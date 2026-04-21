@@ -1,0 +1,284 @@
+from __future__ import annotations
+
+from eimemory.knowledge.views import build_recall_view, choose_view_type, records_from_view
+from eimemory.models.records import RecallBundle, RecordEnvelope, ScopeRef
+from eimemory.storage.runtime_store import RuntimeStore
+
+
+class MemoryAPI:
+    def __init__(self, store: RuntimeStore) -> None:
+        self.store = store
+
+    def ingest(
+        self,
+        *,
+        text: str,
+        memory_type: str,
+        title: str,
+        scope: dict,
+        tags: list[str] | None = None,
+        source: str = "runtime",
+        force_capture: bool = False,
+    ) -> RecordEnvelope:
+        record = RecordEnvelope.create(
+            kind="memory",
+            title=title,
+            summary=text,
+            content={"text": text, "memory_type": memory_type},
+            scope=ScopeRef.from_dict(scope),
+            tags=tags or [],
+            source=source,
+            meta={"memory_type": memory_type, "force_capture": force_capture},
+        )
+        if record.meta.get("quality", {}).get("capture_decision") == "reject":
+            record.status = "rejected"
+            return record
+        return self.store.append(record)
+
+    def recall(
+        self,
+        *,
+        query: str,
+        scope: dict,
+        task_context: dict | None = None,
+        limit: int = 8,
+    ) -> RecallBundle:
+        scope_ref = ScopeRef.from_dict(scope)
+        task_context = dict(task_context or {})
+        task_type = str(task_context.get("task_type") or "")
+        active_policy = {"retrieval_policy": {}, "response_policy": {}}
+        if task_type:
+            active_policy = self.store.get_active_policy(task_type=task_type, scope=scope_ref)
+        retrieval_policy = dict(active_policy.get("retrieval_policy") or {})
+        recall_profile, recall_profile_source = self._resolve_recall_profile(
+            task_context=task_context,
+            retrieval_policy=retrieval_policy,
+        )
+        profile_config = self._recall_profile_config(recall_profile)
+        search_limit = max(limit * profile_config["search_multiplier"], limit)
+        items, search_report = self.store.search_with_diagnostics(
+            query=query,
+            kinds=["memory", "claim_card", "knowledge_page"],
+            scope=scope_ref,
+            limit=search_limit,
+        )
+        graph_expanded = 0
+        related_ids: list[str] = []
+        base_items = list(items)
+        base_ids = {item.record_id for item in base_items}
+        for item in base_items:
+            for link in item.links:
+                if link.target_kind in {"memory", "multimodal_memory"}:
+                    related_ids.append(link.target_id)
+        if related_ids and profile_config["graph_depth"] > 0:
+            items = self._expand_graph_items(
+                base_items=base_items,
+                scope=scope_ref,
+                graph_depth=profile_config["graph_depth"],
+            )
+        claims = [item for item in items if item.kind == "claim_card"]
+        pages = [item for item in items if item.kind == "knowledge_page"]
+        memories = [item for item in items if item.kind == "memory"]
+        view = build_recall_view(
+            view_type=choose_view_type(task_context),
+            claims=claims,
+            pages=pages,
+            memories=memories,
+            query=query,
+        )
+        items = records_from_view(view, items, limit=limit)
+        graph_expanded = sum(1 for item in items if item.record_id not in base_ids)
+        rules = [
+            rule
+            for rule in self.store.list_records(kinds=["rule"], scope=scope_ref, status="active", limit=50)
+            if not task_type or str(rule.meta.get("task_type") or "") == task_type
+        ]
+        reflections = self.store.search(query=query, kinds=["reflection"], scope=scope_ref, limit=3)
+        confidence = 0.0
+        if items:
+            confidence = 0.92 if active_policy.get("retrieval_policy", {}).get("route_hint") == "task_context_first" else 0.81
+        next_hint = ""
+        response_policy = dict(active_policy.get("response_policy") or {})
+        if response_policy.get("next_action_hint"):
+            next_hint = str(response_policy["next_action_hint"])
+        elif items:
+            next_hint = items[0].title.lower()
+        gap = None
+        retrieval_policy = dict(active_policy.get("retrieval_policy") or {})
+        if not items and retrieval_policy.get("open_unknown_on_low_confidence"):
+            from eimemory.api.evolution import EvolutionAPI
+
+            gap = EvolutionAPI(self.store).capture_recall_gap(
+                query=query,
+                task_context=task_context,
+                scope=scope,
+                policy=retrieval_policy,
+            )
+            reflections = [gap["reflection"], *reflections][:3]
+        return RecallBundle(
+            items=items,
+            rules=rules,
+            reflections=reflections,
+            confidence=confidence,
+            next_action_hint=next_hint,
+            explanation={
+                "query": query,
+                "task_context": task_context,
+                "recall_profile": recall_profile,
+                "recall_profile_source": recall_profile_source,
+                "recall_profile_params": profile_config,
+                "selected_count": len(items),
+                "active_policy": dict(active_policy.get("retrieval_policy") or {}),
+                "rule_count": len(rules),
+                "unknown_record_id": gap["unknown"].record_id if gap else "",
+                "graph_expanded": graph_expanded,
+                "retrieval_mode": str(search_report.get("retrieval_mode") or "hybrid"),
+                "vector_hits": int(search_report.get("vector_hits") or 0),
+                "quality_summary": self._quality_summary(items),
+                "scoring": self._scoring_for_items(items, search_report),
+                "recall_view": view.to_dict(),
+            },
+        )
+
+    def _resolve_recall_profile(self, *, task_context: dict, retrieval_policy: dict) -> tuple[str, str]:
+        candidates = [
+            ("task_context", task_context.get("recall_profile")),
+            ("task_context.retrieval_policy", (task_context.get("retrieval_policy") or {}).get("recall_profile") if isinstance(task_context.get("retrieval_policy"), dict) else None),
+            ("retrieval_policy", retrieval_policy.get("recall_profile")),
+        ]
+        for source, value in candidates:
+            profile = self._normalize_recall_profile(value)
+            if profile:
+                return profile, source
+        return "balanced", "default"
+
+    def _normalize_recall_profile(self, value: object) -> str:
+        profile = str(value or "").strip().lower()
+        if profile in {"precision", "balanced", "exploratory"}:
+            return profile
+        return ""
+
+    def _recall_profile_config(self, recall_profile: str) -> dict:
+        if recall_profile == "precision":
+            return {
+                "search_multiplier": 2,
+                "graph_depth": 0,
+                "graph_policy": "disabled",
+                "candidate_bias": "strict",
+            }
+        if recall_profile == "exploratory":
+            return {
+                "search_multiplier": 5,
+                "graph_depth": 2,
+                "graph_policy": "two_hop",
+                "candidate_bias": "broad",
+            }
+        return {
+            "search_multiplier": 3,
+            "graph_depth": 1,
+            "graph_policy": "one_hop",
+            "candidate_bias": "balanced",
+        }
+
+    def _expand_graph_items(
+        self,
+        *,
+        base_items: list[RecordEnvelope],
+        scope: ScopeRef,
+        graph_depth: int,
+    ) -> list[RecordEnvelope]:
+        existing_ids: set[str] = set()
+        expanded_items: list[RecordEnvelope] = []
+        frontier = list(base_items)
+        depth = 0
+        while frontier and depth < graph_depth:
+            related_ids: list[str] = []
+            for item in frontier:
+                if item.record_id not in existing_ids:
+                    expanded_items.append(item)
+                    existing_ids.add(item.record_id)
+                for link in item.links:
+                    if link.target_kind in {"memory", "multimodal_memory"}:
+                        related_ids.append(link.target_id)
+            if not related_ids:
+                break
+            related_records = self.store.get_many_by_ids(related_ids)
+            next_frontier: list[RecordEnvelope] = []
+            for record in related_records:
+                if record.record_id in existing_ids:
+                    continue
+                if not self._is_returnable_memory_record(record):
+                    continue
+                if not self._record_matches_scope(record, scope):
+                    continue
+                expanded_items.append(record)
+                existing_ids.add(record.record_id)
+                next_frontier.append(record)
+            frontier = next_frontier
+            depth += 1
+        for item in base_items:
+            if item.record_id not in existing_ids:
+                expanded_items.append(item)
+                existing_ids.add(item.record_id)
+        return expanded_items
+
+    def _quality_summary(self, items: list[RecordEnvelope]) -> dict:
+        tiers: dict[str, int] = {}
+        rejected = 0
+        for item in items:
+            quality = item.meta.get("quality") if isinstance(item.meta, dict) else {}
+            if not isinstance(quality, dict):
+                quality = {}
+            tier = str(quality.get("quality_tier") or "unscored")
+            tiers[tier] = tiers.get(tier, 0) + 1
+            if quality.get("capture_decision") == "reject" or item.status == "rejected":
+                rejected += 1
+        return {
+            "tiers": tiers,
+            "rejected_returned": rejected,
+        }
+
+    def _is_returnable_memory_record(self, record: RecordEnvelope) -> bool:
+        if record.status == "rejected":
+            return False
+        quality = record.meta.get("quality") if isinstance(record.meta, dict) else {}
+        return not isinstance(quality, dict) or quality.get("capture_decision") != "reject"
+
+    def _record_matches_scope(self, record: RecordEnvelope, scope: ScopeRef) -> bool:
+        if scope.tenant_id and record.scope.tenant_id != scope.tenant_id:
+            return False
+        if scope.agent_id and record.scope.agent_id != scope.agent_id:
+            return False
+        if scope.workspace_id and record.scope.workspace_id != scope.workspace_id:
+            return False
+        if scope.user_id and record.scope.user_id != scope.user_id:
+            return record.scope.user_id == ""
+        return True
+
+    def _scoring_for_items(self, items: list[RecordEnvelope], search_report: dict) -> list[dict]:
+        scored_by_id = {
+            str(entry.get("record_id")): dict(entry)
+            for entry in (search_report.get("scored_items") or [])
+            if isinstance(entry, dict)
+        }
+        scoring: list[dict] = []
+        for item in items:
+            entry = dict(scored_by_id.get(item.record_id) or {})
+            quality = item.meta.get("quality") if isinstance(item.meta, dict) else {}
+            if not isinstance(quality, dict):
+                quality = {}
+            scoring.append(
+                {
+                    "record_id": item.record_id,
+                    "kind": item.kind,
+                    "title": item.title,
+                    "lexical_score": entry.get("lexical_score", 0),
+                    "semantic_score": entry.get("semantic_score", 0.0),
+                    "vector_score": entry.get("vector_score", 0.0),
+                    "quality_score": entry.get("quality_score", quality.get("salience_score", 0.0)),
+                    "quality_tier": str(quality.get("quality_tier") or "unscored"),
+                    "final_score": entry.get("final_score", 0.0),
+                    "source": "search" if entry else "expanded_or_view",
+                }
+            )
+        return scoring

@@ -1,0 +1,10 @@
+.pytest_cache/
+.pytest-tmp/
+__pycache__/
+*.py[cod]
+pytest_*_tmp*/
+py_manual_tmp/
+tmp_pytest/
+tmp*/
+*.tar.gz
+memory/

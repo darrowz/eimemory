@@ -1,0 +1,678 @@
+import json
+
+from eimemory.api.runtime import Runtime
+from eimemory.cli.main import main as cli_main
+from eimemory.models.records import LinkRef, RecordEnvelope, ScopeRef
+
+
+def test_runtime_ingest_and_recall(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+
+    record = runtime.memory.ingest(
+        text="OpenClaw should inject memory before prompt build",
+        memory_type="fact",
+        title="Prompt-build recall",
+        scope={"agent_id": "main", "workspace_id": "repo-x"},
+        tags=["openclaw"],
+    )
+
+    bundle = runtime.memory.recall(
+        query="inject memory before prompt build",
+        scope={"agent_id": "main", "workspace_id": "repo-x"},
+        task_context={"task_type": "chat.reply", "goal": "answer user"},
+        limit=5,
+    )
+
+    assert record.kind == "memory"
+    assert bundle.items
+    assert bundle.items[0].record_id == record.record_id
+    assert bundle.explanation["query"] == "inject memory before prompt build"
+    assert record.meta["quality"]["capture_decision"] == "accept"
+    assert record.meta["quality"]["quality_tier"] in {"confirmed", "core"}
+
+
+def test_runtime_ingest_rejects_thin_chatter_without_persisting(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+
+    record = runtime.memory.ingest(
+        text="ok",
+        memory_type="conversation",
+        title="Thin chatter",
+        scope={"agent_id": "main", "workspace_id": "repo-x"},
+    )
+    persisted = runtime.store.list_records(
+        kinds=["memory"],
+        scope={"agent_id": "main", "workspace_id": "repo-x"},
+        limit=10,
+    )
+
+    assert record.status == "rejected"
+    assert record.meta["quality"]["capture_decision"] == "reject"
+    assert persisted == []
+
+
+def test_runtime_ingest_can_force_capture_low_salience_memory(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+
+    record = runtime.memory.ingest(
+        text="ok",
+        memory_type="conversation",
+        title="Forced short signal",
+        scope={"agent_id": "main", "workspace_id": "repo-x"},
+        force_capture=True,
+    )
+    persisted = runtime.store.list_records(
+        kinds=["memory"],
+        scope={"agent_id": "main", "workspace_id": "repo-x"},
+        limit=10,
+    )
+
+    assert record.status == "active"
+    assert record.meta["quality"]["capture_decision"] == "accept"
+    assert persisted[0].record_id == record.record_id
+
+
+def test_runtime_close_releases_sqlite_file_handle(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    runtime.memory.ingest(
+        text="Release the sqlite handle",
+        memory_type="fact",
+        title="Close runtime",
+        scope={"agent_id": "main", "workspace_id": "repo-x"},
+    )
+    db_path = tmp_path / "state" / "eimemory.sqlite"
+
+    runtime.close()
+    db_path.unlink()
+
+    assert not db_path.exists()
+
+
+def test_runtime_context_manager_closes_store(tmp_path) -> None:
+    db_path = tmp_path / "state" / "eimemory.sqlite"
+
+    with Runtime.create(root=tmp_path) as runtime:
+        runtime.memory.ingest(
+            text="Context manager closes runtime",
+            memory_type="fact",
+            title="Context runtime",
+            scope={"agent_id": "main", "workspace_id": "repo-x"},
+        )
+
+    db_path.unlink()
+    assert not db_path.exists()
+
+
+def test_runtime_evolution_observe_feedback_and_policy(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+
+    incident = runtime.evolution.observe(
+        signal_type="incident",
+        payload={
+            "incident_type": "asr_low_value_input",
+            "severity": "medium",
+            "title": "Ignore punctuation-only ASR",
+            "summary": "Punctuation-only ASR should not trigger reply",
+        },
+        scope={"agent_id": "eibrain", "workspace_id": "robot"},
+    )
+
+    rule = runtime.evolution.store_rule(
+        title="Ignore low-value ASR",
+        summary="Avoid replies on punctuation-only ASR",
+        task_type="brain.respond",
+        retrieval_policy={
+            "route_hint": "task_context_first",
+            "open_unknown_on_low_confidence": True,
+        },
+        scope={"agent_id": "eibrain", "workspace_id": "robot"},
+        status="active",
+    )
+
+    feedback = runtime.evolution.feedback(
+        target_ref={"kind": "incident", "record_id": incident.record_id},
+        decision="accept",
+        reason="Correctly captured the failure mode",
+        reviewed_by="operator",
+        scope={"agent_id": "eibrain", "workspace_id": "robot"},
+    )
+
+    policy = runtime.evolution.get_active_policy(
+        task_type="brain.respond",
+        scope={"agent_id": "eibrain", "workspace_id": "robot"},
+    )
+
+    assert incident.kind == "incident"
+    assert rule.kind == "rule"
+    assert feedback.kind == "feedback"
+    assert policy["retrieval_policy"]["route_hint"] == "task_context_first"
+
+
+def test_runtime_recall_surfaces_active_rules_and_captures_unknowns(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    runtime.evolution.store_rule(
+        title="Open unknowns on weak recall",
+        summary="Track weak recall for later evolution",
+        task_type="chat.reply",
+        retrieval_policy={
+            "route_hint": "task_context_first",
+            "open_unknown_on_low_confidence": True,
+        },
+        scope={"agent_id": "main", "workspace_id": "repo-x"},
+        status="active",
+    )
+
+    bundle = runtime.memory.recall(
+        query="nonexistent preference",
+        scope={"agent_id": "main", "workspace_id": "repo-x"},
+        task_context={"task_type": "chat.reply", "goal": "answer user"},
+        limit=5,
+    )
+    unknowns = runtime.store.list_records(
+        kinds=["unknown"],
+        scope={"agent_id": "main", "workspace_id": "repo-x"},
+        limit=10,
+    )
+    reflections = runtime.store.list_records(
+        kinds=["reflection"],
+        scope={"agent_id": "main", "workspace_id": "repo-x"},
+        limit=10,
+    )
+
+    assert bundle.rules
+    assert bundle.rules[0].title == "Open unknowns on weak recall"
+    assert bundle.confidence == 0.0
+    assert bundle.explanation["active_policy"]["route_hint"] == "task_context_first"
+    assert bundle.explanation["unknown_record_id"] == unknowns[0].record_id
+    assert unknowns[0].kind == "unknown"
+    assert reflections[0].kind == "reflection"
+
+
+def test_runtime_recall_uses_response_policy_for_next_action_hint(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    runtime.memory.ingest(
+        text="Respond briefly when operator context is active",
+        memory_type="preference",
+        title="Brief operator replies",
+        scope={"agent_id": "main", "workspace_id": "repo-x"},
+    )
+    runtime.evolution.store_rule(
+        title="Guide reply style",
+        summary="Prefer concise confirmation",
+        task_type="chat.reply",
+        retrieval_policy={"route_hint": "task_context_first"},
+        response_policy={"next_action_hint": "reply with one concise sentence"},
+        scope={"agent_id": "main", "workspace_id": "repo-x"},
+        status="active",
+    )
+
+    bundle = runtime.memory.recall(
+        query="brief operator context",
+        scope={"agent_id": "main", "workspace_id": "repo-x"},
+        task_context={"task_type": "chat.reply"},
+        limit=5,
+    )
+
+    assert bundle.items
+    assert bundle.next_action_hint == "reply with one concise sentence"
+
+
+def test_runtime_recall_expands_graph_linked_memories(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = ScopeRef(agent_id="main", workspace_id="repo-x")
+    supporting = RecordEnvelope.create(
+        kind="memory",
+        title="Linked catalog entry",
+        summary="Ceramic glaze catalog entry.",
+        scope=scope,
+    )
+    primary = RecordEnvelope.create(
+        kind="memory",
+        title="Operator reply preference",
+        summary="Respond briefly to the operator",
+        scope=scope,
+        links=[
+            LinkRef(
+                relation="supports",
+                target_kind="memory",
+                target_id=supporting.record_id,
+            )
+        ],
+    )
+    runtime.store.append(supporting)
+    runtime.store.append(primary)
+
+    bundle = runtime.memory.recall(
+        query="brief operator reply",
+        scope={"agent_id": "main", "workspace_id": "repo-x"},
+        task_context={"task_type": "chat.reply"},
+        limit=5,
+    )
+
+    titles = [item.title for item in bundle.items]
+    assert "Operator reply preference" in titles
+    assert "Linked catalog entry" in titles
+    assert bundle.explanation["recall_profile"] == "balanced"
+    assert bundle.explanation["recall_profile_source"] == "default"
+    assert bundle.explanation["graph_expanded"] >= 1
+
+
+def test_runtime_recall_dedupes_recall_gaps_for_same_query(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    runtime.evolution.store_rule(
+        title="Open unknowns on weak recall",
+        summary="Track weak recall for later evolution",
+        task_type="chat.reply",
+        retrieval_policy={
+            "route_hint": "task_context_first",
+            "open_unknown_on_low_confidence": True,
+        },
+        scope={"agent_id": "main", "workspace_id": "repo-x"},
+        status="active",
+    )
+
+    for _ in range(2):
+        runtime.memory.recall(
+            query="missing operator preference",
+            scope={"agent_id": "main", "workspace_id": "repo-x"},
+            task_context={"task_type": "chat.reply", "goal": "answer user"},
+            limit=5,
+        )
+
+    unknowns = runtime.store.list_records(
+        kinds=["unknown"],
+        scope={"agent_id": "main", "workspace_id": "repo-x"},
+        limit=10,
+    )
+    reflections = runtime.store.list_records(
+        kinds=["reflection"],
+        scope={"agent_id": "main", "workspace_id": "repo-x"},
+        limit=10,
+    )
+
+    assert len(unknowns) == 1
+    assert len(reflections) == 1
+
+
+def test_runtime_recall_reports_only_returned_graph_expansion(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = ScopeRef(agent_id="main", workspace_id="repo-x")
+    linked = RecordEnvelope.create(
+        kind="memory",
+        title="Linked detail",
+        summary="This record is only reachable through a graph edge",
+        scope=scope,
+    )
+    primary = RecordEnvelope.create(
+        kind="memory",
+        title="Primary detail",
+        summary="This record matches directly",
+        scope=scope,
+        links=[LinkRef(relation="supports", target_kind="memory", target_id=linked.record_id)],
+    )
+    runtime.store.append(linked)
+    runtime.store.append(primary)
+
+    bundle = runtime.memory.recall(
+        query="primary detail",
+        scope={"agent_id": "main", "workspace_id": "repo-x"},
+        task_context={"task_type": "chat.reply"},
+        limit=1,
+    )
+
+    assert len(bundle.items) == 1
+    assert bundle.items[0].title == "Primary detail"
+    assert bundle.explanation["graph_expanded"] == 0
+
+
+def test_runtime_recall_graph_expansion_respects_scope_isolation(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    tenant_a_scope = ScopeRef(tenant_id="tenant-a", agent_id="main", workspace_id="repo-x", user_id="alice")
+    tenant_b_scope = ScopeRef(tenant_id="tenant-b", agent_id="main", workspace_id="repo-x", user_id="bob")
+    linked_other_tenant = RecordEnvelope.create(
+        kind="memory",
+        title="Tenant B private linked memory",
+        summary="Tenant B private preference should never leak",
+        scope=tenant_b_scope,
+    )
+    primary = RecordEnvelope.create(
+        kind="memory",
+        title="Tenant A primary graph memory",
+        summary="Tenant A primary graph recall target",
+        scope=tenant_a_scope,
+        links=[LinkRef(relation="supports", target_kind="memory", target_id=linked_other_tenant.record_id)],
+    )
+    runtime.store.append(linked_other_tenant)
+    runtime.store.append(primary)
+
+    bundle = runtime.memory.recall(
+        query="tenant primary graph recall",
+        scope={"tenant_id": "tenant-a", "agent_id": "main", "workspace_id": "repo-x", "user_id": "alice"},
+        task_context={"task_type": "chat.reply"},
+        limit=5,
+    )
+
+    assert [item.title for item in bundle.items] == ["Tenant A primary graph memory"]
+    assert bundle.explanation["graph_expanded"] == 0
+
+
+def test_runtime_recall_graph_expansion_allows_global_user_scope_links(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    user_scope = ScopeRef(tenant_id="tenant-a", agent_id="main", workspace_id="repo-x", user_id="alice")
+    global_scope = ScopeRef(tenant_id="tenant-a", agent_id="main", workspace_id="repo-x", user_id="")
+    linked_global = RecordEnvelope.create(
+        kind="memory",
+        title="Linked global entry",
+        summary="Ceramic glaze catalog entry.",
+        scope=global_scope,
+    )
+    primary = RecordEnvelope.create(
+        kind="memory",
+        title="Alice primary graph memory",
+        summary="Alice primary graph recall target",
+        scope=user_scope,
+        links=[LinkRef(relation="supports", target_kind="memory", target_id=linked_global.record_id)],
+    )
+    runtime.store.append(linked_global)
+    runtime.store.append(primary)
+
+    bundle = runtime.memory.recall(
+        query="alice primary graph recall",
+        scope={"tenant_id": "tenant-a", "agent_id": "main", "workspace_id": "repo-x", "user_id": "alice"},
+        task_context={"task_type": "chat.reply"},
+        limit=5,
+    )
+
+    titles = [item.title for item in bundle.items]
+    assert "Alice primary graph memory" in titles
+    assert "Linked global entry" in titles
+    assert bundle.explanation["graph_expanded"] == 1
+
+
+def test_runtime_recall_precision_skips_graph_expansion(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = ScopeRef(agent_id="main", workspace_id="repo-x")
+    supporting = RecordEnvelope.create(
+        kind="memory",
+        title="Linked catalog entry",
+        summary="Ceramic glaze catalog entry.",
+        scope=scope,
+    )
+    primary = RecordEnvelope.create(
+        kind="memory",
+        title="Precision primary memory",
+        summary="Precision recall should keep this focused.",
+        scope=scope,
+        links=[
+            LinkRef(
+                relation="supports",
+                target_kind="memory",
+                target_id=supporting.record_id,
+            )
+        ],
+    )
+    runtime.store.append(supporting)
+    runtime.store.append(primary)
+
+    bundle = runtime.memory.recall(
+        query="precision focused recall",
+        scope={"agent_id": "main", "workspace_id": "repo-x"},
+        task_context={"task_type": "chat.reply", "recall_profile": "precision"},
+        limit=5,
+    )
+
+    assert [item.title for item in bundle.items] == ["Precision primary memory"]
+    assert bundle.explanation["recall_profile"] == "precision"
+    assert bundle.explanation["recall_profile_params"]["graph_policy"] == "disabled"
+    assert bundle.explanation["graph_expanded"] == 0
+
+
+def test_runtime_recall_exploratory_uses_task_context_retrieval_policy_profile(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = ScopeRef(agent_id="main", workspace_id="repo-x")
+    hop_two = RecordEnvelope.create(
+        kind="memory",
+        title="Linked hop two",
+        summary="Ceramic glaze catalog entry.",
+        scope=scope,
+    )
+    hop_one = RecordEnvelope.create(
+        kind="memory",
+        title="Linked hop one",
+        summary="Ceramic glaze catalog entry.",
+        scope=scope,
+        links=[LinkRef(relation="supports", target_kind="memory", target_id=hop_two.record_id)],
+    )
+    primary = RecordEnvelope.create(
+        kind="memory",
+        title="Exploratory primary",
+        summary="Primary project recall note.",
+        scope=scope,
+        links=[LinkRef(relation="supports", target_kind="memory", target_id=hop_one.record_id)],
+    )
+    runtime.store.append(hop_two)
+    runtime.store.append(hop_one)
+    runtime.store.append(primary)
+
+    balanced_bundle = runtime.memory.recall(
+        query="exploratory primary widen",
+        scope={"agent_id": "main", "workspace_id": "repo-x"},
+        task_context={"task_type": "chat.reply"},
+        limit=3,
+    )
+    exploratory_bundle = runtime.memory.recall(
+        query="exploratory primary widen",
+        scope={"agent_id": "main", "workspace_id": "repo-x"},
+        task_context={
+            "task_type": "chat.reply",
+            "retrieval_policy": {"recall_profile": "exploratory"},
+        },
+        limit=3,
+    )
+
+    assert [item.title for item in balanced_bundle.items] == ["Exploratory primary", "Linked hop one"]
+    assert [item.title for item in exploratory_bundle.items] == [
+        "Exploratory primary",
+        "Linked hop one",
+        "Linked hop two",
+    ]
+    assert exploratory_bundle.explanation["recall_profile"] == "exploratory"
+    assert exploratory_bundle.explanation["recall_profile_source"] == "task_context.retrieval_policy"
+    assert exploratory_bundle.explanation["recall_profile_params"]["graph_policy"] == "two_hop"
+
+
+def test_runtime_recall_graph_expansion_survives_direct_hit_truncation(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = ScopeRef(agent_id="main", workspace_id="repo-x")
+    linked = RecordEnvelope.create(
+        kind="memory",
+        title="Linked catalog entry",
+        summary="Ceramic glaze catalog entry.",
+        scope=scope,
+    )
+    primary = RecordEnvelope.create(
+        kind="memory",
+        title="Primary graph detail",
+        summary="Primary note for graph expansion testing.",
+        scope=scope,
+        links=[LinkRef(relation="supports", target_kind="memory", target_id=linked.record_id)],
+    )
+    runtime.store.append(linked)
+    runtime.store.append(primary)
+
+    bundle = runtime.memory.recall(
+        query="primary graph detail",
+        scope={"agent_id": "main", "workspace_id": "repo-x"},
+        task_context={"task_type": "chat.reply"},
+        limit=2,
+    )
+
+    assert [item.title for item in bundle.items] == ["Primary graph detail", "Linked catalog entry"]
+    assert bundle.explanation["graph_expanded"] == 1
+
+
+def test_runtime_recall_does_not_graph_expand_rejected_records(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = ScopeRef(agent_id="main", workspace_id="repo-x")
+    rejected = RecordEnvelope.create(
+        kind="memory",
+        title="Rejected linked detail",
+        summary="This rejected detail should never be returned.",
+        scope=scope,
+        status="rejected",
+        meta={"quality": {"capture_decision": "reject", "salience_score": 0.0}},
+    )
+    primary = RecordEnvelope.create(
+        kind="memory",
+        title="Primary graph memory",
+        summary="Primary record matches graph recall.",
+        scope=scope,
+        links=[LinkRef(relation="supports", target_kind="memory", target_id=rejected.record_id)],
+    )
+    runtime.store.append(rejected)
+    runtime.store.append(primary)
+
+    bundle = runtime.memory.recall(
+        query="primary graph recall",
+        scope={"agent_id": "main", "workspace_id": "repo-x"},
+        task_context={"task_type": "chat.reply"},
+        limit=5,
+    )
+
+    assert [item.title for item in bundle.items] == ["Primary graph memory"]
+    assert bundle.explanation["quality_summary"]["rejected_returned"] == 0
+
+
+def test_runtime_recall_uses_vector_assist_for_hybrid_semantic_hits(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    runtime.memory.ingest(
+        text="Keep responses succinct and compact for handheld voice interactions.",
+        memory_type="preference",
+        title="Compact mobile replies",
+        scope={"agent_id": "main", "workspace_id": "repo-x"},
+    )
+
+    bundle = runtime.memory.recall(
+        query="short mobile voice replies",
+        scope={"agent_id": "main", "workspace_id": "repo-x"},
+        task_context={"task_type": "chat.reply"},
+        limit=5,
+    )
+
+    assert bundle.items
+    assert bundle.items[0].title == "Compact mobile replies"
+    assert bundle.explanation["retrieval_mode"] == "hybrid_vector"
+    assert bundle.explanation["vector_hits"] >= 1
+
+
+def test_cli_quality_stats_prints_default_scope_report(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path / "runtime"))
+
+    assert cli_main(
+        [
+            "ingest",
+            "Decision: eimemory should keep OpenClaw memories scoped by tenant and user.",
+            "--title",
+            "OpenClaw scope decision",
+            "--memory-type",
+            "decision",
+        ]
+    ) == 0
+    capsys.readouterr()
+
+    assert cli_main(["quality", "stats"]) == 0
+    report = json.loads(capsys.readouterr().out)
+
+    assert report["memory_count"] == 1
+    high_quality_count = report["quality_distribution"]["confirmed"] + report["quality_distribution"]["core"]
+    assert high_quality_count == 1
+    assert report["by_memory_type"]["decision"] == 1
+
+
+def test_cli_quality_repair_prints_dry_run_and_apply_reports(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path / "runtime"))
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    legacy = RecordEnvelope.create(
+        kind="memory",
+        title="Legacy CLI memory",
+        summary="Decision: CLI repair should report old memory quality backfills.",
+        content={"text": "Decision: CLI repair should report old memory quality backfills.", "memory_type": "decision"},
+        scope=ScopeRef(agent_id="main", workspace_id=""),
+        source="legacy",
+        meta={"memory_type": "decision"},
+    )
+    legacy.meta.pop("quality", None)
+    runtime.store.append(legacy)
+    runtime.close()
+
+    assert cli_main(["quality", "repair"]) == 0
+    dry_run = json.loads(capsys.readouterr().out)
+
+    assert dry_run["applied"] is False
+    assert dry_run["backfilled_count"] == 1
+
+    assert cli_main(["quality", "repair", "--apply"]) == 0
+    applied = json.loads(capsys.readouterr().out)
+
+    assert applied["applied"] is True
+    assert applied["backfilled_count"] == 1
+    assert applied["actions"][0]["action"] == "backfill_quality"
+
+
+def test_runtime_recall_explains_quality_aware_scoring(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = ScopeRef(agent_id="main", workspace_id="repo-x")
+    high_quality = RecordEnvelope.create(
+        kind="memory",
+        title="Core OpenClaw memory rule",
+        summary="OpenClaw memory recall must prioritize verified durable project preferences.",
+        scope=scope,
+        meta={
+            "quality": {
+                "importance": 0.96,
+                "confidence": 0.94,
+                "freshness": 1.0,
+                "reuse_potential": 0.96,
+                "salience_score": 0.95,
+                "quality_tier": "core",
+                "capture_decision": "accept",
+            }
+        },
+    )
+    low_quality = RecordEnvelope.create(
+        kind="memory",
+        title="Weak OpenClaw note",
+        summary="OpenClaw memory recall project note.",
+        scope=scope,
+        meta={
+            "quality": {
+                "importance": 0.1,
+                "confidence": 0.2,
+                "freshness": 1.0,
+                "reuse_potential": 0.1,
+                "salience_score": 0.16,
+                "quality_tier": "candidate",
+                "capture_decision": "accept",
+            }
+        },
+    )
+    runtime.store.append(high_quality)
+    runtime.store.append(low_quality)
+
+    bundle = runtime.memory.recall(
+        query="openclaw memory recall project",
+        scope={"agent_id": "main", "workspace_id": "repo-x"},
+        task_context={"task_type": "chat.reply"},
+        limit=2,
+    )
+
+    assert [item.title for item in bundle.items] == [
+        "Core OpenClaw memory rule",
+        "Weak OpenClaw note",
+    ]
+    scoring = bundle.explanation["scoring"]
+    assert scoring[0]["record_id"] == high_quality.record_id
+    assert scoring[0]["quality_tier"] == "core"
+    assert scoring[0]["quality_score"] > scoring[1]["quality_score"]
+    assert "lexical_score" in scoring[0]
+    assert "vector_score" in scoring[0]

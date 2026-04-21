@@ -1,0 +1,12 @@
+{
+  "id": "eimemory-bridge",
+  "name": "eimemory-bridge",
+  "version": "0.1.0",
+  "main": "./eimemory-bridge/index.js",
+  "displayName": "eimemory Bridge",
+  "description": "OpenClaw bridge plugin that forwards lifecycle hooks into the local eimemory runtime.",
+  "configSchema": {
+    "type": "object",
+    "properties": {}
+  }
+}
