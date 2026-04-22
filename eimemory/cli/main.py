@@ -90,6 +90,46 @@ def _build_parser() -> argparse.ArgumentParser:
     intake_report.add_argument("--source-kind", choices=["paper", "news", "rss", "url", "manual"], default="")
     intake_report.add_argument("--limit", type=int, default=None)
 
+    intake_collect = intake_sub.add_parser("collect")
+    intake_collect.add_argument("--source-kind", choices=["paper", "news", "rss", "url", "manual"], default="")
+    intake_collect.add_argument("--limit", type=int, default=None)
+
+    intake_queue = intake_sub.add_parser("queue")
+    intake_queue.add_argument("--status", action="append", default=[])
+    intake_queue.add_argument("--limit", type=int, default=20)
+
+    intake_review = intake_sub.add_parser("review")
+    intake_review.add_argument("record_id")
+    intake_review.add_argument("decision", choices=["approve", "reject", "quarantine", "deprecate"])
+    intake_review.add_argument("--reviewer", default="cli")
+    intake_review.add_argument("--note", default="")
+
+    intake_promote = intake_sub.add_parser("promote")
+    intake_promote.add_argument("record_id")
+    intake_promote.add_argument("--promoter", default="cli")
+    intake_promote.add_argument("--note", default="")
+
+    intake_merge = intake_sub.add_parser("merge")
+    intake_merge.add_argument("source_record_id")
+    intake_merge.add_argument("target_record_id")
+    intake_merge.add_argument("--reviewer", default="cli")
+    intake_merge.add_argument("--note", default="")
+
+    intake_paper_promote = intake_sub.add_parser("paper-promote")
+    intake_paper_promote.add_argument("record_id")
+
+    intake_policy = intake_sub.add_parser("policy")
+    intake_policy.add_argument("--gap", action="append", default=[])
+
+    intake_pack = intake_sub.add_parser("pack")
+    intake_pack_sub = intake_pack.add_subparsers(dest="pack_command")
+    intake_pack_export = intake_pack_sub.add_parser("export")
+    intake_pack_export.add_argument("path")
+    intake_pack_export.add_argument("--include-candidates", action="store_true")
+    intake_pack_import = intake_pack_sub.add_parser("import")
+    intake_pack_import.add_argument("path")
+    intake_pack_import.add_argument("--dry-run", action="store_true")
+
     export_cmd = sub.add_parser("export")
     export_cmd.add_argument("path")
 
@@ -314,7 +354,103 @@ def main(argv: list[str] | None = None) -> int:
                 return 2
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0 if report.get("ok", True) else 1
-        print(json.dumps({"usage": "eimemory intake run|report"}))
+        if parsed.intake_command == "collect":
+            if parsed.limit is not None and parsed.limit <= 0:
+                print(json.dumps({"ok": False, "error": "invalid_limit"}, ensure_ascii=False))
+                return 2
+            report = runtime.collect_external_sources(
+                source_kind=parsed.source_kind or None,
+                limit=parsed.limit,
+            )
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0
+        if parsed.intake_command == "queue":
+            if parsed.limit <= 0:
+                print(json.dumps({"ok": False, "error": "invalid_limit"}, ensure_ascii=False))
+                return 2
+            records = runtime.list_intake_review_queue(
+                scope=scope,
+                status=list(parsed.status or []) or None,
+                limit=parsed.limit,
+            )
+            print(json.dumps(records, ensure_ascii=False, indent=2))
+            return 0
+        if parsed.intake_command == "review":
+            try:
+                record = runtime.review_intake_candidate(
+                    record_id=parsed.record_id,
+                    decision=parsed.decision,
+                    reviewer=parsed.reviewer,
+                    note=parsed.note,
+                    scope=scope,
+                )
+            except ValueError as exc:
+                print(json.dumps({"ok": False, "error": "review_failed", "detail": str(exc)}, ensure_ascii=False))
+                return 2
+            print(json.dumps(record.to_dict(), ensure_ascii=False, indent=2))
+            return 0
+        if parsed.intake_command == "promote":
+            try:
+                record = runtime.promote_intake_candidate(
+                    record_id=parsed.record_id,
+                    promoter=parsed.promoter,
+                    note=parsed.note,
+                    scope=scope,
+                )
+            except ValueError as exc:
+                print(json.dumps({"ok": False, "error": "promotion_failed", "detail": str(exc)}, ensure_ascii=False))
+                return 2
+            print(json.dumps(record.to_dict(), ensure_ascii=False, indent=2))
+            return 0
+        if parsed.intake_command == "merge":
+            try:
+                record = runtime.merge_intake_candidates(
+                    source_record_id=parsed.source_record_id,
+                    target_record_id=parsed.target_record_id,
+                    reviewer=parsed.reviewer,
+                    note=parsed.note,
+                    scope=scope,
+                )
+            except ValueError as exc:
+                print(json.dumps({"ok": False, "error": "merge_failed", "detail": str(exc)}, ensure_ascii=False))
+                return 2
+            print(json.dumps(record.to_dict(), ensure_ascii=False, indent=2))
+            return 0
+        if parsed.intake_command == "paper-promote":
+            candidate = runtime.store.get_by_id(parsed.record_id)
+            if candidate is None:
+                print(json.dumps({"ok": False, "error": "candidate_not_found"}, ensure_ascii=False))
+                return 2
+            report = runtime.promote_paper_candidate(candidate, scope=scope)
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0 if report.get("ok") else 1
+        if parsed.intake_command == "policy":
+            report = runtime.collection_policy(scope=scope, topic_gaps=list(parsed.gap or []))
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0
+        if parsed.intake_command == "pack":
+            try:
+                if parsed.pack_command == "export":
+                    report = runtime.export_knowledge_pack(
+                        parsed.path,
+                        scope=scope,
+                        include_candidates=bool(parsed.include_candidates),
+                    )
+                elif parsed.pack_command == "import":
+                    report = runtime.import_knowledge_pack(
+                        parsed.path,
+                        scope=scope,
+                        dry_run=bool(parsed.dry_run),
+                    )
+                else:
+                    print(json.dumps({"usage": "eimemory intake pack export|import"}))
+                    return 0
+            except ValueError as exc:
+                print(json.dumps({"ok": False, "error": "pack_failed", "detail": str(exc)}, ensure_ascii=False))
+                return 2
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0
+        print(json.dumps({"usage": "eimemory intake run|report|collect|queue|review|promote|merge|paper-promote|policy|pack"}))
         return 0
     if parsed.command == "export":
         count = export_records(runtime, parsed.path)

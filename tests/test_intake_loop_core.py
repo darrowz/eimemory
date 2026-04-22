@@ -150,6 +150,22 @@ def test_quarantined_secret_is_redacted_from_candidate_payload(tmp_path):
     assert candidate["provenance"]["redacted"] is True
 
 
+def test_authorization_bearer_secret_is_quarantined(tmp_path):
+    doc = tmp_path / "bearer.txt"
+    doc.write_text(
+        "Authorization: Bearer abcdefghijklmnopqrstuvwxyz123456",
+        encoding="utf-8",
+    )
+
+    candidate = KnowledgeIntakeLoop().build_candidates(
+        [SourceEntry(source_id="bearer-src", source_kind="manual", uri=str(doc))]
+    )[0]
+
+    assert candidate["decision"] == "quarantined"
+    assert candidate["content_excerpt"] == "[redacted:secret_detected]"
+    assert "abcdefghijklmnopqrstuvwxyz" not in json.dumps(candidate)
+
+
 def test_candidates_to_records_include_scope_in_record_identity(tmp_path):
     doc = tmp_path / "shared.md"
     doc.write_text(

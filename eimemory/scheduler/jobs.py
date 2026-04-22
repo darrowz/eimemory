@@ -18,6 +18,9 @@ def run_nightly_jobs(
     knowledge_pages = runtime.store.list_records(kinds=["knowledge_page"], scope=scope, limit=1000)
     knowledge_report = runtime.evolution.reconcile_knowledge(scope=scope)
     quality_report = runtime.evolution.memory_quality_report(scope=scope)
+    intake_report = runtime.run_knowledge_intake(scope=scope, persist=True, limit=100)
+    source_quality_report = runtime.source_quality_report(scope=scope)
+    collection_policy = runtime.collection_policy(scope=scope)
     replay_datasets = replay_datasets or {}
     replay_reports = []
     for rule in active_rules:
@@ -42,5 +45,20 @@ def run_nightly_jobs(
             "fail_count": sum(1 for report in replay_reports if report.meta.get("verdict") == "fail"),
         },
         "memory_quality": quality_report,
+        "knowledge_intake": {
+            "scanned_count": intake_report["scanned_count"],
+            "candidate_count": intake_report["candidate_count"],
+            "rejected_count": intake_report["rejected_count"],
+            "quarantined_count": intake_report["quarantined_count"],
+            "written_count": intake_report["written_count"],
+            "skipped_existing_count": intake_report.get("skipped_existing_count", 0),
+        },
+        "source_quality": {
+            "source_count": source_quality_report["source_count"],
+            "run_now": collection_policy["run_now"],
+            "pause": collection_policy["pause"],
+            "lower_frequency": collection_policy["lower_frequency"],
+            "gap_query_count": len(collection_policy["gap_queries"]),
+        },
         "roi": roi,
     }

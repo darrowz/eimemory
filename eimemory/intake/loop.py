@@ -38,6 +38,8 @@ _INJECTION_PATTERNS = (
 _SECRET_PATTERNS = (
     re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----", re.IGNORECASE),
     re.compile(r"\b(api[_-]?key|secret|password|token)\s*[:=]\s*['\"]?[A-Za-z0-9_\-]{12,}", re.IGNORECASE),
+    re.compile(r"\bauthorization\s*:\s*bearer\s+[A-Za-z0-9._\-]{12,}", re.IGNORECASE),
+    re.compile(r"\bbearer\s+[A-Za-z0-9._\-]{20,}", re.IGNORECASE),
     re.compile(r"\bsk-[A-Za-z0-9]{16,}\b"),
 )
 
@@ -84,8 +86,13 @@ class KnowledgeIntakeLoop:
             sources = sources[: max(0, int(limit))]
         candidates = self.build_candidates(sources)
         written = 0
+        skipped_existing = 0
         if persist:
             for record in candidates_to_records(candidates, scope):
+                existing = self.store.get_by_id(record.record_id)
+                if existing is not None and existing.status != "candidate":
+                    skipped_existing += 1
+                    continue
                 self.store.append(record)
                 written += 1
         return {
@@ -98,6 +105,7 @@ class KnowledgeIntakeLoop:
             "rejected_count": sum(1 for item in candidates if item.get("decision") == DECISION_REJECTED),
             "quarantined_count": sum(1 for item in candidates if item.get("decision") == DECISION_QUARANTINED),
             "written_count": written,
+            "skipped_existing_count": skipped_existing,
             "candidates": candidates,
         }
 

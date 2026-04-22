@@ -19,6 +19,8 @@ def build_governance_snapshot(runtime, scope: dict | ScopeRef) -> dict[str, Any]
     source_candidates = _list_all_records(runtime, kinds=["source_candidate"], scope=scope_ref)
     unknowns = _list_all_records(runtime, kinds=["unknown"], scope=scope_ref)
     knowledge_intake = _list_knowledge_intake_records(runtime, scope=scope_ref)
+    source_quality = runtime.source_quality_report(scope=scope_payload)
+    collection_policy = runtime.collection_policy(scope=scope_payload)
 
     backup_reports = _collect_backup_reports(runtime.store.root)
     warnings: list[str] = []
@@ -47,6 +49,13 @@ def build_governance_snapshot(runtime, scope: dict | ScopeRef) -> dict[str, Any]
             "list": [_record_to_dict(record) for record in source_candidates[:20]],
         },
         "knowledge_intake": _summarize_knowledge_intake(knowledge_intake),
+        "source_quality": source_quality,
+        "collection_policy": {
+            "run_now": collection_policy["run_now"],
+            "pause": collection_policy["pause"],
+            "lower_frequency": collection_policy["lower_frequency"],
+            "gap_queries": collection_policy["gap_queries"][:20],
+        },
         "backups": {
             "count": len(backup_reports),
             "latest": backup_reports[0] if backup_reports else None,

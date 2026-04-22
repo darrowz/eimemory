@@ -48,6 +48,104 @@ class Runtime:
             limit=limit,
         )
 
+    def collect_external_sources(
+        self,
+        *,
+        source_kind: str | None = None,
+        limit: int | None = None,
+        fetch_text=None,
+    ) -> dict:
+        from dataclasses import asdict
+
+        from eimemory.intake.connectors import collect_from_source_entry
+
+        sources = self.sources.list_sources(enabled=True, source_kind=source_kind or None)
+        if limit is not None:
+            sources = sources[: max(0, int(limit))]
+        results = []
+        item_count = 0
+        for source in sources:
+            result = collect_from_source_entry(source, fetch_text=fetch_text)
+            payload = asdict(result)
+            payload["source_id"] = source.source_id
+            payload["source_kind"] = source.source_kind
+            item_count += len(result.items)
+            results.append(payload)
+        return {
+            "ok": True,
+            "source_count": len(sources),
+            "item_count": item_count,
+            "results": results,
+        }
+
+    def promote_paper_candidate(self, record_or_payload, *, scope: dict | None = None) -> dict:
+        from eimemory.intake.pipeline import promote_paper_candidate
+
+        return promote_paper_candidate(self, record_or_payload, scope)
+
+    def list_intake_review_queue(self, *, scope: dict | None = None, status=None, limit: int = 100) -> list[dict]:
+        from eimemory.intake.review import list_review_queue
+
+        return list_review_queue(self, scope, status=status, limit=limit)
+
+    def review_intake_candidate(
+        self,
+        *,
+        record_id: str,
+        decision: str,
+        reviewer: str,
+        note: str = "",
+        scope: dict | None = None,
+    ) -> RecordEnvelope:
+        from eimemory.intake.review import review_candidate
+
+        return review_candidate(self, record_id, decision, reviewer, note=note, scope=scope)
+
+    def promote_intake_candidate(
+        self,
+        *,
+        record_id: str,
+        promoter: str,
+        note: str = "",
+        scope: dict | None = None,
+    ) -> RecordEnvelope:
+        from eimemory.intake.review import promote_candidate
+
+        return promote_candidate(self, record_id, promoter, note=note, scope=scope)
+
+    def merge_intake_candidates(
+        self,
+        *,
+        source_record_id: str,
+        target_record_id: str,
+        reviewer: str,
+        note: str = "",
+        scope: dict | None = None,
+    ) -> RecordEnvelope:
+        from eimemory.intake.review import merge_candidates
+
+        return merge_candidates(self, source_record_id, target_record_id, reviewer, note=note, scope=scope)
+
+    def source_quality_report(self, *, scope: dict | None = None) -> dict:
+        from eimemory.intake.policy import build_source_quality_report
+
+        return build_source_quality_report(self, scope or {})
+
+    def collection_policy(self, *, scope: dict | None = None, topic_gaps: list[str] | None = None) -> dict:
+        from eimemory.intake.policy import recommend_collection_policy
+
+        return recommend_collection_policy(self, scope or {}, topic_gaps=topic_gaps or [])
+
+    def export_knowledge_pack(self, path: str | Path, *, scope: dict | None = None, include_candidates: bool = False) -> dict:
+        from eimemory.intake.packs import export_knowledge_pack
+
+        return export_knowledge_pack(self, path, scope or {}, include_candidates=include_candidates)
+
+    def import_knowledge_pack(self, path: str | Path, *, scope: dict | None = None, dry_run: bool = False) -> dict:
+        from eimemory.intake.packs import import_knowledge_pack
+
+        return import_knowledge_pack(self, path, scope or {}, dry_run=dry_run)
+
     def __enter__(self) -> "Runtime":
         return self
 
