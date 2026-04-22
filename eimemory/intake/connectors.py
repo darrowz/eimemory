@@ -6,7 +6,7 @@ import html
 import json
 import re
 from typing import Any, Callable
-from urllib.parse import quote, unquote, urlparse
+from urllib.parse import parse_qsl, quote, unquote, urlencode, urlparse, urlunparse
 import xml.etree.ElementTree as ET
 
 
@@ -14,6 +14,7 @@ FetchTextFunc = Callable[[str], str]
 
 _ARXIV_API_BASE = "https://export.arxiv.org/api/query"
 _CROSSREF_WORKS_BASE = "https://api.crossref.org/works"
+_CHATPAPER_ARXIV_API_PATH = "/api/papers/arxiv"
 _PROMPT_INJECTION_PATTERNS = (
     "ignore previous instructions",
     "reveal the system prompt",
@@ -123,6 +124,65 @@ def fetch_arxiv(query: str, fetch_text_func: FetchTextFunc) -> FetchResult:
         return _safe_error("fetch failed", metadata={"url": url})
 
 
+def build_chatpaper_arxiv_api_url(uri: str) -> str:
+    parsed = urlparse(str(uri).strip())
+    if not parsed.scheme or not parsed.netloc:
+        return str(uri).strip()
+
+    params = dict(parse_qsl(parsed.query, keep_blank_values=False))
+    parts = [unquote(part) for part in parsed.path.split("/") if part]
+    language = params.get("language") or (parts[0] if parts and re.fullmatch(r"[a-z]{2}", parts[0]) else "zh")
+    category = params.get("category") or _chatpaper_category_from_path(parts) or "cs.AI"
+    params.update({"category": category, "page": params.get("page") or "1", "language": language})
+
+    return urlunparse(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            _CHATPAPER_ARXIV_API_PATH,
+            "",
+            urlencode(params),
+            "",
+        )
+    )
+
+
+def parse_chatpaper_arxiv_json(payload: str | dict[str, Any]) -> FetchResult:
+    if isinstance(payload, str):
+        try:
+            data = json.loads(payload)
+        except json.JSONDecodeError:
+            return _safe_error("invalid ChatPaper arXiv JSON")
+    else:
+        data = payload
+
+    raw_papers = data.get("papers") if isinstance(data, dict) else None
+    if not isinstance(raw_papers, list):
+        return _safe_error("invalid ChatPaper arXiv response")
+
+    items: list[CollectedItem] = []
+    seen: set[str] = set()
+    for paper in raw_papers:
+        if not isinstance(paper, dict):
+            continue
+        item = _chatpaper_paper_to_item(paper)
+        if item is None:
+            continue
+        dedupe_key = item.url or item.fingerprint
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        items.append(item)
+
+    metadata = {
+        "total": data.get("total"),
+        "current_page": data.get("currentPage"),
+        "total_pages": data.get("totalPages"),
+        "data_source": data.get("dataSource"),
+    }
+    return FetchResult(ok=True, items=items, metadata={key: value for key, value in metadata.items() if value is not None})
+
+
 def build_crossref_work_url(doi: str) -> str:
     normalized = _normalize_doi(doi)
     return f"{_CROSSREF_WORKS_BASE}/{quote(normalized, safe='')}"
@@ -222,6 +282,9 @@ def collect_from_source_entry(source: Any, fetch_text: FetchTextFunc | None = No
     elif resolved_kind == "doi":
         fetch_url = build_crossref_work_url(uri)
         parser = parse_crossref_work_json
+    elif resolved_kind == "chatpaper_arxiv":
+        fetch_url = build_chatpaper_arxiv_api_url(uri)
+        parser = parse_chatpaper_arxiv_json
     elif resolved_kind in {"rss", "http"}:
         parser = lambda text: parse_feed_xml(text, source_url=uri)
     else:
@@ -256,6 +319,54 @@ def _feed_entry_to_item(entry: ET.Element, *, source_url: str) -> CollectedItem 
         source_kind="rss",
         metadata={"feed_url": source_url} if source_url else {},
     )
+
+
+def _chatpaper_paper_to_item(paper: dict[str, Any]) -> CollectedItem | None:
+    arxiv_id = _clean_text(str(paper.get("id") or ""))
+    original_title = _clean_text(str(paper.get("title") or arxiv_id))
+    original_abstract = _clean_text(str(paper.get("abstract") or ""))
+    translation = _preferred_chatpaper_translation(paper.get("paper_translations"))
+    translated_title = _clean_text(str(translation.get("title") or ""))
+    translated_abstract = _clean_text(str(translation.get("abstract") or ""))
+    url = _clean_text(str(paper.get("arxivUrl") or ""))
+    if not url and arxiv_id:
+        url = f"https://arxiv.org/abs/{arxiv_id}"
+    if not any((original_title, original_abstract, url)):
+        return None
+
+    categories = [str(item) for item in paper.get("categories") or [] if str(item)]
+    metadata = {
+        "arxiv_id": arxiv_id,
+        "pdf_url": _clean_text(str(paper.get("pdfUrl") or "")),
+        "primary_category": _clean_text(str(paper.get("primaryCategory") or "")),
+        "categories": categories,
+        "updated_at": _clean_text(str(paper.get("updatedDate") or "")),
+        "original_title": original_title,
+        "original_abstract": original_abstract,
+        "translation_language": _clean_text(str(translation.get("language_code") or "")),
+        "translated_title": translated_title,
+        "translated_abstract": translated_abstract,
+    }
+    return _collected_item(
+        title=translated_title or original_title,
+        url=url,
+        content=translated_abstract or original_abstract,
+        published_at=_clean_text(str(paper.get("publishedDate") or paper.get("updatedDate") or "")),
+        source_kind="chatpaper_arxiv",
+        metadata={key: value for key, value in metadata.items() if value not in ("", [], None)},
+    )
+
+
+def _preferred_chatpaper_translation(value: Any) -> dict[str, Any]:
+    if not isinstance(value, list):
+        return {}
+    for item in value:
+        if isinstance(item, dict) and item.get("language_code") == "zh":
+            return item
+    for item in value:
+        if isinstance(item, dict):
+            return item
+    return {}
 
 
 def _collected_item(
@@ -422,6 +533,8 @@ def _resolve_source_kind(source_kind: str, uri: str) -> str:
     lowered = uri.lower()
     if source_kind in {"rss", "arxiv", "doi", "github"}:
         return source_kind
+    if "chatpaper.ai/" in lowered and ("/dashboard/arxiv" in lowered or _CHATPAPER_ARXIV_API_PATH in lowered):
+        return "chatpaper_arxiv"
     if "github.com/" in lowered:
         return "github"
     if "arxiv.org/" in lowered or _extract_arxiv_id(uri):
@@ -431,6 +544,19 @@ def _resolve_source_kind(source_kind: str, uri: str) -> str:
     if lowered.startswith(("http://", "https://")):
         return "http"
     return source_kind
+
+
+def _chatpaper_category_from_path(parts: list[str]) -> str:
+    try:
+        arxiv_index = parts.index("arxiv")
+    except ValueError:
+        return ""
+    remainder = parts[arxiv_index + 1 :]
+    if len(remainder) >= 2:
+        return f"{remainder[0]}.{remainder[1]}"
+    if len(remainder) == 1:
+        return remainder[0]
+    return ""
 
 
 def _is_local_uri(uri: str) -> bool:

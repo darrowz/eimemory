@@ -6,11 +6,13 @@ import pytest
 
 from eimemory.intake.connectors import (
     build_arxiv_api_url,
+    build_chatpaper_arxiv_api_url,
     build_crossref_work_url,
     collect_from_source_entry,
     fetch_arxiv,
     normalize_github_url,
     parse_arxiv_xml,
+    parse_chatpaper_arxiv_json,
     parse_crossref_work_json,
     parse_feed_xml,
 )
@@ -105,6 +107,69 @@ def test_parse_crossref_json_builds_collected_item() -> None:
     assert result.items[0].content == "Abstract body"
     assert result.items[0].published_at == "2025-05-06"
     assert result.items[0].metadata["container_title"] == "Journal"
+
+
+def test_parse_chatpaper_arxiv_json_preserves_original_and_translation() -> None:
+    payload = {
+        "papers": [
+            {
+                "id": "2604.19740v1",
+                "title": "Generalization at the Edge of Stability",
+                "abstract": "Original abstract",
+                "publishedDate": "2026-04-21T17:59:02Z",
+                "updatedDate": "2026-04-21T17:59:02Z",
+                "pdfUrl": "https://arxiv.org/pdf/2604.19740v1.pdf",
+                "arxivUrl": "https://arxiv.org/abs/2604.19740v1",
+                "primaryCategory": "cs.AI",
+                "categories": ["cs.AI", "cs.LG"],
+                "paper_translations": [
+                    {
+                        "language_code": "zh",
+                        "title": "稳定边缘的泛化能力",
+                        "abstract": "中文摘要",
+                    }
+                ],
+            }
+        ],
+        "total": 42,
+        "currentPage": 1,
+        "totalPages": 5,
+        "dataSource": "arxiv",
+    }
+
+    result = parse_chatpaper_arxiv_json(payload)
+
+    assert result.ok is True
+    assert result.metadata["total"] == 42
+    item = result.items[0]
+    assert item.title == "稳定边缘的泛化能力"
+    assert item.content == "中文摘要"
+    assert item.url == "https://arxiv.org/abs/2604.19740v1"
+    assert item.source_kind == "chatpaper_arxiv"
+    assert item.metadata["arxiv_id"] == "2604.19740v1"
+    assert item.metadata["original_title"] == "Generalization at the Edge of Stability"
+    assert item.metadata["original_abstract"] == "Original abstract"
+    assert item.metadata["translated_title"] == "稳定边缘的泛化能力"
+    assert item.metadata["categories"] == ["cs.AI", "cs.LG"]
+
+
+def test_collect_chatpaper_dashboard_builds_api_url_and_parses_json() -> None:
+    source = SimpleNamespace(source_kind="url", title="ChatPaper", uri="https://www.chatpaper.ai/zh/dashboard/arxiv/cs/AI")
+    seen: list[str] = []
+
+    def fake_fetch(url: str) -> str:
+        seen.append(url)
+        return '{"papers":[{"id":"2604.19740v1","title":"Paper","abstract":"Abstract","arxivUrl":"https://arxiv.org/abs/2604.19740v1"}]}'
+
+    result = collect_from_source_entry(source, fetch_text=fake_fetch)
+
+    assert build_chatpaper_arxiv_api_url(source.uri) == (
+        "https://www.chatpaper.ai/api/papers/arxiv?category=cs.AI&page=1&language=zh"
+    )
+    assert seen == ["https://www.chatpaper.ai/api/papers/arxiv?category=cs.AI&page=1&language=zh"]
+    assert result.ok is True
+    assert result.items[0].source_kind == "chatpaper_arxiv"
+    assert result.items[0].metadata["arxiv_id"] == "2604.19740v1"
 
 
 def test_normalize_github_repo_release_and_issue_urls() -> None:

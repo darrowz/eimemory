@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from urllib.request import Request, urlopen
 
 from eimemory.api.evolution import EvolutionAPI
 from eimemory.api.memory import MemoryAPI
@@ -54,6 +55,7 @@ class Runtime:
         source_kind: str | None = None,
         limit: int | None = None,
         fetch_text=None,
+        fetch: bool = False,
     ) -> dict:
         from dataclasses import asdict
 
@@ -62,6 +64,8 @@ class Runtime:
         sources = self.sources.list_sources(enabled=True, source_kind=source_kind or None)
         if limit is not None:
             sources = sources[: max(0, int(limit))]
+        if fetch and fetch_text is None:
+            fetch_text = _default_fetch_text
         results = []
         item_count = 0
         for source in sources:
@@ -178,3 +182,16 @@ class Runtime:
         for record in result.to_records(scope=scope):
             self.store.append(record)
         return result
+
+
+def _default_fetch_text(url: str) -> str:
+    request = Request(
+        url,
+        headers={
+            "Accept": "application/json, application/atom+xml, application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.8",
+            "User-Agent": "eimemory/1.0 (+https://github.com/darrowz/eimemory)",
+        },
+    )
+    with urlopen(request, timeout=30) as response:
+        charset = response.headers.get_content_charset() or "utf-8"
+        return response.read().decode(charset, errors="replace")

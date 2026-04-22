@@ -88,6 +88,34 @@ def test_runtime_close_releases_sqlite_file_handle(tmp_path) -> None:
     assert not db_path.exists()
 
 
+def test_runtime_collect_external_sources_can_use_fetcher(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    runtime.sources.add_source(
+        {
+            "source_kind": "url",
+            "title": "ChatPaper",
+            "uri": "https://www.chatpaper.ai/api/papers/arxiv?category=cs.AI&page=1&language=zh",
+            "enabled": True,
+        }
+    )
+    seen: list[str] = []
+
+    def fake_fetch(url: str) -> str:
+        seen.append(url)
+        return '{"papers":[{"id":"2604.19740v1","title":"Paper","abstract":"Abstract","arxivUrl":"https://arxiv.org/abs/2604.19740v1"}]}'
+
+    dry_run = runtime.collect_external_sources(fetch_text=fake_fetch)
+    fetched = runtime.collect_external_sources(fetch=True, fetch_text=fake_fetch)
+
+    assert dry_run["item_count"] == 1
+    assert fetched["item_count"] == 1
+    assert seen == [
+        "https://www.chatpaper.ai/api/papers/arxiv?category=cs.AI&page=1&language=zh",
+        "https://www.chatpaper.ai/api/papers/arxiv?category=cs.AI&page=1&language=zh",
+    ]
+    assert fetched["results"][0]["items"][0]["source_kind"] == "chatpaper_arxiv"
+
+
 def test_runtime_context_manager_closes_store(tmp_path) -> None:
     db_path = tmp_path / "state" / "eimemory.sqlite"
 

@@ -93,6 +93,7 @@ def _build_parser() -> argparse.ArgumentParser:
     intake_collect = intake_sub.add_parser("collect")
     intake_collect.add_argument("--source-kind", choices=["paper", "news", "rss", "url", "manual"], default="")
     intake_collect.add_argument("--limit", type=int, default=None)
+    intake_collect.add_argument("--fetch", action="store_true")
 
     intake_queue = intake_sub.add_parser("queue")
     intake_queue.add_argument("--status", action="append", default=[])
@@ -361,6 +362,7 @@ def main(argv: list[str] | None = None) -> int:
             report = runtime.collect_external_sources(
                 source_kind=parsed.source_kind or None,
                 limit=parsed.limit,
+                fetch=bool(parsed.fetch),
             )
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0
