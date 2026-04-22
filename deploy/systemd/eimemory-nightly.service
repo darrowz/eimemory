@@ -1,0 +1,12 @@
+[Unit]
+Description=eimemory Nightly Knowledge Intake and Governance
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/dev-project/eimemory
+Environment=EIMEMORY_ROOT=/var/lib/eimemory
+Environment=EIMEMORY_CONFIG_DIR=/etc/eimemory
+ExecStart=/opt/eimemory/venv/bin/eimemory nightly
+

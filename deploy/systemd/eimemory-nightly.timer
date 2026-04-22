@@ -1,0 +1,11 @@
+[Unit]
+Description=Run eimemory nightly jobs daily at 03:30 local server time
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+Unit=eimemory-nightly.service
+
+[Install]
+WantedBy=timers.target
+

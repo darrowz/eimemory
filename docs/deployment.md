@@ -44,6 +44,36 @@ EIMEMORY_CONFIG_DIR=/etc/eimemory
 - Backups should be written under `/var/lib/eimemory/backups` and verified with
   `eimemory backup verify`.
 
+## Nightly Knowledge Intake
+
+Production deployments should install the standard systemd user timer:
+
+| Unit | Purpose |
+| --- | --- |
+| `eimemory-nightly.service` | Runs `eimemory nightly` once. |
+| `eimemory-nightly.timer` | Triggers the service daily at `03:30` local server time. |
+
+Install it for the OpenClaw/eimemory operator account:
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp /dev-project/eimemory/deploy/systemd/eimemory-nightly.service ~/.config/systemd/user/
+cp /dev-project/eimemory/deploy/systemd/eimemory-nightly.timer ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now eimemory-nightly.timer
+```
+
+Verify the timer and run one manual smoke:
+
+```bash
+systemctl --user list-timers eimemory-nightly.timer
+systemctl --user start eimemory-nightly.service
+journalctl --user -u eimemory-nightly.service -n 100 --no-pager
+```
+
+The timer uses server local time. If the host timezone changes, systemd will
+apply the new local 03:30 schedule automatically.
+
 ## Verification
 
 After deployment, run:
@@ -60,4 +90,3 @@ After deployment, run:
 EIMEMORY_ROOT=/var/lib/eimemory /opt/eimemory/venv/bin/eimemory quality stats
 EIMEMORY_ROOT=/var/lib/eimemory /opt/eimemory/venv/bin/eimemory governance snapshot
 ```
-
