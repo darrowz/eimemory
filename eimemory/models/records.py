@@ -23,6 +23,7 @@ VALID_KINDS: frozenset[str] = frozenset(
         "entity_record",
         "relation_record",
         "knowledge_page",
+        "knowledge_candidate",
         "recall_view",
     }
 )

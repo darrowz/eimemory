@@ -78,6 +78,18 @@ def _build_parser() -> argparse.ArgumentParser:
     source_scan = source_sub.add_parser("scan")
     source_scan.add_argument("--persist", action="store_true")
 
+    intake = sub.add_parser("intake")
+    intake_sub = intake.add_subparsers(dest="intake_command")
+
+    intake_run = intake_sub.add_parser("run")
+    intake_run.add_argument("--persist", action="store_true")
+    intake_run.add_argument("--source-kind", choices=["paper", "news", "rss", "url", "manual"], default="")
+    intake_run.add_argument("--limit", type=int, default=None)
+
+    intake_report = intake_sub.add_parser("report")
+    intake_report.add_argument("--source-kind", choices=["paper", "news", "rss", "url", "manual"], default="")
+    intake_report.add_argument("--limit", type=int, default=None)
+
     export_cmd = sub.add_parser("export")
     export_cmd.add_argument("path")
 
@@ -167,7 +179,7 @@ def main(argv: list[str] | None = None) -> int:
         print(
             json.dumps(
                 {
-                    "usage": "eimemory init|ingest|recall|paper|source|export|import|backup|migrate|nightly|quality|reflect|governance|evolve",
+                    "usage": "eimemory init|ingest|recall|paper|source|intake|export|import|backup|migrate|nightly|quality|reflect|governance|evolve",
                 }
             )
         )
@@ -281,6 +293,28 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0
         print(json.dumps({"usage": "eimemory source add|list|scan"}))
+        return 0
+    if parsed.command == "intake":
+        if parsed.intake_command in {"run", "report"}:
+            if parsed.limit is not None and parsed.limit <= 0:
+                print(json.dumps({"ok": False, "error": "invalid_limit"}, ensure_ascii=False))
+                return 2
+            try:
+                report = runtime.run_knowledge_intake(
+                    scope=scope,
+                    persist=bool(parsed.persist) if parsed.intake_command == "run" else False,
+                    source_kind=parsed.source_kind or None,
+                    limit=parsed.limit,
+                )
+            except ImportError as exc:
+                print(json.dumps({"ok": False, "error": "knowledge_intake_loop_unavailable", "detail": str(exc)}, ensure_ascii=False))
+                return 2
+            except Exception as exc:
+                print(json.dumps({"ok": False, "error": "knowledge_intake_loop_failed", "detail": str(exc)}, ensure_ascii=False))
+                return 2
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0 if report.get("ok", True) else 1
+        print(json.dumps({"usage": "eimemory intake run|report"}))
         return 0
     if parsed.command == "export":
         count = export_records(runtime, parsed.path)

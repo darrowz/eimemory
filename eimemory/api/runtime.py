@@ -28,6 +28,26 @@ class Runtime:
     def close(self) -> None:
         self.store.close()
 
+    def knowledge_intake_loop(self):
+        from eimemory.intake.loop import KnowledgeIntakeLoop
+
+        return KnowledgeIntakeLoop(self.sources, self.store)
+
+    def run_knowledge_intake(
+        self,
+        *,
+        scope: dict | None = None,
+        persist: bool = False,
+        source_kind: str | None = None,
+        limit: int | None = None,
+    ) -> dict:
+        return self.knowledge_intake_loop().run(
+            scope,
+            persist=persist,
+            source_kind=source_kind,
+            limit=limit,
+        )
+
     def __enter__(self) -> "Runtime":
         return self
 
