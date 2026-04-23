@@ -221,6 +221,54 @@ process.stdout.write(JSON.stringify({
     assert "sender-evil" not in payload["prependContext"]
 
 
+def test_openclaw_js_bridge_agent_end_recovers_user_scope_from_session_id(tmp_path) -> None:
+    script = """
+const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
+const handlers = {};
+plugin.register({ on(name, handler) { handlers[name] = handler; } });
+handlers.agent_end({
+  sessionId: 'agent:main:feishu:direct:ou_scope_test',
+  agentId: 'main',
+  messages: [{ role: 'assistant', content: 'Decision: keep durable user scope.' }],
+  success: true,
+})
+  .then((result) => { process.stdout.write(JSON.stringify(result)); })
+  .catch((error) => { console.error(error && error.stack ? error.stack : String(error)); process.exit(1); });
+""".strip()
+    hook_script = tmp_path / "capture-agent-end-scope.js"
+    hook_script.write_text(
+        """
+const fs = require('node:fs');
+const payload = JSON.parse(fs.readFileSync(0, 'utf8') || '{}');
+process.stdout.write(JSON.stringify({
+  stored: {
+    user_id: payload.user_id,
+    session_id: payload.session_id,
+    assistant_messages: payload.assistant_messages || [],
+  },
+}));
+""".strip(),
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env["EIMEMORY_HOOK_COMMAND"] = f'node "{hook_script}"'
+    result = subprocess.run(
+        ["node", "-e", script],
+        cwd=Path.cwd(),
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=10,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout or "{}")
+    assert payload["stored"]["user_id"] == "ou_scope_test"
+    assert payload["stored"]["session_id"] == "agent:main:feishu:direct:ou_scope_test"
+
+
 def test_openclaw_hooks_capture_recall_and_agent_end(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     hooks = OpenClawMemoryHooks(runtime)

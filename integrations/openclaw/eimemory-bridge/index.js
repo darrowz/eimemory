@@ -120,6 +120,7 @@ function normalizeMessageRole(event) {
 }
 
 function normalizeScope(event, metadata = {}) {
+  const sessionUserId = userIdFromSession(event?.sessionId || event?.session_id || '');
   return {
     tenant_id: String(event?.tenantId || event?.tenant_id || 'default'),
     agent_id: String(event?.agentId || event?.agent_id || 'main'),
@@ -131,9 +132,26 @@ function normalizeScope(event, metadata = {}) {
       || event?.sender_id
       || metadata.sender_id
       || metadata.sender
+      || sessionUserId
       || ''
     ),
   };
+}
+
+function userIdFromSession(sessionId) {
+  const session = String(sessionId || '').trim();
+  if (!session) {
+    return '';
+  }
+  const directMatch = session.match(/feishu:direct:([^:]+)$/i);
+  if (directMatch) {
+    return directMatch[1];
+  }
+  const userMatch = session.match(/feishu:user:([^:]+)$/i);
+  if (userMatch) {
+    return userMatch[1];
+  }
+  return '';
 }
 
 function extractPromptMetadata(prompt) {
