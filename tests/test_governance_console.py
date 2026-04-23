@@ -109,6 +109,9 @@ def test_render_evolution_console_includes_key_sections() -> None:
     assert "Operational Projection" in html
     assert "Recent Papers / Candidates" in html
     assert "Operational Memory Paper" in html
+    assert 'data-reset-layout' in html
+    assert 'draggable="true"' in html
+    assert 'data-card-id="active-intake"' in html
 
 
 def test_render_evolution_console_escapes_user_content() -> None:

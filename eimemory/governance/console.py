@@ -467,6 +467,99 @@ def render_evolution_console(snapshot: dict) -> str:
       .topbar {{ grid-template-columns: 1fr; position: static; }}
       .kpis {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
     }}
+    /* Fill mode: dense 12-column board with draggable cards. */
+    main {{
+      width: min(1440px, calc(100% - 20px));
+    }}
+    .topbar {{
+      grid-template-columns: minmax(260px, 1fr) auto auto;
+    }}
+    .reset-layout {{
+      appearance: none;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 5px 9px;
+      color: var(--body);
+      background: rgba(255,255,255,0.035);
+      font: 700 11px/1 var(--sans);
+      cursor: pointer;
+      white-space: nowrap;
+    }}
+    .reset-layout:hover {{
+      border-color: rgba(33, 208, 143, 0.5);
+      color: var(--green);
+    }}
+    .grid {{
+      grid-template-columns: repeat(12, minmax(0, 1fr));
+      grid-auto-flow: dense;
+      align-items: stretch;
+      gap: 8px;
+    }}
+    .grid > section {{
+      grid-column: span 3;
+      min-height: 148px;
+      display: flex;
+      flex-direction: column;
+      transition: border-color .16s ease, transform .16s ease, opacity .16s ease;
+    }}
+    .grid > section.card-wide {{ grid-column: span 6; }}
+    .grid > section.card-large {{ grid-column: span 7; }}
+    .grid > section.card-medium {{ grid-column: span 4; }}
+    .grid > section.card-tall {{ min-height: 210px; }}
+    .grid > .span-3 {{ grid-column: 1 / -1; }}
+    .grid > section[draggable="true"] h2::after {{
+      content: "drag";
+      float: right;
+      margin-left: 8px;
+      padding: 3px 6px;
+      border: 1px solid var(--line-soft);
+      border-radius: 999px;
+      color: var(--muted);
+      font: 700 9px/1 var(--code);
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }}
+    .grid > section.dragging {{
+      opacity: .58;
+      transform: scale(.99);
+    }}
+    .grid > section.drag-over {{
+      border-color: rgba(33, 208, 143, 0.8);
+      box-shadow: inset 0 0 0 1px rgba(33, 208, 143, 0.28);
+    }}
+    .records {{
+      align-content: start;
+    }}
+    .card-large .records,
+    .card-wide .records {{
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }}
+    .card-large .kv-title,
+    .card-wide .kv-title {{
+      grid-column: 1 / -1;
+    }}
+    @media (max-width: 1180px) {{
+      .grid {{ grid-template-columns: repeat(8, minmax(0, 1fr)); }}
+      .grid > section {{ grid-column: span 4; }}
+      .grid > section.card-wide,
+      .grid > section.card-large {{ grid-column: 1 / -1; }}
+      .grid > section.card-medium {{ grid-column: span 4; }}
+    }}
+    @media (max-width: 720px) {{
+      .topbar {{ grid-template-columns: 1fr auto; }}
+      .warnings {{ grid-column: 1 / -1; }}
+      .grid {{ grid-template-columns: 1fr; }}
+      .grid > section,
+      .grid > section.card-wide,
+      .grid > section.card-large,
+      .grid > section.card-medium {{
+        grid-column: 1 / -1;
+      }}
+      .card-large .records,
+      .card-wide .records {{
+        grid-template-columns: 1fr;
+      }}
+    }}
   </style>
 </head>
 <body>
@@ -480,6 +573,7 @@ def render_evolution_console(snapshot: dict) -> str:
         </div>
       </div>
       <span class="pill">{_escape_text(status)}</span>
+      <button class="reset-layout" type="button" data-reset-layout>Reset layout</button>
       <div class="warnings">{_render_warnings(warnings)}</div>
     </header>
 
@@ -495,7 +589,7 @@ def render_evolution_console(snapshot: dict) -> str:
     </div>
 
     <div class="grid">
-      <section class="span-2">
+      <section class="card card-wide" draggable="true" data-card-id="active-intake">
         <h2>Active Intake</h2>
         <div class="sub">Collection, paper promotion, and operational projection in one compact view.</div>
         <div class="mini-grid">
@@ -508,7 +602,7 @@ def render_evolution_console(snapshot: dict) -> str:
         </div>
       </section>
 
-      <section class="span-2">
+      <section class="card card-wide" draggable="true" data-card-id="memory-quality">
         <h2>Memory Quality</h2>
         <div class="mini-grid">
           {_render_mini("confirmed", _nested(memory_quality, "quality_distribution", "confirmed"))}
@@ -520,7 +614,7 @@ def render_evolution_console(snapshot: dict) -> str:
         {_render_quality_bars(memory_quality.get("quality_distribution"))}
       </section>
 
-      <section>
+      <section class="card" draggable="true" data-card-id="rules">
         <h2>Rules</h2>
         <div class="mini-grid">
           {_render_mini("active", rules.get("active_count"))}
@@ -530,38 +624,38 @@ def render_evolution_console(snapshot: dict) -> str:
         </div>
       </section>
 
-      <section class="span-2">
+      <section class="card card-large card-tall" draggable="true" data-card-id="recent-papers">
         <h2>Recent Papers / Candidates</h2>
         <div class="sub">Most recent active learning artifacts across collection and compilation.</div>
         {_render_recent_papers_candidates(active_intake)}
       </section>
 
-      <section>
+      <section class="card card-medium" draggable="true" data-card-id="external-intake">
         <h2>External Intake</h2>
         <div class="sub">Latest collection signal plus current candidate queue.</div>
         {_render_external_intake(active_intake)}
       </section>
 
-      <section>
+      <section class="card card-medium" draggable="true" data-card-id="paper-promotion">
         <h2>Paper Promotion</h2>
         <div class="sub">Paper candidates promoted into structured knowledge.</div>
         {_render_paper_promotion(active_intake)}
       </section>
 
-      <section>
+      <section class="card card-medium" draggable="true" data-card-id="operational-projection">
         <h2>Operational Projection</h2>
         <div class="sub">Compiled knowledge projected into recall-only memory.</div>
         {_render_operational_projection(active_intake)}
       </section>
 
-      <section>
+      <section class="card" draggable="true" data-card-id="recall-gaps">
         <h2>Recall Gaps</h2>
         <div class="sub">Low-confidence misses captured for later review.</div>
         <div class="mini-grid">{_render_mini("unknown", recall_gaps.get("unknown_count"))}</div>
         {_render_record(recall_gaps.get("latest"), empty_text="No recall gaps recorded")}
       </section>
 
-      <section>
+      <section class="card" draggable="true" data-card-id="reflections">
         <h2>Reflections</h2>
         <div class="mini-grid">
           {_render_mini("reflections", reflection_stats.get("reflection_count"))}
@@ -571,7 +665,7 @@ def render_evolution_console(snapshot: dict) -> str:
         {_render_kv_table("Tags", reflection_stats.get("tags"))}
       </section>
 
-      <section>
+      <section class="card" draggable="true" data-card-id="source-candidates">
         <h2>Source Candidates</h2>
         <div class="sub">Audit-only intake artifacts; excluded from normal recall.</div>
         <div class="mini-grid">{_render_mini("candidate count", source_candidates.get("count"))}</div>
@@ -579,13 +673,13 @@ def render_evolution_console(snapshot: dict) -> str:
         {_render_record_list(source_candidates.get("list"))}
       </section>
 
-      <section>
+      <section class="card" draggable="true" data-card-id="memory-breakdown">
         <h2>Memory Breakdown</h2>
         {_render_kv_table("By Source", memory_quality.get("by_source"))}
         {_render_kv_table("By Type", memory_quality.get("by_memory_type"))}
       </section>
 
-      <section>
+      <section class="card" draggable="true" data-card-id="backups-health">
         <h2>Backups/Health</h2>
         <div class="mini-grid">
           {_render_mini("backup count", backups.get("count"))}
@@ -602,6 +696,62 @@ def render_evolution_console(snapshot: dict) -> str:
       </div>
     </div>
   </main>
+  <script>
+    (() => {{
+      const storageKey = "eimemory.console.cardOrder.v1";
+      const grid = document.querySelector(".grid");
+      if (!grid) return;
+      const cards = () => Array.from(grid.querySelectorAll("section[data-card-id]"));
+      const saved = (() => {{
+        try {{ return JSON.parse(localStorage.getItem(storageKey) || "[]"); }}
+        catch (_) {{ return []; }}
+      }})();
+      if (Array.isArray(saved) && saved.length) {{
+        const byId = new Map(cards().map((card) => [card.dataset.cardId, card]));
+        saved.forEach((id) => {{
+          const card = byId.get(id);
+          if (card) grid.appendChild(card);
+        }});
+      }}
+      let dragged = null;
+      const save = () => localStorage.setItem(storageKey, JSON.stringify(cards().map((card) => card.dataset.cardId)));
+      cards().forEach((card) => {{
+        card.addEventListener("dragstart", (event) => {{
+          dragged = card;
+          card.classList.add("dragging");
+          event.dataTransfer.effectAllowed = "move";
+          event.dataTransfer.setData("text/plain", card.dataset.cardId || "");
+        }});
+        card.addEventListener("dragend", () => {{
+          card.classList.remove("dragging");
+          cards().forEach((item) => item.classList.remove("drag-over"));
+          dragged = null;
+          save();
+        }});
+        card.addEventListener("dragover", (event) => {{
+          if (!dragged || dragged === card) return;
+          event.preventDefault();
+          card.classList.add("drag-over");
+          const rect = card.getBoundingClientRect();
+          const after = event.clientY > rect.top + rect.height / 2;
+          grid.insertBefore(dragged, after ? card.nextSibling : card);
+        }});
+        card.addEventListener("dragleave", () => card.classList.remove("drag-over"));
+        card.addEventListener("drop", (event) => {{
+          event.preventDefault();
+          card.classList.remove("drag-over");
+          save();
+        }});
+      }});
+      const reset = document.querySelector("[data-reset-layout]");
+      if (reset) {{
+        reset.addEventListener("click", () => {{
+          localStorage.removeItem(storageKey);
+          location.reload();
+        }});
+      }}
+    }})();
+  </script>
 </body>
 </html>
 """
