@@ -94,6 +94,7 @@ def _build_parser() -> argparse.ArgumentParser:
     intake_collect.add_argument("--source-kind", choices=["paper", "news", "rss", "url", "manual"], default="")
     intake_collect.add_argument("--limit", type=int, default=None)
     intake_collect.add_argument("--fetch", action="store_true")
+    intake_collect.add_argument("--persist", action="store_true")
 
     intake_queue = intake_sub.add_parser("queue")
     intake_queue.add_argument("--status", action="append", default=[])
@@ -363,6 +364,8 @@ def main(argv: list[str] | None = None) -> int:
                 source_kind=parsed.source_kind or None,
                 limit=parsed.limit,
                 fetch=bool(parsed.fetch),
+                persist=bool(parsed.persist),
+                scope=scope,
             )
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0

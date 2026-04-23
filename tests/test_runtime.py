@@ -116,6 +116,54 @@ def test_runtime_collect_external_sources_can_use_fetcher(tmp_path) -> None:
     assert fetched["results"][0]["items"][0]["source_kind"] == "chatpaper_arxiv"
 
 
+def test_runtime_collect_external_sources_can_persist_fetched_candidates_and_dedupe(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "main", "workspace_id": "papers"}
+    runtime.sources.add_source(
+        {
+            "source_kind": "url",
+            "title": "ChatPaper",
+            "uri": "https://www.chatpaper.ai/dashboard/arxiv/cs/AI?page=1&language=zh",
+            "enabled": True,
+        }
+    )
+
+    def fake_fetch(_url: str) -> str:
+        return json.dumps(
+            {
+                "papers": [
+                    {
+                        "id": "2604.19740v1",
+                        "title": "Externally Collected Paper",
+                        "abstract": "A durable summary suitable for knowledge intake review.",
+                        "arxivUrl": "https://arxiv.org/abs/2604.19740v1",
+                        "publishedDate": "2026-04-20",
+                    }
+                ]
+            }
+        )
+
+    first = runtime.collect_external_sources(fetch=True, persist=True, scope=scope, fetch_text=fake_fetch)
+    second = runtime.collect_external_sources(fetch=True, persist=True, scope=scope, fetch_text=fake_fetch)
+    records = runtime.store.list_records(kinds=["knowledge_candidate"], scope=scope, limit=10)
+
+    assert first["persist"] is True
+    assert first["written_count"] == 1
+    assert first["skipped_existing_count"] == 0
+    assert second["written_count"] == 0
+    assert second["skipped_existing_count"] == 1
+    assert len(records) == 1
+    assert records[0].kind == "knowledge_candidate"
+    assert records[0].status == "candidate"
+    assert records[0].source == "eimemory.intake.collect"
+    assert records[0].content["title"] == "Externally Collected Paper"
+    assert records[0].content["item_url"] == "https://arxiv.org/abs/2604.19740v1"
+    assert records[0].content["metadata"]["arxiv_id"] == "2604.19740v1"
+    assert records[0].provenance["source_kind"] == "url"
+    assert records[0].provenance["fetch_source"] == "chatpaper_arxiv"
+    assert records[0].provenance["fingerprint"]
+
+
 def test_runtime_context_manager_closes_store(tmp_path) -> None:
     db_path = tmp_path / "state" / "eimemory.sqlite"
 

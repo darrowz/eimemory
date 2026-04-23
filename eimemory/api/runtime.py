@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
+from hashlib import sha256
 from pathlib import Path
+from typing import Any
 from urllib.request import Request, urlopen
 
 from eimemory.api.evolution import EvolutionAPI
@@ -9,8 +12,9 @@ from eimemory.intake.registry import SourceRegistry
 from eimemory.intake.papers.sources import ingest_paper_source
 from eimemory.knowledge.compiler import KnowledgeCompilation, compile_paper_knowledge
 from eimemory.knowledge.extract import PaperMemoryExtraction, extract_paper_memory
+from eimemory.knowledge.projectors import project_operational_knowledge
 from eimemory.config.defaults import default_root
-from eimemory.models.records import RecordEnvelope
+from eimemory.models.records import RecordEnvelope, ScopeRef, TimeRef
 from eimemory.storage.runtime_store import RuntimeStore
 
 
@@ -56,6 +60,8 @@ class Runtime:
         limit: int | None = None,
         fetch_text=None,
         fetch: bool = False,
+        persist: bool = False,
+        scope: dict | None = None,
     ) -> dict:
         from dataclasses import asdict
 
@@ -68,17 +74,48 @@ class Runtime:
             fetch_text = _default_fetch_text
         results = []
         item_count = 0
+        written_count = 0
+        skipped_existing_count = 0
+        quarantined_count = 0
+        rejected_count = 0
+        persisted_record_ids: list[str] = []
+        scope_ref = ScopeRef.from_dict(scope)
         for source in sources:
             result = collect_from_source_entry(source, fetch_text=fetch_text)
             payload = asdict(result)
             payload["source_id"] = source.source_id
             payload["source_kind"] = source.source_kind
             item_count += len(result.items)
+            if persist:
+                for item in result.items:
+                    record = _collected_item_record(
+                        item,
+                        source_id=source.source_id,
+                        source_kind=source.source_kind,
+                        fetch_metadata=dict(result.metadata or {}),
+                        scope=scope_ref,
+                    )
+                    if record.status == "quarantined":
+                        quarantined_count += 1
+                    elif record.status == "rejected":
+                        rejected_count += 1
+                    if self.store.get_by_id(record.record_id) is not None:
+                        skipped_existing_count += 1
+                        continue
+                    self.store.append(record)
+                    written_count += 1
+                    persisted_record_ids.append(record.record_id)
             results.append(payload)
         return {
             "ok": True,
+            "persist": bool(persist),
             "source_count": len(sources),
             "item_count": item_count,
+            "written_count": written_count,
+            "skipped_existing_count": skipped_existing_count,
+            "quarantined_count": quarantined_count,
+            "rejected_count": rejected_count,
+            "persisted_record_ids": persisted_record_ids,
             "results": results,
         }
 
@@ -86,6 +123,11 @@ class Runtime:
         from eimemory.intake.pipeline import promote_paper_candidate
 
         return promote_paper_candidate(self, record_or_payload, scope)
+
+    def promote_collected_paper_candidates(self, *, scope: dict | None = None, limit: int = 100, auto: bool = False) -> dict:
+        from eimemory.intake.pipeline import promote_collected_paper_candidates
+
+        return promote_collected_paper_candidates(self, scope, limit=limit, auto=auto)
 
     def list_intake_review_queue(self, *, scope: dict | None = None, status=None, limit: int = 100) -> list[dict]:
         from eimemory.intake.review import list_review_queue
@@ -183,6 +225,9 @@ class Runtime:
             self.store.append(record)
         return result
 
+    def project_operational_knowledge(self, *, scope: dict | None = None, limit: int = 100) -> dict:
+        return project_operational_knowledge(self.store, scope=scope, limit=limit)
+
 
 def _default_fetch_text(url: str) -> str:
     request = Request(
@@ -195,3 +240,100 @@ def _default_fetch_text(url: str) -> str:
     with urlopen(request, timeout=30) as response:
         charset = response.headers.get_content_charset() or "utf-8"
         return response.read().decode(charset, errors="replace")
+
+
+def _collected_item_record(
+    item: Any,
+    *,
+    source_id: str,
+    source_kind: str,
+    fetch_metadata: dict[str, Any],
+    scope: ScopeRef,
+) -> RecordEnvelope:
+    fingerprint = str(getattr(item, "fingerprint", "") or "")
+    item_source_kind = str(getattr(item, "source_kind", "") or "")
+    title = str(getattr(item, "title", "") or "Fetched knowledge candidate")
+    content = str(getattr(item, "content", "") or "")
+    item_url = str(getattr(item, "url", "") or "")
+    metadata = dict(getattr(item, "metadata", {}) or {})
+    status = _collected_item_status(metadata)
+    summary = _summary_from_content(content)
+    content_excerpt = _content_excerpt(content)
+    provenance = {
+        "source_id": str(source_id or ""),
+        "source_kind": str(source_kind or ""),
+        "item_url": item_url,
+        "fingerprint": fingerprint,
+        "fetch_source": item_source_kind,
+        "fetch_metadata": dict(fetch_metadata or {}),
+        "published_at": str(getattr(item, "published_at", "") or ""),
+    }
+    content_payload = {
+        "source_id": str(source_id or ""),
+        "source_kind": str(source_kind or ""),
+        "fetch_source": item_source_kind,
+        "item_url": item_url,
+        "fingerprint": fingerprint,
+        "title": title,
+        "summary": summary,
+        "content_excerpt": content_excerpt,
+        "metadata": metadata,
+        "published_at": str(getattr(item, "published_at", "") or ""),
+    }
+    return RecordEnvelope(
+        record_id=_collected_item_record_id(fingerprint, source_id=str(source_id or ""), scope=scope),
+        kind="knowledge_candidate",
+        status=status,
+        title=f"Knowledge candidate: {title}",
+        summary=summary,
+        detail=content_excerpt,
+        content=content_payload,
+        tags=[],
+        links=[],
+        evidence=[],
+        source="eimemory.intake.collect",
+        scope=scope,
+        time=TimeRef.now(),
+        provenance=provenance,
+        meta={
+            "intake_decision": status,
+            "source_id": str(source_id or ""),
+            "source_kind": str(source_kind or ""),
+            "item_url": item_url,
+            "fingerprint": fingerprint,
+            "fetch_source": item_source_kind,
+            "safety": dict(metadata.get("safety") or {}) if isinstance(metadata.get("safety"), dict) else {},
+        },
+    )
+
+
+def _collected_item_record_id(fingerprint: str, *, source_id: str, scope: ScopeRef) -> str:
+    stable = fingerprint or sha256(source_id.encode("utf-8", errors="ignore")).hexdigest()
+    return f"kc_fetch_{stable[:12]}_{_scope_hash(scope)}"
+
+
+def _scope_hash(scope: ScopeRef) -> str:
+    payload = {
+        "tenant_id": scope.tenant_id,
+        "agent_id": scope.agent_id,
+        "workspace_id": scope.workspace_id,
+        "user_id": scope.user_id,
+    }
+    return sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()[:8]
+
+
+def _collected_item_status(metadata: dict[str, Any]) -> str:
+    safety = metadata.get("safety") if isinstance(metadata, dict) else None
+    if not isinstance(safety, dict) or not safety:
+        return "candidate"
+    if safety.get("prompt_injection"):
+        return "quarantined"
+    return "rejected"
+
+
+def _summary_from_content(content: str) -> str:
+    return " ".join(str(content or "").split())[:240]
+
+
+def _content_excerpt(content: str) -> str:
+    return str(content or "").strip()[:1200]

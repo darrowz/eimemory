@@ -16,7 +16,7 @@ from eimemory.intake.connectors import (
 )
 from eimemory.intake.loop import KIND_NAME, KnowledgeIntakeLoop, candidates_to_records
 from eimemory.intake.packs import export_knowledge_pack, import_knowledge_pack
-from eimemory.intake.pipeline import PaperIntakePipeline, promote_paper_candidate
+from eimemory.intake.pipeline import PaperIntakePipeline, promote_collected_paper_candidates, promote_paper_candidate
 from eimemory.intake.policy import build_source_quality_report, recommend_collection_policy
 from eimemory.intake.registry import SourceEntry, SourceRegistry
 from eimemory.intake.review import (
@@ -51,6 +51,7 @@ __all__ = [
     "parse_crossref_work_json",
     "parse_feed_xml",
     "promote_candidate",
+    "promote_collected_paper_candidates",
     "promote_paper_candidate",
     "recommend_collection_policy",
     "review_candidate",

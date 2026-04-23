@@ -60,6 +60,32 @@ def test_cli_intake_run_can_persist_with_filters(tmp_path, monkeypatch, capsys) 
     assert snapshot["knowledge_intake"]["latest_candidate"]["kind"] == "knowledge_candidate"
 
 
+def test_cli_intake_collect_forwards_persist_and_scope(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path / "runtime"))
+    calls: list[dict] = []
+
+    def fake_collect(self, **kwargs):
+        calls.append(kwargs)
+        return {"ok": True, "persist": kwargs["persist"], "scope": kwargs["scope"], "written_count": 0}
+
+    monkeypatch.setattr("eimemory.api.runtime.Runtime.collect_external_sources", fake_collect)
+
+    assert cli_main(["intake", "collect", "--fetch", "--persist", "--source-kind", "url", "--limit", "1"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True
+    assert payload["persist"] is True
+    assert calls == [
+        {
+            "source_kind": "url",
+            "limit": 1,
+            "fetch": True,
+            "persist": True,
+            "scope": {"agent_id": "main", "workspace_id": ""},
+        }
+    ]
+
+
 def test_cli_intake_rejects_non_positive_limit(tmp_path, monkeypatch, capsys) -> None:
     monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path / "runtime"))
 

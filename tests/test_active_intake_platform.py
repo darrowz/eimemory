@@ -108,3 +108,124 @@ def test_nightly_jobs_do_not_reset_reviewed_candidates(tmp_path) -> None:
     assert first["knowledge_intake"]["written_count"] == 1
     assert second["knowledge_intake"]["skipped_existing_count"] == 1
     assert reloaded.status == "reviewed"
+
+
+def test_nightly_jobs_fetch_and_persist_external_candidates(tmp_path) -> None:
+    from eimemory.api.runtime import Runtime
+
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = {"agent_id": "main"}
+    runtime.sources.add_source(
+        {
+            "source_kind": "rss",
+            "title": "External feed",
+            "uri": "https://example.test/feed.xml",
+            "enabled": True,
+        }
+    )
+
+    def fake_fetch_text(url: str) -> str:
+        assert url == "https://example.test/feed.xml"
+        return """<?xml version="1.0"?>
+        <rss><channel><item>
+          <title>External intake item</title>
+          <link>https://example.test/items/1</link>
+          <description>Fetched external knowledge with enough durable detail for review.</description>
+          <pubDate>Thu, 23 Apr 2026 03:30:00 GMT</pubDate>
+        </item></channel></rss>"""
+
+    report = run_nightly_jobs(runtime, scope=scope, external_fetch_text=fake_fetch_text)
+    candidates = runtime.store.list_records(kinds=["knowledge_candidate"], scope=scope, limit=10)
+
+    assert report["external_collection"]["ok"] is True
+    assert report["external_collection"]["source_count"] == 1
+    assert report["external_collection"]["fetched_item_count"] == 1
+    assert report["external_collection"]["written_count"] == 1
+    assert report["external_collection"]["error_count"] == 0
+    assert any("External intake item" in record.title for record in candidates)
+
+
+def test_nightly_jobs_reports_external_errors_without_failing(tmp_path) -> None:
+    from eimemory.api.runtime import Runtime
+
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = {"agent_id": "main"}
+    runtime.sources.add_source(
+        {
+            "source_kind": "rss",
+            "title": "Broken feed",
+            "uri": "https://example.test/broken.xml",
+            "enabled": True,
+        }
+    )
+
+    def fake_fetch_text(url: str) -> str:
+        raise OSError("network unavailable")
+
+    report = run_nightly_jobs(runtime, scope=scope, external_fetch_text=fake_fetch_text)
+
+    assert report["ok"] is True
+    assert report["external_collection"]["ok"] is False
+    assert report["external_collection"]["source_count"] == 1
+    assert report["external_collection"]["written_count"] == 0
+    assert report["external_collection"]["error_count"] == 1
+    assert report["external_collection"]["errors"][0]["error"] == "fetch failed"
+
+
+def test_nightly_jobs_fetch_persist_and_promote_paper_candidates(tmp_path) -> None:
+    from eimemory.api.runtime import Runtime
+
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = {"agent_id": "main"}
+    runtime.sources.add_source(
+        {
+            "source_kind": "url",
+            "title": "ChatPaper arXiv cs.AI",
+            "uri": "https://www.chatpaper.ai/zh/dashboard/arxiv/cs/AI",
+            "enabled": True,
+            "tags": ["chatpaper", "arxiv", "paper"],
+        }
+    )
+
+    def fake_fetch_text(url: str) -> str:
+        assert url == "https://www.chatpaper.ai/api/papers/arxiv?category=cs.AI&page=1&language=zh"
+        return json.dumps(
+            {
+                "papers": [
+                    {
+                        "id": "2604.19740v1",
+                        "title": "Operational Memory for OpenClaw",
+                        "abstract": "This paper shows that memory recall policy improves OpenClaw runtime responses with enough reusable detail.",
+                        "publishedDate": "2026-04-21T17:59:02Z",
+                        "arxivUrl": "https://arxiv.org/abs/2604.19740v1",
+                        "pdfUrl": "https://arxiv.org/pdf/2604.19740v1.pdf",
+                        "primaryCategory": "cs.AI",
+                        "categories": ["cs.AI"],
+                        "paper_translations": [
+                            {
+                                "language_code": "zh",
+                                "title": "OpenClaw 的运行时记忆",
+                                "abstract": "本文表明记忆召回策略可以改善 OpenClaw runtime responses，并提供足够可复用的细节。",
+                            }
+                        ],
+                    }
+                ],
+                "total": 1,
+            },
+            ensure_ascii=False,
+        )
+
+    report = run_nightly_jobs(runtime, scope=scope, external_fetch_text=fake_fetch_text)
+
+    paper_sources = runtime.store.list_records(kinds=["paper_source"], scope=scope, limit=10)
+    claim_cards = runtime.store.list_records(kinds=["claim_card"], scope=scope, limit=10)
+    knowledge_pages = runtime.store.list_records(kinds=["knowledge_page"], scope=scope, limit=10)
+    candidates = runtime.store.list_records(kinds=["knowledge_candidate"], scope=scope, limit=10)
+
+    assert report["external_collection"]["written_count"] == 1
+    assert report["paper_promotion"]["promoted_count"] == 1
+    assert paper_sources
+    assert claim_cards
+    assert knowledge_pages
+    assert candidates[0].status == "promoted"
+    assert candidates[0].meta["promoted_to_paper_source_id"] == paper_sources[0].record_id

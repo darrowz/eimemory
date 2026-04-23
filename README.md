@@ -79,6 +79,21 @@ eimemory recall "compact retrieval" --view claim_centered
 eimemory recall "compact retrieval synthesis" --view page_centered
 ```
 
+External research sources are registered separately from fetched paper content:
+
+```bash
+eimemory source add --source-kind url --title "ChatPaper arXiv cs.AI" --uri "https://www.chatpaper.ai/zh/dashboard/arxiv/cs/AI" --tag chatpaper --tag arxiv --tag paper
+eimemory source scan --persist
+eimemory intake collect --source-kind url --fetch --persist
+```
+
+`source scan --persist` records that a source exists and has been scanned.
+`intake collect --fetch --persist` fetches external items and persists them as
+reviewable `knowledge_candidate` records. Nightly jobs run the conservative
+closed loop: collect external sources, persist safe candidates, promote
+paper-like candidates into paper knowledge objects, and project only high-value
+operational knowledge into runtime memory.
+
 Core records:
 
 - `paper_source`: canonical source identity and provenance
