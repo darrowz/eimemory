@@ -67,6 +67,9 @@ def test_openclaw_hooks_capture_recall_and_agent_end(tmp_path) -> None:
     )
 
     assert "memory_bundle" in pre
+    assert pre["usage_telemetry"]["selected_count"] >= 1
+    assert pre["usage_telemetry"]["source_composition"]["by_kind"]["memory"] >= 1
+    assert pre["usage_telemetry"]["selected_records"][0]["record_id"]
     assert pre["memory_bundle"]["items"]
     assert end["stored"]["kind"] == "memory"
     audits = runtime.store.list_records(
@@ -78,6 +81,8 @@ def test_openclaw_hooks_capture_recall_and_agent_end(tmp_path) -> None:
     assert audits[0].source == "openclaw.before_prompt_build"
     assert audits[0].content["selected_count"] >= 1
     assert audits[0].content["injected_record_ids"]
+    assert audits[0].content["selected_records"][0]["kind"] == "memory"
+    assert audits[0].content["source_composition"]["by_kind"]["memory"] >= 1
     assert audits[0].content["session_id"] == "sess-1"
 
 

@@ -87,13 +87,69 @@ def test_recommend_collection_policy_uses_quality_rules_and_gap_queries(tmp_path
         runtime.close()
 
 
+def test_recommend_collection_policy_uses_strategy_metadata_and_projected_counts(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = ScopeRef(tenant_id="tenant-a", agent_id="agent-a", workspace_id="repo-a")
+    try:
+        runtime.store.append(
+            _candidate(
+                scope,
+                "paper",
+                "paused-paper",
+                "candidate",
+                0.95,
+                metadata={"source_strategy": {"frequency": "paused", "max_items": 5}},
+            )
+        )
+        runtime.store.append(
+            _candidate(
+                scope,
+                "paper",
+                "trusted-paper",
+                "candidate",
+                0.73,
+                metadata={"source_strategy": {"frequency": "daily", "max_items": 7, "trust": 0.9}},
+            )
+        )
+        runtime.store.append(
+            _candidate(
+                scope,
+                "rss",
+                "low-priority-feed",
+                "candidate",
+                0.7,
+                metadata={"source_strategy": {"frequency": "daily", "max_items": 4, "priority": "low"}},
+            )
+        )
+
+        policy = recommend_collection_policy(runtime, scope)
+        report_by_source = policy["source_quality_report"]["by_source"]
+
+        assert "paused-paper" in policy["pause"]
+        assert "trusted-paper" in policy["run_now"]
+        assert "low-priority-feed" in policy["lower_frequency"]
+        assert report_by_source["paper"]["trusted-paper"]["success_like_count"] == 1
+        assert report_by_source["paper"]["trusted-paper"]["projected_count"] == 7
+        assert report_by_source["paper"]["trusted-paper"]["strategy"]["trust"] == 0.9
+    finally:
+        runtime.close()
+
+
 def _candidate(
     scope: ScopeRef,
     source_kind: str,
     source_id: str,
     status: str,
     score: float,
+    metadata: dict | None = None,
 ) -> RecordEnvelope:
+    meta = {
+        "source_kind": source_kind,
+        "source_id": source_id,
+        "quality": {"score": score},
+    }
+    if metadata:
+        meta.update(metadata)
     return RecordEnvelope.create(
         kind="knowledge_candidate",
         title=f"{source_id} {status}",
@@ -101,11 +157,7 @@ def _candidate(
         detail=f"{source_id} {status} detail",
         scope=scope,
         status=status,
-        meta={
-            "source_kind": source_kind,
-            "source_id": source_id,
-            "quality": {"score": score},
-        },
+        meta=meta,
         content={
             "source_kind": source_kind,
             "source_id": source_id,

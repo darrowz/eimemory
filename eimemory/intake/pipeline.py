@@ -56,7 +56,7 @@ class PaperIntakePipeline:
         record_ids.extend(record.record_id for record in extracted_records)
         record_ids.extend(record.record_id for record in compiled_records)
 
-        return {
+        report = {
             "ok": True,
             "paper_source_id": source_record.record_id,
             "extracted_record_count": len(extracted_records),
@@ -64,6 +64,9 @@ class PaperIntakePipeline:
             "skipped_reason": "",
             "record_ids": _dedupe(record_ids),
         }
+        if isinstance(candidate_record_or_dict, RecordEnvelope):
+            _mark_paper_promoted(self.runtime, candidate_record_or_dict, report)
+        return report
 
 
 def promote_paper_candidate(
@@ -103,13 +106,6 @@ def promote_collected_paper_candidates(
             continue
         report = runtime.promote_paper_candidate(record, scope=scope)
         if report.get("ok"):
-            record.status = "promoted"
-            record.meta = {
-                **dict(record.meta or {}),
-                "promoted_to_paper_source_id": str(report.get("paper_source_id") or ""),
-                "promotion_record_ids": list(report.get("record_ids") or []),
-            }
-            runtime.store.append(record)
             promoted += 1
             promoted_reports.append({"record_id": record.record_id, **report})
             continue
@@ -132,6 +128,12 @@ def promote_collected_paper_candidates(
 
 def _skip(reason: str) -> dict[str, Any]:
     return {**SKIPPED_REPORT, "skipped_reason": reason}
+
+
+def _mark_paper_promoted(runtime: Any, record: RecordEnvelope, report: dict[str, Any]) -> None:
+    from eimemory.intake.review import mark_candidate_paper_promoted
+
+    mark_candidate_paper_promoted(runtime, record, report)
 
 
 def _candidate_payload(candidate_record_or_dict: RecordEnvelope | dict[str, Any]) -> dict[str, Any]:

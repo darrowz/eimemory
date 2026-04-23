@@ -12,6 +12,9 @@ from eimemory.models.records import RecordEnvelope, ScopeRef, TimeRef
 from eimemory.storage.runtime_store import RuntimeStore
 
 VALID_SOURCE_KINDS: frozenset[str] = frozenset({"paper", "news", "rss", "url", "manual"})
+VALID_SOURCE_FREQUENCIES: frozenset[str] = frozenset({"daily", "weekly", "paused"})
+DEFAULT_SOURCE_FREQUENCY = "daily"
+DEFAULT_SOURCE_MAX_ITEMS = 10
 
 
 def _json_safe(value: Any) -> Any:
@@ -38,6 +41,50 @@ def _normalize_tags(tags: Any) -> list[str]:
     if not tags:
         return []
     return sorted({str(item).strip() for item in tags if str(item).strip()})
+
+
+def _normalize_ordered_text_list(value: Any) -> list[str]:
+    if not value:
+        return []
+    items = value if isinstance(value, (list, tuple, set)) else [value]
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        text = str(item).strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        normalized.append(text)
+    return normalized
+
+
+def normalize_source_strategy_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
+    """Normalize source collection hints without turning them into a scheduler."""
+    source_metadata = dict(metadata or {})
+    frequency = str(source_metadata.get("frequency") or DEFAULT_SOURCE_FREQUENCY).strip().lower()
+    if frequency not in VALID_SOURCE_FREQUENCIES:
+        raise ValueError(f"invalid source strategy frequency: {frequency}")
+
+    try:
+        max_items = int(source_metadata.get("max_items", DEFAULT_SOURCE_MAX_ITEMS))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("source strategy max_items must be a positive integer") from exc
+    if max_items <= 0:
+        raise ValueError("source strategy max_items must be a positive integer")
+
+    normalized = dict(source_metadata)
+    normalized["frequency"] = frequency
+    normalized["max_items"] = max_items
+    categories = _normalize_ordered_text_list(source_metadata.get("categories"))
+    if categories:
+        normalized["categories"] = categories
+    else:
+        normalized.pop("categories", None)
+
+    for key in ("priority", "trust"):
+        if key in normalized and normalized[key] is None:
+            normalized.pop(key)
+    return normalized
 
 
 def _default_source_id(source_kind: str, uri: str, title: str) -> str:
@@ -71,7 +118,7 @@ class SourceEntry:
         self.tags = _normalize_tags(self.tags)
         self.enabled = bool(self.enabled)
         self.last_scanned_at = str(self.last_scanned_at or "")
-        self.metadata = dict(self.metadata or {})
+        self.metadata = normalize_source_strategy_metadata(dict(self.metadata or {}))
         if self.source_kind not in VALID_SOURCE_KINDS:
             raise ValueError(f"invalid source_kind: {self.source_kind}")
         if not self.source_id:

@@ -45,13 +45,18 @@ def test_promote_paper_candidate_accepts_knowledge_candidate_record(tmp_path) ->
     runtime = Runtime.create(root=tmp_path)
     scope = {"tenant_id": "tenant-a", "agent_id": "agent-a"}
     record = candidates_to_records([_paper_candidate()], scope)[0]
+    runtime.store.append(record)
 
     report = promote_paper_candidate(runtime, record, scope)
+    promoted = runtime.store.get_by_id(record.record_id)
 
     assert report["ok"] is True
     assert runtime.store.list_records(kinds=["paper_source"], scope=scope)[0].record_id == report["paper_source_id"]
     assert runtime.store.list_records(kinds=["claim_card"], scope=scope)
     assert runtime.store.list_records(kinds=["knowledge_page"], scope=scope)
+    assert promoted.status == "promoted"
+    assert promoted.meta["promoted_to_paper_source_id"] == report["paper_source_id"]
+    assert promoted.meta["promotion_record_ids"] == report["record_ids"]
 
 
 def test_promote_paper_candidate_skips_rejected_or_quarantined_candidates(tmp_path) -> None:

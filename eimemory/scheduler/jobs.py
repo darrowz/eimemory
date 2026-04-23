@@ -36,6 +36,7 @@ def run_nightly_jobs(
         candidate_records=external_collection_report.get("_candidate_records", []),
     )
     operational_projection_report = _run_operational_projection(runtime, scope=scope)
+    research_digest_report = _run_research_digest(runtime, scope=scope)
     external_collection_report.pop("_candidate_records", None)
     source_quality_report = runtime.source_quality_report(scope=scope)
     collection_policy = runtime.collection_policy(scope=scope)
@@ -74,6 +75,7 @@ def run_nightly_jobs(
         "external_collection": external_collection_report,
         "paper_promotion": paper_promotion_report,
         "operational_projection": operational_projection_report,
+        "research_digest": research_digest_report,
         "source_quality": {
             "source_count": source_quality_report["source_count"],
             "run_now": collection_policy["run_now"],
@@ -364,6 +366,54 @@ def _run_operational_projection(runtime: Runtime, *, scope: dict) -> dict[str, A
             "error": type(exc).__name__,
             "detail": str(exc),
             "projection_skipped_reason": "",
+        }
+
+
+def _run_research_digest(runtime: Runtime, *, scope: dict) -> dict[str, Any]:
+    build_digest = getattr(runtime, "build_research_digest", None)
+    if build_digest is None:
+        return {
+            "ok": True,
+            "paper_count": 0,
+            "claim_count": 0,
+            "knowledge_page_count": 0,
+            "candidate_count": 0,
+            "summary": "",
+            "persisted": False,
+            "persisted_page_id": "",
+            "digest_skipped_reason": "build_research_digest_unavailable",
+        }
+    try:
+        report = _json_safe(build_digest(scope=scope, persist=True, limit=5))
+        return {
+            "ok": bool(report.get("ok", True)),
+            "digest_date": str(report.get("digest_date") or ""),
+            "paper_count": int(report.get("paper_count") or 0),
+            "claim_count": int(report.get("claim_count") or 0),
+            "knowledge_page_count": int(report.get("knowledge_page_count") or 0),
+            "candidate_count": int(report.get("candidate_count") or 0),
+            "summary": str(report.get("summary") or ""),
+            "themes": list(report.get("themes") or []),
+            "notable_claim_count": len(report.get("notable_claims") or []),
+            "open_question_count": len(report.get("open_questions") or []),
+            "skipped_low_confidence": dict(report.get("skipped_low_confidence") or {}),
+            "persisted": bool(report.get("persisted")),
+            "persisted_page_id": str(report.get("persisted_page_id") or ""),
+            "digest_skipped_reason": "",
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "paper_count": 0,
+            "claim_count": 0,
+            "knowledge_page_count": 0,
+            "candidate_count": 0,
+            "summary": "",
+            "persisted": False,
+            "persisted_page_id": "",
+            "error": type(exc).__name__,
+            "detail": str(exc),
+            "digest_skipped_reason": "",
         }
 
 

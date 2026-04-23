@@ -39,7 +39,10 @@ class OpenClawMemoryHooks:
             limit=8,
         )
         self._audit_prompt_recall(event=event, bundle=bundle, injected=bool(bundle.items))
-        return {"memory_bundle": bundle.to_dict()}
+        return {
+            "memory_bundle": bundle.to_dict(),
+            "usage_telemetry": self._usage_telemetry(bundle),
+        }
 
     def on_agent_end(self, event: dict) -> dict:
         assistant_messages = event.get("assistant_messages") or self._assistant_messages_from_event(event)
@@ -189,6 +192,7 @@ class OpenClawMemoryHooks:
         scope = ScopeRef.from_dict(self._scope_from_event(event))
         view = dict(bundle.explanation.get("recall_view") or {})
         injected_ids = [item.record_id for item in bundle.items]
+        selected_records = self._selected_records(bundle)
         record = RecordEnvelope.create(
             kind="recall_view",
             title="OpenClaw memory injection audit",
@@ -202,6 +206,8 @@ class OpenClawMemoryHooks:
                 "selected_count": len(injected_ids),
                 "injected": injected,
                 "injected_record_ids": injected_ids,
+                "selected_records": selected_records,
+                "source_composition": dict(bundle.explanation.get("source_composition") or {}),
                 "view_type": str(view.get("view_type") or ""),
                 "confidence": bundle.confidence,
             },
@@ -213,9 +219,50 @@ class OpenClawMemoryHooks:
                 "selected_count": len(injected_ids),
                 "injected": injected,
                 "view_type": str(view.get("view_type") or ""),
+                "source_composition": dict(bundle.explanation.get("source_composition") or {}),
             },
         )
         return self.runtime.store.append(record)
+
+    def _usage_telemetry(self, bundle: RecallBundle) -> dict:
+        return {
+            "selected_count": len(bundle.items),
+            "confidence": bundle.confidence,
+            "source_composition": dict(bundle.explanation.get("source_composition") or {}),
+            "selected_records": self._selected_records(bundle),
+        }
+
+    def _selected_records(self, bundle: RecallBundle) -> list[dict]:
+        selected = bundle.explanation.get("selected_records")
+        if isinstance(selected, list):
+            return [
+                {
+                    "record_id": str(item.get("record_id") or ""),
+                    "kind": str(item.get("kind") or ""),
+                    "title": str(item.get("title") or ""),
+                    "source": str(item.get("source") or ""),
+                    "projection_type": str(item.get("projection_type") or ""),
+                    "source_record_id": str(item.get("source_record_id") or ""),
+                }
+                for item in selected
+                if isinstance(item, dict)
+            ]
+        return [
+            {
+                "record_id": item.record_id,
+                "kind": item.kind,
+                "title": item.title,
+                "source": item.source,
+                "projection_type": str(item.meta.get("projection_type") or ""),
+                "source_record_id": str(
+                    item.meta.get("source_record_id")
+                    or item.provenance.get("source_record_id")
+                    or item.content.get("source_record_id")
+                    or ""
+                ),
+            }
+            for item in bundle.items
+        ]
 
     def _assistant_messages_from_event(self, event: dict) -> list[dict]:
         messages = event.get("messages") or []

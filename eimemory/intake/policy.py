@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import Any
 
+from eimemory.intake.registry import normalize_source_strategy_metadata
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 _SOURCE_RECORD_KINDS = ["knowledge_candidate", "source_candidate", "memory"]
@@ -23,10 +24,15 @@ def build_source_quality_report(runtime: Any, scope: dict[str, Any] | ScopeRef) 
         bucket = _outcome_bucket(record)
         if bucket:
             entry[f"{bucket}_count"] += 1
+            if bucket in {"candidate", "promoted"}:
+                entry["success_like_count"] += 1
         score = _quality_score(record)
         if score is not None:
             entry["_score_total"] += score
             entry["_score_count"] += 1
+        strategy = _source_strategy(record)
+        if strategy:
+            entry["strategy"] = {**entry["strategy"], **strategy}
         entry["last_seen"] = max(str(entry["last_seen"] or ""), _last_seen(record))
 
     sources: list[dict[str, Any]] = []
@@ -36,6 +42,7 @@ def build_source_quality_report(runtime: Any, scope: dict[str, Any] | ScopeRef) 
             score_count = int(entry.pop("_score_count"))
             score_total = float(entry.pop("_score_total"))
             entry["avg_quality_score"] = round(score_total / score_count, 3) if score_count else None
+            entry["projected_count"] = _projected_count(entry)
             sources.append(dict(entry))
 
     return {
@@ -63,13 +70,26 @@ def recommend_collection_policy(
         quarantined = int(item["quarantined_count"])
         rejected = int(item["rejected_count"])
         promoted = int(item["promoted_count"])
+        strategy = item.get("strategy") if isinstance(item.get("strategy"), dict) else {}
+        frequency = str(strategy.get("frequency") or "").strip().lower()
+        priority = str(strategy.get("priority") or "").strip().lower()
+        trust = _float_or_none(strategy.get("trust"))
         avg_score = item["avg_quality_score"]
 
+        if frequency == "paused":
+            pause.append(source_id)
+            continue
         if quarantined >= 2 or (quarantined > promoted and quarantined >= 1 and rejected >= 1):
             pause.append(source_id)
             continue
         if rejected >= 2 and promoted == 0:
             lower_frequency.append(source_id)
+            continue
+        if priority == "low" and promoted == 0:
+            lower_frequency.append(source_id)
+            continue
+        if priority == "high" or (trust is not None and trust >= 0.8):
+            run_now.append(source_id)
             continue
         if promoted > 0 or (avg_score is not None and float(avg_score) >= 0.8):
             run_now.append(source_id)
@@ -92,6 +112,9 @@ def _empty_entry(source_kind: str, source_id: str) -> dict[str, Any]:
         "promoted_count": 0,
         "rejected_count": 0,
         "quarantined_count": 0,
+        "success_like_count": 0,
+        "projected_count": 0,
+        "strategy": {},
         "avg_quality_score": None,
         "last_seen": "",
         "_score_total": 0.0,
@@ -159,6 +182,35 @@ def _quality_score(record: RecordEnvelope) -> float | None:
         except (TypeError, ValueError):
             continue
     return None
+
+
+def _source_strategy(record: RecordEnvelope) -> dict[str, Any]:
+    for payload in (record.meta, record.content, record.provenance):
+        if not isinstance(payload, dict):
+            continue
+        value = payload.get("source_strategy") or payload.get("strategy")
+        if isinstance(value, dict):
+            try:
+                return normalize_source_strategy_metadata(value)
+            except ValueError:
+                return dict(value)
+    return {}
+
+
+def _projected_count(entry: dict[str, Any]) -> int:
+    strategy = entry.get("strategy") if isinstance(entry.get("strategy"), dict) else {}
+    max_items = strategy.get("max_items")
+    try:
+        return int(max_items)
+    except (TypeError, ValueError):
+        return int(entry.get("success_like_count") or entry.get("candidate_count") or 0)
+
+
+def _float_or_none(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _last_seen(record: RecordEnvelope) -> str:

@@ -172,6 +172,38 @@ def test_collect_chatpaper_dashboard_builds_api_url_and_parses_json() -> None:
     assert result.items[0].metadata["arxiv_id"] == "2604.19740v1"
 
 
+def test_collect_chatpaper_uses_metadata_categories_dedupes_and_respects_max_items() -> None:
+    source = SimpleNamespace(
+        source_kind="url",
+        title="ChatPaper",
+        uri="https://www.chatpaper.ai/zh/dashboard/arxiv/cs/AI",
+        metadata={"categories": ["cs.AI", "cs.LG"], "max_items": 2},
+    )
+    seen: list[str] = []
+
+    def fake_fetch(url: str) -> str:
+        seen.append(url)
+        category = "cs.LG" if "category=cs.LG" in url else "cs.AI"
+        duplicate = '{"id":"2604.19740v1","title":"Shared","abstract":"Abstract","arxivUrl":"https://arxiv.org/abs/2604.19740v1"}'
+        unique = (
+            '{"id":"2604.20000v1","title":"LG Paper","abstract":"LG Abstract","arxivUrl":"https://arxiv.org/abs/2604.20000v1"}'
+            if category == "cs.LG"
+            else '{"id":"2604.10000v1","title":"AI Paper","abstract":"AI Abstract","arxivUrl":"https://arxiv.org/abs/2604.10000v1"}'
+        )
+        return f'{{"papers":[{duplicate},{unique}]}}'
+
+    result = collect_from_source_entry(source, fetch_text=fake_fetch)
+
+    assert seen == [
+        "https://www.chatpaper.ai/api/papers/arxiv?category=cs.AI&page=1&language=zh",
+        "https://www.chatpaper.ai/api/papers/arxiv?category=cs.LG&page=1&language=zh",
+    ]
+    assert result.ok is True
+    assert [item.metadata["arxiv_id"] for item in result.items] == ["2604.19740v1", "2604.10000v1"]
+    assert result.metadata["categories"] == ["cs.AI", "cs.LG"]
+    assert result.metadata["fetched_url_count"] == 2
+
+
 def test_normalize_github_repo_release_and_issue_urls() -> None:
     repo = normalize_github_url("https://github.com/Owner/Repo/")
     release = normalize_github_url("https://github.com/Owner/Repo/releases/tag/v1.0.0")

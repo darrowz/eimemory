@@ -7,6 +7,8 @@ import sys
 from pathlib import Path
 
 from eimemory.cli.main import main as cli_main
+from eimemory.models.records import RecordEnvelope, ScopeRef
+from eimemory.storage.runtime_store import RuntimeStore
 
 
 def test_cli_intake_report_is_dry_run_with_filters(tmp_path, monkeypatch, capsys) -> None:
@@ -84,6 +86,35 @@ def test_cli_intake_collect_forwards_persist_and_scope(tmp_path, monkeypatch, ca
             "scope": {"agent_id": "main", "workspace_id": ""},
         }
     ]
+
+
+def test_cli_intake_explain_returns_candidate_explanation(tmp_path, monkeypatch, capsys) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("EIMEMORY_ROOT", str(runtime_root))
+    record = RecordEnvelope.create(
+        kind="knowledge_candidate",
+        title="Knowledge candidate: CLI paper",
+        summary="CLI paper summary",
+        detail="CLI paper content has enough durable details for candidate explanation.",
+        scope=ScopeRef(agent_id="main", workspace_id=""),
+        status="candidate",
+        content={
+            "source_kind": "arxiv",
+            "title": "CLI paper",
+            "url": "https://arxiv.org/abs/2601.00004",
+            "content_excerpt": "CLI paper content has enough durable details for candidate explanation.",
+            "metadata": {"arxiv_id": "2601.00004"},
+        },
+        meta={"source_kind": "arxiv"},
+    )
+    RuntimeStore(runtime_root).append(record)
+
+    assert cli_main(["intake", "explain", record.record_id]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True
+    assert payload["record_id"] == record.record_id
+    assert payload["promotion"]["promotable"] is True
 
 
 def test_cli_intake_rejects_non_positive_limit(tmp_path, monkeypatch, capsys) -> None:

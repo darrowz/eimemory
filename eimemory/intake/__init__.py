@@ -20,6 +20,7 @@ from eimemory.intake.pipeline import PaperIntakePipeline, promote_collected_pape
 from eimemory.intake.policy import build_source_quality_report, recommend_collection_policy
 from eimemory.intake.registry import SourceEntry, SourceRegistry
 from eimemory.intake.review import (
+    explain_candidate,
     list_review_queue,
     merge_candidates,
     promote_candidate,
@@ -41,6 +42,7 @@ __all__ = [
     "collect_from_source_entry",
     "fetch_arxiv",
     "export_knowledge_pack",
+    "explain_candidate",
     "import_knowledge_pack",
     "build_source_quality_report",
     "list_review_queue",

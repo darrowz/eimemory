@@ -752,3 +752,25 @@ def test_runtime_recall_explains_quality_aware_scoring(tmp_path) -> None:
     assert scoring[0]["quality_score"] > scoring[1]["quality_score"]
     assert "lexical_score" in scoring[0]
     assert "vector_score" in scoring[0]
+
+
+def test_runtime_recall_explains_source_composition_and_selected_records(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    runtime.memory.ingest(
+        text="OpenClaw runtime memory should cite selected knowledge records during recall.",
+        memory_type="fact",
+        title="Recall telemetry memory",
+        scope={"agent_id": "main", "workspace_id": "repo-x"},
+    )
+
+    bundle = runtime.memory.recall(
+        query="selected knowledge records during recall",
+        scope={"agent_id": "main", "workspace_id": "repo-x"},
+        task_context={"task_type": "chat.reply"},
+        limit=5,
+    )
+
+    assert bundle.explanation["source_composition"]["by_kind"]["memory"] == 1
+    assert bundle.explanation["source_composition"]["memory_count"] == 1
+    assert bundle.explanation["selected_records"][0]["record_id"] == bundle.items[0].record_id
+    assert bundle.explanation["selected_records"][0]["kind"] == "memory"

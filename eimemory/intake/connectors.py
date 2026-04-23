@@ -124,7 +124,7 @@ def fetch_arxiv(query: str, fetch_text_func: FetchTextFunc) -> FetchResult:
         return _safe_error("fetch failed", metadata={"url": url})
 
 
-def build_chatpaper_arxiv_api_url(uri: str) -> str:
+def build_chatpaper_arxiv_api_url(uri: str, *, category: str | None = None) -> str:
     parsed = urlparse(str(uri).strip())
     if not parsed.scheme or not parsed.netloc:
         return str(uri).strip()
@@ -132,8 +132,8 @@ def build_chatpaper_arxiv_api_url(uri: str) -> str:
     params = dict(parse_qsl(parsed.query, keep_blank_values=False))
     parts = [unquote(part) for part in parsed.path.split("/") if part]
     language = params.get("language") or (parts[0] if parts and re.fullmatch(r"[a-z]{2}", parts[0]) else "zh")
-    category = params.get("category") or _chatpaper_category_from_path(parts) or "cs.AI"
-    params.update({"category": category, "page": params.get("page") or "1", "language": language})
+    resolved_category = category or params.get("category") or _chatpaper_category_from_path(parts) or "cs.AI"
+    params.update({"category": resolved_category, "page": params.get("page") or "1", "language": language})
 
     return urlunparse(
         (
@@ -145,6 +145,13 @@ def build_chatpaper_arxiv_api_url(uri: str) -> str:
             "",
         )
     )
+
+
+def build_chatpaper_arxiv_api_urls(uri: str, categories: list[str] | None = None) -> list[str]:
+    normalized_categories = _normalized_text_list(categories)
+    if not normalized_categories:
+        return [build_chatpaper_arxiv_api_url(uri)]
+    return [build_chatpaper_arxiv_api_url(uri, category=category) for category in normalized_categories]
 
 
 def parse_chatpaper_arxiv_json(payload: str | dict[str, Any]) -> FetchResult:
@@ -250,6 +257,7 @@ def collect_from_source_entry(source: Any, fetch_text: FetchTextFunc | None = No
     source_kind = str(getattr(source, "source_kind", "") or "").strip().lower()
     title = str(getattr(source, "title", "") or "").strip()
     uri = str(getattr(source, "uri", "") or "").strip()
+    source_metadata = dict(getattr(source, "metadata", {}) or {})
     resolved_kind = _resolve_source_kind(source_kind, uri)
 
     if not uri:
@@ -283,7 +291,7 @@ def collect_from_source_entry(source: Any, fetch_text: FetchTextFunc | None = No
         fetch_url = build_crossref_work_url(uri)
         parser = parse_crossref_work_json
     elif resolved_kind == "chatpaper_arxiv":
-        fetch_url = build_chatpaper_arxiv_api_url(uri)
+        return _collect_chatpaper_source(uri, source_metadata=source_metadata, fetch_text=fetch_text)
         parser = parse_chatpaper_arxiv_json
     elif resolved_kind in {"rss", "http"}:
         parser = lambda text: parse_feed_xml(text, source_url=uri)
@@ -296,6 +304,55 @@ def collect_from_source_entry(source: Any, fetch_text: FetchTextFunc | None = No
         return parser(fetch_text(fetch_url))
     except Exception:
         return _safe_error("fetch failed", metadata={"url": fetch_url})
+
+
+def _collect_chatpaper_source(
+    uri: str,
+    *,
+    source_metadata: dict[str, Any],
+    fetch_text: FetchTextFunc | None,
+) -> FetchResult:
+    categories = _normalized_text_list(source_metadata.get("categories"))
+    max_items = _positive_int(source_metadata.get("max_items"))
+    fetch_urls = build_chatpaper_arxiv_api_urls(uri, categories=categories)
+
+    if fetch_text is None:
+        return FetchResult(
+            ok=True,
+            metadata={
+                "dry_run": True,
+                "url": fetch_urls[0],
+                "urls": fetch_urls,
+                "source_kind": "chatpaper_arxiv",
+            },
+        )
+
+    combined: list[CollectedItem] = []
+    seen: set[str] = set()
+    for fetch_url in fetch_urls:
+        try:
+            result = parse_chatpaper_arxiv_json(fetch_text(fetch_url))
+        except Exception:
+            return _safe_error("fetch failed", metadata={"url": fetch_url})
+        if not result.ok:
+            return result
+        for item in result.items:
+            dedupe_key = item.url or item.fingerprint
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            combined.append(item)
+
+    metadata: dict[str, Any] = {
+        "source_kind": "chatpaper_arxiv",
+        "fetched_url_count": len(fetch_urls),
+    }
+    if categories:
+        metadata["categories"] = categories
+    if max_items is not None:
+        metadata["max_items"] = max_items
+        combined = combined[:max_items]
+    return FetchResult(ok=True, items=combined, metadata=metadata)
 
 
 def _feed_entry_to_item(entry: ET.Element, *, source_url: str) -> CollectedItem | None:
@@ -491,6 +548,31 @@ def _first_text(value: Any) -> str:
     if isinstance(value, list) and value:
         return _clean_text(str(value[0]))
     return _clean_text(str(value or ""))
+
+
+def _normalized_text_list(value: Any) -> list[str]:
+    if not value:
+        return []
+    items = value if isinstance(value, (list, tuple, set)) else [value]
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        text = str(item).strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        normalized.append(text)
+    return normalized
+
+
+def _positive_int(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
 
 
 def _crossref_date(message: dict[str, Any]) -> str:

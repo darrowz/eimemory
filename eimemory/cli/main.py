@@ -99,6 +99,11 @@ def _build_parser() -> argparse.ArgumentParser:
     intake_queue = intake_sub.add_parser("queue")
     intake_queue.add_argument("--status", action="append", default=[])
     intake_queue.add_argument("--limit", type=int, default=20)
+    intake_queue.add_argument("--explain", action="store_true")
+
+    intake_explain = intake_sub.add_parser("explain")
+    intake_explain.add_argument("record_id", nargs="?")
+    intake_explain.add_argument("--limit", type=int, default=0)
 
     intake_review = intake_sub.add_parser("review")
     intake_review.add_argument("record_id")
@@ -378,7 +383,31 @@ def main(argv: list[str] | None = None) -> int:
                 status=list(parsed.status or []) or None,
                 limit=parsed.limit,
             )
+            if parsed.explain:
+                records = [
+                    runtime.explain_intake_candidate(record_id=str(record["record_id"]), scope=scope)
+                    for record in records
+                ]
             print(json.dumps(records, ensure_ascii=False, indent=2))
+            return 0
+        if parsed.intake_command == "explain":
+            if parsed.limit < 0:
+                print(json.dumps({"ok": False, "error": "invalid_limit"}, ensure_ascii=False))
+                return 2
+            try:
+                if parsed.record_id:
+                    report = runtime.explain_intake_candidate(record_id=parsed.record_id, scope=scope)
+                else:
+                    limit = parsed.limit or 20
+                    records = runtime.list_intake_review_queue(scope=scope, limit=limit)
+                    report = [
+                        runtime.explain_intake_candidate(record_id=str(record["record_id"]), scope=scope)
+                        for record in records
+                    ]
+            except ValueError as exc:
+                print(json.dumps({"ok": False, "error": "explain_failed", "detail": str(exc)}, ensure_ascii=False))
+                return 2
+            print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0
         if parsed.intake_command == "review":
             try:
@@ -455,7 +484,7 @@ def main(argv: list[str] | None = None) -> int:
                 return 2
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0
-        print(json.dumps({"usage": "eimemory intake run|report|collect|queue|review|promote|merge|paper-promote|policy|pack"}))
+        print(json.dumps({"usage": "eimemory intake run|report|collect|queue|explain|review|promote|merge|paper-promote|policy|pack"}))
         return 0
     if parsed.command == "export":
         count = export_records(runtime, parsed.path)

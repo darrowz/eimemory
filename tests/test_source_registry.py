@@ -4,7 +4,36 @@ import json
 
 from eimemory.api.runtime import Runtime
 from eimemory.cli.main import main as cli_main
-from eimemory.intake.registry import SourceRegistry
+import pytest
+
+from eimemory.intake.registry import SourceRegistry, normalize_source_strategy_metadata
+
+
+def test_source_strategy_metadata_normalizes_defaults_categories_and_limits() -> None:
+    metadata = normalize_source_strategy_metadata(
+        {
+            "frequency": "weekly",
+            "max_items": "3",
+            "priority": "high",
+            "trust": 0.75,
+            "categories": [" cs.AI ", "cs.LG", "", "cs.AI"],
+        }
+    )
+
+    assert metadata["frequency"] == "weekly"
+    assert metadata["max_items"] == 3
+    assert metadata["priority"] == "high"
+    assert metadata["trust"] == 0.75
+    assert metadata["categories"] == ["cs.AI", "cs.LG"]
+    assert normalize_source_strategy_metadata({}) == {"frequency": "daily", "max_items": 10}
+
+
+def test_source_strategy_metadata_rejects_invalid_values() -> None:
+    with pytest.raises(ValueError, match="frequency"):
+        normalize_source_strategy_metadata({"frequency": "hourly"})
+
+    with pytest.raises(ValueError, match="max_items"):
+        normalize_source_strategy_metadata({"max_items": 0})
 
 
 def test_source_registry_add_list_and_scan_persists_candidates(tmp_path) -> None:

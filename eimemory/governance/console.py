@@ -15,6 +15,7 @@ def render_evolution_console(snapshot: dict) -> str:
     rules = _normalize_mapping(snapshot.get("rules"))
     recall_gaps = _normalize_mapping(snapshot.get("recall_gaps"))
     source_candidates = _normalize_mapping(snapshot.get("source_candidates"))
+    active_intake = _normalize_mapping(snapshot.get("active_intake"))
     backups = _normalize_mapping(snapshot.get("backups"))
     health = _normalize_mapping(snapshot.get("health"))
     reflection_stats = _normalize_mapping(snapshot.get("reflection_stats"))
@@ -415,6 +416,30 @@ def render_evolution_console(snapshot: dict) -> str:
       </section>
 
       <section>
+        <h2>External Intake</h2>
+        <div class="sub">Latest collection signal plus current candidate queue.</div>
+        {_render_external_intake(active_intake)}
+      </section>
+
+      <section>
+        <h2>Paper Promotion</h2>
+        <div class="sub">Paper candidates promoted into structured knowledge.</div>
+        {_render_paper_promotion(active_intake)}
+      </section>
+
+      <section>
+        <h2>Operational Projection</h2>
+        <div class="sub">Compiled knowledge projected into recall-only memory.</div>
+        {_render_operational_projection(active_intake)}
+      </section>
+
+      <section class="span-2">
+        <h2>Recent Papers / Candidates</h2>
+        <div class="sub">Most recent active learning artifacts across collection and compilation.</div>
+        {_render_recent_papers_candidates(active_intake)}
+      </section>
+
+      <section>
         <h2>Memory Breakdown</h2>
         {_render_kv_table("By Source", memory_quality.get("by_source"))}
         {_render_kv_table("By Type", memory_quality.get("by_memory_type"))}
@@ -436,6 +461,7 @@ def render_evolution_console(snapshot: dict) -> str:
 def write_evolution_console(snapshot: dict, path: str | Path) -> dict[str, Any]:
     output_path = Path(path)
     html_text = render_evolution_console(snapshot)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(html_text, encoding="utf-8")
     return {
         "ok": True,
@@ -505,6 +531,78 @@ def _render_record_list(records: Any) -> str:
     for record in list(records)[:6]:
         items.append(_render_record(record, empty_text=""))
     return '<div class="records">' + "".join(items) + "</div>"
+
+
+def _render_external_intake(active_intake: dict[str, Any]) -> str:
+    report = _normalize_mapping(_nested(active_intake, "external_collection", "latest_report"))
+    return (
+        '<div class="mini-grid">'
+        f'{_render_mini("candidates", active_intake.get("candidate_count"))}'
+        f'{_render_mini("open", active_intake.get("open_candidate_count"))}'
+        f'{_render_mini("written", report.get("written_count"))}'
+        f'{_render_mini("errors", report.get("error_count"))}'
+        "</div>"
+        f'{_render_report_kv(report, empty_text="No external collection report available.")}'
+    )
+
+
+def _render_paper_promotion(active_intake: dict[str, Any]) -> str:
+    report = _normalize_mapping(_nested(active_intake, "paper_promotion", "latest_report"))
+    return (
+        '<div class="mini-grid">'
+        f'{_render_mini("promoted", active_intake.get("promoted_candidate_count"))}'
+        f'{_render_mini("papers", active_intake.get("paper_source_count"))}'
+        f'{_render_mini("run promoted", report.get("promoted_count"))}'
+        f'{_render_mini("skipped", report.get("skipped_count"))}'
+        "</div>"
+        f'{_render_report_kv(report, empty_text="No paper promotion report available.")}'
+    )
+
+
+def _render_operational_projection(active_intake: dict[str, Any]) -> str:
+    projection = _normalize_mapping(active_intake.get("operational_projection"))
+    report = _normalize_mapping(projection.get("latest_report"))
+    records = projection.get("recent_projected_memories")
+    return (
+        '<div class="mini-grid">'
+        f'{_render_mini("projected", projection.get("projected_memory_count"))}'
+        f'{_render_mini("pages", active_intake.get("knowledge_page_count"))}'
+        f'{_render_mini("run projected", report.get("projected_count"))}'
+        f'{_render_mini("skipped", report.get("skipped_count"))}'
+        "</div>"
+        f'{_render_report_kv(report, empty_text="No operational projection report available.")}'
+        f'{_render_record_list(records)}'
+    )
+
+
+def _render_recent_papers_candidates(active_intake: dict[str, Any]) -> str:
+    candidates = active_intake.get("recent_candidates")
+    paper_sources = active_intake.get("recent_paper_sources")
+    knowledge_pages = active_intake.get("recent_knowledge_pages")
+    if not candidates and not paper_sources and not knowledge_pages:
+        return '<div class="muted">No recent paper or candidate records.</div>'
+    return (
+        f'{_render_labeled_records("Candidates", candidates)}'
+        f'{_render_labeled_records("Papers", paper_sources)}'
+        f'{_render_labeled_records("Knowledge Pages", knowledge_pages)}'
+    )
+
+
+def _render_labeled_records(title: str, records: Any) -> str:
+    if not records:
+        return ""
+    return f'<div class="kv-title">{_escape_text(title)}</div>{_render_record_list(records)}'
+
+
+def _render_report_kv(report: dict[str, Any], *, empty_text: str) -> str:
+    if not report:
+        return f'<div class="muted">{_escape_text(empty_text)}</div>'
+    compact = {
+        key: value
+        for key, value in report.items()
+        if key.endswith("_count") or key in {"ok", "promoted_count", "projected_count", "written_count", "skipped_count"}
+    }
+    return _render_kv_table("Latest Report", compact)
 
 
 def _render_kv_table(title: str, value: Any) -> str:

@@ -135,6 +135,8 @@ class MemoryAPI:
                 "retrieval_mode": str(search_report.get("retrieval_mode") or "hybrid"),
                 "vector_hits": int(search_report.get("vector_hits") or 0),
                 "quality_summary": self._quality_summary(items),
+                "source_composition": self._source_composition(items),
+                "selected_records": self._selected_record_summaries(items),
                 "scoring": self._scoring_for_items(items, search_report),
                 "recall_view": view.to_dict(),
             },
@@ -237,6 +239,51 @@ class MemoryAPI:
             "tiers": tiers,
             "rejected_returned": rejected,
         }
+
+    def _source_composition(self, items: list[RecordEnvelope]) -> dict:
+        by_kind: dict[str, int] = {}
+        projected_count = 0
+        projected_source_ids: list[str] = []
+        for item in items:
+            by_kind[item.kind] = by_kind.get(item.kind, 0) + 1
+            if item.meta.get("projection_type") == "operational_knowledge":
+                projected_count += 1
+                source_id = str(
+                    item.meta.get("source_record_id")
+                    or item.provenance.get("source_record_id")
+                    or item.content.get("source_record_id")
+                    or ""
+                )
+                if source_id and source_id not in projected_source_ids:
+                    projected_source_ids.append(source_id)
+        return {
+            "by_kind": by_kind,
+            "projected_count": projected_count,
+            "projected_source_ids": projected_source_ids,
+            "knowledge_count": by_kind.get("claim_card", 0) + by_kind.get("knowledge_page", 0),
+            "memory_count": by_kind.get("memory", 0),
+        }
+
+    def _selected_record_summaries(self, items: list[RecordEnvelope]) -> list[dict]:
+        selected: list[dict] = []
+        for item in items:
+            selected.append(
+                {
+                    "record_id": item.record_id,
+                    "kind": item.kind,
+                    "status": item.status,
+                    "title": item.title,
+                    "source": item.source,
+                    "projection_type": str(item.meta.get("projection_type") or ""),
+                    "source_record_id": str(
+                        item.meta.get("source_record_id")
+                        or item.provenance.get("source_record_id")
+                        or item.content.get("source_record_id")
+                        or ""
+                    ),
+                }
+            )
+        return selected
 
     def _is_returnable_memory_record(self, record: RecordEnvelope) -> bool:
         if record.status == "rejected":

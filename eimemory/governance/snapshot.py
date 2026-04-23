@@ -19,6 +19,7 @@ def build_governance_snapshot(runtime, scope: dict | ScopeRef) -> dict[str, Any]
     source_candidates = _list_all_records(runtime, kinds=["source_candidate"], scope=scope_ref)
     unknowns = _list_all_records(runtime, kinds=["unknown"], scope=scope_ref)
     knowledge_intake = _list_knowledge_intake_records(runtime, scope=scope_ref)
+    active_intake = _build_active_intake_summary(runtime, scope=scope_ref)
     source_quality = runtime.source_quality_report(scope=scope_payload)
     collection_policy = runtime.collection_policy(scope=scope_payload)
 
@@ -49,6 +50,7 @@ def build_governance_snapshot(runtime, scope: dict | ScopeRef) -> dict[str, Any]
             "list": [_record_to_dict(record) for record in source_candidates[:20]],
         },
         "knowledge_intake": _summarize_knowledge_intake(knowledge_intake),
+        "active_intake": active_intake,
         "source_quality": source_quality,
         "collection_policy": {
             "run_now": collection_policy["run_now"],
@@ -159,6 +161,162 @@ def _summarize_rules(rules: list[RecordEnvelope]) -> dict[str, int]:
             counts["rejected_count"] += 1
     counts["total_count"] = len(rules)
     return counts
+
+
+def _build_active_intake_summary(runtime, *, scope: ScopeRef) -> dict[str, Any]:
+    candidates = _list_all_records(runtime, kinds=["knowledge_candidate"], scope=scope)
+    paper_sources = _list_all_records(runtime, kinds=["paper_source"], scope=scope)
+    knowledge_pages = _list_all_records(runtime, kinds=["knowledge_page"], scope=scope)
+    memories = _list_all_records(runtime, kinds=["memory"], scope=scope)
+    projected_memories = [record for record in memories if _projection_type(record) == "operational_knowledge"]
+    report_records = _list_active_intake_report_records(runtime, scope=scope)
+
+    return {
+        "candidate_count": len(candidates),
+        "open_candidate_count": _count_status(candidates, "candidate"),
+        "promoted_candidate_count": _count_status(candidates, "promoted"),
+        "reviewed_candidate_count": _count_status(candidates, "reviewed"),
+        "rejected_candidate_count": _count_status(candidates, "rejected"),
+        "quarantined_candidate_count": _count_status(candidates, "quarantined"),
+        "paper_source_count": len(paper_sources),
+        "knowledge_page_count": len(knowledge_pages),
+        "external_collection": {
+            "latest_report": _latest_report_section(report_records, "external_collection"),
+        },
+        "paper_promotion": {
+            "latest_report": _latest_report_section(report_records, "paper_promotion"),
+        },
+        "operational_projection": {
+            "projected_memory_count": len(projected_memories),
+            "latest_report": _latest_report_section(report_records, "operational_projection"),
+            "recent_projected_memories": [
+                _projected_memory_summary(record) for record in projected_memories[:10]
+            ],
+        },
+        "recent_candidates": [_candidate_summary(record) for record in candidates[:10]],
+        "recent_paper_sources": [_paper_source_summary(record) for record in paper_sources[:10]],
+        "recent_knowledge_pages": [_knowledge_page_summary(record) for record in knowledge_pages[:10]],
+    }
+
+
+def _list_active_intake_report_records(runtime, *, scope: ScopeRef) -> list[RecordEnvelope]:
+    records: list[RecordEnvelope] = []
+    for record in _list_all_records(runtime, kinds=["replay_result", "reflection", "incident"], scope=scope):
+        if _record_report_payload(record):
+            records.append(record)
+    return sorted(records, key=_record_recency_key, reverse=True)
+
+
+def _record_report_payload(record: RecordEnvelope) -> dict[str, Any]:
+    for container in (record.content, record.meta, record.provenance):
+        if not isinstance(container, dict):
+            continue
+        if any(key in container for key in ("external_collection", "paper_promotion", "operational_projection")):
+            return container
+        report = container.get("report")
+        if isinstance(report, dict) and any(
+            key in report for key in ("external_collection", "paper_promotion", "operational_projection")
+        ):
+            return report
+    return {}
+
+
+def _latest_report_section(records: list[RecordEnvelope], section: str) -> dict[str, Any] | None:
+    for record in records:
+        payload = _record_report_payload(record)
+        value = payload.get(section)
+        if isinstance(value, dict):
+            return dict(value)
+    return None
+
+
+def _candidate_summary(record: RecordEnvelope) -> dict[str, Any]:
+    source_kind = _first_text(record.meta, record.content, record.provenance, keys=("source_kind", "collector_source_kind"))
+    source_uri = _first_text(
+        record.meta,
+        record.content,
+        record.provenance,
+        keys=("source_uri", "item_url", "uri", "url", "canonical_url", "paper_url"),
+    )
+    return {
+        "record_id": record.record_id,
+        "status": record.status,
+        "title": record.title,
+        "summary": record.summary,
+        "source_kind": source_kind,
+        "source_uri": source_uri,
+        "promotion": {
+            "paper_source_id": str(record.meta.get("promoted_to_paper_source_id") or ""),
+            "record_ids": list(record.meta.get("promotion_record_ids") or []),
+        },
+        "time": asdict(record.time),
+        "meta": dict(record.meta or {}),
+    }
+
+
+def _paper_source_summary(record: RecordEnvelope) -> dict[str, Any]:
+    source_kind = _first_text(record.meta, record.content, record.provenance, keys=("source_kind",))
+    source_uri = _first_text(
+        record.content,
+        record.meta,
+        record.provenance,
+        keys=("canonical_url", "paper_url", "url", "pdf_blob_ref", "doi", "arxiv_id"),
+    )
+    return {
+        "record_id": record.record_id,
+        "status": record.status,
+        "title": record.title,
+        "summary": record.summary,
+        "source_kind": source_kind,
+        "source_uri": source_uri,
+        "time": asdict(record.time),
+        "meta": dict(record.meta or {}),
+    }
+
+
+def _knowledge_page_summary(record: RecordEnvelope) -> dict[str, Any]:
+    return {
+        "record_id": record.record_id,
+        "status": record.status,
+        "title": record.title,
+        "summary": record.summary,
+        "page_type": _first_text(record.meta, record.content, keys=("page_type",)),
+        "source_ids": list(record.meta.get("source_ids") or record.content.get("source_ids") or []),
+        "time": asdict(record.time),
+        "meta": dict(record.meta or {}),
+    }
+
+
+def _projected_memory_summary(record: RecordEnvelope) -> dict[str, Any]:
+    return {
+        "record_id": record.record_id,
+        "status": record.status,
+        "title": record.title,
+        "summary": record.summary,
+        "source_record_id": _first_text(record.meta, record.content, record.provenance, keys=("source_record_id",)),
+        "source_record_kind": _first_text(record.meta, record.content, record.provenance, keys=("source_record_kind",)),
+        "time": asdict(record.time),
+        "meta": dict(record.meta or {}),
+    }
+
+
+def _projection_type(record: RecordEnvelope) -> str:
+    return _first_text(record.meta, record.content, record.provenance, keys=("projection_type",)).strip().lower()
+
+
+def _count_status(records: list[RecordEnvelope], status: str) -> int:
+    return sum(1 for record in records if str(record.status or "").strip().lower() == status)
+
+
+def _first_text(*containers: dict[str, Any], keys: tuple[str, ...]) -> str:
+    for container in containers:
+        if not isinstance(container, dict):
+            continue
+        for key in keys:
+            value = container.get(key)
+            if value is not None and str(value).strip():
+                return str(value)
+    return ""
 
 
 def _record_to_dict(record: RecordEnvelope) -> dict[str, Any]:

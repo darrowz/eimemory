@@ -38,6 +38,53 @@ def _sample_snapshot() -> dict:
             "latest": {"title": "Source candidate", "summary": "Potential source", "meta": {}},
             "list": [{"title": "Source candidate", "summary": "Potential source", "meta": {}}],
         },
+        "active_intake": {
+            "candidate_count": 1,
+            "promoted_candidate_count": 1,
+            "paper_source_count": 1,
+            "knowledge_page_count": 1,
+            "external_collection": {"latest_report": {"ok": True, "written_count": 1, "error_count": 0}},
+            "paper_promotion": {"latest_report": {"ok": True, "promoted_count": 1, "skipped_count": 0}},
+            "operational_projection": {
+                "projected_memory_count": 1,
+                "latest_report": {"ok": True, "projected_count": 1, "skipped_count": 0},
+                "recent_projected_memories": [
+                    {
+                        "title": "Operational page: Runtime Memory",
+                        "summary": "Runtime recall should prefer verified operational knowledge.",
+                        "meta": {"projection_type": "operational_knowledge"},
+                    }
+                ],
+            },
+            "recent_candidates": [
+                {
+                    "title": "Knowledge candidate: Operational paper",
+                    "summary": "Paper candidate ready for promotion",
+                    "status": "promoted",
+                    "source_kind": "paper",
+                    "source_uri": "https://arxiv.org/abs/2604.19740",
+                    "promotion": {"paper_source_id": "psrc_operational"},
+                    "meta": {},
+                }
+            ],
+            "recent_paper_sources": [
+                {
+                    "title": "Operational Memory Paper",
+                    "summary": "A paper about operational memory.",
+                    "source_kind": "arxiv",
+                    "source_uri": "https://arxiv.org/abs/2604.19740",
+                    "meta": {},
+                }
+            ],
+            "recent_knowledge_pages": [
+                {
+                    "title": "Operational Memory",
+                    "summary": "Runtime recall should prefer verified operational memory records.",
+                    "page_type": "topic",
+                    "meta": {},
+                }
+            ],
+        },
         "backups": {
             "count": 1,
             "latest": {"path": "backups/run-1", "ok": True, "verified": True},
@@ -57,6 +104,11 @@ def test_render_evolution_console_includes_key_sections() -> None:
     assert "Source Candidates" in html
     assert "Backups/Health" in html
     assert "Reflections" in html
+    assert "External Intake" in html
+    assert "Paper Promotion" in html
+    assert "Operational Projection" in html
+    assert "Recent Papers / Candidates" in html
+    assert "Operational Memory Paper" in html
 
 
 def test_render_evolution_console_escapes_user_content() -> None:
@@ -67,7 +119,7 @@ def test_render_evolution_console_escapes_user_content() -> None:
 
 
 def test_write_evolution_console_writes_html_file(tmp_path) -> None:
-    output_path = tmp_path / "evolution-console.html"
+    output_path = tmp_path / "nested" / "governance" / "evolution-console.html"
 
     report = write_evolution_console(_sample_snapshot(), output_path)
 

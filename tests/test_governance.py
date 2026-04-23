@@ -139,3 +139,92 @@ def test_governance_snapshot_reports_backups_and_health(tmp_path) -> None:
     assert snapshot["backups"]["latest"]["verified"] is True
     assert snapshot["health"]["ok"] is True
     assert snapshot["health"]["warnings"] == []
+
+
+def test_governance_snapshot_surfaces_active_intake_records(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"tenant_id": "default", "agent_id": "main", "workspace_id": "papers", "user_id": ""}
+    scope_ref = ScopeRef.from_dict(scope)
+    candidate = runtime.store.append(
+        RecordEnvelope.create(
+            kind="knowledge_candidate",
+            title="Knowledge candidate: Operational paper",
+            summary="Paper candidate ready for promotion",
+            scope=scope_ref,
+            status="promoted",
+            content={
+                "source_kind": "paper",
+                "uri": "https://arxiv.org/abs/2604.19740",
+                "url": "https://arxiv.org/abs/2604.19740",
+            },
+            meta={
+                "source_kind": "paper",
+                "source_uri": "https://arxiv.org/abs/2604.19740",
+                "promoted_to_paper_source_id": "psrc_operational",
+                "promotion_record_ids": ["psrc_operational", "page_operational"],
+            },
+        )
+    )
+    runtime.store.append(
+        RecordEnvelope.create(
+            kind="paper_source",
+            title="Operational Memory Paper",
+            summary="A paper about operational memory.",
+            scope=scope_ref,
+            content={"source_kind": "arxiv", "canonical_url": "https://arxiv.org/abs/2604.19740"},
+            meta={"source_kind": "arxiv"},
+        )
+    )
+    runtime.store.append(
+        RecordEnvelope.create(
+            kind="knowledge_page",
+            title="Operational Memory",
+            summary="Runtime recall should prefer verified operational memory records.",
+            scope=scope_ref,
+            content={"page_type": "topic", "source_ids": ["psrc_operational"]},
+            meta={"page_type": "topic", "source_ids": ["psrc_operational"]},
+        )
+    )
+    projected = runtime.store.append(
+        RecordEnvelope.create(
+            kind="memory",
+            title="Operational page: Operational Memory",
+            summary="Runtime recall should prefer verified operational memory records.",
+            scope=scope_ref,
+            content={"projection_type": "operational_knowledge"},
+            meta={"projection_type": "operational_knowledge", "source_record_id": "page_operational"},
+        )
+    )
+    runtime.store.append(
+        RecordEnvelope.create(
+            kind="replay_result",
+            title="Nightly active intake report",
+            summary="Latest active intake scheduler report",
+            scope=scope_ref,
+            content={
+                "external_collection": {"ok": True, "written_count": 1},
+                "paper_promotion": {"ok": True, "promoted_count": 1},
+                "operational_projection": {"ok": True, "projected_count": 1},
+            },
+            source="eimemory.scheduler.nightly",
+            meta={"report_type": "nightly"},
+        )
+    )
+
+    from eimemory.governance.snapshot import build_governance_snapshot
+
+    snapshot = build_governance_snapshot(runtime, scope)
+
+    active_intake = snapshot["active_intake"]
+    assert active_intake["candidate_count"] == 1
+    assert active_intake["promoted_candidate_count"] == 1
+    assert active_intake["paper_source_count"] == 1
+    assert active_intake["knowledge_page_count"] == 1
+    assert active_intake["recent_candidates"][0]["record_id"] == candidate.record_id
+    assert active_intake["recent_candidates"][0]["source_kind"] == "paper"
+    assert active_intake["recent_candidates"][0]["source_uri"] == "https://arxiv.org/abs/2604.19740"
+    assert active_intake["recent_candidates"][0]["promotion"]["paper_source_id"] == "psrc_operational"
+    assert active_intake["external_collection"]["latest_report"]["written_count"] == 1
+    assert active_intake["paper_promotion"]["latest_report"]["promoted_count"] == 1
+    assert active_intake["operational_projection"]["projected_memory_count"] == 1
+    assert active_intake["operational_projection"]["recent_projected_memories"][0]["record_id"] == projected.record_id

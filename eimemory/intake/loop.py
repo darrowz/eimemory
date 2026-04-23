@@ -235,7 +235,7 @@ class KnowledgeIntakeLoop:
             return DECISION_REJECTED, "disabled_source"
         if source.source_kind not in VALID_SOURCE_KINDS:
             return DECISION_REJECTED, "unsupported_source_kind"
-        has_metadata = bool(source.title or source.uri or source.tags or source.metadata)
+        has_metadata = bool(source.title or source.uri or source.tags or _meaningful_source_metadata(source.metadata))
         if not has_metadata:
             return DECISION_REJECTED, "empty_source"
         combined = " ".join([material.title, source.uri, material.summary, material.content_excerpt]).strip()
@@ -418,6 +418,12 @@ def _metadata_excerpt(source: SourceEntry) -> str:
         "metadata": dict(source.metadata),
     }
     return _clean_excerpt(json.dumps(_json_safe(payload), ensure_ascii=False, sort_keys=True), EXCERPT_CHARS)
+
+
+def _meaningful_source_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    """Ignore source strategy defaults when deciding whether a source is empty."""
+    defaults = {"frequency": "daily", "max_items": 10}
+    return {key: value for key, value in metadata.items() if defaults.get(key) != value}
 
 
 def _json_safe(value: Any) -> Any:

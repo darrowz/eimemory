@@ -13,6 +13,7 @@ from eimemory.intake.papers.sources import ingest_paper_source
 from eimemory.knowledge.compiler import KnowledgeCompilation, compile_paper_knowledge
 from eimemory.knowledge.extract import PaperMemoryExtraction, extract_paper_memory
 from eimemory.knowledge.projectors import project_operational_knowledge
+from eimemory.knowledge.synthesis import build_research_digest, digest_to_record
 from eimemory.config.defaults import default_root
 from eimemory.models.records import RecordEnvelope, ScopeRef, TimeRef
 from eimemory.storage.runtime_store import RuntimeStore
@@ -134,6 +135,11 @@ class Runtime:
 
         return list_review_queue(self, scope, status=status, limit=limit)
 
+    def explain_intake_candidate(self, *, record_id: str, scope: dict | None = None) -> dict:
+        from eimemory.intake.review import explain_candidate
+
+        return explain_candidate(self, record_id, scope=scope)
+
     def review_intake_candidate(
         self,
         *,
@@ -227,6 +233,32 @@ class Runtime:
 
     def project_operational_knowledge(self, *, scope: dict | None = None, limit: int = 100) -> dict:
         return project_operational_knowledge(self.store, scope=scope, limit=limit)
+
+    def build_research_digest(
+        self,
+        *,
+        scope: dict | None = None,
+        persist: bool = False,
+        limit: int = 5,
+        digest_date: str | None = None,
+    ) -> dict:
+        paper_sources = self.store.list_records(kinds=["paper_source"], scope=scope, limit=1000)
+        claim_cards = self.store.list_records(kinds=["claim_card"], scope=scope, limit=1000)
+        knowledge_pages = self.store.list_records(kinds=["knowledge_page"], scope=scope, limit=1000)
+        candidates = self.store.list_records(kinds=["knowledge_candidate"], scope=scope, limit=1000)
+        digest = build_research_digest(
+            paper_sources=paper_sources,
+            claim_cards=claim_cards,
+            knowledge_pages=knowledge_pages,
+            candidates=candidates,
+            limit=limit,
+            digest_date=digest_date,
+        )
+        if persist and digest["ok"]:
+            record = digest_to_record(digest, scope=scope)
+            self.store.append(record)
+            digest = {**digest, "persisted": True, "persisted_page_id": record.record_id}
+        return digest
 
 
 def _default_fetch_text(url: str) -> str:

@@ -41,6 +41,10 @@ EIMEMORY_CONFIG_DIR=/etc/eimemory
   extension path.
 - Governance Console is read-only. It may expose static HTML through a tokenized
   URL, but it must not provide mutation endpoints.
+- Rotate the Governance Console token after sharing it or after operator changes.
+  Use `deploy/rotate_console_token.py`, then reload and restart the user service.
+- Prefer firewall or reverse-proxy allowlists for port `8765`; the tokenized URL
+  is a lightweight guard, not a replacement for network access control.
 - Backups should be written under `/var/lib/eimemory/backups` and verified with
   `eimemory backup verify`.
 
@@ -90,3 +94,18 @@ After deployment, run:
 EIMEMORY_ROOT=/var/lib/eimemory /opt/eimemory/venv/bin/eimemory quality stats
 EIMEMORY_ROOT=/var/lib/eimemory /opt/eimemory/venv/bin/eimemory governance snapshot
 ```
+
+## Governance Console Token Rotation
+
+The console serves static read-only HTML at `http://<host>:8765/<token>`.
+Rotate the token with:
+
+```bash
+/opt/eimemory/venv/bin/python /dev-project/eimemory/deploy/rotate_console_token.py \
+  --unit ~/.config/systemd/user/eimemory-console.service
+systemctl --user daemon-reload
+systemctl --user restart eimemory-console.service
+```
+
+The script prints the new URL shape. Do not commit generated production tokens
+into the repository.
