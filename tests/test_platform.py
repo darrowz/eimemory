@@ -32,6 +32,30 @@ def test_settings_loader_prefers_env_and_file(tmp_path, monkeypatch) -> None:
     assert settings.default_agent_id == "file-agent"
 
 
+def test_settings_loader_reads_settings_from_config_dir(tmp_path, monkeypatch) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "settings.json").write_text(
+        json.dumps(
+            {
+                "root": str(tmp_path / "from-config-dir"),
+                "default_agent_id": "dir-agent",
+                "default_workspace_id": "repo-x",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("EIMEMORY_CONFIG_PATH", raising=False)
+    monkeypatch.delenv("EIMEMORY_ROOT", raising=False)
+    monkeypatch.setenv("EIMEMORY_CONFIG_DIR", str(config_dir))
+
+    settings = load_settings()
+
+    assert settings.root == tmp_path / "from-config-dir"
+    assert settings.default_agent_id == "dir-agent"
+    assert settings.default_workspace_id == "repo-x"
+
+
 def test_cli_init_ingest_recall_and_export_import(tmp_path, monkeypatch, capsys) -> None:
     monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path / "runtime"))
 

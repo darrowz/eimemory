@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import hashlib
 import html
+import ipaddress
 import json
 import re
 from typing import Any, Callable
@@ -262,6 +263,8 @@ def collect_from_source_entry(source: Any, fetch_text: FetchTextFunc | None = No
 
     if not uri:
         return _safe_error("missing source URI")
+    if _unsafe_literal_fetch_url(uri):
+        return _safe_error("unsafe fetch URL")
     if _is_local_uri(uri):
         return FetchResult(ok=True, metadata={"skipped": True, "reason": "local_source_left_to_loop"})
     if resolved_kind == "github":
@@ -300,6 +303,8 @@ def collect_from_source_entry(source: Any, fetch_text: FetchTextFunc | None = No
 
     if fetch_text is None:
         return FetchResult(ok=True, metadata={"dry_run": True, "url": fetch_url, "source_kind": resolved_kind})
+    if _unsafe_literal_fetch_url(fetch_url):
+        return _safe_error("unsafe fetch URL")
     try:
         return parser(fetch_text(fetch_url))
     except Exception:
@@ -644,6 +649,29 @@ def _chatpaper_category_from_path(parts: list[str]) -> str:
 def _is_local_uri(uri: str) -> bool:
     parsed = urlparse(uri)
     return parsed.scheme in {"", "file"} or len(parsed.scheme) == 1
+
+
+def _unsafe_literal_fetch_url(uri: str) -> bool:
+    parsed = urlparse(str(uri or "").strip())
+    if parsed.scheme not in {"http", "https"}:
+        return False
+    if parsed.username or parsed.password:
+        return True
+    hostname = (parsed.hostname or "").strip().lower()
+    if hostname in {"localhost", "localhost.localdomain"}:
+        return True
+    try:
+        address = ipaddress.ip_address(hostname.strip("[]"))
+    except ValueError:
+        return False
+    return (
+        address.is_private
+        or address.is_loopback
+        or address.is_link_local
+        or address.is_multicast
+        or address.is_reserved
+        or address.is_unspecified
+    )
 
 
 def _github_title(normalized: dict[str, str]) -> str:

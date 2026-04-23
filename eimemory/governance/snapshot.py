@@ -5,7 +5,10 @@ from pathlib import Path
 from typing import Any
 
 from eimemory.compatibility.migration_helpers import backup_verify
+from eimemory.core.clock import now_iso
 from eimemory.models.records import RecordEnvelope, ScopeRef
+
+SNAPSHOT_SCHEMA_VERSION = 1
 
 
 def build_governance_snapshot(runtime, scope: dict | ScopeRef) -> dict[str, Any]:
@@ -36,6 +39,8 @@ def build_governance_snapshot(runtime, scope: dict | ScopeRef) -> dict[str, Any]
 
     return {
         "ok": health_ok,
+        "generated_at": now_iso(),
+        "snapshot_schema_version": SNAPSHOT_SCHEMA_VERSION,
         "scope": scope_payload,
         "memory_quality": memory_quality,
         "reflection_stats": reflection_stats,

@@ -5,13 +5,13 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=/var/lib/eimemory/governance
+Environment=EIMEMORY_CONFIG_DIR=/etc/eimemory
 Environment=EIMEMORY_CONSOLE_TOKEN=change-me
 Environment=EIMEMORY_CONSOLE_PATH=/var/lib/eimemory/governance/evolution-console.html
 Environment=EIMEMORY_CONSOLE_PORT=8765
-ExecStart=/opt/eimemory/venv/bin/python /var/lib/eimemory/governance/serve_console.py
+ExecStart=/opt/eimemory/venv/bin/python -m eimemory.governance.serve_console
 Restart=on-failure
 RestartSec=3
 
 [Install]
 WantedBy=default.target
-

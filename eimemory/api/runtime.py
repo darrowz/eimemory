@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import ipaddress
+import socket
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
-from urllib.request import Request, urlopen
+from urllib.parse import urlparse
+from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 
 from eimemory.api.evolution import EvolutionAPI
 from eimemory.api.memory import MemoryAPI
@@ -17,6 +20,16 @@ from eimemory.knowledge.synthesis import build_research_digest, digest_to_record
 from eimemory.config.defaults import default_root
 from eimemory.models.records import RecordEnvelope, ScopeRef, TimeRef
 from eimemory.storage.runtime_store import RuntimeStore
+
+
+MAX_FETCH_BYTES = 2_000_000
+ALLOWED_FETCH_CONTENT_TYPES = (
+    "application/atom+xml",
+    "application/json",
+    "application/rss+xml",
+    "application/xml",
+    "text/",
+)
 
 
 class Runtime:
@@ -66,7 +79,7 @@ class Runtime:
     ) -> dict:
         from dataclasses import asdict
 
-        from eimemory.intake.connectors import collect_from_source_entry
+        from eimemory.intake.connectors import FetchResult, collect_from_source_entry
 
         sources = self.sources.list_sources(enabled=True, source_kind=source_kind or None)
         if limit is not None:
@@ -74,6 +87,7 @@ class Runtime:
         if fetch and fetch_text is None:
             fetch_text = _default_fetch_text
         results = []
+        item_budget = max(0, int(limit)) if limit is not None else None
         item_count = 0
         written_count = 0
         skipped_existing_count = 0
@@ -83,6 +97,17 @@ class Runtime:
         scope_ref = ScopeRef.from_dict(scope)
         for source in sources:
             result = collect_from_source_entry(source, fetch_text=fetch_text)
+            source_item_limit = _source_max_items(source)
+            allowed_items = result.items[:source_item_limit]
+            if item_budget is not None:
+                allowed_items = allowed_items[: max(0, item_budget - item_count)]
+            if len(allowed_items) != len(result.items):
+                result = FetchResult(
+                    ok=result.ok,
+                    items=list(allowed_items),
+                    error=result.error,
+                    metadata={**dict(result.metadata or {}), "truncated": True, "max_items": len(allowed_items)},
+                )
             payload = asdict(result)
             payload["source_id"] = source.source_id
             payload["source_kind"] = source.source_kind
@@ -100,13 +125,15 @@ class Runtime:
                         quarantined_count += 1
                     elif record.status == "rejected":
                         rejected_count += 1
-                    if self.store.get_by_id(record.record_id) is not None:
+                    if self.store.get_by_id(record.record_id, scope=record.scope) is not None:
                         skipped_existing_count += 1
                         continue
                     self.store.append(record)
                     written_count += 1
                     persisted_record_ids.append(record.record_id)
             results.append(payload)
+            if item_budget is not None and item_count >= item_budget:
+                break
         return {
             "ok": True,
             "persist": bool(persist),
@@ -262,6 +289,7 @@ class Runtime:
 
 
 def _default_fetch_text(url: str) -> str:
+    _validate_fetch_url(url)
     request = Request(
         url,
         headers={
@@ -269,9 +297,61 @@ def _default_fetch_text(url: str) -> str:
             "User-Agent": "eimemory/1.0 (+https://github.com/darrowz/eimemory)",
         },
     )
-    with urlopen(request, timeout=30) as response:
+    opener = build_opener(_SafeRedirectHandler)
+    with opener.open(request, timeout=30) as response:
+        final_url = response.geturl()
+        _validate_fetch_url(final_url)
+        content_type = str(response.headers.get_content_type() or "").lower()
+        if content_type and not any(content_type.startswith(prefix) for prefix in ALLOWED_FETCH_CONTENT_TYPES):
+            raise ValueError("unsupported content type")
         charset = response.headers.get_content_charset() or "utf-8"
-        return response.read().decode(charset, errors="replace")
+        raw = response.read(MAX_FETCH_BYTES + 1)
+        if len(raw) > MAX_FETCH_BYTES:
+            raise ValueError("response too large")
+        return raw.decode(charset, errors="replace")
+
+
+class _SafeRedirectHandler(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[override]
+        _validate_fetch_url(str(newurl))
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _validate_fetch_url(url: str) -> None:
+    parsed = urlparse(str(url or "").strip())
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError("unsupported fetch URL scheme")
+    if parsed.username or parsed.password:
+        raise ValueError("credentials in fetch URL are not allowed")
+    hostname = (parsed.hostname or "").strip()
+    if not hostname:
+        raise ValueError("missing fetch URL host")
+    if hostname.lower() in {"localhost", "localhost.localdomain"}:
+        raise ValueError("unsafe fetch URL host")
+    addresses: set[str] = set()
+    try:
+        addresses = {item[4][0] for item in socket.getaddrinfo(hostname, parsed.port or (443 if parsed.scheme == "https" else 80))}
+    except socket.gaierror as exc:
+        raise ValueError("fetch URL host could not be resolved") from exc
+    for value in addresses:
+        address = ipaddress.ip_address(value)
+        if (
+            address.is_private
+            or address.is_loopback
+            or address.is_link_local
+            or address.is_multicast
+            or address.is_reserved
+            or address.is_unspecified
+        ):
+            raise ValueError("unsafe fetch URL host")
+
+
+def _source_max_items(source: Any) -> int:
+    metadata = dict(getattr(source, "metadata", {}) or {})
+    try:
+        return max(0, int(metadata.get("max_items", 10)))
+    except (TypeError, ValueError):
+        return 10
 
 
 def _collected_item_record(

@@ -19,6 +19,11 @@ The service should still point to canonical production paths:
 /etc/eimemory
 ```
 
+Runtime configuration is loaded from `/etc/eimemory/settings.json` when
+`EIMEMORY_CONFIG_DIR=/etc/eimemory` is set. `EIMEMORY_CONFIG_PATH` can still
+point at a specific settings file, and `EIMEMORY_ROOT` overrides the configured
+root.
+
 ## Nightly Intake Timer
 
 The standard production schedule runs active knowledge intake and governance once

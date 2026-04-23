@@ -13,6 +13,8 @@ class OpenClawMemoryHooks:
 
     def on_message_received(self, event: dict) -> dict:
         message = dict(event.get("message") or {})
+        if str(message.get("role") or "").lower() != "user":
+            return {"stored": None}
         text = self._clean_user_memory_text(str(message.get("content") or "").strip())
         if self._should_capture_message(text=text, event=event):
             stored = self.runtime.memory.ingest(
@@ -89,30 +91,26 @@ class OpenClawMemoryHooks:
             return False
         if self._looks_like_prompt_injection(normalized):
             return False
-        keywords = (
+        durable_markers = (
             "remember",
             "prefer",
             "always",
             "never",
-            "project",
             "decision",
             "important",
             "rule",
+            "long term memory",
+            "durable",
+            "capture memory",
             "记住",
             "偏好",
-            "项目",
             "决定",
             "重要",
             "规则",
             "长期记忆",
             "eimemory",
         )
-        if any(keyword in normalized for keyword in keywords):
-            return True
-        if self._is_low_value_chatter(normalized):
-            return False
-        tokens = [token for token in normalized.split() if token]
-        return len(normalized) >= 24 and len(tokens) >= 4
+        return any(marker in normalized for marker in durable_markers)
 
     def _force_capture_requested(self, event: dict) -> bool:
         return bool(event.get("capture_memory") or event.get("captureMemory"))
@@ -350,8 +348,27 @@ class OpenClawMemoryHooks:
         }
         if compact in noisy_markers:
             return False
-        tokens = [token for token in normalized.split() if token]
-        return len(normalized) >= 12 or len(tokens) >= 3
+        durable_markers = (
+            "decision",
+            "decided",
+            "summary",
+            "summarized",
+            "durable",
+            "remember",
+            "preference",
+            "important",
+            "rule",
+            "long term memory",
+            "决定",
+            "决策",
+            "总结",
+            "摘要",
+            "长期记忆",
+            "重要",
+            "规则",
+            "记住",
+        )
+        return any(marker in normalized for marker in durable_markers)
 
     def _empty_bundle(self, event: dict) -> RecallBundle:
         return RecallBundle(

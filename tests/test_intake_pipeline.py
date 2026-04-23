@@ -158,6 +158,34 @@ def test_promote_collected_paper_candidates_promotes_safe_chatpaper_record(tmp_p
     assert runtime.store.list_records(kinds=["knowledge_page"], scope=scope)
 
 
+def test_promote_collected_paper_candidates_includes_reviewed_records(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"tenant_id": "tenant-a", "agent_id": "agent-a"}
+    record = RecordEnvelope.create(
+        kind="knowledge_candidate",
+        title="Knowledge candidate: Reviewed Memory Paper",
+        summary="A reviewed arXiv paper about memory retrieval.",
+        detail="Memory retrieval policies improve grounded planning outcomes in embodied agents.",
+        scope=ScopeRef.from_dict(scope),
+        status="reviewed",
+        source="unit-test",
+        content={
+            "source_kind": "arxiv",
+            "title": "Reviewed Memory Paper",
+            "url": "https://arxiv.org/abs/2601.00022",
+            "content_excerpt": "Memory retrieval policies improve grounded planning outcomes in embodied agents.",
+            "metadata": {"arxiv_id": "2601.00022"},
+        },
+        meta={"source_kind": "arxiv"},
+    )
+    runtime.store.append(record)
+
+    report = promote_collected_paper_candidates(runtime, scope, auto=True)
+
+    assert report["scanned"] == 1
+    assert report["promoted"] == 1
+
+
 def test_promote_collected_paper_candidates_skips_unsafe_and_thin_generic_url(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     scope = {"tenant_id": "tenant-a", "agent_id": "agent-a"}

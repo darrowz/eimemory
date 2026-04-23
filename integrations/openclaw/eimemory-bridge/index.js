@@ -54,12 +54,13 @@ function normalizeEventPayload(hook, event) {
   if (hook === 'message_received') {
     const scope = normalizeScope(event);
     const content = normalizeContent(event?.content ?? event?.message?.content);
+    const role = normalizeMessageRole(event);
       return {
         session_id: String(event?.sessionId || event?.session_id || ''),
         ...scope,
         capture_memory: Boolean(event?.capture_memory || event?.captureMemory),
         message: {
-          role: String(event?.from || event?.message?.role || 'user'),
+          role,
           content,
       },
     };
@@ -108,6 +109,16 @@ function normalizeSessionId(event, metadata = {}) {
   return '';
 }
 
+function normalizeMessageRole(event) {
+  const candidates = [event?.message?.role, event?.role, event?.from];
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate.trim()) {
+      return candidate.trim();
+    }
+  }
+  return 'user';
+}
+
 function normalizeScope(event, metadata = {}) {
   return {
     tenant_id: String(event?.tenantId || event?.tenant_id || 'default'),
@@ -128,24 +139,82 @@ function normalizeScope(event, metadata = {}) {
 function extractPromptMetadata(prompt) {
   const merged = {};
   const text = String(prompt || '');
-  const fencePattern = /```(?:json)?\s*([\s\S]*?)```/gi;
-  let match = fencePattern.exec(text);
-  while (match) {
-    try {
-      const parsed = JSON.parse(match[1]);
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        Object.assign(merged, parsed);
-      }
-    } catch (_error) {
-      // Metadata is best-effort; malformed prompt wrappers should never block recall.
+  const metadataSection = extractTrustedMetadataSection(text);
+  const conversation = extractLabeledJsonFence(metadataSection, 'Conversation info');
+  if (conversation) {
+    Object.assign(merged, conversation);
+  }
+  const sender = extractLabeledJsonFence(metadataSection, 'Sender');
+  if (sender) {
+    const senderId = sender.sender_id || sender.sender || sender.id || sender.open_id || sender.user_id;
+    if (senderId && !merged.sender_id) {
+      merged.sender_id = senderId;
     }
-    match = fencePattern.exec(text);
+    if (sender.name && !merged.sender_name) {
+      merged.sender_name = sender.name;
+    }
   }
   const messageMatch = text.match(/\[msg:([^\]]+)\]/i);
   if (messageMatch && !merged.message_id) {
     merged.message_id = messageMatch[1];
   }
   return merged;
+}
+
+function extractTrustedMetadataSection(text) {
+  const lines = String(text || '').split(/\r?\n/);
+  const trusted = [];
+  let started = false;
+  let inFence = false;
+  for (const rawLine of lines) {
+    const line = String(rawLine || '');
+    const trimmed = line.trim();
+    const lowered = trimmed.toLowerCase();
+    const isWrapperLine = (
+      !trimmed
+      || lowered.startsWith('system:')
+      || lowered.startsWith('conversation info')
+      || lowered.startsWith('sender ')
+      || lowered.startsWith('sender(')
+      || lowered.startsWith('sender:')
+      || trimmed.startsWith('```')
+      || (started && inFence)
+    );
+    if (!started && !isWrapperLine) {
+      break;
+    }
+    if (isWrapperLine) {
+      trusted.push(line);
+      started = true;
+    } else if (started) {
+      break;
+    }
+    if (trimmed.startsWith('```')) {
+      inFence = !inFence;
+    }
+  }
+  return trusted.join('\n');
+}
+
+function extractLabeledJsonFence(text, label) {
+  const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pattern = new RegExp(
+    `(?:^|\\r?\\n)\\s*${escaped}\\b[^\\r\\n]*\\r?\\n\\s*\\\`\\\`\\\`(?:json)?\\s*([\\s\\S]*?)\\\`\\\`\\\``,
+    'i'
+  );
+  const match = pattern.exec(text);
+  if (!match) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(match[1]);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed;
+    }
+  } catch (_error) {
+    // Metadata is best-effort; malformed prompt wrappers should never block recall.
+  }
+  return null;
 }
 
 function cleanPromptQuery(query) {

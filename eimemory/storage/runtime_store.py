@@ -47,17 +47,18 @@ class RuntimeStore:
         scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
         return self.sqlite.get_active_policy(task_type=task_type, scope=scope_ref)
 
-    def get_by_id(self, record_id: str) -> RecordEnvelope | None:
-        return self.sqlite.get_by_id(record_id)
+    def get_by_id(self, record_id: str, scope: ScopeRef | dict | None = None) -> RecordEnvelope | None:
+        scope_ref = None if scope is None else (scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope))
+        return self.sqlite.get_by_id(record_id, scope=scope_ref)
 
-    def get_many_by_ids(self, record_ids: list[str]) -> list[RecordEnvelope]:
+    def get_many_by_ids(self, record_ids: list[str], scope: ScopeRef | dict | None = None) -> list[RecordEnvelope]:
         resolved: list[RecordEnvelope] = []
         seen: set[str] = set()
         for record_id in record_ids:
             if record_id in seen:
                 continue
             seen.add(record_id)
-            record = self.get_by_id(record_id)
+            record = self.get_by_id(record_id, scope=scope)
             if record is not None:
                 resolved.append(record)
         return resolved

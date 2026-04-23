@@ -226,7 +226,7 @@ def _persist_external_candidates(
     candidate_records = []
     for record in candidates_to_records(accepted, scope):
         try:
-            existing = runtime.store.get_by_id(record.record_id)
+            existing = runtime.store.get_by_id(record.record_id, scope=record.scope)
             if existing is not None and existing.status != "candidate":
                 skipped_existing_count += 1
                 continue

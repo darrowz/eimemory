@@ -8,6 +8,8 @@ from eimemory.governance.console import render_evolution_console, write_evolutio
 def _sample_snapshot() -> dict:
     return {
         "ok": True,
+        "generated_at": "2026-04-23T10:30:00+08:00",
+        "snapshot_schema_version": 1,
         "scope": {"agent_id": "main", "workspace_id": "repo-x"},
         "memory_quality": {
             "memory_count": 2,
@@ -112,6 +114,8 @@ def test_render_evolution_console_includes_key_sections() -> None:
     assert 'data-reset-layout' in html
     assert 'draggable="true"' in html
     assert 'data-card-id="active-intake"' in html
+    assert "Generated 2026-04-23T10:30:00+08:00" in html
+    assert "Schema v1" in html
 
 
 def test_render_evolution_console_escapes_user_content() -> None:

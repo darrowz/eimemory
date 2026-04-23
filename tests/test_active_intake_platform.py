@@ -145,6 +145,43 @@ def test_nightly_jobs_fetch_and_persist_external_candidates(tmp_path) -> None:
     assert any("External intake item" in record.title for record in candidates)
 
 
+def test_external_collection_applies_source_and_global_item_limits(tmp_path) -> None:
+    from eimemory.api.runtime import Runtime
+
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = {"agent_id": "main"}
+    runtime.sources.add_source(
+        {
+            "source_kind": "rss",
+            "title": "Large feed",
+            "uri": "https://example.test/feed.xml",
+            "enabled": True,
+            "metadata": {"max_items": 2},
+        }
+    )
+
+    def fake_fetch_text(_url: str) -> str:
+        return """<?xml version="1.0"?>
+        <rss><channel>
+          <item><title>Item 1</title><link>https://example.test/1</link><description>Durable fetched content one.</description></item>
+          <item><title>Item 2</title><link>https://example.test/2</link><description>Durable fetched content two.</description></item>
+          <item><title>Item 3</title><link>https://example.test/3</link><description>Durable fetched content three.</description></item>
+        </channel></rss>"""
+
+    report = runtime.collect_external_sources(
+        fetch=True,
+        persist=True,
+        fetch_text=fake_fetch_text,
+        limit=1,
+        scope=scope,
+    )
+
+    assert report["source_count"] == 1
+    assert report["item_count"] == 1
+    assert report["written_count"] == 1
+    assert report["results"][0]["metadata"]["truncated"] is True
+
+
 def test_nightly_jobs_reports_external_errors_without_failing(tmp_path) -> None:
     from eimemory.api.runtime import Runtime
 

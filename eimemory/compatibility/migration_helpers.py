@@ -4,12 +4,14 @@ import hashlib
 import json
 import os
 import sqlite3
+from collections import OrderedDict
 from pathlib import Path
 from typing import Iterable
 
 from eimemory.core.clock import now_iso
 from eimemory.api.runtime import Runtime
-from eimemory.models.records import RecordEnvelope, ScopeRef
+from eimemory.intake.loop import _looks_like_prompt_injection, _looks_like_secret
+from eimemory.models.records import RecordEnvelope, ScopeRef, evaluate_memory_quality
 
 
 SUPPORTED_IMPORT_KINDS = {"memory", "multimodal_memory"}
@@ -20,17 +22,10 @@ def export_records(runtime: Runtime, path: str | Path) -> int:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     total = 0
-    batch_size = 1000
-    offset = 0
     with target.open("w", encoding="utf-8") as handle:
-        while True:
-            records = runtime.store.list_records(limit=batch_size, offset=offset)
-            if not records:
-                break
-            for record in records:
-                handle.write(json.dumps(record.to_dict(), ensure_ascii=False) + "\n")
-            total += len(records)
-            offset += len(records)
+        for record in _iter_runtime_records(runtime):
+            handle.write(json.dumps(record.to_dict(), ensure_ascii=False) + "\n")
+            total += 1
     return total
 
 
@@ -56,25 +51,18 @@ def backup_create(runtime: Runtime, path: str | Path) -> dict:
         data_path.parent.mkdir(parents=True, exist_ok=True)
     record_count = 0
     sha256 = hashlib.sha256()
-    batch_size = 1000
-    offset = 0
     with data_path.open("wb") as handle:
-        while True:
-            records = runtime.store.list_records(limit=batch_size, offset=offset)
-            if not records:
-                break
-            for record in records:
-                line = json.dumps(record.to_dict(), ensure_ascii=False).encode("utf-8") + b"\n"
-                handle.write(line)
-                sha256.update(line)
-                record_count += 1
-            offset += len(records)
+        for record in _iter_runtime_records(runtime):
+            line = json.dumps(record.to_dict(), ensure_ascii=False).encode("utf-8") + b"\n"
+            handle.write(line)
+            sha256.update(line)
+            record_count += 1
     manifest = {
         "format_version": BACKUP_FORMAT_VERSION,
         "created_at": now_iso(),
         "record_count": record_count,
         "sha256": sha256.hexdigest(),
-        "data_file": str(data_path),
+        "data_file": _manifest_data_file(data_path, manifest_path),
     }
     with manifest_path.open("w", encoding="utf-8") as handle:
         json.dump(manifest, handle, ensure_ascii=False, indent=2)
@@ -91,7 +79,8 @@ def backup_create(runtime: Runtime, path: str | Path) -> dict:
 
 def backup_verify(path: str | Path) -> dict:
     target = Path(path)
-    data_path, manifest_path, _ = _resolve_backup_paths(target)
+    fallback_data_path, manifest_path, _ = _resolve_backup_paths(target)
+    data_path = fallback_data_path
     report = {
         "ok": False,
         "path": str(target),
@@ -108,9 +97,6 @@ def backup_verify(path: str | Path) -> dict:
     if not manifest_path.exists():
         report["errors"].append({"code": "manifest_missing", "path": str(manifest_path)})
         return report
-    if not data_path.exists():
-        report["errors"].append({"code": "data_missing", "path": str(data_path)})
-        return report
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -120,6 +106,15 @@ def backup_verify(path: str | Path) -> dict:
         report["errors"].append({"code": "manifest_invalid", "error": "manifest must be an object"})
         return report
     report["manifest"] = manifest
+    data_path = _resolve_manifest_data_path(
+        manifest.get("data_file"),
+        manifest_path=manifest_path,
+        fallback_data_path=fallback_data_path,
+    )
+    report["data_path"] = str(data_path)
+    if not data_path.exists():
+        report["errors"].append({"code": "data_missing", "path": str(data_path)})
+        return report
     format_version = manifest.get("format_version")
     created_at = manifest.get("created_at")
     expected_record_count = manifest.get("record_count")
@@ -144,16 +139,6 @@ def backup_verify(path: str | Path) -> dict:
         return report
     if not isinstance(expected_sha256, str) or not expected_sha256:
         report["errors"].append({"code": "sha256_invalid", "value": expected_sha256})
-        return report
-    manifest_data_file = manifest.get("data_file")
-    if manifest_data_file is not None and Path(str(manifest_data_file)) != data_path:
-        report["errors"].append(
-            {
-                "code": "data_file_mismatch",
-                "expected": str(data_path),
-                "actual": str(manifest_data_file),
-            }
-        )
         return report
     record_count = 0
     sha256 = hashlib.sha256()
@@ -436,10 +421,30 @@ def _candidate_payload(
     decision = "accept"
     reason = "accepted"
     confidence = 0.92
-    if len(cleaned_text) < 24 or len(cleaned_text.split()) < 4:
+    combined = " ".join(part for part in (cleaned_title, cleaned_text) if part).strip()
+    if _looks_like_prompt_injection(combined):
+        decision = "reject"
+        reason = "prompt_injection_detected"
+        confidence = 0.02
+    elif _looks_like_secret(combined):
+        decision = "reject"
+        reason = "secret_detected"
+        confidence = 0.02
+    elif len(cleaned_text) < 24 or len(cleaned_text.split()) < 4:
         decision = "reject"
         reason = "content_too_thin"
         confidence = 0.2
+    else:
+        quality = evaluate_memory_quality(
+            text=cleaned_text,
+            title=cleaned_title,
+            memory_type="fact",
+            source=f"migration.{source_type}",
+        )
+        confidence = float(quality.get("confidence") or confidence)
+        if quality.get("capture_decision") != "accept":
+            decision = "reject"
+            reason = str(quality.get("capture_decision") or "low_salience")
     return {
         "candidate_id": candidate_id,
         "source_type": source_type,
@@ -451,6 +456,57 @@ def _candidate_payload(
         "reason": reason,
         "confidence": confidence,
     }
+
+
+def _iter_runtime_records(runtime: Runtime) -> Iterable[RecordEnvelope]:
+    log_path = getattr(getattr(runtime.store, "log", None), "path", None)
+    records = _records_from_jsonl_log(log_path)
+    if records:
+        return records
+    return _records_from_sqlite(runtime)
+
+
+def _records_from_sqlite(runtime: Runtime) -> list[RecordEnvelope]:
+    records: list[RecordEnvelope] = []
+    batch_size = 1000
+    offset = 0
+    while True:
+        page = runtime.store.list_records(limit=batch_size, offset=offset)
+        if not page:
+            break
+        records.extend(page)
+        offset += len(page)
+    return records
+
+
+def _records_from_jsonl_log(path: Path | None) -> list[RecordEnvelope]:
+    if path is None or not path.exists():
+        return []
+    latest_by_key: "OrderedDict[str, RecordEnvelope]" = OrderedDict()
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            record = RecordEnvelope.from_dict(json.loads(line))
+            key = _record_storage_key(record)
+            if key in latest_by_key:
+                del latest_by_key[key]
+            latest_by_key[key] = record
+    return list(latest_by_key.values())
+
+
+def _record_storage_key(record: RecordEnvelope) -> str:
+    scope = record.scope
+    return "|".join(
+        [
+            scope.tenant_id,
+            scope.agent_id,
+            scope.workspace_id,
+            scope.user_id,
+            record.record_id,
+        ]
+    )
 
 
 def _extract_markdown_title_and_body(path: Path, text: str) -> tuple[str, str]:
@@ -469,3 +525,23 @@ def _resolve_backup_paths(path: Path) -> tuple[Path, Path, str]:
     if raw.endswith(("/", "\\")):
         return path / "backup.jsonl", path / "backup.manifest.json", "directory"
     return path.with_suffix(".jsonl"), path.with_suffix(".manifest.json"), "base"
+
+
+def _manifest_data_file(data_path: Path, manifest_path: Path) -> str:
+    try:
+        return os.path.relpath(data_path, start=manifest_path.parent)
+    except ValueError:
+        return data_path.name
+
+
+def _resolve_manifest_data_path(value: object, *, manifest_path: Path, fallback_data_path: Path) -> Path:
+    if not isinstance(value, str) or not value.strip():
+        return fallback_data_path
+    declared = Path(value)
+    if not declared.is_absolute():
+        return manifest_path.parent / declared
+    if declared.exists():
+        return declared
+    if declared.name == fallback_data_path.name and fallback_data_path.exists():
+        return fallback_data_path
+    return declared

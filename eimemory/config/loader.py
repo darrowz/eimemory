@@ -17,9 +17,12 @@ def _load_file_payload(path: Path) -> dict[str, Any]:
 
 def load_settings() -> Settings:
     config_path_value = os.environ.get("EIMEMORY_CONFIG_PATH", "").strip()
+    config_dir_value = os.environ.get("EIMEMORY_CONFIG_DIR", "").strip()
     payload: dict[str, Any] = {}
     if config_path_value:
         payload = _load_file_payload(Path(config_path_value))
+    elif config_dir_value:
+        payload = _load_file_payload(Path(config_dir_value) / "settings.json")
     root_value = os.environ.get("EIMEMORY_ROOT", "").strip()
     root = Path(root_value) if root_value else default_root(payload.get("root"))
     return Settings(

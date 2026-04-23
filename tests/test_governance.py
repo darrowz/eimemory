@@ -100,6 +100,9 @@ def test_governance_snapshot_keeps_scope_isolation_and_surfaces_audit_signals(tm
 
     snapshot = build_governance_snapshot(runtime, local_scope)
 
+    assert snapshot["snapshot_schema_version"] == 1
+    assert isinstance(snapshot["generated_at"], str)
+    assert snapshot["generated_at"]
     assert snapshot["scope"] == local_scope
     assert snapshot["memory_quality"]["memory_count"] == 1
     assert snapshot["memory_quality"]["accepted_count"] == 1

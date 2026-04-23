@@ -205,6 +205,14 @@ def test_explain_promoted_candidate_shows_review_and_promotion_state(tmp_path):
     assert "already_promoted" in explanation["reasons"]
 
 
+def test_review_terminal_candidate_status_is_rejected(tmp_path):
+    store = _store(tmp_path)
+    candidate = _candidate(store, title="Terminal", status="promoted")
+
+    with pytest.raises(ValueError, match="terminal candidate status"):
+        review_candidate(store, candidate.record_id, "reject", "alice")
+
+
 def test_explain_thin_generic_candidate_is_not_promotable(tmp_path):
     store = _store(tmp_path)
     candidate = _candidate(

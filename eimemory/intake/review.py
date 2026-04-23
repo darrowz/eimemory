@@ -15,6 +15,7 @@ _REVIEW_DECISIONS = {
     "quarantine": "quarantined",
     "deprecate": "deprecated",
 }
+_TERMINAL_STATUSES = {"promoted", "merged", "deprecated"}
 
 
 def list_review_queue(
@@ -45,7 +46,7 @@ def explain_candidate(
     record_id: str,
     scope: ScopeRef | dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    record = _candidate_by_id(runtime, record_id)
+    record = _candidate_by_id(runtime, record_id, scope=scope)
     _require_scope(record, scope)
     payload = _candidate_payload(record)
     source_kind = _source_kind(record, payload)
@@ -87,8 +88,10 @@ def review_candidate(
     normalized = str(decision or "").strip().lower()
     if normalized not in _REVIEW_DECISIONS:
         raise ValueError(f"unsupported review decision: {decision}")
-    record = _candidate_by_id(runtime, record_id)
+    record = _candidate_by_id(runtime, record_id, scope=scope)
     _require_scope(record, scope)
+    if record.status in _TERMINAL_STATUSES:
+        raise ValueError(f"cannot review terminal candidate status: {record.status}")
     record.status = _REVIEW_DECISIONS[normalized]
     _append_review_history(record, decision=normalized, actor=reviewer, note=note)
     return _save(runtime, record)
@@ -131,7 +134,7 @@ def promote_candidate(
     note: str = "",
     scope: ScopeRef | dict[str, Any] | None = None,
 ) -> RecordEnvelope:
-    candidate = _candidate_by_id(runtime, record_id)
+    candidate = _candidate_by_id(runtime, record_id, scope=scope)
     _require_scope(candidate, scope)
     if candidate.status not in {"candidate", "reviewed"}:
         raise ValueError(f"cannot promote candidate with status: {candidate.status}")
@@ -192,8 +195,8 @@ def merge_candidates(
     note: str = "",
     scope: ScopeRef | dict[str, Any] | None = None,
 ) -> RecordEnvelope:
-    source = _candidate_by_id(runtime, source_record_id)
-    target = _candidate_by_id(runtime, target_record_id)
+    source = _candidate_by_id(runtime, source_record_id, scope=scope)
+    target = _candidate_by_id(runtime, target_record_id, scope=scope)
     _require_scope(source, scope)
     _require_scope(target, scope)
     if not _same_scope(source.scope, target.scope):
@@ -208,9 +211,16 @@ def _store(runtime: Any) -> Any:
     return getattr(runtime, "store", runtime)
 
 
-def _candidate_by_id(runtime: Any, record_id: str) -> RecordEnvelope:
-    record = _store(runtime).get_by_id(str(record_id))
+def _candidate_by_id(
+    runtime: Any,
+    record_id: str,
+    *,
+    scope: ScopeRef | dict[str, Any] | None = None,
+) -> RecordEnvelope:
+    record = _store(runtime).get_by_id(str(record_id), scope=scope)
     if record is None:
+        if scope is not None and _store(runtime).get_by_id(str(record_id)) is not None:
+            raise ValueError("scope mismatch")
         raise ValueError(f"record not found: {record_id}")
     if record.kind != KNOWLEDGE_CANDIDATE_KIND:
         raise ValueError(f"record is not a knowledge candidate: {record_id}")

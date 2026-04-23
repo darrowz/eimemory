@@ -267,6 +267,19 @@ def test_collect_github_url_does_not_call_fetcher() -> None:
     assert result.items[0].metadata["github"]["kind"] == "issue"
 
 
+def test_collect_rejects_unsafe_literal_fetch_urls_without_calling_fetcher() -> None:
+    source = SimpleNamespace(source_kind="rss", title="Metadata", uri="http://169.254.169.254/latest/meta-data")
+
+    def forbidden(_url: str) -> str:
+        raise AssertionError("unsafe URL should not be fetched")
+
+    result = collect_from_source_entry(source, fetch_text=forbidden)
+
+    assert result.ok is False
+    assert result.error == "unsafe fetch URL"
+    assert result.metadata["safety"]["content_redacted"] is True
+
+
 def test_fetch_arxiv_reports_injected_fetch_failure_without_sensitive_body() -> None:
     def failing_fetch(_url: str) -> str:
         raise RuntimeError("Authorization: Bearer secret-value")

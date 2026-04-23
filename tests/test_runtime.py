@@ -587,6 +587,39 @@ def test_runtime_recall_graph_expansion_survives_direct_hit_truncation(tmp_path)
     assert bundle.explanation["graph_expanded"] == 1
 
 
+def test_runtime_recall_view_only_reports_selected_items(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = ScopeRef(agent_id="main", workspace_id="repo-x")
+    runtime.store.append(
+        RecordEnvelope.create(
+            kind="memory",
+            title="Selected alpha memory",
+            summary="Alpha recall should be selected first.",
+            scope=scope,
+        )
+    )
+    runtime.store.append(
+        RecordEnvelope.create(
+            kind="memory",
+            title="Overflow alpha memory",
+            summary="Alpha recall should not appear when limit is one.",
+            scope=scope,
+        )
+    )
+
+    bundle = runtime.memory.recall(
+        query="alpha recall",
+        scope={"agent_id": "main", "workspace_id": "repo-x"},
+        task_context={"task_type": "chat.reply"},
+        limit=1,
+    )
+
+    returned_ids = {item.record_id for item in bundle.items}
+    view_ids = {item["record_id"] for item in bundle.explanation["recall_view"]["items"]}
+    assert len(bundle.items) == 1
+    assert view_ids == returned_ids
+
+
 def test_runtime_recall_does_not_graph_expand_rejected_records(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     scope = ScopeRef(agent_id="main", workspace_id="repo-x")

@@ -280,6 +280,88 @@ def test_runtime_store_user_scope_can_see_global_memories_but_not_other_users(tm
     assert "Bob memory" not in titles
 
 
+def test_runtime_store_empty_user_scope_does_not_wildcard_private_users(tmp_path) -> None:
+    store = RuntimeStore(root=tmp_path)
+    shared = {"tenant_id": "tenant-a", "agent_id": "main", "workspace_id": "demo"}
+    store.append(
+        RecordEnvelope.create(
+            kind="memory",
+            title="Global memory",
+            summary="Shared global project memory",
+            scope=ScopeRef(user_id="", **shared),
+        )
+    )
+    store.append(
+        RecordEnvelope.create(
+            kind="memory",
+            title="Alice memory",
+            summary="Alice private project memory",
+            scope=ScopeRef(user_id="alice", **shared),
+        )
+    )
+
+    results = store.search(
+        query="project memory",
+        kinds=["memory"],
+        scope=ScopeRef(user_id="", **shared),
+        limit=10,
+    )
+
+    assert [record.title for record in results] == ["Global memory"]
+
+
+def test_runtime_store_scopes_duplicate_record_ids_independently(tmp_path) -> None:
+    store = RuntimeStore(root=tmp_path)
+    shared_id = "stable_paper_id"
+    tenant_a = ScopeRef(tenant_id="tenant-a", agent_id="main", workspace_id="repo")
+    tenant_b = ScopeRef(tenant_id="tenant-b", agent_id="main", workspace_id="repo")
+    for scope, title in [(tenant_a, "Tenant A paper"), (tenant_b, "Tenant B paper")]:
+        store.append(
+            RecordEnvelope(
+                record_id=shared_id,
+                kind="paper_source",
+                status="active",
+                title=title,
+                summary=f"{title} summary",
+                detail="",
+                content={"text": f"{title} content"},
+                tags=[],
+                links=[],
+                evidence=[],
+                source="test",
+                scope=scope,
+                time=TimeRef(
+                    created_at="2026-04-23T00:00:00+00:00",
+                    updated_at="2026-04-23T00:00:00+00:00",
+                    occurred_at="2026-04-23T00:00:00+00:00",
+                ),
+                provenance={},
+                meta={},
+            )
+        )
+
+    assert store.get_by_id(shared_id, scope=tenant_a).title == "Tenant A paper"
+    assert store.get_by_id(shared_id, scope=tenant_b).title == "Tenant B paper"
+    assert store.search(query="paper", kinds=["paper_source"], scope=tenant_a, limit=5)[0].title == "Tenant A paper"
+    assert store.search(query="paper", kinds=["paper_source"], scope=tenant_b, limit=5)[0].title == "Tenant B paper"
+
+
+def test_runtime_store_get_by_id_requires_matching_scope_when_provided(tmp_path) -> None:
+    store = RuntimeStore(root=tmp_path)
+    record = RecordEnvelope.create(
+        kind="memory",
+        title="Alice memory",
+        summary="Alice private project memory",
+        scope=ScopeRef(tenant_id="tenant-a", agent_id="main", workspace_id="demo", user_id="alice"),
+    )
+    store.append(record)
+
+    assert store.get_by_id(
+        record.record_id,
+        scope=ScopeRef(tenant_id="tenant-a", agent_id="main", workspace_id="demo", user_id="bob"),
+    ) is None
+
+
 def test_runtime_store_list_records_uses_stable_tiebreaker_for_same_timestamp(tmp_path) -> None:
     store = RuntimeStore(root=tmp_path)
     scope = ScopeRef(agent_id="main", workspace_id="demo")

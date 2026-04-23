@@ -89,7 +89,7 @@ class KnowledgeIntakeLoop:
         skipped_existing = 0
         if persist:
             for record in candidates_to_records(candidates, scope):
-                existing = self.store.get_by_id(record.record_id)
+                existing = self.store.get_by_id(record.record_id, scope=record.scope)
                 if existing is not None and existing.status != "candidate":
                     skipped_existing += 1
                     continue

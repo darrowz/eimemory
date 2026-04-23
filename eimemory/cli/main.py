@@ -213,6 +213,21 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _print_error(error: str, exc: Exception) -> int:
+    print(
+        json.dumps(
+            {
+                "ok": False,
+                "error": error,
+                "detail": str(exc),
+                "exception": exc.__class__.__name__,
+            },
+            ensure_ascii=False,
+        )
+    )
+    return 2
+
+
 def main(argv: list[str] | None = None) -> int:
     args_list = list(sys.argv[1:] if argv is None else argv)
     if args_list and args_list[0] == "qmd":
@@ -275,7 +290,7 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(record.to_dict(), ensure_ascii=False, indent=2))
             return 0
         if parsed.paper_command == "extract":
-            source_record = runtime.store.get_by_id(parsed.paper_source_id)
+            source_record = runtime.store.get_by_id(parsed.paper_source_id, scope=scope)
             result = runtime.extract_paper_memory(
                 {
                     "paper_source_id": parsed.paper_source_id,
@@ -289,7 +304,7 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps({"ok": True, "record_count": len(result.to_records(scope=scope))}, ensure_ascii=False, indent=2))
             return 0
         if parsed.paper_command == "compile":
-            source_record = runtime.store.get_by_id(parsed.paper_source_id)
+            source_record = runtime.store.get_by_id(parsed.paper_source_id, scope=scope)
             title = parsed.title or (source_record.title if source_record else parsed.paper_source_id)
             claims = [
                 record
@@ -451,7 +466,7 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(record.to_dict(), ensure_ascii=False, indent=2))
             return 0
         if parsed.intake_command == "paper-promote":
-            candidate = runtime.store.get_by_id(parsed.record_id)
+            candidate = runtime.store.get_by_id(parsed.record_id, scope=scope)
             if candidate is None:
                 print(json.dumps({"ok": False, "error": "candidate_not_found"}, ensure_ascii=False))
                 return 2
@@ -487,47 +502,59 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"usage": "eimemory intake run|report|collect|queue|explain|review|promote|merge|paper-promote|policy|pack"}))
         return 0
     if parsed.command == "export":
-        count = export_records(runtime, parsed.path)
+        try:
+            count = export_records(runtime, parsed.path)
+        except Exception as exc:
+            return _print_error("export_failed", exc)
         print(json.dumps({"ok": True, "count": count, "path": parsed.path}, ensure_ascii=False, indent=2))
         return 0
     if parsed.command == "import":
-        count = import_records(runtime, parsed.path)
+        try:
+            count = import_records(runtime, parsed.path)
+        except Exception as exc:
+            return _print_error("import_failed", exc)
         print(json.dumps({"ok": True, "count": count, "path": parsed.path}, ensure_ascii=False, indent=2))
         return 0
     if parsed.command == "backup":
-        if parsed.backup_command == "create":
-            report = backup_create(runtime, parsed.path)
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0
-        if parsed.backup_command == "verify":
-            report = backup_verify(parsed.path)
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0 if report.get("ok") else 1
+        try:
+            if parsed.backup_command == "create":
+                report = backup_create(runtime, parsed.path)
+                print(json.dumps(report, ensure_ascii=False, indent=2))
+                return 0
+            if parsed.backup_command == "verify":
+                report = backup_verify(parsed.path)
+                print(json.dumps(report, ensure_ascii=False, indent=2))
+                return 0 if report.get("ok") else 1
+        except Exception as exc:
+            return _print_error("backup_failed", exc)
         print(json.dumps({"usage": "eimemory backup create|verify"}))
         return 0
     if parsed.command == "migrate":
-        if parsed.migrate_command == "scan":
-            report = scan_migration_source(parsed.path)
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0
-        if parsed.migrate_command == "import":
-            report = scan_migration_source(parsed.path)
-            imported = import_candidates(
-                runtime,
-                report["candidates"],
-                scope=scope,
-                candidate_ids=list(parsed.candidate_id or []),
-            )
-            print(json.dumps({"ok": True, "imported": imported, "path": parsed.path}, ensure_ascii=False, indent=2))
-            return 0
-        if parsed.migrate_command == "report":
-            report = scan_migration_source(parsed.path)
-            rendered = build_review_report(report)
-            output_path = parsed.output
-            with open(output_path, "w", encoding="utf-8") as handle:
-                handle.write(rendered)
-            print(json.dumps({"ok": True, "output": output_path, "accepted_count": report["accepted_count"]}, ensure_ascii=False, indent=2))
-            return 0
+        try:
+            if parsed.migrate_command == "scan":
+                report = scan_migration_source(parsed.path)
+                print(json.dumps(report, ensure_ascii=False, indent=2))
+                return 0
+            if parsed.migrate_command == "import":
+                report = scan_migration_source(parsed.path)
+                imported = import_candidates(
+                    runtime,
+                    report["candidates"],
+                    scope=scope,
+                    candidate_ids=list(parsed.candidate_id or []),
+                )
+                print(json.dumps({"ok": True, "imported": imported, "path": parsed.path}, ensure_ascii=False, indent=2))
+                return 0
+            if parsed.migrate_command == "report":
+                report = scan_migration_source(parsed.path)
+                rendered = build_review_report(report)
+                output_path = parsed.output
+                with open(output_path, "w", encoding="utf-8") as handle:
+                    handle.write(rendered)
+                print(json.dumps({"ok": True, "output": output_path, "accepted_count": report["accepted_count"]}, ensure_ascii=False, indent=2))
+                return 0
+        except Exception as exc:
+            return _print_error("migrate_failed", exc)
         print(json.dumps({"usage": "eimemory migrate scan|import|report"}))
         return 0
     if parsed.command == "nightly":
@@ -556,6 +583,9 @@ def main(argv: list[str] | None = None) -> int:
             event = json.loads(sys.stdin.read() or "{}")
         except json.JSONDecodeError:
             print(json.dumps({"ok": False, "error": "invalid_json"}, ensure_ascii=False))
+            return 2
+        if not isinstance(event, dict):
+            print(json.dumps({"ok": False, "error": "invalid_event"}, ensure_ascii=False))
             return 2
         hooks = OpenClawMemoryHooks(runtime)
         if parsed.hook == "message_received":

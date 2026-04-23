@@ -84,7 +84,10 @@ def promote_collected_paper_candidates(
     limit: int = 100,
     auto: bool = False,
 ) -> dict[str, Any]:
-    records = runtime.store.list_records(kinds=["knowledge_candidate"], scope=scope, status="candidate", limit=limit)
+    records = [
+        *runtime.store.list_records(kinds=["knowledge_candidate"], scope=scope, status="candidate", limit=limit),
+        *runtime.store.list_records(kinds=["knowledge_candidate"], scope=scope, status="reviewed", limit=limit),
+    ][: max(0, int(limit))]
     reasons: dict[str, int] = {}
     promoted_reports: list[dict[str, Any]] = []
     skipped_reports: list[dict[str, str]] = []

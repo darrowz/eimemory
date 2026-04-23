@@ -26,6 +26,8 @@ def render_evolution_console(snapshot: dict) -> str:
     health_ok = bool(health.get("ok"))
     status = "Healthy" if health_ok else "Needs attention"
     warnings = health.get("warnings") or []
+    generated_at = snapshot.get("generated_at") or "unknown"
+    schema_version = snapshot.get("snapshot_schema_version") or "unknown"
 
     return f"""<!doctype html>
 <html lang="en">
@@ -100,6 +102,15 @@ def render_evolution_console(snapshot: dict) -> str:
       color: var(--muted);
       font-family: var(--code);
       font-size: 11px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }}
+    .snapshot-meta {{
+      margin-top: 3px;
+      color: var(--muted);
+      font-family: var(--code);
+      font-size: 10px;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
@@ -570,6 +581,7 @@ def render_evolution_console(snapshot: dict) -> str:
         <div>
           <h1>Evolution Console</h1>
           <div class="scope">tenant={_escape_text(tenant)} / agent={_escape_text(agent)} / workspace={_escape_text(workspace)}</div>
+          <div class="snapshot-meta">Generated {_escape_text(generated_at)} / Schema v{_escape_text(schema_version)}</div>
         </div>
       </div>
       <span class="pill">{_escape_text(status)}</span>

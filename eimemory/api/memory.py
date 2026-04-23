@@ -43,6 +43,7 @@ class MemoryAPI:
         task_context: dict | None = None,
         limit: int = 8,
     ) -> RecallBundle:
+        limit = max(0, min(1000, int(limit)))
         scope_ref = ScopeRef.from_dict(scope)
         task_context = dict(task_context or {})
         task_type = str(task_context.get("task_type") or "")
@@ -87,6 +88,13 @@ class MemoryAPI:
             query=query,
         )
         items = records_from_view(view, items, limit=limit)
+        final_view = build_recall_view(
+            view_type=view.view_type,
+            claims=[item for item in items if item.kind == "claim_card"],
+            pages=[item for item in items if item.kind == "knowledge_page"],
+            memories=[item for item in items if item.kind == "memory"],
+            query=query,
+        )
         graph_expanded = sum(1 for item in items if item.record_id not in base_ids)
         rules = [
             rule
@@ -138,7 +146,7 @@ class MemoryAPI:
                 "source_composition": self._source_composition(items),
                 "selected_records": self._selected_record_summaries(items),
                 "scoring": self._scoring_for_items(items, search_report),
-                "recall_view": view.to_dict(),
+                "recall_view": final_view.to_dict(),
             },
         )
 
@@ -204,7 +212,7 @@ class MemoryAPI:
                         related_ids.append(link.target_id)
             if not related_ids:
                 break
-            related_records = self.store.get_many_by_ids(related_ids)
+            related_records = self.store.get_many_by_ids(related_ids, scope=scope)
             next_frontier: list[RecordEnvelope] = []
             for record in related_records:
                 if record.record_id in existing_ids:
@@ -300,6 +308,8 @@ class MemoryAPI:
             return False
         if scope.user_id and record.scope.user_id != scope.user_id:
             return record.scope.user_id == ""
+        if not scope.user_id and record.scope.user_id:
+            return False
         return True
 
     def _scoring_for_items(self, items: list[RecordEnvelope], search_report: dict) -> list[dict]:
