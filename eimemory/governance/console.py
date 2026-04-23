@@ -333,6 +333,140 @@ def render_evolution_console(snapshot: dict) -> str:
       .kpis, .grid {{ grid-template-columns: 1fr; }}
       .span-2, .span-3 {{ grid-column: auto; }}
     }}
+    /* Compact operations layout override. Keep the console readable first. */
+    body {{
+      background:
+        linear-gradient(180deg, rgba(255,255,255,0.025), transparent 160px),
+        radial-gradient(circle at 8% 0%, rgba(33, 208, 143, 0.08), transparent 280px),
+        #08090a;
+    }}
+    main {{
+      width: min(1180px, calc(100% - 24px));
+      padding: 10px 0 24px;
+    }}
+    .topbar {{
+      position: sticky;
+      top: 0;
+      z-index: 5;
+      grid-template-columns: minmax(260px, 1fr) auto;
+      min-height: 42px;
+      margin-bottom: 8px;
+      padding: 8px 10px;
+      border-radius: 8px;
+      backdrop-filter: blur(10px);
+    }}
+    .mark {{ display: none; }}
+    h1 {{ font-size: 16px; }}
+    .scope {{ font-size: 10px; }}
+    .warnings {{
+      grid-column: 1 / -1;
+      max-width: none;
+      text-align: left;
+      font-size: 11px;
+    }}
+    .pill {{
+      padding: 5px 9px;
+      font-size: 11px;
+    }}
+    .kpis {{
+      grid-template-columns: repeat(8, minmax(0, 1fr));
+      gap: 6px;
+      margin-bottom: 8px;
+    }}
+    .kpi {{
+      min-height: 52px;
+      padding: 8px 9px;
+      border-radius: 8px;
+    }}
+    .label {{
+      margin-bottom: 4px;
+      font-size: 9px;
+      letter-spacing: 0.03em;
+    }}
+    .value {{ font-size: 20px; }}
+    .grid {{
+      grid-template-columns: minmax(0, 1.35fr) minmax(320px, 0.65fr);
+      gap: 8px;
+    }}
+    .span-2, .span-3 {{ grid-column: 1 / -1; }}
+    section {{
+      padding: 10px;
+      border-radius: 8px;
+    }}
+    section h2 {{
+      margin-bottom: 7px;
+      font-size: 13px;
+    }}
+    .sub {{
+      margin: -2px 0 8px;
+      font-size: 11px;
+    }}
+    .mini-grid {{
+      grid-template-columns: repeat(auto-fit, minmax(82px, 1fr));
+      gap: 5px;
+    }}
+    .mini {{
+      padding: 6px 7px;
+      border-radius: 7px;
+    }}
+    .mini .value {{ font-size: 16px; }}
+    .bars {{ gap: 5px; margin-top: 8px; }}
+    .bar-row {{
+      grid-template-columns: 74px 1fr 30px;
+      font-size: 11px;
+    }}
+    .kv {{
+      margin-top: 7px;
+    }}
+    .kv-title {{
+      margin: 7px 0 2px;
+      font-size: 9px;
+    }}
+    .kv-row {{
+      padding: 4px 0;
+      font-size: 11px;
+    }}
+    .records {{
+      gap: 5px;
+      margin-top: 6px;
+    }}
+    .record {{
+      padding: 7px;
+      border-radius: 7px;
+    }}
+    .record-title {{
+      font-size: 12px;
+      margin-bottom: 3px;
+    }}
+    .record-summary {{
+      font-size: 11px;
+      line-height: 1.34;
+    }}
+    .meta {{
+      max-height: 48px;
+      margin-top: 4px;
+      font-size: 9px;
+    }}
+    .muted {{ font-size: 11px; }}
+    details {{ border-radius: 8px; }}
+    summary {{
+      padding: 9px 10px;
+      font-size: 12px;
+    }}
+    pre {{
+      max-height: 280px;
+      padding: 10px;
+      font-size: 10px;
+    }}
+    @media (max-width: 980px) {{
+      .kpis {{ grid-template-columns: repeat(4, minmax(0, 1fr)); }}
+      .grid {{ grid-template-columns: 1fr; }}
+    }}
+    @media (max-width: 620px) {{
+      main {{ width: min(100% - 14px, 1180px); }}
+      .topbar {{ grid-template-columns: 1fr; position: static; }}
+      .kpis {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+    }}
   </style>
 </head>
 <body>
@@ -353,12 +487,27 @@ def render_evolution_console(snapshot: dict) -> str:
       {_render_kpi("memories", memory_quality.get("memory_count"))}
       {_render_kpi("accepted", memory_quality.get("accepted_count"))}
       {_render_kpi("salience", memory_quality.get("average_salience"))}
+      {_render_kpi("candidates", active_intake.get("candidate_count"))}
+      {_render_kpi("papers", active_intake.get("paper_source_count"))}
+      {_render_kpi("pages", active_intake.get("knowledge_page_count"))}
       {_render_kpi("rules", rules.get("total_count"))}
       {_render_kpi("gaps", recall_gaps.get("unknown_count"))}
-      {_render_kpi("backups", backups.get("count"))}
     </div>
 
     <div class="grid">
+      <section class="span-2">
+        <h2>Active Intake</h2>
+        <div class="sub">Collection, paper promotion, and operational projection in one compact view.</div>
+        <div class="mini-grid">
+          {_render_mini("open", active_intake.get("open_candidate_count"))}
+          {_render_mini("promoted", active_intake.get("promoted_candidate_count"))}
+          {_render_mini("quarantined", active_intake.get("quarantined_candidate_count"))}
+          {_render_mini("reviewed", active_intake.get("reviewed_candidate_count"))}
+          {_render_mini("paper sources", active_intake.get("paper_source_count"))}
+          {_render_mini("knowledge pages", active_intake.get("knowledge_page_count"))}
+        </div>
+      </section>
+
       <section class="span-2">
         <h2>Memory Quality</h2>
         <div class="mini-grid">
@@ -381,38 +530,10 @@ def render_evolution_console(snapshot: dict) -> str:
         </div>
       </section>
 
-      <section>
-        <h2>Recall Gaps</h2>
-        <div class="sub">Low-confidence misses captured for later review.</div>
-        <div class="mini-grid">{_render_mini("unknown", recall_gaps.get("unknown_count"))}</div>
-        {_render_record(recall_gaps.get("latest"), empty_text="No recall gaps recorded")}
-      </section>
-
-      <section>
-        <h2>Reflections</h2>
-        <div class="mini-grid">
-          {_render_mini("reflections", reflection_stats.get("reflection_count"))}
-          {_render_mini("incidents", reflection_stats.get("incident_count"))}
-          {_render_mini("unknowns", reflection_stats.get("unknown_count"))}
-        </div>
-        {_render_kv_table("Tags", reflection_stats.get("tags"))}
-      </section>
-
-      <section>
-        <h2>Backups/Health</h2>
-        <div class="mini-grid">
-          {_render_mini("backup count", backups.get("count"))}
-          {_render_mini("healthy", health.get("ok"))}
-        </div>
-        {_render_record(backups.get("latest"), empty_text="No backups available")}
-      </section>
-
       <section class="span-2">
-        <h2>Source Candidates</h2>
-        <div class="sub">Audit-only intake artifacts; excluded from normal recall.</div>
-        <div class="mini-grid">{_render_mini("candidate count", source_candidates.get("count"))}</div>
-        {_render_record(source_candidates.get("latest"), empty_text="No source candidates recorded")}
-        {_render_record_list(source_candidates.get("list"))}
+        <h2>Recent Papers / Candidates</h2>
+        <div class="sub">Most recent active learning artifacts across collection and compilation.</div>
+        {_render_recent_papers_candidates(active_intake)}
       </section>
 
       <section>
@@ -433,16 +554,44 @@ def render_evolution_console(snapshot: dict) -> str:
         {_render_operational_projection(active_intake)}
       </section>
 
-      <section class="span-2">
-        <h2>Recent Papers / Candidates</h2>
-        <div class="sub">Most recent active learning artifacts across collection and compilation.</div>
-        {_render_recent_papers_candidates(active_intake)}
+      <section>
+        <h2>Recall Gaps</h2>
+        <div class="sub">Low-confidence misses captured for later review.</div>
+        <div class="mini-grid">{_render_mini("unknown", recall_gaps.get("unknown_count"))}</div>
+        {_render_record(recall_gaps.get("latest"), empty_text="No recall gaps recorded")}
+      </section>
+
+      <section>
+        <h2>Reflections</h2>
+        <div class="mini-grid">
+          {_render_mini("reflections", reflection_stats.get("reflection_count"))}
+          {_render_mini("incidents", reflection_stats.get("incident_count"))}
+          {_render_mini("unknowns", reflection_stats.get("unknown_count"))}
+        </div>
+        {_render_kv_table("Tags", reflection_stats.get("tags"))}
+      </section>
+
+      <section>
+        <h2>Source Candidates</h2>
+        <div class="sub">Audit-only intake artifacts; excluded from normal recall.</div>
+        <div class="mini-grid">{_render_mini("candidate count", source_candidates.get("count"))}</div>
+        {_render_record(source_candidates.get("latest"), empty_text="No source candidates recorded")}
+        {_render_record_list(source_candidates.get("list"))}
       </section>
 
       <section>
         <h2>Memory Breakdown</h2>
         {_render_kv_table("By Source", memory_quality.get("by_source"))}
         {_render_kv_table("By Type", memory_quality.get("by_memory_type"))}
+      </section>
+
+      <section>
+        <h2>Backups/Health</h2>
+        <div class="mini-grid">
+          {_render_mini("backup count", backups.get("count"))}
+          {_render_mini("healthy", health.get("ok"))}
+        </div>
+        {_render_record(backups.get("latest"), empty_text="No backups available")}
       </section>
 
       <div class="span-3">
