@@ -56,6 +56,16 @@ def test_settings_loader_reads_settings_from_config_dir(tmp_path, monkeypatch) -
     assert settings.default_workspace_id == "repo-x"
 
 
+def test_settings_loader_defaults_rpc_port_for_eibrain_rpc(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("EIMEMORY_CONFIG_PATH", raising=False)
+    monkeypatch.delenv("EIMEMORY_ROOT", raising=False)
+    monkeypatch.setenv("EIMEMORY_CONFIG_DIR", str(tmp_path / "missing-config"))
+
+    settings = load_settings()
+
+    assert settings.rpc_host == "127.0.0.1"
+    assert settings.rpc_port == 8091
+
 def test_cli_init_ingest_recall_and_export_import(tmp_path, monkeypatch, capsys) -> None:
     monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path / "runtime"))
 

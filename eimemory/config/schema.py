@@ -10,4 +10,4 @@ class Settings:
     default_agent_id: str = "main"
     default_workspace_id: str = ""
     rpc_host: str = "127.0.0.1"
-    rpc_port: int = 8765
+    rpc_port: int = 8091

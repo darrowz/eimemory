@@ -47,6 +47,8 @@ EIMEMORY_ROOT=/var/lib/eimemory eimemory serve-eibrain-rpc --host 127.0.0.1 --po
 `eibrain` should connect to the running endpoint, for example `http://127.0.0.1:8091/`.
 The integration contract is the endpoint address, not the repository location.
 
+A production systemd template is available at `deploy/systemd/eimemory-rpc.service`.
+
 ## Memory Quality
 
 New memory records carry deterministic quality metadata under `meta.quality`:

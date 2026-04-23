@@ -62,3 +62,13 @@ def test_console_systemd_uses_packaged_console_entrypoint() -> None:
     assert "/var/lib/eimemory/governance/serve_console.py" not in unit_text
     assert "python -m eimemory.governance.serve_console" in unit_text
     assert "EIMEMORY_CONFIG_DIR=/etc/eimemory" in unit_text
+
+
+def test_eimemory_rpc_systemd_unit_uses_loopback_endpoint() -> None:
+    unit_text = Path("deploy/systemd/eimemory-rpc.service").read_text(encoding="utf-8")
+
+    assert "ExecStart=/opt/eimemory/venv/bin/eimemory serve-eibrain-rpc --host 127.0.0.1 --port 8091" in unit_text
+    assert "Environment=EIMEMORY_ROOT=/var/lib/eimemory" in unit_text
+    assert "Environment=EIMEMORY_CONFIG_DIR=/etc/eimemory" in unit_text
+    assert "WorkingDirectory=/var/lib/eimemory" in unit_text
+    assert "/dev-project/eimemory" not in unit_text

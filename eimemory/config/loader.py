@@ -30,5 +30,5 @@ def load_settings() -> Settings:
         default_agent_id=str(payload.get("default_agent_id", "main")),
         default_workspace_id=str(payload.get("default_workspace_id", "")),
         rpc_host=str(payload.get("rpc_host", "127.0.0.1")),
-        rpc_port=int(payload.get("rpc_port", 8765)),
+        rpc_port=int(payload.get("rpc_port", 8091)),
     )

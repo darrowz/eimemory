@@ -48,6 +48,27 @@ EIMEMORY_CONFIG_DIR=/etc/eimemory
 - Backups should be written under `/var/lib/eimemory/backups` and verified with
   `eimemory backup verify`.
 
+
+## eibrain RPC Service
+
+Install the dedicated user service for the eibrain-facing RPC boundary:
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp /dev-project/eimemory/deploy/systemd/eimemory-rpc.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now eimemory-rpc.service
+```
+
+Verify the listener before switching `eibrain` to the RPC provider:
+
+```bash
+systemctl --user status eimemory-rpc.service --no-pager
+ss -ltn | grep 127.0.0.1:8091
+```
+
+The RPC service must stay on loopback and should use port `8091`, separate from the Governance Console on `8765`.
+
 ## Nightly Knowledge Intake
 
 Production deployments should install the standard systemd user timer:
