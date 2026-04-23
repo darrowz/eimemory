@@ -54,6 +54,14 @@ class EIBrainRPCServer:
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
 
+    def serve_forever(self) -> None:
+        try:
+            self._server.serve_forever()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            self._server.server_close()
+
     def stop(self) -> None:
         self._server.shutdown()
         self._server.server_close()

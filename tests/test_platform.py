@@ -111,6 +111,43 @@ def test_cli_supports_paper_ingest_extract_compile_and_research_recall(tmp_path,
     assert "page_centered" in output
 
 
+def test_cli_can_serve_eibrain_rpc(tmp_path, monkeypatch, capsys) -> None:
+    from eimemory.cli.main import main as cli_main
+
+    started: dict[str, object] = {}
+
+    class _FakeServer:
+        def __init__(self, runtime, *, host: str, port: int) -> None:
+            started["host"] = host
+            started["port"] = port
+            started["root"] = str(runtime.store.root)
+            self.address = (host, port)
+
+        def serve_forever(self) -> None:
+            started["served"] = True
+
+    monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path / "runtime"))
+    monkeypatch.setenv("EIMEMORY_CONFIG_DIR", str(tmp_path / "config"))
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "settings.json").write_text(
+        json.dumps({"rpc_host": "127.0.0.1", "rpc_port": 8091}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("eimemory.cli.main.EIBrainRPCServer", _FakeServer)
+
+    assert cli_main(["serve-eibrain-rpc"]) == 0
+
+    output = json.loads(capsys.readouterr().out)
+    assert started == {
+        "host": "127.0.0.1",
+        "port": 8091,
+        "root": str(tmp_path / "runtime"),
+        "served": True,
+    }
+    assert output == {"ok": True, "host": "127.0.0.1", "port": 8091}
+
+
 def test_http_rpc_server_serves_recall_and_policy(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     runtime.memory.ingest(

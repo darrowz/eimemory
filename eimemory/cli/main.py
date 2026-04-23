@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import sys
 
+from eimemory.adapters.eibrain.rpc_server import EIBrainRPCServer
 from eimemory.adapters.openclaw.hooks import OpenClawMemoryHooks
 from eimemory.adapters.openclaw.qmd_compat import main as qmd_main
 from eimemory.api.runtime import Runtime
@@ -189,6 +190,10 @@ def _build_parser() -> argparse.ArgumentParser:
 
     reflect_sub.add_parser("stats")
 
+    serve_rpc = sub.add_parser("serve-eibrain-rpc")
+    serve_rpc.add_argument("--host", default="")
+    serve_rpc.add_argument("--port", type=int, default=None)
+
     openclaw_hook = sub.add_parser("openclaw-hook")
     openclaw_hook.add_argument("hook", choices=["message_received", "before_prompt_build", "agent_end"])
 
@@ -241,11 +246,19 @@ def main(argv: list[str] | None = None) -> int:
         print(
             json.dumps(
                 {
-                    "usage": "eimemory init|ingest|recall|paper|source|intake|export|import|backup|migrate|nightly|quality|reflect|governance|evolve",
+                    "usage": "eimemory init|ingest|recall|paper|source|intake|export|import|backup|migrate|nightly|quality|reflect|governance|evolve|serve-eibrain-rpc",
                 }
             )
         )
         return 0
+    if parsed.command == "serve-eibrain-rpc":
+        host = parsed.host or settings.rpc_host
+        port = int(parsed.port if parsed.port is not None else settings.rpc_port)
+        server = EIBrainRPCServer(runtime, host=host, port=port)
+        print(json.dumps({"ok": True, "host": server.address[0], "port": server.address[1]}, ensure_ascii=False))
+        server.serve_forever()
+        return 0
+
     if parsed.command == "init":
         runtime.store.root.mkdir(parents=True, exist_ok=True)
         (runtime.store.root / "state").mkdir(parents=True, exist_ok=True)

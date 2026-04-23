@@ -36,6 +36,17 @@ eimemory reflect check
 eimemory reflect log reply-style "Forgot concise style" "Reply with one sentence"
 ```
 
+## eibrain RPC Service
+
+Start the eibrain-facing RPC boundary from the deployed runtime environment, not from a source checkout path:
+
+```bash
+EIMEMORY_ROOT=/var/lib/eimemory eimemory serve-eibrain-rpc --host 127.0.0.1 --port 8091
+```
+
+`eibrain` should connect to the running endpoint, for example `http://127.0.0.1:8091/`.
+The integration contract is the endpoint address, not the repository location.
+
 ## Memory Quality
 
 New memory records carry deterministic quality metadata under `meta.quality`:
