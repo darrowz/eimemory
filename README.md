@@ -41,10 +41,10 @@ eimemory reflect log reply-style "Forgot concise style" "Reply with one sentence
 Start the eibrain-facing RPC boundary from the deployed runtime environment, not from a source checkout path:
 
 ```bash
-EIMEMORY_ROOT=/var/lib/eimemory eimemory serve-eibrain-rpc --host 127.0.0.1 --port 8091
+EIMEMORY_ROOT=/var/lib/eimemory eimemory serve-eibrain-rpc --host 100.66.161.64 --port 8091
 ```
 
-`eibrain` should connect to the running endpoint, for example `http://127.0.0.1:8091/`.
+`eibrain` should connect to the running endpoint, for example `http://honxin:8091/`.
 The integration contract is the endpoint address, not the repository location.
 
 A production systemd template is available at `deploy/systemd/eimemory-rpc.service`.

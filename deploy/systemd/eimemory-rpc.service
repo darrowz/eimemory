@@ -8,7 +8,7 @@ Type=simple
 WorkingDirectory=/var/lib/eimemory
 Environment=EIMEMORY_ROOT=/var/lib/eimemory
 Environment=EIMEMORY_CONFIG_DIR=/etc/eimemory
-ExecStart=/opt/eimemory/venv/bin/eimemory serve-eibrain-rpc --host 127.0.0.1 --port 8091
+ExecStart=/opt/eimemory/venv/bin/eimemory serve-eibrain-rpc --host 100.66.161.64 --port 8091
 Restart=always
 RestartSec=3
 StandardOutput=append:/var/log/eimemory/rpc.service.log

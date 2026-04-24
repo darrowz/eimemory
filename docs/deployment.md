@@ -64,10 +64,10 @@ Verify the listener before switching `eibrain` to the RPC provider:
 
 ```bash
 systemctl --user status eimemory-rpc.service --no-pager
-ss -ltn | grep 127.0.0.1:8091
+ss -ltn | grep 100.66.161.64:8091
 ```
 
-The RPC service must stay on loopback and should use port `8091`, separate from the Governance Console on `8765`.
+The RPC service should bind to honxin's Tailscale address on port `8091`, separate from the Governance Console on `8765`, so honjia can reach it over MagicDNS.
 
 ## Nightly Knowledge Intake
 

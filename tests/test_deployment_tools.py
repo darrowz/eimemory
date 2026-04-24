@@ -64,10 +64,10 @@ def test_console_systemd_uses_packaged_console_entrypoint() -> None:
     assert "EIMEMORY_CONFIG_DIR=/etc/eimemory" in unit_text
 
 
-def test_eimemory_rpc_systemd_unit_uses_loopback_endpoint() -> None:
+def test_eimemory_rpc_systemd_unit_uses_honxin_tailscale_endpoint() -> None:
     unit_text = Path("deploy/systemd/eimemory-rpc.service").read_text(encoding="utf-8")
 
-    assert "ExecStart=/opt/eimemory/venv/bin/eimemory serve-eibrain-rpc --host 127.0.0.1 --port 8091" in unit_text
+    assert "ExecStart=/opt/eimemory/venv/bin/eimemory serve-eibrain-rpc --host 100.66.161.64 --port 8091" in unit_text
     assert "Environment=EIMEMORY_ROOT=/var/lib/eimemory" in unit_text
     assert "Environment=EIMEMORY_CONFIG_DIR=/etc/eimemory" in unit_text
     assert "WorkingDirectory=/var/lib/eimemory" in unit_text
