@@ -275,10 +275,14 @@ class SqliteRecordStore:
         ]
         params: list[object] = []
         self._apply_scope_filters(where, params, scope)
+        order_by = "updated_at DESC"
+        if scope.user_id:
+            order_by = "CASE WHEN user_id = ? THEN 1 ELSE 0 END DESC, updated_at DESC"
+            params = [*params, scope.user_id]
         rows = self.conn.execute(
             "SELECT payload_json FROM records WHERE "
             + " AND ".join(where)
-            + " ORDER BY updated_at DESC",
+            + f" ORDER BY {order_by}",
             params,
         ).fetchall()
         for row in rows:

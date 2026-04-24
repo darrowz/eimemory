@@ -430,6 +430,7 @@ def test_runtime_store_prefers_user_scoped_policy_over_newer_global_rule(tmp_pat
         },
     )
     store.append(specific_rule)
+    global_rule.time.updated_at = "9999-12-31T23:59:59+00:00"
     store.append(global_rule)
 
     policy = store.get_active_policy(task_type="brain.respond", scope=scoped)
