@@ -6,6 +6,7 @@ import re
 from dataclasses import asdict
 from statistics import mean
 
+from eimemory.api.memory import MemoryAPI
 from eimemory.models.relation_records import RelationRecord
 from eimemory.models.records import LinkRef, RecordEnvelope, ScopeRef, VALID_KINDS, evaluate_memory_quality
 from eimemory.storage.runtime_store import RuntimeStore
@@ -175,16 +176,26 @@ class EvolutionAPI:
         rule = self.store.get_by_id(record_id)
         if rule is None or rule.kind != "rule":
             raise ValueError(f"rule not found: {record_id}")
+        memory_api = MemoryAPI(self.store)
+        default_task_type = str(rule.meta.get("task_type") or "")
         scores: list[float] = []
         for sample in dataset:
-            bundle = self.store.search(
-                query=str(sample.get("query", "")),
-                kinds=["memory", "multimodal_memory"],
-                scope=sample.get("scope"),
-                limit=5,
+            sample_scope = dict(sample.get("scope") or asdict(rule.scope))
+            sample_task_context = dict(sample.get("task_context") or {})
+            if default_task_type and not str(sample_task_context.get("task_type") or ""):
+                sample_task_context["task_type"] = default_task_type
+            bundle = memory_api.recall(
+                query=str(sample.get("query") or ""),
+                scope=sample_scope,
+                task_context=sample_task_context,
+                limit=int(sample.get("limit") or 5),
             )
+            results = list(bundle.items)
+            kinds = [str(item) for item in (sample.get("kinds") or []) if str(item)]
+            if kinds:
+                results = [item for item in results if item.kind in kinds]
             expected_titles = [str(item) for item in (sample.get("expect_any_title") or [])]
-            hit = any(result.title in expected_titles for result in bundle)
+            hit = any(result.title in expected_titles for result in results)
             scores.append(1.0 if hit else 0.0)
         pass_rate = mean(scores) if scores else 0.0
         verdict = "pass" if pass_rate >= 0.8 else "fail"
@@ -214,6 +225,7 @@ class EvolutionAPI:
     ) -> dict:
         scope_ref = ScopeRef.from_dict(scope)
         normalized_profile = self._normalize_recall_profile(profile) or "balanced"
+        memory_api = MemoryAPI(self.store)
         samples: list[dict] = []
         hit_count = 0
         misses: list[dict] = []
@@ -237,17 +249,24 @@ class EvolutionAPI:
             query = str(sample.get("query") or "")
             sample_task_context = dict(sample.get("task_context") or {})
             sample_task_type = str(sample.get("task_type") or sample_task_context.get("task_type") or task_type or "")
+            if sample_task_type and not str(sample_task_context.get("task_type") or ""):
+                sample_task_context["task_type"] = sample_task_type
+            sample_profile = self._normalize_recall_profile(sample.get("profile")) or normalized_profile
+            sample_task_context.setdefault("recall_profile", sample_profile)
             expected_titles = {str(item) for item in (sample.get("expect_any_title") or []) if str(item)}
             expected_ids = {str(item) for item in (sample.get("expect_any_record_id") or []) if str(item)}
             expected_kinds = {str(item) for item in (sample.get("expect_any_kind") or []) if str(item)}
-            search_kinds = [str(item) for item in (sample.get("kinds") or ["memory"])]
+            search_kinds = [str(item) for item in (sample.get("kinds") or []) if str(item)]
             search_limit = int(sample.get("limit") or 5)
-            results = self.store.search(
+            bundle = memory_api.recall(
                 query=query,
-                kinds=search_kinds,
                 scope=sample_scope,
+                task_context=sample_task_context,
                 limit=search_limit,
             )
+            results = list(bundle.items)
+            if search_kinds:
+                results = [item for item in results if item.kind in search_kinds]
             hit = self._sample_hit(
                 results=results,
                 expected_titles=expected_titles,

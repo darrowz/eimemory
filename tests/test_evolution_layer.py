@@ -5,7 +5,7 @@ from eimemory.adapters.eibrain.rpc import EIBrainRPCBridge
 from eimemory.api.runtime import Runtime
 from eimemory.knowledge.compiler import compile_paper_knowledge
 from eimemory.models.claim_cards import ClaimCard
-from eimemory.models.records import RecordEnvelope, ScopeRef
+from eimemory.models.records import LinkRef, RecordEnvelope, ScopeRef
 from eimemory.scheduler.jobs import run_nightly_jobs
 
 
@@ -625,3 +625,98 @@ def test_nightly_jobs_include_memory_quality_observability(tmp_path) -> None:
     )
     assert high_quality_count == 1
     assert report["memory_quality"]["average_salience"] > 0
+
+
+
+def test_replay_rule_uses_runtime_recall_pipeline_for_graph_expansion(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = ScopeRef(agent_id="eibrain", workspace_id="robot")
+    supporting = RecordEnvelope.create(
+        kind="memory",
+        title="Linked catalog entry",
+        summary="Ceramic glaze catalog entry.",
+        scope=scope,
+    )
+    primary = RecordEnvelope.create(
+        kind="memory",
+        title="Operator reply preference",
+        summary="Respond briefly to the operator",
+        scope=scope,
+        links=[
+            LinkRef(
+                relation="supports",
+                target_kind="memory",
+                target_id=supporting.record_id,
+            )
+        ],
+    )
+    runtime.store.append(supporting)
+    runtime.store.append(primary)
+    rule = runtime.evolution.store_rule(
+        title="Graph-aware replay",
+        summary="Replay should use runtime recall",
+        task_type="brain.respond",
+        retrieval_policy={"route_hint": "task_context_first"},
+        scope={"agent_id": "eibrain", "workspace_id": "robot"},
+        status="accepted",
+    )
+
+    replay = runtime.evolution.replay_rule(
+        record_id=rule.record_id,
+        dataset=[
+            {
+                "query": "brief operator reply",
+                "scope": {"agent_id": "eibrain", "workspace_id": "robot"},
+                "task_context": {"task_type": "brain.respond"},
+                "expect_any_title": ["Linked catalog entry"],
+            }
+        ],
+    )
+
+    assert replay.meta["verdict"] == "pass"
+    assert replay.meta["pass_rate"] == 1.0
+
+
+
+def test_evaluate_recall_dataset_uses_runtime_recall_pipeline_for_graph_expansion(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = ScopeRef(agent_id="eibrain", workspace_id="robot")
+    supporting = RecordEnvelope.create(
+        kind="memory",
+        title="Linked catalog entry",
+        summary="Ceramic glaze catalog entry.",
+        scope=scope,
+    )
+    primary = RecordEnvelope.create(
+        kind="memory",
+        title="Operator reply preference",
+        summary="Respond briefly to the operator",
+        scope=scope,
+        links=[
+            LinkRef(
+                relation="supports",
+                target_kind="memory",
+                target_id=supporting.record_id,
+            )
+        ],
+    )
+    runtime.store.append(supporting)
+    runtime.store.append(primary)
+
+    report = runtime.evolution.evaluate_recall_dataset(
+        dataset=[
+            {
+                "query": "brief operator reply",
+                "scope": {"agent_id": "eibrain", "workspace_id": "robot"},
+                "task_context": {"task_type": "brain.respond"},
+                "expect_any_title": ["Linked catalog entry"],
+            }
+        ],
+        scope={"agent_id": "eibrain", "workspace_id": "robot"},
+        task_type="brain.respond",
+        profile="balanced",
+    )
+
+    assert report["hit_count"] == 1
+    assert report["miss_count"] == 0
+    assert report["samples"][0]["returned_titles"] == ["Operator reply preference", "Linked catalog entry"]
