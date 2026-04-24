@@ -399,3 +399,39 @@ def test_runtime_store_list_records_uses_stable_tiebreaker_for_same_timestamp(tm
     paged_ids = [record.record_id for record in [*first_page, *second_page]]
     assert paged_ids == ["mem_c", "mem_b", "mem_a"]
     assert len(set(paged_ids)) == 3
+
+
+
+def test_runtime_store_prefers_user_scoped_policy_over_newer_global_rule(tmp_path) -> None:
+    store = RuntimeStore(root=tmp_path)
+    scoped = ScopeRef(agent_id="eibrain", workspace_id="robot", user_id="alice")
+    global_scope = ScopeRef(agent_id="eibrain", workspace_id="robot")
+
+    specific_rule = RecordEnvelope.create(
+        kind="rule",
+        title="Alice policy",
+        summary="Alice-specific retrieval policy",
+        scope=scoped,
+        status="active",
+        meta={
+            "task_type": "brain.respond",
+            "retrieval_policy": {"route_hint": "user_specific"},
+        },
+    )
+    global_rule = RecordEnvelope.create(
+        kind="rule",
+        title="Global policy",
+        summary="Global retrieval policy",
+        scope=global_scope,
+        status="active",
+        meta={
+            "task_type": "brain.respond",
+            "retrieval_policy": {"route_hint": "global_default"},
+        },
+    )
+    store.append(specific_rule)
+    store.append(global_rule)
+
+    policy = store.get_active_policy(task_type="brain.respond", scope=scoped)
+
+    assert policy["retrieval_policy"]["route_hint"] == "user_specific"

@@ -239,7 +239,10 @@ def main(argv: list[str] | None = None) -> int:
         return qmd_main(args_list[1:])
     parser = _build_parser()
     parsed = parser.parse_args(args_list)
-    settings = load_settings()
+    try:
+        settings = load_settings()
+    except (FileNotFoundError, json.JSONDecodeError, ValueError) as exc:
+        return _print_error("invalid_config", exc)
     runtime = Runtime.create(root=settings.root)
     scope = {"agent_id": settings.default_agent_id or "cli", "workspace_id": settings.default_workspace_id}
     if not parsed.command:

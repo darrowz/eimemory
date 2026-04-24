@@ -22,16 +22,19 @@ class EIBrainRPCBridge:
             limit = params.get("limit", 8)
             scope = params.get("scope", {})
             task_context = params.get("task_context", {})
+            query = params.get("query", "")
             if (
-                not isinstance(params.get("query", ""), str)
+                not isinstance(query, str)
+                or not query.strip()
                 or not isinstance(limit, int)
                 or isinstance(limit, bool)
-                or not isinstance(scope, dict)
-                or not isinstance(task_context, dict)
+                or limit <= 0
+                or not self._valid_scope(scope)
+                or not self._valid_task_context(task_context)
             ):
                 return self._invalid_request()
             bundle = self.runtime.memory.recall(
-                query=params.get("query") or "",
+                query=query,
                 scope=scope,
                 task_context=task_context,
                 limit=limit,
@@ -42,8 +45,9 @@ class EIBrainRPCBridge:
             scope = params.get("scope", {})
             if (
                 not isinstance(params.get("signal_type", ""), str)
+                or not str(params.get("signal_type", "")).strip()
                 or not isinstance(payload, dict)
-                or not isinstance(scope, dict)
+                or not self._valid_scope(scope)
             ):
                 return self._invalid_request()
             record = self.runtime.evolution.observe(
@@ -54,14 +58,28 @@ class EIBrainRPCBridge:
             return {"ok": True, "result": record.to_dict()}
         if method == "evolution.get_active_policy":
             scope = params.get("scope", {})
-            if not isinstance(params.get("task_type", ""), str) or not isinstance(scope, dict):
+            task_type = params.get("task_type", "")
+            if not isinstance(task_type, str) or not task_type.strip() or not self._valid_scope(scope):
                 return self._invalid_request()
             policy = self.runtime.evolution.get_active_policy(
-                task_type=params.get("task_type") or "",
+                task_type=task_type,
                 scope=scope,
             )
             return {"ok": True, "result": policy}
-        return {"ok": False, "error": f"unknown method: {method}"}
+        return {"ok": False, "error": "unknown_method"}
 
     def _invalid_request(self) -> dict:
         return {"ok": False, "error": "invalid_request"}
+
+    @staticmethod
+    def _valid_scope(scope: object) -> bool:
+        if not isinstance(scope, dict):
+            return False
+        return any(str(scope.get(key, "")).strip() for key in ("agent_id", "workspace_id", "tenant_id", "user_id"))
+
+    @staticmethod
+    def _valid_task_context(task_context: object) -> bool:
+        if not isinstance(task_context, dict):
+            return False
+        task_type = task_context.get("task_type", "")
+        return isinstance(task_type, str) and bool(task_type.strip())

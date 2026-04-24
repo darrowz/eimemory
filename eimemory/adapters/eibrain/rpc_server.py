@@ -20,7 +20,7 @@ class _RPCHandler(BaseHTTPRequestHandler):
             if not isinstance(request, dict):
                 raise ValueError("request body must be a JSON object")
             response = self.bridge.handle(request)
-            status = 400 if response.get("error") == "invalid_request" else 200
+            status = 400 if response.get("ok") is False else 200
             self._send_json(status, response)
         except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
             self._send_json(400, {"ok": False, "error": "invalid_request"})

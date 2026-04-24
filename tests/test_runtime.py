@@ -807,3 +807,37 @@ def test_runtime_recall_explains_source_composition_and_selected_records(tmp_pat
     assert bundle.explanation["source_composition"]["memory_count"] == 1
     assert bundle.explanation["selected_records"][0]["record_id"] == bundle.items[0].record_id
     assert bundle.explanation["selected_records"][0]["kind"] == "memory"
+
+
+
+def test_runtime_recall_returns_empty_bundle_for_blank_query(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    runtime.evolution.store_rule(
+        title="Open unknowns on weak recall",
+        summary="Track weak recall for later evolution",
+        task_type="chat.reply",
+        retrieval_policy={
+            "route_hint": "task_context_first",
+            "open_unknown_on_low_confidence": True,
+        },
+        scope={"agent_id": "main", "workspace_id": "repo-x"},
+        status="active",
+    )
+
+    bundle = runtime.memory.recall(
+        query="   ",
+        scope={"agent_id": "main", "workspace_id": "repo-x"},
+        task_context={"task_type": "chat.reply", "goal": "answer user"},
+        limit=0,
+    )
+
+    assert bundle.items == []
+    assert bundle.reflections == []
+    assert bundle.confidence == 0.0
+    assert bundle.explanation["invalid_request"] == "empty_query"
+    unknowns = runtime.store.list_records(
+        kinds=["unknown"],
+        scope={"agent_id": "main", "workspace_id": "repo-x"},
+        limit=10,
+    )
+    assert unknowns == []

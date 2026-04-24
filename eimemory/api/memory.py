@@ -43,10 +43,37 @@ class MemoryAPI:
         task_context: dict | None = None,
         limit: int = 8,
     ) -> RecallBundle:
+        normalized_query = str(query or "").strip()
         limit = max(0, min(1000, int(limit)))
         scope_ref = ScopeRef.from_dict(scope)
         task_context = dict(task_context or {})
         task_type = str(task_context.get("task_type") or "")
+        if not normalized_query:
+            return RecallBundle(
+                items=[],
+                rules=[],
+                reflections=[],
+                confidence=0.0,
+                next_action_hint="",
+                explanation={
+                    "query": normalized_query,
+                    "task_context": task_context,
+                    "invalid_request": "empty_query",
+                },
+            )
+        if limit <= 0:
+            return RecallBundle(
+                items=[],
+                rules=[],
+                reflections=[],
+                confidence=0.0,
+                next_action_hint="",
+                explanation={
+                    "query": normalized_query,
+                    "task_context": task_context,
+                    "invalid_request": "non_positive_limit",
+                },
+            )
         active_policy = {"retrieval_policy": {}, "response_policy": {}}
         if task_type:
             active_policy = self.store.get_active_policy(task_type=task_type, scope=scope_ref)
@@ -58,7 +85,7 @@ class MemoryAPI:
         profile_config = self._recall_profile_config(recall_profile)
         search_limit = max(limit * profile_config["search_multiplier"], limit)
         items, search_report = self.store.search_with_diagnostics(
-            query=query,
+            query=normalized_query,
             kinds=["memory", "claim_card", "knowledge_page"],
             scope=scope_ref,
             limit=search_limit,
@@ -85,7 +112,7 @@ class MemoryAPI:
             claims=claims,
             pages=pages,
             memories=memories,
-            query=query,
+            query=normalized_query,
         )
         items = records_from_view(view, items, limit=limit)
         final_view = build_recall_view(
@@ -93,7 +120,7 @@ class MemoryAPI:
             claims=[item for item in items if item.kind == "claim_card"],
             pages=[item for item in items if item.kind == "knowledge_page"],
             memories=[item for item in items if item.kind == "memory"],
-            query=query,
+            query=normalized_query,
         )
         graph_expanded = sum(1 for item in items if item.record_id not in base_ids)
         rules = [
@@ -117,7 +144,7 @@ class MemoryAPI:
             from eimemory.api.evolution import EvolutionAPI
 
             gap = EvolutionAPI(self.store).capture_recall_gap(
-                query=query,
+                query=normalized_query,
                 task_context=task_context,
                 scope=scope,
                 policy=retrieval_policy,
@@ -130,7 +157,7 @@ class MemoryAPI:
             confidence=confidence,
             next_action_hint=next_hint,
             explanation={
-                "query": query,
+                "query": normalized_query,
                 "task_context": task_context,
                 "recall_profile": recall_profile,
                 "recall_profile_source": recall_profile_source,

@@ -52,8 +52,15 @@ def test_eibrain_rpc_rejects_invalid_param_types(tmp_path) -> None:
         {"method": "memory.recall", "params": []},
         {"method": "memory.recall", "params": {"query": "x", "limit": "many"}},
         {"method": "memory.recall", "params": {"query": "x", "scope": []}},
+        {"method": "memory.recall", "params": {"query": "x", "scope": {}}},
         {"method": "memory.recall", "params": {"query": "x", "task_context": []}},
+        {"method": "memory.recall", "params": {"query": "x", "scope": {"agent_id": "eibrain"}, "task_context": {}}},
+        {"method": "memory.recall", "params": {"query": "   ", "scope": {"agent_id": "eibrain", "workspace_id": "robot"}, "task_context": {"task_type": "brain.respond"}}},
+        {"method": "memory.recall", "params": {"query": "x", "scope": {"agent_id": "eibrain", "workspace_id": "robot"}, "task_context": {"task_type": "brain.respond"}, "limit": 0}},
+        {"method": "memory.recall", "params": {"query": "x", "scope": {"agent_id": "eibrain", "workspace_id": "robot"}, "task_context": {"task_type": "brain.respond"}, "limit": -1}},
         {"method": "evolution.observe", "params": {"signal_type": "incident", "payload": []}},
+        {"method": "evolution.get_active_policy", "params": {"task_type": "", "scope": {"agent_id": "eibrain", "workspace_id": "robot"}}},
+        {"method": "evolution.get_active_policy", "params": {"task_type": "brain.respond", "scope": {}}},
     ]
 
     for request in invalid_requests:
@@ -732,3 +739,49 @@ def test_openclaw_before_prompt_build_skips_blank_query(tmp_path) -> None:
 
     assert result["memory_bundle"]["items"] == []
     assert result["memory_bundle"]["confidence"] == 0.0
+
+
+
+def test_evolution_observe_normalizes_unknown_signal_type_to_incident(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    bridge = EIBrainRPCBridge(runtime)
+
+    response = bridge.handle(
+        {
+            "method": "evolution.observe",
+            "params": {
+                "signal_type": "asr_noise",
+                "payload": {"title": "ASR noise", "summary": "Ignore burst noise"},
+                "scope": {"agent_id": "eibrain", "workspace_id": "robot"},
+            },
+        }
+    )
+
+    assert response["ok"] is True
+    assert response["result"]["kind"] == "incident"
+    assert response["result"]["meta"]["signal_type"] == "asr_noise"
+
+
+
+def test_eibrain_rpc_server_returns_400_for_unknown_method(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    server = EIBrainRPCServer(runtime, host="127.0.0.1", port=0)
+    server.start()
+    try:
+        request = urllib.request.Request(
+            f"http://{server.address[0]}:{server.address[1]}/",
+            data=json.dumps({"method": "memory.unknown", "params": {}}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            urllib.request.urlopen(request, timeout=5)
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 400
+            body = json.loads(exc.read().decode("utf-8"))
+        else:
+            raise AssertionError("expected unknown RPC request to fail")
+    finally:
+        server.stop()
+
+    assert body == {"ok": False, "error": "unknown_method"}

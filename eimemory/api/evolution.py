@@ -7,7 +7,7 @@ from dataclasses import asdict
 from statistics import mean
 
 from eimemory.models.relation_records import RelationRecord
-from eimemory.models.records import LinkRef, RecordEnvelope, ScopeRef, evaluate_memory_quality
+from eimemory.models.records import LinkRef, RecordEnvelope, ScopeRef, VALID_KINDS, evaluate_memory_quality
 from eimemory.storage.runtime_store import RuntimeStore
 
 
@@ -16,16 +16,19 @@ class EvolutionAPI:
         self.store = store
 
     def observe(self, *, signal_type: str, payload: dict, scope: dict) -> RecordEnvelope:
+        normalized_signal_type = signal_type if signal_type in VALID_KINDS else "incident"
         title = str(payload.get("title") or payload.get("incident_type") or signal_type)
         summary = str(payload.get("summary") or "")
+        meta = {k: v for k, v in payload.items() if k not in {"title", "summary"}}
+        meta["signal_type"] = signal_type
         record = RecordEnvelope.create(
-            kind=signal_type,
+            kind=normalized_signal_type,
             title=title,
             summary=summary,
             content={"payload": dict(payload)},
             scope=ScopeRef.from_dict(scope),
             source="evolution.observe",
-            meta={k: v for k, v in payload.items() if k not in {"title", "summary"}},
+            meta=meta,
         )
         return self.store.append(record)
 
