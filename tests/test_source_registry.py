@@ -4,6 +4,7 @@ import json
 
 from eimemory.api.runtime import Runtime
 from eimemory.cli.main import main as cli_main
+from eimemory.identity import hongtu_scope
 import pytest
 
 from eimemory.intake.registry import SourceRegistry, normalize_source_strategy_metadata
@@ -62,7 +63,7 @@ def test_source_registry_add_list_and_scan_persists_candidates(tmp_path) -> None
 
     listed = registry.list_sources()
     report = runtime.sources.scan_sources(store=runtime.store, scope={"agent_id": "main"}, persist=True)
-    persisted = runtime.store.list_records(kinds=["source_candidate"], scope={"agent_id": "main"}, limit=10)
+    persisted = runtime.store.list_records(kinds=["source_candidate"], scope=hongtu_scope({}), limit=10)
     recall = runtime.memory.recall(
         query="AI Research Feed",
         scope={"agent_id": "main"},
@@ -112,7 +113,7 @@ def test_cli_source_commands_add_list_and_scan(tmp_path, monkeypatch, capsys) ->
     scan_output = json.loads(capsys.readouterr().out)
 
     runtime = Runtime.create(root=tmp_path)
-    persisted = runtime.store.list_records(kinds=["source_candidate"], scope={"agent_id": "main"}, limit=10)
+    persisted = runtime.store.list_records(kinds=["source_candidate"], scope=hongtu_scope({}), limit=10)
 
     assert add_code == 0
     assert add_output["source_kind"] == "manual"

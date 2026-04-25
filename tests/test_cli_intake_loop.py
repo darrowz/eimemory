@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from eimemory.cli.main import main as cli_main
+from eimemory.identity import hongtu_scope
 from eimemory.models.records import RecordEnvelope, ScopeRef
 from eimemory.storage.runtime_store import RuntimeStore
 
@@ -83,7 +84,7 @@ def test_cli_intake_collect_forwards_persist_and_scope(tmp_path, monkeypatch, ca
             "limit": 1,
             "fetch": True,
             "persist": True,
-            "scope": {"agent_id": "main", "workspace_id": ""},
+            "scope": hongtu_scope({}),
         }
     ]
 
@@ -96,7 +97,7 @@ def test_cli_intake_explain_returns_candidate_explanation(tmp_path, monkeypatch,
         title="Knowledge candidate: CLI paper",
         summary="CLI paper summary",
         detail="CLI paper content has enough durable details for candidate explanation.",
-        scope=ScopeRef(agent_id="main", workspace_id=""),
+        scope=ScopeRef.from_dict(hongtu_scope({})),
         status="candidate",
         content={
             "source_kind": "arxiv",

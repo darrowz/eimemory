@@ -5,10 +5,11 @@ import json
 import eimemory.cli.main as cli_module
 from eimemory.api.runtime import Runtime
 from eimemory.cli.main import main as cli_main
+from eimemory.identity import hongtu_scope
 
 
 def _cli_scope() -> dict[str, str]:
-    return {"tenant_id": "default", "agent_id": "main", "workspace_id": "", "user_id": ""}
+    return hongtu_scope({})
 
 
 def test_cli_governance_snapshot_reports_runtime_state(tmp_path, monkeypatch, capsys) -> None:

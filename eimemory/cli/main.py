@@ -19,6 +19,7 @@ from eimemory.compatibility.migration_helpers import (
     scan_migration_source,
 )
 from eimemory.config.loader import load_settings
+from eimemory.identity import hongtu_scope
 from eimemory.identity_ops import identity_report, repair_hongtu_identity
 from eimemory.knowledge.compiler import compile_paper_knowledge
 from eimemory.governance.console import write_evolution_console
@@ -252,7 +253,12 @@ def main(argv: list[str] | None = None) -> int:
     except (FileNotFoundError, json.JSONDecodeError, ValueError) as exc:
         return _print_error("invalid_config", exc)
     runtime = Runtime.create(root=settings.root)
-    scope = {"agent_id": settings.default_agent_id or "cli", "workspace_id": settings.default_workspace_id}
+    scope = hongtu_scope(
+        {
+            "agent_id": settings.default_agent_id or "cli",
+            "workspace_id": settings.default_workspace_id,
+        }
+    )
     if not parsed.command:
         print(
             json.dumps(
@@ -586,6 +592,7 @@ def main(argv: list[str] | None = None) -> int:
             runtime,
             scope=scope,
         )
+        report["identity_repair"] = repair_hongtu_identity(runtime, apply=True)
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0
     if parsed.command == "quality":
