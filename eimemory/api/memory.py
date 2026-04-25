@@ -19,7 +19,11 @@ class MemoryAPI:
         tags: list[str] | None = None,
         source: str = "runtime",
         force_capture: bool = False,
+        meta: dict | None = None,
     ) -> RecordEnvelope:
+        meta_payload = {"memory_type": memory_type, "force_capture": force_capture}
+        if meta:
+            meta_payload.update(dict(meta))
         record = RecordEnvelope.create(
             kind="memory",
             title=title,
@@ -28,7 +32,7 @@ class MemoryAPI:
             scope=ScopeRef.from_dict(scope),
             tags=tags or [],
             source=source,
-            meta={"memory_type": memory_type, "force_capture": force_capture},
+            meta=meta_payload,
         )
         if record.meta.get("quality", {}).get("capture_decision") == "reject":
             record.status = "rejected"

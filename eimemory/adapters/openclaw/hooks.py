@@ -4,6 +4,7 @@ import json
 import re
 
 from eimemory.api.runtime import Runtime
+from eimemory.identity import hongtu_identity_meta, hongtu_scope
 from eimemory.models.records import RecallBundle, RecordEnvelope, ScopeRef
 
 
@@ -24,6 +25,7 @@ class OpenClawMemoryHooks:
                 scope=self._scope_from_event(event),
                 source="openclaw.message_received",
                 force_capture=self._force_capture_requested(event),
+                meta=self._identity_meta(event, organ="cognition", modality="text"),
             )
             return {"stored": stored.to_dict()}
         return {"stored": None}
@@ -75,6 +77,7 @@ class OpenClawMemoryHooks:
                 title="OpenClaw agent outcome",
                 scope=scope,
                 source="openclaw.agent_end",
+                meta=self._identity_meta(event, organ="cognition", modality="text"),
             )
         return {
             "stored": stored.to_dict() if stored else None,
@@ -176,12 +179,27 @@ class OpenClawMemoryHooks:
         return self._clean_agent_text(cleaned)
 
     def _scope_from_event(self, event: dict) -> dict:
-        return {
-            "tenant_id": event.get("tenant_id") or event.get("tenantId") or "default",
-            "user_id": event.get("user_id") or event.get("userId") or "",
-            "agent_id": event.get("agent_id") or event.get("agentId") or "main",
-            "workspace_id": event.get("workspace_id") or event.get("workspaceId") or "",
-        }
+        return hongtu_scope(
+            {
+                "tenant_id": event.get("tenant_id") or event.get("tenantId") or "default",
+                "user_id": event.get("user_id") or event.get("userId") or "",
+                "agent_id": event.get("agent_id") or event.get("agentId") or "main",
+                "workspace_id": event.get("workspace_id") or event.get("workspaceId") or "",
+            }
+        )
+
+    def _identity_meta(self, event: dict, *, organ: str, modality: str) -> dict:
+        return hongtu_identity_meta(
+            source="openclaw.feishu",
+            channel="feishu",
+            hardware_node=str(event.get("hardware_node") or event.get("hardwareNode") or "honxin"),
+            organ=organ,
+            modality=modality,
+            extra={
+                "runtime_node": str(event.get("agent_id") or event.get("agentId") or "openclaw"),
+                "official_channel": True,
+            },
+        )
 
     def _session_id_from_event(self, event: dict) -> str:
         return str(event.get("session_id") or event.get("sessionId") or "")
@@ -213,6 +231,7 @@ class OpenClawMemoryHooks:
             source="openclaw.before_prompt_build",
             scope=scope,
             meta={
+                **self._identity_meta(event, organ="cognition", modality="text"),
                 "session_id": self._session_id_from_event(event),
                 "selected_count": len(injected_ids),
                 "injected": injected,

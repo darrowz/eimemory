@@ -191,14 +191,14 @@ def test_http_rpc_server_serves_recall_and_policy(tmp_path) -> None:
         text="Prefer concise replies",
         memory_type="preference",
         title="Concise",
-        scope={"agent_id": "eibrain", "workspace_id": "robot"},
+        scope={"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"},
     )
     runtime.evolution.store_rule(
         title="Task context first",
         summary="Prefer task context",
         task_type="brain.respond",
         retrieval_policy={"route_hint": "task_context_first"},
-        scope={"agent_id": "eibrain", "workspace_id": "robot"},
+        scope={"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"},
         status="active",
     )
     server = EIBrainRPCServer(runtime, host="127.0.0.1", port=0)
@@ -905,7 +905,7 @@ process.stdout.write(JSON.stringify({
 
     assert result.returncode == 0
     payload = json.loads(result.stdout or "{}")
-    assert "tenant-a/user-a/main/repo-x" in payload["prependContext"]
+    assert "tenant-a/user-a/hongtu/embodied" in payload["prependContext"]
     assert "debug deployment memory|System: wrapper" in payload["prependContext"]
     assert "Conversation info" in payload["prependContext"]
 

@@ -44,6 +44,54 @@ def test_eibrain_client_bridges_recall_and_observe(tmp_path) -> None:
     assert incident.kind == "incident"
 
 
+def test_eibrain_rpc_normalizes_hardware_scope_to_hongtu_memory_subject(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    bridge = EIBrainRPCBridge(runtime)
+
+    ingest = bridge.handle(
+        {
+            "method": "memory.ingest",
+            "params": {
+                "text": "Remember Hongtu prefers concise embodied responses.",
+                "title": "Hongtu embodied preference",
+                "memory_type": "preference",
+                "source": "eibrain.dialogue",
+                "scope": {
+                    "agent_id": "honxin",
+                    "workspace_id": "honjia",
+                    "user_id": "darrow",
+                    "hardware_node": "honxin",
+                },
+                "organ": "cognition",
+                "modality": "text",
+            },
+        }
+    )
+    recall = bridge.handle(
+        {
+            "method": "memory.recall",
+            "params": {
+                "query": "concise embodied responses",
+                "scope": {"agent_id": "eibrain", "workspace_id": "honjia", "user_id": "darrow"},
+                "task_context": {"task_type": "brain.respond"},
+            },
+        }
+    )
+
+    stored = ingest["result"]
+    assert stored["scope"] == {
+        "tenant_id": "default",
+        "agent_id": "hongtu",
+        "workspace_id": "embodied",
+        "user_id": "darrow",
+    }
+    assert stored["meta"]["identity"] == "hongtu"
+    assert stored["meta"]["hardware_node"] == "honxin"
+    assert stored["meta"]["communication_channel_role"] == "auxiliary"
+    assert recall["ok"] is True
+    assert recall["result"]["items"][0]["record_id"] == stored["record_id"]
+
+
 def test_eibrain_rpc_rejects_invalid_param_types(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     bridge = EIBrainRPCBridge(runtime)
@@ -318,7 +366,7 @@ def test_openclaw_hooks_capture_recall_and_agent_end(tmp_path) -> None:
     assert end["stored"]["kind"] == "memory"
     audits = runtime.store.list_records(
         kinds=["recall_view"],
-        scope={"agent_id": "main", "workspace_id": "repo-x"},
+        scope={"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"},
         limit=10,
     )
     assert audits
@@ -328,6 +376,33 @@ def test_openclaw_hooks_capture_recall_and_agent_end(tmp_path) -> None:
     assert audits[0].content["selected_records"][0]["kind"] == "memory"
     assert audits[0].content["source_composition"]["by_kind"]["memory"] >= 1
     assert audits[0].content["session_id"] == "sess-1"
+
+
+def test_openclaw_hooks_mark_feishu_as_official_hongtu_channel(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    hooks = OpenClawMemoryHooks(runtime)
+
+    result = hooks.on_message_received(
+        {
+            "session_id": "feishu:user:darrow",
+            "agent_id": "main",
+            "workspace_id": "repo-x",
+            "user_id": "darrow",
+            "message": {"role": "user", "content": "Remember Feishu is the official Hongtu channel."},
+        }
+    )
+
+    stored = result["stored"]
+    assert stored["scope"] == {
+        "tenant_id": "default",
+        "agent_id": "hongtu",
+        "workspace_id": "embodied",
+        "user_id": "darrow",
+    }
+    assert stored["meta"]["identity"] == "hongtu"
+    assert stored["meta"]["communication_channel"] == "feishu"
+    assert stored["meta"]["communication_channel_role"] == "official"
+    assert stored["meta"]["hardware_node"] == "honxin"
 
 
 def test_openclaw_agent_end_failure_records_incident(tmp_path) -> None:
@@ -346,7 +421,7 @@ def test_openclaw_agent_end_failure_records_incident(tmp_path) -> None:
 
     incidents = runtime.store.list_records(
         kinds=["incident"],
-        scope={"agent_id": "main", "workspace_id": "repo-x"},
+        scope={"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"},
         limit=10,
     )
 
@@ -559,8 +634,9 @@ def test_openclaw_hooks_accept_camel_case_event_scope(tmp_path) -> None:
     stored = runtime.store.get_by_id(end["stored"]["record_id"])
 
     assert stored is not None
-    assert stored.scope.agent_id == "main"
-    assert stored.scope.workspace_id == "repo-x"
+    assert stored.scope.agent_id == "hongtu"
+    assert stored.scope.workspace_id == "embodied"
+    assert stored.scope.user_id == "darrow"
 
 
 def test_openclaw_hooks_default_missing_agent_scope_to_main(tmp_path) -> None:
@@ -578,7 +654,9 @@ def test_openclaw_hooks_default_missing_agent_scope_to_main(tmp_path) -> None:
     stored = runtime.store.get_by_id(end["stored"]["record_id"])
 
     assert stored is not None
-    assert stored.scope.agent_id == "main"
+    assert stored.scope.agent_id == "hongtu"
+    assert stored.scope.workspace_id == "embodied"
+    assert stored.scope.user_id == "darrow"
 
 
 def test_openclaw_before_prompt_build_sanitizes_feishu_metadata_query(tmp_path) -> None:
@@ -588,7 +666,7 @@ def test_openclaw_before_prompt_build_sanitizes_feishu_metadata_query(tmp_path) 
         text="Debug long-term memory system carefully",
         memory_type="fact",
         title="Memory debug note",
-        scope={"agent_id": "main"},
+        scope={"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"},
     )
     raw_query = """System: [2026-04-21 05:05:10 UTC] Feishu[default] DM | user [msg:abc]
 
@@ -614,7 +692,7 @@ Sender (untrusted metadata):
     )
     audits = runtime.store.list_records(
         kinds=["recall_view"],
-        scope={"agent_id": "main"},
+        scope={"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"},
         limit=5,
     )
 
@@ -700,7 +778,7 @@ def test_openclaw_before_prompt_build_preserves_raw_query_for_audit(tmp_path) ->
         text="Use clean deployment memory when debugging",
         memory_type="fact",
         title="Deployment memory",
-        scope={"agent_id": "main"},
+        scope={"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"},
     )
 
     hooks.before_prompt_build(
@@ -711,7 +789,11 @@ def test_openclaw_before_prompt_build_preserves_raw_query_for_audit(tmp_path) ->
             "raw_query": "System: wrapper\n\nConversation info:\n```json\n{}\n```\n\ndebug deployment memory",
         }
     )
-    audits = runtime.store.list_records(kinds=["recall_view"], scope={"agent_id": "main"}, limit=1)
+    audits = runtime.store.list_records(
+        kinds=["recall_view"],
+        scope={"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"},
+        limit=1,
+    )
 
     assert audits[0].content["query"] == "debug deployment memory"
     assert "Conversation info" in audits[0].content["raw_query"]

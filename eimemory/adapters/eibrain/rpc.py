@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from eimemory.api.runtime import Runtime
+from eimemory.identity import hongtu_identity_meta, hongtu_scope
 
 
 class EIBrainRPCBridge:
@@ -35,11 +36,43 @@ class EIBrainRPCBridge:
                 return self._invalid_request()
             bundle = self.runtime.memory.recall(
                 query=query,
-                scope=scope,
+                scope=hongtu_scope(scope),
                 task_context=task_context,
                 limit=limit,
             )
             return {"ok": True, "result": bundle.to_dict()}
+        if method == "memory.ingest":
+            scope = params.get("scope", {})
+            text = params.get("text", "")
+            memory_type = params.get("memory_type", "conversation")
+            title = params.get("title", "eibrain memory")
+            if (
+                not isinstance(text, str)
+                or not text.strip()
+                or not isinstance(memory_type, str)
+                or not memory_type.strip()
+                or not isinstance(title, str)
+                or not title.strip()
+                or not self._valid_scope(scope)
+            ):
+                return self._invalid_request()
+            source = str(params.get("source") or "eibrain.dialogue")
+            record = self.runtime.memory.ingest(
+                text=text,
+                memory_type=memory_type,
+                title=title,
+                scope=hongtu_scope(scope),
+                source=source,
+                meta=hongtu_identity_meta(
+                    source=source,
+                    channel="eibrain",
+                    hardware_node=str(scope.get("hardware_node") or scope.get("node_id") or "honxin"),
+                    organ=str(params.get("organ") or "cognition"),
+                    modality=str(params.get("modality") or "text"),
+                    extra={"runtime_node": str(scope.get("agent_id") or "eibrain")},
+                ),
+            )
+            return {"ok": True, "result": record.to_dict()}
         if method == "evolution.observe":
             payload = params.get("payload", {})
             scope = params.get("scope", {})
@@ -53,7 +86,7 @@ class EIBrainRPCBridge:
             record = self.runtime.evolution.observe(
                 signal_type=params.get("signal_type") or "",
                 payload=payload,
-                scope=scope,
+                scope=hongtu_scope(scope),
             )
             return {"ok": True, "result": record.to_dict()}
         if method == "evolution.get_active_policy":
@@ -63,7 +96,7 @@ class EIBrainRPCBridge:
                 return self._invalid_request()
             policy = self.runtime.evolution.get_active_policy(
                 task_type=task_type,
-                scope=scope,
+                scope=hongtu_scope(scope),
             )
             return {"ok": True, "result": policy}
         return {"ok": False, "error": "unknown_method"}

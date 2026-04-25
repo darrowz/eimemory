@@ -2,6 +2,10 @@
 
 const { spawnSync } = require('node:child_process');
 
+const HONGTU_AGENT_ID = 'hongtu';
+const HONGTU_WORKSPACE_ID = 'embodied';
+const DEFAULT_OPERATOR_USER_ID = 'darrow';
+
 function splitCommand(command) {
   const parts = [];
   let current = '';
@@ -123,8 +127,8 @@ function normalizeScope(event, metadata = {}) {
   const sessionUserId = userIdFromSession(event?.sessionId || event?.session_id || '');
   return {
     tenant_id: String(event?.tenantId || event?.tenant_id || 'default'),
-    agent_id: String(event?.agentId || event?.agent_id || 'main'),
-    workspace_id: String(event?.workspaceId || event?.workspace_id || ''),
+    agent_id: HONGTU_AGENT_ID,
+    workspace_id: HONGTU_WORKSPACE_ID,
     user_id: String(
       event?.userId
       || event?.user_id
@@ -133,7 +137,7 @@ function normalizeScope(event, metadata = {}) {
       || metadata.sender_id
       || metadata.sender
       || sessionUserId
-      || ''
+      || DEFAULT_OPERATOR_USER_ID
     ),
   };
 }

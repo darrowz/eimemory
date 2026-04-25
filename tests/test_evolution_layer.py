@@ -234,7 +234,7 @@ def test_eibrain_rpc_bridge_handles_recall_and_observe(tmp_path) -> None:
         text="Prefer concise replies",
         memory_type="preference",
         title="Concise replies",
-        scope={"agent_id": "eibrain", "workspace_id": "robot"},
+        scope={"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"},
     )
     bridge = EIBrainRPCBridge(runtime)
 
