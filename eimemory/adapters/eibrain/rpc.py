@@ -46,6 +46,7 @@ class EIBrainRPCBridge:
             text = params.get("text", "")
             memory_type = params.get("memory_type", "conversation")
             title = params.get("title", "eibrain memory")
+            outcome = params.get("outcome", {})
             if (
                 not isinstance(text, str)
                 or not text.strip()
@@ -53,6 +54,7 @@ class EIBrainRPCBridge:
                 or not memory_type.strip()
                 or not isinstance(title, str)
                 or not title.strip()
+                or not isinstance(outcome, dict)
                 or not self._valid_scope(scope)
             ):
                 return self._invalid_request()
@@ -69,7 +71,10 @@ class EIBrainRPCBridge:
                     hardware_node=str(scope.get("hardware_node") or scope.get("node_id") or "honxin"),
                     organ=str(params.get("organ") or "cognition"),
                     modality=str(params.get("modality") or "text"),
-                    extra={"runtime_node": str(scope.get("agent_id") or "eibrain")},
+                    extra={
+                        "runtime_node": str(scope.get("agent_id") or "eibrain"),
+                        **({"outcome": dict(outcome)} if outcome else {}),
+                    },
                 ),
             )
             return {"ok": True, "result": record.to_dict()}

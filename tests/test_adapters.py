@@ -92,6 +92,54 @@ def test_eibrain_rpc_normalizes_hardware_scope_to_hongtu_memory_subject(tmp_path
     assert recall["result"]["items"][0]["record_id"] == stored["record_id"]
 
 
+def test_eibrain_rpc_ingest_persists_outcome_metadata(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    bridge = EIBrainRPCBridge(runtime)
+
+    response = bridge.handle(
+        {
+            "method": "memory.ingest",
+            "params": {
+                "text": "user:hello | reply:hi",
+                "title": "Audio dialogue turn",
+                "memory_type": "conversation",
+                "source": "eibrain.audio_dialogue",
+                "scope": {"agent_id": "honxin", "workspace_id": "honjia", "user_id": "darrow"},
+                "organ": "ear",
+                "modality": "audio_text",
+                "outcome": {"success": True, "status": "planned", "action_count": 1},
+            },
+        }
+    )
+
+    assert response["ok"] is True
+    assert response["result"]["meta"]["outcome"] == {
+        "success": True,
+        "status": "planned",
+        "action_count": 1,
+    }
+
+
+def test_eibrain_rpc_ingest_rejects_non_object_outcome(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    bridge = EIBrainRPCBridge(runtime)
+
+    response = bridge.handle(
+        {
+            "method": "memory.ingest",
+            "params": {
+                "text": "user:hello | reply:hi",
+                "title": "Audio dialogue turn",
+                "memory_type": "conversation",
+                "scope": {"agent_id": "honxin", "workspace_id": "honjia"},
+                "outcome": [],
+            },
+        }
+    )
+
+    assert response == {"ok": False, "error": "invalid_request"}
+
+
 def test_eibrain_rpc_rejects_invalid_param_types(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     bridge = EIBrainRPCBridge(runtime)
@@ -106,6 +154,7 @@ def test_eibrain_rpc_rejects_invalid_param_types(tmp_path) -> None:
         {"method": "memory.recall", "params": {"query": "   ", "scope": {"agent_id": "eibrain", "workspace_id": "robot"}, "task_context": {"task_type": "brain.respond"}}},
         {"method": "memory.recall", "params": {"query": "x", "scope": {"agent_id": "eibrain", "workspace_id": "robot"}, "task_context": {"task_type": "brain.respond"}, "limit": 0}},
         {"method": "memory.recall", "params": {"query": "x", "scope": {"agent_id": "eibrain", "workspace_id": "robot"}, "task_context": {"task_type": "brain.respond"}, "limit": -1}},
+        {"method": "memory.ingest", "params": {"text": "x", "title": "x", "memory_type": "conversation", "scope": {"agent_id": "eibrain"}, "outcome": []}},
         {"method": "evolution.observe", "params": {"signal_type": "incident", "payload": []}},
         {"method": "evolution.get_active_policy", "params": {"task_type": "", "scope": {"agent_id": "eibrain", "workspace_id": "robot"}}},
         {"method": "evolution.get_active_policy", "params": {"task_type": "brain.respond", "scope": {}}},
