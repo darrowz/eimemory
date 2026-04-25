@@ -5,6 +5,7 @@ import sqlite3
 from pathlib import Path
 
 from eimemory.embeddings.local import cosine_similarity, embed_text
+from eimemory.identity import hongtu_query_scopes
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
@@ -336,17 +337,38 @@ class SqliteRecordStore:
         return [RecordEnvelope.from_dict(json.loads(row["payload_json"])) for row in rows]
 
     def _apply_scope_filters(self, where: list[str], params: list[object], scope: ScopeRef) -> None:
-        where.append("tenant_id = ?")
-        params.append(scope.tenant_id or "default")
-        where.append("agent_id = ?")
-        params.append(scope.agent_id)
-        where.append("workspace_id = ?")
-        params.append(scope.workspace_id)
-        if scope.user_id:
-            where.append("(user_id = ? OR user_id = '')")
-            params.append(scope.user_id)
-        else:
-            where.append("user_id = ''")
+        scopes = hongtu_query_scopes(scope)
+        clauses: list[str] = []
+        for item in scopes:
+            clause = [
+                "tenant_id = ?",
+                "agent_id = ?",
+                "workspace_id = ?",
+            ]
+            params.extend([item.tenant_id or "default", item.agent_id, item.workspace_id])
+            if item.user_id:
+                clause.append("(user_id = ? OR user_id = '')")
+                params.append(item.user_id)
+            else:
+                clause.append("user_id = ''")
+            clauses.append("(" + " AND ".join(clause) + ")")
+        where.append("(" + " OR ".join(clauses) + ")")
+
+    def rewrite(self, record: RecordEnvelope, *, previous_scope: ScopeRef | None = None) -> None:
+        previous_key = None
+        if previous_scope is not None:
+            previous_key = self._storage_key_from_values(
+                record_id=record.record_id,
+                tenant_id=previous_scope.tenant_id,
+                agent_id=previous_scope.agent_id,
+                workspace_id=previous_scope.workspace_id,
+                user_id=previous_scope.user_id,
+            )
+        new_key = self._storage_key(record)
+        if previous_key and previous_key != new_key:
+            self.conn.execute("DELETE FROM records WHERE storage_key = ?", (previous_key,))
+            self.conn.commit()
+        self.upsert(record)
 
     def _storage_key(self, record: RecordEnvelope) -> str:
         return self._storage_key_from_values(

@@ -19,6 +19,7 @@ from eimemory.compatibility.migration_helpers import (
     scan_migration_source,
 )
 from eimemory.config.loader import load_settings
+from eimemory.identity_ops import identity_report, repair_hongtu_identity
 from eimemory.knowledge.compiler import compile_paper_knowledge
 from eimemory.governance.console import write_evolution_console
 from eimemory.governance.snapshot import build_governance_snapshot
@@ -175,6 +176,13 @@ def _build_parser() -> argparse.ArgumentParser:
     quality_repair = quality_sub.add_parser("repair")
     quality_repair.add_argument("--apply", action="store_true")
 
+    identity = sub.add_parser("identity")
+    identity_sub = identity.add_subparsers(dest="identity_command")
+    identity_sub.add_parser("report")
+    identity_repair = identity_sub.add_parser("repair")
+    identity_repair.add_argument("--apply", action="store_true")
+    identity_repair.add_argument("--limit", type=int, default=0)
+
     reflect = sub.add_parser("reflect")
     reflect_sub = reflect.add_subparsers(dest="reflect_command")
 
@@ -249,7 +257,7 @@ def main(argv: list[str] | None = None) -> int:
         print(
             json.dumps(
                 {
-                    "usage": "eimemory init|ingest|recall|paper|source|intake|export|import|backup|migrate|nightly|quality|reflect|governance|evolve|serve-eibrain-rpc",
+                    "usage": "eimemory init|ingest|recall|paper|source|intake|export|import|backup|migrate|nightly|quality|identity|reflect|governance|evolve|serve-eibrain-rpc",
                 }
             )
         )
@@ -593,6 +601,24 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0
         print(json.dumps({"usage": "eimemory quality stats|repair"}))
+        return 0
+    if parsed.command == "identity":
+        if parsed.identity_command == "report":
+            report = identity_report(runtime)
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0
+        if parsed.identity_command == "repair":
+            if parsed.limit < 0:
+                print(json.dumps({"ok": False, "error": "invalid_limit"}, ensure_ascii=False))
+                return 2
+            report = repair_hongtu_identity(
+                runtime,
+                apply=bool(parsed.apply),
+                limit=parsed.limit or None,
+            )
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0
+        print(json.dumps({"usage": "eimemory identity report|repair"}))
         return 0
     if parsed.command == "openclaw-hook":
         try:

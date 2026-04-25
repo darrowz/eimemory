@@ -21,6 +21,17 @@ class RuntimeStore:
         export_record_markdown(self.root, record)
         return record
 
+    def rewrite(self, record: RecordEnvelope, *, previous_scope: ScopeRef | dict | None = None) -> RecordEnvelope:
+        previous_scope_ref = (
+            previous_scope
+            if isinstance(previous_scope, ScopeRef)
+            else (None if previous_scope is None else ScopeRef.from_dict(previous_scope))
+        )
+        self.log.append(record)
+        self.sqlite.rewrite(record, previous_scope=previous_scope_ref)
+        export_record_markdown(self.root, record)
+        return record
+
     def search(
         self,
         *,
