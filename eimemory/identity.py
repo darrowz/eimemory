@@ -121,6 +121,8 @@ def _channel_from_source(source: str) -> str:
 def needs_hongtu_identity_repair(record: RecordEnvelope) -> bool:
     if is_legacy_hongtu_scope(record.scope):
         return True
+    if _is_hongtu_subject_source(record):
+        return not is_hongtu_scope(record.scope) or str(record.meta.get("identity") or "") != "hongtu"
     return is_hongtu_scope(record.scope) and str(record.meta.get("identity") or "") != "hongtu"
 
 
@@ -270,3 +272,8 @@ def _modality_from_record(record: RecordEnvelope) -> str:
     if record.kind in text_like_kinds:
         return "text"
     return ""
+
+
+def _is_hongtu_subject_source(record: RecordEnvelope) -> bool:
+    lowered_source = str(record.source or "").lower()
+    return lowered_source.startswith(("openclaw.", "eibrain.", "eimemory."))
