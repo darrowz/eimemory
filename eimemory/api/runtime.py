@@ -11,6 +11,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 
 from eimemory.api.evolution import EvolutionAPI
 from eimemory.api.memory import MemoryAPI
+from eimemory.core.clock import now_iso
 from eimemory.intake.registry import SourceRegistry
 from eimemory.intake.papers.sources import ingest_paper_source
 from eimemory.knowledge.compiler import KnowledgeCompilation, compile_paper_knowledge
@@ -87,6 +88,7 @@ class Runtime:
         if fetch and fetch_text is None:
             fetch_text = _default_fetch_text
         results = []
+        scanned_at = now_iso()
         item_budget = max(0, int(limit)) if limit is not None else None
         item_count = 0
         written_count = 0
@@ -112,6 +114,8 @@ class Runtime:
             payload["source_id"] = source.source_id
             payload["source_kind"] = source.source_kind
             item_count += len(result.items)
+            source_written_count = 0
+            source_skipped_existing_count = 0
             if persist:
                 for item in result.items:
                     record = _collected_item_record(
@@ -127,10 +131,21 @@ class Runtime:
                         rejected_count += 1
                     if self.store.get_by_id(record.record_id, scope=record.scope) is not None:
                         skipped_existing_count += 1
+                        source_skipped_existing_count += 1
                         continue
                     self.store.append(record)
                     written_count += 1
+                    source_written_count += 1
                     persisted_record_ids.append(record.record_id)
+            self.sources.mark_source_scanned(
+                source.source_id,
+                scanned_at=scanned_at,
+                status="ok" if result.ok else "error",
+                item_count=len(result.items),
+                written_count=source_written_count,
+                skipped_existing_count=source_skipped_existing_count,
+                error=result.error,
+            )
             results.append(payload)
             if item_budget is not None and item_count >= item_budget:
                 break

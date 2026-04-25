@@ -69,10 +69,13 @@ def test_nightly_jobs_include_active_intake_reports(tmp_path) -> None:
     )
 
     report = run_nightly_jobs(runtime, scope={"agent_id": "main"})
+    reloaded_source = runtime.sources.list_sources()[0]
 
     assert report["knowledge_intake"]["candidate_count"] == 1
     assert report["knowledge_intake"]["written_count"] == 1
     assert report["source_quality"]["source_count"] == 1
+    assert reloaded_source.last_scanned_at
+    assert reloaded_source.metadata["last_scan"]["status"] == "candidate"
 
 
 def test_nightly_jobs_do_not_reset_reviewed_candidates(tmp_path) -> None:
@@ -115,7 +118,7 @@ def test_nightly_jobs_fetch_and_persist_external_candidates(tmp_path) -> None:
 
     runtime = Runtime.create(root=tmp_path / "runtime")
     scope = {"agent_id": "main"}
-    runtime.sources.add_source(
+    source = runtime.sources.add_source(
         {
             "source_kind": "rss",
             "title": "External feed",
@@ -136,12 +139,18 @@ def test_nightly_jobs_fetch_and_persist_external_candidates(tmp_path) -> None:
 
     report = run_nightly_jobs(runtime, scope=scope, external_fetch_text=fake_fetch_text)
     candidates = runtime.store.list_records(kinds=["knowledge_candidate"], scope=scope, limit=10)
+    reloaded_source = runtime.sources.list_sources()[0]
 
     assert report["external_collection"]["ok"] is True
     assert report["external_collection"]["source_count"] == 1
     assert report["external_collection"]["fetched_item_count"] == 1
     assert report["external_collection"]["written_count"] == 1
     assert report["external_collection"]["error_count"] == 0
+    assert reloaded_source.source_id == source.source_id
+    assert reloaded_source.last_scanned_at
+    assert reloaded_source.metadata["last_scan"]["status"] == "ok"
+    assert reloaded_source.metadata["last_scan"]["item_count"] == 1
+    assert reloaded_source.metadata["last_scan"]["written_count"] == 1
     assert any("External intake item" in record.title for record in candidates)
 
 
@@ -200,6 +209,7 @@ def test_nightly_jobs_reports_external_errors_without_failing(tmp_path) -> None:
         raise OSError("network unavailable")
 
     report = run_nightly_jobs(runtime, scope=scope, external_fetch_text=fake_fetch_text)
+    reloaded_source = runtime.sources.list_sources()[0]
 
     assert report["ok"] is True
     assert report["external_collection"]["ok"] is False
@@ -207,6 +217,9 @@ def test_nightly_jobs_reports_external_errors_without_failing(tmp_path) -> None:
     assert report["external_collection"]["written_count"] == 0
     assert report["external_collection"]["error_count"] == 1
     assert report["external_collection"]["errors"][0]["error"] == "fetch failed"
+    assert reloaded_source.last_scanned_at
+    assert reloaded_source.metadata["last_scan"]["status"] == "error"
+    assert reloaded_source.metadata["last_scan"]["error"]
 
 
 def test_nightly_jobs_fetch_persist_and_promote_paper_candidates(tmp_path) -> None:

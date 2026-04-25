@@ -84,17 +84,31 @@ class KnowledgeIntakeLoop:
         sources = self.sources.list_sources(source_kind=source_kind or None)
         if limit is not None:
             sources = sources[: max(0, int(limit))]
-        candidates = self.build_candidates(sources)
+        scanned_at = now_iso()
+        candidates = self.build_candidates(sources, scanned_at=scanned_at)
         written = 0
         skipped_existing = 0
+        written_by_source: dict[str, int] = {}
+        skipped_by_source: dict[str, int] = {}
         if persist:
             for record in candidates_to_records(candidates, scope):
                 existing = self.store.get_by_id(record.record_id, scope=record.scope)
                 if existing is not None and existing.status != "candidate":
                     skipped_existing += 1
+                    source_id = str(record.meta.get("source_id") or "")
+                    skipped_by_source[source_id] = skipped_by_source.get(source_id, 0) + 1
                     continue
                 self.store.append(record)
                 written += 1
+                source_id = str(record.meta.get("source_id") or "")
+                written_by_source[source_id] = written_by_source.get(source_id, 0) + 1
+        self._mark_scanned_sources(
+            sources,
+            candidates,
+            scanned_at=scanned_at,
+            written_by_source=written_by_source,
+            skipped_by_source=skipped_by_source,
+        )
         return {
             "ok": True,
             "persist": bool(persist),
@@ -109,12 +123,12 @@ class KnowledgeIntakeLoop:
             "candidates": candidates,
         }
 
-    def build_candidates(self, sources: Iterable[SourceEntry]) -> list[dict[str, Any]]:
+    def build_candidates(self, sources: Iterable[SourceEntry], *, scanned_at: str | None = None) -> list[dict[str, Any]]:
         seen_fingerprints: set[str] = set()
         candidates: list[dict[str, Any]] = []
-        scanned_at = now_iso()
+        final_scanned_at = scanned_at or now_iso()
         for source in sources:
-            candidate = self._candidate_for_source(source, scanned_at=scanned_at)
+            candidate = self._candidate_for_source(source, scanned_at=final_scanned_at)
             fingerprint = str(candidate["fingerprint"])
             if candidate["decision"] == DECISION_CANDIDATE and fingerprint in seen_fingerprints:
                 candidate = {
@@ -130,6 +144,31 @@ class KnowledgeIntakeLoop:
                 seen_fingerprints.add(fingerprint)
             candidates.append(candidate)
         return candidates
+
+    def _mark_scanned_sources(
+        self,
+        sources: Iterable[SourceEntry],
+        candidates: Iterable[dict[str, Any]],
+        *,
+        scanned_at: str,
+        written_by_source: dict[str, int],
+        skipped_by_source: dict[str, int],
+    ) -> None:
+        if self.sources is None:
+            return
+        candidates_by_source = {str(item.get("source_id") or ""): item for item in candidates}
+        for source in sources:
+            candidate = candidates_by_source.get(source.source_id, {})
+            status = str(candidate.get("decision") or ("skipped" if not source.enabled else "unknown"))
+            self.sources.mark_source_scanned(
+                source.source_id,
+                scanned_at=scanned_at,
+                status=status,
+                item_count=1 if candidate else 0,
+                written_count=written_by_source.get(source.source_id, 0),
+                skipped_existing_count=skipped_by_source.get(source.source_id, 0),
+                error="" if status == DECISION_CANDIDATE else str(candidate.get("reason") or ""),
+            )
 
     def _candidate_for_source(self, source: SourceEntry, *, scanned_at: str) -> dict[str, Any]:
         material = self._source_material(source, scanned_at=scanned_at)

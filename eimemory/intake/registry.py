@@ -182,6 +182,53 @@ class SourceRegistry:
             sources = [item for item in sources if item.source_kind == normalized_kind]
         return sources
 
+    def mark_source_scanned(
+        self,
+        source_id: str,
+        *,
+        scanned_at: str | None = None,
+        status: str = "ok",
+        item_count: int = 0,
+        written_count: int = 0,
+        skipped_existing_count: int = 0,
+        error: str = "",
+    ) -> SourceEntry | None:
+        self._load()
+        target_id = str(source_id or "").strip()
+        if not target_id:
+            return None
+        final_scanned_at = str(scanned_at or now_iso())
+        updated_entry: SourceEntry | None = None
+        updated_sources: list[SourceEntry] = []
+        for entry in self._sources:
+            if entry.source_id != target_id:
+                updated_sources.append(entry)
+                continue
+            metadata = dict(entry.metadata or {})
+            metadata["last_scan"] = _json_safe(
+                {
+                    "scanned_at": final_scanned_at,
+                    "status": str(status or "ok"),
+                    "item_count": max(0, int(item_count)),
+                    "written_count": max(0, int(written_count)),
+                    "skipped_existing_count": max(0, int(skipped_existing_count)),
+                    "error": str(error or ""),
+                }
+            )
+            updated_entry = SourceEntry.from_dict(
+                {
+                    **entry.to_dict(),
+                    "last_scanned_at": final_scanned_at,
+                    "metadata": metadata,
+                }
+            )
+            updated_sources.append(updated_entry)
+        if updated_entry is None:
+            return None
+        self._sources = updated_sources
+        self._save()
+        return updated_entry
+
     def scan_sources(
         self,
         *,
