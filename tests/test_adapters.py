@@ -120,6 +120,42 @@ def test_eibrain_rpc_ingest_persists_outcome_metadata(tmp_path) -> None:
     }
 
 
+def test_eibrain_rpc_ingest_persists_structured_world_observation(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    bridge = EIBrainRPCBridge(runtime)
+
+    response = bridge.handle(
+        {
+            "method": "memory.ingest",
+            "params": {
+                "text": "Observed cup",
+                "title": "Visual world observation",
+                "memory_type": "world_observation",
+                "source": "eibrain.visual_world",
+                "scope": {"agent_id": "honxin", "workspace_id": "honjia", "user_id": "darrow"},
+                "organ": "eye",
+                "modality": "vision",
+                "content": {"objects": [{"label": "cup", "confidence": 0.8}]},
+                "meta": {"dedupe_key": "world_observation:cup", "confidence": 0.8},
+                "tags": ["world_observation", "vision", "cup"],
+                "evidence": [{"type": "frame", "path": "/tmp/eibrain-vision/latest.jpg"}],
+                "links": [{"rel": "actor", "id": "user-1", "kind": "identity"}],
+            },
+        }
+    )
+
+    stored = response["result"]
+    assert response["ok"] is True
+    assert stored["content"]["text"] == "Observed cup"
+    assert stored["content"]["memory_type"] == "world_observation"
+    assert stored["content"]["objects"] == [{"label": "cup", "confidence": 0.8}]
+    assert stored["meta"]["dedupe_key"] == "world_observation:cup"
+    assert stored["meta"]["confidence"] == 0.8
+    assert stored["tags"] == ["world_observation", "vision", "cup"]
+    assert stored["evidence"] == ['{"path": "/tmp/eibrain-vision/latest.jpg", "type": "frame"}']
+    assert stored["links"] == [{"relation": "actor", "target_kind": "identity", "target_id": "user-1"}]
+
+
 def test_eibrain_rpc_ingest_rejects_non_object_outcome(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     bridge = EIBrainRPCBridge(runtime)

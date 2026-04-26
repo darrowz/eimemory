@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from eimemory.knowledge.views import build_recall_view, choose_view_type, records_from_view
-from eimemory.models.records import RecallBundle, RecordEnvelope, ScopeRef
+from eimemory.models.records import LinkRef, RecallBundle, RecordEnvelope, ScopeRef
 from eimemory.storage.runtime_store import RuntimeStore
 
 
@@ -20,17 +20,27 @@ class MemoryAPI:
         source: str = "runtime",
         force_capture: bool = False,
         meta: dict | None = None,
+        content: dict | None = None,
+        evidence: list[str] | None = None,
+        links: list[LinkRef] | None = None,
     ) -> RecordEnvelope:
         meta_payload = {"memory_type": memory_type, "force_capture": force_capture}
         if meta:
             meta_payload.update(dict(meta))
+        content_payload = {"text": text, "memory_type": memory_type}
+        if content:
+            content_payload.update(dict(content))
+            content_payload.setdefault("text", text)
+            content_payload.setdefault("memory_type", memory_type)
         record = RecordEnvelope.create(
             kind="memory",
             title=title,
             summary=text,
-            content={"text": text, "memory_type": memory_type},
+            content=content_payload,
             scope=ScopeRef.from_dict(scope),
             tags=tags or [],
+            links=links or [],
+            evidence=evidence or [],
             source=source,
             meta=meta_payload,
         )
@@ -87,8 +97,8 @@ class MemoryAPI:
             retrieval_policy=retrieval_policy,
         )
         profile_config = self._recall_profile_config(recall_profile)
-        recall_filters = self._recall_filters_from_task_context(task_context)
         search_limit = max(limit * profile_config["search_multiplier"], limit)
+        recall_filters = self._recall_filters_from_task_context(task_context)
         items, search_report = self.store.search_with_diagnostics(
             query=normalized_query,
             kinds=["memory", "claim_card", "knowledge_page"],
@@ -183,7 +193,6 @@ class MemoryAPI:
                 "recall_view": final_view.to_dict(),
             },
         )
-
 
     def _recall_filters_from_task_context(self, task_context: dict) -> dict:
         filters = {
