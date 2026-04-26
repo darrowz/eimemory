@@ -87,12 +87,14 @@ class MemoryAPI:
             retrieval_policy=retrieval_policy,
         )
         profile_config = self._recall_profile_config(recall_profile)
+        recall_filters = self._recall_filters_from_task_context(task_context)
         search_limit = max(limit * profile_config["search_multiplier"], limit)
         items, search_report = self.store.search_with_diagnostics(
             query=normalized_query,
             kinds=["memory", "claim_card", "knowledge_page"],
             scope=scope_ref,
             limit=search_limit,
+            recall_filters=recall_filters,
         )
         graph_expanded = 0
         related_ids: list[str] = []
@@ -118,7 +120,7 @@ class MemoryAPI:
             memories=memories,
             query=normalized_query,
         )
-        items = records_from_view(view, items, limit=limit)
+        items = self._apply_hard_recall_filters(records_from_view(view, items, limit=limit), recall_filters)
         final_view = build_recall_view(
             view_type=view.view_type,
             claims=[item for item in items if item.kind == "claim_card"],
@@ -177,9 +179,78 @@ class MemoryAPI:
                 "source_composition": self._source_composition(items),
                 "selected_records": self._selected_record_summaries(items),
                 "scoring": self._scoring_for_items(items, search_report),
+                "recall_filters": recall_filters,
                 "recall_view": final_view.to_dict(),
             },
         )
+
+
+    def _recall_filters_from_task_context(self, task_context: dict) -> dict:
+        filters = {
+            "allowed_sources": self._string_list(task_context.get("allowed_sources")),
+            "blocked_sources": self._string_list(task_context.get("blocked_sources")),
+            "allowed_memory_types": self._string_list(task_context.get("allowed_memory_types")),
+            "preferred_modalities": self._string_list(task_context.get("preferred_modalities")),
+            "organs": self._string_list(task_context.get("organs")),
+            "source_weights": self._source_weights(task_context.get("source_weights")),
+        }
+        return {key: value for key, value in filters.items() if value}
+
+    def _apply_hard_recall_filters(self, items: list[RecordEnvelope], recall_filters: dict) -> list[RecordEnvelope]:
+        if not recall_filters:
+            return items
+        return [item for item in items if self._record_allowed_by_recall_filters(item, recall_filters)]
+
+    def _record_allowed_by_recall_filters(self, item: RecordEnvelope, recall_filters: dict) -> bool:
+        labels = self._record_filter_labels(item)
+        blocked_sources = set(recall_filters.get("blocked_sources") or [])
+        if blocked_sources and labels["sources"] & blocked_sources:
+            return False
+        allowed_sources = set(recall_filters.get("allowed_sources") or [])
+        if allowed_sources and not labels["sources"] & allowed_sources:
+            return False
+        allowed_memory_types = set(recall_filters.get("allowed_memory_types") or [])
+        if allowed_memory_types and item.kind == "memory" and labels["memory_types"] and not labels["memory_types"] & allowed_memory_types:
+            return False
+        organs = set(recall_filters.get("organs") or [])
+        if organs and labels["organs"] and not labels["organs"] & organs:
+            return False
+        return True
+
+    def _record_filter_labels(self, item: RecordEnvelope) -> dict[str, set[str]]:
+        meta = item.meta if isinstance(item.meta, dict) else {}
+        content = item.content if isinstance(item.content, dict) else {}
+        sources = {str(item.source or "").strip()}
+        for key in ("source", "source_channel", "communication_channel"):
+            value = meta.get(key) or content.get(key)
+            if value:
+                sources.add(str(value).strip())
+        return {
+            "sources": {item for item in sources if item},
+            "memory_types": {str(meta.get("memory_type") or content.get("memory_type") or "").strip()} - {""},
+            "organs": {str(meta.get("organ") or content.get("organ") or "").strip()} - {""},
+        }
+
+    @staticmethod
+    def _string_list(value: object) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        return [str(item).strip() for item in value if str(item).strip()]
+
+    @staticmethod
+    def _source_weights(value: object) -> dict[str, float]:
+        if not isinstance(value, dict):
+            return {}
+        weights: dict[str, float] = {}
+        for key, raw_weight in value.items():
+            source = str(key).strip()
+            if not source:
+                continue
+            try:
+                weights[source] = max(0.0, float(raw_weight))
+            except (TypeError, ValueError):
+                continue
+        return weights
 
     def _resolve_recall_profile(self, *, task_context: dict, retrieval_policy: dict) -> tuple[str, str]:
         candidates = [

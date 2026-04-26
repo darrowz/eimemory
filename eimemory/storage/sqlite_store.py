@@ -204,6 +204,7 @@ class SqliteRecordStore:
         kinds: list[str] | None,
         scope: ScopeRef,
         limit: int,
+        recall_filters: dict | None = None,
     ) -> tuple[list[RecordEnvelope], dict]:
         limit = self._normalize_limit(limit)
         where = ["1=1"]
@@ -233,6 +234,8 @@ class SqliteRecordStore:
             if vector_score >= 0.12:
                 vector_hits += 1
             record = RecordEnvelope.from_dict(json.loads(row["payload_json"]))
+            if not self._record_matches_recall_filters(record, recall_filters):
+                continue
             quality = self._quality_from_record(record)
             if quality.get("capture_decision") == "reject":
                 continue
@@ -241,7 +244,9 @@ class SqliteRecordStore:
             relevance_score = float(lexical_score) + semantic_score + vector_score
             if lowered_tokens and lexical_score <= 0 and semantic_score < 0.08 and vector_score < 0.28:
                 continue
-            score = relevance_score + quality_boost
+            source_weight = self._source_weight(record, recall_filters)
+            modality_boost = self._preferred_modality_boost(record, recall_filters)
+            score = (relevance_score + quality_boost) * source_weight + modality_boost
             scored.append(
                 (
                     score,
@@ -256,6 +261,8 @@ class SqliteRecordStore:
                         "vector_score": round(vector_score, 4),
                         "quality_score": round(quality_score, 4),
                         "quality": quality,
+                        "source_weight": round(source_weight, 4),
+                        "modality_boost": round(modality_boost, 4),
                         "final_score": round(score, 4),
                     },
                 )
@@ -267,6 +274,7 @@ class SqliteRecordStore:
             "vector_hits": sum(1 for _, vector_score, _, _ in selected_rows if vector_score >= 0.12),
             "retrieval_mode": "hybrid_vector",
             "scored_items": [score_report for _, _, _, score_report in selected_rows],
+            "recall_filters": dict(recall_filters or {}),
         }
 
     def get_active_policy(self, *, task_type: str, scope: ScopeRef) -> dict:
@@ -422,6 +430,71 @@ class SqliteRecordStore:
         if not isinstance(parsed, list):
             return []
         return [float(item) for item in parsed]
+
+
+    def _record_matches_recall_filters(self, record: RecordEnvelope, recall_filters: dict | None) -> bool:
+        filters = dict(recall_filters or {})
+        if not filters:
+            return True
+        labels = self._record_filter_labels(record)
+        blocked_sources = set(filters.get("blocked_sources") or [])
+        if blocked_sources and labels["sources"] & blocked_sources:
+            return False
+        allowed_sources = set(filters.get("allowed_sources") or [])
+        if allowed_sources and not labels["sources"] & allowed_sources:
+            return False
+        allowed_memory_types = set(filters.get("allowed_memory_types") or [])
+        if allowed_memory_types and record.kind == "memory" and labels["memory_types"] and not labels["memory_types"] & allowed_memory_types:
+            return False
+        organs = set(filters.get("organs") or [])
+        if organs and labels["organs"] and not labels["organs"] & organs:
+            return False
+        return True
+
+    def _source_weight(self, record: RecordEnvelope, recall_filters: dict | None) -> float:
+        weights = dict((recall_filters or {}).get("source_weights") or {})
+        if not weights:
+            return 1.0
+        labels = self._record_filter_labels(record)["sources"]
+        matches = [float(weight) for source, weight in weights.items() if source in labels]
+        return max(matches) if matches else 1.0
+
+    def _preferred_modality_boost(self, record: RecordEnvelope, recall_filters: dict | None) -> float:
+        preferred = set((recall_filters or {}).get("preferred_modalities") or [])
+        if not preferred:
+            return 0.0
+        labels = self._record_filter_labels(record)
+        return 0.18 if labels["modalities"] & preferred else 0.0
+
+    def _record_filter_labels(self, record: RecordEnvelope) -> dict[str, set[str]]:
+        meta = record.meta if isinstance(record.meta, dict) else {}
+        content = record.content if isinstance(record.content, dict) else {}
+        sources = {str(record.source or "").strip()}
+        for key in ("source", "source_channel", "communication_channel"):
+            value = meta.get(key) or content.get(key)
+            if value:
+                sources.add(str(value).strip())
+        memory_types = set()
+        for key in ("memory_type",):
+            value = meta.get(key) or content.get(key)
+            if value:
+                memory_types.add(str(value).strip())
+        organs = set()
+        for key in ("organ",):
+            value = meta.get(key) or content.get(key)
+            if value:
+                organs.add(str(value).strip())
+        modalities = set()
+        for key in ("modality",):
+            value = meta.get(key) or content.get(key)
+            if value:
+                modalities.add(str(value).strip())
+        return {
+            "sources": {item for item in sources if item},
+            "memory_types": {item for item in memory_types if item},
+            "organs": {item for item in organs if item},
+            "modalities": {item for item in modalities if item},
+        }
 
     def _quality_from_record(self, record: RecordEnvelope) -> dict:
         quality = record.meta.get("quality") if isinstance(record.meta, dict) else {}

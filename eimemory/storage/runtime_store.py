@@ -50,9 +50,16 @@ class RuntimeStore:
         kinds: list[str] | None = None,
         scope: ScopeRef | dict | None = None,
         limit: int = 10,
+        recall_filters: dict | None = None,
     ) -> tuple[list[RecordEnvelope], dict]:
         scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
-        return self.sqlite.search_with_diagnostics(query=query, kinds=kinds, scope=scope_ref, limit=limit)
+        return self.sqlite.search_with_diagnostics(
+            query=query,
+            kinds=kinds,
+            scope=scope_ref,
+            limit=limit,
+            recall_filters=recall_filters,
+        )
 
     def get_active_policy(self, *, task_type: str, scope: ScopeRef | dict | None = None) -> dict:
         scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
