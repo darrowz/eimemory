@@ -87,7 +87,11 @@ def test_parse_body_user_session_shape() -> None:
     ("text", "capability", "intent"),
     [
         ("看到什么", "vision.describe", "describe_current_scene"),
+        ("看到了什么", "vision.describe", "describe_current_scene"),
         ("你看见什么", "vision.describe", "describe_current_scene"),
+        ("你看见了什么", "vision.describe", "describe_current_scene"),
+        ("你能看见什么", "vision.describe", "describe_current_scene"),
+        ("你能看到什么", "vision.describe", "describe_current_scene"),
         ("what do you see", "vision.describe", "describe_current_scene"),
         ("系统状态", "health.status", "report_health"),
         ("健康", "health.status", "report_health"),

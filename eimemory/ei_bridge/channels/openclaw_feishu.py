@@ -14,7 +14,16 @@ from eimemory.ei_bridge.protocol import (
 
 _INTENT_RULES: tuple[tuple[tuple[str, ...], str, str], ...] = (
     (
-        ("现在看到了什么", "看到什么", "你看见什么", "what do you see"),
+        (
+            "现在看到了什么",
+            "看到了什么",
+            "看到什么",
+            "你看见了什么",
+            "你看见什么",
+            "你能看见什么",
+            "你能看到什么",
+            "what do you see",
+        ),
         "vision.describe",
         "describe_current_scene",
     ),
