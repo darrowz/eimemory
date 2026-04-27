@@ -6,6 +6,7 @@ from collections.abc import Callable
 from dataclasses import asdict
 from hashlib import sha256
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen
 
 from eimemory.core.clock import now_iso
@@ -277,7 +278,7 @@ def _proposal_is_duplicate(runtime: Any, proposal: dict[str, Any]) -> bool:
     for source in runtime.sources.list_sources():
         if source.source_id != proposal.get("source_id"):
             continue
-        categories = {str(item).strip() for item in (source.metadata.get("categories") or [])}
+        categories = set(_source_categories(source))
         if proposal.get("action") == "add_chatpaper_category" and category in categories:
             return True
         if proposal.get("action") == "add_chatpaper_source":
@@ -318,7 +319,7 @@ def _apply_proposal(
         if source.source_id != proposal.get("source_id"):
             continue
         metadata = dict(source.metadata or {})
-        categories = [str(item) for item in (metadata.get("categories") or []) if str(item).strip()]
+        categories = _source_categories(source)
         category = str(proposal.get("category") or "").strip()
         if category in categories:
             return None
@@ -405,6 +406,39 @@ def _is_chatpaper_source(source: Any) -> bool:
     lowered_title = str(getattr(source, "title", "") or "").lower()
     lowered_tags = {str(item).lower() for item in (getattr(source, "tags", []) or [])}
     return "chatpaper.ai" in lowered_uri or "chatpaper" in lowered_title or "chatpaper" in lowered_tags
+
+
+def _source_categories(source: Any) -> list[str]:
+    categories: list[str] = []
+    seen: set[str] = set()
+    uri_category = _chatpaper_category_from_uri(str(getattr(source, "uri", "") or ""))
+    if uri_category:
+        categories.append(uri_category)
+        seen.add(uri_category)
+    metadata = getattr(source, "metadata", {}) or {}
+    for item in metadata.get("categories") or []:
+        category = str(item or "").strip()
+        if not category or category in seen:
+            continue
+        seen.add(category)
+        categories.append(category)
+    return categories
+
+
+def _chatpaper_category_from_uri(uri: str) -> str:
+    parsed = urlparse(str(uri or ""))
+    query_category = parse_qs(parsed.query).get("category", [""])[0]
+    if query_category:
+        return str(query_category).strip()
+    parts = [part for part in parsed.path.split("/") if part]
+    if "arxiv" not in parts:
+        return ""
+    index = parts.index("arxiv")
+    if index + 2 < len(parts):
+        return f"{parts[index + 1]}.{parts[index + 2]}"
+    if index + 1 < len(parts) and "." in parts[index + 1]:
+        return parts[index + 1]
+    return ""
 
 
 def _float_or_none(value: Any) -> float | None:

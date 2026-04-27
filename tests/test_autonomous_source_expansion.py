@@ -107,3 +107,33 @@ def test_autonomous_source_expansion_rejects_low_score_llm_proposals_without_app
     assert source.metadata["categories"] == ["cs.AI"]
     assert audit_records
     assert audit_records[0].meta["evaluation"]["decision"] == "reject"
+
+
+def test_autonomous_source_expansion_preserves_chatpaper_uri_category_when_metadata_is_empty(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = hongtu_scope({})
+    runtime.sources.add_source(
+        {
+            "source_kind": "url",
+            "title": "ChatPaper arXiv cs.AI",
+            "uri": "https://www.chatpaper.ai/zh/dashboard/arxiv/cs/AI",
+            "enabled": True,
+            "tags": ["chatpaper", "arxiv", "paper"],
+        }
+    )
+    runtime.store.append(
+        RecordEnvelope.create(
+            kind="unknown",
+            title="Need retrieval memory papers",
+            summary="Recall missed retrieval memory papers.",
+            detail="Recall missed retrieval memory papers.",
+            scope=ScopeRef.from_dict(scope),
+        )
+    )
+
+    report = run_autonomous_source_expansion(runtime, scope=scope, apply=True, max_apply=1)
+    source = runtime.sources.list_sources()[0]
+    runtime.close()
+
+    assert report["applied_count"] == 1
+    assert {"cs.AI", "cs.IR"}.issubset(set(source.metadata["categories"]))
