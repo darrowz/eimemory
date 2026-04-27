@@ -23,6 +23,7 @@ def run_nightly_jobs(
     knowledge_pages = runtime.store.list_records(kinds=["knowledge_page"], scope=scope, limit=1000)
     knowledge_report = runtime.evolution.reconcile_knowledge(scope=scope)
     quality_report = runtime.evolution.memory_quality_report(scope=scope)
+    source_expansion_report = runtime.expand_sources_autonomously(scope=scope, apply=True, max_apply=3)
     intake_report = runtime.run_knowledge_intake(scope=scope, persist=True, limit=100)
     external_collection_report = _run_external_collection(
         runtime,
@@ -64,6 +65,16 @@ def run_nightly_jobs(
             "fail_count": sum(1 for report in replay_reports if report.meta.get("verdict") == "fail"),
         },
         "memory_quality": quality_report,
+        "source_expansion": {
+            "ok": bool(source_expansion_report.get("ok", True)),
+            "proposal_count": int(source_expansion_report.get("proposal_count") or 0),
+            "approved_count": int(source_expansion_report.get("approved_count") or 0),
+            "rejected_count": int(source_expansion_report.get("rejected_count") or 0),
+            "duplicate_count": int(source_expansion_report.get("duplicate_count") or 0),
+            "applied_count": int(source_expansion_report.get("applied_count") or 0),
+            "updated_source_ids": list(source_expansion_report.get("updated_source_ids") or []),
+            "audit_record_ids": list(source_expansion_report.get("audit_record_ids") or []),
+        },
         "knowledge_intake": {
             "scanned_count": intake_report["scanned_count"],
             "candidate_count": intake_report["candidate_count"],

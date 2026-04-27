@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from eimemory.intake.autonomous_sources import latest_autonomous_source_expansion, run_autonomous_source_expansion
 from eimemory.intake.connectors import (
     CollectedItem,
     FetchResult,
@@ -44,6 +45,7 @@ __all__ = [
     "export_knowledge_pack",
     "explain_candidate",
     "import_knowledge_pack",
+    "latest_autonomous_source_expansion",
     "build_source_quality_report",
     "list_review_queue",
     "merge_candidates",
@@ -57,4 +59,5 @@ __all__ = [
     "promote_paper_candidate",
     "recommend_collection_policy",
     "review_candidate",
+    "run_autonomous_source_expansion",
 ]

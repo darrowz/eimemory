@@ -230,6 +230,31 @@ class Runtime:
 
         return recommend_collection_policy(self, scope or {}, topic_gaps=topic_gaps or [])
 
+    def expand_sources_autonomously(
+        self,
+        *,
+        scope: dict | None = None,
+        apply: bool = False,
+        evaluator=None,
+        max_apply: int = 3,
+        min_score: float = 0.7,
+    ) -> dict:
+        from eimemory.intake.autonomous_sources import run_autonomous_source_expansion
+
+        return run_autonomous_source_expansion(
+            self,
+            scope=scope or {},
+            apply=apply,
+            evaluator=evaluator,
+            max_apply=max_apply,
+            min_score=min_score,
+        )
+
+    def latest_source_expansion(self, *, scope: dict | None = None, limit: int = 20) -> dict:
+        from eimemory.intake.autonomous_sources import latest_autonomous_source_expansion
+
+        return latest_autonomous_source_expansion(self, scope=scope or {}, limit=limit)
+
     def export_knowledge_pack(self, path: str | Path, *, scope: dict | None = None, include_candidates: bool = False) -> dict:
         from eimemory.intake.packs import export_knowledge_pack
 

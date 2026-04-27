@@ -5,6 +5,7 @@ import json
 from eimemory.api.runtime import Runtime
 from eimemory.cli.main import main as cli_main
 from eimemory.identity import hongtu_scope
+from eimemory.models.records import RecordEnvelope, ScopeRef
 import pytest
 
 from eimemory.intake.registry import SourceRegistry, normalize_source_strategy_metadata
@@ -123,3 +124,46 @@ def test_cli_source_commands_add_list_and_scan(tmp_path, monkeypatch, capsys) ->
     assert scan_output["candidate_count"] == 1
     assert persisted[0].kind == "source_candidate"
     assert persisted[0].provenance["source_id"] == list_output[0]["source_id"]
+
+
+def test_cli_source_expand_applies_autonomous_categories(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path))
+
+    assert cli_main(
+        [
+            "source",
+            "add",
+            "--source-kind",
+            "url",
+            "--title",
+            "ChatPaper arXiv cs.AI",
+            "--uri",
+            "https://www.chatpaper.ai/zh/dashboard/arxiv/cs/AI",
+            "--tag",
+            "chatpaper",
+            "--tag",
+            "arxiv",
+        ]
+    ) == 0
+    capsys.readouterr()
+    runtime = Runtime.create(root=tmp_path)
+    runtime.store.append(
+        RecordEnvelope.create(
+            kind="unknown",
+            title="Need robotics and vision sources",
+            summary="Recall missed robotics and vision sources.",
+            detail="Recall missed robotics and vision sources.",
+            scope=ScopeRef.from_dict(hongtu_scope({})),
+        )
+    )
+    runtime.close()
+
+    assert cli_main(["source", "expand", "--apply", "--max-apply", "2"]) == 0
+    report = json.loads(capsys.readouterr().out)
+
+    runtime = Runtime.create(root=tmp_path)
+    source = runtime.sources.list_sources()[0]
+    runtime.close()
+
+    assert report["applied_count"] == 2
+    assert {"cs.CV", "cs.RO"}.issubset(set(source.metadata["categories"]))

@@ -279,3 +279,43 @@ def test_nightly_jobs_fetch_persist_and_promote_paper_candidates(tmp_path) -> No
     assert knowledge_pages
     assert candidates[0].status == "promoted"
     assert candidates[0].meta["promoted_to_paper_source_id"] == paper_sources[0].record_id
+
+
+def test_nightly_jobs_expand_sources_before_external_collection(tmp_path) -> None:
+    from eimemory.api.runtime import Runtime
+    from eimemory.models.records import RecordEnvelope, ScopeRef
+
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = {"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"}
+    runtime.sources.add_source(
+        {
+            "source_kind": "url",
+            "title": "ChatPaper arXiv cs.AI",
+            "uri": "https://www.chatpaper.ai/zh/dashboard/arxiv/cs/AI",
+            "enabled": True,
+            "tags": ["chatpaper", "arxiv", "paper"],
+            "metadata": {"categories": ["cs.AI"], "max_items": 10},
+        }
+    )
+    runtime.store.append(
+        RecordEnvelope.create(
+            kind="unknown",
+            title="Need embodied robotics papers",
+            summary="Recall missed embodied robotics papers.",
+            detail="Recall missed embodied robotics papers.",
+            scope=ScopeRef.from_dict(scope),
+        )
+    )
+    fetched_urls: list[str] = []
+
+    def fake_fetch_text(url: str) -> str:
+        fetched_urls.append(url)
+        return json.dumps({"papers": [], "total": 0})
+
+    report = run_nightly_jobs(runtime, scope=scope, external_fetch_text=fake_fetch_text)
+    source = runtime.sources.list_sources()[0]
+    runtime.close()
+
+    assert report["source_expansion"]["applied_count"] >= 1
+    assert "cs.RO" in source.metadata["categories"]
+    assert any("category=cs.RO" in url for url in fetched_urls)

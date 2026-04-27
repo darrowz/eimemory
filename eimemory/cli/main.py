@@ -82,6 +82,11 @@ def _build_parser() -> argparse.ArgumentParser:
     source_scan = source_sub.add_parser("scan")
     source_scan.add_argument("--persist", action="store_true")
 
+    source_expand = source_sub.add_parser("expand")
+    source_expand.add_argument("--apply", action="store_true")
+    source_expand.add_argument("--max-apply", type=int, default=3)
+    source_expand.add_argument("--min-score", type=float, default=0.7)
+
     intake = sub.add_parser("intake")
     intake_sub = intake.add_subparsers(dest="intake_command")
 
@@ -389,7 +394,22 @@ def main(argv: list[str] | None = None) -> int:
             report = runtime.sources.scan_sources(store=runtime.store, scope=scope, persist=bool(parsed.persist))
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0
-        print(json.dumps({"usage": "eimemory source add|list|scan"}))
+        if parsed.source_command == "expand":
+            if parsed.max_apply < 0:
+                print(json.dumps({"ok": False, "error": "invalid_max_apply"}, ensure_ascii=False))
+                return 2
+            if parsed.min_score < 0.0 or parsed.min_score > 1.0:
+                print(json.dumps({"ok": False, "error": "invalid_min_score"}, ensure_ascii=False))
+                return 2
+            report = runtime.expand_sources_autonomously(
+                scope=scope,
+                apply=bool(parsed.apply),
+                max_apply=parsed.max_apply,
+                min_score=parsed.min_score,
+            )
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0
+        print(json.dumps({"usage": "eimemory source add|list|scan|expand"}))
         return 0
     if parsed.command == "intake":
         if parsed.intake_command in {"run", "report"}:

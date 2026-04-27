@@ -25,6 +25,7 @@ def build_governance_snapshot(runtime, scope: dict | ScopeRef) -> dict[str, Any]
     active_intake = _build_active_intake_summary(runtime, scope=scope_ref)
     source_quality = runtime.source_quality_report(scope=scope_payload)
     collection_policy = runtime.collection_policy(scope=scope_payload)
+    source_expansion = runtime.latest_source_expansion(scope=scope_payload)
 
     backup_reports = _collect_backup_reports(runtime.store.root)
     warnings: list[str] = []
@@ -57,6 +58,7 @@ def build_governance_snapshot(runtime, scope: dict | ScopeRef) -> dict[str, Any]
         "knowledge_intake": _summarize_knowledge_intake(knowledge_intake),
         "active_intake": active_intake,
         "source_quality": source_quality,
+        "source_expansion": source_expansion,
         "collection_policy": {
             "run_now": collection_policy["run_now"],
             "pause": collection_policy["pause"],
