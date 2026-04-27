@@ -54,6 +54,14 @@ function resolveHookCommand() {
   return ['eimemory', 'openclaw-hook'];
 }
 
+function resolveBridgeCommand() {
+  const configured = (process.env.EIMEMORY_BRIDGE_COMMAND || '').trim();
+  if (configured) {
+    return splitCommand(configured);
+  }
+  return ['eimemory', 'ei-bridge', 'feishu'];
+}
+
 function normalizeEventPayload(hook, event) {
   if (hook === 'message_received') {
     const scope = normalizeScope(event);
@@ -324,9 +332,33 @@ function invokeHook(hook, event) {
   return JSON.parse(result.stdout || '{}');
 }
 
+function invokeBridge(event) {
+  const command = resolveBridgeCommand();
+  const result = spawnSync(command[0], [...command.slice(1)], {
+    input: JSON.stringify(event),
+    encoding: 'utf-8',
+    timeout: Number(process.env.EIMEMORY_BRIDGE_TIMEOUT_MS || 5000),
+  });
+  if (result.error) {
+    throw result.error;
+  }
+  if (result.status !== 0) {
+    throw new Error(result.stderr || result.stdout || 'ei-bridge feishu failed');
+  }
+  return JSON.parse(result.stdout || '{}');
+}
+
 function safeInvokeHook(hook, event) {
   try {
     return invokeHook(hook, event);
+  } catch (_error) {
+    return null;
+  }
+}
+
+function safeInvokeBridge(event) {
+  try {
+    return invokeBridge(event);
   } catch (_error) {
     return null;
   }
@@ -343,33 +375,60 @@ module.exports.default = {
   register(api) {
     api.on('message_received', async (event) => safeInvokeHook('message_received', event) || {});
     api.on('before_prompt_build', async (event) => {
+      const bridgePayload = safeInvokeBridge(normalizeEventPayload('before_prompt_build', event));
       const payload = safeInvokeHook('before_prompt_build', event);
+      const bridgeContext = buildBridgePrependContext(bridgePayload);
       if (!payload) {
-        return {};
+        return bridgeContext ? { prependContext: bridgeContext } : {};
       }
       const bundle = payload.memory_bundle || {};
       const items = Array.isArray(bundle.items) ? bundle.items : [];
       if (!items.length) {
+        return bridgeContext ? { prependContext: bridgeContext } : {};
+      }
+      const memoryContext = buildMemoryPrependContext(items);
+      if (!memoryContext && !bridgeContext) {
         return {};
       }
-      const context = items
-        .map((item) => {
-          const summary = cleanInjectedMemoryText(item.summary || item.content?.text || '');
-          if (!summary) {
-            return '';
-          }
-          return `- ${item.title}: ${summary}`.trim();
-        })
-        .filter(Boolean)
-        .join('\n');
-      if (!context) {
-        return {};
-      }
-      return { prependContext: `Relevant eimemory context:\n${context}` };
+      return { prependContext: [bridgeContext, memoryContext].filter(Boolean).join('\n\n') };
     });
     api.on('agent_end', async (event) => safeInvokeHook('agent_end', event) || {});
   },
 };
+
+function buildBridgePrependContext(payload) {
+  if (!payload || payload.matched !== true) {
+    return '';
+  }
+  const context = cleanInjectedMemoryText(payload.prepend_context || payload.reply || '');
+  return context ? `Live eibrain context:\n${context}` : '';
+}
+
+function buildMemoryPrependContext(items) {
+  const context = items
+    .map((item) => {
+      if (isBridgeAuditMemory(item)) {
+        return '';
+      }
+      const summary = cleanInjectedMemoryText(item.summary || item.content?.text || '');
+      if (!summary) {
+        return '';
+      }
+      return `- ${item.title}: ${summary}`.trim();
+    })
+    .filter(Boolean)
+    .join('\n');
+  return context ? `Relevant eimemory context:\n${context}` : '';
+}
+
+function isBridgeAuditMemory(item) {
+  const source = String(item?.source || item?.content?.source || '').toLowerCase();
+  const title = String(item?.title || '').toLowerCase();
+  const memoryType = String(item?.meta?.memory_type || item?.content?.memory_type || '').toLowerCase();
+  return source === 'ei_bridge.openclaw_feishu'
+    || title === 'ei-bridge openclaw command audit'
+    || memoryType === 'audit';
+}
 
 function cleanInjectedMemoryText(text) {
   let cleaned = String(text || '').trim();

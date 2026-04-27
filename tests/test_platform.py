@@ -753,6 +753,99 @@ if (hook === 'before_prompt_build') {
     assert "Quoted command" in payload["prependContext"]
 
 
+def test_openclaw_js_bridge_injects_live_eibrain_context_from_feishu_bridge(tmp_path) -> None:
+    script = """
+const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
+const handlers = {};
+plugin.register({ on(name, handler) { handlers[name] = handler; } });
+handlers.before_prompt_build({ prompt: '现在看到了什么', senderId: 'ou_user' })
+  .then((result) => { process.stdout.write(JSON.stringify(result)); })
+  .catch((error) => { console.error(error && error.stack ? error.stack : String(error)); process.exit(1); });
+""".strip()
+    bridge_script = tmp_path / "bridge.js"
+    bridge_script.write_text(
+        """
+const fs = require('node:fs');
+const payload = JSON.parse(fs.readFileSync(0, 'utf8') || '{}');
+process.stdout.write(JSON.stringify({
+  matched: true,
+  reply: '已完成：视觉状态：live；识别到：person、keyboard',
+  prepend_context: `实时 eibrain 视觉上下文：${payload.query}`,
+}));
+""".strip(),
+        encoding="utf-8",
+    )
+    hook_script = tmp_path / "empty-hook.js"
+    hook_script.write_text("process.stdout.write(JSON.stringify({ memory_bundle: { items: [] } }));", encoding="utf-8")
+    env = os.environ.copy()
+    env["EIMEMORY_BRIDGE_COMMAND"] = f'node "{bridge_script}"'
+    env["EIMEMORY_HOOK_COMMAND"] = f'node "{hook_script}"'
+    result = subprocess.run(
+        ["node", "-e", script],
+        cwd=Path.cwd(),
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=10,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout or "{}")
+    assert "Live eibrain context" in payload["prependContext"]
+    assert "实时 eibrain 视觉上下文：现在看到了什么" in payload["prependContext"]
+
+
+def test_openclaw_js_bridge_filters_ei_bridge_audit_from_memory_context(tmp_path) -> None:
+    script = """
+const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
+const handlers = {};
+plugin.register({ on(name, handler) { handlers[name] = handler; } });
+handlers.before_prompt_build({ prompt: 'what do you see', senderId: 'ou_user' })
+  .then((result) => { process.stdout.write(JSON.stringify(result)); })
+  .catch((error) => { console.error(error && error.stack ? error.stack : String(error)); process.exit(1); });
+""".strip()
+    bridge_script = tmp_path / "bridge.js"
+    bridge_script.write_text(
+        "process.stdout.write(JSON.stringify({ matched: true, prepend_context: 'live scene: person' }));",
+        encoding="utf-8",
+    )
+    hook_script = tmp_path / "memory-hook.js"
+    hook_script.write_text(
+        """
+process.stdout.write(JSON.stringify({
+  memory_bundle: {
+    items: [
+      { title: 'ei-bridge OpenClaw command audit', source: 'ei_bridge.openclaw_feishu', summary: 'noisy audit' },
+      { title: 'Useful memory', source: 'openclaw.message_received', summary: 'operator prefers concise replies' }
+    ]
+  }
+}));
+""".strip(),
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env["EIMEMORY_BRIDGE_COMMAND"] = f'node "{bridge_script}"'
+    env["EIMEMORY_HOOK_COMMAND"] = f'node "{hook_script}"'
+    result = subprocess.run(
+        ["node", "-e", script],
+        cwd=Path.cwd(),
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=10,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout or "{}")
+    assert "live scene: person" in payload["prependContext"]
+    assert "Useful memory" in payload["prependContext"]
+    assert "noisy audit" not in payload["prependContext"]
+
+
 def test_openclaw_js_bridge_normalizes_agent_end_message_content(tmp_path) -> None:
     script = """
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;

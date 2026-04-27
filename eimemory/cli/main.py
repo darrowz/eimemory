@@ -24,6 +24,7 @@ from eimemory.identity_ops import identity_report, repair_hongtu_identity
 from eimemory.knowledge.compiler import compile_paper_knowledge
 from eimemory.governance.console import write_evolution_console
 from eimemory.governance.snapshot import build_governance_snapshot
+from eimemory.ei_bridge.openclaw_runtime import handle_openclaw_feishu_event
 from eimemory.scheduler.jobs import run_nightly_jobs
 
 
@@ -205,6 +206,10 @@ def _build_parser() -> argparse.ArgumentParser:
 
     openclaw_hook = sub.add_parser("openclaw-hook")
     openclaw_hook.add_argument("hook", choices=["message_received", "before_prompt_build", "agent_end"])
+
+    ei_bridge = sub.add_parser("ei-bridge")
+    ei_bridge_sub = ei_bridge.add_subparsers(dest="ei_bridge_command")
+    ei_bridge_sub.add_parser("feishu")
 
     governance = sub.add_parser("governance")
     governance_sub = governance.add_subparsers(dest="governance_command")
@@ -644,6 +649,24 @@ def main(argv: list[str] | None = None) -> int:
         else:
             payload = hooks.on_agent_end(event)
         print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+    if parsed.command == "ei-bridge":
+        if parsed.ei_bridge_command == "feishu":
+            try:
+                event = json.loads(sys.stdin.read() or "{}")
+            except json.JSONDecodeError:
+                print(json.dumps({"ok": False, "error": "invalid_json"}, ensure_ascii=False))
+                return 2
+            if not isinstance(event, dict):
+                print(json.dumps({"ok": False, "error": "invalid_event"}, ensure_ascii=False))
+                return 2
+            try:
+                payload = handle_openclaw_feishu_event(event, runtime)
+            except Exception as exc:
+                return _print_error("ei_bridge_failed", exc)
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+            return 0
+        print(json.dumps({"usage": "eimemory ei-bridge feishu"}, ensure_ascii=False))
         return 0
     if parsed.command == "governance":
         if parsed.governance_command == "snapshot":
