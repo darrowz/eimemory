@@ -1,0 +1,7 @@
+[Unit]
+Description=Restart OpenClaw gateway when Feishu sessions stay stuck
+
+[Service]
+Type=oneshot
+Environment=PYTHONPATH=/dev-project/eimemory
+ExecStart=/dev-project/eimemory/.venv/bin/python -m eimemory.ops.openclaw_watchdog --unit openclaw-gateway.service --threshold-s 120 --min-restart-interval-s 300
