@@ -387,6 +387,16 @@ class Runtime:
             seed=seed,
         )
 
+    def record_skill_trace(self, payload: dict, *, scope: dict | None = None) -> dict:
+        from eimemory.experience import record_skill_trace
+
+        return record_skill_trace(self, payload, scope=scope)
+
+    def record_experience_item(self, payload: dict, *, scope: dict | None = None) -> dict:
+        from eimemory.experience import record_experience_item
+
+        return record_experience_item(self, payload, scope=scope)
+
     def export_knowledge_pack(self, path: str | Path, *, scope: dict | None = None, include_candidates: bool = False) -> dict:
         from eimemory.intake.packs import export_knowledge_pack
 
