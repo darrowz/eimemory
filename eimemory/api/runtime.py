@@ -367,6 +367,26 @@ class Runtime:
             persisted_record_id = record.record_id
         return {**report, "persisted": bool(persist_report), "persisted_record_id": persisted_record_id}
 
+    def run_evaluation(
+        self,
+        dataset: dict | list,
+        *,
+        scope: dict | None = None,
+        task_type: str = "",
+        profile: str = "balanced",
+        seed: bool = True,
+    ) -> dict:
+        from eimemory.evaluation import run_evaluation
+
+        return run_evaluation(
+            self,
+            dataset,
+            scope=scope,
+            task_type=task_type,
+            profile=profile,
+            seed=seed,
+        )
+
     def export_knowledge_pack(self, path: str | Path, *, scope: dict | None = None, include_candidates: bool = False) -> dict:
         from eimemory.intake.packs import export_knowledge_pack
 

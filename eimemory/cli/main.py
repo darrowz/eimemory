@@ -250,6 +250,15 @@ def _build_parser() -> argparse.ArgumentParser:
     evolve_loop.add_argument("--apply", action="store_true")
     evolve_loop.add_argument("--min-roi", type=float, default=0.0)
     evolve_loop.add_argument("--persist-report", action="store_true")
+
+    eval_cmd = sub.add_parser("eval")
+    eval_sub = eval_cmd.add_subparsers(dest="eval_command")
+    eval_run = eval_sub.add_parser("run")
+    eval_run.add_argument("dataset_json")
+    eval_run.add_argument("--task-type", default="")
+    eval_run.add_argument("--profile", default="balanced")
+    eval_run.add_argument("--no-seed", action="store_true")
+    eval_run.add_argument("--output", default="")
     return parser
 
 
@@ -289,7 +298,7 @@ def main(argv: list[str] | None = None) -> int:
         print(
             json.dumps(
                 {
-                    "usage": "eimemory init|ingest|recall|paper|source|intake|export|import|backup|migrate|brief|nightly|quality|identity|reflect|governance|evolve|serve-eibrain-rpc",
+                    "usage": "eimemory init|ingest|recall|paper|source|intake|export|import|backup|migrate|brief|nightly|quality|identity|reflect|governance|evolve|eval|serve-eibrain-rpc",
                 }
             )
         )
@@ -789,6 +798,41 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0
         print(json.dumps({"usage": "eimemory evolve evaluate|promotions|loop"}))
+        return 0
+    if parsed.command == "eval":
+        if parsed.eval_command == "run":
+            try:
+                with open(parsed.dataset_json, "r", encoding="utf-8") as handle:
+                    dataset = json.load(handle)
+            except OSError as exc:
+                print(json.dumps({"ok": False, "error": "dataset_unreadable", "detail": str(exc)}, ensure_ascii=False))
+                return 2
+            except json.JSONDecodeError:
+                print(json.dumps({"ok": False, "error": "invalid_dataset_json"}, ensure_ascii=False))
+                return 2
+            try:
+                report = runtime.run_evaluation(
+                    dataset,
+                    scope=scope,
+                    task_type=parsed.task_type,
+                    profile=parsed.profile,
+                    seed=not bool(parsed.no_seed),
+                )
+            except ValueError as exc:
+                print(json.dumps({"ok": False, "error": "invalid_eval_dataset", "detail": str(exc)}, ensure_ascii=False))
+                return 2
+            if parsed.output:
+                try:
+                    output_path = Path(parsed.output)
+                    output_path.parent.mkdir(parents=True, exist_ok=True)
+                    output_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+                except OSError as exc:
+                    print(json.dumps({"ok": False, "error": "eval_output_failed", "detail": str(exc)}, ensure_ascii=False))
+                    return 2
+                report = {**report, "output": str(output_path)}
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0 if report.get("ok") else 1
+        print(json.dumps({"usage": "eimemory eval run"}))
         return 0
     if parsed.command == "reflect":
         if parsed.reflect_command == "check":
