@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from eimemory.api.runtime import Runtime
 from eimemory.ei_bridge.audit import EIMemoryAuditSink, build_audit_record, should_persist
+from eimemory.ei_bridge.openclaw_runtime import _write_audit
 from eimemory.ei_bridge.protocol import BridgeCommand, BridgeResult, BridgeSource, BridgeTarget
 
 
@@ -138,3 +140,29 @@ def test_sink_returns_stable_error_when_writer_raises() -> None:
     assert response.command_id == "cmd-1"
     assert response.error == "audit_writer_error"
     assert "memory offline" in response.summary
+
+
+def test_openclaw_bridge_audit_is_persisted_outside_recall_memory(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+
+    result = _write_audit(
+        runtime,
+        {
+            "type": "ei_bridge.audit",
+            "command_id": "cmd-vision",
+            "intent": "inspect_frame",
+            "summary": "vision saw a desk",
+        },
+    )
+
+    stored = runtime.store.get_by_id(result["record_id"])
+    bundle = runtime.memory.recall(
+        query="vision saw desk",
+        scope={"agent_id": "hongtu", "workspace_id": "embodied"},
+        limit=8,
+    )
+
+    assert stored is not None
+    assert stored.kind == "recall_view"
+    assert stored.meta["memory_type"] == "audit"
+    assert all(item.record_id != stored.record_id for item in bundle.items)

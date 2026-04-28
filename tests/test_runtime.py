@@ -72,6 +72,35 @@ def test_runtime_ingest_can_force_capture_low_salience_memory(tmp_path) -> None:
     assert persisted[0].record_id == record.record_id
 
 
+def test_runtime_recall_excludes_internal_audit_memories_by_default(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    audit = runtime.memory.ingest(
+        text="ei bridge audit says vision saw a desk",
+        memory_type="audit",
+        title="ei-bridge OpenClaw command audit",
+        scope={"agent_id": "hongtu", "workspace_id": "embodied"},
+        source="ei_bridge.openclaw_feishu",
+        force_capture=True,
+    )
+    useful = runtime.memory.ingest(
+        text="Darrow asked eibrain to describe real objects on the desk",
+        memory_type="fact",
+        title="Vision object preference",
+        scope={"agent_id": "hongtu", "workspace_id": "embodied"},
+        source="openclaw.agent_end",
+    )
+
+    bundle = runtime.memory.recall(
+        query="vision desk objects",
+        scope={"agent_id": "hongtu", "workspace_id": "embodied"},
+        limit=8,
+    )
+
+    record_ids = {item.record_id for item in bundle.items}
+    assert useful.record_id in record_ids
+    assert audit.record_id not in record_ids
+
+
 def test_runtime_close_releases_sqlite_file_handle(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     runtime.memory.ingest(

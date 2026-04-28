@@ -106,6 +106,7 @@ class MemoryAPI:
             limit=search_limit,
             recall_filters=recall_filters,
         )
+        items = [item for item in items if not self._is_internal_audit_record(item)]
         graph_expanded = 0
         related_ids: list[str] = []
         base_items = list(items)
@@ -120,6 +121,7 @@ class MemoryAPI:
                 scope=scope_ref,
                 graph_depth=profile_config["graph_depth"],
             )
+            items = [item for item in items if not self._is_internal_audit_record(item)]
         claims = [item for item in items if item.kind == "claim_card"]
         pages = [item for item in items if item.kind == "knowledge_page"]
         memories = [item for item in items if item.kind == "memory"]
@@ -239,6 +241,15 @@ class MemoryAPI:
             "memory_types": {str(meta.get("memory_type") or content.get("memory_type") or "").strip()} - {""},
             "organs": {str(meta.get("organ") or content.get("organ") or "").strip()} - {""},
         }
+
+    def _is_internal_audit_record(self, item: RecordEnvelope) -> bool:
+        labels = self._record_filter_labels(item)
+        title = str(item.title or "").strip().lower()
+        return (
+            "audit" in labels["memory_types"]
+            or "ei_bridge.openclaw_feishu" in labels["sources"]
+            or title == "ei-bridge openclaw command audit"
+        )
 
     @staticmethod
     def _string_list(value: object) -> list[str]:

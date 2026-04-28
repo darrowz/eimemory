@@ -5,6 +5,7 @@ from typing import Any
 
 from eimemory.api.runtime import Runtime
 from eimemory.identity import hongtu_scope
+from eimemory.models.records import RecordEnvelope, ScopeRef
 
 from .agents import EIBrainAgentAdapter
 from .audit import EIMemoryAuditSink, build_audit_record
@@ -61,20 +62,28 @@ def _build_prepend_context(reply: str) -> str:
 
 
 def _write_audit(runtime: Runtime, record: dict[str, Any]) -> dict[str, Any]:
-    stored = runtime.memory.ingest(
-        text=json.dumps(record, ensure_ascii=False, sort_keys=True),
-        memory_type="audit",
-        title="ei-bridge OpenClaw command audit",
-        scope=hongtu_scope({"agent_id": "hongtu", "workspace_id": "embodied"}),
-        tags=["ei_bridge", "audit", "openclaw", "feishu"],
-        source="ei_bridge.openclaw_feishu",
-        force_capture=True,
-        meta={
-            "communication_channel": "feishu",
-            "official_channel": True,
-            "bridge_type": "ei_bridge",
-            "command_id": record.get("command_id", ""),
-        },
+    scope = hongtu_scope({"agent_id": "hongtu", "workspace_id": "embodied"})
+    stored = runtime.store.append(
+        RecordEnvelope.create(
+            kind="recall_view",
+            title="ei-bridge OpenClaw command audit",
+            summary=str(record.get("summary") or record.get("intent") or "ei bridge audit"),
+            content={
+                "text": json.dumps(record, ensure_ascii=False, sort_keys=True),
+                "memory_type": "audit",
+                "record": record,
+            },
+            scope=ScopeRef.from_dict(scope),
+            tags=["ei_bridge", "audit", "openclaw", "feishu"],
+            source="ei_bridge.openclaw_feishu",
+            meta={
+                "memory_type": "audit",
+                "communication_channel": "feishu",
+                "official_channel": True,
+                "bridge_type": "ei_bridge",
+                "command_id": record.get("command_id", ""),
+            },
+        )
     )
     return {"record_id": stored.record_id}
 
