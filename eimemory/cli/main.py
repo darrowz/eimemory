@@ -82,6 +82,10 @@ def _build_parser() -> argparse.ArgumentParser:
     source_scan = source_sub.add_parser("scan")
     source_scan.add_argument("--persist", action="store_true")
 
+    source_discover = source_sub.add_parser("discover")
+    source_discover.add_argument("--persist", action="store_true")
+    source_discover.add_argument("--gap", action="append", default=[])
+
     source_expand = source_sub.add_parser("expand")
     source_expand.add_argument("--apply", action="store_true")
     source_expand.add_argument("--max-apply", type=int, default=3)
@@ -175,6 +179,13 @@ def _build_parser() -> argparse.ArgumentParser:
     migrate_report.add_argument("path")
     migrate_report.add_argument("--output", required=True)
 
+    brief = sub.add_parser("brief")
+    brief_sub = brief.add_subparsers(dest="brief_command")
+    brief_daily = brief_sub.add_parser("daily")
+    brief_daily.add_argument("--date", default="")
+    brief_daily.add_argument("--persist", action="store_true")
+    brief_daily.add_argument("--channel", default="feishu")
+
     sub.add_parser("nightly")
 
     quality = sub.add_parser("quality")
@@ -234,6 +245,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
     evolve_promotions = evolve_sub.add_parser("promotions")
     evolve_promotions.add_argument("--min-pass-rate", type=float, default=0.8)
+
+    evolve_loop = evolve_sub.add_parser("loop")
+    evolve_loop.add_argument("--apply", action="store_true")
+    evolve_loop.add_argument("--min-roi", type=float, default=0.0)
+    evolve_loop.add_argument("--persist-report", action="store_true")
     return parser
 
 
@@ -273,7 +289,7 @@ def main(argv: list[str] | None = None) -> int:
         print(
             json.dumps(
                 {
-                    "usage": "eimemory init|ingest|recall|paper|source|intake|export|import|backup|migrate|nightly|quality|identity|reflect|governance|evolve|serve-eibrain-rpc",
+                    "usage": "eimemory init|ingest|recall|paper|source|intake|export|import|backup|migrate|brief|nightly|quality|identity|reflect|governance|evolve|serve-eibrain-rpc",
                 }
             )
         )
@@ -394,6 +410,14 @@ def main(argv: list[str] | None = None) -> int:
             report = runtime.sources.scan_sources(store=runtime.store, scope=scope, persist=bool(parsed.persist))
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0
+        if parsed.source_command == "discover":
+            report = runtime.discover_sources(
+                scope=scope,
+                persist=bool(parsed.persist),
+                gap_queries=list(parsed.gap or []),
+            )
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0
         if parsed.source_command == "expand":
             if parsed.max_apply < 0:
                 print(json.dumps({"ok": False, "error": "invalid_max_apply"}, ensure_ascii=False))
@@ -409,7 +433,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0
-        print(json.dumps({"usage": "eimemory source add|list|scan|expand"}))
+        print(json.dumps({"usage": "eimemory source add|list|scan|discover|expand"}))
         return 0
     if parsed.command == "intake":
         if parsed.intake_command in {"run", "report"}:
@@ -612,6 +636,18 @@ def main(argv: list[str] | None = None) -> int:
             return _print_error("migrate_failed", exc)
         print(json.dumps({"usage": "eimemory migrate scan|import|report"}))
         return 0
+    if parsed.command == "brief":
+        if parsed.brief_command == "daily":
+            report = runtime.build_daily_brief(
+                scope=scope,
+                date=parsed.date or None,
+                persist=bool(parsed.persist),
+                channel=parsed.channel,
+            )
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0
+        print(json.dumps({"usage": "eimemory brief daily"}))
+        return 0
     if parsed.command == "nightly":
         report = run_nightly_jobs(
             runtime,
@@ -739,7 +775,20 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0
-        print(json.dumps({"usage": "eimemory evolve evaluate|promotions"}))
+        if parsed.evolve_command == "loop":
+            min_roi = parsed.min_roi
+            if min_roi != min_roi:
+                print(json.dumps({"ok": False, "error": "invalid_min_roi"}, ensure_ascii=False))
+                return 2
+            report = runtime.run_rule_evolution(
+                scope=scope,
+                apply=bool(parsed.apply),
+                min_roi=min_roi,
+                persist_report=bool(parsed.persist_report),
+            )
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0
+        print(json.dumps({"usage": "eimemory evolve evaluate|promotions|loop"}))
         return 0
     if parsed.command == "reflect":
         if parsed.reflect_command == "check":

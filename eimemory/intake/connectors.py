@@ -296,8 +296,15 @@ def collect_from_source_entry(source: Any, fetch_text: FetchTextFunc | None = No
     elif resolved_kind == "chatpaper_arxiv":
         return _collect_chatpaper_source(uri, source_metadata=source_metadata, fetch_text=fetch_text)
         parser = parse_chatpaper_arxiv_json
-    elif resolved_kind in {"rss", "http"}:
+    elif resolved_kind == "rss":
         parser = lambda text: parse_feed_xml(text, source_url=uri)
+    elif resolved_kind == "http":
+        parser = lambda text: _parse_fulltext_fetch_result(
+            text,
+            source_url=uri,
+            source_title=title,
+            source_kind=source_kind,
+        )
     else:
         return FetchResult(ok=True, metadata={"dry_run": True, "unsupported": source_kind or resolved_kind})
 
@@ -309,6 +316,61 @@ def collect_from_source_entry(source: Any, fetch_text: FetchTextFunc | None = No
         return parser(fetch_text(fetch_url))
     except Exception:
         return _safe_error("fetch failed", metadata={"url": fetch_url})
+
+
+def _parse_fulltext_fetch_result(
+    payload: str,
+    *,
+    source_url: str,
+    source_title: str,
+    source_kind: str,
+) -> FetchResult:
+    from eimemory.intake.fulltext import parse_fulltext_document
+
+    fulltext_kind = _fulltext_source_kind(source_url, source_kind)
+    document = parse_fulltext_document(payload, url=source_url, source_kind=fulltext_kind)
+    metadata = {
+        "source_url": source_url,
+        "source_kind": fulltext_kind,
+        "fulltext": {
+            "ok": document.ok,
+            "quality_score": document.quality_score,
+            "byline": document.byline,
+            "date": document.date,
+            "canonical_url": document.canonical_url,
+            "image_count": len(document.images),
+            "error": document.error,
+        },
+    }
+    if not document.ok:
+        return _safe_error(document.error or "fulltext extraction failed", metadata=metadata)
+    return FetchResult(
+        ok=True,
+        items=[
+            _collected_item(
+                title=document.title or source_title or source_url,
+                url=document.canonical_url or source_url,
+                content=document.text,
+                published_at=document.date,
+                source_kind=fulltext_kind,
+                metadata={
+                    **metadata,
+                    "images": document.images[:10],
+                    "fulltext_meta": dict(document.meta or {}),
+                },
+            )
+        ],
+        metadata=metadata,
+    )
+
+
+def _fulltext_source_kind(source_url: str, source_kind: str) -> str:
+    hostname = urlparse(str(source_url or "")).hostname or ""
+    if hostname.lower().endswith("mp.weixin.qq.com"):
+        return "wechat"
+    if source_kind in {"news", "url"}:
+        return "web"
+    return source_kind or "web"
 
 
 def _collect_chatpaper_source(

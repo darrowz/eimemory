@@ -204,6 +204,37 @@ def test_collect_chatpaper_uses_metadata_categories_dedupes_and_respects_max_ite
     assert result.metadata["fetched_url_count"] == 2
 
 
+def test_collect_url_source_extracts_readable_fulltext() -> None:
+    source = SimpleNamespace(source_kind="url", title="Readable article", uri="https://example.test/readable")
+
+    def fake_fetch(url: str) -> str:
+        assert url == source.uri
+        return """
+        <html>
+          <head><meta property="og:title" content="Readable article"></head>
+          <body>
+            <nav>Login Pricing</nav>
+            <article>
+              <p>Fulltext extraction gives the memory layer durable article context.</p>
+              <p>Operators can review the extracted content before promotion.</p>
+            </article>
+          </body>
+        </html>
+        """
+
+    result = collect_from_source_entry(source, fetch_text=fake_fetch)
+
+    assert result.ok is True
+    assert len(result.items) == 1
+    item = result.items[0]
+    assert item.source_kind == "web"
+    assert item.title == "Readable article"
+    assert "durable article context" in item.content
+    assert "Login Pricing" not in item.content
+    assert item.metadata["fulltext"]["ok"] is True
+    assert item.metadata["fulltext"]["quality_score"] >= 0.4
+
+
 def test_normalize_github_repo_release_and_issue_urls() -> None:
     repo = normalize_github_url("https://github.com/Owner/Repo/")
     release = normalize_github_url("https://github.com/Owner/Repo/releases/tag/v1.0.0")

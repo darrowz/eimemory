@@ -41,12 +41,19 @@ def run_nightly_jobs(
     external_collection_report.pop("_candidate_records", None)
     source_quality_report = runtime.source_quality_report(scope=scope)
     collection_policy = runtime.collection_policy(scope=scope)
+    source_discovery_report = _run_source_discovery(runtime, scope=scope)
     replay_datasets = replay_datasets or {}
     replay_reports = []
     for rule in active_rules:
         dataset = replay_datasets.get(rule.record_id)
         if dataset:
             replay_reports.append(runtime.evolution.replay_rule(record_id=rule.record_id, dataset=dataset))
+    rule_evolution_report = _run_rule_evolution(
+        runtime,
+        scope=scope,
+        replay_datasets=replay_datasets,
+    )
+    daily_brief_report = _run_daily_brief(runtime, scope=scope)
     return {
         "ok": True,
         "active_rule_count": len(active_rules),
@@ -87,6 +94,9 @@ def run_nightly_jobs(
         "paper_promotion": paper_promotion_report,
         "operational_projection": operational_projection_report,
         "research_digest": research_digest_report,
+        "daily_brief": daily_brief_report,
+        "rule_evolution": rule_evolution_report,
+        "source_discovery": source_discovery_report,
         "source_quality": {
             "source_count": source_quality_report["source_count"],
             "run_now": collection_policy["run_now"],
@@ -377,6 +387,152 @@ def _run_operational_projection(runtime: Runtime, *, scope: dict) -> dict[str, A
             "error": type(exc).__name__,
             "detail": str(exc),
             "projection_skipped_reason": "",
+        }
+
+
+def _run_source_discovery(runtime: Runtime, *, scope: dict) -> dict[str, Any]:
+    discover = getattr(runtime, "discover_sources", None)
+    if discover is None:
+        return {
+            "ok": True,
+            "proposal_count": 0,
+            "approve_count": 0,
+            "needs_review_count": 0,
+            "persisted_count": 0,
+            "skipped_existing_count": 0,
+            "discovery_skipped_reason": "discover_sources_unavailable",
+        }
+    try:
+        report = _json_safe(discover(scope=scope, persist=True))
+        return {
+            "ok": bool(report.get("ok", True)),
+            "proposal_count": int(report.get("proposal_count") or 0),
+            "approve_count": int(report.get("approve_count") or 0),
+            "needs_review_count": int(report.get("needs_review_count") or 0),
+            "persisted_count": len(report.get("persisted_record_ids") or []),
+            "persisted_record_ids": list(report.get("persisted_record_ids") or []),
+            "skipped_existing_count": int(report.get("skipped_existing_count") or 0),
+            "discovery_skipped_reason": "",
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "proposal_count": 0,
+            "approve_count": 0,
+            "needs_review_count": 0,
+            "persisted_count": 0,
+            "persisted_record_ids": [],
+            "skipped_existing_count": 0,
+            "error": type(exc).__name__,
+            "detail": str(exc),
+            "discovery_skipped_reason": "",
+        }
+
+
+def _run_rule_evolution(
+    runtime: Runtime,
+    *,
+    scope: dict,
+    replay_datasets: dict[str, list[dict]],
+) -> dict[str, Any]:
+    evolve = getattr(runtime, "run_rule_evolution", None)
+    if evolve is None:
+        return {
+            "ok": True,
+            "candidate_count": 0,
+            "promoted_count": 0,
+            "replay_count": 0,
+            "created_rule_count": 0,
+            "persisted": False,
+            "persisted_record_id": "",
+            "evolution_skipped_reason": "run_rule_evolution_unavailable",
+        }
+    try:
+        report = _json_safe(
+            evolve(
+                scope=scope,
+                apply=True,
+                min_roi=0.0,
+                replay_datasets=replay_datasets,
+                persist_report=True,
+            )
+        )
+        record_ids = report.get("record_ids") if isinstance(report.get("record_ids"), dict) else {}
+        return {
+            "ok": bool(report.get("ok", True)),
+            "candidate_count": int(report.get("candidate_count") or 0),
+            "promoted_count": int(report.get("promoted_count") or 0),
+            "replay_count": int(report.get("replay_count") or 0),
+            "created_rule_count": len(record_ids.get("created_rules") or []),
+            "promotion_candidate_count": len(record_ids.get("promotion_candidates") or []),
+            "replayed_rule_ids": list(report.get("replayed_rule_ids") or []),
+            "persisted": bool(report.get("persisted")),
+            "persisted_record_id": str(report.get("persisted_record_id") or ""),
+            "evolution_skipped_reason": "",
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "candidate_count": 0,
+            "promoted_count": 0,
+            "replay_count": 0,
+            "created_rule_count": 0,
+            "promotion_candidate_count": 0,
+            "replayed_rule_ids": [],
+            "persisted": False,
+            "persisted_record_id": "",
+            "error": type(exc).__name__,
+            "detail": str(exc),
+            "evolution_skipped_reason": "",
+        }
+
+
+def _run_daily_brief(runtime: Runtime, *, scope: dict) -> dict[str, Any]:
+    build_brief = getattr(runtime, "build_daily_brief", None)
+    if build_brief is None:
+        return {
+            "ok": True,
+            "date": "",
+            "message_count": 0,
+            "decision_count": 0,
+            "followup_count": 0,
+            "research_item_count": 0,
+            "persisted": False,
+            "persisted_record_id": "",
+            "brief_skipped_reason": "build_daily_brief_unavailable",
+        }
+    try:
+        report = _json_safe(build_brief(scope=scope, persist=True, channel="feishu"))
+        conversation_summary = report.get("conversation_summary") if isinstance(report.get("conversation_summary"), dict) else {}
+        research_digest = report.get("research_digest") if isinstance(report.get("research_digest"), dict) else {}
+        return {
+            "ok": bool(report.get("ok", True)),
+            "date": str(report.get("date") or ""),
+            "message_count": int(conversation_summary.get("message_count") or 0),
+            "decision_count": len(report.get("decisions") or []),
+            "followup_count": len(report.get("followups") or []),
+            "research_item_count": len(research_digest.get("items") or []),
+            "delivery_channel": str((report.get("delivery") or {}).get("channel") or ""),
+            "delivery_pending": bool((report.get("delivery") or {}).get("outbox")),
+            "persisted": bool(report.get("persisted")),
+            "persisted_record_id": str(report.get("persisted_record_id") or ""),
+            "brief_skipped_reason": "",
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "date": "",
+            "message_count": 0,
+            "decision_count": 0,
+            "followup_count": 0,
+            "research_item_count": 0,
+            "delivery_channel": "",
+            "delivery_pending": False,
+            "persisted": False,
+            "persisted_record_id": "",
+            "error": type(exc).__name__,
+            "detail": str(exc),
+            "brief_skipped_reason": "",
         }
 
 

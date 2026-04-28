@@ -26,6 +26,16 @@ def build_governance_snapshot(runtime, scope: dict | ScopeRef) -> dict[str, Any]
     source_quality = runtime.source_quality_report(scope=scope_payload)
     collection_policy = runtime.collection_policy(scope=scope_payload)
     source_expansion = runtime.latest_source_expansion(scope=scope_payload)
+    daily_briefs = _list_report_records(runtime, kinds=["reflection"], scope=scope_ref, source="eimemory.daily_brief")
+    rule_evolution_reports = _list_report_records(
+        runtime,
+        kinds=["reflection"],
+        scope=scope_ref,
+        source="eimemory.rule_evolution_loop",
+    )
+    source_discovery_records = [
+        record for record in source_candidates if record.source == "eimemory.source_discovery"
+    ]
 
     backup_reports = _collect_backup_reports(runtime.store.root)
     warnings: list[str] = []
@@ -59,6 +69,19 @@ def build_governance_snapshot(runtime, scope: dict | ScopeRef) -> dict[str, Any]
         "active_intake": active_intake,
         "source_quality": source_quality,
         "source_expansion": source_expansion,
+        "source_discovery": {
+            "count": len(source_discovery_records),
+            "needs_review_count": sum(1 for record in source_discovery_records if record.meta.get("decision") == "needs_review"),
+            "latest": _record_to_dict(source_discovery_records[0]) if source_discovery_records else None,
+        },
+        "daily_brief": {
+            "count": len(daily_briefs),
+            "latest": _daily_brief_summary(daily_briefs[0]) if daily_briefs else None,
+        },
+        "rule_evolution": {
+            "count": len(rule_evolution_reports),
+            "latest": _rule_evolution_summary(rule_evolution_reports[0]) if rule_evolution_reports else None,
+        },
         "collection_policy": {
             "run_now": collection_policy["run_now"],
             "pause": collection_policy["pause"],
@@ -100,6 +123,14 @@ def _list_all_records(
         records.extend(page)
         offset += len(page)
     return records
+
+
+def _list_report_records(runtime, *, kinds: list[str], scope: ScopeRef, source: str) -> list[RecordEnvelope]:
+    return [
+        record
+        for record in _list_all_records(runtime, kinds=kinds, scope=scope)
+        if record.source == source
+    ]
 
 
 def _list_knowledge_intake_records(runtime, *, scope: ScopeRef) -> list[RecordEnvelope]:
@@ -226,6 +257,38 @@ def _record_report_payload(record: RecordEnvelope) -> dict[str, Any]:
         ):
             return report
     return {}
+
+
+def _daily_brief_summary(record: RecordEnvelope) -> dict[str, Any]:
+    brief = record.content.get("brief") if isinstance(record.content.get("brief"), dict) else {}
+    delivery = record.content.get("delivery") if isinstance(record.content.get("delivery"), dict) else {}
+    conversation_summary = brief.get("conversation_summary") if isinstance(brief.get("conversation_summary"), dict) else {}
+    research_digest = brief.get("research_digest") if isinstance(brief.get("research_digest"), dict) else {}
+    return {
+        "record_id": record.record_id,
+        "date": str(brief.get("date") or record.meta.get("date") or ""),
+        "message_count": int(conversation_summary.get("message_count") or 0),
+        "decision_count": len(brief.get("decisions") or []),
+        "followup_count": len(brief.get("followups") or []),
+        "research_item_count": len(research_digest.get("items") or []),
+        "delivery_channel": str(delivery.get("channel") or record.meta.get("delivery_channel") or ""),
+        "delivery_status": str((delivery.get("outbox") or {}).get("status") or record.meta.get("delivery_status") or ""),
+        "time": asdict(record.time),
+    }
+
+
+def _rule_evolution_summary(record: RecordEnvelope) -> dict[str, Any]:
+    report = record.content.get("report") if isinstance(record.content.get("report"), dict) else {}
+    record_ids = report.get("record_ids") if isinstance(report.get("record_ids"), dict) else {}
+    return {
+        "record_id": record.record_id,
+        "candidate_count": int(report.get("candidate_count") or record.meta.get("candidate_count") or 0),
+        "promoted_count": int(report.get("promoted_count") or record.meta.get("promoted_count") or 0),
+        "replay_count": int(report.get("replay_count") or record.meta.get("replay_count") or 0),
+        "created_rule_count": len(record_ids.get("created_rules") or []),
+        "promotion_candidate_count": len(record_ids.get("promotion_candidates") or []),
+        "time": asdict(record.time),
+    }
 
 
 def _latest_report_section(records: list[RecordEnvelope], section: str) -> dict[str, Any] | None:

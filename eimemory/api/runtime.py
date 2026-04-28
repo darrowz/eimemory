@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 import ipaddress
 import socket
+from dataclasses import asdict, is_dataclass
+from datetime import date as date_type
+from datetime import datetime
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
@@ -255,6 +258,115 @@ class Runtime:
 
         return latest_autonomous_source_expansion(self, scope=scope or {}, limit=limit)
 
+    def discover_sources(
+        self,
+        *,
+        scope: dict | None = None,
+        persist: bool = False,
+        gap_queries: list[str] | None = None,
+        recent_titles: list[str] | None = None,
+    ) -> dict:
+        from eimemory.intake.source_discovery import discover_source_proposals
+
+        scope_ref = ScopeRef.from_dict(scope)
+        scope_payload = asdict(scope_ref)
+        policy = self.collection_policy(scope=scope_payload, topic_gaps=gap_queries or [])
+        recent_records = _list_all_runtime_records(
+            self,
+            kinds=["knowledge_candidate", "paper_source", "knowledge_page", "memory", "unknown"],
+            scope=scope_ref,
+            limit=300,
+        )
+        proposal_recent_titles = list(recent_titles or [])
+        proposal_recent_titles.extend(record.title or record.summary for record in recent_records[:80])
+        proposals = discover_source_proposals(
+            gap_queries=list(policy.get("gap_queries") or []),
+            sources=self.sources.list_sources(enabled=True),
+            recent_titles=proposal_recent_titles,
+        )
+        persisted_record_ids: list[str] = []
+        skipped_existing_count = 0
+        if persist:
+            for proposal in proposals:
+                record = _source_discovery_record(proposal, scope=scope_ref)
+                existing = self.store.get_by_id(record.record_id, scope=scope_ref)
+                if existing is not None:
+                    skipped_existing_count += 1
+                    continue
+                self.store.append(record)
+                persisted_record_ids.append(record.record_id)
+        return {
+            "ok": True,
+            "persist": bool(persist),
+            "scope": scope_payload,
+            "proposal_count": len(proposals),
+            "approve_count": sum(1 for item in proposals if item.get("decision") == "approve"),
+            "needs_review_count": sum(1 for item in proposals if item.get("decision") == "needs_review"),
+            "persisted_record_ids": persisted_record_ids,
+            "skipped_existing_count": skipped_existing_count,
+            "proposals": proposals,
+        }
+
+    def build_daily_brief(
+        self,
+        *,
+        scope: dict | None = None,
+        date: str | date_type | None = None,
+        persist: bool = False,
+        channel: str = "feishu",
+        research_lookback_days: int = 1,
+    ) -> dict:
+        from eimemory.knowledge.daily_brief import build_daily_brief, build_daily_brief_delivery_payload
+
+        scope_ref = ScopeRef.from_dict(scope)
+        day: str | date_type = date if date is not None else now_iso()[:10]
+        records = _list_all_runtime_records(self, kinds=None, scope=scope_ref, limit=2500)
+        brief = build_daily_brief(records, date=day, research_lookback_days=research_lookback_days)
+        delivery = build_daily_brief_delivery_payload(brief, channel=channel)
+        persisted_record_id = ""
+        if persist:
+            record = _daily_brief_record(brief, delivery, scope=scope_ref)
+            self.store.append(record)
+            persisted_record_id = record.record_id
+        return {
+            **brief,
+            "delivery": delivery,
+            "persisted": bool(persist),
+            "persisted_record_id": persisted_record_id,
+        }
+
+    def run_rule_evolution(
+        self,
+        *,
+        scope: dict | None = None,
+        apply: bool = False,
+        min_roi: float = 0.0,
+        replay_datasets: dict[str, list[dict]] | None = None,
+        persist_report: bool = False,
+    ) -> dict:
+        from eimemory.governance.rule_evolution import run_rule_evolution_loop
+
+        scope_ref = ScopeRef.from_dict(scope)
+        scope_payload = asdict(scope_ref)
+        replayed_rule_ids: list[str] = []
+        for rule_id, dataset in dict(replay_datasets or {}).items():
+            if not dataset:
+                continue
+            rule = self.store.get_by_id(str(rule_id), scope=scope_ref)
+            if rule is None or rule.kind != "rule":
+                continue
+            self.evolution.replay_rule(record_id=rule.record_id, dataset=dataset)
+            replayed_rule_ids.append(rule.record_id)
+
+        report = run_rule_evolution_loop(self, scope_payload, apply=apply, min_roi=min_roi)
+        report["replayed_rule_ids"] = replayed_rule_ids
+        persisted_record_id = ""
+        if persist_report:
+            record = _rule_evolution_report_record(report, scope=scope_ref)
+            self.store.append(record)
+            persisted_record_id = record.record_id
+        return {**report, "persisted": bool(persist_report), "persisted_record_id": persisted_record_id}
+
     def export_knowledge_pack(self, path: str | Path, *, scope: dict | None = None, include_candidates: bool = False) -> dict:
         from eimemory.intake.packs import export_knowledge_pack
 
@@ -326,6 +438,156 @@ class Runtime:
             self.store.append(record)
             digest = {**digest, "persisted": True, "persisted_page_id": record.record_id}
         return digest
+
+
+def _list_all_runtime_records(
+    runtime: Runtime,
+    *,
+    kinds: list[str] | None,
+    scope: ScopeRef,
+    limit: int,
+    page_size: int = 500,
+) -> list[RecordEnvelope]:
+    records: list[RecordEnvelope] = []
+    offset = 0
+    max_count = max(0, int(limit))
+    while len(records) < max_count:
+        page = runtime.store.list_records(
+            kinds=kinds,
+            scope=scope,
+            limit=min(page_size, max_count - len(records)),
+            offset=offset,
+        )
+        if not page:
+            break
+        records.extend(page)
+        offset += len(page)
+    return records
+
+
+def _daily_brief_record(brief: dict[str, Any], delivery: dict[str, Any], *, scope: ScopeRef) -> RecordEnvelope:
+    day = str(brief.get("date") or now_iso()[:10])
+    record_id = f"daily_brief_{day.replace('-', '')}_{_scope_hash(scope)}"
+    summary = (
+        f"Daily brief for {day}: "
+        f"{int((brief.get('conversation_summary') or {}).get('message_count') or 0)} conversation memories, "
+        f"{len(brief.get('decisions') or [])} decisions, "
+        f"{len(brief.get('followups') or [])} followups."
+    )
+    return RecordEnvelope(
+        record_id=record_id,
+        kind="reflection",
+        status="active",
+        title=f"Daily experience brief {day}",
+        summary=summary,
+        detail=summary,
+        content={
+            "brief": _json_safe(brief),
+            "delivery": _json_safe(delivery),
+        },
+        tags=["daily-brief", "experience-brief", "pending-delivery"],
+        links=[],
+        evidence=[],
+        source="eimemory.daily_brief",
+        scope=scope,
+        time=TimeRef.now(),
+        provenance={"report_type": "daily_brief", "date": day, "channel": str(delivery.get("channel") or "")},
+        meta={
+            "report_type": "daily_brief",
+            "date": day,
+            "delivery_channel": str(delivery.get("channel") or ""),
+            "delivery_status": str((delivery.get("outbox") or {}).get("status") or "pending_delivery"),
+        },
+    )
+
+
+def _source_discovery_record(proposal: dict[str, Any], *, scope: ScopeRef) -> RecordEnvelope:
+    proposal_id = str(proposal.get("proposal_id") or sha256(json.dumps(proposal, sort_keys=True).encode("utf-8")).hexdigest()[:16])
+    decision = str(proposal.get("decision") or "needs_review")
+    record_id = f"{proposal_id}_{_scope_hash(scope)}"
+    return RecordEnvelope(
+        record_id=record_id,
+        kind="source_candidate",
+        status="candidate",
+        title=str(proposal.get("title") or "Source discovery candidate"),
+        summary=str(proposal.get("reason") or ""),
+        detail=str(proposal.get("uri") or ""),
+        content={"proposal": _json_safe(proposal)},
+        tags=["source-discovery", decision, *[str(tag) for tag in (proposal.get("tags") or [])]],
+        links=[],
+        evidence=[str(item) for item in ((proposal.get("metadata") or {}).get("evidence") or [])][:10],
+        source="eimemory.source_discovery",
+        scope=scope,
+        time=TimeRef.now(),
+        provenance={
+            "proposal_id": proposal_id,
+            "scan_kind": "source_discovery",
+            "source_uri": str(proposal.get("uri") or ""),
+            "source_kind": str(proposal.get("source_kind") or ""),
+        },
+        meta={
+            "proposal_id": proposal_id,
+            "source_kind": str(proposal.get("source_kind") or ""),
+            "source_uri": str(proposal.get("uri") or ""),
+            "source_family": str((proposal.get("metadata") or {}).get("source_family") or ""),
+            "decision": decision,
+            "score": float(proposal.get("score") or 0.0),
+        },
+    )
+
+
+def _rule_evolution_report_record(report: dict[str, Any], *, scope: ScopeRef) -> RecordEnvelope:
+    generated_at = now_iso()
+    record_id = f"rule_evolution_{generated_at[:10].replace('-', '')}_{_scope_hash(scope)}"
+    summary = (
+        f"Rule evolution: {int(report.get('candidate_count') or 0)} candidates, "
+        f"{int(report.get('promoted_count') or 0)} promotions, "
+        f"{int(report.get('replay_count') or 0)} replay results."
+    )
+    return RecordEnvelope(
+        record_id=record_id,
+        kind="reflection",
+        status="active",
+        title="Rule evolution loop report",
+        summary=summary,
+        detail=summary,
+        content={"report": _json_safe(report)},
+        tags=["rule-evolution", "feedback-rule-replay-roi"],
+        links=[],
+        evidence=[],
+        source="eimemory.rule_evolution_loop",
+        scope=scope,
+        time=TimeRef.now(),
+        provenance={"report_type": "rule_evolution", "generated_at": generated_at},
+        meta={
+            "report_type": "rule_evolution",
+            "candidate_count": int(report.get("candidate_count") or 0),
+            "promoted_count": int(report.get("promoted_count") or 0),
+            "replay_count": int(report.get("replay_count") or 0),
+        },
+    )
+
+
+def _json_safe(value: Any) -> Any:
+    if is_dataclass(value) and not isinstance(value, type):
+        return _json_safe(asdict(value))
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, tuple):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, set):
+        return sorted((_json_safe(item) for item in value), key=lambda item: repr(item))
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date_type):
+        return value.isoformat()
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)
 
 
 def _default_fetch_text(url: str) -> str:

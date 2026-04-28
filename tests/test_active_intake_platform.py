@@ -319,3 +319,68 @@ def test_nightly_jobs_expand_sources_before_external_collection(tmp_path) -> Non
     assert report["source_expansion"]["applied_count"] >= 1
     assert "cs.RO" in source.metadata["categories"]
     assert any("category=cs.RO" in url for url in fetched_urls)
+
+
+def test_nightly_jobs_close_daily_brief_rule_evolution_and_source_discovery(tmp_path) -> None:
+    from eimemory.api.runtime import Runtime
+    from eimemory.models.records import RecordEnvelope, ScopeRef
+
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = {"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"}
+    memory = runtime.memory.ingest(
+        text="Decision: nightly should prepare a daily brief outbox without calling Feishu.",
+        memory_type="decision",
+        title="Daily brief decision",
+        source="openclaw.agent_end",
+        force_capture=True,
+        scope=scope,
+    )
+    runtime.evolution.feedback(
+        target_ref={"kind": "memory", "record_id": memory.record_id},
+        decision="accept",
+        reason="Prefer concise operator-facing daily memory summaries",
+        reviewed_by="tester",
+        scope=scope,
+    )
+    runtime.store.append(
+        RecordEnvelope.create(
+            kind="unknown",
+            title="Need news and product launches for AI memory tools",
+            summary="Track news and product launches for AI memory tools.",
+            scope=ScopeRef.from_dict(scope),
+        )
+    )
+
+    report = run_nightly_jobs(runtime, scope=scope)
+    rules = runtime.store.list_records(kinds=["rule"], scope=scope, status="accepted", limit=10)
+    briefs = [
+        record
+        for record in runtime.store.list_records(kinds=["reflection"], scope=scope, limit=20)
+        if record.source == "eimemory.daily_brief"
+    ]
+    source_candidates = [
+        record
+        for record in runtime.store.list_records(kinds=["source_candidate"], scope=scope, limit=20)
+        if record.source == "eimemory.source_discovery"
+    ]
+    from eimemory.governance.snapshot import build_governance_snapshot
+
+    snapshot = build_governance_snapshot(runtime, scope)
+    runtime.close()
+
+    assert report["daily_brief"]["ok"] is True
+    assert report["daily_brief"]["persisted"] is True
+    assert report["daily_brief"]["delivery_pending"] is True
+    assert report["daily_brief"]["message_count"] >= 1
+    assert briefs
+    assert briefs[0].content["delivery"]["network_called"] is False
+    assert report["rule_evolution"]["ok"] is True
+    assert report["rule_evolution"]["created_rule_count"] == 1
+    assert rules[0].meta["evolution_source"] == "rule_evolution_loop"
+    assert report["source_discovery"]["ok"] is True
+    assert report["source_discovery"]["proposal_count"] >= 1
+    assert source_candidates
+    assert source_candidates[0].meta["decision"] in {"approve", "needs_review"}
+    assert snapshot["daily_brief"]["latest"]["delivery_status"] == "pending_delivery"
+    assert snapshot["rule_evolution"]["latest"]["created_rule_count"] == 1
+    assert snapshot["source_discovery"]["count"] >= 1
