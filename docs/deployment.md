@@ -10,7 +10,9 @@ Use these paths on Linux production hosts:
 | Purpose | Path |
 | --- | --- |
 | Main source repository | `/dev-project/eimemory` |
-| Python virtual environment | `/opt/eimemory/venv` |
+| Immutable releases | `/opt/eimemory/releases/<commit>` |
+| Active release symlink | `/opt/eimemory/current` |
+| Release virtual environment | `/opt/eimemory/current/.venv` |
 | Runtime data root | `/var/lib/eimemory` |
 | Configuration root | `/etc/eimemory` |
 | Logs and generated reports | `/var/log/eimemory` |
@@ -19,12 +21,17 @@ Use these paths on Linux production hosts:
 
 ## Runtime Environment
 
-Install the package in editable mode from the canonical source repository:
+The source repository is not a production runtime. Promote a commit into an
+immutable release directory, then run services only through
+`/opt/eimemory/current`:
 
 ```bash
-python3 -m venv /opt/eimemory/venv
-/opt/eimemory/venv/bin/python -m pip install -e /dev-project/eimemory
+/dev-project/eimemory/deploy/install_immutable_release.sh
 ```
+
+The release script copies the current repository commit into
+`/opt/eimemory/releases/<commit>`, creates a release-local virtual environment,
+installs eimemory non-editably, and atomically updates `/opt/eimemory/current`.
 
 The runtime service environment should set:
 
@@ -36,6 +43,10 @@ EIMEMORY_CONFIG_DIR=/etc/eimemory
 ## Service Rules
 
 - Services must not depend on `/home/<user>/dev-project`.
+- Services must not import production code from `/dev-project/eimemory`.
+- systemd units must execute binaries under `/opt/eimemory/current/.venv`.
+- Rollback is performed by repointing `/opt/eimemory/current` to an older
+  directory under `/opt/eimemory/releases`.
 - Runtime data must not be stored inside the source repository.
 - OpenClaw bridge files may be copied from the repository into the production
   extension path.
@@ -104,16 +115,16 @@ apply the new local 03:30 schedule automatically.
 After deployment, run:
 
 ```bash
-/opt/eimemory/venv/bin/python -m pytest \
-  /dev-project/eimemory/tests/test_governance_console.py \
-  /dev-project/eimemory/tests/test_cli_governance.py \
-  /dev-project/eimemory/tests/test_governance.py \
-  /dev-project/eimemory/tests/test_runtime.py \
-  /dev-project/eimemory/tests/test_storage.py \
+/opt/eimemory/current/.venv/bin/python -m pytest \
+  /opt/eimemory/current/tests/test_governance_console.py \
+  /opt/eimemory/current/tests/test_cli_governance.py \
+  /opt/eimemory/current/tests/test_governance.py \
+  /opt/eimemory/current/tests/test_runtime.py \
+  /opt/eimemory/current/tests/test_storage.py \
   -q --basetemp /tmp/eimemory-prod-verify
 
-EIMEMORY_ROOT=/var/lib/eimemory /opt/eimemory/venv/bin/eimemory quality stats
-EIMEMORY_ROOT=/var/lib/eimemory /opt/eimemory/venv/bin/eimemory governance snapshot
+EIMEMORY_ROOT=/var/lib/eimemory /opt/eimemory/current/.venv/bin/eimemory quality stats
+EIMEMORY_ROOT=/var/lib/eimemory /opt/eimemory/current/.venv/bin/eimemory governance snapshot
 ```
 
 ## Governance Console Token Rotation
@@ -122,7 +133,7 @@ The console serves static read-only HTML at `http://<host>:8765/<token>`.
 Rotate the token with:
 
 ```bash
-/opt/eimemory/venv/bin/python /dev-project/eimemory/deploy/rotate_console_token.py \
+/opt/eimemory/current/.venv/bin/python /opt/eimemory/current/deploy/rotate_console_token.py \
   --unit ~/.config/systemd/user/eimemory-console.service
 systemctl --user daemon-reload
 systemctl --user restart eimemory-console.service

@@ -14,9 +14,17 @@ For the current OpenClaw user-service deployment, the active service lives under
 The service should still point to canonical production paths:
 
 ```bash
-/opt/eimemory/venv
+/opt/eimemory/current
+/opt/eimemory/current/.venv
 /var/lib/eimemory
 /etc/eimemory
+```
+
+`/dev-project/eimemory` is the canonical source repository only. Runtime
+services should not import or execute code from it. Promote a release with:
+
+```bash
+/dev-project/eimemory/deploy/install_immutable_release.sh
 ```
 
 Runtime configuration is loaded from `/etc/eimemory/settings.json` when

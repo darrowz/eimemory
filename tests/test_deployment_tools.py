@@ -67,8 +67,29 @@ def test_console_systemd_uses_packaged_console_entrypoint() -> None:
 def test_eimemory_rpc_systemd_unit_uses_honxin_tailscale_endpoint() -> None:
     unit_text = Path("deploy/systemd/eimemory-rpc.service").read_text(encoding="utf-8")
 
-    assert "ExecStart=/opt/eimemory/venv/bin/eimemory serve-eibrain-rpc --host 100.66.161.64 --port 8091" in unit_text
+    assert (
+        "ExecStart=/opt/eimemory/current/.venv/bin/eimemory serve-eibrain-rpc --host 100.66.161.64 --port 8091"
+        in unit_text
+    )
     assert "Environment=EIMEMORY_ROOT=/var/lib/eimemory" in unit_text
     assert "Environment=EIMEMORY_CONFIG_DIR=/etc/eimemory" in unit_text
-    assert "WorkingDirectory=/var/lib/eimemory" in unit_text
+    assert "WorkingDirectory=/opt/eimemory/current" in unit_text
     assert "/dev-project/eimemory" not in unit_text
+
+
+def test_systemd_units_use_immutable_current_release() -> None:
+    for unit_path in Path("deploy/systemd").glob("*.service"):
+        unit_text = unit_path.read_text(encoding="utf-8")
+        assert "/opt/eimemory/venv" not in unit_text
+        assert "/dev-project/eimemory" not in unit_text
+        if unit_path.name != "openclaw-stuck-watchdog.service":
+            assert "WorkingDirectory=/opt/eimemory/current" in unit_text
+
+
+def test_immutable_release_installer_documents_non_editable_runtime() -> None:
+    script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
+
+    assert "git -C \"$REPO_DIR\" archive \"$COMMIT\"" in script
+    assert "pip install \"$RELEASE_DIR\"" in script
+    assert "pip install -e" not in script
+    assert "/opt/eimemory" in script
