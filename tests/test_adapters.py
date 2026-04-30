@@ -952,3 +952,81 @@ def test_eibrain_rpc_server_returns_400_for_unknown_method(tmp_path) -> None:
         server.stop()
 
     assert body == {"ok": False, "error": "unknown_method"}
+
+
+
+def test_eibrain_rpc_records_skill_trace_experience(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    bridge = EIBrainRPCBridge(runtime)
+
+    response = bridge.handle(
+        {
+            "method": "experience.record_skill_trace",
+            "params": {
+                "scope": {"agent_id": "honxin", "workspace_id": "honjia", "user_id": "darrow"},
+                "payload": {
+                    "trace_id": "trace-1",
+                    "task_type": "brain.respond",
+                    "input_summary": "user asked for status",
+                    "selected_skills": ["reply.default"],
+                    "actions": ["play_speech_action"],
+                    "outcome": "planned",
+                    "feedback": "unknown",
+                    "latency_ms": 42,
+                },
+            },
+        }
+    )
+
+    assert response["ok"] is True
+    stored = runtime.store.get_by_id(response["result"]["record_id"])
+    assert stored is not None
+    assert stored.source == "eimemory.experience.skill_trace"
+    assert stored.meta["report_type"] == "skill_trace"
+    assert stored.meta["selected_skill_ids"] == ["reply.default"]
+
+
+def test_eibrain_rpc_records_experience_item(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    bridge = EIBrainRPCBridge(runtime)
+
+    response = bridge.handle(
+        {
+            "method": "experience.record_item",
+            "params": {
+                "scope": {"agent_id": "honxin", "workspace_id": "honjia"},
+                "payload": {
+                    "experience_id": "exp-1",
+                    "experience_kind": "success_strategy",
+                    "summary": "Brief status replies worked well.",
+                    "skill_ids": ["reply.default"],
+                    "outcome_delta": 0.12,
+                    "confidence": 0.8,
+                },
+            },
+        }
+    )
+
+    assert response["ok"] is True
+    stored = runtime.store.get_by_id(response["result"]["record_id"])
+    assert stored is not None
+    assert stored.source == "eimemory.experience.item"
+    assert stored.meta["experience_kind"] == "success_strategy"
+    assert stored.meta["skill_ids"] == ["reply.default"]
+
+
+def test_eibrain_rpc_rejects_invalid_experience_payload(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    bridge = EIBrainRPCBridge(runtime)
+
+    response = bridge.handle(
+        {
+            "method": "experience.record_skill_trace",
+            "params": {
+                "scope": {"agent_id": "honxin", "workspace_id": "honjia"},
+                "payload": {"trace_id": "missing-required-fields"},
+            },
+        }
+    )
+
+    assert response == {"ok": False, "error": "missing required fields: task_type, input_summary, selected_skills, actions, outcome, feedback, latency_ms"}

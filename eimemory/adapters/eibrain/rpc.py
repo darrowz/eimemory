@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 from eimemory.api.runtime import Runtime
+from eimemory.experience import record_experience_item, record_skill_trace
 from eimemory.identity import hongtu_identity_meta, hongtu_scope
 from eimemory.models.records import LinkRef
 
@@ -112,6 +113,24 @@ class EIBrainRPCBridge:
                 scope=hongtu_scope(scope),
             )
             return {"ok": True, "result": record.to_dict()}
+        if method == "experience.record_skill_trace":
+            payload = params.get("payload", {})
+            scope = params.get("scope", {})
+            if not isinstance(payload, dict) or not self._valid_scope(scope):
+                return self._invalid_request()
+            result = record_skill_trace(self.runtime, payload, scope=hongtu_scope(scope))
+            if result.get("ok") is False:
+                return {"ok": False, "error": result.get("error", "invalid_experience")}
+            return {"ok": True, "result": result}
+        if method == "experience.record_item":
+            payload = params.get("payload", {})
+            scope = params.get("scope", {})
+            if not isinstance(payload, dict) or not self._valid_scope(scope):
+                return self._invalid_request()
+            result = record_experience_item(self.runtime, payload, scope=hongtu_scope(scope))
+            if result.get("ok") is False:
+                return {"ok": False, "error": result.get("error", "invalid_experience")}
+            return {"ok": True, "result": result}
         if method == "evolution.get_active_policy":
             scope = params.get("scope", {})
             task_type = params.get("task_type", "")
