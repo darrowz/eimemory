@@ -46,6 +46,7 @@ def build_daily_brief(
         and _is_within_research_window(record, day, research_lookback_days)
     ]
     news_records.sort(key=_record_sort_key)
+    news_records = _dedupe_records_by_url(news_records)
 
     decisions = _extract_marked_items(
         experience_records,
@@ -240,6 +241,24 @@ def _news_item(record: Mapping[str, Any]) -> dict[str, Any]:
         "url": str(content.get("item_url") or content.get("url") or meta.get("item_url") or ""),
         "published_at": str(content.get("published_at") or ""),
     }
+
+
+def _dedupe_records_by_url(records: list[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    deduped: list[Mapping[str, Any]] = []
+    seen: set[str] = set()
+    for record in records:
+        key = _record_url(record) or str(record.get("record_id") or "")
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(record)
+    return deduped
+
+
+def _record_url(record: Mapping[str, Any]) -> str:
+    content = record.get("content") if isinstance(record.get("content"), dict) else {}
+    meta = record.get("meta") if isinstance(record.get("meta"), dict) else {}
+    return str(content.get("item_url") or content.get("url") or meta.get("item_url") or "")
 
 
 def _source_health(records: list[Mapping[str, Any]]) -> dict[str, Any]:

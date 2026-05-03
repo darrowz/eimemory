@@ -164,6 +164,32 @@ def test_daily_brief_keeps_news_digest_separate_from_research(tmp_path) -> None:
         runtime.close()
 
 
+def test_daily_brief_deduplicates_news_by_url(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = {"agent_id": "main", "workspace_id": "news"}
+    try:
+        for index in range(2):
+            runtime.store.append(
+                RecordEnvelope.create(
+                    kind="news",
+                    title=f"News item duplicate {index}",
+                    summary="Same URL should only appear once in daily brief.",
+                    scope=ScopeRef.from_dict(scope),
+                    content={"item_url": "https://example.test/news/same", "source_kind": "rss"},
+                    tags=["news", "external"],
+                    source="eimemory.news.collect",
+                    meta={"source_kind": "rss"},
+                )
+            )
+
+        brief = runtime.build_daily_brief(scope=scope)
+
+        assert brief["news_digest"]["count"] == 1
+        assert brief["news_digest"]["items"][0]["url"] == "https://example.test/news/same"
+    finally:
+        runtime.close()
+
+
 def test_nightly_jobs_promote_news_rss_candidate_and_collect_news(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path / "runtime")
     scope = {"agent_id": "main", "workspace_id": "news"}
