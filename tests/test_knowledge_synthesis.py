@@ -190,6 +190,37 @@ def test_daily_brief_deduplicates_news_by_url(tmp_path) -> None:
         runtime.close()
 
 
+def test_daily_brief_cleans_html_from_news_digest(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = {"agent_id": "main", "workspace_id": "news"}
+    try:
+        runtime.store.append(
+            RecordEnvelope.create(
+                kind="news",
+                title="News item: &lt;b&gt;AI memory update&lt;/b&gt;",
+                summary=(
+                    '<a href="https://example.test/news/html">AI memory vendor update</a> '
+                    '<font color="#6f6f6f">Example News</font>'
+                ),
+                scope=ScopeRef.from_dict(scope),
+                content={"item_url": "https://example.test/news/html", "source_kind": "rss"},
+                tags=["news", "external"],
+                source="eimemory.news.collect",
+                meta={"source_kind": "rss"},
+            )
+        )
+
+        brief = runtime.build_daily_brief(scope=scope)
+        item = brief["news_digest"]["items"][0]
+
+        assert item["title"] == "News item: AI memory update"
+        assert item["summary"] == "AI memory vendor update Example News"
+        assert "<" not in item["summary"]
+        assert ">" not in item["summary"]
+    finally:
+        runtime.close()
+
+
 def test_nightly_jobs_promote_news_rss_candidate_and_collect_news(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path / "runtime")
     scope = {"agent_id": "main", "workspace_id": "news"}

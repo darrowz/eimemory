@@ -4,7 +4,9 @@ from dataclasses import asdict, is_dataclass
 from datetime import date as date_type
 from datetime import datetime
 from datetime import timedelta
+import html
 from pathlib import Path
+import re
 from typing import Any, Iterable, Mapping
 
 from eimemory.core.clock import now_iso
@@ -235,8 +237,8 @@ def _news_item(record: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "record_id": str(record.get("record_id") or ""),
         "kind": str(record.get("kind") or ""),
-        "title": str(record.get("title") or ""),
-        "summary": str(record.get("summary") or ""),
+        "title": _clean_digest_text(str(record.get("title") or "")),
+        "summary": _clean_digest_text(str(record.get("summary") or "")),
         "source": str(record.get("source") or ""),
         "url": str(content.get("item_url") or content.get("url") or meta.get("item_url") or ""),
         "published_at": str(content.get("published_at") or ""),
@@ -259,6 +261,13 @@ def _record_url(record: Mapping[str, Any]) -> str:
     content = record.get("content") if isinstance(record.get("content"), dict) else {}
     meta = record.get("meta") if isinstance(record.get("meta"), dict) else {}
     return str(content.get("item_url") or content.get("url") or meta.get("item_url") or "")
+
+
+def _clean_digest_text(value: str) -> str:
+    """Normalize RSS snippets so daily brief output is readable text, not HTML."""
+    text = html.unescape(str(value or ""))
+    text = re.sub(r"<[^>]*>", " ", text)
+    return " ".join(text.split())
 
 
 def _source_health(records: list[Mapping[str, Any]]) -> dict[str, Any]:
