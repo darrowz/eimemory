@@ -234,11 +234,16 @@ def _research_item(record: Mapping[str, Any]) -> dict[str, Any]:
 def _news_item(record: Mapping[str, Any]) -> dict[str, Any]:
     content = record.get("content") if isinstance(record.get("content"), dict) else {}
     meta = record.get("meta") if isinstance(record.get("meta"), dict) else {}
+    title = _clean_digest_text(str(record.get("title") or content.get("title") or ""))
+    raw_summary = str(record.get("summary") or content.get("summary") or "")
+    summary = _clean_digest_text(raw_summary)
+    if _looks_like_broken_html(summary) or ("<" in raw_summary and not summary):
+        summary = _clean_digest_text(str(content.get("title") or title))
     return {
         "record_id": str(record.get("record_id") or ""),
         "kind": str(record.get("kind") or ""),
-        "title": _clean_digest_text(str(record.get("title") or "")),
-        "summary": _clean_digest_text(str(record.get("summary") or "")),
+        "title": title,
+        "summary": summary,
         "source": str(record.get("source") or ""),
         "url": str(content.get("item_url") or content.get("url") or meta.get("item_url") or ""),
         "published_at": str(content.get("published_at") or ""),
@@ -267,7 +272,12 @@ def _clean_digest_text(value: str) -> str:
     """Normalize RSS snippets so daily brief output is readable text, not HTML."""
     text = html.unescape(str(value or ""))
     text = re.sub(r"<[^>]*>", " ", text)
+    text = re.sub(r"<[^>]*$", " ", text)
     return " ".join(text.split())
+
+
+def _looks_like_broken_html(value: str) -> bool:
+    return "<" in value or ">" in value or value.lower().startswith(("http://", "https://"))
 
 
 def _source_health(records: list[Mapping[str, Any]]) -> dict[str, Any]:

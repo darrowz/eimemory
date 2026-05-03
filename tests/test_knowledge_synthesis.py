@@ -221,6 +221,37 @@ def test_daily_brief_cleans_html_from_news_digest(tmp_path) -> None:
         runtime.close()
 
 
+def test_daily_brief_falls_back_when_news_summary_is_truncated_html(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = {"agent_id": "main", "workspace_id": "news"}
+    try:
+        runtime.store.append(
+            RecordEnvelope.create(
+                kind="news",
+                title="News item: Gemini launches personalization - Example",
+                summary='<a href="https://news.google.com/rss/articles/very-long-truncated',
+                scope=ScopeRef.from_dict(scope),
+                content={
+                    "item_url": "https://example.test/news/truncated",
+                    "source_kind": "rss",
+                    "title": "Gemini launches personalization - Example",
+                },
+                tags=["news", "external"],
+                source="eimemory.news.collect",
+                meta={"source_kind": "rss"},
+            )
+        )
+
+        brief = runtime.build_daily_brief(scope=scope)
+        item = brief["news_digest"]["items"][0]
+
+        assert item["summary"] == "Gemini launches personalization - Example"
+        assert "<" not in item["summary"]
+        assert ">" not in item["summary"]
+    finally:
+        runtime.close()
+
+
 def test_nightly_jobs_promote_news_rss_candidate_and_collect_news(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path / "runtime")
     scope = {"agent_id": "main", "workspace_id": "news"}
