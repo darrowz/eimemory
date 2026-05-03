@@ -231,6 +231,33 @@ def test_http_rpc_server_serves_recall_and_policy(tmp_path) -> None:
     assert policy["result"]["retrieval_policy"]["route_hint"] == "task_context_first"
 
 
+def test_http_rpc_server_get_root_returns_daily_brief_digest(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    runtime.store.append(
+        RecordEnvelope.create(
+            kind="news",
+            title="News item: eimemory launches RSS intake",
+            summary="RSS news intake is available.",
+            scope=ScopeRef.from_dict({"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"}),
+            content={"item_url": "https://example.test/news/rss"},
+            tags=["news"],
+            source="eimemory.news.collect",
+        )
+    )
+    server = EIBrainRPCServer(runtime, host="127.0.0.1", port=0)
+    server.start()
+    try:
+        with urllib.request.urlopen(f"http://{server.address[0]}:{server.address[1]}/", timeout=5) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.stop()
+
+    assert payload["ok"] is True
+    assert payload["service"] == "eimemory-rpc"
+    assert payload["news_digest"]["count"] == 1
+    assert payload["news_digest"]["items"][0]["url"] == "https://example.test/news/rss"
+
+
 def test_scheduler_and_openclaw_tools_surface_runtime_state(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     runtime.memory.ingest(

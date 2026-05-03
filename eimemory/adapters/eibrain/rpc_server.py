@@ -4,6 +4,7 @@ import json
 import threading
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlparse
 
 from eimemory.adapters.eibrain.rpc import EIBrainRPCBridge
 from eimemory.api.runtime import Runtime
@@ -11,6 +12,31 @@ from eimemory.api.runtime import Runtime
 
 class _RPCHandler(BaseHTTPRequestHandler):
     bridge: EIBrainRPCBridge
+    runtime: Runtime
+
+    def do_GET(self) -> None:  # noqa: N802
+        parsed = urlparse(self.path)
+        if parsed.path not in {"", "/", "/health", "/daily-brief"}:
+            self._send_json(404, {"ok": False, "error": "not_found"})
+            return
+        query = parse_qs(parsed.query)
+        scope = {
+            "tenant_id": _first_query_value(query, "tenant_id", "default"),
+            "agent_id": _first_query_value(query, "agent_id", "hongtu"),
+            "workspace_id": _first_query_value(query, "workspace_id", "embodied"),
+            "user_id": _first_query_value(query, "user_id", "darrow"),
+        }
+        brief = self.runtime.build_daily_brief(scope=scope)
+        self._send_json(
+            200,
+            {
+                "ok": True,
+                "service": "eimemory-rpc",
+                "news_digest": brief.get("news_digest", {}),
+                "research_digest": brief.get("research_digest", {}),
+                "source_health": brief.get("source_health", {}),
+            },
+        )
 
     def do_POST(self) -> None:  # noqa: N802
         try:
@@ -46,6 +72,7 @@ class EIBrainRPCServer:
         self.port = port
         handler = type("EIMemoryRPCHandler", (_RPCHandler,), {})
         handler.bridge = EIBrainRPCBridge(runtime)
+        handler.runtime = runtime
         self._server = ThreadingHTTPServer((host, port), handler)
         self.address = self._server.server_address
         self._thread: threading.Thread | None = None
@@ -78,3 +105,10 @@ class EIBrainRPCServer:
         )
         with urllib.request.urlopen(req, timeout=5) as response:
             return json.loads(response.read().decode("utf-8"))
+
+
+def _first_query_value(query: dict[str, list[str]], key: str, default: str = "") -> str:
+    values = query.get(key) or []
+    if not values:
+        return default
+    return str(values[0] or default)
