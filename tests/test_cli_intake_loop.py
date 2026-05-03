@@ -101,7 +101,7 @@ def test_runtime_collect_rss_persists_news_records(tmp_path, monkeypatch) -> Non
             {
                 "source_kind": "rss",
                 "title": "AI News",
-                "uri": "https://example.test/rss",
+                "uri": "https://example.com/rss",
                 "tags": ["news"],
                 "metadata": {"frequency": "daily", "max_items": 5},
             }
@@ -127,6 +127,60 @@ def test_runtime_collect_rss_persists_news_records(tmp_path, monkeypatch) -> Non
         assert news[0].status == "active"
         assert news[0].meta["source_kind"] == "rss"
         assert news[0].content["item_url"] == "https://example.test/news/1"
+    finally:
+        app.close()
+
+
+def test_runtime_collect_rss_enriches_news_with_article_fulltext(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path / "runtime"))
+    runtime = RuntimeStore(tmp_path / "runtime")
+    runtime.close()
+    from eimemory.api.runtime import Runtime
+
+    app = Runtime.create(root=tmp_path / "runtime")
+    try:
+        app.sources.add_source(
+            {
+                "source_kind": "rss",
+                "title": "AI News",
+                "uri": "https://example.com/rss",
+                "tags": ["news"],
+                "metadata": {"frequency": "daily", "max_items": 5},
+            }
+        )
+        xml = """<?xml version="1.0"?>
+        <rss version="2.0"><channel><item>
+          <title>AI memory startup launches product</title>
+          <link>https://example.com/news/1</link>
+          <description>Short RSS summary.</description>
+          <pubDate>Wed, 29 Apr 2026 01:00:00 GMT</pubDate>
+        </item></channel></rss>
+        """
+        article = """
+        <html><head><title>Full article title</title></head>
+        <body><article>
+          <h1>Full article title</h1>
+          <p>The full article body explains the product launch, customer workflow,
+          deployment details, memory model, retrieval quality, and operational impact.</p>
+          <p>It contains enough readable detail to replace the short RSS summary.</p>
+        </article></body></html>
+        """
+
+        def fake_fetch(url: str) -> str:
+            if url == "https://example.com/rss":
+                return xml
+            if url == "https://example.com/news/1":
+                return article
+            raise AssertionError(url)
+
+        report = app.collect_external_sources(source_kind="rss", fetch=True, persist=True, fetch_text=fake_fetch)
+        news = app.store.list_records(kinds=["news"], limit=10)
+
+        assert report["ok"] is True
+        assert report["results"][0]["metadata"]["rss_fulltext"]["success_count"] == 1
+        assert "operational impact" in news[0].detail
+        assert news[0].content["metadata"]["rss_summary"] == "Short RSS summary."
+        assert news[0].content["metadata"]["fulltext"]["ok"] is True
     finally:
         app.close()
 

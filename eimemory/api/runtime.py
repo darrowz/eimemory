@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import ipaddress
 import socket
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, is_dataclass, replace
 from datetime import date as date_type
 from datetime import datetime
 from hashlib import sha256
@@ -102,6 +102,8 @@ class Runtime:
         scope_ref = ScopeRef.from_dict(scope)
         for source in sources:
             result = collect_from_source_entry(source, fetch_text=fetch_text)
+            if fetch and fetch_text is not None and str(source.source_kind or "").lower() == "rss":
+                result = _enrich_rss_result_with_fulltext(result, fetch_text=fetch_text)
             source_item_limit = _source_max_items(source)
             allowed_items = result.items[:source_item_limit]
             if item_budget is not None:
@@ -641,6 +643,65 @@ def _default_fetch_text(url: str) -> str:
         if len(raw) > MAX_FETCH_BYTES:
             raise ValueError("response too large")
         return raw.decode(charset, errors="replace")
+
+
+def _enrich_rss_result_with_fulltext(result: Any, *, fetch_text) -> Any:
+    from eimemory.intake.connectors import FetchResult
+    from eimemory.intake.fulltext import parse_fulltext_document
+
+    if not getattr(result, "ok", False) or not getattr(result, "items", None):
+        return result
+
+    enriched_items = []
+    attempted_count = 0
+    success_count = 0
+    error_count = 0
+    for item in result.items:
+        enriched_item = item
+        item_url = str(getattr(item, "url", "") or "").strip()
+        if item_url:
+            attempted_count += 1
+            try:
+                _validate_fetch_url(item_url)
+                document = parse_fulltext_document(fetch_text(item_url), url=item_url, source_kind="web")
+                original_content = str(getattr(item, "content", "") or "")
+                if document.ok and len(document.text) > len(original_content):
+                    metadata = dict(getattr(item, "metadata", {}) or {})
+                    metadata["rss_summary"] = original_content
+                    metadata["fulltext"] = {
+                        "ok": True,
+                        "quality_score": document.quality_score,
+                        "byline": document.byline,
+                        "date": document.date,
+                        "canonical_url": document.canonical_url,
+                        "image_count": len(document.images),
+                    }
+                    enriched_item = replace(
+                        item,
+                        title=document.title or item.title,
+                        url=document.canonical_url or item.url,
+                        content=document.text,
+                        published_at=document.date or item.published_at,
+                        metadata=metadata,
+                    )
+                    success_count += 1
+            except Exception:
+                error_count += 1
+        enriched_items.append(enriched_item)
+
+    return FetchResult(
+        ok=result.ok,
+        items=enriched_items,
+        error=result.error,
+        metadata={
+            **dict(result.metadata or {}),
+            "rss_fulltext": {
+                "attempted_count": attempted_count,
+                "success_count": success_count,
+                "error_count": error_count,
+            },
+        },
+    )
 
 
 class _SafeRedirectHandler(HTTPRedirectHandler):
