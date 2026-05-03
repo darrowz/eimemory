@@ -89,6 +89,48 @@ def test_cli_intake_collect_forwards_persist_and_scope(tmp_path, monkeypatch, ca
     ]
 
 
+def test_runtime_collect_rss_persists_news_records(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path / "runtime"))
+    runtime = RuntimeStore(tmp_path / "runtime")
+    runtime.close()
+    from eimemory.api.runtime import Runtime
+
+    app = Runtime.create(root=tmp_path / "runtime")
+    try:
+        app.sources.add_source(
+            {
+                "source_kind": "rss",
+                "title": "AI News",
+                "uri": "https://example.test/rss",
+                "tags": ["news"],
+                "metadata": {"frequency": "daily", "max_items": 5},
+            }
+        )
+        xml = """<?xml version="1.0"?>
+        <rss version="2.0"><channel><item>
+          <title>AI memory startup launches product</title>
+          <link>https://example.test/news/1</link>
+          <description>External news body with enough detail for the daily brief.</description>
+          <pubDate>Wed, 29 Apr 2026 01:00:00 GMT</pubDate>
+        </item></channel></rss>
+        """
+
+        report = app.collect_external_sources(source_kind="rss", fetch=True, persist=True, fetch_text=lambda _url: xml)
+        news = app.store.list_records(kinds=["news"], limit=10)
+        candidates = app.store.list_records(kinds=["knowledge_candidate"], limit=10)
+
+        assert report["ok"] is True
+        assert report["written_count"] == 1
+        assert len(news) == 1
+        assert not candidates
+        assert news[0].source == "eimemory.news.collect"
+        assert news[0].status == "active"
+        assert news[0].meta["source_kind"] == "rss"
+        assert news[0].content["item_url"] == "https://example.test/news/1"
+    finally:
+        app.close()
+
+
 def test_cli_intake_explain_returns_candidate_explanation(tmp_path, monkeypatch, capsys) -> None:
     runtime_root = tmp_path / "runtime"
     monkeypatch.setenv("EIMEMORY_ROOT", str(runtime_root))

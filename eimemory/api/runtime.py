@@ -701,6 +701,9 @@ def _collected_item_record(
     item_url = str(getattr(item, "url", "") or "")
     metadata = dict(getattr(item, "metadata", {}) or {})
     status = _collected_item_status(metadata)
+    record_kind = _collected_item_record_kind(source_kind=source_kind, item_source_kind=item_source_kind, metadata=metadata)
+    if record_kind == "news" and status == "candidate":
+        status = "active"
     summary = _summary_from_content(content)
     content_excerpt = _content_excerpt(content)
     provenance = {
@@ -725,17 +728,22 @@ def _collected_item_record(
         "published_at": str(getattr(item, "published_at", "") or ""),
     }
     return RecordEnvelope(
-        record_id=_collected_item_record_id(fingerprint, source_id=str(source_id or ""), scope=scope),
-        kind="knowledge_candidate",
+        record_id=_collected_item_record_id(
+            fingerprint,
+            source_id=str(source_id or ""),
+            scope=scope,
+            record_kind=record_kind,
+        ),
+        kind=record_kind,
         status=status,
-        title=f"Knowledge candidate: {title}",
+        title=f"{_collected_item_title_prefix(record_kind)}: {title}",
         summary=summary,
         detail=content_excerpt,
         content=content_payload,
-        tags=[],
+        tags=_collected_item_tags(record_kind),
         links=[],
         evidence=[],
-        source="eimemory.intake.collect",
+        source="eimemory.news.collect" if record_kind == "news" else "eimemory.intake.collect",
         scope=scope,
         time=TimeRef.now(),
         provenance=provenance,
@@ -751,9 +759,27 @@ def _collected_item_record(
     )
 
 
-def _collected_item_record_id(fingerprint: str, *, source_id: str, scope: ScopeRef) -> str:
+def _collected_item_record_kind(*, source_kind: str, item_source_kind: str, metadata: dict[str, Any]) -> str:
+    source_markers = {str(source_kind or "").strip().lower(), str(item_source_kind or "").strip().lower()}
+    if source_markers & {"news", "rss"}:
+        return "news"
+    if metadata.get("feed_url"):
+        return "news"
+    return "knowledge_candidate"
+
+
+def _collected_item_title_prefix(record_kind: str) -> str:
+    return "News item" if record_kind == "news" else "Knowledge candidate"
+
+
+def _collected_item_tags(record_kind: str) -> list[str]:
+    return ["news", "external"] if record_kind == "news" else []
+
+
+def _collected_item_record_id(fingerprint: str, *, source_id: str, scope: ScopeRef, record_kind: str = "knowledge_candidate") -> str:
     stable = fingerprint or sha256(source_id.encode("utf-8", errors="ignore")).hexdigest()
-    return f"kc_fetch_{stable[:12]}_{_scope_hash(scope)}"
+    prefix = "news_fetch" if record_kind == "news" else "kc_fetch"
+    return f"{prefix}_{stable[:12]}_{_scope_hash(scope)}"
 
 
 def _scope_hash(scope: ScopeRef) -> str:

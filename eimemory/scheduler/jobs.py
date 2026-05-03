@@ -24,6 +24,7 @@ def run_nightly_jobs(
     knowledge_report = runtime.evolution.reconcile_knowledge(scope=scope)
     quality_report = runtime.evolution.memory_quality_report(scope=scope)
     source_expansion_report = runtime.expand_sources_autonomously(scope=scope, apply=True, max_apply=3)
+    news_source_promotion_report = _promote_news_rss_source_candidates(runtime, scope=scope)
     intake_report = runtime.run_knowledge_intake(scope=scope, persist=True, limit=100)
     external_collection_report = _run_external_collection(
         runtime,
@@ -82,6 +83,7 @@ def run_nightly_jobs(
             "updated_source_ids": list(source_expansion_report.get("updated_source_ids") or []),
             "audit_record_ids": list(source_expansion_report.get("audit_record_ids") or []),
         },
+        "news_source_promotion": news_source_promotion_report,
         "knowledge_intake": {
             "scanned_count": intake_report["scanned_count"],
             "candidate_count": intake_report["candidate_count"],
@@ -129,7 +131,7 @@ def _run_external_collection(
     source_count = 0
     fetched_item_count = 0
 
-    for source_kind in ("url", "rss", "paper"):
+    for source_kind in ("news", "rss", "url", "paper"):
         if remaining <= 0:
             break
         report = _collect_external_source_kind(
@@ -167,6 +169,62 @@ def _run_external_collection(
         "errors": errors,
         "source_reports": reports,
         "_candidate_records": persist_report["candidate_records"],
+    }
+
+
+def _promote_news_rss_source_candidates(runtime: Runtime, *, scope: dict) -> dict[str, Any]:
+    records = runtime.store.list_records(kinds=["source_candidate"], scope=scope, status="candidate", limit=500)
+    promoted_source_ids: list[str] = []
+    skipped_count = 0
+    error_count = 0
+    errors: list[dict[str, Any]] = []
+    existing_uris = {
+        str(source.uri or "").strip()
+        for source in runtime.sources.list_sources(enabled=None)
+        if str(source.uri or "").strip()
+    }
+    for record in records:
+        proposal = record.content.get("proposal") if isinstance(record.content.get("proposal"), dict) else {}
+        source_kind = str(proposal.get("source_kind") or record.meta.get("source_kind") or "").strip().lower()
+        source_family = str((proposal.get("metadata") or {}).get("source_family") or record.meta.get("source_family") or "")
+        uri = str(proposal.get("uri") or record.meta.get("source_uri") or "").strip()
+        tags = {str(tag).lower() for tag in (proposal.get("tags") or record.tags or [])}
+        is_news_rss = source_kind == "rss" and ("news" in tags or source_family == "news_rss")
+        if not is_news_rss or not uri:
+            skipped_count += 1
+            continue
+        if uri in existing_uris:
+            skipped_count += 1
+            continue
+        try:
+            source = runtime.sources.add_source(
+                {
+                    "source_kind": "rss",
+                    "title": str(proposal.get("title") or record.title or "News RSS"),
+                    "uri": uri,
+                    "tags": sorted({"news", "rss", "auto-promoted", *tags}),
+                    "enabled": True,
+                    "metadata": {
+                        "frequency": "daily",
+                        "max_items": int((proposal.get("metadata") or {}).get("max_items") or 10),
+                        "source_family": "news_rss",
+                        "promoted_from_record_id": record.record_id,
+                    },
+                }
+            )
+            existing_uris.add(uri)
+            promoted_source_ids.append(source.source_id)
+        except Exception as exc:
+            error_count += 1
+            errors.append({"record_id": record.record_id, "error": type(exc).__name__, "detail": str(exc)})
+    return {
+        "ok": error_count == 0,
+        "scanned_count": len(records),
+        "promoted_count": len(promoted_source_ids),
+        "skipped_count": skipped_count,
+        "error_count": error_count,
+        "errors": errors,
+        "promoted_source_ids": promoted_source_ids,
     }
 
 
@@ -497,6 +555,7 @@ def _run_daily_brief(runtime: Runtime, *, scope: dict) -> dict[str, Any]:
             "decision_count": 0,
             "followup_count": 0,
             "research_item_count": 0,
+            "news_item_count": 0,
             "persisted": False,
             "persisted_record_id": "",
             "brief_skipped_reason": "build_daily_brief_unavailable",
@@ -505,6 +564,7 @@ def _run_daily_brief(runtime: Runtime, *, scope: dict) -> dict[str, Any]:
         report = _json_safe(build_brief(scope=scope, persist=True, channel="feishu"))
         conversation_summary = report.get("conversation_summary") if isinstance(report.get("conversation_summary"), dict) else {}
         research_digest = report.get("research_digest") if isinstance(report.get("research_digest"), dict) else {}
+        news_digest = report.get("news_digest") if isinstance(report.get("news_digest"), dict) else {}
         return {
             "ok": bool(report.get("ok", True)),
             "date": str(report.get("date") or ""),
@@ -512,6 +572,7 @@ def _run_daily_brief(runtime: Runtime, *, scope: dict) -> dict[str, Any]:
             "decision_count": len(report.get("decisions") or []),
             "followup_count": len(report.get("followups") or []),
             "research_item_count": len(research_digest.get("items") or []),
+            "news_item_count": len(news_digest.get("items") or []),
             "delivery_channel": str((report.get("delivery") or {}).get("channel") or ""),
             "delivery_pending": bool((report.get("delivery") or {}).get("outbox")),
             "persisted": bool(report.get("persisted")),
@@ -526,6 +587,7 @@ def _run_daily_brief(runtime: Runtime, *, scope: dict) -> dict[str, Any]:
             "decision_count": 0,
             "followup_count": 0,
             "research_item_count": 0,
+            "news_item_count": 0,
             "delivery_channel": "",
             "delivery_pending": False,
             "persisted": False,

@@ -12,6 +12,7 @@ from eimemory.models.records import RecordEnvelope
 
 DAILY_BRIEF_SCHEMA_VERSION = 1
 RESEARCH_DIGEST_KINDS = {"paper_source", "knowledge_page"}
+NEWS_DIGEST_KINDS = {"news"}
 EXPERIENCE_SOURCES = {
     "openclaw.agent_end",
     "openclaw.message_received",
@@ -38,6 +39,13 @@ def build_daily_brief(
         and _is_within_research_window(record, day, research_lookback_days)
     ]
     digest_records.sort(key=_record_sort_key)
+    news_records = [
+        record
+        for record in all_records
+        if _is_news_digest_record(record)
+        and _is_within_research_window(record, day, research_lookback_days)
+    ]
+    news_records.sort(key=_record_sort_key)
 
     decisions = _extract_marked_items(
         experience_records,
@@ -59,6 +67,10 @@ def build_daily_brief(
         "research_digest": {
             "count": len(digest_records),
             "items": [_research_item(record) for record in digest_records],
+        },
+        "news_digest": {
+            "count": len(news_records),
+            "items": [_news_item(record) for record in news_records],
         },
         "followups": followups,
         "source_health": _source_health(day_records),
@@ -140,6 +152,14 @@ def _is_research_digest_record(record: Mapping[str, Any]) -> bool:
     return "research_digest" in tags or "digest" in source
 
 
+def _is_news_digest_record(record: Mapping[str, Any]) -> bool:
+    kind = str(record.get("kind") or "")
+    source = str(record.get("source") or "").lower()
+    if kind in NEWS_DIGEST_KINDS:
+        return True
+    return kind == "knowledge_candidate" and "news.collect" in source
+
+
 def _conversation_summary(records: list[Mapping[str, Any]]) -> dict[str, Any]:
     by_source: dict[str, int] = {}
     highlights: list[str] = []
@@ -205,6 +225,20 @@ def _research_item(record: Mapping[str, Any]) -> dict[str, Any]:
             or meta.get("source_uri")
             or ""
         ),
+    }
+
+
+def _news_item(record: Mapping[str, Any]) -> dict[str, Any]:
+    content = record.get("content") if isinstance(record.get("content"), dict) else {}
+    meta = record.get("meta") if isinstance(record.get("meta"), dict) else {}
+    return {
+        "record_id": str(record.get("record_id") or ""),
+        "kind": str(record.get("kind") or ""),
+        "title": str(record.get("title") or ""),
+        "summary": str(record.get("summary") or ""),
+        "source": str(record.get("source") or ""),
+        "url": str(content.get("item_url") or content.get("url") or meta.get("item_url") or ""),
+        "published_at": str(content.get("published_at") or ""),
     }
 
 

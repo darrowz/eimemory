@@ -1,5 +1,6 @@
 from eimemory.api.runtime import Runtime
 from eimemory.knowledge.synthesis import build_research_digest
+from eimemory.models.records import RecordEnvelope, ScopeRef
 from eimemory.scheduler.jobs import run_nightly_jobs
 
 
@@ -129,5 +130,81 @@ def test_nightly_jobs_include_research_digest_summary(tmp_path) -> None:
         assert report["research_digest"]["persisted"] is True
         assert report["research_digest"]["persisted_page_id"]
         assert len(digest_pages) == 1
+    finally:
+        runtime.close()
+
+
+def test_daily_brief_keeps_news_digest_separate_from_research(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = {"agent_id": "main", "workspace_id": "news"}
+    try:
+        runtime.store.append(
+            RecordEnvelope.create(
+                kind="news",
+                title="News item: AI memory vendor launches update",
+                summary="AI memory vendor launched a product update.",
+                scope=ScopeRef.from_dict(scope),
+                content={
+                    "item_url": "https://example.test/news/ai-memory",
+                    "published_at": "2026-04-29",
+                    "source_kind": "rss",
+                },
+                tags=["news", "external"],
+                source="eimemory.news.collect",
+                meta={"source_kind": "rss"},
+            )
+        )
+
+        brief = runtime.build_daily_brief(scope=scope)
+
+        assert brief["news_digest"]["count"] == 1
+        assert brief["news_digest"]["items"][0]["url"] == "https://example.test/news/ai-memory"
+        assert brief["research_digest"]["count"] == 0
+    finally:
+        runtime.close()
+
+
+def test_nightly_jobs_promote_news_rss_candidate_and_collect_news(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = {"agent_id": "main", "workspace_id": "news"}
+    try:
+        runtime.store.append(
+            RecordEnvelope.create(
+                kind="source_candidate",
+                title="News RSS candidate: AI memory tools",
+                summary="Gap evidence asks for news coverage.",
+                detail="https://example.test/rss",
+                scope=ScopeRef.from_dict(scope),
+                status="candidate",
+                content={
+                    "proposal": {
+                        "source_kind": "rss",
+                        "title": "News RSS candidate: AI memory tools",
+                        "uri": "https://example.test/rss",
+                        "tags": ["news", "rss", "needs-review"],
+                        "metadata": {"source_family": "news_rss", "max_items": 3},
+                    }
+                },
+                tags=["source-discovery", "needs-review", "news", "rss"],
+                meta={"source_kind": "rss", "source_family": "news_rss", "source_uri": "https://example.test/rss"},
+            )
+        )
+        xml = """<?xml version="1.0"?>
+        <rss version="2.0"><channel><item>
+          <title>AI memory news item</title>
+          <link>https://example.test/news/2</link>
+          <description>News content from promoted RSS candidate.</description>
+        </item></channel></rss>
+        """
+
+        report = run_nightly_jobs(runtime, scope=scope, external_fetch_text=lambda _url: xml)
+        news = runtime.store.list_records(kinds=["news"], scope=scope, limit=10)
+
+        assert report["news_source_promotion"]["promoted_count"] == 1
+        assert report["external_collection"]["written_count"] == 1
+        assert report["daily_brief"]["news_item_count"] == 1
+        assert len(news) == 1
+        assert news[0].status == "active"
+        assert runtime.sources.list_sources(source_kind="rss")[0].uri == "https://example.test/rss"
     finally:
         runtime.close()

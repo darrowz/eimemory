@@ -24,6 +24,7 @@ VALID_KINDS: frozenset[str] = frozenset(
         "relation_record",
         "knowledge_page",
         "knowledge_candidate",
+        "news",
         "recall_view",
     }
 )

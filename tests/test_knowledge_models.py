@@ -16,6 +16,7 @@ def test_knowledge_memory_kinds_are_registered() -> None:
     assert "entity_record" in VALID_KINDS
     assert "relation_record" in VALID_KINDS
     assert "knowledge_page" in VALID_KINDS
+    assert "news" in VALID_KINDS
     assert "recall_view" in VALID_KINDS
     assert "incident" in VALID_KINDS
 
