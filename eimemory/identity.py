@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 from eimemory.models.records import RecordEnvelope, ScopeRef
@@ -8,24 +9,47 @@ from eimemory.models.records import RecordEnvelope, ScopeRef
 HONGTU_AGENT_ID = "hongtu"
 HONGTU_WORKSPACE_ID = "embodied"
 DEFAULT_OPERATOR_USER_ID = "darrow"
+FEISHU_DARROW_OPEN_ID = "ou_644f810515d8ae7789de6a932d4de854"
+HONGTU_SUBJECT_ID = "hongtu:darrow"
 OFFICIAL_COMMUNICATION_CHANNEL = "feishu"
 EIMEMORY_COMMUNICATION_CHANNEL = "eimemory"
 LEGACY_HONGTU_SCOPE_ALIASES: tuple[tuple[str, str], ...] = (
     ("main", ""),
     ("main", "repo-x"),
     ("honxin", "honjia"),
+    ("eibrain", "honjia"),
     ("eibrain", "robot"),
+    ("hongtu", "honjia"),
+    ("hongtu", "robot"),
 )
 
+_CANONICAL_HONGTU_USER_ALIASES: dict[str, tuple[str, ...]] = {
+    DEFAULT_OPERATOR_USER_ID: (
+        DEFAULT_OPERATOR_USER_ID,
+        "Darrow",
+        FEISHU_DARROW_OPEN_ID,
+    )
+}
+DEFAULT_HONGTU_USER_ALIASES: dict[str, tuple[str, ...]] = {
+    alias: aliases
+    for aliases in _CANONICAL_HONGTU_USER_ALIASES.values()
+    for alias in aliases
+}
+_ALIAS_TO_CANONICAL_USER_ID: dict[str, str] = {
+    alias.casefold(): canonical
+    for canonical, aliases in _CANONICAL_HONGTU_USER_ALIASES.items()
+    for alias in aliases
+}
 
-def hongtu_scope(scope: dict[str, Any] | None) -> dict[str, str]:
+
+def hongtu_scope(scope: dict[str, Any] | None, *, aliases: Any = None) -> dict[str, str]:
     payload = dict(scope or {})
     user_id = _scope_user_id(payload, preserve_blank_user=False)
     return {
         "tenant_id": str(payload.get("tenant_id") or payload.get("tenantId") or "default"),
         "agent_id": HONGTU_AGENT_ID,
         "workspace_id": HONGTU_WORKSPACE_ID,
-        "user_id": str(user_id or DEFAULT_OPERATOR_USER_ID),
+        "user_id": canonical_hongtu_user_id(user_id, aliases=aliases),
     }
 
 
@@ -75,6 +99,69 @@ def hongtu_query_scopes(scope: ScopeRef | dict[str, Any] | None) -> list[ScopeRe
         seen.add(key)
         deduped.append(item)
     return deduped
+
+
+def hongtu_query_scopes_with_aliases(
+    scope: ScopeRef | dict[str, Any] | None,
+    aliases: Any = None,
+) -> list[ScopeRef]:
+    """Return canonical and legacy Hongtu scopes for known channel/user aliases."""
+
+    scope_ref = _scope_ref(scope)
+    if not is_hongtuish_scope(scope_ref, aliases=aliases):
+        return [scope_ref]
+    canonical_user_id = canonical_hongtu_user_id(scope_ref.user_id, aliases=aliases)
+    user_ids = _hongtu_alias_user_ids(canonical_user_id, scope_ref.user_id, aliases)
+    scopes: list[ScopeRef] = [scope_ref]
+    for user_id in user_ids:
+        scopes.extend(
+            hongtu_query_scopes(
+                ScopeRef(
+                    tenant_id=scope_ref.tenant_id,
+                    agent_id=HONGTU_AGENT_ID,
+                    workspace_id=HONGTU_WORKSPACE_ID,
+                    user_id=user_id,
+                )
+            )
+        )
+    return _dedupe_scope_refs(scopes)
+
+
+def canonical_hongtu_user_id(*values: Any, aliases: Any = None) -> str:
+    for value in [*values, *_alias_values(aliases)]:
+        text = _clean_text(value)
+        if text.casefold() in _ALIAS_TO_CANONICAL_USER_ID:
+            return _ALIAS_TO_CANONICAL_USER_ID[text.casefold()]
+        if text:
+            return text
+    return DEFAULT_OPERATOR_USER_ID
+
+
+def extract_user_aliases(task_context: Mapping[str, Any] | None) -> list[str]:
+    if not isinstance(task_context, Mapping):
+        return []
+    subject_context = task_context.get("subject_context")
+    aliases: list[str] = []
+    aliases.extend(_alias_values(task_context.get("user_aliases")))
+    aliases.extend(_alias_values(subject_context))
+    for key in ("actor_id", "user_id", "canonical_user_id"):
+        aliases.extend(_alias_values(task_context.get(key)))
+        if isinstance(subject_context, Mapping):
+            aliases.extend(_alias_values(subject_context.get(key)))
+    return _ordered_unique(aliases)
+
+
+def is_hongtuish_scope(scope: ScopeRef | dict[str, Any] | None, *, aliases: Any = None) -> bool:
+    scope_ref = _scope_ref(scope)
+    alias_values = [_clean_text(value).casefold() for value in _alias_values(aliases)]
+    return (
+        is_hongtu_scope(scope_ref)
+        or is_legacy_hongtu_scope(scope_ref)
+        or scope_ref.agent_id.casefold() in {"hongtu", "eibrain", "honxin", "main"}
+        or scope_ref.workspace_id.casefold() in {"embodied", "honjia", "robot", "repo-x"}
+        or scope_ref.user_id.casefold() in _ALIAS_TO_CANONICAL_USER_ID
+        or any(value in _ALIAS_TO_CANONICAL_USER_ID for value in alias_values)
+    )
 
 
 def hongtu_identity_meta(
@@ -206,6 +293,62 @@ def _scope_user_id(payload: dict[str, Any], *, preserve_blank_user: bool) -> str
     if preserve_blank_user:
         return str(user_id or "")
     return str(user_id or DEFAULT_OPERATOR_USER_ID)
+
+
+def _hongtu_alias_user_ids(canonical_user_id: str, original_user_id: Any, aliases: Any) -> list[str]:
+    values: list[str] = [canonical_user_id]
+    values.extend(DEFAULT_HONGTU_USER_ALIASES.get(canonical_user_id, ()))
+    values.extend(_alias_values(original_user_id))
+    values.extend(_alias_values(aliases))
+    return _ordered_unique(values)
+
+
+def _alias_values(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        text = _clean_text(value)
+        return [text] if text else []
+    if isinstance(value, Mapping):
+        values: list[str] = []
+        for key in ("user_aliases", "aliases", "user_ids", "actor_ids", "actor_id", "user_id", "canonical_user_id"):
+            values.extend(_alias_values(value.get(key)))
+        return values
+    if isinstance(value, Iterable):
+        values: list[str] = []
+        for item in value:
+            values.extend(_alias_values(item))
+        return values
+    text = _clean_text(value)
+    return [text] if text else []
+
+
+def _ordered_unique(values: Iterable[Any]) -> list[str]:
+    seen: set[str] = set()
+    unique: list[str] = []
+    for value in values:
+        text = _clean_text(value)
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        unique.append(text)
+    return unique
+
+
+def _dedupe_scope_refs(scopes: Iterable[ScopeRef]) -> list[ScopeRef]:
+    seen: set[tuple[str, str, str, str]] = set()
+    deduped: list[ScopeRef] = []
+    for scope in scopes:
+        key = (scope.tenant_id, scope.agent_id, scope.workspace_id, scope.user_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(scope)
+    return deduped
+
+
+def _clean_text(value: Any) -> str:
+    return str(value or "").strip()
 
 
 def _normalized_meta(record: RecordEnvelope, *, previous_scope: ScopeRef) -> dict[str, Any]:

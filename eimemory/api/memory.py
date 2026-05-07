@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from eimemory.knowledge.views import build_recall_view, choose_view_type, records_from_view
+from eimemory.identity import extract_user_aliases, hongtu_query_scopes_with_aliases
 from eimemory.models.records import LinkRef, RecallBundle, RecordEnvelope, ScopeRef
 from eimemory.storage.runtime_store import RuntimeStore
 
@@ -59,8 +60,11 @@ class MemoryAPI:
     ) -> RecallBundle:
         normalized_query = str(query or "").strip()
         limit = max(0, min(1000, int(limit)))
-        scope_ref = ScopeRef.from_dict(scope)
         task_context = dict(task_context or {})
+        scope_ref = ScopeRef.from_dict(scope)
+        recall_scope_aliases = extract_user_aliases(task_context)
+        query_scope_refs = hongtu_query_scopes_with_aliases(scope_ref, aliases=recall_scope_aliases)
+        policy_scope_ref = query_scope_refs[0] if query_scope_refs else scope_ref
         task_type = str(task_context.get("task_type") or "")
         if not normalized_query:
             return RecallBundle(
@@ -87,10 +91,10 @@ class MemoryAPI:
                     "task_context": task_context,
                     "invalid_request": "non_positive_limit",
                 },
-            )
+        )
         active_policy = {"retrieval_policy": {}, "response_policy": {}}
         if task_type:
-            active_policy = self.store.get_active_policy(task_type=task_type, scope=scope_ref)
+            active_policy = self.store.get_active_policy(task_type=task_type, scope=policy_scope_ref)
         retrieval_policy = dict(active_policy.get("retrieval_policy") or {})
         recall_profile, recall_profile_source = self._resolve_recall_profile(
             task_context=task_context,
@@ -99,13 +103,24 @@ class MemoryAPI:
         profile_config = self._recall_profile_config(recall_profile)
         search_limit = max(limit * profile_config["search_multiplier"], limit)
         recall_filters = self._recall_filters_from_task_context(task_context)
-        items, search_report = self.store.search_with_diagnostics(
-            query=normalized_query,
-            kinds=["memory", "claim_card", "knowledge_page"],
-            scope=scope_ref,
-            limit=search_limit,
-            recall_filters=recall_filters,
-        )
+        items: list[RecordEnvelope] = []
+        search_reports: list[dict] = []
+        seen_item_ids: set[str] = set()
+        for query_scope_ref in query_scope_refs:
+            page_items, page_report = self.store.search_with_diagnostics(
+                query=normalized_query,
+                kinds=["memory", "claim_card", "knowledge_page"],
+                scope=query_scope_ref,
+                limit=search_limit,
+                recall_filters=recall_filters,
+            )
+            search_reports.append(dict(page_report or {}))
+            for item in page_items:
+                if item.record_id in seen_item_ids:
+                    continue
+                seen_item_ids.add(item.record_id)
+                items.append(item)
+        search_report = self._merge_search_reports(search_reports)
         items = [item for item in items if not self._is_internal_audit_record(item)]
         graph_expanded = 0
         related_ids: list[str] = []
@@ -191,6 +206,8 @@ class MemoryAPI:
                 "source_composition": self._source_composition(items),
                 "selected_records": self._selected_record_summaries(items),
                 "scoring": self._scoring_for_items(items, search_report),
+                "query_scopes": [self._scope_dict(item) for item in query_scope_refs],
+                "recall_scope_aliases": recall_scope_aliases,
                 "recall_filters": recall_filters,
                 "recall_view": final_view.to_dict(),
             },
@@ -414,6 +431,39 @@ class MemoryAPI:
                 }
             )
         return selected
+
+    @staticmethod
+    def _scope_dict(scope: ScopeRef) -> dict[str, str]:
+        return {
+            "tenant_id": scope.tenant_id,
+            "agent_id": scope.agent_id,
+            "workspace_id": scope.workspace_id,
+            "user_id": scope.user_id,
+        }
+
+    def _merge_search_reports(self, reports: list[dict]) -> dict:
+        merged: dict = {
+            "retrieval_mode": "hybrid",
+            "vector_hits": 0,
+            "scored_items": [],
+        }
+        seen_scores: set[str] = set()
+        for report in reports:
+            if not isinstance(report, dict):
+                continue
+            if report.get("retrieval_mode"):
+                merged["retrieval_mode"] = report.get("retrieval_mode")
+            merged["vector_hits"] += int(report.get("vector_hits") or 0)
+            for entry in report.get("scored_items") or []:
+                if not isinstance(entry, dict):
+                    continue
+                record_id = str(entry.get("record_id") or "")
+                if record_id and record_id in seen_scores:
+                    continue
+                if record_id:
+                    seen_scores.add(record_id)
+                merged["scored_items"].append(dict(entry))
+        return merged
 
     def _is_returnable_memory_record(self, record: RecordEnvelope) -> bool:
         if record.status == "rejected":

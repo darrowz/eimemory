@@ -4,7 +4,7 @@ import json
 
 from eimemory.api.runtime import Runtime
 from eimemory.experience import record_experience_item, record_skill_trace
-from eimemory.identity import hongtu_identity_meta, hongtu_scope
+from eimemory.identity import extract_user_aliases, hongtu_identity_meta, hongtu_scope
 from eimemory.models.records import LinkRef
 
 
@@ -40,7 +40,7 @@ class EIBrainRPCBridge:
                 return self._invalid_request()
             bundle = self.runtime.memory.recall(
                 query=query,
-                scope=hongtu_scope(scope),
+                scope=hongtu_scope(scope, aliases=extract_user_aliases(task_context)),
                 task_context=task_context,
                 limit=limit,
             )
@@ -77,7 +77,7 @@ class EIBrainRPCBridge:
                 text=text,
                 memory_type=memory_type,
                 title=title,
-                scope=hongtu_scope(scope),
+                scope=hongtu_scope(scope, aliases=meta),
                 source=source,
                 tags=[str(tag) for tag in tags],
                 content=content,

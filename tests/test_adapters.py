@@ -13,6 +13,7 @@ from eimemory.adapters.eibrain.sdk import EIBrainMemoryClient
 from eimemory.adapters.openclaw.hooks import OpenClawMemoryHooks
 from eimemory.api.runtime import Runtime
 from eimemory.cli.main import main as cli_main
+from eimemory.identity import FEISHU_DARROW_OPEN_ID
 
 
 def test_eibrain_client_bridges_recall_and_observe(tmp_path) -> None:
@@ -90,6 +91,49 @@ def test_eibrain_rpc_normalizes_hardware_scope_to_hongtu_memory_subject(tmp_path
     assert stored["meta"]["communication_channel_role"] == "auxiliary"
     assert recall["ok"] is True
     assert recall["result"]["items"][0]["record_id"] == stored["record_id"]
+
+
+def test_eibrain_rpc_recall_expands_hongtu_user_aliases_without_source_leak(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    bridge = EIBrainRPCBridge(runtime)
+    allowed = runtime.memory.ingest(
+        text="Feishu channel memory says Darrow prefers concise replies.",
+        title="Feishu concise preference",
+        memory_type="conversation",
+        source="eibrain.audio_dialogue",
+        scope={"agent_id": "hongtu", "workspace_id": "embodied", "user_id": FEISHU_DARROW_OPEN_ID},
+    )
+    runtime.memory.ingest(
+        text="Blocked audit record should not enter normal Hongtu persona recall.",
+        title="Blocked Feishu audit",
+        memory_type="audit",
+        source="ei_bridge.openclaw_feishu",
+        scope={"agent_id": "hongtu", "workspace_id": "embodied", "user_id": FEISHU_DARROW_OPEN_ID},
+        force_capture=True,
+    )
+
+    recall = bridge.handle(
+        {
+            "method": "memory.recall",
+            "params": {
+                "query": "Darrow concise replies",
+                "scope": {"agent_id": "eibrain", "workspace_id": "honjia", "user_id": FEISHU_DARROW_OPEN_ID},
+                "task_context": {
+                    "task_type": "brain.respond",
+                    "subject_context": {"user_aliases": [FEISHU_DARROW_OPEN_ID, "Darrow"]},
+                    "allowed_sources": ["eibrain.audio_dialogue"],
+                    "blocked_sources": ["ei_bridge.openclaw_feishu"],
+                },
+            },
+        }
+    )
+
+    assert recall["ok"] is True
+    items = recall["result"]["items"]
+    assert [item["record_id"] for item in items] == [allowed.record_id]
+    explanation = recall["result"]["explanation"]
+    assert FEISHU_DARROW_OPEN_ID in explanation["recall_scope_aliases"]
+    assert any(scope["user_id"] == FEISHU_DARROW_OPEN_ID for scope in explanation["query_scopes"])
 
 
 def test_eibrain_rpc_ingest_persists_outcome_metadata(tmp_path) -> None:
