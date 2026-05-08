@@ -275,6 +275,9 @@ def test_openclaw_plugin_manifest_points_to_bridge_plugin() -> None:
 
     assert payload["name"] == "eimemory-bridge"
     assert payload["id"] == "eimemory-bridge"
+    assert payload["activation"] == {"onStartup": True, "onCapabilities": ["hook"]}
+    assert payload["hooks"] == ["message_received", "before_prompt_build", "agent_end"]
+    assert payload["contracts"]["tools"] == ["eimemory_bridge_status"]
     assert payload["main"] == "./eimemory-bridge/index.js"
     assert payload["configSchema"]["type"] == "object"
     assert "Bridge" in payload["displayName"]

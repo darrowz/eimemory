@@ -20,7 +20,8 @@ def test_feishu_message_routes_to_eibrain_and_records_audit() -> None:
             "ok": True,
             "command_id": bridge_command.command_id,
             "payload": {
-                "visual_status": "画面稳定",
+                "visual_status": "live",
+                "observation_mode": "live",
                 "description": "桌面前方有人，旁边有键盘",
                 "scene": {"objects": ["person", "keyboard"]},
             },
@@ -34,8 +35,8 @@ def test_feishu_message_routes_to_eibrain_and_records_audit() -> None:
     audit_result = EIMemoryAuditSink(writes.append).record(command, result)
 
     assert result.ok is True
-    assert "识别到：person、keyboard" in result.summary
-    assert format_reply(result).startswith("已完成：视觉状态：画面稳定")
+    assert result.summary == "我现在看到：桌面前方有人，旁边有键盘；识别到：person、keyboard。"
+    assert format_reply(result).startswith("我现在看到：桌面前方有人")
     assert audit_result.ok is True
     assert writes[0]["type"] == "ei_bridge.audit"
     assert writes[0]["source"]["channel"] == "feishu"
@@ -71,8 +72,9 @@ def test_cli_ei_bridge_feishu_returns_live_visual_context(tmp_path, monkeypatch,
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["matched"] is True
-    assert "person、keyboard" in payload["reply"]
-    assert "实时 eibrain 视觉上下文" in payload["prepend_context"]
+    assert payload["reply"].startswith("我现在看到：person and keyboard in front of camera")
+    assert "共享视觉观测" in payload["prepend_context"]
+    assert "不区分飞书或现场渠道" in payload["prepend_context"]
 
 
 def test_cli_ei_bridge_feishu_ignores_unmatched_text(tmp_path, monkeypatch, capsys) -> None:
@@ -86,3 +88,37 @@ def test_cli_ei_bridge_feishu_ignores_unmatched_text(tmp_path, monkeypatch, caps
 
     payload = json.loads(capsys.readouterr().out)
     assert payload == {"matched": False}
+
+
+def test_cli_ei_bridge_feishu_health_does_not_inject_visual_context(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path / "runtime"))
+    status_path = tmp_path / "status.json"
+    status_path.write_text(
+        json.dumps(
+            {
+                "system_health": "healthy",
+                "visual_diagnostics": {
+                    "data_status": "live",
+                    "data_health": "healthy",
+                },
+                "dialogue_diagnostics": {
+                    "conversation_active": False,
+                    "phase": "idle",
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EIBRAIN_MONITOR_URL", status_path.as_uri())
+    previous_stdin = sys.stdin
+    sys.stdin = io.StringIO(json.dumps({"query": "系统状态", "user_id": "user-1"}, ensure_ascii=False))
+    try:
+        assert cli_main(["ei-bridge", "feishu"]) == 0
+    finally:
+        sys.stdin = previous_stdin
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["matched"] is True
+    assert payload["reply"].startswith("已完成：系统健康：healthy")
+    assert payload["prepend_context"] == ""

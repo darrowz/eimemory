@@ -59,10 +59,38 @@ def _health_payload(status: dict[str, Any]) -> dict[str, Any]:
 
 def _vision_payload(status: dict[str, Any]) -> dict[str, Any]:
     visual = _mapping(status.get("visual_diagnostics"))
+    if not visual:
+        return {
+            "visual_status": "unavailable",
+            "observation_mode": "unavailable",
+            "description": "",
+            "scene": {
+                "objects": [],
+                "summary": "",
+                "detection_count": 0,
+                "recognized_identity": {},
+            },
+            "system_health": status.get("system_health") or "unknown",
+            "visual_data_health": "unknown",
+            "freshness": {
+                "frame_age_s": None,
+                "state_age_s": None,
+            },
+            "raw": {
+                "frame_age_s": None,
+                "state_age_s": None,
+                "backend": "",
+                "detections": [],
+            },
+        }
+
     labels = _scene_labels(visual)
     description = _description_from_visual(visual, labels)
+    frame_age_s = _number_or_none(visual.get("frame_age_s"))
+    state_age_s = _number_or_none(visual.get("state_age_s"))
     return {
         "visual_status": visual.get("data_status") or visual.get("vision_service_status") or "unknown",
+        "observation_mode": _observation_mode(visual, labels, description, frame_age_s, state_age_s),
         "description": description,
         "scene": {
             "objects": labels,
@@ -72,9 +100,13 @@ def _vision_payload(status: dict[str, Any]) -> dict[str, Any]:
         },
         "system_health": status.get("system_health") or "unknown",
         "visual_data_health": visual.get("data_health") or "unknown",
+        "freshness": {
+            "frame_age_s": frame_age_s,
+            "state_age_s": state_age_s,
+        },
         "raw": {
-            "frame_age_s": visual.get("frame_age_s"),
-            "state_age_s": visual.get("state_age_s"),
+            "frame_age_s": frame_age_s,
+            "state_age_s": state_age_s,
             "backend": visual.get("backend") or "",
             "detections": visual.get("detections") if isinstance(visual.get("detections"), list) else [],
         },
@@ -108,6 +140,45 @@ def _description_from_visual(visual: dict[str, Any], labels: list[str]) -> str:
     if scene_summary:
         return scene_summary
     return "当前没有稳定识别到物体"
+
+
+def _observation_mode(
+    visual: dict[str, Any],
+    labels: list[str],
+    description: str,
+    frame_age_s: float | None,
+    state_age_s: float | None,
+) -> str:
+    status = str(visual.get("data_status") or visual.get("vision_service_status") or "").strip().lower()
+    has_real_description = bool(description.strip()) and description.strip().lower() not in {
+        "当前没有稳定识别到物体",
+        "no detections in current frame",
+        "no recognizable face candidate in current frame",
+    }
+    frame_available = bool(
+        visual.get("frame_available")
+        or visual.get("frame_url")
+        or labels
+        or has_real_description
+        or visual.get("detection_count")
+    )
+    if status in {"unavailable", "state_unavailable", "camera_unavailable", "offline", "error", "disabled"}:
+        return "unavailable"
+    if not frame_available:
+        return "unavailable"
+    ages = [age for age in (frame_age_s, state_age_s) if age is not None]
+    reference_age = max(ages) if ages else None
+    if status == "stale" or (reference_age is not None and reference_age > 6.0):
+        return "stale"
+    if reference_age is not None and reference_age > 1.5:
+        return "recent"
+    return "live"
+
+
+def _number_or_none(value: Any) -> float | None:
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
 
 
 def _mapping(value: Any) -> dict[str, Any]:

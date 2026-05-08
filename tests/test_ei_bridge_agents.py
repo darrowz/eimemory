@@ -20,7 +20,8 @@ def test_eibrain_vision_describe_returns_readable_summary() -> None:
             "command_id": command.command_id,
             "payload": {
                 "scene": {"objects": ["杯子", "键盘"]},
-                "visual_status": "画面稳定",
+                "visual_status": "live",
+                "observation_mode": "live",
                 "description": "桌面上有工作物品",
             },
         }
@@ -30,8 +31,50 @@ def test_eibrain_vision_describe_returns_readable_summary() -> None:
 
     assert result.ok is True
     assert result.command_id == "cmd-vision"
-    assert result.summary == "视觉状态：画面稳定；画面描述：桌面上有工作物品；识别到：杯子、键盘"
+    assert result.summary == "我现在看到：桌面上有工作物品；识别到：杯子、键盘。"
     assert result.payload["scene"]["objects"] == ["杯子", "键盘"]
+
+
+def test_eibrain_vision_describe_marks_recent_snapshot_with_age() -> None:
+    adapter = EIBrainAgentAdapter(
+        transport=lambda command: {
+            "ok": True,
+            "command_id": command.command_id,
+            "payload": {
+                "scene": {"objects": ["person"]},
+                "visual_status": "live",
+                "observation_mode": "recent",
+                "description": "画面里有人站在摄像头前",
+                "raw": {"frame_age_s": 2.6},
+            },
+        }
+    )
+
+    result = adapter.handle_command(_command("cmd-recent-vision", "vision.describe"))
+
+    assert result.ok is True
+    assert result.summary == "我刚拿到的是 2.6 秒前的画面：画面里有人站在摄像头前；识别到：person。"
+
+
+def test_eibrain_vision_describe_downgrades_explicit_live_when_frame_is_old() -> None:
+    adapter = EIBrainAgentAdapter(
+        transport=lambda command: {
+            "ok": True,
+            "command_id": command.command_id,
+            "payload": {
+                "scene": {"objects": ["person"]},
+                "visual_status": "live",
+                "observation_mode": "live",
+                "description": "画面里有人站在摄像头前",
+                "raw": {"frame_age_s": 7.2},
+            },
+        }
+    )
+
+    result = adapter.handle_command(_command("cmd-stale-vision", "vision.describe"))
+
+    assert result.ok is True
+    assert result.summary == "我现在拿到的是 7.2 秒前的旧画面：画面里有人站在摄像头前；识别到：person。"
 
 
 def test_eibrain_vision_describe_handles_missing_visual_data() -> None:
@@ -40,7 +83,7 @@ def test_eibrain_vision_describe_handles_missing_visual_data() -> None:
     result = adapter.handle_command(_command("cmd-empty-vision", "vision.describe"))
 
     assert result.ok is True
-    assert result.summary == "暂时没有可用视觉状态"
+    assert result.summary == "我这会儿还没拿到可用画面，不能把现场情况编出来。"
 
 
 def test_eibrain_health_status_returns_stable_summary() -> None:

@@ -3,5 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "main": "index.js",
-  "type": "commonjs"
+  "type": "commonjs",
+  "openclaw": {
+    "extensions": [
+      "./index.js"
+    ]
+  }
 }

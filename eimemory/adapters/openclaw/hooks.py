@@ -27,6 +27,8 @@ class OpenClawMemoryHooks:
                 force_capture=self._force_capture_requested(event),
                 meta=self._identity_meta(event, organ="cognition", modality="text"),
             )
+            if stored.status == "rejected":
+                return {"stored": None, "rejected": stored.to_dict()}
             return {"stored": stored.to_dict()}
         return {"stored": None}
 

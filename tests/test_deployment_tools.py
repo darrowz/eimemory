@@ -86,6 +86,17 @@ def test_systemd_units_use_immutable_current_release() -> None:
             assert "WorkingDirectory=/opt/eimemory/current" in unit_text
 
 
+def test_openclaw_gateway_override_uses_production_eimemory_runtime() -> None:
+    override_text = Path("deploy/systemd/openclaw-gateway-eimemory.conf").read_text(encoding="utf-8")
+
+    assert "Environment=EIMEMORY_ROOT=/var/lib/eimemory" in override_text
+    assert "Environment=EIMEMORY_CONFIG_DIR=/etc/eimemory" in override_text
+    assert 'Environment="EIMEMORY_HOOK_COMMAND=/opt/eimemory/current/.venv/bin/python -m eimemory.cli.main openclaw-hook"' in override_text
+    assert 'Environment="EIMEMORY_BRIDGE_COMMAND=/opt/eimemory/current/.venv/bin/python -m eimemory.cli.main ei-bridge feishu"' in override_text
+    assert "/dev-project/eimemory/.venv" not in override_text
+    assert "PYTHONPATH=/dev-project/eimemory" not in override_text
+
+
 def test_immutable_release_installer_documents_non_editable_runtime() -> None:
     script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
 

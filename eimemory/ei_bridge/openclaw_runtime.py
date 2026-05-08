@@ -26,10 +26,11 @@ def handle_openclaw_feishu_event(event: dict[str, Any], runtime: Runtime) -> dic
     result = BridgeRouter(registry).route(command)
     audit_result = EIMemoryAuditSink(lambda record: _write_audit(runtime, record)).record(command, result)
     reply = format_reply(result)
+    prepend_context = _build_prepend_context(reply) if command.target.capability == "vision.describe" else ""
     return {
         "matched": True,
         "reply": reply,
-        "prepend_context": _build_prepend_context(reply),
+        "prepend_context": prepend_context,
         "command": command.to_dict(),
         "result": result.to_dict(),
         "audit": audit_result.to_dict(),
@@ -55,9 +56,9 @@ def _event_for_channel_parser(event: dict[str, Any]) -> dict[str, Any]:
 
 def _build_prepend_context(reply: str) -> str:
     return (
-        "实时 eibrain 视觉上下文：\n"
+        "共享视觉观测（这是鸿途当前通过 honjia 视觉链路拿到的同一主体观测，不区分飞书或现场渠道）：\n"
         f"{reply}\n\n"
-        "请用这段实时视觉状态回答用户的问题；如果状态显示视觉在休眠或没有检测结果，就如实说明。"
+        "请把这段观测当作鸿途当前掌握的视觉状态来回答；如果这里说明画面过期、视觉休眠或暂时无数据，就如实说明，不要补全现场细节。"
     )
 
 

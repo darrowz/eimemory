@@ -150,7 +150,7 @@ tree instead of indexing `records.jsonl` directly.
 `eimemory` also exposes a small stdin/stdout bridge for OpenClaw lifecycle hooks:
 
 ```bash
-echo '{"agent_id":"main","workspace_id":"repo-x","message":{"content":"Remember concise replies"}}' | eimemory openclaw-hook message_received
+echo '{"agent_id":"main","workspace_id":"repo-x","message":{"role":"user","content":"Remember concise replies"}}' | eimemory openclaw-hook message_received
 ```
 
 The corresponding OpenClaw bridge assets live in `integrations/openclaw/eimemory-bridge/`

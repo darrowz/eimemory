@@ -38,10 +38,11 @@ class EIBrainAgentAdapter:
         try:
             raw_result = self.transport(command) if self.transport is not None else {}
         except Exception as exc:
+            summary = _transport_error_summary(capability, exc)
             return BridgeResult(
                 ok=False,
                 command_id=command.command_id,
-                summary=f"agent transport failed: {exc}",
+                summary=summary,
                 error="transport_error",
                 audit={"agent_id": self.agent_id, "capability": capability},
             )
@@ -88,19 +89,100 @@ def _summary_for_capability(capability: str, payload: dict[str, Any]) -> str:
     return ""
 
 
+def _transport_error_summary(capability: str, exc: Exception) -> str:
+    if capability == "vision.describe":
+        return "我这会儿还没拿到可用画面，不能把现场情况编出来。"
+    return f"agent transport failed: {exc}"
+
+
 def _vision_summary(payload: dict[str, Any]) -> str:
     scene = payload.get("scene") if isinstance(payload.get("scene"), dict) else {}
     objects = scene.get("objects") if isinstance(scene, dict) else None
-    parts: list[str] = []
+    labels = [str(item) for item in objects] if isinstance(objects, list) else []
+    description = str(payload.get("description") or "").strip()
+    mode = _observation_mode(payload, labels, description)
+    frame_age_s = _frame_age_seconds(payload)
 
-    if payload.get("visual_status"):
-        parts.append(f"视觉状态：{payload['visual_status']}")
-    if payload.get("description"):
-        parts.append(f"画面描述：{payload['description']}")
-    if isinstance(objects, list) and objects:
-        parts.append(f"识别到：{'、'.join(str(item) for item in objects)}")
+    if mode == "unavailable":
+        return "我这会儿还没拿到可用画面，不能把现场情况编出来。"
 
-    return "；".join(parts) if parts else "暂时没有可用视觉状态"
+    details: list[str] = []
+    if description and not _is_no_detection_description(description):
+        details.append(description)
+    if labels:
+        details.append(f"识别到：{'、'.join(labels)}")
+    if not details:
+        return _no_detection_summary(mode, frame_age_s)
+
+    return f"{_vision_prefix(mode, frame_age_s)}{'；'.join(details)}。"
+
+
+def _observation_mode(payload: dict[str, Any], labels: list[str], description: str) -> str:
+    mode = str(payload.get("observation_mode") or "").strip().lower()
+    visual_status = str(payload.get("visual_status") or "").strip().lower()
+    if not payload and not labels and not description:
+        return "unavailable"
+    if visual_status in {"unavailable", "state_unavailable", "camera_unavailable", "offline", "error"}:
+        return "unavailable"
+
+    frame_age_s = _frame_age_seconds(payload)
+    if frame_age_s is not None and frame_age_s > 6.0:
+        return "stale"
+    if frame_age_s is not None and frame_age_s > 1.5:
+        return "recent"
+    if mode in {"live", "recent", "stale", "unavailable"}:
+        return mode
+    if visual_status in {"recent", "stale"}:
+        return visual_status
+    if labels or description:
+        return "live"
+    return "unavailable"
+
+
+def _frame_age_seconds(payload: dict[str, Any]) -> float | None:
+    raw = payload.get("raw")
+    if isinstance(raw, dict):
+        age = raw.get("frame_age_s")
+        if isinstance(age, (int, float)):
+            return float(age)
+    freshness = payload.get("freshness")
+    if isinstance(freshness, dict):
+        age = freshness.get("frame_age_s")
+        if isinstance(age, (int, float)):
+            return float(age)
+    return None
+
+
+def _vision_prefix(mode: str, frame_age_s: float | None) -> str:
+    if mode == "recent":
+        return f"我刚拿到的是 {_age_text(frame_age_s)}前的画面："
+    if mode == "stale":
+        return f"我现在拿到的是 {_age_text(frame_age_s)}前的旧画面："
+    return "我现在看到："
+
+
+def _no_detection_summary(mode: str, frame_age_s: float | None) -> str:
+    if mode == "recent":
+        return f"我刚拿到的是 {_age_text(frame_age_s)}前的画面，那一帧里还没稳定识别到目标。"
+    if mode == "stale":
+        return f"我现在拿到的是 {_age_text(frame_age_s)}前的旧画面，那一帧里还没稳定识别到目标。"
+    return "我现在看得到画面，但这帧里还没稳定识别到目标。"
+
+
+def _age_text(frame_age_s: float | None) -> str:
+    if frame_age_s is None:
+        return "几秒"
+    return f"{frame_age_s:.1f} 秒"
+
+
+def _is_no_detection_description(description: str) -> bool:
+    normalized = description.strip().lower()
+    return normalized in {
+        "",
+        "当前没有稳定识别到物体",
+        "no detections in current frame",
+        "no recognizable face candidate in current frame",
+    }
 
 
 def _health_summary(payload: dict[str, Any]) -> str:

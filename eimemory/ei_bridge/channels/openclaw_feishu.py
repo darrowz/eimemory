@@ -88,11 +88,16 @@ def parse_event(event: dict[str, Any]) -> BridgeCommand | None:
 
 
 def format_reply(result: BridgeResult) -> str:
+    capability = str(result.audit.get("capability") or "").strip().lower()
     if result.ok:
         summary = result.summary.strip() or _payload_summary(result.payload)
+        if capability == "vision.describe":
+            return summary or "我这会儿还没拿到可用画面，不能把现场情况编出来。"
         return f"已完成：{summary}" if summary else "已完成。"
 
     summary = result.summary.strip() or "请求未完成"
+    if capability == "vision.describe":
+        return summary or "我这会儿还没拿到可用画面，不能把现场情况编出来。"
     if result.error:
         return f"执行失败：{summary}\n错误：{result.error}"
     return f"执行失败：{summary}"

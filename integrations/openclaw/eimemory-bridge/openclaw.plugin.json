@@ -2,6 +2,22 @@
   "id": "eimemory-bridge",
   "name": "eimemory-bridge",
   "version": "0.1.0",
+  "activation": {
+    "onStartup": true,
+    "onCapabilities": [
+      "hook"
+    ]
+  },
+  "hooks": [
+    "message_received",
+    "before_prompt_build",
+    "agent_end"
+  ],
+  "contracts": {
+    "tools": [
+      "eimemory_bridge_status"
+    ]
+  },
   "main": "index.js",
   "displayName": "eimemory Bridge",
   "description": "Bridges OpenClaw lifecycle hooks into the local eimemory runtime.",

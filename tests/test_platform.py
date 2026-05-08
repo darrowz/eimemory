@@ -637,12 +637,75 @@ def test_cli_openclaw_hook_bridge_reads_stdin_and_returns_json(tmp_path, monkeyp
     assert bundle["memory_bundle"]["items"]
 
 
+def test_cli_openclaw_hook_reports_rejected_message_without_persisting(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path / "runtime"))
+    stdin = io.StringIO(
+        json.dumps(
+            {
+                "session_id": "sess-1",
+                "agent_id": "main",
+                "workspace_id": "repo-x",
+                "message": {"role": "user", "content": "测试eimemory"},
+            }
+        )
+    )
+    previous_stdin = sys.stdin
+    sys.stdin = stdin
+    try:
+        assert cli_main(["openclaw-hook", "message_received"]) == 0
+    finally:
+        sys.stdin = previous_stdin
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["stored"] is None
+    assert payload["rejected"]["status"] == "rejected"
+    assert payload["rejected"]["meta"]["quality"]["capture_decision"] == "reject"
+
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    records = runtime.store.list_records(limit=20)
+    assert records == []
+
+
 def test_openclaw_bridge_assets_exist() -> None:
     assert Path("integrations/openclaw/eimemory-bridge/index.js").exists()
     manifest = json.loads(Path("integrations/openclaw/eimemory-bridge/openclaw.plugin.json").read_text(encoding="utf-8"))
     assert manifest["id"] == "eimemory-bridge"
+    assert manifest["activation"] == {"onStartup": True, "onCapabilities": ["hook"]}
+    assert manifest["hooks"] == ["message_received", "before_prompt_build", "agent_end"]
+    assert manifest["contracts"]["tools"] == ["eimemory_bridge_status"]
     assert manifest["configSchema"]["type"] == "object"
     assert Path("integrations/openclaw/eimemory-bridge/package.json").exists()
+
+
+def test_openclaw_js_bridge_registers_modern_typed_hooks() -> None:
+    script = """
+const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
+const names = [];
+plugin.register({ hooks: { on(name, handler) { names.push(name); } } });
+process.stdout.write(JSON.stringify(names));
+""".strip()
+    result = subprocess.run(["node", "-e", script], cwd=Path.cwd(), capture_output=True, text=True, check=True)
+
+    assert json.loads(result.stdout) == ["message_received", "before_prompt_build", "agent_end"]
+
+
+def test_openclaw_js_bridge_registers_status_tool() -> None:
+    script = """
+const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
+const names = [];
+plugin.register({
+  registerTool(factory, opts) {
+    const tool = factory();
+    names.push(opts.name);
+    names.push(tool.name);
+  },
+  on() {}
+});
+process.stdout.write(JSON.stringify(names));
+""".strip()
+    result = subprocess.run(["node", "-e", script], cwd=Path.cwd(), capture_output=True, text=True, check=True)
+
+    assert json.loads(result.stdout) == ["eimemory_bridge_status", "eimemory_bridge_status"]
 
 
 def test_openclaw_js_bridge_degrades_gracefully_on_hook_failure(tmp_path) -> None:

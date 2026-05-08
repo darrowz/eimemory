@@ -348,20 +348,59 @@ function invokeBridge(event) {
   return JSON.parse(result.stdout || '{}');
 }
 
-function safeInvokeHook(hook, event) {
+function safeInvokeHook(api, hook, event) {
   try {
-    return invokeHook(hook, event);
-  } catch (_error) {
+    const result = invokeHook(hook, event);
+    api?.logger?.info?.(`eimemory-bridge: ${hook} completed`);
+    return result;
+  } catch (error) {
+    api?.logger?.warn?.(`eimemory-bridge: ${hook} failed: ${error?.message || String(error)}`);
     return null;
   }
 }
 
-function safeInvokeBridge(event) {
+function safeInvokeBridge(api, event) {
   try {
-    return invokeBridge(event);
-  } catch (_error) {
+    const result = invokeBridge(event);
+    api?.logger?.info?.('eimemory-bridge: ei-bridge feishu completed');
+    return result;
+  } catch (error) {
+    api?.logger?.warn?.(`eimemory-bridge: ei-bridge feishu failed: ${error?.message || String(error)}`);
     return null;
   }
+}
+
+function registerTypedHook(api, name, handler) {
+  if (api?.hooks?.on) {
+    api.hooks.on(name, handler);
+    return;
+  }
+  if (api?.on) {
+    api.on(name, handler);
+  }
+}
+
+function registerStatusTool(api) {
+  if (!api?.registerTool) {
+    return;
+  }
+  api.registerTool(() => ({
+    name: 'eimemory_bridge_status',
+    label: 'eimemory Bridge Status',
+    description: 'Report whether the OpenClaw eimemory bridge commands are configured.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {},
+    },
+    async execute() {
+      return JSON.stringify({
+        ok: true,
+        hookCommandConfigured: Boolean((process.env.EIMEMORY_HOOK_COMMAND || '').trim()),
+        bridgeCommandConfigured: Boolean((process.env.EIMEMORY_BRIDGE_COMMAND || '').trim()),
+      });
+    },
+  }), { name: 'eimemory_bridge_status' });
 }
 
 module.exports.default = {
@@ -373,10 +412,12 @@ module.exports.default = {
     properties: {},
   },
   register(api) {
-    api.on('message_received', async (event) => safeInvokeHook('message_received', event) || {});
-    api.on('before_prompt_build', async (event) => {
-      const bridgePayload = safeInvokeBridge(normalizeEventPayload('before_prompt_build', event));
-      const payload = safeInvokeHook('before_prompt_build', event);
+    api?.logger?.info?.('eimemory-bridge: registering OpenClaw hooks');
+    registerStatusTool(api);
+    registerTypedHook(api, 'message_received', async (event) => safeInvokeHook(api, 'message_received', event) || {});
+    registerTypedHook(api, 'before_prompt_build', async (event) => {
+      const bridgePayload = safeInvokeBridge(api, normalizeEventPayload('before_prompt_build', event));
+      const payload = safeInvokeHook(api, 'before_prompt_build', event);
       const bridgeContext = buildBridgePrependContext(bridgePayload);
       if (!payload) {
         return bridgeContext ? { prependContext: bridgeContext } : {};
@@ -392,7 +433,7 @@ module.exports.default = {
       }
       return { prependContext: [bridgeContext, memoryContext].filter(Boolean).join('\n\n') };
     });
-    api.on('agent_end', async (event) => safeInvokeHook('agent_end', event) || {});
+    registerTypedHook(api, 'agent_end', async (event) => safeInvokeHook(api, 'agent_end', event) || {});
   },
 };
 

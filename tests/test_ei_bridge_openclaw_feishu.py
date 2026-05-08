@@ -127,9 +127,14 @@ def test_channel_class_delegates_to_parse_event() -> None:
 
 
 def test_format_reply_prefers_success_summary() -> None:
-    result = BridgeResult(ok=True, command_id="cmd-1", summary="已经看到桌面和机械臂。")
+    result = BridgeResult(
+        ok=True,
+        command_id="cmd-1",
+        summary="我现在看到：桌面和机械臂都在画面里。",
+        audit={"capability": "vision.describe"},
+    )
 
-    assert format_reply(result) == "已完成：已经看到桌面和机械臂。"
+    assert format_reply(result) == "我现在看到：桌面和机械臂都在画面里。"
 
 
 def test_format_reply_failure_includes_error() -> None:
