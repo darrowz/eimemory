@@ -127,10 +127,6 @@ class Runtime:
                         item,
                         source_id=source.source_id,
                         source_kind=source.source_kind,
-                        source_metadata={
-                            **dict(getattr(source, "metadata", {}) or {}),
-                            "tags": list(getattr(source, "tags", []) or []),
-                        },
                         fetch_metadata=dict(result.metadata or {}),
                         scope=scope_ref,
                     )
@@ -756,7 +752,6 @@ def _collected_item_record(
     *,
     source_id: str,
     source_kind: str,
-    source_metadata: dict[str, Any],
     fetch_metadata: dict[str, Any],
     scope: ScopeRef,
 ) -> RecordEnvelope:
@@ -766,14 +761,8 @@ def _collected_item_record(
     content = str(getattr(item, "content", "") or "")
     item_url = str(getattr(item, "url", "") or "")
     metadata = dict(getattr(item, "metadata", {}) or {})
-    source_metadata = dict(source_metadata or {})
     status = _collected_item_status(metadata)
-    record_kind = _collected_item_record_kind(
-        source_kind=source_kind,
-        item_source_kind=item_source_kind,
-        metadata=metadata,
-        source_metadata=source_metadata,
-    )
+    record_kind = _collected_item_record_kind(source_kind=source_kind, item_source_kind=item_source_kind, metadata=metadata)
     if record_kind == "news" and status == "candidate":
         status = "active"
     summary = _summary_from_content(content)
@@ -785,7 +774,6 @@ def _collected_item_record(
         "fingerprint": fingerprint,
         "fetch_source": item_source_kind,
         "fetch_metadata": dict(fetch_metadata or {}),
-        "source_metadata": source_metadata,
         "published_at": str(getattr(item, "published_at", "") or ""),
     }
     content_payload = {
@@ -798,7 +786,6 @@ def _collected_item_record(
         "summary": summary,
         "content_excerpt": content_excerpt,
         "metadata": metadata,
-        "source_metadata": source_metadata,
         "published_at": str(getattr(item, "published_at", "") or ""),
     }
     return RecordEnvelope(
@@ -833,18 +820,11 @@ def _collected_item_record(
     )
 
 
-def _collected_item_record_kind(
-    *,
-    source_kind: str,
-    item_source_kind: str,
-    metadata: dict[str, Any],
-    source_metadata: dict[str, Any] | None = None,
-) -> str:
+def _collected_item_record_kind(*, source_kind: str, item_source_kind: str, metadata: dict[str, Any]) -> str:
     source_markers = {str(source_kind or "").strip().lower(), str(item_source_kind or "").strip().lower()}
-    source_metadata = source_metadata or {}
-    source_family = str(metadata.get("source_family") or source_metadata.get("source_family") or "").strip().lower()
-    source_tags = {str(tag).strip().lower() for tag in (source_metadata.get("tags") or [])}
-    if "news" in source_markers or "news" in source_tags or source_family in {"news", "news_rss"}:
+    if source_markers & {"news", "rss"}:
+        return "news"
+    if metadata.get("feed_url"):
         return "news"
     return "knowledge_candidate"
 
