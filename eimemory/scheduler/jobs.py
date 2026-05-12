@@ -545,6 +545,11 @@ def _run_rule_evolution(
         }
 
 
+def _delivery_is_pending(delivery: dict[str, Any]) -> bool:
+    status = str(((delivery.get("outbox") or {}).get("status") or delivery.get("status") or "")).strip().lower()
+    return status in {"pending", "pending_delivery", "queued"}
+
+
 def _run_daily_brief(runtime: Runtime, *, scope: dict) -> dict[str, Any]:
     build_brief = getattr(runtime, "build_daily_brief", None)
     if build_brief is None:
@@ -574,7 +579,7 @@ def _run_daily_brief(runtime: Runtime, *, scope: dict) -> dict[str, Any]:
             "research_item_count": len(research_digest.get("items") or []),
             "news_item_count": len(news_digest.get("items") or []),
             "delivery_channel": str((report.get("delivery") or {}).get("channel") or ""),
-            "delivery_pending": bool((report.get("delivery") or {}).get("outbox")),
+            "delivery_pending": _delivery_is_pending(report.get("delivery") or {}),
             "persisted": bool(report.get("persisted")),
             "persisted_record_id": str(report.get("persisted_record_id") or ""),
             "brief_skipped_reason": "",

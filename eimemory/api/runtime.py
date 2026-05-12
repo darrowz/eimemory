@@ -517,7 +517,7 @@ def _daily_brief_record(brief: dict[str, Any], delivery: dict[str, Any], *, scop
             "brief": _json_safe(brief),
             "delivery": _json_safe(delivery),
         },
-        tags=["daily-brief", "experience-brief", "pending-delivery"],
+        tags=["daily-brief", "experience-brief", "delivery-prepared"],
         links=[],
         evidence=[],
         source="eimemory.daily_brief",
@@ -528,7 +528,7 @@ def _daily_brief_record(brief: dict[str, Any], delivery: dict[str, Any], *, scop
             "report_type": "daily_brief",
             "date": day,
             "delivery_channel": str(delivery.get("channel") or ""),
-            "delivery_status": str((delivery.get("outbox") or {}).get("status") or "pending_delivery"),
+            "delivery_status": str((delivery.get("outbox") or {}).get("status") or "prepared"),
         },
     )
 

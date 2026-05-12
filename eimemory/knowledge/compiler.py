@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Any
 
 from eimemory.knowledge.extract import PaperMemoryExtraction
@@ -85,7 +86,7 @@ def compile_paper_knowledge(
         source_ids=(source_id,),
         provenance=page_provenance,
     )
-    for entity_name in _dedupe_preserve_order(entity_names):
+    for entity_name in _topic_page_entities(entity_names, title=title, claim_texts=claim_texts):
         page_id = stable_page_id("topic", entity_name.lower(), source_id)
         relevant_claims = [
             (claim_id, claim_text)
@@ -117,9 +118,58 @@ def _dedupe_preserve_order(values: list[str]) -> list[str]:
     seen: set[str] = set()
     result: list[str] = []
     for value in values:
-        key = value.lower()
+        cleaned = str(value).strip()
+        if not cleaned:
+            continue
+        key = cleaned.casefold()
         if key in seen:
             continue
         seen.add(key)
-        result.append(value)
+        result.append(cleaned)
     return result
+
+
+def _topic_page_entities(entity_names: list[str], *, title: str, claim_texts: list[str], limit: int = 5) -> list[str]:
+    source_text = f"{title}\n" + "\n".join(claim_texts)
+    return [
+        entity
+        for entity in _dedupe_preserve_order(entity_names)
+        if _is_topic_page_worthy(entity, source_text=source_text)
+    ][:limit]
+
+
+def _is_topic_page_worthy(entity_name: str, *, source_text: str) -> bool:
+    entity = " ".join(str(entity_name).split())
+    if len(entity) < 3:
+        return False
+    lowered = entity.casefold()
+    if lowered in _LOW_VALUE_TOPIC_NAMES:
+        return False
+    token_count = len(re.findall(r"[A-Za-z0-9]+|[\u4e00-\u9fff]+", entity))
+    has_acronym = bool(re.fullmatch(r"[A-Z][A-Z0-9-]{1,}", entity))
+    has_mixed_case = bool(re.search(r"[a-z][A-Z]|[A-Z][a-z]+[A-Z]", entity))
+    if token_count >= 2 or has_acronym or has_mixed_case:
+        return True
+    # Single lowercase English words like "semantic" or "interference" created
+    # noisy topic pages in nightly runs. Keep them as paper-page entities only.
+    if re.fullmatch(r"[a-z][a-z0-9-]+", entity):
+        return False
+    return lowered in source_text.casefold()
+
+
+_LOW_VALUE_TOPIC_NAMES = {
+    "approach",
+    "benchmark",
+    "challenge",
+    "evidence",
+    "framework",
+    "github",
+    "interference",
+    "method",
+    "model",
+    "paper",
+    "retrieval",
+    "search",
+    "semantic",
+    "system",
+}

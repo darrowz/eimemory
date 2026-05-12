@@ -179,7 +179,7 @@ def _themes(papers: list[RecordEnvelope], pages: list[RecordEnvelope], limit: in
     counter: Counter[str] = Counter()
     for record in papers:
         for category in _categories(record):
-            counter[category] += 1
+            counter[category] += 2
     for record in pages:
         page_type = _page_type(record)
         if page_type == "topic" and record.title:

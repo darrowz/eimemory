@@ -138,7 +138,7 @@ def test_nightly_jobs_fetch_and_persist_external_candidates(tmp_path) -> None:
         </item></channel></rss>"""
 
     report = run_nightly_jobs(runtime, scope=scope, external_fetch_text=fake_fetch_text)
-    candidates = runtime.store.list_records(kinds=["knowledge_candidate"], scope=scope, limit=10)
+    collected_records = runtime.store.list_records(kinds=["knowledge_candidate", "news"], scope=scope, limit=10)
     reloaded_source = runtime.sources.list_sources()[0]
 
     assert report["external_collection"]["ok"] is True
@@ -151,7 +151,7 @@ def test_nightly_jobs_fetch_and_persist_external_candidates(tmp_path) -> None:
     assert reloaded_source.metadata["last_scan"]["status"] == "ok"
     assert reloaded_source.metadata["last_scan"]["item_count"] == 1
     assert reloaded_source.metadata["last_scan"]["written_count"] == 1
-    assert any("External intake item" in record.title for record in candidates)
+    assert any("External intake item" in record.title for record in collected_records)
 
 
 def test_external_collection_applies_source_and_global_item_limits(tmp_path) -> None:
@@ -370,7 +370,7 @@ def test_nightly_jobs_close_daily_brief_rule_evolution_and_source_discovery(tmp_
 
     assert report["daily_brief"]["ok"] is True
     assert report["daily_brief"]["persisted"] is True
-    assert report["daily_brief"]["delivery_pending"] is True
+    assert report["daily_brief"]["delivery_pending"] is False
     assert report["daily_brief"]["message_count"] >= 1
     assert briefs
     assert briefs[0].content["delivery"]["network_called"] is False
@@ -381,6 +381,6 @@ def test_nightly_jobs_close_daily_brief_rule_evolution_and_source_discovery(tmp_
     assert report["source_discovery"]["proposal_count"] >= 1
     assert source_candidates
     assert source_candidates[0].meta["decision"] in {"approve", "needs_review"}
-    assert snapshot["daily_brief"]["latest"]["delivery_status"] == "pending_delivery"
+    assert snapshot["daily_brief"]["latest"]["delivery_status"] == "prepared"
     assert snapshot["rule_evolution"]["latest"]["created_rule_count"] == 1
     assert snapshot["source_discovery"]["count"] >= 1

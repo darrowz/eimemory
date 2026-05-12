@@ -85,7 +85,7 @@ def build_daily_brief_delivery_payload(
     *,
     channel: str = "feishu",
 ) -> dict[str, Any]:
-    """Prepare outbox and audit payloads without performing network delivery."""
+    """Prepare an operator-readable delivery artifact without performing network delivery."""
     safe_brief = _json_safe(dict(brief))
     day = str(safe_brief.get("date") or "")
     prepared_at = now_iso()
@@ -96,14 +96,14 @@ def build_daily_brief_delivery_payload(
         "prepared_at": prepared_at,
         "outbox": {
             "kind": "daily_brief",
-            "status": "pending_delivery",
+            "status": "prepared",
             "channel": str(channel or "unknown"),
             "title": f"Daily brief {day}".strip(),
             "body": safe_brief,
         },
         "audit": {
             "action": "daily_brief.prepared",
-            "status": "pending_delivery",
+            "status": "prepared",
             "channel": str(channel or "unknown"),
             "date": day,
             "prepared_at": prepared_at,

@@ -185,5 +185,5 @@ def test_daily_brief_delivery_payload_prepares_outbox_and_audit_without_network(
     assert payload["outbox"]["kind"] == "daily_brief"
     assert payload["outbox"]["body"]["date"] == DAY
     assert payload["audit"]["action"] == "daily_brief.prepared"
-    assert payload["audit"]["status"] == "pending_delivery"
+    assert payload["audit"]["status"] == "prepared"
     json.dumps(payload)

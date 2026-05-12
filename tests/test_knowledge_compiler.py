@@ -43,6 +43,27 @@ def test_compiled_pages_keep_supporting_claim_ids_and_source_links() -> None:
     )
 
 
+def test_compile_paper_knowledge_filters_noisy_single_word_topic_pages() -> None:
+    result = compile_paper_knowledge(
+        paper_source_id="paper_noisy_topics",
+        paper_title="GATHER Retrieval Framework",
+        claims=[
+            "GATHER improves retrieval for hyper-entity queries.",
+            "GATHER improves retrieval for hyper-entity queries.",
+        ],
+        entities=["GATHER", "retrieval", "semantic", "interference", "Hyper Entity Queries"],
+    )
+
+    topic_titles = {page.title for page in result.pages if page.page_type == "topic"}
+    paper_page = next(page for page in result.pages if page.page_type == "paper")
+
+    assert "GATHER" in topic_titles
+    assert "Hyper Entity Queries" in topic_titles
+    assert "semantic" not in topic_titles
+    assert "interference" not in topic_titles
+    assert paper_page.summary.count("GATHER improves retrieval") == 1
+
+
 def test_runtime_compile_paper_knowledge_persists_pages(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     try:
