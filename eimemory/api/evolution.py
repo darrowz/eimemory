@@ -3,12 +3,14 @@ from __future__ import annotations
 import hashlib
 import math
 import re
+from collections import Counter
 from dataclasses import asdict
 from statistics import mean
 
 from eimemory.api.memory import MemoryAPI
 from eimemory.models.relation_records import RelationRecord
 from eimemory.models.records import LinkRef, RecordEnvelope, ScopeRef, VALID_KINDS, evaluate_memory_quality
+from eimemory.scoring import extract_memory_score, score_from_legacy_quality, summarize_scores, with_score_metadata
 from eimemory.storage.runtime_store import RuntimeStore
 
 
@@ -527,6 +529,11 @@ class EvolutionAPI:
         by_source: dict[str, int] = {}
         by_memory_type: dict[str, int] = {}
         missing_quality_count = 0
+        missing_score_count = 0
+        v1_scores = []
+        risk_label_distribution: Counter[str] = Counter()
+        provenance_distribution: Counter[str] = Counter()
+        provenance_source_distribution: Counter[str] = Counter()
         for record in records:
             quality = dict(record.meta.get("quality") or {})
             tier = str(quality.get("quality_tier") or "").strip().lower()
@@ -552,8 +559,23 @@ class EvolutionAPI:
             )
             by_memory_type[memory_type] = by_memory_type.get(memory_type, 0) + 1
 
+            score = extract_memory_score(record.meta)
+            if score is None:
+                missing_score_count += 1
+                continue
+            v1_scores.append(score)
+            risk_label_distribution.update(str(label) for label in (score.explanation.get("risk_labels") or []))
+            provenance_label = str(
+                score.components.get("provenance").evidence.get("label")
+                if score.components.get("provenance") is not None
+                else "provenance.unknown"
+            )
+            provenance_distribution[provenance_label] += 1
+            provenance_source_distribution[str(score.provenance.source or "unknown")] += 1
+
         total_count = len(records)
         accepted_count = total_count - quality_distribution["rejected"]
+        scoring_summary = summarize_scores(v1_scores)
         return {
             "memory_count": total_count,
             "accepted_count": accepted_count,
@@ -564,6 +586,16 @@ class EvolutionAPI:
             "missing_quality_count": missing_quality_count,
             "by_source": dict(sorted(by_source.items())),
             "by_memory_type": dict(sorted(by_memory_type.items())),
+            "scoring_v1": {
+                "count": scoring_summary["count"],
+                "tier_distribution": dict(sorted(scoring_summary["tiers"].items())),
+                "average_final_score": scoring_summary["average_final_score"],
+                "average_component_scores": dict(sorted(scoring_summary["average_components"].items())),
+                "missing_score_count": missing_score_count,
+                "risk_label_distribution": dict(sorted(risk_label_distribution.items())),
+                "provenance_distribution": dict(sorted(provenance_distribution.items())),
+                "provenance_source_distribution": dict(sorted(provenance_source_distribution.items())),
+            },
         }
 
     def repair_memory_quality(
@@ -598,6 +630,23 @@ class EvolutionAPI:
                 )
                 if apply:
                     record.meta["quality"] = repaired_quality
+                    updated[record.record_id] = record
+            elif extract_memory_score(record.meta) is None:
+                repaired_score = score_from_legacy_quality(
+                    record=record,
+                    activity="quality.repair",
+                    source="quality.repair",
+                )
+                actions.append(
+                    {
+                        "action": "backfill_score_v1",
+                        "record_id": record.record_id,
+                        "quality_tier": repaired_score.tier,
+                        "final_score": repaired_score.final_score,
+                    }
+                )
+                if apply:
+                    record.meta = with_score_metadata(record.meta, repaired_score, preserve_quality=True)
                     updated[record.record_id] = record
 
             if record.status != "rejected" and _is_mojibake_or_noisy_memory(record):
@@ -634,9 +683,13 @@ class EvolutionAPI:
             for record in updated.values():
                 self.store.append(record)
 
+        quality_backfilled_count = sum(1 for action in actions if action["action"] == "backfill_quality")
+        score_backfilled_count = sum(1 for action in actions if action["action"] == "backfill_score_v1")
         return {
             "scanned_count": len(records),
-            "backfilled_count": sum(1 for action in actions if action["action"] == "backfill_quality"),
+            "backfilled_count": quality_backfilled_count + score_backfilled_count,
+            "quality_backfilled_count": quality_backfilled_count,
+            "score_backfilled_count": score_backfilled_count,
             "rejected_count": len(rejected_ids),
             "duplicate_count": len(duplicate_actions),
             "applied": bool(apply),

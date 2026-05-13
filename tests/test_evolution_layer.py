@@ -1,11 +1,13 @@
 import json
 from pathlib import Path
+from statistics import mean
 
 from eimemory.adapters.eibrain.rpc import EIBrainRPCBridge
 from eimemory.api.runtime import Runtime
 from eimemory.knowledge.compiler import compile_paper_knowledge
 from eimemory.models.claim_cards import ClaimCard
 from eimemory.models.records import LinkRef, RecordEnvelope, ScopeRef
+from eimemory.scoring import extract_memory_score, score_from_legacy_quality
 from eimemory.scheduler.jobs import run_nightly_jobs
 
 
@@ -475,6 +477,12 @@ def test_memory_quality_report_summarizes_distribution_salience_and_sources(tmp_
             },
         ),
     ]
+    expected_scores = []
+    for record in records:
+        score = extract_memory_score(record.meta)
+        if score is not None and record.title != "Candidate memory":
+            expected_scores.append(score)
+    records[0].meta.pop("scoring", None)
     for record in records:
         runtime.store.append(record)
 
@@ -493,6 +501,70 @@ def test_memory_quality_report_summarizes_distribution_salience_and_sources(tmp_
     assert report["by_source"]["openclaw.message_received"] == 2
     assert report["by_memory_type"]["conversation"] == 2
     assert report["by_memory_type"]["decision"] == 1
+    assert report["scoring_v1"]["count"] == 3
+    assert report["scoring_v1"]["missing_score_count"] == 1
+    assert report["scoring_v1"]["average_final_score"] == round(
+        mean(score.final_score for score in expected_scores), 4
+    )
+    assert report["scoring_v1"]["average_component_scores"] == {
+        name: round(mean(score.components[name].value for score in expected_scores), 4)
+        for name in expected_scores[0].components
+    }
+    expected_risk_labels: dict[str, int] = {}
+    for score in expected_scores:
+        for label in score.explanation.get("risk_labels") or []:
+            expected_risk_labels[label] = expected_risk_labels.get(label, 0) + 1
+    assert report["scoring_v1"]["risk_label_distribution"] == expected_risk_labels
+    expected_provenance: dict[str, int] = {}
+    for score in expected_scores:
+        label = str(score.components["provenance"].evidence.get("label") or "provenance.unknown")
+        expected_provenance[label] = expected_provenance.get(label, 0) + 1
+    assert report["scoring_v1"]["provenance_distribution"] == expected_provenance
+
+
+def test_memory_quality_repair_apply_backfills_v1_scores_from_legacy_quality(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = ScopeRef(agent_id="main", workspace_id="repair")
+    legacy_only = RecordEnvelope.create(
+        kind="memory",
+        title="Legacy scored memory",
+        summary="Decision: keep legacy quality while backfilling v1 scores.",
+        content={"text": "Decision: keep legacy quality while backfilling v1 scores.", "memory_type": "decision"},
+        scope=scope,
+        source="legacy",
+        meta={
+            "memory_type": "decision",
+            "quality": {
+                "importance": 0.7,
+                "confidence": 0.8,
+                "freshness": 0.6,
+                "reuse_potential": 0.7,
+                "salience_score": 0.7,
+                "quality_tier": "confirmed",
+                "capture_decision": "accept",
+            },
+        },
+    )
+    expected_quality = dict(legacy_only.meta["quality"])
+    expected_score = score_from_legacy_quality(record=legacy_only, activity="quality.repair", source="quality.repair")
+    legacy_only.meta.pop("scoring", None)
+    runtime.store.append(legacy_only)
+
+    report = runtime.evolution.repair_memory_quality(
+        scope={"agent_id": "main", "workspace_id": "repair"},
+        apply=True,
+    )
+    repaired = runtime.store.get_by_id(legacy_only.record_id)
+
+    assert report["applied"] is True
+    assert report["scanned_count"] == 1
+    assert report["backfilled_count"] == 1
+    assert report["actions"][0]["action"] == "backfill_score_v1"
+    assert repaired is not None
+    assert repaired.meta["quality"] == expected_quality
+    assert repaired.meta["scoring"]["memory_score_v1"]["schema_version"] == "memory_score.v1"
+    assert repaired.meta["scoring"]["memory_score_v1"]["tier"] == expected_score.tier
+    assert repaired.meta["scoring"]["memory_score_v1"]["final_score"] == expected_score.final_score
 
 
 def test_memory_quality_repair_dry_run_reports_without_mutating(tmp_path) -> None:
