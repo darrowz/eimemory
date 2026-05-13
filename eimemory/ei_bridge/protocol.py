@@ -2,7 +2,25 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from time import time
-from typing import Any
+from typing import Any, Literal
+
+
+type BridgeJSONValue = str | int | float | bool | None | list["BridgeJSONValue"] | dict[str, "BridgeJSONValue"]
+type BridgeScope = dict[str, str]
+type BridgePayload = dict[str, Any]
+type BridgeCommandDict = dict[str, BridgeJSONValue]
+type BridgeResultDict = dict[str, BridgeJSONValue]
+type BridgeEventDict = dict[str, BridgeJSONValue]
+type EIMemoryRPCMethod = Literal[
+    "memory.recall",
+    "memory.ingest",
+    "evolution.observe",
+    "experience.record_skill_trace",
+    "experience.record_item",
+    "evolution.get_active_policy",
+]
+type EIMemoryRPCRequest = dict[str, Any]
+type EIMemoryRPCResponse = dict[str, Any]
 
 
 def _mapping(value: Any) -> dict[str, Any]:

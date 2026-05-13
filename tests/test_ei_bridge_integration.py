@@ -9,10 +9,11 @@ from eimemory.ei_bridge import AgentAdapterRegistry, BridgeRouter
 from eimemory.ei_bridge.agents import EIBrainAgentAdapter
 from eimemory.ei_bridge.audit import EIMemoryAuditSink
 from eimemory.ei_bridge.channels.openclaw_feishu import format_reply, parse_event
+from eimemory.ei_bridge.protocol import BridgeCommand
 
 
 def test_feishu_message_routes_to_eibrain_and_records_audit() -> None:
-    command = parse_event({"text": "现在看到了什么", "user_id": "user-1", "message_id": "msg-1"})
+    command: BridgeCommand | None = parse_event({"text": "现在看到了什么", "user_id": "user-1", "message_id": "msg-1"})
     assert command is not None
 
     adapter = EIBrainAgentAdapter(

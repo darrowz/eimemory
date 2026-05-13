@@ -9,6 +9,9 @@ class BridgeRouter:
         self.registry = registry
 
     def route(self, command: BridgeCommand) -> BridgeResult:
+        # Bridge command routing boundary:
+        # inbound command must first be normalized in protocol/domain layer, then
+        # dispatched by registry keys (agent_id and capability path).
         adapter = self.registry.find(command.target)
         if adapter is None:
             target = command.target.agent_id or command.target.capability or "unspecified target"

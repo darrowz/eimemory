@@ -5,6 +5,10 @@ from typing import Any
 
 from eimemory.ei_bridge.protocol import BridgeCommand, BridgeResult
 
+
+type EIBrainTransportResult = dict[str, Any] | BridgeResult
+type EIBrainTransport = Callable[[BridgeCommand], EIBrainTransportResult]
+
 DEFAULT_CAPABILITIES = (
     "vision.describe",
     "health.status",
@@ -18,7 +22,7 @@ class EIBrainAgentAdapter:
         self,
         agent_id: str = "eibrain",
         capabilities: tuple[str, ...] | list[str] = DEFAULT_CAPABILITIES,
-        transport: Callable[[BridgeCommand], dict[str, Any] | BridgeResult] | None = None,
+        transport: EIBrainTransport | None = None,
     ) -> None:
         self.agent_id = agent_id
         self.capabilities = tuple(capabilities)
@@ -36,7 +40,7 @@ class EIBrainAgentAdapter:
             )
 
         try:
-            raw_result = self.transport(command) if self.transport is not None else {}
+            transport_result = self.transport(command) if self.transport is not None else {}
         except Exception as exc:
             summary = _transport_error_summary(capability, exc)
             return BridgeResult(
@@ -47,7 +51,7 @@ class EIBrainAgentAdapter:
                 audit={"agent_id": self.agent_id, "capability": capability},
             )
 
-        result = _coerce_result(raw_result, command)
+        result = _coerce_result(transport_result, command)
         summary = _summary_for_capability(capability, result.payload)
         if summary:
             return BridgeResult(
@@ -69,7 +73,7 @@ class EIBrainAgentAdapter:
         )
 
 
-def _coerce_result(raw_result: dict[str, Any] | BridgeResult, command: BridgeCommand) -> BridgeResult:
+def _coerce_result(raw_result: EIBrainTransportResult, command: BridgeCommand) -> BridgeResult:
     if isinstance(raw_result, BridgeResult):
         return raw_result
 

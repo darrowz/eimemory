@@ -8,6 +8,7 @@ from urllib.parse import parse_qs, urlparse
 
 from eimemory.adapters.eibrain.rpc import EIBrainRPCBridge
 from eimemory.api.runtime import Runtime
+from eimemory.ei_bridge.protocol import EIMemoryRPCRequest, EIMemoryRPCResponse
 
 
 class _RPCHandler(BaseHTTPRequestHandler):
@@ -42,10 +43,10 @@ class _RPCHandler(BaseHTTPRequestHandler):
         try:
             length = int(self.headers.get("Content-Length", "0"))
             raw = self.rfile.read(length) if length else b"{}"
-            request = json.loads(raw.decode("utf-8"))
+            request: EIMemoryRPCRequest = json.loads(raw.decode("utf-8"))
             if not isinstance(request, dict):
                 raise ValueError("request body must be a JSON object")
-            response = self.bridge.handle(request)
+            response: EIMemoryRPCResponse = self.bridge.handle(request)
             status = 400 if response.get("ok") is False else 200
             self._send_json(status, response)
         except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
@@ -53,7 +54,7 @@ class _RPCHandler(BaseHTTPRequestHandler):
         except Exception as exc:  # pragma: no cover - defensive server boundary
             self._send_json(500, {"ok": False, "error": "internal_error"})
 
-    def _send_json(self, status_code: int, payload: dict) -> None:
+    def _send_json(self, status_code: int, payload: EIMemoryRPCResponse) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status_code)
         self.send_header("Content-Type", "application/json")
@@ -95,7 +96,7 @@ class EIBrainRPCServer:
         if self._thread is not None:
             self._thread.join(timeout=2)
 
-    def request(self, payload: dict) -> dict:
+    def request(self, payload: EIMemoryRPCRequest) -> EIMemoryRPCResponse:
         url = f"http://{self.address[0]}:{self.address[1]}/"
         req = urllib.request.Request(
             url,

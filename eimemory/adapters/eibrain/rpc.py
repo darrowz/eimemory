@@ -6,13 +6,20 @@ from eimemory.api.runtime import Runtime
 from eimemory.experience import record_experience_item, record_skill_trace
 from eimemory.identity import extract_user_aliases, hongtu_identity_meta, hongtu_scope
 from eimemory.models.records import LinkRef
+from eimemory.ei_bridge.protocol import (
+    BridgeScope,
+    EIMemoryRPCRequest,
+    EIMemoryRPCResponse,
+)
 
 
 class EIBrainRPCBridge:
     def __init__(self, runtime: Runtime) -> None:
         self.runtime = runtime
 
-    def handle(self, request: dict) -> dict:
+    def handle(self, request: EIMemoryRPCRequest) -> EIMemoryRPCResponse:
+        # RPC transport boundary: accept only dict-shaped request payloads then map
+        # directly into runtime services with strict per-method validation.
         if not isinstance(request, dict):
             return self._invalid_request()
         method = request.get("method")
@@ -25,7 +32,7 @@ class EIBrainRPCBridge:
             return self._invalid_request()
         if method == "memory.recall":
             limit = params.get("limit", 8)
-            scope = params.get("scope", {})
+            scope: BridgeScope = params.get("scope", {})
             task_context = params.get("task_context", {})
             query = params.get("query", "")
             if (
@@ -46,7 +53,8 @@ class EIBrainRPCBridge:
             )
             return {"ok": True, "result": bundle.to_dict()}
         if method == "memory.ingest":
-            scope = params.get("scope", {})
+            params = dict(params)
+            scope: BridgeScope = params.get("scope", {})
             text = params.get("text", "")
             memory_type = params.get("memory_type", "conversation")
             title = params.get("title", "eibrain memory")
@@ -98,8 +106,9 @@ class EIBrainRPCBridge:
             )
             return {"ok": True, "result": record.to_dict()}
         if method == "evolution.observe":
+            params = dict(params)
             payload = params.get("payload", {})
-            scope = params.get("scope", {})
+            scope: BridgeScope = params.get("scope", {})
             if (
                 not isinstance(params.get("signal_type", ""), str)
                 or not str(params.get("signal_type", "")).strip()
@@ -114,8 +123,9 @@ class EIBrainRPCBridge:
             )
             return {"ok": True, "result": record.to_dict()}
         if method == "experience.record_skill_trace":
+            params = dict(params)
             payload = params.get("payload", {})
-            scope = params.get("scope", {})
+            scope: BridgeScope = params.get("scope", {})
             if not isinstance(payload, dict) or not self._valid_scope(scope):
                 return self._invalid_request()
             result = record_skill_trace(self.runtime, payload, scope=hongtu_scope(scope))
@@ -123,8 +133,9 @@ class EIBrainRPCBridge:
                 return {"ok": False, "error": result.get("error", "invalid_experience")}
             return {"ok": True, "result": result}
         if method == "experience.record_item":
+            params = dict(params)
             payload = params.get("payload", {})
-            scope = params.get("scope", {})
+            scope: BridgeScope = params.get("scope", {})
             if not isinstance(payload, dict) or not self._valid_scope(scope):
                 return self._invalid_request()
             result = record_experience_item(self.runtime, payload, scope=hongtu_scope(scope))
@@ -132,7 +143,8 @@ class EIBrainRPCBridge:
                 return {"ok": False, "error": result.get("error", "invalid_experience")}
             return {"ok": True, "result": result}
         if method == "evolution.get_active_policy":
-            scope = params.get("scope", {})
+            params = dict(params)
+            scope: BridgeScope = params.get("scope", {})
             task_type = params.get("task_type", "")
             if not isinstance(task_type, str) or not task_type.strip() or not self._valid_scope(scope):
                 return self._invalid_request()
@@ -143,7 +155,7 @@ class EIBrainRPCBridge:
             return {"ok": True, "result": policy}
         return {"ok": False, "error": "unknown_method"}
 
-    def _invalid_request(self) -> dict:
+    def _invalid_request(self) -> EIMemoryRPCResponse:
         return {"ok": False, "error": "invalid_request"}
 
     @staticmethod

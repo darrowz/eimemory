@@ -11,9 +11,16 @@ from eimemory.adapters.eibrain.rpc import EIBrainRPCBridge
 from eimemory.adapters.eibrain.rpc_server import EIBrainRPCServer
 from eimemory.adapters.eibrain.sdk import EIBrainMemoryClient
 from eimemory.adapters.openclaw.hooks import OpenClawMemoryHooks
+from eimemory.ei_bridge.protocol import EIMemoryRPCRequest, EIMemoryRPCResponse
 from eimemory.api.runtime import Runtime
 from eimemory.cli.main import main as cli_main
 from eimemory.identity import FEISHU_DARROW_OPEN_ID
+
+
+def _handle_eibrain_request(
+    bridge: EIBrainRPCBridge, request: EIMemoryRPCRequest
+) -> EIMemoryRPCResponse:
+    return bridge.handle(request)
 
 
 def test_eibrain_client_bridges_recall_and_observe(tmp_path) -> None:
@@ -49,35 +56,33 @@ def test_eibrain_rpc_normalizes_hardware_scope_to_hongtu_memory_subject(tmp_path
     runtime = Runtime.create(root=tmp_path)
     bridge = EIBrainRPCBridge(runtime)
 
-    ingest = bridge.handle(
-        {
-            "method": "memory.ingest",
-            "params": {
-                "text": "Remember Hongtu prefers concise embodied responses.",
-                "title": "Hongtu embodied preference",
-                "memory_type": "preference",
-                "source": "eibrain.dialogue",
-                "scope": {
-                    "agent_id": "honxin",
-                    "workspace_id": "honjia",
-                    "user_id": "darrow",
-                    "hardware_node": "honxin",
-                },
-                "organ": "cognition",
-                "modality": "text",
+    ingest_request: EIMemoryRPCRequest = {
+        "method": "memory.ingest",
+        "params": {
+            "text": "Remember Hongtu prefers concise embodied responses.",
+            "title": "Hongtu embodied preference",
+            "memory_type": "preference",
+            "source": "eibrain.dialogue",
+            "scope": {
+                "agent_id": "honxin",
+                "workspace_id": "honjia",
+                "user_id": "darrow",
+                "hardware_node": "honxin",
             },
-        }
-    )
-    recall = bridge.handle(
-        {
-            "method": "memory.recall",
-            "params": {
-                "query": "concise embodied responses",
-                "scope": {"agent_id": "eibrain", "workspace_id": "honjia", "user_id": "darrow"},
-                "task_context": {"task_type": "brain.respond"},
-            },
-        }
-    )
+            "organ": "cognition",
+            "modality": "text",
+        },
+    }
+    recall_request: EIMemoryRPCRequest = {
+        "method": "memory.recall",
+        "params": {
+            "query": "concise embodied responses",
+            "scope": {"agent_id": "eibrain", "workspace_id": "honjia", "user_id": "darrow"},
+            "task_context": {"task_type": "brain.respond"},
+        },
+    }
+    ingest = _handle_eibrain_request(bridge, ingest_request)
+    recall = _handle_eibrain_request(bridge, recall_request)
 
     stored = ingest["result"]
     assert stored["scope"] == {
@@ -112,21 +117,20 @@ def test_eibrain_rpc_recall_expands_hongtu_user_aliases_without_source_leak(tmp_
         force_capture=True,
     )
 
-    recall = bridge.handle(
-        {
-            "method": "memory.recall",
-            "params": {
-                "query": "Darrow concise replies",
-                "scope": {"agent_id": "eibrain", "workspace_id": "honjia", "user_id": FEISHU_DARROW_OPEN_ID},
-                "task_context": {
-                    "task_type": "brain.respond",
-                    "subject_context": {"user_aliases": [FEISHU_DARROW_OPEN_ID, "Darrow"]},
-                    "allowed_sources": ["eibrain.audio_dialogue"],
-                    "blocked_sources": ["ei_bridge.openclaw_feishu"],
-                },
+    recall_request: EIMemoryRPCRequest = {
+        "method": "memory.recall",
+        "params": {
+            "query": "Darrow concise replies",
+            "scope": {"agent_id": "eibrain", "workspace_id": "honjia", "user_id": FEISHU_DARROW_OPEN_ID},
+            "task_context": {
+                "task_type": "brain.respond",
+                "subject_context": {"user_aliases": [FEISHU_DARROW_OPEN_ID, "Darrow"]},
+                "allowed_sources": ["eibrain.audio_dialogue"],
+                "blocked_sources": ["ei_bridge.openclaw_feishu"],
             },
-        }
-    )
+        },
+    }
+    recall = _handle_eibrain_request(bridge, recall_request)
 
     assert recall["ok"] is True
     items = recall["result"]["items"]
@@ -140,21 +144,20 @@ def test_eibrain_rpc_ingest_persists_outcome_metadata(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     bridge = EIBrainRPCBridge(runtime)
 
-    response = bridge.handle(
-        {
-            "method": "memory.ingest",
-            "params": {
-                "text": "user:hello | reply:hi",
-                "title": "Audio dialogue turn",
-                "memory_type": "conversation",
-                "source": "eibrain.audio_dialogue",
-                "scope": {"agent_id": "honxin", "workspace_id": "honjia", "user_id": "darrow"},
-                "organ": "ear",
-                "modality": "audio_text",
-                "outcome": {"success": True, "status": "planned", "action_count": 1},
-            },
-        }
-    )
+    response_request: EIMemoryRPCRequest = {
+        "method": "memory.ingest",
+        "params": {
+            "text": "user:hello | reply:hi",
+            "title": "Audio dialogue turn",
+            "memory_type": "conversation",
+            "source": "eibrain.audio_dialogue",
+            "scope": {"agent_id": "honxin", "workspace_id": "honjia", "user_id": "darrow"},
+            "organ": "ear",
+            "modality": "audio_text",
+            "outcome": {"success": True, "status": "planned", "action_count": 1},
+        },
+    }
+    response: EIMemoryRPCResponse = _handle_eibrain_request(bridge, response_request)
 
     assert response["ok"] is True
     assert response["result"]["meta"]["outcome"] == {
@@ -168,25 +171,24 @@ def test_eibrain_rpc_ingest_persists_structured_world_observation(tmp_path) -> N
     runtime = Runtime.create(root=tmp_path)
     bridge = EIBrainRPCBridge(runtime)
 
-    response = bridge.handle(
-        {
-            "method": "memory.ingest",
-            "params": {
-                "text": "Observed cup",
-                "title": "Visual world observation",
-                "memory_type": "world_observation",
-                "source": "eibrain.visual_world",
-                "scope": {"agent_id": "honxin", "workspace_id": "honjia", "user_id": "darrow"},
-                "organ": "eye",
-                "modality": "vision",
-                "content": {"objects": [{"label": "cup", "confidence": 0.8}]},
-                "meta": {"dedupe_key": "world_observation:cup", "confidence": 0.8},
-                "tags": ["world_observation", "vision", "cup"],
-                "evidence": [{"type": "frame", "path": "/tmp/eibrain-vision/latest.jpg"}],
-                "links": [{"rel": "actor", "id": "user-1", "kind": "identity"}],
-            },
-        }
-    )
+    response_request: EIMemoryRPCRequest = {
+        "method": "memory.ingest",
+        "params": {
+            "text": "Observed cup",
+            "title": "Visual world observation",
+            "memory_type": "world_observation",
+            "source": "eibrain.visual_world",
+            "scope": {"agent_id": "honxin", "workspace_id": "honjia", "user_id": "darrow"},
+            "organ": "eye",
+            "modality": "vision",
+            "content": {"objects": [{"label": "cup", "confidence": 0.8}]},
+            "meta": {"dedupe_key": "world_observation:cup", "confidence": 0.8},
+            "tags": ["world_observation", "vision", "cup"],
+            "evidence": [{"type": "frame", "path": "/tmp/eibrain-vision/latest.jpg"}],
+            "links": [{"rel": "actor", "id": "user-1", "kind": "identity"}],
+        },
+    }
+    response: EIMemoryRPCResponse = _handle_eibrain_request(bridge, response_request)
 
     stored = response["result"]
     assert response["ok"] is True
@@ -204,18 +206,17 @@ def test_eibrain_rpc_ingest_rejects_non_object_outcome(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     bridge = EIBrainRPCBridge(runtime)
 
-    response = bridge.handle(
-        {
-            "method": "memory.ingest",
-            "params": {
-                "text": "user:hello | reply:hi",
-                "title": "Audio dialogue turn",
-                "memory_type": "conversation",
-                "scope": {"agent_id": "honxin", "workspace_id": "honjia"},
-                "outcome": [],
-            },
-        }
-    )
+    response_request: EIMemoryRPCRequest = {
+        "method": "memory.ingest",
+        "params": {
+            "text": "user:hello | reply:hi",
+            "title": "Audio dialogue turn",
+            "memory_type": "conversation",
+            "scope": {"agent_id": "honxin", "workspace_id": "honjia"},
+            "outcome": [],
+        },
+    }
+    response: EIMemoryRPCResponse = _handle_eibrain_request(bridge, response_request)
 
     assert response == {"ok": False, "error": "invalid_request"}
 
@@ -241,7 +242,8 @@ def test_eibrain_rpc_rejects_invalid_param_types(tmp_path) -> None:
     ]
 
     for request in invalid_requests:
-        response = bridge.handle(request)
+        response_request: EIMemoryRPCRequest = request
+        response: EIMemoryRPCResponse = _handle_eibrain_request(bridge, response_request)
         assert response == {"ok": False, "error": "invalid_request"}
 
 
@@ -957,16 +959,15 @@ def test_evolution_observe_normalizes_unknown_signal_type_to_incident(tmp_path) 
     runtime = Runtime.create(root=tmp_path)
     bridge = EIBrainRPCBridge(runtime)
 
-    response = bridge.handle(
-        {
-            "method": "evolution.observe",
-            "params": {
-                "signal_type": "asr_noise",
-                "payload": {"title": "ASR noise", "summary": "Ignore burst noise"},
-                "scope": {"agent_id": "eibrain", "workspace_id": "robot"},
-            },
-        }
-    )
+    response_request: EIMemoryRPCRequest = {
+        "method": "evolution.observe",
+        "params": {
+            "signal_type": "asr_noise",
+            "payload": {"title": "ASR noise", "summary": "Ignore burst noise"},
+            "scope": {"agent_id": "eibrain", "workspace_id": "robot"},
+        },
+    }
+    response: EIMemoryRPCResponse = _handle_eibrain_request(bridge, response_request)
 
     assert response["ok"] is True
     assert response["result"]["kind"] == "incident"
@@ -1003,24 +1004,23 @@ def test_eibrain_rpc_records_skill_trace_experience(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     bridge = EIBrainRPCBridge(runtime)
 
-    response = bridge.handle(
-        {
-            "method": "experience.record_skill_trace",
-            "params": {
-                "scope": {"agent_id": "honxin", "workspace_id": "honjia", "user_id": "darrow"},
-                "payload": {
-                    "trace_id": "trace-1",
-                    "task_type": "brain.respond",
-                    "input_summary": "user asked for status",
-                    "selected_skills": ["reply.default"],
-                    "actions": ["play_speech_action"],
-                    "outcome": "planned",
-                    "feedback": "unknown",
-                    "latency_ms": 42,
-                },
+    response_request: EIMemoryRPCRequest = {
+        "method": "experience.record_skill_trace",
+        "params": {
+            "scope": {"agent_id": "honxin", "workspace_id": "honjia", "user_id": "darrow"},
+            "payload": {
+                "trace_id": "trace-1",
+                "task_type": "brain.respond",
+                "input_summary": "user asked for status",
+                "selected_skills": ["reply.default"],
+                "actions": ["play_speech_action"],
+                "outcome": "planned",
+                "feedback": "unknown",
+                "latency_ms": 42,
             },
-        }
-    )
+        },
+    }
+    response = _handle_eibrain_request(bridge, response_request)
 
     assert response["ok"] is True
     stored = runtime.store.get_by_id(response["result"]["record_id"])
@@ -1034,22 +1034,21 @@ def test_eibrain_rpc_records_experience_item(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     bridge = EIBrainRPCBridge(runtime)
 
-    response = bridge.handle(
-        {
-            "method": "experience.record_item",
-            "params": {
-                "scope": {"agent_id": "honxin", "workspace_id": "honjia"},
-                "payload": {
-                    "experience_id": "exp-1",
-                    "experience_kind": "success_strategy",
-                    "summary": "Brief status replies worked well.",
-                    "skill_ids": ["reply.default"],
-                    "outcome_delta": 0.12,
-                    "confidence": 0.8,
-                },
+    response_request: EIMemoryRPCRequest = {
+        "method": "experience.record_item",
+        "params": {
+            "scope": {"agent_id": "honxin", "workspace_id": "honjia"},
+            "payload": {
+                "experience_id": "exp-1",
+                "experience_kind": "success_strategy",
+                "summary": "Brief status replies worked well.",
+                "skill_ids": ["reply.default"],
+                "outcome_delta": 0.12,
+                "confidence": 0.8,
             },
-        }
-    )
+        },
+    }
+    response = _handle_eibrain_request(bridge, response_request)
 
     assert response["ok"] is True
     stored = runtime.store.get_by_id(response["result"]["record_id"])
@@ -1063,14 +1062,13 @@ def test_eibrain_rpc_rejects_invalid_experience_payload(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     bridge = EIBrainRPCBridge(runtime)
 
-    response = bridge.handle(
-        {
-            "method": "experience.record_skill_trace",
-            "params": {
-                "scope": {"agent_id": "honxin", "workspace_id": "honjia"},
-                "payload": {"trace_id": "missing-required-fields"},
-            },
-        }
-    )
+    response_request: EIMemoryRPCRequest = {
+        "method": "experience.record_skill_trace",
+        "params": {
+            "scope": {"agent_id": "honxin", "workspace_id": "honjia"},
+            "payload": {"trace_id": "missing-required-fields"},
+        },
+    }
+    response = _handle_eibrain_request(bridge, response_request)
 
     assert response == {"ok": False, "error": "missing required fields: task_type, input_summary, selected_skills, actions, outcome, feedback, latency_ms"}

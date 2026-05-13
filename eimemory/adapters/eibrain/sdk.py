@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from eimemory.api.runtime import Runtime
 from eimemory.models.records import RecallBundle, RecordEnvelope
+from eimemory.ei_bridge.protocol import BridgeScope
 
 
 class EIBrainMemoryClient:
@@ -14,7 +15,7 @@ class EIBrainMemoryClient:
         query: str,
         task_type: str,
         goal: str,
-        scope: dict,
+        scope: BridgeScope,
         limit: int = 8,
     ) -> RecallBundle:
         return self.runtime.memory.recall(
@@ -31,7 +32,7 @@ class EIBrainMemoryClient:
         severity: str,
         title: str,
         summary: str,
-        scope: dict,
+        scope: BridgeScope,
     ) -> RecordEnvelope:
         return self.runtime.evolution.observe(
             signal_type="incident",

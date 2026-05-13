@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from eimemory.ei_bridge.agents import EIBrainAgentAdapter, GenericHTTPAgentAdapter
+from eimemory.ei_bridge.agents.eibrain import EIBrainTransportResult
 from eimemory.ei_bridge.protocol import BridgeCommand, BridgeResult, BridgeSource, BridgeTarget
 
 
@@ -120,7 +121,7 @@ def test_eibrain_wake_and_sleep_are_accepted_without_transport() -> None:
 
 
 def test_eibrain_transport_error_returns_failed_result() -> None:
-    def failing_transport(command: BridgeCommand) -> dict[str, object]:
+    def failing_transport(command: BridgeCommand) -> EIBrainTransportResult:
         raise RuntimeError("boom")
 
     adapter = EIBrainAgentAdapter(transport=failing_transport)
