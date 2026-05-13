@@ -260,7 +260,7 @@ class SqliteRecordStore:
                 modality_boost=modality_boost,
                 context=ScoreContext(
                     activity="sqlite.recall",
-                    profile="balanced",
+                    profile=str((recall_filters or {}).get("scoring_profile") or "balanced"),
                     source="sqlite.recall",
                     entity_id=record.record_id,
                     query=query,

@@ -120,6 +120,7 @@ class MemoryAPI:
         profile_config = self._recall_profile_config(recall_profile)
         search_limit = max(limit * profile_config["search_multiplier"], limit)
         recall_filters = self._recall_filters_from_task_context(task_context)
+        recall_filters["scoring_profile"] = recall_profile
         items: list[RecordEnvelope] = []
         search_reports: list[dict] = []
         seen_item_ids: set[str] = set()

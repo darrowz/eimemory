@@ -53,6 +53,8 @@ def clamp_score(value: float) -> float:
 
 def weights_for_profile(profile: str | None) -> dict[str, float]:
     name = str(profile or DEFAULT_PROFILE).strip().lower()
+    if name == "exploratory":
+        name = "exploration"
     return dict(SCORING_PROFILES.get(name) or DEFAULT_WEIGHTS)
 
 
