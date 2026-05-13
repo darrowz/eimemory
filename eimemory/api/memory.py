@@ -3,6 +3,7 @@ from __future__ import annotations
 from eimemory.knowledge.views import build_recall_view, choose_view_type, records_from_view
 from eimemory.identity import extract_user_aliases, hongtu_query_scopes_with_aliases
 from eimemory.models.records import LinkRef, RecallBundle, RecordEnvelope, ScopeRef
+from eimemory.scoring import ScoreContext, evaluate_memory_score, extract_memory_score, with_score_metadata
 from eimemory.storage.runtime_store import RuntimeStore
 
 
@@ -45,6 +46,22 @@ class MemoryAPI:
             source=source,
             meta=meta_payload,
         )
+        score = evaluate_memory_score(
+            text=str(content_payload.get("text") or text),
+            title=title,
+            memory_type=memory_type,
+            source=source,
+            force_capture=force_capture,
+            context=ScoreContext(
+                activity="runtime.ingest",
+                source="runtime.ingest",
+                entity_id=record.record_id,
+                force_capture=force_capture,
+                inputs=[{"memory_type": memory_type}],
+            ),
+            legacy_quality=dict(record.meta.get("quality") or {}),
+        )
+        record.meta = with_score_metadata(record.meta, score, preserve_quality=False)
         if record.meta.get("quality", {}).get("capture_decision") == "reject":
             record.status = "rejected"
             return record
@@ -507,6 +524,39 @@ class MemoryAPI:
                     "quality_score": entry.get("quality_score", quality.get("salience_score", 0.0)),
                     "quality_tier": str(quality.get("quality_tier") or "unscored"),
                     "final_score": entry.get("final_score", 0.0),
+                    "scoring_version": entry.get("scoring_version", "memory_score.v1"),
+                    "memory_score": entry.get(
+                        "memory_score",
+                        (
+                            extract_memory_score(item.meta).to_dict()
+                            if extract_memory_score(item.meta) is not None
+                            else {}
+                        ),
+                    ),
+                    "components": entry.get(
+                        "components",
+                        (
+                            extract_memory_score(item.meta).to_dict().get("components", {})
+                            if extract_memory_score(item.meta) is not None
+                            else {}
+                        ),
+                    ),
+                    "labels": entry.get(
+                        "labels",
+                        (
+                            extract_memory_score(item.meta).to_dict().get("labels", [])
+                            if extract_memory_score(item.meta) is not None
+                            else []
+                        ),
+                    ),
+                    "provenance": entry.get(
+                        "provenance",
+                        (
+                            extract_memory_score(item.meta).to_dict().get("provenance", {})
+                            if extract_memory_score(item.meta) is not None
+                            else {}
+                        ),
+                    ),
                     "source": "search" if entry else "expanded_or_view",
                 }
             )

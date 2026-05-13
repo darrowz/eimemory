@@ -7,6 +7,7 @@ from pathlib import Path
 from eimemory.embeddings.local import cosine_similarity, embed_text
 from eimemory.identity import hongtu_query_scopes
 from eimemory.models.records import RecordEnvelope, ScopeRef
+from eimemory.scoring import ScoreContext, evaluate_recall_score, extract_memory_score, score_from_legacy_quality
 
 
 MAX_QUERY_LIMIT = 1000
@@ -240,13 +241,33 @@ class SqliteRecordStore:
             if quality.get("capture_decision") == "reject":
                 continue
             quality_score = float(quality.get("salience_score") or 0.0)
-            quality_boost = quality_score * 1.25 if record.kind == "memory" else quality_score * 0.35
-            relevance_score = float(lexical_score) + semantic_score + vector_score
             if lowered_tokens and lexical_score <= 0 and semantic_score < 0.08 and vector_score < 0.28:
                 continue
             source_weight = self._source_weight(record, recall_filters)
             modality_boost = self._preferred_modality_boost(record, recall_filters)
-            score = (relevance_score + quality_boost) * source_weight + modality_boost
+            stored_score = extract_memory_score(record.meta) or score_from_legacy_quality(
+                record=record,
+                activity="quality.repair",
+                source="quality.repair",
+            )
+            recall_score = evaluate_recall_score(
+                record=record,
+                query=query,
+                lexical_score=float(lexical_score),
+                semantic_score=semantic_score,
+                vector_score=vector_score,
+                source_weight=source_weight,
+                modality_boost=modality_boost,
+                context=ScoreContext(
+                    activity="sqlite.recall",
+                    profile="balanced",
+                    source="sqlite.recall",
+                    entity_id=record.record_id,
+                    query=query,
+                ),
+                stored_score=stored_score,
+            )
+            score = recall_score.final_score
             scored.append(
                 (
                     score,
@@ -264,6 +285,11 @@ class SqliteRecordStore:
                         "source_weight": round(source_weight, 4),
                         "modality_boost": round(modality_boost, 4),
                         "final_score": round(score, 4),
+                        "scoring_version": recall_score.schema_version,
+                        "memory_score": recall_score.to_dict(),
+                        "components": recall_score.to_dict()["components"],
+                        "labels": list(recall_score.labels),
+                        "provenance": recall_score.provenance.to_dict(),
                     },
                 )
             )

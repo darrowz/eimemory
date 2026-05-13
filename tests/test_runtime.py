@@ -812,6 +812,10 @@ def test_runtime_recall_explains_quality_aware_scoring(tmp_path) -> None:
     assert scoring[0]["record_id"] == high_quality.record_id
     assert scoring[0]["quality_tier"] == "core"
     assert scoring[0]["quality_score"] > scoring[1]["quality_score"]
+    assert scoring[0]["scoring_version"] == "memory_score.v1"
+    assert scoring[0]["memory_score"]["schema_version"] == "memory_score.v1"
+    assert "relevance" in scoring[0]["components"]
+    assert scoring[0]["provenance"]["activity"] == "memory.recall_score"
     assert "lexical_score" in scoring[0]
     assert "vector_score" in scoring[0]
 

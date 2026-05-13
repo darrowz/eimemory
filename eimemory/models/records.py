@@ -6,6 +6,7 @@ from typing import Any
 
 from eimemory.core.clock import now_iso
 from eimemory.core.ids import generate_record_id
+from eimemory.scoring import ScoreContext, evaluate_memory_score, memory_score_to_legacy_quality, with_score_metadata
 
 VALID_KINDS: frozenset[str] = frozenset(
     {
@@ -49,99 +50,15 @@ def evaluate_memory_quality(
     force_capture: bool = False,
 ) -> dict[str, Any]:
     """Return deterministic capture quality metadata for a memory candidate."""
-    combined = " ".join(part.strip() for part in (title, text) if part and part.strip())
-    terms = _normalized_terms(combined)
-    body_terms = _normalized_terms(text)
-    normalized = " ".join(terms)
-    body_alnum_count = sum(1 for char in text if char.isalnum())
-    alnum_count = sum(1 for char in combined if char.isalnum())
-    unique_body_terms = len(set(body_terms))
-    memory_type = memory_type.lower().strip()
-    source = source.lower().strip()
-
-    high_value_keywords = {
-        "always",
-        "decision",
-        "decided",
-        "important",
-        "must",
-        "never",
-        "prefer",
-        "preference",
-        "project",
-        "remember",
-        "rule",
-        "should",
-        "\u8bb0\u4f4f",
-        "\u504f\u597d",
-        "\u51b3\u7b56",
-        "\u89c4\u5219",
-        "\u9879\u76ee",
-        "\u91cd\u8981",
-    }
-    uncertain_keywords = {"maybe", "perhaps", "guess", "unsure", "\u53ef\u80fd", "\u4e5f\u8bb8", "\u4e0d\u786e\u5b9a"}
-    reusable_keywords = {
-        "api",
-        "architecture",
-        "config",
-        "contract",
-        "deploy",
-        "eibrain",
-        "eimemory",
-        "interface",
-        "openclaw",
-        "policy",
-        "scope",
-        "server",
-        "tenant",
-        "user",
-    }
-    keyword_hits = sum(1 for keyword in high_value_keywords if keyword in normalized or keyword in combined)
-    reusable_hits = sum(1 for keyword in reusable_keywords if keyword in normalized or keyword in combined.lower())
-    uncertain_hits = sum(1 for keyword in uncertain_keywords if keyword in normalized or keyword in combined)
-
-    thin_or_noisy = body_alnum_count < 8 or (len(body_terms) <= 2 and body_alnum_count < 20) or unique_body_terms <= 1
-    type_bonus = {
-        "decision": 0.24,
-        "preference": 0.22,
-        "rule": 0.2,
-        "fact": 0.14,
-        "project": 0.14,
-        "conversation": 0.02,
-    }.get(memory_type, 0.08)
-    source_bonus = 0.08 if any(marker in source for marker in ("tool.store", "migration", "cli")) else 0.0
-
-    length_bonus = min(0.18, alnum_count / 420)
-    importance = _clamp_score(0.28 + type_bonus + min(0.28, keyword_hits * 0.09) + length_bonus)
-    confidence = _clamp_score(0.62 + source_bonus - min(0.24, uncertain_hits * 0.08))
-    freshness = 1.0
-    reuse_potential = _clamp_score(0.3 + min(0.28, reusable_hits * 0.07) + min(0.18, keyword_hits * 0.045) + type_bonus / 2)
-    salience_score = _clamp_score((importance * 0.38) + (confidence * 0.22) + (freshness * 0.12) + (reuse_potential * 0.28))
-
-    capture_decision = "accept"
-    if thin_or_noisy and not force_capture:
-        capture_decision = "reject"
-    elif salience_score < 0.34 and not force_capture:
-        capture_decision = "reject"
-
-    if capture_decision == "reject":
-        quality_tier = "candidate"
-    elif salience_score >= 0.78:
-        quality_tier = "core"
-    elif salience_score >= 0.55:
-        quality_tier = "confirmed"
-    else:
-        quality_tier = "candidate"
-
-    return {
-        "importance": importance,
-        "confidence": confidence,
-        "freshness": freshness,
-        "reuse_potential": reuse_potential,
-        "salience_score": salience_score,
-        "quality_tier": quality_tier,
-        "capture_decision": capture_decision,
-    }
+    score = evaluate_memory_score(
+        text=text,
+        title=title,
+        memory_type=memory_type,
+        source=source,
+        force_capture=force_capture,
+        context=ScoreContext(activity="record.create", source="record.create", force_capture=force_capture),
+    )
+    return memory_score_to_legacy_quality(score)
 
 
 @dataclass(slots=True)
@@ -236,17 +153,21 @@ class RecordEnvelope:
         cls._validate_kind(kind)
         meta_payload = dict(meta or {})
         content_payload = dict(content or {})
-        if kind == "memory" and QUALITY_META_KEY not in meta_payload:
+        if kind == "memory":
             memory_text = str(content_payload.get("text") or summary or detail or title)
             memory_type = str(meta_payload.get("memory_type") or content_payload.get("memory_type") or "")
             force_capture = bool(meta_payload.get("force_capture") or content_payload.get("force_capture"))
-            meta_payload[QUALITY_META_KEY] = evaluate_memory_quality(
+            legacy_quality = meta_payload.get(QUALITY_META_KEY) if isinstance(meta_payload.get(QUALITY_META_KEY), dict) else None
+            score = evaluate_memory_score(
                 text=memory_text,
                 title=title,
                 memory_type=memory_type,
                 source=source,
                 force_capture=force_capture,
+                context=ScoreContext(activity="record.create", source="record.create", force_capture=force_capture),
+                legacy_quality=legacy_quality,
             )
+            meta_payload = with_score_metadata(meta_payload, score, preserve_quality=True)
         return cls(
             record_id=generate_record_id(kind),
             kind=kind,

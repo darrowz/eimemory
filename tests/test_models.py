@@ -16,6 +16,7 @@ def test_record_envelope_builds_with_defaults() -> None:
     assert record.record_id.startswith("mem_")
     assert record.time.created_at
     assert record.time.updated_at == record.time.created_at
+    assert record.meta["scoring"]["memory_score_v1"]["schema_version"] == "memory_score.v1"
 
 
 def test_record_envelope_keeps_typed_links() -> None:
@@ -79,5 +80,5 @@ def test_memory_quality_rejects_thin_chatter_unless_forced() -> None:
     forced = evaluate_memory_quality(text="ok", title="chat", memory_type="conversation", force_capture=True)
 
     assert rejected["capture_decision"] == "reject"
-    assert rejected["quality_tier"] == "candidate"
+    assert rejected["quality_tier"] == "rejected"
     assert forced["capture_decision"] == "accept"

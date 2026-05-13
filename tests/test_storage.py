@@ -118,6 +118,9 @@ def test_runtime_store_quality_reranks_similar_memories(tmp_path) -> None:
         "Candidate deployment note",
     ]
     assert report["retrieval_mode"] == "hybrid_vector"
+    assert report["scored_items"][0]["scoring_version"] == "memory_score.v1"
+    assert report["scored_items"][0]["memory_score"]["schema_version"] == "memory_score.v1"
+    assert "relevance" in report["scored_items"][0]["components"]
     assert report["scored_items"][0]["quality"]["salience_score"] == 0.95
     assert report["scored_items"][0]["final_score"] > report["scored_items"][1]["final_score"]
 
