@@ -587,8 +587,9 @@ def _source_discovery_record(proposal: dict[str, Any], *, scope: ScopeRef) -> Re
 def _rule_evolution_report_record(report: dict[str, Any], *, scope: ScopeRef) -> RecordEnvelope:
     generated_at = now_iso()
     record_id = f"rule_evolution_{generated_at[:10].replace('-', '')}_{_scope_hash(scope)}"
+    state_prefix = "Rule evolution steady state" if bool(report.get("steady_state")) else "Rule evolution"
     summary = (
-        f"Rule evolution: {int(report.get('candidate_count') or 0)} candidates, "
+        f"{state_prefix}: {int(report.get('candidate_count') or 0)} candidates, "
         f"{int(report.get('promoted_count') or 0)} promotions, "
         f"{int(report.get('active_rule_count') or 0)} active rules, "
         f"{int(report.get('replay_count') or 0)} replay results."
@@ -614,6 +615,8 @@ def _rule_evolution_report_record(report: dict[str, Any], *, scope: ScopeRef) ->
             "promoted_count": int(report.get("promoted_count") or 0),
             "active_rule_count": int(report.get("active_rule_count") or 0),
             "replay_count": int(report.get("replay_count") or 0),
+            "steady_state": bool(report.get("steady_state")),
+            "no_op_reason": str(report.get("no_op_reason") or ""),
         },
     )
 

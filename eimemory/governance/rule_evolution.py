@@ -51,6 +51,12 @@ def run_rule_evolution_loop(
             rules=rules,
         )
     )
+    existing_preference_memory_ids = _existing_preference_memory_ids(rules)
+    existing_source_memories = [
+        memory.record_id
+        for memory in reversed(memory_records)
+        if memory.record_id in existing_preference_memory_ids and _is_autonomous_preference_memory(memory)
+    ]
 
     created_rules: list[str] = []
     if apply:
@@ -85,6 +91,15 @@ def run_rule_evolution_loop(
             )
             promoted_rules.append(promoted.record_id)
     rules_after = runtime.store.list_records(kinds=["rule"], scope=scope_ref, limit=500) if apply else rules
+    active_rule_count = sum(1 for rule in rules_after if rule.status == "active")
+    promotion_count = len(promoted_rules) if apply else len(promotion_candidates)
+    steady_state = bool(
+        apply
+        and not candidate_specs
+        and not promotion_candidates
+        and active_rule_count > 0
+        and existing_source_memories
+    )
 
     return {
         "ok": True,
@@ -92,17 +107,23 @@ def run_rule_evolution_loop(
         "scope": scope_payload,
         "candidate_count": len(candidate_specs),
         "created_rule_count": len(created_rules),
-        "promoted_count": len(promoted_rules) if apply else len(promotion_candidates),
+        "promoted_count": promotion_count,
         "accepted_rule_count": sum(1 for rule in rules_after if rule.status == "accepted"),
-        "active_rule_count": sum(1 for rule in rules_after if rule.status == "active"),
+        "active_rule_count": active_rule_count,
         "replay_count": len(replay_results),
+        "steady_state": steady_state,
+        "no_op_reason": "all_candidate_sources_already_materialized" if steady_state else "",
         "roi_summary": roi_summary,
         "source_counts": _candidate_source_counts(candidate_specs),
+        "skipped_source_counts": {
+            "memory_preference": len(existing_source_memories) if not candidate_specs else 0,
+        },
         "record_ids": {
             "source_feedback": [item.record_id for item in _candidate_feedback(candidate_specs)],
             "source_reflections": [item.record_id for item in _candidate_reflections(candidate_specs)],
             "source_incidents": _candidate_record_ids(candidate_specs, "incident_repair"),
             "source_memories": _candidate_record_ids(candidate_specs, "memory_preference"),
+            "existing_source_memories": existing_source_memories if not candidate_specs else [],
             "created_rules": created_rules,
             "replay_results": [item.record_id for item in replay_results],
             "promotion_candidates": [item.record_id for item in promotion_candidates],
@@ -230,12 +251,7 @@ def _rule_candidates_from_preference_memories(
     memory_records: list[RecordEnvelope],
     rules: list[RecordEnvelope],
 ) -> list[dict]:
-    existing_memory_ids = {
-        memory_id
-        for rule in rules
-        if str(rule.meta.get("evolution_source_type") or "") == "memory_preference"
-        for memory_id in _coerce_string_list(rule.meta.get("evolution_source_record_ids"))
-    }
+    existing_memory_ids = _existing_preference_memory_ids(rules)
     candidates: list[dict] = []
     for memory in reversed(memory_records):
         if memory.record_id in existing_memory_ids or not _is_autonomous_preference_memory(memory):
@@ -277,6 +293,15 @@ def _rule_candidates_from_preference_memories(
             }
         )
     return candidates
+
+
+def _existing_preference_memory_ids(rules: list[RecordEnvelope]) -> set[str]:
+    return {
+        memory_id
+        for rule in rules
+        if str(rule.meta.get("evolution_source_type") or "") == "memory_preference"
+        for memory_id in _coerce_string_list(rule.meta.get("evolution_source_record_ids"))
+    }
 
 
 def _is_autonomous_preference_memory(record: RecordEnvelope) -> bool:

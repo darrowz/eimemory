@@ -219,3 +219,8 @@ def test_rule_evolution_activates_rule_from_operator_preference_memory(tmp_path)
 
     second_report = run_rule_evolution_loop(runtime, scope, apply=True)
     assert second_report["candidate_count"] == 0
+    assert second_report["active_rule_count"] == 1
+    assert second_report["steady_state"] is True
+    assert second_report["no_op_reason"] == "all_candidate_sources_already_materialized"
+    assert second_report["skipped_source_counts"]["memory_preference"] == 1
+    assert second_report["record_ids"]["existing_source_memories"] == [memory.record_id]
