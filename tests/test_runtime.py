@@ -462,6 +462,35 @@ def test_runtime_recall_prefers_explicit_communication_style_over_diagnostics(tm
             },
         },
     )
+    unrelated_conversation = RecordEnvelope.create(
+        kind="memory",
+        title="OpenClaw agent outcome",
+        summary=(
+            "鸿哥，看完文档，核心信息：MiniMax 有图片理解讨论。"
+            "如果模型支持 vision，就不要生成额外图片摘要，直接传原图。"
+        ),
+        scope=scope,
+        source="openclaw.agent_end",
+        content={
+            "text": (
+                "鸿哥，看完文档，核心信息：MiniMax 有图片理解讨论。"
+                "如果模型支持 vision，就不要生成额外图片摘要，直接传原图。"
+            ),
+            "memory_type": "conversation",
+        },
+        meta={
+            "memory_type": "conversation",
+            "quality": {
+                "importance": 0.9,
+                "confidence": 0.9,
+                "freshness": 1.0,
+                "reuse_potential": 0.9,
+                "salience_score": 0.9,
+                "quality_tier": "core",
+                "capture_decision": "accept",
+            },
+        },
+    )
     preference = runtime.memory.ingest(
         text="鸿哥 沟通风格：极简、直接，讨厌废话；先给结论，少解释。",
         memory_type="conversation",
@@ -472,6 +501,7 @@ def test_runtime_recall_prefers_explicit_communication_style_over_diagnostics(tm
         meta={"memory_type": "conversation"},
     )
     runtime.store.append(diagnostic)
+    runtime.store.append(unrelated_conversation)
 
     bundle = runtime.memory.recall(
         query="鸿哥 沟通风格",
@@ -481,7 +511,9 @@ def test_runtime_recall_prefers_explicit_communication_style_over_diagnostics(tm
 
     assert preference.meta["memory_type"] == "preference"
     assert bundle.items[0].record_id == preference.record_id
-    assert diagnostic.record_id not in [item.record_id for item in bundle.items]
+    returned_ids = [item.record_id for item in bundle.items]
+    assert diagnostic.record_id not in returned_ids
+    assert unrelated_conversation.record_id not in returned_ids
 
 
 def test_runtime_recall_expands_graph_linked_memories(tmp_path) -> None:

@@ -364,9 +364,13 @@ class MemoryAPI:
             for marker in ("极简", "直接", "简洁", "废话", "少解释", "先给结论", "结论")
         ):
             return True
-        if any(marker in haystack for marker in ("偏好", "喜欢", "讨厌", "不喜欢", "不要", "别")) and any(
+        if any(marker in haystack for marker in ("偏好", "喜欢", "讨厌", "不喜欢")) and any(
             marker in haystack
             for marker in ("极简", "直接", "简洁", "废话", "啰嗦", "长篇", "解释", "结论")
+        ):
+            return True
+        if any(marker in haystack for marker in ("鸿哥", "用户", "我", "operator")) and any(
+            marker in haystack for marker in ("不要废话", "别废话", "少废话", "讨厌废话", "先给结论", "少解释", "极简")
         ):
             return True
         return any(marker in lowered for marker in ("prefer concise", "reply style", "communication style"))
