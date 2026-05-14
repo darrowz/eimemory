@@ -139,7 +139,12 @@ class MemoryAPI:
                 seen_item_ids.add(item.record_id)
                 items.append(item)
         search_report = self._merge_search_reports(search_reports)
-        items = [item for item in items if not self._is_internal_audit_record(item)]
+        items = [
+            item
+            for item in items
+            if not self._is_internal_audit_record(item)
+            and not self._is_default_recall_suppressed_record(item, task_context)
+        ]
         graph_expanded = 0
         related_ids: list[str] = []
         base_items = list(items)
@@ -154,7 +159,12 @@ class MemoryAPI:
                 scope=scope_ref,
                 graph_depth=profile_config["graph_depth"],
             )
-            items = [item for item in items if not self._is_internal_audit_record(item)]
+            items = [
+                item
+                for item in items
+                if not self._is_internal_audit_record(item)
+                and not self._is_default_recall_suppressed_record(item, task_context)
+            ]
         claims = [item for item in items if item.kind == "claim_card"]
         pages = [item for item in items if item.kind == "knowledge_page"]
         memories = [item for item in items if item.kind == "memory"]
@@ -285,6 +295,26 @@ class MemoryAPI:
             or "ei_bridge.openclaw_feishu" in labels["sources"]
             or title == "ei-bridge openclaw command audit"
         )
+
+    def _is_default_recall_suppressed_record(self, item: RecordEnvelope, task_context: dict) -> bool:
+        if self._include_digest_pages(task_context):
+            return False
+        page_type = str(item.meta.get("page_type") or item.content.get("page_type") or "").strip().lower()
+        if item.kind == "knowledge_page" and page_type in {"digest", "synthesis"}:
+            return True
+        if item.kind == "knowledge_page" and str(item.source or "") == "eimemory.knowledge.synthesis":
+            return True
+        return False
+
+    @staticmethod
+    def _include_digest_pages(task_context: dict) -> bool:
+        if bool(task_context.get("include_digest_pages")):
+            return True
+        explicit_view = str(task_context.get("recall_view") or task_context.get("memory_view") or "").strip()
+        if explicit_view in {"page_centered", "freshness"}:
+            return True
+        haystack = " ".join(str(task_context.get(key) or "") for key in ("intent", "task_type", "goal")).lower()
+        return any(marker in haystack for marker in ("research", "synthesis", "digest", "brief"))
 
     @staticmethod
     def _string_list(value: object) -> list[str]:

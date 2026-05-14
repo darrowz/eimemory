@@ -155,7 +155,7 @@ def test_daily_brief_keeps_news_digest_separate_from_research(tmp_path) -> None:
             )
         )
 
-        brief = runtime.build_daily_brief(scope=scope)
+        brief = runtime.build_daily_brief(scope=scope, date="2026-04-29")
 
         assert brief["news_digest"]["count"] == 1
         assert brief["news_digest"]["items"][0]["url"] == "https://example.test/news/ai-memory"
@@ -186,6 +186,40 @@ def test_daily_brief_deduplicates_news_by_url(tmp_path) -> None:
 
         assert brief["news_digest"]["count"] == 1
         assert brief["news_digest"]["items"][0]["url"] == "https://example.test/news/same"
+    finally:
+        runtime.close()
+
+
+def test_daily_brief_filters_stale_and_future_news_by_published_at(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = {"agent_id": "main", "workspace_id": "news"}
+    try:
+        for title, published_at in [
+            ("News item: stale 2020 source", "2020-01-01"),
+            ("News item: current source", "2026-05-14"),
+            ("News item: future source", "2027-01-01"),
+        ]:
+            runtime.store.append(
+                RecordEnvelope.create(
+                    kind="news",
+                    title=title,
+                    summary=f"{title} summary.",
+                    scope=ScopeRef.from_dict(scope),
+                    content={
+                        "item_url": f"https://example.test/news/{published_at}",
+                        "published_at": published_at,
+                        "source_kind": "rss",
+                    },
+                    tags=["news", "external"],
+                    source="eimemory.news.collect",
+                    meta={"source_kind": "rss"},
+                )
+            )
+
+        brief = runtime.build_daily_brief(scope=scope, date="2026-05-14")
+
+        titles = [item["title"] for item in brief["news_digest"]["items"]]
+        assert titles == ["News item: current source"]
     finally:
         runtime.close()
 

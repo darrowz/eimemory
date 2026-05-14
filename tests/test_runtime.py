@@ -322,6 +322,76 @@ def test_runtime_recall_uses_response_policy_for_next_action_hint(tmp_path) -> N
     assert bundle.next_action_hint == "reply with one concise sentence"
 
 
+def test_runtime_recall_suppresses_digest_pages_for_default_preference_queries(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = ScopeRef(agent_id="main", workspace_id="repo-x")
+    digest = RecordEnvelope.create(
+        kind="knowledge_page",
+        title="Research digest 2026-05-14",
+        summary="News digest: communication trends, product launches, and market updates.",
+        detail="News digest with communication style coverage but no operator preference.",
+        scope=scope,
+        source="eimemory.knowledge.synthesis",
+        content={"page_type": "digest"},
+        meta={"page_type": "digest"},
+    )
+    preference = RecordEnvelope.create(
+        kind="memory",
+        title="Hongtu operator communication style",
+        summary="鸿哥 沟通风格：直接、简洁，先给结论再给证据。",
+        scope=scope,
+        meta={
+            "memory_type": "preference",
+            "quality": {
+                "importance": 0.9,
+                "confidence": 0.9,
+                "freshness": 1.0,
+                "reuse_potential": 0.9,
+                "salience_score": 0.9,
+                "quality_tier": "core",
+                "capture_decision": "accept",
+            },
+        },
+    )
+    runtime.store.append(digest)
+    runtime.store.append(preference)
+
+    bundle = runtime.memory.recall(
+        query="鸿哥 沟通风格",
+        scope={"agent_id": "main", "workspace_id": "repo-x"},
+        limit=5,
+    )
+
+    titles = [item.title for item in bundle.items]
+    assert titles[0] == "Hongtu operator communication style"
+    assert "Research digest 2026-05-14" not in titles
+
+
+def test_runtime_recall_does_not_answer_preference_query_with_digest_only(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = ScopeRef(agent_id="main", workspace_id="repo-x")
+    runtime.store.append(
+        RecordEnvelope.create(
+            kind="knowledge_page",
+            title="Research digest 2026-05-14",
+            summary="新闻简报：鸿哥 沟通风格 was mentioned in a broad market update.",
+            detail="Digest and news material should not satisfy direct operator preference recall.",
+            scope=scope,
+            source="eimemory.knowledge.synthesis",
+            content={"page_type": "digest"},
+            meta={"page_type": "digest"},
+        )
+    )
+
+    bundle = runtime.memory.recall(
+        query="鸿哥 沟通风格",
+        scope={"agent_id": "main", "workspace_id": "repo-x"},
+        limit=5,
+    )
+
+    assert bundle.items == []
+
+
 def test_runtime_recall_expands_graph_linked_memories(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     scope = ScopeRef(agent_id="main", workspace_id="repo-x")

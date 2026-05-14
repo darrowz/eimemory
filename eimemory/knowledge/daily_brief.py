@@ -45,7 +45,7 @@ def build_daily_brief(
         record
         for record in all_records
         if _is_news_digest_record(record)
-        and _is_within_research_window(record, day, research_lookback_days)
+        and _is_news_within_window(record, day, research_lookback_days)
     ]
     news_records.sort(key=_record_sort_key)
     news_records = _dedupe_records_by_url(news_records)
@@ -132,6 +132,19 @@ def _is_within_research_window(record: Mapping[str, Any], day: str, lookback_day
     if target_day is None or record_day is None:
         return False
     return target_day - timedelta(days=lookback_days) <= record_day < target_day
+
+
+def _is_news_within_window(record: Mapping[str, Any], day: str, lookback_days: int) -> bool:
+    target_day = _parse_day(day)
+    published_day = _news_published_day(record)
+    if target_day is None:
+        return False
+    if published_day is None:
+        return _is_within_research_window(record, day, lookback_days)
+    if published_day > target_day:
+        return False
+    lookback_days = max(0, int(lookback_days))
+    return target_day - timedelta(days=lookback_days) <= published_day <= target_day
 
 
 def _record_payload(record: RecordEnvelope | Mapping[str, Any]) -> dict[str, Any]:
@@ -337,6 +350,22 @@ def _parse_day(value: str) -> date_type | None:
         return date_type.fromisoformat(value[:10])
     except ValueError:
         return None
+
+
+def _news_published_day(record: Mapping[str, Any]) -> date_type | None:
+    content = record.get("content") if isinstance(record.get("content"), dict) else {}
+    meta = record.get("meta") if isinstance(record.get("meta"), dict) else {}
+    provenance = record.get("provenance") if isinstance(record.get("provenance"), dict) else {}
+    for value in (
+        content.get("published_at"),
+        content.get("published"),
+        meta.get("published_at"),
+        provenance.get("published_at"),
+    ):
+        parsed = _parse_day(str(value or ""))
+        if parsed is not None:
+            return parsed
+    return None
 
 
 def _json_safe(value: Any) -> Any:
