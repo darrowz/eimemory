@@ -389,6 +389,22 @@ class Runtime:
             seed=seed,
         )
 
+    def run_memory_eval_ci(
+        self,
+        dataset: dict | list,
+        *,
+        scope: dict | None = None,
+        emit_incidents: bool = False,
+    ) -> dict:
+        from eimemory.evaluation import run_memory_eval_ci
+        if scope is not None and not isinstance(scope, dict):
+            raise TypeError("scope must be a mapping")
+        if scope is not None and isinstance(dataset, dict):
+            dataset = {**dataset, "scope": {**dict(dataset.get("scope") or {}), **dict(scope)}}
+        if scope is not None and isinstance(dataset, list):
+            dataset = {"name": "memory_eval_ci", "scope": dict(scope), "cases": dataset}
+        return run_memory_eval_ci(self, dataset, emit_incidents=emit_incidents)
+
     def record_skill_trace(self, payload: dict, *, scope: dict | None = None) -> dict:
         from eimemory.experience import record_skill_trace
 

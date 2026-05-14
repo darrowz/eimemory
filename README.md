@@ -78,6 +78,21 @@ eimemory quality stats
 Nightly jobs include a `memory_quality` report with tier distribution, average
 salience, source counts, and memory type counts.
 
+## Memory Evaluation CI
+
+`eimemory eval ci` runs a deterministic benchmark-style memory quality suite.
+It reports extraction, update, usage, consistency, temporal, implicit,
+hallucination, and efficiency signals. Failed samples can also be emitted as
+incidents so autonomous rule evolution has repair evidence instead of waiting
+for manual feedback.
+
+```bash
+eimemory eval ci examples/evaluation/memory_ci.json --emit-incidents --output .tmp/memory-eval-report.json
+```
+
+Use `passed_threshold` as the CI gate. Use `incident_record_ids` to inspect
+failures that should become repair evidence or replay datasets.
+
 ## Paper Knowledge Memory
 
 Papers enter `eimemory` as source memory before becoming usable knowledge records.

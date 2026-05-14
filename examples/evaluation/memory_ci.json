@@ -1,0 +1,38 @@
+{
+  "name": "memory-ci-smoke",
+  "scope": {
+    "agent_id": "hongtu",
+    "workspace_id": "embodied",
+    "user_id": "darrow"
+  },
+  "threshold": 0.8,
+  "seed": [
+    {
+      "title": "Official channel",
+      "text": "Feishu is the official communication channel for Hongtu operator coordination.",
+      "memory_type": "decision"
+    },
+    {
+      "title": "Current destination",
+      "text": "The current travel destination is Chongqing, replacing the older Chengdu plan.",
+      "memory_type": "fact"
+    }
+  ],
+  "cases": [
+    {
+      "id": "usage-channel",
+      "phase": "usage",
+      "query": "official communication channel",
+      "expect_any_title": ["Official channel"],
+      "limit": 3
+    },
+    {
+      "id": "temporal-current-destination",
+      "phase": "temporal",
+      "query": "current travel destination",
+      "expect_any_text": ["Chongqing"],
+      "forbid_any_text": ["Changsha"],
+      "limit": 3
+    }
+  ]
+}

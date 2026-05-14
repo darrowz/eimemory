@@ -110,6 +110,18 @@ def run_evaluation(
     }
 
 
+def run_memory_eval_ci(
+    runtime,
+    dataset: dict | list,
+    *,
+    emit_incidents: bool = False,
+) -> dict:
+    """Run the benchmark-style memory evaluation CI dataset."""
+    from eimemory.evaluation.benchmarks import run_memory_eval_ci as run_memory_eval_ci_impl
+
+    return run_memory_eval_ci_impl(runtime, dataset, emit_incidents=emit_incidents)
+
+
 def _normalize_dataset(dataset: dict | list) -> dict:
     if isinstance(dataset, list):
         return {"name": "list_dataset", "cases": dataset}

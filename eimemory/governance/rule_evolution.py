@@ -19,6 +19,7 @@ def run_rule_evolution_loop(
     scope_ref = ScopeRef.from_dict(scope)
     scope_payload = asdict(scope_ref)
     feedback_records = runtime.store.list_records(kinds=["feedback"], scope=scope_ref, limit=500)
+    incident_records = runtime.store.list_records(kinds=["incident"], scope=scope_ref, limit=500)
     reflections = [
         record
         for record in runtime.store.list_records(kinds=["reflection"], scope=scope_ref, limit=500)
@@ -37,6 +38,13 @@ def run_rule_evolution_loop(
         reflections=reflections,
         rules=rules,
     )
+    candidate_specs.extend(
+        _rule_candidates_from_incidents(
+            incident_records=incident_records,
+            rules=rules,
+        )
+    )
+
     created_rules: list[str] = []
     if apply:
         for spec in candidate_specs:
@@ -78,9 +86,11 @@ def run_rule_evolution_loop(
         "promoted_count": len(promoted_rules) if apply else len(promotion_candidates),
         "replay_count": len(replay_results),
         "roi_summary": roi_summary,
+        "source_counts": _candidate_source_counts(candidate_specs),
         "record_ids": {
             "source_feedback": [item.record_id for item in _candidate_feedback(candidate_specs)],
             "source_reflections": [item.record_id for item in _candidate_reflections(candidate_specs)],
+            "source_incidents": _candidate_record_ids(candidate_specs, "incident_repair"),
             "created_rules": created_rules,
             "replay_results": [item.record_id for item in replay_results],
             "promotion_candidates": [item.record_id for item in promotion_candidates],
@@ -121,6 +131,7 @@ def _rule_candidates_from_feedback(
             "evolution_source_feedback_id": feedback.record_id,
             "evolution_source_reflection_id": latest_reflection.record_id if latest_reflection else "",
             "target_ref": target_ref,
+            "evolution_source_type": "feedback",
         }
         candidates.append(
             {
@@ -131,10 +142,91 @@ def _rule_candidates_from_feedback(
                 "response_policy": {"summary": summary},
                 "feedback": feedback,
                 "reflection": latest_reflection,
+                "source_type": "feedback",
+                "source_records": [feedback],
+                "source_record_ids": [feedback.record_id],
                 "audit_meta": audit_meta,
             }
         )
     return candidates
+
+
+def _rule_candidates_from_incidents(
+    *,
+    incident_records: list[RecordEnvelope],
+    rules: list[RecordEnvelope],
+) -> list[dict]:
+    existing_incident_ids = {
+        incident_id
+        for rule in rules
+        if str(rule.meta.get("evolution_source_type") or "") == "incident_repair"
+        for incident_id in _coerce_string_list(rule.meta.get("evolution_source_record_ids"))
+    }
+    candidates: list[dict] = []
+    for incident in reversed(incident_records):
+        payload = dict(incident.content.get("payload") or {})
+        if not (_coerce_bool(incident.meta.get("eval_failure")) or _coerce_bool(payload.get("eval_failure"))):
+            continue
+        repair_hint = _clean_text(incident.meta.get("repair_hint") or payload.get("repair_hint") or "")
+        if not repair_hint or incident.record_id in existing_incident_ids:
+            continue
+
+        summary = repair_hint
+        task_type = _candidate_task_type_from_incident(incident, payload)
+        source_record_ids = [incident.record_id]
+        source_key = _source_key("incident_repair", source_record_ids)
+        eval_phase = str(incident.meta.get("eval_phase") or payload.get("eval_phase") or "")
+        replay_dataset = payload.get("suggested_replay_dataset")
+        suggested_replay_dataset = [dict(item) for item in replay_dataset] if isinstance(replay_dataset, list) else []
+
+        audit_meta = {
+            "task_type": task_type,
+            "retrieval_policy": {"route_hint": "task_context_first"},
+            "response_policy": {"summary": summary},
+            "evolution_source": "rule_evolution_loop",
+            "evolution_source_type": "incident_repair",
+            "evolution_source_key": source_key,
+            "evolution_source_record_ids": source_record_ids,
+            "incident_record_id": incident.record_id,
+            "eval_failure": True,
+            "eval_phase": eval_phase,
+            "suggested_replay_dataset": suggested_replay_dataset,
+        }
+
+        candidates.append(
+            {
+                "title": f"Rule: {summary}",
+                "summary": summary,
+                "task_type": task_type,
+                "retrieval_policy": {"route_hint": "task_context_first"},
+                "response_policy": {"summary": summary},
+                "feedback": None,
+                "reflection": None,
+                "source_type": "incident_repair",
+                "source_records": [incident],
+                "source_record_ids": source_record_ids,
+                "source_key": source_key,
+                "suggested_replay_dataset": suggested_replay_dataset,
+                "audit_meta": audit_meta,
+            }
+        )
+    return candidates
+
+
+def _candidate_task_type_from_incident(
+    incident: RecordEnvelope,
+    payload: dict,
+) -> str:
+    task_type = str(
+        payload.get("task_type")
+        or payload.get("eval_phase")
+        or incident.meta.get("task_type")
+        or incident.meta.get("eval_phase")
+        or "memory_eval_failure"
+    ).strip()
+    if task_type:
+        return task_type
+    return "memory_eval_failure"
 
 
 def _promotion_candidates(
@@ -229,7 +321,13 @@ def _is_actual_reflection(record: RecordEnvelope) -> bool:
 
 
 def _candidate_feedback(candidate_specs: list[dict]) -> list[RecordEnvelope]:
-    return [spec["feedback"] for spec in candidate_specs]
+    return [
+        spec["feedback"]
+        for spec in candidate_specs
+        if isinstance(spec.get("source_type"), str)
+        and str(spec.get("source_type")) == "feedback"
+        and isinstance(spec.get("feedback"), RecordEnvelope)
+    ]
 
 
 def _candidate_reflections(candidate_specs: list[dict]) -> list[RecordEnvelope]:
@@ -244,15 +342,65 @@ def _candidate_reflections(candidate_specs: list[dict]) -> list[RecordEnvelope]:
     return records
 
 
+def _candidate_record_ids(candidate_specs: list[dict], source_type: str) -> list[str]:
+    seen: set[str] = set()
+    record_ids: list[str] = []
+    for spec in candidate_specs:
+        if str(spec.get("source_type") or "") != source_type:
+            continue
+        for record_id in _coerce_string_list(spec.get("source_record_ids")):
+            if record_id in seen:
+                continue
+            seen.add(record_id)
+            record_ids.append(record_id)
+    return record_ids
+
+
+def _candidate_source_counts(candidate_specs: list[dict]) -> dict[str, int]:
+    counts = {"feedback": 0, "incident_repair": 0}
+    for spec in candidate_specs:
+        source_type = str(spec.get("source_type") or "feedback")
+        counts[source_type] = counts.get(source_type, 0) + 1
+    return counts
+
+
 def _candidate_report(spec: dict) -> dict:
     reflection = spec.get("reflection")
+    source_type = str(spec.get("source_type") or "feedback")
+    source_record_ids = _coerce_string_list(spec.get("source_record_ids"))
     return {
         "title": spec["title"],
         "summary": spec["summary"],
         "task_type": spec["task_type"],
-        "source_feedback_id": spec["feedback"].record_id,
+        "source_feedback_id": spec["feedback"].record_id if source_type == "feedback" and isinstance(spec.get("feedback"), RecordEnvelope) else "",
         "source_reflection_id": reflection.record_id if reflection else "",
+        "source_type": source_type,
+        "source_record_ids": source_record_ids,
     }
+
+
+def _coerce_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.lower() in {"true", "1", "yes", "on"}
+    return False
+
+
+def _coerce_string_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value] if value else []
+    if isinstance(value, (list, tuple, set)):
+        return [str(item) for item in value if str(item)]
+    if isinstance(value, dict):
+        if isinstance(value.get("record_id"), str) and value["record_id"]:
+            return [str(value["record_id"])]
+        return []
+    return []
+
+
+def _source_key(prefix: str, source_record_ids: list[str]) -> str:
+    return f"{prefix}:{','.join(source_record_ids)}"
 
 
 def _clean_text(value: Any) -> str:

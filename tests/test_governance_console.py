@@ -87,6 +87,16 @@ def _sample_snapshot() -> dict:
                 }
             ],
         },
+        "memory_eval_ci": {
+            "count": 1,
+            "latest": {
+                "name": "nightly-memory-ci-smoke",
+                "pass_rate": 0.75,
+                "passed_threshold": False,
+                "fail_count": 1,
+                "incident_count": 2,
+            },
+        },
         "backups": {
             "count": 1,
             "latest": {"path": "backups/run-1", "ok": True, "verified": True},
@@ -108,8 +118,10 @@ def test_render_evolution_console_includes_key_sections() -> None:
     assert "Reflections" in html
     assert "External Intake" in html
     assert "Paper Promotion" in html
+    assert "Memory Eval CI" in html
     assert "Operational Projection" in html
     assert "Recent Papers / Candidates" in html
+    assert "0.75" in html
     assert "Operational Memory Paper" in html
     assert 'data-reset-layout' in html
     assert 'draggable="true"' in html

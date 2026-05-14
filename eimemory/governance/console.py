@@ -654,6 +654,11 @@ def render_evolution_console(snapshot: dict) -> str:
         {_render_paper_promotion(active_intake)}
       </section>
 
+      <section class="card card-medium" draggable="true" data-card-id="memory-eval-ci">
+        <h2>Memory Eval CI</h2>
+        {_render_memory_eval_ci(snapshot)}
+      </section>
+
       <section class="card card-medium" draggable="true" data-card-id="operational-projection">
         <h2>Operational Projection</h2>
         <div class="sub">Compiled knowledge projected into recall-only memory.</div>
@@ -883,6 +888,20 @@ def _render_operational_projection(active_intake: dict[str, Any]) -> str:
         "</div>"
         f'{_render_report_kv(report, empty_text="No operational projection report available.")}'
         f'{_render_record_list(records)}'
+    )
+
+
+def _render_memory_eval_ci(snapshot: dict[str, Any]) -> str:
+    section = _normalize_mapping(snapshot.get("memory_eval_ci"))
+    latest = _normalize_mapping(section.get("latest"))
+    if not latest:
+        return '<div class="muted">No memory eval CI report available.</div>'
+    return (
+        '<div class="mini-grid">'
+        f'{_render_mini("pass rate", latest.get("pass_rate"))}'
+        f'{_render_mini("failed", latest.get("fail_count"))}'
+        f'{_render_mini("incidents", latest.get("incident_count"))}'
+        "</div>"
     )
 
 

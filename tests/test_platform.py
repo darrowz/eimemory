@@ -6,6 +6,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 import sys
+import pytest
 
 from eimemory.adapters.eibrain.rpc_server import EIBrainRPCServer
 from eimemory.adapters.openclaw.tools import OpenClawMemoryTools
@@ -319,6 +320,7 @@ def test_export_and_import_helpers_roundtrip(tmp_path) -> None:
     assert bundle.items[0].title == "Exported memory"
 
 
+@pytest.mark.slow
 def test_export_records_includes_more_than_ten_thousand_rows(tmp_path) -> None:
     source = Runtime.create(root=tmp_path / "source")
     for idx in range(10005):
@@ -335,6 +337,24 @@ def test_export_records_includes_more_than_ten_thousand_rows(tmp_path) -> None:
     lines = export_path.read_text(encoding="utf-8").splitlines()
     assert count == 10005
     assert len(lines) == 10005
+
+
+def test_export_records_writes_all_runtime_records_without_large_fixture(tmp_path) -> None:
+    source = Runtime.create(root=tmp_path / "source_small")
+    for idx in range(3):
+        source.memory.ingest(
+            text=f"Small export memory {idx}",
+            memory_type="fact",
+            title=f"Memory {idx}",
+            scope={"agent_id": "main", "workspace_id": "repo-x"},
+        )
+
+    export_path = tmp_path / "small-export.jsonl"
+    count = export_records(source, export_path)
+
+    lines = export_path.read_text(encoding="utf-8").splitlines()
+    assert count == 3
+    assert len(lines) == 3
 
 
 def test_readme_and_example_files_exist() -> None:

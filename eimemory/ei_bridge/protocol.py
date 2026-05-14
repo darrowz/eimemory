@@ -22,6 +22,8 @@ type EIMemoryRPCMethod = Literal[
 type EIMemoryRPCRequest = dict[str, Any]
 type EIMemoryRPCResponse = dict[str, Any]
 
+EIMEMORY_RPC_CONTRACT_VERSION = "ei.memory.rpc.v1"
+
 
 def _mapping(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):

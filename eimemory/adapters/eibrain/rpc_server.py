@@ -8,6 +8,7 @@ from urllib.parse import parse_qs, urlparse
 
 from eimemory.adapters.eibrain.rpc import EIBrainRPCBridge
 from eimemory.api.runtime import Runtime
+from eimemory.ei_bridge.protocol import EIMEMORY_RPC_CONTRACT_VERSION
 from eimemory.ei_bridge.protocol import EIMemoryRPCRequest, EIMemoryRPCResponse
 
 
@@ -17,6 +18,16 @@ class _RPCHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
+        if parsed.path == "/healthz":
+            self._send_json(
+                200,
+                {
+                    "ok": True,
+                    "service": "eimemory-rpc",
+                    "contract_version": EIMEMORY_RPC_CONTRACT_VERSION,
+                },
+            )
+            return
         if parsed.path not in {"", "/", "/health", "/daily-brief"}:
             self._send_json(404, {"ok": False, "error": "not_found"})
             return
@@ -33,6 +44,7 @@ class _RPCHandler(BaseHTTPRequestHandler):
             {
                 "ok": True,
                 "service": "eimemory-rpc",
+                "contract_version": EIMEMORY_RPC_CONTRACT_VERSION,
                 "news_digest": brief.get("news_digest", {}),
                 "research_digest": brief.get("research_digest", {}),
                 "source_health": brief.get("source_health", {}),

@@ -213,6 +213,25 @@ def test_governance_snapshot_surfaces_active_intake_records(tmp_path) -> None:
             meta={"report_type": "nightly"},
         )
     )
+    memory_eval_record = runtime.store.append(
+        RecordEnvelope.create(
+            kind="reflection",
+            title="Nightly memory eval CI",
+            summary="Nightly memory eval smoke result.",
+            scope=scope_ref,
+            source="eimemory.memory_eval_ci",
+            content={
+                "report": {
+                    "name": "nightly-memory-ci-smoke",
+                    "pass_rate": 0.75,
+                    "passed_threshold": False,
+                    "fail_count": 1,
+                    "incident_record_ids": ["incident_abc", "incident_xyz"],
+                }
+            },
+            meta={"report_type": "memory_eval_ci"},
+        )
+    )
 
     from eimemory.governance.snapshot import build_governance_snapshot
 
@@ -231,3 +250,9 @@ def test_governance_snapshot_surfaces_active_intake_records(tmp_path) -> None:
     assert active_intake["paper_promotion"]["latest_report"]["promoted_count"] == 1
     assert active_intake["operational_projection"]["projected_memory_count"] == 1
     assert active_intake["operational_projection"]["recent_projected_memories"][0]["record_id"] == projected.record_id
+    assert snapshot["memory_eval_ci"]["count"] == 1
+    assert snapshot["memory_eval_ci"]["latest"]["record_id"] == memory_eval_record.record_id
+    assert snapshot["memory_eval_ci"]["latest"]["name"] == "nightly-memory-ci-smoke"
+    assert snapshot["memory_eval_ci"]["latest"]["pass_rate"] == 0.75
+    assert snapshot["memory_eval_ci"]["latest"]["fail_count"] == 1
+    assert snapshot["memory_eval_ci"]["latest"]["incident_count"] == 2

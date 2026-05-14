@@ -1,6 +1,6 @@
 [project]
 name = "eimemory"
-version = "0.1.0"
+version = "0.2.0"
 description = "Local-first memory and evolution runtime for OpenClaw and eibrain."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -19,3 +19,6 @@ packages = ["eimemory"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+  "slow: high-volume or performance-sensitive tests",
+]

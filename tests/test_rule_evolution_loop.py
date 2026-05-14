@@ -150,3 +150,43 @@ def test_rule_evolution_ignores_daily_brief_reflections_as_rule_evidence(tmp_pat
     assert report["candidate_count"] == 1
     assert report["record_ids"]["source_reflections"] == []
     assert report["candidates"][0]["source_reflection_id"] == ""
+
+
+def test_rule_evolution_creates_candidate_from_eval_incident_repair_hint(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"}
+    incident = runtime.evolution.observe(
+        signal_type="incident",
+        payload={
+            "title": "Memory eval failure: official-channel",
+            "summary": "Memory evaluation sample failed.",
+            "incident_type": "memory_eval_failure",
+            "severity": "medium",
+            "eval_failure": True,
+            "eval_phase": "usage",
+            "repair_hint": "Prefer Feishu as the official coordination channel.",
+            "suggested_replay_dataset": [
+                {
+                    "query": "official coordination channel",
+                    "scope": scope,
+                    "expect_any_text": ["Feishu"],
+                    "limit": 3,
+                }
+            ],
+        },
+        scope=scope,
+    )
+
+    report = run_rule_evolution_loop(runtime, scope, apply=True)
+    rules = runtime.store.list_records(kinds=["rule"], scope=scope, limit=10)
+
+    assert report["source_counts"]["incident_repair"] == 1
+    assert report["record_ids"]["source_incidents"] == [incident.record_id]
+    assert rules[0].summary == "Prefer Feishu as the official coordination channel."
+    assert rules[0].meta["evolution_source_type"] == "incident_repair"
+    assert rules[0].meta["evolution_source_record_ids"] == [incident.record_id]
+    assert rules[0].meta["incident_record_id"] == incident.record_id
+    assert rules[0].meta["eval_phase"] == "usage"
+    assert rules[0].summary == report["candidates"][0]["summary"]
+    assert report["candidates"][0]["source_type"] == "incident_repair"
+    assert incident.record_id in report["candidates"][0]["source_record_ids"]

@@ -5,6 +5,7 @@ from typing import Any, Callable
 
 from eimemory.api.runtime import Runtime
 from eimemory.intake.loop import candidates_to_records
+from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
 def run_nightly_jobs(
@@ -54,6 +55,7 @@ def run_nightly_jobs(
         scope=scope,
         replay_datasets=replay_datasets,
     )
+    memory_eval_ci_report = _run_memory_eval_ci(runtime, scope=scope)
     daily_brief_report = _run_daily_brief(runtime, scope=scope)
     return {
         "ok": True,
@@ -98,6 +100,7 @@ def run_nightly_jobs(
         "research_digest": research_digest_report,
         "daily_brief": daily_brief_report,
         "rule_evolution": rule_evolution_report,
+        "memory_eval_ci": memory_eval_ci_report,
         "source_discovery": source_discovery_report,
         "source_quality": {
             "source_count": source_quality_report["source_count"],
@@ -108,6 +111,65 @@ def run_nightly_jobs(
         },
         "roi": roi,
     }
+
+
+def _run_memory_eval_ci(runtime: Runtime, *, scope: dict) -> dict[str, Any]:
+    run_eval = getattr(runtime, "run_memory_eval_ci", None)
+    if not callable(run_eval):
+        return {
+            "ok": False,
+            "pass_rate": 0.0,
+            "passed_threshold": False,
+            "eval_skipped_reason": "run_memory_eval_ci_unavailable",
+        }
+    dataset = {
+        "name": "nightly-memory-ci-smoke",
+        "scope": scope,
+        "threshold": 0.0,
+        "seed": [],
+        "cases": [],
+    }
+    try:
+        report = _json_safe(run_eval(dataset, emit_incidents=False))
+        if isinstance(report, dict):
+            record = _memory_eval_report_record(report, scope=ScopeRef.from_dict(scope))
+            runtime.store.append(record)
+            return {**report, "persisted": True, "persisted_record_id": record.record_id}
+        return report
+    except Exception as exc:
+        return {
+            "ok": False,
+            "pass_rate": 0.0,
+            "passed_threshold": False,
+            "eval_skipped_reason": "",
+            "error": type(exc).__name__,
+            "detail": str(exc),
+        }
+
+
+def _memory_eval_report_record(report: dict[str, Any], *, scope: ScopeRef) -> RecordEnvelope:
+    name = str(report.get("name") or "memory_eval_ci")
+    pass_rate = float(report.get("pass_rate") or 0.0)
+    fail_count = int(report.get("fail_count") or 0)
+    summary = f"Memory eval CI {name}: pass_rate={pass_rate:.3f}, failures={fail_count}."
+    return RecordEnvelope.create(
+        kind="reflection",
+        title=f"Memory eval CI: {name}",
+        summary=summary,
+        detail=summary,
+        content={"report": _json_safe(report)},
+        tags=["memory-eval-ci", "nightly"],
+        source="eimemory.memory_eval_ci",
+        scope=scope,
+        meta={
+            "report_type": "memory_eval_ci",
+            "name": name,
+            "pass_rate": pass_rate,
+            "passed_threshold": bool(report.get("passed_threshold")),
+            "fail_count": fail_count,
+            "incident_count": len(report.get("incident_record_ids") or []),
+        },
+    )
 
 
 def _run_external_collection(

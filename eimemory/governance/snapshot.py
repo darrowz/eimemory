@@ -33,6 +33,7 @@ def build_governance_snapshot(runtime, scope: dict | ScopeRef) -> dict[str, Any]
         scope=scope_ref,
         source="eimemory.rule_evolution_loop",
     )
+    memory_eval_reports = _list_memory_eval_report_records(runtime, scope=scope_ref)
     source_discovery_records = [
         record for record in source_candidates if record.source == "eimemory.source_discovery"
     ]
@@ -81,6 +82,10 @@ def build_governance_snapshot(runtime, scope: dict | ScopeRef) -> dict[str, Any]
         "rule_evolution": {
             "count": len(rule_evolution_reports),
             "latest": _rule_evolution_summary(rule_evolution_reports[0]) if rule_evolution_reports else None,
+        },
+        "memory_eval_ci": {
+            "count": len(memory_eval_reports),
+            "latest": _memory_eval_summary(memory_eval_reports[0]) if memory_eval_reports else None,
         },
         "collection_policy": {
             "run_now": collection_policy["run_now"],
@@ -131,6 +136,15 @@ def _list_report_records(runtime, *, kinds: list[str], scope: ScopeRef, source: 
         for record in _list_all_records(runtime, kinds=kinds, scope=scope)
         if record.source == source
     ]
+
+
+def _list_memory_eval_report_records(runtime, *, scope: ScopeRef) -> list[RecordEnvelope]:
+    reports = [
+        record
+        for record in _list_all_records(runtime, kinds=["reflection", "replay_result", "incident"], scope=scope)
+        if _is_memory_eval_ci_record(record)
+    ]
+    return sorted(reports, key=_record_recency_key, reverse=True)
 
 
 def _list_knowledge_intake_records(runtime, *, scope: ScopeRef) -> list[RecordEnvelope]:
@@ -289,6 +303,27 @@ def _rule_evolution_summary(record: RecordEnvelope) -> dict[str, Any]:
         "promotion_candidate_count": len(record_ids.get("promotion_candidates") or []),
         "time": asdict(record.time),
     }
+
+
+def _memory_eval_summary(record: RecordEnvelope) -> dict[str, Any]:
+    report = record.content.get("report") if isinstance(record.content.get("report"), dict) else {}
+    incidents = report.get("incident_record_ids")
+    fail_count = report.get("fail_count")
+    return {
+        "record_id": record.record_id,
+        "name": str(report.get("name") or record.title),
+        "pass_rate": float(report.get("pass_rate") or 0.0),
+        "passed_threshold": bool(report.get("passed_threshold")),
+        "fail_count": int(fail_count if fail_count is not None else 0),
+        "incident_count": len(incidents) if isinstance(incidents, list) else 0,
+        "time": asdict(record.time),
+    }
+
+
+def _is_memory_eval_ci_record(record: RecordEnvelope) -> bool:
+    if str(record.source or "") == "eimemory.memory_eval_ci":
+        return True
+    return str(record.meta.get("report_type") or "") == "memory_eval_ci"
 
 
 def _latest_report_section(records: list[RecordEnvelope], section: str) -> dict[str, Any] | None:

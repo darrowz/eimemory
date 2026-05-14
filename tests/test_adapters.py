@@ -218,7 +218,8 @@ def test_eibrain_rpc_ingest_rejects_non_object_outcome(tmp_path) -> None:
     }
     response: EIMemoryRPCResponse = _handle_eibrain_request(bridge, response_request)
 
-    assert response == {"ok": False, "error": "invalid_request"}
+    assert response["ok"] is False
+    assert response["error"] == "invalid_request"
 
 
 def test_eibrain_rpc_rejects_invalid_param_types(tmp_path) -> None:
@@ -244,7 +245,8 @@ def test_eibrain_rpc_rejects_invalid_param_types(tmp_path) -> None:
     for request in invalid_requests:
         response_request: EIMemoryRPCRequest = request
         response: EIMemoryRPCResponse = _handle_eibrain_request(bridge, response_request)
-        assert response == {"ok": False, "error": "invalid_request"}
+        assert response["ok"] is False
+        assert response["error"] == "invalid_request"
 
 
 def test_eibrain_rpc_server_returns_400_without_detail_for_invalid_request(tmp_path) -> None:
@@ -270,7 +272,8 @@ def test_eibrain_rpc_server_returns_400_without_detail_for_invalid_request(tmp_p
     finally:
         server.stop()
 
-    assert body == {"ok": False, "error": "invalid_request"}
+    assert body["ok"] is False
+    assert body["error"] == "invalid_request"
 
 
 def test_cli_openclaw_hook_rejects_non_object_stdin_json(tmp_path, monkeypatch, capsys) -> None:
@@ -996,7 +999,8 @@ def test_eibrain_rpc_server_returns_400_for_unknown_method(tmp_path) -> None:
     finally:
         server.stop()
 
-    assert body == {"ok": False, "error": "unknown_method"}
+    assert body["ok"] is False
+    assert body["error"] == "unknown_method"
 
 
 
@@ -1071,4 +1075,8 @@ def test_eibrain_rpc_rejects_invalid_experience_payload(tmp_path) -> None:
     }
     response = _handle_eibrain_request(bridge, response_request)
 
-    assert response == {"ok": False, "error": "missing required fields: task_type, input_summary, selected_skills, actions, outcome, feedback, latency_ms"}
+    assert response["ok"] is False
+    assert (
+        response["error"]
+        == "missing required fields: task_type, input_summary, selected_skills, actions, outcome, feedback, latency_ms"
+    )

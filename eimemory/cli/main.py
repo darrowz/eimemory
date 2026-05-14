@@ -259,6 +259,11 @@ def _build_parser() -> argparse.ArgumentParser:
     eval_run.add_argument("--profile", default="balanced")
     eval_run.add_argument("--no-seed", action="store_true")
     eval_run.add_argument("--output", default="")
+    eval_ci = eval_sub.add_parser("ci")
+    eval_ci.add_argument("dataset_json")
+    eval_ci.add_argument("--threshold", type=float, default=None)
+    eval_ci.add_argument("--emit-incidents", action="store_true")
+    eval_ci.add_argument("--output", default="")
     return parser
 
 
@@ -832,6 +837,44 @@ def main(argv: list[str] | None = None) -> int:
                 report = {**report, "output": str(output_path)}
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0 if report.get("ok") else 1
+        if parsed.eval_command == "ci":
+            try:
+                with open(parsed.dataset_json, "r", encoding="utf-8") as handle:
+                    dataset = json.load(handle)
+            except OSError as exc:
+                print(
+                    json.dumps(
+                        {"ok": False, "error": "dataset_unreadable", "detail": str(exc)},
+                        ensure_ascii=False,
+                    )
+                )
+                return 2
+            except json.JSONDecodeError:
+                print(json.dumps({"ok": False, "error": "invalid_dataset_json"}, ensure_ascii=False))
+                return 2
+            if parsed.threshold is not None and isinstance(dataset, dict):
+                dataset = {**dataset, "threshold": parsed.threshold}
+            try:
+                report = runtime.run_memory_eval_ci(dataset, emit_incidents=bool(parsed.emit_incidents))
+            except ValueError as exc:
+                print(json.dumps({"ok": False, "error": "invalid_eval_dataset", "detail": str(exc)}, ensure_ascii=False))
+                return 2
+            if parsed.output:
+                try:
+                    output_path = Path(parsed.output)
+                    output_path.parent.mkdir(parents=True, exist_ok=True)
+                    output_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+                except OSError as exc:
+                    print(
+                        json.dumps(
+                            {"ok": False, "error": "eval_output_failed", "detail": str(exc)},
+                            ensure_ascii=False,
+                        )
+                    )
+                    return 2
+                report = {**report, "output": str(output_path)}
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0 if report.get("passed_threshold") else 1
         print(json.dumps({"usage": "eimemory eval run"}))
         return 0
     if parsed.command == "reflect":

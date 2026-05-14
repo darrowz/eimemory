@@ -50,10 +50,22 @@ def test_intake_review_promote_policy_and_pack_cli_flow(tmp_path, monkeypatch, c
     assert imported["record_count"] == exported["record_count"]
 
 
-def test_nightly_jobs_include_active_intake_reports(tmp_path) -> None:
+def test_nightly_jobs_include_active_intake_reports(tmp_path, monkeypatch) -> None:
     from eimemory.api.runtime import Runtime
 
     runtime = Runtime.create(root=tmp_path / "runtime")
+    monkeypatch.setattr(
+        runtime,
+        "run_memory_eval_ci",
+        lambda dataset, *, emit_incidents=False: {
+            "ok": True,
+            "pass_rate": 0.25,
+            "passed_threshold": False,
+            "incident_count": 0,
+            "fail_count": 1,
+            "name": "nightly-memory-ci-smoke",
+        },
+    )
     doc = tmp_path / "nightly.md"
     doc.write_text(
         "Nightly intake can safely persist durable knowledge candidates for later review.",
@@ -76,6 +88,30 @@ def test_nightly_jobs_include_active_intake_reports(tmp_path) -> None:
     assert report["source_quality"]["source_count"] == 1
     assert reloaded_source.last_scanned_at
     assert reloaded_source.metadata["last_scan"]["status"] == "candidate"
+    assert report["memory_eval_ci"]["ok"] is True
+    assert report["memory_eval_ci"]["passed_threshold"] is False
+    assert report["memory_eval_ci"]["pass_rate"] == 0.25
+    assert report["memory_eval_ci"]["persisted"] is True
+    persisted_eval = runtime.store.get_by_id(
+        report["memory_eval_ci"]["persisted_record_id"],
+        scope={"agent_id": "main"},
+    )
+    assert persisted_eval is not None
+    assert persisted_eval.meta["report_type"] == "memory_eval_ci"
+
+
+def test_nightly_jobs_falls_back_when_memory_eval_ci_is_unavailable(tmp_path, monkeypatch) -> None:
+    from eimemory.api.runtime import Runtime
+
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    monkeypatch.setattr(runtime, "run_memory_eval_ci", None)
+
+    report = run_nightly_jobs(runtime, scope={"agent_id": "main"})
+
+    assert report["memory_eval_ci"]["ok"] is False
+    assert report["memory_eval_ci"]["pass_rate"] == 0.0
+    assert report["memory_eval_ci"]["passed_threshold"] is False
+    assert report["memory_eval_ci"]["eval_skipped_reason"] == "run_memory_eval_ci_unavailable"
 
 
 def test_nightly_jobs_do_not_reset_reviewed_candidates(tmp_path) -> None:

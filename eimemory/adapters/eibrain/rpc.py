@@ -7,6 +7,7 @@ from eimemory.experience import record_experience_item, record_skill_trace
 from eimemory.identity import extract_user_aliases, hongtu_identity_meta, hongtu_scope
 from eimemory.models.records import LinkRef
 from eimemory.ei_bridge.protocol import (
+    EIMEMORY_RPC_CONTRACT_VERSION,
     BridgeScope,
     EIMemoryRPCRequest,
     EIMemoryRPCResponse,
@@ -21,15 +22,15 @@ class EIBrainRPCBridge:
         # RPC transport boundary: accept only dict-shaped request payloads then map
         # directly into runtime services with strict per-method validation.
         if not isinstance(request, dict):
-            return self._invalid_request()
+            return self._with_contract(self._invalid_request())
         method = request.get("method")
         if not isinstance(method, str):
-            return self._invalid_request()
+            return self._with_contract(self._invalid_request())
         params = request.get("params", {})
         if params is None:
             params = {}
         if not isinstance(params, dict):
-            return self._invalid_request()
+            return self._with_contract(self._invalid_request())
         if method == "memory.recall":
             limit = params.get("limit", 8)
             scope: BridgeScope = params.get("scope", {})
@@ -44,14 +45,14 @@ class EIBrainRPCBridge:
                 or not self._valid_scope(scope)
                 or not self._valid_task_context(task_context)
             ):
-                return self._invalid_request()
+                return self._with_contract(self._invalid_request())
             bundle = self.runtime.memory.recall(
                 query=query,
                 scope=hongtu_scope(scope, aliases=extract_user_aliases(task_context)),
                 task_context=task_context,
                 limit=limit,
             )
-            return {"ok": True, "result": bundle.to_dict()}
+            return self._with_contract({"ok": True, "result": bundle.to_dict()})
         if method == "memory.ingest":
             params = dict(params)
             scope: BridgeScope = params.get("scope", {})
@@ -79,7 +80,7 @@ class EIBrainRPCBridge:
                 or not self._valid_list(links)
                 or not self._valid_scope(scope)
             ):
-                return self._invalid_request()
+                return self._with_contract(self._invalid_request())
             source = str(params.get("source") or "eibrain.dialogue")
             record = self.runtime.memory.ingest(
                 text=text,
@@ -104,7 +105,7 @@ class EIBrainRPCBridge:
                     },
                 ),
             )
-            return {"ok": True, "result": record.to_dict()}
+            return self._with_contract({"ok": True, "result": record.to_dict()})
         if method == "evolution.observe":
             params = dict(params)
             payload = params.get("payload", {})
@@ -115,48 +116,55 @@ class EIBrainRPCBridge:
                 or not isinstance(payload, dict)
                 or not self._valid_scope(scope)
             ):
-                return self._invalid_request()
+                return self._with_contract(self._invalid_request())
             record = self.runtime.evolution.observe(
                 signal_type=params.get("signal_type") or "",
                 payload=payload,
                 scope=hongtu_scope(scope),
             )
-            return {"ok": True, "result": record.to_dict()}
+            return self._with_contract({"ok": True, "result": record.to_dict()})
         if method == "experience.record_skill_trace":
             params = dict(params)
             payload = params.get("payload", {})
             scope: BridgeScope = params.get("scope", {})
             if not isinstance(payload, dict) or not self._valid_scope(scope):
-                return self._invalid_request()
+                return self._with_contract(self._invalid_request())
             result = record_skill_trace(self.runtime, payload, scope=hongtu_scope(scope))
             if result.get("ok") is False:
-                return {"ok": False, "error": result.get("error", "invalid_experience")}
-            return {"ok": True, "result": result}
+                return self._with_contract({"ok": False, "error": result.get("error", "invalid_experience")})
+            return self._with_contract({"ok": True, "result": result})
         if method == "experience.record_item":
             params = dict(params)
             payload = params.get("payload", {})
             scope: BridgeScope = params.get("scope", {})
             if not isinstance(payload, dict) or not self._valid_scope(scope):
-                return self._invalid_request()
+                return self._with_contract(self._invalid_request())
             result = record_experience_item(self.runtime, payload, scope=hongtu_scope(scope))
             if result.get("ok") is False:
-                return {"ok": False, "error": result.get("error", "invalid_experience")}
-            return {"ok": True, "result": result}
+                return self._with_contract({"ok": False, "error": result.get("error", "invalid_experience")})
+            return self._with_contract({"ok": True, "result": result})
         if method == "evolution.get_active_policy":
             params = dict(params)
             scope: BridgeScope = params.get("scope", {})
             task_type = params.get("task_type", "")
             if not isinstance(task_type, str) or not task_type.strip() or not self._valid_scope(scope):
-                return self._invalid_request()
+                return self._with_contract(self._invalid_request())
             policy = self.runtime.evolution.get_active_policy(
                 task_type=task_type,
                 scope=hongtu_scope(scope),
             )
-            return {"ok": True, "result": policy}
-        return {"ok": False, "error": "unknown_method"}
+            return self._with_contract({"ok": True, "result": policy})
+        return self._with_contract({"ok": False, "error": "unknown_method"})
 
     def _invalid_request(self) -> EIMemoryRPCResponse:
         return {"ok": False, "error": "invalid_request"}
+
+    @staticmethod
+    def _with_contract(payload: EIMemoryRPCResponse) -> EIMemoryRPCResponse:
+        return {
+            "contract_version": EIMEMORY_RPC_CONTRACT_VERSION,
+            **payload,
+        }
 
     @staticmethod
     def _valid_scope(scope: object) -> bool:
