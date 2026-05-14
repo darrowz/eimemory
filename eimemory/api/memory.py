@@ -26,14 +26,16 @@ class MemoryAPI:
         evidence: list[str] | None = None,
         links: list[LinkRef] | None = None,
     ) -> RecordEnvelope:
+        memory_type = self._normalize_ingest_memory_type(memory_type=memory_type, text=text, title=title)
         meta_payload = {"memory_type": memory_type, "force_capture": force_capture}
         if meta:
             meta_payload.update(dict(meta))
+        meta_payload["memory_type"] = memory_type
         content_payload = {"text": text, "memory_type": memory_type}
         if content:
             content_payload.update(dict(content))
             content_payload.setdefault("text", text)
-            content_payload.setdefault("memory_type", memory_type)
+        content_payload["memory_type"] = memory_type
         record = RecordEnvelope.create(
             kind="memory",
             title=title,
@@ -145,6 +147,9 @@ class MemoryAPI:
             if not self._is_internal_audit_record(item)
             and not self._is_default_recall_suppressed_record(item, task_context)
         ]
+        preference_query = self._is_preference_query(normalized_query, task_context)
+        if preference_query:
+            items = [item for item in items if self._is_preference_recall_candidate(item, normalized_query)]
         graph_expanded = 0
         related_ids: list[str] = []
         base_items = list(items)
@@ -165,6 +170,8 @@ class MemoryAPI:
                 if not self._is_internal_audit_record(item)
                 and not self._is_default_recall_suppressed_record(item, task_context)
             ]
+            if preference_query:
+                items = [item for item in items if self._is_preference_recall_candidate(item, normalized_query)]
         claims = [item for item in items if item.kind == "claim_card"]
         pages = [item for item in items if item.kind == "knowledge_page"]
         memories = [item for item in items if item.kind == "memory"]
@@ -237,6 +244,7 @@ class MemoryAPI:
                 "query_scopes": [self._scope_dict(item) for item in query_scope_refs],
                 "recall_scope_aliases": recall_scope_aliases,
                 "recall_filters": recall_filters,
+                "preference_query": preference_query,
                 "recall_view": final_view.to_dict(),
             },
         )
@@ -305,6 +313,88 @@ class MemoryAPI:
         if item.kind == "knowledge_page" and str(item.source or "") == "eimemory.knowledge.synthesis":
             return True
         return False
+
+    def _normalize_ingest_memory_type(self, *, memory_type: str, text: str, title: str) -> str:
+        normalized = str(memory_type or "").strip()
+        if normalized and normalized != "conversation":
+            return normalized
+        if self._looks_like_explicit_preference(f"{title}\n{text}"):
+            return "preference"
+        return normalized or "fact"
+
+    def _is_preference_query(self, query: str, task_context: dict) -> bool:
+        haystack = f"{query} " + " ".join(str(task_context.get(key) or "") for key in ("intent", "goal", "task_type"))
+        lowered = haystack.lower()
+        return any(
+            marker in haystack
+            for marker in ("沟通风格", "偏好", "喜欢", "讨厌", "废话", "简洁", "极简")
+        ) or any(marker in lowered for marker in ("preference", "reply style", "communication style"))
+
+    def _is_preference_recall_candidate(self, item: RecordEnvelope, query: str) -> bool:
+        if item.kind != "memory":
+            return False
+        text = self._record_text(item)
+        memory_type = str(item.meta.get("memory_type") or item.content.get("memory_type") or "").strip()
+        if memory_type == "preference":
+            return not self._looks_like_recall_diagnostic(text, query)
+        if self._looks_like_recall_diagnostic(text, query):
+            return False
+        return self._looks_like_explicit_preference(text)
+
+    @staticmethod
+    def _record_text(item: RecordEnvelope) -> str:
+        content = item.content if isinstance(item.content, dict) else {}
+        values = [
+            item.title,
+            item.summary,
+            item.detail,
+            content.get("text"),
+            content.get("body"),
+            content.get("raw_query"),
+            content.get("query"),
+        ]
+        return "\n".join(str(value or "") for value in values if str(value or "").strip())
+
+    @staticmethod
+    def _looks_like_explicit_preference(text: str) -> bool:
+        haystack = str(text or "")
+        lowered = haystack.lower()
+        if "沟通风格" in haystack and any(
+            marker in haystack
+            for marker in ("极简", "直接", "简洁", "废话", "少解释", "先给结论", "结论")
+        ):
+            return True
+        if any(marker in haystack for marker in ("偏好", "喜欢", "讨厌", "不喜欢", "不要", "别")) and any(
+            marker in haystack
+            for marker in ("极简", "直接", "简洁", "废话", "啰嗦", "长篇", "解释", "结论")
+        ):
+            return True
+        return any(marker in lowered for marker in ("prefer concise", "reply style", "communication style"))
+
+    @staticmethod
+    def _looks_like_recall_diagnostic(text: str, query: str) -> bool:
+        haystack = str(text or "")
+        lowered = haystack.lower()
+        query_text = str(query or "").strip()
+        contains_query = bool(query_text and query_text in haystack)
+        if not contains_query and "沟通风格" not in haystack:
+            return False
+        diagnostic_markers = (
+            "recall",
+            "诊断",
+            "问题",
+            "不对",
+            "不合格",
+            "失败",
+            "返回了",
+            "ranking",
+            "filter",
+            "news_digest",
+            "新闻简报",
+            "部署",
+            "health",
+        )
+        return any(marker in lowered or marker in haystack for marker in diagnostic_markers)
 
     @staticmethod
     def _include_digest_pages(task_context: dict) -> bool:

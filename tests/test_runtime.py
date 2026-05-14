@@ -392,6 +392,98 @@ def test_runtime_recall_does_not_answer_preference_query_with_digest_only(tmp_pa
     assert bundle.items == []
 
 
+def test_runtime_recall_does_not_answer_preference_query_with_diagnostics(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = ScopeRef(agent_id="main", workspace_id="repo-x")
+    runtime.store.append(
+        RecordEnvelope.create(
+            kind="memory",
+            title="OpenClaw agent outcome",
+            summary=(
+                "问题：eimemory recall '鸿哥 沟通风格' 返回了新闻简报，相关性明显不对。"
+                "结论：recall ranking / filter 还不稳，需要继续诊断。"
+            ),
+            scope=scope,
+            source="openclaw.agent_end",
+            content={
+                "text": (
+                    "问题：eimemory recall '鸿哥 沟通风格' 返回了新闻简报，相关性明显不对。"
+                    "结论：recall ranking / filter 还不稳，需要继续诊断。"
+                ),
+                "memory_type": "conversation",
+            },
+            meta={
+                "memory_type": "conversation",
+                "quality": {
+                    "importance": 0.9,
+                    "confidence": 0.9,
+                    "freshness": 1.0,
+                    "reuse_potential": 0.9,
+                    "salience_score": 0.9,
+                    "quality_tier": "core",
+                    "capture_decision": "accept",
+                },
+            },
+        )
+    )
+
+    bundle = runtime.memory.recall(
+        query="鸿哥 沟通风格",
+        scope={"agent_id": "main", "workspace_id": "repo-x"},
+        limit=5,
+    )
+
+    assert bundle.items == []
+
+
+def test_runtime_recall_prefers_explicit_communication_style_over_diagnostics(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = ScopeRef(agent_id="main", workspace_id="repo-x")
+    diagnostic = RecordEnvelope.create(
+        kind="memory",
+        title="OpenClaw agent outcome",
+        summary="eimemory recall '鸿哥 沟通风格' 返回了新闻简报，相关性明显不对。",
+        scope=scope,
+        source="openclaw.agent_end",
+        content={
+            "text": "eimemory recall '鸿哥 沟通风格' 返回了新闻简报，相关性明显不对。",
+            "memory_type": "conversation",
+        },
+        meta={
+            "memory_type": "conversation",
+            "quality": {
+                "importance": 0.9,
+                "confidence": 0.9,
+                "freshness": 1.0,
+                "reuse_potential": 0.9,
+                "salience_score": 0.9,
+                "quality_tier": "core",
+                "capture_decision": "accept",
+            },
+        },
+    )
+    preference = runtime.memory.ingest(
+        text="鸿哥 沟通风格：极简、直接，讨厌废话；先给结论，少解释。",
+        memory_type="conversation",
+        title="Hongtu operator communication style",
+        scope={"agent_id": "main", "workspace_id": "repo-x"},
+        source="openclaw.message_received",
+        content={"memory_type": "conversation"},
+        meta={"memory_type": "conversation"},
+    )
+    runtime.store.append(diagnostic)
+
+    bundle = runtime.memory.recall(
+        query="鸿哥 沟通风格",
+        scope={"agent_id": "main", "workspace_id": "repo-x"},
+        limit=5,
+    )
+
+    assert preference.meta["memory_type"] == "preference"
+    assert bundle.items[0].record_id == preference.record_id
+    assert diagnostic.record_id not in [item.record_id for item in bundle.items]
+
+
 def test_runtime_recall_expands_graph_linked_memories(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     scope = ScopeRef(agent_id="main", workspace_id="repo-x")
