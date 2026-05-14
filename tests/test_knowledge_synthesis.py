@@ -224,6 +224,40 @@ def test_daily_brief_filters_stale_and_future_news_by_published_at(tmp_path) -> 
         runtime.close()
 
 
+def test_daily_brief_filters_news_with_rfc_published_at(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = {"agent_id": "main", "workspace_id": "news"}
+    try:
+        for title, published_at in [
+            ("News item: stale RFC source", "Mon, 20 Oct 2025 12:00:00 GMT"),
+            ("News item: current RFC source", "Thu, 14 May 2026 08:30:00 GMT"),
+            ("News item: future RFC source", "Tue, 19 May 2026 08:30:00 GMT"),
+        ]:
+            runtime.store.append(
+                RecordEnvelope.create(
+                    kind="news",
+                    title=title,
+                    summary=f"{title} summary.",
+                    scope=ScopeRef.from_dict(scope),
+                    content={
+                        "item_url": f"https://example.test/news/{title}",
+                        "published_at": published_at,
+                        "source_kind": "rss",
+                    },
+                    tags=["news", "external"],
+                    source="eimemory.news.collect",
+                    meta={"source_kind": "rss"},
+                )
+            )
+
+        brief = runtime.build_daily_brief(scope=scope, date="2026-05-14")
+
+        titles = [item["title"] for item in brief["news_digest"]["items"]]
+        assert titles == ["News item: current RFC source"]
+    finally:
+        runtime.close()
+
+
 def test_daily_brief_cleans_html_from_news_digest(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path / "runtime")
     scope = {"agent_id": "main", "workspace_id": "news"}

@@ -4,6 +4,7 @@ from dataclasses import asdict, is_dataclass
 from datetime import date as date_type
 from datetime import datetime
 from datetime import timedelta
+from email.utils import parsedate_to_datetime
 import html
 from pathlib import Path
 import re
@@ -349,6 +350,10 @@ def _parse_day(value: str) -> date_type | None:
     try:
         return date_type.fromisoformat(value[:10])
     except ValueError:
+        pass
+    try:
+        return parsedate_to_datetime(value).date()
+    except (TypeError, ValueError, IndexError):
         return None
 
 
