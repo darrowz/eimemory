@@ -20,6 +20,7 @@ def run_rule_evolution_loop(
     scope_payload = asdict(scope_ref)
     feedback_records = runtime.store.list_records(kinds=["feedback"], scope=scope_ref, limit=500)
     incident_records = runtime.store.list_records(kinds=["incident"], scope=scope_ref, limit=500)
+    memory_records = runtime.store.list_records(kinds=["memory"], scope=scope_ref, limit=500)
     reflections = [
         record
         for record in runtime.store.list_records(kinds=["reflection"], scope=scope_ref, limit=500)
@@ -44,6 +45,12 @@ def run_rule_evolution_loop(
             rules=rules,
         )
     )
+    candidate_specs.extend(
+        _rule_candidates_from_preference_memories(
+            memory_records=memory_records,
+            rules=rules,
+        )
+    )
 
     created_rules: list[str] = []
     if apply:
@@ -55,7 +62,7 @@ def run_rule_evolution_loop(
                 retrieval_policy=spec["retrieval_policy"],
                 response_policy=spec["response_policy"],
                 scope=scope_payload,
-                status="accepted",
+                status=str(spec.get("initial_status") or "accepted"),
             )
             rule.meta.update(spec["audit_meta"])
             runtime.store.append(rule)
@@ -77,13 +84,17 @@ def run_rule_evolution_loop(
                 note="Replay pass-rate and ROI threshold met",
             )
             promoted_rules.append(promoted.record_id)
+    rules_after = runtime.store.list_records(kinds=["rule"], scope=scope_ref, limit=500) if apply else rules
 
     return {
         "ok": True,
         "apply": bool(apply),
         "scope": scope_payload,
         "candidate_count": len(candidate_specs),
+        "created_rule_count": len(created_rules),
         "promoted_count": len(promoted_rules) if apply else len(promotion_candidates),
+        "accepted_rule_count": sum(1 for rule in rules_after if rule.status == "accepted"),
+        "active_rule_count": sum(1 for rule in rules_after if rule.status == "active"),
         "replay_count": len(replay_results),
         "roi_summary": roi_summary,
         "source_counts": _candidate_source_counts(candidate_specs),
@@ -91,6 +102,7 @@ def run_rule_evolution_loop(
             "source_feedback": [item.record_id for item in _candidate_feedback(candidate_specs)],
             "source_reflections": [item.record_id for item in _candidate_reflections(candidate_specs)],
             "source_incidents": _candidate_record_ids(candidate_specs, "incident_repair"),
+            "source_memories": _candidate_record_ids(candidate_specs, "memory_preference"),
             "created_rules": created_rules,
             "replay_results": [item.record_id for item in replay_results],
             "promotion_candidates": [item.record_id for item in promotion_candidates],
@@ -211,6 +223,109 @@ def _rule_candidates_from_incidents(
             }
         )
     return candidates
+
+
+def _rule_candidates_from_preference_memories(
+    *,
+    memory_records: list[RecordEnvelope],
+    rules: list[RecordEnvelope],
+) -> list[dict]:
+    existing_memory_ids = {
+        memory_id
+        for rule in rules
+        if str(rule.meta.get("evolution_source_type") or "") == "memory_preference"
+        for memory_id in _coerce_string_list(rule.meta.get("evolution_source_record_ids"))
+    }
+    candidates: list[dict] = []
+    for memory in reversed(memory_records):
+        if memory.record_id in existing_memory_ids or not _is_autonomous_preference_memory(memory):
+            continue
+        summary = _clean_text(memory.summary or memory.content.get("text") or memory.detail or memory.title)
+        if not summary:
+            continue
+        source_record_ids = [memory.record_id]
+        source_key = _source_key("memory_preference", source_record_ids)
+        task_type = _candidate_task_type_from_memory(memory)
+        retrieval_policy = {"route_hint": "task_context_first", "recall_profile": "precision"}
+        response_policy = {"summary": summary}
+        audit_meta = {
+            "task_type": task_type,
+            "retrieval_policy": retrieval_policy,
+            "response_policy": response_policy,
+            "evolution_source": "rule_evolution_loop",
+            "evolution_source_type": "memory_preference",
+            "evolution_source_key": source_key,
+            "evolution_source_record_ids": source_record_ids,
+            "memory_record_id": memory.record_id,
+            "activation_mode": "autonomous",
+        }
+        candidates.append(
+            {
+                "title": f"Rule: {summary}",
+                "summary": summary,
+                "task_type": task_type,
+                "retrieval_policy": retrieval_policy,
+                "response_policy": response_policy,
+                "feedback": None,
+                "reflection": None,
+                "source_type": "memory_preference",
+                "source_records": [memory],
+                "source_record_ids": source_record_ids,
+                "source_key": source_key,
+                "initial_status": "active",
+                "audit_meta": audit_meta,
+            }
+        )
+    return candidates
+
+
+def _is_autonomous_preference_memory(record: RecordEnvelope) -> bool:
+    if record.status == "rejected":
+        return False
+    meta = record.meta if isinstance(record.meta, dict) else {}
+    content = record.content if isinstance(record.content, dict) else {}
+    quality = meta.get("quality") if isinstance(meta.get("quality"), dict) else {}
+    capture_decision = str(quality.get("capture_decision") or meta.get("capture_decision") or "").strip().lower()
+    if capture_decision == "reject":
+        return False
+    memory_type = str(meta.get("memory_type") or content.get("memory_type") or "").strip().lower()
+    text = "\n".join(
+        str(value or "")
+        for value in (record.title, record.summary, record.detail, content.get("text"), content.get("body"))
+        if str(value or "").strip()
+    )
+    explicit_preference = memory_type == "preference" or _looks_like_explicit_preference(text)
+    if not explicit_preference:
+        return False
+    source = str(record.source or "").strip().lower()
+    force_capture = bool(meta.get("force_capture") or content.get("force_capture"))
+    trusted_sources = {"operator.correction", "openclaw.message_received", "eimemory.user_correction"}
+    return source in trusted_sources or force_capture or _coerce_bool(meta.get("evolution_candidate"))
+
+
+def _candidate_task_type_from_memory(memory: RecordEnvelope) -> str:
+    meta = memory.meta if isinstance(memory.meta, dict) else {}
+    content = memory.content if isinstance(memory.content, dict) else {}
+    for key in ("task_type", "target_task_type"):
+        value = str(meta.get(key) or content.get(key) or "").strip()
+        if value:
+            return value
+    text = "\n".join(str(value or "") for value in (memory.title, memory.summary, content.get("text")) if str(value or "").strip())
+    if any(marker in text for marker in ("沟通风格", "回复风格", "先给结论", "少解释", "讨厌废话")):
+        return "chat.reply"
+    return "memory.preference"
+
+
+def _looks_like_explicit_preference(text: str) -> bool:
+    haystack = str(text or "")
+    lowered = haystack.lower()
+    if "沟通风格" in haystack and any(marker in haystack for marker in ("极简", "直接", "简洁", "废话", "少解释", "先给结论", "结论")):
+        return True
+    if any(marker in haystack for marker in ("偏好", "喜欢", "讨厌", "不喜欢")) and any(
+        marker in haystack for marker in ("极简", "直接", "简洁", "废话", "啰嗦", "长篇", "解释", "结论")
+    ):
+        return True
+    return any(marker in lowered for marker in ("prefer concise", "reply style", "communication style"))
 
 
 def _candidate_task_type_from_incident(
@@ -357,7 +472,7 @@ def _candidate_record_ids(candidate_specs: list[dict], source_type: str) -> list
 
 
 def _candidate_source_counts(candidate_specs: list[dict]) -> dict[str, int]:
-    counts = {"feedback": 0, "incident_repair": 0}
+    counts = {"feedback": 0, "incident_repair": 0, "memory_preference": 0}
     for spec in candidate_specs:
         source_type = str(spec.get("source_type") or "feedback")
         counts[source_type] = counts.get(source_type, 0) + 1
@@ -376,6 +491,7 @@ def _candidate_report(spec: dict) -> dict:
         "source_reflection_id": reflection.record_id if reflection else "",
         "source_type": source_type,
         "source_record_ids": source_record_ids,
+        "initial_status": str(spec.get("initial_status") or "accepted"),
     }
 
 

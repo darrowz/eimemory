@@ -190,3 +190,32 @@ def test_rule_evolution_creates_candidate_from_eval_incident_repair_hint(tmp_pat
     assert rules[0].summary == report["candidates"][0]["summary"]
     assert report["candidates"][0]["source_type"] == "incident_repair"
     assert incident.record_id in report["candidates"][0]["source_record_ids"]
+
+
+def test_rule_evolution_activates_rule_from_operator_preference_memory(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"}
+    memory = runtime.memory.ingest(
+        text="鸿哥 沟通风格：极简、直接，讨厌废话；先给结论，少解释。",
+        memory_type="preference",
+        title="Hongtu operator communication style",
+        source="operator.correction",
+        force_capture=True,
+        scope=scope,
+    )
+
+    report = run_rule_evolution_loop(runtime, scope, apply=True)
+    rules = runtime.store.list_records(kinds=["rule"], scope=scope, status="active", limit=10)
+
+    assert report["candidate_count"] == 1
+    assert report["created_rule_count"] == 1
+    assert report["active_rule_count"] == 1
+    assert report["source_counts"]["memory_preference"] == 1
+    assert report["record_ids"]["source_memories"] == [memory.record_id]
+    assert rules[0].status == "active"
+    assert rules[0].summary == "鸿哥 沟通风格：极简、直接，讨厌废话；先给结论，少解释。"
+    assert rules[0].meta["evolution_source_type"] == "memory_preference"
+    assert rules[0].meta["evolution_source_record_ids"] == [memory.record_id]
+
+    second_report = run_rule_evolution_loop(runtime, scope, apply=True)
+    assert second_report["candidate_count"] == 0

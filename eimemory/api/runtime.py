@@ -590,6 +590,7 @@ def _rule_evolution_report_record(report: dict[str, Any], *, scope: ScopeRef) ->
     summary = (
         f"Rule evolution: {int(report.get('candidate_count') or 0)} candidates, "
         f"{int(report.get('promoted_count') or 0)} promotions, "
+        f"{int(report.get('active_rule_count') or 0)} active rules, "
         f"{int(report.get('replay_count') or 0)} replay results."
     )
     return RecordEnvelope(
@@ -611,6 +612,7 @@ def _rule_evolution_report_record(report: dict[str, Any], *, scope: ScopeRef) ->
             "report_type": "rule_evolution",
             "candidate_count": int(report.get("candidate_count") or 0),
             "promoted_count": int(report.get("promoted_count") or 0),
+            "active_rule_count": int(report.get("active_rule_count") or 0),
             "replay_count": int(report.get("replay_count") or 0),
         },
     )

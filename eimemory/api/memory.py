@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from eimemory.knowledge.views import build_recall_view, choose_view_type, records_from_view
 from eimemory.identity import extract_user_aliases, hongtu_query_scopes_with_aliases
 from eimemory.models.records import LinkRef, RecallBundle, RecordEnvelope, ScopeRef
@@ -123,13 +125,20 @@ class MemoryAPI:
         search_limit = max(limit * profile_config["search_multiplier"], limit)
         recall_filters = self._recall_filters_from_task_context(task_context)
         recall_filters["scoring_profile"] = recall_profile
+        report_query = self._is_report_query(normalized_query, task_context)
         items: list[RecordEnvelope] = []
         search_reports: list[dict] = []
         seen_item_ids: set[str] = set()
+        for item in self._report_records_from_query(normalized_query, query_scope_refs):
+            seen_item_ids.add(item.record_id)
+            items.append(item)
+        search_kinds = ["memory", "claim_card", "knowledge_page"]
+        if report_query:
+            search_kinds.append("reflection")
         for query_scope_ref in query_scope_refs:
             page_items, page_report = self.store.search_with_diagnostics(
                 query=normalized_query,
-                kinds=["memory", "claim_card", "knowledge_page"],
+                kinds=search_kinds,
                 scope=query_scope_ref,
                 limit=search_limit,
                 recall_filters=recall_filters,
@@ -147,7 +156,8 @@ class MemoryAPI:
             if not self._is_internal_audit_record(item)
             and not self._is_default_recall_suppressed_record(item, task_context)
         ]
-        preference_query = self._is_preference_query(normalized_query, task_context)
+        report_items = [item for item in items if report_query and self._is_recallable_report_record(item)]
+        preference_query = self._is_preference_query(normalized_query, task_context) and not report_query
         if preference_query:
             items = [item for item in items if self._is_preference_recall_candidate(item, normalized_query)]
         graph_expanded = 0
@@ -183,6 +193,8 @@ class MemoryAPI:
             query=normalized_query,
         )
         items = self._apply_hard_recall_filters(records_from_view(view, items, limit=limit), recall_filters)
+        if report_items:
+            items = self._dedupe_records([*report_items, *items])[:limit]
         final_view = build_recall_view(
             view_type=view.view_type,
             claims=[item for item in items if item.kind == "claim_card"],
@@ -245,6 +257,7 @@ class MemoryAPI:
                 "recall_scope_aliases": recall_scope_aliases,
                 "recall_filters": recall_filters,
                 "preference_query": preference_query,
+                "report_query": report_query,
                 "recall_view": final_view.to_dict(),
             },
         )
@@ -340,6 +353,60 @@ class MemoryAPI:
         if self._looks_like_recall_diagnostic(text, query):
             return False
         return self._looks_like_explicit_preference(text)
+
+    def _report_records_from_query(
+        self,
+        query: str,
+        scope_refs: list[ScopeRef],
+    ) -> list[RecordEnvelope]:
+        records: list[RecordEnvelope] = []
+        seen: set[str] = set()
+        for record_id in re.findall(r"rule_evolution_[A-Za-z0-9_-]+", str(query or "")):
+            for scope_ref in scope_refs:
+                record = self.store.get_by_id(record_id, scope=scope_ref)
+                if record is None or record.record_id in seen or not self._is_recallable_report_record(record):
+                    continue
+                seen.add(record.record_id)
+                records.append(record)
+        return records
+
+    @staticmethod
+    def _is_report_query(query: str, task_context: dict) -> bool:
+        haystack = f"{query} " + " ".join(
+            str(task_context.get(key) or "")
+            for key in ("intent", "goal", "task_type", "report_type")
+        )
+        lowered = haystack.lower()
+        return any(
+            marker in lowered
+            for marker in (
+                "rule evolution",
+                "rule_evolution",
+                "evolve loop",
+                "evolution report",
+                "governance report",
+                "进化报告",
+                "治理报告",
+            )
+        )
+
+    @staticmethod
+    def _is_recallable_report_record(item: RecordEnvelope) -> bool:
+        report_type = str(item.meta.get("report_type") or item.provenance.get("report_type") or "").strip()
+        return item.kind == "reflection" and (
+            report_type == "rule_evolution" or str(item.source or "") == "eimemory.rule_evolution_loop"
+        )
+
+    @staticmethod
+    def _dedupe_records(items: list[RecordEnvelope]) -> list[RecordEnvelope]:
+        seen: set[str] = set()
+        deduped: list[RecordEnvelope] = []
+        for item in items:
+            if item.record_id in seen:
+                continue
+            seen.add(item.record_id)
+            deduped.append(item)
+        return deduped
 
     @staticmethod
     def _record_text(item: RecordEnvelope) -> str:

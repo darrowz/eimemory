@@ -516,6 +516,55 @@ def test_runtime_recall_prefers_explicit_communication_style_over_diagnostics(tm
     assert unrelated_conversation.record_id not in returned_ids
 
 
+def test_runtime_recall_returns_rule_evolution_report_for_report_query(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"}
+    report = runtime.run_rule_evolution(scope=scope, apply=True, persist_report=True)
+    runtime.memory.ingest(
+        text="Paper about generic autonomous memory evaluation and long-term recall.",
+        memory_type="fact",
+        title="Autonomous memory benchmark paper",
+        scope=scope,
+    )
+
+    bundle = runtime.memory.recall(
+        query=f"rule evolution report {report['persisted_record_id']}",
+        scope=scope,
+        limit=3,
+    )
+
+    assert bundle.items
+    assert bundle.items[0].record_id == report["persisted_record_id"]
+    assert bundle.items[0].kind == "reflection"
+    assert bundle.items[0].meta["report_type"] == "rule_evolution"
+
+
+def test_runtime_recall_prefers_rule_evolution_report_over_matching_paper(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"}
+    report = runtime.run_rule_evolution(scope=scope, apply=True, persist_report=True)
+    runtime.store.append(
+        RecordEnvelope.create(
+            kind="knowledge_page",
+            title="Paper: rule evolution report benchmark",
+            summary="A generic paper page about rule evolution reports and memory evaluation.",
+            scope=ScopeRef.from_dict(scope),
+            content={"page_type": "paper"},
+            meta={"page_type": "paper"},
+        )
+    )
+
+    bundle = runtime.memory.recall(
+        query="rule evolution report",
+        scope=scope,
+        limit=3,
+    )
+
+    assert bundle.items
+    assert bundle.items[0].record_id == report["persisted_record_id"]
+    assert bundle.items[0].kind == "reflection"
+
+
 def test_runtime_recall_expands_graph_linked_memories(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     scope = ScopeRef(agent_id="main", workspace_id="repo-x")
