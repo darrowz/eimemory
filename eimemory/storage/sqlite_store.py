@@ -130,6 +130,16 @@ class SqliteRecordStore:
 
     def upsert(self, record: RecordEnvelope) -> None:
         payload = record.to_dict()
+        raw_index_parts = []
+        if record.kind == "raw_chunk":
+            raw_index_parts = [
+                record.record_id,
+                str(record.content.get("source_event_id", "")),
+                str(record.content.get("session_id", "")),
+                str(record.content.get("turn_id", "")),
+                str(record.content.get("chunk_id", "")),
+                str(record.content.get("raw_text_hash", "")),
+            ]
         content_text = "\n".join(
             part for part in [
                 record.title,
@@ -137,6 +147,7 @@ class SqliteRecordStore:
                 record.detail,
                 str(record.content.get("text", "")),
                 str(record.content.get("excerpt", "")),
+                *raw_index_parts,
             ] if part
         )
         embedding = json.dumps(embed_text(content_text), ensure_ascii=False)

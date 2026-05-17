@@ -1,0 +1,43 @@
+{
+  "name": "longmemeval-smoke",
+  "scope": {
+    "agent_id": "hongtu",
+    "workspace_id": "embodied",
+    "user_id": "darrow"
+  },
+  "cases": [
+    {
+      "id": "postgres-backups",
+      "question": "Which database does the user prefer for backups?",
+      "question_type": "preference",
+      "answer": "PostgreSQL",
+      "haystack_sessions": [
+        {
+          "session_id": "sess-db",
+          "turns": [
+            {
+              "turn_id": "turn-db-1",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "I prefer PostgreSQL because backups are easier."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "session_id": "sess-ui",
+          "messages": [
+            {
+              "role": "user",
+              "content": "The dashboard should keep a compact activity feed."
+            }
+          ]
+        }
+      ],
+      "evidence_session_ids": ["sess-db"],
+      "evidence_turn_ids": ["turn-db-1"]
+    }
+  ]
+}

@@ -16,12 +16,35 @@ def recall_at_k(returned_ids: list[str], expected_ids: set[str], *, k: int) -> f
     return _round(hits / len(expected_ids))
 
 
+def recall_any_at_k(returned_ids: list[str], expected_ids: set[str], *, k: int) -> float:
+    if not expected_ids:
+        return 1.0 if returned_ids else 0.0
+    top = returned_ids[: max(0, int(k))]
+    return 1.0 if any(item in expected_ids for item in top) else 0.0
+
+
+def recall_all_at_k(returned_ids: list[str], expected_ids: set[str], *, k: int) -> float:
+    if not expected_ids:
+        return 1.0 if returned_ids else 0.0
+    top = set(returned_ids[: max(0, int(k))])
+    return 1.0 if expected_ids.issubset(top) else 0.0
+
+
 def precision_at_k(returned_ids: list[str], expected_ids: set[str], *, k: int) -> float:
     top = returned_ids[: max(0, int(k))]
     if not top:
         return 0.0
     hits = len([item for item in top if item in expected_ids])
     return _round(hits / len(top))
+
+
+def first_relevant_rank(returned_ids: list[str], expected_ids: set[str]) -> int:
+    if not expected_ids:
+        return 0
+    for index, item in enumerate(returned_ids, start=1):
+        if item in expected_ids:
+            return index
+    return 0
 
 
 def mean_reciprocal_rank(ranks: list[int]) -> float:

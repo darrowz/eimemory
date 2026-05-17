@@ -23,6 +23,7 @@ from eimemory.knowledge.projectors import project_operational_knowledge
 from eimemory.knowledge.synthesis import build_research_digest, digest_to_record
 from eimemory.config.defaults import default_root
 from eimemory.models.records import RecordEnvelope, ScopeRef, TimeRef
+from eimemory.raw.store import RawEvidenceAPI
 from eimemory.storage.runtime_store import RuntimeStore
 
 
@@ -41,6 +42,7 @@ class Runtime:
         self.store = store
         self.memory = MemoryAPI(store)
         self.evolution = EvolutionAPI(store)
+        self.raw = RawEvidenceAPI(store)
         self.sources = SourceRegistry(self.store.root / "state" / "source_registry.json")
 
     @classmethod
@@ -404,6 +406,26 @@ class Runtime:
         if scope is not None and isinstance(dataset, list):
             dataset = {"name": "memory_eval_ci", "scope": dict(scope), "cases": dataset}
         return run_memory_eval_ci(self, dataset, emit_incidents=emit_incidents)
+
+    def run_longmemeval(
+        self,
+        dataset: dict | list,
+        *,
+        mode: str = "raw",
+        granularity: str = "session",
+        limit: int = 10,
+        persist_report: bool = False,
+    ) -> dict:
+        from eimemory.evaluation import run_longmemeval
+
+        return run_longmemeval(
+            self,
+            dataset,
+            mode=mode,
+            granularity=granularity,
+            limit=limit,
+            persist_report=persist_report,
+        )
 
     def record_skill_trace(self, payload: dict, *, scope: dict | None = None) -> dict:
         from eimemory.experience import record_skill_trace

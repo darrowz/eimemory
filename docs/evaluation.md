@@ -58,3 +58,41 @@ The report includes:
 
 This framework evaluates recall behavior first. Broader source-intake,
 daily-brief, and skill replay suites should reuse this report shape.
+
+## LongMemEval Raw Evidence
+
+`eimemory eval longmem` runs a LongMemEval-style retrieval benchmark without
+LLM calls. It ingests each case's haystack as `raw_chunk` records, retrieves
+raw evidence, and reports retrieval metrics only. It does not score generated
+answers or QA accuracy.
+
+```bash
+eimemory eval longmem examples/evaluation/longmemeval_smoke.json \
+  --mode raw \
+  --granularity session \
+  --limit 10 \
+  --output tmp/longmemeval-report.json
+```
+
+Options:
+
+- `--mode raw` searches raw evidence directly.
+- `--mode hybrid` asks memory recall for raw-hybrid evidence first, then falls
+  back to raw retrieval.
+- `--granularity session|turn|chunk` selects which evidence id type is scored.
+- `--persist-report` writes a `reflection` report with
+  `source="eimemory.longmemeval"` and `meta.report_type="longmemeval_eval"`.
+  Governance snapshots surface the latest report under `longmemeval`.
+
+Dataset cases accept LongMemEval-like aliases:
+
+- question fields: `question` or `query`
+- answer fields: `answer` or `expected_answer`
+- haystack fields: `haystack_sessions`, `sessions`, or `haystack`
+- text fields inside sessions/turns/messages: `content`, `text`, or `message`
+- evidence fields: `evidence_session_ids`, `evidence_turn_ids`, and
+  `evidence_chunk_ids`
+
+Report metrics include `retrieval_recall_at_1/5/10`, `recall_any_at_k`,
+`recall_all_at_k`, `ndcg_at_5`, `mrr`, latency average/p95,
+`by_question_type`, and per-sample returned evidence ids.

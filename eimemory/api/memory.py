@@ -5,6 +5,7 @@ import re
 from eimemory.knowledge.views import build_recall_view, choose_view_type, records_from_view
 from eimemory.identity import extract_user_aliases, hongtu_query_scopes_with_aliases
 from eimemory.models.records import LinkRef, RecallBundle, RecordEnvelope, ScopeRef
+from eimemory.raw.retrieval import search_raw_chunks
 from eimemory.scoring import ScoreContext, evaluate_memory_score, extract_memory_score, with_score_metadata
 from eimemory.storage.runtime_store import RuntimeStore
 
@@ -82,6 +83,8 @@ class MemoryAPI:
         normalized_query = str(query or "").strip()
         limit = max(0, min(1000, int(limit)))
         task_context = dict(task_context or {})
+        recall_mode = str(task_context.get("recall_mode") or "").strip().lower()
+        raw_hybrid = recall_mode == "raw_hybrid"
         scope_ref = ScopeRef.from_dict(scope)
         recall_scope_aliases = extract_user_aliases(task_context)
         query_scope_refs = hongtu_query_scopes_with_aliases(scope_ref, aliases=recall_scope_aliases)
@@ -125,6 +128,25 @@ class MemoryAPI:
         search_limit = max(limit * profile_config["search_multiplier"], limit)
         recall_filters = self._recall_filters_from_task_context(task_context)
         recall_filters["scoring_profile"] = recall_profile
+        raw_evidence: list[dict] = []
+        if raw_hybrid:
+            seen_raw_ids: set[str] = set()
+            for query_scope_ref in query_scope_refs:
+                for evidence in search_raw_chunks(
+                    self.store,
+                    query=normalized_query,
+                    scope=query_scope_ref,
+                    task_context=task_context,
+                    limit=max(limit, 1),
+                ):
+                    record_payload = evidence.get("record") if isinstance(evidence, dict) else {}
+                    record_id = str(record_payload.get("record_id") or "") if isinstance(record_payload, dict) else ""
+                    if record_id and record_id in seen_raw_ids:
+                        continue
+                    if record_id:
+                        seen_raw_ids.add(record_id)
+                    raw_evidence.append(evidence)
+            raw_evidence = raw_evidence[:limit]
         report_query = self._is_report_query(normalized_query, task_context)
         items: list[RecordEnvelope] = []
         search_reports: list[dict] = []
@@ -256,6 +278,8 @@ class MemoryAPI:
                 "query_scopes": [self._scope_dict(item) for item in query_scope_refs],
                 "recall_scope_aliases": recall_scope_aliases,
                 "recall_filters": recall_filters,
+                "recall_mode": "raw_hybrid" if raw_hybrid else "structured",
+                **({"raw_evidence": raw_evidence} if raw_hybrid else {}),
                 "preference_query": preference_query,
                 "report_query": report_query,
                 "recall_view": final_view.to_dict(),

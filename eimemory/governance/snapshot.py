@@ -34,6 +34,7 @@ def build_governance_snapshot(runtime, scope: dict | ScopeRef) -> dict[str, Any]
         source="eimemory.rule_evolution_loop",
     )
     memory_eval_reports = _list_memory_eval_report_records(runtime, scope=scope_ref)
+    longmemeval_reports = _list_longmemeval_report_records(runtime, scope=scope_ref)
     source_discovery_records = [
         record for record in source_candidates if record.source == "eimemory.source_discovery"
     ]
@@ -86,6 +87,10 @@ def build_governance_snapshot(runtime, scope: dict | ScopeRef) -> dict[str, Any]
         "memory_eval_ci": {
             "count": len(memory_eval_reports),
             "latest": _memory_eval_summary(memory_eval_reports[0]) if memory_eval_reports else None,
+        },
+        "longmemeval": {
+            "count": len(longmemeval_reports),
+            "latest": _longmemeval_summary(longmemeval_reports[0]) if longmemeval_reports else None,
         },
         "collection_policy": {
             "run_now": collection_policy["run_now"],
@@ -143,6 +148,15 @@ def _list_memory_eval_report_records(runtime, *, scope: ScopeRef) -> list[Record
         record
         for record in _list_all_records(runtime, kinds=["reflection", "replay_result", "incident"], scope=scope)
         if _is_memory_eval_ci_record(record)
+    ]
+    return sorted(reports, key=_record_recency_key, reverse=True)
+
+
+def _list_longmemeval_report_records(runtime, *, scope: ScopeRef) -> list[RecordEnvelope]:
+    reports = [
+        record
+        for record in _list_all_records(runtime, kinds=["reflection"], scope=scope)
+        if _is_longmemeval_record(record)
     ]
     return sorted(reports, key=_record_recency_key, reverse=True)
 
@@ -320,10 +334,33 @@ def _memory_eval_summary(record: RecordEnvelope) -> dict[str, Any]:
     }
 
 
+def _longmemeval_summary(record: RecordEnvelope) -> dict[str, Any]:
+    report = record.content.get("report") if isinstance(record.content.get("report"), dict) else {}
+    return {
+        "record_id": record.record_id,
+        "name": str(report.get("name") or record.title),
+        "mode": str(report.get("mode") or record.meta.get("mode") or ""),
+        "granularity": str(report.get("granularity") or record.meta.get("granularity") or ""),
+        "sample_count": int(report.get("sample_count") or 0),
+        "retrieval_recall_at_1": float(report.get("retrieval_recall_at_1") or 0.0),
+        "retrieval_recall_at_5": float(report.get("retrieval_recall_at_5") or 0.0),
+        "retrieval_recall_at_10": float(report.get("retrieval_recall_at_10") or 0.0),
+        "mrr": float(report.get("mrr") or 0.0),
+        "latency_ms_p95": float(report.get("latency_ms_p95") or 0.0),
+        "time": asdict(record.time),
+    }
+
+
 def _is_memory_eval_ci_record(record: RecordEnvelope) -> bool:
     if str(record.source or "") == "eimemory.memory_eval_ci":
         return True
     return str(record.meta.get("report_type") or "") == "memory_eval_ci"
+
+
+def _is_longmemeval_record(record: RecordEnvelope) -> bool:
+    if str(record.source or "") == "eimemory.longmemeval":
+        return True
+    return str(record.meta.get("report_type") or "") == "longmemeval_eval"
 
 
 def _latest_report_section(records: list[RecordEnvelope], section: str) -> dict[str, Any] | None:

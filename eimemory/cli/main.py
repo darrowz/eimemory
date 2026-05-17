@@ -264,6 +264,13 @@ def _build_parser() -> argparse.ArgumentParser:
     eval_ci.add_argument("--threshold", type=float, default=None)
     eval_ci.add_argument("--emit-incidents", action="store_true")
     eval_ci.add_argument("--output", default="")
+    eval_longmem = eval_sub.add_parser("longmem")
+    eval_longmem.add_argument("dataset_json")
+    eval_longmem.add_argument("--mode", choices=["raw", "hybrid"], default="raw")
+    eval_longmem.add_argument("--granularity", choices=["session", "turn", "chunk"], default="session")
+    eval_longmem.add_argument("--limit", type=int, default=10)
+    eval_longmem.add_argument("--output", default="")
+    eval_longmem.add_argument("--persist-report", action="store_true")
     return parser
 
 
@@ -875,7 +882,45 @@ def main(argv: list[str] | None = None) -> int:
                 report = {**report, "output": str(output_path)}
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0 if report.get("passed_threshold") else 1
-        print(json.dumps({"usage": "eimemory eval run"}))
+        if parsed.eval_command == "longmem":
+            try:
+                with open(parsed.dataset_json, "r", encoding="utf-8") as handle:
+                    dataset = json.load(handle)
+            except OSError as exc:
+                print(json.dumps({"ok": False, "error": "dataset_unreadable", "detail": str(exc)}, ensure_ascii=False))
+                return 2
+            except json.JSONDecodeError:
+                print(json.dumps({"ok": False, "error": "invalid_dataset_json"}, ensure_ascii=False))
+                return 2
+            if parsed.limit <= 0:
+                print(json.dumps({"ok": False, "error": "invalid_limit"}, ensure_ascii=False))
+                return 2
+            try:
+                from eimemory.evaluation import run_longmemeval
+
+                report = run_longmemeval(
+                    runtime,
+                    dataset,
+                    mode=parsed.mode,
+                    granularity=parsed.granularity,
+                    limit=parsed.limit,
+                    persist_report=bool(parsed.persist_report),
+                )
+            except ValueError as exc:
+                print(json.dumps({"ok": False, "error": "invalid_eval_dataset", "detail": str(exc)}, ensure_ascii=False))
+                return 2
+            if parsed.output:
+                try:
+                    output_path = Path(parsed.output)
+                    output_path.parent.mkdir(parents=True, exist_ok=True)
+                    output_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+                except OSError as exc:
+                    print(json.dumps({"ok": False, "error": "eval_output_failed", "detail": str(exc)}, ensure_ascii=False))
+                    return 2
+                report = {**report, "output": str(output_path)}
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0 if report.get("ok") else 1
+        print(json.dumps({"usage": "eimemory eval run|ci|longmem"}))
         return 0
     if parsed.command == "reflect":
         if parsed.reflect_command == "check":
