@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from eimemory.metadata import business_metadata, normalize_metadata
 from eimemory.scoring.contract import MemoryScore, ScoreContext
 from eimemory.scoring.evaluator import evaluate_memory_score
 from eimemory.scoring.thresholds import capture_decision_for_tier
@@ -28,10 +29,10 @@ def memory_score_to_legacy_quality(score: MemoryScore) -> dict[str, Any]:
 
 
 def _legacy_quality(meta: dict[str, Any] | None) -> dict[str, Any]:
-    quality = dict((meta or {}).get("quality") or {})
+    quality = business_metadata(meta).get("quality") or {}
     if not isinstance(quality, dict):
         return {}
-    return quality
+    return dict(quality)
 
 
 def score_from_legacy_quality(
@@ -41,8 +42,9 @@ def score_from_legacy_quality(
     source: str | None = None,
     profile: str = "balanced",
 ) -> MemoryScore:
+    business_meta = business_metadata(record.meta)
     text = str(record.content.get("text") or record.summary or record.detail or record.title)
-    memory_type = str(record.meta.get("memory_type") or record.content.get("memory_type") or "")
+    memory_type = str(business_meta.get("memory_type") or record.content.get("memory_type") or "")
     return evaluate_memory_score(
         text=text,
         title=str(record.title or ""),
@@ -63,7 +65,7 @@ def score_payload(score: MemoryScore) -> dict[str, Any]:
 
 
 def with_score_metadata(meta: dict[str, Any] | None, score: MemoryScore, *, preserve_quality: bool = False) -> dict[str, Any]:
-    payload = dict(meta or {})
+    payload = normalize_metadata(meta or {})
     quality = _legacy_quality(payload)
     mapped_quality = memory_score_to_legacy_quality(score)
     if preserve_quality and quality:
@@ -75,11 +77,11 @@ def with_score_metadata(meta: dict[str, Any] | None, score: MemoryScore, *, pres
     scoring_meta = dict(payload.get(SCORING_META_KEY) or {})
     scoring_meta[MEMORY_SCORE_META_KEY] = score_payload(score)
     payload[SCORING_META_KEY] = scoring_meta
-    return payload
+    return normalize_metadata(payload)
 
 
 def extract_memory_score(meta: dict[str, Any] | None) -> MemoryScore | None:
-    scoring_meta = dict((meta or {}).get(SCORING_META_KEY) or {})
+    scoring_meta = dict(business_metadata(meta).get(SCORING_META_KEY) or {})
     payload = scoring_meta.get(MEMORY_SCORE_META_KEY)
     if not isinstance(payload, dict):
         return None

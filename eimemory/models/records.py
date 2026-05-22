@@ -6,6 +6,7 @@ from typing import Any
 
 from eimemory.core.clock import now_iso
 from eimemory.core.ids import generate_record_id
+from eimemory.metadata import normalize_metadata
 from eimemory.scoring import ScoreContext, evaluate_memory_score, memory_score_to_legacy_quality, with_score_metadata
 
 VALID_KINDS: frozenset[str] = frozenset(
@@ -152,7 +153,7 @@ class RecordEnvelope:
         meta: dict[str, Any] | None = None,
     ) -> "RecordEnvelope":
         cls._validate_kind(kind)
-        meta_payload = dict(meta or {})
+        meta_payload = normalize_metadata(meta or {})
         content_payload = dict(content or {})
         if kind == "memory":
             memory_text = str(content_payload.get("text") or summary or detail or title)

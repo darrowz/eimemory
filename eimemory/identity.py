@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from typing import Any
 
+from eimemory.metadata import business_metadata, normalize_metadata, runtime_metadata
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
@@ -209,8 +210,8 @@ def needs_hongtu_identity_repair(record: RecordEnvelope) -> bool:
     if is_legacy_hongtu_scope(record.scope):
         return True
     if _is_hongtu_subject_source(record):
-        return not is_hongtu_scope(record.scope) or str(record.meta.get("identity") or "") != "hongtu"
-    return is_hongtu_scope(record.scope) and str(record.meta.get("identity") or "") != "hongtu"
+        return not is_hongtu_scope(record.scope) or str(business_metadata(record.meta).get("identity") or "") != "hongtu"
+    return is_hongtu_scope(record.scope) and str(business_metadata(record.meta).get("identity") or "") != "hongtu"
 
 
 def normalize_hongtu_record(record: RecordEnvelope) -> RecordEnvelope:
@@ -238,12 +239,13 @@ def build_identity_report(records: list[RecordEnvelope]) -> dict[str, Any]:
             report["hongtu_scope_records"] += 1
         if is_legacy_hongtu_scope(record.scope):
             report["legacy_scope_records"] += 1
-        if str(record.meta.get("identity") or "") == "hongtu":
+        if str(business_metadata(record.meta).get("identity") or "") == "hongtu":
             report["hongtu_identity_records"] += 1
-        role = str(record.meta.get("communication_channel_role") or "")
+        meta = business_metadata(record.meta)
+        role = str(meta.get("communication_channel_role") or "")
         if role:
             report["channel_roles"][role] = int(report["channel_roles"].get(role, 0)) + 1
-        modality = str(record.meta.get("modality") or record.content.get("modality") or "")
+        modality = str(runtime_metadata(record.meta).get("modality") or record.content.get("modality") or "")
         if modality:
             report["modalities"][modality] = int(report["modalities"].get(modality, 0)) + 1
         if needs_hongtu_identity_repair(record):
@@ -353,11 +355,13 @@ def _clean_text(value: Any) -> str:
 
 def _normalized_meta(record: RecordEnvelope, *, previous_scope: ScopeRef) -> dict[str, Any]:
     meta = dict(record.meta or {})
+    business_meta = business_metadata(meta)
+    runtime_meta = runtime_metadata(meta)
     source = str(record.source or "")
-    channel = str(meta.get("communication_channel") or _channel_from_source(source))
-    organ = str(meta.get("organ") or _organ_from_record(record))
-    modality = str(meta.get("modality") or _modality_from_record(record))
-    hardware_node = str(meta.get("hardware_node") or _hardware_node_from_record(record, previous_scope=previous_scope))
+    channel = str(business_meta.get("communication_channel") or _channel_from_source(source))
+    organ = str(runtime_meta.get("organ") or _organ_from_record(record))
+    modality = str(runtime_meta.get("modality") or _modality_from_record(record))
+    hardware_node = str(runtime_meta.get("hardware_node") or _hardware_node_from_record(record, previous_scope=previous_scope))
     identity_meta = hongtu_identity_meta(
         source=source,
         channel=channel,
@@ -365,12 +369,12 @@ def _normalized_meta(record: RecordEnvelope, *, previous_scope: ScopeRef) -> dic
         organ=organ,
         modality=modality,
         extra={
-            "runtime_node": str(meta.get("runtime_node") or previous_scope.agent_id or ""),
+            "runtime_node": str(runtime_meta.get("runtime_node") or previous_scope.agent_id or ""),
             **({"official_channel": True} if channel == OFFICIAL_COMMUNICATION_CHANNEL else {}),
         },
     )
     meta.update(identity_meta)
-    return meta
+    return normalize_metadata(meta)
 
 
 def _hardware_node_from_record(record: RecordEnvelope, *, previous_scope: ScopeRef) -> str:
@@ -396,8 +400,9 @@ def _organ_from_record(record: RecordEnvelope) -> str:
 
 
 def _modality_from_record(record: RecordEnvelope) -> str:
-    if str(record.meta.get("modality") or "").strip():
-        return str(record.meta.get("modality") or "")
+    runtime_meta = runtime_metadata(record.meta)
+    if str(runtime_meta.get("modality") or "").strip():
+        return str(runtime_meta.get("modality") or "")
     if str(record.content.get("modality") or "").strip():
         return str(record.content.get("modality") or "")
     text_like_kinds = {

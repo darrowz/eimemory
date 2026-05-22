@@ -4,6 +4,7 @@ import re
 
 from eimemory.knowledge.views import build_recall_view, choose_view_type, records_from_view
 from eimemory.identity import extract_user_aliases, hongtu_query_scopes_with_aliases
+from eimemory.metadata import business_metadata
 from eimemory.models.records import LinkRef, RecallBundle, RecordEnvelope, ScopeRef
 from eimemory.raw.retrieval import search_raw_chunks
 from eimemory.scoring import ScoreContext, evaluate_memory_score, extract_memory_score, with_score_metadata
@@ -64,10 +65,10 @@ class MemoryAPI:
                 force_capture=force_capture,
                 inputs=[{"memory_type": memory_type}],
             ),
-            legacy_quality=dict(record.meta.get("quality") or {}),
+            legacy_quality=dict(business_metadata(record.meta).get("quality") or {}),
         )
         record.meta = with_score_metadata(record.meta, score, preserve_quality=False)
-        if record.meta.get("quality", {}).get("capture_decision") == "reject":
+        if business_metadata(record.meta).get("quality", {}).get("capture_decision") == "reject":
             record.status = "rejected"
             return record
         return self.store.append(record)
@@ -228,7 +229,7 @@ class MemoryAPI:
         rules = [
             rule
             for rule in self.store.list_records(kinds=["rule"], scope=scope_ref, status="active", limit=50)
-            if not task_type or str(rule.meta.get("task_type") or "") == task_type
+            if not task_type or str(business_metadata(rule.meta).get("task_type") or "") == task_type
         ]
         reflections = self.store.search(query=query, kinds=["reflection"], scope=scope_ref, limit=3)
         confidence = 0.0
@@ -319,7 +320,7 @@ class MemoryAPI:
         return True
 
     def _record_filter_labels(self, item: RecordEnvelope) -> dict[str, set[str]]:
-        meta = item.meta if isinstance(item.meta, dict) else {}
+        meta = business_metadata(item.meta)
         content = item.content if isinstance(item.content, dict) else {}
         sources = {str(item.source or "").strip()}
         for key in ("source", "source_channel", "communication_channel"):
@@ -344,7 +345,7 @@ class MemoryAPI:
     def _is_default_recall_suppressed_record(self, item: RecordEnvelope, task_context: dict) -> bool:
         if self._include_digest_pages(task_context):
             return False
-        page_type = str(item.meta.get("page_type") or item.content.get("page_type") or "").strip().lower()
+        page_type = str(business_metadata(item.meta).get("page_type") or item.content.get("page_type") or "").strip().lower()
         if item.kind == "knowledge_page" and page_type in {"digest", "synthesis"}:
             return True
         if item.kind == "knowledge_page" and str(item.source or "") == "eimemory.knowledge.synthesis":
@@ -371,7 +372,7 @@ class MemoryAPI:
         if item.kind != "memory":
             return False
         text = self._record_text(item)
-        memory_type = str(item.meta.get("memory_type") or item.content.get("memory_type") or "").strip()
+        memory_type = str(business_metadata(item.meta).get("memory_type") or item.content.get("memory_type") or "").strip()
         if memory_type == "preference":
             return not self._looks_like_recall_diagnostic(text, query)
         if self._looks_like_recall_diagnostic(text, query):
@@ -416,7 +417,7 @@ class MemoryAPI:
 
     @staticmethod
     def _is_recallable_report_record(item: RecordEnvelope) -> bool:
-        report_type = str(item.meta.get("report_type") or item.provenance.get("report_type") or "").strip()
+        report_type = str(business_metadata(item.meta).get("report_type") or item.provenance.get("report_type") or "").strip()
         return item.kind == "reflection" and (
             report_type == "rule_evolution" or str(item.source or "") == "eimemory.rule_evolution_loop"
         )
@@ -608,7 +609,7 @@ class MemoryAPI:
         tiers: dict[str, int] = {}
         rejected = 0
         for item in items:
-            quality = item.meta.get("quality") if isinstance(item.meta, dict) else {}
+            quality = business_metadata(item.meta).get("quality") if isinstance(item.meta, dict) else {}
             if not isinstance(quality, dict):
                 quality = {}
             tier = str(quality.get("quality_tier") or "unscored")
@@ -626,10 +627,11 @@ class MemoryAPI:
         projected_source_ids: list[str] = []
         for item in items:
             by_kind[item.kind] = by_kind.get(item.kind, 0) + 1
-            if item.meta.get("projection_type") == "operational_knowledge":
+            meta = business_metadata(item.meta)
+            if meta.get("projection_type") == "operational_knowledge":
                 projected_count += 1
                 source_id = str(
-                    item.meta.get("source_record_id")
+                    meta.get("source_record_id")
                     or item.provenance.get("source_record_id")
                     or item.content.get("source_record_id")
                     or ""
@@ -654,9 +656,9 @@ class MemoryAPI:
                     "status": item.status,
                     "title": item.title,
                     "source": item.source,
-                    "projection_type": str(item.meta.get("projection_type") or ""),
+                    "projection_type": str(business_metadata(item.meta).get("projection_type") or ""),
                     "source_record_id": str(
-                        item.meta.get("source_record_id")
+                        business_metadata(item.meta).get("source_record_id")
                         or item.provenance.get("source_record_id")
                         or item.content.get("source_record_id")
                         or ""
@@ -701,7 +703,7 @@ class MemoryAPI:
     def _is_returnable_memory_record(self, record: RecordEnvelope) -> bool:
         if record.status == "rejected":
             return False
-        quality = record.meta.get("quality") if isinstance(record.meta, dict) else {}
+        quality = business_metadata(record.meta).get("quality") if isinstance(record.meta, dict) else {}
         return not isinstance(quality, dict) or quality.get("capture_decision") != "reject"
 
     def _record_matches_scope(self, record: RecordEnvelope, scope: ScopeRef) -> bool:
@@ -726,7 +728,7 @@ class MemoryAPI:
         scoring: list[dict] = []
         for item in items:
             entry = dict(scored_by_id.get(item.record_id) or {})
-            quality = item.meta.get("quality") if isinstance(item.meta, dict) else {}
+            quality = business_metadata(item.meta).get("quality") if isinstance(item.meta, dict) else {}
             if not isinstance(quality, dict):
                 quality = {}
             scoring.append(
@@ -739,6 +741,7 @@ class MemoryAPI:
                     "vector_score": entry.get("vector_score", 0.0),
                     "quality_score": entry.get("quality_score", quality.get("salience_score", 0.0)),
                     "quality_tier": str(quality.get("quality_tier") or "unscored"),
+                    "modality_boost": entry.get("modality_boost", 0.0),
                     "final_score": entry.get("final_score", 0.0),
                     "scoring_version": entry.get("scoring_version", "memory_score.v1"),
                     "memory_score": entry.get(

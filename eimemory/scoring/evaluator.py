@@ -4,6 +4,7 @@ import re
 from typing import Any
 
 from eimemory.core.clock import now_iso
+from eimemory.metadata import business_metadata
 from eimemory.scoring.contract import MemoryScore, ScoreComponent, ScoreContext, ScoreProvenance
 from eimemory.scoring.labels import component_labels, provenance_label
 from eimemory.scoring.thresholds import clamp_score, tier_for_score, weights_for_profile
@@ -312,10 +313,10 @@ def evaluate_recall_score(
     stored = stored_score or evaluate_memory_score(
         text=str(record.content.get("text") or record.summary or record.detail or record.title),
         title=str(record.title or ""),
-        memory_type=str(record.meta.get("memory_type") or record.content.get("memory_type") or ""),
+        memory_type=str(business_metadata(record.meta).get("memory_type") or record.content.get("memory_type") or ""),
         source=str(record.source or ""),
         context=ScoreContext(activity="record.create", source=str(record.source or "")),
-        legacy_quality=dict(record.meta.get("quality") or {}),
+        legacy_quality=dict(business_metadata(record.meta).get("quality") or {}),
     )
     query_tokens = [token for token in _normalized_terms(query) if token]
     lexical_norm = 1.0 if not query_tokens else clamp_score(float(lexical_score) / max(1, len(query_tokens)))
@@ -359,7 +360,7 @@ def evaluate_recall_score(
         components=components,
         source=str(record.source or context.source),
         tier=tier,
-        memory_type=str(record.meta.get("memory_type") or record.content.get("memory_type") or ""),
+        memory_type=str(business_metadata(record.meta).get("memory_type") or record.content.get("memory_type") or ""),
         activity=_score_activity(context),
     )
     risk_labels = list(components["risk_penalty"].evidence.get("labels") or [])

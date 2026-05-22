@@ -8,6 +8,7 @@ from eimemory.embeddings.local import cosine_similarity, embed_text
 from eimemory.identity import hongtu_query_scopes
 from eimemory.models.records import RecordEnvelope, ScopeRef
 from eimemory.scoring import ScoreContext, evaluate_recall_score, extract_memory_score, score_from_legacy_quality
+from eimemory.metadata import business_metadata
 
 
 MAX_QUERY_LIMIT = 1000
@@ -333,8 +334,8 @@ class SqliteRecordStore:
         ).fetchall()
         for row in rows:
             record = RecordEnvelope.from_dict(json.loads(row["payload_json"]))
-            if str(record.meta.get("task_type", "")) == task_type:
-                return dict(record.meta)
+            if str(business_metadata(record.meta).get("task_type", "")) == task_type:
+                return dict(business_metadata(record.meta))
         return {"retrieval_policy": {}, "response_policy": {}}
 
     def get_by_id(self, record_id: str, *, scope: ScopeRef | None = None) -> RecordEnvelope | None:
@@ -504,7 +505,7 @@ class SqliteRecordStore:
         return 0.18 if labels["modalities"] & preferred else 0.0
 
     def _record_filter_labels(self, record: RecordEnvelope) -> dict[str, set[str]]:
-        meta = record.meta if isinstance(record.meta, dict) else {}
+        meta = business_metadata(record.meta)
         content = record.content if isinstance(record.content, dict) else {}
         sources = {str(record.source or "").strip()}
         for key in ("source", "source_channel", "communication_channel"):
@@ -534,7 +535,7 @@ class SqliteRecordStore:
         }
 
     def _quality_from_record(self, record: RecordEnvelope) -> dict:
-        quality = record.meta.get("quality") if isinstance(record.meta, dict) else {}
+        quality = business_metadata(record.meta).get("quality") if isinstance(record.meta, dict) else {}
         if not isinstance(quality, dict):
             return {}
         return dict(quality)

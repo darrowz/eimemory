@@ -92,7 +92,7 @@ def test_eibrain_rpc_normalizes_hardware_scope_to_hongtu_memory_subject(tmp_path
         "user_id": "darrow",
     }
     assert stored["meta"]["identity"] == "hongtu"
-    assert stored["meta"]["hardware_node"] == "honxin"
+    assert stored["meta"]["runtime_meta"]["hardware_node"] == "honxin"
     assert stored["meta"]["communication_channel_role"] == "auxiliary"
     assert recall["ok"] is True
     assert recall["result"]["items"][0]["record_id"] == stored["record_id"]
@@ -536,7 +536,7 @@ def test_openclaw_hooks_mark_feishu_as_official_hongtu_channel(tmp_path) -> None
     assert stored["meta"]["identity"] == "hongtu"
     assert stored["meta"]["communication_channel"] == "feishu"
     assert stored["meta"]["communication_channel_role"] == "official"
-    assert stored["meta"]["hardware_node"] == "honxin"
+    assert stored["meta"]["runtime_meta"]["hardware_node"] == "honxin"
 
 
 def test_openclaw_agent_end_failure_records_incident(tmp_path) -> None:
