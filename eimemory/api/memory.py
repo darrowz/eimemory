@@ -4,6 +4,7 @@ import re
 
 from eimemory.knowledge.views import build_recall_view, choose_view_type, records_from_view
 from eimemory.identity import extract_user_aliases, hongtu_query_scopes_with_aliases
+from eimemory.living import LIVING_MEMORY_META_KEY, enrich_living_memory
 from eimemory.metadata import business_metadata
 from eimemory.models.records import LinkRef, RecallBundle, RecordEnvelope, ScopeRef
 from eimemory.raw.retrieval import search_raw_chunks
@@ -40,6 +41,16 @@ class MemoryAPI:
             content_payload.update(dict(content))
             content_payload.setdefault("text", text)
         content_payload["memory_type"] = memory_type
+        if not isinstance(meta_payload.get(LIVING_MEMORY_META_KEY), dict):
+            meta_payload[LIVING_MEMORY_META_KEY] = enrich_living_memory(
+                {
+                    "title": title,
+                    "summary": text,
+                    "detail": "",
+                    "content": content_payload,
+                    "meta": meta_payload,
+                }
+            )
         record = RecordEnvelope.create(
             kind="memory",
             title=title,
@@ -295,6 +306,7 @@ class MemoryAPI:
             "preferred_modalities": self._string_list(task_context.get("preferred_modalities")),
             "organs": self._string_list(task_context.get("organs")),
             "source_weights": self._source_weights(task_context.get("source_weights")),
+            "living_task_context_terms": self._living_task_context_terms(task_context),
         }
         return {key: value for key, value in filters.items() if value}
 
@@ -507,6 +519,25 @@ class MemoryAPI:
         if not isinstance(value, list):
             return []
         return [str(item).strip() for item in value if str(item).strip()]
+
+    @staticmethod
+    def _living_task_context_terms(task_context: dict) -> list[str]:
+        terms: list[str] = []
+        for key in (
+            "intent",
+            "goal",
+            "task_type",
+            "motive",
+            "desire",
+            "boundary",
+            "repair_needed",
+        ):
+            value = task_context.get(key)
+            if isinstance(value, list):
+                terms.extend(str(item).strip() for item in value if str(item).strip())
+            elif value is not None and str(value).strip():
+                terms.append(str(value).strip())
+        return terms
 
     @staticmethod
     def _source_weights(value: object) -> dict[str, float]:

@@ -427,6 +427,35 @@ class Runtime:
             persist_report=persist_report,
         )
 
+    def run_livingmem_eval(
+        self,
+        dataset: dict | list,
+        *,
+        persist_report: bool = False,
+    ) -> dict:
+        from eimemory.evaluation import run_livingmem_eval
+
+        return run_livingmem_eval(
+            self,
+            dataset,
+            persist_report=persist_report,
+        )
+
+    def enrich_living_memory(self, *, scope: dict | None = None, limit: int = 100) -> dict:
+        from eimemory.living.operations import enrich_memory_records
+
+        return enrich_memory_records(self, scope=scope or {}, limit=limit)
+
+    def build_living_timeline(self, *, scope: dict | None = None, limit: int = 100) -> dict:
+        from eimemory.living.operations import build_living_timeline
+
+        return build_living_timeline(self, scope=scope or {}, limit=limit)
+
+    def recommend_action_posture(self, query: str, *, scope: dict | None = None, limit: int = 5) -> dict:
+        from eimemory.living.operations import recommend_action_posture
+
+        return recommend_action_posture(self, query, scope=scope or {}, limit=limit)
+
     def record_skill_trace(self, payload: dict, *, scope: dict | None = None) -> dict:
         from eimemory.experience import record_skill_trace
 

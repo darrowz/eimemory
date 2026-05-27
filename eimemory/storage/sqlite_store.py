@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import json
+import re
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 from eimemory.embeddings.local import cosine_similarity, embed_text
 from eimemory.identity import hongtu_query_scopes
@@ -279,7 +282,14 @@ class SqliteRecordStore:
                 ),
                 stored_score=stored_score,
             )
-            score = recall_score.final_score
+            base_score = recall_score.final_score
+            living_memory = self._living_memory_metadata(record)
+            living_adjustments = self._living_score_adjustments(
+                living_memory=living_memory,
+                query=query,
+                recall_filters=recall_filters,
+            )
+            score = self._clamp_score(base_score + float(living_adjustments["total_adjustment"]))
             scored.append(
                 (
                     score,
@@ -296,7 +306,10 @@ class SqliteRecordStore:
                         "quality": quality,
                         "source_weight": round(source_weight, 4),
                         "modality_boost": round(modality_boost, 4),
+                        "base_final_score": round(base_score, 4),
                         "final_score": round(score, 4),
+                        "living_memory": living_memory,
+                        "living_score_adjustments": living_adjustments,
                         "scoring_version": recall_score.schema_version,
                         "memory_score": recall_score.to_dict(),
                         "components": recall_score.to_dict()["components"],
@@ -468,6 +481,160 @@ class SqliteRecordStore:
         if not isinstance(parsed, list):
             return []
         return [float(item) for item in parsed]
+
+    def _living_memory_metadata(self, record: RecordEnvelope) -> dict[str, Any]:
+        meta = record.meta if isinstance(record.meta, dict) else {}
+        living = meta.get("living_memory_v1")
+        if not isinstance(living, dict):
+            living = business_metadata(meta).get("living_memory_v1")
+        if not isinstance(living, dict):
+            return {}
+        return {
+            key: dict(value)
+            for key, value in living.items()
+            if key in {"temporal", "motive", "affective", "action_posture"} and isinstance(value, dict)
+        }
+
+    def _living_score_adjustments(
+        self,
+        *,
+        living_memory: dict[str, Any],
+        query: str,
+        recall_filters: dict | None,
+    ) -> dict[str, float]:
+        adjustments = {
+            "motive_match_boost": 0.0,
+            "affective_salience_boost": 0.0,
+            "temporal_boost": 0.0,
+            "stale_identity_penalty": 0.0,
+            "total_adjustment": 0.0,
+        }
+        if not living_memory:
+            return adjustments
+
+        motive = living_memory.get("motive") if isinstance(living_memory.get("motive"), dict) else {}
+        affective = living_memory.get("affective") if isinstance(living_memory.get("affective"), dict) else {}
+        temporal = living_memory.get("temporal") if isinstance(living_memory.get("temporal"), dict) else {}
+
+        query_text, query_terms = self._living_query_text_and_terms(query, recall_filters)
+        matched_motive_labels = [
+            label for label in self._living_label_strings(motive)
+            if self._living_label_matches(label, query_text, query_terms)
+        ]
+        if matched_motive_labels:
+            adjustments["motive_match_boost"] = min(0.08, 0.04 + (0.02 * min(2, len(matched_motive_labels))))
+
+        pressure = self._living_pressure_score(affective.get("pressure"))
+        affective_boost = min(0.04, max(0.0, pressure) * 0.04)
+        if bool(affective.get("frustration_repeat")):
+            affective_boost += 0.025
+        if bool(affective.get("trust_building")):
+            affective_boost += 0.02
+        if bool(affective.get("repair_needed")):
+            affective_boost += 0.05
+        adjustments["affective_salience_boost"] = min(0.1, affective_boost)
+
+        temporal_status = str(temporal.get("status") or temporal.get("state") or "").strip().lower().replace("_", "-")
+        if temporal_status in {"active", "current", "future-intent", "future", "planned", "ongoing"}:
+            adjustments["temporal_boost"] = 0.03
+        temporal_distance = str(temporal.get("temporal_distance") or "").strip().lower().replace("_", "-")
+        if temporal_distance == "future":
+            adjustments["temporal_boost"] = max(adjustments["temporal_boost"], 0.03)
+
+        stale_penalty = 0.0
+        if bool(temporal.get("superseded")) or temporal_status in {"superseded", "expired", "stale"} or temporal_distance == "stale":
+            stale_penalty -= 0.08
+        if self._living_valid_until_is_past(temporal.get("valid_until")):
+            stale_penalty -= 0.08
+        adjustments["stale_identity_penalty"] = max(-0.14, stale_penalty)
+
+        positive = min(
+            0.16,
+            adjustments["motive_match_boost"]
+            + adjustments["affective_salience_boost"]
+            + adjustments["temporal_boost"],
+        )
+        total = positive + adjustments["stale_identity_penalty"]
+        adjustments["total_adjustment"] = round(max(-0.18, min(0.16, total)), 4)
+        return {key: round(value, 4) for key, value in adjustments.items()}
+
+    def _living_query_text_and_terms(self, query: str, recall_filters: dict | None) -> tuple[str, set[str]]:
+        parts = [str(query or "")]
+        filters = dict(recall_filters or {})
+        for key in ("living_task_context_terms", "living_query_terms", "task_context_terms"):
+            value = filters.get(key)
+            if isinstance(value, list):
+                parts.extend(str(item) for item in value if str(item).strip())
+            elif isinstance(value, str):
+                parts.append(value)
+        text = " ".join(parts).lower()
+        return text, set(self._normalized_terms(text))
+
+    def _living_label_strings(self, value: Any) -> list[str]:
+        labels: list[str] = []
+        if isinstance(value, dict):
+            for nested in value.values():
+                labels.extend(self._living_label_strings(nested))
+        elif isinstance(value, list):
+            for nested in value:
+                labels.extend(self._living_label_strings(nested))
+        elif isinstance(value, str) and value.strip():
+            labels.append(value.strip())
+        return labels
+
+    def _living_label_matches(self, label: str, query_text: str, query_terms: set[str]) -> bool:
+        normalized_label = str(label or "").strip().lower()
+        if not normalized_label:
+            return False
+        if normalized_label in query_text:
+            return True
+        label_terms = set(self._normalized_terms(self._living_label_search_text(normalized_label)))
+        return bool(label_terms and label_terms & query_terms)
+
+    def _living_valid_until_is_past(self, value: Any) -> bool:
+        if not value:
+            return False
+        text = str(value).strip()
+        if not text:
+            return False
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return False
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed < datetime.now(timezone.utc)
+
+    @staticmethod
+    def _living_pressure_score(value: Any) -> float:
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"elevated", "high", "urgent", "pressure"}:
+                return 0.8
+            if normalized in {"normal", "medium"}:
+                return 0.35
+            if normalized in {"low", "none"}:
+                return 0.0
+        return SqliteRecordStore._float_value(value)
+
+    @staticmethod
+    def _float_value(value: Any) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
+
+    @staticmethod
+    def _living_label_search_text(value: str) -> str:
+        return str(value or "").replace("_", " ").replace("-", " ")
+
+    @staticmethod
+    def _normalized_terms(text: str) -> list[str]:
+        return [term.lower() for term in re.findall(r"[\w]+", text, flags=re.UNICODE) if term.strip()]
+
+    @staticmethod
+    def _clamp_score(value: float) -> float:
+        return round(max(0.0, min(1.0, value)), 4)
 
 
     def _record_matches_recall_filters(self, record: RecordEnvelope, recall_filters: dict | None) -> bool:

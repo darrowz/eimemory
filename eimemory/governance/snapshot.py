@@ -35,6 +35,7 @@ def build_governance_snapshot(runtime, scope: dict | ScopeRef) -> dict[str, Any]
     )
     memory_eval_reports = _list_memory_eval_report_records(runtime, scope=scope_ref)
     longmemeval_reports = _list_longmemeval_report_records(runtime, scope=scope_ref)
+    living_memory_records = _list_all_records(runtime, kinds=["memory"], scope=scope_ref)
     source_discovery_records = [
         record for record in source_candidates if record.source == "eimemory.source_discovery"
     ]
@@ -92,6 +93,7 @@ def build_governance_snapshot(runtime, scope: dict | ScopeRef) -> dict[str, Any]
             "count": len(longmemeval_reports),
             "latest": _longmemeval_summary(longmemeval_reports[0]) if longmemeval_reports else None,
         },
+        "living_memory": _summarize_living_memory(living_memory_records),
         "collection_policy": {
             "run_now": collection_policy["run_now"],
             "pause": collection_policy["pause"],
@@ -349,6 +351,12 @@ def _longmemeval_summary(record: RecordEnvelope) -> dict[str, Any]:
         "latency_ms_p95": float(report.get("latency_ms_p95") or 0.0),
         "time": asdict(record.time),
     }
+
+
+def _summarize_living_memory(records: list[RecordEnvelope]) -> dict[str, Any]:
+    from eimemory.living.operations import summarize_living_memory
+
+    return summarize_living_memory(records)
 
 
 def _is_memory_eval_ci_record(record: RecordEnvelope) -> bool:

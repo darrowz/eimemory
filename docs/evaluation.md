@@ -96,3 +96,44 @@ Dataset cases accept LongMemEval-like aliases:
 Report metrics include `retrieval_recall_at_1/5/10`, `recall_any_at_k`,
 `recall_all_at_k`, `ndcg_at_5`, `mrr`, latency average/p95,
 `by_question_type`, and per-sample returned evidence ids.
+
+## Living Memory Evaluation
+
+`eimemory eval living` runs a deterministic LivingMemEval smoke suite against
+`record.meta["living_memory_v1"]`. Seed records are enriched before scoring
+when living metadata is absent, using the local living-memory helper if it is
+available.
+
+```bash
+eimemory eval living examples/evaluation/living_memory_smoke.json \
+  --output tmp/living-memory-report.json
+```
+
+Dataset cases bind to seed records by `seed_id` or `seed_index` and can assert:
+
+- `expect_temporal`
+- `expect_motive`
+- `expect_affective`
+- `expect_repair_needed`
+- `expect_stale`
+- `expect_posture`
+
+Reports include `sample_count`, `pass_rate`, `temporal_accuracy`,
+`motive_accuracy`, `affective_grounding`, `repair_recall`,
+`stale_label_avoidance`, and `posture_accuracy`.
+
+Operator-facing living-memory commands emit JSON:
+
+```bash
+eimemory living enrich --limit 100
+eimemory living timeline
+eimemory living posture "repair before proceeding"
+```
+
+Governance snapshots include a `living_memory` section with enriched counts,
+repair-needed counts, open future-intent counts, life-phase counts, and average
+ripeness.
+
+`action_posture.recommended` uses the canonical posture values `act`, `nudge`,
+`wait`, and `let_go`; explanatory fields such as friction, urgency, trust risk,
+and ripeness describe why that posture was chosen.

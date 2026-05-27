@@ -8,6 +8,7 @@ from dataclasses import asdict
 from statistics import mean
 
 from eimemory.api.memory import MemoryAPI
+from eimemory.living import LIVING_MEMORY_META_KEY, enrich_living_memory
 from eimemory.models.relation_records import RelationRecord
 from eimemory.models.records import LinkRef, RecordEnvelope, ScopeRef, VALID_KINDS, evaluate_memory_quality
 from eimemory.scoring import extract_memory_score, score_from_legacy_quality, summarize_scores, with_score_metadata
@@ -24,6 +25,15 @@ class EvolutionAPI:
         summary = str(payload.get("summary") or "")
         meta = {k: v for k, v in payload.items() if k not in {"title", "summary"}}
         meta["signal_type"] = signal_type
+        if not isinstance(meta.get(LIVING_MEMORY_META_KEY), dict):
+            meta[LIVING_MEMORY_META_KEY] = enrich_living_memory(
+                {
+                    "title": title,
+                    "summary": summary,
+                    "detail": "",
+                    "meta": meta,
+                }
+            )
         record = RecordEnvelope.create(
             kind=normalized_signal_type,
             title=title,

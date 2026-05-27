@@ -1,0 +1,55 @@
+{
+  "name": "living-memory-smoke",
+  "scope": {
+    "agent_id": "hongtu",
+    "workspace_id": "embodied",
+    "user_id": "darrow"
+  },
+  "seed": [
+    {
+      "id": "concise-style",
+      "title": "Concise style",
+      "text": "Prefer concise answers. No fluff, get straight to the point today.",
+      "memory_type": "preference"
+    },
+    {
+      "id": "repair-boundary",
+      "title": "Repair boundary",
+      "text": "You broke my trust by ignoring the boundary again; repair this before proceeding.",
+      "memory_type": "preference"
+    }
+  ],
+  "cases": [
+    {
+      "id": "temporal-motive-posture",
+      "seed_id": "concise-style",
+      "expect_temporal": {
+        "temporal_distance": "present"
+      },
+      "expect_motive": {
+        "motive": "efficiency"
+      },
+      "expect_affective": {
+        "valence": "neutral"
+      },
+      "expect_posture": {
+        "naturalness": "concise"
+      },
+      "expect_stale": false
+    },
+    {
+      "id": "repair",
+      "seed_id": "repair-boundary",
+      "expect_motive": {
+        "motive": "trust_repair"
+      },
+      "expect_affective": {
+        "repair_needed": true
+      },
+      "expect_repair_needed": true,
+      "expect_posture": {
+        "recommended": "act"
+      }
+    }
+  ]
+}

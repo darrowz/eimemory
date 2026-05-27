@@ -125,6 +125,194 @@ def test_runtime_store_quality_reranks_similar_memories(tmp_path) -> None:
     assert report["scored_items"][0]["final_score"] > report["scored_items"][1]["final_score"]
 
 
+def test_runtime_store_living_boundary_repair_memory_reranks_similar_generic_memory(tmp_path) -> None:
+    store = RuntimeStore(root=tmp_path)
+    scope = ScopeRef(agent_id="main", workspace_id="demo")
+    generic = RecordEnvelope.create(
+        kind="memory",
+        title="Communication constraint",
+        summary="When deployment pressure rises, discuss communication boundaries with the operator.",
+        scope=scope,
+    )
+    living = RecordEnvelope.create(
+        kind="memory",
+        title="Repair boundary preference",
+        summary="When deployment pressure rises, discuss communication boundaries with the operator.",
+        scope=scope,
+        meta={
+            "living_memory_v1": {
+                "motive": {
+                    "boundary_labels": ["communication boundary"],
+                    "desire_labels": ["repair trust"],
+                },
+                "affective": {
+                    "pressure": 0.8,
+                    "frustration_repeat": True,
+                    "trust_building": True,
+                    "repair_needed": True,
+                },
+                "temporal": {"status": "active"},
+            }
+        },
+    )
+    store.append(generic)
+    store.append(living)
+
+    results, report = store.search_with_diagnostics(
+        query="repair communication boundary",
+        kinds=["memory"],
+        scope=scope,
+        limit=2,
+        recall_filters={"living_task_context_terms": ["repair", "communication boundary"]},
+    )
+
+    assert [record.title for record in results] == [
+        "Repair boundary preference",
+        "Communication constraint",
+    ]
+    top_item = report["scored_items"][0]
+    assert top_item["living_memory"]["affective"]["repair_needed"] is True
+    assert top_item["living_score_adjustments"]["motive_match_boost"] > 0
+    assert top_item["living_score_adjustments"]["affective_salience_boost"] > 0
+    assert top_item["living_score_adjustments"]["total_adjustment"] > 0
+    assert top_item["final_score"] > top_item["base_final_score"]
+
+
+def test_runtime_store_living_expired_superseded_memory_is_penalized(tmp_path) -> None:
+    store = RuntimeStore(root=tmp_path)
+    scope = ScopeRef(agent_id="main", workspace_id="demo")
+    current = RecordEnvelope.create(
+        kind="memory",
+        title="Current deployment identity",
+        summary="OpenClaw deployment identity should use the current operator agreement.",
+        scope=scope,
+    )
+    stale = RecordEnvelope.create(
+        kind="memory",
+        title="Expired deployment identity",
+        summary="OpenClaw deployment identity should use the current operator agreement.",
+        scope=scope,
+        meta={
+            "living_memory_v1": {
+                "temporal": {
+                    "valid_until": "2000-01-01T00:00:00Z",
+                    "superseded": True,
+                }
+            }
+        },
+    )
+    store.append(stale)
+    store.append(current)
+
+    results, report = store.search_with_diagnostics(
+        query="current deployment identity",
+        kinds=["memory"],
+        scope=scope,
+        limit=2,
+    )
+
+    assert [record.title for record in results] == [
+        "Current deployment identity",
+        "Expired deployment identity",
+    ]
+    stale_item = next(item for item in report["scored_items"] if item["title"] == "Expired deployment identity")
+    assert stale_item["living_score_adjustments"]["stale_identity_penalty"] < 0
+    assert stale_item["final_score"] < stale_item["base_final_score"]
+
+
+def test_runtime_store_auto_enriched_living_labels_match_natural_query_terms(tmp_path) -> None:
+    from eimemory.api.runtime import Runtime
+
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "main", "workspace_id": "demo"}
+    generic = runtime.memory.ingest(
+        text="Prefer concise answers when writing operator updates.",
+        memory_type="preference",
+        title="Generic concise style",
+        scope=scope,
+        force_capture=True,
+    )
+    boundary = runtime.memory.ingest(
+        text="Prefer concise answers. No fluff, get straight to the point.",
+        memory_type="preference",
+        title="No fluff concise style",
+        scope=scope,
+        force_capture=True,
+    )
+
+    results, report = runtime.store.search_with_diagnostics(
+        query="no fluff concise style",
+        kinds=["memory"],
+        scope=scope,
+        limit=2,
+        recall_filters={"living_task_context_terms": ["no fluff"]},
+    )
+
+    assert results[0].record_id == boundary.record_id
+    assert {item.record_id for item in results} == {boundary.record_id, generic.record_id}
+    top_item = report["scored_items"][0]
+    assert top_item["record_id"] == boundary.record_id
+    assert top_item["living_score_adjustments"]["motive_match_boost"] > 0
+
+
+def test_runtime_store_auto_enriched_pressure_contributes_to_affective_boost(tmp_path) -> None:
+    from eimemory.api.runtime import Runtime
+
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "main", "workspace_id": "demo"}
+    urgent = runtime.memory.ingest(
+        text="This is urgent and under pressure; reply before proceeding.",
+        memory_type="preference",
+        title="Urgent pressure preference",
+        scope=scope,
+        force_capture=True,
+    )
+
+    _, report = runtime.store.search_with_diagnostics(
+        query="urgent pressure reply",
+        kinds=["memory"],
+        scope=scope,
+        limit=1,
+    )
+
+    scored = report["scored_items"][0]
+    assert scored["record_id"] == urgent.record_id
+    assert scored["living_memory"]["affective"]["pressure"] == "elevated"
+    assert scored["living_score_adjustments"]["affective_salience_boost"] > 0
+
+
+def test_runtime_store_auto_enriched_let_go_memory_is_stale_penalized(tmp_path) -> None:
+    from eimemory.api.runtime import Runtime
+
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "main", "workspace_id": "demo"}
+    stale = runtime.memory.ingest(
+        text="Let go of the old deployment preference; it is no longer relevant.",
+        memory_type="preference",
+        title="Old deployment preference",
+        scope=scope,
+        force_capture=True,
+    )
+    current = runtime.memory.ingest(
+        text="Use the current deployment preference for release work.",
+        memory_type="preference",
+        title="Current deployment preference",
+        scope=scope,
+        force_capture=True,
+    )
+
+    results, report = runtime.store.search_with_diagnostics(
+        query="deployment preference",
+        kinds=["memory"],
+        scope=scope,
+        limit=2,
+    )
+
+    assert results[0].record_id == current.record_id
+    stale_item = next(item for item in report["scored_items"] if item["record_id"] == stale.record_id)
+    assert stale_item["living_score_adjustments"]["stale_identity_penalty"] < 0
+
+
 def test_runtime_store_quality_does_not_match_unrelated_memories(tmp_path) -> None:
     store = RuntimeStore(root=tmp_path)
     scope = ScopeRef(agent_id="main", workspace_id="demo")

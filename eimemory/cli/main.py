@@ -201,6 +201,16 @@ def _build_parser() -> argparse.ArgumentParser:
     identity_repair.add_argument("--apply", action="store_true")
     identity_repair.add_argument("--limit", type=int, default=0)
 
+    living = sub.add_parser("living")
+    living_sub = living.add_subparsers(dest="living_command")
+    living_enrich = living_sub.add_parser("enrich")
+    living_enrich.add_argument("--limit", type=int, default=100)
+    living_timeline = living_sub.add_parser("timeline")
+    living_timeline.add_argument("--limit", type=int, default=100)
+    living_posture = living_sub.add_parser("posture")
+    living_posture.add_argument("query")
+    living_posture.add_argument("--limit", type=int, default=5)
+
     reflect = sub.add_parser("reflect")
     reflect_sub = reflect.add_subparsers(dest="reflect_command")
 
@@ -271,6 +281,10 @@ def _build_parser() -> argparse.ArgumentParser:
     eval_longmem.add_argument("--limit", type=int, default=10)
     eval_longmem.add_argument("--output", default="")
     eval_longmem.add_argument("--persist-report", action="store_true")
+    eval_living = eval_sub.add_parser("living")
+    eval_living.add_argument("dataset_json")
+    eval_living.add_argument("--output", default="")
+    eval_living.add_argument("--persist-report", action="store_true")
     return parser
 
 
@@ -287,6 +301,18 @@ def _print_error(error: str, exc: Exception) -> int:
         )
     )
     return 2
+
+
+def _living_enrich_report(runtime, scope: dict, *, limit: int) -> dict:
+    return runtime.enrich_living_memory(scope=scope, limit=limit)
+
+
+def _living_timeline_report(runtime, scope: dict, *, limit: int) -> dict:
+    return runtime.build_living_timeline(scope=scope, limit=limit)
+
+
+def _living_posture_report(runtime, scope: dict, *, query: str, limit: int) -> dict:
+    return runtime.recommend_action_posture(query, scope=scope, limit=limit)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -310,7 +336,7 @@ def main(argv: list[str] | None = None) -> int:
         print(
             json.dumps(
                 {
-                    "usage": "eimemory init|ingest|recall|paper|source|intake|export|import|backup|migrate|brief|nightly|quality|identity|reflect|governance|evolve|eval|serve-eibrain-rpc",
+                    "usage": "eimemory init|ingest|recall|paper|source|intake|export|import|backup|migrate|brief|nightly|quality|identity|living|reflect|governance|evolve|eval|serve-eibrain-rpc",
                 }
             )
         )
@@ -709,6 +735,21 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         print(json.dumps({"usage": "eimemory identity report|repair"}))
         return 0
+    if parsed.command == "living":
+        if parsed.living_command == "enrich":
+            report = _living_enrich_report(runtime, scope, limit=parsed.limit)
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0 if report.get("ok") else 2
+        if parsed.living_command == "timeline":
+            report = _living_timeline_report(runtime, scope, limit=parsed.limit)
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0 if report.get("ok") else 2
+        if parsed.living_command == "posture":
+            report = _living_posture_report(runtime, scope, query=parsed.query, limit=parsed.limit)
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0 if report.get("ok") else 2
+        print(json.dumps({"usage": "eimemory living enrich|timeline|posture"}))
+        return 0
     if parsed.command == "openclaw-hook":
         try:
             event = json.loads(sys.stdin.read() or "{}")
@@ -920,7 +961,39 @@ def main(argv: list[str] | None = None) -> int:
                 report = {**report, "output": str(output_path)}
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0 if report.get("ok") else 1
-        print(json.dumps({"usage": "eimemory eval run|ci|longmem"}))
+        if parsed.eval_command == "living":
+            try:
+                with open(parsed.dataset_json, "r", encoding="utf-8") as handle:
+                    dataset = json.load(handle)
+            except OSError as exc:
+                print(json.dumps({"ok": False, "error": "dataset_unreadable", "detail": str(exc)}, ensure_ascii=False))
+                return 2
+            except json.JSONDecodeError:
+                print(json.dumps({"ok": False, "error": "invalid_dataset_json"}, ensure_ascii=False))
+                return 2
+            try:
+                from eimemory.evaluation import run_livingmem_eval
+
+                report = run_livingmem_eval(
+                    runtime,
+                    dataset,
+                    persist_report=bool(parsed.persist_report),
+                )
+            except ValueError as exc:
+                print(json.dumps({"ok": False, "error": "invalid_eval_dataset", "detail": str(exc)}, ensure_ascii=False))
+                return 2
+            if parsed.output:
+                try:
+                    output_path = Path(parsed.output)
+                    output_path.parent.mkdir(parents=True, exist_ok=True)
+                    output_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+                except OSError as exc:
+                    print(json.dumps({"ok": False, "error": "eval_output_failed", "detail": str(exc)}, ensure_ascii=False))
+                    return 2
+                report = {**report, "output": str(output_path)}
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0 if report.get("ok") else 1
+        print(json.dumps({"usage": "eimemory eval run|ci|longmem|living"}))
         return 0
     if parsed.command == "reflect":
         if parsed.reflect_command == "check":
