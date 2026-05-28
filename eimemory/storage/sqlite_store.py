@@ -287,6 +287,10 @@ class SqliteRecordStore:
                 continue
             source_weight = self._source_weight(record, recall_filters)
             modality_boost = self._preferred_modality_boost(record, recall_filters)
+            actionable_adjustment, actionable_reasons = self._actionable_intent_adjustment(
+                record=record,
+                recall_filters=recall_filters,
+            )
             stored_score = extract_memory_score(record.meta) or score_from_legacy_quality(
                 record=record,
                 activity="quality.repair",
@@ -320,7 +324,12 @@ class SqliteRecordStore:
             )
             if living_adjustments["stale_identity_penalty"] < 0 and lexical_adjustment > 0:
                 lexical_adjustment = 0.0
-            score = self._clamp_score(base_score + float(living_adjustments["total_adjustment"]) + lexical_adjustment)
+            score = self._clamp_score(
+                base_score
+                + float(living_adjustments["total_adjustment"])
+                + lexical_adjustment
+                + actionable_adjustment
+            )
             scored.append(
                 (
                     score,
@@ -341,6 +350,8 @@ class SqliteRecordStore:
                         "lexical_adjustment": round(float(lexical_adjustment), 4),
                         "kind_intent_adjustment": round(float(kind_intent_adjustment), 4),
                         "kind_intent_penalty": kind_intent_penalty,
+                        "actionable_intent_adjustment": round(float(actionable_adjustment), 4),
+                        "actionable_intent_reasons": list(actionable_reasons),
                         "lexical_signal": lexical_signal.__dict__,
                         "base_final_score": round(base_score, 4),
                         "final_score": round(score, 4),
@@ -725,6 +736,83 @@ class SqliteRecordStore:
     @staticmethod
     def _is_weak_version_anchor(term: str) -> bool:
         return bool(re.fullmatch(r"(?:v\d+(?:\.\d+)?|\d+(?:\.\d+)?)", str(term or "").strip().lower()))
+
+    @classmethod
+    def _actionable_intent_adjustment(
+        cls,
+        *,
+        record: RecordEnvelope,
+        recall_filters: dict | None,
+    ) -> tuple[float, tuple[str, ...]]:
+        if cls._intent_name_from_filters(dict(recall_filters or {})) not in {
+            "project_delivery",
+            "operator_preference",
+            "living_posture",
+        }:
+            return 0.0, ()
+        text = cls._record_actionable_text(record)
+        if not text:
+            return 0.0, ()
+        adjustment = 0.0
+        reasons: list[str] = []
+        if cls._looks_like_serialized_tool_call(text):
+            adjustment -= 0.1
+            reasons.append("serialized_tool_call")
+        if cls._looks_like_actionable_memory(text):
+            adjustment += 0.08
+            reasons.append("actionable_preference")
+        memory_type = str(
+            business_metadata(record.meta).get("memory_type")
+            or record.content.get("memory_type")
+            or ""
+        ).strip().lower()
+        if memory_type in {"preference", "rule", "policy"}:
+            adjustment += 0.04
+            reasons.append(f"memory_type:{memory_type}")
+        return max(-0.12, min(0.12, adjustment)), tuple(reasons)
+
+    @staticmethod
+    def _record_actionable_text(record: RecordEnvelope) -> str:
+        return "\n".join(
+            str(part or "")
+            for part in [
+                record.title,
+                record.summary,
+                record.detail,
+                record.content.get("text", ""),
+                record.content.get("excerpt", ""),
+            ]
+            if part
+        ).strip()
+
+    @staticmethod
+    def _looks_like_serialized_tool_call(text: str) -> bool:
+        compact = re.sub(r"\s+", "", str(text or "").lower())
+        return (
+            compact.startswith('{"type":"toolcall"')
+            or ('"type":"toolcall"' in compact and '"arguments"' in compact)
+            or ('"name":"message"' in compact and '"arguments"' in compact and '"input"' in compact)
+        )
+
+    @staticmethod
+    def _looks_like_actionable_memory(text: str) -> bool:
+        value = str(text or "").lower()
+        if re.search(r"以后.+先.+再", value):
+            return True
+        actionable_terms = (
+            "长期记忆",
+            "以后",
+            "先对",
+            "逐条验收",
+            "验收清单",
+            "交付要求",
+            "硬规则",
+            "偏好",
+            "不要",
+            "必须",
+            "优先",
+        )
+        return sum(1 for term in actionable_terms if term in value) >= 2
 
     @classmethod
     def _normalized_recall_filters(cls, recall_filters: dict | None) -> dict:

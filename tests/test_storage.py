@@ -759,6 +759,75 @@ def test_runtime_store_search_filters_claim_card_with_only_embedded_version_matc
     assert all(item["record_id"] != claim_card.record_id for item in report["scored_items"])
 
 
+def test_runtime_store_search_prefers_actionable_project_memory_over_tool_call_transcript(tmp_path) -> None:
+    store = RuntimeStore(root=tmp_path)
+    scope = ScopeRef(agent_id="main", workspace_id="project")
+    tool_transcript = RecordEnvelope.create(
+        kind="memory",
+        title="OpenClaw agent outcome",
+        summary=(
+            '{"type":"toolCall","name":"message","arguments":{"message":"'
+            "我没有交付实质内容；尝试取消时平台返回无权取消，所以提交透明说明。"
+            '"}}'
+        ),
+        scope=scope,
+        source="openclaw.agent_end",
+        meta={
+            "memory_type": "conversation",
+            "quality": {
+                "importance": 0.7,
+                "salience_score": 0.7,
+                "confidence": 0.62,
+                "freshness": 1.0,
+                "reuse_potential": 0.5,
+                "capture_decision": "accept",
+            },
+        },
+    )
+    actionable_memory = RecordEnvelope.create(
+        kind="memory",
+        title="OpenClaw agent outcome",
+        summary="已记到长期记忆。以后外部订单先对需求清单逐条验收，再交付。",
+        scope=scope,
+        source="openclaw.agent_end",
+        meta={
+            "memory_type": "conversation",
+            "quality": {
+                "importance": 0.52,
+                "salience_score": 0.52,
+                "confidence": 0.62,
+                "freshness": 1.0,
+                "reuse_potential": 0.38,
+                "capture_decision": "accept",
+            },
+        },
+    )
+    store.append(tool_transcript)
+    store.append(actionable_memory)
+
+    results, report = store.search_with_diagnostics(
+        query="UUMit 交付品质 海报 v2",
+        kinds=["memory", "claim_card"],
+        scope=scope,
+        limit=5,
+        recall_filters={
+            "intent_name": "project_delivery",
+            "memory_cube": "project",
+            "preferred_kinds": ("memory", "rule", "raw_chunk", "reflection"),
+            "suppressed_kinds": ("knowledge_page",),
+            "kind_weights": {},
+        },
+    )
+
+    assert [item.record_id for item in results[:2]] == [
+        actionable_memory.record_id,
+        tool_transcript.record_id,
+    ]
+    scored = {item["record_id"]: item for item in report["scored_items"]}
+    assert scored[actionable_memory.record_id]["actionable_intent_adjustment"] > 0
+    assert scored[tool_transcript.record_id]["actionable_intent_adjustment"] < 0
+
+
 def test_runtime_store_search_with_knowledge_penalty_for_non_research_queries(tmp_path) -> None:
     store = RuntimeStore(root=tmp_path)
     scope = ScopeRef(agent_id="main", workspace_id="project")
