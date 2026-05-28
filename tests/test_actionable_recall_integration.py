@@ -107,3 +107,44 @@ def test_research_context_keeps_project_paper_pages_available(tmp_path) -> None:
     assert bundle.items[0].record_id == page.record_id
     assert bundle.explanation["recall_intent"]["name"] == "research"
     assert "knowledge_page" in bundle.explanation["recall_intent"]["preferred_kinds"]
+
+
+def test_project_delivery_filters_operational_digest_projections_before_ranking(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu", "workspace_id": "delivery", "user_id": "darrow"}
+    scope_ref = ScopeRef.from_dict(scope)
+    project_memory = runtime.memory.ingest(
+        text="以后外部订单先对需求清单逐条验收，再交付。",
+        memory_type="preference",
+        title="外部订单交付验收规则",
+        scope=scope,
+        source="operator.correction",
+        force_capture=True,
+    )
+    for index in range(20):
+        runtime.store.append(
+            RecordEnvelope.create(
+                kind="memory",
+                title=f"Operational page: Research digest 2026-05-{index + 1:02d}",
+                summary="UUMit 交付品质 海报 v2 research digest projection.",
+                scope=scope_ref,
+                source="eimemory.knowledge.projectors",
+                meta={
+                    "projection_type": "operational_knowledge",
+                    "source_record_id": f"digest-{index}",
+                    "memory_type": "fact",
+                },
+            )
+        )
+
+    bundle = runtime.memory.recall(
+        query="UUMit 交付品质 海报 v2",
+        scope=scope,
+        task_context={"task_type": "cli.recall"},
+        limit=5,
+    )
+
+    assert bundle.items
+    assert bundle.items[0].record_id == project_memory.record_id
+    assert all("Operational page: Research digest" not in item.title for item in bundle.items)
+    assert "operational_knowledge" in bundle.explanation["recall_filters"]["blocked_projection_types"]

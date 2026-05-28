@@ -280,7 +280,10 @@ class SqliteRecordStore:
             effective_lexical_count = float(lexical_count)
             if living_adjustments["stale_identity_penalty"] < 0:
                 effective_lexical_count = 0.0
-            if query_tokens_for_filter and lexical_signal.score <= 0 and semantic_score < 0.08 and vector_score < 0.28:
+            if self._requires_lexical_grounding(recall_filters):
+                if lexical_signal.score <= 0 and semantic_score < 0.08 and vector_score < 0.42:
+                    continue
+            elif query_tokens_for_filter and lexical_signal.score <= 0 and semantic_score < 0.08 and vector_score < 0.28:
                 continue
             source_weight = self._source_weight(record, recall_filters)
             modality_boost = self._preferred_modality_boost(record, recall_filters)
@@ -699,6 +702,14 @@ class SqliteRecordStore:
         return str(filters.get("intent_name") or filters.get("intent") or "").strip().lower()
 
     @classmethod
+    def _requires_lexical_grounding(cls, recall_filters: dict | None) -> bool:
+        return cls._intent_name_from_filters(dict(recall_filters or {})) in {
+            "project_delivery",
+            "operator_preference",
+            "living_posture",
+        }
+
+    @classmethod
     def _normalized_recall_filters(cls, recall_filters: dict | None) -> dict:
         filters: dict = dict(recall_filters or {})
         filters["intent_name"] = cls._intent_name_from_filters(filters)
@@ -773,6 +784,16 @@ class SqliteRecordStore:
         if not filters:
             return True
         labels = self._record_filter_labels(record)
+        blocked_projection_types = set(self._as_tuple(filters.get("blocked_projection_types") or ()))
+        if blocked_projection_types:
+            projection_type = str(
+                business_metadata(record.meta).get("projection_type")
+                or record.provenance.get("projection_type")
+                or record.content.get("projection_type")
+                or ""
+            ).strip()
+            if projection_type in blocked_projection_types:
+                return False
         blocked_kinds = set(self._as_tuple(filters.get("blocked_kinds") or ()))
         if blocked_kinds and record.kind in blocked_kinds:
             return False

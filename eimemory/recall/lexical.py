@@ -104,7 +104,21 @@ def _clean_text(value: str) -> str:
 
 
 def _extract_terms(text: str) -> list[str]:
-    return [match.group(0).strip() for match in _TOKEN_RE.finditer(text)]
+    terms: list[str] = []
+    for match in _TOKEN_RE.finditer(text):
+        term = match.group(0).strip()
+        if not term:
+            continue
+        terms.append(term)
+        terms.extend(_split_chinese_compound(term))
+    return _dedupe(terms)
+
+
+def _split_chinese_compound(term: str) -> list[str]:
+    if not _is_chinese(term) or len(term) <= 2:
+        return []
+    chunks = [term[index : index + 2] for index in range(0, len(term) - 1, 2)]
+    return [chunk for chunk in chunks if len(chunk) == 2 and chunk != term]
 
 
 def _extract_phrase_terms(text: str) -> list[str]:

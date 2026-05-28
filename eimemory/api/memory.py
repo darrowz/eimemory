@@ -322,6 +322,10 @@ class MemoryAPI:
             recall_filters["preferred_kinds"] = list(recall_intent.preferred_kinds)
         if recall_intent.suppressed_kinds:
             recall_filters["suppressed_kinds"] = list(recall_intent.suppressed_kinds)
+        if recall_intent.name in {"project_delivery", "operator_preference", "living_posture"} and recall_intent.confidence >= 0.45:
+            recall_filters["blocked_projection_types"] = list(
+                dict.fromkeys([*list(recall_filters.get("blocked_projection_types") or []), "operational_knowledge"])
+            )
         if recall_intent.query_terms:
             terms = [*list(recall_filters.get("living_task_context_terms") or []), *list(recall_intent.query_terms)]
             recall_filters["living_query_terms"] = list(dict.fromkeys(str(term) for term in terms if str(term).strip()))

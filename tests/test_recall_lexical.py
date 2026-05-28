@@ -16,6 +16,8 @@ def test_analyze_lexical_signal_recognizes_chinese_phrase_entity_and_version_hit
     assert "外部订单" in signal.exact_phrase_hits
     assert "海报" in signal.exact_phrase_hits
     assert "uumit" in signal.exact_phrase_hits
+    assert "交付" in signal.token_hits
+    assert "品质" in signal.token_hits
 
 
 def test_analyze_lexical_signal_marks_non_research_knowledge_page_penalty_reason() -> None:
