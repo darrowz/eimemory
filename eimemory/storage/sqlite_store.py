@@ -281,7 +281,7 @@ class SqliteRecordStore:
             if living_adjustments["stale_identity_penalty"] < 0:
                 effective_lexical_count = 0.0
             if self._requires_lexical_grounding(recall_filters):
-                if lexical_signal.score <= 0 and semantic_score < 0.08 and vector_score < 0.42:
+                if not self._has_required_lexical_anchor(lexical_signal):
                     continue
             elif query_tokens_for_filter and lexical_signal.score <= 0 and semantic_score < 0.08 and vector_score < 0.28:
                 continue
@@ -708,6 +708,23 @@ class SqliteRecordStore:
             "operator_preference",
             "living_posture",
         }
+
+    @classmethod
+    def _has_required_lexical_anchor(cls, lexical_signal: Any) -> bool:
+        for hit_group in (
+            getattr(lexical_signal, "token_hits", ()),
+            getattr(lexical_signal, "entity_hits", ()),
+            getattr(lexical_signal, "exact_phrase_hits", ()),
+        ):
+            for hit in hit_group:
+                normalized = str(hit or "").strip().lower()
+                if normalized and not cls._is_weak_version_anchor(normalized):
+                    return True
+        return False
+
+    @staticmethod
+    def _is_weak_version_anchor(term: str) -> bool:
+        return bool(re.fullmatch(r"(?:v\d+(?:\.\d+)?|\d+(?:\.\d+)?)", str(term or "").strip().lower()))
 
     @classmethod
     def _normalized_recall_filters(cls, recall_filters: dict | None) -> dict:

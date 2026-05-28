@@ -58,14 +58,14 @@ def analyze_lexical_signal(
                 *query_terms,
                 *_extract_phrase_terms(query_text),
             ]
-            if phrase and phrase in normalized_record and len(phrase) >= 2
+            if phrase and _term_matches_record(phrase, normalized_record, record_terms) and len(phrase) >= 2
         ]
     )
     version_hits = _dedupe(
-        [term for term in query_terms if _VERSION_RE.match(term) and term in normalized_record]
+        [term for term in query_terms if _VERSION_RE.match(term) and term in record_terms]
     )
     entity_hits = _dedupe(
-        [term for term in query_terms if _is_entity_term(term) and term in normalized_record]
+        [term for term in query_terms if _is_entity_term(term) and _term_matches_record(term, normalized_record, record_terms)]
     )
     entity_hits.extend(_expand_chinese_context(normalized_record, exact_phrase_hits))
     token_hits = _dedupe([term for term in query_terms if term in record_terms])
@@ -124,6 +124,12 @@ def _split_chinese_compound(term: str) -> list[str]:
 def _extract_phrase_terms(text: str) -> list[str]:
     quoted = [match.group(1).strip().lower() for match in _PHRASE_RE.finditer(text)]
     return [term for term in quoted if term]
+
+
+def _term_matches_record(term: str, normalized_record: str, record_terms: set[str]) -> bool:
+    if _is_chinese(term):
+        return term in normalized_record
+    return term in record_terms
 
 
 def _dedupe(values: list[str] | tuple[str, ...]) -> list[str]:

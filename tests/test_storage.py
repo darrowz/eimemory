@@ -720,6 +720,45 @@ def test_runtime_store_search_with_lexical_diagnostics_prioritizes_project_memor
     assert report["scored_items"][0]["final_score"] > report["scored_items"][1]["final_score"]
 
 
+def test_runtime_store_search_filters_claim_card_with_only_embedded_version_match_for_project_query(tmp_path) -> None:
+    store = RuntimeStore(root=tmp_path)
+    scope = ScopeRef(agent_id="main", workspace_id="project")
+    memory = RecordEnvelope.create(
+        kind="memory",
+        title="外部订单交付验收规则",
+        summary="以后外部订单先对需求清单逐条验收，再交付。",
+        scope=scope,
+        source="operator.correction",
+        meta={"force_capture": True},
+    )
+    claim_card = RecordEnvelope.create(
+        kind="claim_card",
+        title='Our approach decouples the task and employs DSPy"s MIPROv2 optimizer',
+        summary='Our approach decouples the task into modular stages and employs DSPy"s MIPROv2 optimizer.',
+        scope=scope,
+        source="eimemory.knowledge.claims",
+    )
+    store.append(memory)
+    store.append(claim_card)
+
+    results, report = store.search_with_diagnostics(
+        query="UUMit 交付品质 海报 v2",
+        kinds=["memory", "claim_card"],
+        scope=scope,
+        limit=5,
+        recall_filters={
+            "intent_name": "project_delivery",
+            "memory_cube": "project",
+            "preferred_kinds": ("memory", "rule", "raw_chunk", "reflection"),
+            "suppressed_kinds": ("knowledge_page",),
+            "kind_weights": {},
+        },
+    )
+
+    assert [item.record_id for item in results] == [memory.record_id]
+    assert all(item["record_id"] != claim_card.record_id for item in report["scored_items"])
+
+
 def test_runtime_store_search_with_knowledge_penalty_for_non_research_queries(tmp_path) -> None:
     store = RuntimeStore(root=tmp_path)
     scope = ScopeRef(agent_id="main", workspace_id="project")

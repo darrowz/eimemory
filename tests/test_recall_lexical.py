@@ -20,6 +20,20 @@ def test_analyze_lexical_signal_recognizes_chinese_phrase_entity_and_version_hit
     assert "品质" in signal.token_hits
 
 
+def test_analyze_lexical_signal_does_not_match_version_inside_compound_token() -> None:
+    signal = analyze_lexical_signal(
+        query="UUMit 交付品质 海报 v2",
+        record_text='Our approach employs DSPy"s MIPROv2 optimizer for modular prompt tuning.',
+        record_kind="claim_card",
+        record_source="eimemory.knowledge.claims",
+        recall_filters={"intent_name": "project_delivery"},
+    )
+
+    assert signal.score == 0.0
+    assert signal.version_hits == ()
+    assert "v2" not in signal.exact_phrase_hits
+
+
 def test_analyze_lexical_signal_marks_non_research_knowledge_page_penalty_reason() -> None:
     signal = analyze_lexical_signal(
         query="UUMit 交付品质",
