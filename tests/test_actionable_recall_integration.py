@@ -26,6 +26,20 @@ def test_project_delivery_recall_routes_away_from_research_pages(tmp_path) -> No
             meta={"page_type": "paper"},
         )
     )
+    runtime.store.append(
+        RecordEnvelope.create(
+            kind="memory",
+            title="Operational page: Research digest 2026-05-27",
+            summary="Recent papers: SIREN and PRISM recommendation research. Notable claim mentions delivery quality.",
+            scope=scope_ref,
+            source="eimemory.knowledge.projectors",
+            meta={
+                "projection_type": "operational_knowledge",
+                "source_record_id": "digest-test",
+                "memory_type": "fact",
+            },
+        )
+    )
 
     bundle = runtime.memory.recall(
         query="UUMit 交付品质 海报 v2",
@@ -37,6 +51,7 @@ def test_project_delivery_recall_routes_away_from_research_pages(tmp_path) -> No
     assert bundle.items
     assert bundle.items[0].record_id == project_memory.record_id
     assert all("SIREN" not in item.title for item in bundle.items)
+    assert all("Operational page: Research digest" not in item.title for item in bundle.items)
     assert bundle.explanation["recall_intent"]["name"] == "project_delivery"
     assert bundle.explanation["recall_intent"]["memory_cube"] == "project"
 

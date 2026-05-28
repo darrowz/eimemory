@@ -402,6 +402,18 @@ class MemoryAPI:
             return True
         if item.kind == "knowledge_page" and str(item.source or "") == "eimemory.knowledge.synthesis":
             return True
+        projection_type = str(
+            business_metadata(item.meta).get("projection_type")
+            or item.provenance.get("projection_type")
+            or item.content.get("projection_type")
+            or ""
+        ).strip().lower()
+        if (
+            item.kind == "memory"
+            and projection_type == "operational_knowledge"
+            and str(item.source or "") == "eimemory.knowledge.projectors"
+        ):
+            return True
         return False
 
     def _normalize_ingest_memory_type(self, *, memory_type: str, text: str, title: str) -> str:
