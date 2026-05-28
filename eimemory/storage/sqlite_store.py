@@ -744,11 +744,8 @@ class SqliteRecordStore:
         record: RecordEnvelope,
         recall_filters: dict | None,
     ) -> tuple[float, tuple[str, ...]]:
-        if cls._intent_name_from_filters(dict(recall_filters or {})) not in {
-            "project_delivery",
-            "operator_preference",
-            "living_posture",
-        }:
+        intent_name = cls._intent_name_from_filters(dict(recall_filters or {}))
+        if intent_name not in {"project_delivery", "operator_preference", "living_posture"}:
             return 0.0, ()
         text = cls._record_actionable_text(record)
         if not text:
@@ -758,7 +755,7 @@ class SqliteRecordStore:
         if cls._looks_like_serialized_tool_call(text):
             adjustment -= 0.1
             reasons.append("serialized_tool_call")
-        if cls._looks_like_actionable_memory(text):
+        if intent_name in {"project_delivery", "living_posture"} and cls._looks_like_actionable_memory(text):
             adjustment += 0.08
             reasons.append("actionable_preference")
         memory_type = str(

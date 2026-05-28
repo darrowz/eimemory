@@ -828,6 +828,71 @@ def test_runtime_store_search_prefers_actionable_project_memory_over_tool_call_t
     assert scored[tool_transcript.record_id]["actionable_intent_adjustment"] < 0
 
 
+def test_runtime_store_search_operator_preference_keeps_exact_style_memory_first(tmp_path) -> None:
+    store = RuntimeStore(root=tmp_path)
+    scope = ScopeRef(agent_id="main", workspace_id="operator")
+    poetic_memory = RecordEnvelope.create(
+        kind="memory",
+        title="OpenClaw agent outcome",
+        summary=(
+            "凌晨三点的纸页还带着服务器的微温。鸿哥说研究不能只躺在摘要里。"
+            "于是我把 paper 折成 workflow，把偏好压缩成规则，把“以后回复简洁”放进缓存。"
+        ),
+        scope=scope,
+        source="openclaw.agent_end",
+        meta={
+            "memory_type": "conversation",
+            "quality": {
+                "importance": 0.72,
+                "salience_score": 0.72,
+                "confidence": 0.62,
+                "freshness": 1.0,
+                "reuse_potential": 0.5,
+                "capture_decision": "accept",
+            },
+        },
+    )
+    style_memory = RecordEnvelope.create(
+        kind="memory",
+        title="Hongtu operator communication style",
+        summary="鸿哥 沟通风格：极简、直接，讨厌废话；先给结论，少解释。",
+        scope=scope,
+        source="operator.correction",
+        meta={
+            "memory_type": "preference",
+            "quality": {
+                "importance": 0.6,
+                "salience_score": 0.6,
+                "confidence": 0.8,
+                "freshness": 1.0,
+                "reuse_potential": 0.7,
+                "capture_decision": "accept",
+            },
+        },
+    )
+    store.append(poetic_memory)
+    store.append(style_memory)
+
+    results, report = store.search_with_diagnostics(
+        query="鸿哥 沟通风格",
+        kinds=["memory", "claim_card"],
+        scope=scope,
+        limit=5,
+        recall_filters={
+            "intent_name": "operator_preference",
+            "memory_cube": "operator",
+            "preferred_kinds": ("memory", "rule", "reflection"),
+            "suppressed_kinds": ("knowledge_page",),
+            "kind_weights": {},
+        },
+    )
+
+    assert results[0].record_id == style_memory.record_id
+    scored = {item["record_id"]: item for item in report["scored_items"]}
+    assert scored[poetic_memory.record_id]["actionable_intent_adjustment"] == 0.0
+    assert "actionable_preference" not in scored[poetic_memory.record_id]["actionable_intent_reasons"]
+
+
 def test_runtime_store_search_with_knowledge_penalty_for_non_research_queries(tmp_path) -> None:
     store = RuntimeStore(root=tmp_path)
     scope = ScopeRef(agent_id="main", workspace_id="project")
