@@ -8,6 +8,7 @@ from eimemory.living import LIVING_MEMORY_META_KEY, enrich_living_memory
 from eimemory.metadata import business_metadata
 from eimemory.models.records import LinkRef, RecallBundle, RecordEnvelope, ScopeRef
 from eimemory.raw.retrieval import search_raw_chunks
+from eimemory.recall import RecallIntent, classify_recall_intent
 from eimemory.scoring import ScoreContext, evaluate_memory_score, extract_memory_score, with_score_metadata
 from eimemory.storage.runtime_store import RuntimeStore
 
@@ -138,7 +139,9 @@ class MemoryAPI:
         )
         profile_config = self._recall_profile_config(recall_profile)
         search_limit = max(limit * profile_config["search_multiplier"], limit)
+        recall_intent = classify_recall_intent(normalized_query, task_context)
         recall_filters = self._recall_filters_from_task_context(task_context)
+        self._merge_recall_intent_filters(recall_filters, recall_intent)
         recall_filters["scoring_profile"] = recall_profile
         raw_evidence: list[dict] = []
         if raw_hybrid:
@@ -166,9 +169,10 @@ class MemoryAPI:
         for item in self._report_records_from_query(normalized_query, query_scope_refs):
             seen_item_ids.add(item.record_id)
             items.append(item)
-        search_kinds = ["memory", "claim_card", "knowledge_page"]
-        if report_query:
-            search_kinds.append("reflection")
+        search_kinds = self._search_kinds_for_recall_intent(
+            recall_intent=recall_intent,
+            report_query=report_query,
+        )
         for query_scope_ref in query_scope_refs:
             page_items, page_report = self.store.search_with_diagnostics(
                 query=normalized_query,
@@ -287,6 +291,7 @@ class MemoryAPI:
                 "source_composition": self._source_composition(items),
                 "selected_records": self._selected_record_summaries(items),
                 "scoring": self._scoring_for_items(items, search_report),
+                "recall_intent": self._recall_intent_summary(recall_intent),
                 "query_scopes": [self._scope_dict(item) for item in query_scope_refs],
                 "recall_scope_aliases": recall_scope_aliases,
                 "recall_filters": recall_filters,
@@ -309,6 +314,41 @@ class MemoryAPI:
             "living_task_context_terms": self._living_task_context_terms(task_context),
         }
         return {key: value for key, value in filters.items() if value}
+
+    def _merge_recall_intent_filters(self, recall_filters: dict, recall_intent: RecallIntent) -> None:
+        recall_filters["intent_name"] = recall_intent.name
+        recall_filters["memory_cube"] = recall_intent.memory_cube
+        if recall_intent.preferred_kinds:
+            recall_filters["preferred_kinds"] = list(recall_intent.preferred_kinds)
+        if recall_intent.suppressed_kinds:
+            recall_filters["suppressed_kinds"] = list(recall_intent.suppressed_kinds)
+        if recall_intent.query_terms:
+            terms = [*list(recall_filters.get("living_task_context_terms") or []), *list(recall_intent.query_terms)]
+            recall_filters["living_query_terms"] = list(dict.fromkeys(str(term) for term in terms if str(term).strip()))
+        source_weights = dict(recall_intent.source_weights)
+        source_weights.update(dict(recall_filters.get("source_weights") or {}))
+        if source_weights:
+            recall_filters["source_weights"] = source_weights
+
+    def _search_kinds_for_recall_intent(self, *, recall_intent: RecallIntent, report_query: bool) -> list[str]:
+        if report_query or recall_intent.name == "report":
+            return ["reflection", "memory", "claim_card"]
+        if recall_intent.name in {"project_delivery", "operator_preference", "living_posture"} and recall_intent.confidence >= 0.45:
+            return ["memory", "claim_card"]
+        return ["memory", "claim_card", "knowledge_page"]
+
+    @staticmethod
+    def _recall_intent_summary(recall_intent: RecallIntent) -> dict:
+        return {
+            "name": recall_intent.name,
+            "confidence": recall_intent.confidence,
+            "reasons": list(recall_intent.reasons),
+            "preferred_kinds": list(recall_intent.preferred_kinds),
+            "suppressed_kinds": list(recall_intent.suppressed_kinds),
+            "source_weights": dict(recall_intent.source_weights),
+            "memory_cube": recall_intent.memory_cube,
+            "query_terms": list(recall_intent.query_terms),
+        }
 
     def _apply_hard_recall_filters(self, items: list[RecordEnvelope], recall_filters: dict) -> list[RecordEnvelope]:
         if not recall_filters:

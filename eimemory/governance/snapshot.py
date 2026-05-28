@@ -35,6 +35,7 @@ def build_governance_snapshot(runtime, scope: dict | ScopeRef) -> dict[str, Any]
     )
     memory_eval_reports = _list_memory_eval_report_records(runtime, scope=scope_ref)
     longmemeval_reports = _list_longmemeval_report_records(runtime, scope=scope_ref)
+    actionable_memory_reports = _list_actionable_memory_report_records(runtime, scope=scope_ref)
     living_memory_records = _list_all_records(runtime, kinds=["memory"], scope=scope_ref)
     source_discovery_records = [
         record for record in source_candidates if record.source == "eimemory.source_discovery"
@@ -93,6 +94,7 @@ def build_governance_snapshot(runtime, scope: dict | ScopeRef) -> dict[str, Any]
             "count": len(longmemeval_reports),
             "latest": _longmemeval_summary(longmemeval_reports[0]) if longmemeval_reports else None,
         },
+        "actionable_memory": _actionable_memory_section(actionable_memory_reports),
         "living_memory": _summarize_living_memory(living_memory_records),
         "collection_policy": {
             "run_now": collection_policy["run_now"],
@@ -159,6 +161,15 @@ def _list_longmemeval_report_records(runtime, *, scope: ScopeRef) -> list[Record
         record
         for record in _list_all_records(runtime, kinds=["reflection"], scope=scope)
         if _is_longmemeval_record(record)
+    ]
+    return sorted(reports, key=_record_recency_key, reverse=True)
+
+
+def _list_actionable_memory_report_records(runtime, *, scope: ScopeRef) -> list[RecordEnvelope]:
+    reports = [
+        record
+        for record in _list_all_records(runtime, kinds=["reflection"], scope=scope)
+        if _is_actionable_memory_record(record)
     ]
     return sorted(reports, key=_record_recency_key, reverse=True)
 
@@ -353,6 +364,60 @@ def _longmemeval_summary(record: RecordEnvelope) -> dict[str, Any]:
     }
 
 
+def _actionable_memory_section(records: list[RecordEnvelope]) -> dict[str, Any]:
+    if not records:
+        return {
+            "count": 0,
+            "latest": None,
+            "posture_profile_count": 0,
+            "posture_coverage": 0.0,
+            "project_query_contamination_rate": 0.0,
+        }
+    latest = _actionable_memory_summary(records[0])
+    summary = latest["summary"]
+    return {
+        "count": len(records),
+        "latest": latest["payload"],
+        "posture_profile_count": summary.get("posture_profile_count", 0),
+        "posture_coverage": summary.get("posture_coverage", 0.0),
+        "project_query_contamination_rate": summary.get("project_query_contamination_rate", 0.0),
+    }
+
+
+def _actionable_memory_summary(record: RecordEnvelope) -> dict[str, Any]:
+    report = record.content.get("report") if isinstance(record.content.get("report"), dict) else {}
+    samples = report.get("samples")
+    if not isinstance(samples, list):
+        samples = []
+    posture_samples = [sample for sample in samples if isinstance(sample, dict) and sample.get("case_type") == "posture"]
+    posture_profile_count = sum(
+        1 for sample in posture_samples if isinstance(sample, dict) and bool(sample.get("posture_profile_non_empty"))
+    )
+    posture_coverage = round(posture_profile_count / max(1, len(posture_samples)), 3)
+    project_samples = [sample for sample in samples if isinstance(sample, dict) and str(sample.get("query_type") or "") == "project"]
+    project_contamination = sum(1 for sample in project_samples if isinstance(sample, dict) and sample.get("contamination_detected"))
+    project_query_contamination_rate = round(project_contamination / max(1, len(project_samples)), 3)
+
+    return {
+        "payload": {
+            "record_id": record.record_id,
+            "name": str(report.get("name") or record.title),
+            "pass_rate": float(report.get("pass_rate") or 0.0),
+            "posture_pass_rate": float(report.get("posture_pass_rate") or 0.0),
+            "recall_topk_pass_rate": float(report.get("recall_topk_pass_rate") or 0.0),
+            "contamination_rate": float(report.get("contamination_rate") or 0.0),
+            "project_query_contamination_rate": float(report.get("project_query_contamination_rate") or 0.0),
+            "sample_count": int(report.get("sample_count") or 0),
+            "time": asdict(record.time),
+        },
+        "summary": {
+            "posture_profile_count": posture_profile_count,
+            "posture_coverage": posture_coverage,
+            "project_query_contamination_rate": project_query_contamination_rate,
+        },
+    }
+
+
 def _summarize_living_memory(records: list[RecordEnvelope]) -> dict[str, Any]:
     from eimemory.living.operations import summarize_living_memory
 
@@ -369,6 +434,12 @@ def _is_longmemeval_record(record: RecordEnvelope) -> bool:
     if str(record.source or "") == "eimemory.longmemeval":
         return True
     return str(record.meta.get("report_type") or "") == "longmemeval_eval"
+
+
+def _is_actionable_memory_record(record: RecordEnvelope) -> bool:
+    if str(record.source or "") == "eimemory.actionable_memory":
+        return True
+    return str(record.meta.get("report_type") or "") == "actionable_memory_eval"
 
 
 def _latest_report_section(records: list[RecordEnvelope], section: str) -> dict[str, Any] | None:

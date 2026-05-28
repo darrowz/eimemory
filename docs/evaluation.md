@@ -97,6 +97,49 @@ Report metrics include `retrieval_recall_at_1/5/10`, `recall_any_at_k`,
 `recall_all_at_k`, `ndcg_at_5`, `mrr`, latency average/p95,
 `by_question_type`, and per-sample returned evidence ids.
 
+## Actionable Memory Evaluation
+
+`eimemory eval actionable` runs a compact smoke suite for recall + posture +
+contamination checks.
+
+```bash
+eimemory eval actionable examples/evaluation/actionable_memory_smoke.json \
+  --output tmp/actionable-memory-report.json
+```
+
+Cases support:
+
+- `case_type: recall` for mixed recall checks.
+- `case_type: posture` for posture-profile checks.
+- `query_type` for intent-aware recall (`project`, `research`, `chat`, etc.).
+- recall assertions: `expect_any_title`, `expect_any_record_id`,
+  `expect_any_kind`, `expect_any_text`.
+- contamination assertions: `forbid_any_title`, `forbid_any_kind`.
+- posture assertions: `expect_profile_non_empty`, `expected_constraints`.
+
+The report includes:
+
+- `ok`
+- `report_type` (always `actionable_memory_eval`)
+- `sample_count`
+- `pass_count`
+- `pass_rate`
+- `recall_topk_pass_rate`
+- `posture_pass_rate`
+- `contamination_rate`
+- `project_query_contamination_rate`
+- `samples`
+
+Persisted reports are written as `kind="reflection"` with
+`source="eimemory.actionable_memory"` and
+`meta.report_type="actionable_memory_eval"`.
+
+Governance snapshots now include:
+
+- `actionable_memory.posture_profile_count`
+- `actionable_memory.posture_coverage`
+- `actionable_memory.project_query_contamination_rate`
+
 ## Living Memory Evaluation
 
 `eimemory eval living` runs a deterministic LivingMemEval smoke suite against

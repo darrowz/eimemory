@@ -220,6 +220,48 @@ def test_runtime_store_living_expired_superseded_memory_is_penalized(tmp_path) -
     assert stale_item["final_score"] < stale_item["base_final_score"]
 
 
+def test_runtime_store_valid_until_stale_memory_does_not_win_by_exact_lexical_match(tmp_path) -> None:
+    store = RuntimeStore(root=tmp_path)
+    scope = ScopeRef(agent_id="main", workspace_id="demo")
+    current = RecordEnvelope.create(
+        kind="memory",
+        title="Use latest operator agreement",
+        summary="Use the latest operator agreement for current deployment guidance.",
+        scope=scope,
+    )
+    stale = RecordEnvelope.create(
+        kind="memory",
+        title="Current deployment guidance exact",
+        summary="Current deployment guidance exact.",
+        scope=scope,
+        meta={
+            "living_memory_v1": {
+                "temporal": {
+                    "valid_until": "2000-01-01T00:00:00Z",
+                }
+            }
+        },
+    )
+    store.append(stale)
+    store.append(current)
+
+    results, report = store.search_with_diagnostics(
+        query="current deployment guidance exact",
+        kinds=["memory"],
+        scope=scope,
+        limit=2,
+    )
+
+    assert [record.title for record in results] == [
+        "Use latest operator agreement",
+        "Current deployment guidance exact",
+    ]
+    stale_item = next(item for item in report["scored_items"] if item["title"] == "Current deployment guidance exact")
+    assert stale_item["raw_lexical_score"] > stale_item["lexical_score"]
+    assert stale_item["living_score_adjustments"]["stale_identity_penalty"] < 0
+    assert stale_item["final_score"] < report["scored_items"][0]["final_score"]
+
+
 def test_runtime_store_auto_enriched_living_labels_match_natural_query_terms(tmp_path) -> None:
     from eimemory.api.runtime import Runtime
 
@@ -627,3 +669,113 @@ def test_runtime_store_prefers_user_scoped_policy_over_newer_global_rule(tmp_pat
     policy = store.get_active_policy(task_type="brain.respond", scope=scoped)
 
     assert policy["retrieval_policy"]["route_hint"] == "user_specific"
+
+
+def test_runtime_store_search_with_lexical_diagnostics_prioritizes_project_memory(tmp_path) -> None:
+    store = RuntimeStore(root=tmp_path)
+    scope = ScopeRef(agent_id="main", workspace_id="project")
+    memory = RecordEnvelope.create(
+        kind="memory",
+        title="UUMit 交付验收清单",
+        summary="UUMit 外部订单 交付品质 海报 v2 验收清单。交付要求：按步骤逐项验收。",
+        scope=scope,
+        source="operator.correction",
+    )
+    knowledge_page = RecordEnvelope.create(
+        kind="knowledge_page",
+        title="SIREN 多模态推荐论文",
+        summary="SIREN论文讨论多模态推荐与交付系统，但未涉及 UUMit 海报 v2。",
+        scope=scope,
+        source="eimemory.knowledge.compiler",
+        meta={"page_type": "paper"},
+    )
+    store.append(memory)
+    store.append(knowledge_page)
+
+    results, report = store.search_with_diagnostics(
+        query="UUMit 交付品质 海报 v2",
+        kinds=["memory", "knowledge_page"],
+        scope=scope,
+        limit=5,
+        recall_filters={
+            "intent_name": "project_delivery",
+            "memory_cube": "project",
+            "preferred_kinds": ("memory", "rule", "raw_chunk", "reflection"),
+            "suppressed_kinds": ("knowledge_page",),
+            "kind_weights": {},
+        },
+    )
+
+    assert len(results) == 2
+    assert results[0].record_id == memory.record_id
+    assert [item["kind"] for item in report["scored_items"]] == ["memory", "knowledge_page"]
+    memory_signal = report["scored_items"][0]["lexical_signal"]
+    knowledge_item = report["scored_items"][1]
+    assert memory_signal["version_hits"] == ("v2",)
+    assert "交付品质" in memory_signal["exact_phrase_hits"]
+    assert memory_signal["entity_hits"] or memory_signal["token_hits"]
+    assert knowledge_item["kind"] == "knowledge_page"
+    assert knowledge_item["kind_intent_adjustment"] < 0
+    assert knowledge_item["kind_intent_penalty"]
+    assert report["scored_items"][0]["final_score"] > report["scored_items"][1]["final_score"]
+
+
+def test_runtime_store_search_with_knowledge_penalty_for_non_research_queries(tmp_path) -> None:
+    store = RuntimeStore(root=tmp_path)
+    scope = ScopeRef(agent_id="main", workspace_id="project")
+    memory = RecordEnvelope.create(
+        kind="memory",
+        title="UUMit 交付记录",
+        summary="UUMit 外部订单 交付品质 海报 v2",
+        scope=scope,
+    )
+    knowledge_page = RecordEnvelope.create(
+        kind="knowledge_page",
+        title="Graphit-like 交付指标论文",
+        summary="该论文讨论交付品质与指标。",
+        scope=scope,
+    )
+    store.append(memory)
+    store.append(knowledge_page)
+
+    _, report = store.search_with_diagnostics(
+        query="UUMit 交付品质 海报 v2",
+        kinds=["memory", "knowledge_page"],
+        scope=scope,
+        limit=5,
+        recall_filters={
+            "intent_name": "project_delivery",
+            "preferred_kinds": ("memory", "rule"),
+            "suppressed_kinds": ("knowledge_page",),
+            "kind_weights": {"knowledge_page": 0.72, "memory": 1.25},
+        },
+    )
+
+    scored_items = report["scored_items"]
+    knowledge_entry = next(item for item in scored_items if item["kind"] == "knowledge_page")
+    assert knowledge_entry["kind_intent_adjustment"] < 0
+    assert knowledge_entry["kind_intent_penalty"]
+
+
+def test_runtime_store_search_does_not_report_kind_penalty_when_no_penalty_applied(tmp_path) -> None:
+    store = RuntimeStore(root=tmp_path)
+    scope = ScopeRef(agent_id="main", workspace_id="news")
+    page = RecordEnvelope.create(
+        kind="knowledge_page",
+        title="AI 新闻页面",
+        summary="AI 新闻摘要。",
+        scope=scope,
+        source="eimemory.news.digest",
+    )
+    store.append(page)
+
+    _, report = store.search_with_diagnostics(
+        query="AI 新闻",
+        kinds=["knowledge_page"],
+        scope=scope,
+        limit=1,
+        recall_filters={"intent_name": "news"},
+    )
+
+    assert report["scored_items"][0]["kind_intent_adjustment"] == 0.0
+    assert report["scored_items"][0]["kind_intent_penalty"] == ""

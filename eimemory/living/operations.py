@@ -4,6 +4,7 @@ from dataclasses import asdict
 from typing import Any
 
 from eimemory.living.schema import get_living_memory_meta, has_living_memory_meta, with_living_memory_meta
+from eimemory.living.posture import compile_living_posture_report
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
@@ -83,24 +84,7 @@ def recommend_action_posture(
     scope: dict | ScopeRef | None = None,
     limit: int = 5,
 ) -> dict[str, Any]:
-    if limit <= 0:
-        return {"ok": False, "error": "invalid_limit"}
-    scope_ref = _scope_ref(scope)
-    records = runtime.store.search(query=str(query or ""), kinds=["memory"], scope=scope_ref, limit=limit) if str(query or "").strip() else []
-    items: list[dict[str, Any]] = []
-    for record in records:
-        living = get_living_memory_meta(record)
-        posture = living.get("action_posture") if isinstance(living.get("action_posture"), dict) else {}
-        affective = living.get("affective") if isinstance(living.get("affective"), dict) else {}
-        items.append(
-            {
-                "record_id": record.record_id,
-                "title": record.title,
-                "posture": dict(posture),
-                "repair_needed": bool(affective.get("repair_needed")),
-            }
-        )
-    return {"ok": True, "scope": asdict(scope_ref), "query": query, "record_count": len(items), "items": items}
+    return compile_living_posture_report(runtime, query=query, scope=scope, limit=limit)
 
 
 def summarize_living_memory(records: list[RecordEnvelope]) -> dict[str, Any]:

@@ -285,6 +285,10 @@ def _build_parser() -> argparse.ArgumentParser:
     eval_living.add_argument("dataset_json")
     eval_living.add_argument("--output", default="")
     eval_living.add_argument("--persist-report", action="store_true")
+    eval_actionable = eval_sub.add_parser("actionable")
+    eval_actionable.add_argument("dataset_json")
+    eval_actionable.add_argument("--output", default="")
+    eval_actionable.add_argument("--persist-report", action="store_true")
     return parser
 
 
@@ -993,7 +997,44 @@ def main(argv: list[str] | None = None) -> int:
                 report = {**report, "output": str(output_path)}
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0 if report.get("ok") else 1
-        print(json.dumps({"usage": "eimemory eval run|ci|longmem|living"}))
+        if parsed.eval_command == "actionable":
+            try:
+                with open(parsed.dataset_json, "r", encoding="utf-8") as handle:
+                    dataset = json.load(handle)
+            except OSError as exc:
+                print(json.dumps({"ok": False, "error": "dataset_unreadable", "detail": str(exc)}, ensure_ascii=False))
+                return 2
+            except json.JSONDecodeError:
+                print(json.dumps({"ok": False, "error": "invalid_dataset_json"}, ensure_ascii=False))
+                return 2
+            try:
+                from eimemory.evaluation import run_actionable_memory_eval
+
+                report = run_actionable_memory_eval(
+                    runtime,
+                    dataset,
+                    persist_report=bool(parsed.persist_report),
+                )
+            except ValueError as exc:
+                print(json.dumps({"ok": False, "error": "invalid_eval_dataset", "detail": str(exc)}, ensure_ascii=False))
+                return 2
+            if parsed.output:
+                try:
+                    output_path = Path(parsed.output)
+                    output_path.parent.mkdir(parents=True, exist_ok=True)
+                    output_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+                except OSError as exc:
+                    print(
+                        json.dumps(
+                            {"ok": False, "error": "eval_output_failed", "detail": str(exc)},
+                            ensure_ascii=False,
+                        )
+                    )
+                    return 2
+                report = {**report, "output": str(output_path)}
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0 if report.get("ok") else 1
+        print(json.dumps({"usage": "eimemory eval run|ci|longmem|living|actionable"}))
         return 0
     if parsed.command == "reflect":
         if parsed.reflect_command == "check":

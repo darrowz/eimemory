@@ -1,0 +1,123 @@
+{
+  "name": "actionable-memory-smoke",
+  "scope": {
+    "agent_id": "hongtu",
+    "workspace_id": "actionable",
+    "user_id": "darrow"
+  },
+  "seed": [
+    {
+      "id": "uumit-posture-profile",
+      "kind": "memory",
+      "title": "UUMit project delivery profile",
+      "text": "UUMit项目交付优先级：先保证里程碑可交付，再优化体验；执行证据必须充分且严格验收。",
+      "memory_type": "preference",
+      "meta": {
+        "constraints": {
+          "evidence_required": true,
+          "strict_acceptance": true
+        }
+      }
+    },
+    {
+      "id": "uumit-project-memory",
+      "kind": "memory",
+      "title": "UUMit 项目交付记录",
+      "text": "UUMit项目交付应优先处理关键里程碑并记录可执行交付计划。",
+      "memory_type": "preference"
+    },
+    {
+      "id": "hongtu-style",
+      "kind": "memory",
+      "title": "鸿哥沟通风格",
+      "text": "鸿哥沟通风格：不讲废话，先给结论，再给证据，语气简洁。",
+      "memory_type": "preference"
+    },
+    {
+      "id": "siren-paper",
+      "kind": "knowledge_page",
+      "title": "SIREN 论文检索页",
+      "text": "SIREN is a contaminated project paper page not related to UUMit.",
+      "source": "external.research",
+      "content": {
+        "page_type": "paper",
+        "source_ids": ["siren-1"]
+      },
+      "meta": {
+        "page_type": "paper",
+        "source_ids": ["siren-1"]
+      }
+    },
+    {
+      "id": "prism-paper",
+      "kind": "knowledge_page",
+      "title": "PRISM 论文检索页",
+      "text": "PRISM is a contaminated project paper page not related to UUMit.",
+      "source": "external.research",
+      "content": {
+        "page_type": "paper",
+        "source_ids": ["prism-1"]
+      },
+      "meta": {
+        "page_type": "paper",
+        "source_ids": ["prism-1"]
+      }
+    },
+    {
+      "id": "graphiti-paper-page",
+      "kind": "knowledge_page",
+      "title": "Graphiti temporal knowledge graph 论文",
+      "text": "Graphiti temporal knowledge graph 论文总结了时序关系推断与知识检索的新方法。",
+      "source": "external.research",
+      "content": {
+        "page_type": "paper",
+        "source_ids": ["graphiti-1"]
+      },
+      "meta": {
+        "page_type": "paper",
+        "source_ids": ["graphiti-1"]
+      }
+    }
+  ],
+  "cases": [
+    {
+      "id": "uumit-project",
+      "case_type": "recall",
+      "query_type": "project",
+      "query": "UUMit 项目交付里程碑重点是什么？",
+      "seed_id": "uumit-project-memory",
+      "limit": 5,
+      "expect_any_title": ["UUMit 项目交付记录"],
+      "expect_any_kind": ["memory"],
+      "forbid_any_title": ["SIREN", "PRISM"],
+      "forbid_any_kind": ["knowledge_page"]
+    },
+    {
+      "id": "uumit-posture",
+      "case_type": "posture",
+      "query": "UUMit 交付姿态",
+      "seed_id": "uumit-posture-profile",
+      "limit": 5,
+      "expect_profile_non_empty": true,
+      "expected_constraints": ["evidence_required", "strict_acceptance"]
+    },
+    {
+      "id": "hongtu-style",
+      "case_type": "recall",
+      "query": "鸿哥 沟通风格",
+      "seed_id": "hongtu-style",
+      "limit": 5,
+      "expect_any_title": ["鸿哥沟通风格"],
+      "expect_any_text": ["no fluff", "简洁", "先给结论"]
+    },
+    {
+      "id": "graphiti-query",
+      "case_type": "recall",
+      "query_type": "research",
+      "query": "Graphiti temporal knowledge graph 论文",
+      "limit": 5,
+      "expect_any_title": ["Graphiti temporal knowledge graph 论文"],
+      "expect_any_kind": ["knowledge_page"]
+    }
+  ]
+}

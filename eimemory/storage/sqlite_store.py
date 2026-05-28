@@ -6,6 +6,7 @@ import re
 import sqlite3
 from pathlib import Path
 from typing import Any
+from eimemory.recall import analyze_lexical_signal
 
 from eimemory.embeddings.local import cosine_similarity, embed_text
 from eimemory.identity import hongtu_query_scopes
@@ -15,6 +16,7 @@ from eimemory.metadata import business_metadata
 
 
 MAX_QUERY_LIMIT = 1000
+_MAX_LEXICAL_ADJUSTMENT = 0.18
 
 
 class SqliteRecordStore:
@@ -236,27 +238,49 @@ class SqliteRecordStore:
             + " ORDER BY updated_at DESC"
         )
         rows = self.conn.execute(sql, params).fetchall()
-        lowered_tokens = [token for token in query.lower().split() if token]
+        recall_filters = self._normalized_recall_filters(recall_filters)
+        query_tokens_for_filter = [token for token in self._clean_text_for_query(query).split() if token]
+        query_token_count = max(1, len(query_tokens_for_filter))
         query_ngrams = self._char_ngrams(query.lower())
         query_embedding = embed_text(query)
         scored: list[tuple[float, float, RecordEnvelope, dict]] = []
         vector_hits = 0
         for row in rows:
             haystack = str(row["content_text"] or "").lower()
-            lexical_score = sum(1 for token in lowered_tokens if token in haystack) if lowered_tokens else 1
+            payload = json.loads(row["payload_json"])
+            lexical_signal = analyze_lexical_signal(
+                query,
+                haystack,
+                record_kind=str(payload.get("kind", "")) if isinstance(payload, dict) else "",
+                record_source=str(payload.get("source", "")) if isinstance(payload, dict) else "",
+                recall_filters=recall_filters,
+            )
+            lexical_count = self._lexical_count_for_recall(
+                lexical_signal=lexical_signal,
+                query_token_count=query_token_count,
+            )
             semantic_score = self._jaccard_score(query_ngrams, self._char_ngrams(haystack))
             stored_embedding = self._parse_embedding(row["embedding_json"])
             vector_score = max(0.0, cosine_similarity(query_embedding, stored_embedding))
             if vector_score >= 0.12:
                 vector_hits += 1
-            record = RecordEnvelope.from_dict(json.loads(row["payload_json"]))
+            record = RecordEnvelope.from_dict(payload) if isinstance(payload, dict) else RecordEnvelope.from_dict({})
             if not self._record_matches_recall_filters(record, recall_filters):
                 continue
             quality = self._quality_from_record(record)
             if quality.get("capture_decision") == "reject":
                 continue
             quality_score = float(quality.get("salience_score") or 0.0)
-            if lowered_tokens and lexical_score <= 0 and semantic_score < 0.08 and vector_score < 0.28:
+            living_memory = self._living_memory_metadata(record)
+            living_adjustments = self._living_score_adjustments(
+                living_memory=living_memory,
+                query=query,
+                recall_filters=recall_filters,
+            )
+            effective_lexical_count = float(lexical_count)
+            if living_adjustments["stale_identity_penalty"] < 0:
+                effective_lexical_count = 0.0
+            if query_tokens_for_filter and lexical_signal.score <= 0 and semantic_score < 0.08 and vector_score < 0.28:
                 continue
             source_weight = self._source_weight(record, recall_filters)
             modality_boost = self._preferred_modality_boost(record, recall_filters)
@@ -268,9 +292,9 @@ class SqliteRecordStore:
             recall_score = evaluate_recall_score(
                 record=record,
                 query=query,
-                lexical_score=float(lexical_score),
                 semantic_score=semantic_score,
                 vector_score=vector_score,
+                lexical_score=effective_lexical_count,
                 source_weight=source_weight,
                 modality_boost=modality_boost,
                 context=ScoreContext(
@@ -283,13 +307,17 @@ class SqliteRecordStore:
                 stored_score=stored_score,
             )
             base_score = recall_score.final_score
-            living_memory = self._living_memory_metadata(record)
-            living_adjustments = self._living_score_adjustments(
-                living_memory=living_memory,
-                query=query,
+            kind_intent_adjustment, kind_intent_penalty = self._kind_intent_adjustment(
+                record_kind=str(record.kind or "").strip().lower(),
                 recall_filters=recall_filters,
+                lexical_signal=lexical_signal,
             )
-            score = self._clamp_score(base_score + float(living_adjustments["total_adjustment"]))
+            lexical_adjustment = self._clamp_lexical_adjustment(
+                lexical_signal.score + kind_intent_adjustment
+            )
+            if living_adjustments["stale_identity_penalty"] < 0 and lexical_adjustment > 0:
+                lexical_adjustment = 0.0
+            score = self._clamp_score(base_score + float(living_adjustments["total_adjustment"]) + lexical_adjustment)
             scored.append(
                 (
                     score,
@@ -299,13 +327,18 @@ class SqliteRecordStore:
                         "record_id": record.record_id,
                         "kind": record.kind,
                         "title": record.title,
-                        "lexical_score": lexical_score,
+                        "lexical_score": round(float(effective_lexical_count), 4),
+                        "raw_lexical_score": round(float(lexical_count), 4),
                         "semantic_score": round(semantic_score, 4),
                         "vector_score": round(vector_score, 4),
                         "quality_score": round(quality_score, 4),
                         "quality": quality,
                         "source_weight": round(source_weight, 4),
                         "modality_boost": round(modality_boost, 4),
+                        "lexical_adjustment": round(float(lexical_adjustment), 4),
+                        "kind_intent_adjustment": round(float(kind_intent_adjustment), 4),
+                        "kind_intent_penalty": kind_intent_penalty,
+                        "lexical_signal": lexical_signal.__dict__,
                         "base_final_score": round(base_score, 4),
                         "final_score": round(score, 4),
                         "living_memory": living_memory,
@@ -322,7 +355,7 @@ class SqliteRecordStore:
         selected_rows = scored[:limit]
         selected = [record for _, _, record, _ in selected_rows]
         return selected, {
-            "vector_hits": sum(1 for _, vector_score, _, _ in selected_rows if vector_score >= 0.12),
+            "vector_hits": vector_hits,
             "retrieval_mode": "hybrid_vector",
             "scored_items": [score_report for _, _, _, score_report in selected_rows],
             "recall_filters": dict(recall_filters or {}),
@@ -636,12 +669,116 @@ class SqliteRecordStore:
     def _clamp_score(value: float) -> float:
         return round(max(0.0, min(1.0, value)), 4)
 
+    @staticmethod
+    def _clamp_lexical_adjustment(value: float) -> float:
+        return round(max(-_MAX_LEXICAL_ADJUSTMENT, min(_MAX_LEXICAL_ADJUSTMENT, value)), 4)
+
+    @staticmethod
+    def _clean_text_for_query(query: str) -> str:
+        return re.sub(r"[^\w\u4e00-\u9fff]+", " ", str(query or "").lower(), flags=re.UNICODE).strip()
+
+    @staticmethod
+    def _cleaned_record_terms(text: str) -> list[str]:
+        return [term for term in re.findall(r"[\w\u4e00-\u9fff]+", str(text or "").lower(), flags=re.UNICODE) if term.strip()]
+
+    @staticmethod
+    def _lexical_count_for_recall(
+        *,
+        lexical_signal: Any,
+        query_token_count: int,
+    ) -> float:
+        query_token_count = max(1, int(query_token_count))
+        weighted_hits = len(tuple(lexical_signal.token_hits))
+        weighted_hits += 0.5 * len(lexical_signal.version_hits)
+        weighted_hits += 0.4 * len(lexical_signal.entity_hits)
+        weighted_hits += 0.5 * len(lexical_signal.exact_phrase_hits)
+        return min(float(query_token_count), weighted_hits)
+
+    @staticmethod
+    def _intent_name_from_filters(filters: dict) -> str:
+        return str(filters.get("intent_name") or filters.get("intent") or "").strip().lower()
+
+    @classmethod
+    def _normalized_recall_filters(cls, recall_filters: dict | None) -> dict:
+        filters: dict = dict(recall_filters or {})
+        filters["intent_name"] = cls._intent_name_from_filters(filters)
+        filters["preferred_kinds"] = cls._as_tuple(filters.get("preferred_kinds") or filters.get("allowed_kinds") or ())
+        filters["suppressed_kinds"] = cls._as_tuple(filters.get("suppressed_kinds") or filters.get("blocked_kinds") or ())
+        filters["kind_weights"] = dict(filters.get("kind_weights") or {})
+        if not filters["kind_weights"]:
+            filters["kind_weights"] = {}
+        if "memory_cube" not in filters:
+            filters["memory_cube"] = str(filters.get("memory_cube") or "").strip()
+        return filters
+
+    def _kind_intent_adjustment(
+        self,
+        *,
+        record_kind: str,
+        recall_filters: dict | None,
+        lexical_signal,
+    ) -> tuple[float, str]:
+        filters = dict(recall_filters or {})
+        intent_name = self._intent_name_from_filters(filters)
+        if not intent_name or intent_name == "research":
+            return 0.0, ""
+        suppressed_kinds = set(filters.get("suppressed_kinds") or ())
+        preferred_kinds = set(filters.get("preferred_kinds") or ())
+        kind_weights = dict(filters.get("kind_weights") or {})
+
+        kind_adjustment = 0.0
+        reason = ""
+        if record_kind in suppressed_kinds:
+            kind_adjustment -= 0.08
+            reason = f"intent:{intent_name} suppresses kind:{record_kind}"
+        elif record_kind not in preferred_kinds and preferred_kinds:
+            kind_adjustment -= 0.02
+            reason = f"intent:{intent_name} deprioritizes kind:{record_kind}"
+
+        if kind_weights:
+            raw_weight_text = kind_weights.get(record_kind, 1.0)
+            try:
+                raw_weight = float(raw_weight_text)
+            except (TypeError, ValueError):
+                raw_weight = 1.0
+            if raw_weight > 1.0:
+                kind_adjustment += min(0.06, (raw_weight - 1.0) * 0.06)
+            elif raw_weight < 1.0:
+                kind_adjustment -= min(0.06, (1.0 - raw_weight) * 0.06)
+                if not reason:
+                    reason = f"kind_weight:{record_kind}={raw_weight:.2f}"
+
+        if record_kind == "knowledge_page" and intent_name in {"project_delivery", "operator_preference", "living_posture"}:
+            kind_adjustment = min(0.0, kind_adjustment - 0.04)
+            if not reason:
+                reason = f"kind_intent:{intent_name} downweights knowledge_page"
+
+        if lexical_signal.suppression_reason:
+            reason = lexical_signal.suppression_reason if not reason else f"{reason}; {lexical_signal.suppression_reason}"
+        return self._clamp_lexical_adjustment(kind_adjustment), reason
+
+    @staticmethod
+    def _as_tuple(value: object) -> tuple[str, ...]:
+        if not value:
+            return ()
+        if isinstance(value, str):
+            stripped = value.strip()
+            return (stripped,) if stripped else ()
+        if isinstance(value, (tuple, list, set)):
+            return tuple(str(item).strip() for item in value if str(item).strip())
+        return (str(value).strip(),) if str(value).strip() else ()
 
     def _record_matches_recall_filters(self, record: RecordEnvelope, recall_filters: dict | None) -> bool:
         filters = dict(recall_filters or {})
         if not filters:
             return True
         labels = self._record_filter_labels(record)
+        blocked_kinds = set(self._as_tuple(filters.get("blocked_kinds") or ()))
+        if blocked_kinds and record.kind in blocked_kinds:
+            return False
+        allowed_kinds = set(self._as_tuple(filters.get("allowed_kinds") or ()))
+        if allowed_kinds and record.kind not in allowed_kinds:
+            return False
         blocked_sources = set(filters.get("blocked_sources") or [])
         if blocked_sources and labels["sources"] & blocked_sources:
             return False
