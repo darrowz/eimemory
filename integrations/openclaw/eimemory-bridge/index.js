@@ -5,6 +5,9 @@ const { spawnSync } = require('node:child_process');
 const HONGTU_AGENT_ID = 'hongtu';
 const HONGTU_WORKSPACE_ID = 'embodied';
 const DEFAULT_OPERATOR_USER_ID = 'darrow';
+const DEFAULT_RECALL_MODE = 'fast';
+const DEFAULT_RECALL_BUDGET_MS = 800;
+const DEFAULT_FAST_CANDIDATE_LIMIT = 160;
 
 function splitCommand(command) {
   const parts = [];
@@ -86,7 +89,7 @@ function normalizeEventPayload(hook, event) {
       ...scope,
       query: cleanPromptQuery(rawQuery),
       raw_query: rawQuery,
-      task_context: Object.assign({}, event?.task_context || event?.taskContext || {}),
+      task_context: normalizeRecallContext(event?.task_context || event?.taskContext || {}),
     };
   }
   const scope = normalizeScope(event);
@@ -103,6 +106,28 @@ function normalizeEventPayload(hook, event) {
       notes: String(event?.error || ''),
     },
   };
+}
+
+function normalizeRecallContext(rawContext) {
+  const context = Object.assign({}, rawContext || {});
+  let recallMode = String(context.recall_mode || '').trim().toLowerCase();
+  if (recallMode === 'deep') {
+    recallMode = 'raw_hybrid';
+  } else if (recallMode !== 'raw_hybrid') {
+    recallMode = DEFAULT_RECALL_MODE;
+  }
+  context.recall_mode = recallMode;
+  const budget = Number.parseInt(context.recall_budget_ms, 10);
+  context.recall_budget_ms = Number.isFinite(budget) && budget > 0 ? budget : DEFAULT_RECALL_BUDGET_MS;
+  if (recallMode === 'fast') {
+    const candidateLimit = Number.parseInt(context.candidate_limit, 10);
+    if (!Number.isFinite(candidateLimit)) {
+      context.candidate_limit = DEFAULT_FAST_CANDIDATE_LIMIT;
+    } else {
+      context.candidate_limit = Math.max(40, Math.min(360, candidateLimit));
+    }
+  }
+  return context;
 }
 
 function normalizeSessionId(event, metadata = {}) {

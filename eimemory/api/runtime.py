@@ -451,6 +451,17 @@ class Runtime:
 
         return run_actionable_memory_eval(self, dataset, persist_report=persist_report)
 
+    def run_production_recall_eval(
+        self,
+        dataset: dict | list,
+        *,
+        seed: bool = True,
+        scope: dict | None = None,
+    ) -> dict:
+        from eimemory.evaluation import run_production_recall_eval
+
+        return run_production_recall_eval(self, dataset, seed=seed, scope=scope)
+
     def enrich_living_memory(self, *, scope: dict | None = None, limit: int = 100) -> dict:
         from eimemory.living.operations import enrich_memory_records
 

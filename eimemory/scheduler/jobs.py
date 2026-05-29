@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
+import os
 from dataclasses import asdict, is_dataclass
+from pathlib import Path
 from typing import Any, Callable
 
 from eimemory.api.runtime import Runtime
@@ -56,6 +59,7 @@ def run_nightly_jobs(
         replay_datasets=replay_datasets,
     )
     memory_eval_ci_report = _run_memory_eval_ci(runtime, scope=scope)
+    production_recall_report = _run_production_recall_eval(runtime, scope=scope)
     daily_brief_report = _run_daily_brief(runtime, scope=scope)
     return {
         "ok": True,
@@ -101,6 +105,7 @@ def run_nightly_jobs(
         "daily_brief": daily_brief_report,
         "rule_evolution": rule_evolution_report,
         "memory_eval_ci": memory_eval_ci_report,
+        "production_recall": production_recall_report,
         "source_discovery": source_discovery_report,
         "source_quality": {
             "source_count": source_quality_report["source_count"],
@@ -111,6 +116,43 @@ def run_nightly_jobs(
         },
         "roi": roi,
     }
+
+
+def _run_production_recall_eval(runtime: Runtime, *, scope: dict) -> dict[str, Any]:
+    dataset_path = str(os.environ.get("EIMEMORY_PRODUCTION_RECALL_DATASET") or "").strip()
+    if not dataset_path:
+        return {
+            "ok": True,
+            "configured": False,
+            "eval_skipped_reason": "production_recall_dataset_unconfigured",
+        }
+    run_eval = getattr(runtime, "run_production_recall_eval", None)
+    if not callable(run_eval):
+        return {
+            "ok": False,
+            "configured": True,
+            "eval_skipped_reason": "run_production_recall_eval_unavailable",
+        }
+    try:
+        with Path(dataset_path).open("r", encoding="utf-8") as handle:
+            dataset = json.load(handle)
+        report = _json_safe(run_eval(dataset, seed=False, scope=scope))
+        if isinstance(report, dict):
+            return {**report, "configured": True, "seeded": False}
+        return {
+            "ok": False,
+            "configured": True,
+            "eval_skipped_reason": "",
+            "error": "invalid_production_recall_report",
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "configured": True,
+            "eval_skipped_reason": "",
+            "error": type(exc).__name__,
+            "detail": str(exc),
+        }
 
 
 def _run_memory_eval_ci(runtime: Runtime, *, scope: dict) -> dict[str, Any]:

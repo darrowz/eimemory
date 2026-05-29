@@ -295,7 +295,7 @@ class MemoryAPI:
                 "query_scopes": [self._scope_dict(item) for item in query_scope_refs],
                 "recall_scope_aliases": recall_scope_aliases,
                 "recall_filters": recall_filters,
-                "recall_mode": "raw_hybrid" if raw_hybrid else "structured",
+                "recall_mode": "raw_hybrid" if raw_hybrid else (recall_mode or "structured"),
                 **({"raw_evidence": raw_evidence} if raw_hybrid else {}),
                 "preference_query": preference_query,
                 "report_query": report_query,
@@ -313,6 +313,9 @@ class MemoryAPI:
             "source_weights": self._source_weights(task_context.get("source_weights")),
             "living_task_context_terms": self._living_task_context_terms(task_context),
         }
+        candidate_limit = self._positive_int(task_context.get("candidate_limit"))
+        if candidate_limit:
+            filters["candidate_limit"] = candidate_limit
         return {key: value for key, value in filters.items() if value}
 
     def _merge_recall_intent_filters(self, recall_filters: dict, recall_intent: RecallIntent) -> None:
@@ -609,6 +612,14 @@ class MemoryAPI:
             except (TypeError, ValueError):
                 continue
         return weights
+
+    @staticmethod
+    def _positive_int(value: object) -> int:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return 0
+        return max(0, parsed)
 
     def _resolve_recall_profile(self, *, task_context: dict, retrieval_policy: dict) -> tuple[str, str]:
         candidates = [

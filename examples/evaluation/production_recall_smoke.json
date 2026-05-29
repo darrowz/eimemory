@@ -1,0 +1,169 @@
+{
+  "name": "production-recall-smoke",
+  "scope": {
+    "agent_id": "hongtu",
+    "workspace_id": "production",
+    "user_id": "darrow"
+  },
+  "seed": [
+    {
+      "id": "uumit-preference",
+      "kind": "memory",
+      "title": "UUMit 项目交付记录",
+      "text": "UUMit 项目交付优先级：先保证里程碑可交付，再优化体验，执行计划必须明确。",
+      "memory_type": "preference"
+    },
+    {
+      "id": "hongtu-style",
+      "kind": "memory",
+      "title": "鸿哥沟通风格",
+      "text": "鸿哥沟通风格：先给结论，再给证据，不讲废话。",
+      "memory_type": "preference"
+    },
+    {
+      "id": "graphiti-knowledge-page",
+      "kind": "knowledge_page",
+      "title": "Graphiti temporal knowledge graph 论文",
+      "text": "Graphiti temporal knowledge graph 论文介绍了时序知识图谱推断与检索方法。",
+      "source": "external.research",
+      "content": {
+        "page_type": "paper",
+        "summary": "Graphiti temporal knowledge graph"
+      },
+      "meta": {
+        "page_type": "paper",
+        "source": "research"
+      }
+    },
+    {
+      "id": "openclaw-outcome-record",
+      "kind": "memory",
+      "title": "OpenClaw agent outcome",
+      "text": "OpenClaw agent outcome summary for openclaw.agent_end",
+      "memory_type": "fact",
+      "source": "openclaw.agent_end"
+    },
+    {
+      "id": "rag-match-claim",
+      "kind": "claim_card",
+      "title": "RAG-Match claim card",
+      "text": "RAG-Match 评测用于检查检索增强生成的匹配质量和召回排序稳定性。",
+      "source": "eimemory.knowledge.claims",
+      "meta": {
+        "claim_type": "evaluation"
+      }
+    },
+    {
+      "id": "rule-evolution-reflection-noise",
+      "kind": "reflection",
+      "title": "Governance report reflection",
+      "text": "Governance report reflection is an internal reflection report.",
+      "source": "eimemory.rule_evolution_loop",
+      "meta": {
+        "report_type": "rule_evolution"
+      },
+      "provenance": {
+        "report_type": "rule_evolution"
+      }
+    }
+  ],
+  "cases": [
+    {
+      "case_id": "case-uumit",
+      "query": "UUMit 项目交付优先级",
+      "expected_record_ids": ["uumit-preference"],
+      "expected_titles": ["UUMit 项目交付记录"],
+      "expected_text": ["里程碑", "交付", "计划"],
+      "forbid_kinds": [],
+      "forbid_title_contains": [],
+      "forbid_source_contains": [],
+      "topk": 5,
+      "task_context": {
+        "task_type": "project_delivery"
+      },
+      "scope": {
+        "agent_id": "hongtu",
+        "workspace_id": "production",
+        "user_id": "darrow"
+      }
+    },
+    {
+      "case_id": "case-hongtu-style",
+      "query": "鸿哥 沟通风格",
+      "expected_record_ids": ["hongtu-style"],
+      "expected_titles": ["鸿哥沟通风格"],
+      "expected_text": ["先给结论", "不讲废话"],
+      "forbid_kinds": [],
+      "forbid_title_contains": [],
+      "forbid_source_contains": [],
+      "topk": 5,
+      "task_context": {
+        "task_type": "operator_preference"
+      },
+      "scope": {
+        "agent_id": "hongtu",
+        "workspace_id": "production",
+        "user_id": "darrow"
+      }
+    },
+    {
+      "case_id": "case-research-knowledge",
+      "query": "Graphiti temporal knowledge graph 论文",
+      "expected_record_ids": ["graphiti-knowledge-page"],
+      "expected_titles": ["Graphiti temporal knowledge graph 论文"],
+      "expected_text": ["时序", "知识图谱"],
+      "forbid_kinds": [],
+      "forbid_title_contains": [],
+      "forbid_source_contains": [],
+      "topk": 5,
+      "task_context": {
+        "task_type": "knowledge_search",
+        "knowledge_scope": "research"
+      },
+      "scope": {
+        "agent_id": "hongtu",
+        "workspace_id": "production",
+        "user_id": "darrow"
+      }
+    },
+    {
+      "case_id": "case-rag-match-claim",
+      "query": "RAG-Match 召回排序稳定性",
+      "expected_record_ids": ["rag-match-claim"],
+      "expected_titles": ["RAG-Match claim card"],
+      "expected_text": ["RAG-Match", "召回排序"],
+      "forbid_kinds": [],
+      "forbid_title_contains": [],
+      "forbid_source_contains": ["openclaw.agent_end"],
+      "topk": 5,
+      "task_context": {
+        "task_type": "knowledge_search",
+        "knowledge_scope": "research"
+      },
+      "scope": {
+        "agent_id": "hongtu",
+        "workspace_id": "production",
+        "user_id": "darrow"
+      }
+    },
+    {
+      "case_id": "case-reflection-noise",
+      "query": "governance report",
+      "expected_record_ids": ["rule-evolution-reflection-noise"],
+      "expected_titles": ["Governance report reflection"],
+      "expected_text": ["rule_evolution"],
+      "forbid_kinds": [],
+      "forbid_title_contains": [],
+      "forbid_source_contains": [],
+      "topk": 5,
+      "task_context": {
+        "task_type": "governance report"
+      },
+      "scope": {
+        "agent_id": "hongtu",
+        "workspace_id": "production",
+        "user_id": "darrow"
+      }
+    }
+  ]
+}

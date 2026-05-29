@@ -58,7 +58,7 @@ def test_runtime_eval_seeds_records_and_reports_recall_metrics(tmp_path) -> None
     assert report["precision_at_k"] > 0.0
     assert len(report["seeded_record_ids"]) == 2
     assert report["misses"][0]["case_id"] == "missing"
-    assert report["samples"][0]["retrieval_mode"] in {"hybrid", "hybrid_vector"}
+    assert report["samples"][0]["retrieval_mode"] in {"hybrid", "hybrid_vector", "recall_index_hybrid"}
 
 
 def test_runtime_eval_handles_list_dataset_and_invalid_cases(tmp_path) -> None:

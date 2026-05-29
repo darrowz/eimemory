@@ -98,6 +98,9 @@ def test_nightly_jobs_include_active_intake_reports(tmp_path, monkeypatch) -> No
     )
     assert persisted_eval is not None
     assert persisted_eval.meta["report_type"] == "memory_eval_ci"
+    assert report["production_recall"]["ok"] is True
+    assert report["production_recall"]["configured"] is False
+    assert report["production_recall"]["eval_skipped_reason"] == "production_recall_dataset_unconfigured"
 
 
 def test_nightly_jobs_falls_back_when_memory_eval_ci_is_unavailable(tmp_path, monkeypatch) -> None:
@@ -112,6 +115,49 @@ def test_nightly_jobs_falls_back_when_memory_eval_ci_is_unavailable(tmp_path, mo
     assert report["memory_eval_ci"]["pass_rate"] == 0.0
     assert report["memory_eval_ci"]["passed_threshold"] is False
     assert report["memory_eval_ci"]["eval_skipped_reason"] == "run_memory_eval_ci_unavailable"
+
+
+def test_nightly_jobs_can_run_configured_production_recall_eval(tmp_path, monkeypatch) -> None:
+    from eimemory.api.runtime import Runtime
+
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = {"agent_id": "main", "workspace_id": "project"}
+    runtime.memory.ingest(
+        text="Nightly production recall should find the deployment acceptance rule.",
+        memory_type="preference",
+        title="Nightly production recall target",
+        scope=scope,
+        force_capture=True,
+    )
+    dataset_path = tmp_path / "production-recall.json"
+    dataset_path.write_text(
+        json.dumps(
+            {
+                "name": "nightly-production-recall",
+                "scope": scope,
+                "cases": [
+                    {
+                        "case_id": "target",
+                        "query": "deployment acceptance rule",
+                        "expected_titles": ["Nightly production recall target"],
+                        "topk": 5,
+                        "scope": scope,
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EIMEMORY_PRODUCTION_RECALL_DATASET", str(dataset_path))
+
+    report = run_nightly_jobs(runtime, scope=scope)
+
+    assert report["production_recall"]["ok"] is True
+    assert report["production_recall"]["configured"] is True
+    assert report["production_recall"]["seeded"] is False
+    assert report["production_recall"]["hit_at_1"] == 1.0
+    assert report["production_recall"]["latency_ms_p95"] >= 0.0
 
 
 def test_nightly_jobs_do_not_reset_reviewed_candidates(tmp_path) -> None:

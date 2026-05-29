@@ -117,7 +117,7 @@ def test_runtime_store_quality_reranks_similar_memories(tmp_path) -> None:
         "Core deployment preference",
         "Candidate deployment note",
     ]
-    assert report["retrieval_mode"] == "hybrid_vector"
+    assert report["retrieval_mode"] == "recall_index_hybrid"
     assert report["scored_items"][0]["scoring_version"] == "memory_score.v1"
     assert report["scored_items"][0]["memory_score"]["schema_version"] == "memory_score.v1"
     assert "relevance" in report["scored_items"][0]["components"]
@@ -819,13 +819,31 @@ def test_runtime_store_search_prefers_actionable_project_memory_over_tool_call_t
         },
     )
 
-    assert [item.record_id for item in results[:2]] == [
+    assert [item.record_id for item in results] == [actionable_memory.record_id]
+    scored = {item["record_id"]: item for item in report["scored_items"]}
+    assert scored[actionable_memory.record_id]["actionable_intent_adjustment"] > 0
+    assert tool_transcript.record_id not in scored
+
+    evidence_results, evidence_report = store.search_with_diagnostics(
+        query="UUMit 交付品质 海报 v2",
+        kinds=["memory", "claim_card"],
+        scope=scope,
+        limit=5,
+        recall_filters={
+            "intent_name": "project_delivery",
+            "memory_cube": "project",
+            "preferred_kinds": ("memory", "rule", "raw_chunk", "reflection"),
+            "suppressed_kinds": ("knowledge_page",),
+            "include_evidence_only": True,
+        },
+    )
+
+    assert [item.record_id for item in evidence_results[:2]] == [
         actionable_memory.record_id,
         tool_transcript.record_id,
     ]
-    scored = {item["record_id"]: item for item in report["scored_items"]}
-    assert scored[actionable_memory.record_id]["actionable_intent_adjustment"] > 0
-    assert scored[tool_transcript.record_id]["actionable_intent_adjustment"] < 0
+    evidence_scored = {item["record_id"]: item for item in evidence_report["scored_items"]}
+    assert evidence_scored[tool_transcript.record_id]["actionable_intent_adjustment"] < 0
 
 
 def test_runtime_store_search_operator_preference_keeps_exact_style_memory_first(tmp_path) -> None:
@@ -891,6 +909,107 @@ def test_runtime_store_search_operator_preference_keeps_exact_style_memory_first
     scored = {item["record_id"]: item for item in report["scored_items"]}
     assert scored[poetic_memory.record_id]["actionable_intent_adjustment"] == 0.0
     assert "actionable_preference" not in scored[poetic_memory.record_id]["actionable_intent_reasons"]
+
+
+def test_runtime_store_recall_index_hides_operational_outcome_from_default_project_recall(tmp_path) -> None:
+    store = RuntimeStore(root=tmp_path)
+    scope = ScopeRef(agent_id="main", workspace_id="project")
+    raw_outcome = RecordEnvelope.create(
+        kind="memory",
+        title="OpenClaw agent outcome",
+        summary='{"type":"toolCall","name":"message","arguments":{"message":"UUMit 交付品质 海报 v2 过程日志"}}',
+        scope=scope,
+        source="openclaw.agent_end",
+        meta={"memory_type": "conversation"},
+    )
+    actionable = RecordEnvelope.create(
+        kind="memory",
+        title="OpenClaw agent outcome",
+        summary="已记到长期记忆。以后外部订单先对需求清单逐条验收，再交付。",
+        scope=scope,
+        source="openclaw.agent_end",
+        meta={"memory_type": "conversation"},
+    )
+    store.append(raw_outcome)
+    store.append(actionable)
+
+    results, report = store.search_with_diagnostics(
+        query="UUMit 交付品质 海报 v2",
+        kinds=["memory", "claim_card"],
+        scope=scope,
+        limit=5,
+        recall_filters={
+            "intent_name": "project_delivery",
+            "memory_cube": "project",
+            "preferred_kinds": ("memory", "rule", "raw_chunk", "reflection"),
+            "suppressed_kinds": ("knowledge_page",),
+        },
+    )
+
+    assert results
+    assert results[0].record_id == actionable.record_id
+    assert all(item.record_id != raw_outcome.record_id for item in results)
+    assert report["retrieval_mode"] == "recall_index_hybrid"
+    assert report["candidate_count"] < 5
+
+
+def test_runtime_store_recall_index_keeps_reflections_searchable_when_requested(tmp_path) -> None:
+    store = RuntimeStore(root=tmp_path)
+    scope = ScopeRef(agent_id="main", workspace_id="ops")
+    reflection = RecordEnvelope.create(
+        kind="reflection",
+        title="Deployment report",
+        summary="eimemory deployment report for release 898bd47.",
+        scope=scope,
+        source="eimemory.scheduler.nightly",
+        meta={"report_type": "nightly"},
+    )
+    store.append(reflection)
+
+    results = store.search(
+        query="deployment report release",
+        kinds=["reflection"],
+        scope=scope,
+        limit=5,
+    )
+
+    assert [item.record_id for item in results] == [reflection.record_id]
+
+
+def test_runtime_store_recall_index_limits_candidates_before_rerank(tmp_path) -> None:
+    store = RuntimeStore(root=tmp_path)
+    scope = ScopeRef(agent_id="main", workspace_id="scale")
+    target = RecordEnvelope.create(
+        kind="memory",
+        title="UUMit delivery acceptance rule",
+        summary="UUMit 外部订单 交付品质 海报 v2 必须按需求清单逐条验收。",
+        scope=scope,
+        source="operator.correction",
+        meta={"memory_type": "preference"},
+    )
+    store.append(target)
+    for index in range(180):
+        store.append(
+            RecordEnvelope.create(
+                kind="reflection",
+                title=f"OpenClaw agent outcome {index}",
+                summary=f"UUMit 交付品质 海报 v2 noisy operational report {index}.",
+                scope=scope,
+                source="openclaw.agent_end",
+            )
+        )
+
+    results, report = store.search_with_diagnostics(
+        query="UUMit 交付品质 海报 v2",
+        kinds=["memory", "reflection"],
+        scope=scope,
+        limit=5,
+        recall_filters={"intent_name": "project_delivery", "memory_cube": "project"},
+    )
+
+    assert results[0].record_id == target.record_id
+    assert all(item.kind != "reflection" for item in results)
+    assert report["candidate_count"] < 180
 
 
 def test_runtime_store_search_with_knowledge_penalty_for_non_research_queries(tmp_path) -> None:

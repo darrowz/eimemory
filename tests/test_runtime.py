@@ -942,7 +942,7 @@ def test_runtime_recall_uses_vector_assist_for_hybrid_semantic_hits(tmp_path) ->
 
     assert bundle.items
     assert bundle.items[0].title == "Compact mobile replies"
-    assert bundle.explanation["retrieval_mode"] == "hybrid_vector"
+    assert bundle.explanation["retrieval_mode"] == "recall_index_hybrid"
     assert bundle.explanation["vector_hits"] >= 1
 
 

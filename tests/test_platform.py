@@ -657,6 +657,64 @@ def test_cli_openclaw_hook_bridge_reads_stdin_and_returns_json(tmp_path, monkeyp
     assert bundle["memory_bundle"]["items"]
 
 
+def test_openclaw_js_bridge_before_prompt_build_defaults_recall_context(tmp_path) -> None:
+    hook_script = tmp_path / "capture-openclaw-context.js"
+    capture_path = tmp_path / "captured-payload.json"
+    hook_script.write_text(
+        """
+const fs = require('node:fs');
+const payload = JSON.parse(fs.readFileSync(0, 'utf8') || '{}');
+fs.writeFileSync(process.env.CAPTURE_PATH, JSON.stringify(payload));
+process.stdout.write(JSON.stringify({
+  usage_telemetry: {},
+  memory_bundle: {
+    items: [{ title: 'Bridge smoke', summary: 'context forwarded' }],
+    rules: [],
+    reflections: [],
+    confidence: 0.5,
+    next_action_hint: '',
+    explanation: {}
+  },
+}));
+""".strip(),
+        encoding="utf-8",
+    )
+    script = """
+const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
+const handlers = {};
+plugin.register({ on(name, handler) { handlers[name] = handler; } });
+handlers.before_prompt_build({
+  query: 'platform recall path',
+  task_context: { task_type: 'chat.reply' },
+  session_id: 'sess-platform',
+  user_id: 'darrow',
+  tenant_id: 'tenant-a',
+})
+  .then((result) => { process.stdout.write(JSON.stringify(result)); })
+  .catch((error) => { console.error(error && error.stack ? error.stack : String(error)); process.exit(1); });
+""".strip()
+    env = os.environ.copy()
+    env["EIMEMORY_HOOK_COMMAND"] = f'node "{hook_script}"'
+    env["CAPTURE_PATH"] = str(capture_path)
+    result = subprocess.run(
+        ["node", "-e", script],
+        cwd=Path.cwd(),
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=10,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    payload = json.loads(capture_path.read_text(encoding="utf-8"))
+    assert payload["task_context"]["recall_mode"] == "fast"
+    assert payload["task_context"]["recall_budget_ms"] == 800
+    assert payload["task_context"]["candidate_limit"] == 160
+    assert "Relevant eimemory context" in json.loads(result.stdout or "{}")["prependContext"]
+
+
 def test_cli_openclaw_hook_reports_rejected_message_without_persisting(tmp_path, monkeypatch, capsys) -> None:
     monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path / "runtime"))
     stdin = io.StringIO(

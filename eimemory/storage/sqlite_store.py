@@ -6,7 +6,7 @@ import re
 import sqlite3
 from pathlib import Path
 from typing import Any
-from eimemory.recall import analyze_lexical_signal
+from eimemory.recall import analyze_lexical_signal, build_recall_index_document
 
 from eimemory.embeddings.local import cosine_similarity, embed_text
 from eimemory.identity import hongtu_query_scopes
@@ -17,6 +17,8 @@ from eimemory.metadata import business_metadata
 
 MAX_QUERY_LIMIT = 1000
 _MAX_LEXICAL_ADJUSTMENT = 0.18
+_DEFAULT_CANDIDATE_LIMIT = 360
+_MAX_CANDIDATE_LIMIT = 1200
 
 
 class SqliteRecordStore:
@@ -33,6 +35,8 @@ class SqliteRecordStore:
         ).fetchone()
         if not existing:
             self._create_records_table()
+            self._create_indexes()
+            self._create_recall_index_tables()
             self.conn.commit()
             return
         columns = {
@@ -48,6 +52,8 @@ class SqliteRecordStore:
         if "embedding_json" not in columns:
             self.conn.execute("ALTER TABLE records ADD COLUMN embedding_json TEXT NOT NULL DEFAULT '[]'")
         self._create_indexes()
+        self._create_recall_index_tables()
+        self._backfill_recall_index_if_needed()
         self.conn.commit()
 
     def _create_records_table(self) -> None:
@@ -75,12 +81,57 @@ class SqliteRecordStore:
             )
             """
         )
+        self._create_recall_index_tables()
 
     def _create_indexes(self) -> None:
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_records_record_id ON records(record_id)")
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_records_scope ON records(tenant_id, agent_id, workspace_id, user_id)"
         )
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_records_kind_scope ON records(kind, tenant_id, agent_id, workspace_id, user_id)")
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_records_source_kind ON records(source, kind)")
+
+    def _create_recall_index_tables(self) -> None:
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS recall_index (
+                storage_key TEXT PRIMARY KEY,
+                record_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                status TEXT NOT NULL,
+                source TEXT NOT NULL,
+                tenant_id TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                lane TEXT NOT NULL,
+                visibility TEXT NOT NULL,
+                source_class TEXT NOT NULL,
+                memory_type TEXT NOT NULL,
+                projection_type TEXT NOT NULL,
+                quality_score REAL NOT NULL DEFAULT 0.0,
+                title_text TEXT NOT NULL,
+                body_text TEXT NOT NULL,
+                anchor_terms TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_recall_index_scope_lane ON recall_index(tenant_id, agent_id, workspace_id, user_id, lane, visibility)"
+        )
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_recall_index_kind ON recall_index(kind, visibility)")
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_recall_index_source_class ON recall_index(source_class, visibility)")
+        try:
+            self.conn.execute(
+                """
+                CREATE VIRTUAL TABLE IF NOT EXISTS recall_index_fts
+                USING fts5(storage_key UNINDEXED, title_text, body_text, anchor_terms, tokenize='unicode61')
+                """
+            )
+        except sqlite3.OperationalError:
+            # Some embedded SQLite builds omit FTS5. Anchor candidates still keep recall functional.
+            pass
 
     def _migrate_to_scoped_storage_key(self, columns: set[str]) -> None:
         self.conn.execute("ALTER TABLE records RENAME TO records_legacy")
@@ -202,7 +253,136 @@ class SqliteRecordStore:
                 record.time.updated_at,
             ),
         )
+        self._upsert_recall_index(record=record, storage_key=storage_key, content_text=content_text)
         self.conn.commit()
+
+    def _upsert_recall_index(self, *, record: RecordEnvelope, storage_key: str, content_text: str) -> None:
+        lane, visibility, source_class, memory_type, projection_type, quality_score = self._recall_index_traits(record)
+        title_text = str(record.title or "")
+        body_text = "\n".join(
+            part
+            for part in [
+                str(record.summary or ""),
+                str(record.detail or ""),
+                str(record.content.get("text", "") or ""),
+                str(record.content.get("excerpt", "") or ""),
+            ]
+            if part
+        )
+        if not body_text:
+            body_text = content_text
+        anchor_terms = " ".join(self._recall_anchor_terms(record=record, content_text=content_text))
+        self.conn.execute(
+            """
+            INSERT INTO recall_index (
+                storage_key, record_id, kind, status, source,
+                tenant_id, agent_id, workspace_id, user_id,
+                lane, visibility, source_class, memory_type, projection_type,
+                quality_score, title_text, body_text, anchor_terms, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(storage_key) DO UPDATE SET
+                record_id=excluded.record_id,
+                kind=excluded.kind,
+                status=excluded.status,
+                source=excluded.source,
+                tenant_id=excluded.tenant_id,
+                agent_id=excluded.agent_id,
+                workspace_id=excluded.workspace_id,
+                user_id=excluded.user_id,
+                lane=excluded.lane,
+                visibility=excluded.visibility,
+                source_class=excluded.source_class,
+                memory_type=excluded.memory_type,
+                projection_type=excluded.projection_type,
+                quality_score=excluded.quality_score,
+                title_text=excluded.title_text,
+                body_text=excluded.body_text,
+                anchor_terms=excluded.anchor_terms,
+                updated_at=excluded.updated_at
+            """,
+            (
+                storage_key,
+                record.record_id,
+                record.kind,
+                record.status,
+                record.source,
+                record.scope.tenant_id,
+                record.scope.agent_id,
+                record.scope.workspace_id,
+                record.scope.user_id,
+                lane,
+                visibility,
+                source_class,
+                memory_type,
+                projection_type,
+                quality_score,
+                title_text,
+                body_text,
+                anchor_terms,
+                record.time.updated_at,
+            ),
+        )
+        if self._has_fts_table():
+            self.conn.execute("DELETE FROM recall_index_fts WHERE storage_key = ?", (storage_key,))
+            self.conn.execute(
+                "INSERT INTO recall_index_fts(storage_key, title_text, body_text, anchor_terms) VALUES (?, ?, ?, ?)",
+                (storage_key, title_text, body_text, anchor_terms),
+            )
+
+    def _delete_recall_index(self, storage_key: str) -> None:
+        self.conn.execute("DELETE FROM recall_index WHERE storage_key = ?", (storage_key,))
+        if self._has_fts_table():
+            self.conn.execute("DELETE FROM recall_index_fts WHERE storage_key = ?", (storage_key,))
+
+    def _backfill_recall_index_if_needed(self) -> None:
+        try:
+            record_count = int(self.conn.execute("SELECT COUNT(*) FROM records").fetchone()[0])
+            index_count = int(self.conn.execute("SELECT COUNT(*) FROM recall_index").fetchone()[0])
+        except sqlite3.OperationalError:
+            return
+        fts_count = index_count
+        if self._has_fts_table():
+            try:
+                fts_count = int(self.conn.execute("SELECT COUNT(*) FROM recall_index_fts").fetchone()[0])
+            except sqlite3.OperationalError:
+                fts_count = 0
+        if record_count == index_count == fts_count:
+            return
+        rows = self.conn.execute(
+            "SELECT storage_key, payload_json, content_text FROM records ORDER BY updated_at DESC"
+        ).fetchall()
+        if index_count > record_count:
+            self.conn.execute("DELETE FROM recall_index")
+            if self._has_fts_table():
+                self.conn.execute("DELETE FROM recall_index_fts")
+        for row in rows:
+            record = RecordEnvelope.from_dict(json.loads(row["payload_json"]))
+            self._upsert_recall_index(
+                record=record,
+                storage_key=str(row["storage_key"]),
+                content_text=str(row["content_text"] or ""),
+            )
+
+    def _has_fts_table(self) -> bool:
+        return bool(
+            self.conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='recall_index_fts'"
+            ).fetchone()
+        )
+
+    def _recall_index_traits(self, record: RecordEnvelope) -> tuple[str, str, str, str, str, float]:
+        document = build_recall_index_document(record)
+        return (
+            document.lane,
+            document.visibility,
+            document.source_class,
+            document.memory_type,
+            document.projection_type,
+            document.quality_score,
+        )
+
+    def _recall_anchor_terms(self, *, record: RecordEnvelope, content_text: str) -> tuple[str, ...]:
+        return build_recall_index_document(record).anchor_terms
 
     def search(
         self,
@@ -225,20 +405,14 @@ class SqliteRecordStore:
         recall_filters: dict | None = None,
     ) -> tuple[list[RecordEnvelope], dict]:
         limit = self._normalize_limit(limit)
-        where = ["1=1"]
-        params: list[object] = []
-        if kinds:
-            where.append(f"kind IN ({','.join('?' for _ in kinds)})")
-            params.extend(kinds)
-        self._apply_scope_filters(where, params, scope)
-        where.append("status != 'rejected'")
-        sql = (
-            "SELECT payload_json, content_text, embedding_json FROM records WHERE "
-            + " AND ".join(where)
-            + " ORDER BY updated_at DESC"
-        )
-        rows = self.conn.execute(sql, params).fetchall()
         recall_filters = self._normalized_recall_filters(recall_filters)
+        rows, candidate_report = self._candidate_rows(
+            query=query,
+            kinds=kinds,
+            scope=scope,
+            limit=limit,
+            recall_filters=recall_filters,
+        )
         query_tokens_for_filter = [token for token in self._clean_text_for_query(query).split() if token]
         query_token_count = max(1, len(query_tokens_for_filter))
         query_ngrams = self._char_ngrams(query.lower())
@@ -370,10 +544,360 @@ class SqliteRecordStore:
         selected = [record for _, _, record, _ in selected_rows]
         return selected, {
             "vector_hits": vector_hits,
-            "retrieval_mode": "hybrid_vector",
+            "retrieval_mode": "recall_index_hybrid",
             "scored_items": [score_report for _, _, _, score_report in selected_rows],
             "recall_filters": dict(recall_filters or {}),
+            **candidate_report,
         }
+
+    def _candidate_rows(
+        self,
+        *,
+        query: str,
+        kinds: list[str] | None,
+        scope: ScopeRef,
+        limit: int,
+        recall_filters: dict,
+    ) -> tuple[list[sqlite3.Row], dict]:
+        candidate_limit = self._candidate_limit(limit, recall_filters)
+        candidates: dict[str, dict[str, Any]] = {}
+        fts_query = self._fts_query(query)
+        if fts_query and self._has_fts_table():
+            self._collect_fts_candidates(
+                candidates,
+                fts_query=fts_query,
+                kinds=kinds,
+                scope=scope,
+                limit=candidate_limit,
+                recall_filters=recall_filters,
+            )
+        self._collect_anchor_candidates(
+            candidates,
+            query=query,
+            kinds=kinds,
+            scope=scope,
+            limit=max(80, candidate_limit // 2),
+            recall_filters=recall_filters,
+        )
+        self._collect_lane_seed_candidates(
+            candidates,
+            kinds=kinds,
+            scope=scope,
+            limit=max(40, candidate_limit // 5),
+            recall_filters=recall_filters,
+        )
+        if not candidates:
+            self._collect_recent_candidates(
+                candidates,
+                kinds=kinds,
+                scope=scope,
+                limit=max(limit, min(candidate_limit, 120)),
+                recall_filters=recall_filters,
+            )
+
+        ordered_keys = [
+            key
+            for key, _info in sorted(
+                candidates.items(),
+                key=lambda item: (
+                    float(item[1].get("rank") or 9999.0),
+                    -float(item[1].get("quality_score") or 0.0),
+                    str(item[1].get("updated_at") or ""),
+                ),
+            )[:candidate_limit]
+        ]
+        if not ordered_keys:
+            return [], {
+                "candidate_count": 0,
+                "candidate_limit": candidate_limit,
+                "candidate_sources": {},
+            }
+        placeholders = ",".join("?" for _ in ordered_keys)
+        rows = self.conn.execute(
+            "SELECT storage_key, payload_json, content_text, embedding_json FROM records WHERE storage_key IN ("
+            + placeholders
+            + ")",
+            ordered_keys,
+        ).fetchall()
+        by_key = {str(row["storage_key"]): row for row in rows}
+        source_counts: dict[str, int] = {}
+        for info in candidates.values():
+            for source in info.get("sources") or ():
+                source_counts[str(source)] = source_counts.get(str(source), 0) + 1
+        return [by_key[key] for key in ordered_keys if key in by_key], {
+            "candidate_count": len(ordered_keys),
+            "candidate_limit": candidate_limit,
+            "candidate_sources": source_counts,
+        }
+
+    def _collect_fts_candidates(
+        self,
+        candidates: dict[str, dict[str, Any]],
+        *,
+        fts_query: str,
+        kinds: list[str] | None,
+        scope: ScopeRef,
+        limit: int,
+        recall_filters: dict,
+    ) -> None:
+        where, params = self._recall_index_where(kinds=kinds, scope=scope, recall_filters=recall_filters, alias="i")
+        sql = (
+            "SELECT i.storage_key, i.quality_score, i.updated_at, bm25(recall_index_fts) AS bm25_score "
+            "FROM recall_index_fts JOIN recall_index i ON i.storage_key = recall_index_fts.storage_key "
+            "WHERE recall_index_fts MATCH ? AND "
+            + " AND ".join(where)
+            + " ORDER BY bm25_score ASC, i.quality_score DESC, i.updated_at DESC LIMIT ?"
+        )
+        try:
+            rows = self.conn.execute(sql, [fts_query, *params, limit]).fetchall()
+        except sqlite3.OperationalError:
+            return
+        for index, row in enumerate(rows):
+            self._add_candidate(
+                candidates,
+                storage_key=str(row["storage_key"]),
+                source="fts",
+                rank=10.0 + index,
+                quality_score=self._float_value(row["quality_score"]),
+                updated_at=str(row["updated_at"] or ""),
+            )
+
+    def _collect_anchor_candidates(
+        self,
+        candidates: dict[str, dict[str, Any]],
+        *,
+        query: str,
+        kinds: list[str] | None,
+        scope: ScopeRef,
+        limit: int,
+        recall_filters: dict,
+    ) -> None:
+        terms = self._candidate_query_terms(query)
+        if not terms:
+            return
+        where, params = self._recall_index_where(kinds=kinds, scope=scope, recall_filters=recall_filters, alias="i")
+        anchor_clauses: list[str] = []
+        anchor_params: list[object] = []
+        for term in terms[:8]:
+            like = f"%{term}%"
+            anchor_clauses.append("(i.title_text LIKE ? OR i.anchor_terms LIKE ? OR i.body_text LIKE ?)")
+            anchor_params.extend([like, like, like])
+        sql = (
+            "SELECT i.storage_key, i.quality_score, i.updated_at FROM recall_index i WHERE "
+            + " AND ".join(where)
+            + " AND ("
+            + " OR ".join(anchor_clauses)
+            + ") ORDER BY i.quality_score DESC, i.updated_at DESC LIMIT ?"
+        )
+        rows = self.conn.execute(sql, [*params, *anchor_params, limit]).fetchall()
+        for index, row in enumerate(rows):
+            self._add_candidate(
+                candidates,
+                storage_key=str(row["storage_key"]),
+                source="anchor",
+                rank=30.0 + index,
+                quality_score=self._float_value(row["quality_score"]),
+                updated_at=str(row["updated_at"] or ""),
+            )
+
+    def _collect_lane_seed_candidates(
+        self,
+        candidates: dict[str, dict[str, Any]],
+        *,
+        kinds: list[str] | None,
+        scope: ScopeRef,
+        limit: int,
+        recall_filters: dict,
+    ) -> None:
+        if self._intent_name_from_filters(recall_filters) not in {
+            "project_delivery",
+            "operator_preference",
+            "living_posture",
+            "research",
+        }:
+            return
+        where, params = self._recall_index_where(kinds=kinds, scope=scope, recall_filters=recall_filters, alias="i")
+        sql = (
+            "SELECT i.storage_key, i.quality_score, i.updated_at FROM recall_index i WHERE "
+            + " AND ".join(where)
+            + " ORDER BY i.quality_score DESC, i.updated_at DESC LIMIT ?"
+        )
+        rows = self.conn.execute(sql, [*params, limit]).fetchall()
+        for index, row in enumerate(rows):
+            self._add_candidate(
+                candidates,
+                storage_key=str(row["storage_key"]),
+                source="lane_seed",
+                rank=70.0 + index,
+                quality_score=self._float_value(row["quality_score"]),
+                updated_at=str(row["updated_at"] or ""),
+            )
+
+    def _collect_recent_candidates(
+        self,
+        candidates: dict[str, dict[str, Any]],
+        *,
+        kinds: list[str] | None,
+        scope: ScopeRef,
+        limit: int,
+        recall_filters: dict,
+    ) -> None:
+        where, params = self._recall_index_where(kinds=kinds, scope=scope, recall_filters=recall_filters, alias="i")
+        sql = (
+            "SELECT i.storage_key, i.quality_score, i.updated_at FROM recall_index i WHERE "
+            + " AND ".join(where)
+            + " ORDER BY i.updated_at DESC LIMIT ?"
+        )
+        rows = self.conn.execute(sql, [*params, limit]).fetchall()
+        for index, row in enumerate(rows):
+            self._add_candidate(
+                candidates,
+                storage_key=str(row["storage_key"]),
+                source="recent",
+                rank=120.0 + index,
+                quality_score=self._float_value(row["quality_score"]),
+                updated_at=str(row["updated_at"] or ""),
+            )
+
+    def _recall_index_where(
+        self,
+        *,
+        kinds: list[str] | None,
+        scope: ScopeRef,
+        recall_filters: dict,
+        alias: str,
+    ) -> tuple[list[str], list[object]]:
+        prefix = f"{alias}."
+        where = [f"{prefix}status != 'rejected'"]
+        params: list[object] = []
+        if kinds:
+            where.append(f"{prefix}kind IN ({','.join('?' for _ in kinds)})")
+            params.extend(kinds)
+        self._apply_recall_index_scope_filters(where, params, scope, alias=alias)
+        lanes = self._allowed_recall_lanes(kinds=kinds, recall_filters=recall_filters)
+        if lanes:
+            where.append(f"{prefix}lane IN ({','.join('?' for _ in lanes)})")
+            params.extend(lanes)
+        visibilities = self._allowed_recall_visibilities(kinds=kinds, recall_filters=recall_filters)
+        if visibilities:
+            where.append(f"{prefix}visibility IN ({','.join('?' for _ in visibilities)})")
+            params.extend(visibilities)
+        return where, params
+
+    def _apply_recall_index_scope_filters(self, where: list[str], params: list[object], scope: ScopeRef, *, alias: str) -> None:
+        prefix = f"{alias}."
+        scopes = hongtu_query_scopes(scope)
+        clauses: list[str] = []
+        for item in scopes:
+            clause = [
+                f"{prefix}tenant_id = ?",
+                f"{prefix}agent_id = ?",
+                f"{prefix}workspace_id = ?",
+            ]
+            params.extend([item.tenant_id or "default", item.agent_id, item.workspace_id])
+            if item.user_id:
+                clause.append(f"({prefix}user_id = ? OR {prefix}user_id = '')")
+                params.append(item.user_id)
+            else:
+                clause.append(f"{prefix}user_id = ''")
+            clauses.append("(" + " AND ".join(clause) + ")")
+        where.append("(" + " OR ".join(clauses) + ")")
+
+    def _allowed_recall_lanes(self, *, kinds: list[str] | None, recall_filters: dict) -> tuple[str, ...]:
+        if kinds and set(kinds) <= {"raw_chunk"}:
+            return ("raw",)
+        if kinds and set(kinds) <= {"reflection", "incident", "replay_result", "feedback", "unknown"}:
+            return ("operational",)
+        intent_name = self._intent_name_from_filters(recall_filters)
+        if intent_name == "research":
+            return ("knowledge", "primary")
+        if intent_name == "news":
+            return ("news", "knowledge", "primary")
+        if intent_name == "report":
+            return ("operational", "primary", "knowledge")
+        if intent_name in {"project_delivery", "operator_preference", "living_posture"}:
+            if bool(recall_filters.get("include_evidence_only")):
+                return ("primary", "knowledge", "operational")
+            return ("primary", "knowledge")
+        return ("primary", "knowledge", "news")
+
+    def _allowed_recall_visibilities(self, *, kinds: list[str] | None, recall_filters: dict) -> tuple[str, ...]:
+        if kinds and set(kinds) <= {"raw_chunk"}:
+            return ("evidence_only", "default")
+        if kinds and set(kinds) <= {"reflection", "incident", "replay_result", "feedback", "unknown"}:
+            return ("report_only", "evidence_only", "default")
+        intent_name = self._intent_name_from_filters(recall_filters)
+        if intent_name == "report" or bool(recall_filters.get("include_report_records")):
+            return ("default", "report_only", "evidence_only")
+        if bool(recall_filters.get("include_evidence_only")):
+            return ("default", "evidence_only")
+        return ("default",)
+
+    def _add_candidate(
+        self,
+        candidates: dict[str, dict[str, Any]],
+        *,
+        storage_key: str,
+        source: str,
+        rank: float,
+        quality_score: float,
+        updated_at: str,
+    ) -> None:
+        entry = candidates.setdefault(
+            storage_key,
+            {
+                "rank": rank,
+                "quality_score": quality_score,
+                "updated_at": updated_at,
+                "sources": [],
+            },
+        )
+        entry["rank"] = min(float(entry.get("rank") or rank), rank)
+        entry["quality_score"] = max(float(entry.get("quality_score") or 0.0), quality_score)
+        if updated_at > str(entry.get("updated_at") or ""):
+            entry["updated_at"] = updated_at
+        sources = list(entry.get("sources") or [])
+        if source not in sources:
+            sources.append(source)
+        entry["sources"] = sources
+
+    def _candidate_limit(self, limit: int, recall_filters: dict) -> int:
+        raw = recall_filters.get("candidate_limit")
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            value = max(_DEFAULT_CANDIDATE_LIMIT, max(1, int(limit)) * 36)
+        return max(max(1, int(limit)), min(_MAX_CANDIDATE_LIMIT, value))
+
+    def _candidate_query_terms(self, query: str) -> tuple[str, ...]:
+        raw_terms = self._clean_text_for_query(query).split()
+        terms: list[str] = []
+        for term in raw_terms:
+            normalized = str(term or "").strip().lower()
+            if len(normalized) < 2:
+                continue
+            terms.append(normalized)
+            if re.fullmatch(r"[\u4e00-\u9fff]{3,}", normalized):
+                terms.extend(normalized[index : index + 2] for index in range(0, len(normalized) - 1, 2))
+        seen: set[str] = set()
+        result: list[str] = []
+        for term in terms:
+            if term in seen:
+                continue
+            seen.add(term)
+            result.append(term)
+        return tuple(result)
+
+    def _fts_query(self, query: str) -> str:
+        terms = [
+            term.replace('"', " ").strip()
+            for term in self._candidate_query_terms(query)
+            if not self._is_weak_version_anchor(term)
+        ]
+        terms = [term for term in terms if term]
+        if not terms:
+            return ""
+        return " OR ".join(f'"{term}"' for term in terms[:12])
 
     def get_active_policy(self, *, task_type: str, scope: ScopeRef) -> dict:
         where = [
@@ -473,6 +997,7 @@ class SqliteRecordStore:
         new_key = self._storage_key(record)
         if previous_key and previous_key != new_key:
             self.conn.execute("DELETE FROM records WHERE storage_key = ?", (previous_key,))
+            self._delete_recall_index(previous_key)
             self.conn.commit()
         self.upsert(record)
 

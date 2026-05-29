@@ -15,12 +15,33 @@ from eimemory.ei_bridge.protocol import EIMemoryRPCRequest, EIMemoryRPCResponse
 from eimemory.api.runtime import Runtime
 from eimemory.cli.main import main as cli_main
 from eimemory.identity import FEISHU_DARROW_OPEN_ID
+from eimemory.models.records import RecallBundle
 
 
 def _handle_eibrain_request(
     bridge: EIBrainRPCBridge, request: EIMemoryRPCRequest
 ) -> EIMemoryRPCResponse:
     return bridge.handle(request)
+
+
+def _build_recall_bundle(task_context: dict, query: str = "") -> RecallBundle:
+    return RecallBundle(
+        items=[],
+        rules=[],
+        reflections=[],
+        confidence=0.0,
+        next_action_hint="",
+        explanation={
+            "query": query,
+            "task_context": dict(task_context),
+            "selected_count": 0,
+            "active_policy": {},
+            "rule_count": 0,
+            "unknown_record_id": "",
+            "graph_expanded": 0,
+            "retrieval_mode": "hybrid",
+        },
+    )
 
 
 def test_eibrain_client_bridges_recall_and_observe(tmp_path) -> None:
@@ -510,6 +531,123 @@ def test_openclaw_hooks_capture_recall_and_agent_end(tmp_path) -> None:
     assert audits[0].content["selected_records"][0]["kind"] == "memory"
     assert audits[0].content["source_composition"]["by_kind"]["memory"] >= 1
     assert audits[0].content["session_id"] == "sess-1"
+
+
+def test_openclaw_before_prompt_build_defaults_to_fast_recall_context(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    hooks = OpenClawMemoryHooks(runtime)
+    captured: dict[str, object] = {}
+
+    def fake_recall(*, query: str, scope: dict, task_context: dict, limit: int) -> RecallBundle:
+        captured["task_context"] = dict(task_context)
+        captured["query"] = query
+        captured["limit"] = limit
+        return _build_recall_bundle(task_context=task_context, query=query)
+
+    monkeypatch.setattr(runtime.memory, "recall", fake_recall)
+    result = hooks.before_prompt_build(
+        {
+            "session_id": "sess-fast",
+            "agent_id": "main",
+            "workspace_id": "repo-x",
+            "query": "prefers concise replies",
+            "task_context": {"task_type": "chat.reply"},
+        }
+    )
+
+    assert captured["task_context"] == {
+        "task_type": "chat.reply",
+        "recall_mode": "fast",
+        "recall_budget_ms": 800,
+        "candidate_limit": 160,
+    }
+    assert captured["query"] == "prefers concise replies"
+    assert captured["limit"] == 8
+    assert result["memory_bundle"]["items"] == []
+
+
+def test_openclaw_before_prompt_build_recall_exceptions_fallback_to_empty_bundle(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    hooks = OpenClawMemoryHooks(runtime)
+
+    def fake_recall(*, query: str, scope: dict, task_context: dict, limit: int) -> RecallBundle:
+        raise RuntimeError("recall service failed")
+
+    monkeypatch.setattr(runtime.memory, "recall", fake_recall)
+    result = hooks.before_prompt_build(
+        {
+            "session_id": "sess-fail",
+            "agent_id": "main",
+            "workspace_id": "repo-x",
+            "query": "should fallback",
+            "task_context": {"task_type": "chat.reply"},
+        }
+    )
+
+    assert result["memory_bundle"]["items"] == []
+    assert result["memory_bundle"]["confidence"] == 0.0
+    assert result["memory_bundle"]["explanation"]["task_context"]["recall_mode"] == "fast"
+    assert result["memory_bundle"]["explanation"]["task_context"]["recall_budget_ms"] == 800
+    assert result["memory_bundle"]["explanation"]["task_context"]["candidate_limit"] == 160
+
+
+def test_openclaw_before_prompt_build_fast_budget_and_candidate_limit_are_observed(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    hooks = OpenClawMemoryHooks(runtime)
+    captured: dict[str, object] = {}
+
+    def fake_recall(*, query: str, scope: dict, task_context: dict, limit: int) -> RecallBundle:
+        captured["task_context"] = dict(task_context)
+        return _build_recall_bundle(task_context=task_context, query=query)
+
+    monkeypatch.setattr(runtime.memory, "recall", fake_recall)
+    result = hooks.before_prompt_build(
+        {
+            "session_id": "sess-budget",
+            "agent_id": "main",
+            "workspace_id": "repo-x",
+            "query": "fast recall",
+            "task_context": {"task_type": "chat.reply", "recall_budget_ms": 50, "candidate_limit": 20},
+        }
+    )
+
+    assert result["memory_bundle"]["items"] == []
+    assert captured["task_context"]["recall_budget_ms"] == 50
+    assert captured["task_context"]["candidate_limit"] == 40
+
+
+def test_openclaw_before_prompt_build_deep_or_raw_hybrid_mode_is_not_forced(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    hooks = OpenClawMemoryHooks(runtime)
+
+    fake: list[dict] = []
+
+    def fake_recall_with_capture(*, query: str, scope: dict, task_context: dict, limit: int) -> RecallBundle:
+        fake.append(dict(task_context))
+        return _build_recall_bundle(task_context=task_context, query=query)
+
+    monkeypatch.setattr(runtime.memory, "recall", fake_recall_with_capture)
+    hooks.before_prompt_build(
+        {
+            "session_id": "sess-raw",
+            "agent_id": "main",
+            "workspace_id": "repo-x",
+            "query": "raw hybrid recall path",
+            "task_context": {"task_type": "chat.reply", "recall_mode": "raw_hybrid"},
+        }
+    )
+    hooks.before_prompt_build(
+        {
+            "session_id": "sess-deep",
+            "agent_id": "main",
+            "workspace_id": "repo-x",
+            "query": "deep recall path",
+            "task_context": {"task_type": "chat.reply", "recall_mode": "deep"},
+        }
+    )
+
+    assert fake[0]["recall_mode"] == "raw_hybrid"
+    assert fake[1]["recall_mode"] == "raw_hybrid"
 
 
 def test_openclaw_hooks_mark_feishu_as_official_hongtu_channel(tmp_path) -> None:

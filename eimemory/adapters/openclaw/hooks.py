@@ -8,6 +8,11 @@ from eimemory.identity import hongtu_identity_meta, hongtu_scope
 from eimemory.models.records import RecallBundle, RecordEnvelope, ScopeRef
 
 
+DEFAULT_RECALL_MODE = "fast"
+DEFAULT_RECALL_BUDGET_MS = 800
+DEFAULT_FAST_CANDIDATE_LIMIT = 160
+
+
 class OpenClawMemoryHooks:
     def __init__(self, runtime: Runtime) -> None:
         self.runtime = runtime
@@ -34,14 +39,17 @@ class OpenClawMemoryHooks:
 
     def before_prompt_build(self, event: dict) -> dict:
         query = self._clean_prompt_query(str(event.get("query") or event.get("raw_query") or "").strip())
+        recall_context = self._resolve_recall_context(event)
+        event = dict(event)
+        event["task_context"] = recall_context
         if not query:
-            bundle = self._empty_bundle(event)
+            bundle = self._empty_bundle({"task_context": recall_context})
             self._audit_prompt_recall(event=event, bundle=bundle, injected=False)
             return {"memory_bundle": bundle.to_dict()}
-        bundle = self.runtime.memory.recall(
+        bundle = self._run_recall_safely(
             query=query,
             scope=self._scope_from_event(event),
-            task_context=dict(event.get("task_context") or {}),
+            task_context=recall_context,
             limit=8,
         )
         self._audit_prompt_recall(event=event, bundle=bundle, injected=bool(bundle.items))
@@ -205,6 +213,46 @@ class OpenClawMemoryHooks:
 
     def _session_id_from_event(self, event: dict) -> str:
         return str(event.get("session_id") or event.get("sessionId") or "")
+
+    def _resolve_recall_context(self, event: dict) -> dict:
+        task_context = dict(event.get("task_context") or event.get("taskContext") or {})
+        recall_mode = str(task_context.get("recall_mode") or "").strip().lower()
+        if recall_mode == "deep":
+            recall_mode = "raw_hybrid"
+        elif recall_mode != "raw_hybrid":
+            recall_mode = DEFAULT_RECALL_MODE
+        task_context["recall_mode"] = recall_mode
+        task_context["recall_budget_ms"] = self._coerce_recall_budget_ms(task_context.get("recall_budget_ms"))
+        if recall_mode == "fast":
+            task_context["candidate_limit"] = self._coerce_fast_candidate_limit(task_context.get("candidate_limit"))
+        return task_context
+
+    def _coerce_recall_budget_ms(self, value: object) -> int:
+        try:
+            budget = int(value)
+        except (TypeError, ValueError):
+            return DEFAULT_RECALL_BUDGET_MS
+        if budget <= 0:
+            return DEFAULT_RECALL_BUDGET_MS
+        return budget
+
+    def _coerce_fast_candidate_limit(self, value: object) -> int:
+        try:
+            candidate_limit = int(value)
+        except (TypeError, ValueError):
+            return DEFAULT_FAST_CANDIDATE_LIMIT
+        return max(40, min(360, candidate_limit))
+
+    def _run_recall_safely(self, *, query: str, scope: dict, task_context: dict, limit: int) -> RecallBundle:
+        try:
+            return self.runtime.memory.recall(
+                query=query,
+                scope=scope,
+                task_context=task_context,
+                limit=limit,
+            )
+        except Exception:
+            return self._empty_bundle({"task_context": task_context, "query": query})
 
     def _audit_prompt_recall(self, *, event: dict, bundle: RecallBundle, injected: bool) -> RecordEnvelope:
         scope = ScopeRef.from_dict(self._scope_from_event(event))
@@ -392,6 +440,7 @@ class OpenClawMemoryHooks:
         return any(marker in normalized for marker in durable_markers)
 
     def _empty_bundle(self, event: dict) -> RecallBundle:
+        query = str(event.get("query") or "").strip()
         return RecallBundle(
             items=[],
             rules=[],
@@ -399,7 +448,7 @@ class OpenClawMemoryHooks:
             confidence=0.0,
             next_action_hint="",
             explanation={
-                "query": "",
+                "query": self._clean_prompt_query(query) if query else "",
                 "task_context": dict(event.get("task_context") or {}),
                 "selected_count": 0,
                 "active_policy": {},
