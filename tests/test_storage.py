@@ -1012,6 +1012,42 @@ def test_runtime_store_recall_index_limits_candidates_before_rerank(tmp_path) ->
     assert report["candidate_count"] < 180
 
 
+def test_runtime_store_recall_index_empty_existing_db_falls_back_without_startup_backfill(tmp_path) -> None:
+    store = RuntimeStore(root=tmp_path)
+    scope = ScopeRef(agent_id="main", workspace_id="fallback")
+    target = RecordEnvelope.create(
+        kind="memory",
+        title="Fallback recall target",
+        summary="Fallback recall keeps existing production databases searchable before offline index rebuild.",
+        scope=scope,
+        source="operator.correction",
+        meta={"memory_type": "preference"},
+    )
+    store.append(target)
+    store.sqlite.conn.execute("DELETE FROM recall_index")
+    if store.sqlite._has_fts_table():
+        store.sqlite.conn.execute("DELETE FROM recall_index_fts")
+    store.sqlite.conn.commit()
+    store.close()
+
+    reopened = RuntimeStore(root=tmp_path)
+    try:
+        index_count = reopened.sqlite.conn.execute("SELECT COUNT(*) FROM recall_index").fetchone()[0]
+        results, report = reopened.search_with_diagnostics(
+            query="existing production searchable offline rebuild",
+            kinds=["memory"],
+            scope=scope,
+            limit=5,
+        )
+    finally:
+        reopened.close()
+
+    assert index_count == 0
+    assert results[0].record_id == target.record_id
+    assert report["candidate_fallback"] == "legacy_scan"
+    assert report["candidate_sources"]["legacy_scan"] >= 1
+
+
 def test_runtime_store_search_with_knowledge_penalty_for_non_research_queries(tmp_path) -> None:
     store = RuntimeStore(root=tmp_path)
     scope = ScopeRef(agent_id="main", workspace_id="project")

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
+import os
 import re
 import sqlite3
 from pathlib import Path
@@ -25,8 +26,9 @@ class SqliteRecordStore:
     def __init__(self, path: Path) -> None:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(self.path, check_same_thread=False)
+        self.conn = sqlite3.connect(self.path, timeout=30, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA busy_timeout = 30000")
         self._init_db()
 
     def _init_db(self) -> None:
@@ -53,7 +55,8 @@ class SqliteRecordStore:
             self.conn.execute("ALTER TABLE records ADD COLUMN embedding_json TEXT NOT NULL DEFAULT '[]'")
         self._create_indexes()
         self._create_recall_index_tables()
-        self._backfill_recall_index_if_needed()
+        if str(os.environ.get("EIMEMORY_RECALL_INDEX_BACKFILL_ON_START") or "").strip() == "1":
+            self._backfill_recall_index_if_needed()
         self.conn.commit()
 
     def _create_records_table(self) -> None:
@@ -594,6 +597,13 @@ class SqliteRecordStore:
                 limit=max(limit, min(candidate_limit, 120)),
                 recall_filters=recall_filters,
             )
+        if not candidates and self._recall_index_record_count() == 0:
+            return self._legacy_candidate_rows(
+                kinds=kinds,
+                scope=scope,
+                limit=candidate_limit,
+                recall_filters=recall_filters,
+            )
 
         ordered_keys = [
             key
@@ -629,6 +639,40 @@ class SqliteRecordStore:
             "candidate_limit": candidate_limit,
             "candidate_sources": source_counts,
         }
+
+    def _legacy_candidate_rows(
+        self,
+        *,
+        kinds: list[str] | None,
+        scope: ScopeRef,
+        limit: int,
+        recall_filters: dict,
+    ) -> tuple[list[sqlite3.Row], dict]:
+        where = ["1=1"]
+        params: list[object] = []
+        if kinds:
+            where.append(f"kind IN ({','.join('?' for _ in kinds)})")
+            params.extend(kinds)
+        self._apply_scope_filters(where, params, scope)
+        where.append("status != 'rejected'")
+        sql = (
+            "SELECT storage_key, payload_json, content_text, embedding_json FROM records WHERE "
+            + " AND ".join(where)
+            + " ORDER BY updated_at DESC LIMIT ?"
+        )
+        rows = self.conn.execute(sql, [*params, max(1, int(limit))]).fetchall()
+        return rows, {
+            "candidate_count": len(rows),
+            "candidate_limit": limit,
+            "candidate_sources": {"legacy_scan": len(rows)},
+            "candidate_fallback": "legacy_scan",
+        }
+
+    def _recall_index_record_count(self) -> int:
+        try:
+            return int(self.conn.execute("SELECT COUNT(*) FROM recall_index").fetchone()[0])
+        except sqlite3.OperationalError:
+            return 0
 
     def _collect_fts_candidates(
         self,
