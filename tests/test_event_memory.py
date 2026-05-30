@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from eimemory.api.runtime import Runtime
+from eimemory.adapters.openclaw.hooks import OpenClawMemoryHooks
 from eimemory.adapters.eibrain.rpc import EIBrainRPCBridge
 
 
@@ -136,3 +137,121 @@ def test_recall_explanation_surfaces_policy_suggestions_before_text_memory(tmp_p
     assert suggestions[0]["event_type"] == "media_playback"
     assert suggestions[0]["success_criteria"] == "用户能听到或打开播放"
     assert bundle.explanation["policy_first"] is True
+
+
+def test_openclaw_agent_end_records_event_outcome_for_next_policy_search(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    hooks = OpenClawMemoryHooks(runtime)
+    scope = {"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"}
+
+    result = hooks.on_agent_end(
+        {
+            "session_id": "sess-policy",
+            "agent_id": "main",
+            "workspace_id": "repo-x",
+            "user_messages": [{"content": "请帮我巡检 OpenClaw 队列"}],
+            "assistant_messages": [{"content": "Summary: OpenClaw 队列已恢复。"}],
+            "task_context": {
+                "event_type": "operational_check",
+                "interpreted_intent": "巡检 OpenClaw 队列并处理卡住任务",
+                "goal": "恢复队列处理",
+                "physical_conditions": {"gateway": "openclaw", "queue_depth": 2},
+                "environment": {"host": "honxin"},
+                "verification": "队列恢复，watchdog 日志无新增 stuck session",
+            },
+            "tools": ["openclaw_status", "systemctl"],
+            "action_path": ["检查队列", "查看日志", "重启 gateway", "复查状态"],
+            "outcome": {
+                "success": True,
+                "notes": "queue healthy after restart",
+                "verified": True,
+                "verification": "队列恢复，watchdog 日志无新增 stuck session",
+            },
+        }
+    )
+
+    assert result["event"]["user_phrase"] == "请帮我巡检 OpenClaw 队列"
+    assert result["event"]["interpreted_intent"] == "巡检 OpenClaw 队列并处理卡住任务"
+    assert result["event"]["tools"] == ["openclaw_status", "systemctl"]
+    assert result["event"]["physical_conditions"]["queue_depth"] == 2
+    assert result["outcome"]["outcome"] == "good"
+
+    policy = runtime.search_policy("巡检 OpenClaw 队列", scope=scope)
+    suggestion = policy["policy_suggestions"][0]
+    assert suggestion["source"] == "event_outcome"
+    assert suggestion["event_type"] == "operational_check"
+    assert suggestion["outcome"] == "good"
+    assert suggestion["tools"] == ["openclaw_status", "systemctl"]
+    assert suggestion["verification"] == "队列恢复，watchdog 日志无新增 stuck session"
+
+
+def test_openclaw_task_end_user_correction_records_bad_outcome_and_intent_pattern(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    hooks = OpenClawMemoryHooks(runtime)
+    scope = {"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"}
+
+    result = hooks.on_task_end(
+        {
+            "session_id": "sess-correction",
+            "agent_id": "main",
+            "workspace_id": "repo-x",
+            "user_messages": [
+                {"content": "给我唱一段"},
+                {"content": "不对，不是让你写歌词，我是要能听见"},
+            ],
+            "assistant_messages": [{"content": "我写了一段歌词。"}],
+            "task_context": {"interpreted_intent": "创作歌词", "goal": "生成歌词文本"},
+            "outcome": {"success": True, "notes": "generated lyrics"},
+        }
+    )
+
+    assert result["event"]["user_phrase"] == "给我唱一段"
+    assert result["event"]["event_type"] == "media_playback"
+    assert result["outcome"]["outcome"] == "bad"
+    assert result["outcome"]["correction_from_user"] == "不对，不是让你写歌词，我是要能听见"
+    assert "播放" in result["outcome"]["policy_update"]
+    assert result["pattern"]["default_event_type"] == "media_playback"
+
+    policy = runtime.search_policy("给我唱一段", scope=scope)
+    assert any(
+        item["source"] == "event_outcome"
+        and item["outcome"] == "bad"
+        and item["correction_from_user"] == "不对，不是让你写歌词，我是要能听见"
+        for item in policy["policy_suggestions"]
+    )
+    assert any(
+        item["source"] == "intent_pattern"
+        and item["event_type"] == "media_playback"
+        and "播放" in item["interpreted_intent"]
+        for item in policy["policy_suggestions"]
+    )
+
+
+def test_openclaw_session_end_marks_success_without_verification_as_missing(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    hooks = OpenClawMemoryHooks(runtime)
+    scope = {"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"}
+
+    result = hooks.on_session_end(
+        {
+            "session_id": "sess-no-verification",
+            "agent_id": "main",
+            "workspace_id": "repo-x",
+            "user_messages": [{"content": "整理今天的会议纪要"}],
+            "assistant_messages": [{"content": "Summary: 会议纪要已整理。"}],
+            "task_context": {
+                "event_type": "meeting_notes",
+                "interpreted_intent": "整理会议纪要",
+                "goal": "产出可复用会议纪要",
+            },
+            "outcome": {"success": True, "notes": "done"},
+        }
+    )
+
+    assert result["event"]["user_phrase"] == "整理今天的会议纪要"
+    assert result["outcome"]["outcome"] == "verification_missing"
+    assert "verification" in result["outcome"]["reason"]
+
+    policy = runtime.search_policy("整理今天的会议纪要", scope=scope)
+    assert policy["policy_suggestions"][0]["source"] == "event_outcome"
+    assert policy["policy_suggestions"][0]["outcome"] == "verification_missing"

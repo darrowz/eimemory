@@ -17,6 +17,8 @@ It does not own execution, task orchestration, or workflow control.
 - OpenClaw lifecycle bridge plugin plus `openclaw-hook` CLI bridge
 - eibrain SDK, RPC bridge, and HTTP RPC server
 - CLI for init, ingest, recall, export, import, and nightly jobs
+- Event memory policy layer for task intent, execution path, outcomes, corrections, and policy-first recall
+- Nightly judgment evaluation that summarizes outcomes into reusable playbook intent patterns
 - Conservative migration scanner/importer for markdown, JSONL, and SQLite sources
 - Local vector-assisted hybrid retrieval layer
 - Memory quality metadata, capture tiers, and quality-aware hybrid recall

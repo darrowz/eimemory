@@ -117,7 +117,21 @@ def event_similarity(event: dict[str, Any], phrase: str, event_type: str = "") -
     phrase_terms = normalized_terms(phrase)
     searchable = " ".join(
         str(event.get(key) or "")
-        for key in ("user_phrase", "interpreted_intent", "goal", "lesson", "next_policy", "verification", "event_type")
+        for key in (
+            "user_phrase",
+            "interpreted_intent",
+            "goal",
+            "lesson",
+            "next_policy",
+            "verification",
+            "event_type",
+            "tools",
+            "action_path",
+            "environment",
+            "physical_conditions",
+            "result",
+            "evidence",
+        )
     )
     event_terms = normalized_terms(searchable)
     if not phrase_terms or not event_terms:

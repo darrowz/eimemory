@@ -566,6 +566,83 @@ def test_openclaw_before_prompt_build_defaults_to_fast_recall_context(tmp_path, 
     assert result["memory_bundle"]["items"] == []
 
 
+def test_openclaw_before_prompt_build_searches_policy_before_memory_recall(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    hooks = OpenClawMemoryHooks(runtime)
+    calls: list[str] = []
+
+    def fake_search_policy(user_phrase: str, *, scope: dict, context: dict, limit: int) -> dict:
+        calls.append("policy")
+        assert user_phrase == "给我唱首歌"
+        assert context["task_type"] == "chat.reply"
+        assert context["recall_mode"] == "fast"
+        assert limit == 5
+        return {
+            "ok": True,
+            "matched_event_type": "media_playback",
+            "policy_suggestions": [
+                {
+                    "source": "intent_pattern",
+                    "event_type": "media_playback",
+                    "success_criteria": "用户能听到或打开播放",
+                    "execution_policy": ["先判断播放出口和物理条件"],
+                    "score": 0.8,
+                }
+            ],
+        }
+
+    def fake_recall(*, query: str, scope: dict, task_context: dict, limit: int) -> RecallBundle:
+        calls.append("recall")
+        return _build_recall_bundle(task_context=task_context, query=query)
+
+    monkeypatch.setattr(runtime, "search_policy", fake_search_policy)
+    monkeypatch.setattr(runtime.memory, "recall", fake_recall)
+    result = hooks.before_prompt_build(
+        {
+            "session_id": "sess-policy-first",
+            "agent_id": "main",
+            "workspace_id": "repo-x",
+            "query": "给我唱首歌",
+            "task_context": {"task_type": "chat.reply"},
+        }
+    )
+
+    explanation = result["memory_bundle"]["explanation"]
+    assert calls == ["policy", "recall"]
+    assert explanation["policy_first"] is True
+    assert explanation["matched_event_type"] == "media_playback"
+    assert explanation["policy_suggestions"][0]["event_type"] == "media_playback"
+    assert explanation["policy_suggestions"][0]["success_criteria"] == "用户能听到或打开播放"
+
+
+def test_openclaw_before_prompt_build_song_request_prefers_media_playback_policy(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    hooks = OpenClawMemoryHooks(runtime)
+    scope = {"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"}
+    runtime.memory.ingest(
+        text="给我唱首歌 might look like a generic creative chat memory.",
+        memory_type="conversation",
+        title="Generic song chat",
+        scope=scope,
+        force_capture=True,
+    )
+
+    result = hooks.before_prompt_build(
+        {
+            "session_id": "sess-song",
+            "agent_id": "main",
+            "workspace_id": "repo-x",
+            "user_id": "darrow",
+            "query": "给我唱首歌",
+            "task_context": {"task_type": "chat.reply"},
+        }
+    )
+
+    suggestions = result["memory_bundle"]["explanation"]["policy_suggestions"]
+    assert suggestions[0]["event_type"] == "media_playback"
+    assert suggestions[0]["success_criteria"] == "用户能听到或打开播放"
+
+
 def test_openclaw_before_prompt_build_recall_exceptions_fallback_to_empty_bundle(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path)
     hooks = OpenClawMemoryHooks(runtime)

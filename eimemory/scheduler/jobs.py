@@ -61,6 +61,7 @@ def run_nightly_jobs(
     memory_eval_ci_report = _run_memory_eval_ci(runtime, scope=scope)
     production_recall_report = _run_production_recall_eval(runtime, scope=scope)
     daily_brief_report = _run_daily_brief(runtime, scope=scope)
+    judgment_evaluation_report = _run_judgment_evaluation(runtime, scope=scope)
     return {
         "ok": True,
         "active_rule_count": len(active_rules),
@@ -106,6 +107,7 @@ def run_nightly_jobs(
         "rule_evolution": rule_evolution_report,
         "memory_eval_ci": memory_eval_ci_report,
         "production_recall": production_recall_report,
+        "judgment_evaluation": judgment_evaluation_report,
         "source_discovery": source_discovery_report,
         "source_quality": {
             "source_count": source_quality_report["source_count"],
@@ -152,6 +154,48 @@ def _run_production_recall_eval(runtime: Runtime, *, scope: dict) -> dict[str, A
             "eval_skipped_reason": "",
             "error": type(exc).__name__,
             "detail": str(exc),
+        }
+
+
+def _run_judgment_evaluation(runtime: Runtime, *, scope: dict) -> dict[str, Any]:
+    evaluate = getattr(runtime, "run_judgment_evaluation", None)
+    if not callable(evaluate):
+        return {
+            "ok": False,
+            "scanned_event_count": 0,
+            "playbook_entry_count": 0,
+            "persisted": False,
+            "persisted_record_id": "",
+            "evaluation_skipped_reason": "run_judgment_evaluation_unavailable",
+        }
+    try:
+        report = _json_safe(evaluate(scope=scope, limit=300, persist_playbook=True))
+        return {
+            "ok": bool(report.get("ok", True)),
+            "scanned_event_count": int(report.get("scanned_event_count") or 0),
+            "outcome_counts": dict(report.get("outcome_counts") or {}),
+            "repeated_failure_count": len(report.get("repeated_failures") or []),
+            "user_correction_count": len(report.get("user_corrections") or []),
+            "reliable_path_count": len(report.get("reliable_paths") or []),
+            "noise_signal_count": len(report.get("noise_signals") or []),
+            "temporary_fix_count": len(report.get("temporary_fixes") or []),
+            "playbook_entry_count": len(report.get("playbook_entries") or []),
+            "playbook_entries": list(report.get("playbook_entries") or []),
+            "persisted": bool(report.get("persisted")),
+            "persisted_record_id": str(report.get("persisted_record_id") or ""),
+            "persisted_policy_ids": list(report.get("persisted_policy_ids") or []),
+            "evaluation_skipped_reason": "",
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "scanned_event_count": 0,
+            "playbook_entry_count": 0,
+            "persisted": False,
+            "persisted_record_id": "",
+            "error": type(exc).__name__,
+            "detail": str(exc),
+            "evaluation_skipped_reason": "",
         }
 
 

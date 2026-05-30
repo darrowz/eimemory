@@ -231,7 +231,10 @@ def _build_parser() -> argparse.ArgumentParser:
     serve_rpc.add_argument("--port", type=int, default=None)
 
     openclaw_hook = sub.add_parser("openclaw-hook")
-    openclaw_hook.add_argument("hook", choices=["message_received", "before_prompt_build", "agent_end"])
+    openclaw_hook.add_argument(
+        "hook",
+        choices=["message_received", "before_prompt_build", "agent_end", "task_end", "session_end"],
+    )
 
     ei_bridge = sub.add_parser("ei-bridge")
     ei_bridge_sub = ei_bridge.add_subparsers(dest="ei_bridge_command")
@@ -772,8 +775,12 @@ def main(argv: list[str] | None = None) -> int:
             payload = hooks.on_message_received(event)
         elif parsed.hook == "before_prompt_build":
             payload = hooks.before_prompt_build(event)
-        else:
+        elif parsed.hook == "agent_end":
             payload = hooks.on_agent_end(event)
+        elif parsed.hook == "task_end":
+            payload = hooks.on_task_end(event)
+        else:
+            payload = hooks.on_session_end(event)
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0
     if parsed.command == "ei-bridge":

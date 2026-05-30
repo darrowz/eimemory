@@ -11,7 +11,9 @@
   "hooks": [
     "message_received",
     "before_prompt_build",
-    "agent_end"
+    "agent_end",
+    "task_end",
+    "session_end"
   ],
   "contracts": {
     "tools": [

@@ -493,6 +493,24 @@ class Runtime:
     def record_outcome(self, event_id: str, payload: dict, *, scope: dict | None = None) -> dict:
         return self.store.record_outcome(event_id, payload, scope=scope)
 
+    def run_judgment_evaluation(
+        self,
+        scope: dict | None = None,
+        *,
+        since: str | None = None,
+        limit: int | None = 200,
+        persist_playbook: bool = False,
+    ) -> dict:
+        from eimemory.judgment import run_judgment_evaluation
+
+        return run_judgment_evaluation(
+            self,
+            scope=scope,
+            since=since,
+            limit=limit,
+            persist_playbook=persist_playbook,
+        )
+
     def upsert_intent_pattern(self, payload: dict, *, scope: dict | None = None) -> dict:
         return self.store.upsert_intent_pattern(payload, scope=scope)
 

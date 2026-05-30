@@ -93,19 +93,97 @@ function normalizeEventPayload(hook, event) {
     };
   }
   const scope = normalizeScope(event);
+  const rawQuery = String(event?.query || event?.prompt || event?.userPhrase || event?.user_phrase || '');
+  const taskContext = normalizeRecallContext(event?.task_context || event?.taskContext || {});
+  const outcome = normalizeObject(event?.outcome);
   return {
     session_id: normalizeSessionId(event),
     ...scope,
-    assistant_messages: Array.isArray(event?.messages)
-      ? event.messages
-          .filter((message) => String(message?.role || '').toLowerCase() === 'assistant')
-          .map((message) => ({ content: normalizeContent(message?.content) }))
-      : [],
+    query: cleanPromptQuery(rawQuery),
+    raw_query: rawQuery,
+    task_context: taskContext,
+    user_messages: normalizeRoleMessages(event, 'user'),
+    assistant_messages: normalizeRoleMessages(event, 'assistant'),
+    physical_conditions: normalizeObject(event?.physical_conditions || event?.physicalConditions),
+    environment: normalizeObject(event?.environment),
+    tools: normalizeStringList(event?.tools || event?.used_tools || event?.usedTools),
+    action_path: normalizeStringList(event?.action_path || event?.actionPath || event?.execution_path || event?.executionPath),
     outcome: {
-      success: event?.success !== false,
-      notes: String(event?.error || ''),
+      success: Object.prototype.hasOwnProperty.call(outcome, 'success') ? outcome.success !== false : event?.success !== false,
+      notes: String(outcome.notes || outcome.reason || event?.error || ''),
+      verified: outcome.verified === true || event?.verified === true || event?.verification_status === 'verified',
+      verification: String(
+        outcome.verification
+        || outcome.verification_method
+        || outcome.verificationMethod
+        || event?.verification
+        || event?.verification_method
+        || event?.verificationMethod
+        || taskContext.verification
+        || ''
+      ),
+      correction_from_user: String(
+        outcome.correction_from_user
+        || outcome.correctionFromUser
+        || outcome.correction
+        || event?.correction_from_user
+        || event?.correctionFromUser
+        || event?.user_feedback
+        || event?.userFeedback
+        || ''
+      ),
     },
   };
+}
+
+function normalizeRoleMessages(event, role) {
+  const roleName = String(role || '').toLowerCase();
+  const explicitKeys = roleName === 'user'
+    ? ['user_messages', 'userMessages']
+    : ['assistant_messages', 'assistantMessages'];
+  const messages = [];
+  for (const key of explicitKeys) {
+    const raw = event?.[key];
+    if (!Array.isArray(raw)) {
+      continue;
+    }
+    for (const message of raw) {
+      messages.push({ content: normalizeContent(typeof message === 'object' ? message?.content : message) });
+    }
+  }
+  if (Array.isArray(event?.messages)) {
+    for (const message of event.messages) {
+      if (String(message?.role || '').toLowerCase() === roleName) {
+        messages.push({ content: normalizeContent(message?.content) });
+      }
+    }
+  }
+  return messages.filter((message) => message.content);
+}
+
+function normalizeStringList(value) {
+  if (value == null) {
+    return [];
+  }
+  const raw = Array.isArray(value) ? value : [value];
+  const seen = new Set();
+  const items = [];
+  for (const item of raw) {
+    const text = normalizeContent(item).trim();
+    if (!text || seen.has(text)) {
+      continue;
+    }
+    seen.add(text);
+    items.push(text);
+  }
+  return items;
+}
+
+function normalizeObject(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return {};
+  }
+  return Object.assign({}, value);
 }
 
 function normalizeRecallContext(rawContext) {
@@ -448,17 +526,15 @@ module.exports.default = {
         return bridgeContext ? { prependContext: bridgeContext } : {};
       }
       const bundle = payload.memory_bundle || {};
-      const items = Array.isArray(bundle.items) ? bundle.items : [];
-      if (!items.length) {
+      const memoryContext = buildMemoryPrependContext(bundle);
+      if (!memoryContext) {
         return bridgeContext ? { prependContext: bridgeContext } : {};
-      }
-      const memoryContext = buildMemoryPrependContext(items);
-      if (!memoryContext && !bridgeContext) {
-        return {};
       }
       return { prependContext: [bridgeContext, memoryContext].filter(Boolean).join('\n\n') };
     });
     registerTypedHook(api, 'agent_end', async (event) => safeInvokeHook(api, 'agent_end', event) || {});
+    registerTypedHook(api, 'task_end', async (event) => safeInvokeHook(api, 'task_end', event) || {});
+    registerTypedHook(api, 'session_end', async (event) => safeInvokeHook(api, 'session_end', event) || {});
   },
 };
 
@@ -470,7 +546,77 @@ function buildBridgePrependContext(payload) {
   return context ? `Live eibrain context:\n${context}` : '';
 }
 
-function buildMemoryPrependContext(items) {
+function buildMemoryPrependContext(bundleOrItems) {
+  const bundle = Array.isArray(bundleOrItems) ? { items: bundleOrItems } : (bundleOrItems || {});
+  const policyContext = buildPolicySuggestionsContext(bundle?.explanation?.policy_suggestions || bundle?.policy_suggestions);
+  const memoryItemsContext = buildMemoryItemsContext(bundle.items);
+  const context = [policyContext, memoryItemsContext].filter(Boolean).join('\n');
+  return context ? `Relevant eimemory context:\n${context}` : '';
+}
+
+function buildPolicySuggestionsContext(suggestions) {
+  if (!Array.isArray(suggestions) || !suggestions.length) {
+    return '';
+  }
+  const context = suggestions
+    .map((suggestion) => formatPolicySuggestion(suggestion))
+    .filter(Boolean)
+    .join('\n');
+  return context ? `policy_suggestions:\n${context}` : '';
+}
+
+function formatPolicySuggestion(suggestion) {
+  if (!suggestion || typeof suggestion !== 'object') {
+    return '';
+  }
+  const eventType = cleanInjectedMemoryText(suggestion.event_type || suggestion.eventType || '');
+  const successCriteria = cleanInjectedMemoryText(
+    suggestion.success_criteria || suggestion.successCriteria || suggestion.verification || ''
+  );
+  const executionPolicy = firstPolicyText([
+    suggestion.execution_policy,
+    suggestion.executionPolicy,
+    suggestion.policy_update,
+    suggestion.next_policy,
+    suggestion.action_path,
+  ]);
+  const fields = [];
+  if (eventType) {
+    fields.push(`event_type: ${eventType}`);
+  }
+  if (successCriteria) {
+    fields.push(`success_criteria: ${successCriteria}`);
+  }
+  if (executionPolicy) {
+    fields.push(`execution_policy: ${executionPolicy}`);
+  }
+  return fields.length ? `- ${fields.join('; ')}` : '';
+}
+
+function firstPolicyText(values) {
+  for (const value of values) {
+    const text = policyText(value);
+    if (text) {
+      return text;
+    }
+  }
+  return '';
+}
+
+function policyText(value) {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => cleanInjectedMemoryText(item))
+      .filter(Boolean)
+      .join('; ');
+  }
+  return cleanInjectedMemoryText(value || '');
+}
+
+function buildMemoryItemsContext(items) {
+  if (!Array.isArray(items) || !items.length) {
+    return '';
+  }
   const context = items
     .map((item) => {
       if (isBridgeAuditMemory(item)) {
@@ -484,7 +630,7 @@ function buildMemoryPrependContext(items) {
     })
     .filter(Boolean)
     .join('\n');
-  return context ? `Relevant eimemory context:\n${context}` : '';
+  return context ? `memory_items:\n${context}` : '';
 }
 
 function isBridgeAuditMemory(item) {

@@ -656,6 +656,35 @@ def test_cli_openclaw_hook_bridge_reads_stdin_and_returns_json(tmp_path, monkeyp
     bundle = json.loads(capsys.readouterr().out)
     assert bundle["memory_bundle"]["items"]
 
+    stdin = io.StringIO(
+        json.dumps(
+            {
+                "session_id": "sess-1",
+                "agent_id": "main",
+                "workspace_id": "repo-x",
+                "user_messages": [{"content": "请帮我巡检 OpenClaw 队列"}],
+                "assistant_messages": [{"content": "Summary: 队列已恢复。"}],
+                "task_context": {
+                    "event_type": "operational_check",
+                    "interpreted_intent": "巡检 OpenClaw 队列",
+                    "verification": "队列恢复",
+                },
+                "outcome": {"success": True, "verified": True},
+            }
+        )
+    )
+    previous_stdin = sys.stdin
+    sys.stdin = stdin
+    try:
+        assert cli_main(["openclaw-hook", "task_end"]) == 0
+    finally:
+        sys.stdin = previous_stdin
+
+    terminal = json.loads(capsys.readouterr().out)
+    assert terminal["event"]["user_phrase"] == "请帮我巡检 OpenClaw 队列"
+    assert terminal["event"]["event_type"] == "operational_check"
+    assert terminal["outcome"]["outcome"] == "good"
+
 
 def test_openclaw_js_bridge_before_prompt_build_defaults_recall_context(tmp_path) -> None:
     hook_script = tmp_path / "capture-openclaw-context.js"
@@ -749,7 +778,7 @@ def test_openclaw_bridge_assets_exist() -> None:
     manifest = json.loads(Path("integrations/openclaw/eimemory-bridge/openclaw.plugin.json").read_text(encoding="utf-8"))
     assert manifest["id"] == "eimemory-bridge"
     assert manifest["activation"] == {"onStartup": True, "onCapabilities": ["hook"]}
-    assert manifest["hooks"] == ["message_received", "before_prompt_build", "agent_end"]
+    assert manifest["hooks"] == ["message_received", "before_prompt_build", "agent_end", "task_end", "session_end"]
     assert manifest["contracts"]["tools"] == ["eimemory_bridge_status"]
     assert manifest["configSchema"]["type"] == "object"
     assert Path("integrations/openclaw/eimemory-bridge/package.json").exists()
@@ -764,7 +793,7 @@ process.stdout.write(JSON.stringify(names));
 """.strip()
     result = subprocess.run(["node", "-e", script], cwd=Path.cwd(), capture_output=True, text=True, check=True)
 
-    assert json.loads(result.stdout) == ["message_received", "before_prompt_build", "agent_end"]
+    assert json.loads(result.stdout) == ["message_received", "before_prompt_build", "agent_end", "task_end", "session_end"]
 
 
 def test_openclaw_js_bridge_registers_status_tool() -> None:
@@ -1014,6 +1043,62 @@ process.stdout.write(JSON.stringify({
     assert "noisy audit" not in payload["prependContext"]
 
 
+def test_openclaw_js_bridge_injects_policy_suggestions_before_memory_items(tmp_path) -> None:
+    script = """
+const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
+const handlers = {};
+plugin.register({ on(name, handler) { handlers[name] = handler; } });
+handlers.before_prompt_build({ prompt: '给我唱首歌', senderId: 'ou_user' })
+  .then((result) => { process.stdout.write(JSON.stringify(result)); })
+  .catch((error) => { console.error(error && error.stack ? error.stack : String(error)); process.exit(1); });
+""".strip()
+    bridge_script = tmp_path / "bridge.js"
+    bridge_script.write_text("process.stdout.write(JSON.stringify({ matched: false }));", encoding="utf-8")
+    hook_script = tmp_path / "policy-memory-hook.js"
+    hook_script.write_text(
+        """
+process.stdout.write(JSON.stringify({
+  memory_bundle: {
+    items: [
+      { title: 'Generic song chat', source: 'openclaw.message_received', summary: 'This looks like a lyric-writing memory.' }
+    ],
+    explanation: {
+      policy_suggestions: [
+        {
+          source: 'intent_pattern',
+          event_type: 'media_playback',
+          success_criteria: '用户能听到或打开播放',
+          execution_policy: ['先判断播放出口和物理条件', '再确认歌曲和播放方式']
+        }
+      ]
+    }
+  }
+}));
+""".strip(),
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env["EIMEMORY_BRIDGE_COMMAND"] = f'node "{bridge_script}"'
+    env["EIMEMORY_HOOK_COMMAND"] = f'node "{hook_script}"'
+    result = subprocess.run(
+        ["node", "-e", script],
+        cwd=Path.cwd(),
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=10,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    context = json.loads(result.stdout or "{}")["prependContext"]
+    assert context.index("policy_suggestions") < context.index("Generic song chat")
+    assert "event_type: media_playback" in context
+    assert "success_criteria: 用户能听到或打开播放" in context
+    assert "execution_policy: 先判断播放出口和物理条件; 再确认歌曲和播放方式" in context
+
+
 def test_openclaw_js_bridge_normalizes_agent_end_message_content(tmp_path) -> None:
     script = """
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
@@ -1055,6 +1140,76 @@ process.stdout.write(JSON.stringify({ stored: { summary: payload.assistant_messa
     assert result.returncode == 0
     payload = json.loads(result.stdout or "{}")
     assert payload["stored"]["summary"] == "First part\nSecond part"
+
+
+def test_openclaw_js_bridge_agent_end_forwards_event_policy_context(tmp_path) -> None:
+    script = """
+const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
+const handlers = {};
+plugin.register({ on(name, handler) { handlers[name] = handler; } });
+handlers.agent_end({
+  agentId: 'main',
+  workspaceId: 'repo-x',
+  query: '请帮我巡检 OpenClaw 队列',
+  taskContext: {
+    event_type: 'operational_check',
+    interpreted_intent: '巡检 OpenClaw 队列并处理卡住任务',
+    verification: '队列恢复'
+  },
+  tools: ['openclaw_status', 'systemctl'],
+  actionPath: ['检查队列', '查看日志', '复查状态'],
+  success: true,
+  verified: true,
+  messages: [
+    { role: 'user', content: '请帮我巡检 OpenClaw 队列' },
+    { role: 'assistant', content: 'Summary: OpenClaw 队列已恢复。' }
+  ]
+})
+  .then((result) => { process.stdout.write(JSON.stringify(result)); })
+  .catch((error) => { console.error(error && error.stack ? error.stack : String(error)); process.exit(1); });
+""".strip()
+    hook_script = tmp_path / "capture-agent-end-policy-context.js"
+    hook_script.write_text(
+        """
+const fs = require('node:fs');
+const payload = JSON.parse(fs.readFileSync(0, 'utf8') || '{}');
+process.stdout.write(JSON.stringify({
+  event: {
+    user_messages: payload.user_messages || [],
+    query: payload.query || '',
+    task_context: payload.task_context || {},
+    tools: payload.tools || [],
+    action_path: payload.action_path || [],
+    outcome: payload.outcome || {}
+  }
+}));
+""".strip(),
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env["EIMEMORY_HOOK_COMMAND"] = f'node "{hook_script}"'
+    result = subprocess.run(
+        ["node", "-e", script],
+        cwd=Path.cwd(),
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=10,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout or "{}")
+    event = payload["event"]
+    assert event["user_messages"] == [{"content": "请帮我巡检 OpenClaw 队列"}]
+    assert event["query"] == "请帮我巡检 OpenClaw 队列"
+    assert event["task_context"]["event_type"] == "operational_check"
+    assert event["tools"] == ["openclaw_status", "systemctl"]
+    assert event["action_path"] == ["检查队列", "查看日志", "复查状态"]
+    assert event["outcome"]["success"] is True
+    assert event["outcome"]["verified"] is True
+    assert event["outcome"]["verification"] == "队列恢复"
 
 
 def test_openclaw_js_bridge_sends_clean_user_query_from_feishu_prompt(tmp_path) -> None:
