@@ -10,6 +10,15 @@ from typing import Any
 from eimemory.recall import analyze_lexical_signal, build_recall_index_document
 
 from eimemory.embeddings.local import cosine_similarity, embed_text
+from eimemory.events import (
+    DEFAULT_INTENT_PATTERNS,
+    ensure_event_payload,
+    ensure_outcome_payload,
+    ensure_pattern_payload,
+    event_similarity,
+    normalize_scope,
+    pattern_matches,
+)
 from eimemory.identity import hongtu_query_scopes
 from eimemory.models.records import RecordEnvelope, ScopeRef
 from eimemory.scoring import ScoreContext, evaluate_recall_score, extract_memory_score, score_from_legacy_quality
@@ -39,6 +48,8 @@ class SqliteRecordStore:
             self._create_records_table()
             self._create_indexes()
             self._create_recall_index_tables()
+            self._create_event_memory_tables()
+            self._seed_default_intent_patterns()
             self.conn.commit()
             return
         columns = {
@@ -55,6 +66,8 @@ class SqliteRecordStore:
             self.conn.execute("ALTER TABLE records ADD COLUMN embedding_json TEXT NOT NULL DEFAULT '[]'")
         self._create_indexes()
         self._create_recall_index_tables()
+        self._create_event_memory_tables()
+        self._seed_default_intent_patterns()
         if str(os.environ.get("EIMEMORY_RECALL_INDEX_BACKFILL_ON_START") or "").strip() == "1":
             self._backfill_recall_index_if_needed()
         self.conn.commit()
@@ -135,6 +148,84 @@ class SqliteRecordStore:
         except sqlite3.OperationalError:
             # Some embedded SQLite builds omit FTS5. Anchor candidates still keep recall functional.
             pass
+
+    def _create_event_memory_tables(self) -> None:
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS events (
+                id TEXT PRIMARY KEY,
+                timestamp TEXT NOT NULL,
+                source TEXT NOT NULL,
+                user_phrase TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                interpreted_intent TEXT NOT NULL,
+                goal TEXT NOT NULL,
+                confidence REAL NOT NULL DEFAULT 0.0,
+                tenant_id TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS intent_patterns (
+                id TEXT PRIMARY KEY,
+                pattern TEXT NOT NULL,
+                default_event_type TEXT NOT NULL,
+                interpreted_intent TEXT NOT NULL,
+                confidence REAL NOT NULL DEFAULT 0.0,
+                tenant_id TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS event_outcomes (
+                id TEXT PRIMARY KEY,
+                event_id TEXT NOT NULL,
+                outcome TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                correction_from_user TEXT NOT NULL,
+                policy_update TEXT NOT NULL,
+                tenant_id TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                recorded_at TEXT NOT NULL
+            )
+            """
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_events_scope_type ON events(tenant_id, agent_id, workspace_id, user_id, event_type, timestamp)"
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_intent_patterns_scope_type ON intent_patterns(tenant_id, agent_id, workspace_id, user_id, default_event_type)"
+        )
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_event_outcomes_event ON event_outcomes(event_id)")
+
+    def _seed_default_intent_patterns(self) -> None:
+        scope = ScopeRef()
+        for payload in DEFAULT_INTENT_PATTERNS:
+            pattern = ensure_pattern_payload(payload, scope)
+            existing = self.conn.execute(
+                "SELECT 1 FROM intent_patterns WHERE id = ?",
+                (pattern["id"],),
+            ).fetchone()
+            if existing:
+                continue
+            self.upsert_intent_pattern(pattern, scope=scope, commit=False)
 
     def _migrate_to_scoped_storage_key(self, columns: set[str]) -> None:
         self.conn.execute("ALTER TABLE records RENAME TO records_legacy")
@@ -1535,6 +1626,272 @@ class SqliteRecordStore:
         if not isinstance(quality, dict):
             return {}
         return dict(quality)
+
+    def record_event(
+        self,
+        payload: dict[str, Any],
+        *,
+        scope: ScopeRef | dict | None = None,
+        commit: bool = True,
+    ) -> dict[str, Any]:
+        scope_ref = normalize_scope(scope)
+        data = ensure_event_payload(payload, scope_ref)
+        now = datetime.now(timezone.utc).isoformat()
+        self.conn.execute(
+            """
+            INSERT INTO events (
+                id, timestamp, source, user_phrase, event_type, interpreted_intent,
+                goal, confidence, tenant_id, agent_id, workspace_id, user_id,
+                payload_json, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                timestamp=excluded.timestamp,
+                source=excluded.source,
+                user_phrase=excluded.user_phrase,
+                event_type=excluded.event_type,
+                interpreted_intent=excluded.interpreted_intent,
+                goal=excluded.goal,
+                confidence=excluded.confidence,
+                payload_json=excluded.payload_json,
+                updated_at=excluded.updated_at
+            """,
+            (
+                data["id"],
+                data["timestamp"],
+                data["source"],
+                data["user_phrase"],
+                data["event_type"],
+                data["interpreted_intent"],
+                data["goal"],
+                float(data["confidence"]),
+                scope_ref.tenant_id,
+                scope_ref.agent_id,
+                scope_ref.workspace_id,
+                scope_ref.user_id,
+                json.dumps(data, ensure_ascii=False, sort_keys=True),
+                now,
+                now,
+            ),
+        )
+        if commit:
+            self.conn.commit()
+        return data
+
+    def record_outcome(
+        self,
+        event_id: str,
+        payload: dict[str, Any],
+        *,
+        scope: ScopeRef | dict | None = None,
+        commit: bool = True,
+    ) -> dict[str, Any]:
+        scope_ref = normalize_scope(scope)
+        data = ensure_outcome_payload(event_id, payload)
+        self.conn.execute(
+            """
+            INSERT INTO event_outcomes (
+                id, event_id, outcome, reason, correction_from_user, policy_update,
+                tenant_id, agent_id, workspace_id, user_id, payload_json, recorded_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                outcome=excluded.outcome,
+                reason=excluded.reason,
+                correction_from_user=excluded.correction_from_user,
+                policy_update=excluded.policy_update,
+                payload_json=excluded.payload_json,
+                recorded_at=excluded.recorded_at
+            """,
+            (
+                data["id"],
+                data["event_id"],
+                data["outcome"],
+                str(data.get("reason") or ""),
+                str(data.get("correction_from_user") or ""),
+                str(data.get("policy_update") or ""),
+                scope_ref.tenant_id,
+                scope_ref.agent_id,
+                scope_ref.workspace_id,
+                scope_ref.user_id,
+                json.dumps(data, ensure_ascii=False, sort_keys=True),
+                data["recorded_at"],
+            ),
+        )
+        if commit:
+            self.conn.commit()
+        return data
+
+    def upsert_intent_pattern(
+        self,
+        payload: dict[str, Any],
+        *,
+        scope: ScopeRef | dict | None = None,
+        commit: bool = True,
+    ) -> dict[str, Any]:
+        scope_ref = normalize_scope(scope)
+        data = ensure_pattern_payload(payload, scope_ref)
+        now = datetime.now(timezone.utc).isoformat()
+        self.conn.execute(
+            """
+            INSERT INTO intent_patterns (
+                id, pattern, default_event_type, interpreted_intent, confidence,
+                tenant_id, agent_id, workspace_id, user_id, payload_json, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                pattern=excluded.pattern,
+                default_event_type=excluded.default_event_type,
+                interpreted_intent=excluded.interpreted_intent,
+                confidence=excluded.confidence,
+                payload_json=excluded.payload_json,
+                updated_at=excluded.updated_at
+            """,
+            (
+                data["id"],
+                data["pattern"],
+                data["default_event_type"],
+                str(data.get("interpreted_intent") or ""),
+                float(data["confidence"]),
+                scope_ref.tenant_id,
+                scope_ref.agent_id,
+                scope_ref.workspace_id,
+                scope_ref.user_id,
+                json.dumps(data, ensure_ascii=False, sort_keys=True),
+                now,
+                now,
+            ),
+        )
+        if commit:
+            self.conn.commit()
+        return data
+
+    def search_policy(
+        self,
+        user_phrase: str,
+        *,
+        scope: ScopeRef | dict | None = None,
+        context: dict[str, Any] | None = None,
+        limit: int = 5,
+    ) -> dict[str, Any]:
+        scope_ref = normalize_scope(scope)
+        max_limit = max(1, min(20, int(limit or 5)))
+        context_payload = dict(context or {})
+        pattern_rows = self.conn.execute(
+            """
+            SELECT payload_json, default_event_type, confidence, updated_at
+            FROM intent_patterns
+            WHERE tenant_id = ?
+              AND (agent_id = ? OR agent_id = '')
+              AND (workspace_id = ? OR workspace_id = '')
+              AND (user_id = ? OR user_id = '')
+            ORDER BY
+              CASE WHEN agent_id = ? THEN 0 ELSE 1 END,
+              CASE WHEN workspace_id = ? THEN 0 ELSE 1 END,
+              CASE WHEN user_id = ? THEN 0 ELSE 1 END,
+              confidence DESC,
+              updated_at DESC
+            """,
+            (
+                scope_ref.tenant_id,
+                scope_ref.agent_id,
+                scope_ref.workspace_id,
+                scope_ref.user_id,
+                scope_ref.agent_id,
+                scope_ref.workspace_id,
+                scope_ref.user_id,
+            ),
+        ).fetchall()
+        suggestions: list[dict[str, Any]] = []
+        matched_event_type = str(context_payload.get("event_type") or "")
+        for row in pattern_rows:
+            pattern = json.loads(str(row["payload_json"]))
+            matched = pattern_matches(str(pattern.get("pattern") or ""), user_phrase)
+            if not matched:
+                continue
+            if not matched_event_type:
+                matched_event_type = str(pattern.get("default_event_type") or "")
+            suggestions.append(
+                {
+                    "source": "intent_pattern",
+                    "id": pattern.get("id"),
+                    "pattern": pattern.get("pattern"),
+                    "event_type": pattern.get("default_event_type"),
+                    "interpreted_intent": pattern.get("interpreted_intent"),
+                    "first_questions": list(pattern.get("first_questions") or []),
+                    "execution_policy": list(pattern.get("execution_policy") or []),
+                    "ask_first_boundaries": list(pattern.get("ask_first_boundaries") or []),
+                    "success_criteria": str(pattern.get("success_criteria") or ""),
+                    "score": round(0.55 + float(pattern.get("confidence") or 0.0) * 0.25, 3),
+                }
+            )
+        event_rows = self.conn.execute(
+            """
+            SELECT e.payload_json AS event_payload, e.timestamp, e.confidence,
+                   o.payload_json AS outcome_payload, o.outcome, o.recorded_at
+            FROM events e
+            LEFT JOIN event_outcomes o ON o.event_id = e.id
+            WHERE e.tenant_id = ?
+              AND (e.agent_id = ? OR e.agent_id = '')
+              AND (e.workspace_id = ? OR e.workspace_id = '')
+              AND (e.user_id = ? OR e.user_id = '')
+            ORDER BY e.timestamp DESC
+            LIMIT 200
+            """,
+            (scope_ref.tenant_id, scope_ref.agent_id, scope_ref.workspace_id, scope_ref.user_id),
+        ).fetchall()
+        for row in event_rows:
+            event = json.loads(str(row["event_payload"]))
+            similarity = event_similarity(event, user_phrase, matched_event_type)
+            if similarity <= 0.0:
+                continue
+            outcome = json.loads(str(row["outcome_payload"])) if row["outcome_payload"] else {}
+            outcome_name = str(outcome.get("outcome") or "")
+            has_correction = bool(outcome.get("correction_from_user") or outcome.get("policy_update"))
+            good = outcome_name == "good"
+            bad_without_fix = outcome_name == "bad" and not has_correction
+            score = (
+                similarity
+                + (0.25 if matched_event_type and str(event.get("event_type") or "") == matched_event_type else 0.0)
+                + (0.30 if has_correction else 0.0)
+                + (0.20 if good else 0.0)
+                + 0.10
+                - (0.30 if bad_without_fix else 0.0)
+                + float(event.get("confidence") or 0.0) * 0.10
+            )
+            suggestions.append(
+                {
+                    "source": "event_outcome" if outcome else "event",
+                    "id": event.get("id"),
+                    "event_id": event.get("id"),
+                    "event_type": event.get("event_type"),
+                    "user_phrase": event.get("user_phrase"),
+                    "interpreted_intent": event.get("interpreted_intent"),
+                    "goal": event.get("goal"),
+                    "constraints": list(event.get("constraints") or []),
+                    "physical_conditions": dict(event.get("physical_conditions") or {}),
+                    "action_path": list(event.get("action_path") or []),
+                    "verification": str(event.get("verification") or ""),
+                    "lesson": str(event.get("lesson") or ""),
+                    "next_policy": str(event.get("next_policy") or ""),
+                    "notify_policy": str(event.get("notify_policy") or ""),
+                    "outcome": outcome_name,
+                    "reason": str(outcome.get("reason") or ""),
+                    "correction_from_user": str(outcome.get("correction_from_user") or ""),
+                    "policy_update": str(outcome.get("policy_update") or ""),
+                    "score": round(max(0.0, score), 3),
+                }
+            )
+        suggestions.sort(key=lambda item: (-float(item.get("score") or 0.0), str(item.get("source") or "")))
+        return {
+            "ok": True,
+            "query": str(user_phrase or ""),
+            "scope": {
+                "tenant_id": scope_ref.tenant_id,
+                "agent_id": scope_ref.agent_id,
+                "workspace_id": scope_ref.workspace_id,
+                "user_id": scope_ref.user_id,
+            },
+            "matched_event_type": matched_event_type,
+            "policy_suggestions": suggestions[:max_limit],
+        }
 
     def close(self) -> None:
         self.conn.close()

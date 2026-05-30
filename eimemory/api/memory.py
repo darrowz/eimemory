@@ -132,6 +132,12 @@ class MemoryAPI:
         active_policy = {"retrieval_policy": {}, "response_policy": {}}
         if task_type:
             active_policy = self.store.get_active_policy(task_type=task_type, scope=policy_scope_ref)
+        policy_search = self.store.search_policy(
+            normalized_query,
+            scope=policy_scope_ref,
+            context=task_context,
+            limit=5,
+        )
         retrieval_policy = dict(active_policy.get("retrieval_policy") or {})
         recall_profile, recall_profile_source = self._resolve_recall_profile(
             task_context=task_context,
@@ -282,6 +288,9 @@ class MemoryAPI:
                 "recall_profile_params": profile_config,
                 "selected_count": len(items),
                 "active_policy": dict(active_policy.get("retrieval_policy") or {}),
+                "policy_first": bool(policy_search.get("policy_suggestions")),
+                "policy_suggestions": list(policy_search.get("policy_suggestions") or []),
+                "matched_event_type": str(policy_search.get("matched_event_type") or ""),
                 "rule_count": len(rules),
                 "unknown_record_id": gap["unknown"].record_id if gap else "",
                 "graph_expanded": graph_expanded,

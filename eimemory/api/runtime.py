@@ -487,6 +487,25 @@ class Runtime:
 
         return record_experience_item(self, payload, scope=scope)
 
+    def record_event(self, payload: dict, *, scope: dict | None = None) -> dict:
+        return self.store.record_event(payload, scope=scope)
+
+    def record_outcome(self, event_id: str, payload: dict, *, scope: dict | None = None) -> dict:
+        return self.store.record_outcome(event_id, payload, scope=scope)
+
+    def upsert_intent_pattern(self, payload: dict, *, scope: dict | None = None) -> dict:
+        return self.store.upsert_intent_pattern(payload, scope=scope)
+
+    def search_policy(
+        self,
+        user_phrase: str,
+        *,
+        scope: dict | None = None,
+        context: dict | None = None,
+        limit: int = 5,
+    ) -> dict:
+        return self.store.search_policy(user_phrase, scope=scope, context=context, limit=limit)
+
     def export_knowledge_pack(self, path: str | Path, *, scope: dict | None = None, include_candidates: bool = False) -> dict:
         from eimemory.intake.packs import export_knowledge_pack
 

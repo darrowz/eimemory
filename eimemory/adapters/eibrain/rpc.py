@@ -106,6 +106,54 @@ class EIBrainRPCBridge:
                 ),
             )
             return self._with_contract({"ok": True, "result": record.to_dict()})
+        if method in {"memory.record_event", "memory.recordEvent"}:
+            params = dict(params)
+            scope: BridgeScope = params.get("scope", {})
+            payload = params.get("event", params.get("payload", {}))
+            if not isinstance(payload, dict) or not self._valid_scope(scope):
+                return self._with_contract(self._invalid_request())
+            result = self.runtime.record_event(payload, scope=hongtu_scope(scope))
+            return self._with_contract({"ok": True, "result": result})
+        if method in {"memory.record_outcome", "memory.recordOutcome"}:
+            params = dict(params)
+            scope: BridgeScope = params.get("scope", {})
+            event_id = params.get("event_id", "")
+            payload = params.get("outcome", params.get("payload", {}))
+            if not isinstance(event_id, str) or not event_id.strip() or not isinstance(payload, dict) or not self._valid_scope(scope):
+                return self._with_contract(self._invalid_request())
+            result = self.runtime.record_outcome(event_id, payload, scope=hongtu_scope(scope))
+            return self._with_contract({"ok": True, "result": result})
+        if method in {"memory.upsert_intent_pattern", "memory.upsertIntentPattern"}:
+            params = dict(params)
+            scope: BridgeScope = params.get("scope", {})
+            payload = params.get("pattern", params.get("payload", {}))
+            if not isinstance(payload, dict) or not self._valid_scope(scope):
+                return self._with_contract(self._invalid_request())
+            result = self.runtime.upsert_intent_pattern(payload, scope=hongtu_scope(scope))
+            return self._with_contract({"ok": True, "result": result})
+        if method in {"memory.search_policy", "memory.searchPolicy"}:
+            params = dict(params)
+            scope: BridgeScope = params.get("scope", {})
+            query = params.get("query", params.get("user_phrase", ""))
+            context = params.get("context", {})
+            limit = params.get("limit", 5)
+            if (
+                not isinstance(query, str)
+                or not query.strip()
+                or not isinstance(context, dict)
+                or not isinstance(limit, int)
+                or isinstance(limit, bool)
+                or limit <= 0
+                or not self._valid_scope(scope)
+            ):
+                return self._with_contract(self._invalid_request())
+            result = self.runtime.search_policy(
+                query,
+                scope=hongtu_scope(scope),
+                context=context,
+                limit=limit,
+            )
+            return self._with_contract({"ok": True, "result": result})
         if method == "evolution.observe":
             params = dict(params)
             payload = params.get("payload", {})

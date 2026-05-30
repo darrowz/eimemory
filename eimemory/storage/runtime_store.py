@@ -65,6 +65,29 @@ class RuntimeStore:
         scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
         return self.sqlite.get_active_policy(task_type=task_type, scope=scope_ref)
 
+    def record_event(self, payload: dict, *, scope: ScopeRef | dict | None = None) -> dict:
+        scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+        return self.sqlite.record_event(payload, scope=scope_ref)
+
+    def record_outcome(self, event_id: str, payload: dict, *, scope: ScopeRef | dict | None = None) -> dict:
+        scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+        return self.sqlite.record_outcome(event_id, payload, scope=scope_ref)
+
+    def upsert_intent_pattern(self, payload: dict, *, scope: ScopeRef | dict | None = None) -> dict:
+        scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+        return self.sqlite.upsert_intent_pattern(payload, scope=scope_ref)
+
+    def search_policy(
+        self,
+        user_phrase: str,
+        *,
+        scope: ScopeRef | dict | None = None,
+        context: dict | None = None,
+        limit: int = 5,
+    ) -> dict:
+        scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+        return self.sqlite.search_policy(user_phrase, scope=scope_ref, context=context, limit=limit)
+
     def get_by_id(self, record_id: str, scope: ScopeRef | dict | None = None) -> RecordEnvelope | None:
         scope_ref = None if scope is None else (scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope))
         return self.sqlite.get_by_id(record_id, scope=scope_ref)
