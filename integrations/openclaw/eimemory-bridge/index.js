@@ -7,7 +7,7 @@ const HONGTU_WORKSPACE_ID = 'embodied';
 const DEFAULT_OPERATOR_USER_ID = 'darrow';
 const DEFAULT_RECALL_MODE = 'fast';
 const DEFAULT_RECALL_BUDGET_MS = 800;
-const DEFAULT_FAST_CANDIDATE_LIMIT = 160;
+const DEFAULT_FAST_CANDIDATE_LIMIT = 24;
 
 function splitCommand(command) {
   const parts = [];
@@ -202,7 +202,7 @@ function normalizeRecallContext(rawContext) {
     if (!Number.isFinite(candidateLimit)) {
       context.candidate_limit = DEFAULT_FAST_CANDIDATE_LIMIT;
     } else {
-      context.candidate_limit = Math.max(40, Math.min(360, candidateLimit));
+      context.candidate_limit = Math.max(24, Math.min(360, candidateLimit));
     }
   }
   return context;

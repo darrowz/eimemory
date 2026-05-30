@@ -740,7 +740,7 @@ handlers.before_prompt_build({
     payload = json.loads(capture_path.read_text(encoding="utf-8"))
     assert payload["task_context"]["recall_mode"] == "fast"
     assert payload["task_context"]["recall_budget_ms"] == 800
-    assert payload["task_context"]["candidate_limit"] == 160
+    assert payload["task_context"]["candidate_limit"] == 24
     assert "Relevant eimemory context" in json.loads(result.stdout or "{}")["prependContext"]
 
 

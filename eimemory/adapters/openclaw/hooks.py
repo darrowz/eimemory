@@ -11,7 +11,7 @@ from eimemory.models.records import RecallBundle, RecordEnvelope, ScopeRef
 
 DEFAULT_RECALL_MODE = "fast"
 DEFAULT_RECALL_BUDGET_MS = 800
-DEFAULT_FAST_CANDIDATE_LIMIT = 160
+DEFAULT_FAST_CANDIDATE_LIMIT = 24
 
 
 class OpenClawMemoryHooks:
@@ -257,7 +257,7 @@ class OpenClawMemoryHooks:
             candidate_limit = int(value)
         except (TypeError, ValueError):
             return DEFAULT_FAST_CANDIDATE_LIMIT
-        return max(40, min(360, candidate_limit))
+        return max(24, min(360, candidate_limit))
 
     def _run_recall_safely(self, *, query: str, scope: dict, task_context: dict, limit: int) -> RecallBundle:
         try:

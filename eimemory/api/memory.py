@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from hashlib import sha256
 import re
 
 from eimemory.knowledge.views import build_recall_view, choose_view_type, records_from_view
@@ -11,6 +12,10 @@ from eimemory.raw.retrieval import search_raw_chunks
 from eimemory.recall import RecallIntent, classify_recall_intent
 from eimemory.scoring import ScoreContext, evaluate_memory_score, extract_memory_score, with_score_metadata
 from eimemory.storage.runtime_store import RuntimeStore
+
+
+_KNOWLEDGE_CONTENT_DEDUPE_KINDS = {"knowledge_page", "claim_card", "paper_source", "paper_extract"}
+_MAX_RECORDS_PER_KNOWLEDGE_SOURCE = 2
 
 
 class MemoryAPI:
@@ -236,7 +241,10 @@ class MemoryAPI:
             memories=memories,
             query=normalized_query,
         )
-        items = self._apply_hard_recall_filters(records_from_view(view, items, limit=limit), recall_filters)
+        items = self._apply_hard_recall_filters(
+            self._dedupe_records(records_from_view(view, items, limit=max(limit * 4, limit))),
+            recall_filters,
+        )[:limit]
         if report_items:
             items = self._dedupe_records([*report_items, *items])[:limit]
         final_view = build_recall_view(
@@ -504,14 +512,98 @@ class MemoryAPI:
 
     @staticmethod
     def _dedupe_records(items: list[RecordEnvelope]) -> list[RecordEnvelope]:
-        seen: set[str] = set()
+        seen_ids: set[str] = set()
+        seen_content_positions: dict[str, int] = {}
         deduped: list[RecordEnvelope] = []
         for item in items:
-            if item.record_id in seen:
+            if item.record_id in seen_ids:
                 continue
-            seen.add(item.record_id)
+            seen_ids.add(item.record_id)
+            content_key = MemoryAPI._record_content_key(item)
+            if content_key:
+                existing_index = seen_content_positions.get(content_key)
+                if existing_index is not None:
+                    if MemoryAPI._prefer_dedupe_replacement(item, deduped[existing_index]):
+                        deduped[existing_index] = item
+                    continue
+                seen_content_positions[content_key] = len(deduped)
             deduped.append(item)
-        return deduped
+        return MemoryAPI._cap_knowledge_source_groups(deduped)
+
+    @staticmethod
+    def _record_content_key(item: RecordEnvelope) -> str:
+        title = str(item.title or "").strip().lower()
+        summary = str(item.summary or "").strip().lower()
+        if not title and not summary:
+            return ""
+        if item.kind == "memory":
+            memory_type = (
+                str(business_metadata(item.meta).get("memory_type") or item.content.get("memory_type") or "")
+                .strip()
+                .lower()
+            )
+            text = f"memory::{memory_type}::{title}::{summary}"
+            return sha256(text.encode("utf-8")).hexdigest()[:24]
+
+        title_summary = f"{item.kind}::{title}::{summary[:100]}"
+        summary_key = f"knowledge::{summary[:220]}" if item.kind in _KNOWLEDGE_CONTENT_DEDUPE_KINDS and len(summary) >= 80 else ""
+        text = summary_key or title_summary
+        if not text.strip(":"):
+            return ""
+        return sha256(text.encode("utf-8")).hexdigest()[:24]
+
+    @staticmethod
+    def _prefer_dedupe_replacement(candidate: RecordEnvelope, incumbent: RecordEnvelope) -> bool:
+        return MemoryAPI._dedupe_rank(candidate) > MemoryAPI._dedupe_rank(incumbent)
+
+    @staticmethod
+    def _dedupe_rank(item: RecordEnvelope) -> tuple[float, str, str, str]:
+        score = extract_memory_score(item.meta)
+        quality = business_metadata(item.meta).get("quality")
+        quality_score = 0.0
+        if isinstance(quality, dict):
+            try:
+                quality_score = float(quality.get("salience_score") or quality.get("importance") or 0.0)
+            except (TypeError, ValueError):
+                quality_score = 0.0
+        final_score = float(score.final_score) if score is not None else quality_score
+        return (final_score, str(item.time.updated_at or ""), str(item.time.created_at or ""), str(item.record_id or ""))
+
+    @staticmethod
+    def _cap_knowledge_source_groups(items: list[RecordEnvelope]) -> list[RecordEnvelope]:
+        source_counts: dict[str, int] = {}
+        capped: list[RecordEnvelope] = []
+        for item in items:
+            source_key = MemoryAPI._record_source_group_key(item)
+            if source_key:
+                count = source_counts.get(source_key, 0)
+                if count >= _MAX_RECORDS_PER_KNOWLEDGE_SOURCE:
+                    continue
+                source_counts[source_key] = count + 1
+            capped.append(item)
+        return capped
+
+    @staticmethod
+    def _record_source_group_key(item: RecordEnvelope) -> str:
+        if item.kind not in _KNOWLEDGE_CONTENT_DEDUPE_KINDS:
+            return ""
+        values: list[str] = []
+        containers = [item.provenance, business_metadata(item.meta), item.content if isinstance(item.content, dict) else {}]
+        for container in containers:
+            for key in ("paper_source_id", "source_id"):
+                value = container.get(key)
+                if value:
+                    values.append(str(value).strip().lower())
+            source_ids = container.get("source_ids")
+            if isinstance(source_ids, (list, tuple)):
+                values.extend(str(value).strip().lower() for value in source_ids if str(value).strip())
+        values.extend(
+            str(link.target_id).strip().lower()
+            for link in item.links
+            if str(link.target_kind or "").strip().lower() == "paper_source" and str(link.target_id or "").strip()
+        )
+        normalized = sorted({value for value in values if value})
+        return f"paper::{normalized[0]}" if normalized else ""
 
     @staticmethod
     def _record_text(item: RecordEnvelope) -> str:

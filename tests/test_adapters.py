@@ -559,7 +559,7 @@ def test_openclaw_before_prompt_build_defaults_to_fast_recall_context(tmp_path, 
         "task_type": "chat.reply",
         "recall_mode": "fast",
         "recall_budget_ms": 800,
-        "candidate_limit": 160,
+        "candidate_limit": 24,
     }
     assert captured["query"] == "prefers concise replies"
     assert captured["limit"] == 8
@@ -665,7 +665,7 @@ def test_openclaw_before_prompt_build_recall_exceptions_fallback_to_empty_bundle
     assert result["memory_bundle"]["confidence"] == 0.0
     assert result["memory_bundle"]["explanation"]["task_context"]["recall_mode"] == "fast"
     assert result["memory_bundle"]["explanation"]["task_context"]["recall_budget_ms"] == 800
-    assert result["memory_bundle"]["explanation"]["task_context"]["candidate_limit"] == 160
+    assert result["memory_bundle"]["explanation"]["task_context"]["candidate_limit"] == 24
 
 
 def test_openclaw_before_prompt_build_fast_budget_and_candidate_limit_are_observed(tmp_path, monkeypatch) -> None:
@@ -690,7 +690,31 @@ def test_openclaw_before_prompt_build_fast_budget_and_candidate_limit_are_observ
 
     assert result["memory_bundle"]["items"] == []
     assert captured["task_context"]["recall_budget_ms"] == 50
-    assert captured["task_context"]["candidate_limit"] == 40
+    assert captured["task_context"]["candidate_limit"] == 24
+
+
+def test_openclaw_before_prompt_build_preserves_valid_candidate_limit_and_caps_high_values(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    hooks = OpenClawMemoryHooks(runtime)
+    observed: list[int] = []
+
+    def fake_recall(*, query: str, scope: dict, task_context: dict, limit: int) -> RecallBundle:
+        observed.append(int(task_context["candidate_limit"]))
+        return _build_recall_bundle(task_context=task_context, query=query)
+
+    monkeypatch.setattr(runtime.memory, "recall", fake_recall)
+    for value in (200, 500):
+        hooks.before_prompt_build(
+            {
+                "session_id": f"sess-candidate-{value}",
+                "agent_id": "main",
+                "workspace_id": "repo-x",
+                "query": "fast recall",
+                "task_context": {"task_type": "chat.reply", "candidate_limit": value},
+            }
+        )
+
+    assert observed == [200, 360]
 
 
 def test_openclaw_before_prompt_build_deep_or_raw_hybrid_mode_is_not_forced(tmp_path, monkeypatch) -> None:
