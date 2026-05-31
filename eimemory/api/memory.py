@@ -152,6 +152,12 @@ class MemoryAPI:
         search_limit = max(limit * profile_config["search_multiplier"], limit)
         recall_intent = classify_recall_intent(normalized_query, task_context)
         recall_filters = self._recall_filters_from_task_context(task_context)
+        policy_source_weights = self._source_weights(retrieval_policy.get("source_weights"))
+        if policy_source_weights:
+            recall_filters["source_weights"] = {
+                **policy_source_weights,
+                **dict(recall_filters.get("source_weights") or {}),
+            }
         self._merge_recall_intent_filters(recall_filters, recall_intent)
         recall_filters["scoring_profile"] = recall_profile
         raw_evidence: list[dict] = []

@@ -19,7 +19,7 @@ from eimemory.compatibility.migration_helpers import (
     scan_migration_source,
 )
 from eimemory.config.loader import load_settings
-from eimemory.identity import hongtu_scope
+from eimemory.identity import canonical_hongtu_user_id, hongtu_scope
 from eimemory.identity_ops import identity_report, repair_hongtu_identity
 from eimemory.knowledge.compiler import compile_paper_knowledge
 from eimemory.governance.console import write_evolution_console
@@ -264,6 +264,23 @@ def _build_parser() -> argparse.ArgumentParser:
     evolve_loop.add_argument("--min-roi", type=float, default=0.0)
     evolve_loop.add_argument("--persist-report", action="store_true")
 
+    evolve_autonomous = evolve_sub.add_parser("autonomous")
+    evolve_autonomous.add_argument("--apply", action="store_true")
+    evolve_autonomous.add_argument("--max-apply", type=int, default=3)
+    evolve_autonomous.add_argument("--persist-report", action="store_true")
+    evolve_autonomous.add_argument("--web-evidence-json", default="")
+    evolve_autonomous.add_argument("--scope-agent", default="")
+    evolve_autonomous.add_argument("--scope-workspace", default="")
+    evolve_autonomous.add_argument("--scope-user", default="")
+
+    evolve_web_scout = evolve_sub.add_parser("web-scout")
+    evolve_web_scout.add_argument("--url", action="append", default=[])
+    evolve_web_scout.add_argument("--evidence-json", default="")
+    evolve_web_scout.add_argument("--timeout-seconds", type=int, default=8)
+    evolve_web_scout.add_argument("--scope-agent", default="")
+    evolve_web_scout.add_argument("--scope-workspace", default="")
+    evolve_web_scout.add_argument("--scope-user", default="")
+
     eval_cmd = sub.add_parser("eval")
     eval_sub = eval_cmd.add_subparsers(dest="eval_command")
     eval_run = eval_sub.add_parser("run")
@@ -312,6 +329,53 @@ def _print_error(error: str, exc: Exception) -> int:
         )
     )
     return 2
+
+
+def _cli_scope(parsed: object, *, defaults: dict) -> dict:
+    values = dict(defaults)
+    scope_agent = getattr(parsed, "scope_agent", "")
+    scope_workspace = getattr(parsed, "scope_workspace", "")
+    scope_user = getattr(parsed, "scope_user", "")
+    if scope_agent:
+        values["agent_id"] = scope_agent
+    if scope_workspace:
+        values["workspace_id"] = scope_workspace
+    if scope_user:
+        values["user_id"] = scope_user
+    return {
+        "tenant_id": str(values.get("tenant_id") or "default"),
+        "agent_id": str(values.get("agent_id") or "cli"),
+        "workspace_id": str(values.get("workspace_id") or ""),
+        "user_id": canonical_hongtu_user_id(values.get("user_id")),
+    }
+
+
+def _load_web_hypotheses(raw: str) -> list[dict]:
+    raw_text = str(raw or "").strip()
+    if not raw_text:
+        return []
+    try:
+        loaded = json.loads(raw_text)
+    except json.JSONDecodeError:
+        path = Path(raw_text)
+        try:
+            content = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise ValueError("invalid_web_evidence_json") from exc
+        try:
+            loaded = json.loads(content)
+        except json.JSONDecodeError as exc:
+            raise ValueError("invalid_web_evidence_json") from exc
+    if isinstance(loaded, dict) and isinstance(loaded.get("hypotheses"), list):
+        loaded_payload = loaded["hypotheses"]
+    elif isinstance(loaded, dict):
+        loaded_payload = [loaded]
+    elif isinstance(loaded, list):
+        loaded_payload = loaded
+    else:
+        raise ValueError("invalid_web_evidence_json")
+
+    return [dict(item) for item in loaded_payload if isinstance(item, dict)]
 
 
 def _living_enrich_report(runtime, scope: dict, *, limit: int) -> dict:
@@ -865,7 +929,51 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0
-        print(json.dumps({"usage": "eimemory evolve evaluate|promotions|loop"}))
+        if parsed.evolve_command == "autonomous":
+            max_apply = int(parsed.max_apply)
+            if max_apply < 0:
+                print(json.dumps({"ok": False, "error": "invalid_max_apply"}, ensure_ascii=False))
+                return 2
+            try:
+                web_evidence = _load_web_hypotheses(parsed.web_evidence_json)
+            except ValueError as exc:
+                print(
+                    json.dumps(
+                        {"ok": False, "error": "invalid_web_evidence_json", "detail": str(exc)},
+                        ensure_ascii=False,
+                    )
+                )
+                return 2
+            report = runtime.run_autonomous_evolution(
+                scope=_cli_scope(parsed, defaults=scope),
+                apply=bool(parsed.apply),
+                max_apply=max_apply,
+                web_hypotheses=web_evidence,
+                persist_report=bool(parsed.persist_report),
+            )
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0
+        if parsed.evolve_command == "web-scout":
+            timeout_seconds = max(1, int(parsed.timeout_seconds))
+            try:
+                evidence = _load_web_hypotheses(parsed.evidence_json)
+            except ValueError as exc:
+                print(
+                    json.dumps(
+                        {"ok": False, "error": "invalid_web_evidence_json", "detail": str(exc)},
+                        ensure_ascii=False,
+                    )
+                )
+                return 2
+            report = runtime.scout_web_learning(
+                scope=_cli_scope(parsed, defaults=scope),
+                urls=list(parsed.url or []),
+                evidence=evidence,
+                timeout_seconds=timeout_seconds,
+            )
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0
+        print(json.dumps({"usage": "eimemory evolve evaluate|promotions|loop|autonomous|web-scout"}))
         return 0
     if parsed.command == "eval":
         if parsed.eval_command == "run":

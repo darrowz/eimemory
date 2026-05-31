@@ -62,6 +62,7 @@ def run_nightly_jobs(
     production_recall_report = _run_production_recall_eval(runtime, scope=scope)
     daily_brief_report = _run_daily_brief(runtime, scope=scope)
     judgment_evaluation_report = _run_judgment_evaluation(runtime, scope=scope)
+    autonomous_evolution_report = _run_autonomous_evolution(runtime, scope=scope)
     return {
         "ok": True,
         "active_rule_count": len(active_rules),
@@ -105,6 +106,7 @@ def run_nightly_jobs(
         "research_digest": research_digest_report,
         "daily_brief": daily_brief_report,
         "rule_evolution": rule_evolution_report,
+        "autonomous_evolution": autonomous_evolution_report,
         "memory_eval_ci": memory_eval_ci_report,
         "production_recall": production_recall_report,
         "judgment_evaluation": judgment_evaluation_report,
@@ -692,6 +694,40 @@ def _run_rule_evolution(
             "evolution_skipped_reason": "",
         }
 
+
+def _run_autonomous_evolution(runtime: Runtime, *, scope: dict) -> dict[str, Any]:
+    run_autonomous = getattr(runtime, "run_autonomous_evolution", None)
+    if run_autonomous is None:
+        return {
+            "ok": False,
+            "report_type": "autonomous_evolution",
+            "autonomous_evolution_skipped_reason": "run_autonomous_evolution_unavailable",
+        }
+    try:
+        report = _json_safe(
+            run_autonomous(
+                scope=scope,
+                apply=False,
+                max_apply=3,
+                web_hypotheses=None,
+                persist_report=True,
+            )
+        )
+        if isinstance(report, dict):
+            return report
+    except Exception as exc:
+        return {
+            "ok": False,
+            "report_type": "autonomous_evolution",
+            "autonomous_evolution_skipped_reason": "run_autonomous_evolution_failed",
+            "error": type(exc).__name__,
+            "detail": str(exc),
+        }
+    return {
+        "ok": False,
+        "report_type": "autonomous_evolution",
+        "autonomous_evolution_skipped_reason": "invalid_autonomous_evolution_report",
+    }
 
 def _delivery_is_pending(delivery: dict[str, Any]) -> bool:
     status = str(((delivery.get("outbox") or {}).get("status") or delivery.get("status") or "")).strip().lower()

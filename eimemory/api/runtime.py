@@ -371,6 +371,44 @@ class Runtime:
             persisted_record_id = record.record_id
         return {**report, "persisted": bool(persist_report), "persisted_record_id": persisted_record_id}
 
+    def run_autonomous_evolution(
+        self,
+        *,
+        scope: dict | None = None,
+        apply: bool = False,
+        max_apply: int = 3,
+        web_hypotheses: list[dict] | None = None,
+        persist_report: bool = False,
+    ) -> dict:
+        from eimemory.governance.autonomous_evolution import run_autonomous_evolution
+
+        return run_autonomous_evolution(
+            self,
+            scope=scope,
+            apply=apply,
+            max_apply=max_apply,
+            web_hypotheses=web_hypotheses,
+            persist_report=persist_report,
+        )
+
+    def scout_web_learning(
+        self,
+        *,
+        scope: dict | None = None,
+        urls: list[str] | None = None,
+        evidence: list[dict] | None = None,
+        timeout_seconds: int = 8,
+    ) -> dict:
+        from eimemory.governance.web_learning import scout_web_learning
+
+        return scout_web_learning(
+            self,
+            scope=scope,
+            urls=urls,
+            evidence=evidence,
+            timeout_seconds=timeout_seconds,
+        )
+
     def run_evaluation(
         self,
         dataset: dict | list,
