@@ -391,6 +391,28 @@ class Runtime:
             persist_report=persist_report,
         )
 
+    def run_code_sandbox(
+        self,
+        *,
+        incident: dict[str, Any],
+        scope: dict | None = None,
+        create_worktree: bool = False,
+        persist_report: bool = False,
+        runner: object | None = None,
+        worktree_root: str | Path | None = None,
+    ) -> dict:
+        from eimemory.governance.code_evolution import run_code_sandbox
+
+        return run_code_sandbox(
+            self,
+            incident=incident,
+            scope=scope,
+            create_worktree=create_worktree,
+            persist_report=persist_report,
+            runner=runner,
+            worktree_root=worktree_root,
+        )
+
     def scout_web_learning(
         self,
         *,
@@ -561,6 +583,25 @@ class Runtime:
         limit: int = 5,
     ) -> dict:
         return self.store.search_policy(user_phrase, scope=scope, context=context, limit=limit)
+
+    def get_policy_rollout_ledger(
+        self,
+        *,
+        scope: dict | None = None,
+        action: str | None = None,
+        limit: int = 20,
+    ) -> list[dict]:
+        return self.store.get_policy_rollout_ledger(scope=scope, action=action, limit=limit)
+
+    def rollback_intent_pattern(
+        self,
+        pattern_id: str,
+        *,
+        scope: dict | None = None,
+        reason: str = "",
+        auto: bool = False,
+    ) -> dict:
+        return self.store.rollback_intent_pattern(pattern_id, scope=scope, reason=reason, auto=auto)
 
     def export_knowledge_pack(self, path: str | Path, *, scope: dict | None = None, include_candidates: bool = False) -> dict:
         from eimemory.intake.packs import export_knowledge_pack

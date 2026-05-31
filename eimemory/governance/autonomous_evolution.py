@@ -7,6 +7,12 @@ from hashlib import sha256
 from typing import Any
 
 from eimemory.core.clock import now_iso
+from eimemory.governance.policy_replay import (
+    build_replay_case,
+    evaluate_replay_gate,
+    evaluate_safe_action_gate,
+)
+from eimemory.governance.policy_trust import evaluate_trust_gate
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
@@ -30,37 +36,145 @@ def run_autonomous_evolution(
     replay_cases = [_replay_case_from_opportunity(item) for item in opportunities]
     safe_patches = [_safe_patch_from_opportunity(item, scope=scope_ref) for item in opportunities]
     patch_evaluations = [_evaluate_patch(patch) for patch in safe_patches]
+    patch_gates = [
+        {
+            "trusted_gate": evaluate_trust_gate(
+                outcome=dict(opportunities[index].get("source_outcome_payload") or {}),
+                event=dict(opportunities[index].get("source_event_payload") or {}),
+                source=str(opportunities[index].get("source") or ""),
+            ),
+            "replay_gate": evaluate_replay_gate(replay_case),
+            "safe_action_gate": evaluate_safe_action_gate(patch=patch),
+        }
+        for index, (patch, replay_case) in enumerate(zip(safe_patches, replay_cases))
+    ]
     experiments = [
-        _experiment_from_patch(patch, replay_case, evaluation)
-        for patch, replay_case, evaluation in zip(safe_patches, replay_cases, patch_evaluations)
+        _experiment_from_patch(patch, replay_case, evaluation, gates["trusted_gate"], gates["replay_gate"], gates["safe_action_gate"])
+        for patch, replay_case, evaluation, gates in zip(safe_patches, replay_cases, patch_evaluations, patch_gates)
     ]
 
     max_apply_count = max(0, int(max_apply))
     applied_count = 0
     applied_patches: list[dict[str, Any]] = []
     blocked_patches: list[dict[str, Any]] = []
-    for patch, evaluation in zip(safe_patches, patch_evaluations):
+    for patch, evaluation, gates, replay_case in zip(safe_patches, patch_evaluations, patch_gates, replay_cases):
+        trusted_gate = gates["trusted_gate"]
+        replay_gate = gates["replay_gate"]
+        safe_action_gate = gates["safe_action_gate"]
+        patch_passes = (
+            bool(evaluation.get("ok"))
+            and bool(trusted_gate.get("ok"))
+            and bool(replay_gate.get("ok"))
+            and bool(safe_action_gate.get("ok"))
+        )
+
         if not evaluation["ok"]:
-            blocked_patches.append({
-                "opportunity_id": patch["opportunity_id"],
-                "patch_type": patch["patch_type"],
-                "risk_level": patch["risk_level"],
-                "blocked_reason": evaluation["blocked_reason"],
-            })
+            blocked_patches.append(
+                {
+                    "opportunity_id": patch["opportunity_id"],
+                    "patch_type": patch["patch_type"],
+                    "risk_level": patch["risk_level"],
+                    "blocked_reason": evaluation["blocked_reason"],
+                    "blocked_gates": _blocked_gates(
+                        trusted_gate=trusted_gate,
+                        replay_gate=replay_gate,
+                        safe_action_gate=safe_action_gate,
+                    ),
+                }
+            )
+            continue
+        if not trusted_gate.get("ok"):
+            blocked_patches.append(
+                {
+                    "opportunity_id": patch["opportunity_id"],
+                    "patch_type": patch["patch_type"],
+                    "risk_level": patch["risk_level"],
+                    "blocked_reason": "trusted_gate_reject",
+                    "blocked_gates": _blocked_gates(
+                        trusted_gate=trusted_gate,
+                        replay_gate=replay_gate,
+                        safe_action_gate=safe_action_gate,
+                    ),
+                }
+            )
+            continue
+        if not replay_gate.get("ok"):
+            blocked_patches.append(
+                {
+                    "opportunity_id": patch["opportunity_id"],
+                    "patch_type": patch["patch_type"],
+                    "risk_level": patch["risk_level"],
+                    "blocked_reason": str(replay_gate.get("blocked_reason") or "replay_gate_reject"),
+                    "blocked_gates": _blocked_gates(
+                        trusted_gate=trusted_gate,
+                        replay_gate=replay_gate,
+                        safe_action_gate=safe_action_gate,
+                    ),
+                    "blocked_replay": replay_case,
+                }
+            )
+            continue
+        if not safe_action_gate.get("ok"):
+            blocked_patches.append(
+                {
+                    "opportunity_id": patch["opportunity_id"],
+                    "patch_type": patch["patch_type"],
+                    "risk_level": patch["risk_level"],
+                    "blocked_reason": str(safe_action_gate.get("blocked_reason") or "safe_action_gate_reject"),
+                    "blocked_gates": _blocked_gates(
+                        trusted_gate=trusted_gate,
+                        replay_gate=replay_gate,
+                        safe_action_gate=safe_action_gate,
+                    ),
+                }
+            )
             continue
         if applied_count >= max_apply_count:
             if apply:
+                block_reason = "max_apply_reached"
                 blocked_patches.append({
                     "opportunity_id": patch["opportunity_id"],
                     "patch_type": patch["patch_type"],
                     "risk_level": patch["risk_level"],
-                    "blocked_reason": "max_apply_reached",
+                    "blocked_reason": block_reason,
+                    "blocked_gates": _blocked_gates(
+                        trusted_gate=trusted_gate,
+                        replay_gate=replay_gate,
+                        safe_action_gate=safe_action_gate,
+                    ),
                 })
             continue
-        if apply:
-            applied = _apply_safe_patch(runtime, patch, scope=scope_payload)
-            applied_count += 1
-            applied_patches.append(applied)
+        if apply and patch_passes:
+            applied = _apply_safe_patch(
+                runtime,
+                {
+                    **patch,
+                    "evaluation": evaluation,
+                    "trust_report": trusted_gate,
+                    "replay_report": replay_gate,
+                    "safe_action_report": safe_action_gate,
+                    "replay_case": replay_case,
+                },
+                scope=scope_payload,
+            )
+            if applied.get("applied"):
+                applied_count += 1
+                applied_patches.append(applied)
+            else:
+                blocked_patches.append(
+                    {
+                        "opportunity_id": patch["opportunity_id"],
+                        "patch_type": patch["patch_type"],
+                        "risk_level": patch["risk_level"],
+                        "blocked_reason": str(applied.get("blocked_reason") or "apply_blocked"),
+                        "blocked_gates": _blocked_gates(
+                            trusted_gate=trusted_gate,
+                            replay_gate=replay_gate,
+                            safe_action_gate=safe_action_gate,
+                        ),
+                        "apply_result": applied,
+                    }
+                )
 
     report: dict[str, Any] = {
         "ok": True,
@@ -77,9 +191,13 @@ def run_autonomous_evolution(
         "experiments": experiments,
         "passed_experiment_count": sum(1 for item in experiments if item.get("passed")),
         "failed_experiment_count": sum(1 for item in experiments if not item.get("passed")),
+        "gate_summary": _gate_summary(experiments),
         "applied_count": applied_count,
         "applied_patches": applied_patches,
+        "promotion_ledger_ids": [str(item.get("promotion_id") or "") for item in applied_patches if item.get("promotion_id")],
+        "rolled_back_count": 0,
         "blocked_patches": blocked_patches,
+        "circuit_breaker": {"open": False, "reason": ""},
         "max_apply": max_apply_count,
     }
     persisted_record_id = ""
@@ -90,6 +208,25 @@ def run_autonomous_evolution(
     report["persisted"] = bool(persist_report)
     report["persisted_record_id"] = persisted_record_id
     return report
+
+
+def _blocked_gates(*, trusted_gate: dict[str, Any], replay_gate: dict[str, Any], safe_action_gate: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "trusted_gate": dict(trusted_gate),
+        "replay_gate": dict(replay_gate),
+        "safe_action_gate": dict(safe_action_gate),
+    }
+
+
+def _gate_summary(experiments: list[dict[str, Any]]) -> dict[str, Any]:
+    total = len(experiments)
+    return {
+        "total": total,
+        "trusted_passed": sum(1 for item in experiments if item.get("trusted_gate", {}).get("ok")),
+        "replay_passed": sum(1 for item in experiments if item.get("replay_gate", {}).get("ok")),
+        "safe_action_passed": sum(1 for item in experiments if item.get("safe_action_gate", {}).get("ok")),
+        "passed_all": sum(1 for item in experiments if item.get("passed")),
+    }
 
 
 def _mine_event_opportunities(runtime: Any, *, scope: ScopeRef) -> list[dict[str, Any]]:
@@ -190,32 +327,7 @@ def _web_opportunities(web_hypotheses: list[dict[str, Any]], *, scope: ScopeRef)
 
 
 def _replay_case_from_opportunity(opportunity: dict[str, Any]) -> dict[str, Any]:
-    replay_hints = [
-        item for item in (opportunity.get("source_outcome_payload") or {}).get("replay_hints") or []
-        if isinstance(item, dict)
-    ]
-    if replay_hints:
-        first_hint = replay_hints[0]
-        return {
-            "opportunity_id": str(opportunity.get("opportunity_id") or ""),
-            "query": str(_first_nonempty(first_hint.get("query"), opportunity.get("trigger"))),
-            "expected_text": _coerce_string_list(first_hint.get("expected_text")),
-            "event_type": str(opportunity.get("event_type") or ""),
-            "risk_level": str(opportunity.get("risk_level") or "medium"),
-            "source": str(opportunity.get("source") or ""),
-            "source_url": str(first_hint.get("source_url") or opportunity.get("source_event_payload", {}).get("source_url") or ""),
-        }
-    expected_text = _coerce_string_list(_first_nonempty(opportunity.get("correction_from_user"), opportunity.get("policy_hint")))
-    if not expected_text:
-        expected_text = [_first_nonempty(opportunity.get("policy_update"), opportunity.get("correction_from_user"), "")]
-    return {
-        "opportunity_id": str(opportunity.get("opportunity_id") or ""),
-        "query": str(opportunity.get("trigger") or ""),
-        "expected_text": expected_text,
-        "event_type": str(opportunity.get("event_type") or ""),
-        "risk_level": str(opportunity.get("risk_level") or "medium"),
-        "source": str(opportunity.get("source") or ""),
-    }
+    return build_replay_case(opportunity)
 
 
 def _safe_patch_from_opportunity(opportunity: dict[str, Any], *, scope: ScopeRef) -> dict[str, Any]:
@@ -280,9 +392,6 @@ def _evaluate_patch(patch: dict[str, Any]) -> dict[str, Any]:
     execution_policy = _coerce_string_list(patch.get("execution_policy"))
     if not execution_policy:
         return {"ok": False, "blocked_reason": "empty_execution_policy"}
-    text = " ".join([str(patch.get("interpreted_intent") or ""), *execution_policy])
-    if _contains_high_risk_signals(text):
-        return {"ok": False, "blocked_reason": "contains_high_risk_action"}
     return {"ok": True, "blocked_reason": ""}
 
 
@@ -290,6 +399,9 @@ def _experiment_from_patch(
     patch: dict[str, Any],
     replay_case: dict[str, Any],
     evaluation: dict[str, Any],
+    trusted_gate: dict[str, Any],
+    replay_gate: dict[str, Any],
+    safe_action_gate: dict[str, Any],
 ) -> dict[str, Any]:
     opportunity_id = str(patch.get("opportunity_id") or "")
     patch_type = str(patch.get("patch_type") or "")
@@ -301,7 +413,15 @@ def _experiment_from_patch(
         "risk_level": _normalize_risk_level(str(patch.get("risk_level") or "medium")),
         "replay_case": replay_case,
         "evaluation": dict(evaluation),
-        "passed": bool(evaluation.get("ok")),
+        "trusted_gate": dict(trusted_gate),
+        "replay_gate": dict(replay_gate),
+        "safe_action_gate": dict(safe_action_gate),
+        "passed": (
+            bool(evaluation.get("ok"))
+            and bool(trusted_gate.get("ok"))
+            and bool(replay_gate.get("ok"))
+            and bool(safe_action_gate.get("ok"))
+        ),
     }
 
 
@@ -317,8 +437,20 @@ def _apply_safe_patch(runtime: Any, patch: dict[str, Any], *, scope: dict[str, A
         "confidence": float(patch.get("confidence") or 0.0),
         "source": "autonomous_evolution",
         "source_opportunity_id": str(patch.get("opportunity_id") or ""),
+        "source_opportunity": dict(patch.get("source_opportunity") or {}),
+        "trust_report": dict(patch.get("trust_report") or {}),
+        "replay_report": dict(patch.get("replay_report") or {}),
+        "promotion_details": {
+            "evaluation": dict(patch.get("evaluation") or {}),
+            "safe_action_report": dict(patch.get("safe_action_report") or {}),
+            "replay_case": dict(patch.get("replay_case") or {}),
+        },
+        "is_auto": True,
+        "status": "active",
     }
     result = runtime.upsert_intent_pattern(payload, scope=scope)
+    budget_decision = str(result.get("_promotion_budget_decision") or "")
+    applied = budget_decision in {"ok", "manual_ok", ""} and str(result.get("status") or "active") == "active"
     return {
         "opportunity_id": str(patch.get("opportunity_id") or ""),
         "patch_type": "intent_pattern",
@@ -327,7 +459,10 @@ def _apply_safe_patch(runtime: Any, patch: dict[str, Any], *, scope: dict[str, A
         "event_type": str(result.get("default_event_type") or payload["default_event_type"]),
         "confidence": float(result.get("confidence") or payload["confidence"]),
         "risk_level": str(patch.get("risk_level") or "low"),
-        "applied": True,
+        "promotion_id": str(result.get("_promotion_id") or ""),
+        "promotion_budget_decision": budget_decision,
+        "applied": bool(applied),
+        "blocked_reason": "" if applied else (budget_decision or "pattern_not_active"),
     }
 
 
@@ -425,33 +560,6 @@ def _normalize_risk_level(value: str) -> str:
     if normalized in {"low", "medium", "high"}:
         return normalized
     return "medium"
-
-
-def _contains_high_risk_signals(text: str) -> bool:
-    lowered = str(text or "").lower()
-    high_risk = (
-        "delete",
-        "del ",
-        "删除",
-        "重置",
-        "格式化",
-        "格式",
-        "降权",
-        "停机",
-        "重启",
-        "授权",
-        "payment",
-        "charge",
-        "扣费",
-        "付费",
-        "外发",
-        "发送给外部",
-        "wipe",
-        "reset",
-        "rollback",
-        "回滚",
-    )
-    return any(marker in lowered for marker in high_risk)
 
 
 def _policy_steps(text: str) -> list[str]:

@@ -21,6 +21,19 @@ from eimemory.events import (
 )
 from eimemory.identity import hongtu_query_scopes
 from eimemory.models.records import RecordEnvelope, ScopeRef
+from eimemory.governance.policy_rollout import (
+    AUTO_PROMOTION_BUDGET_PER_DAY,
+    AUTO_ROLLBACK_BUDGET_PER_DAY,
+    budget_decision_for_promotion,
+    budget_decision_for_rollback,
+    build_rollout_ledger_record,
+    follow_up_opportunities_from_rollback,
+    should_auto_rollback_from_repeated_bad_outcomes,
+    now_utc,
+    next_rollout_id,
+    outcome_triggers_immediate_rollback,
+    extract_pattern_ids_from_outcome,
+)
 from eimemory.scoring import ScoreContext, evaluate_recall_score, extract_memory_score, score_from_legacy_quality
 from eimemory.metadata import business_metadata
 
@@ -49,6 +62,7 @@ class SqliteRecordStore:
             self._create_indexes()
             self._create_recall_index_tables()
             self._create_event_memory_tables()
+            self._create_policy_rollout_tables()
             self._seed_default_intent_patterns()
             self.conn.commit()
             return
@@ -67,6 +81,8 @@ class SqliteRecordStore:
         self._create_indexes()
         self._create_recall_index_tables()
         self._create_event_memory_tables()
+        self._migrate_intent_patterns_schema()
+        self._create_policy_rollout_tables()
         self._seed_default_intent_patterns()
         if str(os.environ.get("EIMEMORY_RECALL_INDEX_BACKFILL_ON_START") or "").strip() == "1":
             self._backfill_recall_index_if_needed()
@@ -179,11 +195,13 @@ class SqliteRecordStore:
                 default_event_type TEXT NOT NULL,
                 interpreted_intent TEXT NOT NULL,
                 confidence REAL NOT NULL DEFAULT 0.0,
+                status TEXT NOT NULL DEFAULT 'active',
                 tenant_id TEXT NOT NULL,
                 agent_id TEXT NOT NULL,
                 workspace_id TEXT NOT NULL,
                 user_id TEXT NOT NULL,
                 payload_json TEXT NOT NULL,
+                last_rollback_reason TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )
@@ -214,6 +232,64 @@ class SqliteRecordStore:
             "CREATE INDEX IF NOT EXISTS idx_intent_patterns_scope_type ON intent_patterns(tenant_id, agent_id, workspace_id, user_id, default_event_type)"
         )
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_event_outcomes_event ON event_outcomes(event_id)")
+
+    def _create_policy_rollout_tables(self) -> None:
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS policy_rollout_ledger (
+                id TEXT PRIMARY KEY,
+                tenant_id TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                record_date TEXT NOT NULL,
+                action_type TEXT NOT NULL,
+                promotion_id TEXT NOT NULL,
+                is_auto INTEGER NOT NULL DEFAULT 1,
+                source_opportunity_id TEXT NOT NULL DEFAULT '',
+                source_opportunity_json TEXT NOT NULL DEFAULT '{}',
+                trust_report_json TEXT NOT NULL DEFAULT '{}',
+                replay_report_json TEXT NOT NULL DEFAULT '{}',
+                applied_pattern_id TEXT NOT NULL DEFAULT '',
+                budget_decision TEXT NOT NULL DEFAULT '',
+                rollback_policy_id TEXT NOT NULL DEFAULT '',
+                reason TEXT NOT NULL DEFAULT '',
+                details_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_policy_rollout_scope_date "
+            "ON policy_rollout_ledger(tenant_id, agent_id, workspace_id, user_id, action_type, record_date, created_at)"
+        )
+
+    def _migrate_intent_patterns_schema(self) -> None:
+        columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(intent_patterns)").fetchall()}
+        if "status" not in columns:
+            self.conn.execute("ALTER TABLE intent_patterns ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
+        if "last_rollback_reason" not in columns:
+            self.conn.execute("ALTER TABLE intent_patterns ADD COLUMN last_rollback_reason TEXT NOT NULL DEFAULT ''")
+        if "payload_json" not in columns:
+            return
+        rows = self.conn.execute("SELECT id, payload_json FROM intent_patterns").fetchall()
+        if not rows:
+            return
+        for row in rows:
+            raw = str(row["payload_json"])
+            try:
+                payload = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            payload["status"] = str(payload.get("status") or "active")
+            if payload["status"] not in {"candidate", "shadow", "active", "rolled_back", "quarantined"}:
+                payload["status"] = "active"
+            self.conn.execute(
+                "UPDATE intent_patterns SET payload_json = ?, status = ? WHERE id = ?",
+                (json.dumps(payload, ensure_ascii=False, sort_keys=True), payload["status"], str(row["id"])),
+            )
 
     def _seed_default_intent_patterns(self) -> None:
         scope = ScopeRef()
@@ -1687,6 +1763,7 @@ class SqliteRecordStore:
     ) -> dict[str, Any]:
         scope_ref = normalize_scope(scope)
         data = ensure_outcome_payload(event_id, payload)
+        pattern_ids = extract_pattern_ids_from_outcome(data)
         self.conn.execute(
             """
             INSERT INTO event_outcomes (
@@ -1716,9 +1793,414 @@ class SqliteRecordStore:
                 data["recorded_at"],
             ),
         )
+        rollback_report = {}
+        if str(data.get("outcome") or "").lower() == "bad" and pattern_ids:
+            rollback_report = self._apply_pattern_rollback_if_needed(
+                event_id=event_id,
+                pattern_ids=pattern_ids,
+                outcome_payload=data,
+                scope_ref=scope_ref,
+            )
         if commit:
             self.conn.commit()
+        if rollback_report:
+            return {**data, **rollback_report}
         return data
+
+    def get_policy_rollout_ledger(
+        self,
+        *,
+        scope: ScopeRef | dict | None = None,
+        action: str | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        scope_ref = normalize_scope(scope)
+        max_limit = max(0, min(200, int(limit)))
+        where = [
+            "tenant_id = ?",
+            "agent_id = ?",
+            "workspace_id = ?",
+            "user_id = ?",
+        ]
+        params: list[Any] = [scope_ref.tenant_id, scope_ref.agent_id, scope_ref.workspace_id, scope_ref.user_id]
+        if action:
+            where.append("action_type = ?")
+            params.append(str(action))
+        rows = self.conn.execute(
+            "SELECT * FROM policy_rollout_ledger WHERE "
+            + " AND ".join(where)
+            + " ORDER BY created_at DESC, id DESC LIMIT ?",
+            [*params, max_limit],
+        ).fetchall()
+        return [
+            {
+                "id": row["id"],
+                "promotion_id": row["promotion_id"],
+                "action_type": row["action_type"],
+                "is_auto": bool(row["is_auto"]),
+                "record_date": row["record_date"],
+                "scope": {
+                    "tenant_id": row["tenant_id"],
+                    "agent_id": row["agent_id"],
+                    "workspace_id": row["workspace_id"],
+                    "user_id": row["user_id"],
+                },
+                "source_opportunity_id": row["source_opportunity_id"],
+                "source_opportunity": json.loads(str(row["source_opportunity_json"])),
+                "trust_report": json.loads(str(row["trust_report_json"])),
+                "replay_report": json.loads(str(row["replay_report_json"])),
+                "applied_pattern_id": row["applied_pattern_id"],
+                "budget_decision": row["budget_decision"],
+                "rollback_policy_id": row["rollback_policy_id"],
+                "reason": row["reason"],
+                "details": json.loads(str(row["details_json"])),
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
+
+    def _record_policy_rollout_ledger(
+        self,
+        *,
+        action_type: str,
+        scope: ScopeRef,
+        promotion_id: str,
+        source_opportunity_id: str,
+        source_opportunity: dict[str, Any],
+        trust_report: dict[str, Any],
+        replay_report: dict[str, Any],
+        is_auto: bool,
+        applied_pattern_id: str,
+        budget_decision: str,
+        rollback_policy_id: str = "",
+        reason: str = "",
+        details: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        created_at = now_utc()
+        ledger = build_rollout_ledger_record(
+            promotion_id=promotion_id,
+            source_opportunity=source_opportunity,
+            trust_gate_report=trust_report,
+            replay_gate_report=replay_report,
+            applied_pattern_id=applied_pattern_id,
+            budget_decision=budget_decision,
+            rollback_policy_id=rollback_policy_id,
+            action=action_type,
+            scope=scope,
+            is_auto=bool(is_auto),
+            reason=reason,
+            details=details or {},
+        )
+        ledger_id = next_rollout_id(
+            kind="policy-rollout-ledger",
+            scope=scope,
+            payload={
+                "action_type": action_type,
+                "promotion_id": promotion_id,
+                "applied_pattern_id": applied_pattern_id,
+                "rollback_policy_id": rollback_policy_id,
+                "created_at": created_at,
+            },
+        )
+        self.conn.execute(
+            """
+            INSERT INTO policy_rollout_ledger (
+                id, tenant_id, agent_id, workspace_id, user_id, record_date,
+                action_type, promotion_id, is_auto, source_opportunity_id,
+                source_opportunity_json, trust_report_json, replay_report_json,
+                applied_pattern_id, budget_decision, rollback_policy_id, reason,
+                details_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                ledger_id,
+                scope.tenant_id,
+                scope.agent_id,
+                scope.workspace_id,
+                scope.user_id,
+                created_at[:10],
+                str(action_type),
+                str(promotion_id),
+                1 if is_auto else 0,
+                str(source_opportunity_id or ""),
+                json.dumps(ledger["source_opportunity"], ensure_ascii=False, sort_keys=True),
+                json.dumps(ledger["trust_report"], ensure_ascii=False, sort_keys=True),
+                json.dumps(ledger["replay_report"], ensure_ascii=False, sort_keys=True),
+                str(applied_pattern_id or ""),
+                str(budget_decision or ""),
+                str(rollback_policy_id or ""),
+                str(reason or ""),
+                json.dumps(ledger["details"], ensure_ascii=False, sort_keys=True),
+                created_at,
+            ),
+        )
+        ledger["id"] = ledger_id
+        ledger["source_opportunity_id"] = str(source_opportunity_id or "")
+        ledger["created_at"] = created_at
+        ledger["record_date"] = created_at[:10]
+        return ledger
+
+    def _pattern_row_for_scope(self, pattern_id: str, scope_ref: ScopeRef) -> sqlite3.Row | None:
+        return self.conn.execute(
+            """
+            SELECT *
+            FROM intent_patterns
+            WHERE id = ?
+              AND tenant_id = ?
+              AND (agent_id = ? OR agent_id = '')
+              AND (workspace_id = ? OR workspace_id = '')
+              AND (user_id = ? OR user_id = '')
+            ORDER BY
+              CASE WHEN agent_id = ? THEN 0 ELSE 1 END,
+              CASE WHEN workspace_id = ? THEN 0 ELSE 1 END,
+              CASE WHEN user_id = ? THEN 0 ELSE 1 END
+            LIMIT 1
+            """,
+            (
+                str(pattern_id),
+                scope_ref.tenant_id,
+                scope_ref.agent_id,
+                scope_ref.workspace_id,
+                scope_ref.user_id,
+                scope_ref.agent_id,
+                scope_ref.workspace_id,
+                scope_ref.user_id,
+            ),
+        ).fetchone()
+
+    def _bad_outcome_count_for_pattern(self, *, pattern_id: str, scope_ref: ScopeRef) -> int:
+        rows = self.conn.execute(
+            """
+            SELECT o.event_id, o.payload_json AS outcome_payload, e.payload_json AS event_payload
+            FROM event_outcomes o
+            LEFT JOIN events e
+              ON e.id = o.event_id
+             AND e.tenant_id = o.tenant_id
+             AND e.agent_id = o.agent_id
+             AND e.workspace_id = o.workspace_id
+             AND e.user_id = o.user_id
+            WHERE o.outcome = 'bad'
+              AND o.tenant_id = ?
+              AND o.agent_id = ?
+              AND o.workspace_id = ?
+              AND o.user_id = ?
+            ORDER BY o.recorded_at DESC
+            LIMIT 200
+            """,
+            (scope_ref.tenant_id, scope_ref.agent_id, scope_ref.workspace_id, scope_ref.user_id),
+        ).fetchall()
+        outcome_groups: set[str] = set()
+        for row in rows:
+            try:
+                payload = json.loads(str(row["outcome_payload"]))
+            except json.JSONDecodeError:
+                continue
+            if str(pattern_id) in extract_pattern_ids_from_outcome(payload):
+                try:
+                    event_payload = json.loads(str(row["event_payload"])) if row["event_payload"] else {}
+                except json.JSONDecodeError:
+                    event_payload = {}
+                outcome_groups.add(
+                    self._bad_outcome_group_key(
+                        event_id=str(row["event_id"] or ""),
+                        event_payload=event_payload,
+                    )
+                )
+        return len(outcome_groups)
+
+    @staticmethod
+    def _bad_outcome_group_key(*, event_id: str, event_payload: dict[str, Any]) -> str:
+        session_id = str(event_payload.get("session_id") or "").strip()
+        if session_id:
+            task_id = str(
+                event_payload.get("task_id")
+                or event_payload.get("taskId")
+                or event_payload.get("turn_id")
+                or ""
+            ).strip()
+            task_anchor = task_id or str(event_payload.get("user_phrase") or "").strip()
+            event_type = str(event_payload.get("event_type") or "").strip()
+            return f"session:{session_id}:{task_anchor}:{event_type}"
+        return f"event:{event_id}"
+
+    def _rollback_pattern(
+        self,
+        *,
+        pattern_id: str,
+        scope_ref: ScopeRef,
+        reason: str,
+        event_id: str = "",
+        auto: bool,
+    ) -> dict[str, Any]:
+        row = self._pattern_row_for_scope(pattern_id, scope_ref)
+        if row is None:
+            return {"ok": False, "error": "pattern_not_found", "pattern_id": str(pattern_id)}
+
+        payload = json.loads(str(row["payload_json"]))
+        previous_status = str(row["status"] or payload.get("status") or "active")
+        budget_decision = budget_decision_for_rollback(
+            conn=self.conn,
+            scope=scope_ref,
+            auto=bool(auto),
+            budget_limit=AUTO_ROLLBACK_BUDGET_PER_DAY,
+        )
+        if budget_decision not in {"ok", "manual_ok"}:
+            ledger = self._record_policy_rollout_ledger(
+                action_type="rollback",
+                scope=scope_ref,
+                promotion_id=next_rollout_id(
+                    kind="policy-rollback",
+                    scope=scope_ref,
+                    payload={"pattern_id": str(pattern_id), "event_id": str(event_id), "blocked": True},
+                ),
+                source_opportunity_id=str(event_id or ""),
+                source_opportunity={"event_id": str(event_id or ""), "pattern_id": str(pattern_id)},
+                trust_report={},
+                replay_report={},
+                is_auto=bool(auto),
+                applied_pattern_id="",
+                budget_decision=budget_decision,
+                rollback_policy_id=str(pattern_id),
+                reason=str(reason or "rollback blocked by budget"),
+                details={"previous_status": previous_status, "blocked": True},
+            )
+            return {
+                "ok": False,
+                "error": "rollback_blocked",
+                "pattern_id": str(pattern_id),
+                "budget_decision": budget_decision,
+                "ledger_id": ledger["id"],
+            }
+
+        payload["status"] = "rolled_back"
+        payload["last_rollback_reason"] = str(reason or "")
+        now = datetime.now(timezone.utc).isoformat()
+        self.conn.execute(
+            """
+            UPDATE intent_patterns
+            SET status = ?, payload_json = ?, last_rollback_reason = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                "rolled_back",
+                json.dumps(payload, ensure_ascii=False, sort_keys=True),
+                str(reason or ""),
+                now,
+                str(pattern_id),
+            ),
+        )
+        follow_ups = follow_up_opportunities_from_rollback(
+            pattern_id=str(pattern_id),
+            event_id=str(event_id or ""),
+            reason=str(reason or ""),
+            source="auto" if auto else "manual",
+            scope=scope_ref,
+        )
+        ledger = self._record_policy_rollout_ledger(
+            action_type="rollback",
+            scope=scope_ref,
+            promotion_id=next_rollout_id(
+                kind="policy-rollback",
+                scope=scope_ref,
+                payload={"pattern_id": str(pattern_id), "event_id": str(event_id or "")},
+            ),
+            source_opportunity_id=str(event_id or ""),
+            source_opportunity={"event_id": str(event_id or ""), "pattern_id": str(pattern_id)},
+            trust_report={},
+            replay_report={},
+            is_auto=bool(auto),
+            applied_pattern_id=str(pattern_id),
+            budget_decision=budget_decision,
+            rollback_policy_id=str(pattern_id),
+            reason=str(reason or ""),
+            details={"previous_status": previous_status, "follow_up_opportunities": follow_ups},
+        )
+        return {
+            "ok": True,
+            "pattern_id": str(pattern_id),
+            "previous_status": previous_status,
+            "status": "rolled_back",
+            "budget_decision": budget_decision,
+            "ledger_id": ledger["id"],
+            "follow_up_opportunities": follow_ups,
+        }
+
+    def _apply_pattern_rollback_if_needed(
+        self,
+        *,
+        event_id: str,
+        pattern_ids: list[str],
+        outcome_payload: dict[str, Any],
+        scope_ref: ScopeRef,
+    ) -> dict[str, Any]:
+        rolled_back: list[dict[str, Any]] = []
+        blocked: list[dict[str, Any]] = []
+        skipped: list[dict[str, Any]] = []
+        correction = str(outcome_payload.get("correction_from_user") or outcome_payload.get("reason") or "").strip()
+        for pattern_id in pattern_ids:
+            row = self._pattern_row_for_scope(pattern_id, scope_ref)
+            if row is None:
+                skipped.append({"pattern_id": str(pattern_id), "reason": "pattern_not_found"})
+                continue
+            status = str(row["status"] or "active")
+            if status in {"rolled_back", "quarantined"}:
+                skipped.append({"pattern_id": str(pattern_id), "reason": f"status:{status}"})
+                continue
+            bad_count = self._bad_outcome_count_for_pattern(pattern_id=pattern_id, scope_ref=scope_ref)
+            immediate = outcome_triggers_immediate_rollback(outcome_payload)
+            repeated = should_auto_rollback_from_repeated_bad_outcomes(bad_outcome_count=bad_count)
+            if not (immediate or repeated):
+                skipped.append(
+                    {
+                        "pattern_id": str(pattern_id),
+                        "reason": "below_rollback_threshold",
+                        "bad_outcome_count": bad_count,
+                    }
+                )
+                continue
+            reason = correction or str(outcome_payload.get("policy_update") or "bad outcome attributed to policy")
+            if repeated and not immediate:
+                reason = f"repeated bad outcomes ({bad_count}): {reason}"
+            result = self._rollback_pattern(
+                pattern_id=str(pattern_id),
+                scope_ref=scope_ref,
+                reason=reason,
+                event_id=str(event_id),
+                auto=True,
+            )
+            if result.get("ok"):
+                rolled_back.append(result)
+            else:
+                blocked.append(result)
+        return {
+            "rollback": {
+                "triggered": bool(rolled_back or blocked),
+                "rolled_back_pattern_ids": [str(item.get("pattern_id")) for item in rolled_back],
+                "blocked_pattern_ids": [str(item.get("pattern_id")) for item in blocked],
+                "skipped": skipped,
+                "details": rolled_back + blocked,
+            }
+        }
+
+    def rollback_intent_pattern(
+        self,
+        pattern_id: str,
+        *,
+        scope: ScopeRef | dict | None = None,
+        reason: str = "",
+        auto: bool = False,
+        commit: bool = True,
+    ) -> dict[str, Any]:
+        scope_ref = normalize_scope(scope)
+        result = self._rollback_pattern(
+            pattern_id=str(pattern_id),
+            scope_ref=scope_ref,
+            reason=str(reason or "manual rollback"),
+            auto=bool(auto),
+        )
+        if commit:
+            self.conn.commit()
+        return result
 
     def upsert_intent_pattern(
         self,
@@ -1730,18 +2212,59 @@ class SqliteRecordStore:
         scope_ref = normalize_scope(scope)
         data = ensure_pattern_payload(payload, scope_ref)
         now = datetime.now(timezone.utc).isoformat()
+
+        source_opportunity_id = str(data.get("source_opportunity_id") or "").strip()
+        is_auto = bool(data.get("is_auto", bool(source_opportunity_id)))
+        budget_decision = "manual_ok"
+        trust_report = dict(data.get("trust_report") or {})
+        replay_report = dict(data.get("replay_report") or {})
+        source_opportunity = dict(data.get("source_opportunity") or {})
+
+        promotion_id = next_rollout_id(
+            kind="policy-promotion",
+            scope=scope_ref,
+            payload={"pattern_id": data["id"], "source_opportunity_id": source_opportunity_id},
+        )
+        if source_opportunity and source_opportunity_id:
+            budget_decision = budget_decision_for_promotion(
+                conn=self.conn,
+                scope=scope_ref,
+                auto=bool(is_auto),
+                budget_limit=AUTO_PROMOTION_BUDGET_PER_DAY,
+            )
+            budget_allowed = budget_decision in {"ok", "manual_ok"}
+            if not budget_allowed:
+                data["status"] = "candidate"
+
+            self._record_policy_rollout_ledger(
+                action_type="promotion",
+                scope=scope_ref,
+                promotion_id=promotion_id,
+                source_opportunity_id=source_opportunity_id,
+                source_opportunity=source_opportunity,
+                trust_report=trust_report,
+                replay_report=replay_report,
+                is_auto=is_auto,
+                applied_pattern_id=str(data["id"]) if budget_allowed else "",
+                budget_decision=budget_decision,
+                reason=str(data.get("promotion_blocked_reason") or ""),
+                details=dict(data.get("promotion_details") or {}),
+            )
+
         self.conn.execute(
             """
             INSERT INTO intent_patterns (
-                id, pattern, default_event_type, interpreted_intent, confidence,
-                tenant_id, agent_id, workspace_id, user_id, payload_json, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                id, pattern, default_event_type, interpreted_intent, confidence, status,
+                tenant_id, agent_id, workspace_id, user_id, payload_json, last_rollback_reason, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 pattern=excluded.pattern,
                 default_event_type=excluded.default_event_type,
                 interpreted_intent=excluded.interpreted_intent,
                 confidence=excluded.confidence,
+                status=excluded.status,
                 payload_json=excluded.payload_json,
+                last_rollback_reason=excluded.last_rollback_reason,
                 updated_at=excluded.updated_at
             """,
             (
@@ -1750,17 +2273,23 @@ class SqliteRecordStore:
                 data["default_event_type"],
                 str(data.get("interpreted_intent") or ""),
                 float(data["confidence"]),
+                str(data.get("status") or "active"),
                 scope_ref.tenant_id,
                 scope_ref.agent_id,
                 scope_ref.workspace_id,
                 scope_ref.user_id,
                 json.dumps(data, ensure_ascii=False, sort_keys=True),
+                str(data.get("last_rollback_reason") or ""),
                 now,
                 now,
             ),
         )
         if commit:
             self.conn.commit()
+        data["_promotion_id"] = promotion_id
+        data["_promotion_budget_decision"] = budget_decision
+        data["_promotion_source_opportunity_id"] = source_opportunity_id
+        data["_promotion_is_auto"] = bool(is_auto)
         return data
 
     def search_policy(
@@ -1774,11 +2303,16 @@ class SqliteRecordStore:
         scope_ref = normalize_scope(scope)
         max_limit = max(1, min(20, int(limit or 5)))
         context_payload = dict(context or {})
+        status_values = ["active"]
+        if bool(context_payload.get("include_shadow")):
+            status_values.append("shadow")
+        status_placeholders = ",".join("?" for _ in status_values)
         pattern_rows = self.conn.execute(
-            """
-            SELECT payload_json, default_event_type, confidence, updated_at
+            f"""
+            SELECT payload_json, default_event_type, confidence, updated_at, status
             FROM intent_patterns
             WHERE tenant_id = ?
+              AND status IN ({status_placeholders})
               AND (agent_id = ? OR agent_id = '')
               AND (workspace_id = ? OR workspace_id = '')
               AND (user_id = ? OR user_id = '')
@@ -1791,6 +2325,7 @@ class SqliteRecordStore:
             """,
             (
                 scope_ref.tenant_id,
+                *status_values,
                 scope_ref.agent_id,
                 scope_ref.workspace_id,
                 scope_ref.user_id,
@@ -1819,6 +2354,7 @@ class SqliteRecordStore:
                     "execution_policy": list(pattern.get("execution_policy") or []),
                     "ask_first_boundaries": list(pattern.get("ask_first_boundaries") or []),
                     "success_criteria": str(pattern.get("success_criteria") or ""),
+                    "status": str(pattern.get("status") or "active"),
                     "score": round(0.55 + float(pattern.get("confidence") or 0.0) * 0.25, 3),
                 }
             )

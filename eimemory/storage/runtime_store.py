@@ -88,6 +88,27 @@ class RuntimeStore:
         scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
         return self.sqlite.search_policy(user_phrase, scope=scope_ref, context=context, limit=limit)
 
+    def get_policy_rollout_ledger(
+        self,
+        *,
+        scope: ScopeRef | dict | None = None,
+        action: str | None = None,
+        limit: int = 20,
+    ) -> list[dict]:
+        scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+        return self.sqlite.get_policy_rollout_ledger(scope=scope_ref, action=action, limit=limit)
+
+    def rollback_intent_pattern(
+        self,
+        pattern_id: str,
+        *,
+        scope: ScopeRef | dict | None = None,
+        reason: str = "",
+        auto: bool = False,
+    ) -> dict:
+        scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+        return self.sqlite.rollback_intent_pattern(pattern_id, scope=scope_ref, reason=reason, auto=auto)
+
     def get_by_id(self, record_id: str, scope: ScopeRef | dict | None = None) -> RecordEnvelope | None:
         scope_ref = None if scope is None else (scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope))
         return self.sqlite.get_by_id(record_id, scope=scope_ref)

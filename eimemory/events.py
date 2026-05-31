@@ -164,6 +164,9 @@ def ensure_pattern_payload(payload: dict[str, Any], scope: ScopeRef) -> dict[str
     data["default_event_type"] = str(data.get("default_event_type") or data.get("event_type") or "communication")
     data["id"] = str(data.get("id") or pattern_id(data, scope))
     data["confidence"] = _clamp_float(data.get("confidence"), default=0.75)
+    data["status"] = str(data.get("status") or "active")
+    if data["status"] not in {"candidate", "shadow", "active", "rolled_back", "quarantined"}:
+        data["status"] = "active"
     return data
 
 

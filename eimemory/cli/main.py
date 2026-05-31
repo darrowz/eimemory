@@ -273,6 +273,25 @@ def _build_parser() -> argparse.ArgumentParser:
     evolve_autonomous.add_argument("--scope-workspace", default="")
     evolve_autonomous.add_argument("--scope-user", default="")
 
+    evolve_code_sandbox = evolve_sub.add_parser("code-sandbox")
+    evolve_code_sandbox.add_argument("--incident-json", required=True)
+    evolve_code_sandbox.add_argument("--create-worktree", action="store_true")
+    evolve_code_sandbox.add_argument("--persist-report", action="store_true")
+
+    evolve_gates = evolve_sub.add_parser("gates")
+    evolve_gates.add_argument("--action", default="")
+    evolve_gates.add_argument("--limit", type=int, default=20)
+    evolve_gates.add_argument("--scope-agent", default="")
+    evolve_gates.add_argument("--scope-workspace", default="")
+    evolve_gates.add_argument("--scope-user", default="")
+
+    evolve_rollback = evolve_sub.add_parser("rollback")
+    evolve_rollback.add_argument("--pattern-id", required=True)
+    evolve_rollback.add_argument("--reason", default="manual rollback")
+    evolve_rollback.add_argument("--scope-agent", default="")
+    evolve_rollback.add_argument("--scope-workspace", default="")
+    evolve_rollback.add_argument("--scope-user", default="")
+
     evolve_web_scout = evolve_sub.add_parser("web-scout")
     evolve_web_scout.add_argument("--url", action="append", default=[])
     evolve_web_scout.add_argument("--evidence-json", default="")
@@ -351,9 +370,36 @@ def _cli_scope(parsed: object, *, defaults: dict) -> dict:
 
 
 def _load_web_hypotheses(raw: str) -> list[dict]:
+    loaded = _load_json_argument(
+        raw,
+        allow_dict=True,
+        allow_list=True,
+        allow_empty=True,
+        error_code="invalid_web_evidence_json",
+    )
+    if isinstance(loaded, dict) and isinstance(loaded.get("hypotheses"), list):
+        loaded_payload = loaded["hypotheses"]
+    elif isinstance(loaded, dict):
+        loaded_payload = [loaded]
+    else:
+        loaded_payload = loaded
+
+    return [dict(item) for item in loaded_payload if isinstance(item, dict)]
+
+
+def _load_json_argument(
+    raw: str,
+    *,
+    allow_dict: bool,
+    allow_list: bool,
+    allow_empty: bool = False,
+    error_code: str,
+) -> Any:
     raw_text = str(raw or "").strip()
     if not raw_text:
-        return []
+        if allow_empty:
+            return []
+        raise ValueError(error_code)
     try:
         loaded = json.loads(raw_text)
     except json.JSONDecodeError:
@@ -361,21 +407,17 @@ def _load_web_hypotheses(raw: str) -> list[dict]:
         try:
             content = path.read_text(encoding="utf-8")
         except OSError as exc:
-            raise ValueError("invalid_web_evidence_json") from exc
+            raise ValueError(error_code) from exc
         try:
             loaded = json.loads(content)
         except json.JSONDecodeError as exc:
-            raise ValueError("invalid_web_evidence_json") from exc
-    if isinstance(loaded, dict) and isinstance(loaded.get("hypotheses"), list):
-        loaded_payload = loaded["hypotheses"]
-    elif isinstance(loaded, dict):
-        loaded_payload = [loaded]
-    elif isinstance(loaded, list):
-        loaded_payload = loaded
-    else:
-        raise ValueError("invalid_web_evidence_json")
+            raise ValueError(error_code) from exc
 
-    return [dict(item) for item in loaded_payload if isinstance(item, dict)]
+    if isinstance(loaded, dict) and allow_dict:
+        return dict(loaded)
+    if isinstance(loaded, list) and allow_list:
+        return [dict(item) if isinstance(item, dict) else item for item in loaded]
+    raise ValueError(error_code)
 
 
 def _living_enrich_report(runtime, scope: dict, *, limit: int) -> dict:
@@ -973,7 +1015,52 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0
-        print(json.dumps({"usage": "eimemory evolve evaluate|promotions|loop|autonomous|web-scout"}))
+        if parsed.evolve_command == "code-sandbox":
+            try:
+                incident = _load_json_argument(
+                    parsed.incident_json,
+                    allow_dict=True,
+                    allow_list=False,
+                    allow_empty=False,
+                    error_code="invalid_incident_json",
+                )
+            except ValueError as exc:
+                print(
+                    json.dumps(
+                        {"ok": False, "error": "invalid_incident_json", "detail": str(exc)},
+                        ensure_ascii=False,
+                    )
+                )
+                return 2
+            report = runtime.run_code_sandbox(
+                scope=_cli_scope(parsed, defaults=scope),
+                incident=incident,
+                create_worktree=bool(parsed.create_worktree),
+                persist_report=bool(parsed.persist_report),
+            )
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0
+        if parsed.evolve_command == "gates":
+            report = {
+                "ok": True,
+                "ledger": runtime.get_policy_rollout_ledger(
+                    scope=_cli_scope(parsed, defaults=scope),
+                    action=str(parsed.action or "") or None,
+                    limit=max(0, int(parsed.limit)),
+                ),
+            }
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0
+        if parsed.evolve_command == "rollback":
+            report = runtime.rollback_intent_pattern(
+                str(parsed.pattern_id),
+                scope=_cli_scope(parsed, defaults=scope),
+                reason=str(parsed.reason or "manual rollback"),
+                auto=False,
+            )
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0
+        print(json.dumps({"usage": "eimemory evolve evaluate|promotions|loop|autonomous|code-sandbox|web-scout|gates|rollback"}))
         return 0
     if parsed.command == "eval":
         if parsed.eval_command == "run":

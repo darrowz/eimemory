@@ -44,6 +44,9 @@ class OpenClawMemoryHooks:
         event = dict(event)
         event["task_context"] = recall_context
         if not query:
+            recall_context["policy_suggestion_ids"] = []
+            recall_context["policy_sources"] = []
+            recall_context["matched_event_type"] = ""
             bundle = self._empty_bundle({"task_context": recall_context})
             self._audit_prompt_recall(event=event, bundle=bundle, injected=False)
             return {"memory_bundle": bundle.to_dict()}
@@ -61,6 +64,11 @@ class OpenClawMemoryHooks:
             limit=8,
         )
         self._merge_policy_search(bundle=bundle, policy_search=policy_search)
+        recall_context["policy_suggestion_ids"] = self._coerce_string_list(
+            bundle.explanation.get("policy_suggestion_ids")
+        )
+        recall_context["policy_sources"] = self._coerce_string_list(bundle.explanation.get("policy_sources"))
+        recall_context["matched_event_type"] = str(bundle.explanation.get("matched_event_type") or "")
         self._audit_prompt_recall(event=event, bundle=bundle, injected=bool(bundle.items))
         return {
             "memory_bundle": bundle.to_dict(),
@@ -291,6 +299,12 @@ class OpenClawMemoryHooks:
             existing = bundle.explanation.get("policy_suggestions")
             bundle.explanation["policy_suggestions"] = list(existing) if isinstance(existing, list) else []
             bundle.explanation["policy_first"] = bool(bundle.explanation["policy_suggestions"])
+        bundle.explanation["policy_suggestion_ids"] = self._extract_policy_suggestion_ids(
+            bundle.explanation["policy_suggestions"]
+        )
+        bundle.explanation["policy_sources"] = self._extract_policy_sources(
+            bundle.explanation["policy_suggestions"]
+        )
         matched_event_type = str(
             policy_search.get("matched_event_type")
             or bundle.explanation.get("matched_event_type")
@@ -303,6 +317,9 @@ class OpenClawMemoryHooks:
         view = dict(bundle.explanation.get("recall_view") or {})
         injected_ids = [item.record_id for item in bundle.items]
         selected_records = self._selected_records(bundle)
+        policy_suggestion_ids = self._coerce_string_list(bundle.explanation.get("policy_suggestion_ids"))
+        policy_sources = self._coerce_string_list(bundle.explanation.get("policy_sources"))
+        matched_event_type = str(bundle.explanation.get("matched_event_type") or "")
         record = RecordEnvelope.create(
             kind="recall_view",
             title="OpenClaw memory injection audit",
@@ -316,6 +333,9 @@ class OpenClawMemoryHooks:
                 "selected_count": len(injected_ids),
                 "injected": injected,
                 "injected_record_ids": injected_ids,
+                "policy_suggestion_ids": policy_suggestion_ids,
+                "policy_sources": policy_sources,
+                "matched_event_type": matched_event_type,
                 "selected_records": selected_records,
                 "source_composition": dict(bundle.explanation.get("source_composition") or {}),
                 "view_type": str(view.get("view_type") or ""),
@@ -329,6 +349,9 @@ class OpenClawMemoryHooks:
                 "session_id": self._session_id_from_event(event),
                 "selected_count": len(injected_ids),
                 "injected": injected,
+                "policy_suggestion_ids": policy_suggestion_ids,
+                "policy_sources": policy_sources,
+                "matched_event_type": matched_event_type,
                 "view_type": str(view.get("view_type") or ""),
                 "source_composition": dict(bundle.explanation.get("source_composition") or {}),
             },
@@ -413,10 +436,12 @@ class OpenClawMemoryHooks:
             result=result,
             correction=correction,
         )
+        policy_attribution = self._resolve_policy_attribution(event=event, task_context=task_context)
         event_payload = {
             "source": f"openclaw.{end_kind}",
             "session_id": self._session_id_from_event(event),
             "hook": end_kind,
+            "policy_attribution": policy_attribution,
             "user_phrase": user_phrase,
             "event_type": event_type,
             "interpreted_intent": interpreted_intent,
@@ -463,6 +488,7 @@ class OpenClawMemoryHooks:
             verification=verification,
             result=result,
             end_kind=end_kind,
+            policy_attribution=policy_attribution,
         )
         recorded_outcome = self.runtime.record_outcome(recorded_event["id"], outcome_payload, scope=scope)
         pattern = None
@@ -778,6 +804,7 @@ class OpenClawMemoryHooks:
         verification: str,
         result: str,
         end_kind: str,
+        policy_attribution: dict,
     ) -> dict:
         success = self._bool_or_none(outcome.get("success"))
         if success is None:
@@ -801,11 +828,148 @@ class OpenClawMemoryHooks:
             "outcome": outcome_name,
             "reason": reason,
             "correction_from_user": correction,
+            "policy_attribution": self._normalize_policy_attribution(policy_attribution),
             "policy_update": policy_update,
+            "source_trust": self._classify_source_trust(
+                event=event,
+                outcome=outcome,
+                correction=correction,
+                verification=verification,
+            ),
             "verification": verification,
             "result": result,
             "source": f"openclaw.{end_kind}",
         }
+
+    def _resolve_policy_attribution(self, *, event: dict, task_context: dict) -> dict[str, Any]:
+        policy_attribution = self._normalize_policy_attribution(task_context)
+        if self._policy_attribution_has_values(policy_attribution):
+            return policy_attribution
+        fallback = self._recall_audit_policy_attribution(event=event)
+        if fallback:
+            return fallback
+        return policy_attribution
+
+    def _recall_audit_policy_attribution(self, *, event: dict) -> dict[str, Any]:
+        session_id = self._session_id_from_event(event)
+        if not session_id:
+            return {}
+        scope = self._scope_from_event(event)
+        audits = self.runtime.store.list_records(kinds=["recall_view"], scope=scope, limit=500)
+        for audit in audits:
+            if str(audit.content.get("session_id") or "") == session_id:
+                return self._normalize_policy_attribution(audit.content)
+        return {}
+
+    def _normalize_policy_attribution(self, payload: Any) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            payload = {}
+        return {
+            "policy_suggestion_ids": self._coerce_string_list(payload.get("policy_suggestion_ids")),
+            "policy_sources": self._coerce_string_list(payload.get("policy_sources")),
+            "matched_event_type": str(payload.get("matched_event_type") or ""),
+        }
+
+    def _policy_attribution_has_values(self, policy_attribution: dict[str, Any]) -> bool:
+        if policy_attribution.get("policy_suggestion_ids"):
+            return True
+        if policy_attribution.get("policy_sources"):
+            return True
+        return bool(str(policy_attribution.get("matched_event_type") or "").strip())
+
+    def _extract_policy_suggestion_ids(self, policy_suggestions: Any) -> list[str]:
+        return self._coerce_string_list(
+            [
+                suggestion.get("id")
+                for suggestion in self._coerce_dicts(policy_suggestions)
+                if str(suggestion.get("id") or "").strip()
+            ]
+        )
+
+    def _extract_policy_sources(self, policy_suggestions: Any) -> list[str]:
+        return self._coerce_string_list(
+            [
+                suggestion.get("source")
+                for suggestion in self._coerce_dicts(policy_suggestions)
+                if str(suggestion.get("source") or "").strip()
+            ]
+        )
+
+    def _coerce_string_list(self, value: Any) -> list[str]:
+        if isinstance(value, list | tuple | set):
+            raw_values = value
+        else:
+            raw_values = [value]
+        items: list[str] = []
+        for item in raw_values:
+            if isinstance(item, list | tuple | set):
+                items.extend(self._coerce_string_list(item))
+                continue
+            text = str(item if item is not None else "").strip()
+            if text:
+                items.append(text)
+        return self._dedupe_strings(items)
+
+    def _coerce_dicts(self, value: Any) -> list[dict[str, Any]]:
+        if not isinstance(value, list):
+            return []
+        return [item for item in value if isinstance(item, dict)]
+
+    def _classify_source_trust(
+        self,
+        *,
+        event: dict,
+        outcome: dict,
+        correction: str,
+        verification: str,
+    ) -> str:
+        explicit = str(
+            str(outcome.get("source_trust") or outcome.get("trust") or event.get("source_trust") or "").strip()
+        )
+        if explicit:
+            return explicit
+        if correction:
+            return "user_explicit"
+        if self._has_system_verification(
+            outcome=outcome,
+            event=event,
+            verification=verification,
+        ):
+            return "system_verified"
+        return "agent_inferred"
+
+    def _has_system_verification(
+        self,
+        *,
+        outcome: dict,
+        event: dict,
+        verification: str,
+    ) -> bool:
+        if str(verification or "").strip():
+            return True
+        fields = (
+            "health",
+            "health_check",
+            "health_status",
+            "tests",
+            "test_results",
+            "test_report",
+            "verification",
+            "verification_method",
+            "verified",
+        )
+        for field in fields:
+            if field == "verified":
+                if self._bool_or_none(outcome.get(field)) is True:
+                    return True
+                if self._bool_or_none(event.get(field)) is True:
+                    return True
+                continue
+            if str(outcome.get(field) or "").strip():
+                return True
+            if str(event.get(field) or "").strip():
+                return True
+        return False
 
     def _intent_pattern_from_correction(
         self,
