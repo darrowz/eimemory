@@ -1,4 +1,5 @@
 from eimemory.api.runtime import Runtime
+import eimemory.experience
 from eimemory.experience import record_experience_item, record_skill_trace
 
 
@@ -83,6 +84,22 @@ def test_runtime_exposes_experience_bridge_methods_and_keeps_scope(tmp_path) -> 
     assert record.scope.workspace_id == "robot"
     assert record.scope.user_id == "operator"
     assert item_record.source == "eimemory.experience.item"
+
+
+def test_runtime_exposes_record_outcome_trace(monkeypatch, tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    calls: list[tuple[object, dict, dict | None]] = []
+
+    def _record_outcome_trace(runtime_arg, payload, *, scope=None):
+        calls.append((runtime_arg, payload, scope))
+        return {"ok": True, "record_id": "outcome-trace-1"}
+
+    monkeypatch.setattr(eimemory.experience, "record_outcome_trace", _record_outcome_trace, raising=False)
+
+    result = runtime.record_outcome_trace({"trace_id": "trace-1"}, scope={"agent_id": "eibrain"})
+
+    assert result == {"ok": True, "record_id": "outcome-trace-1"}
+    assert calls == [(runtime, {"trace_id": "trace-1"}, {"agent_id": "eibrain"})]
 
 
 def test_invalid_payload_returns_error_and_does_not_write(tmp_path) -> None:

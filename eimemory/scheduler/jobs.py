@@ -2,13 +2,18 @@ from __future__ import annotations
 
 import json
 import os
+from collections import Counter
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any, Callable
 
 from eimemory.api.runtime import Runtime
 from eimemory.intake.loop import candidates_to_records
+from eimemory.metadata import business_metadata
 from eimemory.models.records import RecordEnvelope, ScopeRef
+
+
+OUTCOME_RULE_SOURCES = {"diagnosis_pattern", "operator_gap", "visual_evidence_gap", "world_state_mismatch"}
 
 
 def run_nightly_jobs(
@@ -63,6 +68,7 @@ def run_nightly_jobs(
     daily_brief_report = _run_daily_brief(runtime, scope=scope)
     judgment_evaluation_report = _run_judgment_evaluation(runtime, scope=scope)
     autonomous_evolution_report = _run_autonomous_evolution(runtime, scope=scope)
+    outcome_evolution_report = _run_outcome_evolution_summary(runtime, scope=scope)
     return {
         "ok": True,
         "active_rule_count": len(active_rules),
@@ -107,6 +113,7 @@ def run_nightly_jobs(
         "daily_brief": daily_brief_report,
         "rule_evolution": rule_evolution_report,
         "autonomous_evolution": autonomous_evolution_report,
+        "outcome_evolution": outcome_evolution_report,
         "memory_eval_ci": memory_eval_ci_report,
         "production_recall": production_recall_report,
         "judgment_evaluation": judgment_evaluation_report,
@@ -120,6 +127,174 @@ def run_nightly_jobs(
         },
         "roi": roi,
     }
+
+
+def _run_outcome_evolution_summary(runtime: Runtime, *, scope: dict) -> dict[str, Any]:
+    traces: list[RecordEnvelope] = []
+    limit = 500
+    offset = 0
+    while True:
+        records = runtime.store.list_records(kinds=["reflection"], scope=scope, limit=limit, offset=offset)
+        traces.extend(record for record in records if _is_outcome_trace(record))
+        if len(records) < limit:
+            break
+        offset += limit
+    outcome_rules = [
+        rule
+        for rule in runtime.store.list_records(kinds=["rule"], scope=scope, limit=500)
+        if str(business_metadata(rule.meta).get("evolution_source_type") or "") in OUTCOME_RULE_SOURCES
+    ]
+    rollout_ledger: list[dict[str, Any]] = []
+    get_ledger = getattr(runtime, "get_policy_rollout_ledger", None)
+    if callable(get_ledger):
+        try:
+            rollout_ledger = list(get_ledger(scope=scope, limit=200))
+        except Exception:
+            rollout_ledger = []
+    return _outcome_evolution_summary(traces, rules=outcome_rules, rollout_ledger=rollout_ledger)
+
+
+def _is_outcome_trace(record: RecordEnvelope) -> bool:
+    meta = business_metadata(record.meta)
+    return (
+        str(meta.get("report_type") or "").strip() == "outcome_trace"
+        and str(meta.get("schema_version") or "").strip() == "outcome_trace.v1"
+    )
+
+
+def _outcome_evolution_summary(
+    records: list[RecordEnvelope],
+    *,
+    rules: list[RecordEnvelope] | None = None,
+    rollout_ledger: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    label_counts: Counter[str] = Counter()
+    signal_counts: Counter[str] = Counter()
+    bad_outcome_count = 0
+    operator_gap_count = 0
+    visual_gap_count = 0
+    world_state_mismatch_count = 0
+
+    for record in records:
+        meta = business_metadata(record.meta)
+        content = record.content if isinstance(record.content, dict) else {}
+        payload = content.get("payload") if isinstance(content.get("payload"), dict) else {}
+        primary_label = str(meta.get("primary_label") or "").strip()
+        if primary_label:
+            label_counts[primary_label] += 1
+            if primary_label != "success":
+                bad_outcome_count += 1
+        signals = _diagnosis_signals(meta.get("diagnosis_signals") or meta.get("signals"))
+        signal_counts.update(signals)
+        signal_set = set(signals)
+        operator_gap = _dict_first(content.get("operator_gap"), payload.get("operator_gap"))
+        visual_evidence = _dict_first(content.get("visual_evidence"), payload.get("visual_evidence"))
+        world_state = _dict_first(content.get("world_state"), payload.get("world_state"))
+        if "operator_gap" in signal_set or _has_operator_gap(operator_gap):
+            operator_gap_count += 1
+        if _has_visual_gap(signal_set, visual_evidence):
+            visual_gap_count += 1
+        if "world_state_mismatch" in signal_set or _has_world_state_mismatch(world_state):
+            world_state_mismatch_count += 1
+
+    outcome_trace_count = len(records)
+    bad_outcome_rate = round(bad_outcome_count / outcome_trace_count, 3) if outcome_trace_count else 0.0
+    rule_items = list(rules or [])
+    generated_rule_count = len(rule_items)
+    shadow_rule_count = sum(1 for rule in rule_items if str(rule.status or "") == "shadow")
+    promoted_rule_count = sum(1 for rule in rule_items if str(rule.status or "") == "active")
+    ledger_items = list(rollout_ledger or [])
+    rolled_back_count = sum(1 for item in ledger_items if str(item.get("action_type") or "") == "rollback")
+    return {
+        "outcome_trace_count": outcome_trace_count,
+        "bad_outcome_count": bad_outcome_count,
+        "bad_outcome_rate": bad_outcome_rate,
+        "top_primary_labels": _top_counter_items(label_counts, "label"),
+        "top_signals": _top_counter_items(signal_counts, "signal"),
+        "operator_gap_count": operator_gap_count,
+        "visual_gap_count": visual_gap_count,
+        "world_state_mismatch_count": world_state_mismatch_count,
+        "generated_rule_count": generated_rule_count,
+        "shadow_rule_count": shadow_rule_count,
+        "promoted_rule_count": promoted_rule_count,
+        "rolled_back_count": rolled_back_count,
+    }
+
+
+def _diagnosis_signals(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value.strip()] if value.strip() else []
+    if isinstance(value, (list, tuple, set)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return []
+
+
+def _has_visual_gap(signals: set[str], visual_evidence: dict[str, Any]) -> bool:
+    if {"missing_visual_evidence", "visual_gap"} & signals:
+        return True
+    status = str(visual_evidence.get("status") or visual_evidence.get("state") or "").strip().lower()
+    if status in {"missing", "absent", "unavailable", "insufficient"}:
+        return True
+    required = _truthy(visual_evidence.get("required")) or _truthy(visual_evidence.get("expected"))
+    unavailable = visual_evidence.get("available") is False or visual_evidence.get("present") is False
+    return required and unavailable
+
+
+def _has_operator_gap(value: dict[str, Any]) -> bool:
+    if not isinstance(value, dict):
+        return False
+    if value.get("detected") is True:
+        return True
+    for key in ("missing", "missing_confirmation", "missing_info", "needs_operator", "approval_missing"):
+        item = value.get(key)
+        if isinstance(item, str) and item.strip().lower() in {"", "none", "no", "false", "0"}:
+            continue
+        if _truthy(item):
+            return True
+    expected = _first_text(value.get("expected"), value.get("expected_behavior"), value.get("required_behavior"))
+    observed = _first_text(value.get("actual"), value.get("observed"), value.get("observed_behavior"))
+    return bool(expected and observed and expected != observed)
+
+
+def _has_world_state_mismatch(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    if value.get("mismatch") is True:
+        return True
+    status = str(value.get("status") or value.get("state") or "").strip().lower()
+    if status in {"mismatch", "mismatched", "stale"}:
+        return True
+    expected = _first_text(value.get("expected"), value.get("target"), value.get("state_after"))
+    observed = _first_text(value.get("observed"), value.get("actual"), value.get("current"))
+    return bool(expected and observed and expected != observed)
+
+
+def _top_counter_items(counter: Counter[str], key: str, *, limit: int = 5) -> list[dict[str, Any]]:
+    return [
+        {key: item, "count": count}
+        for item, count in sorted(counter.items(), key=lambda entry: (-entry[1], entry[0]))[:limit]
+    ]
+
+
+def _dict_first(*values: Any) -> dict[str, Any]:
+    for value in values:
+        if isinstance(value, dict):
+            return dict(value)
+    return {}
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return bool(value)
+
+
+def _first_text(*values: Any) -> str:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
 
 
 def _run_production_recall_eval(runtime: Runtime, *, scope: dict) -> dict[str, Any]:

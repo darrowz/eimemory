@@ -555,12 +555,13 @@ def test_openclaw_before_prompt_build_defaults_to_fast_recall_context(tmp_path, 
         }
     )
 
-    assert captured["task_context"] == {
-        "task_type": "chat.reply",
-        "recall_mode": "fast",
-        "recall_budget_ms": 800,
-        "candidate_limit": 24,
-    }
+    assert captured["task_context"]["task_type"] == "chat.reply"
+    assert captured["task_context"]["recall_mode"] == "fast"
+    assert captured["task_context"]["recall_budget_ms"] == 800
+    assert captured["task_context"]["candidate_limit"] == 24
+    assert captured["task_context"]["trace_context"]["trace_id"] == (
+        "openclaw:sess-fast:chat.reply:prefers concise replies"
+    )
     assert captured["query"] == "prefers concise replies"
     assert captured["limit"] == 8
     assert result["memory_bundle"]["items"] == []

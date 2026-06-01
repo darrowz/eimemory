@@ -466,3 +466,109 @@ def test_nightly_jobs_close_daily_brief_rule_evolution_and_source_discovery(tmp_
     assert snapshot["daily_brief"]["latest"]["delivery_status"] == "prepared"
     assert snapshot["rule_evolution"]["latest"]["created_rule_count"] == 1
     assert snapshot["source_discovery"]["count"] >= 1
+
+
+def test_nightly_jobs_summarize_outcome_traces(tmp_path) -> None:
+    from eimemory.api.runtime import Runtime
+    from eimemory.models.records import RecordEnvelope, ScopeRef
+
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = {"agent_id": "hongtu", "workspace_id": "embodied"}
+    scope_ref = ScopeRef.from_dict(scope)
+    for title, primary_label, signals, risk_level, content in [
+        (
+            "Bad missing visual evidence",
+            "missing_tool_call",
+            ["missing_visual_evidence", "operator_gap"],
+            "L1",
+            {"operator_gap": {"missing_confirmation": True}},
+        ),
+        (
+            "Bad stale world state",
+            "stale_context",
+            ["world_state_mismatch", "operator_gap"],
+            "L2",
+            {"world_state": {"expected": "screen_a", "observed": "screen_b"}},
+        ),
+        (
+            "Successful outcome",
+            "success",
+            [],
+            "L0",
+            {"visual_evidence": {"status": "present"}},
+        ),
+    ]:
+        runtime.store.append(
+            RecordEnvelope.create(
+                kind="reflection",
+                title=title,
+                summary=title,
+                scope=scope_ref,
+                content=content,
+                meta={
+                    "report_type": "outcome_trace",
+                    "schema_version": "outcome_trace.v1",
+                    "primary_label": primary_label,
+                    "diagnosis_signals": signals,
+                    "risk_level": risk_level,
+                },
+            )
+        )
+    runtime.store.append(
+        RecordEnvelope.create(
+            kind="reflection",
+            title="Partial outcome trace",
+            summary="Missing optional diagnosis fields should not break nightly.",
+            scope=scope_ref,
+            content={},
+            meta={"report_type": "outcome_trace", "schema_version": "outcome_trace.v1"},
+        )
+    )
+
+    report = run_nightly_jobs(runtime, scope=scope)
+
+    assert report["outcome_evolution"] == {
+        "outcome_trace_count": 4,
+        "bad_outcome_count": 2,
+        "bad_outcome_rate": 0.5,
+        "top_primary_labels": [
+            {"label": "missing_tool_call", "count": 1},
+            {"label": "stale_context", "count": 1},
+            {"label": "success", "count": 1},
+        ],
+        "top_signals": [
+            {"signal": "operator_gap", "count": 2},
+            {"signal": "missing_visual_evidence", "count": 1},
+            {"signal": "world_state_mismatch", "count": 1},
+        ],
+        "operator_gap_count": 2,
+        "visual_gap_count": 1,
+        "world_state_mismatch_count": 1,
+        "generated_rule_count": 0,
+        "shadow_rule_count": 0,
+        "promoted_rule_count": 0,
+        "rolled_back_count": 0,
+    }
+
+
+def test_nightly_jobs_outcome_evolution_summary_is_zero_without_traces(tmp_path) -> None:
+    from eimemory.api.runtime import Runtime
+
+    runtime = Runtime.create(root=tmp_path / "runtime")
+
+    report = run_nightly_jobs(runtime, scope={"agent_id": "hongtu"})
+
+    assert report["outcome_evolution"] == {
+        "outcome_trace_count": 0,
+        "bad_outcome_count": 0,
+        "bad_outcome_rate": 0.0,
+        "top_primary_labels": [],
+        "top_signals": [],
+        "operator_gap_count": 0,
+        "visual_gap_count": 0,
+        "world_state_mismatch_count": 0,
+        "generated_rule_count": 0,
+        "shadow_rule_count": 0,
+        "promoted_rule_count": 0,
+        "rolled_back_count": 0,
+    }

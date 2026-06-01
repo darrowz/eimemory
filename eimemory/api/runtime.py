@@ -547,6 +547,11 @@ class Runtime:
 
         return record_experience_item(self, payload, scope=scope)
 
+    def record_outcome_trace(self, payload: dict, *, scope: dict | None = None) -> dict:
+        from eimemory.experience import record_outcome_trace
+
+        return record_outcome_trace(self, payload, scope=scope)
+
     def record_event(self, payload: dict, *, scope: dict | None = None) -> dict:
         return self.store.record_event(payload, scope=scope)
 

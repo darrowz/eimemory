@@ -17,6 +17,7 @@ type EIMemoryRPCMethod = Literal[
     "evolution.observe",
     "experience.record_skill_trace",
     "experience.record_item",
+    "experience.record_outcome_trace",
     "evolution.get_active_policy",
 ]
 type EIMemoryRPCRequest = dict[str, Any]

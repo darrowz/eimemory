@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import json
 from typing import Any
 
+from eimemory.governance.candidate_search import generate_candidate_policies, score_proxy_candidates
+from eimemory.governance.outcome_replay import build_replay_case_from_outcome
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
@@ -18,14 +21,12 @@ def run_rule_evolution_loop(
     """Run the deterministic feedback -> rule -> replay -> ROI -> promotion loop."""
     scope_ref = ScopeRef.from_dict(scope)
     scope_payload = asdict(scope_ref)
-    feedback_records = runtime.store.list_records(kinds=["feedback"], scope=scope_ref, limit=500)
-    incident_records = runtime.store.list_records(kinds=["incident"], scope=scope_ref, limit=500)
-    memory_records = runtime.store.list_records(kinds=["memory"], scope=scope_ref, limit=500)
-    reflections = [
-        record
-        for record in runtime.store.list_records(kinds=["reflection"], scope=scope_ref, limit=500)
-        if _is_actual_reflection(record)
-    ]
+    feedback_records = _list_all_records(runtime, kinds=["feedback"], scope=scope_ref)
+    incident_records = _list_all_records(runtime, kinds=["incident"], scope=scope_ref)
+    memory_records = _list_all_records(runtime, kinds=["memory"], scope=scope_ref)
+    reflection_records = _list_all_records(runtime, kinds=["reflection"], scope=scope_ref)
+    outcome_traces = [record for record in reflection_records if _is_outcome_trace(record)]
+    reflections = [record for record in reflection_records if _is_actual_reflection(record)]
     replay_results = [
         record
         for record in runtime.store.list_records(kinds=["replay_result"], scope=scope_ref, limit=500)
@@ -51,6 +52,13 @@ def run_rule_evolution_loop(
             rules=rules,
         )
     )
+    candidate_specs.extend(
+        _rule_candidates_from_outcome_traces(
+            outcome_traces=outcome_traces,
+            rules=rules,
+        )
+    )
+    candidate_specs = _standardize_candidate_audit_meta(candidate_specs)
     existing_preference_memory_ids = _existing_preference_memory_ids(rules)
     existing_source_memories = [
         memory.record_id
@@ -71,8 +79,18 @@ def run_rule_evolution_loop(
                 status=str(spec.get("initial_status") or "accepted"),
             )
             rule.meta.update(spec["audit_meta"])
-            runtime.store.append(rule)
+            rule = runtime.store.append(rule)
             created_rules.append(rule.record_id)
+            spec["_created_rule_id"] = rule.record_id
+
+    outcome_replay_results: list[RecordEnvelope] = []
+    outcome_promoted_rules: list[str] = []
+    if apply:
+        outcome_replay_results, outcome_promoted_rules = _replay_and_promote_outcome_rules(
+            runtime,
+            candidate_specs=candidate_specs,
+        )
+        replay_results = [*outcome_replay_results, *replay_results]
 
     promotion_candidates = _promotion_candidates(
         rules=rules,
@@ -90,6 +108,7 @@ def run_rule_evolution_loop(
                 note="Replay pass-rate and ROI threshold met",
             )
             promoted_rules.append(promoted.record_id)
+    promoted_rules = [*outcome_promoted_rules, *promoted_rules]
     rules_after = runtime.store.list_records(kinds=["rule"], scope=scope_ref, limit=500) if apply else rules
     active_rule_count = sum(1 for rule in rules_after if rule.status == "active")
     promotion_count = len(promoted_rules) if apply else len(promotion_candidates)
@@ -111,6 +130,7 @@ def run_rule_evolution_loop(
         "accepted_rule_count": sum(1 for rule in rules_after if rule.status == "accepted"),
         "active_rule_count": active_rule_count,
         "replay_count": len(replay_results),
+        "outcome_replay_count": len(outcome_replay_results),
         "steady_state": steady_state,
         "no_op_reason": "all_candidate_sources_already_materialized" if steady_state else "",
         "roi_summary": roi_summary,
@@ -123,9 +143,18 @@ def run_rule_evolution_loop(
             "source_reflections": [item.record_id for item in _candidate_reflections(candidate_specs)],
             "source_incidents": _candidate_record_ids(candidate_specs, "incident_repair"),
             "source_memories": _candidate_record_ids(candidate_specs, "memory_preference"),
+            "source_outcome_traces": _candidate_record_ids_for_sources(
+                candidate_specs,
+                {"diagnosis_pattern", "operator_gap", "visual_evidence_gap", "world_state_mismatch"},
+            ),
+            "source_diagnosis_patterns": _candidate_record_ids(candidate_specs, "diagnosis_pattern"),
+            "source_operator_gaps": _candidate_record_ids(candidate_specs, "operator_gap"),
+            "source_visual_evidence_gaps": _candidate_record_ids(candidate_specs, "visual_evidence_gap"),
+            "source_world_state_mismatches": _candidate_record_ids(candidate_specs, "world_state_mismatch"),
             "existing_source_memories": existing_source_memories if not candidate_specs else [],
             "created_rules": created_rules,
             "replay_results": [item.record_id for item in replay_results],
+            "outcome_replay_results": [item.record_id for item in outcome_replay_results],
             "promotion_candidates": [item.record_id for item in promotion_candidates],
             "promoted_rules": promoted_rules,
         },
@@ -182,6 +211,114 @@ def _rule_candidates_from_feedback(
             }
         )
     return candidates
+
+
+def _replay_and_promote_outcome_rules(
+    runtime: Any,
+    *,
+    candidate_specs: list[dict],
+) -> tuple[list[RecordEnvelope], list[str]]:
+    replay_results: list[RecordEnvelope] = []
+    promoted_rules: list[str] = []
+    for spec in candidate_specs:
+        if str(spec.get("source_type") or "") not in {
+            "diagnosis_pattern",
+            "operator_gap",
+            "visual_evidence_gap",
+            "world_state_mismatch",
+        }:
+            continue
+        rule_id = str(spec.get("_created_rule_id") or "")
+        if not rule_id:
+            continue
+        rule = runtime.store.get_by_id(rule_id)
+        if rule is None or rule.kind != "rule":
+            continue
+        dataset = list(spec.get("suggested_replay_dataset") or spec.get("audit_meta", {}).get("suggested_replay_dataset") or [])
+        replay = _outcome_candidate_replay_result(rule, dataset=dataset, spec=spec)
+        replay = runtime.store.append(replay)
+        replay_results.append(replay)
+        promotion_gate = dict(spec.get("promotion_gate") or spec.get("audit_meta", {}).get("promotion_gate") or {})
+        if (
+            bool(promotion_gate.get("allow_auto_promote"))
+            and str(replay.meta.get("verdict") or "") == "pass"
+            and float(replay.meta.get("pass_rate") or 0.0) >= DEFAULT_MIN_PASS_RATE
+        ):
+            promoted = runtime.evolution.promote_rule(
+                record_id=rule.record_id,
+                promoter="rule_evolution_loop",
+                note="Outcome-derived replay gate passed",
+            )
+            promoted_rules.append(promoted.record_id)
+    return replay_results, promoted_rules
+
+
+def _outcome_candidate_replay_result(
+    rule: RecordEnvelope,
+    *,
+    dataset: list[dict],
+    spec: dict,
+) -> RecordEnvelope:
+    evaluation_text = _full_text(
+        " ".join(
+            [
+                rule.title,
+                rule.summary,
+                str(rule.content.get("task_type") or ""),
+                json.dumps(rule.content.get("retrieval_policy") or {}, ensure_ascii=False, sort_keys=True),
+                json.dumps(rule.content.get("response_policy") or {}, ensure_ascii=False, sort_keys=True),
+            ]
+        )
+    ).lower()
+    scores: list[float] = []
+    samples: list[dict[str, Any]] = []
+    for sample in dataset:
+        if not isinstance(sample, dict):
+            continue
+        expected = _coerce_string_list(sample.get("expect_any_text") or sample.get("expected_text"))
+        negative = _coerce_string_list(sample.get("negative_expected_text"))
+        expected_pass = True if not expected else any(_clean_text(item).lower() in evaluation_text for item in expected)
+        negative_pass = not any(_clean_text(item).lower() in evaluation_text for item in negative)
+        passed = bool(expected_pass and negative_pass)
+        scores.append(1.0 if passed else 0.0)
+        samples.append(
+            {
+                "source_outcome_trace_id": str(sample.get("source_outcome_trace_id") or ""),
+                "primary_label": str(sample.get("primary_label") or ""),
+                "signals": _coerce_string_list(sample.get("signals")),
+                "expected_pass": expected_pass,
+                "negative_pass": negative_pass,
+                "passed": passed,
+            }
+        )
+    pass_rate = round(sum(scores) / len(scores), 3) if scores else 0.0
+    verdict = "pass" if pass_rate >= DEFAULT_MIN_PASS_RATE else "fail"
+    audit_meta = dict(spec.get("audit_meta") or {})
+    return RecordEnvelope.create(
+        kind="replay_result",
+        title=f"Outcome replay for {rule.title}",
+        summary=f"Outcome replay verdict: {verdict}",
+        scope=rule.scope,
+        source="eimemory.rule_evolution_loop",
+        meta={
+            "target_rule_id": rule.record_id,
+            "pass_rate": pass_rate,
+            "sample_size": len(scores),
+            "verdict": verdict,
+            "replay_source": "outcome_trace_suggested_replay",
+            "candidate_source": str(spec.get("candidate_source") or audit_meta.get("candidate_source") or ""),
+            "source_outcome_trace_ids": _coerce_string_list(audit_meta.get("source_outcome_trace_ids")),
+        },
+        content={
+            "dataset_size": len(dataset),
+            "samples": samples,
+            "suggested_replay_dataset": dataset,
+        },
+    )
+
+
+def _full_text(value: Any) -> str:
+    return " ".join(str(value or "").split())
 
 
 def _rule_candidates_from_incidents(
@@ -293,6 +430,133 @@ def _rule_candidates_from_preference_memories(
             }
         )
     return candidates
+
+
+def _rule_candidates_from_outcome_traces(
+    *,
+    outcome_traces: list[RecordEnvelope],
+    rules: list[RecordEnvelope],
+) -> list[dict]:
+    existing_source_keys = _existing_evolution_source_keys(rules)
+    ordered_outcome_traces = sorted(outcome_traces, key=lambda record: (record.time.created_at, record.record_id))
+    replay_cases = [
+        replay_case
+        for replay_case in (build_replay_case_from_outcome(record) for record in ordered_outcome_traces)
+        if replay_case
+    ]
+    seed_candidates = generate_candidate_policies(replay_cases)
+    candidates: list[dict] = []
+    seen_source_keys: set[str] = set()
+    for seed in seed_candidates:
+        source_key = str(seed.get("source_key") or seed.get("audit_meta", {}).get("evolution_source_key") or "")
+        if not source_key or source_key in existing_source_keys or source_key in seen_source_keys:
+            continue
+        seen_source_keys.add(source_key)
+        scored = score_proxy_candidates([seed], replay_cases)
+        ranked = list(scored.get("ranked_candidates") or [])
+        candidate = ranked[0] if ranked else dict(seed)
+        proxy_eval = dict(candidate.get("proxy_eval") or scored.get("proxy_eval") or {})
+        audit_meta = dict(candidate.get("audit_meta") or {})
+        audit_meta.update(
+            {
+                "candidate_source": str(candidate.get("candidate_source") or ""),
+                "search_stage": "seed",
+                "proxy_eval": proxy_eval,
+                "promotion_gate": dict(candidate.get("promotion_gate") or audit_meta.get("promotion_gate") or {}),
+                "risk_level": str(candidate.get("risk_level") or audit_meta.get("risk_level") or "medium"),
+                "evolution_source": "rule_evolution_loop",
+                "evolution_source_type": str(candidate.get("source_type") or candidate.get("candidate_source") or ""),
+                "evolution_source_key": source_key,
+                "evolution_source_record_ids": _coerce_string_list(candidate.get("source_record_ids")),
+                "source_outcome_trace_ids": _coerce_string_list(candidate.get("source_trace_ids")),
+                "source_trace_ids": _coerce_string_list(candidate.get("source_trace_ids")),
+                "suggested_replay_dataset": list(candidate.get("suggested_replay_dataset") or []),
+            }
+        )
+        candidates.append(
+            {
+                "title": str(candidate.get("title") or f"Rule: {candidate.get('summary', '')}"),
+                "summary": str(candidate.get("summary") or ""),
+                "task_type": str(candidate.get("task_type") or "outcome.replay"),
+                "retrieval_policy": dict(candidate.get("retrieval_policy") or {}),
+                "response_policy": dict(candidate.get("response_policy") or {"summary": str(candidate.get("summary") or "")}),
+                "feedback": None,
+                "reflection": None,
+                "source_type": str(candidate.get("source_type") or candidate.get("candidate_source") or ""),
+                "candidate_source": str(candidate.get("candidate_source") or candidate.get("source_type") or ""),
+                "source_records": [],
+                "source_record_ids": _coerce_string_list(candidate.get("source_record_ids")),
+                "source_key": source_key,
+                "risk_level": str(candidate.get("risk_level") or "medium"),
+                "suggested_replay_dataset": list(candidate.get("suggested_replay_dataset") or []),
+                "promotion_gate": dict(candidate.get("promotion_gate") or {}),
+                "proxy_eval": proxy_eval,
+                "initial_status": str(candidate.get("initial_status") or "shadow"),
+                "audit_meta": audit_meta,
+            }
+        )
+    return candidates
+
+
+def _existing_evolution_source_keys(rules: list[RecordEnvelope]) -> set[str]:
+    return {
+        str(rule.meta.get("evolution_source_key") or "")
+        for rule in rules
+        if str(rule.meta.get("evolution_source_key") or "")
+    }
+
+
+def _list_all_records(
+    runtime: Any,
+    *,
+    kinds: list[str],
+    scope: ScopeRef,
+    page_size: int = 500,
+) -> list[RecordEnvelope]:
+    records: list[RecordEnvelope] = []
+    offset = 0
+    while True:
+        page = runtime.store.list_records(kinds=kinds, scope=scope, limit=page_size, offset=offset)
+        records.extend(page)
+        if len(page) < page_size:
+            break
+        offset += page_size
+    return records
+
+
+def _standardize_candidate_audit_meta(candidate_specs: list[dict]) -> list[dict]:
+    for spec in candidate_specs:
+        source_type = str(spec.get("source_type") or "feedback")
+        source_record_ids = _coerce_string_list(spec.get("source_record_ids"))
+        suggested_replay_dataset = list(spec.get("suggested_replay_dataset") or [])
+        proxy_eval = dict(spec.get("proxy_eval") or {})
+        promotion_gate = dict(spec.get("promotion_gate") or {})
+        if not promotion_gate:
+            promotion_gate = {
+                "allow_auto_promote": False,
+                "requires_replay": True,
+                "requires_review": True,
+                "blocked_reason": "seed_candidate_requires_replay",
+            }
+        risk_level = str(spec.get("risk_level") or "low")
+        audit_meta = dict(spec.get("audit_meta") or {})
+        audit_meta.setdefault("candidate_source", str(spec.get("candidate_source") or source_type))
+        audit_meta.setdefault("search_stage", "seed")
+        audit_meta.setdefault("proxy_eval", proxy_eval)
+        audit_meta.setdefault("promotion_gate", promotion_gate)
+        audit_meta.setdefault("risk_level", risk_level)
+        audit_meta.setdefault("evolution_source_type", source_type)
+        audit_meta.setdefault("evolution_source_record_ids", source_record_ids)
+        audit_meta.setdefault("source_trace_ids", source_record_ids)
+        audit_meta.setdefault("source_outcome_trace_ids", source_record_ids if source_type in {"diagnosis_pattern", "operator_gap", "visual_evidence_gap", "world_state_mismatch"} else [])
+        audit_meta.setdefault("suggested_replay_dataset", suggested_replay_dataset)
+        spec["candidate_source"] = str(spec.get("candidate_source") or source_type)
+        spec["proxy_eval"] = proxy_eval or dict(audit_meta.get("proxy_eval") or {})
+        spec["promotion_gate"] = promotion_gate or dict(audit_meta.get("promotion_gate") or {})
+        spec["risk_level"] = risk_level
+        spec["suggested_replay_dataset"] = suggested_replay_dataset or list(audit_meta.get("suggested_replay_dataset") or [])
+        spec["audit_meta"] = audit_meta
+    return candidate_specs
 
 
 def _existing_preference_memory_ids(rules: list[RecordEnvelope]) -> set[str]:
@@ -441,7 +705,10 @@ def _latest_replay_for_rule(rule_id: str, replay_results: list[RecordEnvelope]) 
 
 
 def _is_actual_replay_result(record: RecordEnvelope) -> bool:
-    if record.source == "eimemory.rule_evolution_loop":
+    if (
+        record.source == "eimemory.rule_evolution_loop"
+        and str(record.meta.get("replay_source") or "") != "outcome_trace_suggested_replay"
+    ):
         return False
     if str(record.meta.get("report_type") or "") == "rule_evolution":
         return False
@@ -451,6 +718,8 @@ def _is_actual_replay_result(record: RecordEnvelope) -> bool:
 
 
 def _is_actual_reflection(record: RecordEnvelope) -> bool:
+    if _is_outcome_trace(record):
+        return False
     if record.source in {"eimemory.daily_brief", "eimemory.rule_evolution_loop"}:
         return False
     if str(record.meta.get("report_type") or "") in {"daily_brief", "rule_evolution"}:
@@ -458,6 +727,14 @@ def _is_actual_reflection(record: RecordEnvelope) -> bool:
     if isinstance(record.content.get("brief"), dict) or isinstance(record.content.get("report"), dict):
         return False
     return True
+
+
+def _is_outcome_trace(record: RecordEnvelope) -> bool:
+    return (
+        record.kind == "reflection"
+        and str(record.meta.get("report_type") or "") == "outcome_trace"
+        and str(record.meta.get("schema_version") or "") == "outcome_trace.v1"
+    )
 
 
 def _candidate_feedback(candidate_specs: list[dict]) -> list[RecordEnvelope]:
@@ -496,8 +773,30 @@ def _candidate_record_ids(candidate_specs: list[dict], source_type: str) -> list
     return record_ids
 
 
+def _candidate_record_ids_for_sources(candidate_specs: list[dict], source_types: set[str]) -> list[str]:
+    seen: set[str] = set()
+    record_ids: list[str] = []
+    for spec in candidate_specs:
+        if str(spec.get("source_type") or "") not in source_types:
+            continue
+        for record_id in _coerce_string_list(spec.get("source_record_ids")):
+            if record_id in seen:
+                continue
+            seen.add(record_id)
+            record_ids.append(record_id)
+    return record_ids
+
+
 def _candidate_source_counts(candidate_specs: list[dict]) -> dict[str, int]:
-    counts = {"feedback": 0, "incident_repair": 0, "memory_preference": 0}
+    counts = {
+        "feedback": 0,
+        "incident_repair": 0,
+        "memory_preference": 0,
+        "diagnosis_pattern": 0,
+        "operator_gap": 0,
+        "visual_evidence_gap": 0,
+        "world_state_mismatch": 0,
+    }
     for spec in candidate_specs:
         source_type = str(spec.get("source_type") or "feedback")
         counts[source_type] = counts.get(source_type, 0) + 1
@@ -515,7 +814,13 @@ def _candidate_report(spec: dict) -> dict:
         "source_feedback_id": spec["feedback"].record_id if source_type == "feedback" and isinstance(spec.get("feedback"), RecordEnvelope) else "",
         "source_reflection_id": reflection.record_id if reflection else "",
         "source_type": source_type,
+        "candidate_source": str(spec.get("candidate_source") or source_type),
         "source_record_ids": source_record_ids,
+        "source_key": str(spec.get("source_key") or ""),
+        "risk_level": str(spec.get("risk_level") or spec.get("audit_meta", {}).get("risk_level") or ""),
+        "proxy_eval": dict(spec.get("proxy_eval") or spec.get("audit_meta", {}).get("proxy_eval") or {}),
+        "promotion_gate": dict(spec.get("promotion_gate") or spec.get("audit_meta", {}).get("promotion_gate") or {}),
+        "suggested_replay_dataset": list(spec.get("suggested_replay_dataset") or spec.get("audit_meta", {}).get("suggested_replay_dataset") or []),
         "initial_status": str(spec.get("initial_status") or "accepted"),
     }
 

@@ -191,6 +191,16 @@ class EIBrainRPCBridge:
             if result.get("ok") is False:
                 return self._with_contract({"ok": False, "error": result.get("error", "invalid_experience")})
             return self._with_contract({"ok": True, "result": result})
+        if method == "experience.record_outcome_trace":
+            params = dict(params)
+            payload = params.get("payload", {})
+            scope: BridgeScope = params.get("scope", {})
+            if not isinstance(payload, dict) or not self._valid_scope(scope):
+                return self._with_contract(self._invalid_request())
+            result = self.runtime.record_outcome_trace(payload, scope=hongtu_scope(scope))
+            if result.get("ok") is False:
+                return self._with_contract({"ok": False, "error": result.get("error", "invalid_experience")})
+            return self._with_contract({"ok": True, "result": result})
         if method == "evolution.get_active_policy":
             params = dict(params)
             scope: BridgeScope = params.get("scope", {})

@@ -226,6 +226,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
     reflect_sub.add_parser("stats")
 
+    experience = sub.add_parser("experience")
+    experience_sub = experience.add_subparsers(dest="experience_command")
+    experience_outcome = experience_sub.add_parser("outcome")
+    experience_outcome.add_argument("json_path")
+
     serve_rpc = sub.add_parser("serve-eibrain-rpc")
     serve_rpc.add_argument("--host", default="")
     serve_rpc.add_argument("--port", type=int, default=None)
@@ -453,7 +458,7 @@ def main(argv: list[str] | None = None) -> int:
         print(
             json.dumps(
                 {
-                    "usage": "eimemory init|ingest|recall|paper|source|intake|export|import|backup|migrate|brief|nightly|quality|identity|living|reflect|governance|evolve|eval|serve-eibrain-rpc",
+                    "usage": "eimemory init|ingest|recall|paper|source|intake|export|import|backup|migrate|brief|nightly|quality|identity|living|reflect|experience|governance|evolve|eval|serve-eibrain-rpc",
                 }
             )
         )
@@ -480,6 +485,20 @@ def main(argv: list[str] | None = None) -> int:
             source="cli",
         )
         print(json.dumps(record.to_dict(), ensure_ascii=False, indent=2))
+        return 0
+    if parsed.command == "experience":
+        if parsed.experience_command == "outcome":
+            try:
+                payload = json.loads(Path(parsed.json_path).read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                return _print_error("invalid_json", exc)
+            if not isinstance(payload, dict):
+                print(json.dumps({"ok": False, "error": "invalid_payload"}, ensure_ascii=False))
+                return 2
+            result = runtime.record_outcome_trace(payload, scope=scope)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return 0 if result.get("ok") is not False else 2
+        print(json.dumps({"usage": "eimemory experience outcome <json_path>"}))
         return 0
     if parsed.command == "recall":
         task_context = {"task_type": "cli.recall"}

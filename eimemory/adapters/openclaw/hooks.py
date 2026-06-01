@@ -41,15 +41,25 @@ class OpenClawMemoryHooks:
     def before_prompt_build(self, event: dict) -> dict:
         query = self._clean_prompt_query(str(event.get("query") or event.get("raw_query") or "").strip())
         recall_context = self._resolve_recall_context(event)
+        trace_context = self._trace_context_from_event(event, task_context=recall_context, query=query)
+        recall_context["trace_context"] = trace_context
         event = dict(event)
         event["task_context"] = recall_context
         if not query:
             recall_context["policy_suggestion_ids"] = []
             recall_context["policy_sources"] = []
             recall_context["matched_event_type"] = ""
+            recall_context["selected_records"] = []
+            policy_attribution = self._normalize_policy_attribution(recall_context)
+            recall_context["policy_attribution"] = policy_attribution
             bundle = self._empty_bundle({"task_context": recall_context})
             self._audit_prompt_recall(event=event, bundle=bundle, injected=False)
-            return {"memory_bundle": bundle.to_dict()}
+            return {
+                "memory_bundle": bundle.to_dict(),
+                "trace_context": trace_context,
+                "task_context": recall_context,
+                "policy_attribution": policy_attribution,
+            }
         scope = self._scope_from_event(event)
         policy_search = self._run_policy_search_safely(
             query=query,
@@ -69,10 +79,16 @@ class OpenClawMemoryHooks:
         )
         recall_context["policy_sources"] = self._coerce_string_list(bundle.explanation.get("policy_sources"))
         recall_context["matched_event_type"] = str(bundle.explanation.get("matched_event_type") or "")
+        recall_context["selected_records"] = self._selected_records(bundle)
+        policy_attribution = self._normalize_policy_attribution(recall_context)
+        recall_context["policy_attribution"] = policy_attribution
         self._audit_prompt_recall(event=event, bundle=bundle, injected=bool(bundle.items))
         return {
             "memory_bundle": bundle.to_dict(),
             "usage_telemetry": self._usage_telemetry(bundle),
+            "trace_context": trace_context,
+            "task_context": recall_context,
+            "policy_attribution": policy_attribution,
         }
 
     def on_agent_end(self, event: dict) -> dict:
@@ -250,6 +266,88 @@ class OpenClawMemoryHooks:
         if recall_mode == "fast":
             task_context["candidate_limit"] = self._coerce_fast_candidate_limit(task_context.get("candidate_limit"))
         return task_context
+
+    def _trace_context_from_event(self, event: dict, *, task_context: dict, query: str) -> dict:
+        nested_trace_context = self._merged_dict(
+            event.get("trace_context"),
+            event.get("traceContext"),
+            task_context.get("trace_context"),
+            task_context.get("traceContext"),
+        )
+        task_type = self._first_text(
+            event.get("task_type"),
+            event.get("taskType"),
+            task_context.get("task_type"),
+            task_context.get("taskType"),
+            nested_trace_context.get("task_type"),
+            nested_trace_context.get("taskType"),
+        )
+        trace_id = self._first_text(
+            event.get("trace_id"),
+            event.get("traceId"),
+            event.get("outcome_trace_id"),
+            event.get("outcomeTraceId"),
+            task_context.get("trace_id"),
+            task_context.get("traceId"),
+            nested_trace_context.get("trace_id"),
+            nested_trace_context.get("traceId"),
+        )
+        idempotency_key = self._first_text(
+            event.get("idempotency_key"),
+            event.get("idempotencyKey"),
+            task_context.get("idempotency_key"),
+            task_context.get("idempotencyKey"),
+            nested_trace_context.get("idempotency_key"),
+            nested_trace_context.get("idempotencyKey"),
+        )
+        session_id = self._session_id_from_event(event)
+        attempt_marker = self._first_text(
+            event.get("task_id"),
+            event.get("taskId"),
+            event.get("turn_id"),
+            event.get("turnId"),
+            event.get("request_id"),
+            event.get("requestId"),
+            event.get("started_at"),
+            event.get("startedAt"),
+            task_context.get("task_id"),
+            task_context.get("taskId"),
+            task_context.get("turn_id"),
+            task_context.get("turnId"),
+            task_context.get("started_at"),
+            task_context.get("startedAt"),
+            nested_trace_context.get("task_id"),
+            nested_trace_context.get("taskId"),
+            nested_trace_context.get("turn_id"),
+            nested_trace_context.get("turnId"),
+            nested_trace_context.get("request_id"),
+            nested_trace_context.get("requestId"),
+            nested_trace_context.get("started_at"),
+            nested_trace_context.get("startedAt"),
+        )
+        if not trace_id:
+            trace_id = self._dedupe_trace_part("openclaw", session_id, task_type, attempt_marker, query)
+        if not idempotency_key:
+            idempotency_key = self._dedupe_trace_part("openclaw", "outcome", session_id, task_type, attempt_marker, query)
+        return {
+            **nested_trace_context,
+            "trace_id": trace_id,
+            "idempotency_key": idempotency_key,
+            "task_type": task_type,
+            "started_at": self._first_text(
+                event.get("started_at"),
+                event.get("startedAt"),
+                task_context.get("started_at"),
+                task_context.get("startedAt"),
+                nested_trace_context.get("started_at"),
+                nested_trace_context.get("startedAt"),
+            ),
+            "query": query,
+        }
+
+    def _dedupe_trace_part(self, *values: Any) -> str:
+        parts = [str(value or "").strip() for value in values if str(value or "").strip()]
+        return ":".join(parts)
 
     def _coerce_recall_budget_ms(self, value: object) -> int:
         try:
@@ -491,6 +589,20 @@ class OpenClawMemoryHooks:
             policy_attribution=policy_attribution,
         )
         recorded_outcome = self.runtime.record_outcome(recorded_event["id"], outcome_payload, scope=scope)
+        outcome_trace = self._record_outcome_trace_safely(
+            event=event,
+            scope=scope,
+            task_context=task_context,
+            outcome=outcome,
+            correction=correction,
+            verification=verification,
+            result=result,
+            policy_attribution=policy_attribution,
+            event_type=event_type,
+            action_path=action_path,
+            tools=tools,
+            end_kind=end_kind,
+        )
         pattern = None
         if correction:
             pattern_payload = self._intent_pattern_from_correction(
@@ -507,6 +619,7 @@ class OpenClawMemoryHooks:
             "event": recorded_event,
             "outcome": recorded_outcome,
             "pattern": pattern,
+            **outcome_trace,
         }
 
     def _task_context_from_event(self, event: dict) -> dict:
@@ -841,7 +954,137 @@ class OpenClawMemoryHooks:
             "source": f"openclaw.{end_kind}",
         }
 
+    def _record_outcome_trace_safely(
+        self,
+        *,
+        event: dict,
+        scope: dict,
+        task_context: dict,
+        outcome: dict,
+        correction: str,
+        verification: str,
+        result: str,
+        policy_attribution: dict,
+        event_type: str,
+        action_path: list[str],
+        tools: list[str],
+        end_kind: str,
+    ) -> dict:
+        recorder = getattr(self.runtime, "record_outcome_trace", None)
+        if not callable(recorder):
+            return {}
+        payload = self._outcome_trace_payload(
+            event=event,
+            task_context=task_context,
+            outcome=outcome,
+            correction=correction,
+            verification=verification,
+            result=result,
+            policy_attribution=policy_attribution,
+            event_type=event_type,
+            action_path=action_path,
+            tools=tools,
+            end_kind=end_kind,
+        )
+        try:
+            return {"outcome_trace": recorder(payload, scope=scope)}
+        except Exception as exc:
+            return {"outcome_trace_error": str(exc)}
+
+    def _outcome_trace_payload(
+        self,
+        *,
+        event: dict,
+        task_context: dict,
+        outcome: dict,
+        correction: str,
+        verification: str,
+        result: str,
+        policy_attribution: dict,
+        event_type: str,
+        action_path: list[str],
+        tools: list[str],
+        end_kind: str,
+    ) -> dict:
+        query = self._clean_prompt_query(str(event.get("query") or event.get("raw_query") or "").strip())
+        trace_context = self._trace_context_from_event(event, task_context=task_context, query=query)
+        input_summary = self._first_text(
+            event.get("input_summary"),
+            event.get("inputSummary"),
+            outcome.get("input_summary"),
+            outcome.get("inputSummary"),
+            query,
+            event.get("user_phrase"),
+            event.get("userPhrase"),
+            task_context.get("goal"),
+            task_context.get("intent"),
+            result,
+        )
+        payload = {
+            "source": f"openclaw.{end_kind}",
+            "session_id": self._session_id_from_event(event),
+            "trace_id": trace_context["trace_id"],
+            "idempotency_key": trace_context["idempotency_key"],
+            "trace_context": trace_context,
+            "task_type": self._first_text(
+                event.get("task_type"),
+                event.get("taskType"),
+                task_context.get("task_type"),
+                task_context.get("taskType"),
+                event_type,
+            ),
+            "input_summary": input_summary,
+            "selected_tools": self._dedupe_strings([*tools, *self._terminal_tools(event, task_context=task_context)]),
+            "actions": self._dedupe_strings([*action_path, *self._terminal_action_path(event, task_context=task_context)]),
+            "outcome": self._outcome_trace_result(event=event, outcome=outcome, correction=correction),
+            "verifier": self._first_text(
+                event.get("verifier"),
+                outcome.get("verifier"),
+                verification,
+            ),
+            "feedback": self._outcome_trace_feedback(event=event, outcome=outcome, correction=correction),
+            "risk": self._first_present(
+                event.get("risk"),
+                outcome.get("risk"),
+                task_context.get("risk"),
+            )
+            or "",
+            "policy_attribution": self._normalize_policy_attribution(policy_attribution),
+        }
+        for key in ("world_state", "visual_evidence", "operator_gap"):
+            value = self._first_present(event.get(key), outcome.get(key), task_context.get(key), None)
+            if value is not None:
+                payload[key] = value
+        return payload
+
+    def _outcome_trace_result(self, *, event: dict, outcome: dict, correction: str) -> str:
+        success = self._bool_or_none(outcome.get("success"))
+        if success is None:
+            success = self._bool_or_none(event.get("success"))
+        if correction or success is False:
+            return "bad"
+        if success is True:
+            return "success"
+        return "uncertain"
+
+    def _outcome_trace_feedback(self, *, event: dict, outcome: dict, correction: str) -> str:
+        return self._first_text(
+            correction,
+            event.get("feedback"),
+            event.get("user_feedback"),
+            event.get("userFeedback"),
+            outcome.get("feedback"),
+            outcome.get("user_feedback"),
+            outcome.get("userFeedback"),
+            outcome.get("notes"),
+            outcome.get("reason"),
+            event.get("error"),
+        )
+
     def _resolve_policy_attribution(self, *, event: dict, task_context: dict) -> dict[str, Any]:
+        event_policy_attribution = self._normalize_policy_attribution(event)
+        if self._policy_attribution_has_values(event_policy_attribution):
+            return event_policy_attribution
         policy_attribution = self._normalize_policy_attribution(task_context)
         if self._policy_attribution_has_values(policy_attribution):
             return policy_attribution
@@ -864,10 +1107,16 @@ class OpenClawMemoryHooks:
     def _normalize_policy_attribution(self, payload: Any) -> dict[str, Any]:
         if not isinstance(payload, dict):
             payload = {}
+        nested = payload.get("policy_attribution")
+        if isinstance(nested, dict):
+            merged = dict(nested)
+            merged.update({key: value for key, value in payload.items() if key != "policy_attribution"})
+            payload = merged
         return {
             "policy_suggestion_ids": self._coerce_string_list(payload.get("policy_suggestion_ids")),
             "policy_sources": self._coerce_string_list(payload.get("policy_sources")),
             "matched_event_type": str(payload.get("matched_event_type") or ""),
+            "selected_records": self._coerce_selected_records(payload.get("selected_records")),
         }
 
     def _policy_attribution_has_values(self, policy_attribution: dict[str, Any]) -> bool:
@@ -875,7 +1124,19 @@ class OpenClawMemoryHooks:
             return True
         if policy_attribution.get("policy_sources"):
             return True
+        if policy_attribution.get("selected_records"):
+            return True
         return bool(str(policy_attribution.get("matched_event_type") or "").strip())
+
+    def _coerce_selected_records(self, value: Any) -> list[dict[str, Any]]:
+        if not isinstance(value, list):
+            return []
+        records: list[dict[str, Any]] = []
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            records.append(dict(item))
+        return records
 
     def _extract_policy_suggestion_ids(self, policy_suggestions: Any) -> list[str]:
         return self._coerce_string_list(
@@ -1027,6 +1288,15 @@ class OpenClawMemoryHooks:
             if text:
                 return text
         return ""
+
+    def _first_present(self, *values: Any) -> Any:
+        for value in values:
+            if value is None:
+                continue
+            if isinstance(value, str) and not value.strip():
+                continue
+            return value
+        return None
 
     def _merged_list(self, *values: Any) -> list[str]:
         items: list[str] = []
