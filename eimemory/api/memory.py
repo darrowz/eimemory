@@ -239,7 +239,7 @@ class MemoryAPI:
                 items = [item for item in items if self._is_preference_recall_candidate(item, normalized_query)]
         claims = [item for item in items if item.kind == "claim_card"]
         pages = [item for item in items if item.kind == "knowledge_page"]
-        memories = [item for item in items if item.kind == "memory"]
+        memories = [item for item in items if item.kind in {"memory", "rule"}]
         view = build_recall_view(
             view_type=choose_view_type(task_context),
             claims=claims,
@@ -253,19 +253,28 @@ class MemoryAPI:
         )[:limit]
         if report_items:
             items = self._dedupe_records([*report_items, *items])[:limit]
+        graph_expanded = sum(1 for item in items if item.record_id not in base_ids)
+        active_rules = self.store.list_records(kinds=["rule"], scope=scope_ref, status="active", limit=100)
+        rules = [
+            rule
+            for rule in active_rules
+            if not task_type or str(business_metadata(rule.meta).get("task_type") or "") == task_type
+        ][:50]
+        rule_recall_items = self._matching_active_rule_recall_items(
+            active_rules=active_rules,
+            query=normalized_query,
+            recall_intent=recall_intent,
+            limit=limit,
+        )
+        if rule_recall_items:
+            items = self._dedupe_records([*rule_recall_items, *items])[:limit]
         final_view = build_recall_view(
             view_type=view.view_type,
             claims=[item for item in items if item.kind == "claim_card"],
             pages=[item for item in items if item.kind == "knowledge_page"],
-            memories=[item for item in items if item.kind == "memory"],
+            memories=[item for item in items if item.kind in {"memory", "rule"}],
             query=normalized_query,
         )
-        graph_expanded = sum(1 for item in items if item.record_id not in base_ids)
-        rules = [
-            rule
-            for rule in self.store.list_records(kinds=["rule"], scope=scope_ref, status="active", limit=50)
-            if not task_type or str(business_metadata(rule.meta).get("task_type") or "") == task_type
-        ]
         reflections = self.store.search(query=query, kinds=["reflection"], scope=scope_ref, limit=3)
         confidence = 0.0
         if items:
@@ -306,6 +315,7 @@ class MemoryAPI:
                 "policy_suggestions": list(policy_search.get("policy_suggestions") or []),
                 "matched_event_type": str(policy_search.get("matched_event_type") or ""),
                 "rule_count": len(rules),
+                "rule_recall_promoted_count": len(rule_recall_items),
                 "unknown_record_id": gap["unknown"].record_id if gap else "",
                 "graph_expanded": graph_expanded,
                 "retrieval_mode": str(search_report.get("retrieval_mode") or "hybrid"),
@@ -472,6 +482,70 @@ class MemoryAPI:
         if self._looks_like_recall_diagnostic(text, query):
             return False
         return self._looks_like_explicit_preference(text)
+
+    def _matching_active_rule_recall_items(
+        self,
+        *,
+        active_rules: list[RecordEnvelope],
+        query: str,
+        recall_intent: RecallIntent,
+        limit: int,
+    ) -> list[RecordEnvelope]:
+        if not active_rules or limit <= 0:
+            return []
+        if recall_intent.name not in {"operator_preference", "living_posture"}:
+            return []
+        if recall_intent.confidence < 0.45:
+            return []
+        scored: list[tuple[float, str, RecordEnvelope]] = []
+        for rule in active_rules:
+            if str(rule.status or "").strip().lower() != "active":
+                continue
+            score = self._active_rule_query_score(rule, query=query, recall_intent=recall_intent)
+            if score <= 0.0:
+                continue
+            scored.append((score, str(rule.time.updated_at or ""), rule))
+        scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        return [rule for _score, _updated_at, rule in scored[:limit]]
+
+    def _active_rule_query_score(self, rule: RecordEnvelope, *, query: str, recall_intent: RecallIntent) -> float:
+        rule_text = self._record_text(rule).casefold()
+        compact_rule_text = re.sub(r"\s+", "", rule_text)
+        normalized_query = str(query or "").strip().casefold()
+        compact_query = re.sub(r"\s+", "", normalized_query)
+        if not rule_text or not compact_query:
+            return 0.0
+
+        terms = self._rule_recall_query_terms(query=normalized_query, recall_intent=recall_intent)
+        matched_terms = [
+            term
+            for term in terms
+            if term and (term in rule_text or re.sub(r"\s+", "", term) in compact_rule_text)
+        ]
+        exact_match = normalized_query in rule_text or compact_query in compact_rule_text
+        if not matched_terms and not exact_match:
+            return 0.0
+
+        score = len(matched_terms) / max(1, len(terms))
+        if exact_match:
+            score += 1.0
+        if self._looks_like_explicit_preference(rule_text):
+            score += 0.25
+        if recall_intent.name == "operator_preference" and any(
+            marker in rule_text for marker in ("沟通风格", "communication style", "reply style")
+        ):
+            score += 0.2
+        return score
+
+    @staticmethod
+    def _rule_recall_query_terms(*, query: str, recall_intent: RecallIntent) -> list[str]:
+        terms = [str(term).strip().casefold() for term in recall_intent.query_terms if str(term).strip()]
+        compact_query = re.sub(r"\s+", "", str(query or "").strip().casefold())
+        if compact_query:
+            terms.append(compact_query)
+        if compact_query and re.search(r"[\u4e00-\u9fff]", compact_query):
+            terms.extend(compact_query[index : index + 2] for index in range(max(0, len(compact_query) - 1)))
+        return list(dict.fromkeys(term for term in terms if len(term) >= 2))
 
     def _report_records_from_query(
         self,

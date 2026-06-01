@@ -392,6 +392,35 @@ def test_runtime_recall_does_not_answer_preference_query_with_digest_only(tmp_pa
     assert bundle.items == []
 
 
+def test_runtime_recall_surfaces_matching_active_rule_for_operator_preference(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = ScopeRef(agent_id="main", workspace_id="repo-x")
+    rule = RecordEnvelope.create(
+        kind="rule",
+        title="Hongtu communication style rule",
+        summary="鸿哥 沟通风格：极简、直接，讨厌废话；先给结论，少解释。",
+        scope=scope,
+        source="eimemory.rule_evolution_loop",
+        status="active",
+        meta={"task_type": "chat.reply"},
+    )
+    runtime.store.append(rule)
+
+    bundle = runtime.memory.recall(
+        query="鸿哥 沟通风格",
+        scope={"agent_id": "main", "workspace_id": "repo-x"},
+        task_context={"task_type": "cli.recall"},
+        limit=5,
+    )
+
+    assert bundle.items
+    assert bundle.items[0].record_id == rule.record_id
+    assert bundle.items[0].kind == "rule"
+    assert bundle.confidence > 0
+    assert bundle.explanation["rule_recall_promoted_count"] == 1
+    assert bundle.explanation["recall_view"]["items"][0]["record_id"] == rule.record_id
+
+
 def test_runtime_recall_does_not_answer_preference_query_with_diagnostics(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     scope = ScopeRef(agent_id="main", workspace_id="repo-x")
