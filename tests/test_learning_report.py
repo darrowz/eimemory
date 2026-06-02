@@ -47,9 +47,46 @@ def test_learning_daily_report_persists_short_summary(tmp_path) -> None:
 
     assert report["ok"] is True
     assert report["persisted_record_id"]
-    assert report["learned"] == ["Health checks should use compact endpoints."]
+    assert report["learned"] == ["ops.health: Health checks should use compact endpoints."]
     assert report["applied"]
     assert report["blocked"]
     assert len(report["summary"]) < 700
     stored = runtime.store.get_by_id(report["persisted_record_id"], scope=scope)
     assert stored.meta["report_type"] == "autonomous_learning_daily_report"
+
+
+def test_learning_daily_report_skips_tool_message_noise(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu"}
+    noisy = (
+        '{"type":"toolCall","id":"call_1","name":"message","arguments":'
+        '{"action":"send","message":"assistant: this is a long historical response user: with old context that should not become a learning report item"}}'
+    )
+    append_learning_record_once(
+        runtime,
+        kind="world_signal",
+        title="Noisy tool envelope",
+        summary=noisy,
+        scope=scope,
+        loop_id="learn_test",
+        step_name="world_watch",
+        semantic_key="noise-tool-message",
+        meta={"target_capability": "tool.routing"},
+    )
+    append_learning_record_once(
+        runtime,
+        kind="world_signal",
+        title="Health timeout signal",
+        summary="RPC health endpoint timed out because it returned a large daily digest payload.",
+        scope=scope,
+        loop_id="learn_test",
+        step_name="world_watch",
+        semantic_key="clean-health-signal",
+    )
+
+    report = build_learning_daily_report(runtime, scope=scope, report_date="2099-01-01", persist=False)
+
+    assert report["noise_skipped_count"] == 1
+    assert report["learned"] == ["ops.health: RPC health endpoint timed out because it returned a large daily digest payload."]
+    assert "toolCall" not in report["summary"]
+    assert "assistant:" not in report["summary"]
