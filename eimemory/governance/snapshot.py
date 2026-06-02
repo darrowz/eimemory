@@ -40,6 +40,7 @@ def build_governance_snapshot(runtime, scope: dict | ScopeRef) -> dict[str, Any]
     source_discovery_records = [
         record for record in source_candidates if record.source == "eimemory.source_discovery"
     ]
+    autonomous_learning = _build_autonomous_learning_summary(runtime, scope=scope_ref)
 
     backup_reports = _collect_backup_reports(runtime.store.root)
     warnings: list[str] = []
@@ -96,6 +97,7 @@ def build_governance_snapshot(runtime, scope: dict | ScopeRef) -> dict[str, Any]
         },
         "actionable_memory": _actionable_memory_section(actionable_memory_reports),
         "living_memory": _summarize_living_memory(living_memory_records),
+        "autonomous_learning": autonomous_learning,
         "collection_policy": {
             "run_now": collection_policy["run_now"],
             "pause": collection_policy["pause"],
@@ -422,6 +424,39 @@ def _summarize_living_memory(records: list[RecordEnvelope]) -> dict[str, Any]:
     from eimemory.living.operations import summarize_living_memory
 
     return summarize_living_memory(records)
+
+
+def _build_autonomous_learning_summary(runtime, *, scope: ScopeRef) -> dict[str, Any]:
+    loops = _list_all_records(runtime, kinds=["learning_loop"], scope=scope, page_size=200)
+    signals = _list_all_records(runtime, kinds=["world_signal"], scope=scope, page_size=200)
+    goals = _list_all_records(runtime, kinds=["learning_goal"], scope=scope, page_size=200)
+    candidates = _list_all_records(runtime, kinds=["capability_candidate"], scope=scope, page_size=200)
+    promotions = _list_all_records(runtime, kinds=["promotion_request"], scope=scope, page_size=200)
+    scores = _list_all_records(runtime, kinds=["capability_score"], scope=scope, page_size=200)
+    regressions = _list_all_records(runtime, kinds=["regression_watch"], scope=scope, page_size=200)
+    playbooks = _list_all_records(runtime, kinds=["learning_playbook"], scope=scope, page_size=200)
+    return {
+        "loop_count": len(loops),
+        "active_loop_count": sum(1 for item in loops if str(item.status or "") in {"running", "collecting", "researching", "experimenting", "evaluating", "promoting"}),
+        "latest_loop": _record_to_dict(loops[0]) if loops else None,
+        "signal_count": len(signals),
+        "repeated_signal_count": sum(1 for item in signals if int(item.meta.get("repeat_count") or 1) > 1),
+        "latest_signal": _record_to_dict(signals[0]) if signals else None,
+        "goal_count": len(goals),
+        "latest_goal": _record_to_dict(goals[0]) if goals else None,
+        "candidate_count": len(candidates),
+        "promoted_candidate_count": sum(1 for item in candidates if str(item.status or "") == "promoted"),
+        "latest_candidate": _record_to_dict(candidates[0]) if candidates else None,
+        "promotion_count": len(promotions),
+        "blocked_promotion_count": sum(1 for item in promotions if str(item.status or "") == "blocked"),
+        "applied_l2_count": sum(1 for item in promotions if str(item.status or "") == "promoted" and str(item.meta.get("authority_tier") or "").upper() == "L2"),
+        "regression_count": len(regressions),
+        "latest_regression": _record_to_dict(regressions[0]) if regressions else None,
+        "playbook_count": len(playbooks),
+        "latest_playbook": _record_to_dict(playbooks[0]) if playbooks else None,
+        "capability_score_count": len(scores),
+        "latest_capability_score": _record_to_dict(scores[0]) if scores else None,
+    }
 
 
 def _is_memory_eval_ci_record(record: RecordEnvelope) -> bool:

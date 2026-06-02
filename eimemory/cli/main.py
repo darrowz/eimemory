@@ -231,6 +231,42 @@ def _build_parser() -> argparse.ArgumentParser:
     experience_outcome = experience_sub.add_parser("outcome")
     experience_outcome.add_argument("json_path")
 
+    learn = sub.add_parser("learn")
+    learn_sub = learn.add_subparsers(dest="learn_command")
+    learn_watch = learn_sub.add_parser("watch")
+    learn_watch.add_argument("--dry-run", action="store_true", default=True)
+    learn_watch.add_argument("--apply", action="store_true")
+    learn_watch.add_argument("--json", action="store_true", default=True)
+    learn_cycle = learn_sub.add_parser("cycle")
+    learn_cycle.add_argument("--full", action="store_true", default=True)
+    learn_cycle.add_argument("--dry-run", action="store_true")
+    learn_cycle.add_argument("--apply", action="store_true")
+    learn_cycle.add_argument("--force", action="store_true")
+    learn_cycle.add_argument("--max-goals", type=int, default=3)
+    learn_cycle.add_argument("--json", action="store_true", default=True)
+    learn_loops = learn_sub.add_parser("loops")
+    learn_loops.add_argument("--limit", type=int, default=10)
+    learn_loops.add_argument("--json", action="store_true", default=True)
+    learn_goals = learn_sub.add_parser("goals")
+    learn_goals.add_argument("--limit", type=int, default=10)
+    learn_goals.add_argument("--json", action="store_true", default=True)
+    learn_candidates = learn_sub.add_parser("candidates")
+    learn_candidates.add_argument("--limit", type=int, default=10)
+    learn_candidates.add_argument("--json", action="store_true", default=True)
+    learn_ledger = learn_sub.add_parser("ledger")
+    learn_ledger.add_argument("--json", action="store_true", default=True)
+    learn_compact = learn_sub.add_parser("compact")
+    learn_compact.add_argument("--dry-run", action="store_true")
+    learn_compact.add_argument("--apply", action="store_true")
+    learn_compact.add_argument("--json", action="store_true", default=True)
+    learn_promote = learn_sub.add_parser("promote")
+    learn_promote.add_argument("candidate_id")
+    learn_promote.add_argument("--apply", action="store_true")
+    learn_promote.add_argument("--eval-json", default="")
+    learn_promote.add_argument("--health-json", default="")
+    learn_promote.add_argument("--loop-id", default="cli")
+    learn_promote.add_argument("--json", action="store_true", default=True)
+
     serve_rpc = sub.add_parser("serve-eibrain-rpc")
     serve_rpc.add_argument("--host", default="")
     serve_rpc.add_argument("--port", type=int, default=None)
@@ -458,7 +494,7 @@ def main(argv: list[str] | None = None) -> int:
         print(
             json.dumps(
                 {
-                    "usage": "eimemory init|ingest|recall|paper|source|intake|export|import|backup|migrate|brief|nightly|quality|identity|living|reflect|experience|governance|evolve|eval|serve-eibrain-rpc",
+                    "usage": "eimemory init|ingest|recall|paper|source|intake|export|import|backup|migrate|brief|nightly|quality|identity|living|reflect|experience|learn|governance|evolve|eval|serve-eibrain-rpc",
                 }
             )
         )
@@ -499,6 +535,83 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(result, ensure_ascii=False, indent=2))
             return 0 if result.get("ok") is not False else 2
         print(json.dumps({"usage": "eimemory experience outcome <json_path>"}))
+        return 0
+    if parsed.command == "learn":
+        if parsed.learn_command == "watch":
+            from eimemory.governance.world_watchers import collect_world_signals, default_watches
+
+            report = collect_world_signals(
+                runtime,
+                scope=scope,
+                watches=default_watches(),
+                dry_run=not bool(parsed.apply),
+            )
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0
+        if parsed.learn_command == "cycle":
+            report = runtime.run_autonomous_learning_cycle(
+                scope=scope,
+                apply=bool(parsed.apply),
+                dry_run=bool(parsed.dry_run),
+                full=bool(parsed.full),
+                force=bool(parsed.force),
+                max_goals=max(1, int(parsed.max_goals)),
+            )
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0 if report.get("ok") else 1
+        if parsed.learn_command == "loops":
+            print(json.dumps(runtime.list_learning_loops(scope=scope, limit=max(0, int(parsed.limit))), ensure_ascii=False, indent=2))
+            return 0
+        if parsed.learn_command == "goals":
+            print(json.dumps(runtime.list_learning_goals(scope=scope, limit=max(0, int(parsed.limit))), ensure_ascii=False, indent=2))
+            return 0
+        if parsed.learn_command == "candidates":
+            print(json.dumps(runtime.list_learning_candidates(scope=scope, limit=max(0, int(parsed.limit))), ensure_ascii=False, indent=2))
+            return 0
+        if parsed.learn_command == "ledger":
+            print(json.dumps(runtime.learning_ledger(scope=scope), ensure_ascii=False, indent=2))
+            return 0
+        if parsed.learn_command == "compact":
+            report = runtime.compact_learning_records(scope=scope, dry_run=not bool(parsed.apply))
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0
+        if parsed.learn_command == "promote":
+            from eimemory.governance.promotion_manager import promote_candidate
+
+            try:
+                eval_result = _load_json_argument(
+                    parsed.eval_json,
+                    allow_dict=True,
+                    allow_list=False,
+                    allow_empty=True,
+                    error_code="invalid_eval_json",
+                )
+                health = _load_json_argument(
+                    parsed.health_json,
+                    allow_dict=True,
+                    allow_list=False,
+                    allow_empty=True,
+                    error_code="invalid_health_json",
+                )
+            except ValueError as exc:
+                print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
+                return 2
+            if not eval_result:
+                eval_result = None
+            if not health:
+                health = {"ok": True, "source": "cli"}
+            report = promote_candidate(
+                runtime,
+                candidate_id=parsed.candidate_id,
+                scope=scope,
+                loop_id=str(parsed.loop_id or "cli"),
+                apply=bool(parsed.apply),
+                eval_result=eval_result,
+                health=health,
+            )
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0 if report.get("ok") else 1
+        print(json.dumps({"usage": "eimemory learn watch|cycle|loops|goals|candidates|ledger|compact|promote"}))
         return 0
     if parsed.command == "recall":
         task_context = {"task_type": "cli.recall"}

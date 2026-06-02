@@ -391,6 +391,53 @@ class Runtime:
             persist_report=persist_report,
         )
 
+    def run_autonomous_learning_cycle(
+        self,
+        *,
+        scope: dict | None = None,
+        apply: bool = False,
+        dry_run: bool = False,
+        full: bool = True,
+        force: bool = False,
+        max_goals: int = 3,
+    ) -> dict:
+        from eimemory.governance.autonomous_learning import run_autonomous_learning_cycle
+
+        return run_autonomous_learning_cycle(
+            self,
+            scope=scope,
+            apply=apply,
+            dry_run=dry_run,
+            full=full,
+            force=force,
+            max_goals=max_goals,
+        )
+
+    def list_learning_loops(self, *, scope: dict | None = None, limit: int = 10) -> list[dict]:
+        from eimemory.governance.autonomous_learning import list_learning_loops
+
+        return list_learning_loops(self, scope=scope, limit=limit)
+
+    def list_learning_goals(self, *, scope: dict | None = None, limit: int = 10) -> list[dict]:
+        from eimemory.governance.autonomous_learning import list_learning_goals
+
+        return list_learning_goals(self, scope=scope, limit=limit)
+
+    def list_learning_candidates(self, *, scope: dict | None = None, limit: int = 10) -> list[dict]:
+        from eimemory.governance.autonomous_learning import list_learning_candidates
+
+        return list_learning_candidates(self, scope=scope, limit=limit)
+
+    def learning_ledger(self, *, scope: dict | None = None, limit: int = 500) -> dict:
+        from eimemory.governance.capability_ledger import build_capability_ledger
+
+        return build_capability_ledger(self, scope=scope, limit=limit)
+
+    def compact_learning_records(self, *, scope: dict | None = None, dry_run: bool = True) -> dict:
+        from eimemory.governance.learning_retention import compact_learning_records
+
+        return compact_learning_records(self, scope=scope, dry_run=dry_run)
+
     def run_code_sandbox(
         self,
         *,

@@ -24,6 +24,7 @@ It does not own execution, task orchestration, or workflow control.
 - Memory quality metadata, capture tiers, and quality-aware hybrid recall
 - Lightweight reflection/operator commands for check, log, read, and stats
 - Paper-first knowledge memory: source intake, extract, claim/entity/relation records, compiled knowledge pages, recall views, and contradiction-aware refresh signals
+- Autonomous learning loop: world signals, self-model, curiosity goals, evidence-backed research, sandbox experiments, gated L2 rollout, capability ledger, regression rollback, and retention compaction
 
 ## Quick Start
 
@@ -36,6 +37,51 @@ eimemory recall "compact retrieval" --view page_centered
 eimemory quality stats
 eimemory reflect check
 eimemory reflect log reply-style "Forgot concise style" "Reply with one sentence"
+eimemory learn cycle --dry-run
+eimemory learn ledger
+```
+
+## Autonomous Learning
+
+`eimemory learn cycle` runs the bounded self-improvement loop:
+
+```text
+watch -> rank signals -> self-model -> goals -> research -> sandbox -> eval -> promote -> ledger -> retention
+```
+
+The loop is offline-first and deterministic by default. It can learn from local
+outcome traces, recall gaps, replay results, reflections, incidents, and enabled
+watchers without waiting for a new user correction.
+
+Authority tiers:
+
+- `L0`: records, reports, replay cases, scores.
+- `L1`: local low-risk assets such as memory rules, tool-route drafts, playbooks, and eval fixtures.
+- `L2`: fully authorized gated rollout after machine gates pass. A target must have a concrete rollout adapter before it can be marked applied; unsupported code/deploy/scheduler targets are blocked instead of being fake-promoted. L2 requires evidence, eval, health, canary, timeout, rollback, audit, and regression gates.
+- `L3`: external sends, spending, auth/token changes, private data export, device actions, irreversible deletion, or privilege expansion. These remain blocked.
+
+Useful commands:
+
+```bash
+eimemory learn watch --dry-run
+eimemory learn cycle --dry-run
+eimemory learn cycle --apply --force
+eimemory learn loops --limit 5
+eimemory learn goals --limit 10
+eimemory learn candidates --limit 10
+eimemory learn ledger
+eimemory learn compact --dry-run
+eimemory learn promote <candidate_id> --apply --eval-json '{"verdict":"pass","scores":{"safety":1,"regression":1},"gate_bundle":{...}}'
+```
+
+Nightly autonomous learning is opt-in from the scheduler environment:
+
+```bash
+EIMEMORY_AUTONOMOUS_LEARNING_ENABLED=1
+EIMEMORY_AUTONOMOUS_LEARNING_APPLY=1
+EIMEMORY_AUTONOMOUS_LEARNING_DRY_RUN=0
+EIMEMORY_AUTONOMOUS_LEARNING_MAX_GOALS=3
+EIMEMORY_AUTONOMOUS_LEARNING_TIMEOUT_SECONDS=900
 ```
 
 ## eibrain RPC Service

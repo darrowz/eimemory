@@ -29,6 +29,21 @@ VALID_KINDS: frozenset[str] = frozenset(
         "news",
         "recall_view",
         "raw_chunk",
+        "learning_loop",
+        "source_watch",
+        "world_signal",
+        "capability_model",
+        "weakness",
+        "learning_goal",
+        "research_task",
+        "research_note",
+        "learning_experiment",
+        "learning_eval",
+        "capability_candidate",
+        "promotion_request",
+        "capability_score",
+        "regression_watch",
+        "learning_playbook",
     }
 )
 

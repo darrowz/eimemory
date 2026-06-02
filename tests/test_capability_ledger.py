@@ -1,0 +1,16 @@
+from __future__ import annotations
+
+from eimemory.api.runtime import Runtime
+from eimemory.governance.capability_ledger import build_capability_ledger, record_capability_score
+
+
+def test_capability_ledger_tracks_score_and_trend(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu"}
+    record_capability_score(runtime, scope=scope, loop_id="learn_1", capability="tool.routing", score=0.5, evidence_record_ids=["a"])
+    record_capability_score(runtime, scope=scope, loop_id="learn_2", capability="tool.routing", score=0.8, evidence_record_ids=["b"])
+
+    ledger = build_capability_ledger(runtime, scope=scope)
+
+    assert ledger["capabilities"]["tool.routing"]["score"] == 0.8
+    assert ledger["capabilities"]["tool.routing"]["trend"] == 0.3

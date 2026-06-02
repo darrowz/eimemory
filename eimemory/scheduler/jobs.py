@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from collections import Counter
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
@@ -68,6 +69,7 @@ def run_nightly_jobs(
     daily_brief_report = _run_daily_brief(runtime, scope=scope)
     judgment_evaluation_report = _run_judgment_evaluation(runtime, scope=scope)
     autonomous_evolution_report = _run_autonomous_evolution(runtime, scope=scope)
+    autonomous_learning_report = _run_autonomous_learning(runtime, scope=scope)
     outcome_evolution_report = _run_outcome_evolution_summary(runtime, scope=scope)
     return {
         "ok": True,
@@ -113,6 +115,7 @@ def run_nightly_jobs(
         "daily_brief": daily_brief_report,
         "rule_evolution": rule_evolution_report,
         "autonomous_evolution": autonomous_evolution_report,
+        "autonomous_learning": autonomous_learning_report,
         "outcome_evolution": outcome_evolution_report,
         "memory_eval_ci": memory_eval_ci_report,
         "production_recall": production_recall_report,
@@ -903,6 +906,106 @@ def _run_autonomous_evolution(runtime: Runtime, *, scope: dict) -> dict[str, Any
         "report_type": "autonomous_evolution",
         "autonomous_evolution_skipped_reason": "invalid_autonomous_evolution_report",
     }
+
+
+def _run_autonomous_learning(runtime: Runtime, *, scope: dict) -> dict[str, Any]:
+    run_learning = getattr(runtime, "run_autonomous_learning_cycle", None)
+    if run_learning is None:
+        return {
+            "ok": False,
+            "report_type": "autonomous_learning",
+            "configured": False,
+            "enabled": False,
+            "learning_skipped_reason": "run_autonomous_learning_cycle_unavailable",
+        }
+    enabled = _env_bool("EIMEMORY_AUTONOMOUS_LEARNING_ENABLED", default=False)
+    if not enabled:
+        return {
+            "ok": True,
+            "report_type": "autonomous_learning",
+            "configured": False,
+            "enabled": False,
+            "dry_run": True,
+            "apply": False,
+            "goal_count": 0,
+            "candidate_count": 0,
+            "applied_count": 0,
+            "learning_skipped_reason": "autonomous_learning_disabled",
+        }
+    apply_changes = _env_bool("EIMEMORY_AUTONOMOUS_LEARNING_APPLY", default=False)
+    dry_run = _env_bool("EIMEMORY_AUTONOMOUS_LEARNING_DRY_RUN", default=not apply_changes)
+    force = _env_bool("EIMEMORY_AUTONOMOUS_LEARNING_FORCE", default=False)
+    max_goals = _env_int("EIMEMORY_AUTONOMOUS_LEARNING_MAX_GOALS", default=3, minimum=1, maximum=20)
+    timeout_seconds = _env_int("EIMEMORY_AUTONOMOUS_LEARNING_TIMEOUT_SECONDS", default=900, minimum=30, maximum=7200)
+    try:
+        started = time.monotonic()
+        report = _json_safe(
+            run_learning(
+                scope=scope,
+                apply=apply_changes,
+                dry_run=dry_run,
+                full=True,
+                force=force,
+                max_goals=max_goals,
+            )
+        )
+        elapsed_seconds = round(time.monotonic() - started, 3)
+        if isinstance(report, dict):
+            return {
+                "ok": bool(report.get("ok", False)),
+                "report_type": "autonomous_learning",
+                "configured": True,
+                "enabled": True,
+                "dry_run": bool(report.get("dry_run", dry_run)),
+                "apply": bool(report.get("apply", apply_changes)),
+                "force": bool(force),
+                "max_goals": max_goals,
+                "timeout_seconds": timeout_seconds,
+                "elapsed_seconds": elapsed_seconds,
+                "timeout_exceeded": elapsed_seconds > timeout_seconds,
+                "loop_id": str(report.get("loop_id") or ""),
+                "goal_count": int(report.get("goal_count") or 0),
+                "candidate_count": 1 if report.get("candidate_id") else 0,
+                "applied_count": 1 if (report.get("promotion") or {}).get("applied") else 0,
+                "eval_verdict": str(report.get("eval_verdict") or ""),
+                "capability_score_id": str(report.get("capability_score_id") or ""),
+                "regressed": bool((report.get("regression_watch") or {}).get("regressed")),
+                "retention_disabled_count": int((report.get("retention") or {}).get("disabled_count") or 0),
+                "learning_skipped_reason": "",
+            }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "report_type": "autonomous_learning",
+            "configured": True,
+            "enabled": True,
+            "learning_skipped_reason": "run_autonomous_learning_cycle_failed",
+            "error": type(exc).__name__,
+            "detail": str(exc),
+        }
+    return {
+        "ok": False,
+        "report_type": "autonomous_learning",
+        "configured": True,
+        "enabled": True,
+        "learning_skipped_reason": "invalid_autonomous_learning_report",
+    }
+
+
+def _env_bool(name: str, *, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return bool(default)
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _env_int(name: str, *, default: int, minimum: int, maximum: int) -> int:
+    raw = os.environ.get(name)
+    try:
+        value = int(str(raw).strip()) if raw is not None else int(default)
+    except ValueError:
+        value = int(default)
+    return max(minimum, min(maximum, value))
 
 def _delivery_is_pending(delivery: dict[str, Any]) -> bool:
     status = str(((delivery.get("outbox") or {}).get("status") or delivery.get("status") or "")).strip().lower()
