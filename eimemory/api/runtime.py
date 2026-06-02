@@ -438,6 +438,11 @@ class Runtime:
 
         return compact_learning_records(self, scope=scope, dry_run=dry_run)
 
+    def build_learning_daily_report(self, *, scope: dict | None = None, persist: bool = True, report_date: str | None = None) -> dict:
+        from eimemory.governance.learning_report import build_learning_daily_report
+
+        return build_learning_daily_report(self, scope=scope, persist=persist, report_date=report_date)
+
     def run_code_sandbox(
         self,
         *,

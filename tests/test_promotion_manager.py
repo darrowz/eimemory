@@ -142,6 +142,43 @@ def test_l2_deployment_rollout_blocks_without_real_adapter(tmp_path) -> None:
     assert runtime.store.get_by_id(candidate_id).status == "candidate"
 
 
+def test_l2_code_patch_promotes_to_reviewable_artifact(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu"}
+    experiment_id = create_sandbox_experiment(
+        runtime,
+        scope=scope,
+        loop_id="learn_test",
+        learning_goal_id="goal_1",
+        research_note_id="note_1",
+        candidate_kind="code_patch",
+        candidate_patch={
+            "summary": "Add compact health endpoint regression coverage",
+            "target_capability": "code.implementation",
+            "policy": "Prepare a patch for health endpoint review without mutating production.",
+        },
+    )
+    candidate_id = distill_capability_candidate(
+        runtime,
+        scope=scope,
+        loop_id="learn_test",
+        experiment_id=experiment_id,
+        eval_result={**PASSING_EVAL, "gate_bundle": _l2_gate_bundle()},
+        promotion_target="code_patch",
+        summary="Code patch candidate",
+        target_capability="code.implementation",
+    )
+
+    result = promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", eval_result={**PASSING_EVAL, "gate_bundle": _l2_gate_bundle()}, health={"ok": True})
+
+    assert result["ok"] is True
+    assert result["applied"] is True
+    assert result["side_effect"]["adapter"] == "reviewable_code_patch"
+    assert result["side_effect"]["production_applied"] is False
+    assert result["side_effect"]["artifact_path"].endswith(".patch")
+    assert runtime.store.get_by_id(candidate_id).status == "promoted"
+
+
 def _l2_gate_bundle() -> dict:
     return {
         "evidence": [{"tier": "T0", "ref": "evt_1", "summary": "User correction verified"}],

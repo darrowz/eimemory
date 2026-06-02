@@ -70,6 +70,7 @@ def run_nightly_jobs(
     judgment_evaluation_report = _run_judgment_evaluation(runtime, scope=scope)
     autonomous_evolution_report = _run_autonomous_evolution(runtime, scope=scope)
     autonomous_learning_report = _run_autonomous_learning(runtime, scope=scope)
+    autonomous_learning_daily_report = _run_autonomous_learning_daily_report(runtime, scope=scope)
     outcome_evolution_report = _run_outcome_evolution_summary(runtime, scope=scope)
     return {
         "ok": True,
@@ -116,6 +117,7 @@ def run_nightly_jobs(
         "rule_evolution": rule_evolution_report,
         "autonomous_evolution": autonomous_evolution_report,
         "autonomous_learning": autonomous_learning_report,
+        "autonomous_learning_daily_report": autonomous_learning_daily_report,
         "outcome_evolution": outcome_evolution_report,
         "memory_eval_ci": memory_eval_ci_report,
         "production_recall": production_recall_report,
@@ -989,6 +991,45 @@ def _run_autonomous_learning(runtime: Runtime, *, scope: dict) -> dict[str, Any]
         "configured": True,
         "enabled": True,
         "learning_skipped_reason": "invalid_autonomous_learning_report",
+    }
+
+
+def _run_autonomous_learning_daily_report(runtime: Runtime, *, scope: dict) -> dict[str, Any]:
+    build_report = getattr(runtime, "build_learning_daily_report", None)
+    if not callable(build_report):
+        return {
+            "ok": False,
+            "report_type": "autonomous_learning_daily_report",
+            "learning_report_skipped_reason": "build_learning_daily_report_unavailable",
+        }
+    try:
+        report = _json_safe(build_report(scope=scope, persist=True))
+        if isinstance(report, dict):
+            return {
+                "ok": bool(report.get("ok", False)),
+                "report_type": "autonomous_learning_daily_report",
+                "date": str(report.get("date") or ""),
+                "persisted": bool(report.get("persisted")),
+                "persisted_record_id": str(report.get("persisted_record_id") or ""),
+                "learned_count": len(report.get("learned") or []),
+                "applied_count": len(report.get("applied") or []),
+                "blocked_count": len(report.get("blocked") or []),
+                "next_validation_count": len(report.get("next_validation") or []),
+                "summary": str(report.get("summary") or ""),
+                "learning_report_skipped_reason": "",
+            }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "report_type": "autonomous_learning_daily_report",
+            "learning_report_skipped_reason": "build_learning_daily_report_failed",
+            "error": type(exc).__name__,
+            "detail": str(exc),
+        }
+    return {
+        "ok": False,
+        "report_type": "autonomous_learning_daily_report",
+        "learning_report_skipped_reason": "invalid_learning_daily_report",
     }
 
 

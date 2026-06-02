@@ -259,6 +259,10 @@ def _build_parser() -> argparse.ArgumentParser:
     learn_compact.add_argument("--dry-run", action="store_true")
     learn_compact.add_argument("--apply", action="store_true")
     learn_compact.add_argument("--json", action="store_true", default=True)
+    learn_report = learn_sub.add_parser("report")
+    learn_report.add_argument("--date", default="")
+    learn_report.add_argument("--persist", action="store_true")
+    learn_report.add_argument("--json", action="store_true", default=True)
     learn_promote = learn_sub.add_parser("promote")
     learn_promote.add_argument("candidate_id")
     learn_promote.add_argument("--apply", action="store_true")
@@ -575,6 +579,14 @@ def main(argv: list[str] | None = None) -> int:
             report = runtime.compact_learning_records(scope=scope, dry_run=not bool(parsed.apply))
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0
+        if parsed.learn_command == "report":
+            report = runtime.build_learning_daily_report(
+                scope=scope,
+                persist=bool(parsed.persist),
+                report_date=str(parsed.date or "") or None,
+            )
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0 if report.get("ok") else 1
         if parsed.learn_command == "promote":
             from eimemory.governance.promotion_manager import promote_candidate
 
@@ -611,7 +623,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0 if report.get("ok") else 1
-        print(json.dumps({"usage": "eimemory learn watch|cycle|loops|goals|candidates|ledger|compact|promote"}))
+        print(json.dumps({"usage": "eimemory learn watch|cycle|loops|goals|candidates|ledger|compact|report|promote"}))
         return 0
     if parsed.command == "recall":
         task_context = {"task_type": "cli.recall"}

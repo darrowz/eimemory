@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import json
+from pathlib import Path
 from typing import Any
 
 from eimemory.governance.learning_eval import REGRESSION_THRESHOLD, SAFETY_THRESHOLD
@@ -9,7 +11,8 @@ from eimemory.models.records import RecordEnvelope, ScopeRef
 
 POLICY_TARGETS = {"tool_route", "prompt_policy", "system_prompt_patch"}
 PLAYBOOK_TARGETS = {"eval_case", "skill_draft", "sop_draft", "source_policy"}
-UNSUPPORTED_ACTIVE_TARGETS = {"code_patch", "deployment_rollout", "scheduler_policy"}
+CODE_ASSET_TARGETS = {"code_patch"}
+UNSUPPORTED_ACTIVE_TARGETS = {"deployment_rollout", "scheduler_policy"}
 
 
 def promote_candidate(
@@ -114,6 +117,8 @@ def _apply_candidate(
         return {"ok": False, "blocked_reason": f"unsupported_rollout_adapter:{target}", "promotion_target": target}
     if target in POLICY_TARGETS:
         return _apply_policy_candidate(runtime, candidate, patch, scope=scope, loop_id=loop_id, eval_result=eval_result, gate=gate)
+    if target in CODE_ASSET_TARGETS:
+        return _apply_code_patch_candidate(runtime, candidate, patch, scope=scope, loop_id=loop_id, eval_result=eval_result, gate=gate)
     if target == "memory_rule":
         return _apply_memory_rule_candidate(runtime, candidate, patch, scope=scope)
     if target in PLAYBOOK_TARGETS or target in {"", "unknown"}:
@@ -197,6 +202,70 @@ def _apply_memory_rule_candidate(
     return {"ok": True, "promotion_target": "memory_rule", "adapter": "rule", "applied_artifact_ids": [rule.record_id]}
 
 
+def _apply_code_patch_candidate(
+    runtime: Any,
+    candidate: RecordEnvelope,
+    patch: dict[str, Any],
+    *,
+    scope: dict[str, Any] | ScopeRef | None,
+    loop_id: str,
+    eval_result: dict[str, Any],
+    gate: dict[str, Any],
+) -> dict[str, Any]:
+    root = Path(runtime.store.root) / "state" / "autonomous_learning" / "reviewable_patches"
+    root.mkdir(parents=True, exist_ok=True)
+    safe_id = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in candidate.record_id)
+    patch_path = root / f"{safe_id}.patch"
+    metadata_path = root / f"{safe_id}.json"
+    diff_text = str(patch.get("diff") or patch.get("reviewable_diff") or "").strip()
+    if not diff_text:
+        diff_text = _reviewable_diff_text(candidate, patch)
+    patch_path.write_text(diff_text, encoding="utf-8")
+    metadata = {
+        "candidate_id": candidate.record_id,
+        "loop_id": loop_id,
+        "promotion_target": "code_patch",
+        "target_capability": str(candidate.meta.get("target_capability") or patch.get("target_capability") or "code.implementation"),
+        "summary": str(patch.get("summary") or candidate.summary),
+        "artifact_path": str(patch_path),
+        "eval_result": eval_result,
+        "gate": gate,
+        "review_status": "ready_for_machine_review",
+        "production_applied": False,
+        "next_action": "open_review_branch_or_pr_from_patch_artifact",
+    }
+    metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+    record = append_learning_record_once(
+        runtime,
+        kind="learning_playbook",
+        title=f"Reviewable code patch: {candidate.title}",
+        summary=f"Prepared reviewable code patch artifact for {candidate.record_id}",
+        scope=scope or candidate.scope,
+        loop_id=loop_id,
+        step_name="code_patch_asset",
+        semantic_key=stable_semantic_key("reviewable_code_patch", candidate.record_id, diff_text),
+        authority_tier="L2",
+        status="active",
+        content={"candidate_id": candidate.record_id, "patch_artifact": metadata, "diff_excerpt": diff_text[:1200]},
+        meta={
+            "candidate_id": candidate.record_id,
+            "promotion_target": "code_patch",
+            "artifact_path": str(patch_path),
+            "metadata_path": str(metadata_path),
+            "production_applied": False,
+        },
+    )
+    return {
+        "ok": True,
+        "promotion_target": "code_patch",
+        "adapter": "reviewable_code_patch",
+        "applied_artifact_ids": [record.record_id, str(patch_path)],
+        "artifact_path": str(patch_path),
+        "metadata_path": str(metadata_path),
+        "production_applied": False,
+    }
+
+
 def _apply_playbook_candidate(
     runtime: Any,
     candidate: RecordEnvelope,
@@ -222,6 +291,35 @@ def _apply_playbook_candidate(
         meta={"candidate_id": candidate.record_id, "promotion_target": _promotion_target(candidate)},
     )
     return {"ok": True, "promotion_target": _promotion_target(candidate), "adapter": "learning_playbook", "applied_artifact_ids": [record.record_id]}
+
+
+def _reviewable_diff_text(candidate: RecordEnvelope, patch: dict[str, Any]) -> str:
+    summary = str(patch.get("summary") or candidate.summary or "Autonomous learning code patch candidate")
+    policy = str(patch.get("policy") or patch.get("success_criteria") or summary)
+    capability = str(patch.get("target_capability") or candidate.meta.get("target_capability") or "code.implementation")
+    lines = [
+        "diff --git a/AUTONOMOUS_LEARNING_CANDIDATE.md b/AUTONOMOUS_LEARNING_CANDIDATE.md",
+        "new file mode 100644",
+        "index 0000000..0000000",
+        "--- /dev/null",
+        "+++ b/AUTONOMOUS_LEARNING_CANDIDATE.md",
+        "@@ -0,0 +1,12 @@",
+        "+# Autonomous Learning Code Candidate",
+        f"+Candidate: {candidate.record_id}",
+        f"+Capability: {capability}",
+        f"+Summary: {summary}",
+        "+",
+        "+This patch artifact is generated for machine/code review only.",
+        "+It is not applied to production automatically.",
+        "+",
+        "+Proposed action:",
+        f"+{policy}",
+        "+",
+        "+Verification:",
+        "+- python -m compileall eimemory scripts",
+        "+- python -m pytest -q",
+    ]
+    return "\n".join(lines) + "\n"
 
 
 def _candidate_patch(runtime: Any, candidate: RecordEnvelope, *, scope: dict[str, Any] | ScopeRef | None) -> dict[str, Any]:

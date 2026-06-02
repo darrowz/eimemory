@@ -44,7 +44,7 @@ def test_autonomous_learning_cycle_applies_supported_policy_adapter(tmp_path) ->
     assert report["promotion"]["applied_artifact_ids"]
 
 
-def test_autonomous_learning_cycle_does_not_fake_unsupported_code_rollout(tmp_path) -> None:
+def test_autonomous_learning_cycle_promotes_code_patch_as_reviewable_asset(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     scope = {"agent_id": "hongtu", "workspace_id": "personal"}
     runtime.evolution.log_reflection(
@@ -57,9 +57,10 @@ def test_autonomous_learning_cycle_does_not_fake_unsupported_code_rollout(tmp_pa
     report = run_autonomous_learning_cycle(runtime, scope=scope, apply=True, force=True)
 
     assert report["ok"] is True
-    assert report["promotion"]["applied"] is False
-    assert "unsupported_rollout_adapter:code_patch" in report["promotion"]["blocked_reason"]
-    assert runtime.store.get_by_id(report["candidate_id"]).status == "candidate"
+    assert report["promotion"]["applied"] is True
+    assert report["promotion"]["side_effect"]["adapter"] == "reviewable_code_patch"
+    assert report["promotion"]["side_effect"]["production_applied"] is False
+    assert runtime.store.get_by_id(report["candidate_id"]).status == "promoted"
 
 
 def test_autonomous_learning_cycle_dry_run_does_not_persist_learning_records(tmp_path) -> None:

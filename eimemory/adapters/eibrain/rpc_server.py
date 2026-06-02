@@ -10,6 +10,7 @@ from eimemory.adapters.eibrain.rpc import EIBrainRPCBridge
 from eimemory.api.runtime import Runtime
 from eimemory.ei_bridge.protocol import EIMEMORY_RPC_CONTRACT_VERSION
 from eimemory.ei_bridge.protocol import EIMemoryRPCRequest, EIMemoryRPCResponse
+from eimemory.version import __version__
 
 
 class _RPCHandler(BaseHTTPRequestHandler):
@@ -18,17 +19,10 @@ class _RPCHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
-        if parsed.path == "/healthz":
-            self._send_json(
-                200,
-                {
-                    "ok": True,
-                    "service": "eimemory-rpc",
-                    "contract_version": EIMEMORY_RPC_CONTRACT_VERSION,
-                },
-            )
+        if parsed.path in {"/health", "/healthz", "/livez", "/readyz"}:
+            self._send_json(200, _compact_health_payload(self.runtime, ready=parsed.path != "/livez"))
             return
-        if parsed.path not in {"", "/", "/health", "/daily-brief"}:
+        if parsed.path not in {"", "/", "/daily-brief", "/diagnostics"}:
             self._send_json(404, {"ok": False, "error": "not_found"})
             return
         query = parse_qs(parsed.query)
@@ -39,17 +33,21 @@ class _RPCHandler(BaseHTTPRequestHandler):
             "user_id": _first_query_value(query, "user_id", "darrow"),
         }
         brief = self.runtime.build_daily_brief(scope=scope)
-        self._send_json(
-            200,
-            {
-                "ok": True,
-                "service": "eimemory-rpc",
-                "contract_version": EIMEMORY_RPC_CONTRACT_VERSION,
-                "news_digest": brief.get("news_digest", {}),
-                "research_digest": brief.get("research_digest", {}),
-                "source_health": brief.get("source_health", {}),
-            },
-        )
+        payload = {
+            "ok": True,
+            "service": "eimemory-rpc",
+            "contract_version": EIMEMORY_RPC_CONTRACT_VERSION,
+            "news_digest": brief.get("news_digest", {}),
+            "research_digest": brief.get("research_digest", {}),
+            "source_health": brief.get("source_health", {}),
+        }
+        if parsed.path == "/diagnostics":
+            payload["diagnostics"] = {
+                "brief_payload": True,
+                "health_endpoint": "/health",
+                "compact_health_endpoint": "/livez",
+            }
+        self._send_json(200, payload)
 
     def do_POST(self) -> None:  # noqa: N802
         try:
@@ -125,3 +123,19 @@ def _first_query_value(query: dict[str, list[str]], key: str, default: str = "")
     if not values:
         return default
     return str(values[0] or default)
+
+
+def _compact_health_payload(runtime: Runtime, *, ready: bool) -> EIMemoryRPCResponse:
+    root = getattr(getattr(runtime, "store", None), "root", None)
+    store_ok = bool(root)
+    return {
+        "ok": bool(store_ok),
+        "service": "eimemory-rpc",
+        "version": __version__,
+        "contract_version": EIMEMORY_RPC_CONTRACT_VERSION,
+        "checks": {
+            "process": True,
+            "store": store_ok,
+            "ready": bool(ready and store_ok),
+        },
+    }

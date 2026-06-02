@@ -94,3 +94,29 @@ def test_repeated_bad_outcomes_increment_signal_repeat_count(tmp_path) -> None:
     assert second["signal_count"] == 0
     assert second["updated_record_ids"] == [stored[0].record_id]
     assert stored[0].meta["repeat_count"] == 4
+
+
+def test_world_signals_truncate_dedupe_and_classify_capability(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu"}
+    long_summary = "RPC /health timeout on 8091. " + "assistant: old answer user: old prompt " * 20
+    for index in range(2):
+        runtime.store.append(
+            RecordEnvelope.create(
+                kind="unknown",
+                title=f"Health check timeout {index}",
+                summary=long_summary,
+                scope=ScopeRef.from_dict(scope),
+                source="test",
+            )
+        )
+    watch = SourceWatch(name="recall gaps", kind="local_recall_gap", enabled=True, dry_run=False)
+
+    report = collect_world_signals(runtime, scope=scope, watches=[watch], dry_run=True, loop_id="learn_test")
+
+    assert report["signal_count"] == 1
+    signal = report["signals"][0]
+    assert signal["target_capability"] == "ops.health"
+    assert signal["summary_truncated"] is True
+    assert len(signal["summary"]) <= 360
+    assert report["duplicate_count"] == 1

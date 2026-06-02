@@ -51,3 +51,19 @@ def test_cli_learn_promote_applies_candidate(tmp_path, monkeypatch, capsys) -> N
 
     assert promotion["ok"] is True
     assert promotion["applied"] is True
+
+
+def test_cli_learn_report_outputs_daily_summary(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path))
+
+    assert cli_main(["reflect", "log", "tool.routing", "Bad route", "Use memory first"]) == 0
+    capsys.readouterr()
+    assert cli_main(["learn", "cycle", "--force"]) == 0
+    capsys.readouterr()
+
+    assert cli_main(["learn", "report", "--persist"]) == 0
+    report = json.loads(capsys.readouterr().out)
+
+    assert report["ok"] is True
+    assert report["summary"]
+    assert report["persisted_record_id"]

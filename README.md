@@ -25,6 +25,7 @@ It does not own execution, task orchestration, or workflow control.
 - Lightweight reflection/operator commands for check, log, read, and stats
 - Paper-first knowledge memory: source intake, extract, claim/entity/relation records, compiled knowledge pages, recall views, and contradiction-aware refresh signals
 - Autonomous learning loop: world signals, self-model, curiosity goals, evidence-backed research, sandbox experiments, gated L2 rollout, capability ledger, regression rollback, and retention compaction
+- Compact RPC health endpoints for repeatable service checks without loading daily/research digests
 
 ## Quick Start
 
@@ -71,8 +72,13 @@ eimemory learn goals --limit 10
 eimemory learn candidates --limit 10
 eimemory learn ledger
 eimemory learn compact --dry-run
+eimemory learn report --persist
 eimemory learn promote <candidate_id> --apply --eval-json '{"verdict":"pass","scores":{"safety":1,"regression":1},"gate_bundle":{...}}'
 ```
+
+`code_patch` L2 candidates are automatically promoted into reviewable patch
+artifacts when gates pass. They are not applied to production directly; the
+artifact is ready for machine review, branch creation, or PR automation.
 
 Nightly autonomous learning is opt-in from the scheduler environment:
 
@@ -94,6 +100,17 @@ EIMEMORY_ROOT=/var/lib/eimemory eimemory serve-eibrain-rpc --host 100.66.161.64 
 
 `eibrain` should connect to the running endpoint, for example `http://honxin:8091/`.
 The integration contract is the endpoint address, not the repository location.
+
+Use compact health endpoints for monitoring:
+
+```bash
+curl http://honxin:8091/health
+curl http://honxin:8091/livez
+curl http://honxin:8091/readyz
+```
+
+Detailed daily digest payloads live at `/daily-brief` and `/diagnostics`, so
+health checks stay fast even when the knowledge store is large.
 
 A production systemd template is available at `deploy/systemd/eimemory-rpc.service`.
 

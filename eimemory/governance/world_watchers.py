@@ -10,6 +10,11 @@ from eimemory.governance.learning_state import append_learning_record_once, stab
 from eimemory.metadata import business_metadata
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
+MAX_SIGNAL_TITLE_CHARS = 120
+MAX_SIGNAL_SUMMARY_CHARS = 360
+NOISE_SUMMARY_CHARS = 1200
+NOISE_LINE_COUNT = 18
+
 
 @dataclass(slots=True)
 class SourceWatch:
@@ -62,7 +67,19 @@ def collect_world_signals(
             skipped_disabled += 1
             continue
         watch_signals = _collect_watch(runtime, scope=scope_ref, watch=watch)[: watch.max_items]
-        for signal in watch_signals:
+        normalized_signals: list[dict[str, Any]] = []
+        seen_local_hashes: set[str] = set()
+        for raw_signal in watch_signals:
+            signal = _normalize_signal(raw_signal, watch=watch)
+            if _is_noise_signal(signal):
+                continue
+            local_hash = _signal_hash(watch, signal)
+            if local_hash in seen_local_hashes:
+                duplicate_count += 1
+                continue
+            seen_local_hashes.add(local_hash)
+            normalized_signals.append(signal)
+        for signal in normalized_signals:
             signal_hash = _signal_hash(watch, signal)
             if signal_hash in seen_hashes:
                 duplicate_count += 1
@@ -98,6 +115,7 @@ def collect_world_signals(
                         "watch_name": watch.name,
                         "source_kind": watch.kind,
                         "signal_type": payload.get("signal_type"),
+                        "target_capability": payload.get("target_capability"),
                         "signal_hash": signal_hash,
                         "evidence_tier": payload.get("evidence_tier"),
                         "repeat_count": int(payload.get("repeat_count") or 1),
@@ -195,7 +213,7 @@ def _signals_from_records(
             "signal_type": signal_type,
             "title": record.title,
             "summary": record.summary,
-            "target_capability": "memory.recall" if signal_type == "recall_gap" else "proactive.judgment",
+            "target_capability": _classify_capability(f"{record.title} {record.summary}", fallback="memory.recall" if signal_type == "recall_gap" else "proactive.judgment"),
             "confidence": 0.65,
             "evidence_tier": _evidence_tier(watch.kind),
         }
@@ -215,7 +233,7 @@ def _signals_from_user_goals(runtime: Any, *, scope: ScopeRef, watch: SourceWatc
                     "signal_type": "user_goal_memory",
                     "title": record.title,
                     "summary": record.summary,
-                    "target_capability": "proactive.judgment",
+                    "target_capability": _classify_capability(text, fallback="proactive.judgment"),
                     "confidence": 0.55,
                     "evidence_tier": "T2",
                 }
@@ -269,28 +287,15 @@ def _existing_signal_records(runtime: Any, *, scope: ScopeRef) -> dict[str, Reco
 def _signal_hash(watch: SourceWatch, signal: dict[str, Any]) -> str:
     if watch.dedupe_key and signal.get(watch.dedupe_key):
         seed = str(signal.get(watch.dedupe_key))
-    elif signal.get("signal_type") == "bad_outcome":
-        seed = json.dumps(
-            {
-                "watch": watch.name,
-                "kind": watch.kind,
-                "signal_type": signal.get("signal_type"),
-                "title": signal.get("title"),
-                "summary": _normalize_text(str(signal.get("summary") or "")),
-                "target_capability": signal.get("target_capability"),
-            },
-            sort_keys=True,
-            ensure_ascii=False,
-            default=str,
-        )
     else:
         seed = json.dumps(
             {
                 "watch": watch.name,
                 "kind": watch.kind,
-                "record_id": signal.get("record_id"),
-                "title": signal.get("title"),
-                "summary": signal.get("summary"),
+                "signal_type": signal.get("signal_type"),
+                "title": "" if signal.get("summary") else signal.get("title"),
+                "summary": _normalize_text(str(signal.get("summary") or "")),
+                "target_capability": signal.get("target_capability"),
             },
             sort_keys=True,
             ensure_ascii=False,
@@ -316,6 +321,63 @@ def _increment_repeat_count(runtime: Any, record: RecordEnvelope, signal: dict[s
 
 def _normalize_text(text: str) -> str:
     return " ".join(str(text or "").strip().lower().split())[:240]
+
+
+def _normalize_signal(signal: dict[str, Any], *, watch: SourceWatch) -> dict[str, Any]:
+    payload = dict(signal or {})
+    title = _compact_text(str(payload.get("title") or f"World signal: {watch.name}"), limit=MAX_SIGNAL_TITLE_CHARS)
+    raw_summary = str(payload.get("summary") or "")
+    summary = _compact_text(raw_summary, limit=MAX_SIGNAL_SUMMARY_CHARS)
+    target_capability = _classify_capability(
+        f"{title} {raw_summary} {payload.get('signal_type') or ''}",
+        fallback=str(payload.get("target_capability") or "proactive.judgment"),
+    )
+    payload["title"] = title
+    payload["summary"] = summary
+    payload["target_capability"] = target_capability
+    payload["raw_summary_chars"] = len(raw_summary)
+    payload["summary_truncated"] = len(summary) < len(raw_summary.strip())
+    if raw_summary and (len(raw_summary) > NOISE_SUMMARY_CHARS or raw_summary.count("\n") > NOISE_LINE_COUNT):
+        payload["noise_penalty"] = 0.25
+        payload["confidence"] = round(max(0.1, float(payload.get("confidence") or 0.5) - 0.2), 3)
+    return payload
+
+
+def _compact_text(text: str, *, limit: int) -> str:
+    normalized = " ".join(str(text or "").split())
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[: max(0, limit - 3)].rstrip() + "..."
+
+
+def _is_noise_signal(signal: dict[str, Any]) -> bool:
+    text = f"{signal.get('title') or ''} {signal.get('summary') or ''}".lower()
+    if not text.strip():
+        return True
+    if "assistant:" in text and "user:" in text and len(text) > 500:
+        return True
+    if text.count("http") > 12:
+        return True
+    if float(signal.get("confidence") or 0.0) < 0.15:
+        return True
+    return False
+
+
+def _classify_capability(text: str, *, fallback: str) -> str:
+    value = str(text or "").lower()
+    if any(term in value for term in ("health", "timeout", "8091", "service", "systemd", "gateway", "rpc", "端口", "超时", "健康")):
+        return "ops.health"
+    if any(term in value for term in ("recall", "ranking", "retrieve", "检索", "召回", "排序", "相关性")):
+        return "memory.recall"
+    if any(term in value for term in ("tool", "route", "routing", "hook", "工具", "路由")):
+        return "tool.routing"
+    if any(term in value for term in ("code", "patch", "diff", "test", "pytest", "traceback", "exception", "代码", "回归")):
+        return "code.implementation"
+    if any(term in value for term in ("prompt", "system prompt", "策略", "policy")):
+        return "policy.judgment"
+    if any(term in value for term in ("source", "paper", "rss", "news", "论文", "新闻")):
+        return "knowledge.intake"
+    return fallback or "proactive.judgment"
 
 
 def _evidence_tier(kind: str) -> str:
