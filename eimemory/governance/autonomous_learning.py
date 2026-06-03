@@ -5,8 +5,10 @@ from typing import Any
 
 from eimemory.governance.capability_distiller import distill_capability_candidate
 from eimemory.governance.capability_ledger import build_capability_ledger, record_capability_score
+from eimemory.governance.capability_seeding import ensure_all_seeded
 from eimemory.governance.curiosity import generate_learning_goals, persist_learning_goals
 from eimemory.governance.evidence_collector import collect
+from eimemory.governance.goal_registry import load_goal_registry
 from eimemory.governance.learning_eval import run_learning_eval
 from eimemory.governance.learning_retention import compact_learning_records
 from eimemory.governance.learning_state import (
@@ -17,11 +19,13 @@ from eimemory.governance.learning_state import (
     start_learning_loop,
 )
 from eimemory.governance.promotion_manager import promote_candidate
+from eimemory.governance.replay_dataset import build_replay_dataset
 from eimemory.governance.regression_watch import run_regression_watch
 from eimemory.governance.research_planner import create_research_note, create_research_task, plan_research_tasks
 from eimemory.governance.sandbox_lab import create_sandbox_experiment
 from eimemory.governance.self_model import build_self_model
 from eimemory.governance.signal_intake import rank_learning_signals
+from eimemory.governance.thoughts import generate_thoughts
 from eimemory.governance.world_watchers import collect_world_signals, default_watches
 from eimemory.models.records import ScopeRef
 
@@ -60,8 +64,28 @@ def run_autonomous_learning_cycle(
         self_model = build_self_model(runtime, scope=scope_ref, persist=True, loop_id=loop_id)
         mark_step(runtime, loop, step_name="self_model", status="completed", metrics=self_model.get("metrics") or {})
 
+        ensure_all_seeded(runtime, scope=scope_ref, loop_id=loop_id)
+        goal_registry = load_goal_registry()
         ranked_signals = rank_learning_signals(watch_report.get("signals") or [], self_model, [], max_items=20)
-        goals = generate_learning_goals(self_model, ranked_signals, max_goals=max_goals)
+        thought_report = generate_thoughts(
+            runtime,
+            signals=ranked_signals,
+            self_model=self_model,
+            goals=list(goal_registry.get("long_term") or []),
+            scope=scope_ref,
+            loop_id=loop_id,
+            persist=True,
+            max_items=20,
+        )
+        mark_step(runtime, loop, step_name="think", status="completed", record_ids=thought_report.get("persisted_record_ids") or [], metrics={"thought_count": thought_report.get("thought_count", 0)})
+
+        goals = generate_learning_goals(
+            self_model,
+            ranked_signals,
+            goal_registry=goal_registry,
+            thoughts=thought_report.get("thoughts") or [],
+            max_goals=max_goals,
+        )
         goal_ids = persist_learning_goals(runtime, goals, scope=scope_ref, loop_id=loop_id)
         selected_goal = goals[0] if goals else _fallback_goal()
         selected_goal_id = goal_ids[0] if goal_ids else ""
@@ -98,62 +122,77 @@ def run_autonomous_learning_cycle(
         )
         mark_step(runtime, loop, step_name="research", status="completed", record_ids=research_task_ids + [research_note_id], metrics={"evidence_count": len(evidence)})
 
+        replay_dataset = build_replay_dataset(runtime, scope=scope_ref, limit=50, persist=True, loop_id=loop_id)
+        mark_step(runtime, loop, step_name="replay_dataset", status="completed", record_ids=[replay_dataset.get("persisted_record_id", "")], metrics={"case_count": replay_dataset.get("case_count", 0), "correction_count": replay_dataset.get("correction_count", 0)})
+
         target_capability = str(selected_goal.get("target_capability") or "proactive.judgment")
-        candidate_kind = _candidate_kind_for_goal(selected_goal)
-        experiment_id = create_sandbox_experiment(
-            runtime,
-            scope=scope_ref,
-            loop_id=loop_id,
-            learning_goal_id=selected_goal_id or str(selected_goal.get("semantic_key") or ""),
-            research_note_id=research_note_id,
-            candidate_kind=candidate_kind,
-            candidate_patch=_candidate_patch(selected_goal, evidence),
-            expected_gain=str(selected_goal.get("success_criteria") or ""),
-        )
-        experiment = runtime.store.get_by_id(experiment_id, scope=scope_ref)
-        mark_step(runtime, loop, step_name="experiment", status="completed", record_ids=[experiment_id])
-
-        eval_result = run_learning_eval(
-            runtime,
-            experiment,
-            scope=scope_ref,
-            loop_id=loop_id,
-            eval_suite={"scores": {"capability": 0.82, "safety": 1.0, "regression": 1.0, "evidence": _evidence_score(evidence), "cost": 0.85}},
-        )
-        eval_result["gate_bundle"] = _gate_bundle_for_candidate(candidate_kind, evidence=evidence, scope=scope_ref)
-        mark_step(runtime, loop, step_name="eval", status="completed", record_ids=[eval_result.get("record_id", "")], metrics={"verdict": eval_result.get("verdict")})
-
-        candidate_id = ""
-        promotion_report: dict[str, Any] = {"ok": True, "applied": False}
-        regression_report: dict[str, Any] = {"ok": True, "regressed": False, "record_id": ""}
-        if eval_result.get("ok"):
-            candidate_id = distill_capability_candidate(
+        candidate_kinds = choose_candidate_kinds_for_goal(selected_goal, max_candidates=max(1, min(3, max_goals)))
+        experiment_ids: list[str] = []
+        eval_results: list[dict[str, Any]] = []
+        candidate_ids: list[str] = []
+        promotion_reports: list[dict[str, Any]] = []
+        regression_reports: list[dict[str, Any]] = []
+        for candidate_kind in candidate_kinds:
+            experiment_id = create_sandbox_experiment(
                 runtime,
                 scope=scope_ref,
                 loop_id=loop_id,
-                experiment_id=experiment_id,
-                eval_result=eval_result,
-                promotion_target=candidate_kind,
-                summary=str(selected_goal.get("success_criteria") or selected_goal.get("question") or "Autonomous learning candidate"),
-                target_capability=target_capability,
+                learning_goal_id=selected_goal_id or str(selected_goal.get("semantic_key") or ""),
+                research_note_id=research_note_id,
+                candidate_kind=candidate_kind,
+                candidate_patch=_candidate_patch(selected_goal, evidence, candidate_kind=candidate_kind, replay_dataset=replay_dataset),
+                expected_gain=str(selected_goal.get("success_criteria") or ""),
             )
-            promotion_report = promote_candidate(
+            experiment_ids.append(experiment_id)
+            experiment = runtime.store.get_by_id(experiment_id, scope=scope_ref)
+            eval_result = run_learning_eval(
                 runtime,
-                candidate_id=candidate_id,
+                experiment,
                 scope=scope_ref,
                 loop_id=loop_id,
-                apply=bool(apply and not dry_run),
-                eval_result=eval_result,
-                health={"ok": True, "source": "offline_learning_cycle"},
+                eval_suite={"scores": {"capability": 0.82, "safety": 1.0, "regression": 1.0, "evidence": _evidence_score(evidence), "cost": 0.85}},
             )
-            regression_report = run_regression_watch(
-                runtime,
-                candidate_id=candidate_id,
-                scope=scope_ref,
-                loop_id=loop_id,
-                eval_result=eval_result,
-            )
-        mark_step(runtime, loop, step_name="promotion", status="completed", record_ids=[item for item in [candidate_id, promotion_report.get("promotion_request_id", "")] if item], metrics={"applied": promotion_report.get("applied", False)})
+            eval_result["gate_bundle"] = _gate_bundle_for_candidate(candidate_kind, evidence=evidence, scope=scope_ref)
+            eval_results.append(eval_result)
+            if eval_result.get("ok"):
+                candidate_id = distill_capability_candidate(
+                    runtime,
+                    scope=scope_ref,
+                    loop_id=loop_id,
+                    experiment_id=experiment_id,
+                    eval_result=eval_result,
+                    promotion_target=candidate_kind,
+                    summary=str(selected_goal.get("success_criteria") or selected_goal.get("question") or "Autonomous learning candidate"),
+                    target_capability=target_capability,
+                )
+                candidate_ids.append(candidate_id)
+                promotion_report = promote_candidate(
+                    runtime,
+                    candidate_id=candidate_id,
+                    scope=scope_ref,
+                    loop_id=loop_id,
+                    apply=bool(apply and not dry_run),
+                    eval_result=eval_result,
+                    health={"ok": True, "source": "offline_learning_cycle"},
+                )
+                promotion_reports.append(promotion_report)
+                regression_reports.append(
+                    run_regression_watch(
+                        runtime,
+                        candidate_id=candidate_id,
+                        scope=scope_ref,
+                        loop_id=loop_id,
+                        eval_result=eval_result,
+                    )
+                )
+        experiment_id = experiment_ids[0] if experiment_ids else ""
+        eval_result = eval_results[0] if eval_results else {"ok": False, "verdict": ""}
+        candidate_id = candidate_ids[0] if candidate_ids else ""
+        promotion_report = promotion_reports[0] if promotion_reports else {"ok": True, "applied": False}
+        regression_report = regression_reports[0] if regression_reports else {"ok": True, "regressed": False, "record_id": ""}
+        mark_step(runtime, loop, step_name="experiment", status="completed", record_ids=experiment_ids, metrics={"experiment_count": len(experiment_ids), "candidate_kind_count": len(candidate_kinds)})
+        mark_step(runtime, loop, step_name="eval", status="completed", record_ids=[str(item.get("record_id") or "") for item in eval_results], metrics={"pass_count": sum(1 for item in eval_results if item.get("ok")), "eval_count": len(eval_results)})
+        mark_step(runtime, loop, step_name="promotion", status="completed", record_ids=[item for report in promotion_reports for item in [report.get("promotion_request_id", "")] if item] + candidate_ids, metrics={"applied_count": sum(1 for report in promotion_reports if report.get("applied"))})
 
         score_id = record_capability_score(
             runtime,
@@ -183,17 +222,25 @@ def run_autonomous_learning_cycle(
             "dry_run": bool(dry_run),
             "apply": bool(apply),
             "watch_signal_count": int(watch_report.get("signal_count") or 0),
+            "thought_count": int(thought_report.get("thought_count") or 0),
             "goal_count": len(goals),
             "selected_goal_id": selected_goal_id,
             "selected_goal": selected_goal,
             "research_task_ids": research_task_ids,
             "research_note_id": research_note_id,
             "experiment_id": experiment_id,
+            "experiment_ids": experiment_ids,
             "eval_record_id": str(eval_result.get("record_id") or ""),
+            "eval_record_ids": [str(item.get("record_id") or "") for item in eval_results],
             "eval_verdict": str(eval_result.get("verdict") or ""),
             "candidate_id": candidate_id,
+            "candidate_ids": candidate_ids,
+            "candidate_kinds": candidate_kinds,
             "promotion": promotion_report,
+            "promotions": promotion_reports,
             "regression_watch": regression_report,
+            "regression_watches": regression_reports,
+            "replay_dataset": replay_dataset,
             "capability_score_id": score_id,
             "ledger": ledger,
             "retention": retention_report,
@@ -221,13 +268,25 @@ def _run_autonomous_learning_dry_run(
     )
     self_model = build_self_model(runtime, scope=scope, persist=False)
     ranked_signals = rank_learning_signals(watch_report.get("signals") or [], self_model, [], max_items=20)
-    goals = generate_learning_goals(self_model, ranked_signals, max_goals=max_goals)
+    goal_registry = load_goal_registry()
+    thought_report = generate_thoughts(
+        runtime,
+        signals=ranked_signals,
+        self_model=self_model,
+        goals=list(goal_registry.get("long_term") or []),
+        scope=scope,
+        loop_id="dry_run",
+        persist=False,
+        max_items=20,
+    )
+    goals = generate_learning_goals(self_model, ranked_signals, goal_registry=goal_registry, thoughts=thought_report.get("thoughts") or [], max_goals=max_goals)
     selected_goal = goals[0] if goals else _fallback_goal()
     research_tasks = plan_research_tasks(selected_goal, source_policy={"network_enabled": False})
     evidence: list[dict[str, Any]] = []
     for task in research_tasks:
         evidence.extend(collect(task, runtime=runtime, scope=scope))
     candidate_kind = _candidate_kind_for_goal(selected_goal)
+    candidate_kinds = choose_candidate_kinds_for_goal(selected_goal, max_candidates=max(1, min(3, max_goals)))
     eval_result = run_learning_eval(
         runtime,
         {
@@ -251,6 +310,7 @@ def _run_autonomous_learning_dry_run(
         "apply": bool(apply),
         "full": bool(full),
         "watch_signal_count": int(watch_report.get("signal_count") or 0),
+        "thought_count": int(thought_report.get("thought_count") or 0),
         "goal_count": len(goals),
         "selected_goal_id": "",
         "selected_goal": selected_goal,
@@ -263,6 +323,7 @@ def _run_autonomous_learning_dry_run(
         "candidate_id": "",
         "candidate_preview": {
             "candidate_kind": candidate_kind,
+            "candidate_kinds": candidate_kinds,
             "target_capability": selected_goal.get("target_capability") or "proactive.judgment",
             "patch": _candidate_patch(selected_goal, evidence),
         },
@@ -303,21 +364,48 @@ def _fallback_goal() -> dict[str, Any]:
 
 
 def _candidate_kind_for_goal(goal: dict[str, Any]) -> str:
+    return choose_candidate_kinds_for_goal(goal, max_candidates=1)[0]
+
+
+def choose_candidate_kinds_for_goal(goal: dict[str, Any], *, max_candidates: int = 3) -> list[str]:
     capability = str(goal.get("target_capability") or "").lower()
     goal_type = str(goal.get("goal_type") or "").lower()
-    if "routing" in capability:
-        return "tool_route"
-    if "recall" in capability or goal_type == "benchmark_gap":
-        return "memory_rule"
+    expected = str(goal.get("expected_artifact") or "").lower()
+    kinds: list[str] = []
+    if "routing" in capability or "tool" in capability:
+        kinds.extend(["tool_route", "eval_case"])
+    if "recall" in capability or "memory" in capability or goal_type == "benchmark_gap":
+        kinds.extend(["memory_rule", "eval_case"])
     if "code" in capability:
-        return "code_patch"
-    return "sop_draft"
+        kinds.extend(["code_patch", "eval_case"])
+    if "skill" in capability or ("skill" in expected and "code" not in capability):
+        kinds.extend(["skill_draft", "eval_case"])
+    if any(term in capability for term in ("uumit", "office", "device", "operations")) or goal_type in {"long_term", "proactive_thought", "capability_gap"}:
+        kinds.extend(["sop_draft", "eval_case"])
+    if "source" in capability or "research" in capability or "knowledge" in capability:
+        kinds.extend(["source_policy", "eval_case"])
+    if not kinds:
+        kinds.extend(["sop_draft", "eval_case"])
+    deduped: list[str] = []
+    for kind in kinds:
+        if kind not in deduped:
+            deduped.append(kind)
+        if len(deduped) >= max(1, int(max_candidates or 3)):
+            break
+    return deduped
 
 
-def _candidate_patch(goal: dict[str, Any], evidence: list[dict[str, Any]]) -> dict[str, Any]:
+def _candidate_patch(
+    goal: dict[str, Any],
+    evidence: list[dict[str, Any]],
+    *,
+    candidate_kind: str | None = None,
+    replay_dataset: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     target_capability = str(goal.get("target_capability") or "proactive.judgment")
     summary = str(goal.get("success_criteria") or goal.get("question") or "")
-    return {
+    kind = str(candidate_kind or _candidate_kind_for_goal(goal))
+    base = {
         "summary": summary,
         "target_capability": target_capability,
         "goal_type": str(goal.get("goal_type") or "maintenance"),
@@ -326,7 +414,79 @@ def _candidate_patch(goal: dict[str, Any], evidence: list[dict[str, Any]]) -> di
         "execution_policy": [summary or str(goal.get("question") or goal.get("title") or "Apply learned operating policy.")],
         "success_criteria": summary,
         "evidence_refs": [str(item.get("ref") or "") for item in evidence[:10] if item.get("ref")],
+        "replay_case_ids": [str(case.get("case_id") or "") for case in (replay_dataset or {}).get("cases", [])[:10] if case.get("case_id")],
     }
+    if kind == "eval_case":
+        cases = list((replay_dataset or {}).get("cases") or [])
+        first = cases[0] if cases else {}
+        return {
+            **base,
+            "input": str(first.get("input") or first.get("query") or goal.get("question") or ""),
+            "expected": str(first.get("expected_behavior") or first.get("expected") or (first.get("expected_text") or [""])[0] or summary or goal.get("success_criteria") or ""),
+            "expected_text": list(first.get("expected_text") or []),
+            "labels": [target_capability, str(goal.get("goal_type") or "maintenance")],
+        }
+    if kind == "skill_draft":
+        return {
+            **base,
+            "skill_name": _safe_skill_name(target_capability),
+            "triggers": [str(goal.get("title") or target_capability), target_capability],
+            "eval_cases": list((replay_dataset or {}).get("cases") or [])[:3],
+        }
+    if kind == "sop_draft":
+        return {
+            **base,
+            "steps": [
+                "Check relevant memory, outcome traces, and current constraints.",
+                "Choose the lowest-risk action path that satisfies the user's real intent.",
+                "Verify the outcome with explicit evidence before reporting completion.",
+                "Record outcome and update replay coverage when the result is uncertain or corrected.",
+            ],
+        }
+    if kind == "tool_route":
+        dataset = replay_dataset or {}
+        execution_policy = [
+            str(
+                _first_text(
+                    dataset.get("summary"),
+                    str(goal.get("policy") or goal.get("title") or ""),
+                    "Prefer policy-driven routing over direct execution.",
+                )
+            )
+        ]
+        return {
+            **base,
+            "execution_policy": execution_policy,
+            "route_policy": {
+                "match": target_capability,
+                "prefer": "policy_suggestions before semantic memory",
+                "fallback": "ask for missing irreversible or physical execution constraints",
+            },
+        }
+    if kind == "source_policy":
+        return {
+            **base,
+            "source_policy": {
+                "capability": target_capability,
+                "promote_when": "source is recent, deduped, and linked to a long-term goal or repeated weakness",
+                "reject_when": "source is stale, duplicated, unverifiable, or unrelated to active goals",
+            },
+        }
+    return base
+
+
+def _safe_skill_name(capability: str) -> str:
+    value = "".join(ch.lower() if ch.isalnum() else "-" for ch in str(capability or "proactive-skill"))
+    value = "-".join(part for part in value.split("-") if part)
+    return value or "proactive-skill"
+
+
+def _first_text(*values: Any) -> str:
+    for value in values:
+        text = " ".join(str(value or "").split())
+        if text:
+            return text
+    return ""
 
 
 def _evidence_score(evidence: list[dict[str, Any]]) -> float:

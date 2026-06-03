@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from eimemory.api.runtime import Runtime
+from eimemory.governance.capability_seeding import SEEDED_CAPABILITIES
 from eimemory.governance.capability_ledger import build_capability_ledger, record_capability_score
 
 
@@ -14,3 +15,17 @@ def test_capability_ledger_tracks_score_and_trend(tmp_path) -> None:
 
     assert ledger["capabilities"]["tool.routing"]["score"] == 0.8
     assert ledger["capabilities"]["tool.routing"]["trend"] == 0.3
+
+
+def test_build_capability_ledger_auto_includes_seeded_defaults(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu"}
+
+    ledger = build_capability_ledger(runtime, scope=scope)
+
+    for capability in SEEDED_CAPABILITIES:
+        item = ledger["capabilities"].get(capability)
+        assert item is not None
+        assert item["score"] == 0.0
+        assert item["average"] == 0.0
+        assert item["trend"] == 0.0

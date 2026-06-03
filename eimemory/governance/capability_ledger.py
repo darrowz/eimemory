@@ -6,6 +6,17 @@ from typing import Any
 from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
+SEEDED_LEDGER_CAPABILITIES = [
+    "search.discovery",
+    "code.implementation",
+    "operations.uumit",
+    "office.daily_task",
+    "device.control",
+    "research.synthesis",
+    "proactive.judgment",
+    "safety.boundary",
+]
+
 
 def record_capability_score(
     runtime: Any,
@@ -42,7 +53,18 @@ def record_capability_score(
     return record.record_id
 
 
-def build_capability_ledger(runtime: Any, *, scope: dict[str, Any] | ScopeRef | None = None, limit: int = 500) -> dict[str, Any]:
+def build_capability_ledger(
+    runtime: Any,
+    *,
+    scope: dict[str, Any] | ScopeRef | None = None,
+    limit: int = 500,
+    ensure_seeded: bool = False,
+) -> dict[str, Any]:
+    if ensure_seeded:
+        from eimemory.governance.capability_seeding import ensure_all_seeded
+
+        ensure_all_seeded(runtime, scope=scope, loop_id="seed")
+
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
     records = runtime.store.list_records(kinds=["capability_score"], scope=scope_ref, limit=limit)
     by_capability: dict[str, list[RecordEnvelope]] = {}
@@ -68,4 +90,16 @@ def build_capability_ledger(runtime: Any, *, scope: dict[str, Any] | ScopeRef | 
             "regression_count": sum(int(item.meta.get("regression_count") or 0) for item in ordered),
             "last_record_id": ordered[0].record_id if ordered else "",
         }
+    for capability in SEEDED_LEDGER_CAPABILITIES:
+        capabilities.setdefault(
+            capability,
+            {
+                "score": 0.0,
+                "average": 0.0,
+                "trend": 0.0,
+                "evidence_count": 0,
+                "regression_count": 0,
+                "last_record_id": "",
+            },
+        )
     return {"ok": True, "capabilities": capabilities, "record_count": len(records)}

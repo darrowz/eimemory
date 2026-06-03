@@ -1,0 +1,11 @@
+[Unit]
+Description=Run eimemory proactive thinking hourly
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=1h
+Persistent=true
+Unit=eimemory-learn-think.service
+
+[Install]
+WantedBy=timers.target

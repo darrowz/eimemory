@@ -31,7 +31,7 @@ def test_nightly_jobs_include_autonomous_learning_summary(tmp_path, monkeypatch)
     assert report["autonomous_learning"]["ok"] is True
     assert report["autonomous_learning"]["enabled"] is True
     assert report["autonomous_learning"]["goal_count"] >= 1
-    assert report["autonomous_learning"]["candidate_count"] == 1
+    assert report["autonomous_learning"]["candidate_count"] >= 1
     assert report["autonomous_learning"]["applied_count"] == 0
     assert report["autonomous_learning_daily_report"]["ok"] is True
     assert report["autonomous_learning_daily_report"]["persisted"] is True
@@ -48,4 +48,4 @@ def test_governance_snapshot_exposes_autonomous_learning_state(tmp_path) -> None
 
     assert snapshot["autonomous_learning"]["loop_count"] == 1
     assert snapshot["autonomous_learning"]["goal_count"] >= 1
-    assert snapshot["autonomous_learning"]["candidate_count"] == 1
+    assert snapshot["autonomous_learning"]["candidate_count"] >= 1

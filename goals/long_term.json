@@ -1,0 +1,46 @@
+{
+  "long_term": [
+    {
+      "id": "lt-memory-architecture",
+      "title": "AI Agent long-term memory architecture",
+      "sub_capabilities": ["memory.recall_precision", "memory.salience_scoring", "preference.compaction"],
+      "milestones": ["2026-Q3 recall precision above 0.90", "2026-Q4 cross-session preference accuracy above 0.70"],
+      "evaluation_signals": ["operator corrections", "production recall eval", "memory quality stats"]
+    },
+    {
+      "id": "lt-skill-governance",
+      "title": "Skill governance and capability publishing",
+      "sub_capabilities": ["skill.draft", "skill.eval_case", "skill.registry_quality"],
+      "milestones": ["Draft reusable skills from repeated work", "Attach eval cases before activation"],
+      "evaluation_signals": ["skill replay results", "operator corrections"]
+    },
+    {
+      "id": "lt-mcp-a2a",
+      "title": "MCP and A2A tool collaboration",
+      "sub_capabilities": ["tool.routing", "mcp.contract", "agent.coordination"],
+      "milestones": ["Route tools by policy", "Track cross-agent outcomes"],
+      "evaluation_signals": ["tool routing failures", "agent outcome traces"]
+    },
+    {
+      "id": "lt-uumit-delivery",
+      "title": "UUMit business delivery quality",
+      "sub_capabilities": ["operations.uumit", "office.daily_task", "customer.delivery"],
+      "milestones": ["Convert repeated delivery checks into SOPs", "Reduce rework"],
+      "evaluation_signals": ["UUMit outcome traces", "operator corrections", "task verification"]
+    },
+    {
+      "id": "lt-device-office",
+      "title": "Device and office automation reliability",
+      "sub_capabilities": ["device.control", "office.daily_task", "ops.health"],
+      "milestones": ["Check physical constraints before actions", "Verify user-visible output"],
+      "evaluation_signals": ["device control failures", "verification gaps"]
+    },
+    {
+      "id": "lt-safety-boundary",
+      "title": "Safety boundary governance",
+      "sub_capabilities": ["safety.boundary", "risk.gating", "rollback.policy"],
+      "milestones": ["Keep L2/L3 gated", "Make rollback evidence explicit"],
+      "evaluation_signals": ["blocked promotions", "regression watches", "rollback metadata"]
+    }
+  ]
+}

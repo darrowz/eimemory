@@ -433,6 +433,43 @@ class Runtime:
 
         return build_capability_ledger(self, scope=scope, limit=limit)
 
+    def ensure_capability_seeded(self, *, scope: dict | None = None) -> dict:
+        from eimemory.governance.capability_seeding import ensure_all_seeded
+
+        return ensure_all_seeded(self, scope=scope)
+
+    def generate_learning_thoughts(self, *, scope: dict | None = None, persist: bool = True, max_items: int = 20) -> dict:
+        from eimemory.governance.goal_registry import load_goal_registry
+        from eimemory.governance.self_model import build_self_model
+        from eimemory.governance.signal_intake import rank_learning_signals
+        from eimemory.governance.thoughts import generate_thoughts
+        from eimemory.governance.world_watchers import collect_world_signals, default_watches
+
+        watch_report = collect_world_signals(self, scope=scope, watches=default_watches(), dry_run=not persist, loop_id="think")
+        self_model = build_self_model(self, scope=scope, persist=persist, loop_id="think")
+        ranked = rank_learning_signals(watch_report.get("signals") or [], self_model, [], max_items=max_items)
+        registry = load_goal_registry()
+        return generate_thoughts(
+            self,
+            signals=ranked,
+            self_model=self_model,
+            goals=list(registry.get("long_term") or []),
+            scope=scope,
+            loop_id="think",
+            persist=persist,
+            max_items=max_items,
+        )
+
+    def build_replay_dataset(self, *, scope: dict | None = None, limit: int = 50, persist: bool = True) -> dict:
+        from eimemory.governance.replay_dataset import build_replay_dataset
+
+        return build_replay_dataset(self, scope=scope, limit=limit, persist=persist, loop_id="cli")
+
+    def build_learning_dashboard(self, *, scope: dict | None = None, week_start: str | None = None, persist: bool = True, output_path: str | None = None) -> dict:
+        from eimemory.governance.learning_dashboard import build_weekly_dashboard
+
+        return build_weekly_dashboard(self, scope=scope, week_start=week_start, persist=persist, output_path=output_path)
+
     def compact_learning_records(self, *, scope: dict | None = None, dry_run: bool = True) -> dict:
         from eimemory.governance.learning_retention import compact_learning_records
 

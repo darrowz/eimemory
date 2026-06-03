@@ -1,0 +1,10 @@
+[Unit]
+Description=Run eimemory lightweight observer every 5 minutes
+
+[Timer]
+OnCalendar=*:00/5
+Persistent=true
+Unit=eimemory-learn-watch.service
+
+[Install]
+WantedBy=timers.target

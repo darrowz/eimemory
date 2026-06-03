@@ -1,0 +1,11 @@
+[Unit]
+Description=eimemory weekly autonomous learning dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/eimemory/current
+Environment=EIMEMORY_ROOT=/var/lib/eimemory
+Environment=EIMEMORY_CONFIG_DIR=/etc/eimemory
+ExecStart=/opt/eimemory/current/.venv/bin/eimemory learn dashboard --persist --output /var/lib/eimemory/autonomous-learning-dashboard.md

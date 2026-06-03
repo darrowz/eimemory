@@ -1,0 +1,10 @@
+[Unit]
+Description=Run eimemory weekly autonomous learning dashboard
+
+[Timer]
+OnCalendar=Mon *-*-* 09:00:00
+Persistent=true
+Unit=eimemory-learn-dashboard.service
+
+[Install]
+WantedBy=timers.target

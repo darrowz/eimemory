@@ -67,3 +67,14 @@ def test_cli_learn_report_outputs_daily_summary(tmp_path, monkeypatch, capsys) -
     assert report["ok"] is True
     assert report["summary"]
     assert report["persisted_record_id"]
+
+
+def test_cli_learn_dashboard_outputs_markdown(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path))
+
+    assert cli_main(["learn", "dashboard"]) == 0
+    report = json.loads(capsys.readouterr().out)
+
+    assert report["ok"] is True
+    assert "## Capability Ledger" in report["markdown"]
+    assert "trend" in report["markdown"].lower()

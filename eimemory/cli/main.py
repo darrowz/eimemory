@@ -237,6 +237,11 @@ def _build_parser() -> argparse.ArgumentParser:
     learn_watch.add_argument("--dry-run", action="store_true", default=True)
     learn_watch.add_argument("--apply", action="store_true")
     learn_watch.add_argument("--json", action="store_true", default=True)
+    learn_think = learn_sub.add_parser("think")
+    learn_think.add_argument("--dry-run", action="store_true")
+    learn_think.add_argument("--persist", action="store_true")
+    learn_think.add_argument("--max-items", type=int, default=20)
+    learn_think.add_argument("--json", action="store_true", default=True)
     learn_cycle = learn_sub.add_parser("cycle")
     learn_cycle.add_argument("--full", action="store_true", default=True)
     learn_cycle.add_argument("--dry-run", action="store_true")
@@ -255,6 +260,10 @@ def _build_parser() -> argparse.ArgumentParser:
     learn_candidates.add_argument("--json", action="store_true", default=True)
     learn_ledger = learn_sub.add_parser("ledger")
     learn_ledger.add_argument("--json", action="store_true", default=True)
+    learn_replay_dataset = learn_sub.add_parser("replay-dataset")
+    learn_replay_dataset.add_argument("--limit", type=int, default=50)
+    learn_replay_dataset.add_argument("--persist", action="store_true")
+    learn_replay_dataset.add_argument("--json", action="store_true", default=True)
     learn_compact = learn_sub.add_parser("compact")
     learn_compact.add_argument("--dry-run", action="store_true")
     learn_compact.add_argument("--apply", action="store_true")
@@ -263,6 +272,12 @@ def _build_parser() -> argparse.ArgumentParser:
     learn_report.add_argument("--date", default="")
     learn_report.add_argument("--persist", action="store_true")
     learn_report.add_argument("--json", action="store_true", default=True)
+    learn_dashboard = learn_sub.add_parser("dashboard")
+    learn_dashboard.add_argument("--weekly", action="store_true")
+    learn_dashboard.add_argument("--week-start", default="")
+    learn_dashboard.add_argument("--persist", action="store_true")
+    learn_dashboard.add_argument("--output", default="")
+    learn_dashboard.add_argument("--json", action="store_true", default=True)
     learn_promote = learn_sub.add_parser("promote")
     learn_promote.add_argument("candidate_id")
     learn_promote.add_argument("--apply", action="store_true")
@@ -552,6 +567,15 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0
+        if parsed.learn_command == "think":
+            persist = bool(parsed.persist) and not bool(parsed.dry_run)
+            report = runtime.generate_learning_thoughts(
+                scope=scope,
+                persist=persist,
+                max_items=max(1, int(parsed.max_items)),
+            )
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0 if report.get("ok") else 1
         if parsed.learn_command == "cycle":
             report = runtime.run_autonomous_learning_cycle(
                 scope=scope,
@@ -575,6 +599,10 @@ def main(argv: list[str] | None = None) -> int:
         if parsed.learn_command == "ledger":
             print(json.dumps(runtime.learning_ledger(scope=scope), ensure_ascii=False, indent=2))
             return 0
+        if parsed.learn_command == "replay-dataset":
+            report = runtime.build_replay_dataset(scope=scope, limit=max(1, int(parsed.limit)), persist=bool(parsed.persist))
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0 if report.get("ok") else 1
         if parsed.learn_command == "compact":
             report = runtime.compact_learning_records(scope=scope, dry_run=not bool(parsed.apply))
             print(json.dumps(report, ensure_ascii=False, indent=2))
@@ -586,6 +614,18 @@ def main(argv: list[str] | None = None) -> int:
                 report_date=str(parsed.date or "") or None,
             )
             print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0 if report.get("ok") else 1
+        if parsed.learn_command == "dashboard":
+            report = runtime.build_learning_dashboard(
+                scope=scope,
+                week_start=str(parsed.week_start or "") or None,
+                persist=bool(parsed.persist),
+                output_path=str(parsed.output or "") or None,
+            )
+            if parsed.json:
+                print(json.dumps(report, ensure_ascii=False, indent=2))
+            else:
+                print(str(report.get("markdown") or ""))
             return 0 if report.get("ok") else 1
         if parsed.learn_command == "promote":
             from eimemory.governance.promotion_manager import promote_candidate
@@ -623,7 +663,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0 if report.get("ok") else 1
-        print(json.dumps({"usage": "eimemory learn watch|cycle|loops|goals|candidates|ledger|compact|report|promote"}))
+        print(json.dumps({"usage": "eimemory learn watch|think|cycle|loops|goals|candidates|ledger|replay-dataset|compact|report|dashboard|promote"}))
         return 0
     if parsed.command == "recall":
         task_context = {"task_type": "cli.recall"}

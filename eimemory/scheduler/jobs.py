@@ -71,6 +71,7 @@ def run_nightly_jobs(
     autonomous_evolution_report = _run_autonomous_evolution(runtime, scope=scope)
     autonomous_learning_report = _run_autonomous_learning(runtime, scope=scope)
     autonomous_learning_daily_report = _run_autonomous_learning_daily_report(runtime, scope=scope)
+    autonomous_learning_dashboard = _run_autonomous_learning_dashboard(runtime, scope=scope)
     outcome_evolution_report = _run_outcome_evolution_summary(runtime, scope=scope)
     return {
         "ok": True,
@@ -118,6 +119,7 @@ def run_nightly_jobs(
         "autonomous_evolution": autonomous_evolution_report,
         "autonomous_learning": autonomous_learning_report,
         "autonomous_learning_daily_report": autonomous_learning_daily_report,
+        "autonomous_learning_dashboard": autonomous_learning_dashboard,
         "outcome_evolution": outcome_evolution_report,
         "memory_eval_ci": memory_eval_ci_report,
         "production_recall": production_recall_report,
@@ -967,8 +969,10 @@ def _run_autonomous_learning(runtime: Runtime, *, scope: dict) -> dict[str, Any]
                 "timeout_exceeded": elapsed_seconds > timeout_seconds,
                 "loop_id": str(report.get("loop_id") or ""),
                 "goal_count": int(report.get("goal_count") or 0),
-                "candidate_count": 1 if report.get("candidate_id") else 0,
-                "applied_count": 1 if (report.get("promotion") or {}).get("applied") else 0,
+                "thought_count": int(report.get("thought_count") or 0),
+                "candidate_count": len(report.get("candidate_ids") or ([] if not report.get("candidate_id") else [report.get("candidate_id")])),
+                "applied_count": sum(1 for item in (report.get("promotions") or []) if item.get("applied")) or (1 if (report.get("promotion") or {}).get("applied") else 0),
+                "replay_case_count": int((report.get("replay_dataset") or {}).get("case_count") or 0),
                 "eval_verdict": str(report.get("eval_verdict") or ""),
                 "capability_score_id": str(report.get("capability_score_id") or ""),
                 "regressed": bool((report.get("regression_watch") or {}).get("regressed")),
@@ -1030,6 +1034,52 @@ def _run_autonomous_learning_daily_report(runtime: Runtime, *, scope: dict) -> d
         "ok": False,
         "report_type": "autonomous_learning_daily_report",
         "learning_report_skipped_reason": "invalid_learning_daily_report",
+    }
+
+
+def _run_autonomous_learning_dashboard(runtime: Runtime, *, scope: dict) -> dict[str, Any]:
+    build_dashboard = getattr(runtime, "build_learning_dashboard", None)
+    if not callable(build_dashboard):
+        return {
+            "ok": False,
+            "report_type": "autonomous_learning_weekly_dashboard",
+            "dashboard_skipped_reason": "build_learning_dashboard_unavailable",
+        }
+    enabled = _env_bool("EIMEMORY_AUTONOMOUS_LEARNING_DASHBOARD_ENABLED", default=True)
+    if not enabled:
+        return {
+            "ok": True,
+            "report_type": "autonomous_learning_weekly_dashboard",
+            "enabled": False,
+            "dashboard_skipped_reason": "dashboard_disabled",
+        }
+    try:
+        report = _json_safe(build_dashboard(scope=scope, persist=True))
+        if isinstance(report, dict):
+            return {
+                "ok": bool(report.get("ok", False)),
+                "report_type": "autonomous_learning_weekly_dashboard",
+                "enabled": True,
+                "week_start": str(report.get("week_start") or ""),
+                "persisted": bool(report.get("persisted")),
+                "persisted_record_id": str(report.get("persisted_record_id") or ""),
+                "capability_count": len((report.get("ledger") or {}).get("capabilities") or {}),
+                "dashboard_skipped_reason": "",
+            }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "report_type": "autonomous_learning_weekly_dashboard",
+            "enabled": True,
+            "dashboard_skipped_reason": "build_learning_dashboard_failed",
+            "error": type(exc).__name__,
+            "detail": str(exc),
+        }
+    return {
+        "ok": False,
+        "report_type": "autonomous_learning_weekly_dashboard",
+        "enabled": True,
+        "dashboard_skipped_reason": "invalid_learning_dashboard_report",
     }
 
 

@@ -32,6 +32,8 @@ VALID_KINDS: frozenset[str] = frozenset(
         "learning_loop",
         "source_watch",
         "world_signal",
+        "thought",
+        "initiative",
         "capability_model",
         "weakness",
         "learning_goal",

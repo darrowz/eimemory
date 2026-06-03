@@ -35,7 +35,9 @@ root.
 ## Nightly Intake Timer
 
 The standard production schedule runs active knowledge intake and governance once
-per day at 03:30 in the server's local timezone.
+per day at 03:30 in the server's local timezone. The template also enables the
+1.0.0 autonomous learning loop in apply mode with bounded goal count, timeout,
+dashboard output, promotion gates, and rollback metadata.
 
 Install as a user service for the OpenClaw/eimemory operator:
 
@@ -53,4 +55,23 @@ Run one manual verification:
 ```bash
 systemctl --user start eimemory-nightly.service
 journalctl --user -u eimemory-nightly.service -n 100 --no-pager
+```
+
+## Autonomous Learning Timers
+
+The 1.0.0 proactive learning layer runs three additional timers:
+
+- `eimemory-learn-watch.timer`: every 5 minutes, capture lightweight local/outcome/world signals.
+- `eimemory-learn-think.timer`: hourly, turn signals and long-term goals into persisted thoughts.
+- `eimemory-learn-dashboard.timer`: weekly, summarize learned/applied/blocked/next items.
+
+Install as user services:
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp /dev-project/eimemory/deploy/systemd/eimemory-learn-*.service ~/.config/systemd/user/
+cp /dev-project/eimemory/deploy/systemd/eimemory-learn-*.timer ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now eimemory-learn-watch.timer eimemory-learn-think.timer eimemory-learn-dashboard.timer
+systemctl --user list-timers 'eimemory-learn-*.timer'
 ```

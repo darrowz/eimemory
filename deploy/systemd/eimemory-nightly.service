@@ -8,5 +8,11 @@ Type=oneshot
 WorkingDirectory=/opt/eimemory/current
 Environment=EIMEMORY_ROOT=/var/lib/eimemory
 Environment=EIMEMORY_CONFIG_DIR=/etc/eimemory
+Environment=EIMEMORY_AUTONOMOUS_LEARNING_ENABLED=1
+Environment=EIMEMORY_AUTONOMOUS_LEARNING_APPLY=1
+Environment=EIMEMORY_AUTONOMOUS_LEARNING_DRY_RUN=0
+Environment=EIMEMORY_AUTONOMOUS_LEARNING_MAX_GOALS=3
+Environment=EIMEMORY_AUTONOMOUS_LEARNING_TIMEOUT_SECONDS=900
+Environment=EIMEMORY_AUTONOMOUS_LEARNING_DASHBOARD_ENABLED=1
 ExecStart=/opt/eimemory/current/.venv/bin/eimemory nightly
 

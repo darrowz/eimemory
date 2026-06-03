@@ -47,7 +47,7 @@ eimemory learn ledger
 `eimemory learn cycle` runs the bounded self-improvement loop:
 
 ```text
-watch -> rank signals -> self-model -> goals -> research -> sandbox -> eval -> promote -> ledger -> retention
+watch -> self-model -> think -> goals -> research -> replay dataset -> portfolio -> eval -> promote -> ledger -> dashboard -> retention
 ```
 
 The loop is offline-first and deterministic by default. It can learn from local
@@ -65,14 +65,18 @@ Useful commands:
 
 ```bash
 eimemory learn watch --dry-run
+eimemory learn watch --apply
 eimemory learn cycle --dry-run
 eimemory learn cycle --apply --force
 eimemory learn loops --limit 5
 eimemory learn goals --limit 10
 eimemory learn candidates --limit 10
 eimemory learn ledger
+eimemory learn think --persist
+eimemory learn replay-dataset --persist
 eimemory learn compact --dry-run
 eimemory learn report --persist
+eimemory learn dashboard --persist
 eimemory learn promote <candidate_id> --apply --eval-json '{"verdict":"pass","scores":{"safety":1,"regression":1},"gate_bundle":{...}}'
 ```
 
@@ -80,7 +84,30 @@ eimemory learn promote <candidate_id> --apply --eval-json '{"verdict":"pass","sc
 artifacts when gates pass. They are not applied to production directly; the
 artifact is ready for machine review, branch creation, or PR automation.
 
-Nightly autonomous learning is opt-in from the scheduler environment:
+The 1.0.0 proactive layer adds a short thinking pass between observation and
+goal selection. It turns repeated weak signals, long-term objectives, recent
+corrections, stale assets, and replay gaps into persisted `thought` records,
+then promotes high-value thoughts into learning goals and reviewable candidate
+portfolios.
+
+Production schedule examples (all in `deploy/systemd/`):
+
+```bash
+cp /dev-project/eimemory/deploy/systemd/eimemory-learn-watch.service ~/.config/systemd/user/
+cp /dev-project/eimemory/deploy/systemd/eimemory-learn-watch.timer ~/.config/systemd/user/
+
+cp /dev-project/eimemory/deploy/systemd/eimemory-learn-think.service ~/.config/systemd/user/
+cp /dev-project/eimemory/deploy/systemd/eimemory-learn-think.timer ~/.config/systemd/user/
+
+cp /dev-project/eimemory/deploy/systemd/eimemory-learn-dashboard.service ~/.config/systemd/user/
+cp /dev-project/eimemory/deploy/systemd/eimemory-learn-dashboard.timer ~/.config/systemd/user/
+
+systemctl --user daemon-reload
+systemctl --user enable --now eimemory-learn-watch.timer eimemory-learn-think.timer eimemory-learn-dashboard.timer
+```
+
+Nightly autonomous learning is controlled from the scheduler environment. The
+production systemd template enables the 1.0.0 loop by default:
 
 ```bash
 EIMEMORY_AUTONOMOUS_LEARNING_ENABLED=1
