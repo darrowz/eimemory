@@ -18,6 +18,8 @@ queryable memory and conservative self-improvement signals.
 - `eiprotocol`: shared event and message contracts
 - `eihead`: embodied/audio/vision/head runtime integration
 
+![eimemory memory and learning architecture](docs/assets/eimemory-overview.svg)
+
 ## What Problem It Solves
 
 Most agent systems lose the hard parts of experience:
