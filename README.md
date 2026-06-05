@@ -1,13 +1,25 @@
 # eimemory
 
-`eimemory` is a local-first memory, knowledge, and evolution runtime for
-OpenClaw, eibrain, and long-running AI agents.
+`eimemory` is a local-first memory, knowledge, autonomous thinking, and
+self-evolution runtime for OpenClaw, eibrain, and long-running AI agents.
 
 It is designed for agents that need durable context across days, weeks, and
 projects without turning private memory into a cloud dependency. The system
 captures operator decisions, task outcomes, corrections, incidents, knowledge
 sources, replay results, and capability evidence, then turns them into
-queryable memory and conservative self-improvement signals.
+queryable memory, proactive thoughts, learning goals, sandbox experiments, and
+conservative self-improvement signals.
+
+The core idea is not just "store memory". `eimemory` gives an agent a bounded
+learning operating system:
+
+- remember what happened and why it mattered
+- recall the right context for the current task
+- think over weak signals, stale goals, corrections, and replay gaps
+- create its own learning goals and candidate improvements
+- run evidence-backed research and sandbox experiments
+- promote only gated, auditable improvements
+- roll back regressions through a capability ledger
 
 `eimemory` is part of the EI series:
 
@@ -18,7 +30,7 @@ queryable memory and conservative self-improvement signals.
 - `eiprotocol`: shared event and message contracts
 - `eihead`: embodied/audio/vision/head runtime integration
 
-![eimemory memory and learning architecture](docs/assets/eimemory-overview.svg)
+![eimemory autonomous memory and evolution architecture](docs/assets/eimemory-autonomy.svg)
 
 ## What Problem It Solves
 
@@ -44,6 +56,13 @@ knowledge while keeping execution authority outside the memory layer.
   before they pollute long-term recall.
 - Evidence-backed learning: capability upgrades require observations, replay,
   evaluations, gates, and rollback paths.
+- Proactive thinking: repeated weak signals, recent corrections, stale assets,
+  long-term objectives, and replay gaps can become persisted `thought` records.
+- Autonomous goal generation: the system can turn self-model weaknesses and
+  operational evidence into bounded learning goals.
+- Code sandbox support: code-fixable incidents can become isolated sandbox
+  plans with allowed files, verification commands, branch names, worktree
+  paths, and rollback notes.
 - Conservative autonomy: external actions, spending, credentials, and private
   data export remain outside automatic authority.
 - Integration-friendly: CLI, Python APIs, OpenClaw hooks, QMD compatibility,
@@ -56,7 +75,7 @@ It does not own execution, task orchestration, or workflow control.
 
 ## How It Works
 
-At a high level, `eimemory` has five cooperating surfaces:
+At a high level, `eimemory` has seven cooperating surfaces:
 
 1. Record store: appends structured memory records to JSONL and materializes
    searchable state in SQLite.
@@ -66,15 +85,19 @@ At a high level, `eimemory` has five cooperating surfaces:
    then extracts claims, entities, relations, pages, and recall views.
 4. Evaluation layer: runs deterministic memory, recall, LongMemEval-style,
    actionable-memory, and living-memory checks.
-5. Governance layer: turns observations into goals, replay datasets, candidate
+5. Thinking layer: writes `thought` records from weak signals, stale goals,
+   corrections, long-term objectives, and recent failures.
+6. Governance layer: turns observations into goals, replay datasets, candidate
    portfolios, capability ledger entries, and bounded rollout decisions.
+7. Sandbox layer: creates candidate-only experiments, including code evolution
+   worktree plans that never push, merge, or deploy production by themselves.
 
 ## Current Capabilities
 
 - Unified record model for memory, incidents, feedback, rules, and replay
 - JSONL append log plus SQLite materialized store
 - Recall API for OpenClaw and eibrain consumers
-- Evolution API for observe, feedback, review, promote, replay, and ROI
+- Evolution API for observe, feedback, review, promote, replay, rollback, and ROI
 - OpenClaw hook shim, tool shim, and plugin manifest
 - OpenClaw lifecycle bridge plugin plus `openclaw-hook` CLI bridge
 - eibrain SDK, RPC bridge, and HTTP RPC server
@@ -86,7 +109,10 @@ At a high level, `eimemory` has five cooperating surfaces:
 - Memory quality metadata, capture tiers, and quality-aware hybrid recall
 - Lightweight reflection/operator commands for check, log, read, and stats
 - Paper-first knowledge memory: source intake, extract, claim/entity/relation records, compiled knowledge pages, recall views, and contradiction-aware refresh signals
-- Autonomous learning loop: world signals, self-model, curiosity goals, evidence-backed research, sandbox experiments, gated L2 rollout, capability ledger, regression rollback, and retention compaction
+- Autonomous thinking loop: world signals, self-model, curiosity goals, persisted thoughts, evidence-backed research, sandbox experiments, gated L2 rollout, capability ledger, regression rollback, and retention compaction
+- Autonomous source expansion: registered sources can be scanned, evaluated, and converted into reviewable knowledge candidates without mixing source discovery with task execution
+- Code evolution sandbox: code-fixable incidents can produce isolated patch plans with allowed file scopes, verification commands, rollback notes, optional worktree creation, and persisted sandbox reports
+- Governance console and weekly learning dashboard for capability scores, regressions, failures, and trend evidence
 - Compact RPC health endpoints for repeatable service checks without loading daily/research digests
 
 ## Use Cases
@@ -102,6 +128,11 @@ At a high level, `eimemory` has five cooperating surfaces:
 - Operators who want autonomous improvement signals without allowing the memory
   system to spend money, send external messages, change credentials, or mutate
   production by itself.
+- Engineering agents that should learn from repeated coding failures, generate
+  a sandbox repair plan, verify it locally, and leave an auditable artifact
+  before any human or release system applies a patch.
+- Research agents that should expand knowledge sources, extract claims, detect
+  contradictions, and keep retrieval fresh across long-lived projects.
 
 ## Safety Model
 
@@ -182,6 +213,90 @@ goal selection. It turns repeated weak signals, long-term objectives, recent
 corrections, stale assets, and replay gaps into persisted `thought` records,
 then promotes high-value thoughts into learning goals and reviewable candidate
 portfolios.
+
+### Autonomous Thinking
+
+The thinking layer is designed for agents that should improve even when the
+operator is not actively correcting them. It mines local signals such as:
+
+- repeated recall misses
+- stale playbooks or low-confidence rules
+- failed replay/eval samples
+- recent user corrections
+- long-term goals that have not advanced
+- capability-score regressions
+
+The output is not an unbounded chain-of-thought log. It is structured memory:
+short `thought` records, ranked learning goals, candidate portfolios, replay
+datasets, and dashboard summaries that can be audited later.
+
+Useful commands:
+
+```bash
+eimemory learn think --persist
+eimemory learn goals --limit 10
+eimemory learn candidates --limit 10
+eimemory learn dashboard --persist
+eimemory governance snapshot > .tmp/eimemory-governance.json
+```
+
+### Code Evolution Sandbox
+
+`eimemory` can classify incidents and prepare a code repair sandbox without
+mutating production. A code-fixable incident becomes:
+
+- a deterministic branch name
+- an allowed-file scope
+- verification commands such as compile/test runs
+- rollback notes
+- an optional isolated worktree path
+- a persisted `code_evolution_sandbox` report
+
+Example:
+
+```bash
+eimemory evolve code-sandbox \
+  --incident-json '{"incident_type":"bug","title":"Recall crash","summary":"Traceback in hybrid recall","files":["eimemory/api/runtime.py"]}' \
+  --persist-report
+```
+
+To create an isolated worktree plan:
+
+```bash
+eimemory evolve code-sandbox \
+  --incident-json .tmp/incident.json \
+  --create-worktree \
+  --persist-report
+```
+
+Sandbox mode does not commit, push, merge, deploy, spend money, export private
+data, or change account authorization. It produces a reviewable repair artifact
+for a human, CI job, or controlled PR workflow.
+
+## GitHub Discovery
+
+For GitHub recommendation and discovery, position `eimemory` as:
+
+> Local-first memory and autonomous self-evolution runtime for long-running AI agents.
+
+Recommended repository metadata:
+
+- Description: `Local-first memory, autonomous thinking, and self-evolution runtime for long-running AI agents`
+- Topics: `ai-agent`, `agent-memory`, `autonomous-agents`, `self-improving-ai`, `long-term-memory`, `local-first`, `rag`, `replay-evaluation`, `ai-sandbox`, `openclaw`
+- Social preview: use `docs/assets/eimemory-autonomy.svg` or a rendered PNG of the same architecture
+- Pinned repo: pin `eimemory` first, then `eibrain`, `eiskills`, and `eitraining`
+- Release note angle: "autonomous thinking + gated self-evolution + code sandbox"
+- README first screen: keep the autonomy diagram, quick problem statement, and safety boundary above the fold
+
+High-signal phrases for issues, releases, and project descriptions:
+
+- autonomous memory runtime
+- local-first agent memory
+- evidence-backed self-evolution
+- code evolution sandbox
+- capability ledger and rollback
+- replay-gated agent improvement
+- proactive thinking for AI agents
 
 Production schedule examples (all in `deploy/systemd/`):
 
