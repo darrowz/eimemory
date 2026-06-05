@@ -1,11 +1,71 @@
 # eimemory
 
-`eimemory` is a local-first memory and evolution runtime for OpenClaw and eibrain.
+`eimemory` is a local-first memory, knowledge, and evolution runtime for
+OpenClaw, eibrain, and long-running AI agents.
+
+It is designed for agents that need durable context across days, weeks, and
+projects without turning private memory into a cloud dependency. The system
+captures operator decisions, task outcomes, corrections, incidents, knowledge
+sources, replay results, and capability evidence, then turns them into
+queryable memory and conservative self-improvement signals.
+
+`eimemory` is part of the EI series:
+
+- `eimemory`: memory, knowledge, recall, evaluation, and learning ledger
+- `eibrain`: cognition/runtime layer that consumes memory and decides what to do
+- `eiskills`: skill registry and capability packaging layer
+- `eitraining`: replay, evaluation, and training feedback loop
+- `eiprotocol`: shared event and message contracts
+- `eihead`: embodied/audio/vision/head runtime integration
+
+## What Problem It Solves
+
+Most agent systems lose the hard parts of experience:
+
+- why a decision was made
+- what the user corrected
+- which workflow failed
+- what evidence made a rule trustworthy
+- which memories should be recalled for a specific task
+- whether a new capability improved real outcomes or only looked good once
+
+`eimemory` treats those signals as first-class records. It gives an agent a
+memory substrate that can store, retrieve, evaluate, and refine operational
+knowledge while keeping execution authority outside the memory layer.
+
+## Design Goals
+
+- Local-first: data stays in a local JSONL plus SQLite store by default.
+- Memory-only boundary: `eimemory` does not own task execution or orchestration.
+- Auditable recall: retrieval results include scoring and quality metadata.
+- Quality-aware persistence: low-value or unsafe candidates can be rejected
+  before they pollute long-term recall.
+- Evidence-backed learning: capability upgrades require observations, replay,
+  evaluations, gates, and rollback paths.
+- Conservative autonomy: external actions, spending, credentials, and private
+  data export remain outside automatic authority.
+- Integration-friendly: CLI, Python APIs, OpenClaw hooks, QMD compatibility,
+  and eibrain RPC are all supported.
 
 ## Memory Boundary
 
 `eimemory` is a memory system. It stores knowledge, recalls knowledge, and refines memory over time.
 It does not own execution, task orchestration, or workflow control.
+
+## How It Works
+
+At a high level, `eimemory` has five cooperating surfaces:
+
+1. Record store: appends structured memory records to JSONL and materializes
+   searchable state in SQLite.
+2. Recall layer: combines lexical, semantic/vector, graph, and quality-aware
+   scoring to return task-relevant context.
+3. Knowledge layer: ingests sources such as papers, URLs, and candidate notes,
+   then extracts claims, entities, relations, pages, and recall views.
+4. Evaluation layer: runs deterministic memory, recall, LongMemEval-style,
+   actionable-memory, and living-memory checks.
+5. Governance layer: turns observations into goals, replay datasets, candidate
+   portfolios, capability ledger entries, and bounded rollout decisions.
 
 ## Current Capabilities
 
@@ -26,6 +86,37 @@ It does not own execution, task orchestration, or workflow control.
 - Paper-first knowledge memory: source intake, extract, claim/entity/relation records, compiled knowledge pages, recall views, and contradiction-aware refresh signals
 - Autonomous learning loop: world signals, self-model, curiosity goals, evidence-backed research, sandbox experiments, gated L2 rollout, capability ledger, regression rollback, and retention compaction
 - Compact RPC health endpoints for repeatable service checks without loading daily/research digests
+
+## Use Cases
+
+- Personal or team agents that need long-term preferences and project memory.
+- Agent runtime debugging where failures should become reusable lessons.
+- Productized agent systems that need recall quality metrics and regression
+  gates.
+- Knowledge-heavy workflows that need paper/source intake and claim-centered
+  recall.
+- Multi-component EI deployments where `eibrain`, `eiskills`, and `eitraining`
+  need one shared memory and evidence layer.
+- Operators who want autonomous improvement signals without allowing the memory
+  system to spend money, send external messages, change credentials, or mutate
+  production by itself.
+
+## Safety Model
+
+`eimemory` separates memory from authority. The runtime can record observations,
+prepare suggestions, generate replay artifacts, and promote low-risk local
+assets when gates pass. It does not automatically perform high-risk actions.
+
+Authority tiers:
+
+- `L0`: records, reports, replay cases, and scores.
+- `L1`: low-risk local assets such as memory rules, route drafts, playbooks,
+  and eval fixtures.
+- `L2`: gated rollout through explicit adapters after evidence, eval, health,
+  canary, timeout, rollback, audit, and regression checks pass.
+- `L3`: external sends, spending, auth/token changes, private data export,
+  device actions, irreversible deletion, or privilege expansion. These stay
+  blocked by default.
 
 ## Quick Start
 
