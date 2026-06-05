@@ -1,0 +1,87 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="640" viewBox="0 0 1120 640" role="img" aria-labelledby="title desc">
+  <title id="title">eimemory autonomous thinking and self-evolution architecture</title>
+  <desc id="desc">Diagram showing eimemory observing experience, recalling context, thinking, creating learning goals, running sandbox experiments, applying gated improvements, tracking a capability ledger, and rolling back regressions.</desc>
+  <rect width="1120" height="640" fill="#f8fafc"/>
+  <style>
+    .panel{fill:#ffffff;stroke:#334155;stroke-width:2;rx:14}
+    .core{fill:#ecfeff;stroke:#0891b2;stroke-width:3;rx:16}
+    .gate{fill:#fefce8;stroke:#ca8a04;stroke-width:2.5;rx:14}
+    .danger{fill:#fff1f2;stroke:#e11d48;stroke-width:2.5;rx:14}
+    .text{font-family:Arial,Helvetica,sans-serif;fill:#0f172a}
+    .title{font-size:25px;font-weight:700}
+    .section{font-size:17px;font-weight:700}
+    .small{font-size:13px}
+    .tiny{font-size:12px}
+    .arrow{stroke:#475569;stroke-width:2.4;fill:none;marker-end:url(#arrow)}
+    .dash{stroke:#64748b;stroke-width:2.2;stroke-dasharray:7 6;fill:none;marker-end:url(#arrow)}
+  </style>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#475569"/>
+    </marker>
+  </defs>
+
+  <text class="text title" x="44" y="52">eimemory: local-first autonomous memory and self-evolution runtime</text>
+  <text class="text small" x="46" y="80">Durable recall, proactive thinking, evidence-backed learning, code sandboxing, gates, ledger, and rollback.</text>
+
+  <rect class="panel" x="45" y="125" width="210" height="96"/>
+  <text class="text section" x="88" y="162">Observe</text>
+  <text class="text small" x="72" y="187">decisions, outcomes</text>
+  <text class="text small" x="72" y="207">incidents, corrections</text>
+
+  <rect class="panel" x="45" y="272" width="210" height="96"/>
+  <text class="text section" x="90" y="309">Recall</text>
+  <text class="text small" x="72" y="334">hybrid retrieval</text>
+  <text class="text small" x="72" y="354">quality-aware context</text>
+
+  <rect class="panel" x="45" y="420" width="210" height="96"/>
+  <text class="text section" x="85" y="457">Knowledge</text>
+  <text class="text small" x="72" y="482">papers, URLs, claims</text>
+  <text class="text small" x="72" y="502">entities, relations</text>
+
+  <rect class="core" x="335" y="128" width="250" height="145"/>
+  <text class="text section" x="423" y="166">Think</text>
+  <text class="text small" x="370" y="195">self-model weaknesses</text>
+  <text class="text small" x="370" y="216">replay gaps + stale goals</text>
+  <text class="text small" x="370" y="237">persisted thought records</text>
+
+  <rect class="core" x="335" y="345" width="250" height="145"/>
+  <text class="text section" x="389" y="383">Learning Goals</text>
+  <text class="text small" x="370" y="412">curiosity priorities</text>
+  <text class="text small" x="370" y="433">candidate portfolios</text>
+  <text class="text small" x="370" y="454">replay datasets</text>
+
+  <rect class="panel" x="665" y="112" width="245" height="112"/>
+  <text class="text section" x="735" y="149">Sandbox</text>
+  <text class="text small" x="695" y="177">experiments, patch plans</text>
+  <text class="text small" x="695" y="198">isolated code worktrees</text>
+
+  <rect class="gate" x="665" y="270" width="245" height="112"/>
+  <text class="text section" x="743" y="307">Gates</text>
+  <text class="text small" x="695" y="335">evidence, replay, health</text>
+  <text class="text small" x="695" y="356">canary, timeout, audit</text>
+
+  <rect class="panel" x="665" y="428" width="245" height="112"/>
+  <text class="text section" x="720" y="465">Capability Ledger</text>
+  <text class="text small" x="695" y="493">scores, trends, failures</text>
+  <text class="text small" x="695" y="514">promotion evidence</text>
+
+  <rect class="danger" x="965" y="268" width="115" height="114"/>
+  <text class="text section" x="993" y="306">Rollback</text>
+  <text class="text tiny" x="988" y="333">regression</text>
+  <text class="text tiny" x="988" y="351">quarantine</text>
+
+  <path class="arrow" d="M255 173 C295 170 310 170 335 180"/>
+  <path class="arrow" d="M255 320 C298 305 315 250 335 225"/>
+  <path class="arrow" d="M255 468 C300 455 315 425 335 410"/>
+  <path class="arrow" d="M460 273 L460 345"/>
+  <path class="arrow" d="M585 198 C620 180 635 168 665 168"/>
+  <path class="arrow" d="M585 417 C625 390 640 352 665 326"/>
+  <path class="arrow" d="M788 224 L788 270"/>
+  <path class="arrow" d="M788 382 L788 428"/>
+  <path class="dash" d="M910 326 L965 326"/>
+  <path class="dash" d="M965 354 C900 590 535 585 460 490"/>
+
+  <rect class="panel" x="145" y="560" width="830" height="48"/>
+  <text class="text small" x="175" y="590">Authority boundary: sandbox reports and L1/L2 candidates are reviewable; external sends, spending, credentials, private data export, deletion, and production deployment stay blocked by default.</text>
+</svg>
