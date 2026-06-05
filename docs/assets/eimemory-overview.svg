@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="560" viewBox="0 0 1040 560" role="img" aria-labelledby="title desc">
+  <title id="title">eimemory memory and learning architecture</title>
+  <desc id="desc">Diagram showing eimemory record store, recall, knowledge, evaluation, and governance layers.</desc>
+  <rect width="1040" height="560" fill="#f8fafc"/>
+  <style>
+    .box{fill:#ffffff;stroke:#334155;stroke-width:2;rx:12}
+    .main{fill:#eff6ff;stroke:#2563eb;stroke-width:3;rx:14}
+    .text{font-family:Arial,Helvetica,sans-serif;fill:#0f172a}
+    .title{font-size:23px;font-weight:700}
+    .label{font-size:16px;font-weight:700}
+    .small{font-size:13px}
+    .arrow{stroke:#475569;stroke-width:2.2;fill:none;marker-end:url(#arrow)}
+  </style>
+  <defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#475569"/></marker></defs>
+  <text class="text title" x="40" y="48">eimemory: durable context and evidence-backed learning</text>
+  <rect class="box" x="55" y="95" width="230" height="85"/><text class="text label" x="105" y="132">Observations</text><text class="text small" x="88" y="156">decisions, outcomes, incidents</text>
+  <rect class="box" x="55" y="255" width="230" height="85"/><text class="text label" x="112" y="292">Knowledge</text><text class="text small" x="90" y="316">papers, URLs, candidate notes</text>
+  <rect class="box" x="55" y="415" width="230" height="85"/><text class="text label" x="118" y="452">Feedback</text><text class="text small" x="96" y="476">corrections + replay results</text>
+  <rect class="main" x="370" y="135" width="300" height="230"/>
+  <text class="text label" x="455" y="185">eimemory</text>
+  <text class="text small" x="418" y="215">record store: JSONL + SQLite</text>
+  <text class="text small" x="430" y="242">hybrid recall + scoring</text>
+  <text class="text small" x="430" y="269">knowledge compilation</text>
+  <text class="text small" x="435" y="296">evaluation framework</text>
+  <text class="text small" x="428" y="323">learning ledger + gates</text>
+  <rect class="box" x="760" y="90" width="230" height="85"/><text class="text label" x="832" y="128">eibrain</text><text class="text small" x="796" y="152">recall context for planning</text>
+  <rect class="box" x="760" y="250" width="230" height="85"/><text class="text label" x="833" y="288">eiskills</text><text class="text small" x="790" y="312">capability evidence + gates</text>
+  <rect class="box" x="760" y="410" width="230" height="85"/><text class="text label" x="824" y="448">eitraining</text><text class="text small" x="795" y="472">replay datasets + outcomes</text>
+  <path class="arrow" d="M285 138 C330 145 340 190 370 205"/>
+  <path class="arrow" d="M285 298 L370 260"/>
+  <path class="arrow" d="M285 458 C335 405 350 320 370 300"/>
+  <path class="arrow" d="M670 205 C720 180 735 132 760 132"/>
+  <path class="arrow" d="M670 260 L760 292"/>
+  <path class="arrow" d="M670 320 C730 360 735 452 760 452"/>
+</svg>
