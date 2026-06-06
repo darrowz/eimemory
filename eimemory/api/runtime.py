@@ -576,6 +576,37 @@ class Runtime:
             persist_report=persist_report,
         )
 
+    def run_locomo(
+        self,
+        dataset: dict | list,
+        *,
+        mode: str = "raw",
+        granularity: str = "turn",
+        limit: int = 10,
+    ) -> dict:
+        from eimemory.evaluation import run_locomo
+
+        return run_locomo(self, dataset, mode=mode, granularity=granularity, limit=limit)
+
+    def run_public_memory_benchmark(
+        self,
+        dataset: dict | list,
+        *,
+        suite: str,
+        mode: str = "raw",
+        granularity: str = "",
+        limit: int = 10,
+    ) -> dict:
+        from eimemory.evaluation import run_public_memory_benchmark
+
+        return run_public_memory_benchmark(
+            dataset,
+            suite=suite,
+            mode=mode,
+            granularity=granularity,
+            limit=limit,
+        )
+
     def run_livingmem_eval(
         self,
         dataset: dict | list,
@@ -610,6 +641,16 @@ class Runtime:
         from eimemory.evaluation import run_production_recall_eval
 
         return run_production_recall_eval(self, dataset, seed=seed, scope=scope)
+
+    def run_real_task_replay(
+        self,
+        dataset: dict | list,
+        *,
+        seed: bool = True,
+    ) -> dict:
+        from eimemory.evaluation import run_real_task_replay
+
+        return run_real_task_replay(self, dataset, seed=seed)
 
     def enrich_living_memory(self, *, scope: dict | None = None, limit: int = 100) -> dict:
         from eimemory.living.operations import enrich_memory_records

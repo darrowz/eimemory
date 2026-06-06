@@ -1,0 +1,28 @@
+{
+  "name": "locomo-smoke",
+  "scope": {
+    "agent_id": "hongtu",
+    "workspace_id": "embodied",
+    "user_id": "darrow"
+  },
+  "cases": [
+    {
+      "id": "coffee-device-preference",
+      "question": "Which device should be checked before starting coffee service?",
+      "question_type": "temporal_preference",
+      "conversation": [
+        {
+          "turn_id": "coffee-turn-1",
+          "speaker": "user",
+          "text": "Before coffee service, check the kitchen plug and cup position first."
+        },
+        {
+          "turn_id": "music-turn-1",
+          "speaker": "user",
+          "text": "For music playback, make sure audio is actually audible."
+        }
+      ],
+      "evidence_turn_ids": ["coffee-turn-1"]
+    }
+  ]
+}

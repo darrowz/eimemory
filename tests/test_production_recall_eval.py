@@ -170,13 +170,15 @@ def test_production_recall_eval_reports_regression_metrics(tmp_path) -> None:
     assert report["hit_at_k"] == 1.0
     assert report["mrr"] == 1.0
     assert report["outcome_pollution_rate"] == 0.0
-    assert report["reflection_pollution_rate"] == 0.2
+    assert report["reflection_pollution_rate"] == 0.0
     assert report["empty_rate"] == 0.0
     assert report["latency_ms_avg"] >= 0.0
     assert report["latency_ms_p95"] >= 0.0
     assert len(report["samples"]) == 5
     assert report["samples"][3]["outcome_polluted"] is False
-    assert report["samples"][4]["reflection_polluted"] is True
+    assert report["samples"][4]["reflection_returned"] is True
+    assert report["samples"][4]["reflection_allowed"] is True
+    assert report["samples"][4]["reflection_polluted"] is False
     assert report["samples"][3]["forbid_hit"] is False
     assert report["samples"][4]["forbid_hit"] is False
 

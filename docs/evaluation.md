@@ -97,6 +97,65 @@ Report metrics include `retrieval_recall_at_1/5/10`, `recall_any_at_k`,
 `recall_all_at_k`, `ndcg_at_5`, `mrr`, latency average/p95,
 `by_question_type`, and per-sample returned evidence ids.
 
+## Public Benchmark Harness
+
+`eimemory eval public-benchmark` runs public benchmark adapters with an
+isolated temporary runtime. It is the preferred entry point for full
+LongMemEval or LoCoMo datasets because it never writes to the production DB at
+`/var/lib/eimemory/state/eimemory.sqlite`.
+
+```bash
+eimemory eval public-benchmark examples/evaluation/longmemeval_smoke.json \
+  --suite longmemeval \
+  --mode raw \
+  --granularity session \
+  --output tmp/public-longmemeval-report.json
+
+eimemory eval public-benchmark examples/evaluation/locomo_smoke.json \
+  --suite locomo \
+  --mode raw \
+  --granularity turn \
+  --output tmp/public-locomo-report.json
+```
+
+The top-level report includes normalized `r_at_1`, `r_at_5`, `mrr`,
+`ndcg_at_5`, latency, and failure samples, plus the adapter-specific report
+under `report`.
+
+`eimemory eval locomo` is also available for adapter-level smoke runs. It
+accepts LoCoMo-like `conversation`, `messages`, `turns`, `sessions`, or
+`conversation_sessions` fields and scores `session`, `turn`, or `chunk`
+evidence ids.
+
+## Real Task Replay
+
+`eimemory eval task-replay` runs `real_task_replay.v1` cases for OpenClaw,
+UUMit, and eimemory history-derived tasks. Seeded runs use temporary state so
+smoke datasets do not contaminate production memory.
+
+```bash
+eimemory eval task-replay examples/evaluation/real_task_replay_smoke.json \
+  --output tmp/real-task-replay-report.json
+```
+
+The replay schema supports:
+
+- `source_system`: `openclaw`, `uumit`, `eimemory`, or another source label.
+- `query` / `input` / `prompt`: the replayed user or system request.
+- `task_type` and `task_context`: routing context for recall.
+- `expected_text`: terms that should be recalled.
+- `negative_expected_text`: terms that must not be recalled.
+
+To build a larger replay set from local outcome traces, corrections, and
+previous replay suggestions:
+
+```bash
+eimemory learn replay-dataset --limit 100
+```
+
+The generated dataset is marked `schema_version: real_task_replay.v1` and
+includes source-system labels without storing secrets or private tokens.
+
 ## Actionable Memory Evaluation
 
 `eimemory eval actionable` runs a compact smoke suite for recall + posture +

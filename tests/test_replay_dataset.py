@@ -33,6 +33,7 @@ def test_replay_dataset_extracts_user_correction_from_event_outcome(tmp_path) ->
     report = build_replay_dataset(runtime, scope=scope, persist=True)
 
     assert report["ok"] is True
+    assert report["schema_version"] == "real_task_replay.v1"
     assert report["case_count"] == 1
     assert report["correction_count"] == 1
     assert report["cases"][0]["correction_from_user"] == "不是写歌词，是要让我能听见"
@@ -115,6 +116,7 @@ def test_replay_dataset_collects_bad_outcomes_and_operator_corrections(tmp_path)
     report = build_replay_dataset(runtime, scope=scope, limit=50, persist=True)
 
     assert report["report_type"] == "proactive_replay_dataset"
+    assert report["schema_version"] == "real_task_replay.v1"
     assert report["case_count"] >= 3
     assert report["correction_count"] >= 2
     assert report["persisted_record_id"]
@@ -124,3 +126,4 @@ def test_replay_dataset_collects_bad_outcomes_and_operator_corrections(tmp_path)
     persisted = runtime.store.get_by_id(report["persisted_record_id"], scope=scope)
     assert persisted is not None
     assert persisted.meta.get("report_type") == "proactive_replay_dataset"
+    assert persisted.meta.get("schema_version") == "real_task_replay.v1"

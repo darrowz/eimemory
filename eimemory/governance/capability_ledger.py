@@ -82,12 +82,19 @@ def build_capability_ledger(
             reverse=True,
         )
         scores = [float(item.meta.get("score") or 0.0) for item in ordered]
+        evidence_count = sum(int(item.meta.get("evidence_count") or 0) for item in ordered)
+        regression_count = sum(int(item.meta.get("regression_count") or 0) for item in ordered)
+        latest_score = scores[0] if scores else 0.0
+        confidence = _ledger_confidence(score=latest_score, evidence_count=evidence_count)
         capabilities[capability] = {
-            "score": scores[0] if scores else 0.0,
+            "score": latest_score,
             "average": round(mean(scores), 3) if scores else 0.0,
             "trend": round(scores[0] - scores[-1], 3) if len(scores) >= 2 else 0.0,
-            "evidence_count": sum(int(item.meta.get("evidence_count") or 0) for item in ordered),
-            "regression_count": sum(int(item.meta.get("regression_count") or 0) for item in ordered),
+            "evidence_count": evidence_count,
+            "regression_count": regression_count,
+            "confidence": confidence,
+            "status": _ledger_status(score=latest_score, evidence_count=evidence_count),
+            "needs_outcome_recalculation": bool(latest_score < 0.5 or evidence_count == 0),
             "last_record_id": ordered[0].record_id if ordered else "",
         }
     for capability in SEEDED_LEDGER_CAPABILITIES:
@@ -99,7 +106,28 @@ def build_capability_ledger(
                 "trend": 0.0,
                 "evidence_count": 0,
                 "regression_count": 0,
+                "confidence": "none",
+                "status": "stale_unverified",
+                "needs_outcome_recalculation": True,
                 "last_record_id": "",
             },
         )
     return {"ok": True, "capabilities": capabilities, "record_count": len(records)}
+
+
+def _ledger_confidence(*, score: float, evidence_count: int) -> str:
+    if evidence_count <= 0:
+        return "none"
+    if evidence_count < 3:
+        return "low"
+    if score < 0.5:
+        return "low"
+    return "medium" if evidence_count < 10 else "high"
+
+
+def _ledger_status(*, score: float, evidence_count: int) -> str:
+    if evidence_count <= 0:
+        return "stale_unverified"
+    if score < 0.5:
+        return "needs_outcome_recalculation"
+    return "active"

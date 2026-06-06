@@ -380,6 +380,19 @@ def _build_parser() -> argparse.ArgumentParser:
     eval_longmem.add_argument("--limit", type=int, default=10)
     eval_longmem.add_argument("--output", default="")
     eval_longmem.add_argument("--persist-report", action="store_true")
+    eval_locomo = eval_sub.add_parser("locomo")
+    eval_locomo.add_argument("dataset_json")
+    eval_locomo.add_argument("--mode", choices=["raw", "hybrid"], default="raw")
+    eval_locomo.add_argument("--granularity", choices=["session", "turn", "chunk"], default="turn")
+    eval_locomo.add_argument("--limit", type=int, default=10)
+    eval_locomo.add_argument("--output", default="")
+    eval_public = eval_sub.add_parser("public-benchmark")
+    eval_public.add_argument("dataset_json")
+    eval_public.add_argument("--suite", choices=["longmemeval", "locomo"], required=True)
+    eval_public.add_argument("--mode", choices=["raw", "hybrid"], default="raw")
+    eval_public.add_argument("--granularity", choices=["session", "turn", "chunk"], default="")
+    eval_public.add_argument("--limit", type=int, default=10)
+    eval_public.add_argument("--output", default="")
     eval_living = eval_sub.add_parser("living")
     eval_living.add_argument("dataset_json")
     eval_living.add_argument("--output", default="")
@@ -392,6 +405,10 @@ def _build_parser() -> argparse.ArgumentParser:
     eval_production_recall.add_argument("dataset_json")
     eval_production_recall.add_argument("--output", default="")
     eval_production_recall.add_argument("--no-seed", action="store_true")
+    eval_task_replay = eval_sub.add_parser("task-replay")
+    eval_task_replay.add_argument("dataset_json")
+    eval_task_replay.add_argument("--output", default="")
+    eval_task_replay.add_argument("--no-seed", action="store_true")
     return parser
 
 
@@ -1355,6 +1372,80 @@ def main(argv: list[str] | None = None) -> int:
                 report = {**report, "output": str(output_path)}
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0 if report.get("ok") else 1
+        if parsed.eval_command == "locomo":
+            try:
+                with open(parsed.dataset_json, "r", encoding="utf-8") as handle:
+                    dataset = json.load(handle)
+            except OSError as exc:
+                print(json.dumps({"ok": False, "error": "dataset_unreadable", "detail": str(exc)}, ensure_ascii=False))
+                return 2
+            except json.JSONDecodeError:
+                print(json.dumps({"ok": False, "error": "invalid_dataset_json"}, ensure_ascii=False))
+                return 2
+            if parsed.limit <= 0:
+                print(json.dumps({"ok": False, "error": "invalid_limit"}, ensure_ascii=False))
+                return 2
+            try:
+                from eimemory.evaluation import run_locomo
+
+                report = run_locomo(
+                    runtime,
+                    dataset,
+                    mode=parsed.mode,
+                    granularity=parsed.granularity,
+                    limit=parsed.limit,
+                )
+            except ValueError as exc:
+                print(json.dumps({"ok": False, "error": "invalid_eval_dataset", "detail": str(exc)}, ensure_ascii=False))
+                return 2
+            if parsed.output:
+                try:
+                    output_path = Path(parsed.output)
+                    output_path.parent.mkdir(parents=True, exist_ok=True)
+                    output_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+                except OSError as exc:
+                    print(json.dumps({"ok": False, "error": "eval_output_failed", "detail": str(exc)}, ensure_ascii=False))
+                    return 2
+                report = {**report, "output": str(output_path)}
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0 if report.get("ok") else 1
+        if parsed.eval_command == "public-benchmark":
+            try:
+                with open(parsed.dataset_json, "r", encoding="utf-8") as handle:
+                    dataset = json.load(handle)
+            except OSError as exc:
+                print(json.dumps({"ok": False, "error": "dataset_unreadable", "detail": str(exc)}, ensure_ascii=False))
+                return 2
+            except json.JSONDecodeError:
+                print(json.dumps({"ok": False, "error": "invalid_dataset_json"}, ensure_ascii=False))
+                return 2
+            if parsed.limit <= 0:
+                print(json.dumps({"ok": False, "error": "invalid_limit"}, ensure_ascii=False))
+                return 2
+            try:
+                from eimemory.evaluation import run_public_memory_benchmark
+
+                report = run_public_memory_benchmark(
+                    dataset,
+                    suite=parsed.suite,
+                    mode=parsed.mode,
+                    granularity=parsed.granularity,
+                    limit=parsed.limit,
+                )
+            except ValueError as exc:
+                print(json.dumps({"ok": False, "error": "invalid_eval_dataset", "detail": str(exc)}, ensure_ascii=False))
+                return 2
+            if parsed.output:
+                try:
+                    output_path = Path(parsed.output)
+                    output_path.parent.mkdir(parents=True, exist_ok=True)
+                    output_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+                except OSError as exc:
+                    print(json.dumps({"ok": False, "error": "eval_output_failed", "detail": str(exc)}, ensure_ascii=False))
+                    return 2
+                report = {**report, "output": str(output_path)}
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0 if report.get("ok") else 1
         if parsed.eval_command == "living":
             try:
                 with open(parsed.dataset_json, "r", encoding="utf-8") as handle:
@@ -1462,7 +1553,45 @@ def main(argv: list[str] | None = None) -> int:
                 report = {**report, "output": str(output_path)}
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0 if report.get("ok") else 1
-        print(json.dumps({"usage": "eimemory eval run|ci|longmem|living|actionable|production-recall"}))
+        if parsed.eval_command == "task-replay":
+            try:
+                with open(parsed.dataset_json, "r", encoding="utf-8") as handle:
+                    dataset = json.load(handle)
+            except OSError as exc:
+                print(
+                    json.dumps(
+                        {"ok": False, "error": "dataset_unreadable", "detail": str(exc)},
+                        ensure_ascii=False,
+                    )
+                )
+                return 2
+            except json.JSONDecodeError:
+                print(json.dumps({"ok": False, "error": "invalid_dataset_json"}, ensure_ascii=False))
+                return 2
+            try:
+                from eimemory.evaluation import run_real_task_replay
+
+                report = run_real_task_replay(runtime, dataset, seed=not bool(parsed.no_seed))
+            except ValueError as exc:
+                print(json.dumps({"ok": False, "error": "invalid_eval_dataset", "detail": str(exc)}, ensure_ascii=False))
+                return 2
+            if parsed.output:
+                try:
+                    output_path = Path(parsed.output)
+                    output_path.parent.mkdir(parents=True, exist_ok=True)
+                    output_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+                except OSError as exc:
+                    print(
+                        json.dumps(
+                            {"ok": False, "error": "eval_output_failed", "detail": str(exc)},
+                            ensure_ascii=False,
+                        )
+                    )
+                    return 2
+                report = {**report, "output": str(output_path)}
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0 if report.get("ok") else 1
+        print(json.dumps({"usage": "eimemory eval run|ci|longmem|locomo|public-benchmark|living|actionable|production-recall|task-replay"}))
         return 0
     if parsed.command == "reflect":
         if parsed.reflect_command == "check":

@@ -198,7 +198,14 @@ def _run_case(
         reciprocal_rank = 1.0 if returned else 0.0
 
     outcome_polluted = any(_is_outcome_pollution(item) for item in returned)
-    reflection_polluted = any(_is_reflection_record(item) for item in returned)
+    reflection_returned = any(_is_reflection_record(item) for item in returned)
+    reflection_allowed = _allows_reflection_results(
+        query=query,
+        task_context=task_context,
+        expected_record_ids=expected_record_ids,
+        returned=returned,
+    )
+    reflection_polluted = reflection_returned and not reflection_allowed
     forbidden_by_case = any(
         _record_forbidden(
             record=item,
@@ -237,6 +244,8 @@ def _run_case(
         "empty": not bool(returned),
         "forbid_hit": bool(forbidden_by_case),
         "outcome_polluted": bool(outcome_polluted),
+        "reflection_returned": bool(reflection_returned),
+        "reflection_allowed": bool(reflection_allowed),
         "reflection_polluted": bool(reflection_polluted),
         "explanation": {
             "recall_profile": str(bundle.explanation.get("recall_profile") or ""),
@@ -415,6 +424,43 @@ def _is_reflection_record(record: RecordEnvelope) -> bool:
     return str(record.kind) == "reflection"
 
 
+def _allows_reflection_results(
+    *,
+    query: str,
+    task_context: dict[str, Any],
+    expected_record_ids: set[str],
+    returned: list[RecordEnvelope],
+) -> bool:
+    if _is_report_query(query, task_context):
+        return True
+    if expected_record_ids and any(item.kind == "reflection" and item.record_id in expected_record_ids for item in returned):
+        return True
+    return False
+
+
+def _is_report_query(query: str, task_context: dict[str, Any]) -> bool:
+    haystack = f"{query} " + " ".join(
+        str(task_context.get(key) or "")
+        for key in ("intent", "goal", "task_type", "report_type", "recall_view")
+    )
+    lowered = haystack.lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "report",
+            "governance",
+            "reflection",
+            "rule evolution",
+            "rule_evolution",
+            "evolution",
+            "复盘",
+            "反思",
+            "报告",
+            "治理",
+        )
+    )
+
+
 def _expected_record_ids(case: dict[str, Any], *, seed_lookup: dict[str, str]) -> set[str]:
     expected_record_ids = {
         _map_seed_reference(value, seed_lookup=seed_lookup)
@@ -466,6 +512,8 @@ def _invalid_case(index: int, scope: ScopeRef, error: str) -> dict[str, Any]:
         "empty": True,
         "forbid_hit": False,
         "outcome_polluted": False,
+        "reflection_returned": False,
+        "reflection_allowed": False,
         "reflection_polluted": False,
         "error": error,
         "explanation": {},

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+from hashlib import sha256
 
 from eimemory.adapters.openclaw.qmd_export import export_record_markdown
+from eimemory.metadata import business_metadata
 from eimemory.storage.jsonl import JsonlLog
 from eimemory.storage.sqlite_store import SqliteRecordStore
 from eimemory.models.records import RecordEnvelope, ScopeRef
@@ -16,6 +18,9 @@ class RuntimeStore:
         self.sqlite = SqliteRecordStore(self.root / "state" / "eimemory.sqlite")
 
     def append(self, record: RecordEnvelope) -> RecordEnvelope:
+        existing = self._existing_reflection_duplicate(record)
+        if existing is not None:
+            return existing
         self.log.append(record)
         self.sqlite.upsert(record)
         export_record_markdown(self.root, record)
@@ -139,3 +144,39 @@ class RuntimeStore:
 
     def close(self) -> None:
         self.sqlite.close()
+
+    def _existing_reflection_duplicate(self, record: RecordEnvelope) -> RecordEnvelope | None:
+        if record.kind != "reflection":
+            return None
+        fingerprint = _reflection_fingerprint(record)
+        if not fingerprint:
+            return None
+        report_type = str(business_metadata(record.meta).get("report_type") or record.provenance.get("report_type") or "")
+        for existing in self.list_records(kinds=["reflection"], scope=record.scope, limit=200):
+            if str(existing.source or "") != str(record.source or ""):
+                continue
+            existing_report_type = str(
+                business_metadata(existing.meta).get("report_type") or existing.provenance.get("report_type") or ""
+            )
+            if existing_report_type != report_type:
+                continue
+            if _reflection_fingerprint(existing) == fingerprint:
+                return existing
+        return None
+
+
+def _reflection_fingerprint(record: RecordEnvelope) -> str:
+    content = record.content if isinstance(record.content, dict) else {}
+    text = "\n".join(
+        str(value or "").strip()
+        for value in (
+            record.title,
+            record.summary,
+            record.detail,
+            content.get("text"),
+            content.get("summary"),
+            content.get("report"),
+        )
+        if str(value or "").strip()
+    ).lower()
+    return sha256(text.encode("utf-8")).hexdigest()[:24] if text else ""

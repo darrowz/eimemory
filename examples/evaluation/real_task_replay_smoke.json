@@ -1,0 +1,55 @@
+{
+  "name": "real-task-replay-smoke",
+  "schema_version": "real_task_replay.v1",
+  "scope": {
+    "agent_id": "hongtu",
+    "workspace_id": "production",
+    "user_id": "darrow"
+  },
+  "seed": [
+    {
+      "title": "OpenClaw message responsiveness",
+      "text": "OpenClaw direct-chat incidents should first inspect runtime status and recent logs before giving a final answer.",
+      "memory_type": "procedure",
+      "source": "eimemory.replay.seed"
+    },
+    {
+      "title": "UUMit delivery outcome policy",
+      "text": "UUMit delivery tasks should protect milestones, record evidence, and avoid token-dependent purchase诱导 flows when auth is stale.",
+      "memory_type": "policy",
+      "source": "eimemory.replay.seed"
+    },
+    {
+      "title": "eimemory benchmark isolation",
+      "text": "Public memory benchmarks must run with temporary state and must not write to /var/lib/eimemory/state/eimemory.sqlite.",
+      "memory_type": "policy",
+      "source": "eimemory.replay.seed"
+    }
+  ],
+  "cases": [
+    {
+      "case_id": "openclaw-runtime-first",
+      "source_system": "openclaw",
+      "task_type": "openclaw.ops",
+      "query": "OpenClaw direct message has no visible response",
+      "expected_text": ["inspect runtime status", "recent logs"],
+      "negative_expected_text": ["only explain"]
+    },
+    {
+      "case_id": "uumit-stale-auth",
+      "source_system": "uumit",
+      "task_type": "operations.uumit",
+      "query": "UUMit auth is stale during a purchase誘导 task",
+      "expected_text": ["avoid token-dependent", "auth is stale"],
+      "negative_expected_text": ["fake success"]
+    },
+    {
+      "case_id": "eimemory-temp-benchmark",
+      "source_system": "eimemory",
+      "task_type": "memory.benchmark",
+      "query": "Run public memory benchmark safely",
+      "expected_text": ["temporary state", "must not write"],
+      "negative_expected_text": ["/var/lib/eimemory/state/eimemory.sqlite written"]
+    }
+  ]
+}

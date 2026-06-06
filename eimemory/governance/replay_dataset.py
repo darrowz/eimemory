@@ -8,6 +8,7 @@ from eimemory.metadata import business_metadata
 from eimemory.models.records import ScopeRef
 
 REPLAY_DATASET_REPORT_TYPE = "proactive_replay_dataset"
+REAL_TASK_REPLAY_SCHEMA_VERSION = "real_task_replay.v1"
 
 
 def build_replay_dataset(
@@ -47,20 +48,24 @@ def build_replay_dataset(
             ),
             authority_tier="L0",
             status="active",
-            content={"cases": deduped_cases},
+            content={"schema_version": REAL_TASK_REPLAY_SCHEMA_VERSION, "cases": deduped_cases},
             meta={
                 "report_type": REPLAY_DATASET_REPORT_TYPE,
+                "schema_version": REAL_TASK_REPLAY_SCHEMA_VERSION,
                 "case_count": len(deduped_cases),
                 "correction_count": correction_count,
                 "limit": budget,
+                "source_systems": _source_systems(deduped_cases),
             },
         )
         persisted_record_id = record.record_id
     return {
         "ok": True,
+        "schema_version": REAL_TASK_REPLAY_SCHEMA_VERSION,
         "report_type": REPLAY_DATASET_REPORT_TYPE,
         "case_count": len(deduped_cases),
         "correction_count": correction_count,
+        "source_systems": _source_systems(deduped_cases),
         "persisted": bool(persist),
         "persisted_record_id": persisted_record_id,
         "cases": deduped_cases,
@@ -112,6 +117,7 @@ def _cases_from_event_tables(runtime: Any, *, scope: ScopeRef, limit: int) -> li
                     expected_behavior,
                 ),
                 "source": "event_outcome",
+                "source_system": _source_system_from_task(_first_text(outcome.get("task_type"), event.get("event_type"), outcome.get("task_type"))),
                 "event_id": str(row["event_id"] or ""),
                 "query": input_text,
                 "input": input_text,
@@ -147,6 +153,7 @@ def _cases_from_outcome_traces(runtime: Any, *, scope: ScopeRef, limit: int) -> 
             {
                 "case_id": stable_semantic_key("outcome_trace_case", record.record_id, input_text, expected_behavior),
                 "source": "outcome_trace",
+                "source_system": _source_system_from_task(_first_text(content.get("task_type"), content.get("payload", {}).get("task_type"), record.source)),
                 "event_id": record.record_id,
                 "query": input_text,
                 "input": input_text,
@@ -191,6 +198,7 @@ def _cases_from_operator_corrections(runtime: Any, *, scope: ScopeRef, limit: in
             {
                 "case_id": stable_semantic_key("operator_correction", record.record_id, correction, input_text),
                 "source": "operator_correction",
+                "source_system": _source_system_from_task(_first_text(meta.get("task_type"), content.get("task_type"), record.source)),
                 "event_id": record.record_id,
                 "query": input_text,
                 "input": input_text,
@@ -250,6 +258,7 @@ def _cases_from_replay_results(runtime: Any, *, scope: ScopeRef, limit: int) -> 
                 {
                     "case_id": case_id,
                     "source": "replay_result",
+                    "source_system": _source_system_from_task(_first_text(sample.get("source_system"), sample.get("task_type"), content.get("task_type"), record.meta.get("task_type"), record.source)),
                     "event_id": record.record_id,
                     "query": query,
                     "input": query,
@@ -272,6 +281,7 @@ def _cases_from_replay_results(runtime: Any, *, scope: ScopeRef, limit: int) -> 
                 {
                     "case_id": stable_semantic_key("replay_result_case", record.record_id, query),
                     "source": "replay_result",
+                    "source_system": _source_system_from_task(_first_text(record.meta.get("task_type"), record.source)),
                     "event_id": record.record_id,
                     "query": query,
                     "input": query,
@@ -311,6 +321,22 @@ def _case_identity_key(case: dict[str, Any]) -> str:
 
 def _case_fingerprint(cases: list[dict[str, Any]]) -> str:
     return stable_semantic_key(*[case.get("case_id") for case in cases]) if cases else "empty"
+
+
+def _source_systems(cases: list[dict[str, Any]]) -> list[str]:
+    values = sorted({_first_text(case.get("source_system")) for case in cases if _first_text(case.get("source_system"))})
+    return values
+
+
+def _source_system_from_task(value: Any) -> str:
+    text = _first_text(value).lower()
+    if "uumit" in text:
+        return "uumit"
+    if "openclaw" in text or "feishu" in text or "agent" in text:
+        return "openclaw"
+    if "eimemory" in text or "memory" in text or "replay" in text:
+        return "eimemory"
+    return "unknown"
 
 
 def _loads(value: Any) -> dict[str, Any]:
