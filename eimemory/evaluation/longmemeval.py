@@ -213,6 +213,7 @@ def _ingest_case_chunks(runtime, *, case: dict[str, Any], scope: ScopeRef) -> No
             continue
         if not _ingest_with_raw_api(runtime, chunk=chunk, case=case, scope=scope):
             runtime.store.append(_raw_chunk_record(chunk, case=case, scope=scope))
+        _mark_raw_chunk_ingested(runtime, chunk["chunk_id"], scope=scope)
 
 
 def _ingest_with_raw_api(runtime, *, chunk: dict[str, Any], case: dict[str, Any], scope: ScopeRef) -> bool:
@@ -275,10 +276,36 @@ def _raw_chunk_record(chunk: dict[str, Any], *, case: dict[str, Any], scope: Sco
 
 
 def _existing_raw_chunk(runtime, chunk_id: str, *, scope: ScopeRef) -> bool:
+    cache_key = _raw_chunk_cache_key(chunk_id, scope=scope)
+    cache = getattr(runtime, "_eimemory_eval_raw_chunk_ids", None)
+    if cache is None:
+        cache = set()
+        setattr(runtime, "_eimemory_eval_raw_chunk_ids", cache)
+    if cache_key in cache:
+        return True
     for record in runtime.store.list_records(kinds=["raw_chunk"], scope=scope, limit=1000):
         if record.content.get("chunk_id") == chunk_id:
+            cache.add(cache_key)
             return True
     return False
+
+
+def _mark_raw_chunk_ingested(runtime, chunk_id: str, *, scope: ScopeRef) -> None:
+    cache = getattr(runtime, "_eimemory_eval_raw_chunk_ids", None)
+    if cache is None:
+        cache = set()
+        setattr(runtime, "_eimemory_eval_raw_chunk_ids", cache)
+    cache.add(_raw_chunk_cache_key(chunk_id, scope=scope))
+
+
+def _raw_chunk_cache_key(chunk_id: str, *, scope: ScopeRef) -> tuple[str, str, str, str, str]:
+    return (
+        str(scope.tenant_id or "default"),
+        str(scope.agent_id or ""),
+        str(scope.workspace_id or ""),
+        str(scope.user_id or ""),
+        str(chunk_id or ""),
+    )
 
 
 def _retrieve(runtime, *, query: str, scope: ScopeRef, mode: str, limit: int) -> list[RecordEnvelope]:

@@ -78,6 +78,21 @@ def test_locomo_smoke_scores_turn_level_recall(tmp_path) -> None:
     assert report["failure_samples"] == []
 
 
+def test_locomo_reuses_repeated_conversation_chunks(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    dataset = _locomo_dataset()
+    for case in dataset["cases"]:
+        for turn in case["conversation"]:
+            turn["chunk_id"] = turn["turn_id"]
+    dataset["cases"].append({**dataset["cases"][0], "id": "coffee-device-repeat"})
+
+    report = run_locomo(runtime, dataset, mode="raw", granularity="turn", limit=5)
+    records = runtime.store.list_records(kinds=["raw_chunk"], scope=_scope(), limit=10)
+
+    assert report["sample_count"] == 2
+    assert len(records) == 2
+
+
 def test_public_benchmark_runs_in_isolated_runtime(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
 
