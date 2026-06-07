@@ -152,6 +152,8 @@ class RuntimeStore:
         if not fingerprint:
             return None
         report_type = str(business_metadata(record.meta).get("report_type") or record.provenance.get("report_type") or "")
+        if report_type == "outcome_trace":
+            return None
         for existing in self.list_records(kinds=["reflection"], scope=record.scope, limit=200):
             if str(existing.source or "") != str(record.source or ""):
                 continue

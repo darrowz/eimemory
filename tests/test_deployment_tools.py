@@ -91,8 +91,8 @@ def test_openclaw_gateway_override_uses_production_eimemory_runtime() -> None:
 
     assert "Environment=EIMEMORY_ROOT=/var/lib/eimemory" in override_text
     assert "Environment=EIMEMORY_CONFIG_DIR=/etc/eimemory" in override_text
-    assert 'Environment="EIMEMORY_HOOK_COMMAND=/opt/eimemory/current/.venv/bin/python -m eimemory.cli.main openclaw-hook"' in override_text
-    assert 'Environment="EIMEMORY_BRIDGE_COMMAND=/opt/eimemory/current/.venv/bin/python -m eimemory.cli.main ei-bridge feishu"' in override_text
+    assert 'Environment="EIMEMORY_HOOK_COMMAND=/opt/eimemory/current/.venv/bin/eimemory openclaw-hook"' in override_text
+    assert 'Environment="EIMEMORY_BRIDGE_COMMAND=/opt/eimemory/current/.venv/bin/eimemory ei-bridge feishu"' in override_text
     assert "/dev-project/eimemory/.venv" not in override_text
     assert "PYTHONPATH=/dev-project/eimemory" not in override_text
 

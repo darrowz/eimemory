@@ -133,8 +133,10 @@ def run_locomo(
 
 def _normalize_case(case: dict[str, Any], *, index: int, default_scope: dict[str, Any]) -> dict[str, Any]:
     case_id = str(case.get("id") or case.get("case_id") or f"locomo-{index + 1}")
-    sessions = _sessions_from_case(case, case_id=case_id)
-    chunks = _session_chunks(sessions, case_id=case_id)
+    chunks = _existing_chunks(case)
+    if not chunks:
+        sessions = _sessions_from_case(case, case_id=case_id)
+        chunks = _session_chunks(sessions, case_id=case_id)
     return {
         "case_id": case_id,
         "question": str(case.get("question") or case.get("query") or case.get("qa", {}).get("question") or ""),
@@ -146,6 +148,28 @@ def _normalize_case(case: dict[str, Any], *, index: int, default_scope: dict[str
         "evidence_turn_ids": _strings(case.get("evidence_turn_ids") or case.get("evidence_turns")),
         "evidence_chunk_ids": _strings(case.get("evidence_chunk_ids") or case.get("evidence_chunks")),
     }
+
+
+def _existing_chunks(case: dict[str, Any]) -> list[dict[str, Any]]:
+    chunks: list[dict[str, Any]] = []
+    for index, chunk in enumerate(list(case.get("chunks") or [])):
+        if not isinstance(chunk, dict):
+            continue
+        text = str(chunk.get("text") or chunk.get("raw_text") or "")
+        if not text:
+            continue
+        turn_id = str(chunk.get("turn_id") or "")
+        turn_ids = _strings(chunk.get("turn_ids") or ([turn_id] if turn_id else []))
+        chunks.append(
+            {
+                "chunk_id": str(chunk.get("chunk_id") or f"{case.get('case_id') or case.get('id') or 'locomo'}:chunk:{index}"),
+                "session_id": str(chunk.get("session_id") or ""),
+                "turn_id": turn_id or (turn_ids[0] if turn_ids else ""),
+                "turn_ids": turn_ids,
+                "text": text,
+            }
+        )
+    return chunks
 
 
 def _sessions_from_case(case: dict[str, Any], *, case_id: str) -> list[dict[str, Any]]:
