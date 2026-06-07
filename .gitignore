@@ -8,3 +8,6 @@ tmp_pytest/
 tmp*/
 *.tar.gz
 memory/
+
+# local benchmark artifacts
+.bench-artifacts/
