@@ -711,7 +711,8 @@ process.stdout.write(JSON.stringify({
     script = """
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const handlers = {};
-plugin.register({ on(name, handler) { handlers[name] = handler; } });
+process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
+plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = handler; } });
 handlers.before_prompt_build({
   query: 'platform recall path',
   task_context: { task_type: 'chat.reply' },
@@ -778,13 +779,13 @@ def test_openclaw_bridge_assets_exist() -> None:
     manifest = json.loads(Path("integrations/openclaw/eimemory-bridge/openclaw.plugin.json").read_text(encoding="utf-8"))
     assert manifest["id"] == "eimemory-bridge"
     assert manifest["activation"] == {"onStartup": True, "onCapabilities": ["hook"]}
-    assert manifest["hooks"] == ["message_received", "before_prompt_build", "agent_end", "task_end", "session_end"]
+    assert manifest["hooks"] == ["message_received", "before_prompt_build", "agent_end", "session_end"]
     assert manifest["contracts"]["tools"] == ["eimemory_bridge_status"]
     assert manifest["configSchema"]["type"] == "object"
     assert Path("integrations/openclaw/eimemory-bridge/package.json").exists()
 
 
-def test_openclaw_js_bridge_registers_modern_typed_hooks() -> None:
+def test_openclaw_js_bridge_registers_modern_typed_hooks_without_prompt_injection_by_default() -> None:
     script = """
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const names = [];
@@ -793,7 +794,40 @@ process.stdout.write(JSON.stringify(names));
 """.strip()
     result = subprocess.run(["node", "-e", script], cwd=Path.cwd(), capture_output=True, text=True, check=True)
 
-    assert json.loads(result.stdout) == ["message_received", "before_prompt_build", "agent_end", "task_end", "session_end"]
+    assert json.loads(result.stdout) == ["message_received", "agent_end", "session_end"]
+
+
+def test_openclaw_js_bridge_registers_before_prompt_build_only_when_enabled() -> None:
+    script = """
+const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
+const names = [];
+process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
+plugin.register({ config: { allowPromptInjection: true }, hooks: { on(name, handler) { names.push(name); } } });
+process.stdout.write(JSON.stringify(names));
+""".strip()
+    result = subprocess.run(["node", "-e", script], cwd=Path.cwd(), capture_output=True, text=True, check=True)
+
+    assert json.loads(result.stdout) == ["message_received", "before_prompt_build", "agent_end", "session_end"]
+
+
+def test_openclaw_js_bridge_reads_openclaw_prompt_injection_policy(tmp_path) -> None:
+    config_path = tmp_path / "openclaw.json"
+    config_path.write_text(
+        json.dumps({"plugins": {"entries": {"eimemory-bridge": {"hooks": {"allowPromptInjection": True}}}}}),
+        encoding="utf-8",
+    )
+    script = """
+const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
+const names = [];
+process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
+plugin.register({ hooks: { on(name, handler) { names.push(name); } } });
+process.stdout.write(JSON.stringify(names));
+""".strip()
+    env = os.environ.copy()
+    env["OPENCLAW_CONFIG_PATH"] = str(config_path)
+    result = subprocess.run(["node", "-e", script], cwd=Path.cwd(), env=env, capture_output=True, text=True, check=True)
+
+    assert json.loads(result.stdout) == ["message_received", "before_prompt_build", "agent_end", "session_end"]
 
 
 def test_openclaw_js_bridge_registers_status_tool() -> None:
@@ -805,6 +839,7 @@ plugin.register({
     const tool = factory();
     names.push(opts.name);
     names.push(tool.name);
+    names.push(Array.isArray(tool.parameters.required) ? 'required-array' : 'missing-required');
   },
   on() {}
 });
@@ -812,14 +847,40 @@ process.stdout.write(JSON.stringify(names));
 """.strip()
     result = subprocess.run(["node", "-e", script], cwd=Path.cwd(), capture_output=True, text=True, check=True)
 
-    assert json.loads(result.stdout) == ["eimemory_bridge_status", "eimemory_bridge_status"]
+    assert json.loads(result.stdout) == ["eimemory_bridge_status", "eimemory_bridge_status", "required-array"]
+
+
+def test_openclaw_js_bridge_status_tool_returns_json() -> None:
+    script = """
+const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
+let statusTool;
+process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
+plugin.register({
+  config: { allowPromptInjection: true },
+  registerTool(factory) {
+    statusTool = factory();
+  },
+  on() {}
+});
+statusTool.execute().then((result) => { process.stdout.write(JSON.stringify(result)); });
+""".strip()
+    result = subprocess.run(["node", "-e", script], cwd=Path.cwd(), capture_output=True, text=True, check=True)
+
+    tool_result = json.loads(result.stdout)
+    payload = json.loads(tool_result["content"][0]["text"])
+    assert tool_result["details"] == payload
+    assert payload["ok"] is True
+    assert payload["promptInjectionEnvEnabled"] is True
+    assert payload["allowPromptInjection"] is True
+    assert payload["promptInjectionEnabled"] is True
 
 
 def test_openclaw_js_bridge_degrades_gracefully_on_hook_failure(tmp_path) -> None:
     script = """
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const handlers = {};
-plugin.register({ on(name, handler) { handlers[name] = handler; } });
+process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
+plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = handler; } });
 handlers.before_prompt_build({ prompt: 'hello' })
   .then((result) => { process.stdout.write(JSON.stringify(result)); })
   .catch((error) => { console.error(error && error.stack ? error.stack : String(error)); process.exit(1); });
@@ -845,7 +906,8 @@ def test_openclaw_js_bridge_degrades_gracefully_on_malformed_hook_output(tmp_pat
     script = """
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const handlers = {};
-plugin.register({ on(name, handler) { handlers[name] = handler; } });
+process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
+plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = handler; } });
 handlers.message_received({ content: 'Remember bridge capture should not throw.', captureMemory: true })
   .then((result) => { process.stdout.write(JSON.stringify(result)); })
   .catch((error) => { console.error(error && error.stack ? error.stack : String(error)); process.exit(1); });
@@ -876,7 +938,8 @@ def test_openclaw_js_bridge_preserves_camel_case_explicit_capture_flag(tmp_path)
     script = """
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const handlers = {};
-plugin.register({ on(name, handler) { handlers[name] = handler; } });
+process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
+plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = handler; } });
 handlers.message_received({ content: 'ok', captureMemory: true })
   .then((result) => { process.stdout.write(JSON.stringify(result)); })
   .catch((error) => { console.error(error && error.stack ? error.stack : String(error)); process.exit(1); });
@@ -913,7 +976,8 @@ def test_openclaw_js_bridge_supports_quoted_hook_command(tmp_path) -> None:
     script = """
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const handlers = {};
-plugin.register({ on(name, handler) { handlers[name] = handler; } });
+process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
+plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = handler; } });
 handlers.before_prompt_build({ prompt: 'quoted bridge memory' })
   .then((result) => { process.stdout.write(JSON.stringify(result)); })
   .catch((error) => { console.error(error && error.stack ? error.stack : String(error)); process.exit(1); });
@@ -954,7 +1018,8 @@ def test_openclaw_js_bridge_injects_live_eibrain_context_from_feishu_bridge(tmp_
     script = """
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const handlers = {};
-plugin.register({ on(name, handler) { handlers[name] = handler; } });
+process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
+plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = handler; } });
 handlers.before_prompt_build({ prompt: '现在看到了什么', senderId: 'ou_user' })
   .then((result) => { process.stdout.write(JSON.stringify(result)); })
   .catch((error) => { console.error(error && error.stack ? error.stack : String(error)); process.exit(1); });
@@ -998,7 +1063,8 @@ def test_openclaw_js_bridge_filters_ei_bridge_audit_from_memory_context(tmp_path
     script = """
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const handlers = {};
-plugin.register({ on(name, handler) { handlers[name] = handler; } });
+process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
+plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = handler; } });
 handlers.before_prompt_build({ prompt: 'what do you see', senderId: 'ou_user' })
   .then((result) => { process.stdout.write(JSON.stringify(result)); })
   .catch((error) => { console.error(error && error.stack ? error.stack : String(error)); process.exit(1); });
@@ -1047,7 +1113,8 @@ def test_openclaw_js_bridge_injects_policy_suggestions_before_memory_items(tmp_p
     script = """
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const handlers = {};
-plugin.register({ on(name, handler) { handlers[name] = handler; } });
+process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
+plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = handler; } });
 handlers.before_prompt_build({ prompt: '给我唱首歌', senderId: 'ou_user' })
   .then((result) => { process.stdout.write(JSON.stringify(result)); })
   .catch((error) => { console.error(error && error.stack ? error.stack : String(error)); process.exit(1); });
@@ -1103,7 +1170,8 @@ def test_openclaw_js_bridge_normalizes_agent_end_message_content(tmp_path) -> No
     script = """
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const handlers = {};
-plugin.register({ on(name, handler) { handlers[name] = handler; } });
+process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
+plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = handler; } });
 handlers.agent_end({
   agentId: 'main',
   workspaceId: 'repo-x',
@@ -1146,7 +1214,8 @@ def test_openclaw_js_bridge_agent_end_forwards_event_policy_context(tmp_path) ->
     script = """
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const handlers = {};
-plugin.register({ on(name, handler) { handlers[name] = handler; } });
+process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
+plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = handler; } });
 handlers.agent_end({
   agentId: 'main',
   workspaceId: 'repo-x',
@@ -1216,7 +1285,8 @@ def test_openclaw_js_bridge_sends_clean_user_query_from_feishu_prompt(tmp_path) 
     script = """
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const handlers = {};
-plugin.register({ on(name, handler) { handlers[name] = handler; } });
+process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
+plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = handler; } });
 handlers.before_prompt_build({
   agentId: 'main',
   prompt: `System: [2026-04-21 05:05:10 UTC] Feishu[default] DM | user [msg:abc]
@@ -1272,7 +1342,8 @@ def test_openclaw_js_bridge_preserves_raw_query_and_scope(tmp_path) -> None:
     script = """
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const handlers = {};
-plugin.register({ on(name, handler) { handlers[name] = handler; } });
+process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
+plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = handler; } });
 handlers.before_prompt_build({
   tenantId: 'tenant-a',
   userId: 'user-a',
@@ -1330,7 +1401,8 @@ def test_openclaw_js_bridge_derives_feishu_session_and_user_from_prompt_metadata
     script = """
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const handlers = {};
-plugin.register({ on(name, handler) { handlers[name] = handler; } });
+process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
+plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = handler; } });
 handlers.before_prompt_build({
   agentId: 'main',
   prompt: `System: [2026-04-21 05:31:46 UTC] Feishu[default] DM | ou_sender [msg:om_123]
@@ -1389,7 +1461,8 @@ def test_openclaw_js_bridge_strips_thinking_from_injected_context(tmp_path) -> N
     script = """
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const handlers = {};
-plugin.register({ on(name, handler) { handlers[name] = handler; } });
+process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
+plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = handler; } });
 handlers.before_prompt_build({ prompt: 'memory' })
   .then((result) => { process.stdout.write(JSON.stringify(result)); })
   .catch((error) => { console.error(error && error.stack ? error.stack : String(error)); process.exit(1); });

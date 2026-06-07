@@ -1,6 +1,9 @@
 'use strict';
 
 const { spawnSync } = require('node:child_process');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
 const HONGTU_AGENT_ID = 'hongtu';
 const HONGTU_WORKSPACE_ID = 'embodied';
@@ -483,6 +486,34 @@ function registerTypedHook(api, name, handler) {
   }
 }
 
+function truthy(value) {
+  return /^(1|true|yes|on)$/i.test(String(value || '').trim());
+}
+
+function readOpenClawPromptInjectionPolicy() {
+  try {
+    const configPath = process.env.OPENCLAW_CONFIG_PATH
+      || path.join(process.env.OPENCLAW_STATE_DIR || path.join(os.homedir(), '.openclaw'), 'openclaw.json');
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    return config?.plugins?.entries?.['eimemory-bridge']?.hooks?.allowPromptInjection === true;
+  } catch {
+    return false;
+  }
+}
+
+function promptInjectionAllowed(api) {
+  const config = api?.config || {};
+  const hookPolicy = api?.hookPolicy || api?.hooksPolicy || config.hooks || {};
+  return hookPolicy.allowPromptInjection === true
+    || config.allowPromptInjection === true
+    || config.allow_prompt_injection === true
+    || readOpenClawPromptInjectionPolicy();
+}
+
+function promptInjectionEnabled(api) {
+  return truthy(process.env.EIMEMORY_ENABLE_PROMPT_INJECTION) && promptInjectionAllowed(api);
+}
+
 function registerStatusTool(api) {
   if (!api?.registerTool) {
     return;
@@ -495,13 +526,24 @@ function registerStatusTool(api) {
       type: 'object',
       additionalProperties: false,
       properties: {},
+      required: [],
     },
     async execute() {
-      return JSON.stringify({
+      const status = {
         ok: true,
         hookCommandConfigured: Boolean((process.env.EIMEMORY_HOOK_COMMAND || '').trim()),
         bridgeCommandConfigured: Boolean((process.env.EIMEMORY_BRIDGE_COMMAND || '').trim()),
-      });
+        promptInjectionEnabled: promptInjectionEnabled(api),
+        promptInjectionEnvEnabled: truthy(process.env.EIMEMORY_ENABLE_PROMPT_INJECTION),
+        allowPromptInjection: promptInjectionAllowed(api),
+      };
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify(status),
+        }],
+        details: status,
+      };
     },
   }), { name: 'eimemory_bridge_status' });
 }
@@ -518,22 +560,25 @@ module.exports.default = {
     api?.logger?.info?.('eimemory-bridge: registering OpenClaw hooks');
     registerStatusTool(api);
     registerTypedHook(api, 'message_received', async (event) => safeInvokeHook(api, 'message_received', event) || {});
-    registerTypedHook(api, 'before_prompt_build', async (event) => {
-      const bridgePayload = safeInvokeBridge(api, normalizeEventPayload('before_prompt_build', event));
-      const payload = safeInvokeHook(api, 'before_prompt_build', event);
-      const bridgeContext = buildBridgePrependContext(bridgePayload);
-      if (!payload) {
-        return bridgeContext ? { prependContext: bridgeContext } : {};
-      }
-      const bundle = payload.memory_bundle || {};
-      const memoryContext = buildMemoryPrependContext(bundle);
-      if (!memoryContext) {
-        return bridgeContext ? { prependContext: bridgeContext } : {};
-      }
-      return { prependContext: [bridgeContext, memoryContext].filter(Boolean).join('\n\n') };
-    });
+    if (promptInjectionEnabled(api)) {
+      registerTypedHook(api, 'before_prompt_build', async (event) => {
+        const bridgePayload = safeInvokeBridge(api, normalizeEventPayload('before_prompt_build', event));
+        const payload = safeInvokeHook(api, 'before_prompt_build', event);
+        const bridgeContext = buildBridgePrependContext(bridgePayload);
+        if (!payload) {
+          return bridgeContext ? { prependContext: bridgeContext } : {};
+        }
+        const bundle = payload.memory_bundle || {};
+        const memoryContext = buildMemoryPrependContext(bundle);
+        if (!memoryContext) {
+          return bridgeContext ? { prependContext: bridgeContext } : {};
+        }
+        return { prependContext: [bridgeContext, memoryContext].filter(Boolean).join('\n\n') };
+      });
+    } else {
+      api?.logger?.info?.('eimemory-bridge: before_prompt_build disabled; set EIMEMORY_ENABLE_PROMPT_INJECTION=true and allowPromptInjection=true to enable recall injection');
+    }
     registerTypedHook(api, 'agent_end', async (event) => safeInvokeHook(api, 'agent_end', event) || {});
-    registerTypedHook(api, 'task_end', async (event) => safeInvokeHook(api, 'task_end', event) || {});
     registerTypedHook(api, 'session_end', async (event) => safeInvokeHook(api, 'session_end', event) || {});
   },
 };

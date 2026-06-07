@@ -469,8 +469,12 @@ echo '{"agent_id":"main","workspace_id":"repo-x","message":{"role":"user","conte
 ```
 
 The corresponding OpenClaw bridge assets live in `integrations/openclaw/eimemory-bridge/`
-and forward `message_received`, `before_prompt_build`, and `agent_end` into the
-local runtime.
+and forward `message_received`, `before_prompt_build`, `agent_end`, and `session_end`
+into the local runtime.
+
+Prompt context injection through `before_prompt_build` is disabled by default. It
+is registered only when `EIMEMORY_ENABLE_PROMPT_INJECTION=true` and OpenClaw
+sets `plugins.entries.eimemory-bridge.hooks.allowPromptInjection=true`.
 
 The OpenClaw adapter applies memory hygiene before persistence or injection:
 low-value chatter, wrapper-only messages, prompt-injection-like inputs, malformed
