@@ -68,7 +68,14 @@ def run_locomo(
         case_scope = ScopeRef.from_dict(case.get("scope") or normalized["scope"])
         _ingest_case_chunks(runtime, case=case, scope=case_scope)
         started = perf_counter()
-        retrieved = _retrieve(runtime, query=case["question"], scope=case_scope, mode=mode, limit=limit)
+        retrieved = _retrieve(
+            runtime,
+            query=case["question"],
+            scope=case_scope,
+            mode=mode,
+            limit=limit,
+            task_context={"task_type": "locomo", "granularity": granularity},
+        )
         latency_ms = (perf_counter() - started) * 1000.0
         latencies.append(latency_ms)
 

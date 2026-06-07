@@ -308,12 +308,22 @@ def _raw_chunk_cache_key(chunk_id: str, *, scope: ScopeRef) -> tuple[str, str, s
     )
 
 
-def _retrieve(runtime, *, query: str, scope: ScopeRef, mode: str, limit: int) -> list[RecordEnvelope]:
+def _retrieve(
+    runtime,
+    *,
+    query: str,
+    scope: ScopeRef,
+    mode: str,
+    limit: int,
+    task_context: dict[str, Any] | None = None,
+) -> list[RecordEnvelope]:
+    retrieval_context = {"task_type": "longmemeval"}
+    retrieval_context.update(dict(task_context or {}))
     if mode == "hybrid":
         bundle = runtime.memory.recall(
             query=query,
             scope=asdict(scope),
-            task_context={"task_type": "longmemeval", "recall_mode": "raw_hybrid"},
+            task_context={**retrieval_context, "recall_mode": "raw_hybrid"},
             limit=limit,
         )
         raw_records = _raw_records_from_explanation(runtime, bundle.explanation.get("raw_evidence"), scope=scope)
@@ -322,7 +332,7 @@ def _retrieve(runtime, *, query: str, scope: ScopeRef, mode: str, limit: int) ->
     try:
         from eimemory.raw.retrieval import search_raw_chunks
 
-        ranked = search_raw_chunks(runtime.store, query=query, scope=scope, task_context={"task_type": "longmemeval"}, limit=limit)
+        ranked = search_raw_chunks(runtime.store, query=query, scope=scope, task_context=retrieval_context, limit=limit)
         records = [_record_from_ranked(runtime, item, scope=scope) for item in ranked]
         records = [record for record in records if record is not None]
         if records:

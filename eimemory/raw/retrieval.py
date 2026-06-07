@@ -22,14 +22,28 @@ def search_raw_chunks(
     if not normalized_query or limit <= 0:
         return []
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+    task_context = dict(task_context or {})
     candidates = _raw_api_search(store, query=normalized_query, scope=scope_ref, limit=max(limit * 4, limit))
     if not candidates:
         candidates = _store_raw_candidates(store, query=normalized_query, scope=scope_ref, limit=max(limit * 6, limit))
-    return rerank_raw_results(
+    ranked = rerank_raw_results(
         query=normalized_query,
         results=candidates,
-        task_context=task_context or {},
-    )[:limit]
+        task_context=task_context,
+    )
+    if len(ranked) < limit and _should_expand_turn_context(task_context):
+        ranked = _expand_ranked_turn_context(store, ranked=ranked, scope=scope_ref, limit=limit)
+    if len(ranked) < limit:
+        ranked = _merge_candidates(
+            ranked,
+            rerank_raw_results(
+                query=normalized_query,
+                results=_direct_raw_scan_candidates(store, query=normalized_query, scope=scope_ref, limit=max(limit * 2, limit)),
+                task_context=task_context,
+            ),
+            limit=limit,
+        )
+    return ranked[:limit]
 
 
 def rerank_raw_results(
@@ -124,6 +138,59 @@ def _store_raw_candidates(store: Any, *, query: str, scope: ScopeRef, limit: int
     return results
 
 
+def _direct_raw_scan_candidates(store: Any, *, query: str, scope: ScopeRef, limit: int) -> list[dict[str, Any]]:
+    """Low-cost raw scan used as a recall backstop when indexed search is too sparse."""
+    scan_limit = max(200, min(5000, max(1, int(limit)) * 32))
+    try:
+        records = store.list_records(kinds=["raw_chunk"], scope=scope, status="active", limit=scan_limit)
+    except TypeError:
+        try:
+            records = store.list_records(kinds=["raw_chunk"], scope=scope, limit=scan_limit)
+        except Exception:
+            return []
+    except Exception:
+        return []
+
+    query_terms = set(_terms(query))
+    query_ngrams = _char_ngrams(query)
+    proper = {item.lower() for item in _proper_nouns(query)}
+    quoted = [item.lower() for item in _quoted_phrases(query)]
+    scored: list[tuple[float, int, Any]] = []
+    for index, record in enumerate(records):
+        text = _record_text(record)
+        text_lower = text.lower()
+        lexical = _lexical_score(query_terms, text)
+        semantic = _jaccard_score(query_ngrams, _char_ngrams(text))
+        proper_overlap = 0.0
+        if proper:
+            proper_overlap = min(0.25, 0.08 * sum(1 for item in proper if item in text_lower))
+        phrase_overlap = 0.18 if quoted and any(phrase in text_lower for phrase in quoted) else 0.0
+        score = round((lexical * 0.62) + (semantic * 0.28) + proper_overlap + phrase_overlap, 6)
+        scored.append((score, index, record))
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    return [{"record": record, "base_score": score} for score, _index, record in scored[: max(1, int(limit))]]
+
+
+def _merge_candidates(
+    primary: list[dict[str, Any]],
+    secondary: list[dict[str, Any]],
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in [*primary, *secondary]:
+        record = _result_record(item)
+        record_id = _record_id(record)
+        if not record_id or record_id in seen:
+            continue
+        seen.add(record_id)
+        merged.append(item)
+        if len(merged) >= limit:
+            break
+    return merged
+
+
 def _normalize_results(results: Any) -> list[dict[str, Any]]:
     normalized: list[dict[str, Any]] = []
     for item in list(results or []):
@@ -162,10 +229,111 @@ def _boosts(*, query: str, text: str, record: Any, task_context: dict, max_time:
     return boosts
 
 
+def _should_expand_turn_context(task_context: dict) -> bool:
+    task_type = str(task_context.get("task_type") or "").strip().lower()
+    granularity = str(task_context.get("granularity") or "").strip().lower()
+    return task_type == "locomo" and granularity == "turn"
+
+
+def _expand_ranked_turn_context(
+    store: Any,
+    *,
+    ranked: list[dict[str, Any]],
+    scope: ScopeRef,
+    limit: int,
+) -> list[dict[str, Any]]:
+    if len(ranked) <= 0 or limit <= 0:
+        return ranked
+    try:
+        records = store.list_records(kinds=["raw_chunk"], scope=scope, status="active", limit=1200)
+    except TypeError:
+        try:
+            records = store.list_records(kinds=["raw_chunk"], scope=scope, limit=1200)
+        except Exception:
+            return ranked
+    except Exception:
+        return ranked
+    by_session: dict[str, list[Any]] = {}
+    for record in records:
+        session_id = _session_id(record)
+        if not session_id:
+            continue
+        by_session.setdefault(session_id, []).append(record)
+    for session_records in by_session.values():
+        session_records.sort(key=_turn_sort_key)
+
+    expanded: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    top = ranked[: max(1, min(len(ranked), limit))]
+    tail = ranked[len(top) :]
+    for item in top:
+        _append_ranked(expanded, seen, item)
+        if len(expanded) >= limit:
+            break
+    for item in tail:
+        if len(expanded) >= limit:
+            break
+        _append_ranked(expanded, seen, item)
+    anchors = list(expanded)
+    for item in anchors:
+        if len(expanded) >= limit:
+            break
+        record = _result_record(item)
+        for neighbor in _turn_neighbors(record, by_session=by_session, radius=2):
+            if len(expanded) >= limit:
+                break
+            _append_ranked(expanded, seen, _neighbor_ranked_item(neighbor, parent=item))
+    return expanded
+
+
+def _turn_neighbors(record: Any, *, by_session: dict[str, list[Any]], radius: int) -> list[Any]:
+    session_id = _session_id(record)
+    turn_number = _turn_number(record)
+    if not session_id or turn_number is None:
+        return []
+    neighbors: list[tuple[int, int, Any]] = []
+    for index, candidate in enumerate(by_session.get(session_id, [])):
+        candidate_number = _turn_number(candidate)
+        if candidate_number is None or candidate_number == turn_number:
+            continue
+        distance = abs(candidate_number - turn_number)
+        if distance <= radius:
+            neighbors.append((distance, index, candidate))
+    neighbors.sort(key=lambda item: (item[0], item[1]))
+    return [item[2] for item in neighbors]
+
+
+def _neighbor_ranked_item(record: Any, *, parent: dict[str, Any]) -> dict[str, Any]:
+    parent_score = float(parent.get("final_score", parent.get("base_score", 0.0)) or 0.0)
+    return {
+        "record": _record_payload(record, text=_record_text(record)),
+        "base_score": round(max(0.0, parent_score - 0.015), 6),
+        "final_score": round(max(0.0, parent_score - 0.015), 6),
+        "boosts": {"turn_context_neighbor": 1.0},
+    }
+
+
+def _append_ranked(items: list[dict[str, Any]], seen: set[str], item: dict[str, Any]) -> None:
+    record = _result_record(item)
+    record_id = _record_id(record)
+    if not record_id or record_id in seen:
+        return
+    seen.add(record_id)
+    items.append(item)
+
+
 def _result_record(result: Any) -> Any:
     if isinstance(result, dict):
         return result.get("record") or result.get("chunk") or result.get("item")
     return getattr(result, "record", result)
+
+
+def _record_id(record: Any) -> str:
+    if isinstance(record, RecordEnvelope):
+        return str(record.record_id or "")
+    if isinstance(record, dict):
+        return str(record.get("record_id") or record.get("id") or record.get("chunk_id") or "")
+    return str(getattr(record, "record_id", getattr(record, "id", "")) or "")
 
 
 def _result_base_score(result: Any) -> float:
@@ -224,6 +392,38 @@ def _record_text(record: Any) -> str:
     return str(getattr(record, "raw_text", "") or getattr(record, "text", "") or getattr(record, "summary", "") or "")
 
 
+def _session_id(record: Any) -> str:
+    if isinstance(record, RecordEnvelope):
+        return str(record.content.get("session_id") or "")
+    if isinstance(record, dict):
+        return str(record.get("session_id") or "")
+    return str(getattr(record, "session_id", "") or "")
+
+
+def _turn_id(record: Any) -> str:
+    if isinstance(record, RecordEnvelope):
+        return str(record.content.get("turn_id") or "")
+    if isinstance(record, dict):
+        return str(record.get("turn_id") or "")
+    return str(getattr(record, "turn_id", "") or "")
+
+
+def _turn_number(record: Any) -> int | None:
+    value = _turn_id(record)
+    match = re.search(r":(\d+)$", value)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
+
+def _turn_sort_key(record: Any) -> tuple[int, str]:
+    turn_number = _turn_number(record)
+    return (turn_number if turn_number is not None else 10**9, _turn_id(record))
+
+
 def _is_raw_candidate(record: Any) -> bool:
     if not isinstance(record, RecordEnvelope):
         return True
@@ -240,6 +440,24 @@ def _lexical_score(query_terms: set[str], text: str) -> float:
     if not text_terms:
         return 0.0
     return round(len(query_terms & text_terms) / max(1, len(query_terms)), 6)
+
+
+def _char_ngrams(text: str, size: int = 3) -> set[str]:
+    normalized = "".join(ch for ch in str(text or "").lower() if not ch.isspace())
+    if not normalized:
+        return set()
+    if len(normalized) <= size:
+        return {normalized}
+    return {normalized[index : index + size] for index in range(len(normalized) - size + 1)}
+
+
+def _jaccard_score(left: set[str], right: set[str]) -> float:
+    if not left or not right:
+        return 0.0
+    union = len(left | right)
+    if not union:
+        return 0.0
+    return len(left & right) / union
 
 
 def _terms(text: str) -> list[str]:
