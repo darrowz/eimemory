@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
+from eimemory.governance.replay_quality import govern_replay_cases
 from eimemory.metadata import business_metadata
 from eimemory.models.records import ScopeRef
 
@@ -25,7 +26,10 @@ def build_replay_dataset(
     cases.extend(_cases_from_outcome_traces(runtime, scope=scope_ref, limit=budget))
     cases.extend(_cases_from_operator_corrections(runtime, scope=scope_ref, limit=budget))
     cases.extend(_cases_from_replay_results(runtime, scope=scope_ref, limit=budget))
-    deduped_cases = _dedupe_cases(cases)[:budget]
+    quality_report = govern_replay_cases(cases, limit=budget * 3)
+    deduped_cases = _dedupe_cases(quality_report["cases"])[:budget]
+    case_quality_breakdown = dict(quality_report["case_quality_breakdown"])
+    case_quality_breakdown["accepted"] = len(deduped_cases)
     correction_count = sum(1 for case in deduped_cases if case.get("correction_from_user"))
     persisted_record_id = ""
     if persist:
@@ -33,7 +37,10 @@ def build_replay_dataset(
             runtime,
             kind="replay_result",
             title="Proactive replay dataset",
-            summary=f"Built {len(deduped_cases)} replay cases from outcomes and corrections.",
+            summary=(
+                f"Built {len(deduped_cases)} replay cases from outcomes and corrections; "
+                f"filtered {quality_report['filtered_count']} noisy cases."
+            ),
             scope=scope_ref,
             loop_id=loop_id,
             step_name="replay_dataset",
@@ -54,6 +61,11 @@ def build_replay_dataset(
                 "schema_version": REAL_TASK_REPLAY_SCHEMA_VERSION,
                 "case_count": len(deduped_cases),
                 "correction_count": correction_count,
+                "filtered_count": quality_report["filtered_count"],
+                "filter_reasons": quality_report["filter_reasons"],
+                "quality_score": quality_report["quality_score"],
+                "case_quality_breakdown": case_quality_breakdown,
+                "target_pass_rate": quality_report["target_pass_rate"],
                 "limit": budget,
                 "source_systems": _source_systems(deduped_cases),
             },
@@ -65,6 +77,11 @@ def build_replay_dataset(
         "report_type": REPLAY_DATASET_REPORT_TYPE,
         "case_count": len(deduped_cases),
         "correction_count": correction_count,
+        "filtered_count": quality_report["filtered_count"],
+        "filter_reasons": quality_report["filter_reasons"],
+        "quality_score": quality_report["quality_score"],
+        "case_quality_breakdown": case_quality_breakdown,
+        "target_pass_rate": quality_report["target_pass_rate"],
         "source_systems": _source_systems(deduped_cases),
         "persisted": bool(persist),
         "persisted_record_id": persisted_record_id,

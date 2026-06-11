@@ -160,3 +160,53 @@ def test_replay_dataset_ignores_previous_dataset_and_replay_reports(tmp_path) ->
 
     assert report["case_count"] == 0
     assert report["cases"] == []
+
+
+def test_replay_dataset_reports_quality_filtering_and_targets(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu"}
+    scope_ref = ScopeRef.from_dict(scope)
+
+    runtime.store.append(
+        RecordEnvelope.create(
+            kind="replay_result",
+            title="Noisy replay suggestions",
+            summary="Includes operational noise and one real task.",
+            scope=scope_ref,
+            source="unit.test",
+            meta={"verdict": "fail", "task_type": "ops.inspect"},
+            content={
+                "suggested_replay_dataset": [
+                    {"query": "heartbeat ping", "expected_text": ["alive"]},
+                    {"query": "usage-limit exceeded", "expected_text": ["wait"]},
+                    {
+                        "query": "msg_01HZY8R9WQ4WVX7M5G2Q3Q4Q4Q",
+                        "expected": "Inspect the failed job before replying.",
+                        "expected_text": [
+                            "Open the operations console before answering.",
+                            "Inspect the latest failed job.",
+                            "Summarize the concrete failure cause.",
+                        ],
+                        "correction": "The user wanted live job inspection, not generic advice.",
+                        "task_type": "ops.inspect",
+                    },
+                ]
+            },
+        )
+    )
+
+    report = build_replay_dataset(runtime, scope=scope, limit=50, persist=True)
+
+    assert report["case_count"] == 1
+    assert report["filtered_count"] == 2
+    assert report["filter_reasons"] == {"heartbeat": 1, "usage_limit": 1}
+    assert 0.0 <= report["quality_score"] <= 1.0
+    assert report["case_quality_breakdown"]["accepted"] == 1
+    assert report["target_pass_rate"] == 0.85
+    assert report["cases"][0]["query"] == "Inspect the failed job before replying."
+    assert len(report["cases"][0]["expected_text"]) >= 3
+
+    persisted = runtime.store.get_by_id(report["persisted_record_id"], scope=scope)
+    assert persisted is not None
+    assert persisted.meta.get("filtered_count") == 2
+    assert persisted.meta.get("target_pass_rate") == 0.85
