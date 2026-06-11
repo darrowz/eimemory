@@ -20,6 +20,10 @@ The service should still point to canonical production paths:
 /etc/eimemory
 ```
 
+User services should write logs to a user-writable location such as
+`%h/.openclaw/logs`; using `/var/log/eimemory` as a user service output path can
+fail with systemd `209/STDOUT` on some hosts.
+
 `/dev-project/eimemory` is the canonical source repository only. Runtime
 services should not import or execute code from it. Promote a release with:
 

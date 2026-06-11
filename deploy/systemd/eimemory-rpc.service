@@ -11,8 +11,8 @@ Environment=EIMEMORY_CONFIG_DIR=/etc/eimemory
 ExecStart=/opt/eimemory/current/.venv/bin/eimemory serve-eibrain-rpc --host 100.105.189.120 --port 8091
 Restart=always
 RestartSec=3
-StandardOutput=append:/var/log/eimemory/rpc.service.log
-StandardError=append:/var/log/eimemory/rpc.service.log
+StandardOutput=append:%h/.openclaw/logs/eimemory-rpc.service.log
+StandardError=append:%h/.openclaw/logs/eimemory-rpc.service.log
 
 [Install]
 WantedBy=default.target
