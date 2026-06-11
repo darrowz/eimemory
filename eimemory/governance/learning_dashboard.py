@@ -27,12 +27,16 @@ def build_weekly_dashboard(
     daily = build_learning_daily_report(runtime, scope=scope_ref, persist=False)
     failures = _failure_breakdown(runtime, scope=scope_ref, since=start)
     markdown = _render_markdown(start=start, ledger=ledger, daily=daily, failures=failures)
+    output_error: str | dict[str, str] = ""
     written_path = ""
     if output_path:
         target = Path(output_path)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(markdown, encoding="utf-8")
         written_path = str(target)
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(markdown, encoding="utf-8")
+        except OSError as exc:
+            output_error = {"type": exc.__class__.__name__, "detail": str(exc)}
     record_id = ""
     if persist:
         record = append_learning_record_once(
@@ -57,6 +61,7 @@ def build_weekly_dashboard(
         "persisted": bool(persist),
         "persisted_record_id": record_id,
         "output_path": written_path,
+        "output_error": output_error,
         "markdown": markdown,
         "ledger": ledger,
         "failure_breakdown": failures,

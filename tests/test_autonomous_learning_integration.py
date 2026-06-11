@@ -49,3 +49,92 @@ def test_governance_snapshot_exposes_autonomous_learning_state(tmp_path) -> None
     assert snapshot["autonomous_learning"]["loop_count"] == 1
     assert snapshot["autonomous_learning"]["goal_count"] >= 1
     assert snapshot["autonomous_learning"]["candidate_count"] >= 1
+
+
+def test_autonomous_learning_cycle_returns_real_task_replay_report(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "main"}
+    runtime.evolution.log_reflection(tag="tool.routing", miss="routing drift", fix="prefer memory-first", scope=scope)
+
+    replay_dataset_calls: list[dict] = []
+
+    def fake_build_replay_dataset(_runtime, *, scope, limit=50, persist=True, loop_id=""):
+        replay_dataset_calls.append({"scope": scope, "limit": limit, "persist": persist, "loop_id": loop_id})
+        return {
+            "ok": True,
+            "schema_version": "real_task_replay.v1",
+            "report_type": "proactive_replay_dataset",
+            "case_count": 2,
+            "correction_count": 0,
+            "persisted_record_id": "replay_dataset_record",
+            "cases": [
+                {"case_id": "case_1", "query": "sample query", "task_type": "brain.respond"},
+                {"case_id": "case_2", "query": "secondary query", "task_type": "brain.respond"},
+            ],
+        }
+
+    replay_calls: list[dict] = []
+
+    def fake_run_real_task_replay(dataset, *, seed=False, persist_report=False):
+        replay_calls.append(
+            {
+                "seed": seed,
+                "persist_report": persist_report,
+                "case_count": len(dataset.get("cases") or []),
+            }
+        )
+        return {
+            "ok": True,
+            "report_type": "real_task_replay",
+            "schema_version": "real_task_replay.v1",
+            "verdict": "pass",
+            "pass_rate": 1.0,
+            "pass_count": 2,
+            "fail_count": 0,
+            "persisted_record_id": "replay_report_record",
+        }
+
+    monkeypatch.setattr(
+        "eimemory.governance.autonomous_learning.build_replay_dataset",
+        fake_build_replay_dataset,
+    )
+    monkeypatch.setattr(runtime, "run_real_task_replay", fake_run_real_task_replay)
+
+    report = runtime.run_autonomous_learning_cycle(scope=scope, force=True, apply=False)
+
+    assert replay_dataset_calls
+    assert replay_calls and replay_calls[0]["seed"] is False
+    assert replay_calls[0]["persist_report"] is True
+    assert report["ok"] is True
+    assert report["real_task_replay"]["ok"] is True
+    assert report["real_task_replay"]["report_type"] == "real_task_replay"
+
+
+def test_autonomous_learning_cycle_reports_skipped_real_task_replay_on_failure(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "main"}
+    runtime.evolution.log_reflection(tag="tool.routing", miss="routing drift", fix="prefer memory-first", scope=scope)
+
+    monkeypatch.setattr(
+        "eimemory.governance.autonomous_learning.build_replay_dataset",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "schema_version": "real_task_replay.v1",
+            "report_type": "proactive_replay_dataset",
+            "case_count": 1,
+            "correction_count": 0,
+            "persisted_record_id": "replay_dataset_record",
+            "cases": [{"case_id": "case_1", "query": "sample query", "task_type": "brain.respond"}],
+        },
+    )
+    monkeypatch.setattr(
+        runtime,
+        "run_real_task_replay",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("replay unavailable")),
+    )
+
+    report = runtime.run_autonomous_learning_cycle(scope=scope, force=True, apply=False)
+
+    assert report["ok"] is True
+    assert report["real_task_replay"]["ok"] is False
+    assert report["real_task_replay"]["replay_skipped_reason"] == "real_task_replay_failed"

@@ -16,7 +16,10 @@ from eimemory.scoring import extract_memory_score, score_from_legacy_quality, su
 from eimemory.storage.runtime_store import RuntimeStore
 
 
-ROI_EVAL_REPORT_TYPES = frozenset({"production_recall_eval", "real_task_replay", "memory_eval_ci"})
+ROI_EVAL_REPORT_TYPES = frozenset({"production_recall_eval", "real_task_replay", "memory_eval_ci", "learning_eval"})
+LEARNING_EVAL_REPORT_TYPE = "learning_eval"
+REAL_TASK_REPLAY_REPORT_TYPE = "real_task_replay"
+REPLAY_DATASET_REPORT_TYPE = "proactive_replay_dataset"
 ROI_WEIGHTS = {
     "accepted_feedback": 1.0,
     "replay_passes": 1.0,
@@ -26,6 +29,21 @@ ROI_WEIGHTS = {
     "replay_failures": 1.0,
     "eval_fail_reports": 1.0,
 }
+
+OPERATIONAL_INCIDENT_PENALTY_RATE = 0.25
+_OPERATIONAL_INCIDENT_KEYWORDS = (
+    "quota",
+    "rate limit",
+    "auth refresh",
+    "cron timeout",
+    "content flagged",
+    "context overflow",
+    "client closed",
+    "stale",
+    "transient",
+    "timeout",
+    "aborted",
+)
 
 
 class EvolutionAPI:
@@ -525,16 +543,25 @@ class EvolutionAPI:
         feedback = self.store.list_records(kinds=["feedback"], scope=scope, limit=500)
         replay_results = self.store.list_records(kinds=["replay_result"], scope=scope, limit=500)
         reflections = self.store.list_records(kinds=["reflection"], scope=scope, limit=500)
+        learning_eval_records = self.store.list_records(kinds=["learning_eval"], scope=scope, limit=500)
         rules = self.store.list_records(kinds=["rule"], scope=scope, limit=500)
+
         accepted_feedback_count = sum(1 for item in feedback if item.meta.get("decision") == "accept")
-        replay_pass_count = sum(1 for item in replay_results if item.meta.get("verdict") == "pass")
-        replay_failure_count = sum(1 for item in replay_results if item.meta.get("verdict") == "fail")
+        replay_dataset_count = sum(1 for item in replay_results if self._roi_is_replay_dataset_record(item))
+        replay_outcomes = [self._roi_eval_report_outcome(item) for item in replay_results if self._roi_is_replay_metric_record(item)]
+        replay_pass_count = sum(1 for outcome in replay_outcomes if outcome == "pass")
+        replay_failure_count = sum(1 for outcome in replay_outcomes if outcome == "fail")
         accepted_rule_count = sum(1 for item in rules if item.status == "accepted")
         active_rule_count = sum(1 for item in rules if item.status == "active")
+        incident_count = len(incidents)
+        operational_incident_count = sum(1 for item in incidents if self._roi_is_operational_incident(item))
+        incident_penalty_count = float(incident_count - operational_incident_count) + (operational_incident_count * OPERATIONAL_INCIDENT_PENALTY_RATE)
         eval_report_outcomes = [
             self._roi_eval_report_outcome(item)
-            for item in [*replay_results, *reflections]
+            for item in [*replay_results, *reflections, *learning_eval_records]
             if self._roi_report_type(item) in ROI_EVAL_REPORT_TYPES
+            and not self._roi_is_real_task_replay_record(item)
+            and not self._roi_is_replay_metric_record(item)
             and not self._roi_has_replay_verdict(item)
         ]
         eval_pass_report_count = sum(1 for outcome in eval_report_outcomes if outcome == "pass")
@@ -546,27 +573,34 @@ class EvolutionAPI:
             "eval_pass_reports": eval_pass_report_count * ROI_WEIGHTS["eval_pass_reports"],
         }
         negative = {
-            "incidents": len(incidents) * ROI_WEIGHTS["incidents"],
+            "incidents": incident_penalty_count * ROI_WEIGHTS["incidents"],
             "replay_failures": replay_failure_count * ROI_WEIGHTS["replay_failures"],
             "eval_fail_reports": eval_fail_report_count * ROI_WEIGHTS["eval_fail_reports"],
         }
         positive_total = sum(positive.values())
         negative_total = sum(negative.values())
         return {
-            "incident_count": len(incidents),
+            "incident_count": incident_count,
+            "operational_incident_count": operational_incident_count,
+            "incident_penalty_count": incident_penalty_count,
             "feedback_count": len(feedback),
             "accepted_feedback_count": accepted_feedback_count,
             "replay_count": len(replay_results),
             "replay_pass_count": replay_pass_count,
+            "replay_dataset_count": replay_dataset_count,
+            "replay_fail_count": replay_failure_count,
             "accepted_rule_count": accepted_rule_count,
             "active_rule_count": active_rule_count,
             "roi_signal": positive_total - negative_total,
             "roi_breakdown": {
                 "counts": {
-                    "incidents": len(incidents),
+                    "incidents": incident_count,
+                    "operational_incidents": operational_incident_count,
+                    "incident_penalty_count": incident_penalty_count,
                     "accepted_feedback": accepted_feedback_count,
                     "replay_passes": replay_pass_count,
                     "replay_failures": replay_failure_count,
+                    "replay_datasets": replay_dataset_count,
                     "accepted_rules": accepted_rule_count,
                     "active_rules": active_rule_count,
                     "eval_pass_reports": eval_pass_report_count,
@@ -591,6 +625,8 @@ class EvolutionAPI:
 
     @classmethod
     def _roi_report_type(cls, record: RecordEnvelope) -> str:
+        if record.kind == "learning_eval":
+            return LEARNING_EVAL_REPORT_TYPE
         payload = cls._roi_report_payload(record)
         return str(payload.get("report_type") or "").strip()
 
@@ -604,6 +640,12 @@ class EvolutionAPI:
     @classmethod
     def _roi_eval_report_outcome(cls, record: RecordEnvelope) -> str | None:
         payload = cls._roi_report_payload(record)
+        if record.kind == "learning_eval":
+            status = str(record.status or "").strip().lower()
+            if status == "passed":
+                return "pass"
+            if status == "rejected":
+                return "fail"
         verdict = str(payload.get("verdict") or "").strip().lower()
         if verdict in {"pass", "passed", "success"}:
             return "pass"
@@ -634,6 +676,62 @@ class EvolutionAPI:
             if failures > 0 and passes == 0:
                 return "fail"
         return None
+
+    @classmethod
+    def _roi_is_replay_dataset_record(cls, record: RecordEnvelope) -> bool:
+        if record.kind != "replay_result":
+            return False
+        payload = cls._roi_report_payload(record)
+        if cls._roi_report_type(record) == REPLAY_DATASET_REPORT_TYPE:
+            return True
+        if "dataset_size" in payload and "sample_count" not in payload and "pass_count" not in payload and "verdict" not in payload:
+            return True
+        if "cases" in payload and str(record.meta.get("report_type") or "") != REAL_TASK_REPLAY_REPORT_TYPE:
+            return True
+        return False
+
+    @classmethod
+    def _roi_is_replay_metric_record(cls, record: RecordEnvelope) -> bool:
+        if record.kind != "replay_result":
+            return False
+        if cls._roi_is_replay_dataset_record(record):
+            return False
+        payload = cls._roi_report_payload(record)
+        report_type = cls._roi_report_type(record)
+        if report_type and report_type != REAL_TASK_REPLAY_REPORT_TYPE:
+            return False
+        verdict = str(payload.get("verdict") or "").strip().lower()
+        if verdict in {"pass", "passed", "success", "fail", "failed", "failure"}:
+            return True
+        if cls._roi_float(payload.get("pass_rate")) is not None:
+            return True
+        return cls._roi_int(payload.get("pass_count")) is not None or cls._roi_int(payload.get("fail_count")) is not None
+
+    @classmethod
+    def _roi_is_real_task_replay_record(cls, record: RecordEnvelope) -> bool:
+        if record.kind != "replay_result":
+            return False
+        payload = cls._roi_report_payload(record)
+        if cls._roi_report_type(record) == REAL_TASK_REPLAY_REPORT_TYPE:
+            return True
+        return str(payload.get("replay_source") or "").strip().lower() == "real_task_replay"
+
+    @classmethod
+    def _roi_is_operational_incident(cls, record: RecordEnvelope) -> bool:
+        payload = cls._roi_report_payload(record)
+        incident_text = " ".join(
+            [
+                str(record.summary or ""),
+                str(record.title or ""),
+                str(record.detail or ""),
+                str(payload.get("title") or ""),
+                str(payload.get("incident_type") or ""),
+                str(payload.get("incident_type_hint") or ""),
+                str(payload.get("summary") or ""),
+                str(payload.get("message") or ""),
+            ]
+        ).lower()
+        return any(item in incident_text for item in _OPERATIONAL_INCIDENT_KEYWORDS)
 
     @staticmethod
     def _roi_float(value: Any, *, default: float | None = None) -> float | None:

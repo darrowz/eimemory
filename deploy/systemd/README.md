@@ -11,18 +11,34 @@ For the current OpenClaw user-service deployment, the active service lives under
 /home/darrow/.config/systemd/user/eimemory-console.service
 ```
 
-The service should still point to canonical production paths:
+Runtime code is deployed to:
 
 ```bash
 /opt/eimemory/current
+```
+
+Source remains in:
+
+```bash
+/dev-project/eimemory
+```
+
+RPC and user-facing service logs should be written to user-owned paths under:
+
+```bash
+/home/darrow/.openclaw/logs
+```
+
+Using `/var/log/eimemory` for user-owned RPC output is not supported and can
+trigger systemd `209/STDOUT` restart storms.
+
+The service templates also point to these runtime configuration paths:
+
+```bash
 /opt/eimemory/current/.venv
 /var/lib/eimemory
 /etc/eimemory
 ```
-
-User services should write logs to a user-writable location such as
-`%h/.openclaw/logs`; using `/var/log/eimemory` as a user service output path can
-fail with systemd `209/STDOUT` on some hosts.
 
 `/dev-project/eimemory` is the canonical source repository only. Runtime
 services should not import or execute code from it. Promote a release with:

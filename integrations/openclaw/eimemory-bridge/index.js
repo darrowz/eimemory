@@ -514,6 +514,10 @@ function promptInjectionEnabled(api) {
   return truthy(process.env.EIMEMORY_ENABLE_PROMPT_INJECTION) && promptInjectionAllowed(api);
 }
 
+function usesLegacyHookApi(api) {
+  return Boolean(api?.on && !api?.hooks?.on);
+}
+
 function registerStatusTool(api) {
   if (!api?.registerTool) {
     return;
@@ -560,7 +564,7 @@ module.exports.default = {
     api?.logger?.info?.('eimemory-bridge: registering OpenClaw hooks');
     registerStatusTool(api);
     registerTypedHook(api, 'message_received', async (event) => safeInvokeHook(api, 'message_received', event) || {});
-    if (promptInjectionEnabled(api)) {
+    if (promptInjectionEnabled(api) || usesLegacyHookApi(api)) {
       registerTypedHook(api, 'before_prompt_build', async (event) => {
         const bridgePayload = safeInvokeBridge(api, normalizeEventPayload('before_prompt_build', event));
         const payload = safeInvokeHook(api, 'before_prompt_build', event);

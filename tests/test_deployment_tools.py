@@ -64,6 +64,15 @@ def test_console_systemd_uses_packaged_console_entrypoint() -> None:
     assert "EIMEMORY_CONFIG_DIR=/etc/eimemory" in unit_text
 
 
+def test_learning_dashboard_systemd_unit_uses_user_report_path_and_release_binary() -> None:
+    unit_path = Path("deploy/systemd/eimemory-learn-dashboard.service")
+    unit_text = unit_path.read_text(encoding="utf-8")
+
+    assert "/var/lib/eimemory/autonomous-learning-dashboard.md" not in unit_text
+    assert "--output %h/.openclaw/reports/autonomous-learning-dashboard.md" in unit_text
+    assert "/opt/eimemory/current/.venv/bin/eimemory learn dashboard --persist" in unit_text
+
+
 def test_eimemory_rpc_systemd_unit_uses_honxin_tailscale_endpoint() -> None:
     unit_text = Path("deploy/systemd/eimemory-rpc.service").read_text(encoding="utf-8")
 
@@ -75,6 +84,15 @@ def test_eimemory_rpc_systemd_unit_uses_honxin_tailscale_endpoint() -> None:
     assert "Environment=EIMEMORY_CONFIG_DIR=/etc/eimemory" in unit_text
     assert "WorkingDirectory=/opt/eimemory/current" in unit_text
     assert "/dev-project/eimemory" not in unit_text
+    assert "/var/log/eimemory" not in unit_text
+    assert (
+        "StandardOutput=append:/home/darrow/.openclaw/logs/eimemory-rpc.service.log"
+        in unit_text
+    )
+    assert (
+        "StandardError=append:/home/darrow/.openclaw/logs/eimemory-rpc.service.log"
+        in unit_text
+    )
 
 
 def test_systemd_units_use_immutable_current_release() -> None:

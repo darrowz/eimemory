@@ -124,6 +124,12 @@ def run_autonomous_learning_cycle(
 
         replay_dataset = build_replay_dataset(runtime, scope=scope_ref, limit=50, persist=True, loop_id=loop_id)
         mark_step(runtime, loop, step_name="replay_dataset", status="completed", record_ids=[replay_dataset.get("persisted_record_id", "")], metrics={"case_count": replay_dataset.get("case_count", 0), "correction_count": replay_dataset.get("correction_count", 0)})
+        real_task_replay = _run_real_task_replay_if_available(
+            runtime=runtime,
+            loop=loop,
+            scope=scope_ref,
+            replay_dataset=replay_dataset,
+        )
 
         target_capability = str(selected_goal.get("target_capability") or "proactive.judgment")
         candidate_kinds = choose_candidate_kinds_for_goal(selected_goal, max_candidates=max(1, min(3, max_goals)))
@@ -236,6 +242,7 @@ def run_autonomous_learning_cycle(
             "candidate_id": candidate_id,
             "candidate_ids": candidate_ids,
             "candidate_kinds": candidate_kinds,
+            "real_task_replay": real_task_replay,
             "promotion": promotion_report,
             "promotions": promotion_reports,
             "regression_watch": regression_report,
@@ -249,6 +256,76 @@ def run_autonomous_learning_cycle(
         mark_step(runtime, loop, step_name="failed", status="failed", error=str(exc))
         complete_learning_loop(runtime, loop, status="failed", summary=str(exc))
         raise
+
+
+def _run_real_task_replay_if_available(
+    runtime: Any,
+    loop: Any,
+    scope: ScopeRef,
+    replay_dataset: dict[str, Any],
+) -> dict[str, Any]:
+    cases = list((replay_dataset or {}).get("cases") or [])
+    if not cases:
+        skipped_report = {
+            "ok": False,
+            "replay_skipped_reason": "no_replay_cases",
+            "case_count": 0,
+        }
+        mark_step(runtime, loop, step_name="real_task_replay", status="completed", metrics=skipped_report)
+        return skipped_report
+
+    replay_runner = getattr(runtime, "run_real_task_replay", None)
+    if not callable(replay_runner):
+        skipped_report = {
+            "ok": False,
+            "replay_skipped_reason": "run_real_task_replay_unavailable",
+            "case_count": len(cases),
+        }
+        mark_step(runtime, loop, step_name="real_task_replay", status="skipped", metrics=skipped_report)
+        return skipped_report
+
+    payload = {
+        "name": "autonomous_learning_real_task_replay",
+        "scope": asdict(scope),
+        "cases": [dict(case) for case in cases],
+    }
+    try:
+        report = replay_runner(payload, seed=False, persist_report=True)
+        if not isinstance(report, dict):
+            report = {
+                "ok": False,
+                "replay_skipped_reason": "invalid_real_task_replay_report",
+                "case_count": len(cases),
+                "report_type": "real_task_replay",
+            }
+        mark_step(
+            runtime,
+            loop,
+            step_name="real_task_replay",
+            status="completed",
+            metrics={
+                "case_count": len(cases),
+                "ok": bool(report.get("ok", False)),
+                "report_type": str(report.get("report_type") or "real_task_replay"),
+            },
+        )
+        return report
+    except Exception as exc:
+        failed_report = {
+            "ok": False,
+            "replay_skipped_reason": "real_task_replay_failed",
+            "error_type": type(exc).__name__,
+            "error": str(exc),
+            "case_count": len(cases),
+        }
+        mark_step(
+            runtime,
+            loop,
+            step_name="real_task_replay",
+            status="skipped",
+            metrics={"case_count": len(cases), "error_type": type(exc).__name__},
+        )
+        return failed_report
 
 
 def _run_autonomous_learning_dry_run(
