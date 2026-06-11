@@ -133,7 +133,18 @@ def _candidate_from_group(candidate_source: str, source_key: str, replay_cases: 
 def _candidate_sources(replay_case: dict[str, Any]) -> list[str]:
     signals = {item.lower() for item in _coerce_string_list(replay_case.get("signals"))}
     sources = ["diagnosis_pattern"]
-    if signals.intersection({"operator_gap", "missing_operator_confirmation", "operator_expectation_gap"}) or replay_case.get("operator_gap"):
+    if (
+        signals.intersection(
+            {
+                "operator_gap",
+                "operator_correction",
+                "user_correction",
+                "missing_operator_confirmation",
+                "operator_expectation_gap",
+            }
+        )
+        or replay_case.get("operator_gap")
+    ):
         sources.append("operator_gap")
     if signals.intersection({"missing_visual_evidence", "visual_evidence_gap", "verifier_missing"}):
         sources.append("visual_evidence_gap")

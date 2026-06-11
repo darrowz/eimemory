@@ -305,13 +305,6 @@ def _first_text(*values: Any) -> str:
 
 
 def _run_production_recall_eval(runtime: Runtime, *, scope: dict) -> dict[str, Any]:
-    dataset_path = str(os.environ.get("EIMEMORY_PRODUCTION_RECALL_DATASET") or "").strip()
-    if not dataset_path:
-        return {
-            "ok": True,
-            "configured": False,
-            "eval_skipped_reason": "production_recall_dataset_unconfigured",
-        }
     run_eval = getattr(runtime, "run_production_recall_eval", None)
     if not callable(run_eval):
         return {
@@ -320,11 +313,17 @@ def _run_production_recall_eval(runtime: Runtime, *, scope: dict) -> dict[str, A
             "eval_skipped_reason": "run_production_recall_eval_unavailable",
         }
     try:
-        with Path(dataset_path).open("r", encoding="utf-8") as handle:
-            dataset = json.load(handle)
+        dataset, configured, dataset_source, skipped_reason = _production_recall_dataset(runtime, scope=scope)
+        if not _dataset_cases(dataset):
+            return {
+                "ok": True,
+                "configured": configured,
+                "seeded": False,
+                "eval_skipped_reason": skipped_reason,
+            }
         report = _json_safe(run_eval(dataset, seed=False, scope=scope))
         if isinstance(report, dict):
-            return {**report, "configured": True, "seeded": False}
+            return {**report, "configured": True, "seeded": False, "dataset_source": dataset_source}
         return {
             "ok": False,
             "configured": True,
@@ -392,19 +391,26 @@ def _run_memory_eval_ci(runtime: Runtime, *, scope: dict) -> dict[str, Any]:
             "passed_threshold": False,
             "eval_skipped_reason": "run_memory_eval_ci_unavailable",
         }
-    dataset = {
-        "name": "nightly-memory-ci-smoke",
-        "scope": scope,
-        "threshold": 0.0,
-        "seed": [],
-        "cases": [],
-    }
     try:
-        report = _json_safe(run_eval(dataset, emit_incidents=False))
+        dataset, configured, dataset_source = _memory_eval_ci_dataset(runtime, scope=scope)
+        if not _dataset_cases(dataset):
+            return {
+                "ok": True,
+                "configured": configured,
+                "persisted": False,
+                "eval_skipped_reason": "memory_eval_dataset_empty",
+            }
+        report = _json_safe(run_eval(dataset, emit_incidents=True))
         if isinstance(report, dict):
             record = _memory_eval_report_record(report, scope=ScopeRef.from_dict(scope))
             runtime.store.append(record)
-            return {**report, "persisted": True, "persisted_record_id": record.record_id}
+            return {
+                **report,
+                "configured": True,
+                "dataset_source": dataset_source,
+                "persisted": True,
+                "persisted_record_id": record.record_id,
+            }
         return report
     except Exception as exc:
         return {
@@ -415,6 +421,139 @@ def _run_memory_eval_ci(runtime: Runtime, *, scope: dict) -> dict[str, Any]:
             "error": type(exc).__name__,
             "detail": str(exc),
         }
+
+
+def _memory_eval_ci_dataset(runtime: Runtime, *, scope: dict) -> tuple[dict[str, Any] | list[Any], bool, str]:
+    dataset_path = str(os.environ.get("EIMEMORY_MEMORY_EVAL_DATASET") or "").strip()
+    if dataset_path:
+        return _load_json_dataset(dataset_path), True, "env"
+
+    build_replay_dataset = getattr(runtime, "build_replay_dataset", None)
+    if callable(build_replay_dataset):
+        replay_report = build_replay_dataset(scope=scope, persist=False)
+        if isinstance(replay_report, dict):
+            cases = [dict(case) for case in _dataset_cases(replay_report) if isinstance(case, dict)]
+            if cases:
+                return (
+                    {
+                        "name": "nightly-memory-ci-smoke",
+                        "scope": scope,
+                        "threshold": 0.0,
+                        "seed": [],
+                        "cases": cases,
+                    },
+                    True,
+                    "replay_dataset",
+                )
+
+    return {
+        "name": "nightly-memory-ci-smoke",
+        "scope": scope,
+        "threshold": 0.0,
+        "seed": [],
+        "cases": [],
+    }, False, "none"
+
+
+def _production_recall_dataset(
+    runtime: Runtime,
+    *,
+    scope: dict,
+) -> tuple[dict[str, Any] | list[Any], bool, str, str]:
+    dataset_path = str(os.environ.get("EIMEMORY_PRODUCTION_RECALL_DATASET") or "").strip()
+    if dataset_path:
+        return _load_json_dataset(dataset_path), True, "env", "production_recall_dataset_empty"
+
+    conventional_path = _production_recall_conventional_path(runtime)
+    if conventional_path is not None:
+        return _load_json_dataset(str(conventional_path)), True, "conventional_path", "production_recall_dataset_empty"
+
+    build_dataset = getattr(runtime, "build_production_recall_dataset", None)
+    if callable(build_dataset):
+        dataset = build_dataset(scope=scope, persist=False)
+        return dataset, bool(_dataset_cases(dataset)), "runtime_generated", "production_recall_dataset_empty"
+
+    generated = _production_recall_smoke_dataset(runtime, scope=scope)
+    if _dataset_cases(generated):
+        return generated, True, "generated_records", "production_recall_dataset_empty"
+
+    return {
+        "name": "nightly-production-recall-smoke",
+        "scope": scope,
+        "cases": [],
+    }, False, "none", "production_recall_dataset_unconfigured"
+
+
+def _production_recall_conventional_path(runtime: Runtime) -> Path | None:
+    root = getattr(getattr(runtime, "store", None), "root", None)
+    if root is None:
+        return None
+    for relative in (
+        Path("evaluation") / "production_recall.json",
+        Path("eval") / "production_recall.json",
+        Path("production_recall.json"),
+    ):
+        candidate = Path(root) / relative
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _production_recall_smoke_dataset(runtime: Runtime, *, scope: dict) -> dict[str, Any]:
+    store = getattr(runtime, "store", None)
+    list_records = getattr(store, "list_records", None)
+    if not callable(list_records):
+        return {"name": "nightly-production-recall-smoke", "scope": scope, "cases": []}
+    records = list_records(
+        kinds=["memory", "multimodal_memory", "knowledge_page", "claim_card"],
+        scope=scope,
+        status="active",
+        limit=5,
+    )
+    cases = []
+    for record in records:
+        query = _first_text(record.title, record.summary, _record_content_text(record))
+        if not query:
+            continue
+        expected_text = _first_text(record.summary, _record_content_text(record), record.title)
+        cases.append(
+            {
+                "case_id": f"generated-{record.record_id}",
+                "query": query[:160],
+                "expected_record_ids": [record.record_id],
+                "expected_titles": [record.title],
+                "expected_text": [expected_text] if expected_text else [],
+                "topk": 5,
+                "scope": scope,
+            }
+        )
+    return {
+        "name": "nightly-production-recall-smoke",
+        "scope": scope,
+        "cases": cases,
+    }
+
+
+def _record_content_text(record: RecordEnvelope) -> str:
+    content = record.content if isinstance(record.content, dict) else {}
+    return _first_text(content.get("text"), content.get("summary"), content.get("detail"))
+
+
+def _load_json_dataset(path: str) -> dict[str, Any] | list[Any]:
+    with Path(path).open("r", encoding="utf-8") as handle:
+        dataset = json.load(handle)
+    if isinstance(dataset, (dict, list)):
+        return dataset
+    raise ValueError("dataset must be a JSON object or list")
+
+
+def _dataset_cases(dataset: Any) -> list[Any]:
+    if isinstance(dataset, list):
+        return list(dataset)
+    if isinstance(dataset, dict):
+        raw_cases = dataset.get("cases") or dataset.get("samples") or []
+        return list(raw_cases) if isinstance(raw_cases, list) else []
+    return []
 
 
 def _memory_eval_report_record(report: dict[str, Any], *, scope: ScopeRef) -> RecordEnvelope:

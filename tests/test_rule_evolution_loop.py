@@ -192,6 +192,43 @@ def test_rule_evolution_creates_candidate_from_eval_incident_repair_hint(tmp_pat
     assert incident.record_id in report["candidates"][0]["source_record_ids"]
 
 
+def test_rule_evolution_derives_repair_hint_from_eval_incident_summary(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"}
+    incident = runtime.evolution.observe(
+        signal_type="incident",
+        payload={
+            "title": "Memory eval failure: stale-source",
+            "summary": "Memory evaluation cited stale project status.",
+            "detail": "The answer should have checked the latest project tracker before claiming completion.",
+            "incident_type": "memory_eval_failure",
+            "severity": "medium",
+            "eval_failure": True,
+            "eval_phase": "usage",
+            "suggested_replay_dataset": [
+                {
+                    "query": "latest project status",
+                    "scope": scope,
+                    "expect_any_text": ["latest project tracker"],
+                    "limit": 3,
+                }
+            ],
+        },
+        scope=scope,
+    )
+
+    report = run_rule_evolution_loop(runtime, scope, apply=True)
+    rules = runtime.store.list_records(kinds=["rule"], scope=scope, limit=10)
+
+    assert report["candidate_count"] == 1
+    assert report["source_counts"]["incident_repair"] == 1
+    assert report["record_ids"]["source_incidents"] == [incident.record_id]
+    assert rules[0].summary == "Prevent recurrence of: Memory evaluation cited stale project status."
+    assert rules[0].meta["repair_hint_source"] == "derived"
+    assert rules[0].meta["suggested_replay_dataset"][0]["query"] == "latest project status"
+    assert report["candidates"][0]["suggested_replay_dataset"][0]["expect_any_text"] == ["latest project tracker"]
+
+
 def test_rule_evolution_activates_rule_from_operator_preference_memory(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     scope = {"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"}

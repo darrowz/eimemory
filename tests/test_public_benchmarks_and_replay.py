@@ -43,6 +43,7 @@ def _task_replay_dataset() -> dict:
     return {
         "name": "real-task-replay-smoke",
         "schema_version": "real_task_replay.v1",
+        "threshold": 0.9,
         "scope": _scope(),
         "seed": [
             {
@@ -115,6 +116,31 @@ def test_real_task_replay_uses_temp_seed_state(tmp_path) -> None:
     assert report["pass_rate"] == 1.0
     assert report["failure_samples"] == []
     assert runtime.store.list_records(scope=_scope(), limit=10) == []
+    assert runtime.store.list_records(kinds=["replay_result"], scope=_scope(), limit=10) == []
+
+
+def test_real_task_replay_can_persist_report_record(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+
+    report = run_real_task_replay(runtime, _task_replay_dataset(), persist_report=True)
+    records = runtime.store.list_records(kinds=["replay_result"], scope=_scope(), limit=10)
+
+    assert report["pass_rate"] == 1.0
+    assert report["verdict"] == "pass"
+    assert len(records) == 1
+    record = records[0]
+    assert record.kind == "replay_result"
+    assert record.source == "eimemory.real_task_replay"
+    assert record.meta["report_type"] == "real_task_replay"
+    assert record.meta["replay_source"] == "real_task_replay"
+    assert record.meta["schema_version"] == "real_task_replay.v1"
+    assert record.meta["verdict"] == "pass"
+    assert record.meta["pass_rate"] == 1.0
+    assert record.meta["sample_count"] == 1
+    assert record.meta["fail_count"] == 0
+    assert record.meta["threshold"] == 0.9
+    assert record.meta["scope"] == report["scope"]
+    assert record.content["report"]["pass_rate"] == 1.0
 
 
 def test_cli_eval_locomo_and_task_replay_write_reports(tmp_path, monkeypatch, capsys) -> None:
@@ -135,3 +161,25 @@ def test_cli_eval_locomo_and_task_replay_write_reports(tmp_path, monkeypatch, ca
     replay_printed = json.loads(capsys.readouterr().out)
     assert replay_printed["output"] == str(replay_out)
     assert json.loads(replay_out.read_text(encoding="utf-8"))["report_type"] == "real_task_replay"
+
+
+def test_cli_eval_task_replay_can_persist_and_write_report(tmp_path, monkeypatch, capsys) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("EIMEMORY_ROOT", str(runtime_root))
+    replay_path = tmp_path / "replay.json"
+    replay_out = tmp_path / "replay-report.json"
+    replay_path.write_text(json.dumps(_task_replay_dataset(), ensure_ascii=False), encoding="utf-8")
+
+    assert (
+        cli_main(["eval", "task-replay", str(replay_path), "--persist-report", "--output", str(replay_out)])
+        == 0
+    )
+    replay_printed = json.loads(capsys.readouterr().out)
+    runtime = Runtime.create(root=runtime_root)
+    records = runtime.store.list_records(kinds=["replay_result"], scope=_scope(), limit=10)
+
+    assert replay_printed["output"] == str(replay_out)
+    assert json.loads(replay_out.read_text(encoding="utf-8"))["report_type"] == "real_task_replay"
+    assert len(records) == 1
+    assert records[0].meta["verdict"] == "pass"
+    assert records[0].meta["pass_rate"] == 1.0

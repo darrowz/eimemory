@@ -10,7 +10,7 @@ from typing import Any
 
 from eimemory.core.clock import now_iso
 from eimemory.evaluation.metrics import binary_pass_rate, percentile
-from eimemory.models.records import ScopeRef
+from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
 def normalize_real_task_replay_dataset(dataset: dict | list) -> dict[str, Any]:
@@ -21,6 +21,7 @@ def normalize_real_task_replay_dataset(dataset: dict | list) -> dict[str, Any]:
     return {
         "schema_version": "real_task_replay.v1",
         "name": str(raw.get("name") or "real_task_replay"),
+        "threshold": _threshold(raw.get("threshold"), default=0.8),
         "scope": scope,
         "seed": [dict(item) for item in list(raw.get("seed") or raw.get("seed_records") or []) if isinstance(item, dict)],
         "cases": [dict(item) for item in list(raw.get("cases") or raw.get("samples") or []) if isinstance(item, dict)],
@@ -32,6 +33,7 @@ def run_real_task_replay(
     dataset: dict | list,
     *,
     seed: bool = True,
+    persist_report: bool = False,
 ) -> dict[str, Any]:
     normalized = normalize_real_task_replay_dataset(dataset)
     if seed and normalized["seed"]:
@@ -40,10 +42,15 @@ def run_real_task_replay(
 
             eval_runtime = Runtime.create(root=Path(temp_root))
             try:
-                return _run_on_runtime(eval_runtime, normalized=normalized)
+                report = _run_on_runtime(eval_runtime, normalized=normalized)
             finally:
                 eval_runtime.close()
-    return _run_on_runtime(runtime, normalized=normalized if seed else {**normalized, "seed": []})
+    else:
+        report = _run_on_runtime(runtime, normalized=normalized if seed else {**normalized, "seed": []})
+    if persist_report:
+        record = runtime.store.append(_report_record(report, scope=ScopeRef.from_dict(normalized["scope"])))
+        report = {**report, "persisted_record_id": record.record_id}
+    return report
 
 
 def _run_on_runtime(runtime, *, normalized: dict[str, Any]) -> dict[str, Any]:
@@ -58,6 +65,8 @@ def _run_on_runtime(runtime, *, normalized: dict[str, Any]) -> dict[str, Any]:
         latencies.append(float(sample["latency_ms"]))
         samples.append(sample)
     pass_rate = binary_pass_rate([bool(sample.get("passed")) for sample in samples])
+    threshold = float(normalized["threshold"])
+    verdict = "pass" if pass_rate >= threshold else "fail"
     return {
         "ok": True,
         "schema_version": "real_task_replay.v1",
@@ -70,11 +79,37 @@ def _run_on_runtime(runtime, *, normalized: dict[str, Any]) -> dict[str, Any]:
         "pass_count": sum(1 for sample in samples if sample.get("passed")),
         "fail_count": sum(1 for sample in samples if not sample.get("passed")),
         "pass_rate": pass_rate,
+        "threshold": threshold,
+        "verdict": verdict,
         "latency_ms_avg": round(sum(latencies) / len(latencies), 3) if latencies else 0.0,
         "latency_ms_p95": percentile(latencies, 95),
         "failure_samples": [sample for sample in samples if not sample.get("passed")][:20],
         "samples": samples,
     }
+
+
+def _report_record(report: dict[str, Any], *, scope: ScopeRef) -> RecordEnvelope:
+    return RecordEnvelope.create(
+        kind="replay_result",
+        title=f"Real task replay report: {report['name']}",
+        summary=f"Real task replay {report['verdict']} pass_rate={report['pass_rate']}",
+        scope=scope,
+        source="eimemory.real_task_replay",
+        content={"report": dict(report)},
+        meta={
+            "report_type": "real_task_replay",
+            "replay_source": "real_task_replay",
+            "schema_version": "real_task_replay.v1",
+            "name": report["name"],
+            "verdict": report["verdict"],
+            "pass_rate": report["pass_rate"],
+            "threshold": report["threshold"],
+            "sample_count": report["sample_count"],
+            "pass_count": report["pass_count"],
+            "fail_count": report["fail_count"],
+            "scope": asdict(scope),
+        },
+    )
 
 
 def _seed_records(runtime, seed_records: list[dict[str, Any]], *, scope: ScopeRef) -> list[str]:
@@ -151,3 +186,11 @@ def _strings(value: Any) -> list[str]:
     if isinstance(value, str):
         return [value] if value.strip() else []
     return [str(item).strip() for item in list(value or []) if str(item).strip()]
+
+
+def _threshold(value: Any, *, default: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    return max(0.0, min(1.0, parsed))

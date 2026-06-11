@@ -326,6 +326,7 @@ def _rule_candidates_from_incidents(
     incident_records: list[RecordEnvelope],
     rules: list[RecordEnvelope],
 ) -> list[dict]:
+    existing_source_keys = _existing_evolution_source_keys(rules)
     existing_incident_ids = {
         incident_id
         for rule in rules
@@ -338,13 +339,17 @@ def _rule_candidates_from_incidents(
         if not (_coerce_bool(incident.meta.get("eval_failure")) or _coerce_bool(payload.get("eval_failure"))):
             continue
         repair_hint = _clean_text(incident.meta.get("repair_hint") or payload.get("repair_hint") or "")
-        if not repair_hint or incident.record_id in existing_incident_ids:
+        repair_hint_source = "explicit" if repair_hint else ""
+        if not repair_hint:
+            repair_hint = _derive_incident_repair_hint(incident, payload)
+            repair_hint_source = "derived" if repair_hint else ""
+        source_record_ids = [incident.record_id]
+        source_key = _source_key("incident_repair", source_record_ids)
+        if not repair_hint or incident.record_id in existing_incident_ids or source_key in existing_source_keys:
             continue
 
         summary = repair_hint
         task_type = _candidate_task_type_from_incident(incident, payload)
-        source_record_ids = [incident.record_id]
-        source_key = _source_key("incident_repair", source_record_ids)
         eval_phase = str(incident.meta.get("eval_phase") or payload.get("eval_phase") or "")
         replay_dataset = payload.get("suggested_replay_dataset")
         suggested_replay_dataset = [dict(item) for item in replay_dataset] if isinstance(replay_dataset, list) else []
@@ -360,6 +365,7 @@ def _rule_candidates_from_incidents(
             "incident_record_id": incident.record_id,
             "eval_failure": True,
             "eval_phase": eval_phase,
+            "repair_hint_source": repair_hint_source,
             "suggested_replay_dataset": suggested_replay_dataset,
         }
 
@@ -445,6 +451,12 @@ def _rule_candidates_from_outcome_traces(
         if replay_case
     ]
     seed_candidates = generate_candidate_policies(replay_cases)
+    seed_candidates.extend(
+        _single_outcome_trace_seed_candidates(
+            outcome_traces=ordered_outcome_traces,
+            replay_cases=replay_cases,
+        )
+    )
     candidates: list[dict] = []
     seen_source_keys: set[str] = set()
     for seed in seed_candidates:
@@ -496,6 +508,137 @@ def _rule_candidates_from_outcome_traces(
             }
         )
     return candidates
+
+
+def _derive_incident_repair_hint(incident: RecordEnvelope, payload: dict) -> str:
+    text = _first_incident_text(
+        payload.get("summary"),
+        incident.summary,
+        payload.get("detail"),
+        incident.detail,
+        payload.get("reason"),
+        payload.get("failure"),
+        payload.get("error"),
+        payload.get("observed"),
+        payload.get("actual"),
+        payload.get("title"),
+        incident.title,
+    )
+    return f"Prevent recurrence of: {text}" if text else ""
+
+
+def _first_incident_text(*values: Any) -> str:
+    for value in values:
+        if isinstance(value, dict):
+            for key in ("summary", "detail", "message", "reason", "error", "observed", "actual"):
+                text = _clean_text(value.get(key))
+                if text:
+                    return text
+            continue
+        if isinstance(value, (list, tuple, set)):
+            text = _clean_text(" ".join(str(item or "") for item in value))
+        else:
+            text = _clean_text(value)
+        if text:
+            return text
+    return ""
+
+
+def _single_outcome_trace_seed_candidates(
+    *,
+    outcome_traces: list[RecordEnvelope],
+    replay_cases: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    trace_by_id = {record.record_id: record for record in outcome_traces}
+    candidates: list[dict[str, Any]] = []
+    for replay_case in replay_cases:
+        source_trace_id = str(replay_case.get("source_outcome_trace_id") or "")
+        record = trace_by_id.get(source_trace_id)
+        if record is None:
+            continue
+        allowed_sources = _singleton_outcome_candidate_sources(record, replay_case)
+        if not allowed_sources:
+            continue
+        for seed in generate_candidate_policies([replay_case], repeat_threshold=1):
+            candidate_source = str(seed.get("candidate_source") or seed.get("source_type") or "")
+            if candidate_source not in allowed_sources:
+                continue
+            audit_meta = dict(seed.get("audit_meta") or {})
+            audit_meta["singleton_seed"] = True
+            audit_meta["singleton_seed_reason"] = _singleton_seed_reason(record, replay_case, candidate_source)
+            seed["audit_meta"] = audit_meta
+            candidates.append(seed)
+    return candidates
+
+
+def _singleton_outcome_candidate_sources(record: RecordEnvelope, replay_case: dict[str, Any]) -> set[str]:
+    if _outcome_trace_confidence(record) < 0.8 or not _outcome_trace_has_correction(record):
+        return set()
+    primary_label = _clean_text(replay_case.get("primary_label") or record.meta.get("primary_label")).lower()
+    signals = {item.lower() for item in _coerce_nested_string_list(replay_case.get("signals"))}
+    if primary_label == "user_correction" or signals.intersection({"operator_correction", "user_correction", "operator_gap"}):
+        return {"operator_gap"}
+    if primary_label == "state_tracking_error" or signals.intersection({"state_tracking_error", "world_state_mismatch"}):
+        return {"world_state_mismatch"}
+    if primary_label and primary_label not in {"success", "unknown", "unknown_failure"}:
+        return {"diagnosis_pattern"}
+    return set()
+
+
+def _singleton_seed_reason(record: RecordEnvelope, replay_case: dict[str, Any], candidate_source: str) -> str:
+    primary_label = _clean_text(replay_case.get("primary_label") or record.meta.get("primary_label"))
+    return f"single_high_confidence_{candidate_source}:{primary_label or 'bad_outcome'}"
+
+
+def _outcome_trace_confidence(record: RecordEnvelope) -> float:
+    content = record.content if isinstance(record.content, dict) else {}
+    payload = content.get("payload") if isinstance(content.get("payload"), dict) else {}
+    diagnosis = content.get("diagnosis") if isinstance(content.get("diagnosis"), dict) else {}
+    verifier = payload.get("verifier") if isinstance(payload.get("verifier"), dict) else {}
+    for value in (
+        record.meta.get("confidence"),
+        record.meta.get("diagnosis_confidence"),
+        diagnosis.get("confidence"),
+        payload.get("confidence"),
+        verifier.get("confidence"),
+    ):
+        try:
+            return max(0.0, min(1.0, float(value)))
+        except (TypeError, ValueError):
+            continue
+    return 0.0
+
+
+def _outcome_trace_has_correction(record: RecordEnvelope) -> bool:
+    content = record.content if isinstance(record.content, dict) else {}
+    payload = content.get("payload") if isinstance(content.get("payload"), dict) else {}
+    diagnosis = content.get("diagnosis") if isinstance(content.get("diagnosis"), dict) else {}
+    operator_gap = content.get("operator_gap") if isinstance(content.get("operator_gap"), dict) else {}
+    world_state = content.get("world_state") if isinstance(content.get("world_state"), dict) else {}
+    for source in (diagnosis, payload, operator_gap, world_state):
+        for key in ("correction", "fix", "policy_update", "expected_behavior", "required_behavior", "expected"):
+            if _clean_text(source.get(key)):
+                return True
+    return False
+
+
+def _coerce_nested_string_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value] if value else []
+    if isinstance(value, dict):
+        values: list[str] = []
+        for item in value.values():
+            values.extend(_coerce_nested_string_list(item))
+        return values
+    if isinstance(value, (list, tuple, set)):
+        values: list[str] = []
+        for item in value:
+            values.extend(_coerce_nested_string_list(item))
+        return values
+    text = _clean_text(value)
+    return [text] if text else []
 
 
 def _existing_evolution_source_keys(rules: list[RecordEnvelope]) -> set[str]:

@@ -11,7 +11,26 @@ def _append_outcome_trace(
     signals: list[str],
     risk_level: str = "L1",
     query: str = "Inspect the console failure",
+    confidence: float | None = None,
+    correction: str | None = None,
 ) -> RecordEnvelope:
+    diagnosis = {
+        "expected_text": ["open console", "inspect failure"],
+        "negative_expected_text": ["answered from memory"],
+        "signals": signals,
+    }
+    if correction:
+        diagnosis["correction"] = correction
+    meta = {
+        "report_type": "outcome_trace",
+        "schema_version": "outcome_trace.v1",
+        "task_type": "ops.inspect",
+        "primary_label": primary_label,
+        "diagnosis_signals": signals,
+        "risk_level": risk_level,
+    }
+    if confidence is not None:
+        meta["confidence"] = confidence
     trace = RecordEnvelope.create(
         kind="reflection",
         title="Outcome trace",
@@ -23,26 +42,15 @@ def _append_outcome_trace(
                 "query": query,
                 "actual_response": "I answered from memory without checking the console.",
             },
-            "diagnosis": {
-                "expected_text": ["open console", "inspect failure"],
-                "negative_expected_text": ["answered from memory"],
-                "signals": signals,
-            },
+            "diagnosis": diagnosis,
             "world_state": {"expected": "console inspected", "observed": "not inspected"},
             "visual_evidence": {"missing": "latest failure screenshot was not inspected"},
             "operator_gap": {
-                "expected_behavior": "Open console before answering.",
+                "expected_behavior": correction or "Open console before answering.",
                 "observed_behavior": "No console was opened.",
             },
         },
-        meta={
-            "report_type": "outcome_trace",
-            "schema_version": "outcome_trace.v1",
-            "task_type": "ops.inspect",
-            "primary_label": primary_label,
-            "diagnosis_signals": signals,
-            "risk_level": risk_level,
-        },
+        meta=meta,
     )
     return runtime.store.append(trace)
 
@@ -96,6 +104,55 @@ def test_rule_evolution_creates_shadow_candidate_from_repeated_operator_gap(tmp_
     assert second_report["candidate_count"] == 0
     assert second_report["replay_count"] == 2
     assert second_report["record_ids"]["source_outcome_traces"] == []
+
+
+def test_rule_evolution_creates_candidate_from_single_high_confidence_operator_correction(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "eibrain", "workspace_id": "robot"}
+    trace = _append_outcome_trace(
+        runtime,
+        scope,
+        primary_label="user_correction",
+        signals=["operator_correction"],
+        confidence=0.91,
+        correction="Open the console and inspect the failure before answering.",
+    )
+
+    report = run_rule_evolution_loop(runtime, scope, apply=True)
+    rules = runtime.store.list_records(kinds=["rule"], scope=scope, limit=10)
+
+    assert report["candidate_count"] == 1
+    assert report["source_counts"]["operator_gap"] == 1
+    assert report["record_ids"]["source_outcome_traces"] == [trace.record_id]
+    assert report["record_ids"]["source_operator_gaps"] == [trace.record_id]
+    assert report["outcome_replay_count"] == 1
+    assert report["promoted_count"] == 1
+    assert rules[0].meta["candidate_source"] == "operator_gap"
+    assert rules[0].meta["source_outcome_trace_ids"] == [trace.record_id]
+    assert rules[0].meta["suggested_replay_dataset"][0]["source_outcome_trace_id"] == trace.record_id
+    assert set(report["candidates"][0]["suggested_replay_dataset"][0]["expect_any_text"]) >= {
+        "open console",
+        "inspect failure",
+        "Open the console and inspect the failure before answering.",
+    }
+
+
+def test_rule_evolution_blocks_single_low_confidence_generic_outcome(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "eibrain", "workspace_id": "robot"}
+    _append_outcome_trace(
+        runtime,
+        scope,
+        primary_label="missing_tool_call",
+        signals=["generic_failure"],
+        confidence=0.31,
+    )
+
+    report = run_rule_evolution_loop(runtime, scope, apply=True)
+
+    assert report["candidate_count"] == 0
+    assert report["outcome_replay_count"] == 0
+    assert runtime.store.list_records(kinds=["rule"], scope=scope, limit=10) == []
 
 
 def test_rule_evolution_high_risk_visual_and_world_candidates_never_active(tmp_path) -> None:

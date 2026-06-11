@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 from eimemory.cli.main import main as cli_main
-from eimemory.scheduler.jobs import run_nightly_jobs
+from eimemory.scheduler.jobs import _run_memory_eval_ci, _run_production_recall_eval, run_nightly_jobs
 
 
 def test_intake_review_promote_policy_and_pack_cli_flow(tmp_path, monkeypatch, capsys) -> None:
@@ -56,6 +56,21 @@ def test_nightly_jobs_include_active_intake_reports(tmp_path, monkeypatch) -> No
     runtime = Runtime.create(root=tmp_path / "runtime")
     monkeypatch.setattr(
         runtime,
+        "build_replay_dataset",
+        lambda *, scope, persist=False: {
+            "ok": True,
+            "cases": [
+                {
+                    "case_id": "nightly-replay",
+                    "query": "nightly intake durable knowledge",
+                    "expected_text": ["durable knowledge"],
+                    "scope": scope,
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        runtime,
         "run_memory_eval_ci",
         lambda dataset, *, emit_incidents=False: {
             "ok": True,
@@ -101,6 +116,86 @@ def test_nightly_jobs_include_active_intake_reports(tmp_path, monkeypatch) -> No
     assert report["production_recall"]["ok"] is True
     assert report["production_recall"]["configured"] is False
     assert report["production_recall"]["eval_skipped_reason"] == "production_recall_dataset_unconfigured"
+
+
+def test_memory_eval_ci_uses_generated_replay_cases_and_emits_incidents(monkeypatch) -> None:
+    monkeypatch.delenv("EIMEMORY_MEMORY_EVAL_DATASET", raising=False)
+    calls = {}
+
+    class Store:
+        def __init__(self) -> None:
+            self.records = []
+
+        def append(self, record):
+            self.records.append(record)
+            return record
+
+    class Runtime:
+        def __init__(self) -> None:
+            self.store = Store()
+
+        def build_replay_dataset(self, *, scope, persist=False):
+            calls["build_replay_dataset"] = {"scope": scope, "persist": persist}
+            return {
+                "ok": True,
+                "cases": [
+                    {
+                        "case_id": "generated-replay",
+                        "query": "repair failed task",
+                        "expected_text": ["repair hint"],
+                    }
+                ],
+            }
+
+        def run_memory_eval_ci(self, dataset, *, emit_incidents=False):
+            calls["run_memory_eval_ci"] = {"dataset": dataset, "emit_incidents": emit_incidents}
+            return {
+                "ok": True,
+                "name": "nightly-memory-ci-smoke",
+                "pass_rate": 1.0,
+                "passed_threshold": True,
+                "fail_count": 0,
+                "incident_record_ids": [],
+            }
+
+    report = _run_memory_eval_ci(Runtime(), scope={"agent_id": "main"})
+
+    assert calls["build_replay_dataset"] == {"scope": {"agent_id": "main"}, "persist": False}
+    assert calls["run_memory_eval_ci"]["emit_incidents"] is True
+    assert calls["run_memory_eval_ci"]["dataset"]["cases"][0]["case_id"] == "generated-replay"
+    assert report["ok"] is True
+    assert report["persisted"] is True
+
+
+def test_memory_eval_ci_skips_without_persisting_when_dataset_is_empty(monkeypatch) -> None:
+    monkeypatch.delenv("EIMEMORY_MEMORY_EVAL_DATASET", raising=False)
+
+    class Store:
+        def __init__(self) -> None:
+            self.records = []
+
+        def append(self, record):
+            self.records.append(record)
+            return record
+
+    class Runtime:
+        def __init__(self) -> None:
+            self.store = Store()
+
+        def build_replay_dataset(self, *, scope, persist=False):
+            return {"ok": True, "cases": []}
+
+        def run_memory_eval_ci(self, dataset, *, emit_incidents=False):
+            raise AssertionError("empty fallback datasets should not run memory eval")
+
+    runtime = Runtime()
+    report = _run_memory_eval_ci(runtime, scope={"agent_id": "main"})
+
+    assert report["ok"] is True
+    assert report["configured"] is False
+    assert report["persisted"] is False
+    assert report["eval_skipped_reason"] == "memory_eval_dataset_empty"
+    assert runtime.store.records == []
 
 
 def test_nightly_jobs_falls_back_when_memory_eval_ci_is_unavailable(tmp_path, monkeypatch) -> None:
@@ -158,6 +253,39 @@ def test_nightly_jobs_can_run_configured_production_recall_eval(tmp_path, monkey
     assert report["production_recall"]["seeded"] is False
     assert report["production_recall"]["hit_at_1"] == 1.0
     assert report["production_recall"]["latency_ms_p95"] >= 0.0
+
+
+def test_production_recall_eval_can_use_runtime_generated_dataset(monkeypatch) -> None:
+    monkeypatch.delenv("EIMEMORY_PRODUCTION_RECALL_DATASET", raising=False)
+    calls = {}
+
+    class Runtime:
+        def build_production_recall_dataset(self, *, scope, persist=False):
+            calls["build_production_recall_dataset"] = {"scope": scope, "persist": persist}
+            return {
+                "name": "generated-production-recall",
+                "scope": scope,
+                "cases": [
+                    {
+                        "case_id": "generated-recall",
+                        "query": "deployment acceptance rule",
+                        "expected_titles": ["Deployment acceptance"],
+                    }
+                ],
+            }
+
+        def run_production_recall_eval(self, dataset, *, seed=False, scope=None):
+            calls["run_production_recall_eval"] = {"dataset": dataset, "seed": seed, "scope": scope}
+            return {"ok": True, "hit_at_1": 1.0, "latency_ms_p95": 0.0}
+
+    report = _run_production_recall_eval(Runtime(), scope={"agent_id": "main"})
+
+    assert calls["build_production_recall_dataset"] == {"scope": {"agent_id": "main"}, "persist": False}
+    assert calls["run_production_recall_eval"]["dataset"]["cases"][0]["case_id"] == "generated-recall"
+    assert calls["run_production_recall_eval"]["seed"] is False
+    assert report["ok"] is True
+    assert report["configured"] is True
+    assert report["dataset_source"] == "runtime_generated"
 
 
 def test_nightly_jobs_do_not_reset_reviewed_candidates(tmp_path) -> None:

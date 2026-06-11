@@ -6,6 +6,7 @@ import re
 from collections import Counter
 from dataclasses import asdict
 from statistics import mean
+from typing import Any
 
 from eimemory.api.memory import MemoryAPI
 from eimemory.living import LIVING_MEMORY_META_KEY, enrich_living_memory
@@ -13,6 +14,18 @@ from eimemory.models.relation_records import RelationRecord
 from eimemory.models.records import LinkRef, RecordEnvelope, ScopeRef, VALID_KINDS, evaluate_memory_quality
 from eimemory.scoring import extract_memory_score, score_from_legacy_quality, summarize_scores, with_score_metadata
 from eimemory.storage.runtime_store import RuntimeStore
+
+
+ROI_EVAL_REPORT_TYPES = frozenset({"production_recall_eval", "real_task_replay", "memory_eval_ci"})
+ROI_WEIGHTS = {
+    "accepted_feedback": 1.0,
+    "replay_passes": 1.0,
+    "active_rules": 1.0,
+    "eval_pass_reports": 1.0,
+    "incidents": 1.0,
+    "replay_failures": 1.0,
+    "eval_fail_reports": 1.0,
+}
 
 
 class EvolutionAPI:
@@ -511,11 +524,34 @@ class EvolutionAPI:
         incidents = self.store.list_records(kinds=["incident"], scope=scope, limit=500)
         feedback = self.store.list_records(kinds=["feedback"], scope=scope, limit=500)
         replay_results = self.store.list_records(kinds=["replay_result"], scope=scope, limit=500)
+        reflections = self.store.list_records(kinds=["reflection"], scope=scope, limit=500)
         rules = self.store.list_records(kinds=["rule"], scope=scope, limit=500)
         accepted_feedback_count = sum(1 for item in feedback if item.meta.get("decision") == "accept")
         replay_pass_count = sum(1 for item in replay_results if item.meta.get("verdict") == "pass")
+        replay_failure_count = sum(1 for item in replay_results if item.meta.get("verdict") == "fail")
         accepted_rule_count = sum(1 for item in rules if item.status == "accepted")
         active_rule_count = sum(1 for item in rules if item.status == "active")
+        eval_report_outcomes = [
+            self._roi_eval_report_outcome(item)
+            for item in [*replay_results, *reflections]
+            if self._roi_report_type(item) in ROI_EVAL_REPORT_TYPES
+            and not self._roi_has_replay_verdict(item)
+        ]
+        eval_pass_report_count = sum(1 for outcome in eval_report_outcomes if outcome == "pass")
+        eval_fail_report_count = sum(1 for outcome in eval_report_outcomes if outcome == "fail")
+        positive = {
+            "accepted_feedback": accepted_feedback_count * ROI_WEIGHTS["accepted_feedback"],
+            "replay_passes": replay_pass_count * ROI_WEIGHTS["replay_passes"],
+            "active_rules": active_rule_count * ROI_WEIGHTS["active_rules"],
+            "eval_pass_reports": eval_pass_report_count * ROI_WEIGHTS["eval_pass_reports"],
+        }
+        negative = {
+            "incidents": len(incidents) * ROI_WEIGHTS["incidents"],
+            "replay_failures": replay_failure_count * ROI_WEIGHTS["replay_failures"],
+            "eval_fail_reports": eval_fail_report_count * ROI_WEIGHTS["eval_fail_reports"],
+        }
+        positive_total = sum(positive.values())
+        negative_total = sum(negative.values())
         return {
             "incident_count": len(incidents),
             "feedback_count": len(feedback),
@@ -524,8 +560,98 @@ class EvolutionAPI:
             "replay_pass_count": replay_pass_count,
             "accepted_rule_count": accepted_rule_count,
             "active_rule_count": active_rule_count,
-            "roi_signal": accepted_feedback_count + replay_pass_count - len(incidents),
+            "roi_signal": positive_total - negative_total,
+            "roi_breakdown": {
+                "counts": {
+                    "incidents": len(incidents),
+                    "accepted_feedback": accepted_feedback_count,
+                    "replay_passes": replay_pass_count,
+                    "replay_failures": replay_failure_count,
+                    "accepted_rules": accepted_rule_count,
+                    "active_rules": active_rule_count,
+                    "eval_pass_reports": eval_pass_report_count,
+                    "eval_fail_reports": eval_fail_report_count,
+                },
+                "weights": dict(ROI_WEIGHTS),
+                "positive": {**positive, "total": positive_total},
+                "negative": {**negative, "total": negative_total},
+            },
         }
+
+    @staticmethod
+    def _roi_report_payload(record: RecordEnvelope) -> dict[str, Any]:
+        payload: dict[str, Any] = {}
+        report = record.content.get("report") if isinstance(record.content, dict) else None
+        if isinstance(report, dict):
+            payload.update(report)
+        if isinstance(record.content, dict):
+            payload.update({key: value for key, value in record.content.items() if key != "report"})
+        payload.update(record.meta)
+        return payload
+
+    @classmethod
+    def _roi_report_type(cls, record: RecordEnvelope) -> str:
+        payload = cls._roi_report_payload(record)
+        return str(payload.get("report_type") or "").strip()
+
+    @classmethod
+    def _roi_has_replay_verdict(cls, record: RecordEnvelope) -> bool:
+        if record.kind != "replay_result":
+            return False
+        verdict = str(cls._roi_report_payload(record).get("verdict") or "").strip().lower()
+        return verdict in {"pass", "passed", "success", "fail", "failed", "failure"}
+
+    @classmethod
+    def _roi_eval_report_outcome(cls, record: RecordEnvelope) -> str | None:
+        payload = cls._roi_report_payload(record)
+        verdict = str(payload.get("verdict") or "").strip().lower()
+        if verdict in {"pass", "passed", "success"}:
+            return "pass"
+        if verdict in {"fail", "failed", "failure"}:
+            return "fail"
+        if "passed_threshold" in payload:
+            return "pass" if bool(payload.get("passed_threshold")) else "fail"
+        if payload.get("ok") is False:
+            return "fail"
+
+        threshold = cls._roi_float(payload.get("threshold"), default=0.8)
+        pass_rate = cls._roi_float(payload.get("pass_rate"))
+        if pass_rate is not None:
+            return "pass" if pass_rate >= threshold else "fail"
+
+        for metric in ("hit_at_k", "hit_at_1", "mrr"):
+            value = cls._roi_float(payload.get(metric))
+            if value is not None:
+                return "pass" if value >= threshold else "fail"
+
+        pass_count = cls._roi_int(payload.get("pass_count"))
+        fail_count = cls._roi_int(payload.get("fail_count"))
+        if pass_count is not None or fail_count is not None:
+            passes = int(pass_count or 0)
+            failures = int(fail_count or 0)
+            if passes > 0 and failures == 0:
+                return "pass"
+            if failures > 0 and passes == 0:
+                return "fail"
+        return None
+
+    @staticmethod
+    def _roi_float(value: Any, *, default: float | None = None) -> float | None:
+        if value is None or value == "":
+            return default
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _roi_int(value: Any) -> int | None:
+        if value is None or value == "":
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
 
     def memory_quality_report(self, *, scope: dict, limit: int | None = None) -> dict:
         records = self._list_memory_records(scope=scope, limit=limit)

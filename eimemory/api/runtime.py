@@ -647,10 +647,11 @@ class Runtime:
         dataset: dict | list,
         *,
         seed: bool = True,
+        persist_report: bool = False,
     ) -> dict:
         from eimemory.evaluation import run_real_task_replay
 
-        return run_real_task_replay(self, dataset, seed=seed)
+        return run_real_task_replay(self, dataset, seed=seed, persist_report=persist_report)
 
     def enrich_living_memory(self, *, scope: dict | None = None, limit: int = 100) -> dict:
         from eimemory.living.operations import enrich_memory_records

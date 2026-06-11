@@ -409,6 +409,7 @@ def _build_parser() -> argparse.ArgumentParser:
     eval_task_replay.add_argument("dataset_json")
     eval_task_replay.add_argument("--output", default="")
     eval_task_replay.add_argument("--no-seed", action="store_true")
+    eval_task_replay.add_argument("--persist-report", action="store_true")
     return parser
 
 
@@ -1571,7 +1572,12 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 from eimemory.evaluation import run_real_task_replay
 
-                report = run_real_task_replay(runtime, dataset, seed=not bool(parsed.no_seed))
+                report = run_real_task_replay(
+                    runtime,
+                    dataset,
+                    seed=not bool(parsed.no_seed),
+                    persist_report=bool(parsed.persist_report),
+                )
             except ValueError as exc:
                 print(json.dumps({"ok": False, "error": "invalid_eval_dataset", "detail": str(exc)}, ensure_ascii=False))
                 return 2
