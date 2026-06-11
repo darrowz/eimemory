@@ -16,7 +16,8 @@ def test_capability_ledger_tracks_score_and_trend(tmp_path) -> None:
     assert ledger["capabilities"]["tool.routing"]["score"] == 0.8
     assert ledger["capabilities"]["tool.routing"]["trend"] == 0.3
     assert ledger["capabilities"]["tool.routing"]["confidence"] == "low"
-    assert ledger["capabilities"]["tool.routing"]["status"] == "active"
+    assert ledger["capabilities"]["tool.routing"]["status"] == "needs_outcome_recalculation"
+    assert ledger["capabilities"]["tool.routing"]["goal_gap_reason"] == "insufficient_outcome_evidence"
 
 
 def test_build_capability_ledger_auto_includes_seeded_defaults(tmp_path) -> None:
