@@ -40,7 +40,8 @@ def test_autonomous_learning_cycle_applies_supported_policy_adapter(tmp_path) ->
 
     assert report["ok"] is True
     assert report["promotion"]["applied"] is True
-    assert runtime.store.get_by_id(report["candidate_id"]).status == "promoted"
+    assert report["promotion"]["post_promotion_status"] == "shadow_observe"
+    assert runtime.store.get_by_id(report["candidate_id"]).status == "shadow_observe"
     assert report["promotion"]["applied_artifact_ids"]
 
 

@@ -68,9 +68,25 @@ def test_learning_dashboard_systemd_unit_uses_user_report_path_and_release_binar
     unit_path = Path("deploy/systemd/eimemory-learn-dashboard.service")
     unit_text = unit_path.read_text(encoding="utf-8")
 
+    assert "daily autonomous learning dashboard" in unit_text
     assert "/var/lib/eimemory/autonomous-learning-dashboard.md" not in unit_text
     assert "--output %h/.openclaw/reports/autonomous-learning-dashboard.md" in unit_text
     assert "/opt/eimemory/current/.venv/bin/eimemory learn dashboard --persist" in unit_text
+
+
+def test_learning_dashboard_timer_runs_daily_after_nightly() -> None:
+    timer_text = Path("deploy/systemd/eimemory-learn-dashboard.timer").read_text(encoding="utf-8")
+
+    assert "daily autonomous learning dashboard" in timer_text
+    assert "OnCalendar=*-*-* 03:45:00" in timer_text
+    assert "Mon *-*-* 09:00:00" not in timer_text
+
+
+def test_nightly_systemd_unit_sets_autonomous_learning_promotion_budget() -> None:
+    unit_text = Path("deploy/systemd/eimemory-nightly.service").read_text(encoding="utf-8")
+
+    assert "Environment=EIMEMORY_AUTONOMOUS_LEARNING_MAX_GOALS=3" in unit_text
+    assert "Environment=EIMEMORY_AUTONOMOUS_LEARNING_MAX_PROMOTIONS=3" in unit_text
 
 
 def test_eimemory_rpc_systemd_unit_uses_honxin_tailscale_endpoint() -> None:

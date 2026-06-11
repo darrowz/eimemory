@@ -46,6 +46,26 @@ def test_build_weekly_dashboard_writes_output_on_success(tmp_path) -> None:
     assert (tmp_path / "reports" / "autonomous-learning-dashboard.md").read_text(encoding="utf-8") == report["markdown"]
 
 
+def test_dashboard_defaults_to_daily_autonomy_summary(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+
+    report = build_weekly_dashboard(runtime, scope={"agent_id": "hongtu"}, persist=False)
+
+    assert report["report_type"] == "autonomous_learning_daily_dashboard"
+    assert report["period_type"] == "daily"
+    assert "## Autonomy Summary" in report["markdown"]
+    assert "## ROI Components" in report["markdown"]
+
+
+def test_dashboard_weekly_flag_preserves_weekly_report_type(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+
+    report = build_weekly_dashboard(runtime, scope={"agent_id": "hongtu"}, persist=False, weekly=True)
+
+    assert report["report_type"] == "autonomous_learning_weekly_dashboard"
+    assert report["period_type"] == "weekly"
+
+
 def test_build_weekly_dashboard_survives_output_write_permission_error(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path)
 

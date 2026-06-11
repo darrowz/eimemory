@@ -39,6 +39,7 @@ def run_autonomous_learning_cycle(
     full: bool = True,
     force: bool = False,
     max_goals: int = 3,
+    max_promotions: int | None = None,
 ) -> dict[str, Any]:
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
     if dry_run:
@@ -132,6 +133,7 @@ def run_autonomous_learning_cycle(
         candidate_ids: list[str] = []
         promotion_reports: list[dict[str, Any]] = []
         regression_reports: list[dict[str, Any]] = []
+        promotion_budget = max(0, int(max_promotions)) if max_promotions is not None else len(candidate_kinds)
         for candidate_kind in candidate_kinds:
             experiment_id = create_sandbox_experiment(
                 runtime,
@@ -171,7 +173,7 @@ def run_autonomous_learning_cycle(
                     candidate_id=candidate_id,
                     scope=scope_ref,
                     loop_id=loop_id,
-                    apply=bool(apply and not dry_run),
+                    apply=bool(apply and not dry_run and sum(1 for report in promotion_reports if report.get("applied")) < promotion_budget),
                     eval_result=eval_result,
                     health={"ok": True, "source": "offline_learning_cycle"},
                 )

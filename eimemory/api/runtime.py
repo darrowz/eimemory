@@ -400,6 +400,7 @@ class Runtime:
         full: bool = True,
         force: bool = False,
         max_goals: int = 3,
+        max_promotions: int | None = None,
     ) -> dict:
         from eimemory.governance.autonomous_learning import run_autonomous_learning_cycle
 
@@ -411,6 +412,31 @@ class Runtime:
             full=full,
             force=force,
             max_goals=max_goals,
+            max_promotions=max_promotions,
+        )
+
+    def run_autonomy_cycle(
+        self,
+        *,
+        scope: dict | None = None,
+        apply: bool = False,
+        dry_run: bool = False,
+        full: bool = True,
+        force: bool = False,
+        max_goals: int = 3,
+        policy: dict | None = None,
+    ) -> dict:
+        from eimemory.governance.autonomy_controller import run_autonomy_cycle
+
+        return run_autonomy_cycle(
+            self,
+            scope=scope,
+            apply=apply,
+            dry_run=dry_run,
+            full=full,
+            force=force,
+            max_goals=max_goals,
+            policy=policy,
         )
 
     def list_learning_loops(self, *, scope: dict | None = None, limit: int = 10) -> list[dict]:
@@ -465,10 +491,18 @@ class Runtime:
 
         return build_replay_dataset(self, scope=scope, limit=limit, persist=persist, loop_id="cli")
 
-    def build_learning_dashboard(self, *, scope: dict | None = None, week_start: str | None = None, persist: bool = True, output_path: str | None = None) -> dict:
+    def build_learning_dashboard(
+        self,
+        *,
+        scope: dict | None = None,
+        week_start: str | None = None,
+        persist: bool = True,
+        output_path: str | None = None,
+        weekly: bool = False,
+    ) -> dict:
         from eimemory.governance.learning_dashboard import build_weekly_dashboard
 
-        return build_weekly_dashboard(self, scope=scope, week_start=week_start, persist=persist, output_path=output_path)
+        return build_weekly_dashboard(self, scope=scope, week_start=week_start, persist=persist, output_path=output_path, weekly=weekly)
 
     def compact_learning_records(self, *, scope: dict | None = None, dry_run: bool = True) -> dict:
         from eimemory.governance.learning_retention import compact_learning_records

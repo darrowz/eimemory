@@ -37,6 +37,20 @@ def test_cli_learn_cycle_apply_and_ledger(tmp_path, monkeypatch, capsys) -> None
     assert ledger["capabilities"]
 
 
+def test_cli_learn_autonomy_respects_zero_promotion_budget(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path))
+
+    assert cli_main(["reflect", "log", "tool.routing", "Bad route", "Use memory first for stable personal facts"]) == 0
+    capsys.readouterr()
+    assert cli_main(["learn", "autonomy", "--apply", "--force", "--max-promotions", "0"]) == 0
+    report = json.loads(capsys.readouterr().out)
+
+    assert report["ok"] is True
+    assert report["report_type"] == "autonomy_cycle"
+    assert report["autonomy_policy"]["max_auto_promotions"] == 0
+    assert report["promotion_control"]["applied_count"] == 0
+
+
 def test_cli_learn_promote_applies_candidate(tmp_path, monkeypatch, capsys) -> None:
     monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path))
 

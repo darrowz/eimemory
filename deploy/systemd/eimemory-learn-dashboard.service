@@ -1,5 +1,5 @@
 [Unit]
-Description=eimemory weekly autonomous learning dashboard
+Description=eimemory daily autonomous learning dashboard
 After=network-online.target
 Wants=network-online.target
 

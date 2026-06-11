@@ -1079,6 +1079,7 @@ def _run_autonomous_learning(runtime: Runtime, *, scope: dict) -> dict[str, Any]
     dry_run = _env_bool("EIMEMORY_AUTONOMOUS_LEARNING_DRY_RUN", default=not apply_changes)
     force = _env_bool("EIMEMORY_AUTONOMOUS_LEARNING_FORCE", default=False)
     max_goals = _env_int("EIMEMORY_AUTONOMOUS_LEARNING_MAX_GOALS", default=3, minimum=1, maximum=20)
+    max_promotions = _env_int("EIMEMORY_AUTONOMOUS_LEARNING_MAX_PROMOTIONS", default=3, minimum=0, maximum=20)
     timeout_seconds = _env_int("EIMEMORY_AUTONOMOUS_LEARNING_TIMEOUT_SECONDS", default=900, minimum=30, maximum=7200)
     try:
         started = time.monotonic()
@@ -1090,6 +1091,7 @@ def _run_autonomous_learning(runtime: Runtime, *, scope: dict) -> dict[str, Any]
                 full=True,
                 force=force,
                 max_goals=max_goals,
+                max_promotions=max_promotions,
             )
         )
         elapsed_seconds = round(time.monotonic() - started, 3)
@@ -1103,6 +1105,7 @@ def _run_autonomous_learning(runtime: Runtime, *, scope: dict) -> dict[str, Any]
                 "apply": bool(report.get("apply", apply_changes)),
                 "force": bool(force),
                 "max_goals": max_goals,
+                "max_promotions": max_promotions,
                 "timeout_seconds": timeout_seconds,
                 "elapsed_seconds": elapsed_seconds,
                 "timeout_exceeded": elapsed_seconds > timeout_seconds,
@@ -1181,14 +1184,14 @@ def _run_autonomous_learning_dashboard(runtime: Runtime, *, scope: dict) -> dict
     if not callable(build_dashboard):
         return {
             "ok": False,
-            "report_type": "autonomous_learning_weekly_dashboard",
+            "report_type": "autonomous_learning_dashboard",
             "dashboard_skipped_reason": "build_learning_dashboard_unavailable",
         }
     enabled = _env_bool("EIMEMORY_AUTONOMOUS_LEARNING_DASHBOARD_ENABLED", default=True)
     if not enabled:
         return {
             "ok": True,
-            "report_type": "autonomous_learning_weekly_dashboard",
+            "report_type": "autonomous_learning_dashboard",
             "enabled": False,
             "dashboard_skipped_reason": "dashboard_disabled",
         }
@@ -1197,8 +1200,10 @@ def _run_autonomous_learning_dashboard(runtime: Runtime, *, scope: dict) -> dict
         if isinstance(report, dict):
             return {
                 "ok": bool(report.get("ok", False)),
-                "report_type": "autonomous_learning_weekly_dashboard",
+                "report_type": str(report.get("report_type") or "autonomous_learning_dashboard"),
                 "enabled": True,
+                "period_type": str(report.get("period_type") or ""),
+                "period_start": str(report.get("period_start") or report.get("week_start") or ""),
                 "week_start": str(report.get("week_start") or ""),
                 "persisted": bool(report.get("persisted")),
                 "persisted_record_id": str(report.get("persisted_record_id") or ""),
@@ -1208,7 +1213,7 @@ def _run_autonomous_learning_dashboard(runtime: Runtime, *, scope: dict) -> dict
     except Exception as exc:
         return {
             "ok": False,
-            "report_type": "autonomous_learning_weekly_dashboard",
+            "report_type": "autonomous_learning_dashboard",
             "enabled": True,
             "dashboard_skipped_reason": "build_learning_dashboard_failed",
             "error": type(exc).__name__,
@@ -1216,7 +1221,7 @@ def _run_autonomous_learning_dashboard(runtime: Runtime, *, scope: dict) -> dict
         }
     return {
         "ok": False,
-        "report_type": "autonomous_learning_weekly_dashboard",
+        "report_type": "autonomous_learning_dashboard",
         "enabled": True,
         "dashboard_skipped_reason": "invalid_learning_dashboard_report",
     }

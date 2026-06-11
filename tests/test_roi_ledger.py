@@ -156,8 +156,39 @@ def test_roi_ledger_treats_operational_incidents_as_partial_penalty(tmp_path) ->
 
     assert report["incident_count"] == 3
     assert report["operational_incident_count"] == 2
-    assert report["incident_penalty_count"] == 1.5
-    assert report["roi_breakdown"]["counts"]["incident_penalty_count"] == 1.5
+    assert report["incident_penalty_count"] < 2.0
+    assert report["roi_breakdown"]["counts"]["incident_penalty_count"] < 2.0
+    assert report["roi_components"]["service_stability"]["penalty"] < 1.0
+
+
+def test_roi_ledger_splits_service_learning_and_business_value(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    runtime.evolution.store_rule(
+        title="Active ROI rule",
+        summary="Active rules are durable positive evidence",
+        task_type="brain.respond",
+        retrieval_policy={"route_hint": "task_context_first"},
+        scope=SCOPE,
+        status="active",
+    )
+    _append_record(
+        runtime,
+        kind="replay_result",
+        title="Real task replay passed",
+        meta={"replay_source": "real_task_replay", "report_type": "real_task_replay", "verdict": "pass", "pass_rate": 1.0},
+    )
+    runtime.evolution.observe(
+        signal_type="incident",
+        payload={"incident_type": "subscription_usage_limit", "summary": "Subscription usage limit reached."},
+        scope=SCOPE,
+    )
+
+    report = runtime.evolution.build_roi_report(scope=SCOPE)
+
+    assert set(report["roi_components"]) == {"service_stability", "learning_quality", "business_value"}
+    assert report["roi_components"]["service_stability"]["categories"]["quota"] == 1
+    assert report["roi_components"]["learning_quality"]["signal"] > 0
+    assert report["roi_components"]["business_value"]["signal"] > 0
 
 
 def test_roi_ledger_counts_failed_replay_and_eval_reports_as_negative(tmp_path) -> None:

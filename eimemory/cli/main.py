@@ -248,7 +248,16 @@ def _build_parser() -> argparse.ArgumentParser:
     learn_cycle.add_argument("--apply", action="store_true")
     learn_cycle.add_argument("--force", action="store_true")
     learn_cycle.add_argument("--max-goals", type=int, default=3)
+    learn_cycle.add_argument("--max-promotions", type=int, default=3)
     learn_cycle.add_argument("--json", action="store_true", default=True)
+    learn_autonomy = learn_sub.add_parser("autonomy")
+    learn_autonomy.add_argument("--full", action="store_true", default=True)
+    learn_autonomy.add_argument("--dry-run", action="store_true")
+    learn_autonomy.add_argument("--apply", action="store_true")
+    learn_autonomy.add_argument("--force", action="store_true")
+    learn_autonomy.add_argument("--max-goals", type=int, default=3)
+    learn_autonomy.add_argument("--max-promotions", type=int, default=3)
+    learn_autonomy.add_argument("--json", action="store_true", default=True)
     learn_loops = learn_sub.add_parser("loops")
     learn_loops.add_argument("--limit", type=int, default=10)
     learn_loops.add_argument("--json", action="store_true", default=True)
@@ -594,15 +603,27 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0 if report.get("ok") else 1
-        if parsed.learn_command == "cycle":
-            report = runtime.run_autonomous_learning_cycle(
-                scope=scope,
-                apply=bool(parsed.apply),
-                dry_run=bool(parsed.dry_run),
-                full=bool(parsed.full),
-                force=bool(parsed.force),
-                max_goals=max(1, int(parsed.max_goals)),
-            )
+        if parsed.learn_command in {"cycle", "autonomy"}:
+            if parsed.learn_command == "autonomy":
+                report = runtime.run_autonomy_cycle(
+                    scope=scope,
+                    apply=bool(parsed.apply),
+                    dry_run=bool(parsed.dry_run),
+                    full=bool(parsed.full),
+                    force=bool(parsed.force),
+                    max_goals=max(1, int(parsed.max_goals)),
+                    policy={"max_auto_promotions": max(0, int(parsed.max_promotions))},
+                )
+            else:
+                report = runtime.run_autonomous_learning_cycle(
+                    scope=scope,
+                    apply=bool(parsed.apply),
+                    dry_run=bool(parsed.dry_run),
+                    full=bool(parsed.full),
+                    force=bool(parsed.force),
+                    max_goals=max(1, int(parsed.max_goals)),
+                    max_promotions=max(0, int(parsed.max_promotions)),
+                )
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0 if report.get("ok") else 1
         if parsed.learn_command == "loops":
@@ -639,6 +660,7 @@ def main(argv: list[str] | None = None) -> int:
                 week_start=str(parsed.week_start or "") or None,
                 persist=bool(parsed.persist),
                 output_path=str(parsed.output or "") or None,
+                weekly=bool(parsed.weekly),
             )
             if parsed.json:
                 print(json.dumps(report, ensure_ascii=False, indent=2))
@@ -681,7 +703,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0 if report.get("ok") else 1
-        print(json.dumps({"usage": "eimemory learn watch|think|cycle|loops|goals|candidates|ledger|replay-dataset|compact|report|dashboard|promote"}))
+        print(json.dumps({"usage": "eimemory learn watch|think|cycle|autonomy|loops|goals|candidates|ledger|replay-dataset|compact|report|dashboard|promote"}))
         return 0
     if parsed.command == "recall":
         task_context = {"task_type": "cli.recall"}

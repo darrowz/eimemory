@@ -5,6 +5,7 @@ import math
 import re
 from collections import Counter
 from dataclasses import asdict
+from datetime import datetime, timezone
 from statistics import mean
 from typing import Any
 
@@ -566,8 +567,10 @@ class EvolutionAPI:
         accepted_rule_count = sum(1 for item in rules if item.status == "accepted")
         active_rule_count = sum(1 for item in rules if item.status == "active")
         incident_count = len(incidents)
-        operational_incident_count = sum(1 for item in incidents if self._roi_is_operational_incident(item))
-        incident_penalty_count = float(incident_count - operational_incident_count) + (operational_incident_count * OPERATIONAL_INCIDENT_PENALTY_RATE)
+        incident_categories = Counter(self._roi_incident_category(item) for item in incidents)
+        operational_incident_count = sum(count for category, count in incident_categories.items() if category in {"quota", "timeout", "service"})
+        incident_penalties = [self._roi_incident_penalty(item) for item in incidents]
+        incident_penalty_count = round(sum(incident_penalties), 3)
         learning_eval_outcomes = [self._roi_eval_report_outcome(item) for item in learning_eval_records]
         learning_eval_pass_count = sum(1 for outcome in learning_eval_outcomes if outcome == "pass")
         learning_eval_fail_count = sum(1 for outcome in learning_eval_outcomes if outcome == "fail")
@@ -594,6 +597,35 @@ class EvolutionAPI:
         }
         positive_total = sum(positive.values())
         negative_total = sum(negative.values())
+        service_penalty = round(
+            sum(penalty for item, penalty in zip(incidents, incident_penalties) if self._roi_incident_category(item) in {"quota", "timeout", "service"}),
+            3,
+        )
+        learning_positive = replay_pass_count + learning_eval_pass_count + eval_pass_report_count + active_rule_count
+        learning_negative = replay_failure_count + learning_eval_fail_count + eval_fail_report_count
+        business_positive = (real_task_replay_pass_count * 2.0) + accepted_feedback_count
+        business_negative = real_task_replay_fail_count
+        roi_components = {
+            "service_stability": {
+                "score": round(max(0.0, 1.0 - (service_penalty / max(1, incident_count))), 3),
+                "signal": round(-service_penalty, 3),
+                "incident_count": incident_count,
+                "penalty": service_penalty,
+                "categories": {key: int(value) for key, value in sorted(incident_categories.items())},
+            },
+            "learning_quality": {
+                "score": round(max(0.0, min(1.0, learning_positive / max(1.0, learning_positive + learning_negative))), 3),
+                "signal": round(float(learning_positive - learning_negative), 3),
+                "positive": learning_positive,
+                "negative": learning_negative,
+            },
+            "business_value": {
+                "score": round(max(0.0, min(1.0, business_positive / max(1.0, business_positive + business_negative))), 3),
+                "signal": round(float(business_positive - business_negative), 3),
+                "positive": business_positive,
+                "negative": business_negative,
+            },
+        }
         return {
             "incident_count": incident_count,
             "operational_incident_count": operational_incident_count,
@@ -614,11 +646,13 @@ class EvolutionAPI:
             "accepted_rule_count": accepted_rule_count,
             "active_rule_count": active_rule_count,
             "roi_signal": positive_total - negative_total,
+            "roi_components": roi_components,
             "roi_breakdown": {
                 "counts": {
                     "incidents": incident_count,
                     "operational_incidents": operational_incident_count,
                     "incident_penalty_count": incident_penalty_count,
+                    "incident_categories": {key: int(value) for key, value in sorted(incident_categories.items())},
                     "accepted_feedback": accepted_feedback_count,
                     "actual_replays": actual_replay_count,
                     "replay_passes": replay_pass_count,
@@ -747,6 +781,10 @@ class EvolutionAPI:
 
     @classmethod
     def _roi_is_operational_incident(cls, record: RecordEnvelope) -> bool:
+        return cls._roi_incident_category(record) in {"quota", "timeout", "service"}
+
+    @classmethod
+    def _roi_incident_category(cls, record: RecordEnvelope) -> str:
         payload = cls._roi_report_payload(record)
         incident_text = " ".join(
             [
@@ -760,7 +798,43 @@ class EvolutionAPI:
                 str(payload.get("message") or ""),
             ]
         ).lower()
-        return any(item in incident_text for item in _OPERATIONAL_INCIDENT_KEYWORDS)
+        if any(item in incident_text for item in ("quota", "rate limit", "usage limit", "subscription usage limit", "daily quota")):
+            return "quota"
+        if any(item in incident_text for item in ("timeout", "idle timed out", "aborted", "client closed", "cron timeout")):
+            return "timeout"
+        if any(item in incident_text for item in ("auth refresh", "model/provider", "transient", "stale", "context overflow", "content flagged")):
+            return "service"
+        if any(item in incident_text for item in ("replay", "dataset", "expected_text", "message_id", "quality", "migration")):
+            return "data_quality"
+        return "behavior"
+
+    @classmethod
+    def _roi_incident_penalty(cls, record: RecordEnvelope) -> float:
+        category = cls._roi_incident_category(record)
+        base = {
+            "quota": 0.05,
+            "timeout": 0.10,
+            "service": OPERATIONAL_INCIDENT_PENALTY_RATE,
+            "data_quality": 0.75,
+            "behavior": 1.0,
+        }.get(category, 1.0)
+        return round(base * cls._roi_age_multiplier(record), 3)
+
+    @staticmethod
+    def _roi_age_multiplier(record: RecordEnvelope) -> float:
+        raw = str(getattr(record.time, "created_at", "") or "")
+        try:
+            created = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
+            age_days = (datetime.now(timezone.utc) - created).days
+        except ValueError:
+            return 1.0
+        if age_days >= 30:
+            return 0.25
+        if age_days >= 7:
+            return 0.5
+        return 1.0
 
     @staticmethod
     def _roi_float(value: Any, *, default: float | None = None) -> float | None:

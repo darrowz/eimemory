@@ -56,8 +56,9 @@ root.
 
 The standard production schedule runs active knowledge intake and governance once
 per day at 03:30 in the server's local timezone. The template also enables the
-1.0.0 autonomous learning loop in apply mode with bounded goal count, timeout,
-dashboard output, promotion gates, and rollback metadata.
+1.0.0 autonomous learning loop in apply mode with bounded goal count,
+promotion budget, timeout, dashboard output, promotion gates, and rollback
+metadata.
 
 Install as a user service for the OpenClaw/eimemory operator:
 
@@ -83,7 +84,7 @@ The 1.0.0 proactive learning layer runs three additional timers:
 
 - `eimemory-learn-watch.timer`: every 5 minutes, capture lightweight local/outcome/world signals.
 - `eimemory-learn-think.timer`: hourly, turn signals and long-term goals into persisted thoughts.
-- `eimemory-learn-dashboard.timer`: weekly, summarize learned/applied/blocked/next items.
+- `eimemory-learn-dashboard.timer`: daily at 03:45 local time, summarize learned/applied/blocked/next items.
 
 Install as user services:
 

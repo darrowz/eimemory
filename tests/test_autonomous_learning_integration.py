@@ -36,6 +36,33 @@ def test_nightly_jobs_include_autonomous_learning_summary(tmp_path, monkeypatch)
     assert report["autonomous_learning_daily_report"]["ok"] is True
     assert report["autonomous_learning_daily_report"]["persisted"] is True
     assert report["autonomous_learning_daily_report"]["summary"]
+    assert report["autonomous_learning_dashboard"]["report_type"] == "autonomous_learning_daily_dashboard"
+    assert report["autonomous_learning_dashboard"]["period_type"] == "daily"
+
+
+def test_nightly_jobs_forward_max_promotion_budget(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    calls: dict[str, int | bool] = {}
+    monkeypatch.setenv("EIMEMORY_AUTONOMOUS_LEARNING_ENABLED", "1")
+    monkeypatch.setenv("EIMEMORY_AUTONOMOUS_LEARNING_DRY_RUN", "0")
+    monkeypatch.setenv("EIMEMORY_AUTONOMOUS_LEARNING_APPLY", "1")
+    monkeypatch.setenv("EIMEMORY_AUTONOMOUS_LEARNING_MAX_PROMOTIONS", "0")
+    monkeypatch.setattr(runtime, "run_memory_eval_ci", lambda dataset, *, emit_incidents=False: {"ok": True, "pass_rate": 1.0, "passed_threshold": True, "fail_count": 0, "name": "stub"})
+
+    def fake_learning(**kwargs):
+        calls["apply"] = kwargs["apply"]
+        calls["max_promotions"] = kwargs["max_promotions"]
+        return {"ok": True, "dry_run": False, "apply": True, "goal_count": 1, "candidate_ids": ["candidate_1"], "promotions": [{"applied": False}]}
+
+    monkeypatch.setattr(runtime, "run_autonomous_learning_cycle", fake_learning)
+
+    report = run_nightly_jobs(runtime, scope={"agent_id": "main"})
+
+    assert report["autonomous_learning"]["ok"] is True
+    assert calls["apply"] is True
+    assert calls["max_promotions"] == 0
+    assert report["autonomous_learning"]["max_promotions"] == 0
+    assert report["autonomous_learning"]["applied_count"] == 0
 
 
 def test_governance_snapshot_exposes_autonomous_learning_state(tmp_path) -> None:
@@ -49,6 +76,22 @@ def test_governance_snapshot_exposes_autonomous_learning_state(tmp_path) -> None
     assert snapshot["autonomous_learning"]["loop_count"] == 1
     assert snapshot["autonomous_learning"]["goal_count"] >= 1
     assert snapshot["autonomous_learning"]["candidate_count"] >= 1
+
+
+def test_runtime_learning_cycle_does_not_persist_dashboard_side_effect(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "main"}
+    runtime.evolution.log_reflection(tag="memory.recall", miss="recall miss", fix="preference first", scope=scope)
+
+    report = runtime.run_autonomous_learning_cycle(scope=scope, force=True)
+
+    assert report["ok"] is True
+    dashboards = [
+        record
+        for record in runtime.store.list_records(kinds=["reflection"], scope=scope, limit=100)
+        if str(record.meta.get("report_type") or "") in {"autonomous_learning_daily_dashboard", "autonomous_learning_weekly_dashboard"}
+    ]
+    assert dashboards == []
 
 
 def test_autonomous_learning_cycle_returns_real_task_replay_report(tmp_path, monkeypatch) -> None:

@@ -1,8 +1,8 @@
 [Unit]
-Description=Run eimemory weekly autonomous learning dashboard
+Description=Run eimemory daily autonomous learning dashboard
 
 [Timer]
-OnCalendar=Mon *-*-* 09:00:00
+OnCalendar=*-*-* 03:45:00
 Persistent=true
 Unit=eimemory-learn-dashboard.service
 

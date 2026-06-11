@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import asdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -19,14 +20,18 @@ def build_weekly_dashboard(
     week_start: str | None = None,
     persist: bool = True,
     output_path: str | Path | None = None,
+    weekly: bool = False,
 ) -> dict[str, Any]:
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
     ensure_all_seeded(runtime, scope=scope_ref, loop_id="dashboard_seed")
-    start = _week_start(week_start)
+    period_type = "weekly" if weekly else "daily"
+    start = _week_start(week_start) if weekly else _day_start(week_start)
     ledger = build_capability_ledger(runtime, scope=scope_ref)
     daily = build_learning_daily_report(runtime, scope=scope_ref, persist=False)
     failures = _failure_breakdown(runtime, scope=scope_ref, since=start)
-    markdown = _render_markdown(start=start, ledger=ledger, daily=daily, failures=failures)
+    activity = _activity_breakdown(runtime, scope=scope_ref, since=start)
+    roi = _safe_roi(runtime, scope=scope_ref)
+    markdown = _render_markdown(start=start, period_type=period_type, ledger=ledger, daily=daily, failures=failures, activity=activity, roi=roi)
     output_error: str | dict[str, str] = ""
     written_path = ""
     if output_path:
@@ -42,21 +47,23 @@ def build_weekly_dashboard(
         record = append_learning_record_once(
             runtime,
             kind="reflection",
-            title=f"Autonomous learning weekly dashboard {start}",
-            summary=f"Weekly dashboard for {len((ledger.get('capabilities') or {}))} capabilities.",
+            title=f"Autonomous learning {period_type} dashboard {start}",
+            summary=f"{period_type.title()} dashboard for {len((ledger.get('capabilities') or {}))} capabilities.",
             scope=scope_ref,
-            loop_id=f"weekly_dashboard_{start}",
+            loop_id=f"{period_type}_dashboard_{start}",
             step_name="learning_dashboard",
-            semantic_key=stable_semantic_key("learning_dashboard", start, scope_ref),
+            semantic_key=stable_semantic_key("learning_dashboard", period_type, start, scope_ref),
             authority_tier="L0",
             status="active",
-            content={"report_type": "autonomous_learning_weekly_dashboard", "week_start": start, "markdown": markdown, "ledger": ledger, "failures": failures},
-            meta={"report_type": "autonomous_learning_weekly_dashboard", "week_start": start, "capability_count": len(ledger.get("capabilities") or {})},
+            content={"report_type": f"autonomous_learning_{period_type}_dashboard", "period_type": period_type, "period_start": start, "markdown": markdown, "ledger": ledger, "failures": failures, "activity": activity, "roi": roi},
+            meta={"report_type": f"autonomous_learning_{period_type}_dashboard", "period_type": period_type, "period_start": start, "capability_count": len(ledger.get("capabilities") or {})},
         )
         record_id = record.record_id
     return {
         "ok": True,
-        "report_type": "autonomous_learning_weekly_dashboard",
+        "report_type": f"autonomous_learning_{period_type}_dashboard",
+        "period_type": period_type,
+        "period_start": start,
         "week_start": start,
         "persisted": bool(persist),
         "persisted_record_id": record_id,
@@ -65,6 +72,8 @@ def build_weekly_dashboard(
         "markdown": markdown,
         "ledger": ledger,
         "failure_breakdown": failures,
+        "activity": activity,
+        "roi": roi,
     }
 
 
@@ -74,6 +83,12 @@ def _week_start(value: str | None) -> str:
     today = datetime.fromisoformat(now_iso().replace("Z", "+00:00")).date()
     monday = today - timedelta(days=today.weekday())
     return monday.isoformat()
+
+
+def _day_start(value: str | None) -> str:
+    if value:
+        return value[:10]
+    return datetime.fromisoformat(now_iso().replace("Z", "+00:00")).date().isoformat()
 
 
 def _failure_breakdown(runtime: Any, *, scope: ScopeRef, since: str) -> dict[str, int]:
@@ -89,9 +104,63 @@ def _failure_breakdown(runtime: Any, *, scope: ScopeRef, since: str) -> dict[str
     return counts
 
 
-def _render_markdown(*, start: str, ledger: dict[str, Any], daily: dict[str, Any], failures: dict[str, int]) -> str:
+def _activity_breakdown(runtime: Any, *, scope: ScopeRef, since: str) -> dict[str, Any]:
+    counts = {
+        "signals": 0,
+        "candidates": 0,
+        "promotions": 0,
+        "rollbacks": 0,
+        "replay_pass_rate": 0.0,
+        "replay_pass_count": 0,
+        "replay_fail_count": 0,
+    }
+    for record in runtime.store.list_records(kinds=["world_signal"], scope=scope, limit=500):
+        if _record_date(record) >= since:
+            counts["signals"] += 1
+    for record in runtime.store.list_records(kinds=["capability_candidate"], scope=scope, limit=500):
+        if _record_date(record) >= since:
+            counts["candidates"] += 1
+    for record in runtime.store.list_records(kinds=["promotion_request"], scope=scope, limit=500):
+        if _record_date(record) < since:
+            continue
+        if str(record.status or "") == "promoted":
+            counts["promotions"] += 1
+        if str(record.status or "") in {"rolled_back", "quarantined"}:
+            counts["rollbacks"] += 1
+    replays = []
+    for record in runtime.store.list_records(kinds=["replay_result"], scope=scope, limit=500):
+        if _record_date(record) >= since and str(record.meta.get("report_type") or record.content.get("report_type") or "") != "proactive_replay_dataset":
+            replays.append(record)
+    counts["replay_pass_count"] = sum(1 for item in replays if str(item.meta.get("verdict") or item.content.get("verdict") or "").lower() in {"pass", "passed", "success"})
+    counts["replay_fail_count"] = sum(1 for item in replays if str(item.meta.get("verdict") or item.content.get("verdict") or "").lower() in {"fail", "failed", "failure"})
+    total = counts["replay_pass_count"] + counts["replay_fail_count"]
+    counts["replay_pass_rate"] = round(counts["replay_pass_count"] / total, 3) if total else 0.0
+    return counts
+
+
+def _safe_roi(runtime: Any, *, scope: ScopeRef) -> dict[str, Any]:
+    try:
+        return dict(runtime.evolution.build_roi_report(scope=asdict(scope)))
+    except Exception as exc:
+        return {"ok": False, "error": type(exc).__name__, "detail": str(exc), "roi_components": {}}
+
+
+def _render_markdown(*, start: str, period_type: str, ledger: dict[str, Any], daily: dict[str, Any], failures: dict[str, int], activity: dict[str, Any], roi: dict[str, Any]) -> str:
     lines = [
-        f"# eimemory autonomous learning weekly dashboard ({start})",
+        f"# eimemory autonomous learning {period_type} dashboard ({start})",
+        "",
+        "## Autonomy Summary",
+        "",
+        f"- Signals: {int(activity.get('signals') or 0)}",
+        f"- Candidates: {int(activity.get('candidates') or 0)}",
+        f"- Promotions: {int(activity.get('promotions') or 0)}",
+        f"- Rollbacks/quarantines: {int(activity.get('rollbacks') or 0)}",
+        f"- Replay pass rate: {float(activity.get('replay_pass_rate') or 0.0):.3f}",
+        f"- ROI signal: {float(roi.get('roi_signal') or 0.0):.3f}",
+        "",
+        "## ROI Components",
+        "",
+        *_roi_component_lines(roi),
         "",
         "## Capability Ledger",
         "",
@@ -126,6 +195,17 @@ def _render_markdown(*, start: str, ledger: dict[str, Any], daily: dict[str, Any
     else:
         lines.append("- none")
     return "\n".join(lines) + "\n"
+
+
+def _roi_component_lines(roi: dict[str, Any]) -> list[str]:
+    components = dict(roi.get("roi_components") or {})
+    if not components:
+        return ["- none"]
+    lines = []
+    for key in ("service_stability", "learning_quality", "business_value"):
+        item = dict(components.get(key) or {})
+        lines.append(f"- {key}: score={float(item.get('score') or 0.0):.3f}, signal={float(item.get('signal') or 0.0):.3f}")
+    return lines
 
 
 def _join(items: list[Any]) -> str:
