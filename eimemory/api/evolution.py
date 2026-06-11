@@ -36,13 +36,18 @@ _OPERATIONAL_INCIDENT_KEYWORDS = (
     "rate limit",
     "auth refresh",
     "cron timeout",
+    "daily quota",
     "content flagged",
     "context overflow",
     "client closed",
+    "idle timed out",
+    "model/provider",
     "stale",
+    "subscription usage limit",
     "transient",
     "timeout",
     "aborted",
+    "usage limit",
 )
 
 
@@ -548,14 +553,24 @@ class EvolutionAPI:
 
         accepted_feedback_count = sum(1 for item in feedback if item.meta.get("decision") == "accept")
         replay_dataset_count = sum(1 for item in replay_results if self._roi_is_replay_dataset_record(item))
-        replay_outcomes = [self._roi_eval_report_outcome(item) for item in replay_results if self._roi_is_replay_metric_record(item)]
+        replay_metric_records = [item for item in replay_results if self._roi_is_replay_metric_record(item)]
+        real_task_replay_records = [item for item in replay_metric_records if self._roi_is_real_task_replay_record(item)]
+        replay_outcomes = [self._roi_eval_report_outcome(item) for item in replay_metric_records]
+        real_task_replay_outcomes = [self._roi_eval_report_outcome(item) for item in real_task_replay_records]
         replay_pass_count = sum(1 for outcome in replay_outcomes if outcome == "pass")
         replay_failure_count = sum(1 for outcome in replay_outcomes if outcome == "fail")
+        actual_replay_count = len(replay_metric_records)
+        real_task_replay_count = len(real_task_replay_records)
+        real_task_replay_pass_count = sum(1 for outcome in real_task_replay_outcomes if outcome == "pass")
+        real_task_replay_fail_count = sum(1 for outcome in real_task_replay_outcomes if outcome == "fail")
         accepted_rule_count = sum(1 for item in rules if item.status == "accepted")
         active_rule_count = sum(1 for item in rules if item.status == "active")
         incident_count = len(incidents)
         operational_incident_count = sum(1 for item in incidents if self._roi_is_operational_incident(item))
         incident_penalty_count = float(incident_count - operational_incident_count) + (operational_incident_count * OPERATIONAL_INCIDENT_PENALTY_RATE)
+        learning_eval_outcomes = [self._roi_eval_report_outcome(item) for item in learning_eval_records]
+        learning_eval_pass_count = sum(1 for outcome in learning_eval_outcomes if outcome == "pass")
+        learning_eval_fail_count = sum(1 for outcome in learning_eval_outcomes if outcome == "fail")
         eval_report_outcomes = [
             self._roi_eval_report_outcome(item)
             for item in [*replay_results, *reflections, *learning_eval_records]
@@ -586,9 +601,16 @@ class EvolutionAPI:
             "feedback_count": len(feedback),
             "accepted_feedback_count": accepted_feedback_count,
             "replay_count": len(replay_results),
+            "actual_replay_count": actual_replay_count,
             "replay_pass_count": replay_pass_count,
             "replay_dataset_count": replay_dataset_count,
             "replay_fail_count": replay_failure_count,
+            "real_task_replay_count": real_task_replay_count,
+            "real_task_replay_pass_count": real_task_replay_pass_count,
+            "real_task_replay_fail_count": real_task_replay_fail_count,
+            "learning_eval_count": len(learning_eval_records),
+            "learning_eval_pass_count": learning_eval_pass_count,
+            "learning_eval_fail_count": learning_eval_fail_count,
             "accepted_rule_count": accepted_rule_count,
             "active_rule_count": active_rule_count,
             "roi_signal": positive_total - negative_total,
@@ -598,9 +620,16 @@ class EvolutionAPI:
                     "operational_incidents": operational_incident_count,
                     "incident_penalty_count": incident_penalty_count,
                     "accepted_feedback": accepted_feedback_count,
+                    "actual_replays": actual_replay_count,
                     "replay_passes": replay_pass_count,
                     "replay_failures": replay_failure_count,
                     "replay_datasets": replay_dataset_count,
+                    "real_task_replays": real_task_replay_count,
+                    "real_task_replay_passes": real_task_replay_pass_count,
+                    "real_task_replay_failures": real_task_replay_fail_count,
+                    "learning_evals": len(learning_eval_records),
+                    "learning_eval_passes": learning_eval_pass_count,
+                    "learning_eval_failures": learning_eval_fail_count,
                     "accepted_rules": accepted_rule_count,
                     "active_rules": active_rule_count,
                     "eval_pass_reports": eval_pass_report_count,

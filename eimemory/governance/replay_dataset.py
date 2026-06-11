@@ -221,8 +221,11 @@ def _cases_from_replay_results(runtime: Any, *, scope: ScopeRef, limit: int) -> 
     for record in records:
         content = record.content if isinstance(record.content, dict) else {}
         meta = record.meta if isinstance(record.meta, dict) else {}
+        report_type = str(meta.get("report_type") or content.get("report_type") or "").strip()
+        if report_type in {REPLAY_DATASET_REPORT_TYPE, "real_task_replay"}:
+            continue
         verdict = _first_text(meta.get("verdict"))
-        dataset = _coerce_list(content.get("suggested_replay_dataset") or content.get("cases") or content.get("samples"))
+        dataset = _coerce_list(content.get("suggested_replay_dataset"))
         if not dataset:
             continue
         source_case_count = 0

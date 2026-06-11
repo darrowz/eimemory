@@ -127,3 +127,36 @@ def test_replay_dataset_collects_bad_outcomes_and_operator_corrections(tmp_path)
     assert persisted is not None
     assert persisted.meta.get("report_type") == "proactive_replay_dataset"
     assert persisted.meta.get("schema_version") == "real_task_replay.v1"
+
+
+def test_replay_dataset_ignores_previous_dataset_and_replay_reports(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu"}
+    scope_ref = ScopeRef.from_dict(scope)
+    runtime.store.append(
+        RecordEnvelope.create(
+            kind="replay_result",
+            title="Previous proactive replay dataset",
+            summary="Should not recursively generate more cases.",
+            scope=scope_ref,
+            source="unit.test",
+            meta={"report_type": "proactive_replay_dataset", "schema_version": "real_task_replay.v1"},
+            content={"cases": [{"query": "recursive noise", "expected_text": ["noise"]}]},
+        )
+    )
+    runtime.store.append(
+        RecordEnvelope.create(
+            kind="replay_result",
+            title="Previous real task replay",
+            summary="Should not become a new replay case either.",
+            scope=scope_ref,
+            source="unit.test",
+            meta={"report_type": "real_task_replay", "verdict": "fail", "pass_rate": 0.0},
+            content={"report": {"samples": [{"query": "old failed sample", "expected_text": ["old"]}]}},
+        )
+    )
+
+    report = build_replay_dataset(runtime, scope=scope, limit=50, persist=False)
+
+    assert report["case_count"] == 0
+    assert report["cases"] == []

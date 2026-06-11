@@ -81,6 +81,8 @@ def test_autonomous_learning_cycle_returns_real_task_replay_report(tmp_path, mon
                 "seed": seed,
                 "persist_report": persist_report,
                 "case_count": len(dataset.get("cases") or []),
+                "seed_count": len(dataset.get("seed") or []),
+                "threshold": dataset.get("threshold"),
             }
         )
         return {
@@ -103,9 +105,12 @@ def test_autonomous_learning_cycle_returns_real_task_replay_report(tmp_path, mon
     report = runtime.run_autonomous_learning_cycle(scope=scope, force=True, apply=False)
 
     assert replay_dataset_calls
-    assert replay_calls and replay_calls[0]["seed"] is False
+    assert replay_calls
     assert replay_calls[0]["persist_report"] is True
     assert report["ok"] is True
+    assert replay_calls[0]["seed"] is True
+    assert replay_calls[0]["seed_count"] == 2
+    assert replay_calls[0]["threshold"] == 0.6
     assert report["real_task_replay"]["ok"] is True
     assert report["real_task_replay"]["report_type"] == "real_task_replay"
 
