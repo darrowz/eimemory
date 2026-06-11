@@ -62,3 +62,29 @@ def test_replay_quality_filters_operational_noise_and_normalizes_cases() -> None
     assert len(accepted[0]["expected_text"]) == 5
     assert all(len(item) <= 160 for item in accepted[0]["expected_text"])
     assert accepted[0]["quality_score"] >= 0.7
+
+
+def test_replay_quality_removes_system_error_expected_points() -> None:
+    governed = govern_replay_cases(
+        [
+            {
+                "case_id": "model-error-expected",
+                "query": "Reply with OK. Do not use tools.",
+                "expected": "Task should complete with a concise confirmation.",
+                "expected_text": [
+                    '{"type":"error","status":400,"error":{"type":"invalid_request_error","message":"The gpt-5.4 model is not supported when using Codex with a ChatGPT account."}}',
+                    "Confirm the task completed.",
+                    "Avoid invoking tools.",
+                    "Keep the response concise.",
+                ],
+                "task_type": "communication",
+            }
+        ],
+        limit=10,
+    )
+
+    assert governed["filtered_count"] == 0
+    expected_text = governed["cases"][0]["expected_text"]
+    assert len(expected_text) >= 3
+    assert all("invalid_request_error" not in item for item in expected_text)
+    assert all("model is not supported" not in item.lower() for item in expected_text)

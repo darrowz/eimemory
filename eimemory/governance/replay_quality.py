@@ -118,7 +118,7 @@ def normalize_expected_text(
     points.extend(_split_expected_points(expected))
     points.extend(_split_expected_points(correction))
     points.extend(_derived_acceptance_points(query=query, expected=expected, correction=correction, task_type=task_type))
-    return _unique_short(points)[:MAX_EXPECTED_POINTS]
+    return _unique_short([point for point in points if not _expected_point_noise_reason(point)])[:MAX_EXPECTED_POINTS]
 
 
 def _derive_task_query(case: dict[str, Any], raw_query: str) -> str:
@@ -240,14 +240,30 @@ def _derived_acceptance_points(*, query: Any, expected: Any, correction: Any, ta
     task_text = _first_text(task_type)
     if query_text:
         points.append(f"Address the real task intent: {query_text}")
-    if expected_text and expected_text != query_text:
+    if expected_text and expected_text != query_text and not _expected_point_noise_reason(expected_text):
         points.append(f"Satisfy the expected behavior: {expected_text}")
-    if correction_text:
+    if correction_text and not _expected_point_noise_reason(correction_text):
         points.append(f"Apply the user correction: {correction_text}")
     if task_text:
         points.append(f"Keep the response scoped to {task_text}.")
     points.append("Avoid repeating the noisy failure pattern from the source outcome.")
     return points
+
+
+def _expected_point_noise_reason(text: str) -> str:
+    reason = _noise_reason(text)
+    if reason:
+        return reason
+    lower = str(text or "").lower()
+    if not lower:
+        return "missing_expected_text"
+    if "invalid_request_error" in lower or "model is not supported" in lower:
+        return "system_error"
+    if "codex with a chatgpt account" in lower or "badrequesterror" in lower:
+        return "system_error"
+    if lower.strip().startswith("{") and '"error"' in lower and '"status"' in lower:
+        return "system_error"
+    return ""
 
 
 def _case_quality_score(case: dict[str, Any]) -> float:
