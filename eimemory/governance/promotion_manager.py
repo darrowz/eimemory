@@ -7,6 +7,7 @@ from typing import Any
 
 from eimemory.governance.learning_eval import REGRESSION_THRESHOLD, SAFETY_THRESHOLD
 from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
+from eimemory.governance.promotion_watch import WATCH_STATUS, initialize_promotion_watch
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 POLICY_TARGETS = {"tool_route", "prompt_policy", "system_prompt_patch"}
@@ -53,18 +54,32 @@ def promote_candidate(
             "side_effect": side_effect,
         }
 
-    candidate.status = "promoted"
+    post_promotion_status = WATCH_STATUS if bool(side_effect.get("requires_post_promotion_watch")) else "promoted"
+    candidate.status = post_promotion_status
     candidate.meta["promoted_by"] = "eimemory.autonomous_learning"
     candidate.meta["promotion_tier"] = tier
     candidate.meta["applied_artifact_ids"] = list(side_effect.get("applied_artifact_ids") or [])
     runtime.store.rewrite(candidate)
-    request_id = _promotion_record(runtime, candidate, scope=scope, loop_id=loop_id, status="promoted", action="applied", eval_result=eval_payload, health=health_payload, gate=gate, side_effect=side_effect)
+    request_status = post_promotion_status
+    request_action = "applied_shadow" if post_promotion_status == WATCH_STATUS else "applied"
+    request_id = _promotion_record(runtime, candidate, scope=scope, loop_id=loop_id, status=request_status, action=request_action, eval_result=eval_payload, health=health_payload, gate=gate, side_effect=side_effect)
+    watch = {}
+    if post_promotion_status == WATCH_STATUS:
+        watch = initialize_promotion_watch(
+            runtime,
+            candidate=candidate,
+            scope=scope,
+            promotion_request_id=request_id,
+            applied_pattern_ids=[str(item) for item in side_effect.get("applied_artifact_ids") or []],
+        )
     return {
         "ok": True,
         "applied": True,
         "authority_tier": tier,
         "candidate_id": candidate_id,
         "promotion_request_id": request_id,
+        "post_promotion_status": post_promotion_status,
+        "post_promotion_watch": watch,
         "side_effect": side_effect,
         "applied_artifact_ids": list(side_effect.get("applied_artifact_ids") or []),
         "rollback": candidate.content.get("rollback") or "disable candidate",
@@ -162,9 +177,14 @@ def _apply_policy_candidate(
         "trust_report": {"ok": True, "gate": gate},
         "replay_report": {"ok": True, "eval_result": eval_result},
         "is_auto": True,
+        "status": "shadow",
+        "promotion_details": {
+            "post_promotion_status": WATCH_STATUS,
+            "required_observations": 3,
+        },
     }
     result = runtime.upsert_intent_pattern(payload, scope=_scope_dict(scope or candidate.scope))
-    if str(result.get("status") or "active") != "active":
+    if str(result.get("status") or "active") not in {"active", "shadow"}:
         return {
             "ok": False,
             "blocked_reason": str(result.get("_promotion_budget_decision") or "policy_not_active"),
@@ -178,6 +198,7 @@ def _apply_policy_candidate(
         "adapter": "intent_pattern",
         "applied_artifact_ids": [str(result.get("id") or pattern_id)],
         "adapter_result": result,
+        "requires_post_promotion_watch": True,
     }
 
 

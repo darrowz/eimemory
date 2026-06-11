@@ -98,8 +98,11 @@ def test_l2_prompt_policy_applies_to_search_policy_after_gates(tmp_path) -> None
 
     assert result["ok"] is True
     assert result["applied"] is True
-    assert runtime.store.get_by_id(candidate_id).status == "promoted"
-    policy = runtime.search_policy("autonomous prompt policy sample", scope=scope)
+    assert result["post_promotion_status"] == "shadow_observe"
+    assert runtime.store.get_by_id(candidate_id).status == "shadow_observe"
+    default_policy = runtime.search_policy("autonomous prompt policy sample", scope=scope)
+    assert default_policy["policy_suggestions"] == []
+    policy = runtime.search_policy("autonomous prompt policy sample", scope=scope, context={"include_shadow": True})
     assert policy["policy_suggestions"][0]["source"] == "intent_pattern"
     assert policy["policy_suggestions"][0]["interpreted_intent"] == "优先查策略再执行"
 

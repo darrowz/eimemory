@@ -687,7 +687,13 @@ class Runtime:
         return self.store.record_event(payload, scope=scope)
 
     def record_outcome(self, event_id: str, payload: dict, *, scope: dict | None = None) -> dict:
-        return self.store.record_outcome(event_id, payload, scope=scope)
+        recorded = self.store.record_outcome(event_id, payload, scope=scope)
+        from eimemory.governance.promotion_watch import record_outcome_observations
+
+        watch_reports = record_outcome_observations(self, event_id=event_id, outcome_payload=recorded, scope=scope)
+        if watch_reports:
+            recorded["post_promotion_watch"] = watch_reports
+        return recorded
 
     def run_judgment_evaluation(
         self,
