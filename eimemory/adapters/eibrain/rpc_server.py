@@ -239,8 +239,8 @@ def _compact_health_payload(
         "commit": _current_commit(),
         "contract_version": EIMEMORY_RPC_CONTRACT_VERSION,
         "paths": {
-            "current": str(Path.cwd()),
-            "release": str(Path.cwd().resolve()),
+            "current": str(_current_path()),
+            "release": str(_release_path()),
         },
         "listen_host": listen_host,
         "listen_port": int(listen_port),
@@ -281,6 +281,9 @@ def _current_commit() -> str:
         value = os.environ.get(key, "").strip()
         if value:
             return value
+    release_name = _release_path().name
+    if _looks_like_commit(release_name):
+        return release_name
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"],
@@ -294,3 +297,31 @@ def _current_commit() -> str:
     if result.returncode != 0:
         return ""
     return result.stdout.strip()
+
+
+def _current_path() -> Path:
+    current_link = Path("/opt/eimemory/current")
+    release_path = _release_path()
+    try:
+        if current_link.exists() and current_link.resolve() == release_path.resolve():
+            return current_link
+    except OSError:
+        pass
+    return release_path
+
+
+def _release_path() -> Path:
+    cwd = Path.cwd().resolve()
+    for path in (cwd, *Path(__file__).resolve().parents):
+        parts = path.parts
+        if "releases" not in parts:
+            continue
+        index = parts.index("releases")
+        if index + 1 < len(parts) and _looks_like_commit(parts[index + 1]):
+            return Path(*parts[: index + 2])
+    return cwd
+
+
+def _looks_like_commit(value: str) -> bool:
+    text = str(value or "").strip().lower()
+    return len(text) >= 7 and all(char in "0123456789abcdef" for char in text)

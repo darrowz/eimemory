@@ -300,6 +300,24 @@ def test_http_rpc_server_health_reports_release_and_store_readiness(tmp_path, mo
     assert payload["checks"]["ready"] is True
 
 
+def test_health_payload_infers_commit_from_release_working_directory(tmp_path, monkeypatch) -> None:
+    from eimemory.adapters.eibrain.rpc_server import build_health_payload
+
+    commit = "abc123def4567890"
+    release_dir = tmp_path / "opt" / "eimemory" / "releases" / commit
+    release_dir.mkdir(parents=True)
+    monkeypatch.delenv("EIMEMORY_COMMIT", raising=False)
+    monkeypatch.delenv("GIT_COMMIT", raising=False)
+    monkeypatch.delenv("SOURCE_VERSION", raising=False)
+    monkeypatch.chdir(release_dir)
+    runtime = Runtime.create(root=tmp_path / "runtime")
+
+    payload = build_health_payload(runtime, listen_host="127.0.0.1", listen_port=8091)
+
+    assert payload["commit"] == commit
+    assert payload["paths"]["release"] == str(release_dir)
+
+
 def test_http_rpc_server_can_expose_loopback_health_proxy(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     server = EIBrainRPCServer(
