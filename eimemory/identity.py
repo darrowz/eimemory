@@ -410,6 +410,7 @@ def _modality_from_record(record: RecordEnvelope) -> str:
         "recall_view",
         "knowledge_page",
         "knowledge_candidate",
+        "knowledge_unit",
         "claim_card",
         "paper_source",
         "paper_extract",

@@ -554,6 +554,28 @@ class Runtime:
             worktree_root=worktree_root,
         )
 
+    def propose_code_patch(
+        self,
+        *,
+        incident: dict[str, Any],
+        scope: dict | None = None,
+        create_worktree: bool = False,
+        persist_report: bool = False,
+        runner: object | None = None,
+        worktree_root: str | Path | None = None,
+    ) -> dict:
+        from eimemory.governance.code_evolution_bridge import propose_code_patch
+
+        return propose_code_patch(
+            self,
+            incident=incident,
+            scope=scope,
+            create_worktree=create_worktree,
+            persist_report=persist_report,
+            runner=runner,
+            worktree_root=worktree_root,
+        )
+
     def scout_web_learning(
         self,
         *,
@@ -815,6 +837,17 @@ class Runtime:
 
     def ingest_paper_source(self, paper_input: dict, *, scope: dict | None = None) -> RecordEnvelope:
         return ingest_paper_source(self.store, paper_input, scope=scope)
+
+    def ingest_knowledge_source(
+        self,
+        payload: dict[str, Any],
+        *,
+        scope: dict[str, Any] | None = None,
+        persist: bool = False,
+    ) -> dict[str, Any]:
+        from eimemory.knowledge.ingest import ingest_knowledge_source
+
+        return ingest_knowledge_source(self, payload, scope=scope, persist=persist)
 
     def extract_paper_memory(self, paper_input: dict, *, scope: dict | None = None) -> PaperMemoryExtraction:
         result = extract_paper_memory(
