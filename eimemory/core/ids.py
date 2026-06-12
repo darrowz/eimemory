@@ -16,6 +16,7 @@ _PREFIX_BY_KIND = {
     "snapshot": "snap",
     "replay_result": "replay",
     "outcome": "out",
+    "autonomy_goal_queue": "agq",
 }
 
 

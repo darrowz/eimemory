@@ -459,6 +459,24 @@ class Runtime:
 
         return build_capability_ledger(self, scope=scope, limit=limit)
 
+    def build_autonomy_goal_queue(
+        self,
+        *,
+        scope: dict | None = None,
+        max_goals: int = 3,
+        persist: bool = False,
+        capabilities: list[str] | None = None,
+    ) -> dict:
+        from eimemory.governance.autonomy_goal_queue import build_autonomy_goal_queue
+
+        return build_autonomy_goal_queue(
+            self,
+            scope=scope,
+            max_goals=max_goals,
+            persist=persist,
+            capabilities=capabilities,
+        )
+
     def ensure_capability_seeded(self, *, scope: dict | None = None) -> dict:
         from eimemory.governance.capability_seeding import ensure_all_seeded
 

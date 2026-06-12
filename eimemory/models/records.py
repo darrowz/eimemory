@@ -46,6 +46,7 @@ VALID_KINDS: frozenset[str] = frozenset(
         "capability_candidate",
         "promotion_request",
         "capability_score",
+        "autonomy_goal_queue",
         "regression_watch",
         "learning_playbook",
     }
