@@ -894,6 +894,48 @@ class Runtime:
             limit=limit,
         )
 
+    def validate_skill_candidate(
+        self,
+        *,
+        candidate_id: str | None = None,
+        scope: dict | None = None,
+        candidate: dict[str, Any] | None = None,
+        persist: bool = True,
+    ) -> dict:
+        from eimemory.governance.skill_validation import validate_skill_candidate
+
+        return validate_skill_candidate(
+            self.store,
+            candidate_id=candidate_id,
+            scope=scope,
+            candidate=candidate,
+            persist=persist,
+        )
+
+    def record_skill_candidate_observation(
+        self,
+        *,
+        candidate_id: str,
+        scope: dict | None = None,
+        outcome: str,
+        observation_id: str = "",
+        observation_kind: str = "real",
+        reason: str = "",
+        details: dict[str, Any] | None = None,
+    ) -> dict:
+        from eimemory.governance.skill_validation import record_skill_candidate_observation
+
+        return record_skill_candidate_observation(
+            self.store,
+            candidate_id=candidate_id,
+            scope=scope,
+            outcome=outcome,
+            observation_id=observation_id,
+            observation_kind=observation_kind,
+            reason=reason,
+            details=details,
+        )
+
     def build_research_digest(
         self,
         *,
