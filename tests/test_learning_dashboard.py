@@ -26,6 +26,23 @@ def test_capability_seed_is_idempotent_and_dashboard_lists_all_capabilities(tmp_
     assert "- Blocked:" in report["markdown"]
     assert "- Next validation:" in report["markdown"]
     assert "## Failure Focus" in report["markdown"]
+    assert "## Module Activation" in report["markdown"]
+    assert "External collection" in report["markdown"]
+    assert "Paper intake" in report["markdown"]
+    assert "Autonomous learning" in report["markdown"]
+    assert "Autonomous evolution" in report["markdown"]
+    assert "Code sandbox" in report["markdown"]
+    assert "Knowledge ingest" in report["markdown"]
+    assert "Skill candidates" in report["markdown"]
+    assert "Autonomy goal queue" in report["markdown"]
+    assert report["module_status"]["external_collection"]["enabled"] is True
+    assert report["module_status"]["paper_intake"]["enabled"] is True
+    assert report["module_status"]["autonomous_learning"]["enabled"] is True
+    assert report["module_status"]["autonomous_evolution"]["enabled"] is True
+    assert report["module_status"]["code_sandbox"]["enabled"] is True
+    assert report["module_status"]["knowledge_ingest"]["enabled"] is True
+    assert report["module_status"]["skill_candidates"]["enabled"] is True
+    assert report["module_status"]["autonomy_goal_queue"]["enabled"] is True
     assert report["persisted_record_id"]
     assert report["output_error"] == ""
 
@@ -54,6 +71,7 @@ def test_dashboard_defaults_to_daily_autonomy_summary(tmp_path) -> None:
     assert report["report_type"] == "autonomous_learning_daily_dashboard"
     assert report["period_type"] == "daily"
     assert "## Autonomy Summary" in report["markdown"]
+    assert "## Module Activation" in report["markdown"]
     assert "## ROI Components" in report["markdown"]
 
 

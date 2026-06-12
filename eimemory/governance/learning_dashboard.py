@@ -31,7 +31,17 @@ def build_weekly_dashboard(
     failures = _failure_breakdown(runtime, scope=scope_ref, since=start)
     activity = _activity_breakdown(runtime, scope=scope_ref, since=start)
     roi = _safe_roi(runtime, scope=scope_ref)
-    markdown = _render_markdown(start=start, period_type=period_type, ledger=ledger, daily=daily, failures=failures, activity=activity, roi=roi)
+    module_status = _module_status(runtime, scope=scope_ref)
+    markdown = _render_markdown(
+        start=start,
+        period_type=period_type,
+        ledger=ledger,
+        daily=daily,
+        failures=failures,
+        activity=activity,
+        roi=roi,
+        module_status=module_status,
+    )
     output_error: str | dict[str, str] = ""
     written_path = ""
     if output_path:
@@ -55,7 +65,17 @@ def build_weekly_dashboard(
             semantic_key=stable_semantic_key("learning_dashboard", period_type, start, scope_ref),
             authority_tier="L0",
             status="active",
-            content={"report_type": f"autonomous_learning_{period_type}_dashboard", "period_type": period_type, "period_start": start, "markdown": markdown, "ledger": ledger, "failures": failures, "activity": activity, "roi": roi},
+            content={
+                "report_type": f"autonomous_learning_{period_type}_dashboard",
+                "period_type": period_type,
+                "period_start": start,
+                "markdown": markdown,
+                "ledger": ledger,
+                "failures": failures,
+                "activity": activity,
+                "roi": roi,
+                "module_status": module_status,
+            },
             meta={"report_type": f"autonomous_learning_{period_type}_dashboard", "period_type": period_type, "period_start": start, "capability_count": len(ledger.get("capabilities") or {})},
         )
         record_id = record.record_id
@@ -74,6 +94,7 @@ def build_weekly_dashboard(
         "failure_breakdown": failures,
         "activity": activity,
         "roi": roi,
+        "module_status": module_status,
     }
 
 
@@ -145,7 +166,17 @@ def _safe_roi(runtime: Any, *, scope: ScopeRef) -> dict[str, Any]:
         return {"ok": False, "error": type(exc).__name__, "detail": str(exc), "roi_components": {}}
 
 
-def _render_markdown(*, start: str, period_type: str, ledger: dict[str, Any], daily: dict[str, Any], failures: dict[str, int], activity: dict[str, Any], roi: dict[str, Any]) -> str:
+def _render_markdown(
+    *,
+    start: str,
+    period_type: str,
+    ledger: dict[str, Any],
+    daily: dict[str, Any],
+    failures: dict[str, int],
+    activity: dict[str, Any],
+    roi: dict[str, Any],
+    module_status: dict[str, Any],
+) -> str:
     lines = [
         f"# eimemory autonomous learning {period_type} dashboard ({start})",
         "",
@@ -157,6 +188,12 @@ def _render_markdown(*, start: str, period_type: str, ledger: dict[str, Any], da
         f"- Rollbacks/quarantines: {int(activity.get('rollbacks') or 0)}",
         f"- Replay pass rate: {float(activity.get('replay_pass_rate') or 0.0):.3f}",
         f"- ROI signal: {float(roi.get('roi_signal') or 0.0):.3f}",
+        "",
+        "## Module Activation",
+        "",
+        "| Module | Enabled | Evidence |",
+        "| --- | ---: | --- |",
+        *_module_status_lines(module_status),
         "",
         "## ROI Components",
         "",
@@ -195,6 +232,94 @@ def _render_markdown(*, start: str, period_type: str, ledger: dict[str, Any], da
     else:
         lines.append("- none")
     return "\n".join(lines) + "\n"
+
+
+def _module_status(runtime: Any, *, scope: ScopeRef) -> dict[str, Any]:
+    sources = _safe_sources(runtime)
+    enabled_sources = [source for source in sources if bool(getattr(source, "enabled", False))]
+    return {
+        "external_collection": {
+            "enabled": callable(getattr(runtime, "collect_external_sources", None)),
+            "evidence": f"{len(enabled_sources)} enabled source(s)",
+        },
+        "paper_intake": {
+            "enabled": all(callable(getattr(runtime, name, None)) for name in ("ingest_paper_source", "promote_collected_paper_candidates")),
+            "evidence": f"{_count_records(runtime, scope, ['paper_source', 'paper_extract'])} paper record(s)",
+        },
+        "autonomous_learning": {
+            "enabled": callable(getattr(runtime, "run_autonomy_cycle", None)) and callable(getattr(runtime, "run_autonomous_learning_cycle", None)),
+            "evidence": f"{_count_records(runtime, scope, ['learning_loop'])} loop record(s)",
+        },
+        "autonomous_evolution": {
+            "enabled": callable(getattr(runtime, "run_autonomous_evolution", None)),
+            "evidence": f"{_count_records(runtime, scope, ['capability_candidate', 'promotion_request'])} evolution record(s)",
+        },
+        "code_sandbox": {
+            "enabled": callable(getattr(runtime, "run_code_sandbox", None)) and callable(getattr(runtime, "propose_code_patch", None)),
+            "evidence": f"{_count_records(runtime, scope, ['reflection'])} reflection/report record(s)",
+        },
+        "knowledge_ingest": {
+            "enabled": callable(getattr(runtime, "ingest_knowledge_source", None)),
+            "evidence": f"{_count_records(runtime, scope, ['knowledge_unit'])} knowledge unit(s)",
+        },
+        "skill_candidates": {
+            "enabled": callable(getattr(runtime, "extract_skill_candidates", None)),
+            "evidence": _skill_candidate_evidence(runtime, scope),
+        },
+        "autonomy_goal_queue": {
+            "enabled": callable(getattr(runtime, "build_autonomy_goal_queue", None)),
+            "evidence": f"{_count_records(runtime, scope, ['autonomy_goal_queue'])} queue record(s)",
+        },
+    }
+
+
+def _module_status_lines(module_status: dict[str, Any]) -> list[str]:
+    labels = {
+        "external_collection": "External collection",
+        "paper_intake": "Paper intake",
+        "autonomous_learning": "Autonomous learning",
+        "autonomous_evolution": "Autonomous evolution",
+        "code_sandbox": "Code sandbox",
+        "knowledge_ingest": "Knowledge ingest",
+        "skill_candidates": "Skill candidates",
+        "autonomy_goal_queue": "Autonomy goal queue",
+    }
+    lines: list[str] = []
+    for key, label in labels.items():
+        item = dict(module_status.get(key) or {})
+        enabled = "yes" if item.get("enabled") else "no"
+        evidence = str(item.get("evidence") or "")
+        lines.append(f"| {label} | {enabled} | {evidence} |")
+    return lines
+
+
+def _safe_sources(runtime: Any) -> list[Any]:
+    try:
+        sources = getattr(runtime, "sources", None)
+        return list(sources.list_sources()) if sources is not None else []
+    except Exception:
+        return []
+
+
+def _count_records(runtime: Any, scope: ScopeRef, kinds: list[str]) -> int:
+    try:
+        return len(runtime.store.list_records(kinds=kinds, scope=scope, limit=500))
+    except Exception:
+        return 0
+
+
+def _skill_candidate_evidence(runtime: Any, scope: ScopeRef) -> str:
+    try:
+        records = runtime.store.list_records(kinds=["skill_candidate"], scope=scope, limit=500)
+    except Exception:
+        records = []
+    statuses: dict[str, int] = {}
+    for record in records:
+        status = str(record.meta.get("status") or record.status or "candidate")
+        statuses[status] = statuses.get(status, 0) + 1
+    if not statuses:
+        return "0 candidate(s)"
+    return ", ".join(f"{status}={count}" for status, count in sorted(statuses.items()))
 
 
 def _roi_component_lines(roi: dict[str, Any]) -> list[str]:
