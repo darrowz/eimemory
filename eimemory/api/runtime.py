@@ -825,6 +825,24 @@ class Runtime:
     def project_operational_knowledge(self, *, scope: dict | None = None, limit: int = 100) -> dict:
         return project_operational_knowledge(self.store, scope=scope, limit=limit)
 
+    def extract_skill_candidates(
+        self,
+        *,
+        knowledge_units: list[Any] | None = None,
+        scope: dict | None = None,
+        persist: bool = False,
+        limit: int = 100,
+    ) -> dict:
+        from eimemory.governance.skill_candidate import extract_skill_candidates
+
+        return extract_skill_candidates(
+            self.store,
+            knowledge_units=knowledge_units,
+            scope=scope,
+            persist=persist,
+            limit=limit,
+        )
+
     def build_research_digest(
         self,
         *,
