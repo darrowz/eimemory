@@ -8,7 +8,7 @@ Type=simple
 WorkingDirectory=/opt/eimemory/current
 Environment=EIMEMORY_ROOT=/var/lib/eimemory
 Environment=EIMEMORY_CONFIG_DIR=/etc/eimemory
-ExecStart=/opt/eimemory/current/.venv/bin/eimemory serve-eibrain-rpc --host 100.105.189.120 --port 8091
+ExecStart=/opt/eimemory/current/.venv/bin/eimemory serve-eibrain-rpc --host 100.105.189.120 --port 8091 --loopback-health-host 127.0.0.1 --loopback-health-port 8091
 Restart=always
 RestartSec=3
 StandardOutput=append:/home/darrow/.openclaw/logs/eimemory-rpc.service.log

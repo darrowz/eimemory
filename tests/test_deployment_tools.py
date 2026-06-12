@@ -96,6 +96,7 @@ def test_eimemory_rpc_systemd_unit_uses_honxin_tailscale_endpoint() -> None:
         "ExecStart=/opt/eimemory/current/.venv/bin/eimemory serve-eibrain-rpc --host 100.105.189.120 --port 8091"
         in unit_text
     )
+    assert "--loopback-health-host 127.0.0.1 --loopback-health-port 8091" in unit_text
     assert "Environment=EIMEMORY_ROOT=/var/lib/eimemory" in unit_text
     assert "Environment=EIMEMORY_CONFIG_DIR=/etc/eimemory" in unit_text
     assert "WorkingDirectory=/opt/eimemory/current" in unit_text
@@ -109,6 +110,13 @@ def test_eimemory_rpc_systemd_unit_uses_honxin_tailscale_endpoint() -> None:
         "StandardError=append:/home/darrow/.openclaw/logs/eimemory-rpc.service.log"
         in unit_text
     )
+
+
+def test_openclaw_watchdog_systemd_uses_primary_and_loopback_health_gates() -> None:
+    unit_text = Path("deploy/systemd/openclaw-stuck-watchdog.service").read_text(encoding="utf-8")
+
+    assert "--health-url http://100.105.189.120:8091/health" in unit_text
+    assert "--loopback-health-url http://127.0.0.1:8091/health" in unit_text
 
 
 def test_systemd_units_use_immutable_current_release() -> None:

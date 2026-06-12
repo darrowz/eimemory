@@ -573,7 +573,7 @@ module.exports.default = {
           return bridgeContext ? { prependContext: bridgeContext } : {};
         }
         const bundle = payload.memory_bundle || {};
-        const memoryContext = buildMemoryPrependContext(bundle);
+        const memoryContext = buildMemoryPrependContext(bundle, payload.injection_plan);
         if (!memoryContext) {
           return bridgeContext ? { prependContext: bridgeContext } : {};
         }
@@ -595,10 +595,10 @@ function buildBridgePrependContext(payload) {
   return context ? `Live eibrain context:\n${context}` : '';
 }
 
-function buildMemoryPrependContext(bundleOrItems) {
+function buildMemoryPrependContext(bundleOrItems, injectionPlan) {
   const bundle = Array.isArray(bundleOrItems) ? { items: bundleOrItems } : (bundleOrItems || {});
   const policyContext = buildPolicySuggestionsContext(bundle?.explanation?.policy_suggestions || bundle?.policy_suggestions);
-  const memoryItemsContext = buildMemoryItemsContext(bundle.items);
+  const memoryItemsContext = buildMemoryItemsContext(bundle.items, injectionPlan || bundle?.explanation?.injection_plan);
   const context = [policyContext, memoryItemsContext].filter(Boolean).join('\n');
   return context ? `Relevant eimemory context:\n${context}` : '';
 }
@@ -662,24 +662,76 @@ function policyText(value) {
   return cleanInjectedMemoryText(value || '');
 }
 
-function buildMemoryItemsContext(items) {
+function buildMemoryItemsContext(items, injectionPlan) {
   if (!Array.isArray(items) || !items.length) {
     return '';
   }
-  const context = items
-    .map((item) => {
+  const planById = injectionPlanById(injectionPlan);
+  const sections = {
+    policy_only: [],
+    memory_items: [],
+  };
+  items.forEach((item) => {
       if (isBridgeAuditMemory(item)) {
-        return '';
+        return;
       }
-      const summary = cleanInjectedMemoryText(item.summary || item.content?.text || '');
+      const plan = planById.get(String(item?.record_id || item?.recordId || '')) || null;
+      const action = normalizeInjectionAction(plan?.action || plan?.lane || '');
+      if (action === 'withheld') {
+        return;
+      }
+      const summary = injectedItemText(item, action);
       if (!summary) {
-        return '';
+        return;
       }
-      return `- ${item.title}: ${summary}`.trim();
-    })
-    .filter(Boolean)
-    .join('\n');
-  return context ? `memory_items:\n${context}` : '';
+      const title = cleanInjectedMemoryText(item.title || '');
+      const line = `- ${title}: ${summary}`.trim();
+      if (action === 'policy_only') {
+        sections.policy_only.push(line);
+      } else {
+        sections.memory_items.push(line);
+      }
+    });
+  const blocks = [];
+  if (sections.policy_only.length) {
+    blocks.push(`policy_only:\n${sections.policy_only.join('\n')}`);
+  }
+  if (sections.memory_items.length) {
+    blocks.push(`memory_items:\n${sections.memory_items.join('\n')}`);
+  }
+  return blocks.join('\n');
+}
+
+function injectionPlanById(injectionPlan) {
+  const byId = new Map();
+  const entries = Array.isArray(injectionPlan?.items)
+    ? injectionPlan.items
+    : (Array.isArray(injectionPlan?.entries) ? injectionPlan.entries : []);
+  for (const entry of entries) {
+    const id = String(entry?.record_id || entry?.recordId || '');
+    if (id) {
+      byId.set(id, entry);
+    }
+  }
+  return byId;
+}
+
+function normalizeInjectionAction(action) {
+  const normalized = String(action || '').toLowerCase();
+  if (['full_text', 'summary_only', 'policy_only', 'withheld'].includes(normalized)) {
+    return normalized;
+  }
+  return 'summary_only';
+}
+
+function injectedItemText(item, action) {
+  if (action === 'full_text') {
+    return cleanInjectedMemoryText(item.content?.text || item.detail || item.summary || '');
+  }
+  if (action === 'policy_only') {
+    return cleanInjectedMemoryText(item.summary || item.title || '');
+  }
+  return cleanInjectedMemoryText(item.summary || item.title || '');
 }
 
 function isBridgeAuditMemory(item) {

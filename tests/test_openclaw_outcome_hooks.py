@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from eimemory.adapters.openclaw.hooks import OpenClawMemoryHooks
 from eimemory.api.runtime import Runtime
-from eimemory.models.records import RecallBundle
+from eimemory.models.records import RecallBundle, RecordEnvelope, ScopeRef
 
 
 def _build_bundle(*, task_context: dict, query: str = "open dashboard") -> RecallBundle:
@@ -35,6 +35,27 @@ def _build_bundle(*, task_context: dict, query: str = "open dashboard") -> Recal
                 }
             ],
         },
+    )
+
+
+def _record(
+    *,
+    kind: str,
+    title: str,
+    summary: str,
+    detail: str = "",
+    content: dict | None = None,
+    meta: dict | None = None,
+) -> RecordEnvelope:
+    return RecordEnvelope.create(
+        kind=kind,
+        title=title,
+        summary=summary,
+        detail=detail,
+        content=content,
+        meta=meta,
+        scope=ScopeRef.from_dict({"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"}),
+        source="test.openclaw",
     )
 
 
@@ -88,6 +109,122 @@ def test_openclaw_before_prompt_build_returns_trace_context_and_policy_attributi
     assert result["task_context"]["policy_attribution"]["matched_event_type"] == "browser_task"
     assert result["task_context"]["policy_attribution"]["selected_records"][0]["record_id"] == "rec-1"
     assert result["memory_bundle"]["explanation"]["policy_suggestion_ids"] == ["policy-1"]
+
+
+def test_openclaw_before_prompt_build_strict_injection_plan_classifies_and_audits_lanes(
+    tmp_path, monkeypatch
+) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    hooks = OpenClawMemoryHooks(runtime)
+    preference = _record(
+        kind="memory",
+        title="Reply preference",
+        summary="User prefers concise replies with evidence.",
+        content={"text": "Always answer with concise replies and include evidence.", "memory_type": "preference"},
+        meta={
+            "memory_type": "preference",
+            "quality": {"confidence": 0.96, "quality_tier": "core", "salience_score": 0.94},
+        },
+    )
+    regular_memory = _record(
+        kind="memory",
+        title="Recent discussion",
+        summary="A recent implementation discussion mentioned dashboard work.",
+        content={"text": "Detailed transient discussion log about dashboard implementation.", "memory_type": "conversation"},
+        meta={
+            "memory_type": "conversation",
+            "quality": {"confidence": 0.55, "quality_tier": "candidate", "salience_score": 0.5},
+        },
+    )
+    candidate = _record(
+        kind="capability_candidate",
+        title="Browser automation candidate",
+        summary="Candidate capability should inform policy only.",
+    )
+    incident = _record(
+        kind="incident",
+        title="Failed browser run",
+        summary="Operational incident should not be injected into prompts.",
+    )
+    rule = _record(
+        kind="rule",
+        title="Verify before completion",
+        summary="Run verification before claiming completion.",
+        content={"execution_policy": ["Run tests before status updates."]},
+    )
+
+    def fake_recall(*, query: str, scope: dict, task_context: dict, limit: int) -> RecallBundle:
+        return RecallBundle(
+            items=[preference, regular_memory, candidate, incident],
+            rules=[rule],
+            reflections=[],
+            confidence=0.83,
+            next_action_hint="",
+            explanation={
+                "query": query,
+                "task_context": dict(task_context),
+                "selected_count": 5,
+                "active_policy": {},
+                "rule_count": 1,
+                "unknown_record_id": "",
+                "graph_expanded": 0,
+                "retrieval_mode": "hybrid",
+            },
+        )
+
+    monkeypatch.setattr(runtime.memory, "recall", fake_recall)
+    monkeypatch.setattr(
+        runtime,
+        "search_policy",
+        lambda query, *, scope, context, limit: {"ok": True, "policy_suggestions": [], "matched_event_type": ""},
+    )
+
+    result = hooks.before_prompt_build(
+        {
+            "session_id": "sess-injection-plan",
+            "agent_id": "main",
+            "workspace_id": "repo-x",
+            "user_id": "darrow",
+            "query": "How should I reply about dashboard work?",
+            "task_context": {"task_type": "chat.reply"},
+        }
+    )
+
+    plan = result["task_context"]["injection_plan"]
+    lanes = {entry["record_id"]: entry["lane"] for entry in plan["entries"]}
+    reasons = {entry["record_id"]: entry.get("withheld_reason", "") for entry in plan["entries"]}
+    assert plan["mode"] == "strict"
+    assert lanes[preference.record_id] == "full_text"
+    assert lanes[regular_memory.record_id] == "summary_only"
+    assert lanes[candidate.record_id] == "policy_only"
+    assert lanes[rule.record_id] == "policy_only"
+    assert lanes[incident.record_id] == "withheld"
+    assert reasons[incident.record_id] == "operational_record"
+    assert plan["lane_composition"] == {
+        "full_text": 1,
+        "summary_only": 1,
+        "policy_only": 2,
+        "withheld": 1,
+    }
+    assert plan["withheld_reasons"] == {"operational_record": 1}
+    assert plan["token_estimate"] >= plan["entries"][0]["token_estimate"] > 0
+
+    telemetry = result["usage_telemetry"]
+    assert telemetry["injection_token_estimate"] == plan["token_estimate"]
+    assert telemetry["injection_lane_composition"] == plan["lane_composition"]
+    assert telemetry["injection_withheld_reasons"] == plan["withheld_reasons"]
+    assert result["memory_bundle"]["explanation"]["injection_plan"] == plan
+
+    audits = runtime.store.list_records(
+        kinds=["recall_view"],
+        scope={"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"},
+        limit=1,
+    )
+    assert audits[0].content["injection_plan"] == plan
+    assert audits[0].content["injection_token_estimate"] == plan["token_estimate"]
+    assert audits[0].content["injection_lane_composition"] == plan["lane_composition"]
+    assert audits[0].content["injection_withheld_reasons"] == plan["withheld_reasons"]
+    assert audits[0].meta["injection_token_estimate"] == plan["token_estimate"]
 
 
 def test_openclaw_agent_end_records_success_outcome_trace(tmp_path, monkeypatch) -> None:

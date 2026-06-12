@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 import sys
 
-from eimemory.adapters.eibrain.rpc_server import EIBrainRPCServer
+from eimemory.adapters.eibrain.rpc_server import EIBrainRPCServer, build_health_payload
 from eimemory.adapters.openclaw.hooks import OpenClawMemoryHooks
 from eimemory.adapters.openclaw.qmd_compat import main as qmd_main
 from eimemory.api.runtime import Runtime
@@ -298,6 +298,11 @@ def _build_parser() -> argparse.ArgumentParser:
     serve_rpc = sub.add_parser("serve-eibrain-rpc")
     serve_rpc.add_argument("--host", default="")
     serve_rpc.add_argument("--port", type=int, default=None)
+    serve_rpc.add_argument("--loopback-health-host", default="")
+    serve_rpc.add_argument("--loopback-health-port", type=int, default=None)
+
+    sub.add_parser("doctor")
+    sub.add_parser("status")
 
     openclaw_hook = sub.add_parser("openclaw-hook")
     openclaw_hook.add_argument(
@@ -545,10 +550,45 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
         return 0
+    if parsed.command in {"doctor", "status"}:
+        host = settings.rpc_host
+        port = int(settings.rpc_port)
+        loopback_health = None
+        if settings.rpc_loopback_health_host and settings.rpc_loopback_health_port is not None:
+            loopback_health = {
+                "host": settings.rpc_loopback_health_host,
+                "port": int(settings.rpc_loopback_health_port),
+                "path": "/health",
+            }
+        print(
+            json.dumps(
+                build_health_payload(
+                    runtime,
+                    listen_host=host,
+                    listen_port=port,
+                    loopback_health=loopback_health,
+                ),
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
     if parsed.command == "serve-eibrain-rpc":
         host = parsed.host or settings.rpc_host
         port = int(parsed.port if parsed.port is not None else settings.rpc_port)
-        server = EIBrainRPCServer(runtime, host=host, port=port)
+        loopback_health_host = parsed.loopback_health_host or settings.rpc_loopback_health_host
+        loopback_health_port = (
+            parsed.loopback_health_port
+            if parsed.loopback_health_port is not None
+            else settings.rpc_loopback_health_port
+        )
+        server_kwargs = {}
+        if loopback_health_host and loopback_health_port is not None:
+            server_kwargs = {
+                "loopback_health_host": loopback_health_host,
+                "loopback_health_port": loopback_health_port,
+            }
+        server = EIBrainRPCServer(runtime, host=host, port=port, **server_kwargs)
         print(json.dumps({"ok": True, "host": server.address[0], "port": server.address[1]}, ensure_ascii=False))
         server.serve_forever()
         return 0

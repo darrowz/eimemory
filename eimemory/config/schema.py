@@ -11,3 +11,5 @@ class Settings:
     default_workspace_id: str = ""
     rpc_host: str = "127.0.0.1"
     rpc_port: int = 8091
+    rpc_loopback_health_host: str = ""
+    rpc_loopback_health_port: int | None = None

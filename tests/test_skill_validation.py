@@ -96,30 +96,73 @@ def test_low_quality_high_risk_candidate_fails_and_records_quarantine(tmp_path) 
         runtime.close()
 
 
-def test_three_good_observations_promote_canary_to_active(tmp_path) -> None:
+def test_replay_and_sandbox_good_observations_do_not_promote_canary_to_active(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "agent-skill", "workspace_id": "validation"}
+    try:
+        candidate = _append_candidate(runtime, scope=scope, record_id="skillcand_replay_only")
+        runtime.validate_skill_candidate(candidate_id=candidate.record_id, scope=scope)
+
+        for index, observation_kind in enumerate(["replay", "sandbox", "replay"]):
+            report = runtime.record_skill_candidate_observation(
+                candidate_id=candidate.record_id,
+                scope=scope,
+                outcome="good",
+                observation_id=f"obs-replay-good-{index}",
+                observation_kind=observation_kind,
+            )
+
+        stored = runtime.store.get_by_id(candidate.record_id, scope=scope)
+        assert report["proposal_status"] == "canary"
+        assert report["pass"] is True
+        assert report["pass_count"] == 3
+        assert report["fail_count"] == 0
+        assert report["real_good_count"] == 0
+        assert report["real_bad_count"] == 0
+        assert report["failure_rate"] == 0.0
+        assert report["observation_kind"] == "replay"
+        assert stored is not None
+        assert stored.status == "canary"
+        validation = stored.meta["skill_validation"]
+        assert validation["good_observation_count"] == 3
+        assert validation["real_good_count"] == 0
+        assert validation["failure_rate"] == 0.0
+        assert [item["observation_kind"] for item in validation["observations"]] == ["replay", "sandbox", "replay"]
+    finally:
+        runtime.close()
+
+
+def test_three_good_real_or_operator_observations_promote_canary_to_active(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     scope = {"agent_id": "agent-skill", "workspace_id": "validation"}
     try:
         candidate = _append_candidate(runtime, scope=scope, record_id="skillcand_observe")
         runtime.validate_skill_candidate(candidate_id=candidate.record_id, scope=scope)
 
-        for index in range(3):
+        for index, observation_kind in enumerate(["real", "operator", "real"]):
             report = runtime.record_skill_candidate_observation(
                 candidate_id=candidate.record_id,
                 scope=scope,
                 outcome="good",
                 observation_id=f"obs-good-{index}",
-                observation_kind="pseudo",
+                observation_kind=observation_kind,
             )
 
         stored = runtime.store.get_by_id(candidate.record_id, scope=scope)
         assert report["proposal_status"] == "active"
         assert report["pass"] is True
         assert report["pass_rate"] == 1.0
+        assert report["pass_count"] == 3
+        assert report["fail_count"] == 0
+        assert report["real_good_count"] == 3
+        assert report["real_bad_count"] == 0
+        assert report["failure_rate"] == 0.0
         assert stored is not None
         assert stored.status == "active"
         assert stored.meta["skill_validation"]["good_observation_count"] == 3
         assert stored.meta["skill_validation"]["bad_observation_count"] == 0
+        assert stored.meta["skill_validation"]["real_good_count"] == 3
+        assert stored.meta["skill_validation"]["real_bad_count"] == 0
     finally:
         runtime.close()
 
@@ -147,6 +190,159 @@ def test_one_bad_observation_quarantines_candidate(tmp_path) -> None:
         assert stored is not None
         assert stored.status == "quarantined"
         assert stored.status != "active"
+    finally:
+        runtime.close()
+
+
+def test_active_repeated_bad_real_observations_roll_back_with_evidence(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "agent-skill", "workspace_id": "validation"}
+    try:
+        candidate = _append_candidate(runtime, scope=scope, record_id="skillcand_active_bad")
+        runtime.validate_skill_candidate(candidate_id=candidate.record_id, scope=scope)
+        for index in range(3):
+            runtime.record_skill_candidate_observation(
+                candidate_id=candidate.record_id,
+                scope=scope,
+                outcome="good",
+                observation_id=f"obs-active-good-{index}",
+                observation_kind="real",
+            )
+
+        first_bad = runtime.record_skill_candidate_observation(
+            candidate_id=candidate.record_id,
+            scope=scope,
+            outcome="failed",
+            observation_id="obs-active-bad-1",
+            observation_kind="real",
+            reason="Operator task failed after activation.",
+        )
+        assert first_bad["proposal_status"] == "active"
+        assert first_bad["failure_rate"] == 0.25
+        assert first_bad["real_bad_count"] == 1
+        assert first_bad["last_bad_at"]
+
+        second_bad = runtime.record_skill_candidate_observation(
+            candidate_id=candidate.record_id,
+            scope=scope,
+            outcome="bad",
+            observation_id="obs-active-bad-2",
+            observation_kind="operator",
+            reason="Second real task failed after activation.",
+        )
+
+        stored = runtime.store.get_by_id(candidate.record_id, scope=scope)
+        assert second_bad["proposal_status"] == "rolled_back"
+        assert second_bad["pass"] is False
+        assert second_bad["failure_rate"] == 0.4
+        assert second_bad["real_bad_count"] == 2
+        assert second_bad["rollback_evidence_ids"] == ["obs-active-bad-1", "obs-active-bad-2"]
+        assert "repeated_bad_real_observations" in second_bad["reasons"]
+        assert stored is not None
+        assert stored.status == "rolled_back"
+        validation = stored.meta["skill_validation"]
+        assert validation["last_bad_at"] == second_bad["last_bad_at"]
+        assert validation["rollback_evidence_ids"] == ["obs-active-bad-1", "obs-active-bad-2"]
+    finally:
+        runtime.close()
+
+
+def test_active_single_ordinary_real_failure_does_not_immediately_roll_back(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "agent-skill", "workspace_id": "validation"}
+    try:
+        candidate = _append_candidate(runtime, scope=scope, record_id="skillcand_active_sparse")
+        stored = runtime.store.get_by_id(candidate.record_id, scope=scope)
+        assert stored is not None
+        stored.status = "active"
+        stored.content["status"] = "active"
+        stored.meta["status"] = "active"
+        runtime.store.rewrite(stored)
+
+        report = runtime.record_skill_candidate_observation(
+            candidate_id=candidate.record_id,
+            scope=scope,
+            outcome="failed",
+            observation_id="obs-sparse-real-bad-1",
+            observation_kind="real",
+            reason="First ordinary real-task failure after migration.",
+        )
+
+        reloaded = runtime.store.get_by_id(candidate.record_id, scope=scope)
+        assert report["proposal_status"] == "active"
+        assert report["pass"] is False
+        assert report["real_bad_count"] == 1
+        assert report["rollback_evidence_ids"] == []
+        assert "bad_observation_recorded" in report["reasons"]
+        assert reloaded is not None
+        assert reloaded.status == "active"
+    finally:
+        runtime.close()
+
+
+def test_active_synthetic_failure_does_not_roll_back(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "agent-skill", "workspace_id": "validation"}
+    try:
+        candidate = _append_candidate(runtime, scope=scope, record_id="skillcand_active_synthetic")
+        stored = runtime.store.get_by_id(candidate.record_id, scope=scope)
+        assert stored is not None
+        stored.status = "active"
+        stored.content["status"] = "active"
+        stored.meta["status"] = "active"
+        runtime.store.rewrite(stored)
+
+        report = runtime.record_skill_candidate_observation(
+            candidate_id=candidate.record_id,
+            scope=scope,
+            outcome="failed",
+            observation_id="obs-sandbox-bad-1",
+            observation_kind="sandbox",
+            reason="Sandbox replay failed.",
+        )
+
+        reloaded = runtime.store.get_by_id(candidate.record_id, scope=scope)
+        assert report["proposal_status"] == "active"
+        assert report["pass"] is False
+        assert report["real_bad_count"] == 0
+        assert report["rollback_evidence_ids"] == []
+        assert reloaded is not None
+        assert reloaded.status == "active"
+    finally:
+        runtime.close()
+
+
+def test_active_unsafe_real_observation_rolls_back_immediately(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "agent-skill", "workspace_id": "validation"}
+    try:
+        candidate = _append_candidate(runtime, scope=scope, record_id="skillcand_active_unsafe")
+        runtime.validate_skill_candidate(candidate_id=candidate.record_id, scope=scope)
+        for index in range(3):
+            runtime.record_skill_candidate_observation(
+                candidate_id=candidate.record_id,
+                scope=scope,
+                outcome="success",
+                observation_id=f"obs-unsafe-good-{index}",
+                observation_kind="operator",
+            )
+
+        report = runtime.record_skill_candidate_observation(
+            candidate_id=candidate.record_id,
+            scope=scope,
+            outcome="unsafe",
+            observation_id="obs-unsafe-bad-1",
+            observation_kind="real",
+            reason="The active skill produced an unsafe operator outcome.",
+        )
+
+        stored = runtime.store.get_by_id(candidate.record_id, scope=scope)
+        assert report["proposal_status"] == "rolled_back"
+        assert report["rollback_evidence_ids"] == ["obs-unsafe-bad-1"]
+        assert report["last_bad_at"]
+        assert "unsafe_outcome" in report["reasons"]
+        assert stored is not None
+        assert stored.status == "rolled_back"
     finally:
         runtime.close()
 

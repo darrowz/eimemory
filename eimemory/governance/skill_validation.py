@@ -13,6 +13,8 @@ from eimemory.storage.runtime_store import RuntimeStore
 VALIDATION_SOURCE = "eimemory.skill_validation"
 REPORT_TYPE = "skill_candidate_validation"
 REQUIRED_GOOD_OBSERVATIONS = 3
+FAILURE_RATE_THRESHOLD = 0.34
+REAL_OBSERVATION_KINDS = {"real", "operator"}
 GOOD_OUTCOMES = {"good", "success", "pass", "passed", "improved", "better"}
 BAD_OUTCOMES = {"bad", "fail", "failed", "regressed", "unsafe", "error"}
 
@@ -83,33 +85,64 @@ def record_skill_candidate_observation(
     is_good = outcome_status in GOOD_OUTCOMES and not is_bad
     obs_id = str(observation_id or _observation_id(candidate_id, observations, outcome_status))
 
+    observation_kind_value = str(observation_kind or "real").strip().lower() or "real"
+    observed_at = now_iso()
     if obs_id not in {str(item.get("observation_id") or "") for item in observations}:
         observations.append(
             {
                 "observation_id": obs_id,
-                "observation_kind": str(observation_kind or "real"),
+                "observation_kind": observation_kind_value,
                 "outcome": outcome_status,
                 "good": bool(is_good),
                 "bad": bool(is_bad),
                 "reason": str(reason or ""),
                 "details": dict(details or {}),
-                "observed_at": now_iso(),
+                "observed_at": observed_at,
             }
         )
 
     good_count = sum(1 for item in observations if bool(item.get("good")))
     bad_count = sum(1 for item in observations if bool(item.get("bad")))
+    real_good_count = sum(1 for item in observations if bool(item.get("good")) and _is_real_observation(item))
+    real_bad_count = sum(1 for item in observations if bool(item.get("bad")) and _is_real_observation(item))
     total_count = len(observations)
+    failure_rate = round(bad_count / total_count, 3) if total_count else 0.0
+    rollback_evidence_ids = [
+        str(item.get("observation_id") or "")
+        for item in observations
+        if bool(item.get("bad")) and _is_real_observation(item) and str(item.get("observation_id") or "").strip()
+    ]
+    last_bad_at = _last_bad_at(observations)
     next_status = previous_status
     passed = is_good and not is_bad
     reasons: list[str] = []
+    unsafe_real_outcome = outcome_status == "unsafe" and observation_kind_value in REAL_OBSERVATION_KINDS
 
-    if is_bad or bad_count > 0:
+    if previous_status == "active" and unsafe_real_outcome:
+        next_status = "rolled_back"
+        passed = False
+        reasons.append("unsafe_outcome")
+    elif previous_status == "active" and real_bad_count >= 2:
+        next_status = "rolled_back"
+        passed = False
+        reasons.append("repeated_bad_real_observations")
+    elif previous_status == "active":
+        next_status = "active"
+        if is_bad:
+            passed = False
+            reasons.append("bad_observation_recorded")
+    elif is_bad or bad_count > 0:
         next_status = "quarantined"
         passed = False
         reasons.append("bad_observation")
-    elif previous_status == "canary" and good_count >= REQUIRED_GOOD_OBSERVATIONS:
+    elif previous_status == "canary" and real_good_count >= REQUIRED_GOOD_OBSERVATIONS and failure_rate < FAILURE_RATE_THRESHOLD:
         next_status = "active"
+    elif previous_status == "canary" and good_count >= REQUIRED_GOOD_OBSERVATIONS and real_good_count < REQUIRED_GOOD_OBSERVATIONS:
+        next_status = "canary"
+        reasons.append("requires_real_operator_observations")
+    elif previous_status == "canary" and real_good_count >= REQUIRED_GOOD_OBSERVATIONS:
+        next_status = "canary"
+        reasons.append("failure_rate_above_threshold")
     elif previous_status != "canary":
         reasons.append("candidate_not_in_canary")
     else:
@@ -124,12 +157,21 @@ def record_skill_candidate_observation(
         "status_transition": {"from": previous_status, "to": next_status},
         "pass": bool(passed and next_status != "quarantined"),
         "pass_rate": pass_rate,
+        "failure_rate": failure_rate,
         "reasons": reasons,
         "stage": "canary_observation",
         "good_observation_count": good_count,
         "bad_observation_count": bad_count,
+        "pass_count": good_count,
+        "fail_count": bad_count,
+        "real_good_count": real_good_count,
+        "real_bad_count": real_bad_count,
+        "last_bad_at": last_bad_at,
+        "rollback_evidence_ids": rollback_evidence_ids if next_status in {"quarantined", "rolled_back"} else [],
         "required_good_observations": REQUIRED_GOOD_OBSERVATIONS,
         "observation_id": obs_id,
+        "observation_kind": observation_kind_value,
+        "failure_rate_threshold": FAILURE_RATE_THRESHOLD,
     }
     _rewrite_candidate_with_validation(store, record, status=next_status, report=report, observations=observations)
     validation_record = _validation_result_record(report, scope=record.scope, candidate_record=record)
@@ -176,12 +218,29 @@ def _rewrite_candidate_with_validation(
     }
     if observations is not None:
         merged_validation["observations"] = observations
-        merged_validation["good_observation_count"] = sum(1 for item in observations if bool(item.get("good")))
-        merged_validation["bad_observation_count"] = sum(1 for item in observations if bool(item.get("bad")))
+        good_count = sum(1 for item in observations if bool(item.get("good")))
+        bad_count = sum(1 for item in observations if bool(item.get("bad")))
+        total_count = len(observations)
+        merged_validation["good_observation_count"] = good_count
+        merged_validation["bad_observation_count"] = bad_count
+        merged_validation["pass_count"] = good_count
+        merged_validation["fail_count"] = bad_count
+        merged_validation["real_good_count"] = sum(1 for item in observations if bool(item.get("good")) and _is_real_observation(item))
+        merged_validation["real_bad_count"] = sum(1 for item in observations if bool(item.get("bad")) and _is_real_observation(item))
+        merged_validation["failure_rate"] = round(bad_count / total_count, 3) if total_count else 0.0
+        merged_validation["last_bad_at"] = _last_bad_at(observations)
+        merged_validation["rollback_evidence_ids"] = list(report.get("rollback_evidence_ids") or [])
     else:
         merged_validation.setdefault("observations", [])
         merged_validation.setdefault("good_observation_count", 0)
         merged_validation.setdefault("bad_observation_count", 0)
+        merged_validation.setdefault("pass_count", 0)
+        merged_validation.setdefault("fail_count", 0)
+        merged_validation.setdefault("real_good_count", 0)
+        merged_validation.setdefault("real_bad_count", 0)
+        merged_validation.setdefault("failure_rate", 0.0)
+        merged_validation.setdefault("last_bad_at", "")
+        merged_validation.setdefault("rollback_evidence_ids", [])
 
     record.status = status
     record.content["status"] = status
@@ -266,6 +325,15 @@ def _pass_rate(checks: list[dict[str, Any]]) -> float:
     return round(sum(1 for item in checks if item.get("pass")) / len(checks), 3)
 
 
+def _is_real_observation(observation: dict[str, Any]) -> bool:
+    return str(observation.get("observation_kind") or "").strip().lower() in REAL_OBSERVATION_KINDS
+
+
+def _last_bad_at(observations: list[dict[str, Any]]) -> str:
+    bad_times = [str(item.get("observed_at") or "") for item in observations if bool(item.get("bad")) and str(item.get("observed_at") or "")]
+    return bad_times[-1] if bad_times else ""
+
+
 def _scope(scope: ScopeRef | dict[str, Any] | None) -> ScopeRef:
     return scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
 
@@ -303,7 +371,7 @@ def _validation_record_id(candidate_id: str, generated_at: str, report: dict[str
 
 
 def _retag(record: RecordEnvelope, status: str) -> None:
-    tags = [tag for tag in record.tags if tag not in {"candidate", "sandbox_ready", "canary", "active", "quarantined"}]
+    tags = [tag for tag in record.tags if tag not in {"candidate", "sandbox_ready", "canary", "active", "quarantined", "rolled_back"}]
     tags.extend(["skill-candidate", status])
     record.tags = list(dict.fromkeys(str(tag) for tag in tags if str(tag).strip()))
 

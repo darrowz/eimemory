@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
+import subprocess
 import threading
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -16,11 +19,23 @@ from eimemory.version import __version__
 class _RPCHandler(BaseHTTPRequestHandler):
     bridge: EIBrainRPCBridge
     runtime: Runtime
+    listen_host: str
+    listen_port: int
+    loopback_health: dict[str, object] | None = None
 
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         if parsed.path in {"/health", "/healthz", "/livez", "/readyz"}:
-            self._send_json(200, _compact_health_payload(self.runtime, ready=parsed.path != "/livez"))
+            self._send_json(
+                200,
+                _compact_health_payload(
+                    self.runtime,
+                    ready=parsed.path != "/livez",
+                    listen_host=self.listen_host,
+                    listen_port=self.listen_port,
+                    loopback_health=self.loopback_health,
+                ),
+            )
             return
         if parsed.path not in {"", "/", "/daily-brief", "/diagnostics"}:
             self._send_json(404, {"ok": False, "error": "not_found"})
@@ -76,8 +91,50 @@ class _RPCHandler(BaseHTTPRequestHandler):
         return
 
 
+class _HealthOnlyHandler(BaseHTTPRequestHandler):
+    runtime: Runtime
+    listen_host: str
+    listen_port: int
+    loopback_health: dict[str, object] | None = None
+
+    def do_GET(self) -> None:  # noqa: N802
+        parsed = urlparse(self.path)
+        if parsed.path not in {"/health", "/healthz", "/livez", "/readyz"}:
+            self._send_json(404, {"ok": False, "error": "not_found"})
+            return
+        self._send_json(
+            200,
+            _compact_health_payload(
+                self.runtime,
+                ready=parsed.path != "/livez",
+                listen_host=self.listen_host,
+                listen_port=self.listen_port,
+                loopback_health=self.loopback_health,
+            ),
+        )
+
+    def _send_json(self, status_code: int, payload: EIMemoryRPCResponse) -> None:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(status_code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format: str, *args) -> None:  # noqa: A003
+        return
+
+
 class EIBrainRPCServer:
-    def __init__(self, runtime: Runtime, *, host: str, port: int) -> None:
+    def __init__(
+        self,
+        runtime: Runtime,
+        *,
+        host: str,
+        port: int,
+        loopback_health_host: str = "",
+        loopback_health_port: int | None = None,
+    ) -> None:
         self.runtime = runtime
         self.host = host
         self.port = port
@@ -86,23 +143,62 @@ class EIBrainRPCServer:
         handler.runtime = runtime
         self._server = ThreadingHTTPServer((host, port), handler)
         self.address = self._server.server_address
+        handler.listen_host = str(self.address[0])
+        handler.listen_port = int(self.address[1])
         self._thread: threading.Thread | None = None
+        self._loopback_health_server: ThreadingHTTPServer | None = None
+        self._loopback_health_thread: threading.Thread | None = None
+        self.loopback_health_address: tuple[str, int] | None = None
+        if loopback_health_host and loopback_health_port is not None:
+            health_handler = type("EIMemoryLoopbackHealthHandler", (_HealthOnlyHandler,), {})
+            health_handler.runtime = runtime
+            health_handler.listen_host = str(self.address[0])
+            health_handler.listen_port = int(self.address[1])
+            self._loopback_health_server = ThreadingHTTPServer((loopback_health_host, loopback_health_port), health_handler)
+            self.loopback_health_address = self._loopback_health_server.server_address
+            loopback_health = {
+                "host": str(self.loopback_health_address[0]),
+                "port": int(self.loopback_health_address[1]),
+                "path": "/health",
+            }
+            health_handler.loopback_health = loopback_health
+            handler.loopback_health = loopback_health
 
     def start(self) -> None:
+        if self._loopback_health_server is not None:
+            self._loopback_health_thread = threading.Thread(
+                target=self._loopback_health_server.serve_forever,
+                daemon=True,
+            )
+            self._loopback_health_thread.start()
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
 
     def serve_forever(self) -> None:
+        if self._loopback_health_server is not None:
+            self._loopback_health_thread = threading.Thread(
+                target=self._loopback_health_server.serve_forever,
+                daemon=True,
+            )
+            self._loopback_health_thread.start()
         try:
             self._server.serve_forever()
         except KeyboardInterrupt:
             pass
         finally:
             self._server.server_close()
+            if self._loopback_health_server is not None:
+                self._loopback_health_server.shutdown()
+                self._loopback_health_server.server_close()
 
     def stop(self) -> None:
         self._server.shutdown()
         self._server.server_close()
+        if self._loopback_health_server is not None:
+            self._loopback_health_server.shutdown()
+            self._loopback_health_server.server_close()
+        if self._loopback_health_thread is not None:
+            self._loopback_health_thread.join(timeout=2)
         if self._thread is not None:
             self._thread.join(timeout=2)
 
@@ -125,17 +221,76 @@ def _first_query_value(query: dict[str, list[str]], key: str, default: str = "")
     return str(values[0] or default)
 
 
-def _compact_health_payload(runtime: Runtime, *, ready: bool) -> EIMemoryRPCResponse:
+def _compact_health_payload(
+    runtime: Runtime,
+    *,
+    ready: bool,
+    listen_host: str,
+    listen_port: int,
+    loopback_health: dict[str, object] | None = None,
+) -> EIMemoryRPCResponse:
     root = getattr(getattr(runtime, "store", None), "root", None)
-    store_ok = bool(root)
-    return {
-        "ok": bool(store_ok),
+    store_root = Path(root) if root else None
+    store_ready = bool(store_root and store_root.exists())
+    payload: EIMemoryRPCResponse = {
+        "ok": store_ready,
         "service": "eimemory-rpc",
         "version": __version__,
+        "commit": _current_commit(),
         "contract_version": EIMEMORY_RPC_CONTRACT_VERSION,
+        "paths": {
+            "current": str(Path.cwd()),
+            "release": str(Path.cwd().resolve()),
+        },
+        "listen_host": listen_host,
+        "listen_port": int(listen_port),
+        "store": {
+            "ready": store_ready,
+            "root": str(store_root) if store_root else "",
+        },
         "checks": {
             "process": True,
-            "store": store_ok,
-            "ready": bool(ready and store_ok),
+            "store": store_ready,
+            "ready": bool(ready and store_ready),
         },
     }
+    if loopback_health:
+        payload["loopback_health"] = loopback_health
+    return payload
+
+
+def build_health_payload(
+    runtime: Runtime,
+    *,
+    listen_host: str,
+    listen_port: int,
+    ready: bool = True,
+    loopback_health: dict[str, object] | None = None,
+) -> EIMemoryRPCResponse:
+    return _compact_health_payload(
+        runtime,
+        ready=ready,
+        listen_host=listen_host,
+        listen_port=listen_port,
+        loopback_health=loopback_health,
+    )
+
+
+def _current_commit() -> str:
+    for key in ("EIMEMORY_COMMIT", "GIT_COMMIT", "SOURCE_VERSION"):
+        value = os.environ.get(key, "").strip()
+        if value:
+            return value
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=1,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if result.returncode != 0:
+        return ""
+    return result.stdout.strip()

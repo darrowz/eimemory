@@ -6,6 +6,7 @@ from typing import Any
 
 from eimemory.api.runtime import Runtime
 from eimemory.identity import hongtu_identity_meta, hongtu_scope
+from eimemory.metadata import business_metadata
 from eimemory.models.records import RecallBundle, RecordEnvelope, ScopeRef
 
 
@@ -53,9 +54,14 @@ class OpenClawMemoryHooks:
             policy_attribution = self._normalize_policy_attribution(recall_context)
             recall_context["policy_attribution"] = policy_attribution
             bundle = self._empty_bundle({"task_context": recall_context})
+            injection_plan = self._build_injection_plan(bundle=bundle, task_context=recall_context)
+            recall_context["injection_plan"] = injection_plan
+            bundle.explanation["injection_plan"] = injection_plan
             self._audit_prompt_recall(event=event, bundle=bundle, injected=False)
             return {
                 "memory_bundle": bundle.to_dict(),
+                "injection_plan": injection_plan,
+                "usage_telemetry": self._usage_telemetry(bundle),
                 "trace_context": trace_context,
                 "task_context": recall_context,
                 "policy_attribution": policy_attribution,
@@ -82,9 +88,13 @@ class OpenClawMemoryHooks:
         recall_context["selected_records"] = self._selected_records(bundle)
         policy_attribution = self._normalize_policy_attribution(recall_context)
         recall_context["policy_attribution"] = policy_attribution
+        injection_plan = self._build_injection_plan(bundle=bundle, task_context=recall_context)
+        recall_context["injection_plan"] = injection_plan
+        bundle.explanation["injection_plan"] = injection_plan
         self._audit_prompt_recall(event=event, bundle=bundle, injected=bool(bundle.items))
         return {
             "memory_bundle": bundle.to_dict(),
+            "injection_plan": injection_plan,
             "usage_telemetry": self._usage_telemetry(bundle),
             "trace_context": trace_context,
             "task_context": recall_context,
@@ -237,6 +247,14 @@ class OpenClawMemoryHooks:
                 "workspace_id": event.get("workspace_id") or event.get("workspaceId") or "",
             }
         )
+
+    def _raw_scope_from_event(self, event: dict) -> dict:
+        return {
+            "tenant_id": str(event.get("tenant_id") or event.get("tenantId") or "default"),
+            "agent_id": str(event.get("agent_id") or event.get("agentId") or "main"),
+            "workspace_id": str(event.get("workspace_id") or event.get("workspaceId") or ""),
+            "user_id": str(event.get("user_id") or event.get("userId") or ""),
+        }
 
     def _identity_meta(self, event: dict, *, organ: str, modality: str) -> dict:
         return hongtu_identity_meta(
@@ -418,50 +436,306 @@ class OpenClawMemoryHooks:
         policy_suggestion_ids = self._coerce_string_list(bundle.explanation.get("policy_suggestion_ids"))
         policy_sources = self._coerce_string_list(bundle.explanation.get("policy_sources"))
         matched_event_type = str(bundle.explanation.get("matched_event_type") or "")
+        injection_plan = self._coerce_injection_plan(bundle.explanation.get("injection_plan"))
+        content = {
+            "session_id": self._session_id_from_event(event),
+            "query": self._clean_prompt_query(str(event.get("query") or event.get("raw_query") or "").strip()),
+            "raw_query": str(event.get("raw_query") or event.get("rawQuery") or event.get("query") or "").strip(),
+            "task_context": dict(event.get("task_context") or event.get("taskContext") or {}),
+            "selected_count": len(injected_ids),
+            "injected": injected,
+            "injected_record_ids": injected_ids,
+            "policy_suggestion_ids": policy_suggestion_ids,
+            "policy_sources": policy_sources,
+            "matched_event_type": matched_event_type,
+            "selected_records": selected_records,
+            "source_composition": dict(bundle.explanation.get("source_composition") or {}),
+            "injection_plan": injection_plan,
+            "injection_token_estimate": injection_plan["token_estimate"],
+            "injection_lane_composition": dict(injection_plan["lane_composition"]),
+            "injection_withheld_reasons": dict(injection_plan["withheld_reasons"]),
+            "view_type": str(view.get("view_type") or ""),
+            "confidence": bundle.confidence,
+        }
+        meta = {
+            **self._identity_meta(event, organ="cognition", modality="text"),
+            "session_id": self._session_id_from_event(event),
+            "selected_count": len(injected_ids),
+            "injected": injected,
+            "policy_suggestion_ids": policy_suggestion_ids,
+            "policy_sources": policy_sources,
+            "matched_event_type": matched_event_type,
+            "view_type": str(view.get("view_type") or ""),
+            "source_composition": dict(bundle.explanation.get("source_composition") or {}),
+            "injection_token_estimate": injection_plan["token_estimate"],
+            "injection_lane_composition": dict(injection_plan["lane_composition"]),
+            "injection_withheld_reasons": dict(injection_plan["withheld_reasons"]),
+        }
         record = RecordEnvelope.create(
             kind="recall_view",
             title="OpenClaw memory injection audit",
             summary=f"Injected {len(injected_ids)} memory records before prompt build",
             detail="Audit record for OpenClaw before_prompt_build memory recall.",
-            content={
-                "session_id": self._session_id_from_event(event),
-                "query": self._clean_prompt_query(str(event.get("query") or event.get("raw_query") or "").strip()),
-                "raw_query": str(event.get("raw_query") or event.get("rawQuery") or event.get("query") or "").strip(),
-                "task_context": dict(event.get("task_context") or event.get("taskContext") or {}),
-                "selected_count": len(injected_ids),
-                "injected": injected,
-                "injected_record_ids": injected_ids,
-                "policy_suggestion_ids": policy_suggestion_ids,
-                "policy_sources": policy_sources,
-                "matched_event_type": matched_event_type,
-                "selected_records": selected_records,
-                "source_composition": dict(bundle.explanation.get("source_composition") or {}),
-                "view_type": str(view.get("view_type") or ""),
-                "confidence": bundle.confidence,
-            },
+            content=content,
             tags=["openclaw", "before_prompt_build", "injection_audit"],
             source="openclaw.before_prompt_build",
             scope=scope,
-            meta={
-                **self._identity_meta(event, organ="cognition", modality="text"),
-                "session_id": self._session_id_from_event(event),
-                "selected_count": len(injected_ids),
-                "injected": injected,
-                "policy_suggestion_ids": policy_suggestion_ids,
-                "policy_sources": policy_sources,
-                "matched_event_type": matched_event_type,
-                "view_type": str(view.get("view_type") or ""),
-                "source_composition": dict(bundle.explanation.get("source_composition") or {}),
-            },
+            meta=meta,
         )
-        return self.runtime.store.append(record)
+        stored = self.runtime.store.append(record)
+        raw_scope = ScopeRef.from_dict(self._raw_scope_from_event(event))
+        if raw_scope != scope:
+            self.runtime.store.append(
+                RecordEnvelope.create(
+                    kind="recall_view",
+                    title="OpenClaw memory injection audit",
+                    summary=f"Injected {len(injected_ids)} memory records before prompt build",
+                    detail="Audit record for OpenClaw before_prompt_build memory recall.",
+                    content=content,
+                    tags=["openclaw", "before_prompt_build", "injection_audit"],
+                    source="openclaw.before_prompt_build",
+                    scope=raw_scope,
+                    meta=meta,
+                )
+            )
+        return stored
 
     def _usage_telemetry(self, bundle: RecallBundle) -> dict:
+        injection_plan = self._coerce_injection_plan(bundle.explanation.get("injection_plan"))
+        lane_composition = dict(injection_plan["lane_composition"])
         return {
             "selected_count": len(bundle.items),
             "confidence": bundle.confidence,
             "source_composition": dict(bundle.explanation.get("source_composition") or {}),
             "selected_records": self._selected_records(bundle),
+            "injection_token_estimate": injection_plan["token_estimate"],
+            "injection_lane_composition": lane_composition,
+            "injection_withheld_reasons": dict(injection_plan["withheld_reasons"]),
+            "injection_plan": injection_plan,
+            "injection": {
+                "token_estimate": injection_plan["token_estimate"],
+                "lane_composition": lane_composition,
+                "withheld_reasons": dict(injection_plan["withheld_reasons"]),
+                "full_text_count": lane_composition["full_text"],
+                "summary_only_count": lane_composition["summary_only"],
+                "policy_only_count": lane_composition["policy_only"],
+                "withheld_count": lane_composition["withheld"],
+            },
+        }
+
+    def _build_injection_plan(self, *, bundle: RecallBundle, task_context: dict) -> dict:
+        mode = str(task_context.get("injection_mode") or task_context.get("injectionMode") or "strict").strip().lower()
+        if mode not in {"strict", "balanced", "debug"}:
+            mode = "strict"
+        entries: list[dict[str, Any]] = []
+        full_text_count = 0
+        for record in self._injection_candidates(bundle):
+            lane, reason = self._classify_injection_lane(record=record, full_text_count=full_text_count, mode=mode)
+            if lane == "full_text":
+                full_text_count += 1
+            entry = {
+                "record_id": record.record_id,
+                "kind": record.kind,
+                "title": record.title,
+                "source": record.source,
+                "recall_lane": self._record_recall_lane(record),
+                "lane": lane,
+                "action": lane,
+                "token_estimate": self._injection_token_estimate(record=record, lane=lane),
+            }
+            memory_type = self._record_memory_type(record)
+            if memory_type:
+                entry["memory_type"] = memory_type
+            if reason:
+                entry["withheld_reason"] = reason
+                entry["reason"] = reason
+            entries.append(entry)
+        lane_composition = {"full_text": 0, "summary_only": 0, "policy_only": 0, "withheld": 0}
+        withheld_reasons: dict[str, int] = {}
+        for entry in entries:
+            lane = str(entry.get("lane") or "")
+            if lane in lane_composition:
+                lane_composition[lane] += 1
+            reason = str(entry.get("withheld_reason") or "")
+            if reason:
+                withheld_reasons[reason] = withheld_reasons.get(reason, 0) + 1
+        return {
+            "mode": mode,
+            "token_estimate": sum(int(entry.get("token_estimate") or 0) for entry in entries),
+            "lane_composition": lane_composition,
+            "withheld_reasons": withheld_reasons,
+            "full_text_count": lane_composition["full_text"],
+            "summary_only_count": lane_composition["summary_only"],
+            "policy_only_count": lane_composition["policy_only"],
+            "withheld_count": lane_composition["withheld"],
+            "entries": entries,
+            "items": entries,
+        }
+
+    def _injection_candidates(self, bundle: RecallBundle) -> list[RecordEnvelope]:
+        candidates: list[RecordEnvelope] = []
+        seen: set[str] = set()
+        for record in [*bundle.items, *bundle.rules, *bundle.reflections]:
+            if record.record_id in seen:
+                continue
+            seen.add(record.record_id)
+            candidates.append(record)
+        return candidates
+
+    def _classify_injection_lane(
+        self,
+        *,
+        record: RecordEnvelope,
+        full_text_count: int,
+        mode: str,
+    ) -> tuple[str, str]:
+        operational_kinds = {
+            "incident",
+            "recall_view",
+            "replay_result",
+            "learning_loop",
+            "learning_eval",
+            "regression_watch",
+            "feedback",
+            "reflection",
+            "unknown",
+        }
+        if record.kind in operational_kinds:
+            if mode == "debug":
+                return "summary_only", ""
+            return "withheld", "operational_record"
+        if record.kind in {"rule", "capability_candidate", "skill_candidate", "promotion_request"}:
+            return "policy_only", ""
+        if record.kind != "memory":
+            return "summary_only", ""
+        operational_memory_types = {
+            "incident",
+            "incident_report",
+            "audit",
+            "audit_record",
+            "log",
+            "run_log",
+            "runtime_log",
+            "diagnostic",
+            "evolution_artifact",
+        }
+        if self._record_memory_type(record) in operational_memory_types:
+            if mode == "debug":
+                return "summary_only", ""
+            return "withheld", "blocked_recall_lane"
+        full_text_limit = 2 if mode == "strict" else 3
+        if self._is_full_text_memory(record) and full_text_count < full_text_limit:
+            return "full_text", ""
+        return "summary_only", ""
+
+    def _is_full_text_memory(self, record: RecordEnvelope) -> bool:
+        memory_type = self._record_memory_type(record)
+        if memory_type not in {"preference", "user_preference", "fact", "durable_fact"}:
+            return False
+        quality = business_metadata(record.meta).get("quality")
+        quality = quality if isinstance(quality, dict) else {}
+        tier = str(quality.get("quality_tier") or "").strip().lower()
+        confidence = self._float_or_zero(quality.get("confidence"))
+        salience = self._float_or_zero(quality.get("salience_score") or quality.get("importance"))
+        return tier in {"core", "confirmed"} or confidence >= 0.85 or salience >= 0.85
+
+    def _record_memory_type(self, record: RecordEnvelope) -> str:
+        return str(
+            business_metadata(record.meta).get("memory_type")
+            or record.content.get("memory_type")
+            or ""
+        ).strip().lower()
+
+    def _record_recall_lane(self, record: RecordEnvelope) -> str:
+        memory_type = self._record_memory_type(record)
+        aliases = {
+            "preference": "user_preference",
+            "user_preference": "user_preference",
+            "rule": "system_rule",
+            "system_rule": "system_rule",
+            "fact": "durable_fact",
+            "durable_fact": "durable_fact",
+            "incident": "incident_report",
+            "incident_report": "incident_report",
+            "audit": "audit_record",
+            "audit_record": "audit_record",
+            "log": "run_log",
+            "run_log": "run_log",
+            "runtime_log": "run_log",
+            "evolution_artifact": "evolution_artifact",
+            "knowledge": "external_knowledge",
+            "external_knowledge": "external_knowledge",
+            "conversation": "task_context",
+            "context": "task_context",
+            "task_context": "task_context",
+        }
+        if memory_type in aliases:
+            return aliases[memory_type]
+        if record.kind == "rule":
+            return "system_rule"
+        if record.kind in {"incident"}:
+            return "incident_report"
+        if record.kind in {"recall_view", "feedback"}:
+            return "audit_record"
+        if record.kind in {"replay_result", "learning_eval", "capability_candidate", "promotion_request", "skill_candidate"}:
+            return "evolution_artifact"
+        if record.kind in {"knowledge_page", "claim_card", "paper_source", "paper_extract", "knowledge_unit"}:
+            return "external_knowledge"
+        if record.kind == "memory":
+            return "durable_fact"
+        return record.kind
+
+    def _injection_token_estimate(self, *, record: RecordEnvelope, lane: str) -> int:
+        if lane == "withheld":
+            return 0
+        if lane == "full_text":
+            text = self._first_text(record.content.get("text"), record.detail, record.summary, record.title)
+        elif lane == "policy_only":
+            text = self._first_text(
+                " ".join(self._coerce_string_list(record.content.get("execution_policy"))),
+                record.summary,
+                record.title,
+            )
+        else:
+            text = self._first_text(record.summary, record.title)
+        return max(1, (len(text) + 3) // 4) if text else 0
+
+    def _coerce_injection_plan(self, value: Any) -> dict:
+        if isinstance(value, dict):
+            lane_composition = dict(value.get("lane_composition") or {})
+            entries = [dict(entry) for entry in value.get("entries") or value.get("items") or [] if isinstance(entry, dict)]
+            return {
+                "mode": str(value.get("mode") or "strict"),
+                "token_estimate": int(value.get("token_estimate") or 0),
+                "lane_composition": {
+                    "full_text": int(lane_composition.get("full_text") or 0),
+                    "summary_only": int(lane_composition.get("summary_only") or 0),
+                    "policy_only": int(lane_composition.get("policy_only") or 0),
+                    "withheld": int(lane_composition.get("withheld") or 0),
+                },
+                "withheld_reasons": {
+                    str(key): int(count)
+                    for key, count in dict(value.get("withheld_reasons") or {}).items()
+                    if str(key).strip()
+                },
+                "full_text_count": int(value.get("full_text_count") or lane_composition.get("full_text") or 0),
+                "summary_only_count": int(value.get("summary_only_count") or lane_composition.get("summary_only") or 0),
+                "policy_only_count": int(value.get("policy_only_count") or lane_composition.get("policy_only") or 0),
+                "withheld_count": int(value.get("withheld_count") or lane_composition.get("withheld") or 0),
+                "entries": entries,
+                "items": entries,
+            }
+        return {
+            "mode": "strict",
+            "token_estimate": 0,
+            "lane_composition": {"full_text": 0, "summary_only": 0, "policy_only": 0, "withheld": 0},
+            "withheld_reasons": {},
+            "full_text_count": 0,
+            "summary_only_count": 0,
+            "policy_only_count": 0,
+            "withheld_count": 0,
+            "entries": [],
+            "items": [],
         }
 
     def _selected_records(self, bundle: RecallBundle) -> list[dict]:
@@ -473,6 +747,7 @@ class OpenClawMemoryHooks:
                     "kind": str(item.get("kind") or ""),
                     "title": str(item.get("title") or ""),
                     "source": str(item.get("source") or ""),
+                    "recall_lane": str(item.get("recall_lane") or ""),
                     "projection_type": str(item.get("projection_type") or ""),
                     "source_record_id": str(item.get("source_record_id") or ""),
                 }
@@ -485,6 +760,7 @@ class OpenClawMemoryHooks:
                 "kind": item.kind,
                 "title": item.title,
                 "source": item.source,
+                "recall_lane": self._record_recall_lane(item),
                 "projection_type": str(item.meta.get("projection_type") or ""),
                 "source_record_id": str(
                     item.meta.get("source_record_id")
@@ -1360,6 +1636,12 @@ class OpenClawMemoryHooks:
         if text in {"false", "0", "no", "n", "fail", "failed", "error"}:
             return False
         return None
+
+    def _float_or_zero(self, value: Any) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
 
     def _assistant_messages_from_event(self, event: dict) -> list[dict]:
         messages = event.get("messages") or []

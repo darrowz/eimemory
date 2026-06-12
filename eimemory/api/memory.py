@@ -16,6 +16,29 @@ from eimemory.storage.runtime_store import RuntimeStore
 
 _KNOWLEDGE_CONTENT_DEDUPE_KINDS = {"knowledge_page", "claim_card", "paper_source", "paper_extract"}
 _MAX_RECORDS_PER_KNOWLEDGE_SOURCE = 2
+_DEFAULT_BLOCKED_RECALL_LANES = ("run_log", "audit_record", "incident_report", "evolution_artifact")
+_RECALL_LANE_MEMORY_TYPE_ALIASES = {
+    "audit": "audit_record",
+    "audit_record": "audit_record",
+    "incident": "incident_report",
+    "incident_report": "incident_report",
+    "log": "run_log",
+    "run_log": "run_log",
+    "runtime_log": "run_log",
+    "evolution": "evolution_artifact",
+    "evolution_artifact": "evolution_artifact",
+    "preference": "user_preference",
+    "user_preference": "user_preference",
+    "rule": "system_rule",
+    "system_rule": "system_rule",
+    "fact": "durable_fact",
+    "durable_fact": "durable_fact",
+    "knowledge": "external_knowledge",
+    "external_knowledge": "external_knowledge",
+    "conversation": "task_context",
+    "context": "task_context",
+    "task_context": "task_context",
+}
 
 
 class MemoryAPI:
@@ -160,6 +183,19 @@ class MemoryAPI:
             }
         self._merge_recall_intent_filters(recall_filters, recall_intent)
         recall_filters["scoring_profile"] = recall_profile
+        operational_recall_allowed = self._allows_operational_recall(normalized_query, task_context)
+        if operational_recall_allowed:
+            recall_filters["include_evidence_only"] = True
+            recall_filters["include_report_records"] = True
+        else:
+            recall_filters["blocked_recall_lanes"] = list(
+                dict.fromkeys(
+                    [
+                        *self._string_list(recall_filters.get("blocked_recall_lanes")),
+                        *_DEFAULT_BLOCKED_RECALL_LANES,
+                    ]
+                )
+            )
         raw_evidence: list[dict] = []
         if raw_hybrid:
             seen_raw_ids: set[str] = set()
@@ -179,7 +215,7 @@ class MemoryAPI:
                         seen_raw_ids.add(record_id)
                     raw_evidence.append(evidence)
             raw_evidence = raw_evidence[:limit]
-        report_query = self._is_report_query(normalized_query, task_context)
+        report_query = self._is_report_query(normalized_query, task_context) or operational_recall_allowed
         items: list[RecordEnvelope] = []
         search_reports: list[dict] = []
         seen_item_ids: set[str] = set()
@@ -189,6 +225,7 @@ class MemoryAPI:
         search_kinds = self._search_kinds_for_recall_intent(
             recall_intent=recall_intent,
             report_query=report_query,
+            operational_recall_allowed=operational_recall_allowed,
         )
         for query_scope_ref in query_scope_refs:
             page_items, page_report = self.store.search_with_diagnostics(
@@ -208,8 +245,12 @@ class MemoryAPI:
         items = [
             item
             for item in items
-            if not self._is_internal_audit_record(item)
-            and not self._is_default_recall_suppressed_record(item, task_context)
+            if (operational_recall_allowed or not self._is_internal_audit_record(item))
+            and not self._is_default_recall_suppressed_record(
+                item,
+                task_context,
+                allow_operational_recall=operational_recall_allowed,
+            )
         ]
         report_items = [item for item in items if report_query and self._is_recallable_report_record(item)]
         preference_query = self._is_preference_query(normalized_query, task_context) and not report_query
@@ -232,8 +273,12 @@ class MemoryAPI:
             items = [
                 item
                 for item in items
-                if not self._is_internal_audit_record(item)
-                and not self._is_default_recall_suppressed_record(item, task_context)
+                if (operational_recall_allowed or not self._is_internal_audit_record(item))
+                and not self._is_default_recall_suppressed_record(
+                    item,
+                    task_context,
+                    allow_operational_recall=operational_recall_allowed,
+                )
             ]
             if preference_query:
                 items = [item for item in items if self._is_preference_recall_candidate(item, normalized_query)]
@@ -247,8 +292,11 @@ class MemoryAPI:
             memories=memories,
             query=normalized_query,
         )
+        view_items = records_from_view(view, items, limit=max(limit * 4, limit))
+        if operational_recall_allowed:
+            view_items = self._dedupe_records([*view_items, *items])
         items = self._apply_hard_recall_filters(
-            self._dedupe_records(records_from_view(view, items, limit=max(limit * 4, limit))),
+            self._dedupe_records(view_items),
             recall_filters,
         )[:limit]
         if report_items:
@@ -343,6 +391,8 @@ class MemoryAPI:
             "allowed_memory_types": self._string_list(task_context.get("allowed_memory_types")),
             "preferred_modalities": self._string_list(task_context.get("preferred_modalities")),
             "organs": self._string_list(task_context.get("organs")),
+            "allowed_recall_lanes": self._string_list(task_context.get("allowed_recall_lanes")),
+            "blocked_recall_lanes": self._string_list(task_context.get("blocked_recall_lanes")),
             "source_weights": self._source_weights(task_context.get("source_weights")),
             "living_task_context_terms": self._living_task_context_terms(task_context),
         }
@@ -370,7 +420,26 @@ class MemoryAPI:
         if source_weights:
             recall_filters["source_weights"] = source_weights
 
-    def _search_kinds_for_recall_intent(self, *, recall_intent: RecallIntent, report_query: bool) -> list[str]:
+    def _search_kinds_for_recall_intent(
+        self,
+        *,
+        recall_intent: RecallIntent,
+        report_query: bool,
+        operational_recall_allowed: bool = False,
+    ) -> list[str]:
+        if operational_recall_allowed:
+            return [
+                "reflection",
+                "memory",
+                "claim_card",
+                "incident",
+                "replay_result",
+                "learning_eval",
+                "recall_view",
+                "capability_candidate",
+                "skill_candidate",
+                "promotion_request",
+            ]
         if report_query or recall_intent.name == "report":
             return ["reflection", "memory", "claim_card"]
         if recall_intent.name in {"project_delivery", "operator_preference", "living_posture"} and recall_intent.confidence >= 0.45:
@@ -409,6 +478,13 @@ class MemoryAPI:
         organs = set(recall_filters.get("organs") or [])
         if organs and labels["organs"] and not labels["organs"] & organs:
             return False
+        recall_lane = self._record_recall_lane(item)
+        blocked_recall_lanes = set(recall_filters.get("blocked_recall_lanes") or [])
+        if blocked_recall_lanes and recall_lane in blocked_recall_lanes:
+            return False
+        allowed_recall_lanes = set(recall_filters.get("allowed_recall_lanes") or [])
+        if allowed_recall_lanes and recall_lane not in allowed_recall_lanes:
+            return False
         return True
 
     def _record_filter_labels(self, item: RecordEnvelope) -> dict[str, set[str]]:
@@ -434,7 +510,13 @@ class MemoryAPI:
             or title == "ei-bridge openclaw command audit"
         )
 
-    def _is_default_recall_suppressed_record(self, item: RecordEnvelope, task_context: dict) -> bool:
+    def _is_default_recall_suppressed_record(
+        self,
+        item: RecordEnvelope,
+        task_context: dict,
+        *,
+        allow_operational_recall: bool = False,
+    ) -> bool:
         if self._include_digest_pages(task_context):
             return False
         page_type = str(business_metadata(item.meta).get("page_type") or item.content.get("page_type") or "").strip().lower()
@@ -454,7 +536,66 @@ class MemoryAPI:
             and str(item.source or "") == "eimemory.knowledge.projectors"
         ):
             return True
+        if not allow_operational_recall and self._record_recall_lane(item) in _DEFAULT_BLOCKED_RECALL_LANES:
+            return True
         return False
+
+    def _record_recall_lane(self, item: RecordEnvelope) -> str:
+        labels = self._record_filter_labels(item)
+        for memory_type in labels["memory_types"]:
+            normalized = _RECALL_LANE_MEMORY_TYPE_ALIASES.get(memory_type, memory_type)
+            if normalized:
+                return normalized
+        if item.kind == "rule":
+            return "system_rule"
+        if item.kind in {"recall_view", "feedback"}:
+            return "audit_record"
+        if item.kind == "incident":
+            return "incident_report"
+        if item.kind in {"replay_result", "learning_eval", "capability_candidate", "promotion_request", "skill_candidate"}:
+            return "evolution_artifact"
+        if item.kind in _KNOWLEDGE_CONTENT_DEDUPE_KINDS or item.kind == "knowledge_unit":
+            return "external_knowledge"
+        if item.kind == "memory":
+            return "durable_fact"
+        return ""
+
+    @staticmethod
+    def _allows_operational_recall(query: str, task_context: dict) -> bool:
+        if bool(task_context.get("include_operational_recall")) or bool(task_context.get("include_recall_pollution")):
+            return True
+        if bool(task_context.get("include_report_records")) or bool(task_context.get("include_evidence_only")):
+            return True
+        haystack = " ".join(
+            str(value or "")
+            for value in (
+                query,
+                task_context.get("intent"),
+                task_context.get("task_intent"),
+                task_context.get("task_type"),
+                task_context.get("query_type"),
+                task_context.get("goal"),
+                task_context.get("report_type"),
+            )
+        ).lower()
+        return any(
+            marker in haystack
+            for marker in (
+                "diagnostic",
+                "diagnostics",
+                "debug",
+                "debugging",
+                "evidence report",
+                "governance report",
+                "audit",
+                "incident",
+                "run log",
+                "run_log",
+                "postmortem",
+                "root cause",
+                "trace",
+            )
+        )
 
     def _normalize_ingest_memory_type(self, *, memory_type: str, text: str, title: str) -> str:
         normalized = str(memory_type or "").strip()
@@ -902,10 +1043,13 @@ class MemoryAPI:
 
     def _source_composition(self, items: list[RecordEnvelope]) -> dict:
         by_kind: dict[str, int] = {}
+        by_recall_lane: dict[str, int] = {}
         projected_count = 0
         projected_source_ids: list[str] = []
         for item in items:
             by_kind[item.kind] = by_kind.get(item.kind, 0) + 1
+            recall_lane = self._record_recall_lane(item) or "unknown"
+            by_recall_lane[recall_lane] = by_recall_lane.get(recall_lane, 0) + 1
             meta = business_metadata(item.meta)
             if meta.get("projection_type") == "operational_knowledge":
                 projected_count += 1
@@ -919,6 +1063,7 @@ class MemoryAPI:
                     projected_source_ids.append(source_id)
         return {
             "by_kind": by_kind,
+            "by_recall_lane": by_recall_lane,
             "projected_count": projected_count,
             "projected_source_ids": projected_source_ids,
             "knowledge_count": by_kind.get("claim_card", 0) + by_kind.get("knowledge_page", 0),
@@ -935,6 +1080,7 @@ class MemoryAPI:
                     "status": item.status,
                     "title": item.title,
                     "source": item.source,
+                    "recall_lane": self._record_recall_lane(item),
                     "projection_type": str(business_metadata(item.meta).get("projection_type") or ""),
                     "source_record_id": str(
                         business_metadata(item.meta).get("source_record_id")

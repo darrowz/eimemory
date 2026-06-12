@@ -101,6 +101,232 @@ def test_runtime_recall_excludes_internal_audit_memories_by_default(tmp_path) ->
     assert audit.record_id not in record_ids
 
 
+def test_runtime_recall_pollution_guard_blocks_operational_lanes_by_default(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = ScopeRef(agent_id="hongtu", workspace_id="embodied")
+    quality = {
+        "importance": 0.95,
+        "confidence": 0.95,
+        "freshness": 1.0,
+        "reuse_potential": 0.95,
+        "salience_score": 0.95,
+        "quality_tier": "core",
+        "capture_decision": "accept",
+    }
+
+    def add_memory(memory_type: str, title: str) -> RecordEnvelope:
+        return runtime.store.append(
+            RecordEnvelope.create(
+                kind="memory",
+                title=title,
+                summary=f"OpenClaw recall pollution guard shared marker for {memory_type}.",
+                scope=scope,
+                source="openclaw.agent_end",
+                content={
+                    "text": f"OpenClaw recall pollution guard shared marker for {memory_type}.",
+                    "memory_type": memory_type,
+                },
+                meta={"memory_type": memory_type, "quality": quality},
+            )
+        )
+
+    try:
+        polluted = {
+            add_memory("run_log", "OpenClaw run log").record_id,
+            add_memory("audit_record", "OpenClaw audit record").record_id,
+            add_memory("incident_report", "OpenClaw incident report").record_id,
+            add_memory("evolution_artifact", "OpenClaw evolution artifact").record_id,
+        }
+        preserved = {
+            add_memory("user_preference", "OpenClaw user preference").record_id,
+            add_memory("system_rule", "OpenClaw system rule").record_id,
+            add_memory("durable_fact", "OpenClaw durable fact").record_id,
+            add_memory("external_knowledge", "OpenClaw external knowledge").record_id,
+        }
+
+        bundle = runtime.memory.recall(
+            query="OpenClaw recall pollution guard shared marker",
+            scope={"agent_id": "hongtu", "workspace_id": "embodied"},
+            task_context={"task_type": "chat.reply"},
+            limit=20,
+        )
+
+        ids = {item.record_id for item in bundle.items}
+        assert preserved <= ids
+        assert ids.isdisjoint(polluted)
+        assert set(bundle.explanation["recall_filters"]["blocked_recall_lanes"]) >= {
+            "run_log",
+            "audit_record",
+            "incident_report",
+            "evolution_artifact",
+        }
+    finally:
+        runtime.close()
+
+
+def test_runtime_recall_diagnostic_mode_can_include_operational_lanes(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = ScopeRef(agent_id="hongtu", workspace_id="embodied")
+    quality = {
+        "importance": 0.95,
+        "confidence": 0.95,
+        "freshness": 1.0,
+        "reuse_potential": 0.95,
+        "salience_score": 0.95,
+        "quality_tier": "core",
+        "capture_decision": "accept",
+    }
+
+    try:
+        polluted = []
+        for memory_type in ("run_log", "audit_record", "incident_report", "evolution_artifact"):
+            polluted.append(
+                runtime.store.append(
+                    RecordEnvelope.create(
+                        kind="memory",
+                        title=f"OpenClaw {memory_type}",
+                        summary=f"OpenClaw recall pollution guard diagnostic marker for {memory_type}.",
+                        scope=scope,
+                        source="openclaw.agent_end",
+                        content={
+                            "text": f"OpenClaw recall pollution guard diagnostic marker for {memory_type}.",
+                            "memory_type": memory_type,
+                        },
+                        meta={"memory_type": memory_type, "quality": quality},
+                    )
+                )
+            )
+        polluted.append(
+            runtime.store.append(
+                RecordEnvelope.create(
+                    kind="memory",
+                    title="OpenClaw legacy audit",
+                    summary="OpenClaw recall pollution guard diagnostic marker for legacy audit.",
+                    scope=scope,
+                    source="ei_bridge.openclaw_feishu",
+                    content={
+                        "text": "OpenClaw recall pollution guard diagnostic marker for legacy audit.",
+                        "memory_type": "audit",
+                    },
+                    meta={"memory_type": "audit", "quality": quality},
+                )
+            )
+        )
+
+        bundle = runtime.memory.recall(
+            query="debug OpenClaw recall pollution guard diagnostic marker",
+            scope={"agent_id": "hongtu", "workspace_id": "embodied"},
+            task_context={"task_type": "ops.diagnostic", "intent": "diagnostic"},
+            limit=20,
+        )
+
+        assert {item.record_id for item in polluted} <= {item.record_id for item in bundle.items}
+        assert "incident_report" not in bundle.explanation["recall_filters"].get("blocked_recall_lanes", [])
+    finally:
+        runtime.close()
+
+
+def test_runtime_recall_diagnostic_mode_searches_evolution_artifact_records(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = ScopeRef(agent_id="hongtu", workspace_id="embodied")
+    try:
+        replay_result = runtime.store.append(
+            RecordEnvelope.create(
+                kind="replay_result",
+                title="OpenClaw diagnostic replay artifact",
+                summary="OpenClaw autonomy artifact marker for replay pass-rate analysis.",
+                scope=scope,
+                source="eimemory.skill_validation",
+                content={"report": {"pass_rate": 0.8}},
+                meta={"report_type": "skill_candidate_validation"},
+            )
+        )
+        learning_eval = runtime.store.append(
+            RecordEnvelope.create(
+                kind="learning_eval",
+                title="OpenClaw diagnostic learning eval",
+                summary="OpenClaw autonomy artifact marker for learning eval analysis.",
+                scope=scope,
+                source="eimemory.learning_eval",
+                content={"pass": True},
+                meta={"ok": True},
+            )
+        )
+
+        default_bundle = runtime.memory.recall(
+            query="OpenClaw autonomy artifact marker",
+            scope={"agent_id": "hongtu", "workspace_id": "embodied"},
+            task_context={"task_type": "chat.reply"},
+            limit=20,
+        )
+        diagnostic_bundle = runtime.memory.recall(
+            query="debug OpenClaw autonomy artifact marker",
+            scope={"agent_id": "hongtu", "workspace_id": "embodied"},
+            task_context={"task_type": "ops.diagnostic", "intent": "diagnostic"},
+            limit=20,
+        )
+
+        default_ids = {item.record_id for item in default_bundle.items}
+        diagnostic_ids = {item.record_id for item in diagnostic_bundle.items}
+        assert replay_result.record_id not in default_ids
+        assert learning_eval.record_id not in default_ids
+        assert replay_result.record_id in diagnostic_ids
+        assert learning_eval.record_id in diagnostic_ids
+    finally:
+        runtime.close()
+
+
+def test_runtime_recall_plain_report_request_does_not_enable_operational_lanes(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = ScopeRef(agent_id="hongtu", workspace_id="embodied")
+    quality = {
+        "importance": 0.95,
+        "confidence": 0.95,
+        "freshness": 1.0,
+        "reuse_potential": 0.95,
+        "salience_score": 0.95,
+        "quality_tier": "core",
+        "capture_decision": "accept",
+    }
+    try:
+        incident = runtime.store.append(
+            RecordEnvelope.create(
+                kind="memory",
+                title="Project report old incident",
+                summary="Project status report marker from an old incident should stay hidden.",
+                scope=scope,
+                source="openclaw.agent_end",
+                content={"text": "Project status report marker from an old incident should stay hidden.", "memory_type": "incident_report"},
+                meta={"memory_type": "incident_report", "quality": quality},
+            )
+        )
+        fact = runtime.store.append(
+            RecordEnvelope.create(
+                kind="memory",
+                title="Project report fact",
+                summary="Project status report marker from a durable fact should be visible.",
+                scope=scope,
+                source="openclaw.agent_end",
+                content={"text": "Project status report marker from a durable fact should be visible.", "memory_type": "durable_fact"},
+                meta={"memory_type": "durable_fact", "quality": quality},
+            )
+        )
+
+        bundle = runtime.memory.recall(
+            query="write a project status report marker",
+            scope={"agent_id": "hongtu", "workspace_id": "embodied"},
+            task_context={"task_type": "chat.reply"},
+            limit=20,
+        )
+
+        ids = {item.record_id for item in bundle.items}
+        assert fact.record_id in ids
+        assert incident.record_id not in ids
+        assert "incident_report" in bundle.explanation["recall_filters"]["blocked_recall_lanes"]
+    finally:
+        runtime.close()
+
+
 def test_runtime_close_releases_sqlite_file_handle(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     runtime.memory.ingest(

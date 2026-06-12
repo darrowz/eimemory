@@ -68,6 +68,31 @@ def test_settings_loader_defaults_rpc_port_for_eibrain_rpc(monkeypatch) -> None:
     assert settings.rpc_port == 8091
 
 
+def test_settings_loader_reads_loopback_health_proxy_settings(tmp_path, monkeypatch) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "settings.json").write_text(
+        json.dumps(
+            {
+                "root": str(tmp_path / "runtime"),
+                "rpc_host": "100.105.189.120",
+                "rpc_port": 8091,
+                "rpc_loopback_health_host": "127.0.0.1",
+                "rpc_loopback_health_port": 8091,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EIMEMORY_CONFIG_DIR", str(config_dir))
+    monkeypatch.delenv("EIMEMORY_CONFIG_PATH", raising=False)
+    monkeypatch.delenv("EIMEMORY_ROOT", raising=False)
+
+    settings = load_settings()
+
+    assert settings.rpc_loopback_health_host == "127.0.0.1"
+    assert settings.rpc_loopback_health_port == 8091
+
+
 
 def test_settings_loader_requires_present_config_path(tmp_path, monkeypatch) -> None:
     missing_path = tmp_path / "missing.json"
@@ -186,6 +211,25 @@ def test_cli_can_serve_eibrain_rpc(tmp_path, monkeypatch, capsys) -> None:
     assert output == {"ok": True, "host": "127.0.0.1", "port": 8091}
 
 
+def test_cli_doctor_reports_ops_diagnostics(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path / "runtime"))
+    monkeypatch.setenv("EIMEMORY_COMMIT", "abc123doctor")
+
+    assert cli_main(["doctor"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True
+    assert payload["service"] == "eimemory-rpc"
+    assert payload["version"]
+    assert payload["commit"] == "abc123doctor"
+    assert payload["paths"]["current"]
+    assert payload["paths"]["release"]
+    assert payload["listen_host"] == "127.0.0.1"
+    assert payload["listen_port"] == 8091
+    assert payload["store"]["ready"] is True
+    assert payload["checks"]["ready"] is True
+
+
 def test_http_rpc_server_serves_recall_and_policy(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     runtime.memory.ingest(
@@ -230,6 +274,54 @@ def test_http_rpc_server_serves_recall_and_policy(tmp_path) -> None:
     assert recall["ok"] is True
     assert recall["result"]["items"]
     assert policy["result"]["retrieval_policy"]["route_hint"] == "task_context_first"
+
+
+def test_http_rpc_server_health_reports_release_and_store_readiness(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("EIMEMORY_COMMIT", "abc123health")
+    runtime = Runtime.create(root=tmp_path)
+    server = EIBrainRPCServer(runtime, host="127.0.0.1", port=0)
+    server.start()
+    try:
+        with urllib.request.urlopen(f"http://{server.address[0]}:{server.address[1]}/health", timeout=5) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.stop()
+
+    assert payload["ok"] is True
+    assert payload["version"]
+    assert payload["commit"] == "abc123health"
+    assert payload["paths"]["current"]
+    assert payload["paths"]["release"]
+    assert payload["listen_host"] == server.address[0]
+    assert payload["listen_port"] == server.address[1]
+    assert payload["store"]["ready"] is True
+    assert payload["store"]["root"] == str(tmp_path)
+    assert payload["checks"]["store"] is True
+    assert payload["checks"]["ready"] is True
+
+
+def test_http_rpc_server_can_expose_loopback_health_proxy(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    server = EIBrainRPCServer(
+        runtime,
+        host="127.0.0.1",
+        port=0,
+        loopback_health_host="127.0.0.1",
+        loopback_health_port=0,
+    )
+    server.start()
+    try:
+        host, port = server.loopback_health_address
+        with urllib.request.urlopen(f"http://{host}:{port}/health", timeout=5) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.stop()
+
+    assert payload["ok"] is True
+    assert payload["listen_host"] == server.address[0]
+    assert payload["listen_port"] == server.address[1]
+    assert payload["loopback_health"]["host"] == "127.0.0.1"
+    assert payload["loopback_health"]["port"] == port
 
 
 def test_http_rpc_server_get_root_returns_daily_brief_digest(tmp_path) -> None:
@@ -1164,6 +1256,70 @@ process.stdout.write(JSON.stringify({
     assert "event_type: media_playback" in context
     assert "success_criteria: 用户能听到或打开播放" in context
     assert "execution_policy: 先判断播放出口和物理条件; 再确认歌曲和播放方式" in context
+
+
+def test_openclaw_js_bridge_enforces_injection_plan_lanes(tmp_path) -> None:
+    script = """
+const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
+const handlers = {};
+process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
+plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = handler; } });
+handlers.before_prompt_build({ prompt: 'health status', senderId: 'ou_user' })
+  .then((result) => { process.stdout.write(JSON.stringify(result)); })
+  .catch((error) => { console.error(error && error.stack ? error.stack : String(error)); process.exit(1); });
+""".strip()
+    bridge_script = tmp_path / "bridge.js"
+    bridge_script.write_text("process.stdout.write(JSON.stringify({ matched: false }));", encoding="utf-8")
+    hook_script = tmp_path / "injection-plan-hook.js"
+    hook_script.write_text(
+        """
+process.stdout.write(JSON.stringify({
+  injection_plan: {
+    mode: 'strict',
+    items: [
+      { record_id: 'full-1', action: 'full_text' },
+      { record_id: 'summary-1', action: 'summary_only' },
+      { record_id: 'policy-1', action: 'policy_only' },
+      { record_id: 'withheld-1', action: 'withheld', reason: 'blocked_recall_lane' }
+    ]
+  },
+  memory_bundle: {
+    items: [
+      { record_id: 'full-1', title: 'Full preference', summary: 'short summary', content: { text: 'FULL TEXT DETAIL' } },
+      { record_id: 'summary-1', title: 'Summary fact', summary: 'SUMMARY ONLY', content: { text: 'SHOULD NOT USE FULL TEXT' } },
+      { record_id: 'policy-1', kind: 'rule', title: 'Policy rule', summary: 'POLICY SUMMARY', content: { text: 'SHOULD NOT USE RULE FULL TEXT' } },
+      { record_id: 'withheld-1', title: 'Old incident', summary: 'WITHHELD SUMMARY', content: { text: 'WITHHELD FULL TEXT' } }
+    ],
+    explanation: {}
+  }
+}));
+""".strip(),
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env["EIMEMORY_BRIDGE_COMMAND"] = f'node "{bridge_script}"'
+    env["EIMEMORY_HOOK_COMMAND"] = f'node "{hook_script}"'
+    result = subprocess.run(
+        ["node", "-e", script],
+        cwd=Path.cwd(),
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=10,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    context = json.loads(result.stdout or "{}")["prependContext"]
+    assert "Full preference: FULL TEXT DETAIL" in context
+    assert "Summary fact: SUMMARY ONLY" in context
+    assert "SHOULD NOT USE FULL TEXT" not in context
+    assert "policy_only:" in context
+    assert "Policy rule: POLICY SUMMARY" in context
+    assert "SHOULD NOT USE RULE FULL TEXT" not in context
+    assert "Old incident" not in context
+    assert "WITHHELD" not in context
 
 
 def test_openclaw_js_bridge_normalizes_agent_end_message_content(tmp_path) -> None:

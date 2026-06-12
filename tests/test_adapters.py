@@ -15,7 +15,7 @@ from eimemory.ei_bridge.protocol import EIMemoryRPCRequest, EIMemoryRPCResponse
 from eimemory.api.runtime import Runtime
 from eimemory.cli.main import main as cli_main
 from eimemory.identity import FEISHU_DARROW_OPEN_ID
-from eimemory.models.records import RecallBundle
+from eimemory.models.records import RecallBundle, RecordEnvelope, ScopeRef
 
 
 def _handle_eibrain_request(
@@ -565,6 +565,125 @@ def test_openclaw_before_prompt_build_defaults_to_fast_recall_context(tmp_path, 
     assert captured["query"] == "prefers concise replies"
     assert captured["limit"] == 8
     assert result["memory_bundle"]["items"] == []
+
+
+def test_openclaw_before_prompt_build_returns_strict_injection_plan(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    hooks = OpenClawMemoryHooks(runtime)
+    scope_ref = ScopeRef.from_dict({"agent_id": "main", "workspace_id": "repo-x"})
+    preference = RecordEnvelope.create(
+        kind="memory",
+        title="Concise reply preference",
+        summary="Darrow prefers concise status replies.",
+        content={"text": "Darrow prefers concise status replies.", "memory_type": "preference"},
+        source="openclaw.agent_end",
+        scope=scope_ref,
+        meta={"memory_type": "preference"},
+    )
+    incident = RecordEnvelope.create(
+        kind="memory",
+        title="Old restart storm incident",
+        summary="Old restart storm incident should not be injected as current guidance.",
+        content={"text": "Old restart storm incident should not be injected.", "memory_type": "incident"},
+        source="openclaw.agent_end",
+        scope=scope_ref,
+        meta={"memory_type": "incident"},
+    )
+    rule = RecordEnvelope.create(
+        kind="rule",
+        title="Use health check before restart",
+        summary="Check health endpoints before restarting services.",
+        content={"text": "Check health endpoints before restarting services."},
+        source="eimemory.policy",
+        scope=scope_ref,
+        meta={"task_type": "ops.health"},
+    )
+
+    def fake_recall(*, query: str, scope: dict, task_context: dict, limit: int) -> RecallBundle:
+        return RecallBundle(
+            items=[preference, incident, rule],
+            rules=[],
+            reflections=[],
+            confidence=0.81,
+            next_action_hint="",
+            explanation={
+                "query": query,
+                "task_context": dict(task_context),
+                "selected_count": 3,
+                "source_composition": {},
+                "selected_records": [],
+                "recall_view": {"items": []},
+            },
+        )
+
+    monkeypatch.setattr(runtime.memory, "recall", fake_recall)
+
+    result = hooks.before_prompt_build(
+        {
+            "agentId": "main",
+            "workspaceId": "repo-x",
+            "query": "health check reply",
+            "task_context": {"task_type": "chat.reply"},
+        }
+    )
+
+    plan = result["injection_plan"]
+    by_id = {item["record_id"]: item for item in plan["items"]}
+    assert plan["mode"] == "strict"
+    assert by_id[preference.record_id]["action"] == "full_text"
+    assert by_id[rule.record_id]["action"] == "policy_only"
+    assert by_id[incident.record_id]["action"] == "withheld"
+    assert by_id[incident.record_id]["reason"] == "blocked_recall_lane"
+    assert result["usage_telemetry"]["injection"]["full_text_count"] == 1
+    assert result["usage_telemetry"]["injection"]["withheld_count"] == 1
+
+    audits = runtime.store.list_records(
+        kinds=["recall_view"],
+        scope={"agent_id": "main", "workspace_id": "repo-x"},
+        limit=5,
+    )
+    assert audits[0].content["injection_plan"]["mode"] == "strict"
+    assert audits[0].content["injection_plan"]["withheld_count"] == 1
+
+
+def test_openclaw_injection_plan_withholds_reflections_by_default(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    hooks = OpenClawMemoryHooks(runtime)
+    scope_ref = ScopeRef.from_dict({"agent_id": "main", "workspace_id": "repo-x"})
+    reflection = RecordEnvelope.create(
+        kind="reflection",
+        title="Old recall reflection",
+        summary="Old recall reflection should not be prompt context by default.",
+        content={"text": "Old recall reflection should not be prompt context by default."},
+        source="eimemory.evolution",
+        scope=scope_ref,
+    )
+
+    def fake_recall(*, query: str, scope: dict, task_context: dict, limit: int) -> RecallBundle:
+        return RecallBundle(
+            items=[],
+            rules=[],
+            reflections=[reflection],
+            confidence=0.0,
+            next_action_hint="",
+            explanation={"query": query, "task_context": dict(task_context), "recall_view": {"items": []}},
+        )
+
+    monkeypatch.setattr(runtime.memory, "recall", fake_recall)
+
+    result = hooks.before_prompt_build(
+        {
+            "agentId": "main",
+            "workspaceId": "repo-x",
+            "query": "health check reply",
+            "task_context": {"task_type": "chat.reply"},
+        }
+    )
+
+    plan = result["injection_plan"]
+    assert plan["items"][0]["record_id"] == reflection.record_id
+    assert plan["items"][0]["action"] == "withheld"
+    assert plan["items"][0]["reason"] == "operational_record"
 
 
 def test_openclaw_before_prompt_build_searches_policy_before_memory_recall(tmp_path, monkeypatch) -> None:
