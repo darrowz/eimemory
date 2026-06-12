@@ -142,6 +142,26 @@ class OpenClawMemoryTools:
             "candidates": combined[: int(limit)],
         }
 
+    def memory_code_patch_propose(
+        self,
+        *,
+        incident: dict,
+        scope: dict,
+        create_worktree: bool = False,
+        persist_report: bool = False,
+    ) -> dict:
+        if not callable(getattr(self.runtime, "propose_code_patch", None)):
+            return {"ok": False, "error": "runtime_unavailable", "message": "propose_code_patch is missing"}
+
+        return dict(
+            self.runtime.propose_code_patch(
+                incident=dict(incident or {}),
+                scope=scope,
+                create_worktree=bool(create_worktree),
+                persist_report=bool(persist_report),
+            )
+        )
+
     def _summarize_knowledge_intake(self, scope: ScopeRef) -> dict:
         try:
             sources = self.runtime.sources.list_sources() if self.runtime.sources else []
@@ -231,9 +251,11 @@ class OpenClawMemoryTools:
         try:
             from eimemory.governance import sandbox_lab
 
+            proposal_available = callable(getattr(self.runtime, "propose_code_patch", None))
             return {
-                "available": bool(hasattr(sandbox_lab, "create_sandbox_experiment")),
+                "available": bool(hasattr(sandbox_lab, "create_sandbox_experiment") and proposal_available),
                 "create_sandbox_experiment": bool(hasattr(sandbox_lab, "create_sandbox_experiment")),
+                "code_patch_proposal": proposal_available,
             }
         except Exception as exc:
             return {

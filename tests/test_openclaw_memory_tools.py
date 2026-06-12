@@ -50,6 +50,7 @@ def test_openclaw_memory_learn_status_reports_learning_state(tmp_path) -> None:
     assert status["capability_candidates"]["candidate_count"] == 1
     assert status["promotion_watch"]["request_count"] >= 1
     assert status["code_sandbox"]["available"] is True
+    assert status["code_sandbox"]["code_patch_proposal"] is True
 
 
 def test_openclaw_memory_run_autonomy_dry_run_defaults_to_safe_mode(tmp_path, monkeypatch) -> None:
@@ -133,3 +134,35 @@ def test_openclaw_memory_skill_status_is_compatible_without_skill_candidates(tmp
     assert report["skill_candidate_count"] == 0
     assert report["candidate_count"] == 1
     assert report["candidates"][0]["kind"] == "capability_candidate"
+
+
+def test_openclaw_memory_code_patch_propose_defaults_to_safe_proposal(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    tools = OpenClawMemoryTools(runtime)
+    captured: dict[str, object] = {}
+
+    def fake_propose_code_patch(*, incident, scope, create_worktree=False, persist_report=False, **_kwargs) -> dict:
+        captured["incident"] = incident
+        captured["scope"] = scope
+        captured["create_worktree"] = create_worktree
+        captured["persist_report"] = persist_report
+        return {
+            "ok": True,
+            "report_type": "code_patch_proposal",
+            "proposal_status": "sandbox_ready",
+            "sandbox_plan": {"worktree_created": bool(create_worktree)},
+        }
+
+    monkeypatch.setattr(runtime, "propose_code_patch", fake_propose_code_patch)
+
+    report = tools.memory_code_patch_propose(
+        incident={"incident_type": "TypeError", "summary": "Runtime crash"},
+        scope={"agent_id": "main", "workspace_id": "repo-x"},
+    )
+
+    assert report["ok"] is True
+    assert report["report_type"] == "code_patch_proposal"
+    assert report["proposal_status"] == "sandbox_ready"
+    assert captured["create_worktree"] is False
+    assert captured["persist_report"] is False
+    assert captured["incident"] == {"incident_type": "TypeError", "summary": "Runtime crash"}
