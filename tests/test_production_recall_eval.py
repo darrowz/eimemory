@@ -163,11 +163,13 @@ def test_production_recall_eval_reports_regression_metrics(tmp_path) -> None:
     report = run_production_recall_eval(runtime, _dataset())
 
     assert report["ok"] is True
-    assert report["report_type"] == "production_recall_eval"
-    assert report["schema_version"] == 1
+    assert report["report_type"] == "recall_quality_report"
+    assert report["legacy_report_type"] == "production_recall_eval"
+    assert report["schema_version"] == 2
     assert report["sample_count"] == 5
     assert report["hit_at_1"] == 1.0
     assert report["hit_at_k"] == 1.0
+    assert report["hit_at_5"] == 1.0
     assert report["mrr"] == 1.0
     assert report["outcome_pollution_rate"] == 0.0
     assert report["reflection_pollution_rate"] == 0.0
@@ -205,6 +207,7 @@ def test_cli_eval_production_recall_writes_report_file(tmp_path, monkeypatch, ca
     written = json.loads(output_path.read_text(encoding="utf-8"))
 
     assert printed["output"] == str(output_path)
-    assert written["report_type"] == "production_recall_eval"
+    assert written["report_type"] == "recall_quality_report"
+    assert written["legacy_report_type"] == "production_recall_eval"
     assert written["sample_count"] == 5
     assert written["outcome_pollution_rate"] == 0.0

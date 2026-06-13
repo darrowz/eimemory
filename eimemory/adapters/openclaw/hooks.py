@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from time import perf_counter
 from typing import Any
 
 from eimemory.api.runtime import Runtime
@@ -40,6 +41,7 @@ class OpenClawMemoryHooks:
         return {"stored": None}
 
     def before_prompt_build(self, event: dict) -> dict:
+        start = perf_counter()
         query = self._clean_prompt_query(str(event.get("query") or event.get("raw_query") or "").strip())
         recall_context = self._resolve_recall_context(event)
         trace_context = self._trace_context_from_event(event, task_context=recall_context, query=query)
@@ -57,6 +59,9 @@ class OpenClawMemoryHooks:
             injection_plan = self._build_injection_plan(bundle=bundle, task_context=recall_context)
             recall_context["injection_plan"] = injection_plan
             bundle.explanation["injection_plan"] = injection_plan
+            latency_ms = round((perf_counter() - start) * 1000.0, 3)
+            recall_context["latency_ms"] = latency_ms
+            bundle.explanation["latency_ms"] = latency_ms
             self._audit_prompt_recall(event=event, bundle=bundle, injected=False)
             return {
                 "memory_bundle": bundle.to_dict(),
@@ -91,6 +96,9 @@ class OpenClawMemoryHooks:
         injection_plan = self._build_injection_plan(bundle=bundle, task_context=recall_context)
         recall_context["injection_plan"] = injection_plan
         bundle.explanation["injection_plan"] = injection_plan
+        latency_ms = round((perf_counter() - start) * 1000.0, 3)
+        recall_context["latency_ms"] = latency_ms
+        bundle.explanation["latency_ms"] = latency_ms
         self._audit_prompt_recall(event=event, bundle=bundle, injected=bool(bundle.items))
         return {
             "memory_bundle": bundle.to_dict(),
@@ -437,6 +445,7 @@ class OpenClawMemoryHooks:
         policy_sources = self._coerce_string_list(bundle.explanation.get("policy_sources"))
         matched_event_type = str(bundle.explanation.get("matched_event_type") or "")
         injection_plan = self._coerce_injection_plan(bundle.explanation.get("injection_plan"))
+        latency_ms = float(bundle.explanation.get("latency_ms") or 0.0)
         content = {
             "session_id": self._session_id_from_event(event),
             "query": self._clean_prompt_query(str(event.get("query") or event.get("raw_query") or "").strip()),
@@ -454,6 +463,7 @@ class OpenClawMemoryHooks:
             "injection_token_estimate": injection_plan["token_estimate"],
             "injection_lane_composition": dict(injection_plan["lane_composition"]),
             "injection_withheld_reasons": dict(injection_plan["withheld_reasons"]),
+            "latency_ms": latency_ms,
             "view_type": str(view.get("view_type") or ""),
             "confidence": bundle.confidence,
         }
@@ -470,6 +480,7 @@ class OpenClawMemoryHooks:
             "injection_token_estimate": injection_plan["token_estimate"],
             "injection_lane_composition": dict(injection_plan["lane_composition"]),
             "injection_withheld_reasons": dict(injection_plan["withheld_reasons"]),
+            "latency_ms": latency_ms,
         }
         record = RecordEnvelope.create(
             kind="recall_view",
@@ -508,6 +519,7 @@ class OpenClawMemoryHooks:
             "confidence": bundle.confidence,
             "source_composition": dict(bundle.explanation.get("source_composition") or {}),
             "selected_records": self._selected_records(bundle),
+            "latency_ms": float(bundle.explanation.get("latency_ms") or 0.0),
             "injection_token_estimate": injection_plan["token_estimate"],
             "injection_lane_composition": lane_composition,
             "injection_withheld_reasons": dict(injection_plan["withheld_reasons"]),
@@ -673,6 +685,8 @@ class OpenClawMemoryHooks:
             return aliases[memory_type]
         if record.kind == "rule":
             return "system_rule"
+        if record.kind == "reflection":
+            return self._reflection_recall_lane(record)
         if record.kind in {"incident"}:
             return "incident_report"
         if record.kind in {"recall_view", "feedback"}:
@@ -684,6 +698,22 @@ class OpenClawMemoryHooks:
         if record.kind == "memory":
             return "durable_fact"
         return record.kind
+
+    @staticmethod
+    def _reflection_recall_lane(record: RecordEnvelope) -> str:
+        meta = business_metadata(record.meta)
+        content = record.content if isinstance(record.content, dict) else {}
+        report_type = str(meta.get("report_type") or record.provenance.get("report_type") or content.get("report_type") or "").strip().lower()
+        haystack = " ".join([report_type, str(record.source or ""), str(record.title or "")]).lower()
+        if any(marker in haystack for marker in ("audit", "before_prompt_build", "injection")):
+            return "audit_record"
+        if "incident" in haystack:
+            return "incident_report"
+        if "outcome_trace" in haystack or "run_log" in haystack:
+            return "run_log"
+        if report_type:
+            return "evolution_artifact"
+        return "audit_record"
 
     def _injection_token_estimate(self, *, record: RecordEnvelope, lane: str) -> int:
         if lane == "withheld":

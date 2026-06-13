@@ -17,7 +17,7 @@ from eimemory.scoring import extract_memory_score, score_from_legacy_quality, su
 from eimemory.storage.runtime_store import RuntimeStore
 
 
-ROI_EVAL_REPORT_TYPES = frozenset({"production_recall_eval", "real_task_replay", "memory_eval_ci", "learning_eval"})
+ROI_EVAL_REPORT_TYPES = frozenset({"production_recall_eval", "recall_quality_report", "real_task_replay", "memory_eval_ci", "learning_eval"})
 LEARNING_EVAL_REPORT_TYPE = "learning_eval"
 REAL_TASK_REPLAY_REPORT_TYPE = "real_task_replay"
 REPLAY_DATASET_REPORT_TYPE = "proactive_replay_dataset"

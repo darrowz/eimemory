@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from datetime import datetime, timezone
 import json
 import os
@@ -42,6 +43,29 @@ MAX_QUERY_LIMIT = 1000
 _MAX_LEXICAL_ADJUSTMENT = 0.18
 _DEFAULT_CANDIDATE_LIMIT = 360
 _MAX_CANDIDATE_LIMIT = 1200
+_RECALL_LANE_MEMORY_TYPE_ALIASES = {
+    "audit": "audit_record",
+    "audit_record": "audit_record",
+    "diagnostic": "audit_record",
+    "incident": "incident_report",
+    "incident_report": "incident_report",
+    "log": "run_log",
+    "run_log": "run_log",
+    "runtime_log": "run_log",
+    "evolution": "evolution_artifact",
+    "evolution_artifact": "evolution_artifact",
+    "preference": "user_preference",
+    "user_preference": "user_preference",
+    "rule": "system_rule",
+    "system_rule": "system_rule",
+    "fact": "durable_fact",
+    "durable_fact": "durable_fact",
+    "knowledge": "external_knowledge",
+    "external_knowledge": "external_knowledge",
+    "conversation": "task_context",
+    "context": "task_context",
+    "task_context": "task_context",
+}
 
 
 class SqliteRecordStore:
@@ -589,6 +613,7 @@ class SqliteRecordStore:
         query_embedding = embed_text(query)
         scored: list[tuple[float, float, RecordEnvelope, dict]] = []
         vector_hits = 0
+        blocked_counts: Counter[str] = Counter()
         for row in rows:
             haystack = str(row["content_text"] or "").lower()
             payload = json.loads(row["payload_json"])
@@ -609,10 +634,13 @@ class SqliteRecordStore:
             if vector_score >= 0.12:
                 vector_hits += 1
             record = RecordEnvelope.from_dict(payload) if isinstance(payload, dict) else RecordEnvelope.from_dict({})
-            if not self._record_matches_recall_filters(record, recall_filters):
+            blocked_reason = self._record_recall_filter_block_reason(record, recall_filters)
+            if blocked_reason:
+                blocked_counts[blocked_reason] += 1
                 continue
             quality = self._quality_from_record(record)
             if quality.get("capture_decision") == "reject":
+                blocked_counts["quality_rejected"] += 1
                 continue
             quality_score = float(quality.get("salience_score") or 0.0)
             living_memory = self._living_memory_metadata(record)
@@ -716,7 +744,11 @@ class SqliteRecordStore:
             "vector_hits": vector_hits,
             "retrieval_mode": "recall_index_hybrid",
             "scored_items": [score_report for _, _, _, score_report in selected_rows],
-            "recall_filters": dict(recall_filters or {}),
+            "blocked_counts": dict(blocked_counts),
+            "recall_filters": {
+                **dict(recall_filters or {}),
+                **({"blocked_counts": dict(blocked_counts)} if blocked_counts else {}),
+            },
             **candidate_report,
         }
 
@@ -1618,9 +1650,12 @@ class SqliteRecordStore:
         return (str(value).strip(),) if str(value).strip() else ()
 
     def _record_matches_recall_filters(self, record: RecordEnvelope, recall_filters: dict | None) -> bool:
+        return not bool(self._record_recall_filter_block_reason(record, recall_filters))
+
+    def _record_recall_filter_block_reason(self, record: RecordEnvelope, recall_filters: dict | None) -> str:
         filters = dict(recall_filters or {})
         if not filters:
-            return True
+            return ""
         labels = self._record_filter_labels(record)
         blocked_projection_types = set(self._as_tuple(filters.get("blocked_projection_types") or ()))
         if blocked_projection_types:
@@ -1631,26 +1666,32 @@ class SqliteRecordStore:
                 or ""
             ).strip()
             if projection_type in blocked_projection_types:
-                return False
+                return f"projection:{projection_type or 'blocked'}"
         blocked_kinds = set(self._as_tuple(filters.get("blocked_kinds") or ()))
         if blocked_kinds and record.kind in blocked_kinds:
-            return False
+            return f"kind:{record.kind}"
         allowed_kinds = set(self._as_tuple(filters.get("allowed_kinds") or ()))
         if allowed_kinds and record.kind not in allowed_kinds:
-            return False
+            return "kind:not_allowed"
         blocked_sources = set(filters.get("blocked_sources") or [])
         if blocked_sources and labels["sources"] & blocked_sources:
-            return False
+            return "source:blocked"
         allowed_sources = set(filters.get("allowed_sources") or [])
         if allowed_sources and not labels["sources"] & allowed_sources:
-            return False
+            return "source:not_allowed"
         allowed_memory_types = set(filters.get("allowed_memory_types") or [])
         if allowed_memory_types and record.kind == "memory" and labels["memory_types"] and not labels["memory_types"] & allowed_memory_types:
-            return False
+            return "memory_type:not_allowed"
         organs = set(filters.get("organs") or [])
         if organs and labels["organs"] and not labels["organs"] & organs:
-            return False
-        return True
+            return "organ:not_allowed"
+        blocked_recall_lanes = set(filters.get("blocked_recall_lanes") or [])
+        if blocked_recall_lanes and labels["recall_lanes"] & blocked_recall_lanes:
+            return sorted(labels["recall_lanes"] & blocked_recall_lanes)[0]
+        allowed_recall_lanes = set(filters.get("allowed_recall_lanes") or [])
+        if allowed_recall_lanes and not labels["recall_lanes"] & allowed_recall_lanes:
+            return "recall_lane:not_allowed"
+        return ""
 
     def _source_weight(self, record: RecordEnvelope, recall_filters: dict | None) -> float:
         weights = dict((recall_filters or {}).get("source_weights") or {})
@@ -1695,7 +1736,46 @@ class SqliteRecordStore:
             "memory_types": {item for item in memory_types if item},
             "organs": {item for item in organs if item},
             "modalities": {item for item in modalities if item},
+            "recall_lanes": {self._record_recall_lane(record)},
         }
+
+    def _record_recall_lane(self, record: RecordEnvelope) -> str:
+        labels_meta = business_metadata(record.meta)
+        content = record.content if isinstance(record.content, dict) else {}
+        memory_type = str(labels_meta.get("memory_type") or content.get("memory_type") or "").strip().lower()
+        if memory_type in _RECALL_LANE_MEMORY_TYPE_ALIASES:
+            return _RECALL_LANE_MEMORY_TYPE_ALIASES[memory_type]
+        if record.kind == "rule":
+            return "system_rule"
+        if record.kind == "reflection":
+            return self._reflection_recall_lane(record)
+        if record.kind in {"recall_view", "feedback"}:
+            return "audit_record"
+        if record.kind == "incident":
+            return "incident_report"
+        if record.kind in {"replay_result", "learning_eval", "capability_candidate", "promotion_request", "skill_candidate"}:
+            return "evolution_artifact"
+        if record.kind in {"knowledge_page", "claim_card", "paper_source", "paper_extract", "knowledge_unit"}:
+            return "external_knowledge"
+        if record.kind == "memory":
+            return "durable_fact"
+        return str(record.kind or "")
+
+    @staticmethod
+    def _reflection_recall_lane(record: RecordEnvelope) -> str:
+        meta = business_metadata(record.meta)
+        content = record.content if isinstance(record.content, dict) else {}
+        report_type = str(meta.get("report_type") or record.provenance.get("report_type") or content.get("report_type") or "").strip().lower()
+        haystack = " ".join([report_type, str(record.source or ""), str(record.title or "")]).lower()
+        if any(marker in haystack for marker in ("audit", "before_prompt_build", "injection")):
+            return "audit_record"
+        if "incident" in haystack:
+            return "incident_report"
+        if "outcome_trace" in haystack or "run_log" in haystack:
+            return "run_log"
+        if report_type:
+            return "evolution_artifact"
+        return "audit_record"
 
     def _quality_from_record(self, record: RecordEnvelope) -> dict:
         quality = business_metadata(record.meta).get("quality") if isinstance(record.meta, dict) else {}

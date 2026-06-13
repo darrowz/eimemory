@@ -68,6 +68,18 @@ function resolveBridgeCommand() {
   return ['eimemory', 'ei-bridge', 'feishu'];
 }
 
+function resolveCliCommand() {
+  const configured = (process.env.EIMEMORY_CLI_COMMAND || '').trim();
+  if (configured) {
+    return splitCommand(configured);
+  }
+  const hookCommand = resolveHookCommand();
+  if (hookCommand[hookCommand.length - 1] === 'openclaw-hook') {
+    return hookCommand.slice(0, -1);
+  }
+  return ['eimemory'];
+}
+
 function normalizeEventPayload(hook, event) {
   if (hook === 'message_received') {
     const scope = normalizeScope(event);
@@ -454,6 +466,21 @@ function invokeBridge(event) {
   return JSON.parse(result.stdout || '{}');
 }
 
+function invokeCli(args) {
+  const command = resolveCliCommand();
+  const result = spawnSync(command[0], [...command.slice(1), ...args], {
+    encoding: 'utf-8',
+    timeout: Number(process.env.EIMEMORY_TOOL_TIMEOUT_MS || 30000),
+  });
+  if (result.error) {
+    throw result.error;
+  }
+  if (result.status !== 0) {
+    throw new Error(result.stderr || result.stdout || `eimemory cli failed: ${args.join(' ')}`);
+  }
+  return JSON.parse(result.stdout || '{}');
+}
+
 function safeInvokeHook(api, hook, event) {
   try {
     const result = invokeHook(hook, event);
@@ -552,6 +579,51 @@ function registerStatusTool(api) {
   }), { name: 'eimemory_bridge_status' });
 }
 
+function registerMemoryE2ETool(api) {
+  if (!api?.registerTool) {
+    return;
+  }
+  api.registerTool(() => ({
+    name: 'memory_e2e_check',
+    label: 'eimemory E2E Check',
+    description: 'Run an eimemory OpenClaw end-to-end memory check.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        query: { type: 'string' },
+        agent_id: { type: 'string' },
+        workspace_id: { type: 'string' },
+        user_id: { type: 'string' },
+      },
+      required: [],
+    },
+    async execute(input = {}) {
+      const args = ['eval', 'openclaw-e2e'];
+      if (input.query) {
+        args.push('--query', String(input.query));
+      }
+      if (input.agent_id) {
+        args.push('--scope-agent', String(input.agent_id));
+      }
+      if (input.workspace_id) {
+        args.push('--scope-workspace', String(input.workspace_id));
+      }
+      if (input.user_id) {
+        args.push('--scope-user', String(input.user_id));
+      }
+      const result = invokeCli(args);
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify(result),
+        }],
+        details: result,
+      };
+    },
+  }), { name: 'memory_e2e_check' });
+}
+
 module.exports.default = {
   id: 'eimemory-bridge',
   name: 'eimemory Bridge',
@@ -563,6 +635,7 @@ module.exports.default = {
   register(api) {
     api?.logger?.info?.('eimemory-bridge: registering OpenClaw hooks');
     registerStatusTool(api);
+    registerMemoryE2ETool(api);
     registerTypedHook(api, 'message_received', async (event) => safeInvokeHook(api, 'message_received', event) || {});
     if (promptInjectionEnabled(api) || usesLegacyHookApi(api)) {
       registerTypedHook(api, 'before_prompt_build', async (event) => {

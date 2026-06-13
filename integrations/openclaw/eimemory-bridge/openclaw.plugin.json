@@ -16,7 +16,8 @@
   ],
   "contracts": {
     "tools": [
-      "eimemory_bridge_status"
+      "eimemory_bridge_status",
+      "memory_e2e_check"
     ]
   },
   "main": "index.js",

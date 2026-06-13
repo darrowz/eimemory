@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from hashlib import sha256
 import inspect
 from collections import Counter
 from typing import Any
 from dataclasses import asdict
 
 from eimemory.api.runtime import Runtime
+from eimemory.adapters.openclaw.hooks import OpenClawMemoryHooks
 from eimemory.models.records import ScopeRef
 from eimemory.models.records import RecordEnvelope
 
@@ -64,6 +66,95 @@ class OpenClawMemoryTools:
             "capability_candidates": self._summarize_skill_candidates(learn_scope),
             "promotion_watch": self._summarize_promotion_watch(learn_scope),
             "code_sandbox": self._summarize_code_sandbox(),
+        }
+
+    def memory_e2e_check(self, *, scope: dict, query: str = "eimemory openclaw e2e") -> dict:
+        hooks = OpenClawMemoryHooks(self.runtime)
+        normalized_query = str(query or "eimemory openclaw e2e").strip() or "eimemory openclaw e2e"
+        event_scope = dict(scope or {})
+        session_id = f"eimemory-e2e-{sha256((normalized_query + repr(sorted(event_scope.items()))).encode('utf-8')).hexdigest()[:12]}"
+        event_base = {
+            **event_scope,
+            "session_id": session_id,
+        }
+        canonical_scope = hooks._scope_from_event(event_base)
+        marker = f"{normalized_query} marker {session_id}"
+        stored = self.runtime.memory.ingest(
+            text=f"EIMemory OpenClaw E2E test memory: {marker}",
+            memory_type="preference",
+            title="EIMemory OpenClaw E2E marker",
+            scope=canonical_scope,
+            source="openclaw.memory_e2e_check",
+            force_capture=True,
+        )
+        before = hooks.before_prompt_build(
+            {
+                **event_base,
+                "query": normalized_query,
+                "raw_query": normalized_query,
+                "task_context": {
+                    "task_type": "eimemory.openclaw_e2e",
+                    "candidate_limit": 24,
+                },
+            }
+        )
+        bundle = dict(before.get("memory_bundle") or {})
+        items = [dict(item) for item in list(bundle.get("items") or []) if isinstance(item, dict)]
+        injection_plan = dict(before.get("injection_plan") or {})
+        injection_composition = dict(injection_plan.get("lane_composition") or {})
+        recall_hit = any(str(item.get("record_id") or "") == stored.record_id for item in items)
+        audit = self._latest_recall_audit(session_id=session_id, scope=canonical_scope)
+        terminal = hooks.on_task_end(
+            {
+                **event_base,
+                "query": normalized_query,
+                "raw_query": normalized_query,
+                "task_context": dict(before.get("task_context") or {}),
+                "user_messages": [normalized_query],
+                "assistant_messages": [{"role": "assistant", "content": f"E2E check observed {marker}"}],
+                "outcome": {
+                    "success": True,
+                    "outcome": "good",
+                    "notes": "OpenClaw memory E2E check passed",
+                    "verification": "stored marker was available to prompt recall",
+                },
+            }
+        )
+        event = dict(terminal.get("event") or {})
+        outcome = dict(terminal.get("outcome") or {})
+        outcome_trace = dict(terminal.get("outcome_trace") or {})
+        outcome_trace_id = str(outcome_trace.get("record_id") or "")
+        evidence_id = str(audit.record_id if audit else event.get("id") or outcome.get("id") or "")
+        ok = bool(stored.record_id and recall_hit and audit and event and outcome)
+        return {
+            "ok": ok,
+            "verdict": "pass" if ok else "fail",
+            "scope": canonical_scope,
+            "session_id": session_id,
+            "store": {"ok": bool(stored.record_id), "record_id": stored.record_id},
+            "recall": {
+                "hit": bool(recall_hit),
+                "audit_record_id": audit.record_id if audit else "",
+                "selected_count": len(items),
+            },
+            "policy": {
+                "hit": bool(before.get("task_context", {}).get("policy_suggestion_ids")),
+                "policy_suggestion_ids": list(before.get("task_context", {}).get("policy_suggestion_ids") or []),
+            },
+            "injection": {
+                "withheld_count": int(injection_composition.get("withheld") or injection_plan.get("withheld_count") or 0),
+                "lane_composition": injection_composition,
+            },
+            "outcome": {
+                "event_id": str(event.get("id") or ""),
+                "outcome_id": str(outcome.get("id") or ""),
+                "trace_id": outcome_trace_id,
+            },
+            "ledger": {
+                "evidence_id": evidence_id,
+                "audit_record_id": audit.record_id if audit else "",
+                "outcome_trace_id": outcome_trace_id,
+            },
         }
 
     def memory_run_autonomy(
@@ -161,6 +252,18 @@ class OpenClawMemoryTools:
                 persist_report=bool(persist_report),
             )
         )
+
+    def _latest_recall_audit(self, *, session_id: str, scope: dict) -> RecordEnvelope | None:
+        scope_ref = ScopeRef.from_dict(scope)
+        records = self.runtime.store.list_records(kinds=["recall_view", "reflection"], scope=scope_ref, limit=100)
+        for record in records:
+            if str(record.source or "") != "openclaw.before_prompt_build":
+                continue
+            content = record.content if isinstance(record.content, dict) else {}
+            meta = record.meta if isinstance(record.meta, dict) else {}
+            if str(content.get("session_id") or meta.get("session_id") or "").strip() == str(session_id).strip():
+                return record
+        return None
 
     def _summarize_knowledge_intake(self, scope: ScopeRef) -> dict:
         try:

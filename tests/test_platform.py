@@ -890,7 +890,7 @@ def test_openclaw_bridge_assets_exist() -> None:
     assert manifest["id"] == "eimemory-bridge"
     assert manifest["activation"] == {"onStartup": True, "onCapabilities": ["hook"]}
     assert manifest["hooks"] == ["message_received", "before_prompt_build", "agent_end", "session_end"]
-    assert manifest["contracts"]["tools"] == ["eimemory_bridge_status"]
+    assert manifest["contracts"]["tools"] == ["eimemory_bridge_status", "memory_e2e_check"]
     assert manifest["configSchema"]["type"] == "object"
     assert Path("integrations/openclaw/eimemory-bridge/package.json").exists()
 

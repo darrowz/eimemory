@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import asdict
 import json
 from pathlib import Path
 import sys
@@ -9,6 +10,7 @@ from eimemory.adapters.eibrain.rpc_server import EIBrainRPCServer, build_health_
 from eimemory.adapters.openclaw.hooks import OpenClawMemoryHooks
 from eimemory.adapters.openclaw.qmd_compat import main as qmd_main
 from eimemory.api.runtime import Runtime
+from eimemory.models.records import ScopeRef
 from eimemory.compatibility.migration_helpers import (
     build_review_report,
     backup_create,
@@ -301,8 +303,10 @@ def _build_parser() -> argparse.ArgumentParser:
     serve_rpc.add_argument("--loopback-health-host", default="")
     serve_rpc.add_argument("--loopback-health-port", type=int, default=None)
 
-    sub.add_parser("doctor")
-    sub.add_parser("status")
+    doctor = sub.add_parser("doctor")
+    doctor.add_argument("--json", action="store_true", default=True)
+    status = sub.add_parser("status")
+    status.add_argument("--json", action="store_true", default=True)
 
     openclaw_hook = sub.add_parser("openclaw-hook")
     openclaw_hook.add_argument(
@@ -419,6 +423,13 @@ def _build_parser() -> argparse.ArgumentParser:
     eval_production_recall.add_argument("dataset_json")
     eval_production_recall.add_argument("--output", default="")
     eval_production_recall.add_argument("--no-seed", action="store_true")
+    eval_production_recall.add_argument("--persist-report", action="store_true")
+    eval_openclaw_e2e = eval_sub.add_parser("openclaw-e2e")
+    eval_openclaw_e2e.add_argument("--query", default="eimemory openclaw e2e")
+    eval_openclaw_e2e.add_argument("--scope-agent", default="")
+    eval_openclaw_e2e.add_argument("--scope-workspace", default="")
+    eval_openclaw_e2e.add_argument("--scope-user", default="")
+    eval_openclaw_e2e.add_argument("--output", default="")
     eval_task_replay = eval_sub.add_parser("task-replay")
     eval_task_replay.add_argument("dataset_json")
     eval_task_replay.add_argument("--output", default="")
@@ -1596,10 +1607,44 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 from eimemory.evaluation import run_production_recall_eval
 
-                report = run_production_recall_eval(runtime, dataset, seed=not bool(parsed.no_seed))
+                report = run_production_recall_eval(
+                    runtime,
+                    dataset,
+                    seed=not bool(parsed.no_seed),
+                    persist_report=bool(parsed.persist_report),
+                )
             except ValueError as exc:
                 print(json.dumps({"ok": False, "error": "invalid_eval_dataset", "detail": str(exc)}, ensure_ascii=False))
                 return 2
+            if parsed.output:
+                try:
+                    output_path = Path(parsed.output)
+                    output_path.parent.mkdir(parents=True, exist_ok=True)
+                    output_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+                except OSError as exc:
+                    print(
+                        json.dumps(
+                            {"ok": False, "error": "eval_output_failed", "detail": str(exc)},
+                            ensure_ascii=False,
+                        )
+                    )
+                    return 2
+                report = {**report, "output": str(output_path)}
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0 if report.get("ok") else 1
+        if parsed.eval_command == "openclaw-e2e":
+            from eimemory.adapters.openclaw.tools import OpenClawMemoryTools
+
+            e2e_scope = asdict(
+                ScopeRef.from_dict(
+                    {
+                        "agent_id": parsed.scope_agent or settings.default_agent_id or "main",
+                        "workspace_id": parsed.scope_workspace or settings.default_workspace_id,
+                        "user_id": parsed.scope_user or "",
+                    }
+                )
+            )
+            report = OpenClawMemoryTools(runtime).memory_e2e_check(scope=e2e_scope, query=str(parsed.query or ""))
             if parsed.output:
                 try:
                     output_path = Path(parsed.output)

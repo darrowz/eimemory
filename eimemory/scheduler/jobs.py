@@ -123,6 +123,7 @@ def run_nightly_jobs(
         "outcome_evolution": outcome_evolution_report,
         "memory_eval_ci": memory_eval_ci_report,
         "production_recall": production_recall_report,
+        "recall_quality": production_recall_report,
         "judgment_evaluation": judgment_evaluation_report,
         "source_discovery": source_discovery_report,
         "source_quality": {
@@ -321,7 +322,12 @@ def _run_production_recall_eval(runtime: Runtime, *, scope: dict) -> dict[str, A
                 "seeded": False,
                 "eval_skipped_reason": skipped_reason,
             }
-        report = _json_safe(run_eval(dataset, seed=False, scope=scope))
+        try:
+            report = _json_safe(run_eval(dataset, seed=False, scope=scope, persist_report=True))
+        except TypeError as exc:
+            if "persist_report" not in str(exc):
+                raise
+            report = _json_safe(run_eval(dataset, seed=False, scope=scope))
         if isinstance(report, dict):
             return {**report, "configured": True, "seeded": False, "dataset_source": dataset_source}
         return {

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from hashlib import sha256
 import re
 
@@ -174,6 +175,7 @@ class MemoryAPI:
         profile_config = self._recall_profile_config(recall_profile)
         search_limit = max(limit * profile_config["search_multiplier"], limit)
         recall_intent = classify_recall_intent(normalized_query, task_context)
+        report_query = self._is_report_query(normalized_query, task_context)
         recall_filters = self._recall_filters_from_task_context(task_context)
         policy_source_weights = self._source_weights(retrieval_policy.get("source_weights"))
         if policy_source_weights:
@@ -183,7 +185,7 @@ class MemoryAPI:
             }
         self._merge_recall_intent_filters(recall_filters, recall_intent)
         recall_filters["scoring_profile"] = recall_profile
-        operational_recall_allowed = self._allows_operational_recall(normalized_query, task_context)
+        operational_recall_allowed = report_query or self._allows_operational_recall(normalized_query, task_context)
         if operational_recall_allowed:
             recall_filters["include_evidence_only"] = True
             recall_filters["include_report_records"] = True
@@ -215,7 +217,7 @@ class MemoryAPI:
                         seen_raw_ids.add(record_id)
                     raw_evidence.append(evidence)
             raw_evidence = raw_evidence[:limit]
-        report_query = self._is_report_query(normalized_query, task_context) or operational_recall_allowed
+        report_query = report_query or operational_recall_allowed
         items: list[RecordEnvelope] = []
         search_reports: list[dict] = []
         seen_item_ids: set[str] = set()
@@ -242,16 +244,20 @@ class MemoryAPI:
                 seen_item_ids.add(item.record_id)
                 items.append(item)
         search_report = self._merge_search_reports(search_reports)
-        items = [
-            item
-            for item in items
-            if (operational_recall_allowed or not self._is_internal_audit_record(item))
-            and not self._is_default_recall_suppressed_record(
-                item,
-                task_context,
-                allow_operational_recall=operational_recall_allowed,
-            )
-        ]
+        blocked_counts: Counter[str] = Counter(dict(search_report.get("blocked_counts") or {}))
+        diagnostic_blocked_counts = self._diagnostic_blocked_operational_counts(
+            query=normalized_query,
+            query_scope_refs=query_scope_refs,
+            recall_filters=recall_filters,
+            operational_recall_allowed=operational_recall_allowed,
+        )
+        blocked_counts.update(diagnostic_blocked_counts)
+        items, suppressed_counts = self._filter_default_suppressed_items(
+            items,
+            task_context,
+            allow_operational_recall=operational_recall_allowed,
+        )
+        blocked_counts.update(suppressed_counts)
         report_items = [item for item in items if report_query and self._is_recallable_report_record(item)]
         preference_query = self._is_preference_query(normalized_query, task_context) and not report_query
         if preference_query:
@@ -270,16 +276,12 @@ class MemoryAPI:
                 scope=scope_ref,
                 graph_depth=profile_config["graph_depth"],
             )
-            items = [
-                item
-                for item in items
-                if (operational_recall_allowed or not self._is_internal_audit_record(item))
-                and not self._is_default_recall_suppressed_record(
-                    item,
-                    task_context,
-                    allow_operational_recall=operational_recall_allowed,
-                )
-            ]
+            items, graph_suppressed_counts = self._filter_default_suppressed_items(
+                items,
+                task_context,
+                allow_operational_recall=operational_recall_allowed,
+            )
+            blocked_counts.update(graph_suppressed_counts)
             if preference_query:
                 items = [item for item in items if self._is_preference_recall_candidate(item, normalized_query)]
         claims = [item for item in items if item.kind == "claim_card"]
@@ -295,10 +297,12 @@ class MemoryAPI:
         view_items = records_from_view(view, items, limit=max(limit * 4, limit))
         if operational_recall_allowed:
             view_items = self._dedupe_records([*view_items, *items])
-        items = self._apply_hard_recall_filters(
+        items, hard_filter_counts = self._apply_hard_recall_filters_with_counts(
             self._dedupe_records(view_items),
             recall_filters,
-        )[:limit]
+        )
+        blocked_counts.update(hard_filter_counts)
+        items = items[:limit]
         if report_items:
             items = self._dedupe_records([*report_items, *items])[:limit]
         graph_expanded = sum(1 for item in items if item.record_id not in base_ids)
@@ -316,6 +320,8 @@ class MemoryAPI:
         )
         if rule_recall_items:
             items = self._dedupe_records([*rule_recall_items, *items])[:limit]
+        if blocked_counts:
+            recall_filters["blocked_counts"] = dict(sorted(blocked_counts.items()))
         final_view = build_recall_view(
             view_type=view.view_type,
             claims=[item for item in items if item.kind == "claim_card"],
@@ -459,33 +465,124 @@ class MemoryAPI:
             "query_terms": list(recall_intent.query_terms),
         }
 
+    def _filter_default_suppressed_items(
+        self,
+        items: list[RecordEnvelope],
+        task_context: dict,
+        *,
+        allow_operational_recall: bool,
+    ) -> tuple[list[RecordEnvelope], Counter[str]]:
+        filtered: list[RecordEnvelope] = []
+        blocked_counts: Counter[str] = Counter()
+        for item in items:
+            if not allow_operational_recall and self._is_internal_audit_record(item):
+                blocked_counts[self._record_recall_lane(item) or "audit_record"] += 1
+                continue
+            if self._is_default_recall_suppressed_record(
+                item,
+                task_context,
+                allow_operational_recall=allow_operational_recall,
+            ):
+                blocked_counts[self._record_recall_lane(item) or str(item.kind or "suppressed")] += 1
+                continue
+            filtered.append(item)
+        return filtered, blocked_counts
+
+    def _diagnostic_blocked_operational_counts(
+        self,
+        *,
+        query: str,
+        query_scope_refs: list[ScopeRef],
+        recall_filters: dict,
+        operational_recall_allowed: bool,
+    ) -> Counter[str]:
+        if operational_recall_allowed:
+            return Counter()
+        blocked_lanes = set(recall_filters.get("blocked_recall_lanes") or [])
+        if not blocked_lanes:
+            return Counter()
+        diagnostic_filters = {
+            key: value
+            for key, value in dict(recall_filters or {}).items()
+            if key not in {"blocked_recall_lanes", "allowed_recall_lanes", "blocked_counts"}
+        }
+        diagnostic_filters["include_report_records"] = True
+        diagnostic_filters["include_evidence_only"] = True
+        counts: Counter[str] = Counter()
+        diagnostic_kinds = [
+            "reflection",
+            "incident",
+            "replay_result",
+            "learning_eval",
+            "recall_view",
+            "feedback",
+            "capability_candidate",
+            "skill_candidate",
+            "promotion_request",
+        ]
+        for scope_ref in query_scope_refs[:3]:
+            try:
+                candidates, _report = self.store.search_with_diagnostics(
+                    query=query,
+                    kinds=diagnostic_kinds,
+                    scope=scope_ref,
+                    limit=24,
+                    recall_filters=diagnostic_filters,
+                )
+            except Exception:
+                continue
+            for item in candidates:
+                lane = self._record_recall_lane(item)
+                if lane in blocked_lanes:
+                    counts[lane] += 1
+        return counts
+
     def _apply_hard_recall_filters(self, items: list[RecordEnvelope], recall_filters: dict) -> list[RecordEnvelope]:
+        filtered, _counts = self._apply_hard_recall_filters_with_counts(items, recall_filters)
+        return filtered
+
+    def _apply_hard_recall_filters_with_counts(
+        self,
+        items: list[RecordEnvelope],
+        recall_filters: dict,
+    ) -> tuple[list[RecordEnvelope], Counter[str]]:
         if not recall_filters:
-            return items
-        return [item for item in items if self._record_allowed_by_recall_filters(item, recall_filters)]
+            return items, Counter()
+        filtered: list[RecordEnvelope] = []
+        blocked_counts: Counter[str] = Counter()
+        for item in items:
+            reason = self._record_recall_filter_block_reason(item, recall_filters)
+            if reason:
+                blocked_counts[reason] += 1
+                continue
+            filtered.append(item)
+        return filtered, blocked_counts
 
     def _record_allowed_by_recall_filters(self, item: RecordEnvelope, recall_filters: dict) -> bool:
+        return not bool(self._record_recall_filter_block_reason(item, recall_filters))
+
+    def _record_recall_filter_block_reason(self, item: RecordEnvelope, recall_filters: dict) -> str:
         labels = self._record_filter_labels(item)
         blocked_sources = set(recall_filters.get("blocked_sources") or [])
         if blocked_sources and labels["sources"] & blocked_sources:
-            return False
+            return "source:blocked"
         allowed_sources = set(recall_filters.get("allowed_sources") or [])
         if allowed_sources and not labels["sources"] & allowed_sources:
-            return False
+            return "source:not_allowed"
         allowed_memory_types = set(recall_filters.get("allowed_memory_types") or [])
         if allowed_memory_types and item.kind == "memory" and labels["memory_types"] and not labels["memory_types"] & allowed_memory_types:
-            return False
+            return "memory_type:not_allowed"
         organs = set(recall_filters.get("organs") or [])
         if organs and labels["organs"] and not labels["organs"] & organs:
-            return False
+            return "organ:not_allowed"
         recall_lane = self._record_recall_lane(item)
         blocked_recall_lanes = set(recall_filters.get("blocked_recall_lanes") or [])
         if blocked_recall_lanes and recall_lane in blocked_recall_lanes:
-            return False
+            return recall_lane
         allowed_recall_lanes = set(recall_filters.get("allowed_recall_lanes") or [])
         if allowed_recall_lanes and recall_lane not in allowed_recall_lanes:
-            return False
-        return True
+            return "recall_lane:not_allowed"
+        return ""
 
     def _record_filter_labels(self, item: RecordEnvelope) -> dict[str, set[str]]:
         meta = business_metadata(item.meta)
@@ -548,6 +645,8 @@ class MemoryAPI:
                 return normalized
         if item.kind == "rule":
             return "system_rule"
+        if item.kind == "reflection":
+            return self._reflection_recall_lane(item)
         if item.kind in {"recall_view", "feedback"}:
             return "audit_record"
         if item.kind == "incident":
@@ -559,6 +658,22 @@ class MemoryAPI:
         if item.kind == "memory":
             return "durable_fact"
         return ""
+
+    @staticmethod
+    def _reflection_recall_lane(item: RecordEnvelope) -> str:
+        meta = business_metadata(item.meta)
+        content = item.content if isinstance(item.content, dict) else {}
+        report_type = str(meta.get("report_type") or item.provenance.get("report_type") or content.get("report_type") or "").strip().lower()
+        haystack = " ".join([report_type, str(item.source or ""), str(item.title or "")]).lower()
+        if any(marker in haystack for marker in ("audit", "before_prompt_build", "injection")):
+            return "audit_record"
+        if "incident" in haystack:
+            return "incident_report"
+        if "outcome_trace" in haystack or "run_log" in haystack:
+            return "run_log"
+        if report_type:
+            return "evolution_artifact"
+        return "audit_record"
 
     @staticmethod
     def _allows_operational_recall(query: str, task_context: dict) -> bool:
@@ -1106,6 +1221,7 @@ class MemoryAPI:
             "retrieval_mode": "hybrid",
             "vector_hits": 0,
             "scored_items": [],
+            "blocked_counts": {},
         }
         seen_scores: set[str] = set()
         for report in reports:
@@ -1114,6 +1230,9 @@ class MemoryAPI:
             if report.get("retrieval_mode"):
                 merged["retrieval_mode"] = report.get("retrieval_mode")
             merged["vector_hits"] += int(report.get("vector_hits") or 0)
+            blocked_counts = dict(report.get("blocked_counts") or (report.get("recall_filters") or {}).get("blocked_counts") or {})
+            for key, value in blocked_counts.items():
+                merged["blocked_counts"][str(key)] = int(merged["blocked_counts"].get(str(key), 0)) + int(value or 0)
             for entry in report.get("scored_items") or []:
                 if not isinstance(entry, dict):
                     continue

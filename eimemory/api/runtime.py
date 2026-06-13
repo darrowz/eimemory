@@ -711,10 +711,11 @@ class Runtime:
         *,
         seed: bool = True,
         scope: dict | None = None,
+        persist_report: bool = False,
     ) -> dict:
         from eimemory.evaluation import run_production_recall_eval
 
-        return run_production_recall_eval(self, dataset, seed=seed, scope=scope)
+        return run_production_recall_eval(self, dataset, seed=seed, scope=scope, persist_report=persist_report)
 
     def run_real_task_replay(
         self,

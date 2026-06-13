@@ -46,11 +46,19 @@ def record_outcome_observations(
     scope: dict[str, Any] | ScopeRef | None = None,
 ) -> list[dict[str, Any]]:
     reports: list[dict[str, Any]] = []
-    for pattern_id in extract_pattern_ids_from_outcome(outcome_payload):
+    attribution = _outcome_policy_attribution(runtime, event_id=event_id, outcome_payload=outcome_payload, scope=scope)
+    for pattern_id in attribution["pattern_ids"]:
         pattern = _load_pattern(runtime, pattern_id=pattern_id, scope=scope)
         watch = dict((pattern or {}).get("post_promotion_watch") or {})
         if watch.get("status") != WATCH_STATUS:
             continue
+        details = {
+            "outcome_id": str(outcome_payload.get("id") or ""),
+            "outcome_event_id": str(event_id or outcome_payload.get("event_id") or ""),
+            "outcome_trace_id": str(outcome_payload.get("trace_id") or ""),
+            "audit_record_id": str(attribution.get("audit_record_id") or ""),
+            "selected_records": list(attribution.get("selected_records") or []),
+        }
         reports.append(
             record_promotion_observation(
                 runtime,
@@ -61,7 +69,7 @@ def record_outcome_observations(
                 improved=_improved_from_outcome(outcome_payload),
                 outcome=str(outcome_payload.get("outcome") or ""),
                 reason=str(outcome_payload.get("reason") or outcome_payload.get("correction_from_user") or ""),
-                details={"outcome_id": str(outcome_payload.get("id") or "")},
+                details=details,
             )
         )
     return reports
@@ -258,6 +266,11 @@ def _record_watch_ledger(
 ) -> None:
     scope_ref = _scope(scope)
     pattern_id = str(pattern.get("id") or watch.get("pattern_id") or "")
+    last_observation = {}
+    observations = [item for item in list(watch.get("observations") or []) if isinstance(item, dict)]
+    if observations:
+        last_observation = dict(observations[-1])
+    evidence = dict(last_observation.get("details") or {})
     runtime.store.sqlite._record_policy_rollout_ledger(
         action_type="shadow_observe",
         scope=scope_ref,
@@ -274,6 +287,10 @@ def _record_watch_ledger(
             "decision": str(decision),
             "pattern_id": pattern_id,
             "candidate_id": str(watch.get("candidate_id") or ""),
+            "audit_record_id": str(evidence.get("audit_record_id") or ""),
+            "outcome_trace_id": str(evidence.get("outcome_trace_id") or ""),
+            "outcome_event_id": str(evidence.get("outcome_event_id") or last_observation.get("event_id") or ""),
+            "selected_records": list(evidence.get("selected_records") or []),
             "observed_count": int(watch.get("observed_count") or 0),
             "hit_count": int(watch.get("hit_count") or 0),
             "improvement_count": int(watch.get("improvement_count") or 0),
@@ -316,6 +333,108 @@ def _improved_from_outcome(payload: dict[str, Any]) -> bool:
     if "improvement" in payload:
         return bool(payload.get("improvement"))
     return str(payload.get("outcome") or "").strip().lower() in {"good", "success", "improved", "better"}
+
+
+def _outcome_policy_attribution(
+    runtime: Any,
+    *,
+    event_id: str,
+    outcome_payload: dict[str, Any],
+    scope: dict[str, Any] | ScopeRef | None,
+) -> dict[str, Any]:
+    direct_ids = extract_pattern_ids_from_outcome(outcome_payload)
+    if direct_ids:
+        return {"pattern_ids": direct_ids, "audit_record_id": "", "selected_records": []}
+    session_id = _session_id_from_outcome(runtime, event_id=event_id, outcome_payload=outcome_payload, scope=scope)
+    if not session_id:
+        return {"pattern_ids": [], "audit_record_id": "", "selected_records": []}
+    audit = _latest_recall_audit_for_session(runtime, session_id=session_id, scope=scope)
+    if not audit:
+        return {"pattern_ids": [], "audit_record_id": "", "selected_records": []}
+    content = audit.content if isinstance(audit.content, dict) else {}
+    meta = audit.meta if isinstance(audit.meta, dict) else {}
+    policy_ids = _coerce_string_list(content.get("policy_suggestion_ids") or meta.get("policy_suggestion_ids"))
+    selected_records = [
+        dict(item)
+        for item in list(content.get("selected_records") or [])
+        if isinstance(item, dict)
+    ]
+    return {
+        "pattern_ids": policy_ids,
+        "audit_record_id": audit.record_id,
+        "selected_records": selected_records,
+    }
+
+
+def _session_id_from_outcome(
+    runtime: Any,
+    *,
+    event_id: str,
+    outcome_payload: dict[str, Any],
+    scope: dict[str, Any] | ScopeRef | None,
+) -> str:
+    for value in (
+        outcome_payload.get("session_id"),
+        (outcome_payload.get("policy_attribution") or {}).get("session_id")
+        if isinstance(outcome_payload.get("policy_attribution"), dict)
+        else "",
+    ):
+        text = str(value or "").strip()
+        if text:
+            return text
+    scope_ref = _scope(scope)
+    try:
+        row = runtime.store.sqlite.conn.execute(
+            """
+            SELECT payload_json FROM events
+            WHERE id = ?
+              AND tenant_id = ?
+              AND agent_id = ?
+              AND workspace_id = ?
+              AND user_id = ?
+            LIMIT 1
+            """,
+            (str(event_id), scope_ref.tenant_id, scope_ref.agent_id, scope_ref.workspace_id, scope_ref.user_id),
+        ).fetchone()
+    except Exception:
+        row = None
+    if row is None:
+        return ""
+    try:
+        event_payload = json.loads(str(row["payload_json"]))
+    except json.JSONDecodeError:
+        return ""
+    return str(event_payload.get("session_id") or "").strip()
+
+
+def _latest_recall_audit_for_session(
+    runtime: Any,
+    *,
+    session_id: str,
+    scope: dict[str, Any] | ScopeRef | None,
+) -> RecordEnvelope | None:
+    try:
+        records = runtime.store.list_records(kinds=["recall_view", "reflection"], scope=_scope(scope), limit=100)
+    except Exception:
+        return None
+    for record in records:
+        if str(record.source or "") != "openclaw.before_prompt_build":
+            continue
+        content = record.content if isinstance(record.content, dict) else {}
+        meta = record.meta if isinstance(record.meta, dict) else {}
+        if str(content.get("session_id") or meta.get("session_id") or "").strip() != session_id:
+            continue
+        if _coerce_string_list(content.get("policy_suggestion_ids") or meta.get("policy_suggestion_ids")):
+            return record
+    return None
+
+
+def _coerce_string_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
 
 
 def _scope(scope: dict[str, Any] | ScopeRef | None) -> ScopeRef:
