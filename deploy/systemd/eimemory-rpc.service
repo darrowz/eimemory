@@ -19,4 +19,4 @@ StandardOutput=append:/home/darrow/.openclaw/logs/eimemory-rpc.service.log
 StandardError=append:/home/darrow/.openclaw/logs/eimemory-rpc.service.log
 
 [Install]
-WantedBy=default.target
+WantedBy=multi-user.target

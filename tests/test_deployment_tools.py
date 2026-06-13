@@ -114,6 +114,8 @@ def test_eimemory_rpc_systemd_unit_uses_honxin_tailscale_endpoint() -> None:
         "StandardError=append:/home/darrow/.openclaw/logs/eimemory-rpc.service.log"
         in unit_text
     )
+    assert "WantedBy=multi-user.target" in unit_text
+    assert "WantedBy=default.target" not in unit_text
 
 
 def test_openclaw_watchdog_systemd_uses_primary_and_loopback_health_gates() -> None:
@@ -158,6 +160,7 @@ def test_immutable_release_installer_normalizes_service_ownership() -> None:
     assert 'SERVICE_USER="${SERVICE_USER:-darrow}"' in script
     assert 'SERVICE_GROUP="${SERVICE_GROUP:-$SERVICE_USER}"' in script
     assert 'SERVICE_HOME="${SERVICE_HOME:-/home/$SERVICE_USER}"' in script
+    assert 'SYSTEMD_ENABLE_SERVICE="${SYSTEMD_ENABLE_SERVICE:-1}"' in script
     assert "_ensure_runtime_dir" in script
     assert '"$INSTALL_ROOT"' in script
     assert '"$EIMEMORY_ROOT"' in script
@@ -165,3 +168,5 @@ def test_immutable_release_installer_normalizes_service_ownership() -> None:
     assert '"$EIMEMORY_LOG_DIR"' in script
     assert 'id "$SERVICE_USER" >/dev/null 2>&1' in script
     assert 'chown -R "$SERVICE_USER:$SERVICE_GROUP"' in script
+    assert 'install -m 0644 "$RELEASE_DIR/deploy/systemd/eimemory-rpc.service" "$SYSTEMD_UNIT_DIR/eimemory-rpc.service"' in script
+    assert "systemctl enable eimemory-rpc.service" in script

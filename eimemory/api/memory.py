@@ -320,6 +320,11 @@ class MemoryAPI:
         )
         if rule_recall_items:
             items = self._dedupe_records([*rule_recall_items, *items])[:limit]
+        items, online_gate_counts = self._apply_online_recall_pollution_gate(
+            items,
+            allow_operational_recall=operational_recall_allowed,
+        )
+        blocked_counts.update(online_gate_counts)
         if blocked_counts:
             recall_filters["blocked_counts"] = dict(sorted(blocked_counts.items()))
         final_view = build_recall_view(
@@ -377,6 +382,11 @@ class MemoryAPI:
                 "quality_summary": self._quality_summary(items),
                 "source_composition": self._source_composition(items),
                 "selected_records": self._selected_record_summaries(items),
+                "online_recall_gate": {
+                    "ok": True,
+                    "mode": "bypassed" if operational_recall_allowed else "enforced",
+                    "blocked_counts": dict(sorted(online_gate_counts.items())),
+                },
                 "scoring": self._scoring_for_items(items, search_report),
                 "recall_intent": self._recall_intent_summary(recall_intent),
                 "query_scopes": [self._scope_dict(item) for item in query_scope_refs],
@@ -558,6 +568,32 @@ class MemoryAPI:
             filtered.append(item)
         return filtered, blocked_counts
 
+    def _apply_online_recall_pollution_gate(
+        self,
+        items: list[RecordEnvelope],
+        *,
+        allow_operational_recall: bool,
+    ) -> tuple[list[RecordEnvelope], Counter[str]]:
+        if allow_operational_recall:
+            return items, Counter()
+        filtered: list[RecordEnvelope] = []
+        blocked_counts: Counter[str] = Counter()
+        for item in items:
+            reason = self._online_recall_pollution_reason(item)
+            if reason:
+                blocked_counts[reason] += 1
+                continue
+            filtered.append(item)
+        return filtered, blocked_counts
+
+    def _online_recall_pollution_reason(self, item: RecordEnvelope) -> str:
+        if self._is_stale_rule_record(item):
+            return "stale_rule"
+        lane = self._record_recall_lane(item)
+        if lane in _DEFAULT_BLOCKED_RECALL_LANES:
+            return lane
+        return ""
+
     def _record_allowed_by_recall_filters(self, item: RecordEnvelope, recall_filters: dict) -> bool:
         return not bool(self._record_recall_filter_block_reason(item, recall_filters))
 
@@ -634,6 +670,22 @@ class MemoryAPI:
         ):
             return True
         if not allow_operational_recall and self._record_recall_lane(item) in _DEFAULT_BLOCKED_RECALL_LANES:
+            return True
+        return False
+
+    @staticmethod
+    def _is_stale_rule_record(item: RecordEnvelope) -> bool:
+        if item.kind != "rule":
+            return False
+        if str(item.status or "").strip().lower() not in {"active", "accepted"}:
+            return True
+        meta = business_metadata(item.meta)
+        watch = meta.get("post_promotion_watch") if isinstance(meta, dict) else {}
+        if isinstance(watch, dict) and str(watch.get("status") or "").strip().lower() in {
+            "rolled_back",
+            "quarantined",
+            "rejected",
+        }:
             return True
         return False
 

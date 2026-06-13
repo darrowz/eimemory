@@ -164,6 +164,51 @@ def test_runtime_recall_pollution_guard_blocks_operational_lanes_by_default(tmp_
         runtime.close()
 
 
+def test_runtime_recall_online_gate_blocks_rolled_back_rules_after_promotion_insert(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu", "workspace_id": "embodied"}
+    scope_ref = ScopeRef.from_dict(scope)
+    try:
+        useful = runtime.memory.ingest(
+            text="鸿哥沟通风格：极简、直接、讨厌废话，先给结论。",
+            memory_type="preference",
+            title="鸿哥沟通风格",
+            scope=scope,
+            force_capture=True,
+        )
+        stale_rule = runtime.store.append(
+            RecordEnvelope.create(
+                kind="rule",
+                title="鸿哥沟通风格旧规则",
+                summary="鸿哥沟通风格旧规则：这条规则已经被回滚，不应进入普通召回。",
+                detail="鸿哥沟通风格旧规则：这条规则已经被回滚，不应进入普通召回。",
+                content={"text": "鸿哥沟通风格旧规则：这条规则已经被回滚，不应进入普通召回。"},
+                scope=scope_ref,
+                status="active",
+                meta={
+                    "task_type": "operator_preference",
+                    "post_promotion_watch": {"status": "rolled_back"},
+                },
+            )
+        )
+
+        bundle = runtime.memory.recall(
+            query="鸿哥 沟通风格",
+            scope=scope,
+            task_context={"task_type": "operator_preference"},
+            limit=5,
+        )
+
+        ids = {item.record_id for item in bundle.items}
+        assert useful.record_id in ids
+        assert stale_rule.record_id not in ids
+        assert bundle.explanation["online_recall_gate"]["ok"] is True
+        assert bundle.explanation["online_recall_gate"]["blocked_counts"]["stale_rule"] >= 1
+        assert bundle.explanation["recall_filters"]["blocked_counts"]["stale_rule"] >= 1
+    finally:
+        runtime.close()
+
+
 def test_runtime_recall_diagnostic_mode_can_include_operational_lanes(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     scope = ScopeRef(agent_id="hongtu", workspace_id="embodied")
