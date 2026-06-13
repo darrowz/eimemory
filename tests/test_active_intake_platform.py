@@ -252,6 +252,9 @@ def test_nightly_jobs_can_run_configured_production_recall_eval(tmp_path, monkey
     assert report["production_recall"]["configured"] is True
     assert report["production_recall"]["seeded"] is False
     assert report["production_recall"]["hit_at_1"] == 1.0
+    assert report["production_recall"]["quality_gate"]["ok"] is True
+    assert report["production_recall"]["passed_threshold"] is True
+    assert report["recall_quality_gate"]["ok"] is True
     assert report["production_recall"]["latency_ms_p95"] >= 0.0
 
 

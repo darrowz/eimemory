@@ -92,6 +92,10 @@ def test_nightly_systemd_unit_sets_autonomous_learning_promotion_budget() -> Non
 def test_eimemory_rpc_systemd_unit_uses_honxin_tailscale_endpoint() -> None:
     unit_text = Path("deploy/systemd/eimemory-rpc.service").read_text(encoding="utf-8")
 
+    assert "User=darrow" in unit_text
+    assert "Group=darrow" in unit_text
+    assert "UMask=0027" in unit_text
+    assert "Environment=HOME=/home/darrow" in unit_text
     assert (
         "ExecStart=/opt/eimemory/current/.venv/bin/eimemory serve-eibrain-rpc --host 100.105.189.120 --port 8091"
         in unit_text
@@ -146,3 +150,18 @@ def test_immutable_release_installer_documents_non_editable_runtime() -> None:
     assert "pip install \"$RELEASE_DIR\"" in script
     assert "pip install -e" not in script
     assert "/opt/eimemory" in script
+
+
+def test_immutable_release_installer_normalizes_service_ownership() -> None:
+    script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
+
+    assert 'SERVICE_USER="${SERVICE_USER:-darrow}"' in script
+    assert 'SERVICE_GROUP="${SERVICE_GROUP:-$SERVICE_USER}"' in script
+    assert 'SERVICE_HOME="${SERVICE_HOME:-/home/$SERVICE_USER}"' in script
+    assert "_ensure_runtime_dir" in script
+    assert '"$INSTALL_ROOT"' in script
+    assert '"$EIMEMORY_ROOT"' in script
+    assert '"$EIMEMORY_CONFIG_DIR"' in script
+    assert '"$EIMEMORY_LOG_DIR"' in script
+    assert 'id "$SERVICE_USER" >/dev/null 2>&1' in script
+    assert 'chown -R "$SERVICE_USER:$SERVICE_GROUP"' in script

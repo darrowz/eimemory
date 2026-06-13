@@ -4,7 +4,7 @@ import json
 
 from eimemory.api.runtime import Runtime
 from eimemory.cli.main import main as cli_main
-from eimemory.evaluation.production_recall import run_production_recall_eval
+from eimemory.evaluation.production_recall import evaluate_production_recall_quality_gate, run_production_recall_eval
 
 
 def _scope() -> dict[str, str]:
@@ -171,6 +171,10 @@ def test_production_recall_eval_reports_regression_metrics(tmp_path) -> None:
     assert report["hit_at_k"] == 1.0
     assert report["hit_at_5"] == 1.0
     assert report["mrr"] == 1.0
+    assert report["quality_gate"]["ok"] is True
+    assert report["quality_gate"]["thresholds"]["hit_at_1"] == 0.7
+    assert report["quality_gate"]["thresholds"]["latency_ms_p95"] == 1500.0
+    assert report["passed_threshold"] is True
     assert report["outcome_pollution_rate"] == 0.0
     assert report["reflection_pollution_rate"] == 0.0
     assert report["empty_rate"] == 0.0
@@ -211,3 +215,26 @@ def test_cli_eval_production_recall_writes_report_file(tmp_path, monkeypatch, ca
     assert written["legacy_report_type"] == "production_recall_eval"
     assert written["sample_count"] == 5
     assert written["outcome_pollution_rate"] == 0.0
+
+
+def test_production_recall_quality_gate_blocks_pollution_and_latency() -> None:
+    gate = evaluate_production_recall_quality_gate(
+        {
+            "sample_count": 20,
+            "hit_at_1": 0.7,
+            "hit_at_5": 0.9,
+            "false_recall_rate": 0.0,
+            "forbidden_hit_rate": 0.0,
+            "audit_pollution_rate": 0.06,
+            "incident_pollution_rate": 0.0,
+            "evolution_pollution_rate": 0.0,
+            "stale_rule_pollution_rate": 0.0,
+            "selected_record_pollution_rate": 0.0,
+            "latency_ms_p95": 1500.1,
+        }
+    )
+
+    assert gate["ok"] is False
+    assert gate["blocked_reason"] == "recall_quality_gate_failed"
+    assert gate["blocking_metrics"]["audit_pollution_rate"]["actual"] == 0.06
+    assert gate["blocking_metrics"]["latency_ms_p95"]["actual"] == 1500.1

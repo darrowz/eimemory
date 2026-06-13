@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from eimemory.api.runtime import Runtime
+from eimemory.evaluation.production_recall import evaluate_production_recall_quality_gate
 from eimemory.intake.loop import candidates_to_records
 from eimemory.metadata import business_metadata
 from eimemory.models.records import RecordEnvelope, ScopeRef
@@ -124,6 +125,13 @@ def run_nightly_jobs(
         "memory_eval_ci": memory_eval_ci_report,
         "production_recall": production_recall_report,
         "recall_quality": production_recall_report,
+        "recall_quality_gate": production_recall_report.get("quality_gate") or {
+            "ok": False,
+            "blocked_reason": production_recall_report.get("eval_skipped_reason")
+            or production_recall_report.get("error")
+            or "recall_quality_unavailable",
+            "blocking_metrics": {},
+        },
         "judgment_evaluation": judgment_evaluation_report,
         "source_discovery": source_discovery_report,
         "source_quality": {
@@ -329,6 +337,11 @@ def _run_production_recall_eval(runtime: Runtime, *, scope: dict) -> dict[str, A
                 raise
             report = _json_safe(run_eval(dataset, seed=False, scope=scope))
         if isinstance(report, dict):
+            if "quality_gate" not in report:
+                report["quality_gate"] = evaluate_production_recall_quality_gate(report)
+                report["passed_threshold"] = bool(report["quality_gate"].get("ok"))
+                report["gate_ok"] = bool(report["quality_gate"].get("ok"))
+                report["blocked_reason"] = "" if report["gate_ok"] else str(report["quality_gate"].get("blocked_reason") or "")
             return {**report, "configured": True, "seeded": False, "dataset_source": dataset_source}
         return {
             "ok": False,

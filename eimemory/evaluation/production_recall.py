@@ -22,6 +22,24 @@ from eimemory.metadata import business_metadata
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
+RECALL_QUALITY_GATE_THRESHOLDS: dict[str, float] = {
+    "hit_at_1": 0.70,
+    "hit_at_5": 0.90,
+    "false_recall_rate": 0.05,
+    "forbidden_hit_rate": 0.05,
+    "outcome_pollution_rate": 0.05,
+    "reflection_pollution_rate": 0.05,
+    "audit_pollution_rate": 0.05,
+    "incident_pollution_rate": 0.05,
+    "evolution_pollution_rate": 0.05,
+    "stale_rule_pollution_rate": 0.05,
+    "selected_record_pollution_rate": 0.05,
+    "latency_ms_p95": 1500.0,
+}
+
+_MIN_GATE_METRICS = {"hit_at_1", "hit_at_5"}
+
+
 def normalize_production_recall_dataset(dataset: dict | list) -> dict[str, Any]:
     if isinstance(dataset, list):
         raw = {"name": "production_recall", "cases": dataset}
@@ -159,7 +177,7 @@ def _run_production_recall_eval_on_runtime(
 
     sample_count = len(sample_reports)
     pass_count = sum(1 for sample in sample_reports if bool(sample.get("passed")))
-    return {
+    report = {
         "ok": True,
         "schema_version": 2,
         "report_type": "recall_quality_report",
@@ -195,6 +213,46 @@ def _run_production_recall_eval_on_runtime(
         "injection_withheld_rate": round(sum(injection_withheld_rates) / sample_count, 3) if sample_count else 0.0,
         "empty_rate": round(empty_count / sample_count, 3) if sample_count else 0.0,
         "samples": sample_reports,
+    }
+    quality_gate = evaluate_production_recall_quality_gate(report)
+    return {
+        **report,
+        "quality_gate": quality_gate,
+        "passed_threshold": bool(quality_gate.get("ok")),
+        "gate_ok": bool(quality_gate.get("ok")),
+        "blocked_reason": "" if quality_gate.get("ok") else str(quality_gate.get("blocked_reason") or ""),
+    }
+
+
+def evaluate_production_recall_quality_gate(
+    report: dict[str, Any],
+    *,
+    thresholds: dict[str, float] | None = None,
+) -> dict[str, Any]:
+    limits = dict(RECALL_QUALITY_GATE_THRESHOLDS)
+    if thresholds:
+        limits.update({str(key): float(value) for key, value in thresholds.items()})
+
+    blocking: dict[str, dict[str, Any]] = {}
+    sample_count = int(report.get("sample_count") or 0)
+    if sample_count <= 0:
+        blocking["sample_count"] = {"actual": sample_count, "threshold": 1, "operator": ">="}
+
+    for metric, threshold in limits.items():
+        actual = float(report.get(metric) or 0.0)
+        if metric in _MIN_GATE_METRICS:
+            if actual < threshold:
+                blocking[metric] = {"actual": actual, "threshold": threshold, "operator": ">="}
+        elif actual > threshold:
+            blocking[metric] = {"actual": actual, "threshold": threshold, "operator": "<="}
+
+    ok = not blocking
+    return {
+        "ok": ok,
+        "policy": "production_recall_pollution_gate",
+        "blocked_reason": "" if ok else "recall_quality_gate_failed",
+        "thresholds": limits,
+        "blocking_metrics": blocking,
     }
 
 
@@ -273,7 +331,6 @@ def _run_case(
     )
     expected_policy_ids = _normalize_set(case.get("expected_policy_ids") or case.get("expect_any_policy_id"), lower=False)
     policy_hit = _policy_hit(policy_suggestions, expected_policy_ids=expected_policy_ids)
-    outcome_polluted = any(_is_outcome_pollution(item) for item in returned)
     reflection_returned = any(_is_reflection_record(item) for item in returned)
     reflection_allowed = _allows_reflection_results(
         query=query,
@@ -281,12 +338,13 @@ def _run_case(
         expected_record_ids=expected_record_ids,
         returned=returned,
     )
+    outcome_polluted = any(_is_outcome_pollution(item) for item in returned) and not reflection_allowed
     reflection_polluted = reflection_returned and not reflection_allowed
     audit_polluted = any(_record_recall_lane(item) == "audit_record" for item in returned) and not reflection_allowed
-    incident_polluted = any(_record_recall_lane(item) == "incident_report" for item in returned)
-    evolution_polluted = any(_record_recall_lane(item) == "evolution_artifact" for item in returned)
+    incident_polluted = any(_record_recall_lane(item) == "incident_report" for item in returned) and not reflection_allowed
+    evolution_polluted = any(_record_recall_lane(item) == "evolution_artifact" for item in returned) and not reflection_allowed
     stale_rule_polluted = any(_is_stale_rule_record(item) for item in returned)
-    selected_record_polluted = any(_selected_record_is_polluted(item) for item in selected_records)
+    selected_record_polluted = any(_selected_record_is_polluted(item) for item in selected_records) and not reflection_allowed
     forbidden_by_case = any(
         _record_forbidden(
             record=item,
@@ -683,7 +741,8 @@ def _recall_quality_report_record(report: dict[str, Any], *, scope: ScopeRef) ->
         f"Recall quality {name}: "
         f"hit@1={float(report.get('hit_at_1') or 0.0):.3f}, "
         f"hit@5={float(report.get('hit_at_5') or 0.0):.3f}, "
-        f"p95={float(report.get('latency_ms_p95') or 0.0):.1f}ms"
+        f"p95={float(report.get('latency_ms_p95') or 0.0):.1f}ms, "
+        f"gate={'ok' if (report.get('quality_gate') or {}).get('ok') else 'blocked'}"
     )
     return RecordEnvelope.create(
         kind="reflection",
@@ -701,6 +760,7 @@ def _recall_quality_report_record(report: dict[str, Any], *, scope: ScopeRef) ->
             "hit_at_1": float(report.get("hit_at_1") or 0.0),
             "hit_at_5": float(report.get("hit_at_5") or 0.0),
             "latency_ms_p95": float(report.get("latency_ms_p95") or 0.0),
+            "quality_gate_ok": bool((report.get("quality_gate") or {}).get("ok")),
         },
         provenance={
             "report_type": "recall_quality_report",
