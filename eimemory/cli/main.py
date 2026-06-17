@@ -35,6 +35,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command")
 
     sub.add_parser("init")
+    sub.add_parser("emergency-stop")
 
     ingest = sub.add_parser("ingest")
     ingest.add_argument("text")
@@ -556,7 +557,7 @@ def main(argv: list[str] | None = None) -> int:
         print(
             json.dumps(
                 {
-                    "usage": "eimemory init|ingest|recall|paper|source|intake|export|import|backup|migrate|brief|nightly|quality|identity|living|reflect|experience|learn|governance|evolve|eval|serve-eibrain-rpc",
+                    "usage": "eimemory init|emergency-stop|ingest|recall|paper|source|intake|export|import|backup|migrate|brief|nightly|quality|identity|living|reflect|experience|learn|governance|evolve|eval|serve-eibrain-rpc",
                 }
             )
         )
@@ -608,6 +609,12 @@ def main(argv: list[str] | None = None) -> int:
         runtime.store.root.mkdir(parents=True, exist_ok=True)
         (runtime.store.root / "state").mkdir(parents=True, exist_ok=True)
         print(json.dumps({"ok": True, "root": str(runtime.store.root)}, ensure_ascii=False, indent=2))
+        return 0
+    if parsed.command == "emergency-stop":
+        from eimemory.governance.safety.kill_switch import emergency_stop
+
+        emergency_stop()
+        print(json.dumps({"ok": True, "command": "emergency-stop"}, ensure_ascii=False))
         return 0
     if parsed.command == "ingest":
         record = runtime.memory.ingest(
