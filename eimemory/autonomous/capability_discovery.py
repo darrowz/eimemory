@@ -1,9 +1,12 @@
-"""Discover new capabilities from weakness/incident clustering."""
+﻿"""Discover new capabilities from weakness/incident clustering."""
 from collections import Counter
 from pathlib import Path
 import json
+import logging
 from datetime import datetime, timedelta, timezone
 import re
+
+log = logging.getLogger(__name__)
 
 EXISTING_CAPABILITIES = {"code.implementation"}
 
@@ -59,4 +62,7 @@ def discover_new_capabilities(
         cap = _bucket(summary)
         if cap:
             buckets[cap] += 1
-    return [c for c, n in buckets.most_common() if n >= min_count and c not in EXISTING_CAPABILITIES]
+    discovered = [c for c, n in buckets.most_common() if n >= min_count and c not in EXISTING_CAPABILITIES]
+    if discovered:
+        log.info("capability_discovery discovered=%s", discovered)
+    return discovered

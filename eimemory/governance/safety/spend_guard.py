@@ -20,10 +20,13 @@ declare a sandbox for the gate to allow a call.
 """
 from __future__ import annotations
 
+import logging
 import os
 import socket
 import sys
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 
 def _default_sandbox_hostnames_file() -> Path:
@@ -78,4 +81,8 @@ def assert_no_paid_spend(*, call_site: str) -> None:
     """
     hostname = socket.gethostname()
     if hostname not in _sandbox_hostnames():
+        log.warning(
+            "paid_api_blocked hostname=%s call_site=%s",
+            hostname, call_site,
+        )
         raise PaidApiBlocked(hostname, call_site)

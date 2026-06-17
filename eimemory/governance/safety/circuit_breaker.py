@@ -13,10 +13,13 @@ on budget exhaustion, callers MUST see an exception, never a silent allow.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 
 def _atomic_write_json(path: Path, payload: dict) -> None:
@@ -106,7 +109,15 @@ class CircuitBreaker:
         if not isinstance(current, int):
             current = 0
         if current >= budget:
+            log.warning(
+                "circuit_breaker_trip action_class=%s count=%d budget=%d",
+                action_class, current, budget,
+            )
             raise BudgetExceeded(action_class)
+        log.info(
+            "circuit_breaker_consume action_class=%s new_count=%d budget=%d",
+            action_class, current + 1, budget,
+        )
         self.state[action_class]["count"] = current + 1
         self._save()
 

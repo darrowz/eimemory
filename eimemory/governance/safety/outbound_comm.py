@@ -14,6 +14,7 @@ message body — auditors can verify delivery without leaking content.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -63,7 +64,7 @@ class OutboundComm:
             "ts": datetime.now(timezone.utc).isoformat(),
             "channel": channel,
             "recipient": recipient,
-            "payload_hash": hash(payload),
+            "payload_hash": hashlib.sha256(payload.encode("utf-8")).hexdigest(),
         }
         with self.path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(row) + "\n")

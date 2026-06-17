@@ -165,10 +165,24 @@ def generate_hypotheses_from_weaknesses(
     if not bucket_counts:
         return [f"baseline: no recent weakness/incident in {days}d"]
 
-    return [
+    hyps = [
         _format_hypothesis(bucket, count)
         for bucket, count in bucket_counts.most_common(max_n)
     ]
+    log.info("hypothesis_generated source=hypothesis.py count=%d", len(hyps))
+    return hyps
+
+
+# Logging hook: emit one structured event per hypothesis set so the
+# audit chain can correlate hypothesis generation with downstream
+# experiments without forcing callers to instrument the call site.
+import logging
+log = logging.getLogger(__name__)
+
+
+def log_hypotheses(hyps: list[str], *, source: str = "hypothesis.py") -> None:
+    """Emit one log record summarising the generated hypothesis set."""
+    log.info("hypothesis_generated source=%s count=%d", source, len(hyps))
 
 
 if __name__ == "__main__":
