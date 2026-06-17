@@ -13,8 +13,29 @@ on budget exhaustion, callers MUST see an exception, never a silent allow.
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+
+def _atomic_write_json(path: Path, payload: dict) -> None:
+    """Atomically write JSON to ``path`` (write to temp, fsync, replace)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=path.name + ".", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(payload, sort_keys=True, ensure_ascii=False))
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except Exception:
+        # Clean up the temp file on any failure so we don't leave junk behind.
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 class BudgetExceeded(Exception):
@@ -49,9 +70,7 @@ class CircuitBreaker:
         return json.loads(self.path.read_text(encoding="utf-8"))
 
     def _save(self) -> None:
-        self.path.write_text(
-            json.dumps(self.state, sort_keys=True), encoding="utf-8"
-        )
+        _atomic_write_json(self.path, self.state)
 
     def _budget_for(self, action_class: str) -> int:
         return self.DEFAULT_BUDGETS.get(action_class, self.default_budget)

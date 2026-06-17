@@ -1,4 +1,4 @@
-"""Hard kill switch for any autonomous eimemory process. Always available.
+﻿"""Hard kill switch for any autonomous eimemory process. Always available.
 
 Cross-platform implementation:
 - Windows: ``signal.SIGTERM`` is mapped by the standard signal module to
@@ -7,8 +7,7 @@ Cross-platform implementation:
   hint to also kill child PIDs (best-effort: we walk the process tree
   via ``taskkill /T``). The audit log is written under ``%LOCALAPPDATA%``
   since ``/var/lib/eimemory`` is not writable.
-- POSIX: the original ``pkill -9 -f eimemory`` / ``kill -<pgid> SIGKILL``
-  semantics are preserved.
+- POSIX: the original ``pkill -9 -f eimemory`` / ``kill -<pgid> SIGKILL`` semantics are preserved. NOTE: ``pkill -9 -f eimemory`` matches any process whose command line contains ``eimemory`` (including the caller of ``emergency_stop()`` itself); self-termination is by design.
 
 The function is idempotent: repeated calls are safe, and an unknown pid
 is a no-op (ProcessLookupError is swallowed).
