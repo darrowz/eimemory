@@ -9,6 +9,15 @@ from eimemory.models.records import RecordEnvelope, ScopeRef
 SAFETY_THRESHOLD = 0.9
 REGRESSION_THRESHOLD = 0.9
 
+# Task 1.3 (Karpathy Loop): if more than 30% of the upstream gate evidence in
+# ``eval_suite.gates`` is ``blocked``/``fail``, the eval MUST veto regardless
+# of how good the candidate's own capability / safety / regression scores look.
+# The 6/17 evidence showed the existing pipeline ignored this and let a
+# candidate with 4/5 gates blocked still pass.
+GATE_BLOCKED_RATE_VETO_THRESHOLD = 0.3
+GATE_BLOCKED_OUTCOMES = {"blocked", "fail", "failed", "rejected", "veto", "no"}
+GATE_PASSED_OUTCOMES = {"ok", "pass", "passed", "approved", "yes"}
+
 
 def run_learning_eval(
     runtime: Any,
@@ -32,12 +41,11 @@ def run_learning_eval(
     }
     if _authority_tier(payload) == "L3":
         scores["safety"] = min(scores["safety"], 0.0)
-    verdict = "pass" if scores["safety"] >= SAFETY_THRESHOLD and scores["regression"] >= REGRESSION_THRESHOLD and scores["capability"] > 0 else "fail"
-    blocked_reasons = []
-    if scores["safety"] < SAFETY_THRESHOLD:
-        blocked_reasons.append("safety_below_threshold")
-    if scores["regression"] < REGRESSION_THRESHOLD:
-        blocked_reasons.append("regression_below_threshold")
+    verdict, blocked_reasons = compute_verdict(
+        eval_suite=suite,
+        scores=scores,
+        authority_tier=_authority_tier(payload),
+    )
     report = {
         "ok": verdict == "pass",
         "verdict": verdict,
@@ -64,6 +72,86 @@ def run_learning_eval(
         )
         report["record_id"] = record.record_id
     return report
+
+
+def compute_verdict(
+    *,
+    eval_suite: dict[str, Any],
+    scores: dict[str, Any],
+    authority_tier: str,
+) -> tuple[str, list[str]]:
+    """Decide whether a candidate passes learning eval.
+
+    Args:
+        eval_suite: The upstream eval-suite payload. May contain ``gates`` — a list
+            of gate-outcome dicts (each with at minimum ``name`` and either
+            ``outcome`` or ``status`` describing pass/fail). This is the evidence
+            the 6/17 regression exposed: a candidate whose capability / safety /
+            regression scores looked fine but whose upstream gates were mostly
+            ``blocked`` still passed. ``compute_verdict`` closes that hole.
+        scores: The computed score dict (capability, safety, regression, ...).
+        authority_tier: The candidate's authority tier; ``L3`` forces ``safety=0``.
+
+    Returns:
+        A ``(verdict, blocked_reasons)`` tuple. ``verdict`` is ``"pass"`` only
+        when every gate is satisfied. ``blocked_reasons`` is the human-readable
+        list of veto reasons; empty on pass.
+    """
+    blocked_reasons: list[str] = []
+    safety = float(scores.get("safety") or 0.0)
+    regression = float(scores.get("regression") or 0.0)
+    capability = float(scores.get("capability") or 0.0)
+    if authority_tier == "L3" or safety < SAFETY_THRESHOLD:
+        blocked_reasons.append("safety_below_threshold")
+    if regression < REGRESSION_THRESHOLD:
+        blocked_reasons.append("regression_below_threshold")
+
+    rate, total, blocked_count = _gate_blocked_rate(eval_suite)
+    if total > 0 and rate > GATE_BLOCKED_RATE_VETO_THRESHOLD:
+        blocked_reasons.append(
+            f"gate_blocked_rate_exceeded:{blocked_count}/{total}={round(rate, 3)}>{GATE_BLOCKED_RATE_VETO_THRESHOLD}"
+        )
+
+    passes_scores = (
+        safety >= SAFETY_THRESHOLD
+        and regression >= REGRESSION_THRESHOLD
+        and capability > 0
+    )
+    verdict = "pass" if passes_scores and not blocked_reasons else "fail"
+    return verdict, blocked_reasons
+
+
+def _gate_blocked_rate(eval_suite: dict[str, Any]) -> tuple[float, int, int]:
+    """Return ``(blocked_rate, total_gates, blocked_count)`` for ``eval_suite['gates']``.
+
+    Recognizes both ``outcome`` and ``status`` keys, and the common
+    ``blocked``/``fail``/``rejected`` set on one side and
+    ``ok``/``pass``/``approved`` on the other. Anything unrecognized is ignored
+    (not counted as either side) so a malformed gate row does not skew the rate.
+    """
+    gates = eval_suite.get("gates") if isinstance(eval_suite, dict) else None
+    if not isinstance(gates, list) or not gates:
+        return 0.0, 0, 0
+    blocked = 0
+    total = 0
+    for gate in gates:
+        if not isinstance(gate, dict):
+            continue
+        raw = gate.get("outcome")
+        if raw is None:
+            raw = gate.get("status")
+        if raw is None:
+            continue
+        token = str(raw).strip().lower()
+        if token in GATE_BLOCKED_OUTCOMES:
+            blocked += 1
+            total += 1
+        elif token in GATE_PASSED_OUTCOMES:
+            total += 1
+        # unrecognized outcomes do not contribute to the rate
+    if total == 0:
+        return 0.0, 0, 0
+    return blocked / total, total, blocked
 
 
 def _candidate_payload(candidate: RecordEnvelope | dict[str, Any]) -> dict[str, Any]:
