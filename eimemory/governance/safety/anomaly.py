@@ -16,9 +16,29 @@ process restarts; the file is read on construction and rewritten on every
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from collections import defaultdict
 from pathlib import Path
 from statistics import mean, pstdev
+
+
+def _atomic_write_json(path: Path, payload: dict) -> None:
+    """Atomically write JSON to ``path`` (write to temp, fsync, replace)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=path.name + ".", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(payload, sort_keys=True, ensure_ascii=False))
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 class AnomalyDetector:
@@ -57,13 +77,14 @@ class AnomalyDetector:
     def check(self, action_class: str, count: int, *, day: int, hour: int) -> bool:
         """Return True iff ``count`` deviates more than ``sigma`` std-deviations from the bucket baseline.
 
-        Minimum-history guard is ``< 1`` (empty bucket only) — not the plan's ``< 3``.
-        Rationale: ``day % window_days`` bucketing gives 1 sample per bucket per week,
-        so a ``< 3`` guard would suppress detection for the entire first week of any
-        new detector. The ``s < 0.001`` early-return is replaced with a stdev floor
-        (``max(observed, max(mean*0.1, 1.0))``) so a constant baseline still produces
-        a meaningful z-score against a spike (e.g. 10 -> 100). Plan deviation,
-        documented in the Task 0.6 report-back.
+        Minimum-history guard is empty-bucket-only (returns False on no
+        history at all). Rationale: ``day % window_days`` bucketing
+        gives 1 sample per bucket per week, so a ``< 3`` guard would
+        suppress detection for the entire first week of any new
+        detector. The stdev floor (``max(observed, max(mean*0.1, 1.0))``)
+        keeps a constant baseline producing a meaningful z-score against
+        a spike (e.g. 10 -> 100). Plan deviation, documented in the
+        Task 0.6 report-back.
         """
         key = f"{action_class}:d{day % self.window_days}:h{hour}"
         history = self.baselines.get(key, [])
@@ -77,6 +98,4 @@ class AnomalyDetector:
         return z > self.sigma
 
     def _save(self) -> None:
-        self.path.write_text(
-            json.dumps(dict(self.baselines), sort_keys=True), encoding="utf-8"
-        )
+        _atomic_write_json(self.path, dict(self.baselines))
