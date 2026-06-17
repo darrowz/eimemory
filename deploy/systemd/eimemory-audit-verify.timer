@@ -1,0 +1,10 @@
+[Unit]
+Description=Hourly eimemory audit chain verify (calls kill switch on break)
+
+[Timer]
+OnCalendar=*:00
+Persistent=true
+Unit=eimemory-audit-verify.service
+
+[Install]
+WantedBy=timers.target
