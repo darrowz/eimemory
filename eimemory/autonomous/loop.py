@@ -20,7 +20,10 @@ contract that keeps the loop safe to run unattended in the sandbox:
     3. **Time-box** — ``experiment_fn`` must finish within
        ``time_box_seconds`` (default 300 s, the plan's 5-minute cap).
        Long-running experiments raise :class:`ExperimentTimeout` and
-       are written to the audit log as ``outcome=timeout``.
+       are written to the audit log as ``outcome=timeout``. The
+       worker is run in a **child process** (spawn context) so a
+       timeout terminates the worker; the worker is **not** left
+       running and can no longer mutate state.
     4. **Keep / discard** — candidate metric vs. baseline; keep if
        relative improvement >= ``keep_threshold`` (default 1%),
        otherwise discard. The decision is deterministic and
@@ -35,11 +38,28 @@ contract that keeps the loop safe to run unattended in the sandbox:
 The runner does **not** itself mutate the live state, call any paid
 API, or push to a remote. It is the per-step orchestrator; the
 promotion state machine and the nightly cron are separate modules.
+
+.. note::
+   The wrapped ``experiment_fn`` **must be picklable and
+   self-contained** because the runner executes it in a child
+   process (``multiprocessing.get_context("spawn")``). That means:
+
+   * define the function at module level, not as a ``lambda`` or
+     nested closure;
+   * do not capture shared state (file handles, locks, sockets) from
+     the parent process — the child cannot see them;
+   * do not rely on in-process singletons — they are not shared.
+
+   If a non-picklable function is supplied, the runner raises
+   :class:`TypeError` (fail-closed) rather than falling back to a
+   thread that the parent cannot actually stop.
 """
 from __future__ import annotations
 
-import threading
+import multiprocessing
+import pickle
 import time
+import warnings
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -70,6 +90,19 @@ DEFAULT_TIME_BOX_SECONDS = 300.0
 # above is kept (inclusive on the boundary to avoid fence-post
 # off-by-one on the first kept experiment).
 DEFAULT_KEEP_THRESHOLD = 0.01
+
+# Substring hints used to flag a wrapped function that *looks* like it
+# has external side effects. The runner only emits a warning (it does
+# not refuse the call) — the function is still terminated on timeout
+# because the child process is killed.
+_SIDE_EFFECT_NAME_HINTS = ("write", "save", "persist", "patch", "file", "upload")
+
+# How long to wait between SIGTERM and SIGKILL when shutting down a
+# runaway child process. Two seconds is enough for a well-behaved
+# process to honour the signal-handler hook; if the process is
+# stuck in a C extension or busy-wait loop, the second ``kill()`` is
+# the only thing that will free the CPU.
+_TERMINATE_GRACE_SECONDS = 2.0
 
 
 # ---------- exception types ----------
@@ -171,9 +204,11 @@ def run_single_experiment(
         hypothesis: Free-form dict describing the change being tried.
             Echoed in the result and the audit row.
         experiment_fn: Zero-arg callable that runs the experiment and
-            returns the candidate metric value. The runner enforces
-            the time box via a thread + join; the function itself
-            does not need to be cooperative.
+            returns the candidate metric value. **Must be a
+            picklable, module-level function** (see module docstring).
+            Lambdas, local closures, and ``functools.partial``
+            wrappers are not supported; passing one raises
+            :class:`TypeError`.
         baseline_value: The current ``metric_name`` value; the
             experiment is compared against this.
         metric_name: Name of the metric being optimised. Default
@@ -198,7 +233,10 @@ def run_single_experiment(
         BudgetExceeded: Circuit-breaker budget for
             ``"code_patch_write"`` is exhausted for the current hour.
         ExperimentTimeout: ``experiment_fn`` did not finish within
-            ``time_box_seconds``.
+            ``time_box_seconds``. The child process has already been
+            terminated at this point.
+        TypeError: ``experiment_fn`` is not picklable. The runner
+            fails closed rather than falling back to a thread.
     """
     # ---- 1. profile gate ----
     profile = load_profile(Path(profile_ini))
@@ -214,11 +252,11 @@ def run_single_experiment(
     # ---- 3. time-boxed experiment ----
     started = _now_iso()
     t0 = time.monotonic()
-    candidate = _run_with_time_box(experiment_fn, time_box_seconds)
-    elapsed = time.monotonic() - t0
-    finished = _now_iso()
-
-    if candidate is _TIMED_OUT_SENTINEL:
+    try:
+        candidate = _run_with_time_box(experiment_fn, time_box_seconds)
+    except _TimeBoxTimeout as timeout_exc:
+        elapsed = time.monotonic() - t0
+        finished = _now_iso()
         result = ExperimentResult(
             experiment_id=experiment_id,
             outcome="timeout",
@@ -236,7 +274,9 @@ def run_single_experiment(
             audit_log or AuditLog(Path(audit_path)),
             result,
         )
-        raise ExperimentTimeout(elapsed=elapsed, time_box_seconds=time_box_seconds)
+        raise ExperimentTimeout(elapsed=elapsed, time_box_seconds=time_box_seconds) from timeout_exc
+    elapsed = time.monotonic() - t0
+    finished = _now_iso()
 
     # ---- 4. keep / discard ----
     if baseline_value <= 0:
@@ -267,47 +307,156 @@ def run_single_experiment(
 
 # ---------- internals ----------
 
-# Sentinel returned by ``_run_with_time_box`` when the time box
-# expires.  Using a module-level object lets the public runner
-# distinguish a "no value because the function timed out" from a
-# legitimate ``0.0`` candidate value.
-_TIMED_OUT_SENTINEL: Any = object()
+
+class _TimeBoxTimeout(Exception):
+    """Internal-only exception raised by ``_run_with_time_box`` on timeout.
+
+    The public runner catches this and re-raises it as
+    :class:`ExperimentTimeout` (which carries the elapsed time and
+    cap). Keeping an internal type lets the runner distinguish a
+    timeout from a worker-side failure.
+    """
+
+
+def _time_box_worker(fn: Callable[[], Any], queue: Any) -> None:
+    """Top-level worker for the child process.
+
+    Must remain importable from the module so the spawn context can
+    import it without circular references. Catches **every**
+    exception (``BaseException``) so that even ``KeyboardInterrupt`` /
+    ``SystemExit`` in the child are reported as an error rather than
+    leaving the parent waiting forever.
+    """
+    try:
+        result = fn()
+    except BaseException as exc:  # noqa: BLE001 — converted to RuntimeError in parent
+        try:
+            queue.put(("error", type(exc).__name__, str(exc)))
+        except Exception:
+            # If we cannot even enqueue the error, the parent will
+            # observe a dead process and surface that as a runtime
+            # error. Nothing more we can do.
+            pass
+        return
+    try:
+        queue.put(("ok", result))
+    except Exception:
+        pass
+
+
+def _is_picklable(value: Any) -> bool:
+    """Return True iff ``value`` can be pickled by the default protocol.
+
+    Used to fail closed before spawning a child process when the
+    caller's function is a lambda or local closure.
+    """
+    try:
+        pickle.dumps(value)
+    except Exception:
+        return False
+    return True
+
+
+def _looks_like_side_effect(fn: Any) -> bool:
+    """Heuristic: does the function name hint at external side effects?
+
+    Used only to emit a ``UserWarning`` when the worker is about to
+    be killed. The runner does not refuse the call — the child
+    process is terminated either way — but operators deserve a
+    visible signal that a function with a name like ``write_xxx``
+    may have left a half-written file behind.
+    """
+    name = getattr(fn, "__name__", "") or ""
+    name = name.lower()
+    return any(hint in name for hint in _SIDE_EFFECT_NAME_HINTS)
 
 
 def _run_with_time_box(
-    fn: Callable[[], float],
+    fn: Callable[[], Any],
     time_box_seconds: float,
 ) -> Any:
-    """Run ``fn`` in a worker thread, return its result, or sentinel on timeout.
+    """Run ``fn`` in a child process, return its result, or raise on timeout.
 
-    The thread cannot be killed from the outside in Python; the
-    function continues running in the background after a timeout, but
-    the runner no longer waits for it.  This matches the Phase 2
-    plan's "hard time box" — the experiment is recorded as
-    ``timeout`` and a new experiment can be started.  The leaked
-    thread is the price of the hard cap; in the sandbox v1 it is
-    acceptable because the wrapped function is a pure metric
-    evaluation, not a long-lived daemon.
+    The child runs in the ``spawn`` start method so the worker can be
+    **terminated** when the time box expires. With a daemon thread
+    (the previous implementation) the worker kept running and could
+    still mutate state after the runner had already declared the
+    experiment ``timeout`` — that is the bug this code fixes.
+
+    Contract:
+
+    * Returns ``fn()`` if the worker finishes within the time box.
+    * Raises :class:`_TimeBoxTimeout` if the time box expires. The
+      child process is terminated (and, if necessary, killed) before
+      this returns. The public runner converts the internal timeout
+      into :class:`ExperimentTimeout` for the audit log.
+    * Raises :class:`RuntimeError` if the worker raised. The error
+      text carries the original exception type name and message.
+    * Raises :class:`TypeError` if ``fn`` is not picklable (e.g. a
+      ``lambda`` or local closure). The runner fails closed rather
+      than silently falling back to a thread.
     """
-    box: dict[str, Any] = {"value": _TIMED_OUT_SENTINEL, "error": None}
-    barrier = threading.Event()
+    # The picklability check is best-effort: it catches lambdas and
+    # closures up front. If the function passes the check but the
+    # underlying spawn context still fails (rare; e.g. transitively
+    # captures an unpicklable object), the start() call below
+    # converts that failure into TypeError too.
+    if not _is_picklable(fn):
+        raise TypeError(
+            "time-boxed experiment_fn must be picklable and self-contained "
+            "(module-level function, no shared state with the parent process). "
+            "Lambdas, local closures, and functools.partial over a lambda are "
+            "not supported in the child-process implementation."
+        )
 
-    def _worker() -> None:
-        try:
-            box["value"] = fn()
-        except Exception as exc:  # noqa: BLE001 — re-raised in the main thread
-            box["error"] = exc
-        finally:
-            barrier.set()
+    ctx = multiprocessing.get_context("spawn")
+    queue: Any = ctx.Queue(maxsize=1)
+    process = ctx.Process(target=_time_box_worker, args=(fn, queue), name="loop-experiment")
+    try:
+        process.start()
+    except Exception as exc:
+        raise TypeError(
+            "time-boxed experiment_fn must be picklable and self-contained "
+            "(module-level function, no shared state with the parent process)"
+        ) from exc
 
-    thread = threading.Thread(target=_worker, name="loop-experiment", daemon=True)
-    thread.start()
-    barrier.wait(timeout=time_box_seconds)
-    if not barrier.is_set():
-        return _TIMED_OUT_SENTINEL
-    if box["error"] is not None:
-        raise box["error"]
-    return box["value"]
+    process.join(time_box_seconds)
+    if process.is_alive():
+        # Timeout: terminate the worker so it can no longer mutate
+        # state. SIGTERM first (graceful), then SIGKILL after a short
+        # grace window if the process is still alive (busy-wait or
+        # stuck in a C extension).
+        if _looks_like_side_effect(fn):
+            warnings.warn(
+                f"experiment_fn {fn.__name__!r} was terminated for exceeding the "
+                f"time box of {time_box_seconds:.2f}s; check for half-written "
+                "files, partial uploads, or other unobservable state.",
+                UserWarning,
+                stacklevel=2,
+            )
+        process.terminate()
+        process.join(_TERMINATE_GRACE_SECONDS)
+        if process.is_alive():
+            process.kill()
+            process.join()
+        process.close()
+        raise _TimeBoxTimeout(time_box_seconds)
+
+    # Worker exited within the time box. Drain the result queue.
+    process.close()
+    try:
+        status, *payload = queue.get_nowait()
+    except Exception as exc:
+        raise RuntimeError(
+            f"time-boxed function exited without reporting a result: {exc!r}"
+        ) from exc
+
+    if status == "ok":
+        return payload[0]
+    # status == "error" — payload is (type_name, message)
+    if len(payload) >= 2:
+        raise RuntimeError(f"time-boxed function failed: {payload[0]}: {payload[1]}")
+    raise RuntimeError(f"time-boxed function failed: {payload!r}")
 
 
 def _now_iso() -> str:

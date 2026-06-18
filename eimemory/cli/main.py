@@ -913,7 +913,7 @@ def main(argv: list[str] | None = None) -> int:
                 scope=scope,
             )
             print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0
+            return 0 if report.get("ok", True) else 1
         if parsed.intake_command == "queue":
             if parsed.limit <= 0:
                 print(json.dumps({"ok": False, "error": "invalid_limit"}, ensure_ascii=False))

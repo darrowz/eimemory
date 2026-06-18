@@ -6,13 +6,20 @@ The runner is the single-step heart of the autoresearch loop:
     2. Circuit-breaker: ``consume('code_patch_write')`` must succeed
        (otherwise ``CircuitBreakerTrip``).
     3. Time-box: ``experiment_fn`` must finish within
-       ``time_box_seconds`` (otherwise ``ExperimentTimeout``).
+       ``time_box_seconds`` (otherwise ``ExperimentTimeout``). The
+       worker runs in a child process that is actually terminated on
+       timeout (R9 fix).
     4. Compare candidate metric to baseline; keep if relative
        improvement >= ``keep_threshold`` (default 1%), else discard.
     5. Append an audit row with action_class=code_patch_write.
 
 Mirrors ``eimemory/autonomous/loop.py``. RED-GREEN TDD per
 ``docs/superpowers/plans/2026-06-17-eimemory-karpathy-loop.md`` Task 2.2.
+
+.. note::
+   ``experiment_fn`` must be picklable (the runner uses
+   ``multiprocessing.get_context("spawn")``). Tests therefore define
+   each function at module level below instead of using ``lambda``.
 """
 from __future__ import annotations
 
@@ -40,7 +47,41 @@ from eimemory.governance.safety.profile import (
 )
 
 
+# ---------- module-level experiment functions (must be picklable) ----------
+
+
+def _fn_returns_0_42() -> float:
+    return 0.42
+
+
+def _fn_returns_0_50() -> float:
+    return 0.50
+
+
+def _fn_returns_0_404() -> float:
+    return 0.404
+
+
+def _fn_returns_0_402() -> float:
+    return 0.402
+
+
+def _fn_returns_0_30() -> float:
+    return 0.30
+
+
+def _fn_returns_0_41() -> float:
+    return 0.41
+
+
+def _slow_2s() -> float:
+    """Sleeps for two seconds — used to exceed a sub-second time box."""
+    time.sleep(2.0)
+    return 0.50
+
+
 # ---------- helpers ----------
+
 
 def _write_learning_profile(tmp_path: Path) -> Path:
     """Write a learning-profile ini under tmp_path and return its path."""
@@ -71,7 +112,7 @@ def test_profile_conservative_blocks_experiment(tmp_path: Path):
             audit_path=audit,
             experiment_id="exp-001",
             hypothesis={"kind": "rule_tweak", "text": "lower k from 8 to 4"},
-            experiment_fn=lambda: 0.42,
+            experiment_fn=_fn_returns_0_42,
             baseline_value=0.40,
             time_box_seconds=5.0,
         )
@@ -90,7 +131,7 @@ def test_profile_learning_allows_experiment(tmp_path: Path):
         audit_path=audit,
         experiment_id="exp-002",
         hypothesis={"kind": "rule_tweak", "text": "x"},
-        experiment_fn=lambda: 0.50,
+        experiment_fn=_fn_returns_0_50,
         baseline_value=0.40,
         time_box_seconds=5.0,
     )
@@ -108,7 +149,7 @@ def test_kept_on_relative_improvement_at_or_above_one_percent(tmp_path: Path):
         audit_path=audit,
         experiment_id="exp-keep",
         hypothesis={"kind": "rule_tweak", "text": "+"},
-        experiment_fn=lambda: 0.404,
+        experiment_fn=_fn_returns_0_404,
         baseline_value=0.40,
         keep_threshold=0.01,
         time_box_seconds=5.0,
@@ -127,7 +168,7 @@ def test_discarded_on_relative_improvement_below_one_percent(tmp_path: Path):
         audit_path=audit,
         experiment_id="exp-discard",
         hypothesis={"kind": "rule_tweak", "text": "-"},
-        experiment_fn=lambda: 0.402,
+        experiment_fn=_fn_returns_0_402,
         baseline_value=0.40,
         keep_threshold=0.01,
         time_box_seconds=5.0,
@@ -144,7 +185,7 @@ def test_discarded_on_regression(tmp_path: Path):
         audit_path=audit,
         experiment_id="exp-regress",
         hypothesis={"kind": "rule_tweak", "text": "bad"},
-        experiment_fn=lambda: 0.30,
+        experiment_fn=_fn_returns_0_30,
         baseline_value=0.40,
         time_box_seconds=5.0,
     )
@@ -155,14 +196,15 @@ def test_discarded_on_regression(tmp_path: Path):
 # ---------- time box ----------
 
 def test_time_box_kills_long_running_experiment(tmp_path: Path):
-    """An experiment_fn that exceeds time_box_seconds must raise ExperimentTimeout."""
+    """An experiment_fn that exceeds time_box_seconds must raise ExperimentTimeout.
+
+    With the R9 fix the child process is *terminated* on timeout, so
+    the runner returns within ``time_box_seconds + grace``, not
+    ``experiment_fn's total runtime``.
+    """
     ini = _write_learning_profile(tmp_path)
     audit = _new_audit_path(tmp_path)
     start = time.time()
-
-    def _slow():
-        time.sleep(2.0)
-        return 0.50
 
     with pytest.raises(ExperimentTimeout):
         run_single_experiment(
@@ -170,12 +212,13 @@ def test_time_box_kills_long_running_experiment(tmp_path: Path):
             audit_path=audit,
             experiment_id="exp-timeout",
             hypothesis={"kind": "rule_tweak", "text": "slow"},
-            experiment_fn=_slow,
+            experiment_fn=_slow_2s,
             baseline_value=0.40,
             time_box_seconds=0.2,
         )
     elapsed = time.time() - start
-    # Time box should be respected; the test allows generous headroom for slow CI.
+    # Time box should be respected; the test allows generous headroom
+    # for child-process spawn + SIGTERM/SIGKILL grace on Windows.
     assert elapsed < 1.5, f"runner ignored time box: ran for {elapsed:.2f}s"
 
 
@@ -193,7 +236,7 @@ def test_circuit_breaker_trips_on_fourth_experiment(tmp_path: Path):
             audit_path=audit,
             experiment_id=f"exp-cb-{i}",
             hypothesis={"kind": "rule_tweak", "text": str(i)},
-            experiment_fn=lambda: 0.50,
+            experiment_fn=_fn_returns_0_50,
             baseline_value=0.40,
             time_box_seconds=5.0,
             circuit_breaker=cb,
@@ -206,7 +249,7 @@ def test_circuit_breaker_trips_on_fourth_experiment(tmp_path: Path):
             audit_path=audit,
             experiment_id="exp-cb-4",
             hypothesis={"kind": "rule_tweak", "text": "trip"},
-            experiment_fn=lambda: 0.50,
+            experiment_fn=_fn_returns_0_50,
             baseline_value=0.40,
             time_box_seconds=5.0,
             circuit_breaker=cb,
@@ -225,7 +268,7 @@ def test_audit_row_appended_on_kept_outcome(tmp_path: Path):
         audit_path=audit,
         experiment_id="exp-audit-keep",
         hypothesis={"kind": "rule_tweak", "text": "+"},
-        experiment_fn=lambda: 0.50,
+        experiment_fn=_fn_returns_0_50,
         baseline_value=0.40,
         time_box_seconds=5.0,
     )
@@ -249,7 +292,7 @@ def test_audit_chain_verifies_after_experiment(tmp_path: Path):
             audit_path=audit,
             experiment_id=f"exp-chain-{i}",
             hypothesis={"kind": "rule_tweak", "text": str(i)},
-            experiment_fn=lambda: 0.41,
+            experiment_fn=_fn_returns_0_41,
             baseline_value=0.40,
             time_box_seconds=5.0,
         )
@@ -273,7 +316,7 @@ def test_result_carries_metric_metadata(tmp_path: Path):
         audit_path=audit,
         experiment_id="exp-meta",
         hypothesis={"kind": "rule_tweak", "text": "x"},
-        experiment_fn=lambda: 0.42,
+        experiment_fn=_fn_returns_0_42,
         baseline_value=0.40,
         metric_name="recall_view.hit_at_1",
         time_box_seconds=5.0,

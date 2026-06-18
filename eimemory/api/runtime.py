@@ -156,8 +156,19 @@ class Runtime:
             results.append(payload)
             if item_budget is not None and item_count >= item_budget:
                 break
+        # Aggregate per-source ok flags. An empty source list is a vacuous
+        # success (no failures, no work to do). A non-empty list requires
+        # every source payload to report ok=True for the overall run to
+        # succeed. failed_sources carries the source_id of any source
+        # that returned ok=False so callers (and the CLI) can react.
+        ok = all(bool(r.get("ok")) for r in results) if results else True
+        failed_sources: list[str] = [
+            str(r.get("source_id", ""))
+            for r in results
+            if not bool(r.get("ok"))
+        ]
         return {
-            "ok": True,
+            "ok": ok,
             "persist": bool(persist),
             "source_count": len(sources),
             "item_count": item_count,
@@ -166,6 +177,8 @@ class Runtime:
             "quarantined_count": quarantined_count,
             "rejected_count": rejected_count,
             "persisted_record_ids": persisted_record_ids,
+            "failed_sources": failed_sources,
+            "error_count": len(failed_sources),
             "results": results,
         }
 
