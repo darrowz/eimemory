@@ -1,7 +1,12 @@
-"""Full eval run: LME 500 + LoCoMo 1986 with progress logging.
+"""Full eval v2: single-pass per dataset, with heartbeat.
 
-Writes to stdout AND to EIMEMORY_EVAL_LOG (default /tmp/full_eval.log)
-so the operator can tail progress while the script runs in background.
+v1 sliced the dataset into 10 chunks and re-ran the adapter per slice.
+Each slice re-loaded the data and re-built the Runtime state, so the
+first slice alone took 12 min for 50 cases.
+
+v2 runs the whole dataset in ONE call per dataset. It also launches a
+background heartbeat thread that logs every 30s so the operator can
+tail the log and see "still alive" without restarting.
 """
 from __future__ import annotations
 
@@ -9,13 +14,17 @@ import json
 import os
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
-# Same resolution as smoke test
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 DATA = Path(os.environ.get("EIMEMORY_DATA_DIR") or _REPO_ROOT / "data")
 LOG = os.environ.get("EIMEMORY_EVAL_LOG", "/tmp/full_eval.log")
+HEARTBEAT_S = int(os.environ.get("EIMEMORY_HEARTBEAT_S", "30"))
+
+
+_heartbeat_stop = threading.Event()
 
 
 def log(msg: str) -> None:
@@ -28,86 +37,75 @@ def log(msg: str) -> None:
         pass
 
 
+def heartbeat(stage: str, start: float) -> None:
+    while not _heartbeat_stop.is_set():
+        _heartbeat_stop.wait(HEARTBEAT_S)
+        if _heartbeat_stop.is_set():
+            return
+        log(f"  [heartbeat] {stage} still running, elapsed {time.time()-start:.0f}s")
+
+
+def run_dataset(name: str, dataset: dict, runner, **kwargs) -> dict:
+    t0 = time.time()
+    n = len(dataset["cases"])
+    log(f"=== {name}: starting single-pass over {n} cases ===")
+    _heartbeat_stop.clear()
+    hb = threading.Thread(target=heartbeat, args=(name, t0), daemon=True)
+    hb.start()
+    try:
+        report = runner(dataset, **kwargs)
+    finally:
+        _heartbeat_stop.set()
+        hb.join(timeout=2)
+    dt = time.time() - t0
+    log(f"=== {name}: DONE in {dt:.1f}s ===")
+    log(f"  full report: {json.dumps(report, ensure_ascii=False, default=str)}")
+    return report
+
+
 def main() -> int:
+    try:
+        with open(LOG, "w", encoding="utf-8") as f:
+            f.write(f"# full eval v2 single-pass started {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+    except Exception:
+        pass
+    log(f"DATA dir: {DATA}")
+    log(f"Python: {sys.version.split()[0]}")
+    log(f"Heartbeat every {HEARTBEAT_S}s")
+
     from eimemory.api.runtime import Runtime
     from eimemory.evaluation.longmemeval import run_longmemeval
     from eimemory.evaluation.locomo import run_locomo
-
-    # Clear log
-    try:
-        with open(LOG, "w", encoding="utf-8") as f:
-            f.write(f"# full eval log started {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
-    except Exception:
-        pass
-
-    log(f"DATA dir: {DATA}")
-    log(f"Python: {sys.version.split()[0]}")
 
     tmp = Path(tempfile.mkdtemp(prefix="eimemory-eval-"))
     log(f"Runtime tmp: {tmp}")
     runtime = Runtime.create(root=tmp)
     try:
-        # ===== LongMemEval =====
-        log("=== LME: loading dataset ===")
+        # LongMemEval
         lme_path = DATA / "longmemeval_s_eimemory.json"
-        log(f"LME raw file: {lme_path} ({lme_path.stat().st_size/1024/1024:.1f} MB)")
+        log(f"LME raw: {lme_path} ({lme_path.stat().st_size/1024/1024:.1f} MB)")
         lme = json.loads(lme_path.read_text(encoding="utf-8"))
         n_lme = len(lme["cases"])
         log(f"LME cases: {n_lme}")
-        t0 = time.time()
-        # report_every: hook into runner if it supports; otherwise we just wait.
-        # run_longmemeval returns a report dict; we don't have built-in progress.
-        # For visibility, run in slices of N cases and print R@k after each slice.
-        slice_size = max(1, n_lme // 10)
-        log(f"LME slicing: {slice_size} per slice, {(n_lme + slice_size - 1) // slice_size} slices")
-        cumulative_lme = {"hit_at_1": 0, "hit_at_5": 0, "mrr_sum": 0.0, "ndcg_sum": 0.0}
-        slices_done = 0
-        for start in range(0, n_lme, slice_size):
-            sub = {"name": lme.get("name"), "schema_version": lme.get("schema_version"),
-                   "scope": lme.get("scope"), "cases": lme["cases"][start:start+slice_size]}
-            r = run_longmemeval(runtime, sub, mode="raw", granularity="session", limit=len(sub["cases"]))
-            slices_done += 1
-            log(f"  LME slice {slices_done}/{(n_lme + slice_size - 1) // slice_size} "
-                f"[{start}:{start+len(sub['cases'])}] "
-                f"R@1={r.get('retrieval_recall_at_1')} R@5={r.get('retrieval_recall_at_5')} "
-                f"MRR={r.get('mrr'):.4f} NDCG@5={r.get('ndcg_at_5'):.4f} "
-                f"({time.time()-t0:.0f}s elapsed)")
-        # Final aggregate from full run to be safe
-        log("LME: running final aggregate over ALL cases")
-        r_lme = run_longmemeval(runtime, lme, mode="raw", granularity="session", limit=n_lme)
-        log(f"LME FULL: R@1={r_lme.get('retrieval_recall_at_1')} R@5={r_lme.get('retrieval_recall_at_5')} "
-            f"MRR={r_lme.get('mrr'):.4f} NDCG@5={r_lme.get('ndcg_at_5'):.4f} "
-            f"({time.time()-t0:.0f}s total, {n_lme} cases)")
 
-        # ===== LoCoMo =====
-        log("=== LoCoMo: loading dataset ===")
+        def lme_runner(ds, **kw):
+            return run_longmemeval(runtime, ds, mode="raw", granularity="session", limit=len(ds["cases"]))
+        lme_report = run_dataset("LME", lme, lme_runner)
+
+        # LoCoMo
         loc_path = DATA / "locomo10_eimemory.json"
-        log(f"LoCoMo raw file: {loc_path} ({loc_path.stat().st_size/1024/1024:.1f} MB)")
+        log(f"LoCoMo raw: {loc_path} ({loc_path.stat().st_size/1024/1024:.1f} MB)")
         loc = json.loads(loc_path.read_text(encoding="utf-8"))
         n_loc = len(loc["cases"])
         log(f"LoCoMo cases: {n_loc}")
-        t1 = time.time()
-        slice_loc = max(1, n_loc // 10)
-        slices_loc = 0
-        for start in range(0, n_loc, slice_loc):
-            sub = {"name": loc.get("name"), "schema_version": loc.get("schema_version"),
-                   "scope": loc.get("scope"), "cases": loc["cases"][start:start+slice_loc]}
-            r = run_locomo(runtime, sub, mode="raw", granularity="turn", limit=len(sub["cases"]))
-            slices_loc += 1
-            log(f"  LoCoMo slice {slices_loc}/{(n_loc + slice_loc - 1) // slice_loc} "
-                f"[{start}:{start+len(sub['cases'])}] "
-                f"R@1={r.get('recall_at_1', r.get('retrieval_recall_at_1'))} "
-                f"R@5={r.get('recall_at_5', r.get('retrieval_recall_at_5'))} "
-                f"MRR={r.get('mrr'):.4f} NDCG@5={r.get('ndcg_at_5'):.4f} "
-                f"({time.time()-t1:.0f}s elapsed)")
-        log("LoCoMo: running final aggregate over ALL cases")
-        r_loc = run_locomo(runtime, loc, mode="raw", granularity="turn", limit=n_loc)
-        log(f"LoCoMo FULL: R@1={r_loc.get('recall_at_1', r_loc.get('retrieval_recall_at_1'))} "
-            f"R@5={r_loc.get('recall_at_5', r_loc.get('retrieval_recall_at_5'))} "
-            f"MRR={r_loc.get('mrr'):.4f} NDCG@5={r_loc.get('ndcg_at_5'):.4f} "
-            f"({time.time()-t1:.0f}s total, {n_loc} cases)")
 
-        log(f"DONE wall={time.time()-t0:.0f}s")
+        def loc_runner(ds, **kw):
+            return run_locomo(runtime, ds, mode="raw", granularity="turn", limit=len(ds["cases"]))
+        loc_report = run_dataset("LoCoMo", loc, loc_runner)
+
+        log("=== ALL DONE ===")
+        log(f"LME:    R@1={lme_report.get('retrieval_recall_at_1')} R@5={lme_report.get('retrieval_recall_at_5')} MRR={lme_report.get('mrr'):.4f} NDCG@5={lme_report.get('ndcg_at_5'):.4f}")
+        log(f"LoCoMo: R@1={loc_report.get('recall_at_1', loc_report.get('retrieval_recall_at_1'))} R@5={loc_report.get('recall_at_5', loc_report.get('retrieval_recall_at_5'))} MRR={loc_report.get('mrr'):.4f} NDCG@5={loc_report.get('ndcg_at_5'):.4f}")
     finally:
         runtime.close()
     return 0
