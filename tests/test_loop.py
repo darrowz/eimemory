@@ -82,7 +82,6 @@ def _slow_2s() -> float:
 
 # ---------- helpers ----------
 
-
 def _write_learning_profile(tmp_path: Path) -> Path:
     """Write a learning-profile ini under tmp_path and return its path."""
     ini = tmp_path / "eimemory.ini"

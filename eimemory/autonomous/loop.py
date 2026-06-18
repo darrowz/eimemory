@@ -53,10 +53,21 @@ promotion state machine and the nightly cron are separate modules.
    If a non-picklable function is supplied, the runner raises
    :class:`TypeError` (fail-closed) rather than falling back to a
    thread that the parent cannot actually stop.
+
+   Windows note: ``multiprocessing.spawn`` is used so the
+   implementation works the same on Windows, macOS, and Linux. The
+   cost is a one-time per-process cold-start of ~200-500 ms on
+   Windows; sub-second time boxes need to account for this.
+
+   Test hook: setting the ``EIMEMORY_TEST_PID_FILE`` environment
+   variable to a writable path causes the child worker to write its
+   own PID to that file at start-up. Tests use this to verify
+   ``os.kill(pid, 0)`` reports the worker as dead after the timeout.
 """
 from __future__ import annotations
 
 import multiprocessing
+import os
 import pickle
 import time
 import warnings
@@ -103,6 +114,12 @@ _SIDE_EFFECT_NAME_HINTS = ("write", "save", "persist", "patch", "file", "upload"
 # stuck in a C extension or busy-wait loop, the second ``kill()`` is
 # the only thing that will free the CPU.
 _TERMINATE_GRACE_SECONDS = 2.0
+
+# Test-only env var. When set, the child worker writes its PID to
+# the file at this path so tests can verify the worker was actually
+# terminated (``os.kill(pid, 0)`` must raise ``ProcessLookupError``).
+# This has zero effect in production because the env var is unset.
+_TEST_PID_FILE_ENV = "EIMEMORY_TEST_PID_FILE"
 
 
 # ---------- exception types ----------
@@ -327,6 +344,16 @@ def _time_box_worker(fn: Callable[[], Any], queue: Any) -> None:
     ``SystemExit`` in the child are reported as an error rather than
     leaving the parent waiting forever.
     """
+    # Test-only hook: if ``EIMEMORY_TEST_PID_FILE`` is set, write
+    # this child's PID to that file so tests can verify the worker
+    # was actually terminated. Errors writing the file are silently
+    # ignored — production code never sets the env var.
+    pid_file = os.environ.get(_TEST_PID_FILE_ENV)
+    if pid_file:
+        try:
+            Path(pid_file).write_text(str(os.getpid()), encoding="utf-8")
+        except OSError:
+            pass
     try:
         result = fn()
     except BaseException as exc:  # noqa: BLE001 — converted to RuntimeError in parent
@@ -486,3 +513,8 @@ def _append_audit(audit_log: AuditLog, result: ExperimentResult) -> None:
             "error": result.error,
         }
     )
+
+
+# Expose the test hook name for tests that want to use it without
+# importing the private module attribute.
+TEST_PID_FILE_ENV = _TEST_PID_FILE_ENV

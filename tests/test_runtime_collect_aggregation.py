@@ -159,8 +159,13 @@ def test_collect_with_all_sources_failing(tmp_path: Path) -> None:
         runtime.close()
 
 
-def test_collect_failed_sources_listed_with_dedupe(tmp_path: Path) -> None:
-    """failed_sources preserves the source order from the source registry."""
+def test_collect_failed_sources_listed(tmp_path: Path) -> None:
+    """failed_sources is a list of source_ids for every source that returned ok=False.
+
+    Three sources, two of which fail. The healthy source must NOT
+    appear in failed_sources, and the failing sources must be listed
+    in the order they appear in the source registry.
+    """
     runtime = _setup_runtime(tmp_path)
     try:
         _add_source(runtime, source_id="src-a", uri="https://example.test/feed-a")
@@ -180,9 +185,14 @@ def test_collect_failed_sources_listed_with_dedupe(tmp_path: Path) -> None:
         )
 
         assert report["ok"] is False
-        # Order is preserved (a, c). The healthy source 'src-b' is excluded.
+        # failed_sources preserves the registry order; the healthy
+        # source 'src-b' is excluded.
+        assert isinstance(report["failed_sources"], list)
         assert report["failed_sources"] == ["src-a", "src-c"]
         assert report["error_count"] == 2
+        # And every listed source_id is non-empty (no silently-skipped
+        # entries that lack a source_id).
+        assert all(s for s in report["failed_sources"])
     finally:
         runtime.close()
 
