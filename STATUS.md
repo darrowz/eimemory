@@ -43,7 +43,9 @@
 
 ## 🤖 Karpathy Loop 自主进化 — 阶段 1 完成（状态机 + held-out 验证）
 
-> 目标：把 eimemory 1.3.2 从"每天 cron 跑 12 行模板 patch 永远不 apply"改成 Karpathy Loop 自主研究。本阶段先打通**真 apply 闭环**和**真门控**，让后续 loop 跑出来的 candidate 必须先过这两关。
+> 目标：把 eimemory 1.4.0 从"每天 cron 跑 12 行模板 patch 永远不 apply"改成 Karpathy Loop 自主研究。本阶段先打通**真 apply 闭环**和**真门控**，让后续 loop 跑出来的 candidate 必须先过这两关。
+>
+> 1.3.2 → 1.4.0 升级内容：R9 六 bug 修复（见 [plans/2026-06-18-eimemory-six-bug-fix-batch.md](docs/superpowers/plans/2026-06-18-eimemory-six-bug-fix-batch.md)）+ Phase 5 eval pipeline 脚本集（scripts/ssh_*.py / scripts/run_full_eval.py / scripts/convert_*.py 等 18 个）。
 
 ### 1.1 canary/active/rolled_back 三目录建立 ✅
 - `state/autonomous_learning/{canary,active,rolled_back}/` 已落地

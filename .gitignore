@@ -20,3 +20,7 @@ data/
 **/locomo*.json
 **/longmemeval*.json
 **/*_eimemory.json
+
+# orchestrator runtime scratch (Mavis plans/notes)
+plans/*/notes/
+.mavis/
