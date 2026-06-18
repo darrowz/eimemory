@@ -4,11 +4,17 @@ eimemory adapter locally to validate the format before pushing to the server.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
 
-DATA = Path(r"E:\eimemory\data")
+# Resolve data dir cross-platform:
+#   1) $EIMEMORY_DATA_DIR env var (explicit override)
+#   2) <repo_root>/data  (works for both Windows dev and Linux deploy since
+#      __file__ -> scripts/smoke_test_converted_data.py -> repo root is parent.parent)
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+DATA = Path(os.environ.get("EIMEMORY_DATA_DIR") or _REPO_ROOT / "data")
 
 
 def main() -> int:
