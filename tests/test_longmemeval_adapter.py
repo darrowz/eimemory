@@ -131,6 +131,48 @@ def test_longmemeval_turn_granularity_scores_evidence_from_non_first_turn(tmp_pa
     assert report["samples"][0]["hit_turn_ids"] == ["turn-cache-2"]
 
 
+def test_longmemeval_supports_raw_haystack_session_lists_with_has_answer_turns(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+
+    dataset = {
+        "name": "raw-longmemeval-case",
+        "scope": {"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"},
+        "cases": [
+            {
+                "question_id": "raw-has-ans-1",
+                "question": "Where did I move?",
+                "question_type": "temporal",
+                "answer": "Austin",
+                "answer_session_ids": ["session-a"],
+                "haystack_session_ids": ["session-a", "session-b"],
+                "haystack_sessions": [
+                    [
+                        {"role": "user", "content": "I moved to Austin in March.", "has_answer": True},
+                        {"role": "assistant", "content": "Congrats."},
+                    ],
+                    [
+                        {"role": "user", "content": "The office needs more plants."},
+                    ],
+                ],
+            }
+        ],
+    }
+    normalized = normalize_longmemeval_dataset(dataset)["cases"][0]
+
+    assert normalized["case_id"] == "raw-has-ans-1"
+    assert normalized["evidence_session_ids"] == ["session-a"]
+    assert normalized["evidence_turn_ids"] == ["session-a:m0"]
+    assert normalized["chunks"][0]["session_id"] == "session-a"
+    assert "session-a:m0" in normalized["chunks"][0]["turn_ids"]
+
+    report = run_longmemeval(runtime, dataset, mode="raw", granularity="turn", limit=5)
+
+    assert report["sample_count"] == 1
+    assert report["samples"][0]["case_id"] == "raw-has-ans-1"
+    assert report["samples"][0]["expected_ids"] == ["session-a:m0"]
+    assert report["samples"][0]["hit_turn_ids"] == ["session-a:m0"]
+
+
 def test_longmemeval_hybrid_mode_uses_raw_hybrid_retrieval_end_to_end(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
 

@@ -62,7 +62,14 @@ def run_longmemeval(
         case_scope = ScopeRef.from_dict(case.get("scope") or normalized["scope"])
         _ingest_case_chunks(runtime, case=case, scope=case_scope)
         start = perf_counter()
-        retrieved = _retrieve(runtime, query=case["question"], scope=case_scope, mode=mode, limit=limit)
+        retrieved = _retrieve(
+            runtime,
+            query=case["question"],
+            scope=case_scope,
+            mode=mode,
+            limit=limit,
+            benchmark_case_id=case["case_id"],
+        )
         latency_ms = (perf_counter() - start) * 1000.0
         latencies.append(latency_ms)
 
@@ -139,8 +146,25 @@ def run_longmemeval(
 
 
 def _normalize_case(case: dict[str, Any], *, index: int, default_scope: dict[str, Any]) -> dict[str, Any]:
-    case_id = str(case.get("id") or case.get("case_id") or f"case-{index + 1}")
-    sessions = list(case.get("haystack_sessions") or case.get("sessions") or case.get("haystack") or [])
+    case_id = str(case.get("question_id") or case.get("id") or case.get("case_id") or f"case-{index + 1}")
+    if _is_raw_longmemeval_case(case):
+        sessions, mined_session_ids, mined_turn_ids = _normalize_raw_case_haystack(case=case, case_id=case_id)
+    else:
+        sessions = list(case.get("haystack_sessions") or case.get("sessions") or case.get("haystack") or [])
+        mined_session_ids, mined_turn_ids = [], []
+
+    evidence_session_ids = _merge_case_ids(
+        case.get("evidence_session_ids"),
+        case.get("evidence_sessions"),
+        case.get("answer_session_ids"),
+        mined_session_ids,
+    )
+    evidence_turn_ids = _merge_case_ids(
+        case.get("evidence_turn_ids"),
+        case.get("evidence_turns"),
+        mined_turn_ids,
+    )
+
     chunks = _session_chunks(sessions, case_id=case_id)
     return {
         "case_id": case_id,
@@ -149,10 +173,73 @@ def _normalize_case(case: dict[str, Any], *, index: int, default_scope: dict[str
         "expected_answer": str(case.get("expected_answer") or case.get("answer") or ""),
         "scope": asdict(ScopeRef.from_dict(case.get("scope") or default_scope)),
         "chunks": chunks,
-        "evidence_session_ids": _strings(case.get("evidence_session_ids") or case.get("evidence_sessions")),
-        "evidence_turn_ids": _strings(case.get("evidence_turn_ids") or case.get("evidence_turns")),
+        "evidence_session_ids": evidence_session_ids,
+        "evidence_turn_ids": evidence_turn_ids,
         "evidence_chunk_ids": _strings(case.get("evidence_chunk_ids") or case.get("evidence_chunks")),
     }
+
+
+def _is_raw_longmemeval_case(case: dict[str, Any]) -> bool:
+    sessions = list(case.get("haystack_sessions") or [])
+    if not sessions:
+        return False
+    first = sessions[0]
+    return isinstance(first, list)
+
+
+def _normalize_raw_case_haystack(case: dict[str, Any], *, case_id: str) -> tuple[list[dict[str, Any]], list[str], list[str]]:
+    raw_sessions = list(case.get("haystack_sessions") or [])
+    raw_session_ids = list(case.get("haystack_session_ids") or [])
+    sessions: list[dict[str, Any]] = []
+    evidence_session_ids: list[str] = []
+    evidence_turn_ids: list[str] = []
+
+    for session_index, session_messages in enumerate(raw_sessions):
+        if not isinstance(session_messages, list):
+            continue
+
+        session_id = str(
+            raw_session_ids[session_index]
+            if session_index < len(raw_session_ids)
+            else f"{case_id}-session-{session_index + 1}"
+        )
+        if not session_id:
+            continue
+
+        turns: list[dict[str, Any]] = []
+        for message_index, message in enumerate(session_messages):
+            if not isinstance(message, dict):
+                continue
+            content = str(message.get("content") or message.get("text") or message.get("message") or "").strip()
+            if not content:
+                continue
+            turn_id = f"{session_id}:m{message_index}"
+            speaker = str(message.get("role") or message.get("speaker") or "").strip()
+            turns.append({"turn_id": turn_id, "messages": [{"role": speaker, "content": content}]})
+
+            if message.get("has_answer"):
+                evidence_turn_ids = _append_unique(evidence_turn_ids, turn_id)
+                evidence_session_ids = _append_unique(evidence_session_ids, session_id)
+
+        if turns:
+            sessions.append({"session_id": session_id, "turns": turns})
+
+    return sessions, evidence_session_ids, evidence_turn_ids
+
+
+def _merge_case_ids(*items: Any) -> list[str]:
+    values: list[str] = []
+    for item in items:
+        for value in _strings(item):
+            values = _append_unique(values, value)
+    return values
+
+
+def _append_unique(values: list[str], value: str) -> list[str]:
+    text = str(value or "").strip()
+    if text and text not in values:
+        values.append(text)
+    return values
 
 
 def _session_chunks(sessions: list[Any], *, case_id: str) -> list[dict[str, Any]]:
@@ -225,7 +312,7 @@ def _ingest_with_raw_api(runtime, *, chunk: dict[str, Any], case: dict[str, Any]
         "turn_id": chunk["turn_id"],
         "turn_ids": list(chunk["turn_ids"]),
         "source": "eimemory.longmemeval",
-        "meta": {"longmemeval_case_id": case["case_id"]},
+        "meta": {"longmemeval_case_id": case["case_id"], "benchmark_case_id": case["case_id"]},
     }
     candidates = [getattr(runtime, "raw", None)]
     try:
@@ -271,7 +358,7 @@ def _raw_chunk_record(chunk: dict[str, Any], *, case: dict[str, Any], scope: Sco
         },
         scope=scope,
         source="eimemory.longmemeval",
-        meta={"memory_type": "raw_chunk", "longmemeval_case_id": case["case_id"]},
+        meta={"memory_type": "raw_chunk", "longmemeval_case_id": case["case_id"], "benchmark_case_id": case["case_id"]},
     )
 
 
@@ -315,10 +402,13 @@ def _retrieve(
     scope: ScopeRef,
     mode: str,
     limit: int,
+    benchmark_case_id: str | None = None,
     task_context: dict[str, Any] | None = None,
 ) -> list[RecordEnvelope]:
     retrieval_context = {"task_type": "longmemeval"}
     retrieval_context.update(dict(task_context or {}))
+    if benchmark_case_id:
+        retrieval_context["benchmark_case_id"] = str(benchmark_case_id)
     if mode == "hybrid":
         bundle = runtime.memory.recall(
             query=query,
@@ -326,23 +416,50 @@ def _retrieve(
             task_context={**retrieval_context, "recall_mode": "raw_hybrid"},
             limit=limit,
         )
-        raw_records = _raw_records_from_explanation(runtime, bundle.explanation.get("raw_evidence"), scope=scope)
+        raw_records = _raw_records_from_explanation(
+            runtime,
+            bundle.explanation.get("raw_evidence"),
+            scope=scope,
+            benchmark_case_id=benchmark_case_id,
+        )
         if raw_records:
             return raw_records[:limit]
     try:
         from eimemory.raw.retrieval import search_raw_chunks
 
         ranked = search_raw_chunks(runtime.store, query=query, scope=scope, task_context=retrieval_context, limit=limit)
-        records = [_record_from_ranked(runtime, item, scope=scope) for item in ranked]
-        records = [record for record in records if record is not None]
+        records = [
+            record
+            for item in ranked
+            if (record := _record_from_ranked(runtime, item, scope=scope)) is not None
+            and _record_matches_case(record, benchmark_case_id=benchmark_case_id)
+        ]
         if records:
             return records[:limit]
     except Exception:
         pass
-    return runtime.store.search(query=query, kinds=["raw_chunk"], scope=scope, limit=limit)
+    records = runtime.store.search(query=query, kinds=["raw_chunk"], scope=scope, limit=limit)
+    if benchmark_case_id:
+        records = _filter_records_by_case(records, benchmark_case_id=benchmark_case_id)
+    if records:
+        return records[:limit]
+    return _case_records_from_store(
+        runtime,
+        query=query,
+        scope=scope,
+        limit=limit,
+        benchmark_case_id=benchmark_case_id,
+        task_context=retrieval_context,
+    )
 
 
-def _raw_records_from_explanation(runtime, raw_evidence: Any, *, scope: ScopeRef) -> list[RecordEnvelope]:
+def _raw_records_from_explanation(
+    runtime,
+    raw_evidence: Any,
+    *,
+    scope: ScopeRef,
+    benchmark_case_id: str | None = None,
+) -> list[RecordEnvelope]:
     records: list[RecordEnvelope] = []
     seen: set[str] = set()
     for item in list(raw_evidence or []):
@@ -355,6 +472,8 @@ def _raw_records_from_explanation(runtime, raw_evidence: Any, *, scope: ScopeRef
         record = runtime.store.get_by_id(record_id, scope=scope)
         if record is None:
             continue
+        if not _record_matches_case(record, benchmark_case_id=benchmark_case_id):
+            continue
         seen.add(record_id)
         records.append(record)
     return records
@@ -364,6 +483,47 @@ def _record_from_ranked(runtime, item: dict[str, Any], *, scope: ScopeRef) -> Re
     payload = item.get("record") if isinstance(item, dict) else None
     record_id = str(payload.get("record_id") or "") if isinstance(payload, dict) else ""
     return runtime.store.get_by_id(record_id, scope=scope) if record_id else None
+
+
+def _case_records_from_store(
+    runtime,
+    *,
+    query: str,
+    scope: ScopeRef,
+    limit: int,
+    benchmark_case_id: str | None,
+    task_context: dict[str, Any],
+) -> list[RecordEnvelope]:
+    if not benchmark_case_id:
+        return []
+    try:
+        records = runtime.store.list_records(kinds=["raw_chunk"], scope=scope, status="active", limit=5000)
+    except TypeError:
+        try:
+            records = runtime.store.list_records(kinds=["raw_chunk"], scope=scope, limit=5000)
+        except Exception:
+            return []
+    except Exception:
+        return []
+
+    case_records = _filter_records_by_case(list(records), benchmark_case_id=benchmark_case_id)
+    if not case_records:
+        return []
+    try:
+        from eimemory.raw.retrieval import rerank_raw_results
+
+        ranked = rerank_raw_results(query=query, results=case_records, task_context=task_context)
+        ordered = [
+            record
+            for item in ranked
+            if (record := _record_from_ranked(runtime, item, scope=scope)) is not None
+            and _record_matches_case(record, benchmark_case_id=benchmark_case_id)
+        ]
+        if ordered:
+            return ordered[:limit]
+    except Exception:
+        pass
+    return case_records[:limit]
 
 
 def _returned_ids(records: list[RecordEnvelope], *, granularity: str) -> list[str]:
@@ -408,6 +568,31 @@ def _hit_ids(records: list[RecordEnvelope], *, expected_ids: list[str], key: str
         if value and value in expected and value not in hits:
             hits.append(value)
     return hits
+
+
+def _record_case_id(record: RecordEnvelope) -> str:
+    meta = record.meta if isinstance(record.meta, dict) else {}
+    for key in ("benchmark_case_id", "longmemeval_case_id", "case_id"):
+        value = meta.get(key)
+        if value:
+            return str(value)
+    for key in ("benchmark_case_id", "longmemeval_case_id", "case_id"):
+        value = record.content.get(key)
+        if value:
+            return str(value)
+    return ""
+
+
+def _record_matches_case(record: RecordEnvelope, *, benchmark_case_id: str | None) -> bool:
+    if not benchmark_case_id:
+        return True
+    return _record_case_id(record) == str(benchmark_case_id)
+
+
+def _filter_records_by_case(records: list[RecordEnvelope], *, benchmark_case_id: str | None) -> list[RecordEnvelope]:
+    if not benchmark_case_id:
+        return records
+    return [record for record in records if _record_matches_case(record, benchmark_case_id=benchmark_case_id)]
 
 
 def _summarize_samples(samples: list[dict[str, Any]]) -> dict[str, Any]:

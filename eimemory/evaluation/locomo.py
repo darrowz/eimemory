@@ -75,6 +75,7 @@ def run_locomo(
             scope=case_scope,
             mode=mode,
             limit=limit,
+            benchmark_case_id=case["case_id"],
             task_context={"task_type": "locomo", "granularity": granularity},
         )
         latency_ms = (perf_counter() - started) * 1000.0

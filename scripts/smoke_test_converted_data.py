@@ -8,6 +8,7 @@ import os
 import sys
 import tempfile
 from pathlib import Path
+from scripts.run_full_eval import load_eval_config
 
 # Resolve data dir cross-platform:
 #   1) $EIMEMORY_DATA_DIR env var (explicit override)
@@ -18,6 +19,9 @@ DATA = Path(os.environ.get("EIMEMORY_DATA_DIR") or _REPO_ROOT / "data")
 
 
 def main() -> int:
+    config = load_eval_config()
+    lme_limit = config["lme_limit"] or 5
+    locomo_limit = config["locomo_limit"] or 5
     from eimemory.api.runtime import Runtime
     from eimemory.evaluation.longmemeval import run_longmemeval
     from eimemory.evaluation.locomo import run_locomo
@@ -28,13 +32,25 @@ def main() -> int:
         # LongMemEval subset
         lme = json.loads((DATA / "longmemeval_s_eimemory.json").read_text(encoding="utf-8"))
         lme["cases"] = lme["cases"][:3]
-        report = run_longmemeval(runtime, lme, mode="raw", granularity="session", limit=5)
+        report = run_longmemeval(
+            runtime,
+            lme,
+            mode="raw",
+            granularity=config["lme_granularity"],
+            limit=lme_limit,
+        )
         print(f"LME smoke 3/500: R@1={report['retrieval_recall_at_1']} R@5={report['retrieval_recall_at_5']} MRR={report['mrr']} NDCG@5={report['ndcg_at_5']}")
 
         # LoCoMo subset
         loc = json.loads((DATA / "locomo10_eimemory.json").read_text(encoding="utf-8"))
         loc["cases"] = loc["cases"][:5]
-        report2 = run_locomo(runtime, loc, mode="raw", granularity="turn", limit=5)
+        report2 = run_locomo(
+            runtime,
+            loc,
+            mode="raw",
+            granularity=config["locomo_granularity"],
+            limit=locomo_limit,
+        )
         print(f"LoCoMo smoke 5/1986: R@1={report2.get('recall_at_1', report2.get('retrieval_recall_at_1'))} R@5={report2.get('recall_at_5', report2.get('retrieval_recall_at_5'))} MRR={report2['mrr']} NDCG@5={report2['ndcg_at_5']}")
     finally:
         runtime.close()
