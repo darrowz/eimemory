@@ -1,9 +1,9 @@
 """Convert raw LongMemEval (xiaowu0162/longmemeval-cleaned) to eimemory longmemeval format.
 
 Raw shape (cleaned variant):
-  haystack_sessions:   list[list[{role, content}]]  (53 sessions, each a list of messages)
-  haystack_session_ids: list[str]                   (parallel to haystack_sessions)
-  haystack_dates:       list[str]                   (parallel)
+  haystack_sessions:   list[list[{role, content, has_answer}]]  (53 sessions, each a list of messages)
+  haystack_session_ids: list[str]                               (parallel to haystack_sessions)
+  haystack_dates:       list[str]                               (parallel)
   question, answer, answer_session_ids, question_type, question_id
 
 Eimemory shape (locomo/longmemeval adapter):
@@ -16,15 +16,25 @@ which preserves fine-grained evidence alignment if the dataset ever provides it.
 Evidence mining
 ---------------
 
-The xiaowu0162/longmemeval-cleaned variant only carries ``answer_session_ids``
-(real evidence at session granularity) and never carries ``evidence_turn_ids``.
-Other LongMemEval variants may carry both. The converter therefore reads:
+The cleaned variant does **not** publish a top-level ``evidence_*`` field.
+Real evidence lives on individual messages as the boolean ``has_answer`` —
+the official LongMemEval signal that the message contributed to the
+reference answer. We mine it as follows:
 
-* ``answer_session_ids`` (preferred) or ``evidence_session_ids`` → ``evidence_session_ids``
-* ``evidence_turn_ids`` (if present) → ``evidence_turn_ids``
+* ``evidence_session_ids`` ← union of
+    - ``answer_session_ids`` (raw, includes abstract ``*_abs`` session IDs)
+    - any session that contains at least one ``has_answer=True`` message
+* ``evidence_turn_ids`` ← ``f"{session_id}:m{msg_idx}"`` for every
+  message where ``has_answer`` is truthy. This matches the ``turn_id``
+  format we emit in the eimemory haystack, so the LME adapter's
+  ``_expected_ids(turn)`` set-membership check works end-to-end.
+* The official LongMemEval schema's top-level ``evidence_session_ids`` /
+  ``evidence_turn_ids`` (when present, e.g. older raw variants) are also
+  unioned in for forward compatibility.
 
 Set ``_USE_REAL_EVIDENCE = False`` to disable mining and reproduce the
-historical hard-coded behaviour (empty lists).
+historical hard-coded behaviour (empty turn IDs, session IDs from
+``answer_session_ids`` only).
 """
 from __future__ import annotations
 
@@ -39,15 +49,27 @@ from pathlib import Path
 _USE_REAL_EVIDENCE = True
 
 
-def _extract_real_evidence(raw_case: dict) -> tuple[list[str], list[str]]:
+def _extract_real_evidence(
+    raw_case: dict,
+    *,
+    haystack_session_ids: list[str] | None = None,
+    haystack_sessions: list | None = None,
+) -> tuple[list[str], list[str]]:
     """Pull real evidence fields from a raw LongMemEval case.
 
-    Returns ``(session_ids, turn_ids)``. ``session_ids`` prefers
-    ``answer_session_ids`` (the only evidence field populated by the
-    xiaowu0162 cleaned variant) and falls back to ``evidence_session_ids``
-    for completeness against the official LongMemEval schema. ``turn_ids``
-    is taken from ``evidence_turn_ids`` when present; the cleaned variant
-    never populates this field, so an empty list is the expected default.
+    Returns ``(session_ids, turn_ids)``.
+
+    ``session_ids`` is the union of:
+
+    * ``answer_session_ids`` (raw, may include abstract ``*_abs`` IDs)
+    * ``evidence_session_ids`` (top-level, when present on older variants)
+    * any session that contains at least one ``has_answer=True`` message
+
+    ``turn_ids`` is the list of ``f"{session_id}:m{msg_idx}"`` markers
+    for every message where ``has_answer`` is truthy, merged with the
+    top-level ``evidence_turn_ids`` field when present. The string
+    format matches the ``turn_id`` we emit on the eimemory side, so the
+    adapter's set-membership check is a direct match.
     """
     session_ids: list[str] = []
     for field in ("answer_session_ids", "evidence_session_ids"):
@@ -55,11 +77,42 @@ def _extract_real_evidence(raw_case: dict) -> tuple[list[str], list[str]]:
             text = str(value or "").strip()
             if text and text not in session_ids:
                 session_ids.append(text)
+
     turn_ids: list[str] = []
     for value in list(raw_case.get("evidence_turn_ids") or []):
         text = str(value or "").strip()
         if text and text not in turn_ids:
             turn_ids.append(text)
+
+    # Mine the per-message ``has_answer`` boolean — the actual official
+    # LongMemEval evidence signal. We need both the haystack and the
+    # parallel session-id list to translate (sess_idx, msg_idx) into
+    # the ``{sid}:m{msg_idx}`` turn-id format the adapter expects.
+    if haystack_sessions is not None and haystack_session_ids is not None:
+        for sess_idx, sess_msgs in enumerate(haystack_sessions):
+            if not isinstance(sess_msgs, list):
+                continue
+            sid = (
+                haystack_session_ids[sess_idx]
+                if sess_idx < len(haystack_session_ids)
+                else f"s{sess_idx}"
+            )
+            sid_str = str(sid or "").strip()
+            if not sid_str:
+                continue
+            has_answer_in_session = False
+            for msg_idx, message in enumerate(sess_msgs):
+                if not isinstance(message, dict):
+                    continue
+                if not message.get("has_answer"):
+                    continue
+                turn_id = f"{sid_str}:m{msg_idx}"
+                if turn_id not in turn_ids:
+                    turn_ids.append(turn_id)
+                has_answer_in_session = True
+            if has_answer_in_session and sid_str not in session_ids:
+                session_ids.append(sid_str)
+
     return session_ids, turn_ids
 
 
@@ -101,7 +154,11 @@ def convert(raw_path: Path, out_path: Path) -> int:
             continue
 
         if _USE_REAL_EVIDENCE:
-            evidence_session_ids, evidence_turn_ids = _extract_real_evidence(c)
+            evidence_session_ids, evidence_turn_ids = _extract_real_evidence(
+                c,
+                haystack_session_ids=hs_ids,
+                haystack_sessions=hs,
+            )
         else:
             # Historical behaviour: only the session-level answer evidence
             # is wired in; turn-level evidence is hard-coded empty.
@@ -126,6 +183,7 @@ def convert(raw_path: Path, out_path: Path) -> int:
                 "source": "xiaowu0162/longmemeval-cleaned",
                 "haystack_session_ids": [str(s) for s in hs_ids],
                 "evidence_mining_enabled": _USE_REAL_EVIDENCE,
+                "evidence_turn_id_count": len(evidence_turn_ids),
             },
         }
         cases.append(case)
