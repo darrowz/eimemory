@@ -32,6 +32,9 @@ immutable release directory, then run services only through
 The release script copies the current repository commit into
 `/opt/eimemory/releases/<commit>`, creates a release-local virtual environment,
 installs eimemory non-editably, and atomically updates `/opt/eimemory/current`.
+It does not enable the RPC service by default. If a host intentionally uses a
+system service, pass `SYSTEMD_ENABLE_SERVICE=1`; otherwise keep the existing
+user service as the single RPC owner.
 
 The runtime service environment should set:
 
@@ -79,6 +82,9 @@ ss -ltn | grep 100.66.161.64:8091
 ```
 
 The RPC service should bind to honxin's Tailscale address on port `8091`, separate from the Governance Console on `8765`, so honjia can reach it over MagicDNS.
+Do not run both `/etc/systemd/system/eimemory-rpc.service` and
+`~/.config/systemd/user/eimemory-rpc.service`; they bind the same port and will
+restart-loop whichever starts second.
 
 ## Nightly Knowledge Intake
 

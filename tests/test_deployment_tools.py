@@ -160,7 +160,7 @@ def test_immutable_release_installer_normalizes_service_ownership() -> None:
     assert 'SERVICE_USER="${SERVICE_USER:-darrow}"' in script
     assert 'SERVICE_GROUP="${SERVICE_GROUP:-$SERVICE_USER}"' in script
     assert 'SERVICE_HOME="${SERVICE_HOME:-/home/$SERVICE_USER}"' in script
-    assert 'SYSTEMD_ENABLE_SERVICE="${SYSTEMD_ENABLE_SERVICE:-1}"' in script
+    assert 'SYSTEMD_ENABLE_SERVICE="${SYSTEMD_ENABLE_SERVICE:-0}"' in script
     assert "_ensure_runtime_dir" in script
     assert '"$INSTALL_ROOT"' in script
     assert '"$EIMEMORY_ROOT"' in script

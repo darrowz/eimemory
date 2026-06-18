@@ -47,6 +47,12 @@ services should not import or execute code from it. Promote a release with:
 /dev-project/eimemory/deploy/install_immutable_release.sh
 ```
 
+The installer intentionally leaves service ownership alone by default. Use
+`SYSTEMD_ENABLE_SERVICE=1` only on hosts where `/etc/systemd/system/eimemory-rpc.service`
+is the chosen owner. On the OpenClaw honxin deployment, the RPC owner is the
+user unit under `/home/darrow/.config/systemd/user`; do not enable the system
+unit at the same time.
+
 Runtime configuration is loaded from `/etc/eimemory/settings.json` when
 `EIMEMORY_CONFIG_DIR=/etc/eimemory` is set. `EIMEMORY_CONFIG_PATH` can still
 point at a specific settings file, and `EIMEMORY_ROOT` overrides the configured
