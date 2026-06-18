@@ -11,3 +11,12 @@ memory/
 
 # local benchmark artifacts
 .bench-artifacts/
+
+# raw eval data (multi-hundred-MB JSONs, never in git)
+data/
+# generic large data files
+*.json.gz
+# loose eval dataset dumps anywhere in the tree
+**/locomo*.json
+**/longmemeval*.json
+**/*_eimemory.json
