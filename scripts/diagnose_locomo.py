@@ -1,14 +1,19 @@
 """Diagnose LoCoMo 0.0 R@5: look at how cases are normalized, what chunks
 look like, what the actual retrieval path is. Run on remote.
 """
-import sys, paramiko
-sys.path.insert(0, '/opt/eimemory')
-import json
+import os
+import sys
+import time
 from pathlib import Path
 
+ROOT = Path(os.environ.get("EIMEMORY_ROOT", "/opt/eimemory"))
+sys.path.insert(0, str(ROOT))
+import json
+import tempfile
+
 # 1) Load a sample LoCoMo case and inspect its normalized form
-DATA = Path('/opt/eimemory/data')
-locomo = json.loads((DATA / 'locomo10_eimemory.json').read_text(encoding='utf-8'))
+DATA = ROOT / "data"
+locomo = json.loads((DATA / "locomo10_eimemory.json").read_text(encoding="utf-8"))
 case0 = locomo['cases'][0]
 print('=== RAW LoCoMo case 0 ===')
 print('case_id:', case0.get('case_id'))
@@ -32,7 +37,6 @@ print()
 print('=== NORMALIZED LoCoMo case 0 ===')
 from eimemory.evaluation.locomo import normalize_locomo_dataset, _returned_ids, _expected_ids
 from eimemory.api.runtime import Runtime
-import tempfile
 norm = normalize_locomo_dataset({'name': 'locomo10-full', 'scope': locomo['scope'], 'cases': [case0]})
 nc = norm['cases'][0]
 print('normalized case_id:', nc['case_id'])
@@ -93,4 +97,3 @@ try:
 finally:
     runtime.close()
 
-import time

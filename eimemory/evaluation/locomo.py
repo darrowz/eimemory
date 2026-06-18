@@ -8,6 +8,7 @@ from time import perf_counter
 from typing import Any
 
 from eimemory.core.clock import now_iso
+from eimemory.evaluation._text import extract_text_from_turn
 from eimemory.evaluation.longmemeval import (
     _hit_ids,
     _ingest_case_chunks,
@@ -211,10 +212,14 @@ def _turns(session: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _turn_text(turn: dict[str, Any]) -> str:
-    value = turn.get("content", turn.get("text", turn.get("message", "")))
-    role = str(turn.get("role") or turn.get("speaker") or "").strip()
-    text = str(value or "").strip()
-    return f"{role}: {text}" if role and text else text
+    # Delegates to the shared helper so that both the flat
+    # ``{"speaker": ..., "text": ...}`` shape and the nested
+    # ``{"messages": [{"role": ..., "content": ...}, ...]}`` shape
+    # produced by the LoCoMo converter produce non-empty text. The
+    # previous inline implementation only knew about the flat shape and
+    # silently dropped every chunk from the converter output, which is
+    # why the LoCoMo R@5 score was exactly 0.0.
+    return extract_text_from_turn(turn)
 
 
 def _returned_ids(records: list[Any], *, granularity: str) -> list[str]:
