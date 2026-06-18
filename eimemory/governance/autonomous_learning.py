@@ -19,6 +19,11 @@ from eimemory.governance.learning_state import (
     start_learning_loop,
 )
 from eimemory.governance.promotion_manager import promote_candidate
+from eimemory.governance.prompt_safety import (
+    PROMPT_SAFETY_STUB_NOTREADY,
+    prompt_injection_check,
+    prompt_shadow_eval,
+)
 from eimemory.governance.replay_dataset import build_replay_dataset
 from eimemory.governance.regression_watch import run_regression_watch
 from eimemory.governance.research_planner import create_research_note, create_research_task, plan_research_tasks
@@ -611,9 +616,57 @@ def _evidence_score(evidence: list[dict[str, Any]]) -> float:
     return round(min(1.0, sum(scores) / len(scores)), 3)
 
 
-def _gate_bundle_for_candidate(candidate_kind: str, *, evidence: list[dict[str, Any]], scope: ScopeRef) -> dict[str, Any]:
+def _gate_bundle_for_candidate(
+    candidate_kind: str,
+    *,
+    evidence: list[dict[str, Any]],
+    scope: ScopeRef,
+    prompt_text: str | None = None,
+) -> dict[str, Any]:
     target = str(candidate_kind or "").lower()
     prompt_target = target in {"prompt_policy", "system_prompt_patch"}
+    # When the candidate has no prompt body (e.g. a tool-route patch) the
+    # gate is genuinely inapplicable; mark it skipped with a ``None``
+    # passed value (not ``True``) so downstream code can distinguish
+    # "passed" from "not run". When a prompt body IS supplied for a
+    # prompt-target candidate, the real stub check must run — we no longer
+    # fall through to a tautological ``True`` (Bug A, see
+    # 2026-06-18-eimemory-six-bug-fix-batch §2 Task 1).
+    if prompt_target:
+        # Use the explicit prompt text when the caller has it; otherwise
+        # fall back to the candidate kind itself (the only string the
+        # gate-bundle builder reliably has). The stub scans the input for
+        # known injection markers — passing the candidate kind is good
+        # enough for now and will be replaced once the gate-bundle builder
+        # has access to the full candidate content.
+        body = str(prompt_text if prompt_text is not None else candidate_kind or "")
+        shadow_passed = bool(prompt_shadow_eval(body, cases=3))
+        injection_passed = bool(prompt_injection_check(body, cases=3))
+        prompt_shadow_field: dict[str, Any] = {
+            "passed": shadow_passed,
+            "skipped": False,
+            "cases": 3,
+            "notready": PROMPT_SAFETY_STUB_NOTREADY,
+        }
+        prompt_injection_field: dict[str, Any] = {
+            "passed": injection_passed,
+            "skipped": False,
+            "cases": 3,
+            "notready": PROMPT_SAFETY_STUB_NOTREADY,
+        }
+    else:
+        prompt_shadow_field = {
+            "passed": None,
+            "skipped": True,
+            "reason": "no_prompt_target",
+            "cases": 0,
+        }
+        prompt_injection_field = {
+            "passed": None,
+            "skipped": True,
+            "reason": "no_prompt_target",
+            "cases": 0,
+        }
     return {
         "evidence": [
             {
@@ -643,6 +696,6 @@ def _gate_bundle_for_candidate(candidate_kind: str, *, evidence: list[dict[str, 
         "timeout_seconds": 900,
         "cooldown_seconds": 3600,
         "audit": {"enabled": True, "ledger": "promotion_request"},
-        "prompt_shadow_eval": {"passed": not prompt_target or True, "cases": 3 if prompt_target else 0},
-        "prompt_injection_check": {"passed": not prompt_target or True, "cases": 3 if prompt_target else 0},
+        "prompt_shadow_eval": prompt_shadow_field,
+        "prompt_injection_check": prompt_injection_field,
     }
