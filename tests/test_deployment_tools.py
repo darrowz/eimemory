@@ -103,6 +103,16 @@ def test_eimemory_rpc_systemd_unit_uses_honxin_tailscale_endpoint() -> None:
     assert "--loopback-health-host 127.0.0.1 --loopback-health-port 8091" in unit_text
     assert "Environment=EIMEMORY_ROOT=/var/lib/eimemory" in unit_text
     assert "Environment=EIMEMORY_CONFIG_DIR=/etc/eimemory" in unit_text
+    assert "KillMode=mixed" in unit_text
+    assert "TimeoutStopSec=10" in unit_text
+    assert (
+        "ExecStartPre=/opt/eimemory/current/deploy/systemd/eimemory-rpc-cleanup-port.sh 8091 serve-eibrain-rpc"
+        in unit_text
+    )
+    assert (
+        "ExecStopPost=/opt/eimemory/current/deploy/systemd/eimemory-rpc-cleanup-port.sh 8091 serve-eibrain-rpc"
+        in unit_text
+    )
     assert "WorkingDirectory=/opt/eimemory/current" in unit_text
     assert "/dev-project/eimemory" not in unit_text
     assert "/var/log/eimemory" not in unit_text
@@ -116,6 +126,17 @@ def test_eimemory_rpc_systemd_unit_uses_honxin_tailscale_endpoint() -> None:
     )
     assert "WantedBy=multi-user.target" in unit_text
     assert "WantedBy=default.target" not in unit_text
+
+
+def test_eimemory_rpc_cleanup_script_kills_only_matching_port_listeners() -> None:
+    script = Path("deploy/systemd/eimemory-rpc-cleanup-port.sh").read_text(encoding="utf-8")
+
+    assert script.startswith("#!/usr/bin/env bash\n")
+    assert "ss -ltnp" in script
+    assert "pid=[0-9]+" in script
+    assert "*eimemory*\"$MATCH\"*" in script
+    assert "kill -TERM" in script
+    assert "kill -KILL" in script
 
 
 def test_openclaw_watchdog_systemd_uses_primary_and_loopback_health_gates() -> None:
