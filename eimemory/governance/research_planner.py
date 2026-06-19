@@ -9,6 +9,7 @@ from eimemory.models.records import ScopeRef
 def plan_research_tasks(goal: dict[str, Any], source_policy: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     policy = dict(source_policy or {})
     network_enabled = bool(policy.get("network_enabled") or policy.get("allow_network"))
+    source_urls = _string_list(policy.get("urls") or policy.get("source_urls"))
     title = str(goal.get("title") or "")
     question = str(goal.get("question") or "")
     target = str(goal.get("target_capability") or "")
@@ -22,7 +23,10 @@ def plan_research_tasks(goal: dict[str, Any], source_policy: dict[str, Any] | No
     if any(term in text for term in ("tool", "routing", "memory", "recall")):
         tasks.append(_task("tool_comparison", goal, expected_tiers=["T2"], max_seconds=20))
     if network_enabled:
-        tasks.append(_task("docs_read", goal, expected_tiers=["T3"], max_seconds=45, network=True))
+        task = _task("docs_read", goal, expected_tiers=["T3"], max_seconds=45, network=True)
+        if source_urls:
+            task["source_urls"] = source_urls[:5]
+        tasks.append(task)
     return _dedupe_tasks(tasks)
 
 
@@ -120,4 +124,22 @@ def _dedupe_tasks(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
             continue
         seen.add(key)
         deduped.append(task)
+    return deduped
+
+
+def _string_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        items = [value]
+    elif isinstance(value, (list, tuple, set)):
+        items = list(value)
+    else:
+        items = []
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        text = str(item or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        deduped.append(text)
     return deduped

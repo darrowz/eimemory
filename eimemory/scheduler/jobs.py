@@ -1115,6 +1115,7 @@ def _run_autonomous_learning(runtime: Runtime, *, scope: dict) -> dict[str, Any]
     max_goals = _env_int("EIMEMORY_AUTONOMOUS_LEARNING_MAX_GOALS", default=3, minimum=1, maximum=20)
     max_promotions = _env_int("EIMEMORY_AUTONOMOUS_LEARNING_MAX_PROMOTIONS", default=3, minimum=0, maximum=20)
     timeout_seconds = _env_int("EIMEMORY_AUTONOMOUS_LEARNING_TIMEOUT_SECONDS", default=900, minimum=30, maximum=7200)
+    allow_network = _env_bool("EIMEMORY_AUTONOMOUS_LEARNING_NETWORK", default=True)
     try:
         started = time.monotonic()
         report = _json_safe(
@@ -1126,6 +1127,7 @@ def _run_autonomous_learning(runtime: Runtime, *, scope: dict) -> dict[str, Any]
                 force=force,
                 max_goals=max_goals,
                 max_promotions=max_promotions,
+                allow_network=allow_network,
             )
         )
         elapsed_seconds = round(time.monotonic() - started, 3)
@@ -1144,6 +1146,9 @@ def _run_autonomous_learning(runtime: Runtime, *, scope: dict) -> dict[str, Any]
                 "max_goals": max_goals,
                 "max_promotions": max_promotions,
                 "timeout_seconds": timeout_seconds,
+                "network_research_enabled": bool((report.get("network_research") or {}).get("enabled", allow_network)),
+                "network_hypothesis_count": int((report.get("network_research") or {}).get("hypothesis_count") or 0),
+                "network_error_count": int((report.get("network_research") or {}).get("error_count") or 0),
                 "elapsed_seconds": elapsed_seconds,
                 "timeout_exceeded": elapsed_seconds > timeout_seconds,
                 "loop_id": str(report.get("loop_id") or ""),

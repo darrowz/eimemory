@@ -87,6 +87,7 @@ def test_nightly_systemd_unit_sets_autonomous_learning_promotion_budget() -> Non
 
     assert "Environment=EIMEMORY_AUTONOMOUS_LEARNING_MAX_GOALS=3" in unit_text
     assert "Environment=EIMEMORY_AUTONOMOUS_LEARNING_MAX_PROMOTIONS=3" in unit_text
+    assert "Environment=EIMEMORY_AUTONOMOUS_LEARNING_NETWORK=1" in unit_text
 
 
 def test_eimemory_rpc_systemd_unit_uses_honxin_tailscale_endpoint() -> None:

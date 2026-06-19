@@ -415,6 +415,7 @@ class Runtime:
         force: bool = False,
         max_goals: int = 3,
         max_promotions: int | None = None,
+        allow_network: bool | None = None,
     ) -> dict:
         from eimemory.governance.autonomous_learning import run_autonomous_learning_cycle
 
@@ -427,6 +428,7 @@ class Runtime:
             force=force,
             max_goals=max_goals,
             max_promotions=max_promotions,
+            allow_network=allow_network,
         )
 
     def run_autonomy_cycle(

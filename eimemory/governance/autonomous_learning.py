@@ -46,8 +46,10 @@ def run_autonomous_learning_cycle(
     force: bool = False,
     max_goals: int = 3,
     max_promotions: int | None = None,
+    allow_network: bool | None = None,
 ) -> dict[str, Any]:
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+    network_enabled = _network_enabled(allow_network)
     if dry_run:
         return _run_autonomous_learning_dry_run(
             runtime,
@@ -55,6 +57,7 @@ def run_autonomous_learning_cycle(
             apply=apply,
             full=full,
             max_goals=max_goals,
+            allow_network=network_enabled,
         )
     loop = start_learning_loop(runtime, scope=scope_ref, trigger="learn_cycle", dry_run=dry_run, force=force)
     loop_id = str(loop.meta.get("loop_id") or loop.content.get("loop_id") or loop.record_id)
@@ -98,7 +101,7 @@ def run_autonomous_learning_cycle(
         selected_goal_id = goal_ids[0] if goal_ids else ""
         mark_step(runtime, loop, step_name="goals", status="completed", record_ids=goal_ids, metrics={"goal_count": len(goals)})
 
-        research_tasks = plan_research_tasks(selected_goal, source_policy={"network_enabled": False})
+        research_tasks = plan_research_tasks(selected_goal, source_policy={"network_enabled": network_enabled})
         research_task_ids = [
             create_research_task(runtime, scope=scope_ref, loop_id=loop_id, goal_id=selected_goal_id or selected_goal.get("semantic_key", ""), task=task)
             for task in research_tasks
@@ -106,7 +109,8 @@ def run_autonomous_learning_cycle(
         evidence: list[dict[str, Any]] = []
         for task in research_tasks:
             evidence.extend(collect(task, runtime=runtime, scope=scope_ref))
-        if not evidence:
+        network_research = _network_research_summary(enabled=network_enabled, tasks=research_tasks, evidence=evidence)
+        if not evidence or _all_t6_evidence(evidence):
             evidence = [
                 {
                     "tier": "T2",
@@ -262,6 +266,7 @@ def run_autonomous_learning_cycle(
             "selected_goal": selected_goal,
             "research_task_ids": research_task_ids,
             "research_note_id": research_note_id,
+            "network_research": network_research,
             "experiment_id": experiment_id,
             "experiment_ids": experiment_ids,
             "eval_record_id": str(eval_result.get("record_id") or ""),
@@ -433,6 +438,7 @@ def _run_autonomous_learning_dry_run(
     apply: bool,
     full: bool,
     max_goals: int,
+    allow_network: bool = False,
 ) -> dict[str, Any]:
     watch_report = collect_world_signals(
         runtime,
@@ -456,10 +462,11 @@ def _run_autonomous_learning_dry_run(
     )
     goals = generate_learning_goals(self_model, ranked_signals, goal_registry=goal_registry, thoughts=thought_report.get("thoughts") or [], max_goals=max_goals)
     selected_goal = goals[0] if goals else _fallback_goal()
-    research_tasks = plan_research_tasks(selected_goal, source_policy={"network_enabled": False})
+    research_tasks = plan_research_tasks(selected_goal, source_policy={"network_enabled": allow_network})
     evidence: list[dict[str, Any]] = []
     for task in research_tasks:
         evidence.extend(collect(task, runtime=runtime, scope=scope))
+    network_research = _network_research_summary(enabled=allow_network, tasks=research_tasks, evidence=evidence)
     candidate_kind = _candidate_kind_for_goal(selected_goal)
     candidate_kinds = choose_candidate_kinds_for_goal(selected_goal, max_candidates=max(1, min(3, max_goals)))
     eval_result = run_learning_eval(
@@ -490,6 +497,7 @@ def _run_autonomous_learning_dry_run(
         "selected_goal_id": "",
         "selected_goal": selected_goal,
         "research_task_count": len(research_tasks),
+        "network_research": network_research,
         "research_task_ids": [],
         "research_note_id": "",
         "experiment_id": "",
@@ -513,6 +521,29 @@ def _run_autonomous_learning_dry_run(
 def list_learning_goals(runtime: Any, *, scope: dict[str, Any] | ScopeRef | None = None, limit: int = 10) -> list[dict[str, Any]]:
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
     return [record.to_dict() for record in runtime.store.list_records(kinds=["learning_goal"], scope=scope_ref, limit=limit)]
+
+
+def _network_enabled(value: bool | None) -> bool:
+    if value is not None:
+        return bool(value)
+    return _env_truthy("EIMEMORY_AUTONOMOUS_LEARNING_NETWORK", default=True)
+
+
+def _network_research_summary(*, enabled: bool, tasks: list[dict[str, Any]], evidence: list[dict[str, Any]]) -> dict[str, Any]:
+    network_tasks = [task for task in tasks if bool(task.get("network"))]
+    web_items = [item for item in evidence if str(item.get("kind") or "") == "web_learning_scout"]
+    error_items = [item for item in evidence if str(item.get("kind") or "").startswith("web_learning_scout_")]
+    return {
+        "enabled": bool(enabled),
+        "task_count": len(network_tasks),
+        "hypothesis_count": len(web_items),
+        "error_count": len(error_items),
+        "evidence_refs": [str(item.get("ref") or "") for item in web_items[:10] if item.get("ref")],
+    }
+
+
+def _all_t6_evidence(evidence: list[dict[str, Any]]) -> bool:
+    return bool(evidence) and all(str(item.get("tier") or "").upper() == "T6" for item in evidence)
 
 
 def list_learning_loops(runtime: Any, *, scope: dict[str, Any] | ScopeRef | None = None, limit: int = 10) -> list[dict[str, Any]]:
