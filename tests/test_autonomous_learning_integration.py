@@ -198,6 +198,21 @@ def test_autonomous_learning_cycle_can_attach_web_scout_evidence_when_network_en
     scope = {"agent_id": "main"}
     runtime.evolution.log_reflection(tag="knowledge.source", miss="research stale", fix="check current web evidence", scope=scope)
     _force_real_task_replay_pass(runtime, monkeypatch)
+    monkeypatch.setattr(
+        "eimemory.governance.autonomous_learning.generate_learning_goals",
+        lambda *_args, **_kwargs: [
+            {
+                "goal_type": "maintenance",
+                "title": "Refresh source policy",
+                "question": "Which current sources should shape memory research policy?",
+                "success_criteria": "Promote current source evidence only when it can improve source quality or replay coverage.",
+                "authority_tier": "L0",
+                "priority": 0.7,
+                "target_capability": "knowledge.source",
+                "semantic_key": "test_knowledge_source",
+            }
+        ],
+    )
     scout_calls: list[dict] = []
 
     def fake_scout_web_learning(*, scope, urls=None, evidence=None, timeout_seconds=8):
@@ -242,6 +257,14 @@ def test_autonomous_learning_cycle_can_attach_web_scout_evidence_when_network_en
     assert any(item["kind"] == "web_learning_scout" and item["tier"] == "T3" for item in evidence)
     assert report["network_research"]["enabled"] is True
     assert report["network_research"]["hypothesis_count"] == 1
+    output_gate = report["network_research"]["output_gate"]
+    assert output_gate["decision"] == "actionable"
+    assert "source_score" in output_gate["landing_targets"]
+    assert "replay" in output_gate["landing_targets"]
+    gate_record = runtime.store.get_by_id(output_gate["summary_record_id"], scope=scope)
+    assert gate_record is not None
+    assert gate_record.meta["report_type"] == "network_learning_output_gate"
+    assert gate_record.content["decision"] == "actionable"
 
 
 def test_autonomous_learning_cycle_uses_network_research_by_default(tmp_path, monkeypatch) -> None:
@@ -303,7 +326,63 @@ def test_autonomous_learning_cycle_adds_local_fallback_when_default_network_has_
 
     assert report["ok"] is True
     assert report["network_research"]["enabled"] is True
+    assert report["network_research"]["output_gate"]["decision"] == "skipped"
+    assert report["network_research"]["output_gate"]["reason"] == "no_web_hypotheses"
+    assert report["network_research"]["output_gate"]["landing_targets"] == []
     assert "T2" in evidence_tiers
+
+
+def test_autonomous_learning_network_output_gate_can_keep_web_learning_as_reference_summary(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "main"}
+    _force_real_task_replay_pass(runtime, monkeypatch)
+
+    monkeypatch.setattr(
+        "eimemory.governance.autonomous_learning.generate_learning_goals",
+        lambda *_args, **_kwargs: [
+            {
+                "goal_type": "maintenance",
+                "title": "Refresh operational notes",
+                "question": "Can recent external notes inform operations without changing policy?",
+                "success_criteria": "Keep useful background as reference when no durable artifact is justified.",
+                "authority_tier": "L0",
+                "priority": 0.4,
+                "target_capability": "operations.context",
+                "semantic_key": "test_ops_context",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        runtime,
+        "scout_web_learning",
+        lambda **_: {
+            "ok": True,
+            "source": "web_learning_scout",
+            "reflection_record_id": "web_ref_ops",
+            "hypothesis_count": 1,
+            "hypotheses": [
+                {
+                    "source_url": "https://example.com/background-only",
+                    "candidate_policy": {
+                        "title": "Background only",
+                        "policy_update": "Interesting context, but not enough to change a rule or patch code.",
+                    },
+                }
+            ],
+            "errors": [],
+        },
+    )
+
+    report = runtime.run_autonomous_learning_cycle(scope=scope, force=True, apply=False, allow_network=True)
+
+    output_gate = report["network_research"]["output_gate"]
+    assert output_gate["decision"] == "summary_only"
+    assert output_gate["landing_targets"] == ["summary"]
+    assert output_gate["reason"] == "no_actionable_landing_target"
+    gate_record = runtime.store.get_by_id(output_gate["summary_record_id"], scope=scope)
+    assert gate_record is not None
+    assert gate_record.content["decision"] == "summary_only"
+    assert gate_record.content["landing_targets"] == ["summary"]
 
 
 def test_autonomous_learning_cycle_reports_skipped_real_task_replay_on_failure(tmp_path, monkeypatch) -> None:

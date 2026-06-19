@@ -106,8 +106,8 @@ def test_production_systemd_has_single_autonomous_scheduler_owner() -> None:
 def test_eimemory_rpc_systemd_unit_uses_honxin_tailscale_endpoint() -> None:
     unit_text = Path("deploy/systemd/eimemory-rpc.service").read_text(encoding="utf-8")
 
-    assert "User=darrow" in unit_text
-    assert "Group=darrow" in unit_text
+    assert "User=" not in unit_text
+    assert "Group=" not in unit_text
     assert "UMask=0027" in unit_text
     assert "Environment=HOME=/home/darrow" in unit_text
     assert (
@@ -135,8 +135,8 @@ def test_eimemory_rpc_systemd_unit_uses_honxin_tailscale_endpoint() -> None:
         "StandardError=append:/home/darrow/.openclaw/logs/eimemory-rpc.service.log"
         in unit_text
     )
-    assert "WantedBy=multi-user.target" in unit_text
-    assert "WantedBy=default.target" not in unit_text
+    assert "WantedBy=default.target" in unit_text
+    assert "WantedBy=multi-user.target" not in unit_text
 
 
 def test_eimemory_rpc_cleanup_script_kills_only_matching_port_listeners() -> None:
@@ -192,7 +192,10 @@ def test_immutable_release_installer_normalizes_service_ownership() -> None:
     assert 'SERVICE_USER="${SERVICE_USER:-darrow}"' in script
     assert 'SERVICE_GROUP="${SERVICE_GROUP:-$SERVICE_USER}"' in script
     assert 'SERVICE_HOME="${SERVICE_HOME:-/home/$SERVICE_USER}"' in script
-    assert 'SYSTEMD_ENABLE_SERVICE="${SYSTEMD_ENABLE_SERVICE:-0}"' in script
+    assert 'SYSTEMD_ENABLE_SERVICE="${SYSTEMD_ENABLE_SERVICE:-0}"' not in script
+    assert "SYSTEMD_UNIT_DIR" not in script
+    assert 'USER_SYSTEMD_ENABLE_SERVICE="${USER_SYSTEMD_ENABLE_SERVICE:-1}"' in script
+    assert 'USER_SYSTEMD_DIR="${USER_SYSTEMD_DIR:-$SERVICE_HOME/.config/systemd/user}"' in script
     assert "_ensure_runtime_dir" in script
     assert '"$INSTALL_ROOT"' in script
     assert '"$EIMEMORY_ROOT"' in script
@@ -200,5 +203,19 @@ def test_immutable_release_installer_normalizes_service_ownership() -> None:
     assert '"$EIMEMORY_LOG_DIR"' in script
     assert 'id "$SERVICE_USER" >/dev/null 2>&1' in script
     assert 'chown -R "$SERVICE_USER:$SERVICE_GROUP"' in script
-    assert 'install -m 0644 "$RELEASE_DIR/deploy/systemd/eimemory-rpc.service" "$SYSTEMD_UNIT_DIR/eimemory-rpc.service"' in script
-    assert "systemctl enable eimemory-rpc.service" in script
+    assert 'install -m 0644 "$RELEASE_DIR/deploy/systemd/eimemory-rpc.service" "$USER_SYSTEMD_DIR/eimemory-rpc.service"' in script
+    assert "systemctl --user daemon-reload" in script
+    assert "systemctl --user enable eimemory-rpc.service" in script
+    assert "systemctl enable eimemory-rpc.service" not in script
+
+
+def test_user_systemd_owner_check_uses_only_user_service_as_rpc_owner() -> None:
+    script = Path("deploy/check_user_systemd_owner.sh").read_text(encoding="utf-8")
+
+    assert "systemctl --user is-active eimemory-rpc.service" in script
+    assert "systemctl --user is-enabled eimemory-rpc.service" in script
+    assert "systemctl is-active eimemory-rpc.service" in script
+    assert "systemctl is-enabled eimemory-rpc.service" in script
+    assert "system_owner_active" in script
+    assert "system_owner_enabled" in script
+    assert "ok=user_systemd_owner" in script

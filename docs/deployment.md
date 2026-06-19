@@ -15,7 +15,7 @@ Use these paths on Linux production hosts:
 | Release virtual environment | `/opt/eimemory/current/.venv` |
 | Runtime data root | `/var/lib/eimemory` |
 | Configuration root | `/etc/eimemory` |
-| Logs and generated reports | `/var/log/eimemory` |
+| User service logs and generated reports | `/home/darrow/.openclaw/logs` |
 | OpenClaw bridge extension | `/var/lib/eimemory/openclaw/extensions/eimemory-bridge` |
 | Governance console HTML | `/var/lib/eimemory/governance/evolution-console.html` |
 
@@ -32,9 +32,9 @@ immutable release directory, then run services only through
 The release script copies the current repository commit into
 `/opt/eimemory/releases/<commit>`, creates a release-local virtual environment,
 installs eimemory non-editably, and atomically updates `/opt/eimemory/current`.
-It does not enable the RPC service by default. If a host intentionally uses a
-system service, pass `SYSTEMD_ENABLE_SERVICE=1`; otherwise keep the existing
-user service as the single RPC owner.
+The RPC service is always owned by the user systemd layer
+(`systemctl --user`). Do not install or enable a system-level
+`eimemory-rpc.service`; it is not a supported deployment owner.
 
 The runtime service environment should set:
 
@@ -78,13 +78,17 @@ Verify the listener before switching `eibrain` to the RPC provider:
 
 ```bash
 systemctl --user status eimemory-rpc.service --no-pager
-ss -ltn | grep 100.66.161.64:8091
+ss -ltn | grep 100.105.189.120:8091
+/opt/eimemory/current/deploy/check_user_systemd_owner.sh
 ```
 
 The RPC service should bind to honxin's Tailscale address on port `8091`, separate from the Governance Console on `8765`, so honjia can reach it over MagicDNS.
-Do not run both `/etc/systemd/system/eimemory-rpc.service` and
-`~/.config/systemd/user/eimemory-rpc.service`; they bind the same port and will
-restart-loop whichever starts second.
+If `/etc/systemd/system/eimemory-rpc.service` exists from an older deployment,
+disable it before starting the user unit:
+
+```bash
+sudo systemctl disable --now eimemory-rpc.service
+```
 
 ## Nightly Knowledge Intake
 
@@ -157,6 +161,7 @@ After deployment, run:
 
 EIMEMORY_ROOT=/var/lib/eimemory /opt/eimemory/current/.venv/bin/eimemory quality stats
 EIMEMORY_ROOT=/var/lib/eimemory /opt/eimemory/current/.venv/bin/eimemory governance snapshot
+/opt/eimemory/current/deploy/check_user_systemd_owner.sh
 ```
 
 ## Governance Console Token Rotation

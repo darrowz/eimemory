@@ -343,7 +343,7 @@ EIMEMORY_AUTONOMOUS_LEARNING_TIMEOUT_SECONDS=900
 Start the eibrain-facing RPC boundary from the deployed runtime environment, not from a source checkout path:
 
 ```bash
-EIMEMORY_ROOT=/var/lib/eimemory eimemory serve-eibrain-rpc --host 100.66.161.64 --port 8091
+EIMEMORY_ROOT=/var/lib/eimemory eimemory serve-eibrain-rpc --host 100.105.189.120 --port 8091
 ```
 
 `eibrain` should connect to the running endpoint, for example `http://honxin:8091/`.
@@ -360,7 +360,7 @@ curl http://honxin:8091/readyz
 Detailed daily digest payloads live at `/daily-brief` and `/diagnostics`, so
 health checks stay fast even when the knowledge store is large.
 
-A production systemd template is available at `deploy/systemd/eimemory-rpc.service`.
+A production user systemd template is available at `deploy/systemd/eimemory-rpc.service`.
 
 ## Memory Quality
 

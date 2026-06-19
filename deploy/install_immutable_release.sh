@@ -10,8 +10,8 @@ SERVICE_HOME="${SERVICE_HOME:-/home/$SERVICE_USER}"
 EIMEMORY_ROOT="${EIMEMORY_ROOT:-/var/lib/eimemory}"
 EIMEMORY_CONFIG_DIR="${EIMEMORY_CONFIG_DIR:-/etc/eimemory}"
 EIMEMORY_LOG_DIR="${EIMEMORY_LOG_DIR:-$SERVICE_HOME/.openclaw/logs}"
-SYSTEMD_ENABLE_SERVICE="${SYSTEMD_ENABLE_SERVICE:-0}"
-SYSTEMD_UNIT_DIR="${SYSTEMD_UNIT_DIR:-/etc/systemd/system}"
+USER_SYSTEMD_ENABLE_SERVICE="${USER_SYSTEMD_ENABLE_SERVICE:-1}"
+USER_SYSTEMD_DIR="${USER_SYSTEMD_DIR:-$SERVICE_HOME/.config/systemd/user}"
 COMMIT="${1:-$(git -C "$REPO_DIR" rev-parse --short HEAD)}"
 RELEASE_DIR="$INSTALL_ROOT/releases/$COMMIT"
 CURRENT_LINK="$INSTALL_ROOT/current"
@@ -62,13 +62,20 @@ _ensure_runtime_dir "$EIMEMORY_LOG_DIR" 0750
 if [ "$(id -u)" -eq 0 ] && id "$SERVICE_USER" >/dev/null 2>&1; then
   chown -h "$SERVICE_USER:$SERVICE_GROUP" "$CURRENT_LINK" 2>/dev/null || true
 fi
-if [ "$(id -u)" -eq 0 ] && [ "$SYSTEMD_ENABLE_SERVICE" = "1" ] && command -v systemctl >/dev/null 2>&1; then
-  install -m 0644 "$RELEASE_DIR/deploy/systemd/eimemory-rpc.service" "$SYSTEMD_UNIT_DIR/eimemory-rpc.service"
-  systemctl daemon-reload
-  systemctl enable eimemory-rpc.service
+if [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ] && command -v systemctl >/dev/null 2>&1; then
+  mkdir -p "$USER_SYSTEMD_DIR"
+  install -m 0644 "$RELEASE_DIR/deploy/systemd/eimemory-rpc.service" "$USER_SYSTEMD_DIR/eimemory-rpc.service"
+  if [ "$(id -u)" -eq 0 ] && id "$SERVICE_USER" >/dev/null 2>&1; then
+    chown -R "$SERVICE_USER:$SERVICE_GROUP" "$USER_SYSTEMD_DIR"
+    echo "user_systemd_enable_hint=run as $SERVICE_USER: systemctl --user enable eimemory-rpc.service"
+  else
+    systemctl --user daemon-reload
+    systemctl --user enable eimemory-rpc.service
+  fi
 fi
 
 echo "release=$RELEASE_DIR"
 echo "current=$CURRENT_LINK"
 echo "commit=$COMMIT"
 echo "service_user=$SERVICE_USER"
+echo "user_systemd_unit=$USER_SYSTEMD_DIR/eimemory-rpc.service"

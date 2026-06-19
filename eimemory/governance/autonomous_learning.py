@@ -33,7 +33,7 @@ from eimemory.governance.self_model import build_self_model
 from eimemory.governance.signal_intake import rank_learning_signals
 from eimemory.governance.thoughts import generate_thoughts
 from eimemory.governance.world_watchers import collect_world_signals, default_watches
-from eimemory.models.records import ScopeRef
+from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
 def run_autonomous_learning_cycle(
@@ -147,6 +147,18 @@ def run_autonomous_learning_cycle(
 
         target_capability = str(selected_goal.get("target_capability") or "proactive.judgment")
         candidate_kinds = choose_candidate_kinds_for_goal(selected_goal, max_candidates=max(1, min(3, max_goals)))
+        network_research["output_gate"] = _network_output_gate(
+            runtime,
+            enabled=network_enabled,
+            scope=scope_ref,
+            loop_id=loop_id,
+            goal=selected_goal,
+            evidence=evidence,
+            candidate_kinds=candidate_kinds,
+            research_note_id=research_note_id,
+            replay_dataset=replay_dataset,
+            persist=True,
+        )
         experiment_ids: list[str] = []
         eval_results: list[dict[str, Any]] = []
         candidate_ids: list[str] = []
@@ -469,6 +481,18 @@ def _run_autonomous_learning_dry_run(
     network_research = _network_research_summary(enabled=allow_network, tasks=research_tasks, evidence=evidence)
     candidate_kind = _candidate_kind_for_goal(selected_goal)
     candidate_kinds = choose_candidate_kinds_for_goal(selected_goal, max_candidates=max(1, min(3, max_goals)))
+    network_research["output_gate"] = _network_output_gate(
+        runtime,
+        enabled=allow_network,
+        scope=scope,
+        loop_id="dry_run",
+        goal=selected_goal,
+        evidence=evidence,
+        candidate_kinds=candidate_kinds,
+        research_note_id="",
+        replay_dataset={},
+        persist=False,
+    )
     eval_result = run_learning_eval(
         runtime,
         {
@@ -540,6 +564,162 @@ def _network_research_summary(*, enabled: bool, tasks: list[dict[str, Any]], evi
         "error_count": len(error_items),
         "evidence_refs": [str(item.get("ref") or "") for item in web_items[:10] if item.get("ref")],
     }
+
+
+_NETWORK_OUTPUT_TARGET_BY_CANDIDATE_KIND = {
+    "memory_rule": "rule",
+    "eval_case": "replay",
+    "skill_draft": "skill",
+    "code_patch": "patch",
+    "source_policy": "source_score",
+}
+
+
+def _network_output_gate(
+    runtime: Any,
+    *,
+    enabled: bool,
+    scope: ScopeRef,
+    loop_id: str,
+    goal: dict[str, Any],
+    evidence: list[dict[str, Any]],
+    candidate_kinds: list[str],
+    research_note_id: str,
+    replay_dataset: dict[str, Any] | None,
+    persist: bool,
+) -> dict[str, Any]:
+    web_items = [item for item in evidence if str(item.get("kind") or "") == "web_learning_scout"]
+    if not enabled:
+        return _network_output_gate_report(
+            decision="skipped",
+            reason="network_disabled",
+            landing_targets=[],
+            web_items=web_items,
+            candidate_kinds=candidate_kinds,
+        )
+    if not web_items:
+        return _network_output_gate_report(
+            decision="skipped",
+            reason="no_web_hypotheses",
+            landing_targets=[],
+            web_items=web_items,
+            candidate_kinds=candidate_kinds,
+        )
+
+    target_capability = str(goal.get("target_capability") or "").lower()
+    actionable_goal = any(term in target_capability for term in ("source", "research", "knowledge", "recall", "memory", "code", "skill"))
+    landing_targets: list[str] = []
+    if actionable_goal:
+        for kind in candidate_kinds:
+            target = _NETWORK_OUTPUT_TARGET_BY_CANDIDATE_KIND.get(str(kind))
+            if target and target not in landing_targets:
+                landing_targets.append(target)
+
+    confidence = max((_as_float(item.get("confidence"), default=0.0) for item in web_items), default=0.0)
+    if confidence < 0.55:
+        decision = "summary_only"
+        reason = "low_confidence_web_hypotheses"
+        landing_targets = ["summary"]
+    elif not landing_targets:
+        decision = "summary_only"
+        reason = "no_actionable_landing_target"
+        landing_targets = ["summary"]
+    else:
+        decision = "actionable"
+        reason = "mapped_to_output_targets"
+
+    report = _network_output_gate_report(
+        decision=decision,
+        reason=reason,
+        landing_targets=landing_targets,
+        web_items=web_items,
+        candidate_kinds=candidate_kinds,
+        target_capability=str(goal.get("target_capability") or ""),
+        research_note_id=research_note_id,
+        replay_dataset=replay_dataset or {},
+    )
+    if persist:
+        record = runtime.store.append(
+            RecordEnvelope.create(
+                kind="reflection",
+                title="Network learning output gate",
+                summary=_network_output_gate_summary(report),
+                detail=f"loop_id={loop_id}; research_note_id={research_note_id}",
+                scope=scope,
+                source="eimemory.autonomous_learning.network_output_gate",
+                content={
+                    "report_type": "network_learning_output_gate",
+                    "loop_id": loop_id,
+                    "decision": report["decision"],
+                    "reason": report["reason"],
+                    "landing_targets": list(report["landing_targets"]),
+                    "target_capability": report.get("target_capability", ""),
+                    "candidate_kinds": list(candidate_kinds),
+                    "research_note_id": research_note_id,
+                    "web_evidence": _network_output_evidence(web_items),
+                    "replay_case_count": int((replay_dataset or {}).get("case_count") or len((replay_dataset or {}).get("cases") or [])),
+                },
+                tags=["autonomous_learning", "network_learning", "output_gate", str(report["decision"])],
+                evidence=[str(item.get("ref") or "") for item in web_items[:10] if item.get("ref")],
+                meta={"report_type": "network_learning_output_gate", "loop_id": loop_id, "decision": report["decision"]},
+            )
+        )
+        report["summary_record_id"] = record.record_id
+    return report
+
+
+def _network_output_gate_report(
+    *,
+    decision: str,
+    reason: str,
+    landing_targets: list[str],
+    web_items: list[dict[str, Any]],
+    candidate_kinds: list[str],
+    target_capability: str = "",
+    research_note_id: str = "",
+    replay_dataset: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "decision": decision,
+        "reason": reason,
+        "landing_targets": list(landing_targets),
+        "web_evidence_count": len(web_items),
+        "evidence_refs": [str(item.get("ref") or "") for item in web_items[:10] if item.get("ref")],
+        "candidate_kinds": list(candidate_kinds),
+        "target_capability": target_capability,
+        "research_note_id": research_note_id,
+        "replay_case_count": int((replay_dataset or {}).get("case_count") or len((replay_dataset or {}).get("cases") or [])),
+        "summary_record_id": "",
+    }
+
+
+def _network_output_evidence(web_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "tier": str(item.get("tier") or ""),
+            "ref": str(item.get("ref") or ""),
+            "summary": str(item.get("summary") or "")[:400],
+            "confidence": _as_float(item.get("confidence"), default=0.0),
+        }
+        for item in web_items[:10]
+    ]
+
+
+def _network_output_gate_summary(report: dict[str, Any]) -> str:
+    if report.get("decision") == "actionable":
+        targets = ", ".join(list(report.get("landing_targets") or []))
+        return f"Network learning routed to actionable targets: {targets}."
+    if report.get("decision") == "summary_only":
+        return "Network learning kept as reference summary; no durable artifact was justified."
+    return f"Network learning skipped: {report.get('reason') or 'no action'}."
+
+
+def _as_float(value: Any, *, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _all_t6_evidence(evidence: list[dict[str, Any]]) -> bool:

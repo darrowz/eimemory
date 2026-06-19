@@ -2,8 +2,9 @@
 
 This directory contains service templates for production eimemory deployments.
 
-Copy templates into the selected systemd scope and replace placeholder values
-before enabling them.
+Copy templates into the operator's user systemd scope and replace placeholder
+values before enabling them. The production RPC owner is `systemctl --user`;
+system-level `eimemory-rpc.service` ownership is unsupported.
 
 For the current OpenClaw user-service deployment, the active service lives under:
 
@@ -47,11 +48,17 @@ services should not import or execute code from it. Promote a release with:
 /dev-project/eimemory/deploy/install_immutable_release.sh
 ```
 
-The installer intentionally leaves service ownership alone by default. Use
-`SYSTEMD_ENABLE_SERVICE=1` only on hosts where `/etc/systemd/system/eimemory-rpc.service`
-is the chosen owner. On the OpenClaw honxin deployment, the RPC owner is the
-user unit under `/home/darrow/.config/systemd/user`; do not enable the system
-unit at the same time.
+The installer installs the RPC template under the user unit directory by
+default. Use `/home/darrow/.config/systemd/user/eimemory-rpc.service` as the
+single RPC owner. If an older system unit exists, disable it before starting the
+user unit:
+
+```bash
+sudo systemctl disable --now eimemory-rpc.service
+systemctl --user daemon-reload
+systemctl --user enable --now eimemory-rpc.service
+/opt/eimemory/current/deploy/check_user_systemd_owner.sh
+```
 
 Runtime configuration is loaded from `/etc/eimemory/settings.json` when
 `EIMEMORY_CONFIG_DIR=/etc/eimemory` is set. `EIMEMORY_CONFIG_PATH` can still
