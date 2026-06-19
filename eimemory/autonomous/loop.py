@@ -36,8 +36,9 @@ contract that keeps the loop safe to run unattended in the sandbox:
        verifier runs hourly.
 
 The runner does **not** itself mutate the live state, call any paid
-API, or push to a remote. It is the per-step orchestrator; the
-promotion state machine and the nightly cron are separate modules.
+API, or push to a remote. It is the per-step orchestrator used by
+manual or experimental loops; production scheduling belongs to the
+governance learning path.
 
 .. note::
    The wrapped ``experiment_fn`` **must be picklable and

@@ -90,6 +90,19 @@ def test_nightly_systemd_unit_sets_autonomous_learning_promotion_budget() -> Non
     assert "Environment=EIMEMORY_AUTONOMOUS_LEARNING_NETWORK=1" in unit_text
 
 
+def test_production_systemd_has_single_autonomous_scheduler_owner() -> None:
+    systemd_dir = Path("deploy/systemd")
+    service_names = {path.name for path in systemd_dir.glob("*")}
+
+    assert "eimemory-nightly.service" in service_names
+    assert "eimemory-nightly.timer" in service_names
+    assert "eimemory-karpathy-loop.service" not in service_names
+    assert "eimemory-karpathy-loop.timer" not in service_names
+    for unit_path in systemd_dir.glob("*"):
+        unit_text = unit_path.read_text(encoding="utf-8")
+        assert "karpathy_loop_cron" not in unit_text
+
+
 def test_eimemory_rpc_systemd_unit_uses_honxin_tailscale_endpoint() -> None:
     unit_text = Path("deploy/systemd/eimemory-rpc.service").read_text(encoding="utf-8")
 

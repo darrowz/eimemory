@@ -1,11 +1,15 @@
-"""Karpathy Loop package (Phase 2 of the 2026-06-17 karpathy-loop plan).
+"""Experimental autonomous-learning utilities.
 
-The ``eimemory.autonomous`` package is the autoresearch loop that
-extends the existing ``eimemory.governance.autonomous_learning`` with
-a hard-time-boxed single-experiment runner, JSONL experiment log,
-hypothesis clustering, compounding context, and a nightly cron.
+The production self-improvement path lives under
+``eimemory.governance.autonomous_learning`` and
+``eimemory.governance.autonomous_evolution``. This package keeps the
+reusable Karpathy-loop utilities that still have value for isolated
+experiments: hard time boxes, experiment logs, hypothesis clustering,
+compounding context, business feedback, and seven-day review helpers.
 
-See ``docs/superpowers/plans/2026-06-17-eimemory-karpathy-loop.md``
-Phase 2 (Tasks 2.1-2.8) for the full design.
+It is intentionally not a separate production scheduler. Nightly and
+continuous production loops must enter through ``eimemory nightly`` or
+``eimemory learn ...`` so there is one state owner for learning goals,
+promotion gates, replay evidence, and rollback metadata.
 """
 from __future__ import annotations

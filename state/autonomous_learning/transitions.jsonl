@@ -1,3 +1,0 @@
-{"record_id": "rec_demo_20260617_task1_4", "from": null, "to": "sandbox", "at": "2026-06-17T16:03:42.295580+00:00"}
-{"record_id": "rec_demo_20260617_task1_4", "from": "sandbox", "to": "canary", "at": "2026-06-17T16:03:42.296533+00:00"}
-{"record_id": "rec_demo_20260617_task1_4", "from": "canary", "to": "active", "at": "2026-06-17T16:03:42.297556+00:00"}

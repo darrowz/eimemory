@@ -58,12 +58,26 @@ Runtime configuration is loaded from `/etc/eimemory/settings.json` when
 point at a specific settings file, and `EIMEMORY_ROOT` overrides the configured
 root.
 
-## Nightly Intake Timer
+## Production Timer Set
 
-The standard production schedule runs active knowledge intake and governance once
-per day at 03:30 in the server's local timezone. The template also enables the
-1.0.0 autonomous learning loop in apply mode with bounded goal count,
-promotion budget, timeout, dashboard output, promotion gates, and rollback
+The production schedule has a single governance owner. Install only these
+timers unless a deployment document explicitly says otherwise:
+
+| Timer | Purpose |
+| --- | --- |
+| `eimemory-nightly.timer` | Daily intake, governance, evaluation summaries, autonomous evolution, autonomous learning, and dashboards. |
+| `eimemory-learn-watch.timer` | Lightweight signal capture every 5 minutes. |
+| `eimemory-learn-think.timer` | Hourly proactive thinking over local evidence. |
+| `eimemory-learn-dashboard.timer` | Daily operator dashboard after the nightly run. |
+
+Do not install a standalone Karpathy-loop timer in production. The reusable
+experiment helpers under `eimemory.autonomous` feed into the governance path;
+they are not a second state owner.
+
+The standard nightly schedule runs active knowledge intake and governance once
+per day at 03:30 in the server's local timezone. The template enables
+autonomous learning in apply mode with bounded goal count, promotion budget,
+timeout, dashboard output, promotion gates, network evidence, and rollback
 metadata.
 
 Install as a user service for the OpenClaw/eimemory operator:
@@ -84,7 +98,7 @@ systemctl --user start eimemory-nightly.service
 journalctl --user -u eimemory-nightly.service -n 100 --no-pager
 ```
 
-## Autonomous Learning Timers
+## Companion Learning Timers
 
 The 1.0.0 proactive learning layer runs three additional timers:
 

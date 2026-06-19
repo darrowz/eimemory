@@ -1,4 +1,4 @@
-"""Nightly Karpathy-loop iteration runner."""
+"""Manual Karpathy-loop iteration runner for isolated experiments."""
 from __future__ import annotations
 
 import dataclasses
@@ -71,9 +71,9 @@ def _baseline_from_log(exp_log_path: Path) -> float:
 def _score_hypothesis_candidate(hypothesis: str, prior_context: str) -> float:
     """Deterministic offline score for a candidate hypothesis.
 
-    This is intentionally local and cheap: the nightly loop can run without
-    network calls while still scoring a concrete hypothesis and compounding
-    context instead of a no-op warmup.
+    This is intentionally local and cheap: an experimental iteration can run
+    without network calls while still scoring a concrete hypothesis and
+    compounding context instead of a no-op warmup.
     """
     text = f"{hypothesis}\n{prior_context}".lower()
     score = 0.50

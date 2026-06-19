@@ -24,3 +24,15 @@ data/
 # orchestrator runtime scratch (Mavis plans/notes)
 plans/*/notes/
 .mavis/
+
+# local development and runtime artifacts
+.harness/
+STATUS.md
+DEPLOY_RUNBOOK.md
+state/autonomous_learning/**/*.jsonl
+state/autonomous_learning/active/*
+state/autonomous_learning/canary/*
+state/autonomous_learning/rolled_back/*
+!state/autonomous_learning/active/.gitkeep
+!state/autonomous_learning/canary/.gitkeep
+!state/autonomous_learning/rolled_back/.gitkeep

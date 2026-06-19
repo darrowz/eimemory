@@ -24,7 +24,7 @@ relative. An experiment is **discarded** otherwise. No human override.
 Each experiment: **5 minutes** wall clock, hard limit. If exceeded, kill
 and discard. The 5-minute box is what makes "50 experiments per night"
 mathematically possible (50 × 5 min = 250 min ≈ 4 hours, matching the
-nightly cron budget).
+experimental iteration budget).
 
 ## Inputs (read once at loop start)
 

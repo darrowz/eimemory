@@ -435,35 +435,6 @@ def _apply_playbook_candidate(
     return {"ok": True, "promotion_target": _promotion_target(candidate), "adapter": "learning_playbook", "applied_artifact_ids": [record.record_id]}
 
 
-def _reviewable_diff_text(candidate: RecordEnvelope, patch: dict[str, Any]) -> str:
-    summary = str(patch.get("summary") or candidate.summary or "Autonomous learning code patch candidate")
-    policy = str(patch.get("policy") or patch.get("success_criteria") or summary)
-    capability = str(patch.get("target_capability") or candidate.meta.get("target_capability") or "code.implementation")
-    lines = [
-        "diff --git a/AUTONOMOUS_LEARNING_CANDIDATE.md b/AUTONOMOUS_LEARNING_CANDIDATE.md",
-        "new file mode 100644",
-        "index 0000000..0000000",
-        "--- /dev/null",
-        "+++ b/AUTONOMOUS_LEARNING_CANDIDATE.md",
-        "@@ -0,0 +1,12 @@",
-        "+# Autonomous Learning Code Candidate",
-        f"+Candidate: {candidate.record_id}",
-        f"+Capability: {capability}",
-        f"+Summary: {summary}",
-        "+",
-        "+This patch artifact is generated for machine/code review only.",
-        "+It is not applied to production automatically.",
-        "+",
-        "+Proposed action:",
-        f"+{policy}",
-        "+",
-        "+Verification:",
-        "+- python -m compileall eimemory scripts",
-        "+- python -m pytest -q",
-    ]
-    return "\n".join(lines) + "\n"
-
-
 def _code_repo_root(patch: dict[str, Any]) -> Path | None:
     raw = str(patch.get("repo_root") or patch.get("repository_root") or os.environ.get("EIMEMORY_AUTONOMOUS_CODE_REPO") or "").strip()
     if not raw:

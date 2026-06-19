@@ -60,9 +60,10 @@ knowledge while keeping execution authority outside the memory layer.
   long-term objectives, and replay gaps can become persisted `thought` records.
 - Autonomous goal generation: the system can turn self-model weaknesses and
   operational evidence into bounded learning goals.
-- Code sandbox support: code-fixable incidents can become isolated sandbox
-  plans with allowed files, verification commands, branch names, worktree
-  paths, and rollback notes.
+- Code evolution support: code-fixable incidents can become isolated sandbox
+  plans first, then gated L2 code patches with allowed files, verification
+  commands, optional repo commits, optional deployment commands, health checks,
+  and rollback notes.
 - Conservative autonomy: external actions, spending, credentials, and private
   data export remain outside automatic authority.
 - Integration-friendly: CLI, Python APIs, OpenClaw hooks, QMD compatibility,
@@ -204,9 +205,10 @@ eimemory learn dashboard --persist
 eimemory learn promote <candidate_id> --apply --eval-json '{"verdict":"pass","scores":{"safety":1,"regression":1},"gate_bundle":{...}}'
 ```
 
-`code_patch` L2 candidates are automatically promoted into reviewable patch
-artifacts when gates pass. They are not applied to production directly; the
-artifact is ready for machine review, branch creation, or PR automation.
+`code_patch` L2 candidates can update repository files and, when explicitly
+requested by the candidate patch, commit and deploy through configured commands.
+They are blocked unless eval, health, timeout, rollback, audit, and regression
+gates provide machine-checkable evidence.
 
 The 1.0.0 proactive layer adds a short thinking pass between observation and
 goal selection. It turns repeated weak signals, long-term objectives, recent
@@ -269,9 +271,10 @@ eimemory evolve code-sandbox \
   --persist-report
 ```
 
-Sandbox mode does not commit, push, merge, deploy, spend money, export private
-data, or change account authorization. It produces a reviewable repair artifact
-for a human, CI job, or controlled PR workflow.
+Sandbox mode itself does not commit, push, merge, deploy, spend money, export
+private data, or change account authorization. The later L2 promotion path owns
+real file application, optional commit, optional deployment, post-deploy health,
+and rollback evidence.
 
 ## GitHub Discovery
 
@@ -301,6 +304,9 @@ High-signal phrases for issues, releases, and project descriptions:
 Production schedule examples (all in `deploy/systemd/`):
 
 ```bash
+cp /dev-project/eimemory/deploy/systemd/eimemory-nightly.service ~/.config/systemd/user/
+cp /dev-project/eimemory/deploy/systemd/eimemory-nightly.timer ~/.config/systemd/user/
+
 cp /dev-project/eimemory/deploy/systemd/eimemory-learn-watch.service ~/.config/systemd/user/
 cp /dev-project/eimemory/deploy/systemd/eimemory-learn-watch.timer ~/.config/systemd/user/
 
@@ -311,17 +317,23 @@ cp /dev-project/eimemory/deploy/systemd/eimemory-learn-dashboard.service ~/.conf
 cp /dev-project/eimemory/deploy/systemd/eimemory-learn-dashboard.timer ~/.config/systemd/user/
 
 systemctl --user daemon-reload
-systemctl --user enable --now eimemory-learn-watch.timer eimemory-learn-think.timer eimemory-learn-dashboard.timer
+systemctl --user enable --now eimemory-nightly.timer eimemory-learn-watch.timer eimemory-learn-think.timer eimemory-learn-dashboard.timer
 ```
 
+`eimemory-nightly.timer` is the only production governance owner. Do not install
+a separate Karpathy-loop timer; reusable experiment helpers feed into the
+governance loop instead of scheduling their own state writer.
+
 Nightly autonomous learning is controlled from the scheduler environment. The
-production systemd template enables the 1.0.0 loop by default:
+production systemd template enables the loop by default:
 
 ```bash
 EIMEMORY_AUTONOMOUS_LEARNING_ENABLED=1
 EIMEMORY_AUTONOMOUS_LEARNING_APPLY=1
 EIMEMORY_AUTONOMOUS_LEARNING_DRY_RUN=0
 EIMEMORY_AUTONOMOUS_LEARNING_MAX_GOALS=3
+EIMEMORY_AUTONOMOUS_LEARNING_MAX_PROMOTIONS=3
+EIMEMORY_AUTONOMOUS_LEARNING_NETWORK=1
 EIMEMORY_AUTONOMOUS_LEARNING_TIMEOUT_SECONDS=900
 ```
 
