@@ -186,3 +186,20 @@ def test_autonomous_learning_cycle_reports_skipped_real_task_replay_on_failure(t
     assert report["ok"] is True
     assert report["real_task_replay"]["ok"] is False
     assert report["real_task_replay"]["replay_skipped_reason"] == "real_task_replay_failed"
+    assert report["replay_gate_passed"] is False
+    assert report["candidate_ids"] == []
+    assert report["promotions"] == []
+
+
+def test_autonomous_learning_required_env_fails_when_disabled(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    monkeypatch.delenv("EIMEMORY_AUTONOMOUS_LEARNING_ENABLED", raising=False)
+    monkeypatch.setenv("EIMEMORY_REQUIRE_AUTONOMOUS_LEARNING", "1")
+    monkeypatch.setattr(runtime, "run_memory_eval_ci", lambda dataset, *, emit_incidents=False: {"ok": True, "pass_rate": 1.0, "passed_threshold": True, "fail_count": 0, "name": "stub"})
+
+    report = run_nightly_jobs(runtime, scope={"agent_id": "main"})
+
+    assert report["autonomous_learning"]["ok"] is False
+    assert report["autonomous_learning"]["configured"] is True
+    assert report["autonomous_learning"]["requires_enable_env"] == "EIMEMORY_AUTONOMOUS_LEARNING_ENABLED=1"
+    assert report["autonomous_learning"]["learning_skipped_reason"] == "autonomous_learning_required_but_disabled"

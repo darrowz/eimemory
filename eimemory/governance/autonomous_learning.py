@@ -130,6 +130,14 @@ def run_autonomous_learning_cycle(
 
         replay_dataset = build_replay_dataset(runtime, scope=scope_ref, limit=50, persist=True, loop_id=loop_id)
         mark_step(runtime, loop, step_name="replay_dataset", status="completed", record_ids=[replay_dataset.get("persisted_record_id", "")], metrics={"case_count": replay_dataset.get("case_count", 0), "correction_count": replay_dataset.get("correction_count", 0)})
+        real_task_replay = _run_real_task_replay_if_available(
+            runtime=runtime,
+            loop=loop,
+            scope=scope_ref,
+            replay_dataset=replay_dataset,
+            seed_records=_replay_seed_records_from_cases(replay_dataset.get("cases") or [], scope=scope_ref),
+        )
+        replay_gate_passed = _replay_gate_passed(real_task_replay)
 
         target_capability = str(selected_goal.get("target_capability") or "proactive.judgment")
         candidate_kinds = choose_candidate_kinds_for_goal(selected_goal, max_candidates=max(1, min(3, max_goals)))
@@ -161,7 +169,7 @@ def run_autonomous_learning_cycle(
             )
             eval_result["gate_bundle"] = _gate_bundle_for_candidate(candidate_kind, evidence=evidence, scope=scope_ref)
             eval_results.append(eval_result)
-            if eval_result.get("ok"):
+            if eval_result.get("ok") and replay_gate_passed:
                 candidate_id = distill_capability_candidate(
                     runtime,
                     scope=scope_ref,
@@ -197,23 +205,26 @@ def run_autonomous_learning_cycle(
         candidate_id = candidate_ids[0] if candidate_ids else ""
         promotion_report = promotion_reports[0] if promotion_reports else {"ok": True, "applied": False}
         regression_report = regression_reports[0] if regression_reports else {"ok": True, "regressed": False, "record_id": ""}
-        real_task_replay = _run_real_task_replay_if_available(
-            runtime=runtime,
-            loop=loop,
-            scope=scope_ref,
-            replay_dataset=replay_dataset,
-            seed_records=_replay_seed_records_from_cases(replay_dataset.get("cases") or [], scope=scope_ref),
-        )
         mark_step(runtime, loop, step_name="experiment", status="completed", record_ids=experiment_ids, metrics={"experiment_count": len(experiment_ids), "candidate_kind_count": len(candidate_kinds)})
         mark_step(runtime, loop, step_name="eval", status="completed", record_ids=[str(item.get("record_id") or "") for item in eval_results], metrics={"pass_count": sum(1 for item in eval_results if item.get("ok")), "eval_count": len(eval_results)})
-        mark_step(runtime, loop, step_name="promotion", status="completed", record_ids=[item for report in promotion_reports for item in [report.get("promotion_request_id", "")] if item] + candidate_ids, metrics={"applied_count": sum(1 for report in promotion_reports if report.get("applied"))})
+        mark_step(
+            runtime,
+            loop,
+            step_name="promotion",
+            status="completed" if replay_gate_passed else "blocked",
+            record_ids=[item for report in promotion_reports for item in [report.get("promotion_request_id", "")] if item] + candidate_ids,
+            metrics={
+                "applied_count": sum(1 for report in promotion_reports if report.get("applied")),
+                "replay_gate_passed": replay_gate_passed,
+            },
+        )
 
         score_id = record_capability_score(
             runtime,
             scope=scope_ref,
             loop_id=loop_id,
             capability=target_capability,
-            score=0.8 if eval_result.get("ok") else 0.4,
+            score=0.8 if eval_result.get("ok") and replay_gate_passed else 0.4,
             evidence_record_ids=[item for item in [research_note_id, eval_result.get("record_id", ""), candidate_id] if item],
         )
         retention_report = compact_learning_records(runtime, scope=scope_ref, loop_id=loop_id, dry_run=not bool(apply), max_records=1000)
@@ -251,6 +262,7 @@ def run_autonomous_learning_cycle(
             "candidate_ids": candidate_ids,
             "candidate_kinds": candidate_kinds,
             "real_task_replay": real_task_replay,
+            "replay_gate_passed": replay_gate_passed,
             "promotion": promotion_report,
             "promotions": promotion_reports,
             "regression_watch": regression_report,
@@ -338,6 +350,13 @@ def _run_real_task_replay_if_available(
             metrics={"case_count": len(cases), "error_type": type(exc).__name__},
         )
         return failed_report
+
+
+def _replay_gate_passed(report: dict[str, Any]) -> bool:
+    if bool(report.get("ok")):
+        return True
+    reason = str(report.get("replay_skipped_reason") or "").strip()
+    return reason in {"no_replay_cases", "run_real_task_replay_unavailable"}
 
 
 def _replay_seed_records_from_cases(cases: list[dict[str, Any]], *, scope: ScopeRef) -> list[dict[str, Any]]:

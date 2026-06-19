@@ -126,7 +126,10 @@ def test_longmemeval_turn_granularity_scores_evidence_from_non_first_turn(tmp_pa
 
     report = run_longmemeval(runtime, dataset, mode="raw", granularity="turn", limit=5)
 
+    assert report["retrieval_recall_at_1"] == 1.0
+    assert report["mrr"] == 1.0
     assert report["retrieval_recall_at_5"] == 1.0
+    assert report["samples"][0]["returned_ids"][0] == "turn-cache-2"
     assert "turn-cache-2" in report["samples"][0]["returned_ids"]
     assert report["samples"][0]["hit_turn_ids"] == ["turn-cache-2"]
 

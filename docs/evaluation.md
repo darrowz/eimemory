@@ -97,6 +97,23 @@ Report metrics include `retrieval_recall_at_1/5/10`, `recall_any_at_k`,
 `recall_all_at_k`, `ndcg_at_5`, `mrr`, latency average/p95,
 `by_question_type`, and per-sample returned evidence ids.
 
+For `--granularity turn`, LongMemEval keeps session chunks intact and stores
+per-turn text metadata. Retrieved sessions are then locally ordered by turn
+text against the query before scoring, which avoids penalizing correct session
+retrieval simply because the evidence turn appears late in the session.
+
+The full benchmark helper `scripts/run_full_eval.py` accepts these environment
+knobs for production probes:
+
+- `EIMEMORY_RUN_ONLY=all|lme|locomo` to run both suites or one targeted suite.
+- `EIMEMORY_WORKERS=<n>` to set worker count.
+- `EIMEMORY_LME_LIMIT` and `EIMEMORY_LOCOMO_LIMIT` to cap per-worker retrieval.
+- `EIMEMORY_RERANKER=auto|deterministic|llm` to control raw reranking.
+
+Aggregated LME reports include `failure_count`, `rank_histogram`, and
+`failure_examples` so low-score runs show whether misses are rank placement,
+missing evidence, or retrieval failures.
+
 ## Public Benchmark Harness
 
 `eimemory eval public-benchmark` runs public benchmark adapters with an

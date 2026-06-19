@@ -95,6 +95,14 @@ def test_cron_script_writes_kept_log() -> None:
     assert has_date_subst, "kept- log path must include a date stamp substitution"
 
 
+def test_cron_script_invokes_real_runner_not_noop_warmup() -> None:
+    content = _read(CRON_SCRIPT)
+    assert "eimemory.autonomous.runner" in content
+    assert "_trivial_experiment" not in content
+    assert "cron_warmup" not in content
+    assert "noop" not in content
+
+
 # ---------- syntax check (skipped without bash) ----------
 
 def _find_real_bash() -> str | None:

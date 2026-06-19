@@ -11,6 +11,7 @@ def test_run_full_eval_env_config_defaults() -> None:
     assert env["lme_limit"] is None
     assert env["locomo_limit"] is None
     assert env["reranker"] == "auto"
+    assert env["run_only"] == "all"
 
 
 def test_run_full_eval_env_config_override() -> None:
@@ -21,6 +22,7 @@ def test_run_full_eval_env_config_override() -> None:
             "EIMEMORY_LME_LIMIT": "7",
             "EIMEMORY_LOCOMO_LIMIT": "4",
             "EIMEMORY_RERANKER": "deterministic",
+            "EIMEMORY_RUN_ONLY": "lme",
         }
     )
     assert env["n_workers"] == 16
@@ -28,6 +30,7 @@ def test_run_full_eval_env_config_override() -> None:
     assert env["lme_limit"] == 7
     assert env["locomo_limit"] == 4
     assert env["reranker"] == "deterministic"
+    assert env["run_only"] == "lme"
 
 
 def test_aggregate_report_robust_to_zero_ranks_and_missing_latency() -> None:
@@ -68,6 +71,8 @@ def test_aggregate_report_robust_to_zero_ranks_and_missing_latency() -> None:
     assert lme_agg["sample_count"] == 2
     assert lme_agg["mrr"] == 0.25
     assert lme_agg["latency_ms_avg"] == 10.0
+    assert lme_agg["failure_count"] == 1
+    assert lme_agg["rank_histogram"][0] == 1
 
     loc_results = [
         {
@@ -108,6 +113,7 @@ def test_full_eval_final_report_includes_required_metadata() -> None:
     )
     assert report["n_workers"] == 8
     assert report["reranker"] == "llm"
+    assert report["run_only"] == "all"
     assert report["candidate_metadata"]["lme"]["dataset_name"] == "longmemeval-s-cleaned"
     assert report["candidate_metadata"]["locomo"]["dataset_name"] == "locomo10-full"
     assert report["lme"]["granularity"] == "turn"

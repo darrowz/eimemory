@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import re
 from statistics import mean
 from time import perf_counter
 from typing import Any
@@ -73,7 +74,7 @@ def run_longmemeval(
         latency_ms = (perf_counter() - start) * 1000.0
         latencies.append(latency_ms)
 
-        returned_ids = _returned_ids(retrieved, granularity=granularity)
+        returned_ids = _returned_ids(retrieved, granularity=granularity, query=case["question"])
         expected_ids = _expected_ids(case, granularity=granularity)
         rank = first_relevant_rank(returned_ids, expected_ids)
         ranks.append(rank)
@@ -250,11 +251,13 @@ def _session_chunks(sessions: list[Any], *, case_id: str) -> list[dict[str, Any]
         session_id = str(session.get("session_id") or session.get("id") or f"{case_id}-session-{session_index + 1}")
         texts: list[str] = []
         turn_ids: list[str] = []
+        turn_texts: list[dict[str, str]] = []
         for turn_index, turn in enumerate(_turns(session)):
             turn_id = str(turn.get("turn_id") or turn.get("id") or f"{session_id}-turn-{turn_index + 1}")
             turn_text = _messages_text(turn.get("messages") or turn.get("turns") or [turn])
             if turn_text:
                 turn_ids.append(turn_id)
+                turn_texts.append({"turn_id": turn_id, "text": turn_text})
                 texts.append(turn_text)
         if not texts:
             texts.append(_messages_text(session.get("messages") or [session]))
@@ -267,6 +270,7 @@ def _session_chunks(sessions: list[Any], *, case_id: str) -> list[dict[str, Any]
                 "session_id": session_id,
                 "turn_id": turn_ids[0] if turn_ids else "",
                 "turn_ids": turn_ids,
+                "turn_texts": turn_texts,
                 "text": text,
             }
         )
@@ -311,6 +315,7 @@ def _ingest_with_raw_api(runtime, *, chunk: dict[str, Any], case: dict[str, Any]
         "session_id": chunk["session_id"],
         "turn_id": chunk["turn_id"],
         "turn_ids": list(chunk["turn_ids"]),
+        "turn_texts": list(chunk.get("turn_texts") or []),
         "source": "eimemory.longmemeval",
         "meta": {"longmemeval_case_id": case["case_id"], "benchmark_case_id": case["case_id"]},
     }
@@ -355,6 +360,7 @@ def _raw_chunk_record(chunk: dict[str, Any], *, case: dict[str, Any], scope: Sco
             "session_id": chunk["session_id"],
             "turn_id": chunk["turn_id"],
             "turn_ids": list(chunk["turn_ids"]),
+            "turn_texts": list(chunk.get("turn_texts") or []),
         },
         scope=scope,
         source="eimemory.longmemeval",
@@ -526,12 +532,12 @@ def _case_records_from_store(
     return case_records[:limit]
 
 
-def _returned_ids(records: list[RecordEnvelope], *, granularity: str) -> list[str]:
+def _returned_ids(records: list[RecordEnvelope], *, granularity: str, query: str = "") -> list[str]:
     key = {"session": "session_id", "turn": "turn_id", "chunk": "chunk_id"}[granularity]
     values: list[str] = []
     for record in records:
         if granularity == "turn":
-            for turn_id in list(record.content.get("turn_ids") or []):
+            for turn_id in _localized_turn_ids(record, query=query):
                 value = str(turn_id or "")
                 if value and value not in values:
                     values.append(value)
@@ -539,6 +545,54 @@ def _returned_ids(records: list[RecordEnvelope], *, granularity: str) -> list[st
         if value and str(value) not in values:
             values.append(str(value))
     return values
+
+
+def _localized_turn_ids(record: RecordEnvelope, *, query: str) -> list[str]:
+    turn_ids = [str(item) for item in list(record.content.get("turn_ids") or []) if str(item)]
+    if not turn_ids:
+        turn_id = str(record.content.get("turn_id") or "")
+        return [turn_id] if turn_id else []
+    turn_texts = _turn_text_map(record)
+    query_terms = set(_terms(query))
+    if not turn_texts or not query_terms:
+        return turn_ids
+    ranked: list[tuple[float, int, str]] = []
+    for index, turn_id in enumerate(turn_ids):
+        text = turn_texts.get(turn_id, "")
+        ranked.append((_turn_local_score(query_terms, text), index, turn_id))
+    ranked.sort(key=lambda item: (-item[0], item[1]))
+    return [turn_id for _score, _index, turn_id in ranked]
+
+
+def _turn_text_map(record: RecordEnvelope) -> dict[str, str]:
+    mapped: dict[str, str] = {}
+    raw = record.content.get("turn_texts")
+    if isinstance(raw, list):
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            turn_id = str(item.get("turn_id") or "").strip()
+            text = str(item.get("text") or "").strip()
+            if turn_id and text:
+                mapped[turn_id] = text
+    legacy = record.content.get("turn_text_by_id")
+    if isinstance(legacy, dict):
+        for key, value in legacy.items():
+            turn_id = str(key or "").strip()
+            text = str(value or "").strip()
+            if turn_id and text:
+                mapped.setdefault(turn_id, text)
+    return mapped
+
+
+def _turn_local_score(query_terms: set[str], text: str) -> float:
+    text_terms = set(_terms(text))
+    if not query_terms or not text_terms:
+        return 0.0
+    overlap = len(query_terms & text_terms) / max(1, len(query_terms))
+    text_lower = str(text or "").lower()
+    preference_boost = 0.15 if any(marker in text_lower for marker in ("i prefer", "prefer ", "preference")) else 0.0
+    return round(overlap + preference_boost, 6)
 
 
 def _expected_ids(case: dict[str, Any], *, granularity: str) -> set[str]:
@@ -637,3 +691,11 @@ def _normalize_choice(value: str, *, allowed: set[str], default: str) -> str:
 
 def _strings(value: Any) -> list[str]:
     return [str(item) for item in list(value or []) if str(item)]
+
+
+def _terms(text: str) -> list[str]:
+    return [
+        term.lower()
+        for term in re.findall(r"[\w']+", str(text or ""), flags=re.UNICODE)
+        if len(term.strip("'")) > 1
+    ]

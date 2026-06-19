@@ -541,6 +541,13 @@ function promptInjectionEnabled(api) {
   return truthy(process.env.EIMEMORY_ENABLE_PROMPT_INJECTION) && promptInjectionAllowed(api);
 }
 
+function memoryE2EToolEnabled(api) {
+  const config = api?.config || {};
+  return config.enableMemoryE2ECheck === true
+    || config.enable_memory_e2e_check === true
+    || truthy(process.env.EIMEMORY_ENABLE_MEMORY_E2E_TOOL);
+}
+
 function usesLegacyHookApi(api) {
   return Boolean(api?.on && !api?.hooks?.on);
 }
@@ -580,7 +587,7 @@ function registerStatusTool(api) {
 }
 
 function registerMemoryE2ETool(api) {
-  if (!api?.registerTool) {
+  if (!api?.registerTool || !memoryE2EToolEnabled(api)) {
     return;
   }
   api.registerTool(() => ({

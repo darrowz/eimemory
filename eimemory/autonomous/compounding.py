@@ -72,7 +72,7 @@ def load_recent_kept(
                 row = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if row.get("kept"):
+            if _row_is_kept(row):
                 kept.append(row)
     return kept[-n:]
 
@@ -165,3 +165,16 @@ def _format_row(row: dict[str, Any]) -> str:
         f"- {ts} | {hyp} | "
         f"before={before:.3f} -> after={after:.3f}"
     )
+
+
+def _row_is_kept(row: dict[str, Any]) -> bool:
+    value = row.get("kept")
+    if isinstance(value, bool):
+        return value
+    if value is not None:
+        normalized = str(value).strip().lower()
+        if normalized in {"1", "true", "yes", "y", "on", "kept", "keep"}:
+            return True
+        if normalized in {"0", "false", "no", "n", "off", "discarded", "discard"}:
+            return False
+    return str(row.get("outcome") or row.get("decision") or "").strip().lower() in {"kept", "keep"}

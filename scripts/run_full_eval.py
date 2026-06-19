@@ -19,6 +19,7 @@ DEFAULT_GRANULARITY = "turn"
 DEFAULT_RERANKER = "auto"
 ALLOWED_GRANULARITY = {"session", "turn", "chunk"}
 ALLOWED_RERANKER = {"deterministic", "llm", "auto"}
+ALLOWED_RUN_ONLY = {"all", "lme", "locomo"}
 
 
 def _env_value(name: str, environ: dict[str, str] | None = None) -> str | None:
@@ -71,6 +72,11 @@ def load_eval_config(environ: dict[str, str] | None = None) -> dict[str, Any]:
             _env_value("EIMEMORY_RERANKER", environ),
             ALLOWED_RERANKER,
             DEFAULT_RERANKER,
+        ),
+        "run_only": _as_choice(
+            _env_value("EIMEMORY_RUN_ONLY", environ),
+            ALLOWED_RUN_ONLY,
+            "all",
         ),
     }
 
@@ -307,6 +313,10 @@ def aggregate_lme_reports(
 
     from statistics import mean as _mean
 
+    failures = [sample for sample in all_samples if not _safe_int(sample.get("rank"), default=0)]
+    rank_histogram: dict[int, int] = {}
+    for rank in all_ranks:
+        rank_histogram[rank] = rank_histogram.get(rank, 0) + 1
     effective_limit = limit if limit is not None else n
     return {
         "ok": True,
@@ -327,6 +337,16 @@ def aggregate_lme_reports(
         "mrr": round(mean_reciprocal_rank(all_ranks), 4),
         "latency_ms_avg": round(_mean(all_latencies), 3) if all_latencies else 0.0,
         "latency_ms_p95": _pct(all_latencies, 95),
+        "failure_count": len(failures),
+        "rank_histogram": rank_histogram,
+        "failure_examples": [
+            {
+                "case_id": str(sample.get("case_id") or ""),
+                "expected_ids": list(sample.get("expected_ids") or []),
+                "returned_ids": list(sample.get("returned_ids") or [])[:10],
+            }
+            for sample in failures[:20]
+        ],
     }
 
 
@@ -418,6 +438,7 @@ def build_full_eval_report(
         "n_workers": config["n_workers"],
         "worker_count": config["n_workers"],
         "reranker": config["reranker"],
+        "run_only": config.get("run_only", "all"),
         "candidate_metadata": {
             "lme": {
                 "dataset_name": lme_name,
@@ -468,65 +489,72 @@ def main() -> int:
         f"LME_granularity={lme_granularity}, "
         f"LoCoMo_granularity={locomo_granularity}, "
         f"reranker={config['reranker']}, "
+        f"run_only={config['run_only']}, "
         f"Python={sys.version.split()[0]}"
     )
     log(f"CPU count: {mp.cpu_count()}")
 
-    # === LME ===
-    lme_path = DATA / "longmemeval_s_eimemory.json"
-    log(f"LME raw: {lme_path} ({lme_path.stat().st_size/1024/1024:.1f} MB)")
-    lme = json.loads(lme_path.read_text(encoding="utf-8"))
-    lme_cases = lme["cases"]
-    lme_scope = lme.get("scope")
-    n_lme = len(lme_cases)
-    chunks_lme = split_into_chunks_with_scope(lme_cases, lme_scope, config["n_workers"])
-    log(f"LME cases: {n_lme}, splitting into chunks of ~{max(1, n_lme // config['n_workers'])}")
-    log(f"LME chunks: {len(chunks_lme)}")
-    lme_payload = [
-        (chunk, chunk_id, total, lme_granularity, config["lme_limit"], config["reranker"])
-        for chunk, chunk_id, total in chunks_lme
-    ]
+    lme_agg: dict[str, Any] = {"ok": True, "skipped": True, "sample_count": 0}
+    loc_agg: dict[str, Any] = {"ok": True, "skipped": True, "sample_count": 0}
+    n_lme = n_loc = 0
+    chunks_lme: list[Any] = []
+    chunks_loc: list[Any] = []
 
-    t0 = time.time()
-    with mp.Pool(processes=config["n_workers"], initializer=_worker_init_worker) as pool:
-        lme_results = pool.map(_run_chunk_lme, lme_payload)
-    log(f"LME wall time: {time.time()-t0:.0f}s")
-    lme_agg = aggregate_lme_reports(
-        lme_results,
-        granularity=lme_granularity,
-        worker_count=config["n_workers"],
-        limit=config["lme_limit"],
-        reranker=config["reranker"],
-    )
-    log(f"LME AGG: {json.dumps(lme_agg, ensure_ascii=False)}")
+    if config["run_only"] in {"all", "lme"}:
+        lme_path = DATA / "longmemeval_s_eimemory.json"
+        log(f"LME raw: {lme_path} ({lme_path.stat().st_size/1024/1024:.1f} MB)")
+        lme = json.loads(lme_path.read_text(encoding="utf-8"))
+        lme_cases = lme["cases"]
+        lme_scope = lme.get("scope")
+        n_lme = len(lme_cases)
+        chunks_lme = split_into_chunks_with_scope(lme_cases, lme_scope, config["n_workers"])
+        log(f"LME cases: {n_lme}, splitting into chunks of ~{max(1, n_lme // config['n_workers'])}")
+        log(f"LME chunks: {len(chunks_lme)}")
+        lme_payload = [
+            (chunk, chunk_id, total, lme_granularity, config["lme_limit"], config["reranker"])
+            for chunk, chunk_id, total in chunks_lme
+        ]
 
-    # === LoCoMo ===
-    loc_path = DATA / "locomo10_eimemory.json"
-    log(f"LoCoMo raw: {loc_path} ({loc_path.stat().st_size/1024/1024:.1f} MB)")
-    loc = json.loads(loc_path.read_text(encoding="utf-8"))
-    loc_cases = loc["cases"]
-    loc_scope = loc.get("scope")
-    n_loc = len(loc_cases)
-    chunks_loc = split_into_chunks_with_scope(loc_cases, loc_scope, config["n_workers"])
-    log(f"LoCoMo cases: {n_loc}, splitting into chunks of ~{max(1, n_loc // config['n_workers'])}")
-    log(f"LoCoMo chunks: {len(chunks_loc)}")
-    loc_payload = [
-        (chunk, chunk_id, total, locomo_granularity, config["locomo_limit"], config["reranker"])
-        for chunk, chunk_id, total in chunks_loc
-    ]
+        t0 = time.time()
+        with mp.Pool(processes=config["n_workers"], initializer=_worker_init_worker) as pool:
+            lme_results = pool.map(_run_chunk_lme, lme_payload)
+        log(f"LME wall time: {time.time()-t0:.0f}s")
+        lme_agg = aggregate_lme_reports(
+            lme_results,
+            granularity=lme_granularity,
+            worker_count=config["n_workers"],
+            limit=config["lme_limit"],
+            reranker=config["reranker"],
+        )
+        log(f"LME AGG: {json.dumps(lme_agg, ensure_ascii=False)}")
 
-    t0 = time.time()
-    with mp.Pool(processes=config["n_workers"], initializer=_worker_init_worker) as pool:
-        loc_results = pool.map(_run_chunk_loc, loc_payload)
-    log(f"LoCoMo wall time: {time.time()-t0:.0f}s")
-    loc_agg = aggregate_loc_reports(
-        loc_results,
-        granularity=locomo_granularity,
-        worker_count=config["n_workers"],
-        limit=config["locomo_limit"],
-        reranker=config["reranker"],
-    )
-    log(f"LoCoMo AGG: {json.dumps(loc_agg, ensure_ascii=False)}")
+    if config["run_only"] in {"all", "locomo"}:
+        loc_path = DATA / "locomo10_eimemory.json"
+        log(f"LoCoMo raw: {loc_path} ({loc_path.stat().st_size/1024/1024:.1f} MB)")
+        loc = json.loads(loc_path.read_text(encoding="utf-8"))
+        loc_cases = loc["cases"]
+        loc_scope = loc.get("scope")
+        n_loc = len(loc_cases)
+        chunks_loc = split_into_chunks_with_scope(loc_cases, loc_scope, config["n_workers"])
+        log(f"LoCoMo cases: {n_loc}, splitting into chunks of ~{max(1, n_loc // config['n_workers'])}")
+        log(f"LoCoMo chunks: {len(chunks_loc)}")
+        loc_payload = [
+            (chunk, chunk_id, total, locomo_granularity, config["locomo_limit"], config["reranker"])
+            for chunk, chunk_id, total in chunks_loc
+        ]
+
+        t0 = time.time()
+        with mp.Pool(processes=config["n_workers"], initializer=_worker_init_worker) as pool:
+            loc_results = pool.map(_run_chunk_loc, loc_payload)
+        log(f"LoCoMo wall time: {time.time()-t0:.0f}s")
+        loc_agg = aggregate_loc_reports(
+            loc_results,
+            granularity=locomo_granularity,
+            worker_count=config["n_workers"],
+            limit=config["locomo_limit"],
+            reranker=config["reranker"],
+        )
+        log(f"LoCoMo AGG: {json.dumps(loc_agg, ensure_ascii=False)}")
 
     log("=== ALL DONE ===")
     log(_scorecard("LME", lme_agg, metric_names=["retrieval_recall_at_1", "retrieval_recall_at_5", "retrieval_recall_at_10", "mrr", "ndcg_at_5", "latency_ms_avg", "latency_ms_p95"]))

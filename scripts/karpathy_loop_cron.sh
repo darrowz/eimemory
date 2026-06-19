@@ -58,6 +58,8 @@ AUDIT_LOG="${EIMEMORY_ROOT}/audit.jsonl"
 EXP_LOG_DIR="${EIMEMORY_ROOT}/exp_log"
 DATE_STAMP="$(date -u +%Y%m%d)"
 KEPT_LOG="${EXP_LOG_DIR}/kept-${DATE_STAMP}.log"
+EXP_JSONL="${EXP_LOG_DIR}/experiments.jsonl"
+RECORDS_PATH="${EIMEMORY_ROOT}/records.jsonl"
 
 mkdir -p "${EXP_LOG_DIR}"
 
@@ -101,14 +103,10 @@ for ((i = 1; i <= EXP_BUDGET; i++)); do
 
     EXPERIMENT_ID="kl-$(date -u +%Y%m%dT%H%M%S)-${i}"
 
-    # Run a single experiment via inline python3. The inline form is
-    # used (rather than `python3 -m eimemory.autonomous.loop`) because
-    # loop.py is a library module, not a CLI; the cron wrapper holds
-    # the orchestration, the module holds the gated runner. The runner
-    # writes its own audit row and returns an ExperimentResult; we
-    # serialise the result to JSON for the kept/discard accounting.
-    if EXPERIMENT_JSON="$(python3 - "$PROFILE_INI" "$AUDIT_LOG" "$EXPERIMENT_ID" <<'PYEOF'
-import dataclasses
+    # Run a single real hypothesis-driven iteration. The runner owns
+    # hypothesis selection, scoring, audit, and exp_log append; this
+    # wrapper only enforces nightly budgets and kept/discard accounting.
+    if EXPERIMENT_JSON="$(python3 - "$PROFILE_INI" "$AUDIT_LOG" "$RECORDS_PATH" "$EXP_JSONL" "$EXPERIMENT_ID" <<'PYEOF'
 import json
 import sys
 from pathlib import Path
@@ -116,14 +114,16 @@ from pathlib import Path
 from eimemory.autonomous.loop import (
     ExperimentTimeout,
     ProfileBlocked,
-    run_single_experiment,
 )
+from eimemory.autonomous.runner import run_karpathy_iteration
 from eimemory.governance.safety.circuit_breaker import BudgetExceeded
 from eimemory.governance.safety.profile import load_profile
 
 profile_ini = Path(sys.argv[1])
 audit_path = Path(sys.argv[2])
-experiment_id = sys.argv[3]
+records_path = Path(sys.argv[3])
+exp_log_path = Path(sys.argv[4])
+experiment_id = sys.argv[5]
 
 # Re-check the profile gate here too: if the profile flipped between
 # the outer check and this experiment, the runner will refuse; we
@@ -133,23 +133,13 @@ if not profile.can_run_phase2():
     raise SystemExit(2)
 
 
-def _trivial_experiment() -> float:
-    # The cron wrapper does not own hypothesis generation or metric
-    # evaluation; those are wired in by the next iteration of the
-    # loop. For now this returns the baseline so the runner's
-    # keep/discard path is exercised end-to-end and the audit row is
-    # produced exactly the way the real run will produce it.
-    return 0.0
-
-
 try:
-    result = run_single_experiment(
+    result = run_karpathy_iteration(
         profile_ini=profile_ini,
         audit_path=audit_path,
+        records_path=records_path,
+        exp_log_path=exp_log_path,
         experiment_id=experiment_id,
-        hypothesis={"kind": "cron_warmup", "text": "noop"},
-        experiment_fn=_trivial_experiment,
-        baseline_value=1.0,
         time_box_seconds=300.0,
     )
 except ExperimentTimeout:
@@ -159,7 +149,7 @@ except BudgetExceeded:
 except ProfileBlocked:
     raise SystemExit(2)
 
-print(json.dumps(dataclasses.asdict(result), default=str))
+print(json.dumps(result, default=str))
 PYEOF
 )"; then
         OUTCOME="$(printf '%s' "$EXPERIMENT_JSON" | python3 -c "

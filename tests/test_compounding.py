@@ -61,6 +61,34 @@ def test_load_recent_kept_filters_to_kept_rows() -> None:
         assert all(r["kept"] for r in kept)
 
 
+def test_load_recent_kept_accepts_outcome_kept_without_legacy_flag() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        log = Path(tmp) / "exp.jsonl"
+        rows = [
+            {
+                "hypothesis": "kept by outcome",
+                "outcome": "kept",
+                "duration_seconds": 1.0,
+                "baseline_value": 0.5,
+                "candidate_value": 0.6,
+                "timestamp": "2026-06-18T10:00:00Z",
+            },
+            {
+                "hypothesis": "discarded by outcome",
+                "outcome": "discarded",
+                "duration_seconds": 1.0,
+                "baseline_value": 0.5,
+                "candidate_value": 0.4,
+                "timestamp": "2026-06-18T11:00:00Z",
+            },
+        ]
+        log.write_text("\n".join(json.dumps(r) for r in rows), encoding="utf-8")
+
+        kept = load_recent_kept(log, n=5)
+
+        assert [row["hypothesis"] for row in kept] == ["kept by outcome"]
+
+
 def test_load_recent_kept_caps_at_n() -> None:
     """``load_recent_kept`` returns at most ``n`` rows even when more are kept."""
     with tempfile.TemporaryDirectory() as tmp:

@@ -69,12 +69,12 @@ def test_call_tool_propose_hypothesis_dispatches() -> None:
 
 
 def test_call_tool_run_experiment_requires_hypothesis_id() -> None:
-    """``run_experiment`` must require hypothesis_id and return a scheduled response."""
+    """``run_experiment`` must require hypothesis_id and return a concrete response."""
     stub = MCPLoopStub()
     result = stub.call_tool("run_experiment", hypothesis_id="hyp_001")
     assert result["ok"] is True
     assert result["data"]["experiment_id"] == "exp_hyp_001"
-    assert result["data"]["status"] == "scheduled"
+    assert result["data"]["status"] == "ready"
 
 
 def test_call_tool_keep_or_discard_keeps_when_hit_at_1_above_baseline() -> None:
@@ -120,3 +120,25 @@ def test_call_tool_missing_required_arg_raises_missing_arg_error() -> None:
     with pytest.raises(MissingArgError) as excinfo:
         stub.call_tool("run_experiment")
     assert "hypothesis_id" in str(excinfo.value)
+
+
+def test_mcp_stub_no_longer_returns_placeholder_stub_text() -> None:
+    stub = MCPLoopStub()
+    result = stub.call_tool(
+        "propose_hypothesis",
+        weaknesses=["LongMemEval recall miss on turn localization"],
+        incidents=["R@1 dropped after session-only retrieval"],
+    )
+
+    assert result["ok"] is True
+    assert "stub:" not in result["data"]["hypothesis"].lower()
+    assert "recall" in result["data"]["hypothesis"].lower()
+
+
+def test_call_tool_score_experiment_returns_numeric_metrics() -> None:
+    stub = MCPLoopStub()
+    result = stub.call_tool("score_experiment", experiment_id="exp_001")
+
+    assert result["ok"] is True
+    assert isinstance(result["data"]["hit_at_1"], float)
+    assert isinstance(result["data"]["baseline"], float)

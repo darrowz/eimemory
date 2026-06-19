@@ -2,6 +2,7 @@
 import tempfile
 from pathlib import Path
 
+from eimemory.api.runtime import Runtime
 from eimemory.autonomous.seven_day_review import review_active_candidates, ReviewDecision
 
 
@@ -33,3 +34,28 @@ def test_active_candidate_rolled_back():
             rollback_threshold=-0.03,
         )
         assert any(d.decision == "rollback" for d in decisions)
+
+
+def test_review_records_governance_side_effects(tmp_path: Path) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    active = tmp_path / "active"
+    active.mkdir()
+    (active / "rec_test.md").write_text("# test", encoding="utf-8")
+    scope = {"agent_id": "main"}
+    metrics = {
+        "rec_test": {
+            "hit@1_before": 0.6,
+            "hit@1_after": 0.68,
+            "capability": "memory.recall_quality",
+        }
+    }
+
+    decisions = review_active_candidates(active, metrics, runtime=runtime, scope=scope)
+
+    decision = decisions[0]
+    assert decision.decision == "promote_l2"
+    assert len(decision.side_effect_record_ids) == 2
+    score_records = runtime.store.list_records(kinds=["capability_score"], scope=scope, limit=10)
+    audit_records = runtime.store.list_records(kinds=["reflection"], scope=scope, limit=10)
+    assert score_records[0].meta["capability"] == "memory.recall_quality"
+    assert audit_records[0].meta["report_type"] == "seven_day_review_decision"

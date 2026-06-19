@@ -1081,12 +1081,27 @@ def _run_autonomous_learning(runtime: Runtime, *, scope: dict) -> dict[str, Any]
             "learning_skipped_reason": "run_autonomous_learning_cycle_unavailable",
         }
     enabled = _env_bool("EIMEMORY_AUTONOMOUS_LEARNING_ENABLED", default=False)
+    required = _env_bool("EIMEMORY_REQUIRE_AUTONOMOUS_LEARNING", default=False)
     if not enabled:
+        if required:
+            return {
+                "ok": False,
+                "report_type": "autonomous_learning",
+                "configured": True,
+                "enabled": False,
+                "required": True,
+                "requires_enable_env": "EIMEMORY_AUTONOMOUS_LEARNING_ENABLED=1",
+                "apply_env": "EIMEMORY_AUTONOMOUS_LEARNING_APPLY=1",
+                "learning_skipped_reason": "autonomous_learning_required_but_disabled",
+            }
         return {
             "ok": True,
             "report_type": "autonomous_learning",
             "configured": False,
             "enabled": False,
+            "required": False,
+            "requires_enable_env": "EIMEMORY_AUTONOMOUS_LEARNING_ENABLED=1",
+            "apply_env": "EIMEMORY_AUTONOMOUS_LEARNING_APPLY=1",
             "dry_run": True,
             "apply": False,
             "goal_count": 0,
@@ -1120,6 +1135,9 @@ def _run_autonomous_learning(runtime: Runtime, *, scope: dict) -> dict[str, Any]
                 "report_type": "autonomous_learning",
                 "configured": True,
                 "enabled": True,
+                "required": bool(required),
+                "requires_enable_env": "EIMEMORY_AUTONOMOUS_LEARNING_ENABLED=1",
+                "apply_env": "EIMEMORY_AUTONOMOUS_LEARNING_APPLY=1",
                 "dry_run": bool(report.get("dry_run", dry_run)),
                 "apply": bool(report.get("apply", apply_changes)),
                 "force": bool(force),
