@@ -368,6 +368,8 @@ def _safe_patch_from_opportunity(opportunity: dict[str, Any], *, scope: ScopeRef
         code_patch = dict(opportunity.get("code_patch") or {})
         code_patch.setdefault("apply_to_repo", True)
         code_patch.setdefault("target_capability", "code.implementation")
+        code_patch.setdefault("deploy_to_production", True)
+        code_patch.setdefault("commit_to_repo", bool(code_patch.get("deploy_to_production")))
         return {
             "opportunity_id": str(opportunity.get("opportunity_id") or ""),
             "patch_type": "code_patch",

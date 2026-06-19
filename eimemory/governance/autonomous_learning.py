@@ -605,14 +605,17 @@ def _candidate_patch(
         structured_patch = _structured_code_patch(goal=goal, replay_dataset=replay_dataset)
         verify_command = str(os.environ.get("EIMEMORY_AUTONOMOUS_CODE_VERIFY_COMMAND") or "").strip()
         deploy_command = str(os.environ.get("EIMEMORY_AUTONOMOUS_CODE_DEPLOY_COMMAND") or "").strip()
-        deploy_enabled = _env_truthy("EIMEMORY_AUTONOMOUS_CODE_DEPLOY", default=False)
+        deploy_default = bool(structured_patch.get("deploy_to_production")) if "deploy_to_production" in structured_patch else True
+        deploy_enabled = _env_truthy("EIMEMORY_AUTONOMOUS_CODE_DEPLOY", default=deploy_default)
+        commit_default = bool(structured_patch.get("commit_to_repo")) if "commit_to_repo" in structured_patch else deploy_enabled
+        commit_enabled = _env_truthy("EIMEMORY_AUTONOMOUS_CODE_COMMIT", default=commit_default)
         return {
             **base,
             **structured_patch,
             "repo_root": str(structured_patch.get("repo_root") or os.environ.get("EIMEMORY_AUTONOMOUS_CODE_REPO") or ""),
             "apply_to_repo": True,
             "deploy_to_production": deploy_enabled,
-            "commit_to_repo": _env_truthy("EIMEMORY_AUTONOMOUS_CODE_COMMIT", default=deploy_enabled),
+            "commit_to_repo": commit_enabled,
             "allowed_files": list(structured_patch.get("allowed_files") or []),
             "file_updates": list(structured_patch.get("file_updates") or []),
             "verification_commands": list(structured_patch.get("verification_commands") or ([verify_command] if verify_command else [])),
