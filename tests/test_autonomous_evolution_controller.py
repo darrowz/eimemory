@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+
 from eimemory.api.runtime import Runtime
 from eimemory.governance.autonomous_evolution import run_autonomous_evolution
 
@@ -231,3 +233,62 @@ def test_web_hypotheses_medium_and_high_risk_not_directly_applied(tmp_path) -> N
     assert any(item["risk_level"] == "medium" for item in report["opportunities"])
     assert any(item["risk_level"] == "high" for item in report["opportunities"])
     assert not policy["policy_suggestions"]
+
+
+def test_autonomous_evolution_applies_structured_code_patch_from_bad_outcome(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = {"agent_id": "hongtu", "workspace_id": "code", "user_id": "darrow"}
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    target = repo / "module.py"
+    target.write_text("VALUE = 'broken'\n", encoding="utf-8")
+    event = runtime.record_event(
+        {
+            "id": "evt_code_bad",
+            "timestamp": "2026-06-19T09:00:00+08:00",
+            "source": "autonomous_test",
+            "user_phrase": "fix failing module",
+            "event_type": "code.implementation",
+            "interpreted_intent": "fix runtime bug",
+            "goal": "module imports with corrected value",
+            "verification": "python import check passes",
+            "confidence": 0.92,
+        },
+        scope=scope,
+    )
+    runtime.record_outcome(
+        event["id"],
+        {
+            "outcome": "bad",
+            "reason": "Traceback: module returned broken value",
+            "correction_from_user": "patch module.py so VALUE is fixed",
+            "policy_update": "apply a direct code patch and verify it imports",
+            "source_trust": "system_verified",
+            "verification": "pytest-style import command is provided",
+            "code_patch": {
+                "summary": "Fix broken VALUE constant",
+                "repo_root": str(repo),
+                "apply_to_repo": True,
+                "deploy_to_production": False,
+                "commit_to_repo": False,
+                "allowed_files": ["module.py"],
+                "file_updates": [{"path": "module.py", "content": "VALUE = 'fixed'\n"}],
+                "verification_commands": [
+                    [
+                        sys.executable,
+                        "-c",
+                        "import pathlib; ns={}; exec(pathlib.Path('module.py').read_text(encoding='utf-8'), ns); assert ns['VALUE'] == 'fixed'",
+                    ]
+                ],
+            },
+        },
+        scope=scope,
+    )
+
+    report = run_autonomous_evolution(runtime, scope=scope, apply=True, max_apply=1)
+
+    assert report["ok"] is True
+    assert report["applied_count"] == 1
+    assert report["applied_patches"][0]["patch_type"] == "code_patch"
+    assert report["applied_patches"][0]["side_effect"]["adapter"] == "direct_repo_patch"
+    assert target.read_text(encoding="utf-8") == "VALUE = 'fixed'\n"

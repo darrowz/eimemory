@@ -23,6 +23,7 @@ def test_nightly_jobs_include_autonomous_learning_summary(tmp_path, monkeypatch)
     monkeypatch.setenv("EIMEMORY_AUTONOMOUS_LEARNING_DRY_RUN", "0")
     monkeypatch.setenv("EIMEMORY_AUTONOMOUS_LEARNING_APPLY", "0")
     monkeypatch.setattr(runtime, "run_memory_eval_ci", lambda dataset, *, emit_incidents=False: {"ok": True, "pass_rate": 1.0, "passed_threshold": True, "fail_count": 0, "name": "stub"})
+    _force_real_task_replay_pass(runtime, monkeypatch)
     scope = {"agent_id": "main"}
     runtime.evolution.log_reflection(tag="tool.routing", miss="bad route", fix="memory first", scope=scope)
 
@@ -65,9 +66,10 @@ def test_nightly_jobs_forward_max_promotion_budget(tmp_path, monkeypatch) -> Non
     assert report["autonomous_learning"]["applied_count"] == 0
 
 
-def test_governance_snapshot_exposes_autonomous_learning_state(tmp_path) -> None:
+def test_governance_snapshot_exposes_autonomous_learning_state(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path)
     scope = {"agent_id": "main"}
+    _force_real_task_replay_pass(runtime, monkeypatch)
     runtime.evolution.log_reflection(tag="memory.recall", miss="recall miss", fix="preference first", scope=scope)
     runtime.run_autonomous_learning_cycle(scope=scope, force=True)
 
@@ -203,3 +205,33 @@ def test_autonomous_learning_required_env_fails_when_disabled(tmp_path, monkeypa
     assert report["autonomous_learning"]["configured"] is True
     assert report["autonomous_learning"]["requires_enable_env"] == "EIMEMORY_AUTONOMOUS_LEARNING_ENABLED=1"
     assert report["autonomous_learning"]["learning_skipped_reason"] == "autonomous_learning_required_but_disabled"
+
+
+def _force_real_task_replay_pass(runtime: Runtime, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "eimemory.governance.autonomous_learning.build_replay_dataset",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "schema_version": "real_task_replay.v1",
+            "report_type": "proactive_replay_dataset",
+            "case_count": 1,
+            "correction_count": 1,
+            "persisted_record_id": "replay_dataset_record",
+            "cases": [{"case_id": "case_1", "query": "sample query", "task_type": "brain.respond", "expected_text": ["expected"]}],
+        },
+    )
+    monkeypatch.setattr(
+        runtime,
+        "run_real_task_replay",
+        lambda dataset, *, seed=False, persist_report=False: {
+            "ok": True,
+            "report_type": "real_task_replay",
+            "schema_version": "real_task_replay.v1",
+            "verdict": "pass",
+            "pass_rate": 1.0,
+            "threshold": dataset.get("threshold", 0.6),
+            "sample_count": len(dataset.get("cases") or []),
+            "pass_count": len(dataset.get("cases") or []),
+            "fail_count": 0,
+        },
+    )

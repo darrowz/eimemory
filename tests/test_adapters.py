@@ -646,6 +646,60 @@ def test_openclaw_before_prompt_build_returns_strict_injection_plan(tmp_path, mo
     assert audits[0].content["injection_plan"]["withheld_count"] == 1
 
 
+def test_openclaw_injection_plan_prechecks_context_token_budget(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    hooks = OpenClawMemoryHooks(runtime)
+    scope_ref = ScopeRef.from_dict({"agent_id": "main", "workspace_id": "repo-x"})
+    first = RecordEnvelope.create(
+        kind="memory",
+        title="Compact preference",
+        summary="short",
+        content={"text": "short", "memory_type": "preference"},
+        source="openclaw.agent_end",
+        scope=scope_ref,
+        meta={"memory_type": "preference", "quality": {"quality_tier": "confirmed"}},
+    )
+    second = RecordEnvelope.create(
+        kind="memory",
+        title="Huge preference",
+        summary="huge",
+        content={"text": "x" * 800, "memory_type": "preference"},
+        source="openclaw.agent_end",
+        scope=scope_ref,
+        meta={"memory_type": "preference", "quality": {"quality_tier": "confirmed"}},
+    )
+
+    def fake_recall(*, query: str, scope: dict, task_context: dict, limit: int) -> RecallBundle:
+        return RecallBundle(
+            items=[first, second],
+            rules=[],
+            reflections=[],
+            confidence=0.82,
+            next_action_hint="",
+            explanation={"query": query, "task_context": dict(task_context), "recall_view": {"items": []}},
+        )
+
+    monkeypatch.setattr(runtime.memory, "recall", fake_recall)
+
+    result = hooks.before_prompt_build(
+        {
+            "agentId": "main",
+            "workspaceId": "repo-x",
+            "query": "budgeted prompt",
+            "task_context": {"task_type": "chat.reply", "injection_token_budget": 16},
+        }
+    )
+
+    plan = result["injection_plan"]
+    by_id = {item["record_id"]: item for item in plan["items"]}
+    assert plan["token_budget"] == 16
+    assert plan["token_estimate"] <= 16
+    assert by_id[first.record_id]["action"] == "full_text"
+    assert by_id[second.record_id]["action"] == "withheld"
+    assert by_id[second.record_id]["reason"] == "context_token_budget"
+    assert plan["withheld_reasons"]["context_token_budget"] == 1
+
+
 def test_openclaw_injection_plan_withholds_reflections_by_default(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path)
     hooks = OpenClawMemoryHooks(runtime)

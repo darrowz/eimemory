@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import fnmatch
 import json
-from pathlib import Path
+import os
+from pathlib import Path, PurePosixPath
+import subprocess
 from typing import Any
 
 from eimemory.governance.learning_eval import REGRESSION_THRESHOLD, SAFETY_THRESHOLD
@@ -112,6 +115,8 @@ def _rollout_gate(eval_result: dict[str, Any], health: dict[str, Any], *, tier: 
         if not bool((gate_bundle.get("audit") or {}).get("enabled")):
             blocked.append("audit_gate")
         target = _promotion_target(candidate)
+        if target in CODE_ASSET_TARGETS and not _real_task_replay_gate(gate_bundle):
+            blocked.append("real_task_replay_gate")
         if target in {"prompt_policy", "system_prompt_patch"} and not _prompt_safety_gate(gate_bundle):
             blocked.append("prompt_safety_gate")
     return {"ok": not blocked, "blocked_reasons": blocked, "gate_bundle": gate_bundle}
@@ -233,57 +238,141 @@ def _apply_code_patch_candidate(
     eval_result: dict[str, Any],
     gate: dict[str, Any],
 ) -> dict[str, Any]:
-    root = Path(runtime.store.root) / "state" / "autonomous_learning" / "reviewable_patches"
-    root.mkdir(parents=True, exist_ok=True)
-    safe_id = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in candidate.record_id)
-    patch_path = root / f"{safe_id}.patch"
-    metadata_path = root / f"{safe_id}.json"
-    diff_text = str(patch.get("diff") or patch.get("reviewable_diff") or "").strip()
-    if not diff_text:
-        diff_text = _reviewable_diff_text(candidate, patch)
-    patch_path.write_text(diff_text, encoding="utf-8")
-    metadata = {
-        "candidate_id": candidate.record_id,
-        "loop_id": loop_id,
-        "promotion_target": "code_patch",
-        "target_capability": str(candidate.meta.get("target_capability") or patch.get("target_capability") or "code.implementation"),
-        "summary": str(patch.get("summary") or candidate.summary),
-        "artifact_path": str(patch_path),
-        "eval_result": eval_result,
-        "gate": gate,
-        "review_status": "ready_for_machine_review",
-        "production_applied": False,
-        "next_action": "open_review_branch_or_pr_from_patch_artifact",
-    }
-    metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+    if not _truthy(patch.get("apply_to_repo"), default=True):
+        return {"ok": False, "blocked_reason": "code_patch_requires_apply_to_repo", "promotion_target": "code_patch"}
+    repo_root = _code_repo_root(patch)
+    if repo_root is None:
+        return {"ok": False, "blocked_reason": "code_patch_repo_root_missing", "promotion_target": "code_patch"}
+    if not repo_root.exists() or not repo_root.is_dir():
+        return {"ok": False, "blocked_reason": "code_patch_repo_root_not_found", "promotion_target": "code_patch", "repo_root": str(repo_root)}
+    file_updates = _file_updates(patch)
+    if not file_updates:
+        return {"ok": False, "blocked_reason": "code_patch_requires_file_updates", "promotion_target": "code_patch", "repo_root": str(repo_root)}
+    allowed_files = _allowed_files(patch, file_updates)
+    timeout_seconds = int(patch.get("timeout_seconds") or (gate.get("gate_bundle") or {}).get("timeout_seconds") or 300)
+    applied, backups, error = _apply_file_updates(repo_root, file_updates, allowed_files=allowed_files)
+    if error:
+        return {
+            "ok": False,
+            "blocked_reason": error,
+            "promotion_target": "code_patch",
+            "repo_root": str(repo_root),
+            "applied_file_paths": [item["path"] for item in applied],
+        }
+
+    verification = _run_patch_commands(
+        patch.get("verification_commands") or patch.get("verify_commands") or [],
+        cwd=repo_root,
+        timeout_seconds=timeout_seconds,
+        phase="verify",
+    )
+    if not verification["ok"]:
+        _restore_file_updates(backups)
+        return {
+            "ok": False,
+            "blocked_reason": "code_patch_verification_failed",
+            "promotion_target": "code_patch",
+            "repo_root": str(repo_root),
+            "applied_file_paths": [item["path"] for item in applied],
+            "verification": verification,
+            "rolled_back": True,
+        }
+
+    commit = _commit_repo_patch(
+        repo_root,
+        applied_paths=[item["path"] for item in applied],
+        patch=patch,
+        candidate=candidate,
+        timeout_seconds=timeout_seconds,
+    )
+    if not commit["ok"]:
+        _restore_file_updates(backups)
+        return {
+            "ok": False,
+            "blocked_reason": "code_patch_commit_failed",
+            "promotion_target": "code_patch",
+            "repo_root": str(repo_root),
+            "applied_file_paths": [item["path"] for item in applied],
+            "verification": verification,
+            "commit": commit,
+            "rolled_back": True,
+        }
+
+    deployment: dict[str, Any] = {"ok": True, "skipped": True, "reports": []}
+    production_applied = False
+    if _truthy(patch.get("deploy_to_production"), default=False):
+        deploy_commands = _deployment_commands(patch, repo_root)
+        if not deploy_commands:
+            _restore_file_updates(backups)
+            return {
+                "ok": False,
+                "blocked_reason": "code_patch_deployment_commands_missing",
+                "promotion_target": "code_patch",
+                "repo_root": str(repo_root),
+                "applied_file_paths": [item["path"] for item in applied],
+                "verification": verification,
+                "commit": commit,
+                "rolled_back": not commit.get("commit_sha"),
+            }
+        deployment = _run_patch_commands(deploy_commands, cwd=repo_root, timeout_seconds=timeout_seconds, phase="deploy")
+        if not deployment["ok"]:
+            if not commit.get("commit_sha"):
+                _restore_file_updates(backups)
+            return {
+                "ok": False,
+                "blocked_reason": "code_patch_deployment_failed",
+                "promotion_target": "code_patch",
+                "repo_root": str(repo_root),
+                "applied_file_paths": [item["path"] for item in applied],
+                "verification": verification,
+                "commit": commit,
+                "deployment": deployment,
+                "rolled_back": not commit.get("commit_sha"),
+            }
+        production_applied = True
+
     record = append_learning_record_once(
         runtime,
         kind="learning_playbook",
-        title=f"Reviewable code patch: {candidate.title}",
-        summary=f"Prepared reviewable code patch artifact for {candidate.record_id}",
+        title=f"Direct code patch: {candidate.title}",
+        summary=f"Applied direct code patch for {candidate.record_id}",
         scope=scope or candidate.scope,
         loop_id=loop_id,
-        step_name="code_patch_asset",
-        semantic_key=stable_semantic_key("reviewable_code_patch", candidate.record_id, diff_text),
+        step_name="code_patch_apply",
+        semantic_key=stable_semantic_key("direct_code_patch", candidate.record_id, [item["path"] for item in applied], commit.get("commit_sha")),
         authority_tier="L2",
         status="active",
-        content={"candidate_id": candidate.record_id, "patch_artifact": metadata, "diff_excerpt": diff_text[:1200]},
+        content={
+            "candidate_id": candidate.record_id,
+            "repo_root": str(repo_root),
+            "applied_file_paths": [item["path"] for item in applied],
+            "verification": verification,
+            "commit": commit,
+            "deployment": deployment,
+            "eval_result": eval_result,
+            "gate": gate,
+            "production_applied": production_applied,
+        },
         meta={
             "candidate_id": candidate.record_id,
             "promotion_target": "code_patch",
-            "artifact_path": str(patch_path),
-            "metadata_path": str(metadata_path),
-            "production_applied": False,
+            "repo_root": str(repo_root),
+            "production_applied": production_applied,
+            "commit_sha": str(commit.get("commit_sha") or ""),
         },
     )
     return {
         "ok": True,
         "promotion_target": "code_patch",
-        "adapter": "reviewable_code_patch",
-        "applied_artifact_ids": [record.record_id, str(patch_path)],
-        "artifact_path": str(patch_path),
-        "metadata_path": str(metadata_path),
-        "production_applied": False,
+        "adapter": "direct_repo_patch",
+        "applied_artifact_ids": [record.record_id] + [item["path"] for item in applied],
+        "repo_root": str(repo_root),
+        "applied_file_paths": [item["path"] for item in applied],
+        "repo_mutated": True,
+        "verification": verification,
+        "commit": commit,
+        "deployment": deployment,
+        "production_applied": production_applied,
     }
 
 
@@ -343,6 +432,233 @@ def _reviewable_diff_text(candidate: RecordEnvelope, patch: dict[str, Any]) -> s
     return "\n".join(lines) + "\n"
 
 
+def _code_repo_root(patch: dict[str, Any]) -> Path | None:
+    raw = str(patch.get("repo_root") or patch.get("repository_root") or os.environ.get("EIMEMORY_AUTONOMOUS_CODE_REPO") or "").strip()
+    if not raw:
+        default = Path("/dev-project/eimemory")
+        if default.exists():
+            raw = str(default)
+        else:
+            raw = os.getcwd()
+    try:
+        return Path(raw).expanduser().resolve()
+    except OSError:
+        return None
+
+
+def _file_updates(patch: dict[str, Any]) -> list[dict[str, str]]:
+    updates = patch.get("file_updates") or patch.get("files") or []
+    if not isinstance(updates, list):
+        return []
+    normalized: list[dict[str, str]] = []
+    for item in updates:
+        if not isinstance(item, dict):
+            continue
+        path = str(item.get("path") or item.get("file") or "").strip()
+        content = item.get("content")
+        if not path or content is None:
+            continue
+        normalized.append({"path": path, "content": str(content)})
+    return normalized
+
+
+def _allowed_files(patch: dict[str, Any], file_updates: list[dict[str, str]]) -> list[str]:
+    raw = patch.get("allowed_files") or patch.get("allowlist") or []
+    if isinstance(raw, str):
+        items = [raw]
+    elif isinstance(raw, (list, tuple, set)):
+        items = [str(item) for item in raw if str(item).strip()]
+    else:
+        items = []
+    return items or [str(item["path"]) for item in file_updates]
+
+
+def _apply_file_updates(
+    repo_root: Path,
+    file_updates: list[dict[str, str]],
+    *,
+    allowed_files: list[str],
+) -> tuple[list[dict[str, str]], list[dict[str, Any]], str]:
+    applied: list[dict[str, str]] = []
+    backups: list[dict[str, Any]] = []
+    try:
+        for update in file_updates:
+            relative_path = _safe_repo_relative_path(update["path"])
+            if not _path_allowed(relative_path, allowed_files):
+                raise ValueError(f"code_patch_path_not_allowed:{relative_path}")
+            destination = _repo_child(repo_root, relative_path)
+            backups.append(
+                {
+                    "path": destination,
+                    "existed": destination.exists(),
+                    "content": destination.read_bytes() if destination.exists() else b"",
+                }
+            )
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_text(update["content"], encoding="utf-8")
+            applied.append({"path": relative_path, "absolute_path": str(destination)})
+        return applied, backups, ""
+    except Exception as exc:
+        _restore_file_updates(backups)
+        return applied, backups, str(exc)
+
+
+def _restore_file_updates(backups: list[dict[str, Any]]) -> None:
+    for backup in reversed(backups):
+        path = backup["path"]
+        if bool(backup.get("existed")):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(bytes(backup.get("content") or b""))
+        elif path.exists():
+            path.unlink()
+
+
+def _safe_repo_relative_path(value: str) -> str:
+    raw = str(value or "").strip().replace("\\", "/")
+    if not raw:
+        raise ValueError("empty_code_patch_path")
+    path = PurePosixPath(raw)
+    first = path.parts[0] if path.parts else ""
+    if path.is_absolute() or raw.startswith("//") or ":" in first:
+        raise ValueError(f"absolute_code_patch_path:{raw}")
+    if any(part in {"", ".", ".."} for part in path.parts):
+        raise ValueError(f"unsafe_code_patch_path:{raw}")
+    return "/".join(path.parts)
+
+
+def _repo_child(repo_root: Path, relative_path: str) -> Path:
+    root = repo_root.resolve()
+    child = (root / Path(*PurePosixPath(relative_path).parts)).resolve()
+    try:
+        child.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(f"code_patch_path_escapes_repo:{relative_path}") from exc
+    return child
+
+
+def _path_allowed(relative_path: str, allowed_files: list[str]) -> bool:
+    normalized_allowed = [_safe_repo_relative_path(item) for item in allowed_files if str(item).strip()]
+    return any(relative_path == item or fnmatch.fnmatch(relative_path, item) for item in normalized_allowed)
+
+
+def _run_patch_commands(commands: Any, *, cwd: Path, timeout_seconds: int, phase: str) -> dict[str, Any]:
+    normalized = _normalize_commands(commands)
+    reports: list[dict[str, Any]] = []
+    for command in normalized:
+        shell = isinstance(command, str)
+        display = command if shell else [str(part) for part in command]
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=str(cwd),
+                text=True,
+                capture_output=True,
+                timeout=timeout_seconds,
+                shell=shell,
+                check=False,
+            )
+            report = {
+                "phase": phase,
+                "command": display,
+                "returncode": completed.returncode,
+                "stdout": (completed.stdout or "")[-4000:],
+                "stderr": (completed.stderr or "")[-4000:],
+                "ok": completed.returncode == 0,
+            }
+        except subprocess.TimeoutExpired as exc:
+            report = {
+                "phase": phase,
+                "command": display,
+                "returncode": None,
+                "stdout": str(exc.stdout or "")[-4000:],
+                "stderr": str(exc.stderr or "")[-4000:],
+                "ok": False,
+                "timeout": True,
+            }
+        except Exception as exc:
+            report = {
+                "phase": phase,
+                "command": display,
+                "returncode": None,
+                "stdout": "",
+                "stderr": str(exc),
+                "ok": False,
+                "error_type": type(exc).__name__,
+            }
+        reports.append(report)
+        if not report["ok"]:
+            return {"ok": False, "reports": reports}
+    return {"ok": True, "reports": reports, "skipped": not bool(normalized)}
+
+
+def _normalize_commands(commands: Any) -> list[str | list[str]]:
+    if commands is None:
+        return []
+    if isinstance(commands, str):
+        return [commands] if commands.strip() else []
+    if not isinstance(commands, list):
+        return []
+    normalized: list[str | list[str]] = []
+    for item in commands:
+        if isinstance(item, str):
+            if item.strip():
+                normalized.append(item)
+        elif isinstance(item, (list, tuple)) and item:
+            normalized.append([str(part) for part in item])
+    return normalized
+
+
+def _commit_repo_patch(
+    repo_root: Path,
+    *,
+    applied_paths: list[str],
+    patch: dict[str, Any],
+    candidate: RecordEnvelope,
+    timeout_seconds: int,
+) -> dict[str, Any]:
+    if not _truthy(patch.get("commit_to_repo"), default=False):
+        return {"ok": True, "skipped": True, "reason": "commit_disabled"}
+    if not (repo_root / ".git").exists():
+        return {"ok": False, "reason": "git_repo_missing"}
+    add_result = _run_patch_commands([["git", "add", "--", *applied_paths]], cwd=repo_root, timeout_seconds=timeout_seconds, phase="commit")
+    if not add_result["ok"]:
+        return {"ok": False, "reason": "git_add_failed", "reports": add_result["reports"]}
+    diff_result = subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=str(repo_root), text=True, capture_output=True, timeout=timeout_seconds, check=False)
+    if diff_result.returncode == 0:
+        return {"ok": True, "skipped": True, "reason": "no_staged_changes", "reports": add_result["reports"]}
+    message = str(patch.get("commit_message") or f"autonomous: apply code patch {candidate.record_id[:12]}")
+    commit_result = _run_patch_commands([["git", "commit", "-m", message]], cwd=repo_root, timeout_seconds=timeout_seconds, phase="commit")
+    if not commit_result["ok"]:
+        return {"ok": False, "reason": "git_commit_failed", "reports": add_result["reports"] + commit_result["reports"]}
+    sha_result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(repo_root), text=True, capture_output=True, timeout=timeout_seconds, check=False)
+    return {
+        "ok": sha_result.returncode == 0,
+        "commit_sha": sha_result.stdout.strip() if sha_result.returncode == 0 else "",
+        "reports": add_result["reports"] + commit_result["reports"],
+    }
+
+
+def _deployment_commands(patch: dict[str, Any], repo_root: Path) -> list[str | list[str]]:
+    explicit = _normalize_commands(patch.get("deployment_commands") or patch.get("deploy_commands"))
+    if explicit:
+        return explicit
+    env_command = os.environ.get("EIMEMORY_AUTONOMOUS_CODE_DEPLOY_COMMAND", "").strip()
+    if env_command:
+        return [env_command]
+    installer = repo_root / "deploy" / "install_immutable_release.sh"
+    if installer.exists():
+        return [["bash", "-lc", 'COMMIT="$(git rev-parse HEAD)" && sudo ./deploy/install_immutable_release.sh "$COMMIT" && systemctl --user restart eimemory-rpc.service']]
+    return []
+
+
+def _truthy(value: Any, *, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on", "y", "apply", "enabled"}
+
+
 def _candidate_patch(runtime: Any, candidate: RecordEnvelope, *, scope: dict[str, Any] | ScopeRef | None) -> dict[str, Any]:
     content = candidate.content if isinstance(candidate.content, dict) else {}
     direct = content.get("candidate_patch") if isinstance(content.get("candidate_patch"), dict) else {}
@@ -398,6 +714,21 @@ def _prompt_safety_gate(gate_bundle: dict[str, Any]) -> bool:
     shadow = gate_bundle.get("prompt_shadow_eval") if isinstance(gate_bundle.get("prompt_shadow_eval"), dict) else {}
     injection = gate_bundle.get("prompt_injection_check") if isinstance(gate_bundle.get("prompt_injection_check"), dict) else {}
     return bool(shadow.get("passed")) and bool(injection.get("passed"))
+
+
+def _real_task_replay_gate(gate_bundle: dict[str, Any]) -> bool:
+    report = gate_bundle.get("real_task_replay") or gate_bundle.get("replay_report") or gate_bundle.get("replay")
+    if not isinstance(report, dict):
+        return False
+    if not bool(report.get("ok")):
+        return False
+    verdict = str(report.get("verdict") or "").strip().lower()
+    sample_count = int(report.get("sample_count") or report.get("case_count") or report.get("pass_count") or 0)
+    if verdict != "pass" or sample_count <= 0:
+        return False
+    pass_rate = float(report.get("pass_rate") or 0.0)
+    threshold = float(report.get("threshold") or 0.6)
+    return pass_rate >= threshold
 
 
 def _promotion_target(candidate: RecordEnvelope) -> str:

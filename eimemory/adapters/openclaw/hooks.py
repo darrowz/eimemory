@@ -14,6 +14,7 @@ from eimemory.models.records import RecallBundle, RecordEnvelope, ScopeRef
 DEFAULT_RECALL_MODE = "fast"
 DEFAULT_RECALL_BUDGET_MS = 800
 DEFAULT_FAST_CANDIDATE_LIMIT = 24
+DEFAULT_INJECTION_TOKEN_BUDGET = 1800
 
 
 class OpenClawMemoryHooks:
@@ -384,6 +385,15 @@ class OpenClawMemoryHooks:
             return DEFAULT_RECALL_BUDGET_MS
         return budget
 
+    def _coerce_injection_token_budget(self, value: object) -> int:
+        try:
+            budget = int(value)
+        except (TypeError, ValueError):
+            return DEFAULT_INJECTION_TOKEN_BUDGET
+        if budget <= 0:
+            return DEFAULT_INJECTION_TOKEN_BUDGET
+        return max(8, min(8000, budget))
+
     def _coerce_fast_candidate_limit(self, value: object) -> int:
         try:
             candidate_limit = int(value)
@@ -539,12 +549,29 @@ class OpenClawMemoryHooks:
         mode = str(task_context.get("injection_mode") or task_context.get("injectionMode") or "strict").strip().lower()
         if mode not in {"strict", "balanced", "debug"}:
             mode = "strict"
+        token_budget = self._coerce_injection_token_budget(
+            self._first_present(
+                task_context.get("injection_token_budget"),
+                task_context.get("injectionTokenBudget"),
+                task_context.get("max_injection_tokens"),
+                task_context.get("maxInjectionTokens"),
+                None,
+            )
+        )
+        used_tokens = 0
         entries: list[dict[str, Any]] = []
         full_text_count = 0
         for record in self._injection_candidates(bundle):
             lane, reason = self._classify_injection_lane(record=record, full_text_count=full_text_count, mode=mode)
-            if lane == "full_text":
-                full_text_count += 1
+            token_estimate = self._injection_token_estimate(record=record, lane=lane)
+            if lane != "withheld" and used_tokens + token_estimate > token_budget:
+                lane = "withheld"
+                reason = "context_token_budget"
+                token_estimate = 0
+            elif lane != "withheld":
+                used_tokens += token_estimate
+                if lane == "full_text":
+                    full_text_count += 1
             entry = {
                 "record_id": record.record_id,
                 "kind": record.kind,
@@ -553,7 +580,7 @@ class OpenClawMemoryHooks:
                 "recall_lane": self._record_recall_lane(record),
                 "lane": lane,
                 "action": lane,
-                "token_estimate": self._injection_token_estimate(record=record, lane=lane),
+                "token_estimate": token_estimate,
             }
             memory_type = self._record_memory_type(record)
             if memory_type:
@@ -573,6 +600,7 @@ class OpenClawMemoryHooks:
                 withheld_reasons[reason] = withheld_reasons.get(reason, 0) + 1
         return {
             "mode": mode,
+            "token_budget": token_budget,
             "token_estimate": sum(int(entry.get("token_estimate") or 0) for entry in entries),
             "lane_composition": lane_composition,
             "withheld_reasons": withheld_reasons,
@@ -736,6 +764,7 @@ class OpenClawMemoryHooks:
             entries = [dict(entry) for entry in value.get("entries") or value.get("items") or [] if isinstance(entry, dict)]
             return {
                 "mode": str(value.get("mode") or "strict"),
+                "token_budget": int(value.get("token_budget") or DEFAULT_INJECTION_TOKEN_BUDGET),
                 "token_estimate": int(value.get("token_estimate") or 0),
                 "lane_composition": {
                     "full_text": int(lane_composition.get("full_text") or 0),
@@ -757,6 +786,7 @@ class OpenClawMemoryHooks:
             }
         return {
             "mode": "strict",
+            "token_budget": DEFAULT_INJECTION_TOKEN_BUDGET,
             "token_estimate": 0,
             "lane_composition": {"full_text": 0, "summary_only": 0, "policy_only": 0, "withheld": 0},
             "withheld_reasons": {},

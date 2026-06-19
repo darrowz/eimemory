@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import os
 from typing import Any
 
 from eimemory.governance.capability_distiller import distill_capability_candidate
@@ -137,7 +138,8 @@ def run_autonomous_learning_cycle(
             replay_dataset=replay_dataset,
             seed_records=_replay_seed_records_from_cases(replay_dataset.get("cases") or [], scope=scope_ref),
         )
-        replay_gate_passed = _replay_gate_passed(real_task_replay)
+        replay_gate = _replay_gate_report(real_task_replay)
+        replay_gate_passed = bool(replay_gate.get("ok"))
 
         target_capability = str(selected_goal.get("target_capability") or "proactive.judgment")
         candidate_kinds = choose_candidate_kinds_for_goal(selected_goal, max_candidates=max(1, min(3, max_goals)))
@@ -167,7 +169,13 @@ def run_autonomous_learning_cycle(
                 loop_id=loop_id,
                 eval_suite={"scores": {"capability": 0.82, "safety": 1.0, "regression": 1.0, "evidence": _evidence_score(evidence), "cost": 0.85}},
             )
-            eval_result["gate_bundle"] = _gate_bundle_for_candidate(candidate_kind, evidence=evidence, scope=scope_ref)
+            eval_result["gate_bundle"] = _gate_bundle_for_candidate(
+                candidate_kind,
+                evidence=evidence,
+                scope=scope_ref,
+                real_task_replay=real_task_replay,
+                replay_gate=replay_gate,
+            )
             eval_results.append(eval_result)
             if eval_result.get("ok") and replay_gate_passed:
                 candidate_id = distill_capability_candidate(
@@ -216,6 +224,7 @@ def run_autonomous_learning_cycle(
             metrics={
                 "applied_count": sum(1 for report in promotion_reports if report.get("applied")),
                 "replay_gate_passed": replay_gate_passed,
+                "replay_gate_reason": str(replay_gate.get("reason") or ""),
             },
         )
 
@@ -262,6 +271,7 @@ def run_autonomous_learning_cycle(
             "candidate_ids": candidate_ids,
             "candidate_kinds": candidate_kinds,
             "real_task_replay": real_task_replay,
+            "replay_gate": replay_gate,
             "replay_gate_passed": replay_gate_passed,
             "promotion": promotion_report,
             "promotions": promotion_reports,
@@ -353,10 +363,37 @@ def _run_real_task_replay_if_available(
 
 
 def _replay_gate_passed(report: dict[str, Any]) -> bool:
-    if bool(report.get("ok")):
-        return True
-    reason = str(report.get("replay_skipped_reason") or "").strip()
-    return reason in {"no_replay_cases", "run_real_task_replay_unavailable"}
+    return bool(_replay_gate_report(report).get("ok"))
+
+
+def _replay_gate_report(report: dict[str, Any]) -> dict[str, Any]:
+    if not bool(report.get("ok")):
+        return {
+            "ok": False,
+            "reason": str(report.get("replay_skipped_reason") or "real_task_replay_not_ok"),
+            "real_task_replay": report,
+        }
+    verdict = str(report.get("verdict") or "").strip().lower()
+    sample_count = int(report.get("sample_count") or report.get("case_count") or report.get("pass_count") or 0)
+    pass_rate = float(report.get("pass_rate") or 0.0)
+    threshold = float(report.get("threshold") or 0.6)
+    ok = verdict == "pass" and sample_count > 0 and pass_rate >= threshold
+    reason = "passed" if ok else "real_task_replay_threshold_failed"
+    if verdict != "pass":
+        reason = "real_task_replay_verdict_not_pass"
+    elif sample_count <= 0:
+        reason = "real_task_replay_no_samples"
+    elif pass_rate < threshold:
+        reason = "real_task_replay_pass_rate_below_threshold"
+    return {
+        "ok": ok,
+        "reason": reason,
+        "verdict": verdict,
+        "sample_count": sample_count,
+        "pass_rate": pass_rate,
+        "threshold": threshold,
+        "real_task_replay": report,
+    }
 
 
 def _replay_seed_records_from_cases(cases: list[dict[str, Any]], *, scope: ScopeRef) -> list[dict[str, Any]]:
@@ -564,6 +601,24 @@ def _candidate_patch(
             "expected_text": list(first.get("expected_text") or []),
             "labels": [target_capability, str(goal.get("goal_type") or "maintenance")],
         }
+    if kind == "code_patch":
+        structured_patch = _structured_code_patch(goal=goal, replay_dataset=replay_dataset)
+        verify_command = str(os.environ.get("EIMEMORY_AUTONOMOUS_CODE_VERIFY_COMMAND") or "").strip()
+        deploy_command = str(os.environ.get("EIMEMORY_AUTONOMOUS_CODE_DEPLOY_COMMAND") or "").strip()
+        deploy_enabled = _env_truthy("EIMEMORY_AUTONOMOUS_CODE_DEPLOY", default=False)
+        return {
+            **base,
+            **structured_patch,
+            "repo_root": str(structured_patch.get("repo_root") or os.environ.get("EIMEMORY_AUTONOMOUS_CODE_REPO") or ""),
+            "apply_to_repo": True,
+            "deploy_to_production": deploy_enabled,
+            "commit_to_repo": _env_truthy("EIMEMORY_AUTONOMOUS_CODE_COMMIT", default=deploy_enabled),
+            "allowed_files": list(structured_patch.get("allowed_files") or []),
+            "file_updates": list(structured_patch.get("file_updates") or []),
+            "verification_commands": list(structured_patch.get("verification_commands") or ([verify_command] if verify_command else [])),
+            "deployment_commands": [deploy_command] if deploy_command else [],
+            "rollback_plan": dict(structured_patch.get("rollback_plan") or {"type": "restore_files"}),
+        }
     if kind == "skill_draft":
         return {
             **base,
@@ -613,6 +668,28 @@ def _candidate_patch(
     return base
 
 
+def _structured_code_patch(*, goal: dict[str, Any], replay_dataset: dict[str, Any] | None) -> dict[str, Any]:
+    for value in (goal.get("code_patch"), goal.get("candidate_patch"), goal.get("patch")):
+        if isinstance(value, dict) and _has_file_updates(value):
+            return dict(value)
+    for case in list((replay_dataset or {}).get("cases") or []):
+        if not isinstance(case, dict):
+            continue
+        for value in (case.get("code_patch"), case.get("candidate_patch"), case.get("patch")):
+            if isinstance(value, dict) and _has_file_updates(value):
+                return dict(value)
+        if _has_file_updates(case):
+            return dict(case)
+    return {}
+
+
+def _has_file_updates(value: dict[str, Any]) -> bool:
+    updates = value.get("file_updates") or value.get("files") or []
+    if not isinstance(updates, list):
+        return False
+    return any(isinstance(item, dict) and str(item.get("path") or item.get("file") or "").strip() and item.get("content") is not None for item in updates)
+
+
 def _safe_skill_name(capability: str) -> str:
     value = "".join(ch.lower() if ch.isalnum() else "-" for ch in str(capability or "proactive-skill"))
     value = "-".join(part for part in value.split("-") if part)
@@ -625,6 +702,13 @@ def _first_text(*values: Any) -> str:
         if text:
             return text
     return ""
+
+
+def _env_truthy(name: str, *, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on", "y", "enabled", "apply"}
 
 
 def _evidence_score(evidence: list[dict[str, Any]]) -> float:
@@ -641,6 +725,8 @@ def _gate_bundle_for_candidate(
     evidence: list[dict[str, Any]],
     scope: ScopeRef,
     prompt_text: str | None = None,
+    real_task_replay: dict[str, Any] | None = None,
+    replay_gate: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     target = str(candidate_kind or "").lower()
     prompt_target = target in {"prompt_policy", "system_prompt_patch"}
@@ -715,6 +801,27 @@ def _gate_bundle_for_candidate(
         "timeout_seconds": 900,
         "cooldown_seconds": 3600,
         "audit": {"enabled": True, "ledger": "promotion_request"},
+        "real_task_replay": _gate_real_task_replay(real_task_replay or {}, replay_gate or {}),
         "prompt_shadow_eval": prompt_shadow_field,
         "prompt_injection_check": prompt_injection_field,
+    }
+
+
+def _gate_real_task_replay(real_task_replay: dict[str, Any], replay_gate: dict[str, Any]) -> dict[str, Any]:
+    if real_task_replay:
+        report = dict(real_task_replay)
+        report.setdefault("ok", bool(replay_gate.get("ok")))
+        report.setdefault("verdict", "pass" if replay_gate.get("ok") else "fail")
+        report.setdefault("pass_rate", replay_gate.get("pass_rate") or (1.0 if replay_gate.get("ok") else 0.0))
+        report.setdefault("threshold", replay_gate.get("threshold") or 0.6)
+        report.setdefault("sample_count", replay_gate.get("sample_count") or report.get("case_count") or report.get("pass_count") or 0)
+        return report
+    return {
+        "ok": bool(replay_gate.get("ok")),
+        "report_type": "real_task_replay",
+        "verdict": "pass" if replay_gate.get("ok") else "fail",
+        "pass_rate": replay_gate.get("pass_rate") or (1.0 if replay_gate.get("ok") else 0.0),
+        "threshold": replay_gate.get("threshold") or 0.6,
+        "sample_count": replay_gate.get("sample_count") or 0,
+        "reason": str(replay_gate.get("reason") or ""),
     }
