@@ -136,8 +136,16 @@ def test_autonomous_learning_cycle_returns_real_task_replay_report(tmp_path, mon
 
     replay_dataset_calls: list[dict] = []
 
-    def fake_build_replay_dataset(_runtime, *, scope, limit=50, persist=True, loop_id=""):
-        replay_dataset_calls.append({"scope": scope, "limit": limit, "persist": persist, "loop_id": loop_id})
+    def fake_build_replay_dataset(_runtime, *, scope, limit=50, persist=True, loop_id="", include_built_in_regressions=False):
+        replay_dataset_calls.append(
+            {
+                "scope": scope,
+                "limit": limit,
+                "persist": persist,
+                "loop_id": loop_id,
+                "include_built_in_regressions": include_built_in_regressions,
+            }
+        )
         return {
             "ok": True,
             "schema_version": "real_task_replay.v1",
@@ -183,6 +191,7 @@ def test_autonomous_learning_cycle_returns_real_task_replay_report(tmp_path, mon
     report = runtime.run_autonomous_learning_cycle(scope=scope, force=True, apply=False)
 
     assert replay_dataset_calls
+    assert replay_dataset_calls[0]["include_built_in_regressions"] is True
     assert replay_calls
     assert replay_calls[0]["persist_report"] is True
     assert report["ok"] is True
@@ -265,6 +274,11 @@ def test_autonomous_learning_cycle_can_attach_web_scout_evidence_when_network_en
     assert gate_record is not None
     assert gate_record.meta["report_type"] == "network_learning_output_gate"
     assert gate_record.content["decision"] == "actionable"
+    assert output_gate["source_score_record_ids"]
+    source_score = runtime.store.get_by_id(output_gate["source_score_record_ids"][0], scope=scope)
+    assert source_score is not None
+    assert source_score.meta["report_type"] == "network_source_score"
+    assert source_score.content["target_capability"] == "knowledge.source"
 
 
 def test_autonomous_learning_cycle_uses_network_research_by_default(tmp_path, monkeypatch) -> None:

@@ -127,6 +127,53 @@ def test_l2_promotion_blocks_without_health_gate(tmp_path) -> None:
     assert "health_gate" in result["blocked_reason"]
 
 
+def test_l2_prompt_policy_blocks_when_prompt_safety_is_stub_notready(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu"}
+    gate_bundle = _l2_gate_bundle()
+    gate_bundle["prompt_shadow_eval"] = {"passed": True, "notready": True}
+    gate_bundle["prompt_injection_check"] = {"passed": True, "notready": True}
+    eval_result = {**PASSING_EVAL, "gate_bundle": gate_bundle}
+    candidate_id = distill_capability_candidate(
+        runtime,
+        scope=scope,
+        loop_id="learn_test",
+        experiment_id="exp_1",
+        eval_result=eval_result,
+        promotion_target="system_prompt_patch",
+        summary="Prompt policy update",
+    )
+
+    result = promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", apply=False, eval_result=eval_result, health={"ok": True})
+
+    assert result["ok"] is False
+    assert "prompt_safety_gate" in result["blocked_reason"]
+
+
+def test_promotion_request_records_target_metadata(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu"}
+    candidate_id = distill_capability_candidate(
+        runtime,
+        scope=scope,
+        loop_id="learn_test",
+        experiment_id="exp_1",
+        eval_result=PASSING_EVAL,
+        promotion_target="tool_route",
+        summary="Use memory-first routing.",
+        target_capability="tool.routing",
+    )
+
+    result = promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", apply=False, eval_result=PASSING_EVAL, health={"ok": True})
+    promotion = runtime.store.get_by_id(result["promotion_request_id"], scope=scope)
+
+    assert promotion is not None
+    assert promotion.content["promotion_target"] == "tool_route"
+    assert promotion.content["target_capability"] == "tool.routing"
+    assert promotion.meta["promotion_target"] == "tool_route"
+    assert promotion.meta["target_capability"] == "tool.routing"
+
+
 def test_l2_deployment_rollout_blocks_without_real_adapter(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     candidate_id = distill_capability_candidate(

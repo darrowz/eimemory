@@ -101,7 +101,15 @@ def test_autonomous_learning_cycle_dry_run_does_not_persist_learning_records(tmp
 
 
 def _force_real_task_replay_pass(runtime: Runtime, monkeypatch, code_patch: dict | None = None) -> None:
-    def fake_build_replay_dataset(_runtime, *, scope, limit=50, persist=True, loop_id=""):
+    def fake_build_replay_dataset(
+        _runtime,
+        *,
+        scope,
+        limit=50,
+        persist=True,
+        loop_id="",
+        include_built_in_regressions=False,
+    ):
         return {
             "ok": True,
             "schema_version": "real_task_replay.v1",

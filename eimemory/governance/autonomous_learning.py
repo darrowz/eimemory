@@ -133,7 +133,14 @@ def run_autonomous_learning_cycle(
         )
         mark_step(runtime, loop, step_name="research", status="completed", record_ids=research_task_ids + [research_note_id], metrics={"evidence_count": len(evidence)})
 
-        replay_dataset = build_replay_dataset(runtime, scope=scope_ref, limit=50, persist=True, loop_id=loop_id)
+        replay_dataset = build_replay_dataset(
+            runtime,
+            scope=scope_ref,
+            limit=50,
+            persist=True,
+            loop_id=loop_id,
+            include_built_in_regressions=True,
+        )
         mark_step(runtime, loop, step_name="replay_dataset", status="completed", record_ids=[replay_dataset.get("persisted_record_id", "")], metrics={"case_count": replay_dataset.get("case_count", 0), "correction_count": replay_dataset.get("correction_count", 0)})
         real_task_replay = _run_real_task_replay_if_available(
             runtime=runtime,
@@ -665,6 +672,16 @@ def _network_output_gate(
             )
         )
         report["summary_record_id"] = record.record_id
+        if report["decision"] == "actionable" and "source_score" in report["landing_targets"]:
+            report["source_score_record_ids"] = _persist_network_source_scores(
+                runtime,
+                scope=scope,
+                loop_id=loop_id,
+                goal=goal,
+                report=report,
+                web_items=web_items,
+                research_note_id=research_note_id,
+            )
     return report
 
 
@@ -691,7 +708,62 @@ def _network_output_gate_report(
         "research_note_id": research_note_id,
         "replay_case_count": int((replay_dataset or {}).get("case_count") or len((replay_dataset or {}).get("cases") or [])),
         "summary_record_id": "",
+        "source_score_record_ids": [],
     }
+
+
+def _persist_network_source_scores(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    loop_id: str,
+    goal: dict[str, Any],
+    report: dict[str, Any],
+    web_items: list[dict[str, Any]],
+    research_note_id: str,
+) -> list[str]:
+    source_scores = [
+        {
+            "ref": str(item.get("ref") or ""),
+            "tier": str(item.get("tier") or ""),
+            "confidence": _as_float(item.get("confidence"), default=0.0),
+            "summary": str(item.get("summary") or "")[:400],
+        }
+        for item in web_items[:10]
+    ]
+    if not source_scores:
+        return []
+    avg_confidence = round(sum(item["confidence"] for item in source_scores) / len(source_scores), 3)
+    record = runtime.store.append(
+        RecordEnvelope.create(
+            kind="reflection",
+            title="Network source score",
+            summary=f"Scored {len(source_scores)} network learning sources for {goal.get('target_capability') or 'autonomous learning'}.",
+            detail=f"loop_id={loop_id}; research_note_id={research_note_id}",
+            scope=scope,
+            source="eimemory.autonomous_learning.network_source_score",
+            content={
+                "report_type": "network_source_score",
+                "loop_id": loop_id,
+                "target_capability": str(goal.get("target_capability") or ""),
+                "research_note_id": research_note_id,
+                "decision": str(report.get("decision") or ""),
+                "landing_targets": list(report.get("landing_targets") or []),
+                "average_confidence": avg_confidence,
+                "source_scores": source_scores,
+            },
+            tags=["autonomous_learning", "network_learning", "source_score"],
+            evidence=[item["ref"] for item in source_scores if item.get("ref")],
+            meta={
+                "report_type": "network_source_score",
+                "loop_id": loop_id,
+                "target_capability": str(goal.get("target_capability") or ""),
+                "source_count": len(source_scores),
+                "average_confidence": avg_confidence,
+            },
+        )
+    )
+    return [record.record_id]
 
 
 def _network_output_evidence(web_items: list[dict[str, Any]]) -> list[dict[str, Any]]:

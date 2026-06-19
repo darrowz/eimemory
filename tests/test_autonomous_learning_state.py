@@ -54,6 +54,25 @@ def test_learning_loop_can_complete_and_restart(tmp_path) -> None:
     assert next_loop.status == "running"
 
 
+def test_start_learning_loop_recovers_stale_active_loop(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu", "workspace_id": "personal"}
+    stale = start_learning_loop(runtime, scope=scope, trigger="nightly")
+    stale.time.created_at = "2000-01-01T00:00:00+00:00"
+    stale.time.updated_at = "2000-01-01T00:00:00+00:00"
+    stale.meta["status"] = "running"
+    runtime.store.rewrite(stale)
+
+    next_loop = start_learning_loop(runtime, scope=scope, trigger="nightly")
+    recovered = runtime.store.get_by_id(stale.record_id)
+
+    assert next_loop.record_id != stale.record_id
+    assert next_loop.status == "running"
+    assert recovered.status == "failed"
+    assert recovered.meta["status"] == "failed"
+    assert recovered.meta["stale_recovered_reason"] == "stale_learning_loop"
+
+
 def test_mark_step_is_idempotent_for_same_step(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     loop = start_learning_loop(runtime, scope={"agent_id": "hongtu"}, trigger="manual")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from datetime import datetime, timezone
 from hashlib import sha256
 from typing import Any
 
@@ -12,6 +13,7 @@ from eimemory.models.records import RecordEnvelope, ScopeRef
 AUTONOMOUS_LEARNING_SCHEMA_VERSION = "autonomous_learning.v1"
 ACTIVE_LOOP_STATUSES = {"running", "collecting", "researching", "experimenting", "evaluating", "promoting"}
 TERMINAL_LOOP_STATUSES = {"completed", "blocked", "failed"}
+DEFAULT_STALE_LOOP_SECONDS = 6 * 60 * 60
 
 
 def scope_payload(scope: dict[str, Any] | ScopeRef | None) -> dict[str, Any]:
@@ -37,6 +39,7 @@ def start_learning_loop(
     loop_id: str = "",
 ) -> RecordEnvelope:
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+    recover_stale_learning_loops(runtime, scope=scope_ref)
     active = active_learning_loops(runtime, scope=scope_ref)
     if active and not force:
         raise RuntimeError(f"active learning loop already exists: {active[0].record_id}")
@@ -84,6 +87,51 @@ def active_learning_loops(
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
     loops = runtime.store.list_records(kinds=["learning_loop"], scope=scope_ref, limit=limit)
     return [loop for loop in loops if str(loop.status or "").strip().lower() in ACTIVE_LOOP_STATUSES]
+
+
+def recover_stale_learning_loops(
+    runtime: Any,
+    *,
+    scope: dict[str, Any] | ScopeRef | None = None,
+    max_age_seconds: int = DEFAULT_STALE_LOOP_SECONDS,
+    reason: str = "stale_learning_loop",
+    limit: int = 50,
+) -> list[RecordEnvelope]:
+    scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+    recovered: list[RecordEnvelope] = []
+    now = datetime.now(timezone.utc)
+    for loop in active_learning_loops(runtime, scope=scope_ref, limit=limit):
+        age_seconds = _record_age_seconds(loop, now=now)
+        if age_seconds < max(1, int(max_age_seconds)):
+            continue
+        previous_status = str(loop.status or "")
+        loop.status = "failed"
+        loop.summary = loop.summary or f"Recovered stale learning loop: {loop.record_id}"
+        loop.meta["status"] = "failed"
+        loop.meta["previous_status"] = previous_status
+        loop.meta["stale_recovered_at"] = now_iso()
+        loop.meta["stale_recovered_reason"] = reason
+        loop.meta["stale_age_seconds"] = int(age_seconds)
+        content = dict(loop.content or {})
+        steps = list(content.get("steps") or [])
+        steps.append(
+            {
+                "step_name": "stale_recovery",
+                "status": "failed",
+                "error": reason,
+                "record_ids": [],
+                "metrics": {"stale_age_seconds": int(age_seconds)},
+                "updated_at": loop.meta["stale_recovered_at"],
+            }
+        )
+        content["steps"] = steps
+        content["stale_recovered_at"] = loop.meta["stale_recovered_at"]
+        content["stale_recovered_reason"] = reason
+        content["previous_status"] = previous_status
+        loop.content = content
+        loop.touch()
+        recovered.append(runtime.store.rewrite(loop))
+    return recovered
 
 
 def latest_learning_loop(
@@ -233,3 +281,16 @@ def _resolve_loop(runtime: Any, loop: RecordEnvelope | str) -> RecordEnvelope:
     if record is None or record.kind != "learning_loop":
         raise ValueError(f"learning loop not found: {loop}")
     return record
+
+
+def _record_age_seconds(record: RecordEnvelope, *, now: datetime) -> float:
+    timestamp = str(record.time.updated_at or record.time.created_at or "").strip()
+    if not timestamp:
+        return 0.0
+    try:
+        parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    except ValueError:
+        return 0.0
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return max(0.0, (now - parsed.astimezone(timezone.utc)).total_seconds())

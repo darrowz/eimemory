@@ -789,6 +789,8 @@ def _canary_gate(gate_bundle: dict[str, Any]) -> bool:
 def _prompt_safety_gate(gate_bundle: dict[str, Any]) -> bool:
     shadow = gate_bundle.get("prompt_shadow_eval") if isinstance(gate_bundle.get("prompt_shadow_eval"), dict) else {}
     injection = gate_bundle.get("prompt_injection_check") if isinstance(gate_bundle.get("prompt_injection_check"), dict) else {}
+    if bool(shadow.get("notready")) or bool(injection.get("notready")):
+        return False
     return bool(shadow.get("passed")) and bool(injection.get("passed"))
 
 
@@ -850,6 +852,8 @@ def _promotion_record(
     side_effect: dict[str, Any] | None = None,
 ) -> str:
     semantic_key = stable_semantic_key("promotion", candidate.record_id, action, status)
+    promotion_target = _promotion_target(candidate)
+    target_capability = str(candidate.meta.get("target_capability") or candidate.content.get("target_capability") or "")
     record = append_learning_record_once(
         runtime,
         kind="promotion_request",
@@ -863,6 +867,8 @@ def _promotion_record(
         status=status,
         content={
             "candidate_id": candidate.record_id,
+            "promotion_target": promotion_target,
+            "target_capability": target_capability,
             "action": action,
             "eval_result": eval_result,
             "health": health,
@@ -872,6 +878,8 @@ def _promotion_record(
         },
         meta={
             "candidate_id": candidate.record_id,
+            "promotion_target": promotion_target,
+            "target_capability": target_capability,
             "action": action,
             "gate_ok": bool((gate or {"ok": status == "promoted"}).get("ok")),
             "side_effect_ok": bool((side_effect or {}).get("ok")),
