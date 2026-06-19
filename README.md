@@ -199,6 +199,7 @@ eimemory learn candidates --limit 10
 eimemory learn ledger
 eimemory learn think --persist
 eimemory learn replay-dataset --persist
+eimemory learn replay-dataset --include-built-in-regressions
 eimemory learn compact --dry-run
 eimemory learn report --persist
 eimemory learn dashboard --persist

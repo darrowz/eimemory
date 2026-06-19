@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 from eimemory.api.runtime import Runtime
-from eimemory.evaluation.regression_replay import mistake_to_replay_case, run_regression_replay
+from eimemory.evaluation.regression_replay import (
+    built_in_real_regression_cases,
+    mistake_to_replay_case,
+    run_regression_replay,
+)
 from eimemory.governance.replay_dataset import build_replay_dataset
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
@@ -70,3 +74,54 @@ def test_replay_dataset_includes_persisted_regression_replay_case(tmp_path) -> N
         "EIMemory 1.4.4",
         "do not guess the version",
     ]
+
+
+def test_built_in_real_regression_cases_cover_known_mistake_classes() -> None:
+    cases = built_in_real_regression_cases()
+
+    assert len(cases) >= 25
+    assert {case["mistake_type"] for case in cases} == {
+        "version_answer_wrong",
+        "evidence_not_checked",
+        "long_task_lost_contact",
+        "field_mapping_wrong",
+        "eval_claim_without_run",
+    }
+    assert all(case["case_id"] for case in cases)
+    assert all(len(case["expected_text"]) >= 3 for case in cases)
+
+
+def test_built_in_real_regression_cases_fail_when_answer_uses_old_bad_habits() -> None:
+    cases = built_in_real_regression_cases()
+    stale_answers = {
+        case["case_id"]: "I think it is probably fine based on memory."
+        for case in cases
+    }
+
+    report = run_regression_replay(cases, stale_answers)
+
+    assert report["verdict"] == "fail"
+    assert report["fail_count"] == len(cases)
+
+
+def test_replay_dataset_can_include_built_in_real_regressions(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+
+    report = build_replay_dataset(
+        runtime,
+        scope={"agent_id": "hongtu"},
+        limit=50,
+        persist=False,
+        include_built_in_regressions=True,
+    )
+
+    mistake_types = {case["mistake_type"] for case in report["cases"]}
+    assert report["case_count"] >= 25
+    assert report["include_built_in_regressions"] is True
+    assert mistake_types == {
+        "version_answer_wrong",
+        "evidence_not_checked",
+        "long_task_lost_contact",
+        "field_mapping_wrong",
+        "eval_claim_without_run",
+    }

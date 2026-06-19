@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from eimemory.evaluation.regression_replay import REGRESSION_REPLAY_CASE_REPORT_TYPE
+from eimemory.evaluation.regression_replay import REGRESSION_REPLAY_CASE_REPORT_TYPE, built_in_real_regression_cases
 from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.governance.replay_quality import govern_replay_cases
 from eimemory.metadata import business_metadata
@@ -20,6 +20,7 @@ def build_replay_dataset(
     limit: int = 50,
     persist: bool = True,
     loop_id: str = "manual",
+    include_built_in_regressions: bool = False,
 ) -> dict[str, Any]:
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
     budget = max(1, int(limit or 50))
@@ -28,6 +29,8 @@ def build_replay_dataset(
     cases.extend(_cases_from_regression_replay_records(runtime, scope=scope_ref, limit=budget))
     cases.extend(_cases_from_operator_corrections(runtime, scope=scope_ref, limit=budget))
     cases.extend(_cases_from_replay_results(runtime, scope=scope_ref, limit=budget))
+    if include_built_in_regressions:
+        cases.extend(built_in_real_regression_cases())
     quality_report = govern_replay_cases(cases, limit=budget * 3)
     deduped_cases = _dedupe_cases(quality_report["cases"])[:budget]
     case_quality_breakdown = dict(quality_report["case_quality_breakdown"])
@@ -70,6 +73,7 @@ def build_replay_dataset(
                 "target_pass_rate": quality_report["target_pass_rate"],
                 "limit": budget,
                 "source_systems": _source_systems(deduped_cases),
+                "include_built_in_regressions": bool(include_built_in_regressions),
             },
         )
         persisted_record_id = record.record_id
@@ -85,6 +89,7 @@ def build_replay_dataset(
         "case_quality_breakdown": case_quality_breakdown,
         "target_pass_rate": quality_report["target_pass_rate"],
         "source_systems": _source_systems(deduped_cases),
+        "include_built_in_regressions": bool(include_built_in_regressions),
         "persisted": bool(persist),
         "persisted_record_id": persisted_record_id,
         "cases": deduped_cases,

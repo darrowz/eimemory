@@ -170,6 +170,14 @@ previous replay suggestions:
 eimemory learn replay-dataset --limit 100
 ```
 
+To add the curated regression set from real operator feedback and incidents
+(wrong version answers, missing evidence checks, long-task silence, field
+mapping mistakes, and unsupported evaluation claims), pass:
+
+```bash
+eimemory learn replay-dataset --limit 100 --include-built-in-regressions
+```
+
 The generated dataset is marked `schema_version: real_task_replay.v1` and
 includes source-system labels without storing secrets or private tokens.
 

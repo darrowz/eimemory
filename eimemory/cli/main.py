@@ -275,6 +275,7 @@ def _build_parser() -> argparse.ArgumentParser:
     learn_replay_dataset = learn_sub.add_parser("replay-dataset")
     learn_replay_dataset.add_argument("--limit", type=int, default=50)
     learn_replay_dataset.add_argument("--persist", action="store_true")
+    learn_replay_dataset.add_argument("--include-built-in-regressions", action="store_true")
     learn_replay_dataset.add_argument("--json", action="store_true", default=True)
     learn_compact = learn_sub.add_parser("compact")
     learn_compact.add_argument("--dry-run", action="store_true")
@@ -697,7 +698,12 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(runtime.learning_ledger(scope=scope), ensure_ascii=False, indent=2))
             return 0
         if parsed.learn_command == "replay-dataset":
-            report = runtime.build_replay_dataset(scope=scope, limit=max(1, int(parsed.limit)), persist=bool(parsed.persist))
+            report = runtime.build_replay_dataset(
+                scope=scope,
+                limit=max(1, int(parsed.limit)),
+                persist=bool(parsed.persist),
+                include_built_in_regressions=bool(parsed.include_built_in_regressions),
+            )
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0 if report.get("ok") else 1
         if parsed.learn_command == "compact":

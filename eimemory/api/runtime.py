@@ -520,10 +520,24 @@ class Runtime:
             max_items=max_items,
         )
 
-    def build_replay_dataset(self, *, scope: dict | None = None, limit: int = 50, persist: bool = True) -> dict:
+    def build_replay_dataset(
+        self,
+        *,
+        scope: dict | None = None,
+        limit: int = 50,
+        persist: bool = True,
+        include_built_in_regressions: bool = False,
+    ) -> dict:
         from eimemory.governance.replay_dataset import build_replay_dataset
 
-        return build_replay_dataset(self, scope=scope, limit=limit, persist=persist, loop_id="cli")
+        return build_replay_dataset(
+            self,
+            scope=scope,
+            limit=limit,
+            persist=persist,
+            loop_id="cli",
+            include_built_in_regressions=include_built_in_regressions,
+        )
 
     def build_learning_dashboard(
         self,
