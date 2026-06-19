@@ -1130,7 +1130,7 @@ def _run_autonomous_learning(runtime: Runtime, *, scope: dict) -> dict[str, Any]
         )
         elapsed_seconds = round(time.monotonic() - started, 3)
         if isinstance(report, dict):
-            return {
+            status = {
                 "ok": bool(report.get("ok", False)),
                 "report_type": "autonomous_learning",
                 "configured": True,
@@ -1158,6 +1158,7 @@ def _run_autonomous_learning(runtime: Runtime, *, scope: dict) -> dict[str, Any]
                 "retention_disabled_count": int((report.get("retention") or {}).get("disabled_count") or 0),
                 "learning_skipped_reason": "",
             }
+            return _with_query_first_evidence(status, report)
     except Exception as exc:
         return {
             "ok": False,
@@ -1188,7 +1189,7 @@ def _run_autonomous_learning_daily_report(runtime: Runtime, *, scope: dict) -> d
     try:
         report = _json_safe(build_report(scope=scope, persist=True))
         if isinstance(report, dict):
-            return {
+            status = {
                 "ok": bool(report.get("ok", False)),
                 "report_type": "autonomous_learning_daily_report",
                 "date": str(report.get("date") or ""),
@@ -1201,6 +1202,7 @@ def _run_autonomous_learning_daily_report(runtime: Runtime, *, scope: dict) -> d
                 "summary": str(report.get("summary") or ""),
                 "learning_report_skipped_reason": "",
             }
+            return _with_query_first_evidence(status, report)
     except Exception as exc:
         return {
             "ok": False,
@@ -1235,7 +1237,7 @@ def _run_autonomous_learning_dashboard(runtime: Runtime, *, scope: dict) -> dict
     try:
         report = _json_safe(build_dashboard(scope=scope, persist=True))
         if isinstance(report, dict):
-            return {
+            status = {
                 "ok": bool(report.get("ok", False)),
                 "report_type": str(report.get("report_type") or "autonomous_learning_dashboard"),
                 "enabled": True,
@@ -1247,6 +1249,7 @@ def _run_autonomous_learning_dashboard(runtime: Runtime, *, scope: dict) -> dict
                 "capability_count": len((report.get("ledger") or {}).get("capabilities") or {}),
                 "dashboard_skipped_reason": "",
             }
+            return _with_query_first_evidence(status, report)
     except Exception as exc:
         return {
             "ok": False,
@@ -1262,6 +1265,12 @@ def _run_autonomous_learning_dashboard(runtime: Runtime, *, scope: dict) -> dict
         "enabled": True,
         "dashboard_skipped_reason": "invalid_learning_dashboard_report",
     }
+
+
+def _with_query_first_evidence(status: dict[str, Any], report: dict[str, Any]) -> dict[str, Any]:
+    if "query_first_evidence" in report:
+        status["query_first_evidence"] = _json_safe(report.get("query_first_evidence"))
+    return status
 
 
 def _env_bool(name: str, *, default: bool = False) -> bool:

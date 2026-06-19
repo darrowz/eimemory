@@ -5,6 +5,7 @@ from typing import Any
 
 from eimemory.governance.autonomous_learning import run_autonomous_learning_cycle as _legacy_run_autonomous_learning_cycle
 from eimemory.governance.autonomy_policy import AutonomyPolicy, normalize_autonomy_policy
+from eimemory.governance.evolution_pruner import PRODUCTIVE_MODULES, classify_evolution_modules
 from eimemory.models.records import ScopeRef
 
 
@@ -39,11 +40,27 @@ def run_autonomy_cycle(
     real_task_replay = dict(learning_report.get("real_task_replay") or {})
     promotions = list(learning_report.get("promotions") or [])
     post_promotion_watch = _post_promotion_watch_summary(runtime, scope=scope_ref)
+    loop_policy = {"productive_modules": list(PRODUCTIVE_MODULES)}
+    demoted_modules: list[str] = []
+    if "online_evidence" in learning_report:
+        pruner_report = classify_evolution_modules(online_evidence=learning_report.get("online_evidence"))
+        demoted_modules = list(pruner_report.get("demote") or [])
+        loop_policy.update(
+            {
+                "ok": bool(pruner_report.get("ok", False)),
+                "keep": list(pruner_report.get("keep") or []),
+                "observe": list(pruner_report.get("observe") or []),
+                "demoted_modules": demoted_modules,
+                "evidence_count": int(pruner_report.get("evidence_count") or 0),
+            }
+        )
     return {
         **learning_report,
         "ok": bool(learning_report.get("ok", False)),
         "report_type": "autonomy_cycle",
         "autonomy_policy": autonomy_policy.to_dict(),
+        "loop_policy": loop_policy,
+        "demoted_modules": demoted_modules,
         "rollout_radius": autonomy_policy.rollout_radius,
         "bounded_max_goals": bounded_goals,
         "replay_quality": {

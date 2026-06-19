@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from eimemory.evaluation.regression_replay import REGRESSION_REPLAY_CASE_REPORT_TYPE
 from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.governance.replay_quality import govern_replay_cases
 from eimemory.metadata import business_metadata
@@ -24,6 +25,7 @@ def build_replay_dataset(
     budget = max(1, int(limit or 50))
     cases = _cases_from_event_tables(runtime, scope=scope_ref, limit=budget)
     cases.extend(_cases_from_outcome_traces(runtime, scope=scope_ref, limit=budget))
+    cases.extend(_cases_from_regression_replay_records(runtime, scope=scope_ref, limit=budget))
     cases.extend(_cases_from_operator_corrections(runtime, scope=scope_ref, limit=budget))
     cases.extend(_cases_from_replay_results(runtime, scope=scope_ref, limit=budget))
     quality_report = govern_replay_cases(cases, limit=budget * 3)
@@ -227,6 +229,54 @@ def _cases_from_operator_corrections(runtime: Any, *, scope: ScopeRef, limit: in
                 "outcome": "user_correction",
                 "correction_from_user": correction,
                 "evidence": [record.record_id],
+            }
+        )
+    return cases
+
+
+def _cases_from_regression_replay_records(runtime: Any, *, scope: ScopeRef, limit: int) -> list[dict[str, Any]]:
+    records = runtime.store.list_records(kinds=["reflection"], scope=scope, limit=max(1, int(limit or 1)) * 3)
+    cases: list[dict[str, Any]] = []
+    for record in records:
+        meta = business_metadata(record.meta)
+        if str(meta.get("report_type") or "") != REGRESSION_REPLAY_CASE_REPORT_TYPE:
+            continue
+        content = record.content if isinstance(record.content, dict) else {}
+        payload = content.get("case") if isinstance(content.get("case"), dict) else content
+        mistake_type = _first_text(payload.get("mistake_type"), meta.get("mistake_type"))
+        query = _first_text(payload.get("query"), payload.get("input"), payload.get("prompt"), record.summary, record.title)
+        expected_text = _coerce_string_list(payload.get("expected_text") or payload.get("expect_any_text") or payload.get("expected"))
+        expected = _first_text(payload.get("expected"), expected_text[0] if expected_text else "")
+        target_capability = _first_text(payload.get("target_capability"), meta.get("target_capability"), _classify_text(" ".join([mistake_type, query, expected])))
+        case_id = _first_text(payload.get("case_id"), payload.get("id")) or stable_semantic_key(
+            "regression_replay_case",
+            record.record_id,
+            mistake_type,
+            query,
+            expected,
+        )
+        labels = _coerce_string_list(payload.get("labels"))
+        if REGRESSION_REPLAY_CASE_REPORT_TYPE not in labels:
+            labels.append(REGRESSION_REPLAY_CASE_REPORT_TYPE)
+        if mistake_type and mistake_type not in labels:
+            labels.append(mistake_type)
+        cases.append(
+            {
+                "case_id": case_id,
+                "source": REGRESSION_REPLAY_CASE_REPORT_TYPE,
+                "source_system": _source_system_from_task(_first_text(payload.get("source_system"), target_capability, record.source)),
+                "event_id": record.record_id,
+                "query": query,
+                "input": query,
+                "expected": expected,
+                "expected_text": expected_text,
+                "labels": labels,
+                "target_capability": target_capability,
+                "task_type": _first_text(payload.get("task_type"), target_capability),
+                "outcome": "regression_replay",
+                "correction_from_user": _first_text(payload.get("correction_from_user"), payload.get("correction")),
+                "evidence": [record.record_id],
+                "mistake_type": mistake_type,
             }
         )
     return cases

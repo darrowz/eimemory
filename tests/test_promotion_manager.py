@@ -186,6 +186,13 @@ def test_l2_code_patch_applies_repo_patch_and_deploys_after_gates(tmp_path) -> N
                     "from pathlib import Path; Path('deployed.txt').write_text('ok\\n', encoding='utf-8')",
                 ]
             ],
+            "post_deploy_health_commands": [
+                [
+                    sys.executable,
+                    "-c",
+                    "from pathlib import Path; assert Path('deployed.txt').read_text(encoding='utf-8') == 'ok\\n'",
+                ]
+            ],
         },
     )
     candidate_id = distill_capability_candidate(
@@ -206,9 +213,60 @@ def test_l2_code_patch_applies_repo_patch_and_deploys_after_gates(tmp_path) -> N
     assert result["side_effect"]["adapter"] == "direct_repo_patch"
     assert result["side_effect"]["production_applied"] is True
     assert result["side_effect"]["repo_mutated"] is True
+    assert result["side_effect"]["post_deploy_health"]["ok"] is True
+    assert result["side_effect"]["rollback_evidence"]["service_name"] == "eimemory-rpc.service"
+    assert result["side_effect"]["rollback_evidence"]["file_backups"][0]["path"] == "health_probe.py"
     assert target.read_text(encoding="utf-8") == "VERSION = 'new'\n"
     assert (repo / "deployed.txt").read_text(encoding="utf-8") == "ok\n"
     assert runtime.store.get_by_id(candidate_id).status == "promoted"
+
+
+def test_l2_code_patch_blocks_when_post_deploy_health_fails(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu"}
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    target = repo / "health_probe.py"
+    target.write_text("VERSION = 'old'\n", encoding="utf-8")
+    experiment_id = create_sandbox_experiment(
+        runtime,
+        scope=scope,
+        loop_id="learn_test",
+        learning_goal_id="goal_1",
+        research_note_id="note_1",
+        candidate_kind="code_patch",
+        candidate_patch={
+            "summary": "Patch health probe version and deploy service",
+            "target_capability": "code.implementation",
+            "repo_root": str(repo),
+            "apply_to_repo": True,
+            "deploy_to_production": True,
+            "commit_to_repo": False,
+            "allowed_files": ["health_probe.py"],
+            "file_updates": [{"path": "health_probe.py", "content": "VERSION = 'new'\n"}],
+            "deployment_commands": [[sys.executable, "-c", "print('deployed')"]],
+            "post_deploy_health_commands": [[sys.executable, "-c", "raise SystemExit(7)"]],
+        },
+    )
+    eval_result = {**PASSING_EVAL, "gate_bundle": _l2_gate_bundle()}
+    candidate_id = distill_capability_candidate(
+        runtime,
+        scope=scope,
+        loop_id="learn_test",
+        experiment_id=experiment_id,
+        eval_result=eval_result,
+        promotion_target="code_patch",
+        summary="Code patch candidate",
+        target_capability="code.implementation",
+    )
+
+    result = promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", eval_result=eval_result, health={"ok": True})
+
+    assert result["ok"] is False
+    assert result["blocked_reason"] == "code_patch_post_deploy_health_failed"
+    assert result["side_effect"]["post_deploy_health"]["ok"] is False
+    assert result["side_effect"]["rollback_evidence"]["file_backups"][0]["path"] == "health_probe.py"
+    assert runtime.store.get_by_id(candidate_id).status == "candidate"
 
 
 def test_l2_code_patch_blocks_when_real_task_replay_gate_fails(tmp_path) -> None:

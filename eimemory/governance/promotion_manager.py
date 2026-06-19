@@ -250,7 +250,9 @@ def _apply_code_patch_candidate(
         return {"ok": False, "blocked_reason": "code_patch_requires_file_updates", "promotion_target": "code_patch", "repo_root": str(repo_root)}
     allowed_files = _allowed_files(patch, file_updates)
     timeout_seconds = int(patch.get("timeout_seconds") or (gate.get("gate_bundle") or {}).get("timeout_seconds") or 300)
+    prior_commit_sha = _current_commit_sha(repo_root, timeout_seconds=timeout_seconds)
     applied, backups, error = _apply_file_updates(repo_root, file_updates, allowed_files=allowed_files)
+    rollback_evidence = _rollback_evidence(repo_root=repo_root, patch=patch, applied=applied, backups=backups, prior_commit_sha=prior_commit_sha, commit={})
     if error:
         return {
             "ok": False,
@@ -258,6 +260,7 @@ def _apply_code_patch_candidate(
             "promotion_target": "code_patch",
             "repo_root": str(repo_root),
             "applied_file_paths": [item["path"] for item in applied],
+            "rollback_evidence": rollback_evidence,
         }
 
     verification = _run_patch_commands(
@@ -275,6 +278,7 @@ def _apply_code_patch_candidate(
             "repo_root": str(repo_root),
             "applied_file_paths": [item["path"] for item in applied],
             "verification": verification,
+            "rollback_evidence": rollback_evidence,
             "rolled_back": True,
         }
 
@@ -283,8 +287,9 @@ def _apply_code_patch_candidate(
         applied_paths=[item["path"] for item in applied],
         patch=patch,
         candidate=candidate,
-        timeout_seconds=timeout_seconds,
+            timeout_seconds=timeout_seconds,
     )
+    rollback_evidence = _rollback_evidence(repo_root=repo_root, patch=patch, applied=applied, backups=backups, prior_commit_sha=prior_commit_sha, commit=commit)
     if not commit["ok"]:
         _restore_file_updates(backups)
         return {
@@ -295,10 +300,12 @@ def _apply_code_patch_candidate(
             "applied_file_paths": [item["path"] for item in applied],
             "verification": verification,
             "commit": commit,
+            "rollback_evidence": rollback_evidence,
             "rolled_back": True,
         }
 
     deployment: dict[str, Any] = {"ok": True, "skipped": True, "reports": []}
+    post_deploy_health: dict[str, Any] = {"ok": True, "skipped": True, "reports": []}
     production_applied = False
     if _truthy(patch.get("deploy_to_production"), default=False):
         deploy_commands = _deployment_commands(patch, repo_root)
@@ -312,9 +319,11 @@ def _apply_code_patch_candidate(
                 "applied_file_paths": [item["path"] for item in applied],
                 "verification": verification,
                 "commit": commit,
+                "rollback_evidence": rollback_evidence,
                 "rolled_back": not commit.get("commit_sha"),
             }
         deployment = _run_patch_commands(deploy_commands, cwd=repo_root, timeout_seconds=timeout_seconds, phase="deploy")
+        rollback_evidence = _rollback_evidence(repo_root=repo_root, patch=patch, applied=applied, backups=backups, prior_commit_sha=prior_commit_sha, commit=commit, deployment=deployment)
         if not deployment["ok"]:
             if not commit.get("commit_sha"):
                 _restore_file_updates(backups)
@@ -327,6 +336,24 @@ def _apply_code_patch_candidate(
                 "verification": verification,
                 "commit": commit,
                 "deployment": deployment,
+                "rollback_evidence": rollback_evidence,
+                "rolled_back": not commit.get("commit_sha"),
+            }
+        post_deploy_health = _run_patch_commands(_post_deploy_health_commands(patch), cwd=repo_root, timeout_seconds=timeout_seconds, phase="post_deploy_health")
+        if not post_deploy_health["ok"] or post_deploy_health.get("skipped"):
+            if not commit.get("commit_sha"):
+                _restore_file_updates(backups)
+            return {
+                "ok": False,
+                "blocked_reason": "code_patch_post_deploy_health_failed",
+                "promotion_target": "code_patch",
+                "repo_root": str(repo_root),
+                "applied_file_paths": [item["path"] for item in applied],
+                "verification": verification,
+                "commit": commit,
+                "deployment": deployment,
+                "post_deploy_health": post_deploy_health,
+                "rollback_evidence": rollback_evidence,
                 "rolled_back": not commit.get("commit_sha"),
             }
         production_applied = True
@@ -349,6 +376,8 @@ def _apply_code_patch_candidate(
             "verification": verification,
             "commit": commit,
             "deployment": deployment,
+            "post_deploy_health": post_deploy_health,
+            "rollback_evidence": rollback_evidence,
             "eval_result": eval_result,
             "gate": gate,
             "production_applied": production_applied,
@@ -359,6 +388,7 @@ def _apply_code_patch_candidate(
             "repo_root": str(repo_root),
             "production_applied": production_applied,
             "commit_sha": str(commit.get("commit_sha") or ""),
+            "prior_commit_sha": str(rollback_evidence.get("prior_commit_sha") or ""),
         },
     )
     return {
@@ -372,6 +402,8 @@ def _apply_code_patch_candidate(
         "verification": verification,
         "commit": commit,
         "deployment": deployment,
+        "post_deploy_health": post_deploy_health,
+        "rollback_evidence": rollback_evidence,
         "production_applied": production_applied,
     }
 
@@ -649,6 +681,79 @@ def _deployment_commands(patch: dict[str, Any], repo_root: Path) -> list[str | l
     if installer.exists():
         return [["bash", "-lc", 'COMMIT="$(git rev-parse HEAD)" && sudo ./deploy/install_immutable_release.sh "$COMMIT" && systemctl --user restart eimemory-rpc.service']]
     return []
+
+
+def _post_deploy_health_commands(patch: dict[str, Any]) -> list[str | list[str]]:
+    explicit = _normalize_commands(
+        patch.get("post_deploy_health_commands")
+        or patch.get("health_commands")
+        or patch.get("smoke_commands")
+    )
+    if explicit:
+        return explicit
+    env_command = os.environ.get("EIMEMORY_AUTONOMOUS_CODE_HEALTH_COMMAND", "").strip()
+    if env_command:
+        return [env_command]
+    return [["bash", "-lc", "curl -fsS http://127.0.0.1:8091/health"]]
+
+
+def _current_commit_sha(repo_root: Path, *, timeout_seconds: int) -> str:
+    if not (repo_root / ".git").exists():
+        return ""
+    try:
+        result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(repo_root), text=True, capture_output=True, timeout=timeout_seconds, check=False)
+    except Exception:
+        return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def _rollback_evidence(
+    *,
+    repo_root: Path,
+    patch: dict[str, Any],
+    applied: list[dict[str, str]],
+    backups: list[dict[str, Any]],
+    prior_commit_sha: str,
+    commit: dict[str, Any],
+    deployment: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    deployment = deployment or {}
+    return {
+        "repo_root": str(repo_root),
+        "service_name": str(patch.get("service_name") or os.environ.get("EIMEMORY_AUTONOMOUS_CODE_SERVICE") or "eimemory-rpc.service"),
+        "prior_commit_sha": prior_commit_sha,
+        "new_commit_sha": str(commit.get("commit_sha") or ""),
+        "release_path": str(patch.get("release_path") or _release_path_from_deployment(deployment) or ""),
+        "rollback_method": "restore_file_backups_or_revert_commit_and_restart_service",
+        "file_backups": [
+            {
+                "path": str(item.get("path") or _relative_backup_path(repo_root, backup)),
+                "existed": bool(backup.get("existed")),
+            }
+            for item, backup in zip(applied, backups)
+        ],
+    }
+
+
+def _relative_backup_path(repo_root: Path, backup: dict[str, Any]) -> str:
+    path = backup.get("path")
+    if not isinstance(path, Path):
+        return ""
+    try:
+        return path.resolve().relative_to(repo_root.resolve()).as_posix()
+    except ValueError:
+        return str(path)
+
+
+def _release_path_from_deployment(deployment: dict[str, Any]) -> str:
+    for report in deployment.get("reports") or []:
+        if not isinstance(report, dict):
+            continue
+        for stream in (str(report.get("stdout") or ""), str(report.get("stderr") or "")):
+            for line in stream.splitlines():
+                if line.startswith("release="):
+                    return line.split("=", 1)[1].strip()
+    return ""
 
 
 def _truthy(value: Any, *, default: bool = False) -> bool:
