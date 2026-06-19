@@ -123,10 +123,7 @@ def test_eimemory_rpc_systemd_unit_uses_honxin_tailscale_endpoint() -> None:
         "ExecStartPre=/opt/eimemory/current/deploy/systemd/eimemory-rpc-cleanup-port.sh 8091 serve-eibrain-rpc"
         in unit_text
     )
-    assert (
-        "ExecStopPost=/opt/eimemory/current/deploy/systemd/eimemory-rpc-cleanup-port.sh 8091 serve-eibrain-rpc"
-        in unit_text
-    )
+    assert "ExecStopPost=" not in unit_text
     assert "WorkingDirectory=/opt/eimemory/current" in unit_text
     assert "/dev-project/eimemory" not in unit_text
     assert "/var/log/eimemory" not in unit_text
