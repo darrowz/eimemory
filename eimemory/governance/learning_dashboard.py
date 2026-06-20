@@ -30,6 +30,7 @@ def build_weekly_dashboard(
     daily = build_learning_daily_report(runtime, scope=scope_ref, persist=False)
     failures = _failure_breakdown(runtime, scope=scope_ref, since=start)
     activity = _activity_breakdown(runtime, scope=scope_ref, since=start)
+    promotion_statuses = _promotion_statuses(runtime, scope=scope_ref)
     roi = _safe_roi(runtime, scope=scope_ref)
     module_status = _module_status(runtime, scope=scope_ref)
     markdown = _render_markdown(
@@ -73,6 +74,7 @@ def build_weekly_dashboard(
                 "ledger": ledger,
                 "failures": failures,
                 "activity": activity,
+                "promotion_statuses": promotion_statuses,
                 "roi": roi,
                 "module_status": module_status,
             },
@@ -93,6 +95,7 @@ def build_weekly_dashboard(
         "ledger": ledger,
         "failure_breakdown": failures,
         "activity": activity,
+        "promotion_statuses": promotion_statuses,
         "roi": roi,
         "module_status": module_status,
     }
@@ -157,6 +160,31 @@ def _activity_breakdown(runtime: Any, *, scope: ScopeRef, since: str) -> dict[st
     total = counts["replay_pass_count"] + counts["replay_fail_count"]
     counts["replay_pass_rate"] = round(counts["replay_pass_count"] / total, 3) if total else 0.0
     return counts
+
+
+def _promotion_statuses(runtime: Any, *, scope: ScopeRef, limit: int = 50) -> list[dict[str, Any]]:
+    statuses: list[dict[str, Any]] = []
+    for record in runtime.store.list_records(kinds=["promotion_request"], scope=scope, limit=limit):
+        content = record.content if isinstance(record.content, dict) else {}
+        meta = record.meta if isinstance(record.meta, dict) else {}
+        candidate_id = str(content.get("candidate_id") or meta.get("candidate_id") or "")
+        candidate = runtime.store.get_by_id(candidate_id, scope=scope) if candidate_id else None
+        watch = dict((candidate.meta or {}).get("post_promotion_watch") or {}) if candidate is not None else {}
+        statuses.append(
+            {
+                "promotion_request_id": record.record_id,
+                "candidate_id": candidate_id,
+                "status": str((candidate.status if candidate is not None else record.status) or record.status),
+                "promotion_target": str(content.get("promotion_target") or meta.get("promotion_target") or ""),
+                "target_capability": str(content.get("target_capability") or meta.get("target_capability") or ""),
+                "action": str(content.get("action") or meta.get("action") or ""),
+                "observed_count": int(watch.get("observed_count") or 0),
+                "failure_rate": float(watch.get("failure_rate") or 0.0),
+                "rollout_ledger_id": str(content.get("rollout_ledger_id") or meta.get("rollout_ledger_id") or ""),
+                "updated_at": str(record.time.updated_at or record.time.created_at or ""),
+            }
+        )
+    return statuses
 
 
 def _safe_roi(runtime: Any, *, scope: ScopeRef) -> dict[str, Any]:

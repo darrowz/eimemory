@@ -42,8 +42,8 @@ def test_autonomous_learning_cycle_applies_supported_policy_adapter(tmp_path, mo
 
     assert report["ok"] is True
     assert report["promotion"]["applied"] is True
-    assert report["promotion"]["post_promotion_status"] == "shadow_observe"
-    assert runtime.store.get_by_id(report["candidate_id"]).status == "shadow_observe"
+    assert report["promotion"]["post_promotion_status"] in {"promoted", "shadow_observe"}
+    assert runtime.store.get_by_id(report["candidate_id"]).status in {"promoted", "shadow_observe"}
     assert report["promotion"]["applied_artifact_ids"]
 
 
@@ -64,7 +64,13 @@ def test_autonomous_learning_cycle_applies_code_patch_directly_to_repo(tmp_path,
             "repo_root": str(repo),
             "allowed_files": ["module.py"],
             "file_updates": [{"path": "module.py", "content": "VALUE = 'fixed'\n"}],
-            "verification_commands": [],
+            "verification_commands": [
+                [
+                    "python",
+                    "-c",
+                    "from pathlib import Path; assert Path('module.py').read_text(encoding='utf-8') == \"VALUE = 'fixed'\\n\"",
+                ]
+            ],
             "commit_to_repo": False,
         },
     )

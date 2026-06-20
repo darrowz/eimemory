@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import json
+import time
+import tracemalloc
 from dataclasses import asdict, dataclass
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
+from eimemory.core.clock import now_iso
 from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.governance.goal_registry import derive_goal_signals, load_goal_registry
+from eimemory.governance.supervisor import persist_supervisor_summary, supervisor_summary
 from eimemory.metadata import business_metadata
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
@@ -29,6 +33,7 @@ class SourceWatch:
     max_items: int = 20
     last_seen: str = ""
     dedupe_key: str = ""
+    seen_record_ids: tuple[str, ...] = ()
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "SourceWatch":
@@ -43,6 +48,7 @@ class SourceWatch:
             max_items=max(0, int(data.get("max_items") or 20)),
             last_seen=str(data.get("last_seen") or ""),
             dedupe_key=str(data.get("dedupe_key") or ""),
+            seen_record_ids=tuple(str(item) for item in list(data.get("seen_record_ids") or []) if str(item)),
         )
 
 
@@ -54,11 +60,16 @@ def collect_world_signals(
     dry_run: bool = True,
     loop_id: str = "manual",
 ) -> dict[str, Any]:
+    started = time.perf_counter()
+    tracemalloc_started = not tracemalloc.is_tracing()
+    if tracemalloc_started:
+        tracemalloc.start()
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
-    normalized = [watch if isinstance(watch, SourceWatch) else SourceWatch.from_dict(watch) for watch in (watches or default_watches())]
+    normalized = [_with_cursor(runtime, scope=scope_ref, watch=watch if isinstance(watch, SourceWatch) else SourceWatch.from_dict(watch)) for watch in (watches or default_watches())]
     signals: list[dict[str, Any]] = []
     persisted_ids: list[str] = []
     updated_ids: list[str] = []
+    watcher_cursors: list[dict[str, str]] = []
     skipped_disabled = 0
     duplicate_count = 0
     existing_records = _existing_signal_records(runtime, scope=scope_ref)
@@ -68,6 +79,8 @@ def collect_world_signals(
             skipped_disabled += 1
             continue
         watch_signals = _collect_watch(runtime, scope=scope_ref, watch=watch)[: watch.max_items]
+        high_watermark = _high_watermark_for_signals(runtime, scope=scope_ref, watch=watch, signals=watch_signals) or watch.last_seen
+        seen_record_ids = _cursor_seen_record_ids(runtime, scope=scope_ref, watch=watch, signals=watch_signals, high_watermark=high_watermark)
         normalized_signals: list[dict[str, Any]] = []
         seen_local_hashes: set[str] = set()
         for raw_signal in watch_signals:
@@ -123,6 +136,24 @@ def collect_world_signals(
                     },
                 )
                 persisted_ids.append(record.record_id)
+        if not dry_run and not watch.dry_run:
+            _save_watch_cursor(runtime, scope=scope_ref, watch=watch, high_watermark=high_watermark, seen_record_ids=seen_record_ids)
+        watcher_cursors.append({"watch_name": watch.name, "kind": watch.kind, "last_seen": watch.last_seen, "high_watermark": high_watermark})
+    current, peak = tracemalloc.get_traced_memory() if tracemalloc.is_tracing() else (0, 0)
+    if tracemalloc_started:
+        tracemalloc.stop()
+    duration_ms = int((time.perf_counter() - started) * 1000)
+    summary = supervisor_summary(
+        command="learn-watch",
+        ok=True,
+        duration_ms=duration_ms,
+        memory_peak=int(peak or current or 0),
+        produced_count=len(persisted_ids) + len(updated_ids),
+        promoted_count=0,
+        rolled_back_count=0,
+    )
+    if not dry_run:
+        persist_supervisor_summary(runtime, scope=scope_ref, summary=summary)
     return {
         "ok": True,
         "dry_run": bool(dry_run),
@@ -132,6 +163,13 @@ def collect_world_signals(
         "duplicate_count": duplicate_count,
         "persisted_record_ids": persisted_ids,
         "updated_record_ids": updated_ids,
+        "watcher_cursors": watcher_cursors,
+        "duration_ms": duration_ms,
+        "memory_peak": int(peak or current or 0),
+        "produced_count": len(persisted_ids) + len(updated_ids),
+        "promoted_count": 0,
+        "rolled_back_count": 0,
+        "supervisor_summary": summary,
         "signals": signals,
     }
 
@@ -184,6 +222,8 @@ def _collect_watch(runtime: Any, *, scope: ScopeRef, watch: SourceWatch) -> list
 def _signals_from_outcomes(runtime: Any, *, scope: ScopeRef, watch: SourceWatch) -> list[dict[str, Any]]:
     signals_by_key: dict[str, dict[str, Any]] = {}
     for record in runtime.store.list_records(kinds=["reflection"], scope=scope, limit=watch.max_items * 5):
+        if not _record_after_cursor(record, watch):
+            continue
         meta = business_metadata(record.meta)
         if str(meta.get("report_type") or "") != "outcome_trace":
             continue
@@ -234,6 +274,7 @@ def _signals_from_records(
             "evidence_tier": _evidence_tier(watch.kind),
         }
         for record in runtime.store.list_records(kinds=kinds, scope=scope, limit=watch.max_items)
+        if _record_after_cursor(record, watch)
     ]
 
 
@@ -241,6 +282,8 @@ def _signals_from_user_goals(runtime: Any, *, scope: ScopeRef, watch: SourceWatc
     memories = runtime.store.list_records(kinds=["memory"], scope=scope, limit=watch.max_items * 3)
     signals = []
     for record in memories:
+        if not _record_after_cursor(record, watch):
+            continue
         text = f"{record.title} {record.summary} {record.detail}".lower()
         if any(term in text for term in ("goal", "目标", "计划", "长期", "重要")):
             signals.append(
@@ -262,6 +305,8 @@ def _signals_from_external_intake(runtime: Any, *, scope: ScopeRef, watch: Sourc
     records = runtime.store.list_records(kinds=kinds, scope=scope, limit=max(1, watch.max_items) * 4)
     by_kind: dict[str, list[Any]] = {}
     for record in records:
+        if not _record_after_cursor(record, watch):
+            continue
         by_kind.setdefault(record.kind, []).append(record)
     signals = []
     for kind, items in sorted(by_kind.items()):
@@ -370,8 +415,10 @@ def _signals_from_event_outcomes(runtime: Any, *, scope: ScopeRef, watch: Source
     if conn is None:
         return []
     try:
+        since_clause = "AND o.recorded_at > ?" if watch.last_seen else ""
+        params: tuple[Any, ...] = (scope.tenant_id, scope.agent_id, scope.workspace_id, scope.user_id, watch.last_seen, max(1, watch.max_items) * 5) if watch.last_seen else (scope.tenant_id, scope.agent_id, scope.workspace_id, scope.user_id, max(1, watch.max_items) * 5)
         rows = conn.execute(
-            """
+            f"""
             SELECT e.id AS event_id, e.payload_json AS event_payload, o.payload_json AS outcome_payload, o.outcome
             FROM event_outcomes o
             LEFT JOIN events e ON e.id = o.event_id
@@ -379,10 +426,11 @@ def _signals_from_event_outcomes(runtime: Any, *, scope: ScopeRef, watch: Source
               AND o.agent_id = ?
               AND o.workspace_id = ?
               AND o.user_id = ?
+              {since_clause}
             ORDER BY o.recorded_at DESC
             LIMIT ?
             """,
-            (scope.tenant_id, scope.agent_id, scope.workspace_id, scope.user_id, max(1, watch.max_items) * 5),
+            params,
         ).fetchall()
     except Exception:
         return []
@@ -425,6 +473,8 @@ def _signals_from_stale_assets(runtime: Any, *, scope: ScopeRef, watch: SourceWa
     records = runtime.store.list_records(kinds=["capability_candidate", "learning_playbook", "rule"], scope=scope, limit=max(1, watch.max_items) * 5)
     signals = []
     for record in records:
+        if not _record_after_cursor(record, watch):
+            continue
         meta = business_metadata(record.meta)
         if str(record.status or "") in {"disabled", "rejected"}:
             continue
@@ -490,6 +540,134 @@ def _existing_signal_records(runtime: Any, *, scope: ScopeRef) -> dict[str, Reco
             break
         offset += len(page)
     return records_by_hash
+
+
+def _with_cursor(runtime: Any, *, scope: ScopeRef, watch: SourceWatch) -> SourceWatch:
+    cursor = _load_watch_cursor(runtime, scope=scope, watch=watch)
+    if not cursor:
+        return watch
+    return SourceWatch(
+        name=watch.name,
+        kind=watch.kind,
+        query=watch.query,
+        enabled=watch.enabled,
+        dry_run=watch.dry_run,
+        cadence=watch.cadence,
+        authority_tier=watch.authority_tier,
+        max_items=watch.max_items,
+        last_seen=str(cursor.get("high_watermark") or cursor.get("last_seen") or watch.last_seen),
+        dedupe_key=watch.dedupe_key,
+        seen_record_ids=tuple(str(item) for item in list(cursor.get("seen_record_ids") or []) if str(item)),
+    )
+
+
+def _load_watch_cursor(runtime: Any, *, scope: ScopeRef, watch: SourceWatch) -> dict[str, Any]:
+    for record in runtime.store.list_records(kinds=["reflection"], scope=scope, limit=200):
+        meta = record.meta if isinstance(record.meta, dict) else {}
+        content = record.content if isinstance(record.content, dict) else {}
+        if str(meta.get("report_type") or content.get("report_type") or "") != "world_watch_cursor":
+            continue
+        if str(meta.get("watch_name") or content.get("watch_name") or "") == watch.name and str(meta.get("kind") or content.get("kind") or "") == watch.kind:
+            return dict(content)
+    return {}
+
+
+def _save_watch_cursor(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    watch: SourceWatch,
+    high_watermark: str,
+    seen_record_ids: set[str],
+) -> RecordEnvelope:
+    record = append_learning_record_once(
+        runtime,
+        kind="reflection",
+        title=f"World watch cursor: {watch.name}",
+        summary=f"{watch.name} high watermark {high_watermark}",
+        scope=scope,
+        loop_id="learn_watch_cursor",
+        step_name="world_watch_cursor",
+        semantic_key=stable_semantic_key("world_watch_cursor", watch.name, watch.kind, scope),
+        authority_tier="L0",
+        status="active",
+        content={
+            "report_type": "world_watch_cursor",
+            "watch_name": watch.name,
+            "kind": watch.kind,
+            "last_seen": watch.last_seen,
+            "high_watermark": high_watermark,
+            "seen_record_ids": sorted(seen_record_ids),
+        },
+        meta={"report_type": "world_watch_cursor", "watch_name": watch.name, "kind": watch.kind},
+    )
+    record.content = {
+        "report_type": "world_watch_cursor",
+        "watch_name": watch.name,
+        "kind": watch.kind,
+        "last_seen": watch.last_seen,
+        "high_watermark": high_watermark,
+        "seen_record_ids": sorted(seen_record_ids),
+    }
+    record.meta = {**dict(record.meta or {}), "report_type": "world_watch_cursor", "watch_name": watch.name, "kind": watch.kind}
+    record.touch()
+    return runtime.store.rewrite(record)
+
+
+def _record_after_cursor(record: RecordEnvelope, watch: SourceWatch) -> bool:
+    if not watch.last_seen:
+        return True
+    timestamp = str(record.time.updated_at or record.time.created_at or "")
+    if not timestamp:
+        return False
+    if timestamp > watch.last_seen:
+        return True
+    if timestamp == watch.last_seen and record.record_id not in set(watch.seen_record_ids):
+        return True
+    return False
+
+
+def _high_watermark_for_signals(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    watch: SourceWatch,
+    signals: list[dict[str, Any]],
+) -> str:
+    timestamps: list[str] = []
+    for signal in signals:
+        for record_id in _signal_source_ids(signal):
+            record = runtime.store.get_by_id(record_id, scope=scope)
+            if record is None:
+                continue
+            timestamp = str(record.time.updated_at or record.time.created_at or "")
+            if timestamp:
+                timestamps.append(timestamp)
+    if timestamps:
+        return max(timestamps)
+    return watch.last_seen
+
+
+def _cursor_seen_record_ids(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    watch: SourceWatch,
+    signals: list[dict[str, Any]],
+    high_watermark: str,
+) -> set[str]:
+    seen = set(watch.seen_record_ids)
+    if not high_watermark:
+        return seen
+    for signal in signals:
+        for record_id in _signal_source_ids(signal):
+            record = runtime.store.get_by_id(record_id, scope=scope)
+            if record is None:
+                continue
+            timestamp = str(record.time.updated_at or record.time.created_at or "")
+            if timestamp == high_watermark:
+                seen.add(record.record_id)
+    return seen
 
 
 def _signal_hash(watch: SourceWatch, signal: dict[str, Any]) -> str:

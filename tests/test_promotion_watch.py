@@ -112,16 +112,17 @@ def test_shadow_observe_bad_outcome_rolls_back_pattern(tmp_path) -> None:
     candidate_id = _policy_candidate(runtime, scope=scope, pattern_id="watch-rollback")
     promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", eval_result=_passing_eval(), health={"ok": True})
 
-    report = record_promotion_observation(
-        runtime,
-        pattern_id="watch-rollback",
-        scope=scope,
-        event_id="evt-bad-shadow",
-        hit=True,
-        improved=False,
-        outcome="bad",
-        reason="shadow policy caused a worse task outcome",
-    )
+    for index in range(3):
+        report = record_promotion_observation(
+            runtime,
+            pattern_id="watch-rollback",
+            scope=scope,
+            event_id=f"evt-bad-shadow-{index}",
+            hit=True,
+            improved=False,
+            outcome="bad",
+            reason="shadow policy caused a worse task outcome",
+        )
 
     assert report["status"] == "rolled_back"
     assert report["rolled_back"] is True
@@ -130,6 +131,92 @@ def test_shadow_observe_bad_outcome_rolls_back_pattern(tmp_path) -> None:
 
     ledger = runtime.get_policy_rollout_ledger(scope=scope, action="rollback", limit=10)
     assert ledger[0]["rollback_policy_id"] == "watch-rollback"
+
+
+def test_shadow_observe_waits_for_three_events_and_uses_failure_rate_threshold(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"}
+    candidate_id = _policy_candidate(runtime, scope=scope, pattern_id="watch-failure-rate")
+    promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", eval_result=_passing_eval(), health={"ok": True})
+
+    first = record_promotion_observation(
+        runtime,
+        pattern_id="watch-failure-rate",
+        scope=scope,
+        event_id="evt-good-1",
+        hit=True,
+        improved=True,
+        outcome="good",
+    )
+    second = record_promotion_observation(
+        runtime,
+        pattern_id="watch-failure-rate",
+        scope=scope,
+        event_id="evt-bad-1",
+        hit=True,
+        improved=False,
+        outcome="bad",
+        reason="one bad canary event",
+    )
+    third = record_promotion_observation(
+        runtime,
+        pattern_id="watch-failure-rate",
+        scope=scope,
+        event_id="evt-good-2",
+        hit=True,
+        improved=True,
+        outcome="good",
+    )
+
+    assert first["status"] == "shadow_observe"
+    assert second["status"] == "shadow_observe"
+    assert third["status"] in {"rolled_back", "quarantined"}
+    assert third["watch"]["observed_count"] == 3
+    assert third["watch"]["failure_rate"] >= 0.2
+    ledger = runtime.get_policy_rollout_ledger(scope=scope, action="rolled_back", limit=10)
+    assert ledger[0]["details"]["observed_count"] == 3
+    assert ledger[0]["details"]["failure_rate"] >= 0.2
+
+
+def test_shadow_observe_promotes_active_with_low_failure_rate_ledger(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"}
+    candidate_id = _policy_candidate(runtime, scope=scope, pattern_id="watch-active-rate")
+    promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", eval_result=_passing_eval(), health={"ok": True})
+
+    for index in range(3):
+        report = record_promotion_observation(
+            runtime,
+            pattern_id="watch-active-rate",
+            scope=scope,
+            event_id=f"evt-active-{index}",
+            hit=True,
+            improved=True,
+            outcome="good",
+        )
+
+    assert report["status"] == "active"
+    assert report["watch"]["failure_rate"] <= 0.05
+    ledger = runtime.get_policy_rollout_ledger(scope=scope, action="promoted_active", limit=10)
+    assert ledger[0]["details"]["observed_count"] == 3
+    assert ledger[0]["details"]["failure_rate"] <= 0.05
+
+
+def test_learning_dashboard_lists_current_promotion_status(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"}
+    candidate_id = _policy_candidate(runtime, scope=scope, pattern_id="watch-dashboard")
+    result = promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", eval_result=_passing_eval(), health={"ok": True})
+
+    dashboard = runtime.build_learning_dashboard(scope=scope, persist=False)
+
+    statuses = dashboard["promotion_statuses"]
+    assert any(
+        item["candidate_id"] == candidate_id
+        and item["promotion_request_id"] == result["promotion_request_id"]
+        and item["status"] == "shadow_observe"
+        for item in statuses
+    )
 
 
 def _policy_candidate(runtime: Runtime, *, scope: dict, pattern_id: str) -> str:

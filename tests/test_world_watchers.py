@@ -65,7 +65,7 @@ def test_world_signal_dedupe_by_hash(tmp_path) -> None:
 
     assert first["signal_count"] == 1
     assert second["signal_count"] == 0
-    assert second["duplicate_count"] == 1
+    assert second["duplicate_count"] == 0
     assert len(runtime.store.list_records(kinds=["world_signal"], scope=scope, limit=10)) == 1
 
 
@@ -130,6 +130,53 @@ def test_repeated_bad_outcomes_merge_only_new_source_records(tmp_path) -> None:
     assert second["signal_count"] == 0
     assert second["updated_record_ids"] == [stored[0].record_id]
     assert stored[0].meta["repeat_count"] == 3
+
+
+def test_world_watch_uses_incremental_cursor_and_fixed_supervisor_summary(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu"}
+    watch = SourceWatch(name="outcomes", kind="local_outcome_trace", enabled=True, dry_run=False)
+    runtime.store.append(
+        RecordEnvelope.create(
+            kind="reflection",
+            title="Outcome trace",
+            summary="Tool routing failed",
+            scope=ScopeRef.from_dict(scope),
+            source="test",
+            meta={"report_type": "outcome_trace", "schema_version": "outcome_trace.v1", "primary_label": "missing_tool_call"},
+        )
+    )
+
+    first = collect_world_signals(runtime, scope=scope, watches=[watch], dry_run=False, loop_id="learn_watch")
+    second = collect_world_signals(runtime, scope=scope, watches=[watch], dry_run=False, loop_id="learn_watch")
+
+    assert first["signal_count"] == 1
+    assert second["signal_count"] == 0
+    assert second["duplicate_count"] == 0
+    assert second["watcher_cursors"][0]["watch_name"] == "outcomes"
+    assert second["watcher_cursors"][0]["last_seen"]
+    assert second["watcher_cursors"][0]["high_watermark"]
+    for key in ("last_success_at", "last_error_at", "duration_ms", "memory_peak", "produced_count", "promoted_count", "rolled_back_count"):
+        assert key in second["supervisor_summary"]
+    assert second["supervisor_summary"]["duration_ms"] < 15000
+    assert second["supervisor_summary"]["memory_peak"] < 250 * 1024 * 1024
+
+    runtime.store.append(
+        RecordEnvelope.create(
+            kind="reflection",
+            title="Outcome trace",
+            summary="Tool routing failed",
+            scope=ScopeRef.from_dict(scope),
+            source="test",
+            meta={"report_type": "outcome_trace", "schema_version": "outcome_trace.v1", "primary_label": "missing_tool_call"},
+        )
+    )
+    third = collect_world_signals(runtime, scope=scope, watches=[watch], dry_run=False, loop_id="learn_watch")
+    stored = runtime.store.list_records(kinds=["world_signal"], scope=scope, limit=10)
+
+    assert third["signal_count"] == 0
+    assert third["updated_record_ids"] == [stored[0].record_id]
+    assert stored[0].meta["repeat_count"] == 2
 
 
 def test_world_signals_truncate_dedupe_and_classify_capability(tmp_path) -> None:

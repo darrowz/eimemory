@@ -573,18 +573,16 @@ def main(argv: list[str] | None = None) -> int:
                 "port": int(settings.rpc_loopback_health_port),
                 "path": "/health",
             }
-        print(
-            json.dumps(
-                build_health_payload(
-                    runtime,
-                    listen_host=host,
-                    listen_port=port,
-                    loopback_health=loopback_health,
-                ),
-                ensure_ascii=False,
-                indent=2,
-            )
+        from eimemory.governance.supervisor import build_supervisor_contract
+
+        health_payload = build_health_payload(
+            runtime,
+            listen_host=host,
+            listen_port=port,
+            loopback_health=loopback_health,
         )
+        health_payload["supervisor"] = build_supervisor_contract(runtime, scope=scope)
+        print(json.dumps(health_payload, ensure_ascii=False, indent=2))
         return 0
     if parsed.command == "serve-eibrain-rpc":
         host = parsed.host or settings.rpc_host

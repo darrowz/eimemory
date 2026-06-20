@@ -6,6 +6,7 @@ from typing import Any
 
 from eimemory.events import normalize_scope
 from eimemory.governance.policy_rollout import extract_pattern_ids_from_outcome, next_rollout_id, now_utc
+from eimemory.governance.rollout_lifecycle import record_lifecycle_event
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
@@ -121,16 +122,18 @@ def record_promotion_observation(
             watch["improvement_count"] = int(watch.get("improvement_count") or 0) + 1
         if observation["regressed"]:
             watch["regression_count"] = int(watch.get("regression_count") or 0) + 1
-        if outcome_status == "bad":
+    if outcome_status == "bad":
             watch["bad_outcome_count"] = int(watch.get("bad_outcome_count") or 0) + 1
+    watch["failure_rate"] = _failure_rate(watch)
     watch["updated_at"] = now_utc()
     pattern["post_promotion_watch"] = watch
 
-    if outcome_status == "bad":
-        return _rollback_shadow_pattern(runtime, pattern=pattern, scope=scope, watch=watch, reason=reason or "bad outcome during shadow observe")
-
     if int(watch.get("observed_count") or 0) >= int(watch.get("required_observations") or REQUIRED_OBSERVATIONS):
-        if _watch_can_activate(watch):
+        failure_rate = _failure_rate(watch)
+        watch["failure_rate"] = failure_rate
+        if failure_rate >= 0.2:
+            return _rollback_shadow_pattern(runtime, pattern=pattern, scope=scope, watch=watch, reason=reason or "canary failure rate exceeded threshold")
+        if failure_rate <= 0.05 and _watch_can_activate(watch):
             return _activate_shadow_pattern(runtime, pattern=pattern, scope=scope, watch=watch)
         return _quarantine_shadow_pattern(runtime, pattern=pattern, scope=scope, watch=watch)
 
@@ -154,6 +157,7 @@ def _initial_watch(*, candidate_id: str, promotion_request_id: str, pattern_id: 
         "improvement_count": 0,
         "regression_count": 0,
         "bad_outcome_count": 0,
+        "failure_rate": 0.0,
         "observations": [],
         "started_at": now,
         "updated_at": now,
@@ -172,6 +176,7 @@ def _watch_state(pattern: dict[str, Any], *, pattern_id: str) -> dict[str, Any]:
     watch.setdefault("improvement_count", 0)
     watch.setdefault("regression_count", 0)
     watch.setdefault("bad_outcome_count", 0)
+    watch.setdefault("failure_rate", _failure_rate(watch))
     watch.setdefault("observations", [])
     return watch
 
@@ -180,9 +185,16 @@ def _watch_can_activate(watch: dict[str, Any]) -> bool:
     return (
         int(watch.get("hit_count") or 0) > 0
         and int(watch.get("improvement_count") or 0) > 0
-        and int(watch.get("regression_count") or 0) == 0
-        and int(watch.get("bad_outcome_count") or 0) == 0
+        and _failure_rate(watch) <= 0.05
     )
+
+
+def _failure_rate(watch: dict[str, Any]) -> float:
+    observed = int(watch.get("observed_count") or 0)
+    if observed <= 0:
+        return 0.0
+    failures = int(watch.get("regression_count") or 0) + int(watch.get("bad_outcome_count") or 0)
+    return round(min(1.0, max(0.0, failures / observed)), 6)
 
 
 def _activate_shadow_pattern(runtime: Any, *, pattern: dict[str, Any], scope: dict[str, Any] | ScopeRef | None, watch: dict[str, Any]) -> dict[str, Any]:
@@ -224,6 +236,7 @@ def _rollback_shadow_pattern(
     _write_pattern(runtime, pattern, scope=scope)
     rollback = runtime.rollback_intent_pattern(str(pattern.get("id") or ""), scope=_scope_dict(scope), reason=str(reason or "bad outcome during shadow observe"), auto=True)
     _update_candidate_status(runtime, watch, scope=scope, status="rolled_back")
+    _record_watch_ledger(runtime, pattern=pattern, scope=scope, watch=watch, decision="rolled_back")
     return {"ok": bool(rollback.get("ok")), "status": "rolled_back", "rolled_back": bool(rollback.get("ok")), "pattern_id": str(pattern.get("id") or ""), "rollback": rollback, "watch": watch}
 
 
@@ -271,6 +284,38 @@ def _record_watch_ledger(
     if observations:
         last_observation = dict(observations[-1])
     evidence = dict(last_observation.get("details") or {})
+    action_type = _watch_action_for_decision(decision)
+    details = {
+        "decision": str(decision),
+        "pattern_id": pattern_id,
+        "candidate_id": str(watch.get("candidate_id") or ""),
+        "audit_record_id": str(evidence.get("audit_record_id") or ""),
+        "outcome_trace_id": str(evidence.get("outcome_trace_id") or ""),
+        "outcome_event_id": str(evidence.get("outcome_event_id") or last_observation.get("event_id") or ""),
+        "selected_records": list(evidence.get("selected_records") or []),
+        "observed_count": int(watch.get("observed_count") or 0),
+        "hit_count": int(watch.get("hit_count") or 0),
+        "improvement_count": int(watch.get("improvement_count") or 0),
+        "regression_count": int(watch.get("regression_count") or 0),
+        "bad_outcome_count": int(watch.get("bad_outcome_count") or 0),
+        "failure_rate": _failure_rate(watch),
+    }
+    record_lifecycle_event(
+        runtime,
+        scope=scope_ref,
+        action_type=action_type,
+        candidate_id=str(watch.get("candidate_id") or ""),
+        promotion_id=str(watch.get("promotion_request_id") or ""),
+        patch_id=pattern_id,
+        observed_count=int(watch.get("observed_count") or 0),
+        failure_rate=_failure_rate(watch),
+        source_opportunity={"candidate_id": str(watch.get("candidate_id") or ""), "pattern_id": pattern_id},
+        replay_report={"post_promotion_watch": watch},
+        reason=str(watch.get("decision_reason") or ""),
+        details=details,
+        applied_artifact_id=pattern_id if decision == "active" else "",
+        budget_decision="ok" if decision in {"active", WATCH_STATUS} else "blocked",
+    )
     runtime.store.sqlite._record_policy_rollout_ledger(
         action_type="shadow_observe",
         scope=scope_ref,
@@ -283,22 +328,19 @@ def _record_watch_ledger(
         applied_pattern_id=pattern_id if decision == "active" else "",
         budget_decision="ok",
         reason=str(watch.get("decision_reason") or ""),
-        details={
-            "decision": str(decision),
-            "pattern_id": pattern_id,
-            "candidate_id": str(watch.get("candidate_id") or ""),
-            "audit_record_id": str(evidence.get("audit_record_id") or ""),
-            "outcome_trace_id": str(evidence.get("outcome_trace_id") or ""),
-            "outcome_event_id": str(evidence.get("outcome_event_id") or last_observation.get("event_id") or ""),
-            "selected_records": list(evidence.get("selected_records") or []),
-            "observed_count": int(watch.get("observed_count") or 0),
-            "hit_count": int(watch.get("hit_count") or 0),
-            "improvement_count": int(watch.get("improvement_count") or 0),
-            "regression_count": int(watch.get("regression_count") or 0),
-            "bad_outcome_count": int(watch.get("bad_outcome_count") or 0),
-        },
+        details=details,
     )
     runtime.store.sqlite.conn.commit()
+
+
+def _watch_action_for_decision(decision: str) -> str:
+    if decision == "active":
+        return "promoted_active"
+    if decision == "quarantined":
+        return "quarantined"
+    if decision == "rolled_back":
+        return "rolled_back"
+    return "shadow_observed"
 
 
 def _update_candidate_status(runtime: Any, watch: dict[str, Any], *, scope: dict[str, Any] | ScopeRef | None, status: str) -> None:

@@ -235,11 +235,12 @@ def test_web_hypotheses_medium_and_high_risk_not_directly_applied(tmp_path) -> N
     assert not policy["policy_suggestions"]
 
 
-def test_autonomous_evolution_applies_structured_code_patch_from_bad_outcome(tmp_path) -> None:
+def test_autonomous_evolution_applies_structured_code_patch_from_bad_outcome(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path / "runtime")
     scope = {"agent_id": "hongtu", "workspace_id": "code", "user_id": "darrow"}
     repo = tmp_path / "repo"
     repo.mkdir()
+    monkeypatch.setenv("EIMEMORY_AUTONOMOUS_CODE_REPO", str(repo))
     target = repo / "module.py"
     target.write_text("VALUE = 'broken'\n", encoding="utf-8")
     event = runtime.record_event(

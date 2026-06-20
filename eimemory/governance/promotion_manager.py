@@ -11,6 +11,7 @@ from typing import Any
 from eimemory.governance.learning_eval import REGRESSION_THRESHOLD, SAFETY_THRESHOLD
 from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.governance.promotion_watch import WATCH_STATUS, initialize_promotion_watch
+from eimemory.governance.rollout_lifecycle import record_lifecycle_event, standardized_lifecycle_details
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 POLICY_TARGETS = {"tool_route", "prompt_policy", "system_prompt_patch"}
@@ -34,15 +35,19 @@ def promote_candidate(
     if candidate is None or candidate.kind != "capability_candidate":
         raise ValueError(f"capability candidate not found: {candidate_id}")
     tier = str(candidate.meta.get("authority_tier") or candidate.content.get("authority_tier") or "L0").upper()
+    _record_candidate_lifecycle(runtime, candidate, scope=scope, action_type="proposed")
     if tier == "L3":
+        _record_candidate_lifecycle(runtime, candidate, scope=scope, action_type="gate_failed", reason="l3_requires_approval")
         request_id = _promotion_record(runtime, candidate, scope=scope, loop_id=loop_id, status="blocked", action="blocked_l3", eval_result=eval_result or {}, health=health or {})
         return {"ok": False, "applied": False, "blocked_reason": "l3_requires_approval", "promotion_request_id": request_id}
     eval_payload = eval_result or candidate.content.get("eval_result") or {}
     health_payload = health or {"ok": True}
     gate = _rollout_gate(eval_payload, health_payload, tier=tier, candidate=candidate)
     if not gate["ok"]:
+        _record_candidate_lifecycle(runtime, candidate, scope=scope, action_type="gate_failed", test_result=eval_payload, health_result=health_payload, reason=",".join(gate["blocked_reasons"]), details={"gate": gate})
         request_id = _promotion_record(runtime, candidate, scope=scope, loop_id=loop_id, status="blocked", action="gate_failed", eval_result=eval_payload, health=health_payload, gate=gate)
         return {"ok": False, "applied": False, "blocked_reason": ",".join(gate["blocked_reasons"]), "promotion_request_id": request_id}
+    _record_candidate_lifecycle(runtime, candidate, scope=scope, action_type="gate_passed", test_result=eval_payload, health_result=health_payload, details={"gate": gate})
     if not apply:
         request_id = _promotion_record(runtime, candidate, scope=scope, loop_id=loop_id, status="candidate", action="dry_run", eval_result=eval_payload, health=health_payload, gate=gate)
         return {"ok": True, "applied": False, "dry_run": True, "promotion_request_id": request_id}
@@ -59,6 +64,8 @@ def promote_candidate(
         }
 
     post_promotion_status = WATCH_STATUS if bool(side_effect.get("requires_post_promotion_watch")) else "promoted"
+    if "applied" not in set(side_effect.get("lifecycle_actions") or []):
+        _record_candidate_lifecycle(runtime, candidate, scope=scope, action_type="applied", test_result=eval_payload, health_result=health_payload, side_effect=side_effect)
     candidate.status = post_promotion_status
     candidate.meta["promoted_by"] = "eimemory.autonomous_learning"
     candidate.meta["promotion_tier"] = tier
@@ -303,6 +310,9 @@ def _apply_code_patch_candidate(
     file_updates = _file_updates(patch)
     if not file_updates:
         return {"ok": False, "blocked_reason": "code_patch_requires_file_updates", "promotion_target": "code_patch", "repo_root": str(repo_root)}
+    contract_error = _code_patch_contract_error(patch, repo_root=repo_root, file_updates=file_updates)
+    if contract_error:
+        return {"ok": False, "blocked_reason": contract_error, "promotion_target": "code_patch", "repo_root": str(repo_root)}
     allowed_files = _allowed_files(patch, file_updates)
     timeout_seconds = int(patch.get("timeout_seconds") or (gate.get("gate_bundle") or {}).get("timeout_seconds") or 300)
     prior_commit_sha = _current_commit_sha(repo_root, timeout_seconds=timeout_seconds)
@@ -325,7 +335,8 @@ def _apply_code_patch_candidate(
         phase="verify",
     )
     if not verification["ok"]:
-        _restore_file_updates(backups)
+        rollback = _rollback_code_patch(repo_root=repo_root, patch=patch, backups=backups, timeout_seconds=timeout_seconds, phase="verify")
+        _record_candidate_lifecycle(runtime, candidate, scope=scope, action_type="rolled_back", test_result=verification, rollback_command=_rollback_command_display(patch), reason="code_patch_verification_failed", side_effect={"rollback": rollback, "rollback_evidence": rollback_evidence})
         return {
             "ok": False,
             "blocked_reason": "code_patch_verification_failed",
@@ -334,6 +345,7 @@ def _apply_code_patch_candidate(
             "applied_file_paths": [item["path"] for item in applied],
             "verification": verification,
             "rollback_evidence": rollback_evidence,
+            "rollback": rollback,
             "rolled_back": True,
         }
 
@@ -346,7 +358,8 @@ def _apply_code_patch_candidate(
     )
     rollback_evidence = _rollback_evidence(repo_root=repo_root, patch=patch, applied=applied, backups=backups, prior_commit_sha=prior_commit_sha, commit=commit)
     if not commit["ok"]:
-        _restore_file_updates(backups)
+        rollback = _rollback_code_patch(repo_root=repo_root, patch=patch, backups=backups, timeout_seconds=timeout_seconds, phase="commit")
+        _record_candidate_lifecycle(runtime, candidate, scope=scope, action_type="rolled_back", test_result=verification, rollback_command=_rollback_command_display(patch), reason="code_patch_commit_failed", side_effect={"rollback": rollback, "rollback_evidence": rollback_evidence, "commit": commit})
         return {
             "ok": False,
             "blocked_reason": "code_patch_commit_failed",
@@ -356,8 +369,19 @@ def _apply_code_patch_candidate(
             "verification": verification,
             "commit": commit,
             "rollback_evidence": rollback_evidence,
+            "rollback": rollback,
             "rolled_back": True,
         }
+    _record_candidate_lifecycle(
+        runtime,
+        candidate,
+        scope=scope,
+        action_type="applied",
+        test_result=verification,
+        commit_sha=str(commit.get("commit_sha") or ""),
+        rollback_command=_rollback_command_display(patch),
+        side_effect={"commit": commit, "repo_root": str(repo_root), "applied_file_paths": [item["path"] for item in applied]},
+    )
 
     deployment: dict[str, Any] = {"ok": True, "skipped": True, "reports": []}
     post_deploy_health: dict[str, Any] = {"ok": True, "skipped": True, "reports": []}
@@ -365,7 +389,8 @@ def _apply_code_patch_candidate(
     if _truthy(patch.get("deploy_to_production"), default=False):
         deploy_commands = _deployment_commands(patch, repo_root)
         if not deploy_commands:
-            _restore_file_updates(backups)
+            rollback = _rollback_code_patch(repo_root=repo_root, patch=patch, backups=backups, timeout_seconds=timeout_seconds, phase="deploy")
+            _record_candidate_lifecycle(runtime, candidate, scope=scope, action_type="rolled_back", test_result=verification, commit_sha=str(commit.get("commit_sha") or ""), rollback_command=_rollback_command_display(patch), reason="code_patch_deployment_commands_missing", side_effect={"rollback": rollback, "rollback_evidence": rollback_evidence})
             return {
                 "ok": False,
                 "blocked_reason": "code_patch_deployment_commands_missing",
@@ -375,13 +400,14 @@ def _apply_code_patch_candidate(
                 "verification": verification,
                 "commit": commit,
                 "rollback_evidence": rollback_evidence,
-                "rolled_back": not commit.get("commit_sha"),
+                "rollback": rollback,
+                "rolled_back": True,
             }
         deployment = _run_patch_commands(deploy_commands, cwd=repo_root, timeout_seconds=timeout_seconds, phase="deploy")
         rollback_evidence = _rollback_evidence(repo_root=repo_root, patch=patch, applied=applied, backups=backups, prior_commit_sha=prior_commit_sha, commit=commit, deployment=deployment)
         if not deployment["ok"]:
-            if not commit.get("commit_sha"):
-                _restore_file_updates(backups)
+            rollback = _rollback_code_patch(repo_root=repo_root, patch=patch, backups=backups, timeout_seconds=timeout_seconds, phase="deploy")
+            _record_candidate_lifecycle(runtime, candidate, scope=scope, action_type="rolled_back", test_result=verification, commit_sha=str(commit.get("commit_sha") or ""), release_path=str(rollback_evidence.get("release_path") or ""), rollback_command=_rollback_command_display(patch), reason="code_patch_deployment_failed", side_effect={"rollback": rollback, "deployment": deployment, "rollback_evidence": rollback_evidence})
             return {
                 "ok": False,
                 "blocked_reason": "code_patch_deployment_failed",
@@ -392,12 +418,24 @@ def _apply_code_patch_candidate(
                 "commit": commit,
                 "deployment": deployment,
                 "rollback_evidence": rollback_evidence,
-                "rolled_back": not commit.get("commit_sha"),
+                "rollback": rollback,
+                "rolled_back": True,
             }
+        _record_candidate_lifecycle(
+            runtime,
+            candidate,
+            scope=scope,
+            action_type="deployed",
+            test_result=verification,
+            commit_sha=str(commit.get("commit_sha") or ""),
+            release_path=str(rollback_evidence.get("release_path") or ""),
+            rollback_command=_rollback_command_display(patch),
+            side_effect={"deployment": deployment, "rollback_evidence": rollback_evidence},
+        )
         post_deploy_health = _run_patch_commands(_post_deploy_health_commands(patch), cwd=repo_root, timeout_seconds=timeout_seconds, phase="post_deploy_health")
         if not post_deploy_health["ok"] or post_deploy_health.get("skipped"):
-            if not commit.get("commit_sha"):
-                _restore_file_updates(backups)
+            rollback = _rollback_code_patch(repo_root=repo_root, patch=patch, backups=backups, timeout_seconds=timeout_seconds, phase="post_deploy_health")
+            _record_candidate_lifecycle(runtime, candidate, scope=scope, action_type="rolled_back", test_result=verification, health_result=post_deploy_health, commit_sha=str(commit.get("commit_sha") or ""), release_path=str(rollback_evidence.get("release_path") or ""), rollback_command=_rollback_command_display(patch), reason="code_patch_post_deploy_health_failed", side_effect={"rollback": rollback, "deployment": deployment, "post_deploy_health": post_deploy_health, "rollback_evidence": rollback_evidence})
             return {
                 "ok": False,
                 "blocked_reason": "code_patch_post_deploy_health_failed",
@@ -409,8 +447,21 @@ def _apply_code_patch_candidate(
                 "deployment": deployment,
                 "post_deploy_health": post_deploy_health,
                 "rollback_evidence": rollback_evidence,
-                "rolled_back": not commit.get("commit_sha"),
+                "rollback": rollback,
+                "rolled_back": True,
             }
+        _record_candidate_lifecycle(
+            runtime,
+            candidate,
+            scope=scope,
+            action_type="health_checked",
+            test_result=verification,
+            health_result=post_deploy_health,
+            commit_sha=str(commit.get("commit_sha") or ""),
+            release_path=str(rollback_evidence.get("release_path") or ""),
+            rollback_command=_rollback_command_display(patch),
+            side_effect={"deployment": deployment, "post_deploy_health": post_deploy_health, "rollback_evidence": rollback_evidence},
+        )
         production_applied = True
 
     record = append_learning_record_once(
@@ -460,6 +511,7 @@ def _apply_code_patch_candidate(
         "post_deploy_health": post_deploy_health,
         "rollback_evidence": rollback_evidence,
         "production_applied": production_applied,
+        "lifecycle_actions": ["applied", *([] if deployment.get("skipped") else ["deployed"]), *([] if post_deploy_health.get("skipped") else ["health_checked"])],
     }
 
 
@@ -518,6 +570,32 @@ def _file_updates(patch: dict[str, Any]) -> list[dict[str, str]]:
             continue
         normalized.append({"path": path, "content": str(content)})
     return normalized
+
+
+def _code_patch_contract_error(patch: dict[str, Any], *, repo_root: Path, file_updates: list[dict[str, str]]) -> str:
+    if not str(patch.get("repo_root") or patch.get("repository_root") or "").strip():
+        return "code_patch_repo_root_missing"
+    allowed_root = _allowed_code_repo_root()
+    try:
+        if repo_root.resolve() != allowed_root.resolve():
+            return "code_patch_repo_root_not_allowed"
+    except OSError:
+        return "code_patch_repo_root_not_allowed"
+    if not _allowed_files(patch, file_updates):
+        return "code_patch_requires_allowed_files"
+    if not _normalize_commands(patch.get("verification_commands") or patch.get("verify_commands")):
+        return "code_patch_requires_verification_commands"
+    if _truthy(patch.get("deploy_to_production"), default=False):
+        if not _truthy(patch.get("commit_to_repo"), default=False):
+            return "code_patch_requires_commit_to_repo"
+        if not _rollback_commands(patch):
+            return "code_patch_requires_rollback_plan"
+    return ""
+
+
+def _allowed_code_repo_root() -> Path:
+    raw = os.environ.get("EIMEMORY_AUTONOMOUS_CODE_REPO", "").strip() or "/dev-project/eimemory"
+    return Path(raw).expanduser().resolve()
 
 
 def _allowed_files(patch: dict[str, Any], file_updates: list[dict[str, str]]) -> list[str]:
@@ -597,6 +675,38 @@ def _repo_child(repo_root: Path, relative_path: str) -> Path:
 def _path_allowed(relative_path: str, allowed_files: list[str]) -> bool:
     normalized_allowed = [_safe_repo_relative_path(item) for item in allowed_files if str(item).strip()]
     return any(relative_path == item or fnmatch.fnmatch(relative_path, item) for item in normalized_allowed)
+
+
+def _rollback_code_patch(
+    *,
+    repo_root: Path,
+    patch: dict[str, Any],
+    backups: list[dict[str, Any]],
+    timeout_seconds: int,
+    phase: str,
+) -> dict[str, Any]:
+    _restore_file_updates(backups)
+    commands = _rollback_commands(patch)
+    command_report = _run_patch_commands(commands, cwd=repo_root, timeout_seconds=timeout_seconds, phase=f"rollback:{phase}") if commands else {"ok": True, "skipped": True, "reports": []}
+    return {
+        "ok": bool(command_report.get("ok")),
+        "phase": str(phase),
+        "file_restore": {"ok": True, "restored_count": len(backups)},
+        "command": _rollback_command_display(patch),
+        "command_report": command_report,
+    }
+
+
+def _rollback_commands(patch: dict[str, Any]) -> list[str | list[str]]:
+    plan = patch.get("rollback_plan") if isinstance(patch.get("rollback_plan"), dict) else {}
+    return _normalize_commands(plan.get("commands") or patch.get("rollback_commands") or patch.get("rollback_command"))
+
+
+def _rollback_command_display(patch: dict[str, Any]) -> str:
+    commands = _rollback_commands(patch)
+    if not commands:
+        return ""
+    return " && ".join(command if isinstance(command, str) else " ".join(command) for command in commands)
 
 
 def _run_patch_commands(commands: Any, *, cwd: Path, timeout_seconds: int, phase: str) -> dict[str, Any]:
@@ -751,6 +861,7 @@ def _rollback_evidence(
         "new_commit_sha": str(commit.get("commit_sha") or ""),
         "release_path": str(patch.get("release_path") or _release_path_from_deployment(deployment) or ""),
         "rollback_method": "restore_file_backups_or_revert_commit_and_restart_service",
+        "rollback_command": _rollback_command_display(patch),
         "file_backups": [
             {
                 "path": str(item.get("path") or _relative_backup_path(repo_root, backup)),
@@ -893,6 +1004,58 @@ def _list_text(value: Any) -> list[str]:
     return []
 
 
+def _record_candidate_lifecycle(
+    runtime: Any,
+    candidate: RecordEnvelope,
+    *,
+    scope: dict[str, Any] | ScopeRef | None,
+    action_type: str,
+    test_result: dict[str, Any] | None = None,
+    health_result: dict[str, Any] | None = None,
+    commit_sha: str = "",
+    release_path: str = "",
+    rollback_command: str = "",
+    reason: str = "",
+    side_effect: dict[str, Any] | None = None,
+    details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    patch = _candidate_patch(runtime, candidate, scope=scope)
+    patch_id = str(patch.get("id") or patch.get("patch_id") or candidate.content.get("experiment_id") or candidate.meta.get("experiment_id") or candidate.record_id)
+    side = dict(side_effect or {})
+    release = str(release_path or (side.get("rollback_evidence") or {}).get("release_path") or "")
+    commit = str(commit_sha or (side.get("commit") or {}).get("commit_sha") or "")
+    rollback = str(rollback_command or (side.get("rollback") or {}).get("command") or _rollback_command_display(patch))
+    return record_lifecycle_event(
+        runtime,
+        scope=scope or candidate.scope,
+        action_type=action_type,
+        candidate_id=candidate.record_id,
+        patch_id=patch_id,
+        commit_sha=commit,
+        release_path=release,
+        test_result=test_result or side.get("verification") or {},
+        health_result=health_result or side.get("post_deploy_health") or {},
+        rollback_command=rollback,
+        source_opportunity={
+            "candidate_id": candidate.record_id,
+            "candidate_title": candidate.title,
+            "promotion_target": _promotion_target(candidate),
+            "target_capability": str(candidate.meta.get("target_capability") or candidate.content.get("target_capability") or ""),
+        },
+        trust_report=dict(details or {}),
+        replay_report=test_result or {},
+        reason=reason,
+        details={
+            "promotion_target": _promotion_target(candidate),
+            "target_capability": str(candidate.meta.get("target_capability") or candidate.content.get("target_capability") or ""),
+            "side_effect": side,
+            **dict(details or {}),
+        },
+        applied_artifact_id=str((side.get("applied_artifact_ids") or [""])[0] if isinstance(side.get("applied_artifact_ids"), list) and side.get("applied_artifact_ids") else ""),
+        budget_decision="blocked" if action_type in {"gate_failed", "rolled_back", "quarantined"} else "ok",
+    )
+
+
 def _promotion_record(
     runtime: Any,
     candidate: RecordEnvelope,
@@ -1013,7 +1176,17 @@ def _ensure_promotion_rollout_ledger(
         budget_decision=budget_decision,
         reason=reason,
         details=_jsonable(
-            {
+            standardized_lifecycle_details(
+                candidate_id=candidate_id,
+                patch_id=str((candidate.content or {}).get("experiment_id") or (candidate.meta or {}).get("experiment_id") or candidate_id) if candidate is not None else candidate_id,
+                commit_sha=str(side_effect.get("commit_sha") or (side_effect.get("commit") or {}).get("commit_sha") or ""),
+                release_path=str((side_effect.get("rollback_evidence") or {}).get("release_path") or ""),
+                test_result=eval_result,
+                health_result=health,
+                rollback_command=str((side_effect.get("rollback") or {}).get("command") or ""),
+                observed_count=0,
+                failure_rate=0.0,
+                extra={
                 "promotion_request_id": promotion_record.record_id,
                 "candidate_id": candidate_id,
                 "promotion_target": promotion_target,
@@ -1025,7 +1198,8 @@ def _ensure_promotion_rollout_ledger(
                 "health": health,
                 "side_effect": side_effect,
                 "eval_result": eval_result,
-            }
+                },
+            )
         ),
     )
     _attach_rollout_ledger_id(runtime, promotion_record, ledger_id=str(ledger.get("id") or ""))

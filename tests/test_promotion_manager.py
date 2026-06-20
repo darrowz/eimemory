@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import subprocess
 
 import pytest
 
@@ -195,13 +196,17 @@ def test_l2_deployment_rollout_blocks_without_real_adapter(tmp_path) -> None:
     assert runtime.store.get_by_id(candidate_id).status == "candidate"
 
 
-def test_l2_code_patch_applies_repo_patch_and_deploys_after_gates(tmp_path) -> None:
+def test_l2_code_patch_applies_repo_patch_and_deploys_after_gates(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path)
     scope = {"agent_id": "hongtu"}
     repo = tmp_path / "repo"
     repo.mkdir()
+    _init_git_repo(repo)
     target = repo / "health_probe.py"
     target.write_text("VERSION = 'old'\n", encoding="utf-8")
+    subprocess.run(["git", "add", "health_probe.py"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "seed"], cwd=repo, check=True)
+    monkeypatch.setenv("EIMEMORY_AUTONOMOUS_CODE_REPO", str(repo))
     experiment_id = create_sandbox_experiment(
         runtime,
         scope=scope,
@@ -215,7 +220,7 @@ def test_l2_code_patch_applies_repo_patch_and_deploys_after_gates(tmp_path) -> N
             "repo_root": str(repo),
             "apply_to_repo": True,
             "deploy_to_production": True,
-            "commit_to_repo": False,
+            "commit_to_repo": True,
             "allowed_files": ["health_probe.py"],
             "file_updates": [
                 {"path": "health_probe.py", "content": "VERSION = 'new'\n"},
@@ -241,6 +246,7 @@ def test_l2_code_patch_applies_repo_patch_and_deploys_after_gates(tmp_path) -> N
                     "from pathlib import Path; assert Path('deployed.txt').read_text(encoding='utf-8') == 'ok\\n'",
                 ]
             ],
+            "rollback_plan": {"commands": [[sys.executable, "-c", "print('rollback ready')"]]},
         },
     )
     candidate_id = distill_capability_candidate(
@@ -279,13 +285,186 @@ def test_l2_code_patch_applies_repo_patch_and_deploys_after_gates(tmp_path) -> N
     assert entry["details"]["rollout_action"] == "applied"
 
 
-def test_l2_code_patch_blocks_when_post_deploy_health_fails(tmp_path) -> None:
+def test_code_patch_rollout_writes_full_lifecycle_ledger(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = {"agent_id": "hongtu", "workspace_id": "code", "user_id": "darrow"}
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+    target = repo / "module.py"
+    target.write_text("VALUE = 'old'\n", encoding="utf-8")
+    subprocess.run(["git", "add", "module.py"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "seed"], cwd=repo, check=True)
+    monkeypatch.setenv("EIMEMORY_AUTONOMOUS_CODE_REPO", str(repo))
+    release_path = tmp_path / "release-150"
+    release_token = release_path.as_posix()
+    experiment_id = create_sandbox_experiment(
+        runtime,
+        scope=scope,
+        loop_id="learn_test",
+        learning_goal_id="goal_1",
+        research_note_id="note_1",
+        candidate_kind="code_patch",
+        candidate_patch={
+            "summary": "Patch module and deploy immutable release",
+            "repo_root": str(repo),
+            "apply_to_repo": True,
+            "deploy_to_production": True,
+            "commit_to_repo": True,
+            "allowed_files": ["module.py"],
+            "file_updates": [{"path": "module.py", "content": "VALUE = 'new'\n"}],
+            "verification_commands": [[sys.executable, "-c", "from pathlib import Path; assert Path('module.py').read_text(encoding='utf-8') == \"VALUE = 'new'\\n\""]],
+            "deployment_commands": [[sys.executable, "-c", f"from pathlib import Path; Path(r'{release_token}').mkdir(parents=True, exist_ok=True); print('release={release_token}')"]],
+            "post_deploy_health_commands": [[sys.executable, "-c", "print('health ok')"]],
+            "rollback_plan": {"commands": [[sys.executable, "-c", "print('rollback ready')"]]},
+        },
+    )
+    candidate_id = distill_capability_candidate(
+        runtime,
+        scope=scope,
+        loop_id="learn_test",
+        experiment_id=experiment_id,
+        eval_result={**PASSING_EVAL, "gate_bundle": _l2_gate_bundle()},
+        promotion_target="code_patch",
+        summary="Code patch candidate",
+        target_capability="code.implementation",
+    )
+
+    result = promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", eval_result={**PASSING_EVAL, "gate_bundle": _l2_gate_bundle()}, health={"ok": True})
+
+    assert result["ok"] is True
+    assert result["side_effect"]["commit"]["commit_sha"]
+    assert result["side_effect"]["rollback_evidence"]["release_path"] == release_token
+    ledger = [
+        item
+        for item in runtime.get_policy_rollout_ledger(scope=scope, limit=50)
+        if item["source_opportunity_id"] == candidate_id
+    ]
+    actions = {item["action_type"] for item in ledger}
+    assert {"proposed", "gate_passed", "applied", "deployed", "health_checked"}.issubset(actions)
+    required_fields = {
+        "candidate_id",
+        "patch_id",
+        "commit_sha",
+        "release_path",
+        "test_result",
+        "health_result",
+        "rollback_command",
+        "observed_count",
+        "failure_rate",
+    }
+    for entry in ledger:
+        assert required_fields.issubset(entry["details"])
+
+
+def test_code_patch_requires_strict_rollout_contract(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = {"agent_id": "hongtu", "workspace_id": "code", "user_id": "darrow"}
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setenv("EIMEMORY_AUTONOMOUS_CODE_REPO", str(repo))
+    (repo / "module.py").write_text("VALUE = 'old'\n", encoding="utf-8")
+    experiment_id = create_sandbox_experiment(
+        runtime,
+        scope=scope,
+        loop_id="learn_test",
+        learning_goal_id="goal_1",
+        research_note_id="note_1",
+        candidate_kind="code_patch",
+        candidate_patch={
+            "summary": "Invalid missing rollback plan",
+            "repo_root": str(repo),
+            "apply_to_repo": True,
+            "deploy_to_production": True,
+            "commit_to_repo": True,
+            "allowed_files": ["module.py"],
+            "file_updates": [{"path": "module.py", "content": "VALUE = 'new'\n"}],
+            "verification_commands": [[sys.executable, "-c", "print('ok')"]],
+        },
+    )
+    candidate_id = distill_capability_candidate(
+        runtime,
+        scope=scope,
+        loop_id="learn_test",
+        experiment_id=experiment_id,
+        eval_result={**PASSING_EVAL, "gate_bundle": _l2_gate_bundle()},
+        promotion_target="code_patch",
+        summary="Code patch candidate",
+        target_capability="code.implementation",
+    )
+
+    result = promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", eval_result={**PASSING_EVAL, "gate_bundle": _l2_gate_bundle()}, health={"ok": True})
+
+    assert result["ok"] is False
+    assert result["blocked_reason"] == "code_patch_requires_rollback_plan"
+    assert (repo / "module.py").read_text(encoding="utf-8") == "VALUE = 'old'\n"
+
+
+def test_code_patch_rolls_back_when_post_deploy_health_fails(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = {"agent_id": "hongtu", "workspace_id": "code", "user_id": "darrow"}
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+    target = repo / "module.py"
+    target.write_text("VALUE = 'old'\n", encoding="utf-8")
+    subprocess.run(["git", "add", "module.py"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "seed"], cwd=repo, check=True)
+    monkeypatch.setenv("EIMEMORY_AUTONOMOUS_CODE_REPO", str(repo))
+    rollback_marker = tmp_path / "rollback.txt"
+    experiment_id = create_sandbox_experiment(
+        runtime,
+        scope=scope,
+        loop_id="learn_test",
+        learning_goal_id="goal_1",
+        research_note_id="note_1",
+        candidate_kind="code_patch",
+        candidate_patch={
+            "summary": "Patch module with failing health",
+            "repo_root": str(repo),
+            "apply_to_repo": True,
+            "deploy_to_production": True,
+            "commit_to_repo": True,
+            "allowed_files": ["module.py"],
+            "file_updates": [{"path": "module.py", "content": "VALUE = 'new'\n"}],
+            "verification_commands": [[sys.executable, "-c", "print('tests ok')"]],
+            "deployment_commands": [[sys.executable, "-c", "print('release=/tmp/bad-release')"]],
+            "post_deploy_health_commands": [[sys.executable, "-c", "raise SystemExit(9)"]],
+            "rollback_plan": {"commands": [[sys.executable, "-c", f"from pathlib import Path; Path(r'{rollback_marker}').write_text('rolled back', encoding='utf-8')"]]},
+        },
+    )
+    candidate_id = distill_capability_candidate(
+        runtime,
+        scope=scope,
+        loop_id="learn_test",
+        experiment_id=experiment_id,
+        eval_result={**PASSING_EVAL, "gate_bundle": _l2_gate_bundle()},
+        promotion_target="code_patch",
+        summary="Code patch candidate",
+        target_capability="code.implementation",
+    )
+
+    result = promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", eval_result={**PASSING_EVAL, "gate_bundle": _l2_gate_bundle()}, health={"ok": True})
+
+    assert result["ok"] is False
+    assert result["blocked_reason"] == "code_patch_post_deploy_health_failed"
+    assert result["side_effect"]["rollback"]["ok"] is True
+    assert rollback_marker.read_text(encoding="utf-8") == "rolled back"
+    ledger = runtime.get_policy_rollout_ledger(scope=scope, action="rolled_back", limit=10)
+    assert ledger[0]["source_opportunity_id"] == candidate_id
+
+
+def test_l2_code_patch_blocks_when_post_deploy_health_fails(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path)
     scope = {"agent_id": "hongtu"}
     repo = tmp_path / "repo"
     repo.mkdir()
+    _init_git_repo(repo)
     target = repo / "health_probe.py"
     target.write_text("VERSION = 'old'\n", encoding="utf-8")
+    subprocess.run(["git", "add", "health_probe.py"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "seed"], cwd=repo, check=True)
+    monkeypatch.setenv("EIMEMORY_AUTONOMOUS_CODE_REPO", str(repo))
     experiment_id = create_sandbox_experiment(
         runtime,
         scope=scope,
@@ -299,11 +478,13 @@ def test_l2_code_patch_blocks_when_post_deploy_health_fails(tmp_path) -> None:
             "repo_root": str(repo),
             "apply_to_repo": True,
             "deploy_to_production": True,
-            "commit_to_repo": False,
+            "commit_to_repo": True,
             "allowed_files": ["health_probe.py"],
             "file_updates": [{"path": "health_probe.py", "content": "VERSION = 'new'\n"}],
+            "verification_commands": [[sys.executable, "-c", "print('tests ok')"]],
             "deployment_commands": [[sys.executable, "-c", "print('deployed')"]],
             "post_deploy_health_commands": [[sys.executable, "-c", "raise SystemExit(7)"]],
+            "rollback_plan": {"commands": [[sys.executable, "-c", "print('rollback ready')"]]},
         },
     )
     eval_result = {**PASSING_EVAL, "gate_bundle": _l2_gate_bundle()}
@@ -448,3 +629,9 @@ def _l2_gate_bundle() -> dict:
             "sample_count": 2,
         },
     }
+
+
+def _init_git_repo(repo) -> None:
+    subprocess.run(["git", "init"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
