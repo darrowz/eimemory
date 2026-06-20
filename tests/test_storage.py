@@ -48,6 +48,41 @@ def test_runtime_store_persists_scoped_memory_edges(tmp_path) -> None:
     assert edges[0].to_id == second.record_id
 
 
+def test_runtime_store_bulk_upserts_memory_edges_in_one_call(tmp_path) -> None:
+    store = RuntimeStore(root=tmp_path)
+    scope = ScopeRef(agent_id="main", workspace_id="graph")
+    records = [
+        store.append(RecordEnvelope.create(kind="memory", title=f"Record {index}", summary=f"Graph record {index}", scope=scope))
+        for index in range(3)
+    ]
+
+    edges = store.upsert_memory_edges(
+        [
+            MemoryEdge.create(
+                from_id=records[0].record_id,
+                to_id=records[1].record_id,
+                edge_type="semantic",
+                confidence=0.5,
+                evidence_id=records[1].record_id,
+                scope=scope,
+            ),
+            MemoryEdge.create(
+                from_id=records[1].record_id,
+                to_id=records[2].record_id,
+                edge_type="temporal",
+                confidence=0.7,
+                evidence_id=records[2].record_id,
+                scope=scope,
+            ),
+        ]
+    )
+
+    stored = store.list_memory_edges(scope=scope, record_ids=[records[1].record_id], limit=10)
+
+    assert len(edges) == 2
+    assert {edge.edge_id for edge in stored} == {edge.edge_id for edge in edges}
+
+
 def test_runtime_store_returns_active_policy_rules(tmp_path) -> None:
     store = RuntimeStore(root=tmp_path)
     scope = ScopeRef(agent_id="eibrain", workspace_id="robot")

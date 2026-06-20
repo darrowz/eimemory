@@ -1241,9 +1241,18 @@ class SqliteRecordStore:
         return [RecordEnvelope.from_dict(json.loads(row["payload_json"])) for row in rows]
 
     def upsert_memory_edge(self, edge: MemoryEdge) -> MemoryEdge:
-        if edge.edge_type not in MEMORY_EDGE_TYPES:
-            raise ValueError(f"invalid memory edge type: {edge.edge_type}")
-        self.conn.execute(
+        self.upsert_memory_edges([edge])
+        return edge
+
+    def upsert_memory_edges(self, edges: list[MemoryEdge]) -> list[MemoryEdge]:
+        clean_edges = []
+        for edge in edges:
+            if edge.edge_type not in MEMORY_EDGE_TYPES:
+                raise ValueError(f"invalid memory edge type: {edge.edge_type}")
+            clean_edges.append(edge)
+        if not clean_edges:
+            return []
+        self.conn.executemany(
             """
             INSERT INTO memory_edges (
                 edge_id, from_id, to_id, edge_type, confidence, evidence_id,
@@ -1257,25 +1266,30 @@ class SqliteRecordStore:
                 meta_json=excluded.meta_json,
                 updated_at=excluded.updated_at
             """,
-            (
-                edge.edge_id,
-                edge.from_id,
-                edge.to_id,
-                edge.edge_type,
-                edge.confidence,
-                edge.evidence_id,
-                edge.scope.tenant_id,
-                edge.scope.agent_id,
-                edge.scope.workspace_id,
-                edge.scope.user_id,
-                edge.reason,
-                json.dumps(edge.meta or {}, ensure_ascii=False, sort_keys=True),
-                edge.created_at,
-                edge.updated_at,
-            ),
+            [self._memory_edge_params(edge) for edge in clean_edges],
         )
         self.conn.commit()
-        return edge
+        return clean_edges
+
+    def _memory_edge_params(self, edge: MemoryEdge) -> tuple[Any, ...]:
+        if edge.edge_type not in MEMORY_EDGE_TYPES:
+            raise ValueError(f"invalid memory edge type: {edge.edge_type}")
+        return (
+            edge.edge_id,
+            edge.from_id,
+            edge.to_id,
+            edge.edge_type,
+            edge.confidence,
+            edge.evidence_id,
+            edge.scope.tenant_id,
+            edge.scope.agent_id,
+            edge.scope.workspace_id,
+            edge.scope.user_id,
+            edge.reason,
+            json.dumps(edge.meta or {}, ensure_ascii=False, sort_keys=True),
+            edge.created_at,
+            edge.updated_at,
+        )
 
     def list_memory_edges(
         self,

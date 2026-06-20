@@ -311,6 +311,8 @@ def _signals_from_external_intake(runtime: Any, *, scope: ScopeRef, watch: Sourc
     for record in records:
         if not _record_after_cursor(record, watch):
             continue
+        if _is_internal_watch_record(record):
+            continue
         by_kind.setdefault(record.kind, []).append(record)
     signals = []
     for kind, items in sorted(by_kind.items()):
@@ -333,6 +335,11 @@ def _signals_from_external_intake(runtime: Any, *, scope: ScopeRef, watch: Sourc
         if len(signals) >= watch.max_items:
             break
     return signals
+
+
+def _is_internal_watch_record(record: RecordEnvelope) -> bool:
+    meta = business_metadata(record.meta)
+    return str(meta.get("report_type") or "") in {"memory_graph_cursor", "supervisor_run"}
 
 
 def _signals_from_local_state(runtime: Any, *, scope: ScopeRef, watch: SourceWatch) -> list[dict[str, Any]]:

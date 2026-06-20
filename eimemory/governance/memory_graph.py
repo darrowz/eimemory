@@ -76,8 +76,12 @@ def build_incremental_memory_edges(
         edges.extend(_entity_edges(record, candidates, scope=scope_ref))
     unique_edges = _dedupe_edges(edges)
     if not dry_run:
-        for edge in unique_edges:
-            runtime.store.upsert_memory_edge(edge)
+        bulk_upsert = getattr(runtime.store, "upsert_memory_edges", None)
+        if callable(bulk_upsert):
+            bulk_upsert(unique_edges)
+        else:
+            for edge in unique_edges:
+                runtime.store.upsert_memory_edge(edge)
         if records:
             _save_graph_cursor(runtime, scope=scope_ref, records=records)
     edge_counts: dict[str, int] = {}

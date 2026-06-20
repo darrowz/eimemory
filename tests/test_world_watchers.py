@@ -252,3 +252,28 @@ def test_world_signals_truncate_dedupe_and_classify_capability(tmp_path) -> None
     assert signal["summary_truncated"] is True
     assert len(signal["summary"]) <= 360
     assert report["duplicate_count"] == 1
+
+
+def test_external_intake_watch_ignores_internal_memory_graph_cursor(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu", "workspace_id": "graph"}
+    runtime.store.append(
+        RecordEnvelope.create(
+            kind="source_watch",
+            title="Memory graph edge cursor",
+            summary="Memory graph cursor at 2026-06-20T00:00:00+08:00",
+            scope=ScopeRef.from_dict(scope),
+            source="eimemory.memory_graph",
+            content={"last_seen": "2026-06-20T00:00:00+08:00"},
+            meta={"report_type": "memory_graph_cursor"},
+        )
+    )
+
+    report = collect_world_signals(
+        runtime,
+        scope=scope,
+        watches=[SourceWatch(name="external intake summary", kind="external_intake_summary", enabled=True, dry_run=False)],
+        dry_run=True,
+    )
+
+    assert report["signal_count"] == 0

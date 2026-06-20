@@ -146,6 +146,9 @@ class RuntimeStore:
     def upsert_memory_edge(self, edge: MemoryEdge) -> MemoryEdge:
         return self.sqlite.upsert_memory_edge(edge)
 
+    def upsert_memory_edges(self, edges: list[MemoryEdge]) -> list[MemoryEdge]:
+        return self.sqlite.upsert_memory_edges(edges)
+
     def list_memory_edges(
         self,
         *,
