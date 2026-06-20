@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from eimemory.api.runtime import Runtime
 from eimemory.governance.world_watchers import SourceWatch, collect_world_signals
+from eimemory.governance.world_watchers import default_watches
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
@@ -17,6 +18,13 @@ def test_disabled_watchers_write_nothing(tmp_path) -> None:
     assert report["signal_count"] == 0
     assert report["skipped_disabled_count"] == 1
     assert runtime.store.list_records(kinds=["world_signal"], scope={"agent_id": "hongtu"}, limit=10) == []
+
+
+def test_default_watches_do_not_run_heavy_goal_registry_gap_polling() -> None:
+    goal_watch = next(watch for watch in default_watches() if watch.kind == "goal_registry_gap")
+
+    assert goal_watch.enabled is False
+    assert goal_watch.dry_run is True
 
 
 def test_dry_run_returns_signals_without_persisting(tmp_path) -> None:

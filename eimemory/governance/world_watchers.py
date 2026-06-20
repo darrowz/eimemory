@@ -197,7 +197,7 @@ def default_watches() -> list[SourceWatch]:
         SourceWatch(name="user goals", kind="user_goal_memory", enabled=True, dry_run=False),
         SourceWatch(name="external intake summary", kind="external_intake_summary", enabled=True, dry_run=False),
         SourceWatch(name="local state", kind="local_state", enabled=True, dry_run=False),
-        SourceWatch(name="goal registry gap", kind="goal_registry_gap", enabled=True, dry_run=False),
+        SourceWatch(name="goal registry gap", kind="goal_registry_gap", enabled=False, dry_run=True),
         SourceWatch(name="stale asset", kind="stale_asset", enabled=True, dry_run=False),
         SourceWatch(name="repo scan", kind="local_repo", enabled=False, dry_run=True),
         SourceWatch(name="tool registry", kind="tool_registry", enabled=False, dry_run=True),
