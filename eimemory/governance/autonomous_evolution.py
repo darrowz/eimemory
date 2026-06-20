@@ -198,6 +198,7 @@ def run_autonomous_evolution(
         "applied_count": applied_count,
         "applied_patches": applied_patches,
         "promotion_ledger_ids": [str(item.get("promotion_id") or "") for item in applied_patches if item.get("promotion_id")],
+        "rollout_ledger_ids": [str(item.get("rollout_ledger_id") or "") for item in applied_patches if item.get("rollout_ledger_id")],
         "rolled_back_count": 0,
         "blocked_patches": blocked_patches,
         "circuit_breaker": {"open": False, "reason": ""},
@@ -516,6 +517,8 @@ def _apply_safe_patch(runtime: Any, patch: dict[str, Any], *, scope: dict[str, A
     }
     result = runtime.upsert_intent_pattern(payload, scope=scope)
     budget_decision = str(result.get("_promotion_budget_decision") or "")
+    promotion_id = str(result.get("_promotion_id") or "")
+    rollout_ledger_id = _rollout_ledger_id_for_promotion(runtime, scope=scope, promotion_id=promotion_id)
     applied = budget_decision in {"ok", "manual_ok", ""} and str(result.get("status") or "active") == "active"
     return {
         "opportunity_id": str(patch.get("opportunity_id") or ""),
@@ -525,7 +528,8 @@ def _apply_safe_patch(runtime: Any, patch: dict[str, Any], *, scope: dict[str, A
         "event_type": str(result.get("default_event_type") or payload["default_event_type"]),
         "confidence": float(result.get("confidence") or payload["confidence"]),
         "risk_level": str(patch.get("risk_level") or "low"),
-        "promotion_id": str(result.get("_promotion_id") or ""),
+        "promotion_id": promotion_id,
+        "rollout_ledger_id": rollout_ledger_id,
         "promotion_budget_decision": budget_decision,
         "applied": bool(applied),
         "blocked_reason": "" if applied else (budget_decision or "pattern_not_active"),
@@ -572,18 +576,34 @@ def _apply_code_patch(runtime: Any, patch: dict[str, Any], *, scope: dict[str, A
     )
     side_effect = dict(promotion.get("side_effect") or {})
     applied = bool(promotion.get("ok") and promotion.get("applied") and side_effect.get("repo_mutated"))
+    promotion_id = str(promotion.get("promotion_request_id") or "")
+    rollout_ledger_id = _rollout_ledger_id_for_promotion(runtime, scope=scope, promotion_id=promotion_id)
     return {
         "opportunity_id": str(patch.get("opportunity_id") or ""),
         "patch_type": "code_patch",
         "risk_level": str(patch.get("risk_level") or "low"),
         "candidate_id": candidate_id,
         "experiment_id": experiment_id,
-        "promotion_id": str(promotion.get("promotion_request_id") or ""),
+        "promotion_id": promotion_id,
+        "rollout_ledger_id": rollout_ledger_id,
         "applied": applied,
         "blocked_reason": "" if applied else str(promotion.get("blocked_reason") or side_effect.get("blocked_reason") or "code_patch_promotion_failed"),
         "promotion": promotion,
         "side_effect": side_effect,
     }
+
+
+def _rollout_ledger_id_for_promotion(runtime: Any, *, scope: dict[str, Any], promotion_id: str) -> str:
+    if not promotion_id or not hasattr(runtime, "get_policy_rollout_ledger"):
+        return ""
+    try:
+        ledger = runtime.get_policy_rollout_ledger(scope=scope, limit=200)
+    except Exception:
+        return ""
+    for entry in ledger:
+        if str(entry.get("promotion_id") or "") == str(promotion_id):
+            return str(entry.get("id") or "")
+    return ""
 
 
 def _code_patch_gate_bundle(patch: dict[str, Any]) -> dict[str, Any]:

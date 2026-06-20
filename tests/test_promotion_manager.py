@@ -6,8 +6,9 @@ import pytest
 
 from eimemory.api.runtime import Runtime
 from eimemory.governance.capability_distiller import distill_capability_candidate
-from eimemory.governance.promotion_manager import promote_candidate
+from eimemory.governance.promotion_manager import backfill_promotion_rollout_ledger, promote_candidate
 from eimemory.governance.sandbox_lab import create_sandbox_experiment
+from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
 PASSING_EVAL = {"verdict": "pass", "scores": {"capability": 0.9, "safety": 1.0, "regression": 1.0, "cost": 0.8}}
@@ -266,6 +267,16 @@ def test_l2_code_patch_applies_repo_patch_and_deploys_after_gates(tmp_path) -> N
     assert target.read_text(encoding="utf-8") == "VERSION = 'new'\n"
     assert (repo / "deployed.txt").read_text(encoding="utf-8") == "ok\n"
     assert runtime.store.get_by_id(candidate_id).status == "promoted"
+    ledger = runtime.get_policy_rollout_ledger(scope=scope, action="capability_promotion", limit=10)
+    entry = next(item for item in ledger if item["promotion_id"] == result["promotion_request_id"])
+    promotion = runtime.store.get_by_id(result["promotion_request_id"], scope=scope)
+    assert promotion is not None
+    assert promotion.content["rollout_ledger_id"] == entry["id"]
+    assert entry["source_opportunity_id"] == candidate_id
+    assert entry["applied_pattern_id"] == result["applied_artifact_ids"][0]
+    assert entry["budget_decision"] == "ok"
+    assert entry["details"]["promotion_target"] == "code_patch"
+    assert entry["details"]["rollout_action"] == "applied"
 
 
 def test_l2_code_patch_blocks_when_post_deploy_health_fails(tmp_path) -> None:
@@ -368,6 +379,55 @@ def test_l2_code_patch_blocks_when_real_task_replay_gate_fails(tmp_path) -> None
     assert "real_task_replay_gate" in result["blocked_reason"]
     assert target.read_text(encoding="utf-8") == "VERSION = 'old'\n"
     assert runtime.store.get_by_id(candidate_id).status == "candidate"
+    ledger = runtime.get_policy_rollout_ledger(scope=scope, action="capability_promotion", limit=10)
+    entry = next(item for item in ledger if item["promotion_id"] == result["promotion_request_id"])
+    assert entry["source_opportunity_id"] == candidate_id
+    assert entry["budget_decision"] == "blocked"
+    assert entry["reason"] == "real_task_replay_gate"
+    assert entry["details"]["rollout_action"] == "gate_failed"
+
+
+def test_backfill_promotion_rollout_ledger_from_existing_request(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu", "workspace_id": "code", "user_id": "darrow"}
+    candidate_id = distill_capability_candidate(
+        runtime,
+        scope=scope,
+        loop_id="learn_test",
+        experiment_id="exp_1",
+        eval_result=PASSING_EVAL,
+        promotion_target="tool_route",
+        summary="Use memory-first routing.",
+        target_capability="tool.routing",
+    )
+    promotion = RecordEnvelope.create(
+        kind="promotion_request",
+        title="Promotion applied: Use memory-first routing.",
+        summary="Use memory-first routing.",
+        scope=ScopeRef.from_dict(scope),
+        status="promoted",
+        content={
+            "candidate_id": candidate_id,
+            "promotion_target": "tool_route",
+            "target_capability": "tool.routing",
+            "action": "applied",
+            "eval_result": PASSING_EVAL,
+            "health": {"ok": True},
+            "gate": {"ok": True, "gate_bundle": {}},
+            "side_effect": {"ok": True, "adapter": "test", "applied_artifact_ids": ["policy-1"]},
+        },
+        meta={"candidate_id": candidate_id, "promotion_target": "tool_route", "action": "applied"},
+    )
+    runtime.store.append(promotion)
+
+    report = backfill_promotion_rollout_ledger(runtime, scope=scope, limit=10)
+
+    ledger = runtime.get_policy_rollout_ledger(scope=scope, action="capability_promotion", limit=10)
+    entry = next(item for item in ledger if item["promotion_id"] == promotion.record_id)
+    assert report["created_count"] == 1
+    assert entry["source_opportunity_id"] == candidate_id
+    assert entry["applied_pattern_id"] == "policy-1"
+    assert entry["details"]["promotion_target"] == "tool_route"
 
 
 def _l2_gate_bundle() -> dict:

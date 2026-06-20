@@ -292,3 +292,6 @@ def test_autonomous_evolution_applies_structured_code_patch_from_bad_outcome(tmp
     assert report["applied_patches"][0]["patch_type"] == "code_patch"
     assert report["applied_patches"][0]["side_effect"]["adapter"] == "direct_repo_patch"
     assert target.read_text(encoding="utf-8") == "VALUE = 'fixed'\n"
+    ledger = runtime.get_policy_rollout_ledger(scope=scope, action="capability_promotion", limit=10)
+    assert report["rollout_ledger_ids"] == [report["applied_patches"][0]["rollout_ledger_id"]]
+    assert any(item["promotion_id"] == report["applied_patches"][0]["promotion_id"] for item in ledger)

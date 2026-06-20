@@ -17,6 +17,7 @@ POLICY_TARGETS = {"tool_route", "prompt_policy", "system_prompt_patch"}
 PLAYBOOK_TARGETS = {"eval_case", "skill_draft", "sop_draft", "source_policy"}
 CODE_ASSET_TARGETS = {"code_patch"}
 UNSUPPORTED_ACTIVE_TARGETS = {"deployment_rollout", "scheduler_policy"}
+CAPABILITY_ROLLOUT_ACTION = "capability_promotion"
 
 
 def promote_candidate(
@@ -86,6 +87,60 @@ def promote_candidate(
         "side_effect": side_effect,
         "applied_artifact_ids": list(side_effect.get("applied_artifact_ids") or []),
         "rollback": candidate.content.get("rollback") or "disable candidate",
+    }
+
+
+def backfill_promotion_rollout_ledger(
+    runtime: Any,
+    *,
+    scope: dict[str, Any] | ScopeRef | None = None,
+    limit: int = 500,
+) -> dict[str, Any]:
+    """Backfill rollout ledger rows for historical promotion_request records."""
+    scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+    max_count = max(0, int(limit))
+    page_size = min(100, max_count or 100)
+    offset = 0
+    records: list[RecordEnvelope] = []
+    seen_ids: set[str] = set()
+    while len(records) < max_count:
+        remaining = max_count - len(records)
+        page = runtime.store.list_records(
+            kinds=["promotion_request"],
+            scope=scope_ref,
+            limit=min(page_size, remaining),
+            offset=offset,
+        )
+        if not page:
+            break
+        for record in page:
+            if record.record_id in seen_ids:
+                continue
+            records.append(record)
+            seen_ids.add(record.record_id)
+            if len(records) >= max_count:
+                break
+        if len(page) < min(page_size, remaining):
+            break
+        offset += len(page)
+
+    created: list[str] = []
+    existing: list[str] = []
+    for record in records:
+        ledger = _ensure_promotion_rollout_ledger(runtime, promotion_record=record, scope=scope_ref)
+        if not ledger:
+            continue
+        if ledger.get("created"):
+            created.append(str(ledger.get("id") or ""))
+        else:
+            existing.append(str(ledger.get("id") or ""))
+    return {
+        "ok": True,
+        "scanned_count": len(records),
+        "created_count": len([item for item in created if item]),
+        "existing_count": len([item for item in existing if item]),
+        "ledger_ids": [item for item in created if item],
+        "action_type": CAPABILITY_ROLLOUT_ACTION,
     }
 
 
@@ -885,4 +940,210 @@ def _promotion_record(
             "side_effect_ok": bool((side_effect or {}).get("ok")),
         },
     )
+    _ensure_promotion_rollout_ledger(runtime, promotion_record=record, candidate=candidate, scope=scope or candidate.scope)
     return record.record_id
+
+
+def _ensure_promotion_rollout_ledger(
+    runtime: Any,
+    *,
+    promotion_record: RecordEnvelope,
+    candidate: RecordEnvelope | None = None,
+    scope: dict[str, Any] | ScopeRef | None = None,
+) -> dict[str, Any] | None:
+    content = dict(promotion_record.content or {})
+    action = str(content.get("action") or promotion_record.meta.get("action") or "").strip()
+    if action == "dry_run":
+        return None
+    scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope or promotion_record.scope)
+    existing_id = _existing_capability_rollout_ledger_id(runtime, scope=scope_ref, promotion_id=promotion_record.record_id)
+    if existing_id:
+        _attach_rollout_ledger_id(runtime, promotion_record, ledger_id=existing_id)
+        return {"id": existing_id, "created": False}
+
+    sqlite = getattr(getattr(runtime, "store", None), "sqlite", None)
+    record_ledger = getattr(sqlite, "_record_policy_rollout_ledger", None)
+    if not callable(record_ledger):
+        return None
+
+    candidate_id = str(content.get("candidate_id") or promotion_record.meta.get("candidate_id") or "").strip()
+    if candidate is None and candidate_id:
+        candidate = runtime.store.get_by_id(candidate_id, scope=scope_ref)
+    gate = _jsonable(content.get("gate") if isinstance(content.get("gate"), dict) else {})
+    side_effect = _jsonable(content.get("side_effect") if isinstance(content.get("side_effect"), dict) else {})
+    eval_result = _jsonable(content.get("eval_result") if isinstance(content.get("eval_result"), dict) else {})
+    health = _jsonable(content.get("health") if isinstance(content.get("health"), dict) else {})
+    applied_artifact_ids = _applied_artifact_ids(candidate=candidate, content=content, side_effect=side_effect)
+    budget_decision = _capability_budget_decision(promotion_record.status, action)
+    applied_pattern_id = applied_artifact_ids[0] if budget_decision == "ok" and applied_artifact_ids else ""
+    reason = _promotion_ledger_reason(action=action, gate=gate, side_effect=side_effect)
+    promotion_target = str(content.get("promotion_target") or promotion_record.meta.get("promotion_target") or (candidate.meta.get("promotion_target") if candidate else "") or "")
+    target_capability = str(content.get("target_capability") or promotion_record.meta.get("target_capability") or (candidate.meta.get("target_capability") if candidate else "") or "")
+    source_opportunity_id = candidate_id or promotion_record.record_id
+    source_opportunity = _jsonable(
+        {
+            "opportunity_id": source_opportunity_id,
+            "opportunity_type": CAPABILITY_ROLLOUT_ACTION,
+            "candidate_id": candidate_id,
+            "candidate_title": candidate.title if candidate is not None else promotion_record.title,
+            "candidate_summary": candidate.summary if candidate is not None else promotion_record.summary,
+            "experiment_id": str((candidate.content or {}).get("experiment_id") or (candidate.meta or {}).get("experiment_id") or "") if candidate is not None else "",
+            "promotion_target": promotion_target,
+            "target_capability": target_capability,
+            "loop_id": str(content.get("loop_id") or promotion_record.meta.get("loop_id") or ""),
+            "rollout_action": action,
+        }
+    )
+    ledger = record_ledger(
+        action_type=CAPABILITY_ROLLOUT_ACTION,
+        scope=scope_ref,
+        promotion_id=promotion_record.record_id,
+        source_opportunity_id=source_opportunity_id,
+        source_opportunity=source_opportunity,
+        trust_report=_jsonable(
+            {
+                "ok": budget_decision == "ok" and bool(gate.get("ok", True)),
+                "gate": gate,
+                "health": health,
+            }
+        ),
+        replay_report=_promotion_replay_report(eval_result=eval_result, gate=gate),
+        is_auto=True,
+        applied_pattern_id=applied_pattern_id,
+        budget_decision=budget_decision,
+        reason=reason,
+        details=_jsonable(
+            {
+                "promotion_request_id": promotion_record.record_id,
+                "candidate_id": candidate_id,
+                "promotion_target": promotion_target,
+                "target_capability": target_capability,
+                "rollout_status": promotion_record.status,
+                "rollout_action": action,
+                "applied_artifact_ids": applied_artifact_ids,
+                "gate": gate,
+                "health": health,
+                "side_effect": side_effect,
+                "eval_result": eval_result,
+            }
+        ),
+    )
+    _attach_rollout_ledger_id(runtime, promotion_record, ledger_id=str(ledger.get("id") or ""))
+    return {**ledger, "created": True}
+
+
+def _existing_capability_rollout_ledger_id(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    promotion_id: str,
+) -> str:
+    sqlite = getattr(getattr(runtime, "store", None), "sqlite", None)
+    conn = getattr(sqlite, "conn", None)
+    if conn is not None:
+        row = conn.execute(
+            """
+            SELECT id
+            FROM policy_rollout_ledger
+            WHERE tenant_id = ?
+              AND agent_id = ?
+              AND workspace_id = ?
+              AND user_id = ?
+              AND action_type = ?
+              AND promotion_id = ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            """,
+            (
+                scope.tenant_id,
+                scope.agent_id,
+                scope.workspace_id,
+                scope.user_id,
+                CAPABILITY_ROLLOUT_ACTION,
+                str(promotion_id),
+            ),
+        ).fetchone()
+        return str(row["id"] or "") if row is not None else ""
+    try:
+        for item in runtime.get_policy_rollout_ledger(scope=scope, action=CAPABILITY_ROLLOUT_ACTION, limit=200):
+            if str(item.get("promotion_id") or "") == str(promotion_id):
+                return str(item.get("id") or "")
+    except Exception:
+        return ""
+    return ""
+
+
+def _attach_rollout_ledger_id(runtime: Any, promotion_record: RecordEnvelope, *, ledger_id: str) -> None:
+    if not ledger_id:
+        return
+    content = dict(promotion_record.content or {})
+    meta = dict(promotion_record.meta or {})
+    if content.get("rollout_ledger_id") == ledger_id and meta.get("rollout_ledger_id") == ledger_id:
+        return
+    content["rollout_ledger_id"] = ledger_id
+    meta["rollout_ledger_id"] = ledger_id
+    promotion_record.content = content
+    promotion_record.meta = meta
+    promotion_record.touch()
+    runtime.store.rewrite(promotion_record)
+
+
+def _capability_budget_decision(status: str, action: str) -> str:
+    if str(action) in {"applied", "applied_shadow"} and str(status) in {"promoted", WATCH_STATUS}:
+        return "ok"
+    return "blocked"
+
+
+def _promotion_ledger_reason(*, action: str, gate: dict[str, Any], side_effect: dict[str, Any]) -> str:
+    if side_effect.get("blocked_reason"):
+        return str(side_effect.get("blocked_reason") or "")
+    blocked_reasons = gate.get("blocked_reasons")
+    if isinstance(blocked_reasons, list) and blocked_reasons:
+        return ",".join(str(item) for item in blocked_reasons if str(item).strip())
+    if action == "blocked_l3":
+        return "l3_requires_approval"
+    if action in {"gate_failed", "adapter_failed"}:
+        return action
+    return ""
+
+
+def _applied_artifact_ids(
+    *,
+    candidate: RecordEnvelope | None,
+    content: dict[str, Any],
+    side_effect: dict[str, Any],
+) -> list[str]:
+    raw = side_effect.get("applied_artifact_ids") or content.get("applied_artifact_ids") or []
+    if not raw and candidate is not None:
+        raw = candidate.meta.get("applied_artifact_ids") or []
+    if isinstance(raw, str):
+        items = [raw]
+    elif isinstance(raw, (list, tuple, set)):
+        items = [str(item) for item in raw if str(item).strip()]
+    else:
+        items = []
+    return items
+
+
+def _promotion_replay_report(*, eval_result: dict[str, Any], gate: dict[str, Any]) -> dict[str, Any]:
+    gate_bundle = gate.get("gate_bundle") if isinstance(gate.get("gate_bundle"), dict) else {}
+    for key in ("real_task_replay", "replay_report", "replay"):
+        report = gate_bundle.get(key)
+        if isinstance(report, dict):
+            return _jsonable({"ok": bool(report.get("ok", True)), "source": key, key: report})
+    return _jsonable(
+        {
+            "ok": str(eval_result.get("verdict") or "pass").lower() == "pass",
+            "eval_result": eval_result,
+        }
+    )
+
+
+def _jsonable(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_jsonable(item) for item in value]
+    return str(value)
