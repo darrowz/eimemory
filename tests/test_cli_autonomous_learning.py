@@ -109,3 +109,4 @@ def test_cli_learn_think_persists_supervisor_contract(tmp_path, monkeypatch, cap
 
     assert doctor["supervisor"]["runs"]["learn-think"]["last_success_at"]
     assert doctor["supervisor"]["runs"]["learn-think"]["error"] == ""
+    assert doctor["supervisor"]["runs"]["learn-watch"]["error"] == "no_run_record"

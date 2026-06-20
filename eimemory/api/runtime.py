@@ -536,7 +536,7 @@ class Runtime:
         if not started_tracing:
             tracemalloc.start()
         try:
-            watch_report = collect_world_signals(self, scope=scope, watches=default_watches(), dry_run=not persist, loop_id="think")
+            watch_report = collect_world_signals(self, scope=scope, watches=default_watches(), dry_run=True, loop_id="think")
             self_model = build_self_model(self, scope=scope, persist=persist, loop_id="think")
             ranked = rank_learning_signals(watch_report.get("signals") or [], self_model, [], max_items=max_items)
             registry = load_goal_registry()
