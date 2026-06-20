@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import json
+import sys
 import time
-import tracemalloc
 from dataclasses import asdict, dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -62,9 +62,7 @@ def collect_world_signals(
     loop_id: str = "manual",
 ) -> dict[str, Any]:
     started = time.perf_counter()
-    tracemalloc_started = not tracemalloc.is_tracing()
-    if tracemalloc_started:
-        tracemalloc.start()
+    memory_start = _memory_peak_bytes()
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
     normalized = [_with_cursor(runtime, scope=scope_ref, watch=watch if isinstance(watch, SourceWatch) else SourceWatch.from_dict(watch)) for watch in (watches or default_watches())]
     signals: list[dict[str, Any]] = []
@@ -141,16 +139,14 @@ def collect_world_signals(
             _save_watch_cursor(runtime, scope=scope_ref, watch=watch, high_watermark=high_watermark, seen_record_ids=seen_record_ids)
         watcher_cursors.append({"watch_name": watch.name, "kind": watch.kind, "last_seen": watch.last_seen, "high_watermark": high_watermark})
     edge_report = build_incremental_memory_edges(runtime, scope=scope_ref, dry_run=dry_run)
-    current, peak = tracemalloc.get_traced_memory() if tracemalloc.is_tracing() else (0, 0)
-    if tracemalloc_started:
-        tracemalloc.stop()
+    memory_peak = max(memory_start, _memory_peak_bytes())
     duration_ms = int((time.perf_counter() - started) * 1000)
     produced_count = len(persisted_ids) + len(updated_ids) + int(edge_report.get("edge_count") or 0)
     summary = supervisor_summary(
         command="learn-watch",
         ok=True,
         duration_ms=duration_ms,
-        memory_peak=int(peak or current or 0),
+        memory_peak=int(memory_peak or 0),
         produced_count=produced_count,
         promoted_count=0,
         rolled_back_count=0,
@@ -168,7 +164,7 @@ def collect_world_signals(
         "updated_record_ids": updated_ids,
         "watcher_cursors": watcher_cursors,
         "duration_ms": duration_ms,
-        "memory_peak": int(peak or current or 0),
+        "memory_peak": int(memory_peak or 0),
         "produced_count": produced_count,
         "promoted_count": 0,
         "rolled_back_count": 0,
@@ -176,6 +172,20 @@ def collect_world_signals(
         "supervisor_summary": summary,
         "signals": signals,
     }
+
+
+def _memory_peak_bytes() -> int:
+    try:
+        import resource
+    except ImportError:
+        return 0
+    try:
+        peak = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+    except Exception:
+        return 0
+    if sys.platform == "darwin":
+        return peak
+    return peak * 1024
 
 
 def default_watches() -> list[SourceWatch]:
