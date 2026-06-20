@@ -207,6 +207,9 @@ def test_immutable_release_installer_normalizes_service_ownership() -> None:
     assert "systemctl --user daemon-reload" in script
     assert "systemctl --user enable eimemory-rpc.service" in script
     assert "systemctl enable eimemory-rpc.service" not in script
+    assert "_retire_system_rpc_unit" in script
+    assert "systemctl disable --now eimemory-rpc.service" in script
+    assert "retired-by-eimemory-user-systemd" in script
 
 
 def test_user_systemd_owner_check_uses_only_user_service_as_rpc_owner() -> None:
@@ -218,4 +221,13 @@ def test_user_systemd_owner_check_uses_only_user_service_as_rpc_owner() -> None:
     assert "systemctl is-enabled eimemory-rpc.service" in script
     assert "system_owner_active" in script
     assert "system_owner_enabled" in script
+    assert "system_owner_fragment" in script
+    assert "system_rpc_service_unit_present" in script
     assert "ok=user_systemd_owner" in script
+
+
+def test_learn_watch_timer_is_not_five_minute_heavy_polling() -> None:
+    timer = Path("deploy/systemd/eimemory-learn-watch.timer").read_text(encoding="utf-8")
+
+    assert "OnCalendar=*:00/15" in timer
+    assert "OnCalendar=*:00/5" not in timer

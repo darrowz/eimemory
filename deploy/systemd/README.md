@@ -73,7 +73,7 @@ timers unless a deployment document explicitly says otherwise:
 | Timer | Purpose |
 | --- | --- |
 | `eimemory-nightly.timer` | Daily intake, governance, evaluation summaries, autonomous evolution, autonomous learning, and dashboards. |
-| `eimemory-learn-watch.timer` | Lightweight signal capture every 5 minutes. |
+| `eimemory-learn-watch.timer` | Lightweight signal capture every 15 minutes. |
 | `eimemory-learn-think.timer` | Hourly proactive thinking over local evidence. |
 | `eimemory-learn-dashboard.timer` | Daily operator dashboard after the nightly run. |
 
@@ -109,7 +109,7 @@ journalctl --user -u eimemory-nightly.service -n 100 --no-pager
 
 The 1.0.0 proactive learning layer runs three additional timers:
 
-- `eimemory-learn-watch.timer`: every 5 minutes, capture lightweight local/outcome/world signals.
+- `eimemory-learn-watch.timer`: every 15 minutes, capture lightweight local/outcome/world signals.
 - `eimemory-learn-think.timer`: hourly, turn signals and long-term goals into persisted thoughts.
 - `eimemory-learn-dashboard.timer`: daily at 03:45 local time, summarize learned/applied/blocked/next items.
 

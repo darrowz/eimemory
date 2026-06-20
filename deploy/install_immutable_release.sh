@@ -12,6 +12,7 @@ EIMEMORY_CONFIG_DIR="${EIMEMORY_CONFIG_DIR:-/etc/eimemory}"
 EIMEMORY_LOG_DIR="${EIMEMORY_LOG_DIR:-$SERVICE_HOME/.openclaw/logs}"
 USER_SYSTEMD_ENABLE_SERVICE="${USER_SYSTEMD_ENABLE_SERVICE:-1}"
 USER_SYSTEMD_DIR="${USER_SYSTEMD_DIR:-$SERVICE_HOME/.config/systemd/user}"
+SYSTEM_RPC_UNIT_PATH="${SYSTEM_RPC_UNIT_PATH:-/etc/systemd/system/eimemory-rpc.service}"
 COMMIT="${1:-$(git -C "$REPO_DIR" rev-parse --short HEAD)}"
 RELEASE_DIR="$INSTALL_ROOT/releases/$COMMIT"
 CURRENT_LINK="$INSTALL_ROOT/current"
@@ -31,6 +32,19 @@ _ensure_runtime_dir() {
   else
     echo "warning: unable to create runtime directory: $path" >&2
   fi
+}
+
+_retire_system_rpc_unit() {
+  if [ "$(id -u)" -ne 0 ] || ! command -v systemctl >/dev/null 2>&1; then
+    return
+  fi
+  systemctl disable --now eimemory-rpc.service >/dev/null 2>&1 || true
+  if [ -e "$SYSTEM_RPC_UNIT_PATH" ] || [ -L "$SYSTEM_RPC_UNIT_PATH" ]; then
+    local retired_path="$SYSTEM_RPC_UNIT_PATH.retired-by-eimemory-user-systemd"
+    mv -f "$SYSTEM_RPC_UNIT_PATH" "$retired_path"
+    echo "retired_systemd_unit=$retired_path"
+  fi
+  systemctl daemon-reload >/dev/null 2>&1 || true
 }
 
 if ! git -C "$REPO_DIR" rev-parse --verify "$COMMIT^{commit}" >/dev/null 2>&1; then
@@ -62,6 +76,7 @@ _ensure_runtime_dir "$EIMEMORY_LOG_DIR" 0750
 if [ "$(id -u)" -eq 0 ] && id "$SERVICE_USER" >/dev/null 2>&1; then
   chown -h "$SERVICE_USER:$SERVICE_GROUP" "$CURRENT_LINK" 2>/dev/null || true
 fi
+_retire_system_rpc_unit
 if [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ] && command -v systemctl >/dev/null 2>&1; then
   mkdir -p "$USER_SYSTEMD_DIR"
   install -m 0644 "$RELEASE_DIR/deploy/systemd/eimemory-rpc.service" "$USER_SYSTEMD_DIR/eimemory-rpc.service"

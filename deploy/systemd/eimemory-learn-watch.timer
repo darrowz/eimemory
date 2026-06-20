@@ -1,8 +1,8 @@
 [Unit]
-Description=Run eimemory lightweight observer every 5 minutes
+Description=Run eimemory lightweight observer every 15 minutes
 
 [Timer]
-OnCalendar=*:00/5
+OnCalendar=*:00/15
 Persistent=true
 Unit=eimemory-learn-watch.service
 

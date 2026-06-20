@@ -86,8 +86,8 @@ def collect_world_signals(
                 duplicate_count += 1
                 existing = existing_records.get(signal_hash)
                 if existing is not None and not dry_run and not watch.dry_run:
-                    _increment_repeat_count(runtime, existing, signal)
-                    updated_ids.append(existing.record_id)
+                    if _increment_repeat_count(runtime, existing, signal):
+                        updated_ids.append(existing.record_id)
                 continue
             seen_hashes.add(signal_hash)
             payload = {
@@ -512,19 +512,32 @@ def _signal_hash(watch: SourceWatch, signal: dict[str, Any]) -> str:
     return sha256(seed.encode("utf-8")).hexdigest()[:24]
 
 
-def _increment_repeat_count(runtime: Any, record: RecordEnvelope, signal: dict[str, Any]) -> None:
+def _increment_repeat_count(runtime: Any, record: RecordEnvelope, signal: dict[str, Any]) -> bool:
     content = record.content if isinstance(record.content, dict) else {}
     payload = content.get("signal") if isinstance(content.get("signal"), dict) else {}
     current = max(1, int(payload.get("repeat_count") or record.meta.get("repeat_count") or 1))
     incoming = max(1, int(signal.get("repeat_count") or 1))
-    payload["repeat_count"] = current + incoming
-    payload["source_record_ids"] = sorted({*list(payload.get("source_record_ids") or []), *list(signal.get("source_record_ids") or []), str(signal.get("record_id") or "")} - {""})
+    current_source_ids = {str(item) for item in list(payload.get("source_record_ids") or []) if str(item)}
+    incoming_source_ids = _signal_source_ids(signal)
+    if incoming_source_ids and incoming_source_ids.issubset(current_source_ids):
+        return False
+    if not incoming_source_ids and not signal.get("record_id"):
+        return False
+    merged_source_ids = sorted(current_source_ids | incoming_source_ids)
+    payload["repeat_count"] = max(current, incoming, len(merged_source_ids) if merged_source_ids else 1)
+    payload["source_record_ids"] = merged_source_ids
     payload["impact"] = min(1.0, float(payload.get("impact") or 0.75) + 0.05)
     payload["urgency"] = min(1.0, float(payload.get("urgency") or 0.7) + 0.05)
     record.content = {**content, "signal": payload}
     record.meta["repeat_count"] = payload["repeat_count"]
     record.meta["last_seen_loop"] = str(signal.get("loop_id") or "")
     runtime.store.rewrite(record)
+    return True
+
+
+def _signal_source_ids(signal: dict[str, Any]) -> set[str]:
+    values = [*list(signal.get("source_record_ids") or []), str(signal.get("record_id") or "")]
+    return {str(item) for item in values if str(item)}
 
 
 def _normalize_text(text: str) -> str:

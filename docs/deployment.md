@@ -128,7 +128,7 @@ rollback evidence. The companion timers are lightweight helpers:
 
 | Unit | Purpose |
 | --- | --- |
-| `eimemory-learn-watch.timer` | Capture local/outcome/world signals every 5 minutes. |
+| `eimemory-learn-watch.timer` | Capture local/outcome/world signals every 15 minutes. |
 | `eimemory-learn-think.timer` | Turn signals, corrections, and stale goals into persisted thoughts hourly. |
 | `eimemory-learn-dashboard.timer` | Write the operator dashboard after nightly at 03:45. |
 
