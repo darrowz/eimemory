@@ -11,6 +11,7 @@ from typing import Any
 from eimemory.core.clock import now_iso
 from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.governance.goal_registry import derive_goal_signals, load_goal_registry
+from eimemory.governance.memory_graph import build_incremental_memory_edges
 from eimemory.governance.supervisor import persist_supervisor_summary, supervisor_summary
 from eimemory.metadata import business_metadata
 from eimemory.models.records import RecordEnvelope, ScopeRef
@@ -139,16 +140,18 @@ def collect_world_signals(
         if not dry_run and not watch.dry_run:
             _save_watch_cursor(runtime, scope=scope_ref, watch=watch, high_watermark=high_watermark, seen_record_ids=seen_record_ids)
         watcher_cursors.append({"watch_name": watch.name, "kind": watch.kind, "last_seen": watch.last_seen, "high_watermark": high_watermark})
+    edge_report = build_incremental_memory_edges(runtime, scope=scope_ref, dry_run=dry_run)
     current, peak = tracemalloc.get_traced_memory() if tracemalloc.is_tracing() else (0, 0)
     if tracemalloc_started:
         tracemalloc.stop()
     duration_ms = int((time.perf_counter() - started) * 1000)
+    produced_count = len(persisted_ids) + len(updated_ids) + int(edge_report.get("edge_count") or 0)
     summary = supervisor_summary(
         command="learn-watch",
         ok=True,
         duration_ms=duration_ms,
         memory_peak=int(peak or current or 0),
-        produced_count=len(persisted_ids) + len(updated_ids),
+        produced_count=produced_count,
         promoted_count=0,
         rolled_back_count=0,
     )
@@ -166,9 +169,10 @@ def collect_world_signals(
         "watcher_cursors": watcher_cursors,
         "duration_ms": duration_ms,
         "memory_peak": int(peak or current or 0),
-        "produced_count": len(persisted_ids) + len(updated_ids),
+        "produced_count": produced_count,
         "promoted_count": 0,
         "rolled_back_count": 0,
+        "edge_builder": edge_report,
         "supervisor_summary": summary,
         "signals": signals,
     }

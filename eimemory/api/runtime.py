@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import ipaddress
 import socket
+import time
+import tracemalloc
 from dataclasses import asdict, is_dataclass, replace
 from datetime import date as date_type
 from datetime import datetime
@@ -35,6 +37,29 @@ ALLOWED_FETCH_CONTENT_TYPES = (
     "application/xml",
     "text/",
 )
+
+
+def _supervisor_count(value: Any, field_names: set[str]) -> int:
+    if isinstance(value, dict):
+        total = 0
+        for key, item in value.items():
+            if key in field_names:
+                total += _non_negative_int(item)
+            elif isinstance(item, (dict, list, tuple)):
+                total += _supervisor_count(item, field_names)
+        return total
+    if isinstance(value, (list, tuple)):
+        return sum(_supervisor_count(item, field_names) for item in value)
+    return 0
+
+
+def _non_negative_int(value: Any) -> int:
+    if isinstance(value, bool):
+        return 0
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 class Runtime:
@@ -502,23 +527,57 @@ class Runtime:
         from eimemory.governance.goal_registry import load_goal_registry
         from eimemory.governance.self_model import build_self_model
         from eimemory.governance.signal_intake import rank_learning_signals
+        from eimemory.governance.supervisor import persist_supervisor_summary, supervisor_summary
         from eimemory.governance.thoughts import generate_thoughts
         from eimemory.governance.world_watchers import collect_world_signals, default_watches
 
-        watch_report = collect_world_signals(self, scope=scope, watches=default_watches(), dry_run=not persist, loop_id="think")
-        self_model = build_self_model(self, scope=scope, persist=persist, loop_id="think")
-        ranked = rank_learning_signals(watch_report.get("signals") or [], self_model, [], max_items=max_items)
-        registry = load_goal_registry()
-        return generate_thoughts(
-            self,
-            signals=ranked,
-            self_model=self_model,
-            goals=list(registry.get("long_term") or []),
-            scope=scope,
-            loop_id="think",
-            persist=persist,
-            max_items=max_items,
-        )
+        started_at = time.perf_counter()
+        started_tracing = tracemalloc.is_tracing()
+        if not started_tracing:
+            tracemalloc.start()
+        try:
+            watch_report = collect_world_signals(self, scope=scope, watches=default_watches(), dry_run=not persist, loop_id="think")
+            self_model = build_self_model(self, scope=scope, persist=persist, loop_id="think")
+            ranked = rank_learning_signals(watch_report.get("signals") or [], self_model, [], max_items=max_items)
+            registry = load_goal_registry()
+            report = generate_thoughts(
+                self,
+                signals=ranked,
+                self_model=self_model,
+                goals=list(registry.get("long_term") or []),
+                scope=scope,
+                loop_id="think",
+                persist=persist,
+                max_items=max_items,
+            )
+            summary = supervisor_summary(
+                command="learn-think",
+                ok=bool(report.get("ok", True)),
+                duration_ms=int((time.perf_counter() - started_at) * 1000),
+                memory_peak=int(tracemalloc.get_traced_memory()[1]) if tracemalloc.is_tracing() else 0,
+                produced_count=_supervisor_count(report, {"persisted_count", "thought_count", "record_count"}),
+                promoted_count=0,
+                rolled_back_count=0,
+                error=str(report.get("error") or ""),
+            )
+            report["supervisor_summary"] = summary
+            if persist:
+                persist_supervisor_summary(self, scope=scope, summary=summary)
+            return report
+        except Exception as exc:
+            summary = supervisor_summary(
+                command="learn-think",
+                ok=False,
+                duration_ms=int((time.perf_counter() - started_at) * 1000),
+                memory_peak=int(tracemalloc.get_traced_memory()[1]) if tracemalloc.is_tracing() else 0,
+                error=str(exc),
+            )
+            if persist:
+                persist_supervisor_summary(self, scope=scope, summary=summary)
+            raise
+        finally:
+            if not started_tracing and tracemalloc.is_tracing():
+                tracemalloc.stop()
 
     def build_replay_dataset(
         self,

@@ -4,6 +4,7 @@ from collections import Counter
 from hashlib import sha256
 import re
 
+from eimemory.governance.memory_graph import build_evidence_refs, build_timeline, graph_route_for_query
 from eimemory.knowledge.views import build_recall_view, choose_view_type, records_from_view
 from eimemory.identity import extract_user_aliases, hongtu_query_scopes_with_aliases
 from eimemory.living import LIVING_MEMORY_META_KEY, enrich_living_memory
@@ -175,6 +176,11 @@ class MemoryAPI:
         profile_config = self._recall_profile_config(recall_profile)
         search_limit = max(limit * profile_config["search_multiplier"], limit)
         recall_intent = classify_recall_intent(normalized_query, task_context)
+        graph_route = graph_route_for_query(
+            normalized_query,
+            intent_name=recall_intent.name,
+            task_context=task_context,
+        )
         report_query = self._is_report_query(normalized_query, task_context)
         recall_filters = self._recall_filters_from_task_context(task_context)
         policy_source_weights = self._source_weights(retrieval_policy.get("source_weights"))
@@ -263,6 +269,7 @@ class MemoryAPI:
         if preference_query:
             items = [item for item in items if self._is_preference_recall_candidate(item, normalized_query)]
         graph_expanded = 0
+        graph_edge_refs = []
         related_ids: list[str] = []
         base_items = list(items)
         base_ids = {item.record_id for item in base_items}
@@ -284,6 +291,23 @@ class MemoryAPI:
             blocked_counts.update(graph_suppressed_counts)
             if preference_query:
                 items = [item for item in items if self._is_preference_recall_candidate(item, normalized_query)]
+        if base_items and profile_config["graph_depth"] > 0:
+            edge_items, graph_edge_refs = self._expand_memory_edge_items(
+                base_items=base_items,
+                scope=scope_ref,
+                edge_types=list(graph_route.get("edge_types") or []),
+                limit=max(limit * 2, limit),
+            )
+            if edge_items:
+                items = self._dedupe_records([*items, *edge_items])
+                items, edge_suppressed_counts = self._filter_default_suppressed_items(
+                    items,
+                    task_context,
+                    allow_operational_recall=operational_recall_allowed,
+                )
+                blocked_counts.update(edge_suppressed_counts)
+                if preference_query:
+                    items = [item for item in items if self._is_preference_recall_candidate(item, normalized_query)]
         claims = [item for item in items if item.kind == "claim_card"]
         pages = [item for item in items if item.kind == "knowledge_page"]
         memories = [item for item in items if item.kind in {"memory", "rule"}]
@@ -377,11 +401,14 @@ class MemoryAPI:
                 "rule_recall_promoted_count": len(rule_recall_items),
                 "unknown_record_id": gap["unknown"].record_id if gap else "",
                 "graph_expanded": graph_expanded,
+                "graph_route": graph_route,
                 "retrieval_mode": str(search_report.get("retrieval_mode") or "hybrid"),
                 "vector_hits": int(search_report.get("vector_hits") or 0),
                 "quality_summary": self._quality_summary(items),
                 "source_composition": self._source_composition(items),
                 "selected_records": self._selected_record_summaries(items),
+                "evidence_refs": build_evidence_refs(items, graph_edge_refs),
+                "timeline": build_timeline(items),
                 "online_recall_gate": {
                     "ok": True,
                     "mode": "bypassed" if operational_recall_allowed else "enforced",
@@ -1191,6 +1218,37 @@ class MemoryAPI:
                 expanded_items.append(item)
                 existing_ids.add(item.record_id)
         return expanded_items
+
+    def _expand_memory_edge_items(
+        self,
+        *,
+        base_items: list[RecordEnvelope],
+        scope: ScopeRef,
+        edge_types: list[str],
+        limit: int,
+    ) -> tuple[list[RecordEnvelope], list]:
+        base_ids = [item.record_id for item in base_items]
+        if not base_ids:
+            return [], []
+        edges = self.store.list_memory_edges(
+            scope=scope,
+            edge_types=edge_types,
+            record_ids=base_ids,
+            limit=max(1, int(limit)) * 4,
+        )
+        related_ids: list[str] = []
+        for edge in edges:
+            if edge.from_id in base_ids and edge.to_id not in base_ids:
+                related_ids.append(edge.to_id)
+            if edge.to_id in base_ids and edge.from_id not in base_ids:
+                related_ids.append(edge.from_id)
+        related = self.store.get_many_by_ids(list(dict.fromkeys(related_ids)), scope=scope)
+        expanded = [
+            record
+            for record in related
+            if self._is_returnable_memory_record(record) and self._record_matches_scope(record, scope)
+        ]
+        return expanded[: max(0, int(limit))], edges
 
     def _quality_summary(self, items: list[RecordEnvelope]) -> dict:
         tiers: dict[str, int] = {}

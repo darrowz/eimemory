@@ -15,6 +15,7 @@ from eimemory.cli.main import main as cli_main
 from eimemory.compatibility.migration_helpers import export_records, import_records
 from eimemory.config.loader import load_settings
 from eimemory.models.records import RecordEnvelope, ScopeRef
+from eimemory.governance.supervisor import build_supervisor_contract
 from eimemory.scheduler.jobs import run_nightly_jobs
 
 
@@ -407,6 +408,9 @@ def test_scheduler_and_openclaw_tools_surface_runtime_state(tmp_path) -> None:
     assert search["items"]
     assert explain["ok"] is True
     assert nightly["active_rule_count"] == 1
+    assert nightly["supervisor_summary"]["command"] == "nightly"
+    supervisor = build_supervisor_contract(runtime, scope={"agent_id": "main", "workspace_id": "repo-x"})
+    assert supervisor["runs"]["nightly"]["last_success_at"]
 
 
 def test_export_and_import_helpers_roundtrip(tmp_path) -> None:

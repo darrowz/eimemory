@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import time
+import tracemalloc
 from collections import Counter
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
@@ -10,6 +11,7 @@ from typing import Any, Callable
 
 from eimemory.api.runtime import Runtime
 from eimemory.evaluation.production_recall import evaluate_production_recall_quality_gate
+from eimemory.governance.supervisor import persist_supervisor_summary, supervisor_summary
 from eimemory.intake.loop import candidates_to_records
 from eimemory.metadata import business_metadata
 from eimemory.models.records import RecordEnvelope, ScopeRef
@@ -25,124 +27,205 @@ def run_nightly_jobs(
     replay_datasets: dict[str, list[dict]] | None = None,
     external_fetch_text: Callable[[str], str] | None = None,
 ) -> dict:
-    roi = runtime.evolution.build_roi_report(scope=scope)
-    active_rules = runtime.store.list_records(kinds=["rule"], scope=scope, status="active", limit=500)
-    promotion_candidates = runtime.store.list_records(kinds=["rule"], scope=scope, status="accepted", limit=500)
-    memories = runtime.store.list_records(kinds=["memory", "multimodal_memory"], scope=scope, limit=500)
-    paper_sources = runtime.store.list_records(kinds=["paper_source"], scope=scope, limit=1000)
-    claim_cards = runtime.store.list_records(kinds=["claim_card"], scope=scope, limit=1000)
-    knowledge_pages = runtime.store.list_records(kinds=["knowledge_page"], scope=scope, limit=1000)
-    knowledge_report = runtime.evolution.reconcile_knowledge(scope=scope)
-    quality_report = runtime.evolution.memory_quality_report(scope=scope)
-    source_expansion_report = runtime.expand_sources_autonomously(scope=scope, apply=True, max_apply=3)
-    news_source_promotion_report = _promote_news_rss_source_candidates(runtime, scope=scope)
-    intake_report = runtime.run_knowledge_intake(scope=scope, persist=True, limit=100)
-    external_collection_report = _run_external_collection(
-        runtime,
-        scope=scope,
-        limit=100,
-        fetch_text=external_fetch_text,
+    started_at = time.perf_counter()
+    started_tracing = tracemalloc.is_tracing()
+    if not started_tracing:
+        tracemalloc.start()
+    try:
+        roi = runtime.evolution.build_roi_report(scope=scope)
+        active_rules = runtime.store.list_records(kinds=["rule"], scope=scope, status="active", limit=500)
+        promotion_candidates = runtime.store.list_records(kinds=["rule"], scope=scope, status="accepted", limit=500)
+        memories = runtime.store.list_records(kinds=["memory", "multimodal_memory"], scope=scope, limit=500)
+        paper_sources = runtime.store.list_records(kinds=["paper_source"], scope=scope, limit=1000)
+        claim_cards = runtime.store.list_records(kinds=["claim_card"], scope=scope, limit=1000)
+        knowledge_pages = runtime.store.list_records(kinds=["knowledge_page"], scope=scope, limit=1000)
+        knowledge_report = runtime.evolution.reconcile_knowledge(scope=scope)
+        quality_report = runtime.evolution.memory_quality_report(scope=scope)
+        source_expansion_report = runtime.expand_sources_autonomously(scope=scope, apply=True, max_apply=3)
+        news_source_promotion_report = _promote_news_rss_source_candidates(runtime, scope=scope)
+        intake_report = runtime.run_knowledge_intake(scope=scope, persist=True, limit=100)
+        external_collection_report = _run_external_collection(
+            runtime,
+            scope=scope,
+            limit=100,
+            fetch_text=external_fetch_text,
+        )
+        paper_promotion_report = _run_paper_candidate_promotion(
+            runtime,
+            scope=scope,
+            candidate_records=external_collection_report.get("_candidate_records", []),
+        )
+        operational_projection_report = _run_operational_projection(runtime, scope=scope)
+        research_digest_report = _run_research_digest(runtime, scope=scope)
+        external_collection_report.pop("_candidate_records", None)
+        source_quality_report = runtime.source_quality_report(scope=scope)
+        collection_policy = runtime.collection_policy(scope=scope)
+        source_discovery_report = _run_source_discovery(runtime, scope=scope)
+        replay_datasets = replay_datasets or {}
+        replay_reports = []
+        for rule in active_rules:
+            dataset = replay_datasets.get(rule.record_id)
+            if dataset:
+                replay_reports.append(runtime.evolution.replay_rule(record_id=rule.record_id, dataset=dataset))
+        rule_evolution_report = _run_rule_evolution(
+            runtime,
+            scope=scope,
+            replay_datasets=replay_datasets,
+        )
+        memory_eval_ci_report = _run_memory_eval_ci(runtime, scope=scope)
+        production_recall_report = _run_production_recall_eval(runtime, scope=scope)
+        daily_brief_report = _run_daily_brief(runtime, scope=scope)
+        judgment_evaluation_report = _run_judgment_evaluation(runtime, scope=scope)
+        autonomous_evolution_report = _run_autonomous_evolution(runtime, scope=scope)
+        autonomous_learning_report = _run_autonomous_learning(runtime, scope=scope)
+        autonomous_learning_daily_report = _run_autonomous_learning_daily_report(runtime, scope=scope)
+        autonomous_learning_dashboard = _run_autonomous_learning_dashboard(runtime, scope=scope)
+        outcome_evolution_report = _run_outcome_evolution_summary(runtime, scope=scope)
+        report = {
+            "ok": True,
+            "active_rule_count": len(active_rules),
+            "promotion_candidate_count": len(promotion_candidates),
+            "memory_count": len(memories),
+            "knowledge": {
+                "paper_source_count": len(paper_sources),
+                "claim_card_count": len(claim_cards),
+                "knowledge_page_count": len(knowledge_pages),
+                "contradiction_count": knowledge_report["contradiction_count"],
+                "refreshed_page_count": knowledge_report["page_refresh_count"],
+            },
+            "replay": {
+                "executed": len(replay_reports),
+                "pass_count": sum(1 for report in replay_reports if report.meta.get("verdict") == "pass"),
+                "fail_count": sum(1 for report in replay_reports if report.meta.get("verdict") == "fail"),
+            },
+            "memory_quality": quality_report,
+            "source_expansion": {
+                "ok": bool(source_expansion_report.get("ok", True)),
+                "proposal_count": int(source_expansion_report.get("proposal_count") or 0),
+                "approved_count": int(source_expansion_report.get("approved_count") or 0),
+                "rejected_count": int(source_expansion_report.get("rejected_count") or 0),
+                "duplicate_count": int(source_expansion_report.get("duplicate_count") or 0),
+                "applied_count": int(source_expansion_report.get("applied_count") or 0),
+                "updated_source_ids": list(source_expansion_report.get("updated_source_ids") or []),
+                "audit_record_ids": list(source_expansion_report.get("audit_record_ids") or []),
+            },
+            "news_source_promotion": news_source_promotion_report,
+            "knowledge_intake": {
+                "scanned_count": intake_report["scanned_count"],
+                "candidate_count": intake_report["candidate_count"],
+                "rejected_count": intake_report["rejected_count"],
+                "quarantined_count": intake_report["quarantined_count"],
+                "written_count": intake_report["written_count"],
+                "skipped_existing_count": intake_report.get("skipped_existing_count", 0),
+            },
+            "external_collection": external_collection_report,
+            "paper_promotion": paper_promotion_report,
+            "operational_projection": operational_projection_report,
+            "research_digest": research_digest_report,
+            "daily_brief": daily_brief_report,
+            "rule_evolution": rule_evolution_report,
+            "autonomous_evolution": autonomous_evolution_report,
+            "autonomous_learning": autonomous_learning_report,
+            "autonomous_learning_daily_report": autonomous_learning_daily_report,
+            "autonomous_learning_dashboard": autonomous_learning_dashboard,
+            "outcome_evolution": outcome_evolution_report,
+            "memory_eval_ci": memory_eval_ci_report,
+            "production_recall": production_recall_report,
+            "recall_quality": production_recall_report,
+            "recall_quality_gate": production_recall_report.get("quality_gate") or {
+                "ok": False,
+                "blocked_reason": production_recall_report.get("eval_skipped_reason")
+                or production_recall_report.get("error")
+                or "recall_quality_unavailable",
+                "blocking_metrics": {},
+            },
+            "judgment_evaluation": judgment_evaluation_report,
+            "source_discovery": source_discovery_report,
+            "source_quality": {
+                "source_count": source_quality_report["source_count"],
+                "run_now": collection_policy["run_now"],
+                "pause": collection_policy["pause"],
+                "lower_frequency": collection_policy["lower_frequency"],
+                "gap_query_count": len(collection_policy["gap_queries"]),
+            },
+            "roi": roi,
+        }
+        summary = supervisor_summary(
+            command="nightly",
+            ok=True,
+            duration_ms=int((time.perf_counter() - started_at) * 1000),
+            memory_peak=_supervisor_memory_peak(),
+            produced_count=_nightly_produced_count(report),
+            promoted_count=_nightly_promoted_count(report),
+            rolled_back_count=_nightly_rolled_back_count(report),
+        )
+        report["supervisor_summary"] = summary
+        persist_supervisor_summary(runtime, scope=scope, summary=summary)
+        return report
+    except Exception as exc:
+        summary = supervisor_summary(
+            command="nightly",
+            ok=False,
+            duration_ms=int((time.perf_counter() - started_at) * 1000),
+            memory_peak=_supervisor_memory_peak(),
+            error=str(exc),
+        )
+        persist_supervisor_summary(runtime, scope=scope, summary=summary)
+        raise
+    finally:
+        if not started_tracing and tracemalloc.is_tracing():
+            tracemalloc.stop()
+
+
+def _supervisor_memory_peak() -> int:
+    if not tracemalloc.is_tracing():
+        return 0
+    return int(tracemalloc.get_traced_memory()[1])
+
+
+def _nightly_produced_count(report: dict[str, Any]) -> int:
+    return _sum_count_fields(
+        report,
+        {
+            "accepted_count",
+            "candidate_count",
+            "persisted_count",
+            "record_count",
+            "updated_count",
+            "written_count",
+        },
     )
-    paper_promotion_report = _run_paper_candidate_promotion(
-        runtime,
-        scope=scope,
-        candidate_records=external_collection_report.get("_candidate_records", []),
-    )
-    operational_projection_report = _run_operational_projection(runtime, scope=scope)
-    research_digest_report = _run_research_digest(runtime, scope=scope)
-    external_collection_report.pop("_candidate_records", None)
-    source_quality_report = runtime.source_quality_report(scope=scope)
-    collection_policy = runtime.collection_policy(scope=scope)
-    source_discovery_report = _run_source_discovery(runtime, scope=scope)
-    replay_datasets = replay_datasets or {}
-    replay_reports = []
-    for rule in active_rules:
-        dataset = replay_datasets.get(rule.record_id)
-        if dataset:
-            replay_reports.append(runtime.evolution.replay_rule(record_id=rule.record_id, dataset=dataset))
-    rule_evolution_report = _run_rule_evolution(
-        runtime,
-        scope=scope,
-        replay_datasets=replay_datasets,
-    )
-    memory_eval_ci_report = _run_memory_eval_ci(runtime, scope=scope)
-    production_recall_report = _run_production_recall_eval(runtime, scope=scope)
-    daily_brief_report = _run_daily_brief(runtime, scope=scope)
-    judgment_evaluation_report = _run_judgment_evaluation(runtime, scope=scope)
-    autonomous_evolution_report = _run_autonomous_evolution(runtime, scope=scope)
-    autonomous_learning_report = _run_autonomous_learning(runtime, scope=scope)
-    autonomous_learning_daily_report = _run_autonomous_learning_daily_report(runtime, scope=scope)
-    autonomous_learning_dashboard = _run_autonomous_learning_dashboard(runtime, scope=scope)
-    outcome_evolution_report = _run_outcome_evolution_summary(runtime, scope=scope)
-    return {
-        "ok": True,
-        "active_rule_count": len(active_rules),
-        "promotion_candidate_count": len(promotion_candidates),
-        "memory_count": len(memories),
-        "knowledge": {
-            "paper_source_count": len(paper_sources),
-            "claim_card_count": len(claim_cards),
-            "knowledge_page_count": len(knowledge_pages),
-            "contradiction_count": knowledge_report["contradiction_count"],
-            "refreshed_page_count": knowledge_report["page_refresh_count"],
-        },
-        "replay": {
-            "executed": len(replay_reports),
-            "pass_count": sum(1 for report in replay_reports if report.meta.get("verdict") == "pass"),
-            "fail_count": sum(1 for report in replay_reports if report.meta.get("verdict") == "fail"),
-        },
-        "memory_quality": quality_report,
-        "source_expansion": {
-            "ok": bool(source_expansion_report.get("ok", True)),
-            "proposal_count": int(source_expansion_report.get("proposal_count") or 0),
-            "approved_count": int(source_expansion_report.get("approved_count") or 0),
-            "rejected_count": int(source_expansion_report.get("rejected_count") or 0),
-            "duplicate_count": int(source_expansion_report.get("duplicate_count") or 0),
-            "applied_count": int(source_expansion_report.get("applied_count") or 0),
-            "updated_source_ids": list(source_expansion_report.get("updated_source_ids") or []),
-            "audit_record_ids": list(source_expansion_report.get("audit_record_ids") or []),
-        },
-        "news_source_promotion": news_source_promotion_report,
-        "knowledge_intake": {
-            "scanned_count": intake_report["scanned_count"],
-            "candidate_count": intake_report["candidate_count"],
-            "rejected_count": intake_report["rejected_count"],
-            "quarantined_count": intake_report["quarantined_count"],
-            "written_count": intake_report["written_count"],
-            "skipped_existing_count": intake_report.get("skipped_existing_count", 0),
-        },
-        "external_collection": external_collection_report,
-        "paper_promotion": paper_promotion_report,
-        "operational_projection": operational_projection_report,
-        "research_digest": research_digest_report,
-        "daily_brief": daily_brief_report,
-        "rule_evolution": rule_evolution_report,
-        "autonomous_evolution": autonomous_evolution_report,
-        "autonomous_learning": autonomous_learning_report,
-        "autonomous_learning_daily_report": autonomous_learning_daily_report,
-        "autonomous_learning_dashboard": autonomous_learning_dashboard,
-        "outcome_evolution": outcome_evolution_report,
-        "memory_eval_ci": memory_eval_ci_report,
-        "production_recall": production_recall_report,
-        "recall_quality": production_recall_report,
-        "recall_quality_gate": production_recall_report.get("quality_gate") or {
-            "ok": False,
-            "blocked_reason": production_recall_report.get("eval_skipped_reason")
-            or production_recall_report.get("error")
-            or "recall_quality_unavailable",
-            "blocking_metrics": {},
-        },
-        "judgment_evaluation": judgment_evaluation_report,
-        "source_discovery": source_discovery_report,
-        "source_quality": {
-            "source_count": source_quality_report["source_count"],
-            "run_now": collection_policy["run_now"],
-            "pause": collection_policy["pause"],
-            "lower_frequency": collection_policy["lower_frequency"],
-            "gap_query_count": len(collection_policy["gap_queries"]),
-        },
-        "roi": roi,
-    }
+
+
+def _nightly_promoted_count(report: dict[str, Any]) -> int:
+    return _sum_count_fields(report, {"applied_count", "promoted_count"})
+
+
+def _nightly_rolled_back_count(report: dict[str, Any]) -> int:
+    return _sum_count_fields(report, {"rollback_count", "rolled_back_count"})
+
+
+def _sum_count_fields(value: Any, field_names: set[str]) -> int:
+    if isinstance(value, dict):
+        total = 0
+        for key, item in value.items():
+            if key in field_names:
+                total += _coerce_non_negative_int(item)
+            elif isinstance(item, (dict, list, tuple)):
+                total += _sum_count_fields(item, field_names)
+        return total
+    if isinstance(value, (list, tuple)):
+        return sum(_sum_count_fields(item, field_names) for item in value)
+    return 0
+
+
+def _coerce_non_negative_int(value: Any) -> int:
+    if isinstance(value, bool):
+        return 0
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _run_outcome_evolution_summary(runtime: Runtime, *, scope: dict) -> dict[str, Any]:

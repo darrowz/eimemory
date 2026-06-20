@@ -5,6 +5,7 @@ from hashlib import sha256
 
 from eimemory.adapters.openclaw.qmd_export import export_record_markdown
 from eimemory.metadata import business_metadata
+from eimemory.models.memory_edges import MemoryEdge
 from eimemory.storage.jsonl import JsonlLog
 from eimemory.storage.sqlite_store import SqliteRecordStore
 from eimemory.models.records import RecordEnvelope, ScopeRef
@@ -141,6 +142,25 @@ class RuntimeStore:
     ) -> list[RecordEnvelope]:
         scope_ref = None if scope is None else (scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope))
         return self.sqlite.list_records(kinds=kinds, scope=scope_ref, status=status, limit=limit, offset=offset)
+
+    def upsert_memory_edge(self, edge: MemoryEdge) -> MemoryEdge:
+        return self.sqlite.upsert_memory_edge(edge)
+
+    def list_memory_edges(
+        self,
+        *,
+        scope: ScopeRef | dict | None = None,
+        edge_types: list[str] | None = None,
+        record_ids: list[str] | None = None,
+        limit: int = 100,
+    ) -> list[MemoryEdge]:
+        scope_ref = None if scope is None else (scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope))
+        return self.sqlite.list_memory_edges(
+            scope=scope_ref,
+            edge_types=edge_types,
+            record_ids=record_ids,
+            limit=limit,
+        )
 
     def close(self) -> None:
         self.sqlite.close()

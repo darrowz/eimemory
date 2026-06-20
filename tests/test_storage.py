@@ -1,3 +1,4 @@
+from eimemory.models.memory_edges import MemoryEdge
 from eimemory.models.records import RecordEnvelope, ScopeRef, TimeRef
 from eimemory.storage.runtime_store import RuntimeStore
 
@@ -19,6 +20,32 @@ def test_runtime_store_persists_and_searches_records(tmp_path) -> None:
 
     assert len(results) == 1
     assert results[0].record_id == record.record_id
+
+
+def test_runtime_store_persists_scoped_memory_edges(tmp_path) -> None:
+    store = RuntimeStore(root=tmp_path)
+    scope = ScopeRef(agent_id="main", workspace_id="graph")
+    first = RecordEnvelope.create(kind="memory", title="Deploy 1.5.1", summary="Release commit abc123.", scope=scope)
+    second = RecordEnvelope.create(kind="memory", title="Health check", summary="8091 health ok.", scope=scope)
+    store.append(first)
+    store.append(second)
+
+    edge = MemoryEdge.create(
+        from_id=first.record_id,
+        to_id=second.record_id,
+        edge_type="temporal",
+        confidence=0.7,
+        evidence_id=second.record_id,
+        scope=scope,
+        reason="test",
+    )
+    store.upsert_memory_edge(edge)
+
+    edges = store.list_memory_edges(scope=scope, edge_types=["temporal"], record_ids=[first.record_id], limit=5)
+
+    assert [item.edge_id for item in edges] == [edge.edge_id]
+    assert edges[0].from_id == first.record_id
+    assert edges[0].to_id == second.record_id
 
 
 def test_runtime_store_returns_active_policy_rules(tmp_path) -> None:

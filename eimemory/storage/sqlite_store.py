@@ -21,6 +21,7 @@ from eimemory.events import (
     pattern_matches,
 )
 from eimemory.identity import hongtu_query_scopes
+from eimemory.models.memory_edges import MEMORY_EDGE_TYPES, MemoryEdge
 from eimemory.models.records import RecordEnvelope, ScopeRef
 from eimemory.governance.policy_rollout import (
     AUTO_PROMOTION_BUDGET_PER_DAY,
@@ -85,6 +86,7 @@ class SqliteRecordStore:
             self._create_records_table()
             self._create_indexes()
             self._create_recall_index_tables()
+            self._create_memory_edge_tables()
             self._create_event_memory_tables()
             self._create_policy_rollout_tables()
             self._seed_default_intent_patterns()
@@ -104,6 +106,7 @@ class SqliteRecordStore:
             self.conn.execute("ALTER TABLE records ADD COLUMN embedding_json TEXT NOT NULL DEFAULT '[]'")
         self._create_indexes()
         self._create_recall_index_tables()
+        self._create_memory_edge_tables()
         self._create_event_memory_tables()
         self._migrate_intent_patterns_schema()
         self._create_policy_rollout_tables()
@@ -188,6 +191,34 @@ class SqliteRecordStore:
         except sqlite3.OperationalError:
             # Some embedded SQLite builds omit FTS5. Anchor candidates still keep recall functional.
             pass
+
+    def _create_memory_edge_tables(self) -> None:
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS memory_edges (
+                edge_id TEXT PRIMARY KEY,
+                from_id TEXT NOT NULL,
+                to_id TEXT NOT NULL,
+                edge_type TEXT NOT NULL,
+                confidence REAL NOT NULL DEFAULT 0.0,
+                evidence_id TEXT NOT NULL DEFAULT '',
+                tenant_id TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                reason TEXT NOT NULL DEFAULT '',
+                meta_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_memory_edges_scope_type "
+            "ON memory_edges(tenant_id, agent_id, workspace_id, user_id, edge_type, updated_at)"
+        )
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_edges_from ON memory_edges(from_id, edge_type)")
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_edges_to ON memory_edges(to_id, edge_type)")
 
     def _create_event_memory_tables(self) -> None:
         self.conn.execute(
@@ -1208,6 +1239,99 @@ class SqliteRecordStore:
             [*params, limit, offset],
         ).fetchall()
         return [RecordEnvelope.from_dict(json.loads(row["payload_json"])) for row in rows]
+
+    def upsert_memory_edge(self, edge: MemoryEdge) -> MemoryEdge:
+        if edge.edge_type not in MEMORY_EDGE_TYPES:
+            raise ValueError(f"invalid memory edge type: {edge.edge_type}")
+        self.conn.execute(
+            """
+            INSERT INTO memory_edges (
+                edge_id, from_id, to_id, edge_type, confidence, evidence_id,
+                tenant_id, agent_id, workspace_id, user_id,
+                reason, meta_json, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(edge_id) DO UPDATE SET
+                confidence=excluded.confidence,
+                evidence_id=excluded.evidence_id,
+                reason=excluded.reason,
+                meta_json=excluded.meta_json,
+                updated_at=excluded.updated_at
+            """,
+            (
+                edge.edge_id,
+                edge.from_id,
+                edge.to_id,
+                edge.edge_type,
+                edge.confidence,
+                edge.evidence_id,
+                edge.scope.tenant_id,
+                edge.scope.agent_id,
+                edge.scope.workspace_id,
+                edge.scope.user_id,
+                edge.reason,
+                json.dumps(edge.meta or {}, ensure_ascii=False, sort_keys=True),
+                edge.created_at,
+                edge.updated_at,
+            ),
+        )
+        self.conn.commit()
+        return edge
+
+    def list_memory_edges(
+        self,
+        *,
+        scope: ScopeRef | None = None,
+        edge_types: list[str] | None = None,
+        record_ids: list[str] | None = None,
+        limit: int = 100,
+    ) -> list[MemoryEdge]:
+        where = ["1=1"]
+        params: list[object] = []
+        if scope is not None:
+            self._apply_scope_filters(where, params, scope)
+        clean_types = [str(item) for item in list(edge_types or []) if str(item) in MEMORY_EDGE_TYPES]
+        if clean_types:
+            where.append(f"edge_type IN ({','.join('?' for _ in clean_types)})")
+            params.extend(clean_types)
+        clean_ids = [str(item) for item in list(record_ids or []) if str(item)]
+        if clean_ids:
+            placeholders = ",".join("?" for _ in clean_ids)
+            where.append(f"(from_id IN ({placeholders}) OR to_id IN ({placeholders}))")
+            params.extend(clean_ids)
+            params.extend(clean_ids)
+        rows = self.conn.execute(
+            "SELECT * FROM memory_edges WHERE "
+            + " AND ".join(where)
+            + " ORDER BY confidence DESC, updated_at DESC LIMIT ?",
+            [*params, self._normalize_limit(limit)],
+        ).fetchall()
+        return [self._memory_edge_from_row(row) for row in rows]
+
+    def _memory_edge_from_row(self, row: sqlite3.Row) -> MemoryEdge:
+        try:
+            meta = json.loads(str(row["meta_json"] or "{}"))
+        except json.JSONDecodeError:
+            meta = {}
+        return MemoryEdge.from_dict(
+            {
+                "edge_id": row["edge_id"],
+                "from_id": row["from_id"],
+                "to_id": row["to_id"],
+                "edge_type": row["edge_type"],
+                "confidence": row["confidence"],
+                "evidence_id": row["evidence_id"],
+                "scope": {
+                    "tenant_id": row["tenant_id"],
+                    "agent_id": row["agent_id"],
+                    "workspace_id": row["workspace_id"],
+                    "user_id": row["user_id"],
+                },
+                "reason": row["reason"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+                "meta": meta if isinstance(meta, dict) else {},
+            }
+        )
 
     def _apply_scope_filters(self, where: list[str], params: list[object], scope: ScopeRef) -> None:
         scopes = hongtu_query_scopes(scope)

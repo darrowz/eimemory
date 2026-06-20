@@ -179,6 +179,53 @@ def test_world_watch_uses_incremental_cursor_and_fixed_supervisor_summary(tmp_pa
     assert stored[0].meta["repeat_count"] == 2
 
 
+def test_world_watch_builds_incremental_magma_memory_edges(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu", "workspace_id": "graph"}
+    scope_ref = ScopeRef.from_dict(scope)
+    cause = runtime.store.append(
+        RecordEnvelope.create(
+            kind="memory",
+            title="Rollback plan missing",
+            summary="The eimemory deployment failure root cause was an empty rollback command.",
+            scope=scope_ref,
+            source="test",
+            meta={"service": "eimemory-rpc"},
+        )
+    )
+    symptom = runtime.store.append(
+        RecordEnvelope.create(
+            kind="reflection",
+            title="eimemory-rpc deploy failed",
+            summary="Health check on 8091 failed after deployment.",
+            scope=scope_ref,
+            source="test",
+            content={"cause_record_id": cause.record_id, "service": "eimemory-rpc"},
+        )
+    )
+
+    first = collect_world_signals(
+        runtime,
+        scope=scope,
+        watches=[SourceWatch(name="disabled", kind="local_state", enabled=False)],
+        dry_run=False,
+        loop_id="learn_watch",
+    )
+    second = collect_world_signals(
+        runtime,
+        scope=scope,
+        watches=[SourceWatch(name="disabled", kind="local_state", enabled=False)],
+        dry_run=False,
+        loop_id="learn_watch",
+    )
+    edges = runtime.store.list_memory_edges(scope=scope, edge_types=["causal", "entity", "temporal"], record_ids=[symptom.record_id], limit=10)
+
+    assert first["edge_builder"]["scanned_count"] >= 2
+    assert first["edge_builder"]["edge_counts"]["causal"] >= 1
+    assert second["edge_builder"]["scanned_count"] == 0
+    assert any(edge.edge_type == "causal" and edge.from_id == cause.record_id and edge.to_id == symptom.record_id for edge in edges)
+
+
 def test_world_signals_truncate_dedupe_and_classify_capability(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     scope = {"agent_id": "hongtu"}

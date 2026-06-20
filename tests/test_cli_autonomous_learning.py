@@ -92,3 +92,20 @@ def test_cli_learn_dashboard_outputs_markdown(tmp_path, monkeypatch, capsys) -> 
     assert report["ok"] is True
     assert "## Capability Ledger" in report["markdown"]
     assert "trend" in report["markdown"].lower()
+
+
+def test_cli_learn_think_persists_supervisor_contract(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path))
+
+    assert cli_main(["learn", "think", "--persist", "--max-items", "1"]) == 0
+    report = json.loads(capsys.readouterr().out)
+
+    assert report["ok"] is True
+    for key in ("last_success_at", "last_error_at", "duration_ms", "memory_peak", "produced_count", "promoted_count", "rolled_back_count"):
+        assert key in report["supervisor_summary"]
+
+    assert cli_main(["doctor"]) == 0
+    doctor = json.loads(capsys.readouterr().out)
+
+    assert doctor["supervisor"]["runs"]["learn-think"]["last_success_at"]
+    assert doctor["supervisor"]["runs"]["learn-think"]["error"] == ""

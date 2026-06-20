@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from eimemory.api.runtime import Runtime
+from eimemory.models.memory_edges import MemoryEdge
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
@@ -54,6 +55,62 @@ def test_project_delivery_recall_routes_away_from_research_pages(tmp_path) -> No
     assert all("Operational page: Research digest" not in item.title for item in bundle.items)
     assert bundle.explanation["recall_intent"]["name"] == "project_delivery"
     assert bundle.explanation["recall_intent"]["memory_cube"] == "project"
+
+
+def test_recall_uses_causal_graph_route_and_evidence_refs(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu", "workspace_id": "ops", "user_id": "darrow"}
+    scope_ref = ScopeRef.from_dict(scope)
+    cause = runtime.store.append(
+        RecordEnvelope.create(
+            kind="memory",
+            title="Rollback ledger detail",
+            summary="rollback_plan was empty and the rollback command could not run.",
+            scope=scope_ref,
+            source="test",
+            meta={"service": "eimemory-rpc"},
+        )
+    )
+    symptom = runtime.store.append(
+        RecordEnvelope.create(
+            kind="memory",
+            title="eimemory-rpc deploy failed",
+            summary="The deployment failed after the 8091 health check.",
+            scope=scope_ref,
+            source="test",
+            meta={"service": "eimemory-rpc", "commit_sha": "abc123", "release_path": "/opt/eimemory/releases/abc123"},
+        )
+    )
+    edge = runtime.store.upsert_memory_edge(
+        MemoryEdge.create(
+            from_id=cause.record_id,
+            to_id=symptom.record_id,
+            edge_type="causal",
+            confidence=0.9,
+            evidence_id=symptom.record_id,
+            scope=scope_ref,
+            reason="test_causal_link",
+        )
+    )
+
+    bundle = runtime.memory.recall(
+        query="为什么 eimemory-rpc 部署失败",
+        scope=scope,
+        task_context={"task_type": "cli.recall"},
+        limit=5,
+    )
+
+    item_ids = [item.record_id for item in bundle.items]
+    assert symptom.record_id in item_ids
+    assert cause.record_id in item_ids
+    assert bundle.explanation["graph_route"]["primary"] == "causal"
+    assert "causal" in bundle.explanation["graph_route"]["edge_types"]
+    cause_ref = next(ref for ref in bundle.explanation["evidence_refs"] if ref["record_id"] == cause.record_id)
+    symptom_ref = next(ref for ref in bundle.explanation["evidence_refs"] if ref["record_id"] == symptom.record_id)
+    assert edge.edge_id in cause_ref["edge_ids"]
+    assert symptom_ref["commit_sha"] == "abc123"
+    assert symptom_ref["release_path"] == "/opt/eimemory/releases/abc123"
+    assert bundle.explanation["timeline"]
 
 
 def test_research_intent_keeps_knowledge_pages_available(tmp_path) -> None:
