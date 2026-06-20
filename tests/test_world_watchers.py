@@ -221,6 +221,8 @@ def test_world_watch_builds_incremental_magma_memory_edges(tmp_path) -> None:
     edges = runtime.store.list_memory_edges(scope=scope, edge_types=["causal", "entity", "temporal"], record_ids=[symptom.record_id], limit=10)
 
     assert first["edge_builder"]["scanned_count"] >= 2
+    assert first["edge_builder"]["batch_limit"] <= 24
+    assert first["edge_builder"]["reference_limit"] <= 160
     assert first["edge_builder"]["edge_counts"]["causal"] >= 1
     assert second["edge_builder"]["scanned_count"] == 0
     assert any(edge.edge_type == "causal" and edge.from_id == cause.record_id and edge.to_id == symptom.record_id for edge in edges)

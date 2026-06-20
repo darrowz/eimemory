@@ -48,7 +48,7 @@ def build_incremental_memory_edges(
     runtime: Any,
     *,
     scope: dict[str, Any] | ScopeRef | None = None,
-    limit: int = 120,
+    limit: int = 24,
     dry_run: bool = False,
 ) -> dict[str, Any]:
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
@@ -60,9 +60,10 @@ def build_incremental_memory_edges(
     ]
     records.sort(key=lambda item: (_record_time(item), item.record_id))
     records = records[: max(0, int(limit))]
+    reference_limit = max(60, min(160, max(1, int(limit)) * 5))
     references = [
         record
-        for record in runtime.store.list_records(kinds=GRAPH_RECORD_KINDS, scope=scope_ref, limit=600)
+        for record in runtime.store.list_records(kinds=GRAPH_RECORD_KINDS, scope=scope_ref, limit=reference_limit)
         if _is_graph_record_candidate(record)
     ]
     by_id = {record.record_id: record for record in references}
@@ -88,6 +89,8 @@ def build_incremental_memory_edges(
         "scanned_count": len(records),
         "edge_count": len(unique_edges),
         "edge_counts": edge_counts,
+        "batch_limit": max(0, int(limit)),
+        "reference_limit": reference_limit,
         "last_seen": cursor.get("last_seen", ""),
         "high_watermark": _high_watermark(records),
         "cursor_record_ids": [record.record_id for record in records if _record_time(record) == _high_watermark(records)],
@@ -305,7 +308,7 @@ def _entity_anchors(record: RecordEnvelope) -> list[str]:
 
 def _record_text(record: RecordEnvelope) -> str:
     content = record.content if isinstance(record.content, dict) else {}
-    return "\n".join(
+    text = "\n".join(
         str(value or "")
         for value in (
             record.title,
@@ -317,6 +320,7 @@ def _record_text(record: RecordEnvelope) -> str:
         )
         if str(value or "").strip()
     )
+    return text[:2400]
 
 
 def _terms(text: str) -> list[str]:
