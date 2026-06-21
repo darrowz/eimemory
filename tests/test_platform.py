@@ -1574,7 +1574,7 @@ process.stdout.write(JSON.stringify({
 
     assert result.returncode == 0
     payload = json.loads(result.stdout or "{}")
-    assert "tenant-a/user-a/hongtu/embodied" in payload["prependContext"]
+    assert "tenant-a/user-a/main/repo-x" in payload["prependContext"]
     assert "debug deployment memory|System: wrapper" in payload["prependContext"]
     assert "Conversation info" in payload["prependContext"]
 

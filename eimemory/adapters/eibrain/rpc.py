@@ -5,7 +5,7 @@ import json
 from eimemory.api.runtime import Runtime
 from eimemory.experience import record_experience_item, record_skill_trace
 from eimemory.identity import extract_user_aliases, hongtu_identity_meta, hongtu_scope
-from eimemory.models.records import LinkRef
+from eimemory.models.records import LinkRef, ScopeRef
 from eimemory.ei_bridge.protocol import (
     EIMEMORY_RPC_CONTRACT_VERSION,
     BridgeScope,
@@ -46,13 +46,17 @@ class EIBrainRPCBridge:
                 or not self._valid_task_context(task_context)
             ):
                 return self._with_contract(self._invalid_request())
+            resolved_scope = self._resolve_scope(scope, aliases=extract_user_aliases(task_context))
             bundle = self.runtime.memory.recall(
                 query=query,
-                scope=hongtu_scope(scope, aliases=extract_user_aliases(task_context)),
+                scope=resolved_scope,
                 task_context=task_context,
                 limit=limit,
             )
-            return self._with_contract({"ok": True, "result": bundle.to_dict()})
+            result = bundle.to_dict()
+            if scope.get("preserve_scope") is True:
+                result = self._filter_recall_result_to_scope(result, resolved_scope)
+            return self._with_contract({"ok": True, "result": result})
         if method == "memory.ingest":
             params = dict(params)
             scope: BridgeScope = params.get("scope", {})
@@ -82,11 +86,12 @@ class EIBrainRPCBridge:
             ):
                 return self._with_contract(self._invalid_request())
             source = str(params.get("source") or "eibrain.dialogue")
+            resolved_scope = self._resolve_scope(scope, aliases=meta)
             record = self.runtime.memory.ingest(
                 text=text,
                 memory_type=memory_type,
                 title=title,
-                scope=hongtu_scope(scope, aliases=meta),
+                scope=resolved_scope,
                 source=source,
                 tags=[str(tag) for tag in tags],
                 content=content,
@@ -112,7 +117,7 @@ class EIBrainRPCBridge:
             payload = params.get("event", params.get("payload", {}))
             if not isinstance(payload, dict) or not self._valid_scope(scope):
                 return self._with_contract(self._invalid_request())
-            result = self.runtime.record_event(payload, scope=hongtu_scope(scope))
+            result = self.runtime.record_event(payload, scope=self._resolve_scope(scope))
             return self._with_contract({"ok": True, "result": result})
         if method in {"memory.record_outcome", "memory.recordOutcome"}:
             params = dict(params)
@@ -121,7 +126,7 @@ class EIBrainRPCBridge:
             payload = params.get("outcome", params.get("payload", {}))
             if not isinstance(event_id, str) or not event_id.strip() or not isinstance(payload, dict) or not self._valid_scope(scope):
                 return self._with_contract(self._invalid_request())
-            result = self.runtime.record_outcome(event_id, payload, scope=hongtu_scope(scope))
+            result = self.runtime.record_outcome(event_id, payload, scope=self._resolve_scope(scope))
             return self._with_contract({"ok": True, "result": result})
         if method in {"memory.upsert_intent_pattern", "memory.upsertIntentPattern"}:
             params = dict(params)
@@ -129,7 +134,7 @@ class EIBrainRPCBridge:
             payload = params.get("pattern", params.get("payload", {}))
             if not isinstance(payload, dict) or not self._valid_scope(scope):
                 return self._with_contract(self._invalid_request())
-            result = self.runtime.upsert_intent_pattern(payload, scope=hongtu_scope(scope))
+            result = self.runtime.upsert_intent_pattern(payload, scope=self._resolve_scope(scope))
             return self._with_contract({"ok": True, "result": result})
         if method in {"memory.search_policy", "memory.searchPolicy"}:
             params = dict(params)
@@ -149,7 +154,7 @@ class EIBrainRPCBridge:
                 return self._with_contract(self._invalid_request())
             result = self.runtime.search_policy(
                 query,
-                scope=hongtu_scope(scope),
+                scope=self._resolve_scope(scope),
                 context=context,
                 limit=limit,
             )
@@ -168,7 +173,7 @@ class EIBrainRPCBridge:
             record = self.runtime.evolution.observe(
                 signal_type=params.get("signal_type") or "",
                 payload=payload,
-                scope=hongtu_scope(scope),
+                scope=self._resolve_scope(scope),
             )
             return self._with_contract({"ok": True, "result": record.to_dict()})
         if method == "experience.record_skill_trace":
@@ -177,7 +182,7 @@ class EIBrainRPCBridge:
             scope: BridgeScope = params.get("scope", {})
             if not isinstance(payload, dict) or not self._valid_scope(scope):
                 return self._with_contract(self._invalid_request())
-            result = record_skill_trace(self.runtime, payload, scope=hongtu_scope(scope))
+            result = record_skill_trace(self.runtime, payload, scope=self._resolve_scope(scope))
             if result.get("ok") is False:
                 return self._with_contract({"ok": False, "error": result.get("error", "invalid_experience")})
             return self._with_contract({"ok": True, "result": result})
@@ -187,7 +192,7 @@ class EIBrainRPCBridge:
             scope: BridgeScope = params.get("scope", {})
             if not isinstance(payload, dict) or not self._valid_scope(scope):
                 return self._with_contract(self._invalid_request())
-            result = record_experience_item(self.runtime, payload, scope=hongtu_scope(scope))
+            result = record_experience_item(self.runtime, payload, scope=self._resolve_scope(scope))
             if result.get("ok") is False:
                 return self._with_contract({"ok": False, "error": result.get("error", "invalid_experience")})
             return self._with_contract({"ok": True, "result": result})
@@ -197,7 +202,7 @@ class EIBrainRPCBridge:
             scope: BridgeScope = params.get("scope", {})
             if not isinstance(payload, dict) or not self._valid_scope(scope):
                 return self._with_contract(self._invalid_request())
-            result = self.runtime.record_outcome_trace(payload, scope=hongtu_scope(scope))
+            result = self.runtime.record_outcome_trace(payload, scope=self._resolve_scope(scope))
             if result.get("ok") is False:
                 return self._with_contract({"ok": False, "error": result.get("error", "invalid_experience")})
             return self._with_contract({"ok": True, "result": result})
@@ -209,10 +214,46 @@ class EIBrainRPCBridge:
                 return self._with_contract(self._invalid_request())
             policy = self.runtime.evolution.get_active_policy(
                 task_type=task_type,
-                scope=hongtu_scope(scope),
+                scope=self._resolve_scope(scope),
             )
             return self._with_contract({"ok": True, "result": policy})
         return self._with_contract({"ok": False, "error": "unknown_method"})
+
+    @staticmethod
+    def _resolve_scope(scope: BridgeScope, *, aliases: object = None) -> dict[str, str]:
+        if scope.get("preserve_scope") is True:
+            scope_ref = ScopeRef.from_dict(scope)
+            return {
+                "tenant_id": scope_ref.tenant_id,
+                "agent_id": scope_ref.agent_id,
+                "workspace_id": scope_ref.workspace_id,
+                "user_id": scope_ref.user_id,
+            }
+        return hongtu_scope(scope, aliases=aliases)
+
+    @classmethod
+    def _filter_recall_result_to_scope(cls, result: dict, scope: dict[str, str]) -> dict:
+        filtered = dict(result)
+        items = filtered.get("items")
+        if isinstance(items, list):
+            filtered["items"] = [item for item in items if cls._item_matches_scope(item, scope)]
+        recall_view = filtered.get("recall_view")
+        if isinstance(recall_view, dict) and isinstance(recall_view.get("items"), list):
+            recall_view = dict(recall_view)
+            recall_view["items"] = [
+                item for item in recall_view["items"] if cls._item_matches_scope(item, scope)
+            ]
+            filtered["recall_view"] = recall_view
+        return filtered
+
+    @staticmethod
+    def _item_matches_scope(item: object, scope: dict[str, str]) -> bool:
+        if not isinstance(item, dict):
+            return False
+        item_scope = item.get("scope")
+        if not isinstance(item_scope, dict):
+            return False
+        return all(str(item_scope.get(key) or "") == str(scope.get(key) or "") for key in ("tenant_id", "agent_id", "workspace_id", "user_id"))
 
     def _invalid_request(self) -> EIMemoryRPCResponse:
         return {"ok": False, "error": "invalid_request"}

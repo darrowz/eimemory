@@ -253,8 +253,19 @@ function normalizeScope(event, metadata = {}) {
   const sessionUserId = userIdFromSession(event?.sessionId || event?.session_id || '');
   return {
     tenant_id: String(event?.tenantId || event?.tenant_id || 'default'),
-    agent_id: HONGTU_AGENT_ID,
-    workspace_id: HONGTU_WORKSPACE_ID,
+    agent_id: String(
+      event?.agentId
+      || event?.agent_id
+      || process.env.EIMEMORY_AGENT_ID
+      || HONGTU_AGENT_ID
+    ),
+    workspace_id: String(
+      event?.workspaceId
+      || event?.workspace_id
+      || process.env.EIMEMORY_WORKSPACE_ID
+      || process.env.EIMEMORY_NODE
+      || HONGTU_WORKSPACE_ID
+    ),
     user_id: String(
       event?.userId
       || event?.user_id
@@ -265,6 +276,8 @@ function normalizeScope(event, metadata = {}) {
       || sessionUserId
       || DEFAULT_OPERATOR_USER_ID
     ),
+    preserve_scope: process.env.EIMEMORY_PRESERVE_SCOPE === '1'
+      || process.env.EIMEMORY_PRESERVE_SCOPE === 'true',
   };
 }
 

@@ -119,6 +119,52 @@ def test_eibrain_rpc_normalizes_hardware_scope_to_hongtu_memory_subject(tmp_path
     assert recall["result"]["items"][0]["record_id"] == stored["record_id"]
 
 
+def test_eibrain_rpc_can_preserve_remote_openclaw_scope(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    bridge = EIBrainRPCBridge(runtime)
+
+    scope = {
+        "agent_id": "hongtai",
+        "workspace_id": "shitron",
+        "user_id": "darrow",
+        "preserve_scope": True,
+    }
+    ingest = _handle_eibrain_request(
+        bridge,
+        {
+            "method": "memory.ingest",
+            "params": {
+                "text": "Remember shitron OpenClaw uses the preserved remote scope.",
+                "title": "Remote OpenClaw scope",
+                "memory_type": "preference",
+                "source": "openclaw.message_received",
+                "scope": scope,
+            },
+        },
+    )
+    recall = _handle_eibrain_request(
+        bridge,
+        {
+            "method": "memory.recall",
+            "params": {
+                "query": "preserved remote scope",
+                "scope": scope,
+                "task_context": {"task_type": "openclaw.prompt"},
+            },
+        },
+    )
+
+    assert ingest["result"]["scope"] == {
+        "tenant_id": "default",
+        "agent_id": "hongtai",
+        "workspace_id": "shitron",
+        "user_id": "darrow",
+    }
+    assert recall["result"]["items"]
+    assert recall["result"]["items"][0]["scope"]["agent_id"] == "hongtai"
+    assert recall["result"]["items"][0]["scope"]["workspace_id"] == "shitron"
+
+
 def test_eibrain_rpc_recall_expands_hongtu_user_aliases_without_source_leak(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     bridge = EIBrainRPCBridge(runtime)
