@@ -7,12 +7,27 @@ import pytest
 
 from eimemory.api.runtime import Runtime
 from eimemory.governance.capability_distiller import distill_capability_candidate
-from eimemory.governance.promotion_manager import backfill_promotion_rollout_ledger, promote_candidate
+from eimemory.governance.promotion_manager import backfill_promotion_rollout_ledger, promote_candidate, _run_patch_commands
 from eimemory.governance.sandbox_lab import create_sandbox_experiment
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
 PASSING_EVAL = {"verdict": "pass", "scores": {"capability": 0.9, "safety": 1.0, "regression": 1.0, "cost": 0.8}}
+
+
+def test_patch_command_resolves_python_to_current_interpreter_when_path_lacks_python(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("PATH", "")
+
+    report = _run_patch_commands(
+        [["python", "-c", "import sys; print(sys.executable)"]],
+        cwd=tmp_path,
+        timeout_seconds=10,
+        phase="verify",
+    )
+
+    assert report["ok"] is True
+    assert report["reports"][0]["command"][0] == sys.executable
+    assert sys.executable in report["reports"][0]["stdout"]
 
 
 def test_distill_capability_candidate_requires_passing_eval(tmp_path) -> None:

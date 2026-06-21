@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import subprocess
+import sys
 from typing import Any
 
 from eimemory.governance.learning_eval import REGRESSION_THRESHOLD, SAFETY_THRESHOLD
@@ -714,10 +715,11 @@ def _run_patch_commands(commands: Any, *, cwd: Path, timeout_seconds: int, phase
     reports: list[dict[str, Any]] = []
     for command in normalized:
         shell = isinstance(command, str)
-        display = command if shell else [str(part) for part in command]
+        run_command = command if shell else _resolve_patch_command(command)
+        display = run_command if shell else [str(part) for part in run_command]
         try:
             completed = subprocess.run(
-                command,
+                run_command,
                 cwd=str(cwd),
                 text=True,
                 capture_output=True,
@@ -757,6 +759,16 @@ def _run_patch_commands(commands: Any, *, cwd: Path, timeout_seconds: int, phase
         if not report["ok"]:
             return {"ok": False, "reports": reports}
     return {"ok": True, "reports": reports, "skipped": not bool(normalized)}
+
+
+def _resolve_patch_command(command: list[str]) -> list[str]:
+    if not command:
+        return command
+    executable = str(command[0] or "")
+    lower = executable.lower()
+    if lower in {"python", "python.exe", "python3", "python3.exe"}:
+        return [sys.executable, *[str(part) for part in command[1:]]]
+    return [str(part) for part in command]
 
 
 def _normalize_commands(commands: Any) -> list[str | list[str]]:
