@@ -148,6 +148,10 @@ class SqliteRecordStore:
             "CREATE INDEX IF NOT EXISTS idx_records_scope ON records(tenant_id, agent_id, workspace_id, user_id)"
         )
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_records_kind_scope ON records(kind, tenant_id, agent_id, workspace_id, user_id)")
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_records_kind_scope_updated "
+            "ON records(kind, tenant_id, agent_id, workspace_id, user_id, updated_at DESC, record_id DESC)"
+        )
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_records_source_kind ON records(source, kind)")
 
     def _create_recall_index_tables(self) -> None:
@@ -1219,6 +1223,8 @@ class SqliteRecordStore:
         status: str | None = None,
         limit: int = 100,
         offset: int = 0,
+        since: str | None = None,
+        until: str | None = None,
     ) -> list[RecordEnvelope]:
         limit = self._normalize_limit(limit)
         offset = max(0, int(offset))
@@ -1232,6 +1238,14 @@ class SqliteRecordStore:
             params.append(status)
         if scope:
             self._apply_scope_filters(where, params, scope)
+        since_value = _normalize_datetime_bound(since, end_of_day=False)
+        until_value = _normalize_datetime_bound(until, end_of_day=True)
+        if since_value:
+            where.append("updated_at >= ?")
+            params.append(since_value)
+        if until_value:
+            where.append("updated_at <= ?")
+            params.append(until_value)
         rows = self.conn.execute(
             "SELECT payload_json FROM records WHERE "
             + " AND ".join(where)
@@ -2653,3 +2667,12 @@ class SqliteRecordStore:
 
     def close(self) -> None:
         self.conn.close()
+
+
+def _normalize_datetime_bound(value: str | None, *, end_of_day: bool) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw):
+        return f"{raw}T23:59:59.999999+00:00" if end_of_day else f"{raw}T00:00:00+00:00"
+    return raw

@@ -7,13 +7,16 @@ from eimemory.governance.learning_state import append_learning_record_once, stab
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 SEEDED_LEDGER_CAPABILITIES = [
+    "memory.recall",
+    "tool.routing",
+    "knowledge.intake",
+    "proactive.judgment",
     "search.discovery",
     "code.implementation",
     "operations.uumit",
     "office.daily_task",
     "device.control",
     "research.synthesis",
-    "proactive.judgment",
     "safety.boundary",
 ]
 
@@ -78,6 +81,8 @@ def build_capability_ledger(
     *,
     scope: dict[str, Any] | ScopeRef | None = None,
     limit: int = 500,
+    since: str | None = None,
+    until: str | None = None,
     ensure_seeded: bool = False,
     attribute_outcomes: bool = True,
 ) -> dict[str, Any]:
@@ -94,7 +99,15 @@ def build_capability_ledger(
             attribute_capability_outcomes(runtime, scope=scope_ref, loop_id="outcome_attribution", limit=limit)
         except Exception:
             pass
-    records = runtime.store.list_records(kinds=["capability_score"], scope=scope_ref, limit=limit)
+    normalized_since = _normalize_date_bound(since, end_of_day=False)
+    normalized_until = _normalize_date_bound(until, end_of_day=True)
+    records = runtime.store.list_records(
+        kinds=["capability_score"],
+        scope=scope_ref,
+        limit=limit,
+        since=normalized_since,
+        until=normalized_until,
+    )
     by_capability: dict[str, list[RecordEnvelope]] = {}
     for record in records:
         by_capability.setdefault(str(record.meta.get("capability") or "general"), []).append(record)
@@ -151,7 +164,16 @@ def build_capability_ledger(
                 "last_record_id": "",
             },
         )
-    return {"ok": True, "capabilities": capabilities, "record_count": len(records)}
+    return {
+        "ok": True,
+        "capabilities": capabilities,
+        "record_count": len(records),
+        "query": {
+            "limit": max(0, int(limit)),
+            "since": normalized_since,
+            "until": normalized_until,
+        },
+    }
 
 
 def _ledger_confidence(*, score: float, evidence_count: int) -> str:
@@ -191,3 +213,12 @@ def _record_list(record: RecordEnvelope, key: str) -> list[str]:
     if not isinstance(value, list):
         return []
     return [str(item) for item in value if str(item or "").strip()]
+
+
+def _normalize_date_bound(value: str | None, *, end_of_day: bool) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    if len(raw) == 10 and raw[4] == "-" and raw[7] == "-":
+        return f"{raw}T23:59:59.999999+00:00" if end_of_day else f"{raw}T00:00:00+00:00"
+    return raw

@@ -152,8 +152,16 @@ def run_autonomous_learning_cycle(
         replay_gate = _replay_gate_report(real_task_replay)
         replay_gate_passed = bool(replay_gate.get("ok"))
 
-        target_capability = str(selected_goal.get("target_capability") or "proactive.judgment")
-        candidate_kinds = choose_candidate_kinds_for_goal(selected_goal, max_candidates=max(1, min(3, max_goals)))
+        goal_portfolio = _candidate_goal_portfolio(goals or [selected_goal], max_goals=max_goals)
+        max_candidates_per_goal = max(1, min(3, max_goals)) if len(goal_portfolio) <= 1 else 1
+        candidate_specs = _candidate_specs_for_goals(
+            goal_portfolio,
+            max_goals=max_goals,
+            max_candidates_per_goal=max_candidates_per_goal,
+            replay_dataset=replay_dataset,
+            evidence=evidence,
+        )
+        candidate_kinds = [str(spec.get("promotion_target") or "") for spec in candidate_specs]
         network_research["output_gate"] = _network_output_gate(
             runtime,
             enabled=network_enabled,
@@ -172,16 +180,21 @@ def run_autonomous_learning_cycle(
         promotion_reports: list[dict[str, Any]] = []
         regression_reports: list[dict[str, Any]] = []
         promotion_budget = max(0, int(max_promotions)) if max_promotions is not None else len(candidate_kinds)
-        for candidate_kind in candidate_kinds:
+        for spec in candidate_specs:
+            candidate_kind = str(spec.get("promotion_target") or "")
+            goal_for_candidate = dict(spec.get("goal") or selected_goal)
+            goal_id_for_candidate = _goal_id_for_goal(goal_for_candidate, goals, goal_ids)
+            target_capability = str(spec.get("target_capability") or goal_for_candidate.get("target_capability") or "proactive.judgment")
+            candidate_patch = dict(spec.get("patch") or _candidate_patch(goal_for_candidate, evidence, candidate_kind=candidate_kind, replay_dataset=replay_dataset))
             experiment_id = create_sandbox_experiment(
                 runtime,
                 scope=scope_ref,
                 loop_id=loop_id,
-                learning_goal_id=selected_goal_id or str(selected_goal.get("semantic_key") or ""),
+                learning_goal_id=goal_id_for_candidate or str(goal_for_candidate.get("semantic_key") or ""),
                 research_note_id=research_note_id,
                 candidate_kind=candidate_kind,
-                candidate_patch=_candidate_patch(selected_goal, evidence, candidate_kind=candidate_kind, replay_dataset=replay_dataset),
-                expected_gain=str(selected_goal.get("success_criteria") or ""),
+                candidate_patch=candidate_patch,
+                expected_gain=str(goal_for_candidate.get("success_criteria") or ""),
             )
             experiment_ids.append(experiment_id)
             experiment = runtime.store.get_by_id(experiment_id, scope=scope_ref)
@@ -208,7 +221,7 @@ def run_autonomous_learning_cycle(
                     experiment_id=experiment_id,
                     eval_result=eval_result,
                     promotion_target=candidate_kind,
-                    summary=str(selected_goal.get("success_criteria") or selected_goal.get("question") or "Autonomous learning candidate"),
+                    summary=_candidate_summary(goal_for_candidate, candidate_kind=candidate_kind, patch=candidate_patch),
                     target_capability=target_capability,
                 )
                 candidate_ids.append(candidate_id)
@@ -255,7 +268,7 @@ def run_autonomous_learning_cycle(
             runtime,
             scope=scope_ref,
             loop_id=loop_id,
-            capability=target_capability,
+            capability=str(selected_goal.get("target_capability") or "proactive.judgment"),
             score=0.8 if eval_result.get("ok") and replay_gate_passed else 0.4,
             evidence_record_ids=[item for item in [research_note_id, eval_result.get("record_id", ""), candidate_id] if item],
         )
@@ -294,6 +307,15 @@ def run_autonomous_learning_cycle(
             "candidate_id": candidate_id,
             "candidate_ids": candidate_ids,
             "candidate_kinds": candidate_kinds,
+            "candidate_specs": [
+                {
+                    "target_capability": str(spec.get("target_capability") or ""),
+                    "requested_target": str(spec.get("requested_target") or ""),
+                    "promotion_target": str(spec.get("promotion_target") or ""),
+                    "fallback_reason": str((spec.get("patch") or {}).get("fallback_reason") or ""),
+                }
+                for spec in candidate_specs
+            ],
             "real_task_replay": real_task_replay,
             "replay_gate": replay_gate,
             "replay_gate_passed": replay_gate_passed,
@@ -486,8 +508,14 @@ def _run_autonomous_learning_dry_run(
     for task in research_tasks:
         evidence.extend(collect(task, runtime=runtime, scope=scope))
     network_research = _network_research_summary(enabled=allow_network, tasks=research_tasks, evidence=evidence)
-    candidate_kind = _candidate_kind_for_goal(selected_goal)
     candidate_kinds = choose_candidate_kinds_for_goal(selected_goal, max_candidates=max(1, min(3, max_goals)))
+    candidate_kind, candidate_patch = _resolved_candidate_kind_and_patch(
+        selected_goal,
+        evidence,
+        candidate_kind=candidate_kinds[0] if candidate_kinds else _candidate_kind_for_goal(selected_goal),
+        replay_dataset={},
+    )
+    candidate_kinds = [candidate_kind, *[kind for kind in candidate_kinds[1:] if kind != candidate_kind]]
     network_research["output_gate"] = _network_output_gate(
         runtime,
         enabled=allow_network,
@@ -539,7 +567,7 @@ def _run_autonomous_learning_dry_run(
             "candidate_kind": candidate_kind,
             "candidate_kinds": candidate_kinds,
             "target_capability": selected_goal.get("target_capability") or "proactive.judgment",
-            "patch": _candidate_patch(selected_goal, evidence),
+            "patch": candidate_patch,
         },
         "promotion": {"ok": True, "applied": False, "dry_run": True},
         "regression_watch": {"ok": True, "regressed": False, "record_id": ""},
@@ -825,6 +853,98 @@ def _candidate_kind_for_goal(goal: dict[str, Any]) -> str:
     return choose_candidate_kinds_for_goal(goal, max_candidates=1)[0]
 
 
+def _candidate_specs_for_goals(
+    goals: list[dict[str, Any]],
+    *,
+    max_goals: int = 3,
+    max_candidates_per_goal: int = 1,
+    replay_dataset: dict[str, Any] | None = None,
+    evidence: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    specs: list[dict[str, Any]] = []
+    for goal in _candidate_goal_portfolio(goals, max_goals=max_goals):
+        for requested_target in choose_candidate_kinds_for_goal(goal, max_candidates=max_candidates_per_goal):
+            promotion_target, patch = _resolved_candidate_kind_and_patch(
+                goal,
+                evidence or [],
+                candidate_kind=requested_target,
+                replay_dataset=replay_dataset,
+            )
+            spec = {
+                "goal": dict(goal),
+                "target_capability": str(goal.get("target_capability") or "proactive.judgment"),
+                "requested_target": requested_target,
+                "promotion_target": promotion_target,
+                "patch": patch,
+            }
+            specs.append(spec)
+    if specs:
+        return specs
+    fallback = _fallback_goal()
+    promotion_target, patch = _resolved_candidate_kind_and_patch(
+        fallback,
+        evidence or [],
+        candidate_kind=_candidate_kind_for_goal(fallback),
+        replay_dataset=replay_dataset,
+    )
+    return [
+        {
+            "goal": fallback,
+            "target_capability": fallback["target_capability"],
+            "requested_target": promotion_target,
+            "promotion_target": promotion_target,
+            "patch": patch,
+        }
+    ]
+
+
+def _candidate_goal_portfolio(goals: list[dict[str, Any]], *, max_goals: int = 3) -> list[dict[str, Any]]:
+    limit = max(1, int(max_goals or 1))
+    selected: list[dict[str, Any]] = []
+    seen_categories: set[str] = set()
+    for goal in goals:
+        if not isinstance(goal, dict):
+            continue
+        category = _capability_category(str(goal.get("target_capability") or "proactive.judgment"))
+        if category in seen_categories:
+            continue
+        selected.append(dict(goal))
+        seen_categories.add(category)
+        if len(selected) >= limit:
+            return selected
+    for goal in goals:
+        if not isinstance(goal, dict):
+            continue
+        if goal not in selected:
+            selected.append(dict(goal))
+        if len(selected) >= limit:
+            break
+    return selected
+
+
+def _capability_category(capability: str) -> str:
+    value = str(capability or "").lower()
+    if "recall" in value or "memory" in value:
+        return "memory.recall"
+    if "tool" in value or "routing" in value or "route" in value:
+        return "tool.routing"
+    if "code" in value or "implementation" in value:
+        return "code.implementation"
+    if any(term in value for term in ("source", "research", "knowledge", "intake", "rss", "news", "paper")):
+        return "knowledge.intake"
+    if "proactive" in value or "judgment" in value or "initiative" in value:
+        return "proactive.judgment"
+    return value or "proactive.judgment"
+
+
+def _goal_id_for_goal(goal: dict[str, Any], goals: list[dict[str, Any]], goal_ids: list[str]) -> str:
+    semantic_key = str(goal.get("semantic_key") or "")
+    for index, item in enumerate(goals):
+        if semantic_key and str(item.get("semantic_key") or "") == semantic_key:
+            return goal_ids[index] if index < len(goal_ids) else ""
+    return ""
+
+
 def choose_candidate_kinds_for_goal(goal: dict[str, Any], *, max_candidates: int = 3) -> list[str]:
     capability = str(goal.get("target_capability") or "").lower()
     goal_type = str(goal.get("goal_type") or "").lower()
@@ -838,10 +958,10 @@ def choose_candidate_kinds_for_goal(goal: dict[str, Any], *, max_candidates: int
         kinds.extend(["code_patch", "eval_case"])
     if "skill" in capability or ("skill" in expected and "code" not in capability):
         kinds.extend(["skill_draft", "eval_case"])
-    if any(term in capability for term in ("uumit", "office", "device", "operations")) or goal_type in {"long_term", "proactive_thought", "capability_gap"}:
-        kinds.extend(["sop_draft", "eval_case"])
     if "source" in capability or "research" in capability or "knowledge" in capability:
         kinds.extend(["source_policy", "eval_case"])
+    if any(term in capability for term in ("uumit", "office", "device", "operations")) or goal_type in {"long_term", "proactive_thought", "capability_gap"}:
+        kinds.extend(["sop_draft", "eval_case"])
     if not kinds:
         kinds.extend(["sop_draft", "eval_case"])
     deduped: list[str] = []
@@ -851,6 +971,28 @@ def choose_candidate_kinds_for_goal(goal: dict[str, Any], *, max_candidates: int
         if len(deduped) >= max(1, int(max_candidates or 3)):
             break
     return deduped
+
+
+def _resolved_candidate_kind_and_patch(
+    goal: dict[str, Any],
+    evidence: list[dict[str, Any]],
+    *,
+    candidate_kind: str | None = None,
+    replay_dataset: dict[str, Any] | None = None,
+) -> tuple[str, dict[str, Any]]:
+    requested = str(candidate_kind or _candidate_kind_for_goal(goal))
+    if requested == "code_patch" and not _structured_code_patch(goal=goal, replay_dataset=replay_dataset):
+        patch = _candidate_patch(goal, evidence, candidate_kind="sop_draft", replay_dataset=replay_dataset)
+        patch.pop("file_updates", None)
+        patch["fallback_from"] = "code_patch"
+        patch["fallback_reason"] = "code_patch_missing_file_updates"
+        patch["requested_promotion_target"] = requested
+        patch["promotion_target"] = "sop_draft"
+        patch["summary"] = _candidate_summary(goal, candidate_kind="sop_draft", patch=patch)
+        return "sop_draft", patch
+    patch = _candidate_patch(goal, evidence, candidate_kind=requested, replay_dataset=replay_dataset)
+    patch["promotion_target"] = requested
+    return requested, patch
 
 
 def _candidate_patch(
@@ -954,6 +1096,32 @@ def _candidate_patch(
     return base
 
 
+def _candidate_summary(goal: dict[str, Any], *, candidate_kind: str, patch: dict[str, Any]) -> str:
+    capability = str(goal.get("target_capability") or patch.get("target_capability") or "proactive.judgment")
+    artifact = _candidate_artifact_label(candidate_kind)
+    title = _first_text(goal.get("question"), goal.get("title"), patch.get("summary"), patch.get("policy"))
+    criteria = _first_text(goal.get("success_criteria"), patch.get("success_criteria"))
+    if patch.get("fallback_reason") == "code_patch_missing_file_updates":
+        base = f"{capability} {artifact} fallback: {title or 'empty code patch output'}"
+        return _short_text(f"{base}. Missing file_updates, so the learning is kept as SOP/eval instead of patch promotion. {criteria}", 280)
+    if criteria and criteria != title:
+        return _short_text(f"{capability} {artifact}: {title}. Success: {criteria}", 280)
+    return _short_text(f"{capability} {artifact}: {title or criteria or 'Create a reusable learning asset.'}", 280)
+
+
+def _candidate_artifact_label(candidate_kind: str) -> str:
+    labels = {
+        "tool_route": "tool routing policy",
+        "memory_rule": "memory recall rule",
+        "eval_case": "replay eval case",
+        "skill_draft": "skill draft",
+        "sop_draft": "SOP",
+        "source_policy": "knowledge intake source policy",
+        "code_patch": "code patch",
+    }
+    return labels.get(str(candidate_kind or ""), str(candidate_kind or "candidate").replace("_", " "))
+
+
 def _structured_code_patch(*, goal: dict[str, Any], replay_dataset: dict[str, Any] | None) -> dict[str, Any]:
     for value in (goal.get("code_patch"), goal.get("candidate_patch"), goal.get("patch")):
         if isinstance(value, dict) and _has_file_updates(value):
@@ -988,6 +1156,13 @@ def _first_text(*values: Any) -> str:
         if text:
             return text
     return ""
+
+
+def _short_text(text: str, limit: int) -> str:
+    value = " ".join(str(text or "").split())
+    if len(value) <= limit:
+        return value
+    return value[: max(0, limit - 3)].rstrip() + "..."
 
 
 def _env_truthy(name: str, *, default: bool = False) -> bool:

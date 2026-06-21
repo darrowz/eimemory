@@ -45,6 +45,57 @@ from eimemory.evaluation.longmemeval import (
 DATA_DIR = Path(r"E:\eimemory\data")
 
 
+def _load_locomo_first_case(path: Path) -> dict:
+    decoder = json.JSONDecoder()
+    buffer = ""
+    name = ""
+    scope: dict = {}
+    in_cases = False
+    with path.open("r", encoding="utf-8") as handle:
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if chunk:
+                buffer += chunk
+            if not in_cases:
+                name = name or _decode_object_field(buffer, "name", decoder) or ""
+                decoded_scope = _decode_object_field(buffer, "scope", decoder)
+                if isinstance(decoded_scope, dict):
+                    scope = decoded_scope
+                cases_index = buffer.find('"cases"')
+                if cases_index >= 0:
+                    array_index = buffer.find("[", cases_index)
+                    if array_index >= 0:
+                        buffer = buffer[array_index + 1 :]
+                        in_cases = True
+            if in_cases:
+                buffer = buffer.lstrip()
+                if buffer.startswith(","):
+                    buffer = buffer[1:].lstrip()
+                try:
+                    case, _end = decoder.raw_decode(buffer)
+                except json.JSONDecodeError:
+                    if chunk:
+                        continue
+                    raise
+                return {"name": name or "locomo10-full", "scope": scope, "cases": [case]}
+            if not chunk:
+                raise ValueError(f"could not read first case from {path}")
+
+
+def _decode_object_field(buffer: str, field_name: str, decoder: json.JSONDecoder):
+    key_index = buffer.find(f'"{field_name}"')
+    if key_index < 0:
+        return None
+    colon_index = buffer.find(":", key_index)
+    if colon_index < 0:
+        return None
+    try:
+        value, _end = decoder.raw_decode(buffer[colon_index + 1 :].lstrip())
+    except json.JSONDecodeError:
+        return None
+    return value
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -268,11 +319,8 @@ def test_locomo_real_data_produces_hundreds_of_chunks() -> None:
     Before the fix this returned 0 chunks per case; the fix should produce
     hundreds (each conversation has dozens of turns).
     """
-    data = json.loads((DATA_DIR / "locomo10_eimemory.json").read_text(encoding="utf-8"))
-    case0 = data["cases"][0]
-    normalized = normalize_locomo_dataset(
-        {"name": data["name"], "scope": data["scope"], "cases": [case0]}
-    )
+    data = _load_locomo_first_case(DATA_DIR / "locomo10_eimemory.json")
+    normalized = normalize_locomo_dataset(data)
     chunks = normalized["cases"][0]["chunks"]
     assert len(chunks) > 50, f"expected >50 chunks, got {len(chunks)}"
     assert chunks[0]["text"].strip()

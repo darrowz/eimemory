@@ -11,6 +11,7 @@ from eimemory.models.records import RecordEnvelope, ScopeRef
 
 CAPABILITY_DIMENSIONS = (
     "search.research",
+    "knowledge.intake",
     "memory.recall",
     "tool.routing",
     "code.implementation",
@@ -211,6 +212,8 @@ def _capability_for(tag: str, text: str) -> str:
         return "memory.recall"
     if any(term in value for term in ("tool", "routing", "route", "工具", "路由")):
         return "tool.routing"
+    if any(term in value for term in ("knowledge", "intake", "source", "rss", "news", "paper", "research stale", "web evidence")):
+        return "knowledge.intake"
     if any(term in value for term in ("code", "test", "ci", "pytest", "代码")):
         return "code.implementation"
     if any(term in value for term in ("safety", "risk", "unsafe", "权限", "安全")):

@@ -54,8 +54,54 @@ def _load_converter():
 
 
 def _load_raw_sample(limit: int = 1) -> list[dict]:
-    raw = json.loads(DATA_PATH.read_text(encoding="utf-8"))
-    return raw[:limit]
+    return _load_json_array_sample(DATA_PATH, limit=limit)
+
+
+def _load_json_array_sample(path: Path, *, limit: int | None = None) -> list[dict]:
+    items: list[dict] = []
+    for item in _iter_json_array(path):
+        items.append(item)
+        if limit is not None and len(items) >= limit:
+            break
+    return items
+
+
+def _iter_json_array(path: Path):
+    decoder = json.JSONDecoder()
+    buffer = ""
+    started = False
+    with path.open("r", encoding="utf-8") as handle:
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if chunk:
+                buffer += chunk
+            while True:
+                buffer = buffer.lstrip()
+                if not started:
+                    if not buffer:
+                        break
+                    if buffer[0] != "[":
+                        raise ValueError(f"expected JSON array in {path}")
+                    buffer = buffer[1:]
+                    started = True
+                    continue
+                if not buffer:
+                    break
+                if buffer[0] == ",":
+                    buffer = buffer[1:]
+                    continue
+                if buffer[0] == "]":
+                    return
+                try:
+                    item, end = decoder.raw_decode(buffer)
+                except json.JSONDecodeError:
+                    if chunk:
+                        break
+                    raise
+                yield item
+                buffer = buffer[end:]
+            if not chunk:
+                return
 
 
 # ---------------------------------------------------------------------------
@@ -204,23 +250,25 @@ def test_lme_converter_real_cleaned_data_mines_turn_ids() -> None:
     other 479/500 must produce at least one mined turn id.
     """
     converter = _load_converter()
-    raw = json.loads(DATA_PATH.read_text(encoding="utf-8"))
-    assert len(raw) == 500
     # Run the helper directly (no file IO) over every case.
     mined = []
-    for case in raw:
+    first_turn_ids: list[str] | None = None
+    for case in _iter_json_array(DATA_PATH):
         ses, turns = converter._extract_real_evidence(
             case,
             haystack_session_ids=case.get("haystack_session_ids") or [],
             haystack_sessions=case.get("haystack_sessions") or [],
         )
         mined.append((ses, turns))
+        if first_turn_ids is None:
+            first_turn_ids = turns
+    assert len(mined) == 500
     with_turns = sum(1 for _, turns in mined if turns)
     assert with_turns >= 470, (
         f"expected >= 470/500 cases to have mined turn evidence, got {with_turns}"
     )
     # The first raw case has 2 has_answer messages.
-    assert mined[0][1] == ["answer_280352e9:m4", "answer_280352e9:m5"]
+    assert first_turn_ids == ["answer_280352e9:m4", "answer_280352e9:m5"]
 
 
 # ---------------------------------------------------------------------------

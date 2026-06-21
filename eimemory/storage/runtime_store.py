@@ -139,9 +139,19 @@ class RuntimeStore:
         status: str | None = None,
         limit: int = 100,
         offset: int = 0,
+        since: str | None = None,
+        until: str | None = None,
     ) -> list[RecordEnvelope]:
         scope_ref = None if scope is None else (scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope))
-        return self.sqlite.list_records(kinds=kinds, scope=scope_ref, status=status, limit=limit, offset=offset)
+        return self.sqlite.list_records(
+            kinds=kinds,
+            scope=scope_ref,
+            status=status,
+            limit=limit,
+            offset=offset,
+            since=since,
+            until=until,
+        )
 
     def upsert_memory_edge(self, edge: MemoryEdge) -> MemoryEdge:
         return self.sqlite.upsert_memory_edge(edge)

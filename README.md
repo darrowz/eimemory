@@ -164,7 +164,7 @@ eimemory quality stats
 eimemory reflect check
 eimemory reflect log reply-style "Forgot concise style" "Reply with one sentence"
 eimemory learn cycle --dry-run
-eimemory learn ledger
+eimemory learn ledger --limit 50 --since 2026-06-21
 ```
 
 ## Autonomous Learning
@@ -196,7 +196,7 @@ eimemory learn cycle --apply --force
 eimemory learn loops --limit 5
 eimemory learn goals --limit 10
 eimemory learn candidates --limit 10
-eimemory learn ledger
+eimemory learn ledger --limit 50 --since 2026-06-21
 eimemory learn think --persist
 eimemory learn replay-dataset --persist
 eimemory learn replay-dataset --include-built-in-regressions
@@ -205,6 +205,12 @@ eimemory learn report --persist
 eimemory learn dashboard --persist
 eimemory learn promote <candidate_id> --apply --eval-json '{"verdict":"pass","scores":{"safety":1,"regression":1},"gate_bundle":{...}}'
 ```
+
+The candidate portfolio covers multiple capability lanes in one learning pass:
+memory recall, tool routing, proactive judgment, knowledge intake, and code
+implementation can each produce a concrete candidate when their goals are
+present. Empty `code_patch` outputs are downgraded to SOP/eval assets instead
+of entering patch promotion.
 
 `code_patch` L2 candidates can update repository files and, when explicitly
 requested by the candidate patch, commit and deploy through configured commands.

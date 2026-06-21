@@ -271,6 +271,9 @@ def _build_parser() -> argparse.ArgumentParser:
     learn_candidates.add_argument("--limit", type=int, default=10)
     learn_candidates.add_argument("--json", action="store_true", default=True)
     learn_ledger = learn_sub.add_parser("ledger")
+    learn_ledger.add_argument("--limit", type=int, default=200)
+    learn_ledger.add_argument("--since", default="")
+    learn_ledger.add_argument("--until", default="")
     learn_ledger.add_argument("--json", action="store_true", default=True)
     learn_replay_dataset = learn_sub.add_parser("replay-dataset")
     learn_replay_dataset.add_argument("--limit", type=int, default=50)
@@ -693,7 +696,18 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(runtime.list_learning_candidates(scope=scope, limit=max(0, int(parsed.limit))), ensure_ascii=False, indent=2))
             return 0
         if parsed.learn_command == "ledger":
-            print(json.dumps(runtime.learning_ledger(scope=scope), ensure_ascii=False, indent=2))
+            print(
+                json.dumps(
+                    runtime.learning_ledger(
+                        scope=scope,
+                        limit=max(1, int(parsed.limit)),
+                        since=str(parsed.since or "") or None,
+                        until=str(parsed.until or "") or None,
+                    ),
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
             return 0
         if parsed.learn_command == "replay-dataset":
             report = runtime.build_replay_dataset(

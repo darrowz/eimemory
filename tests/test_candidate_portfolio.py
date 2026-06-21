@@ -1,6 +1,12 @@
 from __future__ import annotations
 
-from eimemory.governance.autonomous_learning import _candidate_kind_for_goal, _candidate_patch, choose_candidate_kinds_for_goal
+from eimemory.governance.autonomous_learning import (
+    _candidate_kind_for_goal,
+    _candidate_patch,
+    _candidate_specs_for_goals,
+    _resolved_candidate_kind_and_patch,
+    choose_candidate_kinds_for_goal,
+)
 
 
 def test_candidate_kinds_include_expected_portfolio_types() -> None:
@@ -60,3 +66,47 @@ def test_candidate_patch_shapes_differ_by_candidate_kind() -> None:
     tool_route = _candidate_patch(goal, [], candidate_kind="tool_route", replay_dataset=replay_dataset)
     assert "pattern" in tool_route
     assert "execution_policy" in tool_route
+
+
+def test_empty_code_patch_downgrades_to_sop_candidate() -> None:
+    goal = {
+        "target_capability": "code.implementation",
+        "question": "Fix the broken implementation path without guessing.",
+        "success_criteria": "The next artifact must be replayable.",
+        "patch": {"summary": "empty generator output", "file_updates": []},
+    }
+
+    kind, patch = _resolved_candidate_kind_and_patch(
+        goal,
+        [],
+        candidate_kind="code_patch",
+        replay_dataset={"cases": [{"case_id": "case-empty-patch", "query": "fix code"}]},
+    )
+
+    assert kind == "sop_draft"
+    assert patch["fallback_from"] == "code_patch"
+    assert patch["fallback_reason"] == "code_patch_missing_file_updates"
+    assert "file_updates" not in patch
+
+
+def test_candidate_specs_cover_diverse_capability_goals() -> None:
+    goals = [
+        {"target_capability": "code.implementation", "title": "Fix code", "goal_type": "capability_gap"},
+        {"target_capability": "memory.recall", "title": "Improve recall", "goal_type": "capability_gap"},
+        {"target_capability": "tool.routing", "title": "Improve routing", "goal_type": "capability_gap"},
+        {"target_capability": "knowledge.intake", "title": "Improve intake", "goal_type": "capability_gap"},
+        {"target_capability": "proactive.judgment", "title": "Improve proactive judgment", "goal_type": "capability_gap"},
+    ]
+
+    specs = _candidate_specs_for_goals(goals, max_goals=5, max_candidates_per_goal=1, replay_dataset={})
+    capabilities = [spec["target_capability"] for spec in specs]
+    targets = {spec["promotion_target"] for spec in specs}
+
+    assert capabilities[:5] == [
+        "code.implementation",
+        "memory.recall",
+        "tool.routing",
+        "knowledge.intake",
+        "proactive.judgment",
+    ]
+    assert {"memory_rule", "tool_route", "source_policy", "sop_draft"}.issubset(targets)

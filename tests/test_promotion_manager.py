@@ -35,6 +35,30 @@ def test_distill_capability_candidate_requires_passing_eval(tmp_path) -> None:
     assert candidate.meta["authority_tier"] == "L1"
 
 
+def test_distill_capability_candidate_uses_specific_readable_title(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu"}
+
+    candidate_id = distill_capability_candidate(
+        runtime,
+        scope=scope,
+        loop_id="learn_specific_title",
+        experiment_id="experiment-specific-title",
+        eval_result=PASSING_EVAL,
+        promotion_target="tool_route",
+        summary="Use memory-first routing when the user asks for stable project facts.",
+        target_capability="tool.routing",
+    )
+
+    candidate = runtime.store.get_by_id(candidate_id, scope=scope)
+
+    assert candidate is not None
+    assert candidate.title != "Capability candidate: tool_route"
+    assert "tool.routing" in candidate.title
+    assert "memory-first routing" in candidate.title
+    assert "Generate a policy/SOP/eval case" not in candidate.summary
+
+
 def test_distillation_rejects_low_safety_eval(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
 

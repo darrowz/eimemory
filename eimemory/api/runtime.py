@@ -495,10 +495,17 @@ class Runtime:
 
         return list_learning_candidates(self, scope=scope, limit=limit)
 
-    def learning_ledger(self, *, scope: dict | None = None, limit: int = 500) -> dict:
+    def learning_ledger(
+        self,
+        *,
+        scope: dict | None = None,
+        limit: int = 500,
+        since: str | None = None,
+        until: str | None = None,
+    ) -> dict:
         from eimemory.governance.capability_ledger import build_capability_ledger
 
-        return build_capability_ledger(self, scope=scope, limit=limit)
+        return build_capability_ledger(self, scope=scope, limit=limit, since=since, until=until)
 
     def build_autonomy_goal_queue(
         self,

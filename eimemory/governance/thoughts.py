@@ -150,7 +150,7 @@ def _candidate_thoughts(signals: list[dict[str, Any]], self_model: dict[str, Any
             {
                 "question": f"How can this repeated weakness be prevented: {_short(lesson, 140)}?",
                 "hypothesis": lesson,
-                "next_action": "Generate a policy/SOP/eval case and run replay.",
+                "next_action": f"Build a {cap} policy/SOP/eval case for: {_short(lesson, 96)}.",
                 "target_capability": cap,
                 "importance": 0.75 + min(0.2, float(weakness.get("severity") or 0.0) / 5),
                 "urgency": 0.65,

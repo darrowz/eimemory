@@ -48,6 +48,43 @@ def test_runtime_store_persists_scoped_memory_edges(tmp_path) -> None:
     assert edges[0].to_id == second.record_id
 
 
+def test_runtime_store_list_records_filters_by_updated_at_with_index(tmp_path) -> None:
+    store = RuntimeStore(root=tmp_path)
+    scope = ScopeRef(agent_id="main", workspace_id="ledger")
+    old = store.append(
+        RecordEnvelope.create(
+            kind="capability_score",
+            title="Old recall score",
+            summary="old",
+            scope=scope,
+            meta={"capability": "memory.recall", "score": 0.3},
+            content={"capability": "memory.recall", "score": 0.3},
+        )
+    )
+    new = store.append(
+        RecordEnvelope.create(
+            kind="capability_score",
+            title="New routing score",
+            summary="new",
+            scope=scope,
+            meta={"capability": "tool.routing", "score": 0.8},
+            content={"capability": "tool.routing", "score": 0.8},
+        )
+    )
+    old.time.created_at = "2099-01-01T00:00:00+00:00"
+    old.time.updated_at = "2099-01-01T00:00:00+00:00"
+    new.time.created_at = "2099-01-02T00:00:00+00:00"
+    new.time.updated_at = "2099-01-02T00:00:00+00:00"
+    store.rewrite(old)
+    store.rewrite(new)
+
+    results = store.list_records(kinds=["capability_score"], scope=scope, since="2099-01-02", limit=10)
+    index_names = {str(row["name"]) for row in store.sqlite.conn.execute("PRAGMA index_list(records)").fetchall()}
+
+    assert [record.record_id for record in results] == [new.record_id]
+    assert "idx_records_kind_scope_updated" in index_names
+
+
 def test_runtime_store_bulk_upserts_memory_edges_in_one_call(tmp_path) -> None:
     store = RuntimeStore(root=tmp_path)
     scope = ScopeRef(agent_id="main", workspace_id="graph")

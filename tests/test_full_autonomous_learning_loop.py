@@ -27,6 +27,74 @@ def test_autonomous_learning_cycle_produces_goal_candidate_and_ledger(tmp_path, 
     assert report["capability_score_id"]
 
 
+def test_autonomous_learning_cycle_distills_diverse_capability_candidates(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu", "workspace_id": "personal"}
+    _force_real_task_replay_pass(runtime, monkeypatch)
+    goals = [
+        {
+            "goal_type": "capability_gap",
+            "title": "Fix empty patch generation",
+            "question": "Avoid promoting code patches without file updates.",
+            "success_criteria": "Empty code patch output becomes a SOP or eval asset.",
+            "authority_tier": "L1",
+            "priority": 0.95,
+            "target_capability": "code.implementation",
+            "semantic_key": "test-code",
+        },
+        {
+            "goal_type": "capability_gap",
+            "title": "Improve memory recall",
+            "question": "Recall exact deployed version evidence before answering.",
+            "success_criteria": "Version answers cite current evidence.",
+            "authority_tier": "L1",
+            "priority": 0.9,
+            "target_capability": "memory.recall",
+            "semantic_key": "test-memory",
+        },
+        {
+            "goal_type": "capability_gap",
+            "title": "Improve tool routing",
+            "question": "Route status questions to health and ledger tools first.",
+            "success_criteria": "Routing decisions use query-first evidence.",
+            "authority_tier": "L1",
+            "priority": 0.85,
+            "target_capability": "tool.routing",
+            "semantic_key": "test-tool",
+        },
+        {
+            "goal_type": "capability_gap",
+            "title": "Improve knowledge intake",
+            "question": "Score external sources and keep weak web learning as summary.",
+            "success_criteria": "Knowledge intake lands as source score or summary.",
+            "authority_tier": "L1",
+            "priority": 0.8,
+            "target_capability": "knowledge.intake",
+            "semantic_key": "test-knowledge",
+        },
+        {
+            "goal_type": "capability_gap",
+            "title": "Improve proactive judgment",
+            "question": "Notice low-yield learn-watch runs and suggest cheaper cadence.",
+            "success_criteria": "Proactive judgments become a concrete SOP/eval asset.",
+            "authority_tier": "L1",
+            "priority": 0.75,
+            "target_capability": "proactive.judgment",
+            "semantic_key": "test-proactive",
+        },
+    ]
+    monkeypatch.setattr("eimemory.governance.autonomous_learning.generate_learning_goals", lambda *_args, **_kwargs: goals)
+
+    report = run_autonomous_learning_cycle(runtime, scope=scope, apply=False, force=True, max_goals=5, allow_network=False)
+    candidates = [runtime.store.get_by_id(candidate_id, scope=scope) for candidate_id in report["candidate_ids"]]
+    candidate_capabilities = {candidate.meta["target_capability"] for candidate in candidates if candidate is not None}
+    promotion_targets = {candidate.meta["promotion_target"] for candidate in candidates if candidate is not None}
+
+    assert {"memory.recall", "tool.routing", "knowledge.intake", "proactive.judgment"}.issubset(candidate_capabilities)
+    assert "code_patch" not in promotion_targets
+    assert {"memory_rule", "tool_route", "source_policy", "sop_draft"}.issubset(promotion_targets)
+
+
 def test_autonomous_learning_cycle_applies_supported_policy_adapter(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path)
     scope = {"agent_id": "hongtu", "workspace_id": "personal"}

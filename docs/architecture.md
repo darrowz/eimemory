@@ -40,6 +40,11 @@ into that loop, but they do not run their own production scheduler.
    - `eimemory.governance.autonomous_learning` is the main loop:
      watch, self-model, think, goals, evidence, replay, candidate portfolio,
      promotion, ledger, dashboard, and retention.
+   - Candidate portfolio generation is lane-aware: memory recall, tool routing,
+     proactive judgment, knowledge intake, and code implementation goals can
+     each produce concrete candidates in the same pass. Empty code-patch
+     outputs are converted to SOP/eval candidates rather than promoted as
+     patches.
    - `eimemory.governance.autonomous_evolution` mines bad outcomes and replay
      evidence into concrete improvement opportunities.
    - `eimemory.governance.promotion_manager` owns promotion gates, file-update
@@ -61,6 +66,9 @@ into that loop, but they do not run their own production scheduler.
    - `eimemory learn watch`, `learn think`, and `learn dashboard` are lightweight
      companion passes for signal capture, proactive thinking, and operator
      reporting.
+   - `eimemory learn ledger --limit --since --until` is the supported status
+     query path for capability ledger checks; it uses the scoped record/time
+     index instead of scanning the full record table.
    - `deploy/systemd/` contains the production unit templates. No standalone
      Karpathy-loop timer is part of production deployment.
 

@@ -7,13 +7,16 @@ from eimemory.models.records import ScopeRef
 
 
 SEEDED_CAPABILITIES: list[str] = [
+    "memory.recall",
+    "tool.routing",
+    "knowledge.intake",
+    "proactive.judgment",
     "search.discovery",
     "code.implementation",
     "operations.uumit",
     "office.daily_task",
     "device.control",
     "research.synthesis",
-    "proactive.judgment",
     "safety.boundary",
 ]
 
