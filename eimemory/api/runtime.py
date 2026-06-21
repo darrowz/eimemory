@@ -502,10 +502,18 @@ class Runtime:
         limit: int = 500,
         since: str | None = None,
         until: str | None = None,
+        attribute_outcomes: bool = False,
     ) -> dict:
         from eimemory.governance.capability_ledger import build_capability_ledger
 
-        return build_capability_ledger(self, scope=scope, limit=limit, since=since, until=until)
+        return build_capability_ledger(
+            self,
+            scope=scope,
+            limit=limit,
+            since=since,
+            until=until,
+            attribute_outcomes=attribute_outcomes,
+        )
 
     def build_autonomy_goal_queue(
         self,

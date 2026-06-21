@@ -37,6 +37,23 @@ def test_build_capability_ledger_auto_includes_seeded_defaults(tmp_path) -> None
         assert item["needs_outcome_recalculation"] is True
 
 
+def test_runtime_learning_ledger_is_read_only_by_default(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu"}
+    calls = {"count": 0}
+
+    def fake_attribute(*_args, **_kwargs):
+        calls["count"] += 1
+        return {"ok": True}
+
+    monkeypatch.setattr("eimemory.governance.capability_attribution.attribute_capability_outcomes", fake_attribute)
+
+    report = runtime.learning_ledger(scope=scope, limit=5)
+
+    assert report["ok"] is True
+    assert calls["count"] == 0
+
+
 def test_capability_ledger_marks_low_outcome_score_for_recalculation(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     scope = {"agent_id": "hongtu"}
