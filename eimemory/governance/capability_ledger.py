@@ -3,6 +3,7 @@ from __future__ import annotations
 from statistics import mean
 from typing import Any
 
+from eimemory.governance.harness_patch import HARNESS_PATCH_V2, HarnessSurface
 from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
@@ -33,6 +34,7 @@ def record_capability_score(
     evidence_tiers: list[str] | None = None,
     evidence_sources: list[str] | None = None,
     regression_count: int = 0,
+    meta: dict[str, Any] | None = None,
 ) -> str:
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
     existing = [
@@ -42,6 +44,37 @@ def record_capability_score(
     ]
     sequence = len(existing) + 1
     semantic_key = stable_semantic_key("capability_score", capability, loop_id, score, evidence_record_ids or [])
+    content = {
+        "capability": capability,
+        "score": round(float(score), 3),
+        "evidence_record_ids": list(evidence_record_ids or []),
+        "evidence_items": list(evidence_items or []),
+        "evidence_tiers": list(evidence_tiers or []),
+        "evidence_sources": list(evidence_sources or []),
+        "regression_count": regression_count,
+        "score_sequence": sequence,
+    }
+    merged_meta: dict[str, Any] = {
+        "capability": capability,
+        "score": round(float(score), 3),
+        "score_sequence": sequence,
+        "evidence_count": len(evidence_record_ids or []),
+        "evidence_tiers": list(evidence_tiers or []),
+        "evidence_sources": list(evidence_sources or []),
+        "regression_count": regression_count,
+    }
+    if meta:
+        merged_meta.update(meta)
+    tier = str(merged_meta.get("authority_tier") or "L0")
+    if HARNESS_PATCH_V2 and meta and str(meta.get("kind") or "") == "candidate_promotion":
+        card = content.get("proposal_card") if isinstance(content, dict) else None
+        if not card or not isinstance(card, dict):
+            raise ValueError(
+                "proposal_card is required for candidate_promotion under HARNESS_PATCH_V2"
+            )
+        surface = str(card.get("target_surface") or "")
+        if surface not in {s.value for s in HarnessSurface}:
+            raise ValueError(f"proposal_card.target_surface invalid: {surface!r}")
     record = append_learning_record_once(
         runtime,
         kind="capability_score",
@@ -51,27 +84,10 @@ def record_capability_score(
         loop_id=loop_id,
         step_name="ledger",
         semantic_key=semantic_key,
-        authority_tier="L0",
+        authority_tier=tier,
         status="active",
-        content={
-            "capability": capability,
-            "score": round(float(score), 3),
-            "evidence_record_ids": list(evidence_record_ids or []),
-            "evidence_items": list(evidence_items or []),
-            "evidence_tiers": list(evidence_tiers or []),
-            "evidence_sources": list(evidence_sources or []),
-            "regression_count": regression_count,
-            "score_sequence": sequence,
-        },
-        meta={
-            "capability": capability,
-            "score": round(float(score), 3),
-            "score_sequence": sequence,
-            "evidence_count": len(evidence_record_ids or []),
-            "evidence_tiers": list(evidence_tiers or []),
-            "evidence_sources": list(evidence_sources or []),
-            "regression_count": regression_count,
-        },
+        content=content,
+        meta=merged_meta,
     )
     return record.record_id
 
