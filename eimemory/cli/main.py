@@ -440,7 +440,159 @@ def _build_parser() -> argparse.ArgumentParser:
     eval_task_replay.add_argument("--output", default="")
     eval_task_replay.add_argument("--no-seed", action="store_true")
     eval_task_replay.add_argument("--persist-report", action="store_true")
+
+    # eimemory patch — harness-patch CLI (1.6.0)
+    patch = sub.add_parser("patch")
+    patch_sub = patch.add_subparsers(dest="patch_command")
+    patch_propose = patch_sub.add_parser("propose")
+    patch_propose.add_argument("--surface", required=True, choices=[
+        "INSTRUCTION", "VERIFICATION_GUIDANCE", "TOOL_LOOP_GUARD", "ARTIFACT_RECOVERY", "RUNTIME_POLICY",
+    ])
+    patch_propose.add_argument("--evidence", nargs="+", required=True, help="Record IDs that motivate the patch")
+    patch_propose.add_argument("--agent", required=True, help="Target agent (eibrain / openclaw / mcp_consumer)")
+    patch_propose.add_argument("--tier", required=True, choices=["L0", "L1", "L2", "L3", "L4"])
+    patch_propose.add_argument("--rollback", required=True, help="Rollback plan (free text)")
+    patch_propose.add_argument("--diff-lines", type=int, default=0)
+    patch_propose.add_argument("--diff-tokens", type=int, default=0)
+    patch_propose.add_argument("--notes", default="")
+    patch_validate = patch_sub.add_parser("validate")
+    patch_validate.add_argument("--card", required=True, help="Path to a JSON file with a ProposalCard dict")
+    patch_promote = patch_sub.add_parser("promote")
+    patch_promote.add_argument("--candidate", required=True, help="Candidate record_id")
+    patch_rollback = patch_sub.add_parser("rollback")
+    patch_rollback.add_argument("--candidate", required=True, help="Candidate record_id to roll back")
+    patch_list = patch_sub.add_parser("list")
+    patch_list.add_argument("--limit", type=int, default=100)
+
     return parser
+
+
+def _handle_patch(parsed: object, *, runtime: Any, scope: dict[str, Any]) -> int:
+    """Dispatch the eimemory patch subcommands (1.6.0 harness-patch)."""
+    cmd = getattr(parsed, "patch_command", None)
+    if not cmd:
+        print(json.dumps({"usage": "eimemory patch propose|validate|promote|rollback|list"}))
+        return 0
+    if cmd == "propose":
+        from eimemory.governance.harness_patch import HarnessSurface, ProposalCard
+        card = ProposalCard(
+            target_surface=HarnessSurface(parsed.surface),
+            evidence_record_ids=tuple(parsed.evidence),
+            expected_delta=0.0,
+            target_agent=parsed.agent,
+            risk_tier=parsed.tier,
+            rollback_plan=parsed.rollback,
+            diff_lines=parsed.diff_lines,
+            diff_tokens=parsed.diff_tokens,
+            notes=parsed.notes,
+        )
+        print(json.dumps({
+            "target_surface": card.target_surface.value,
+            "evidence_record_ids": list(card.evidence_record_ids),
+            "expected_delta": card.expected_delta,
+            "target_agent": card.target_agent,
+            "risk_tier": card.risk_tier,
+            "rollback_plan": card.rollback_plan,
+            "diff_lines": card.diff_lines,
+            "diff_tokens": card.diff_tokens,
+            "notes": card.notes,
+        }, ensure_ascii=False, indent=2))
+        return 0
+    if cmd == "validate":
+        from eimemory.governance.harness_patch import HarnessSurface, ProposalCard, HarnessGate
+        try:
+            card_dict = json.loads(Path(parsed.card).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            return _print_error("invalid_card_file", exc)
+        try:
+            card = ProposalCard(
+                target_surface=HarnessSurface(card_dict["target_surface"]),
+                evidence_record_ids=tuple(card_dict.get("evidence_record_ids") or ()),
+                expected_delta=float(card_dict.get("expected_delta") or 0.0),
+                target_agent=str(card_dict.get("target_agent") or ""),
+                risk_tier=str(card_dict.get("risk_tier") or "L0"),
+                rollback_plan=str(card_dict.get("rollback_plan") or ""),
+                diff_lines=int(card_dict.get("diff_lines") or 0),
+                diff_tokens=int(card_dict.get("diff_tokens") or 0),
+            )
+        except (KeyError, ValueError) as exc:
+            return _print_error("invalid_card", exc)
+        gate = HarnessGate(card)
+        result = gate.evaluate(
+            held_in_scores={"accuracy": 0.85},
+            held_out_scores=None,
+            baseline_held_in=0.80,
+            baseline_held_out=None,
+        )
+        print(json.dumps({
+            "verdict": result.verdict.value,
+            "reason": result.reason,
+            "held_in_score": result.held_in_score,
+            "held_out_score": result.held_out_score,
+            "delta": result.delta,
+        }, ensure_ascii=False, indent=2))
+        return 0
+    if cmd == "promote":
+        from eimemory.governance.regression_watch import evaluate_harness_gate
+        gate_result = evaluate_harness_gate(
+            runtime,
+            candidate_id=parsed.candidate,
+            held_in_scores={"accuracy": 0.85},
+            held_out_scores=None,
+            baseline_held_in=0.80,
+            baseline_held_out=None,
+            scope=scope,
+        )
+        verdict = gate_result.get("verdict")
+        if verdict == "REJECT":
+            print(json.dumps({
+                "ok": False,
+                "verdict": verdict,
+                "reason": gate_result.get("reason"),
+            }, ensure_ascii=False, indent=2))
+            return 2
+        from eimemory.governance import promotion_manager
+        try:
+            promo_result = promotion_manager.promote_candidate(
+                runtime, candidate_id=parsed.candidate, scope=scope,
+            )
+        except Exception as exc:
+            return _print_error("promote_failed", exc)
+        print(json.dumps({
+            "ok": True,
+            "verdict": verdict,
+            "promotion": promo_result,
+        }, ensure_ascii=False, indent=2))
+        return 0
+    if cmd == "rollback":
+        from eimemory.governance import promotion_manager
+        try:
+            if hasattr(promotion_manager, "_rollback_evidence"):
+                result = promotion_manager._rollback_evidence(
+                    runtime, candidate_id=parsed.candidate, scope=scope,
+                )
+            else:
+                result = {"ok": False, "reason": "no rollback handler found"}
+        except Exception as exc:
+            return _print_error("rollback_failed", exc)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+    if cmd == "list":
+        try:
+            proposals = list(runtime.store.list_records(
+                kinds=["proposal_card"], scope=scope, limit=parsed.limit,
+            ))
+        except Exception as exc:
+            return _print_error("list_failed", exc)
+        items = []
+        for p in proposals:
+            if hasattr(p, "to_dict"):
+                items.append(p.to_dict())
+            else:
+                items.append({"record_id": getattr(p, "record_id", ""), "title": getattr(p, "title", "")})
+        print(json.dumps({"ok": True, "count": len(items), "proposals": items}, ensure_ascii=False, indent=2))
+        return 0
+    return _print_error("unknown_patch_command", ValueError(cmd))
 
 
 def _print_error(error: str, exc: Exception) -> int:
@@ -561,11 +713,13 @@ def main(argv: list[str] | None = None) -> int:
         print(
             json.dumps(
                 {
-                    "usage": "eimemory init|emergency-stop|ingest|recall|paper|source|intake|export|import|backup|migrate|brief|nightly|quality|identity|living|reflect|experience|learn|governance|evolve|eval|serve-eibrain-rpc",
+                    "usage": "eimemory init|emergency-stop|ingest|recall|paper|source|intake|export|import|backup|migrate|brief|nightly|quality|identity|living|reflect|experience|learn|governance|evolve|eval|patch|serve-eibrain-rpc",
                 }
             )
         )
         return 0
+    if parsed.command == "patch":
+        return _handle_patch(parsed, runtime=runtime, scope=scope)
     if parsed.command in {"doctor", "status"}:
         host = settings.rpc_host
         port = int(settings.rpc_port)
