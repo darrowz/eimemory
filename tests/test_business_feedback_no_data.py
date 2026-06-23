@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -52,6 +53,17 @@ def _make_recall_view(hit_at_1: float | None, *, occurred_at: str) -> dict:
         "content": {"hit_at_1": hit_at_1},
         "time": {"occurred_at": occurred_at},
     }
+
+
+def _recent_iso(days_ago: int) -> str:
+    """ISO timestamp ``days_ago`` days before now (UTC).
+
+    Used to build records that always fall inside the rolling 7-day
+    window used by ``compute_business_impact``. Hard-coded dates here
+    drift out of the window over time and turn these tests into
+    no-data cases — keep them anchored to ``now``.
+    """
+    return (datetime.now(timezone.utc) - timedelta(days=days_ago)).isoformat()
 
 
 def _auto_rollback_gate(impact: dict) -> str:
@@ -105,9 +117,9 @@ def test_real_records_returns_numeric_metrics() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         records = Path(tmp) / "records.jsonl"
         rows = [
-            _make_recall_view(0.70, occurred_at="2026-06-15T10:00:00+08:00"),
-            _make_recall_view(0.65, occurred_at="2026-06-16T10:00:00+08:00"),
-            _make_recall_view(0.75, occurred_at="2026-06-17T10:00:00+08:00"),
+            _make_recall_view(0.70, occurred_at=_recent_iso(2)),
+            _make_recall_view(0.65, occurred_at=_recent_iso(1)),
+            _make_recall_view(0.75, occurred_at=_recent_iso(0)),
         ]
         _write_records(records, rows)
 
@@ -133,7 +145,7 @@ def test_zero_hit_records_distinguished_from_empty() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         records = Path(tmp) / "records.jsonl"
         rows = [
-            _make_recall_view(0.0, occurred_at=f"2026-06-{15 + i}T10:00:00+08:00")
+            _make_recall_view(0.0, occurred_at=_recent_iso(4 - i))
             for i in range(5)
         ]
         _write_records(records, rows)
