@@ -21,6 +21,35 @@ CODE_ASSET_TARGETS = {"code_patch"}
 UNSUPPORTED_ACTIVE_TARGETS = {"deployment_rollout", "scheduler_policy"}
 CAPABILITY_ROLLOUT_ACTION = "capability_promotion"
 
+# L3+ candidates must declare a safety wire to governance/safety/ modules.
+# The wire is a tuple/list of module names supplied in the candidate's content
+# under the "safety_wire" key. promotion_manager enforces presence of all
+# four modules before any state mutation runs.
+REQUIRED_SAFETY_MODULES_L3_PLUS = (
+    "kill_switch",
+    "circuit_breaker",
+    "spend_guard",
+    "audit_verifier",
+)
+
+
+def _check_safety_wire(*, authority_tier: str, safety_wire: tuple[str, ...] | list[str]) -> None:
+    """Reject L3+ candidates whose safety_wire is missing required modules.
+
+    Tiers below L3 (L0, L1, L2) do not require a wire and pass through.
+    L3 and L4 require every module in REQUIRED_SAFETY_MODULES_L3_PLUS.
+    Raises ValueError when any required module is absent.
+    """
+    tier = str(authority_tier or "").upper()
+    if tier not in {"L3", "L4"}:
+        return
+    wire = set(safety_wire or ())
+    missing = set(REQUIRED_SAFETY_MODULES_L3_PLUS) - wire
+    if missing:
+        raise ValueError(
+            f"safety_wire missing required modules for {tier}: {sorted(missing)}"
+        )
+
 
 def promote_candidate(
     runtime: Any,
@@ -36,6 +65,10 @@ def promote_candidate(
     if candidate is None or candidate.kind != "capability_candidate":
         raise ValueError(f"capability candidate not found: {candidate_id}")
     tier = str(candidate.meta.get("authority_tier") or candidate.content.get("authority_tier") or "L0").upper()
+    _check_safety_wire(
+        authority_tier=str(candidate.meta.get("authority_tier") or ""),
+        safety_wire=tuple((candidate.content or {}).get("safety_wire") or ()),
+    )
     _record_candidate_lifecycle(runtime, candidate, scope=scope, action_type="proposed")
     if tier == "L3":
         _record_candidate_lifecycle(runtime, candidate, scope=scope, action_type="gate_failed", reason="l3_requires_approval")
