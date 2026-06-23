@@ -16,6 +16,12 @@ SOURCE_PRIORITY = {
 HIGH_RISK_LEVELS = {"high", "unsafe", "l2", "l3", "l4", "ha", "privacy", "device", "account"}
 LOW_RISK_LEVELS = {"low", "safe", "software", "l0", "l1"}
 
+# Harness-patch v2 hard limits (see docs/superpowers/plans/2026-06-23-eimemory-1.6.0-harness-patch.md §Task 4).
+MAX_DIFF_LINES = 50
+MAX_DIFF_TOKENS = 2000
+MIN_DIVERSE_CANDIDATES = 3
+ONE_ACTIVE_PER_SURFACE = True
+
 
 def generate_candidate_policies(
     replay_cases: list[dict[str, Any]],
@@ -75,6 +81,42 @@ def score_proxy_candidates(
         "proxy_eval": dict(top_candidate.get("proxy_eval") or {}),
         "ranked_candidates": ranked,
     }
+
+
+def enforce_diff_size(*, diff_lines: int, diff_tokens: int) -> None:
+    """Reject harness patches whose diff exceeds the v2 hard size limits."""
+    if int(diff_lines) > MAX_DIFF_LINES:
+        raise ValueError(
+            f"diff_lines {diff_lines} exceeds MAX_DIFF_LINES={MAX_DIFF_LINES}"
+        )
+    if int(diff_tokens) > MAX_DIFF_TOKENS:
+        raise ValueError(
+            f"diff_tokens {diff_tokens} exceeds MAX_DIFF_TOKENS={MAX_DIFF_TOKENS}"
+        )
+
+
+def enforce_diversity(candidates: list[dict[str, Any]], *, min_count: int) -> None:
+    """Reject candidate batches whose distinct ``source_key`` count falls short."""
+    distinct_keys = {
+        str(c.get("source_key") or c.get("id") or "") for c in candidates
+    }
+    if len(distinct_keys) < int(min_count):
+        raise ValueError(
+            f"need ≥{min_count} diverse candidates (source_keys), got {len(distinct_keys)}"
+        )
+
+
+def enforce_one_active_per_surface(
+    *,
+    new_surface: str,
+    active_surfaces: list[dict[str, Any]],
+) -> None:
+    """Reject promoting a new patch onto a surface that already has an active one."""
+    for entry in active_surfaces:
+        if str(entry.get("target_surface") or "") == str(new_surface):
+            raise ValueError(
+                f"surface {new_surface!r} already active (existing candidate {entry.get('id')!r})"
+            )
 
 
 def _candidate_from_group(candidate_source: str, source_key: str, replay_cases: list[dict[str, Any]]) -> dict[str, Any]:
