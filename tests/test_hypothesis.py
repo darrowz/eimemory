@@ -15,6 +15,7 @@ hypothesis per bucket. The two tests below cover the two contracts:
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -28,9 +29,7 @@ def _write_records(records_path: Path, rows: list[dict]) -> None:
 
 def _recent_occurred_at() -> str:
     """Return a timestamp inside the 7-day window the generator uses."""
-    # 2 days ago, fixed local time. The generator accepts any timezone
-    # offset in the +HH:MM / -HH:MM form, so a fixed string is fine.
-    return "2026-06-15T10:00:00+08:00"
+    return (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()
 
 
 def test_generates_at_most_50_hypotheses(tmp_path: Path):

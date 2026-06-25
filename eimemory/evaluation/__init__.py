@@ -7,6 +7,7 @@ from .longmemeval import normalize_longmemeval_dataset, run_longmemeval
 from .locomo import normalize_locomo_dataset, run_locomo
 from .production_recall import normalize_production_recall_dataset, run_production_recall_eval
 from .public_benchmarks import run_public_memory_benchmark
+from .reward import RewardEngine
 from .task_replay import normalize_real_task_replay_dataset, run_real_task_replay
 
 __all__ = [
@@ -16,6 +17,7 @@ __all__ = [
     "normalize_locomo_dataset",
     "normalize_production_recall_dataset",
     "normalize_real_task_replay_dataset",
+    "RewardEngine",
     "run_actionable_memory_eval",
     "run_evaluation",
     "run_livingmem_eval",

@@ -4,7 +4,10 @@ from dataclasses import asdict, is_dataclass
 import json
 from typing import Any
 
+from eimemory.evaluation.reward import RewardEngine
+from eimemory.governance.rl_policy import RLPolicy
 from eimemory.models.records import ScopeRef
+from eimemory.storage.replay_buffer import ReplayBuffer
 
 
 SUCCESS_LABELS = {"success", "good", "passed", "pass", "ok"}
@@ -28,6 +31,7 @@ def evaluate_result(runtime: Any, result: dict[str, Any], *, scope: dict[str, An
         payload.get("status"),
     )
     signals = _string_list(meta.get("signals") or meta.get("diagnosis_signals") or diagnosis.get("signals"))
+    cost = _float(_nested(content, "payload", "cost") or content.get("cost"))
     result_ok = payload.get("ok")
     if primary_label:
         ok = primary_label.lower() in SUCCESS_LABELS
@@ -43,6 +47,7 @@ def evaluate_result(runtime: Any, result: dict[str, Any], *, scope: dict[str, An
         "outcome_status": outcome_status,
         "signals": signals,
         "confidence": _float(diagnosis.get("confidence")),
+        "cost": cost,
         "source": "closed_loop.evaluate",
     }
 
@@ -58,10 +63,37 @@ def post_experience_hook(runtime: Any, result: dict[str, Any], scope: dict[str, 
         evaluation=eval_result,
     )
     learning_signal = _safe_generate_learning(runtime, scope=scope)
+    rl_signal = _safe_rl_update(
+        runtime,
+        scope=scope,
+        state={
+            "source": "experience.outcome",
+            "record_id": str(eval_result.get("record_id") or ""),
+            "primary_label": str(eval_result.get("primary_label") or ""),
+            "signals": list(eval_result.get("signals") or []),
+        },
+        action={
+            "id": str(eval_result.get("primary_label") or "unknown"),
+            "type": "experience_feedback",
+            "value": 0.0,
+        },
+        eval_result=eval_result,
+        outcome={
+            "success": bool(eval_result.get("ok", False)),
+            "status": eval_result.get("outcome_status"),
+            "cost": eval_result.get("cost"),
+        },
+        next_state={
+            "memory_record_id": str(memory_update.get("record_id") or ""),
+            "learning_ok": bool(learning_signal.get("ok", False)),
+        },
+        source_record_id=str(eval_result.get("record_id") or ""),
+    )
     return {
         "eval": eval_result,
         "memory": memory_update,
         "learning": learning_signal,
+        "rl": rl_signal,
     }
 
 
@@ -81,11 +113,37 @@ def autonomy_cycle(
         evaluation=feedback,
         cycle=cycle_result,
     )
+    rl_signal = _safe_rl_update(
+        runtime,
+        scope=scope,
+        state={
+            "source": "autonomy.cycle",
+            "bounded_max_goals": cycle_result.get("bounded_max_goals") if isinstance(cycle_result, dict) else None,
+        },
+        action={
+            "id": "run_autonomy_cycle",
+            "type": "autonomy_cycle",
+            "value": 0.0,
+        },
+        eval_result=feedback,
+        outcome={
+            "success": bool(cycle_result.get("ok", False)) if isinstance(cycle_result, dict) else False,
+            "status": "success" if isinstance(cycle_result, dict) and cycle_result.get("ok") else "failed",
+        },
+        next_state={
+            "memory_record_id": str(memory_update.get("record_id") or ""),
+            "feedback_ok": bool(feedback.get("ok", False)),
+        },
+        source_record_id=str(feedback.get("record_id") or ""),
+    )
+    payload = dict(cycle_result or {}) if isinstance(cycle_result, dict) else {}
     return {
+        **payload,
         "ok": bool(cycle_result.get("ok", False)) if isinstance(cycle_result, dict) else False,
         "cycle": cycle_result,
         "feedback": feedback,
         "memory": memory_update,
+        "rl": rl_signal,
     }
 
 
@@ -146,6 +204,43 @@ def _safe_generate_learning(runtime: Any, *, scope: dict[str, Any] | ScopeRef | 
         return dict(generator(scope=_scope_dict(scope), persist=True, max_items=3))
     except Exception as exc:
         return {"ok": False, "error": exc.__class__.__name__, "detail": str(exc)}
+
+
+def _safe_rl_update(
+    runtime: Any,
+    *,
+    scope: dict[str, Any] | ScopeRef | None,
+    state: dict[str, Any],
+    action: dict[str, Any],
+    eval_result: dict[str, Any],
+    outcome: dict[str, Any],
+    next_state: dict[str, Any],
+    source_record_id: str,
+) -> dict[str, Any]:
+    try:
+        reward = RewardEngine().compute(experience=state, eval_result=eval_result, outcome=outcome)
+        transition = ReplayBuffer(runtime.store).add_transition(
+            state=state,
+            action=action,
+            reward=reward,
+            next_state=next_state,
+            scope=scope,
+            source_record_id=source_record_id,
+        )
+        policy_update = RLPolicy(runtime.store).update(
+            state=state,
+            action=action,
+            reward=reward,
+            scope=scope,
+        )
+    except Exception as exc:
+        return {"ok": False, "error": exc.__class__.__name__, "detail": str(exc)}
+    return {
+        "ok": True,
+        "reward": reward,
+        "transition_record_id": transition.record_id,
+        "policy_update": policy_update,
+    }
 
 
 def _scope_dict(scope: dict[str, Any] | ScopeRef | None) -> dict[str, Any]:
