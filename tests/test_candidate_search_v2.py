@@ -1,6 +1,6 @@
 """Tests for harness-patch v2 enforcement helpers in candidate_search.
 
-See ``docs/superpowers/plans/2026-06-23-eimemory-1.6.0-harness-patch.md`` §Task 4.
+See ``docs/superpowers/plans/2026-06-23-eimemory-1.6.0-harness-patch.md`` Task 4.
 """
 from __future__ import annotations
 

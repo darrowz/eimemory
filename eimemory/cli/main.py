@@ -565,14 +565,11 @@ def _handle_patch(parsed: object, *, runtime: Any, scope: dict[str, Any]) -> int
         }, ensure_ascii=False, indent=2))
         return 0
     if cmd == "rollback":
-        from eimemory.governance import promotion_manager
+        from eimemory.governance.promotion_manager import rollback_capability_candidate
         try:
-            if hasattr(promotion_manager, "_rollback_evidence"):
-                result = promotion_manager._rollback_evidence(
-                    runtime, candidate_id=parsed.candidate, scope=scope,
-                )
-            else:
-                result = {"ok": False, "reason": "no rollback handler found"}
+            result = rollback_capability_candidate(
+                runtime, candidate_id=parsed.candidate, scope=scope,
+            )
         except Exception as exc:
             return _print_error("rollback_failed", exc)
         print(json.dumps(result, ensure_ascii=False, indent=2))

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import os
 from statistics import mean
 from typing import Any
 
-from eimemory.governance.harness_patch import HARNESS_PATCH_V2, HarnessSurface
+from eimemory.governance.harness_patch import HarnessSurface
 from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
@@ -65,8 +66,12 @@ def record_capability_score(
     }
     if meta:
         merged_meta.update(meta)
+        if isinstance(meta.get("proposal_card"), dict):
+            content["proposal_card"] = dict(meta["proposal_card"])
     tier = str(merged_meta.get("authority_tier") or "L0")
-    if HARNESS_PATCH_V2 and meta and str(meta.get("kind") or "") == "candidate_promotion":
+    # Re-read HARNESS_PATCH_V2 at call time so monkeypatch.setenv in tests takes
+    # effect (the module-level constant in harness_patch is captured at import).
+    if os.environ.get("HARNESS_PATCH_V2") == "1" and meta and str(meta.get("kind") or "") == "candidate_promotion":
         card = content.get("proposal_card") if isinstance(content, dict) else None
         if not card or not isinstance(card, dict):
             raise ValueError(

@@ -19,7 +19,22 @@ from enum import Enum
 
 
 # Backwards-compat: opt-in via env var so 1.5.x callers are unaffected.
+#
+# NOTE: this constant is captured at module-import time. Tests and runtime code
+# that need to react to env-var changes after import must use ``_is_v2_enabled()``
+# below instead of importing this name.
 HARNESS_PATCH_V2 = os.environ.get("HARNESS_PATCH_V2") == "1"
+
+
+def _is_v2_enabled() -> bool:
+    """Runtime check for the HARNESS_PATCH_V2 opt-in env var.
+
+    Always reads ``os.environ`` at call time, so monkeypatching the env var in
+    tests (or flipping it in a running process) takes effect immediately. Use
+    this helper instead of importing ``HARNESS_PATCH_V2`` whenever the decision
+    needs to reflect the *current* process state.
+    """
+    return os.environ.get("HARNESS_PATCH_V2") == "1"
 
 
 class HarnessSurface(str, Enum):
@@ -151,4 +166,5 @@ __all__ = [
     "GateVerdict",
     "GateResult",
     "HarnessGate",
+    "_is_v2_enabled",
 ]

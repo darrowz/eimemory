@@ -16,7 +16,7 @@ SOURCE_PRIORITY = {
 HIGH_RISK_LEVELS = {"high", "unsafe", "l2", "l3", "l4", "ha", "privacy", "device", "account"}
 LOW_RISK_LEVELS = {"low", "safe", "software", "l0", "l1"}
 
-# Harness-patch v2 hard limits (see docs/superpowers/plans/2026-06-23-eimemory-1.6.0-harness-patch.md §Task 4).
+# Harness-patch v2 hard limits (see docs/superpowers/plans/2026-06-23-eimemory-1.6.0-harness-patch.md Task 4).
 MAX_DIFF_LINES = 50
 MAX_DIFF_TOKENS = 2000
 MIN_DIVERSE_CANDIDATES = 3
@@ -56,6 +56,11 @@ def generate_candidate_policies(
         candidates.append(candidate)
         if len(candidates) >= 5:
             break
+    # Harness-patch v2 enforcement: a large enough candidate batch must satisfy
+    # diversity. Smaller/single-cluster batches return as before for backwards
+    # compatibility.
+    if len(candidates) >= MIN_DIVERSE_CANDIDATES:
+        enforce_diversity(candidates, min_count=MIN_DIVERSE_CANDIDATES)
     return candidates
 
 
@@ -102,7 +107,7 @@ def enforce_diversity(candidates: list[dict[str, Any]], *, min_count: int) -> No
     }
     if len(distinct_keys) < int(min_count):
         raise ValueError(
-            f"need ≥{min_count} diverse candidates (source_keys), got {len(distinct_keys)}"
+            f"need >= {min_count} diverse candidates (source_keys), got {len(distinct_keys)}"
         )
 
 

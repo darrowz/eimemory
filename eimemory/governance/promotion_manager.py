@@ -51,6 +51,108 @@ def _check_safety_wire(*, authority_tier: str, safety_wire: tuple[str, ...] | li
         )
 
 
+def _enforce_harness_patch_v2(runtime: Any, candidate: Any, *, scope: Any) -> None:
+    """Run candidate_search v2 enforce_* checks when HARNESS_PATCH_V2=1.
+
+    Re-reads the env var at call time so flipping it after process start (or
+    monkeypatching in tests) takes effect. Imports the helpers lazily so the
+    import graph stays cheap when v2 is off.
+    """
+    import os
+    if os.environ.get("HARNESS_PATCH_V2") != "1":
+        return
+    card_data = ((candidate.content or {}).get("proposal_card") if candidate.content else None)
+    if not card_data or not isinstance(card_data, dict):
+        return
+    from eimemory.governance.candidate_search import (
+        enforce_diff_size,
+        enforce_one_active_per_surface,
+    )
+    enforce_diff_size(
+        diff_lines=int(card_data.get("diff_lines") or 0),
+        diff_tokens=int(card_data.get("diff_tokens") or 0),
+    )
+    surface = str(card_data.get("target_surface") or "")
+    if not surface:
+        return
+    # Collect surfaces of currently-active candidates (excluding the one we are
+    # about to promote) so enforce_one_active_per_surface can reject duplicates.
+    active_surfaces: list[dict[str, Any]] = []
+    try:
+        for rec in runtime.store.list_records(
+            kinds=["capability_candidate"],
+            scope=scope,
+            limit=500,
+        ):
+            if rec.record_id == candidate.record_id:
+                continue
+            status = str(rec.meta.get("status") or "")
+            if status not in {"active", "applied", "watch"}:
+                continue
+            other_card = (rec.content or {}).get("proposal_card") if rec.content else None
+            if isinstance(other_card, dict):
+                other_surface = str(other_card.get("target_surface") or "")
+                if other_surface:
+                    active_surfaces.append({"target_surface": other_surface, "id": rec.record_id})
+    except Exception:
+        # Best-effort: if the store cannot enumerate, skip the check rather
+        # than block legitimate promotions on a transient lookup failure.
+        active_surfaces = []
+    enforce_one_active_per_surface(new_surface=surface, active_surfaces=active_surfaces)
+
+
+def rollback_capability_candidate(
+    runtime: Any,
+    *,
+    candidate_id: str,
+    scope: dict[str, Any] | ScopeRef | None = None,
+    loop_id: str = "manual_rollback",
+    reason: str = "manual rollback via eimemory patch rollback",
+) -> dict[str, Any]:
+    """Roll back a single ``capability_candidate`` to ``rolled_back`` status.
+
+    This is the *capability* counterpart of the code-patch ``_rollback_evidence``
+    helper: it flips the candidate's status, records a lifecycle event, and
+    returns a JSON-friendly summary so the CLI can print it.
+
+    The function is idempotent: rolling back an already-rolled-back candidate
+    returns ``ok=True`` without writing a second lifecycle record.
+    """
+    candidate = runtime.store.get_by_id(candidate_id, scope=scope)
+    if candidate is None or candidate.kind != "capability_candidate":
+        raise ValueError(f"capability candidate not found: {candidate_id}")
+    # Read from ``candidate.status`` (the field mutate operations on) to stay
+    # consistent with promote_candidate's writes.
+    previous_status = str(candidate.status or candidate.meta.get("status") or "")
+    if previous_status == "rolled_back":
+        return {
+            "ok": True,
+            "candidate_id": candidate_id,
+            "previous_status": previous_status,
+            "new_status": "rolled_back",
+            "already_rolled_back": True,
+        }
+    _record_candidate_lifecycle(
+        runtime,
+        candidate,
+        scope=scope,
+        action_type="rolled_back",
+        reason=reason,
+        details={"previous_status": previous_status},
+    )
+    candidate.status = "rolled_back"
+    candidate.meta["rolled_back_by"] = "eimemory.cli.patch"
+    candidate.meta["rolled_back_at_loop_id"] = loop_id
+    candidate.meta["rolled_back_reason"] = reason
+    runtime.store.rewrite(candidate)
+    return {
+        "ok": True,
+        "candidate_id": candidate_id,
+        "previous_status": previous_status,
+        "new_status": "rolled_back",
+    }
+
+
 def promote_candidate(
     runtime: Any,
     *,
@@ -69,6 +171,7 @@ def promote_candidate(
         authority_tier=str(candidate.meta.get("authority_tier") or ""),
         safety_wire=tuple((candidate.content or {}).get("safety_wire") or ()),
     )
+    _enforce_harness_patch_v2(runtime, candidate, scope=scope)
     _record_candidate_lifecycle(runtime, candidate, scope=scope, action_type="proposed")
     if tier == "L3":
         _record_candidate_lifecycle(runtime, candidate, scope=scope, action_type="gate_failed", reason="l3_requires_approval")
