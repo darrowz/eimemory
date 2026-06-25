@@ -5,6 +5,7 @@ from dataclasses import asdict
 import json
 from pathlib import Path
 import sys
+from typing import Any, Callable
 
 from eimemory.adapters.eibrain.rpc_server import EIBrainRPCServer, build_health_payload
 from eimemory.adapters.openclaw.hooks import OpenClawMemoryHooks
@@ -28,6 +29,35 @@ from eimemory.governance.console import write_evolution_console
 from eimemory.governance.snapshot import build_governance_snapshot
 from eimemory.ei_bridge.openclaw_runtime import handle_openclaw_feishu_event
 from eimemory.scheduler.jobs import run_nightly_jobs
+
+
+COMMAND_REGISTRY: dict[str, Callable[[object, Any, dict[str, Any]], Any]] = {}
+FALLTHROUGH = object()
+
+
+def register(cmd: str) -> Callable[[Callable[[object, Any, dict[str, Any]], Any]], Callable[[object, Any, dict[str, Any]], Any]]:
+    def wrapper(fn: Callable[[object, Any, dict[str, Any]], Any]) -> Callable[[object, Any, dict[str, Any]], Any]:
+        COMMAND_REGISTRY[str(cmd)] = fn
+        return fn
+
+    return wrapper
+
+
+def dispatch(cmd: str, parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
+    fn = COMMAND_REGISTRY.get(str(cmd))
+    if not fn:
+        return {"ok": False, "error": "unknown_command"}
+    return fn(parsed, runtime, scope)
+
+
+def _dispatch_exit(result: Any) -> int:
+    if isinstance(result, int):
+        return result
+    if isinstance(result, dict):
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0 if result.get("ok") is not False else 1
+    print(json.dumps({"ok": True, "result": result}, ensure_ascii=False, indent=2))
+    return 0
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -441,7 +471,7 @@ def _build_parser() -> argparse.ArgumentParser:
     eval_task_replay.add_argument("--no-seed", action="store_true")
     eval_task_replay.add_argument("--persist-report", action="store_true")
 
-    # eimemory patch — harness-patch CLI (1.6.0)
+    # eimemory patch - harness-patch CLI (1.6.0)
     patch = sub.add_parser("patch")
     patch_sub = patch.add_subparsers(dest="patch_command")
     patch_propose = patch_sub.add_parser("propose")
@@ -592,6 +622,67 @@ def _handle_patch(parsed: object, *, runtime: Any, scope: dict[str, Any]) -> int
     return _print_error("unknown_patch_command", ValueError(cmd))
 
 
+@register("patch")
+def _dispatch_patch(parsed: object, runtime: Any, scope: dict[str, Any]) -> int:
+    return _handle_patch(parsed, runtime=runtime, scope=scope)
+
+
+@register("recall")
+def _dispatch_recall(parsed: object, runtime: Any, scope: dict[str, Any]) -> int:
+    task_context = {"task_type": "cli.recall"}
+    if parsed.view:
+        task_context["recall_view"] = parsed.view
+    bundle = runtime.memory.recall(
+        query=parsed.query,
+        scope=scope,
+        task_context=task_context,
+        limit=5,
+    )
+    print(json.dumps(bundle.to_dict(), ensure_ascii=False, indent=2))
+    return 0
+
+
+@register("experience")
+def _dispatch_experience(parsed: object, runtime: Any, scope: dict[str, Any]) -> int:
+    if parsed.experience_command == "outcome":
+        try:
+            payload = json.loads(Path(parsed.json_path).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            return _print_error("invalid_json", exc)
+        if not isinstance(payload, dict):
+            print(json.dumps({"ok": False, "error": "invalid_payload"}, ensure_ascii=False))
+            return 2
+        result = runtime.record_outcome_trace(payload, scope=scope)
+        if result.get("ok") is not False:
+            from eimemory.governance.closed_loop import post_experience_hook
+
+            result["closed_loop"] = post_experience_hook(runtime, result, scope)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0 if result.get("ok") is not False else 2
+    print(json.dumps({"usage": "eimemory experience outcome <json_path>"}))
+    return 0
+
+
+@register("learn")
+def _dispatch_learn(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
+    if parsed.learn_command != "autonomy":
+        return FALLTHROUGH
+    from eimemory.governance.closed_loop import autonomy_cycle
+
+    report = autonomy_cycle(
+        runtime,
+        scope,
+        apply=bool(parsed.apply),
+        dry_run=bool(parsed.dry_run),
+        full=bool(parsed.full),
+        force=bool(parsed.force),
+        max_goals=max(1, int(parsed.max_goals)),
+        policy={"max_auto_promotions": max(0, int(parsed.max_promotions))},
+    )
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0 if report.get("ok") else 1
+
+
 def _print_error(error: str, exc: Exception) -> int:
     print(
         json.dumps(
@@ -715,8 +806,10 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
         return 0
-    if parsed.command == "patch":
-        return _handle_patch(parsed, runtime=runtime, scope=scope)
+    if parsed.command in COMMAND_REGISTRY:
+        dispatch_result = dispatch(parsed.command, parsed, runtime, scope)
+        if dispatch_result is not FALLTHROUGH:
+            return _dispatch_exit(dispatch_result)
     if parsed.command in {"doctor", "status"}:
         host = settings.rpc_host
         port = int(settings.rpc_port)
