@@ -103,3 +103,26 @@ def test_autonomy_cycle_uses_rl_policy_to_select_conservative_behavior(tmp_path,
     assert report["bounded_max_goals"] == 1
     assert report["policy_decision"]["id"] == "conservative_autonomy_cycle"
     assert report["policy_decision"]["selected_by"] == "rl_policy.value_table"
+
+
+def test_autonomy_cycle_smoke_skips_heavy_learning_and_keeps_policy_decision(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("smoke must not call heavy autonomous learning")
+
+    monkeypatch.setattr(autonomy_controller, "_legacy_run_autonomous_learning_cycle", fail_if_called)
+
+    report = autonomy_controller.run_autonomy_cycle(
+        runtime,
+        scope={"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"},
+        max_goals=3,
+        policy={"max_daily_goals": 3},
+        smoke=True,
+    )
+
+    assert report["ok"] is True
+    assert report["report_type"] == "autonomy_cycle"
+    assert report["smoke"] is True
+    assert report["policy_decision"]["id"] == "run_autonomy_cycle"
+    assert report["replay_quality"]["case_count"] == 1

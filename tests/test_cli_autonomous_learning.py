@@ -80,6 +80,19 @@ def test_cli_learn_autonomy_respects_zero_promotion_budget(tmp_path, monkeypatch
     assert report["promotion_control"]["applied_count"] == 0
 
 
+def test_cli_learn_autonomy_smoke_runs_closed_loop_without_heavy_learning(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path))
+
+    assert cli_main(["learn", "autonomy", "--smoke", "--apply", "--max-goals", "1", "--max-promotions", "0"]) == 0
+    report = json.loads(capsys.readouterr().out)
+
+    assert report["ok"] is True
+    assert report["cycle"]["smoke"] is True
+    assert report["policy_decision"]["selected_by"] == "rl_policy.value_table"
+    assert report["rl"]["ok"] is True
+    assert report["rl"]["policy_update"]["action_key"] == "autonomy_cycle:run_autonomy_cycle"
+
+
 def test_cli_learn_promote_applies_candidate(tmp_path, monkeypatch, capsys) -> None:
     monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path))
 

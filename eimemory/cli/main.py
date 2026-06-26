@@ -290,6 +290,7 @@ def _build_parser() -> argparse.ArgumentParser:
     learn_autonomy.add_argument("--force", action="store_true")
     learn_autonomy.add_argument("--max-goals", type=int, default=3)
     learn_autonomy.add_argument("--max-promotions", type=int, default=3)
+    learn_autonomy.add_argument("--smoke", action="store_true")
     learn_autonomy.add_argument("--json", action="store_true", default=True)
     learn_loops = learn_sub.add_parser("loops")
     learn_loops.add_argument("--limit", type=int, default=10)
@@ -678,6 +679,7 @@ def _dispatch_learn(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
         force=bool(parsed.force),
         max_goals=max(1, int(parsed.max_goals)),
         policy={"max_auto_promotions": max(0, int(parsed.max_promotions))},
+        smoke=bool(getattr(parsed, "smoke", False)),
     )
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0 if report.get("ok") else 1
@@ -917,6 +919,7 @@ def main(argv: list[str] | None = None) -> int:
                     force=bool(parsed.force),
                     max_goals=max(1, int(parsed.max_goals)),
                     policy={"max_auto_promotions": max(0, int(parsed.max_promotions))},
+                    smoke=bool(getattr(parsed, "smoke", False)),
                 )
             else:
                 report = runtime.run_autonomous_learning_cycle(

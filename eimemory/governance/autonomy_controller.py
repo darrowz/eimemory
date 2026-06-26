@@ -20,6 +20,7 @@ def run_autonomy_cycle(
     force: bool = False,
     max_goals: int = 3,
     policy: dict[str, Any] | AutonomyPolicy | None = None,
+    smoke: bool = False,
 ) -> dict[str, Any]:
     autonomy_policy = normalize_autonomy_policy(policy)
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
@@ -28,16 +29,25 @@ def run_autonomy_cycle(
     if str(policy_decision.get("id") or "") == "conservative_autonomy_cycle":
         bounded_goals = 1
 
-    learning_report = _legacy_run_autonomous_learning_cycle(
-        runtime,
-        scope=scope_ref,
-        apply=bool(apply),
-        dry_run=bool(dry_run),
-        full=bool(full),
-        force=bool(force),
-        max_goals=bounded_goals,
-        max_promotions=autonomy_policy.max_auto_promotions,
-    )
+    if smoke:
+        learning_report = _smoke_learning_report(
+            scope=scope_ref,
+            apply=bool(apply),
+            dry_run=bool(dry_run),
+            bounded_goals=bounded_goals,
+            policy_decision=policy_decision,
+        )
+    else:
+        learning_report = _legacy_run_autonomous_learning_cycle(
+            runtime,
+            scope=scope_ref,
+            apply=bool(apply),
+            dry_run=bool(dry_run),
+            full=bool(full),
+            force=bool(force),
+            max_goals=bounded_goals,
+            max_promotions=autonomy_policy.max_auto_promotions,
+        )
     roi_report = _safe_roi(runtime, scope=scope_ref)
     dashboard = _safe_dashboard(runtime, scope=scope_ref, persist=not bool(dry_run))
     replay_dataset = dict(learning_report.get("replay_dataset") or {})
@@ -121,6 +131,39 @@ def _select_autonomy_action(runtime: Any, *, scope: ScopeRef, bounded_goals: int
         },
         scope=scope,
     )
+
+
+def _smoke_learning_report(
+    *,
+    scope: ScopeRef,
+    apply: bool,
+    dry_run: bool,
+    bounded_goals: int,
+    policy_decision: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "report_type": "autonomy_cycle_smoke",
+        "loop_id": "autonomy-smoke",
+        "smoke": True,
+        "apply": bool(apply),
+        "dry_run": bool(dry_run),
+        "goal_count": 1,
+        "replay_dataset": {
+            "case_count": 1,
+            "filtered_count": 1,
+            "quality_score": 1.0,
+            "target_pass_rate": 1.0,
+        },
+        "real_task_replay": {
+            "verdict": "pass",
+            "pass_rate": 1.0,
+        },
+        "promotions": [],
+        "selected_action": dict(policy_decision or {}),
+        "bounded_max_goals": int(bounded_goals),
+        "scope": asdict(scope),
+    }
 
 
 def _safe_roi(runtime: Any, *, scope: ScopeRef) -> dict[str, Any]:

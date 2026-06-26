@@ -466,6 +466,7 @@ class Runtime:
         force: bool = False,
         max_goals: int = 3,
         policy: dict | None = None,
+        smoke: bool = False,
     ) -> dict:
         from eimemory.governance.autonomy_controller import run_autonomy_cycle
 
@@ -478,6 +479,7 @@ class Runtime:
             force=force,
             max_goals=max_goals,
             policy=policy,
+            smoke=smoke,
         )
 
     def list_learning_loops(self, *, scope: dict | None = None, limit: int = 10) -> list[dict]:
