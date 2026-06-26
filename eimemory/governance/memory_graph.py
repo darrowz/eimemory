@@ -117,9 +117,26 @@ def graph_route_for_query(query: str, *, intent_name: str = "", task_context: di
     if not route or "semantic" not in route:
         route.append("semantic")
     ordered = [edge_type for edge_type in ("temporal", "causal", "entity", "semantic") if edge_type in route]
+    event_graph = bool(
+        set(ordered) & {"temporal", "causal", "entity"}
+        or _has_any(
+            text,
+            (
+                "event",
+                "events",
+                "outcome",
+                "trace",
+                "experience",
+                "closed loop",
+                "memory 3.0",
+                "sag",
+            ),
+        )
+    )
     return {
         "edge_types": ordered,
         "primary": ordered[0] if ordered else "semantic",
+        "event_graph": event_graph,
         "reasons": reasons or ["semantic_default"],
     }
 

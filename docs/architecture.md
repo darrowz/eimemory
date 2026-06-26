@@ -19,8 +19,14 @@ into that loop, but they do not run their own production scheduler.
    - `eimemory.raw`, `eimemory.recall`, `eimemory.scoring`, and
      `eimemory.embeddings` provide lexical, semantic, graph, recency, and
      quality-aware retrieval.
+   - SAG-style event memory projects closed-loop outcomes into first-class
+     `event_trace` memories. These records keep source outcome IDs, event IDs,
+     entities, relations, and evidence references, while reusing the existing
+     `records`, `events/event_outcomes`, and `memory_edges` stores.
    - Recall responses expose scoring and quality summaries so low recall can be
-     debugged from evidence instead of intuition.
+     debugged from evidence instead of intuition. Event-centered recalls expose
+     `graph_route.event_graph`, selected event record IDs, event IDs, and
+     timeline/evidence refs.
 
 3. **Knowledge and intake**
    - `eimemory.intake` registers and scans external sources.
@@ -40,6 +46,11 @@ into that loop, but they do not run their own production scheduler.
    - `eimemory.governance.autonomous_learning` is the main loop:
      watch, self-model, think, goals, evidence, replay, candidate portfolio,
      promotion, ledger, dashboard, and retention.
+   - `eimemory.governance.closed_loop.post_experience_hook` is the immediate
+     Memory 3.0 feedback path: an outcome is evaluated, written back as
+     feedback memory, projected into SAG-style event memory, converted into
+     policy-search evidence, sent to learning, and rewarded through replay/RL
+     policy values.
    - Candidate portfolio generation is lane-aware: memory recall, tool routing,
      proactive judgment, knowledge intake, and code implementation goals can
      each produce concrete candidates in the same pass. Empty code-patch
@@ -78,6 +89,8 @@ There is one production self-improvement line:
 
 ```text
 signals/outcomes/replay/web evidence
+  -> closed_loop event projection
+  -> SAG-style event_trace memory + memory_edges
   -> governance.autonomous_learning
   -> governance.autonomous_evolution
   -> promotion_manager gates

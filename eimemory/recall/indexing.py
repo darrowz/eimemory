@@ -64,6 +64,8 @@ def classify_recall_lane(record: RecordEnvelope) -> str:
 
     memory_type = _memory_type(record)
     if kind in {"memory", "rule"} or memory_type == "living_posture":
+        if projection_type == "event_memory":
+            return "primary"
         if projection_type == "operational_knowledge":
             return "operational"
         if source_class == "agent_outcome" and _looks_like_actionable_memory(_combined_record_text(record)):
@@ -115,6 +117,8 @@ def classify_source_class(record: RecordEnvelope) -> str:
         return "tool_call"
     if _looks_like_agent_outcome_record(source=source, title=title, text=_combined_record_text(record).lower()):
         return "agent_outcome"
+    if projection_type == "event_memory":
+        return "event_memory"
     if projection_type == "operational_knowledge":
         return "operational_projection"
     if any(term in source or term in title for term in ("diagnostic", "health", "traceback", "panic")):

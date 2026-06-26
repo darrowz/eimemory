@@ -5,6 +5,7 @@ import json
 from typing import Any
 
 from eimemory.evaluation.reward import RewardEngine
+from eimemory.governance.event_graph import project_experience_event_memory
 from eimemory.governance.rl_policy import RLPolicy
 from eimemory.models.records import ScopeRef
 from eimemory.storage.replay_buffer import ReplayBuffer
@@ -62,6 +63,13 @@ def post_experience_hook(runtime: Any, result: dict[str, Any], scope: dict[str, 
         source="loop",
         evaluation=eval_result,
     )
+    event_graph = _safe_event_graph_projection(
+        runtime,
+        result=result,
+        eval_result=eval_result,
+        memory_update=memory_update,
+        scope=scope,
+    )
     learning_signal = _safe_generate_learning(runtime, scope=scope)
     rl_signal = _safe_rl_update(
         runtime,
@@ -92,6 +100,7 @@ def post_experience_hook(runtime: Any, result: dict[str, Any], scope: dict[str, 
     return {
         "eval": eval_result,
         "memory": memory_update,
+        "event_graph": event_graph,
         "learning": learning_signal,
         "rl": rl_signal,
     }
@@ -218,6 +227,31 @@ def _safe_generate_learning(runtime: Any, *, scope: dict[str, Any] | ScopeRef | 
         return dict(generator(scope=_scope_dict(scope), persist=True, max_items=3))
     except Exception as exc:
         return {"ok": False, "error": exc.__class__.__name__, "detail": str(exc)}
+
+
+def _safe_event_graph_projection(
+    runtime: Any,
+    *,
+    result: dict[str, Any],
+    eval_result: dict[str, Any],
+    memory_update: dict[str, Any],
+    scope: dict[str, Any] | ScopeRef | None,
+) -> dict[str, Any]:
+    try:
+        return project_experience_event_memory(
+            runtime,
+            result=result,
+            eval_result=eval_result,
+            memory_update=memory_update,
+            scope=scope,
+        )
+    except Exception as exc:
+        return {
+            "ok": False,
+            "projection": "sag_event_memory",
+            "error": exc.__class__.__name__,
+            "detail": str(exc),
+        }
 
 
 def _safe_rl_update(

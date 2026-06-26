@@ -380,6 +380,7 @@ class MemoryAPI:
                 policy=retrieval_policy,
             )
             reflections = [gap["reflection"], *reflections][:3]
+        event_graph_summary = self._event_graph_summary(items, graph_edge_refs)
         return RecallBundle(
             items=items,
             rules=rules,
@@ -402,6 +403,7 @@ class MemoryAPI:
                 "unknown_record_id": gap["unknown"].record_id if gap else "",
                 "graph_expanded": graph_expanded,
                 "graph_route": graph_route,
+                "event_graph": event_graph_summary,
                 "retrieval_mode": str(search_report.get("retrieval_mode") or "hybrid"),
                 "vector_hits": int(search_report.get("vector_hits") or 0),
                 "quality_summary": self._quality_summary(items),
@@ -1293,6 +1295,44 @@ class MemoryAPI:
             "projected_source_ids": projected_source_ids,
             "knowledge_count": by_kind.get("claim_card", 0) + by_kind.get("knowledge_page", 0),
             "memory_count": by_kind.get("memory", 0),
+        }
+
+    def _event_graph_summary(self, items: list[RecordEnvelope], edges: list) -> dict:
+        event_items = [
+            item
+            for item in items
+            if str(
+                business_metadata(item.meta).get("projection_type")
+                or item.provenance.get("projection_type")
+                or item.content.get("projection_type")
+                or ""
+            ).strip().lower()
+            == "event_memory"
+        ]
+        return {
+            "ok": True,
+            "selected_event_count": len(event_items),
+            "event_record_ids": [item.record_id for item in event_items],
+            "event_ids": [
+                str(
+                    business_metadata(item.meta).get("event_id")
+                    or item.provenance.get("event_id")
+                    or item.content.get("event_id")
+                    or ""
+                )
+                for item in event_items
+                if str(
+                    business_metadata(item.meta).get("event_id")
+                    or item.provenance.get("event_id")
+                    or item.content.get("event_id")
+                    or ""
+                )
+            ],
+            "edge_ids": [
+                str(getattr(edge, "edge_id", ""))
+                for edge in list(edges or [])
+                if str(getattr(edge, "edge_id", ""))
+            ],
         }
 
     def _selected_record_summaries(self, items: list[RecordEnvelope]) -> list[dict]:

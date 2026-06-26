@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 from eimemory.autonomous.exp_log import ExpLog
@@ -18,7 +19,7 @@ def test_runner_generates_real_hypothesis_and_appends_exp_log(tmp_path: Path) ->
     records_path = tmp_path / "records.jsonl"
     exp_log_path = tmp_path / "exp_log" / "experiments.jsonl"
     _write_profile(profile_ini)
-    now = "2026-06-18T10:00:00+08:00"
+    now = datetime.now(timezone.utc).isoformat()
     records_path.write_text(
         json.dumps(
             {
