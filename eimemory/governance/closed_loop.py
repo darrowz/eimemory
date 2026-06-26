@@ -119,12 +119,9 @@ def autonomy_cycle(
         state={
             "source": "autonomy.cycle",
             "bounded_max_goals": cycle_result.get("bounded_max_goals") if isinstance(cycle_result, dict) else None,
+            "policy_decision": _mapping(cycle_result.get("policy_decision")) if isinstance(cycle_result, dict) else {},
         },
-        action={
-            "id": "run_autonomy_cycle",
-            "type": "autonomy_cycle",
-            "value": 0.0,
-        },
+        action=_autonomy_action(cycle_result),
         eval_result=feedback,
         outcome={
             "success": bool(cycle_result.get("ok", False)) if isinstance(cycle_result, dict) else False,
@@ -144,6 +141,23 @@ def autonomy_cycle(
         "feedback": feedback,
         "memory": memory_update,
         "rl": rl_signal,
+    }
+
+
+def _autonomy_action(cycle_result: Any) -> dict[str, Any]:
+    if isinstance(cycle_result, dict):
+        decision = _mapping(cycle_result.get("policy_decision"))
+        if decision.get("id"):
+            return {
+                "id": str(decision.get("id") or "run_autonomy_cycle"),
+                "type": str(decision.get("type") or "autonomy_cycle"),
+                "value": _float(decision.get("policy_value")),
+                "selected_by": str(decision.get("selected_by") or ""),
+            }
+    return {
+        "id": "run_autonomy_cycle",
+        "type": "autonomy_cycle",
+        "value": 0.0,
     }
 
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from eimemory.api.runtime import Runtime
 from eimemory.evaluation.reward import RewardEngine
-from eimemory.governance.closed_loop import post_experience_hook
+from eimemory.governance.closed_loop import autonomy_cycle, post_experience_hook
 from eimemory.governance.rl_policy import RLPolicy
 from eimemory.storage.replay_buffer import ReplayBuffer
 
@@ -109,3 +109,29 @@ def test_closed_loop_records_reward_transition_and_policy_update(tmp_path) -> No
     assert transitions[0].content["source_record_id"] == outcome["record_id"]
     assert transitions[0].content["action"]["type"] == "experience_feedback"
     assert values[0].meta["action_key"].startswith("experience_feedback:")
+
+
+def test_autonomy_closed_loop_rewards_selected_policy_action(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"}
+
+    def fake_cycle(**_kwargs):
+        return {
+            "ok": True,
+            "cycle_id": "cycle-policy-1",
+            "policy_decision": {
+                "id": "conservative_autonomy_cycle",
+                "type": "autonomy_cycle",
+                "action_key": "autonomy_cycle:conservative_autonomy_cycle",
+                "policy_value": 0.4,
+                "selected_by": "rl_policy.value_table",
+            },
+        }
+
+    runtime.run_autonomy_cycle = fake_cycle  # type: ignore[method-assign]
+
+    report = autonomy_cycle(runtime, scope, apply=True, dry_run=False, max_goals=3)
+    values = runtime.store.list_records(kinds=["rl_policy_value"], scope=scope, limit=10)
+
+    assert report["rl"]["policy_update"]["action_key"] == "autonomy_cycle:conservative_autonomy_cycle"
+    assert values[0].meta["action_key"] == "autonomy_cycle:conservative_autonomy_cycle"

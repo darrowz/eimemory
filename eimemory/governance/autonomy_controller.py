@@ -6,6 +6,7 @@ from typing import Any
 from eimemory.governance.autonomous_learning import run_autonomous_learning_cycle as _legacy_run_autonomous_learning_cycle
 from eimemory.governance.autonomy_policy import AutonomyPolicy, normalize_autonomy_policy
 from eimemory.governance.evolution_pruner import PRODUCTIVE_MODULES, classify_evolution_modules
+from eimemory.governance.rl_policy import RLPolicy
 from eimemory.models.records import ScopeRef
 
 
@@ -23,6 +24,9 @@ def run_autonomy_cycle(
     autonomy_policy = normalize_autonomy_policy(policy)
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
     bounded_goals = max(1, min(_int_value(max_goals, default=autonomy_policy.max_daily_goals), autonomy_policy.max_daily_goals))
+    policy_decision = _select_autonomy_action(runtime, scope=scope_ref, bounded_goals=bounded_goals)
+    if str(policy_decision.get("id") or "") == "conservative_autonomy_cycle":
+        bounded_goals = 1
 
     learning_report = _legacy_run_autonomous_learning_cycle(
         runtime,
@@ -60,6 +64,7 @@ def run_autonomy_cycle(
         "report_type": "autonomy_cycle",
         "autonomy_policy": autonomy_policy.to_dict(),
         "loop_policy": loop_policy,
+        "policy_decision": policy_decision,
         "demoted_modules": demoted_modules,
         "rollout_radius": autonomy_policy.rollout_radius,
         "bounded_max_goals": bounded_goals,
@@ -89,6 +94,33 @@ def run_autonomy_cycle(
         },
         "scope": asdict(scope_ref),
     }
+
+
+def _select_autonomy_action(runtime: Any, *, scope: ScopeRef, bounded_goals: int) -> dict[str, Any]:
+    store = getattr(runtime, "store", None)
+    if store is None:
+        return {}
+    return RLPolicy(store).select_action(
+        {
+            "source": "autonomy_controller.run_autonomy_cycle",
+            "bounded_max_goals": bounded_goals,
+            "possible_actions": [
+                {
+                    "id": "run_autonomy_cycle",
+                    "type": "autonomy_cycle",
+                    "value": 0.0,
+                    "max_goals": bounded_goals,
+                },
+                {
+                    "id": "conservative_autonomy_cycle",
+                    "type": "autonomy_cycle",
+                    "value": -0.1,
+                    "max_goals": 1,
+                },
+            ],
+        },
+        scope=scope,
+    )
 
 
 def _safe_roi(runtime: Any, *, scope: ScopeRef) -> dict[str, Any]:
