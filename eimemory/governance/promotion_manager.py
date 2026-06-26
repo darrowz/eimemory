@@ -601,6 +601,38 @@ def _apply_code_patch_candidate(
         )
         production_applied = True
 
+    canary: dict[str, Any] = {"ok": True, "skipped": True, "status": "not_required", "reports": []}
+    if production_applied:
+        canary = _run_code_patch_canary(
+            runtime,
+            candidate,
+            scope=scope,
+            repo_root=repo_root,
+            patch=patch,
+            verification=verification,
+            commit=commit,
+            rollback_evidence=rollback_evidence,
+            backups=backups,
+            timeout_seconds=timeout_seconds,
+        )
+        if not canary["ok"]:
+            rollback = dict(canary.get("rollback") or {})
+            return {
+                "ok": False,
+                "blocked_reason": "code_patch_canary_failed",
+                "promotion_target": "code_patch",
+                "repo_root": str(repo_root),
+                "applied_file_paths": [item["path"] for item in applied],
+                "verification": verification,
+                "commit": commit,
+                "deployment": deployment,
+                "post_deploy_health": post_deploy_health,
+                "canary": canary,
+                "rollback_evidence": rollback_evidence,
+                "rollback": rollback,
+                "rolled_back": True,
+            }
+
     record = append_learning_record_once(
         runtime,
         kind="learning_playbook",
@@ -620,6 +652,7 @@ def _apply_code_patch_candidate(
             "commit": commit,
             "deployment": deployment,
             "post_deploy_health": post_deploy_health,
+            "canary": canary,
             "rollback_evidence": rollback_evidence,
             "eval_result": eval_result,
             "gate": gate,
@@ -646,10 +679,215 @@ def _apply_code_patch_candidate(
         "commit": commit,
         "deployment": deployment,
         "post_deploy_health": post_deploy_health,
+        "canary": canary,
         "rollback_evidence": rollback_evidence,
         "production_applied": production_applied,
-        "lifecycle_actions": ["applied", *([] if deployment.get("skipped") else ["deployed"]), *([] if post_deploy_health.get("skipped") else ["health_checked"])],
+        "lifecycle_actions": [
+            "applied",
+            *([] if deployment.get("skipped") else ["deployed"]),
+            *([] if post_deploy_health.get("skipped") else ["health_checked"]),
+            *([] if canary.get("skipped") else ["shadow_observed", str(canary.get("status") or "")]),
+        ],
     }
+
+
+def _run_code_patch_canary(
+    runtime: Any,
+    candidate: RecordEnvelope,
+    *,
+    scope: dict[str, Any] | ScopeRef | None,
+    repo_root: Path,
+    patch: dict[str, Any],
+    verification: dict[str, Any],
+    commit: dict[str, Any],
+    rollback_evidence: dict[str, Any],
+    backups: list[dict[str, Any]],
+    timeout_seconds: int,
+) -> dict[str, Any]:
+    commands = _canary_commands(patch)
+    if not commands:
+        return {"ok": True, "skipped": True, "status": "not_required", "reports": []}
+    required_observations = _bounded_int(patch.get("canary_required_observations"), default=3, minimum=1, maximum=20)
+    rollback_threshold = _bounded_float(
+        patch.get("canary_failure_rollback_threshold"),
+        default=0.2,
+        minimum=0.0,
+        maximum=1.0,
+    )
+    active_threshold = _bounded_float(
+        patch.get("canary_failure_active_threshold"),
+        default=0.05,
+        minimum=0.0,
+        maximum=1.0,
+    )
+    reports: list[dict[str, Any]] = []
+    observed_count = 0
+    failure_count = 0
+    release_path = str(rollback_evidence.get("release_path") or "")
+    commit_sha = str(commit.get("commit_sha") or "")
+    for index in range(required_observations):
+        observation = _run_patch_commands(
+            commands,
+            cwd=repo_root,
+            timeout_seconds=timeout_seconds,
+            phase=f"canary:{index + 1}",
+        )
+        observed_count += 1
+        if not observation.get("ok"):
+            failure_count += 1
+        failure_rate = round(min(1.0, max(0.0, failure_count / observed_count)), 6)
+        observation["observed_count"] = observed_count
+        observation["failure_rate"] = failure_rate
+        reports.append(observation)
+        _record_code_patch_canary_lifecycle(
+            runtime,
+            candidate,
+            scope=scope,
+            patch=patch,
+            action_type="shadow_observed",
+            verification=verification,
+            health_result=observation,
+            commit_sha=commit_sha,
+            release_path=release_path,
+            observed_count=observed_count,
+            failure_rate=failure_rate,
+            details={"observation_index": index + 1, "canary_status": "observing"},
+        )
+        if failure_rate >= rollback_threshold:
+            rollback = _rollback_code_patch(
+                repo_root=repo_root,
+                patch=patch,
+                backups=backups,
+                timeout_seconds=timeout_seconds,
+                phase="canary",
+            )
+            _record_code_patch_canary_lifecycle(
+                runtime,
+                candidate,
+                scope=scope,
+                patch=patch,
+                action_type="rolled_back",
+                verification=verification,
+                health_result=observation,
+                commit_sha=commit_sha,
+                release_path=release_path,
+                observed_count=observed_count,
+                failure_rate=failure_rate,
+                reason="code_patch_canary_failure_rate_exceeded",
+                details={"canary_status": "rolled_back", "rollback": rollback},
+            )
+            return {
+                "ok": False,
+                "skipped": False,
+                "status": "rolled_back",
+                "observed_count": observed_count,
+                "failure_rate": failure_rate,
+                "reports": reports,
+                "rollback": rollback,
+            }
+    final_failure_rate = round(min(1.0, max(0.0, failure_count / max(observed_count, 1))), 6)
+    if final_failure_rate <= active_threshold:
+        _record_code_patch_canary_lifecycle(
+            runtime,
+            candidate,
+            scope=scope,
+            patch=patch,
+            action_type="promoted_active",
+            verification=verification,
+            health_result=reports[-1] if reports else {},
+            commit_sha=commit_sha,
+            release_path=release_path,
+            observed_count=observed_count,
+            failure_rate=final_failure_rate,
+            details={"canary_status": "promoted_active"},
+        )
+        return {
+            "ok": True,
+            "skipped": False,
+            "status": "promoted_active",
+            "observed_count": observed_count,
+            "failure_rate": final_failure_rate,
+            "reports": reports,
+        }
+    rollback = _rollback_code_patch(
+        repo_root=repo_root,
+        patch=patch,
+        backups=backups,
+        timeout_seconds=timeout_seconds,
+        phase="canary_quarantine",
+    )
+    _record_code_patch_canary_lifecycle(
+        runtime,
+        candidate,
+        scope=scope,
+        patch=patch,
+        action_type="quarantined",
+        verification=verification,
+        health_result=reports[-1] if reports else {},
+        commit_sha=commit_sha,
+        release_path=release_path,
+        observed_count=observed_count,
+        failure_rate=final_failure_rate,
+        reason="code_patch_canary_failure_rate_above_active_threshold",
+        details={"canary_status": "quarantined", "rollback": rollback},
+    )
+    return {
+        "ok": False,
+        "skipped": False,
+        "status": "quarantined",
+        "observed_count": observed_count,
+        "failure_rate": final_failure_rate,
+        "reports": reports,
+        "rollback": rollback,
+    }
+
+
+def _record_code_patch_canary_lifecycle(
+    runtime: Any,
+    candidate: RecordEnvelope,
+    *,
+    scope: dict[str, Any] | ScopeRef | None,
+    patch: dict[str, Any],
+    action_type: str,
+    verification: dict[str, Any],
+    health_result: dict[str, Any],
+    commit_sha: str,
+    release_path: str,
+    observed_count: int,
+    failure_rate: float,
+    reason: str = "",
+    details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    patch_id = str(patch.get("id") or patch.get("patch_id") or candidate.content.get("experiment_id") or candidate.meta.get("experiment_id") or candidate.record_id)
+    return record_lifecycle_event(
+        runtime,
+        scope=scope or candidate.scope,
+        action_type=action_type,
+        candidate_id=candidate.record_id,
+        patch_id=patch_id,
+        commit_sha=commit_sha,
+        release_path=release_path,
+        test_result=verification,
+        health_result=health_result,
+        rollback_command=_rollback_command_display(patch),
+        observed_count=observed_count,
+        failure_rate=failure_rate,
+        source_opportunity={
+            "candidate_id": candidate.record_id,
+            "candidate_title": candidate.title,
+            "promotion_target": "code_patch",
+            "target_capability": str(candidate.meta.get("target_capability") or candidate.content.get("target_capability") or ""),
+        },
+        replay_report={"canary": health_result},
+        reason=reason,
+        details={
+            "promotion_target": "code_patch",
+            "target_capability": str(candidate.meta.get("target_capability") or candidate.content.get("target_capability") or ""),
+            **dict(details or {}),
+        },
+        applied_artifact_id=commit_sha if action_type == "promoted_active" else "",
+        budget_decision="ok" if action_type in {"shadow_observed", "promoted_active"} else "blocked",
+    )
 
 
 def _apply_playbook_candidate(
@@ -979,6 +1217,32 @@ def _post_deploy_health_commands(patch: dict[str, Any]) -> list[str | list[str]]
     if env_command:
         return [env_command]
     return [["bash", "-lc", "curl -fsS http://127.0.0.1:8091/health"]]
+
+
+def _canary_commands(patch: dict[str, Any]) -> list[str | list[str]]:
+    explicit = _normalize_commands(patch.get("canary_commands") or patch.get("shadow_observe_commands"))
+    if explicit:
+        return explicit
+    env_command = os.environ.get("EIMEMORY_AUTONOMOUS_CODE_CANARY_COMMAND", "").strip()
+    if env_command:
+        return [env_command]
+    return _post_deploy_health_commands(patch)
+
+
+def _bounded_int(value: Any, *, default: int, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = int(default)
+    return max(int(minimum), min(int(maximum), parsed))
+
+
+def _bounded_float(value: Any, *, default: float, minimum: float, maximum: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        parsed = float(default)
+    return max(float(minimum), min(float(maximum), parsed))
 
 
 def _current_commit_sha(repo_root: Path, *, timeout_seconds: int) -> str:

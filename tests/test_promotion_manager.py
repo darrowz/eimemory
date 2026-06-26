@@ -396,6 +396,153 @@ def test_code_patch_rollout_writes_full_lifecycle_ledger(tmp_path, monkeypatch) 
         assert required_fields.issubset(entry["details"])
 
 
+def test_code_patch_rollout_auto_canary_promotes_active(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = {"agent_id": "hongtu", "workspace_id": "code", "user_id": "darrow"}
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+    target = repo / "module.py"
+    target.write_text("VALUE = 'old'\n", encoding="utf-8")
+    subprocess.run(["git", "add", "module.py"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "seed"], cwd=repo, check=True)
+    monkeypatch.setenv("EIMEMORY_AUTONOMOUS_CODE_REPO", str(repo))
+    release_path = tmp_path / "release-auto-canary"
+    release_token = release_path.as_posix()
+    canary_file = tmp_path / "canary_count.txt"
+    experiment_id = create_sandbox_experiment(
+        runtime,
+        scope=scope,
+        loop_id="learn_test",
+        learning_goal_id="goal_1",
+        research_note_id="note_1",
+        candidate_kind="code_patch",
+        candidate_patch={
+            "summary": "Patch module and auto-promote after canary",
+            "repo_root": str(repo),
+            "apply_to_repo": True,
+            "deploy_to_production": True,
+            "commit_to_repo": True,
+            "allowed_files": ["module.py"],
+            "file_updates": [{"path": "module.py", "content": "VALUE = 'new'\n"}],
+            "verification_commands": [[sys.executable, "-c", "from pathlib import Path; assert Path('module.py').read_text(encoding='utf-8') == \"VALUE = 'new'\\n\""]],
+            "deployment_commands": [[sys.executable, "-c", f"from pathlib import Path; Path(r'{release_token}').mkdir(parents=True, exist_ok=True); print('release={release_token}')"]],
+            "post_deploy_health_commands": [[sys.executable, "-c", "print('health ok')"]],
+            "canary_commands": [
+                [
+                    sys.executable,
+                    "-c",
+                    f"from pathlib import Path; p=Path(r'{canary_file}'); n=int(p.read_text() or '0') if p.exists() else 0; p.write_text(str(n+1)); print('canary ok')",
+                ]
+            ],
+            "canary_required_observations": 3,
+            "rollback_plan": {"commands": [[sys.executable, "-c", "print('rollback ready')"]]},
+        },
+    )
+    candidate_id = distill_capability_candidate(
+        runtime,
+        scope=scope,
+        loop_id="learn_test",
+        experiment_id=experiment_id,
+        eval_result={**PASSING_EVAL, "gate_bundle": _l2_gate_bundle()},
+        promotion_target="code_patch",
+        summary="Code patch candidate",
+        target_capability="code.implementation",
+    )
+
+    result = promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", eval_result={**PASSING_EVAL, "gate_bundle": _l2_gate_bundle()}, health={"ok": True})
+
+    assert result["ok"] is True
+    assert result["side_effect"]["production_applied"] is True
+    assert result["side_effect"]["canary"]["status"] == "promoted_active"
+    assert result["side_effect"]["canary"]["observed_count"] == 3
+    assert result["side_effect"]["canary"]["failure_rate"] == 0.0
+    assert canary_file.read_text(encoding="utf-8") == "3"
+    assert runtime.store.get_by_id(candidate_id).status == "promoted"
+    ledger = [
+        item
+        for item in runtime.get_policy_rollout_ledger(scope=scope, limit=80)
+        if item["source_opportunity_id"] == candidate_id
+    ]
+    actions = [item["action_type"] for item in ledger]
+    assert actions.count("shadow_observed") == 3
+    assert "promoted_active" in actions
+    active = next(item for item in ledger if item["action_type"] == "promoted_active")
+    assert active["details"]["observed_count"] == 3
+    assert active["details"]["failure_rate"] == 0.0
+    assert active["details"]["commit_sha"] == result["side_effect"]["commit"]["commit_sha"]
+    assert active["details"]["release_path"] == release_token
+
+
+def test_code_patch_rollout_auto_canary_failure_rolls_back(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = {"agent_id": "hongtu", "workspace_id": "code", "user_id": "darrow"}
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+    target = repo / "module.py"
+    target.write_text("VALUE = 'old'\n", encoding="utf-8")
+    subprocess.run(["git", "add", "module.py"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "seed"], cwd=repo, check=True)
+    monkeypatch.setenv("EIMEMORY_AUTONOMOUS_CODE_REPO", str(repo))
+    release_path = tmp_path / "release-bad-canary"
+    release_token = release_path.as_posix()
+    experiment_id = create_sandbox_experiment(
+        runtime,
+        scope=scope,
+        loop_id="learn_test",
+        learning_goal_id="goal_1",
+        research_note_id="note_1",
+        candidate_kind="code_patch",
+        candidate_patch={
+            "summary": "Patch module but rollback on bad canary",
+            "repo_root": str(repo),
+            "apply_to_repo": True,
+            "deploy_to_production": True,
+            "commit_to_repo": True,
+            "allowed_files": ["module.py"],
+            "file_updates": [{"path": "module.py", "content": "VALUE = 'new'\n"}],
+            "verification_commands": [[sys.executable, "-c", "from pathlib import Path; assert Path('module.py').read_text(encoding='utf-8') == \"VALUE = 'new'\\n\""]],
+            "deployment_commands": [[sys.executable, "-c", f"from pathlib import Path; Path(r'{release_token}').mkdir(parents=True, exist_ok=True); print('release={release_token}')"]],
+            "post_deploy_health_commands": [[sys.executable, "-c", "print('health ok')"]],
+            "canary_commands": [[sys.executable, "-c", "raise SystemExit(2)"]],
+            "canary_required_observations": 3,
+            "rollback_plan": {"commands": [[sys.executable, "-c", "print('rollback ready')"]]},
+        },
+    )
+    candidate_id = distill_capability_candidate(
+        runtime,
+        scope=scope,
+        loop_id="learn_test",
+        experiment_id=experiment_id,
+        eval_result={**PASSING_EVAL, "gate_bundle": _l2_gate_bundle()},
+        promotion_target="code_patch",
+        summary="Code patch candidate",
+        target_capability="code.implementation",
+    )
+
+    result = promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", eval_result={**PASSING_EVAL, "gate_bundle": _l2_gate_bundle()}, health={"ok": True})
+
+    assert result["ok"] is False
+    assert result["blocked_reason"] == "code_patch_canary_failed"
+    assert result["side_effect"]["canary"]["status"] == "rolled_back"
+    assert result["side_effect"]["canary"]["observed_count"] == 1
+    assert result["side_effect"]["canary"]["failure_rate"] == 1.0
+    assert result["side_effect"]["rollback"]["ok"] is True
+    assert target.read_text(encoding="utf-8") == "VALUE = 'old'\n"
+    assert runtime.store.get_by_id(candidate_id).status == "candidate"
+    ledger = [
+        item
+        for item in runtime.get_policy_rollout_ledger(scope=scope, limit=80)
+        if item["source_opportunity_id"] == candidate_id
+    ]
+    actions = {item["action_type"] for item in ledger}
+    assert {"shadow_observed", "rolled_back"}.issubset(actions)
+    rolled_back = next(item for item in ledger if item["action_type"] == "rolled_back")
+    assert rolled_back["details"]["observed_count"] == 1
+    assert rolled_back["details"]["failure_rate"] == 1.0
+
+
 def test_code_patch_requires_strict_rollout_contract(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path / "runtime")
     scope = {"agent_id": "hongtu", "workspace_id": "code", "user_id": "darrow"}

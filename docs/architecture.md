@@ -60,8 +60,9 @@ into that loop, but they do not run their own production scheduler.
      evidence into concrete improvement opportunities.
    - `eimemory.governance.promotion_manager` owns promotion gates, file-update
      application, optional repo commits, optional production deployment,
-     post-deploy health checks, rollback evidence, and capability ledger
-     updates.
+     post-deploy health checks, automatic code-patch canary observation,
+     rollback/quarantine decisions, promoted-active lifecycle records, rollback
+     evidence, and capability ledger updates.
 
 6. **Runtime and adapters**
    - `eimemory.api.runtime.Runtime` is the public facade used by the CLI,
