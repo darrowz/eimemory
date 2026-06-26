@@ -48,12 +48,27 @@ def run_autonomy_cycle(
             max_goals=bounded_goals,
             max_promotions=autonomy_policy.max_auto_promotions,
         )
-    roi_report = _safe_roi(runtime, scope=scope_ref)
-    dashboard = _safe_dashboard(runtime, scope=scope_ref, persist=not bool(dry_run))
+    if smoke:
+        roi_report = {"ok": True, "smoke": True, "roi_components": {}, "skipped_reason": "autonomy_smoke"}
+        dashboard = {
+            "ok": True,
+            "report_type": "autonomy_dashboard",
+            "period_type": "smoke",
+            "persisted_record_id": "",
+            "output_path": "",
+            "skipped_reason": "autonomy_smoke",
+        }
+    else:
+        roi_report = _safe_roi(runtime, scope=scope_ref)
+        dashboard = _safe_dashboard(runtime, scope=scope_ref, persist=not bool(dry_run))
     replay_dataset = dict(learning_report.get("replay_dataset") or {})
     real_task_replay = dict(learning_report.get("real_task_replay") or {})
     promotions = list(learning_report.get("promotions") or [])
-    post_promotion_watch = _post_promotion_watch_summary(runtime, scope=scope_ref)
+    post_promotion_watch = (
+        {"observing_count": 0, "active_count": 0, "quarantined_count": 0, "rolled_back_count": 0}
+        if smoke
+        else _post_promotion_watch_summary(runtime, scope=scope_ref)
+    )
     loop_policy = {"productive_modules": list(PRODUCTIVE_MODULES)}
     demoted_modules: list[str] = []
     if "online_evidence" in learning_report:

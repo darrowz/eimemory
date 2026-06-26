@@ -112,6 +112,8 @@ def test_autonomy_cycle_smoke_skips_heavy_learning_and_keeps_policy_decision(tmp
         raise AssertionError("smoke must not call heavy autonomous learning")
 
     monkeypatch.setattr(autonomy_controller, "_legacy_run_autonomous_learning_cycle", fail_if_called)
+    monkeypatch.setattr(autonomy_controller, "_safe_roi", fail_if_called)
+    monkeypatch.setattr(autonomy_controller, "_safe_dashboard", fail_if_called)
 
     report = autonomy_controller.run_autonomy_cycle(
         runtime,
