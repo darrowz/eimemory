@@ -45,7 +45,33 @@ into that loop, but they do not run their own production scheduler.
 5. **Governance and self-improvement**
    - `eimemory.governance.autonomous_learning` is the main loop:
      watch, self-model, think, goals, evidence, replay, candidate portfolio,
-     promotion, ledger, dashboard, and retention.
+     goal graph, capability replay packs, safety replay, candidate portfolio,
+     promotion, skill sedimentation, hard dashboard metrics, ledger, and
+     retention.
+   - `eimemory.governance.goal_graph` turns autonomous goals into an executable
+     tree: `root_goal -> sub_goal -> task -> candidate/replay/eval -> apply ->
+     observe -> reward -> active/rollback`. Every node carries
+     `goal_id`, parent/root IDs, status, success criteria, evidence refs, task
+     refs, candidate refs, reward, ledger refs, and rollback refs.
+   - `eimemory.governance.episode_events` writes task episodes as graph-first
+     memory records. Each episode keeps event, entity, decision, artifact,
+     failure, and outcome facets, then anchors them with semantic, temporal,
+     causal, and entity `memory_edges`.
+   - `eimemory.governance.capability_replay_packs` gives non-code capabilities
+     real replay evidence. The required active set is `memory.recall`,
+     `tool.routing`, `knowledge.intake`, `proactive.judgment`, and
+     `safety.boundary`; a capability is not considered complete without replay,
+     ledger, observe, and rollback evidence.
+   - `eimemory.governance.safety_replay` is the dedicated safety boundary gate:
+     it verifies secrets, destructive commands, private exfiltration,
+     unauthorized account/deploy changes, and high-risk actions that require a
+     gate.
+   - `eimemory.governance.skill_sedimentation` converts repeated SOP/playbook
+     evidence into queryable and callable `eiskill` registry entries after
+     repeat and replay checks.
+   - `eimemory.governance.capability_dashboard` reports hard improvement
+     metrics: recall hit rate, user correction rate, task success rate,
+     automatic patch success rate, rollback count, and skill reuse count.
    - `eimemory.governance.closed_loop.post_experience_hook` is the immediate
      Memory 3.0 feedback path: an outcome is evaluated, written back as
      feedback memory, projected into SAG-style event memory, converted into
@@ -93,10 +119,11 @@ signals/outcomes/replay/web evidence
   -> closed_loop event projection
   -> SAG-style event_trace memory + memory_edges
   -> governance.autonomous_learning
+  -> goal_graph task episodes + capability replay packs + safety replay
   -> governance.autonomous_evolution
   -> promotion_manager gates
-  -> memory/rule/playbook/code patch application
-  -> eval, health, rollback, ledger
+  -> memory/rule/playbook/eiskill/code patch application
+  -> eval, health, observe, reward, rollback, ledger, dashboard metrics
 ```
 
 `eimemory.autonomous` remains as an experimental utility package. It contains

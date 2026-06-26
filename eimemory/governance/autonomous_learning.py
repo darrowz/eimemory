@@ -6,9 +6,12 @@ from typing import Any
 
 from eimemory.governance.capability_distiller import distill_capability_candidate
 from eimemory.governance.capability_ledger import build_capability_ledger, record_capability_score
+from eimemory.governance.capability_dashboard import build_capability_dashboard_metrics
+from eimemory.governance.capability_replay_packs import build_capability_replay_packs
 from eimemory.governance.capability_seeding import ensure_all_seeded
 from eimemory.governance.curiosity import generate_learning_goals, persist_learning_goals
 from eimemory.governance.evidence_collector import collect
+from eimemory.governance.goal_graph import build_goal_graph_loop
 from eimemory.governance.goal_registry import load_goal_registry
 from eimemory.governance.learning_eval import run_learning_eval
 from eimemory.governance.learning_retention import compact_learning_records
@@ -30,7 +33,9 @@ from eimemory.governance.regression_watch import run_regression_watch
 from eimemory.governance.research_planner import create_research_note, create_research_task, plan_research_tasks
 from eimemory.governance.sandbox_lab import create_sandbox_experiment
 from eimemory.governance.self_model import build_self_model
+from eimemory.governance.safety_replay import run_safety_boundary_replay
 from eimemory.governance.signal_intake import rank_learning_signals
+from eimemory.governance.skill_sedimentation import promote_repeated_sops_to_skill_candidates
 from eimemory.governance.thoughts import generate_thoughts
 from eimemory.governance.world_watchers import collect_world_signals, default_watches
 from eimemory.models.records import RecordEnvelope, ScopeRef
@@ -151,6 +156,57 @@ def run_autonomous_learning_cycle(
         )
         replay_gate = _replay_gate_report(real_task_replay)
         replay_gate_passed = bool(replay_gate.get("ok"))
+        loop_capabilities = _loop_capabilities(goals or [selected_goal])
+        goal_graph = build_goal_graph_loop(
+            runtime,
+            scope=scope_ref,
+            max_goals=max_goals,
+            persist=True,
+            capabilities=loop_capabilities,
+            loop_id=loop_id,
+        )
+        mark_step(
+            runtime,
+            loop,
+            step_name="goal_graph",
+            status="completed",
+            record_ids=[item for item in [goal_graph.get("persisted_record_id", ""), *(goal_graph.get("episode_event_ids") or [])] if item],
+            metrics={
+                "root_goal_count": goal_graph.get("root_goal_count", 0),
+                "task_count": goal_graph.get("task_count", 0),
+                "episode_event_count": goal_graph.get("episode_event_count", 0),
+            },
+        )
+        capability_replay = build_capability_replay_packs(
+            runtime,
+            scope=scope_ref,
+            capabilities=_closed_loop_capabilities(loop_capabilities),
+            persist=True,
+            loop_id=loop_id,
+        )
+        mark_step(
+            runtime,
+            loop,
+            step_name="capability_replay",
+            status="completed",
+            record_ids=list(capability_replay.get("persisted_replay_ids") or []) + list(capability_replay.get("score_record_ids") or []),
+            metrics={
+                "pack_count": capability_replay.get("pack_count", 0),
+                "case_count": capability_replay.get("case_count", 0),
+            },
+        )
+        safety_replay = run_safety_boundary_replay(runtime, scope=scope_ref, persist=True, loop_id=loop_id)
+        mark_step(
+            runtime,
+            loop,
+            step_name="safety_replay",
+            status="completed" if safety_replay.get("ok") else "blocked",
+            record_ids=list(safety_replay.get("replay_record_ids") or []) + [str(safety_replay.get("score_record_id") or "")],
+            metrics={
+                "case_count": safety_replay.get("case_count", 0),
+                "pass_rate": safety_replay.get("pass_rate", 0.0),
+            },
+        )
 
         goal_portfolio = _candidate_goal_portfolio(goals or [selected_goal], max_goals=max_goals)
         max_candidates_per_goal = max(1, min(3, max_goals)) if len(goal_portfolio) <= 1 else 1
@@ -272,8 +328,34 @@ def run_autonomous_learning_cycle(
             score=0.8 if eval_result.get("ok") and replay_gate_passed else 0.4,
             evidence_record_ids=[item for item in [research_note_id, eval_result.get("record_id", ""), candidate_id] if item],
         )
+        skill_sedimentation = promote_repeated_sops_to_skill_candidates(
+            runtime,
+            scope=scope_ref,
+            min_repeats=3,
+            persist=True,
+        )
+        mark_step(
+            runtime,
+            loop,
+            step_name="skill_sedimentation",
+            status="completed",
+            record_ids=list(skill_sedimentation.get("candidate_ids") or []) + list(skill_sedimentation.get("registry_record_ids") or []),
+            metrics={
+                "skill_candidate_count": skill_sedimentation.get("skill_candidate_count", 0),
+                "sop_group_count": skill_sedimentation.get("sop_group_count", 0),
+            },
+        )
         retention_report = compact_learning_records(runtime, scope=scope_ref, loop_id=loop_id, dry_run=not bool(apply), max_records=1000)
         ledger = build_capability_ledger(runtime, scope=scope_ref)
+        capability_dashboard = build_capability_dashboard_metrics(runtime, scope=scope_ref, persist=True, loop_id=loop_id)
+        mark_step(
+            runtime,
+            loop,
+            step_name="capability_dashboard",
+            status="completed",
+            record_ids=[str(capability_dashboard.get("persisted_record_id") or "")],
+            metrics=dict(capability_dashboard.get("metrics") or {}),
+        )
         mark_step(
             runtime,
             loop,
@@ -319,12 +401,17 @@ def run_autonomous_learning_cycle(
             "real_task_replay": real_task_replay,
             "replay_gate": replay_gate,
             "replay_gate_passed": replay_gate_passed,
+            "goal_graph": goal_graph,
+            "capability_replay": capability_replay,
+            "safety_replay": safety_replay,
             "promotion": promotion_report,
             "promotions": promotion_reports,
             "regression_watch": regression_report,
             "regression_watches": regression_reports,
             "replay_dataset": replay_dataset,
             "capability_score_id": score_id,
+            "skill_sedimentation": skill_sedimentation,
+            "capability_dashboard": capability_dashboard,
             "ledger": ledger,
             "retention": retention_report,
         }
@@ -580,6 +667,26 @@ def _run_autonomous_learning_dry_run(
 def list_learning_goals(runtime: Any, *, scope: dict[str, Any] | ScopeRef | None = None, limit: int = 10) -> list[dict[str, Any]]:
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
     return [record.to_dict() for record in runtime.store.list_records(kinds=["learning_goal"], scope=scope_ref, limit=limit)]
+
+
+def _loop_capabilities(goals: list[dict[str, Any]]) -> list[str]:
+    capabilities: list[str] = []
+    for goal in goals:
+        for key in ("target_capability", "capability"):
+            value = str(goal.get(key) or "").strip()
+            if value and value not in capabilities:
+                capabilities.append(value)
+    return capabilities or ["memory.recall", "tool.routing", "safety.boundary"]
+
+
+def _closed_loop_capabilities(capabilities: list[str]) -> list[str]:
+    required = ["memory.recall", "tool.routing", "knowledge.intake", "proactive.judgment", "safety.boundary"]
+    result: list[str] = []
+    for value in [*capabilities, *required]:
+        text = str(value or "").strip()
+        if text and text not in result:
+            result.append(text)
+    return result
 
 
 def _network_enabled(value: bool | None) -> bool:

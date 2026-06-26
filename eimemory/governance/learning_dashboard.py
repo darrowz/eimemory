@@ -7,6 +7,7 @@ from typing import Any
 
 from eimemory.core.clock import now_iso
 from eimemory.governance.capability_ledger import build_capability_ledger
+from eimemory.governance.capability_dashboard import build_capability_dashboard_metrics
 from eimemory.governance.capability_seeding import SEEDED_CAPABILITIES, ensure_all_seeded
 from eimemory.governance.learning_report import build_learning_daily_report
 from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
@@ -33,6 +34,7 @@ def build_weekly_dashboard(
     promotion_statuses = _promotion_statuses(runtime, scope=scope_ref)
     roi = _safe_roi(runtime, scope=scope_ref)
     module_status = _module_status(runtime, scope=scope_ref)
+    hard_metrics = build_capability_dashboard_metrics(runtime, scope=scope_ref, persist=False)
     markdown = _render_markdown(
         start=start,
         period_type=period_type,
@@ -42,6 +44,7 @@ def build_weekly_dashboard(
         activity=activity,
         roi=roi,
         module_status=module_status,
+        hard_metrics=hard_metrics,
     )
     output_error: str | dict[str, str] = ""
     written_path = ""
@@ -77,6 +80,7 @@ def build_weekly_dashboard(
                 "promotion_statuses": promotion_statuses,
                 "roi": roi,
                 "module_status": module_status,
+                "hard_metrics": hard_metrics,
             },
             meta={"report_type": f"autonomous_learning_{period_type}_dashboard", "period_type": period_type, "period_start": start, "capability_count": len(ledger.get("capabilities") or {})},
         )
@@ -98,6 +102,7 @@ def build_weekly_dashboard(
         "promotion_statuses": promotion_statuses,
         "roi": roi,
         "module_status": module_status,
+        "hard_metrics": hard_metrics,
     }
 
 
@@ -204,7 +209,9 @@ def _render_markdown(
     activity: dict[str, Any],
     roi: dict[str, Any],
     module_status: dict[str, Any],
+    hard_metrics: dict[str, Any],
 ) -> str:
+    metrics = dict(hard_metrics.get("metrics") or {})
     lines = [
         f"# eimemory autonomous learning {period_type} dashboard ({start})",
         "",
@@ -222,6 +229,15 @@ def _render_markdown(
         "| Module | Enabled | Evidence |",
         "| --- | ---: | --- |",
         *_module_status_lines(module_status),
+        "",
+        "## Hard Metrics",
+        "",
+        f"- Recall hit rate: {float(metrics.get('recall_hit_rate') or 0.0):.3f}",
+        f"- User correction rate: {float(metrics.get('user_correction_rate') or 0.0):.3f}",
+        f"- Task success rate: {float(metrics.get('task_success_rate') or 0.0):.3f}",
+        f"- Auto patch success rate: {float(metrics.get('auto_patch_success_rate') or 0.0):.3f}",
+        f"- Rollbacks/quarantines: {int(metrics.get('rollback_count') or 0)}",
+        f"- Skill reuse count: {int(metrics.get('skill_reuse_count') or 0)}",
         "",
         "## ROI Components",
         "",

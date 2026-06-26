@@ -311,6 +311,33 @@ def _build_parser() -> argparse.ArgumentParser:
     learn_replay_dataset.add_argument("--persist", action="store_true")
     learn_replay_dataset.add_argument("--include-built-in-regressions", action="store_true")
     learn_replay_dataset.add_argument("--json", action="store_true", default=True)
+    learn_goal_graph = learn_sub.add_parser("goal-graph")
+    learn_goal_graph.add_argument("--max-goals", type=int, default=3)
+    learn_goal_graph.add_argument("--capability", action="append", default=[])
+    learn_goal_graph.add_argument("--persist", action="store_true")
+    learn_goal_graph.add_argument("--json", action="store_true", default=True)
+    learn_capability_replay = learn_sub.add_parser("capability-replay")
+    learn_capability_replay.add_argument("--capability", action="append", default=[])
+    learn_capability_replay.add_argument("--persist", action="store_true")
+    learn_capability_replay.add_argument("--json", action="store_true", default=True)
+    learn_safety_replay = learn_sub.add_parser("safety-replay")
+    learn_safety_replay.add_argument("--persist", action="store_true")
+    learn_safety_replay.add_argument("--json", action="store_true", default=True)
+    learn_skills = learn_sub.add_parser("skills")
+    learn_skills.add_argument("--promote", action="store_true")
+    learn_skills.add_argument("--persist", action="store_true")
+    learn_skills.add_argument("--min-repeats", type=int, default=3)
+    learn_skills.add_argument("--limit", type=int, default=100)
+    learn_skills.add_argument("--json", action="store_true", default=True)
+    learn_skill_call = learn_sub.add_parser("skill-call")
+    learn_skill_call.add_argument("skill_id")
+    learn_skill_call.add_argument("--context-json", default="")
+    learn_skill_call.add_argument("--no-persist", action="store_true")
+    learn_skill_call.add_argument("--json", action="store_true", default=True)
+    learn_metrics = learn_sub.add_parser("metrics")
+    learn_metrics.add_argument("--persist", action="store_true")
+    learn_metrics.add_argument("--limit", type=int, default=500)
+    learn_metrics.add_argument("--json", action="store_true", default=True)
     learn_compact = learn_sub.add_parser("compact")
     learn_compact.add_argument("--dry-run", action="store_true")
     learn_compact.add_argument("--apply", action="store_true")
@@ -965,6 +992,75 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0 if report.get("ok") else 1
+        if parsed.learn_command == "goal-graph":
+            report = runtime.build_goal_graph_loop(
+                scope=scope,
+                max_goals=max(1, int(parsed.max_goals)),
+                persist=bool(parsed.persist),
+                capabilities=list(parsed.capability or []) or None,
+                loop_id="cli_goal_graph",
+            )
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0 if report.get("ok") else 1
+        if parsed.learn_command == "capability-replay":
+            report = runtime.build_capability_replay_packs(
+                scope=scope,
+                capabilities=list(parsed.capability or []) or None,
+                persist=bool(parsed.persist),
+                loop_id="cli_capability_replay",
+            )
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0 if report.get("ok") else 1
+        if parsed.learn_command == "safety-replay":
+            report = runtime.run_safety_boundary_replay(
+                scope=scope,
+                persist=bool(parsed.persist),
+                loop_id="cli_safety_replay",
+            )
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0 if report.get("ok") else 1
+        if parsed.learn_command == "skills":
+            if bool(parsed.promote):
+                report = runtime.promote_repeated_sops_to_skill_candidates(
+                    scope=scope,
+                    min_repeats=max(1, int(parsed.min_repeats)),
+                    persist=bool(parsed.persist),
+                    limit=max(1, int(parsed.limit)),
+                )
+                report["registry"] = runtime.list_eiskills(scope=scope, limit=max(1, int(parsed.limit)))
+            else:
+                report = runtime.list_eiskills(scope=scope, limit=max(1, int(parsed.limit)))
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0 if report.get("ok") else 1
+        if parsed.learn_command == "skill-call":
+            try:
+                context = _load_json_argument(
+                    parsed.context_json,
+                    allow_dict=True,
+                    allow_list=False,
+                    allow_empty=True,
+                    error_code="invalid_context_json",
+                )
+            except ValueError as exc:
+                print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
+                return 2
+            report = runtime.call_eiskill(
+                skill_id=str(parsed.skill_id),
+                scope=scope,
+                context=context if isinstance(context, dict) else {},
+                persist=not bool(parsed.no_persist),
+            )
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0 if report.get("ok") else 1
+        if parsed.learn_command == "metrics":
+            report = runtime.build_capability_dashboard_metrics(
+                scope=scope,
+                persist=bool(parsed.persist),
+                limit=max(1, int(parsed.limit)),
+                loop_id="cli_capability_dashboard",
+            )
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0 if report.get("ok") else 1
         if parsed.learn_command == "compact":
             report = runtime.compact_learning_records(scope=scope, dry_run=not bool(parsed.apply))
             print(json.dumps(report, ensure_ascii=False, indent=2))
@@ -1026,7 +1122,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0 if report.get("ok") else 1
-        print(json.dumps({"usage": "eimemory learn watch|think|cycle|autonomy|loops|goals|candidates|ledger|replay-dataset|compact|report|dashboard|promote"}))
+        print(json.dumps({"usage": "eimemory learn watch|think|cycle|autonomy|loops|goals|candidates|ledger|replay-dataset|goal-graph|capability-replay|safety-replay|skills|skill-call|metrics|compact|report|dashboard|promote"}))
         return 0
     if parsed.command == "recall":
         task_context = {"task_type": "cli.recall"}

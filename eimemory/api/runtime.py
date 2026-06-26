@@ -535,6 +535,130 @@ class Runtime:
             capabilities=capabilities,
         )
 
+    def build_goal_graph_loop(
+        self,
+        *,
+        scope: dict | None = None,
+        max_goals: int = 3,
+        persist: bool = False,
+        capabilities: list[str] | None = None,
+        loop_id: str = "goal_graph_1_6_9",
+    ) -> dict:
+        from eimemory.governance.goal_graph import build_goal_graph_loop
+
+        return build_goal_graph_loop(
+            self,
+            scope=scope,
+            max_goals=max_goals,
+            persist=persist,
+            capabilities=capabilities,
+            loop_id=loop_id,
+        )
+
+    def observe_goal_graph_node(
+        self,
+        *,
+        graph: dict,
+        node_id: str,
+        status: str,
+        reward: float,
+        ledger_refs: list[str] | None = None,
+        rollback_refs: list[str] | None = None,
+        persist: bool = False,
+        scope: dict | None = None,
+        loop_id: str = "goal_graph_observe_1_6_9",
+    ) -> dict:
+        from eimemory.governance.goal_graph import observe_goal_graph_node
+
+        return observe_goal_graph_node(
+            self,
+            graph=graph,
+            node_id=node_id,
+            status=status,
+            reward=reward,
+            ledger_refs=ledger_refs,
+            rollback_refs=rollback_refs,
+            persist=persist,
+            scope=scope,
+            loop_id=loop_id,
+        )
+
+    def build_capability_replay_packs(
+        self,
+        *,
+        scope: dict | None = None,
+        capabilities: list[str] | None = None,
+        persist: bool = False,
+        loop_id: str = "capability_replay_1_6_9",
+    ) -> dict:
+        from eimemory.governance.capability_replay_packs import build_capability_replay_packs
+
+        return build_capability_replay_packs(
+            self,
+            scope=scope,
+            capabilities=capabilities,
+            persist=persist,
+            loop_id=loop_id,
+        )
+
+    def run_safety_boundary_replay(
+        self,
+        *,
+        scope: dict | None = None,
+        persist: bool = False,
+        loop_id: str = "safety_boundary_replay_1_6_9",
+    ) -> dict:
+        from eimemory.governance.safety_replay import run_safety_boundary_replay
+
+        return run_safety_boundary_replay(self, scope=scope, persist=persist, loop_id=loop_id)
+
+    def promote_repeated_sops_to_skill_candidates(
+        self,
+        *,
+        scope: dict | None = None,
+        min_repeats: int = 3,
+        persist: bool = False,
+        limit: int = 500,
+    ) -> dict:
+        from eimemory.governance.skill_sedimentation import promote_repeated_sops_to_skill_candidates
+
+        return promote_repeated_sops_to_skill_candidates(
+            self,
+            scope=scope,
+            min_repeats=min_repeats,
+            persist=persist,
+            limit=limit,
+        )
+
+    def list_eiskills(self, *, scope: dict | None = None, limit: int = 100) -> dict:
+        from eimemory.governance.skill_sedimentation import list_eiskills
+
+        return list_eiskills(self, scope=scope, limit=limit)
+
+    def call_eiskill(
+        self,
+        *,
+        skill_id: str,
+        scope: dict | None = None,
+        context: dict[str, Any] | None = None,
+        persist: bool = True,
+    ) -> dict:
+        from eimemory.governance.skill_sedimentation import call_eiskill
+
+        return call_eiskill(self, skill_id=skill_id, scope=scope, context=context, persist=persist)
+
+    def build_capability_dashboard_metrics(
+        self,
+        *,
+        scope: dict | None = None,
+        persist: bool = False,
+        limit: int = 500,
+        loop_id: str = "capability_dashboard_1_6_9",
+    ) -> dict:
+        from eimemory.governance.capability_dashboard import build_capability_dashboard_metrics
+
+        return build_capability_dashboard_metrics(self, scope=scope, persist=persist, limit=limit, loop_id=loop_id)
+
     def ensure_capability_seeded(self, *, scope: dict | None = None) -> dict:
         from eimemory.governance.capability_seeding import ensure_all_seeded
 
