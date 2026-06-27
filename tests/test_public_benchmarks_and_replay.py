@@ -119,6 +119,54 @@ def test_real_task_replay_uses_temp_seed_state(tmp_path) -> None:
     assert runtime.store.list_records(kinds=["replay_result"], scope=_scope(), limit=10) == []
 
 
+def test_real_task_replay_blocks_expired_preference_pollution(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    dataset = {
+        "name": "evoarena-style-preference-supersession-smoke",
+        "schema_version": "real_task_replay.v1",
+        "threshold": 1.0,
+        "scope": _scope(),
+        "seed": [
+            {
+                "title": "Old UUMit reporting rule",
+                "text": "UUMit daily progress should be reported with income and pending settlement status.",
+                "memory_type": "preference",
+                "meta": {
+                    "living_memory_v1": {
+                        "temporal": {
+                            "life_phase": "old",
+                            "valid_until": "2000-01-01T00:00:00+00:00",
+                        }
+                    }
+                },
+            },
+            {
+                "title": "Current UUMit silent rule",
+                "text": "UUMit is silently self-managed. Do not send progress unless spending, authorization, major risk, or a real blocker needs Hongge decision.",
+                "memory_type": "preference",
+                "meta": {"living_memory_v1": {"temporal": {"life_phase": "current", "status": "current"}}},
+            },
+        ],
+        "cases": [
+            {
+                "case_id": "uumit-current-reporting-preference",
+                "source_system": "openclaw",
+                "task_type": "memory.preference.evolution",
+                "query": "UUMit progress reporting rule after current preference update",
+                "expected_text": ["silently self-managed", "Do not send progress"],
+                "negative_expected_text": ["daily progress should be reported", "income and pending settlement status"],
+                "limit": 5,
+            }
+        ],
+    }
+
+    report = run_real_task_replay(runtime, dataset)
+
+    assert report["verdict"] == "pass"
+    assert report["pass_rate"] == 1.0
+    assert report["samples"][0]["returned_titles"] == ["Current UUMit silent rule"]
+
+
 def test_real_task_replay_can_persist_report_record(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
 

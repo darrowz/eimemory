@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from datetime import datetime, timezone
 from hashlib import sha256
 import re
 
@@ -618,6 +619,8 @@ class MemoryAPI:
     def _online_recall_pollution_reason(self, item: RecordEnvelope) -> str:
         if self._is_stale_rule_record(item):
             return "stale_rule"
+        if self._is_temporally_stale_memory(item):
+            return "stale_memory"
         lane = self._record_recall_lane(item)
         if lane in _DEFAULT_BLOCKED_RECALL_LANES:
             return lane
@@ -717,6 +720,40 @@ class MemoryAPI:
         }:
             return True
         return False
+
+    @staticmethod
+    def _is_temporally_stale_memory(item: RecordEnvelope) -> bool:
+        if item.kind != "memory":
+            return False
+        meta = business_metadata(item.meta)
+        living = meta.get(LIVING_MEMORY_META_KEY)
+        if not isinstance(living, dict):
+            return False
+        temporal = living.get("temporal")
+        if not isinstance(temporal, dict):
+            return False
+        temporal_status = str(temporal.get("status") or temporal.get("state") or "").strip().lower().replace("_", "-")
+        temporal_distance = str(temporal.get("temporal_distance") or "").strip().lower().replace("_", "-")
+        if bool(temporal.get("superseded")) or temporal_status in {"superseded", "expired", "stale"}:
+            return True
+        if temporal_distance == "stale":
+            return True
+        return MemoryAPI._valid_until_is_past(temporal.get("valid_until"))
+
+    @staticmethod
+    def _valid_until_is_past(value: object) -> bool:
+        if not value:
+            return False
+        text = str(value).strip()
+        if not text:
+            return False
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return False
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed < datetime.now(timezone.utc)
 
     def _record_recall_lane(self, item: RecordEnvelope) -> str:
         labels = self._record_filter_labels(item)
