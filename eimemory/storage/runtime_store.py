@@ -171,6 +171,44 @@ class RuntimeStore:
             until=until,
         )
 
+    def count_records_by_meta_value(
+        self,
+        *,
+        kinds: list[str] | None = None,
+        scope: ScopeRef | dict | None = None,
+        meta_key: str,
+        meta_value: object,
+        status: str | None = None,
+    ) -> int | None:
+        scope_ref = None if scope is None else (scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope))
+        return self.sqlite.count_records_by_meta_value(
+            kinds=kinds,
+            scope=scope_ref,
+            meta_key=meta_key,
+            meta_value=meta_value,
+            status=status,
+        )
+
+    def list_records_by_meta_value(
+        self,
+        *,
+        kinds: list[str] | None = None,
+        scope: ScopeRef | dict | None = None,
+        meta_key: str,
+        meta_value: object,
+        status: str | None = None,
+        limit: int = 100,
+    ) -> list[RecordEnvelope] | None:
+        scope_ref = None if scope is None else (scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope))
+        return self.sqlite.list_records_by_meta_value(
+            kinds=kinds,
+            scope=scope_ref,
+            meta_key=meta_key,
+            meta_value=meta_value,
+            status=status,
+            limit=limit,
+        )
+
     def upsert_memory_edge(self, edge: MemoryEdge) -> MemoryEdge:
         result = self.sqlite.upsert_memory_edge(edge)
         self._append_auxiliary_log("memory_edges", result.to_dict(), scope=result.scope)

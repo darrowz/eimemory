@@ -159,7 +159,14 @@ def _cases_from_event_tables(runtime: Any, *, scope: ScopeRef, limit: int) -> li
 
 
 def _cases_from_outcome_traces(runtime: Any, *, scope: ScopeRef, limit: int) -> list[dict[str, Any]]:
-    records = runtime.store.list_records(kinds=["reflection"], scope=scope, limit=max(1, int(limit or 1)) * 3)
+    records = _records_by_meta_value(
+        runtime,
+        kinds=["reflection"],
+        scope=scope,
+        meta_key="report_type",
+        meta_value="outcome_trace",
+        limit=max(1, int(limit or 1)) * 3,
+    )
     cases: list[dict[str, Any]] = []
     for record in records:
         meta = business_metadata(record.meta)
@@ -240,7 +247,14 @@ def _cases_from_operator_corrections(runtime: Any, *, scope: ScopeRef, limit: in
 
 
 def _cases_from_regression_replay_records(runtime: Any, *, scope: ScopeRef, limit: int) -> list[dict[str, Any]]:
-    records = runtime.store.list_records(kinds=["reflection"], scope=scope, limit=max(1, int(limit or 1)) * 3)
+    records = _records_by_meta_value(
+        runtime,
+        kinds=["reflection"],
+        scope=scope,
+        meta_key="report_type",
+        meta_value=REGRESSION_REPLAY_CASE_REPORT_TYPE,
+        limit=max(1, int(limit or 1)) * 3,
+    )
     cases: list[dict[str, Any]] = []
     for record in records:
         meta = business_metadata(record.meta)
@@ -492,6 +506,29 @@ def _coerce_list(values: Any) -> list[Any]:
     if isinstance(values, set):
         return list(values)
     return []
+
+
+def _records_by_meta_value(
+    runtime: Any,
+    *,
+    kinds: list[str],
+    scope: ScopeRef,
+    meta_key: str,
+    meta_value: Any,
+    limit: int,
+) -> list[Any]:
+    lookup = getattr(runtime.store, "list_records_by_meta_value", None)
+    if callable(lookup):
+        records = lookup(
+            kinds=kinds,
+            scope=scope,
+            meta_key=meta_key,
+            meta_value=meta_value,
+            limit=limit,
+        )
+        if records is not None:
+            return list(records)
+    return runtime.store.list_records(kinds=kinds, scope=scope, limit=limit)
 
 
 def _first_text(*values: Any) -> str:

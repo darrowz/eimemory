@@ -38,12 +38,7 @@ def record_capability_score(
     meta: dict[str, Any] | None = None,
 ) -> str:
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
-    existing = [
-        record
-        for record in runtime.store.list_records(kinds=["capability_score"], scope=scope_ref, limit=500)
-        if str(record.meta.get("capability") or "") == capability
-    ]
-    sequence = len(existing) + 1
+    sequence = _next_capability_score_sequence(runtime, scope=scope_ref, capability=capability)
     semantic_key = stable_semantic_key("capability_score", capability, loop_id, score, evidence_record_ids or [])
     content = {
         "capability": capability,
@@ -95,6 +90,25 @@ def record_capability_score(
         meta=merged_meta,
     )
     return record.record_id
+
+
+def _next_capability_score_sequence(runtime: Any, *, scope: ScopeRef, capability: str) -> int:
+    counter = getattr(runtime.store, "count_records_by_meta_value", None)
+    if callable(counter):
+        count = counter(
+            kinds=["capability_score"],
+            scope=scope,
+            meta_key="capability",
+            meta_value=capability,
+        )
+        if count is not None:
+            return int(count) + 1
+    existing = [
+        record
+        for record in runtime.store.list_records(kinds=["capability_score"], scope=scope, limit=500)
+        if str(record.meta.get("capability") or "") == capability
+    ]
+    return len(existing) + 1
 
 
 def build_capability_ledger(

@@ -20,6 +20,36 @@ def test_capability_ledger_tracks_score_and_trend(tmp_path) -> None:
     assert ledger["capabilities"]["tool.routing"]["goal_gap_reason"] == "insufficient_outcome_evidence"
 
 
+def test_record_capability_score_counts_sequence_without_record_scan(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu"}
+    record_capability_score(
+        runtime,
+        scope=scope,
+        loop_id="learn_1",
+        capability="memory.recall",
+        score=0.5,
+        evidence_record_ids=["a"],
+    )
+
+    def fail_record_scan(*_args, **_kwargs):
+        raise AssertionError("capability score sequence must not scan record pages")
+
+    monkeypatch.setattr(runtime.store, "list_records", fail_record_scan)
+    second_id = record_capability_score(
+        runtime,
+        scope=scope,
+        loop_id="learn_2",
+        capability="memory.recall",
+        score=0.8,
+        evidence_record_ids=["b"],
+    )
+
+    second = runtime.store.get_by_id(second_id, scope=scope)
+    assert second is not None
+    assert second.meta["score_sequence"] == 2
+
+
 def test_build_capability_ledger_auto_includes_seeded_defaults(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     scope = {"agent_id": "hongtu"}

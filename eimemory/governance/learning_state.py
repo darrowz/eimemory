@@ -265,9 +265,7 @@ def find_record_by_idempotency(
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
     indexed_lookup = getattr(runtime.store, "get_by_idempotency_key", None)
     if callable(indexed_lookup):
-        existing = indexed_lookup(kinds=kinds, scope=scope_ref, idempotency_key=idempotency_key)
-        if existing is not None:
-            return existing
+        return indexed_lookup(kinds=kinds, scope=scope_ref, idempotency_key=idempotency_key)
     offset = 0
     while True:
         page = runtime.store.list_records(kinds=kinds, scope=scope_ref, limit=page_size, offset=offset)

@@ -193,6 +193,22 @@ class SqliteRecordStore:
             "CREATE INDEX IF NOT EXISTS idx_records_semantic "
             "ON records(kind, tenant_id, agent_id, workspace_id, user_id, semantic_key, updated_at DESC, record_id DESC)"
         )
+        try:
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_records_meta_capability "
+                "ON records(kind, tenant_id, agent_id, workspace_id, user_id, "
+                "CAST(json_extract(meta_json, '$.capability') AS TEXT), updated_at DESC, record_id DESC)"
+            )
+        except sqlite3.OperationalError:
+            pass
+        try:
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_records_meta_report_type "
+                "ON records(kind, tenant_id, agent_id, workspace_id, user_id, "
+                "CAST(json_extract(meta_json, '$.report_type') AS TEXT), updated_at DESC, record_id DESC)"
+            )
+        except sqlite3.OperationalError:
+            pass
 
     def _create_recall_index_tables(self) -> None:
         self.conn.execute(
@@ -1356,6 +1372,72 @@ class SqliteRecordStore:
             + " ORDER BY updated_at DESC, record_id DESC LIMIT ? OFFSET ?",
             [*params, limit, offset],
         ).fetchall()
+        return [RecordEnvelope.from_dict(json.loads(row["payload_json"])) for row in rows]
+
+    def count_records_by_meta_value(
+        self,
+        *,
+        kinds: list[str] | None = None,
+        scope: ScopeRef | None = None,
+        meta_key: str,
+        meta_value: Any,
+        status: str | None = None,
+    ) -> int | None:
+        expression = _meta_json_text_expression(meta_key)
+        if not expression:
+            return None
+        where = ["1=1", f"{expression} = ?"]
+        params: list[object] = [str(meta_value)]
+        if kinds:
+            where.append(f"kind IN ({','.join('?' for _ in kinds)})")
+            params.extend(kinds)
+        if status:
+            where.append("status = ?")
+            params.append(status)
+        if scope:
+            self._apply_scope_filters(where, params, scope)
+        try:
+            row = self.conn.execute(
+                "SELECT COUNT(*) FROM records WHERE " + " AND ".join(where),
+                params,
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return None
+        return int(row[0]) if row is not None else 0
+
+    def list_records_by_meta_value(
+        self,
+        *,
+        kinds: list[str] | None = None,
+        scope: ScopeRef | None = None,
+        meta_key: str,
+        meta_value: Any,
+        status: str | None = None,
+        limit: int = 100,
+    ) -> list[RecordEnvelope] | None:
+        expression = _meta_json_text_expression(meta_key)
+        if not expression:
+            return None
+        limit = self._normalize_limit(limit)
+        where = ["1=1", f"{expression} = ?"]
+        params: list[object] = [str(meta_value)]
+        if kinds:
+            where.append(f"kind IN ({','.join('?' for _ in kinds)})")
+            params.extend(kinds)
+        if status:
+            where.append("status = ?")
+            params.append(status)
+        if scope:
+            self._apply_scope_filters(where, params, scope)
+        try:
+            rows = self.conn.execute(
+                "SELECT payload_json FROM records WHERE "
+                + " AND ".join(where)
+                + " ORDER BY updated_at DESC, record_id DESC LIMIT ?",
+                [*params, limit],
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return None
         return [RecordEnvelope.from_dict(json.loads(row["payload_json"])) for row in rows]
 
     def upsert_memory_edge(self, edge: MemoryEdge) -> MemoryEdge:
@@ -2858,3 +2940,10 @@ def _record_meta_keys_from_json(meta_json: str) -> tuple[str, str]:
     if not isinstance(meta, dict):
         meta = {}
     return str(meta.get("idempotency_key") or ""), str(meta.get("semantic_key") or "")
+
+
+def _meta_json_text_expression(meta_key: str) -> str:
+    key = str(meta_key or "").strip()
+    if not key or any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_." for ch in key):
+        return ""
+    return f"CAST(json_extract(meta_json, '$.{key}') AS TEXT)"

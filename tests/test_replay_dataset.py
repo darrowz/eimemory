@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from eimemory.api.runtime import Runtime
 from eimemory.models.records import RecordEnvelope, ScopeRef
-from eimemory.governance.replay_dataset import build_replay_dataset
+from eimemory.governance.replay_dataset import build_replay_dataset, _cases_from_outcome_traces
 
 
 def test_replay_dataset_extracts_user_correction_from_event_outcome(tmp_path) -> None:
@@ -210,3 +210,32 @@ def test_replay_dataset_reports_quality_filtering_and_targets(tmp_path) -> None:
     assert persisted is not None
     assert persisted.meta.get("filtered_count") == 2
     assert persisted.meta.get("target_pass_rate") == 0.85
+
+
+def test_outcome_trace_replay_cases_use_indexed_report_type_lookup(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = ScopeRef.from_dict({"agent_id": "hongtu"})
+    runtime.store.append(
+        RecordEnvelope.create(
+            kind="reflection",
+            title="Outcome trace",
+            summary="User corrected the routing answer.",
+            scope=scope,
+            source="unit.test",
+            meta={"report_type": "outcome_trace", "primary_label": "user_correction"},
+            content={
+                "input_summary": "latest version?",
+                "policy_update": "Query git/runtime before answering version questions.",
+                "expected_text": ["git", "runtime"],
+            },
+        )
+    )
+
+    def fail_record_scan(*_args, **_kwargs):
+        raise AssertionError("outcome trace replay lookup must not scan record pages")
+
+    monkeypatch.setattr(runtime.store, "list_records", fail_record_scan)
+    cases = _cases_from_outcome_traces(runtime, scope=scope, limit=10)
+
+    assert len(cases) == 1
+    assert cases[0]["source"] == "outcome_trace"

@@ -149,3 +149,27 @@ def test_append_learning_record_once_uses_indexed_idempotency_lookup(tmp_path, m
     )
 
     assert second.record_id == first.record_id
+
+
+def test_append_learning_record_once_does_not_scan_on_indexed_idempotency_miss(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu"}
+    loop = start_learning_loop(runtime, scope=scope, trigger="manual")
+    loop_id = str(loop.meta["loop_id"])
+
+    def fail_paged_lookup(*_args, **_kwargs):
+        raise AssertionError("idempotency miss must not page through records")
+
+    monkeypatch.setattr(runtime.store, "list_records", fail_paged_lookup)
+    record = append_learning_record_once(
+        runtime,
+        kind="replay_result",
+        title="New capability replay",
+        summary="Replay miss should still append",
+        scope=scope,
+        loop_id=loop_id,
+        step_name="capability_replay",
+        semantic_key="memory.recall.new-case",
+    )
+
+    assert record.kind == "replay_result"
