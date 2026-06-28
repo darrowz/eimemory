@@ -234,6 +234,36 @@ def test_eibrain_rpc_ingest_persists_outcome_metadata(tmp_path) -> None:
     }
 
 
+def test_eibrain_rpc_ingest_can_force_capture_short_fact(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    bridge = EIBrainRPCBridge(runtime)
+
+    response = _handle_eibrain_request(
+        bridge,
+        {
+            "method": "memory.ingest",
+            "params": {
+                "text": "1.7.4",
+                "title": "Current eimemory version",
+                "memory_type": "fact",
+                "force_capture": True,
+                "scope": {"agent_id": "eibrain", "workspace_id": "robot"},
+            },
+        },
+    )
+    stored = response["result"]
+    persisted = runtime.store.list_records(
+        kinds=["memory"],
+        scope={"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"},
+        limit=10,
+    )
+
+    assert response["ok"] is True
+    assert stored["status"] == "active"
+    assert stored["meta"]["quality"]["capture_decision"] == "accept"
+    assert [record.record_id for record in persisted] == [stored["record_id"]]
+
+
 def test_eibrain_rpc_ingest_persists_structured_world_observation(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     bridge = EIBrainRPCBridge(runtime)

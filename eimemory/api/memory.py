@@ -44,6 +44,32 @@ _RECALL_LANE_MEMORY_TYPE_ALIASES = {
 }
 
 
+def _capture_warnings(score) -> list[dict[str, object]]:
+    payload = score.to_dict() if hasattr(score, "to_dict") else {}
+    explanation = payload.get("explanation", {}) if isinstance(payload, dict) else {}
+    risk_labels = explanation.get("risk_labels") if isinstance(explanation, dict) else []
+    warnings: list[dict[str, object]] = []
+    components = payload.get("components", {}) if isinstance(payload, dict) else {}
+    risk_penalty = components.get("risk_penalty", {}) if isinstance(components, dict) else {}
+    risk_evidence = risk_penalty.get("evidence", {}) if isinstance(risk_penalty, dict) else {}
+    thin_or_noisy = bool(isinstance(risk_evidence, dict) and risk_evidence.get("thin_or_noisy"))
+    if thin_or_noisy or (isinstance(risk_labels, list) and "thin_or_noisy" in risk_labels):
+        warnings.append(
+            {
+                "code": "thin_or_noisy_risk",
+                "message": "memory candidate was rejected by the capture quality gate; pass force_capture to persist deliberate short facts",
+            }
+        )
+    if not warnings:
+        warnings.append(
+            {
+                "code": "capture_rejected",
+                "message": "memory candidate was rejected by the capture quality gate",
+            }
+        )
+    return warnings
+
+
 class MemoryAPI:
     def __init__(self, store: RuntimeStore) -> None:
         self.store = store
@@ -113,6 +139,7 @@ class MemoryAPI:
         record.meta = with_score_metadata(record.meta, score, preserve_quality=False)
         if business_metadata(record.meta).get("quality", {}).get("capture_decision") == "reject":
             record.status = "rejected"
+            record.meta["capture_warnings"] = _capture_warnings(score)
             return record
         return self.store.append(record)
 

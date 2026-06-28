@@ -70,15 +70,38 @@ _RECALL_LANE_MEMORY_TYPE_ALIASES = {
 
 
 class SqliteRecordStore:
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, auxiliary_log_dir: Path | None = None) -> None:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.auxiliary_log_dir = Path(auxiliary_log_dir) if auxiliary_log_dir is not None else None
+        self.suppress_auxiliary_logging = False
         self.conn = sqlite3.connect(self.path, timeout=30, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA busy_timeout = 30000")
-        self.conn.execute("PRAGMA journal_mode = WAL")
-        self.conn.execute("PRAGMA synchronous = NORMAL")
+        self._configure_connection()
         self._init_db()
+
+    def _configure_connection(self) -> None:
+        try:
+            self.conn.execute("PRAGMA journal_mode=WAL")
+        except sqlite3.OperationalError:
+            pass
+        self.conn.execute("PRAGMA synchronous=NORMAL")
+        self.conn.execute("PRAGMA temp_store=MEMORY")
+        self.conn.execute("PRAGMA cache_size=-65536")
+
+    def _append_auxiliary_log(self, log_name: str, payload: dict[str, Any]) -> None:
+        if self.suppress_auxiliary_logging or self.auxiliary_log_dir is None:
+            return
+        path = self.auxiliary_log_dir / f"{log_name}.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        entry = {
+            "log_type": str(log_name),
+            "logged_at": datetime.now(timezone.utc).isoformat(),
+            "payload": payload,
+        }
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry, ensure_ascii=False, sort_keys=True) + "\n")
 
     def _init_db(self) -> None:
         existing = self.conn.execute(
@@ -106,7 +129,12 @@ class SqliteRecordStore:
             }
         if "embedding_json" not in columns:
             self.conn.execute("ALTER TABLE records ADD COLUMN embedding_json TEXT NOT NULL DEFAULT '[]'")
+        if "idempotency_key" not in columns:
+            self.conn.execute("ALTER TABLE records ADD COLUMN idempotency_key TEXT NOT NULL DEFAULT ''")
+        if "semantic_key" not in columns:
+            self.conn.execute("ALTER TABLE records ADD COLUMN semantic_key TEXT NOT NULL DEFAULT ''")
         self._create_indexes()
+        self._backfill_record_meta_keys_if_needed()
         self._create_recall_index_tables()
         self._create_memory_edge_tables()
         self._create_event_memory_tables()
@@ -135,6 +163,8 @@ class SqliteRecordStore:
                 user_id TEXT NOT NULL,
                 tenant_id TEXT NOT NULL,
                 embedding_json TEXT NOT NULL DEFAULT '[]',
+                idempotency_key TEXT NOT NULL DEFAULT '',
+                semantic_key TEXT NOT NULL DEFAULT '',
                 meta_json TEXT NOT NULL,
                 payload_json TEXT NOT NULL,
                 created_at TEXT NOT NULL,
@@ -155,6 +185,14 @@ class SqliteRecordStore:
             "ON records(kind, tenant_id, agent_id, workspace_id, user_id, updated_at DESC, record_id DESC)"
         )
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_records_source_kind ON records(source, kind)")
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_records_idempotency "
+            "ON records(kind, tenant_id, agent_id, workspace_id, user_id, idempotency_key, updated_at DESC, record_id DESC)"
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_records_semantic "
+            "ON records(kind, tenant_id, agent_id, workspace_id, user_id, semantic_key, updated_at DESC, record_id DESC)"
+        )
 
     def _create_recall_index_tables(self) -> None:
         self.conn.execute(
@@ -377,6 +415,7 @@ class SqliteRecordStore:
         rows = self.conn.execute(f"SELECT {', '.join(select_columns)} FROM records_legacy").fetchall()
         for row in rows:
             row_data = dict(row)
+            idempotency_key, semantic_key = _record_meta_keys_from_json(row_data["meta_json"])
             storage_key = self._storage_key_from_values(
                 record_id=str(row_data["record_id"]),
                 tenant_id=str(row_data.get("tenant_id") or "default"),
@@ -389,8 +428,8 @@ class SqliteRecordStore:
                 INSERT OR REPLACE INTO records (
                     storage_key, record_id, kind, status, title, summary, detail,
                     content_text, source, agent_id, workspace_id, user_id, tenant_id,
-                    embedding_json, meta_json, payload_json, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    embedding_json, idempotency_key, semantic_key, meta_json, payload_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     storage_key,
@@ -407,6 +446,8 @@ class SqliteRecordStore:
                     row_data["user_id"],
                     row_data["tenant_id"],
                     row_data.get("embedding_json", "[]"),
+                    idempotency_key,
+                    semantic_key,
                     row_data["meta_json"],
                     row_data["payload_json"],
                     row_data["created_at"],
@@ -415,6 +456,23 @@ class SqliteRecordStore:
             )
         self.conn.execute("DROP TABLE records_legacy")
         self.conn.commit()
+
+    def _backfill_record_meta_keys_if_needed(self) -> None:
+        rows = self.conn.execute(
+            """
+            SELECT storage_key, meta_json
+            FROM records
+            WHERE (idempotency_key = '' OR semantic_key = '')
+            """
+        ).fetchall()
+        for row in rows:
+            idempotency_key, semantic_key = _record_meta_keys_from_json(str(row["meta_json"] or "{}"))
+            if not idempotency_key and not semantic_key:
+                continue
+            self.conn.execute(
+                "UPDATE records SET idempotency_key = ?, semantic_key = ? WHERE storage_key = ?",
+                (idempotency_key, semantic_key, str(row["storage_key"])),
+            )
 
     def upsert(self, record: RecordEnvelope) -> None:
         payload = record.to_dict()
@@ -440,13 +498,15 @@ class SqliteRecordStore:
         )
         embedding = json.dumps(embed_text(content_text), ensure_ascii=False)
         storage_key = self._storage_key(record)
+        idempotency_key = str(record.meta.get("idempotency_key") or "")
+        semantic_key = str(record.meta.get("semantic_key") or "")
         self.conn.execute(
             """
             INSERT INTO records (
                 storage_key, record_id, kind, status, title, summary, detail, content_text,
                 source, agent_id, workspace_id, user_id, tenant_id,
-                embedding_json, meta_json, payload_json, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                embedding_json, idempotency_key, semantic_key, meta_json, payload_json, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(storage_key) DO UPDATE SET
                 status=excluded.status,
                 title=excluded.title,
@@ -459,6 +519,8 @@ class SqliteRecordStore:
                 user_id=excluded.user_id,
                 tenant_id=excluded.tenant_id,
                 embedding_json=excluded.embedding_json,
+                idempotency_key=excluded.idempotency_key,
+                semantic_key=excluded.semantic_key,
                 meta_json=excluded.meta_json,
                 payload_json=excluded.payload_json,
                 updated_at=excluded.updated_at
@@ -478,6 +540,8 @@ class SqliteRecordStore:
                 record.scope.user_id,
                 record.scope.tenant_id,
                 embedding,
+                idempotency_key,
+                semantic_key,
                 json.dumps(record.meta, ensure_ascii=False),
                 json.dumps(payload, ensure_ascii=False),
                 record.time.created_at,
@@ -1212,6 +1276,44 @@ class SqliteRecordStore:
             + " AND ".join(where)
             + " ORDER BY updated_at DESC LIMIT 1",
             params,
+        ).fetchone()
+        if not row:
+            return None
+        return RecordEnvelope.from_dict(json.loads(row["payload_json"]))
+
+    def get_by_idempotency_key(
+        self,
+        *,
+        kinds: list[str],
+        scope: ScopeRef,
+        idempotency_key: str,
+    ) -> RecordEnvelope | None:
+        clean_kinds = [str(kind) for kind in list(kinds or []) if str(kind).strip()]
+        key = str(idempotency_key or "").strip()
+        if not clean_kinds or not key:
+            return None
+        placeholders = ",".join("?" for _ in clean_kinds)
+        row = self.conn.execute(
+            f"""
+            SELECT payload_json
+            FROM records
+            WHERE kind IN ({placeholders})
+              AND tenant_id = ?
+              AND agent_id = ?
+              AND workspace_id = ?
+              AND user_id = ?
+              AND idempotency_key = ?
+            ORDER BY updated_at DESC, record_id DESC
+            LIMIT 1
+            """,
+            [
+                *clean_kinds,
+                scope.tenant_id,
+                scope.agent_id,
+                scope.workspace_id,
+                scope.user_id,
+                key,
+            ],
         ).fetchone()
         if not row:
             return None
@@ -1994,6 +2096,7 @@ class SqliteRecordStore:
         *,
         scope: ScopeRef | dict | None = None,
         commit: bool = True,
+        apply_rollbacks: bool = True,
     ) -> dict[str, Any]:
         scope_ref = normalize_scope(scope)
         data = ensure_outcome_payload(event_id, payload)
@@ -2028,7 +2131,7 @@ class SqliteRecordStore:
             ),
         )
         rollback_report = {}
-        if str(data.get("outcome") or "").lower() == "bad" and pattern_ids:
+        if apply_rollbacks and str(data.get("outcome") or "").lower() == "bad" and pattern_ids:
             rollback_report = self._apply_pattern_rollback_if_needed(
                 event_id=event_id,
                 pattern_ids=pattern_ids,
@@ -2092,6 +2195,72 @@ class SqliteRecordStore:
             }
             for row in rows
         ]
+
+    def upsert_policy_rollout_ledger_payload(self, ledger: dict[str, Any], *, commit: bool = True) -> dict[str, Any]:
+        payload = dict(ledger or {})
+        scope = normalize_scope(payload.get("scope"))
+        created_at = str(payload.get("created_at") or now_utc())
+        record_date = str(payload.get("record_date") or created_at[:10])
+        ledger_id = str(payload.get("id") or next_rollout_id(kind="policy-rollout-ledger", scope=scope, payload=payload))
+        self.conn.execute(
+            """
+            INSERT INTO policy_rollout_ledger (
+                id, tenant_id, agent_id, workspace_id, user_id, record_date,
+                action_type, promotion_id, is_auto, source_opportunity_id,
+                source_opportunity_json, trust_report_json, replay_report_json,
+                applied_pattern_id, budget_decision, rollback_policy_id, reason,
+                details_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                record_date=excluded.record_date,
+                action_type=excluded.action_type,
+                promotion_id=excluded.promotion_id,
+                is_auto=excluded.is_auto,
+                source_opportunity_id=excluded.source_opportunity_id,
+                source_opportunity_json=excluded.source_opportunity_json,
+                trust_report_json=excluded.trust_report_json,
+                replay_report_json=excluded.replay_report_json,
+                applied_pattern_id=excluded.applied_pattern_id,
+                budget_decision=excluded.budget_decision,
+                rollback_policy_id=excluded.rollback_policy_id,
+                reason=excluded.reason,
+                details_json=excluded.details_json,
+                created_at=excluded.created_at
+            """,
+            (
+                ledger_id,
+                scope.tenant_id,
+                scope.agent_id,
+                scope.workspace_id,
+                scope.user_id,
+                record_date,
+                str(payload.get("action_type") or ""),
+                str(payload.get("promotion_id") or ""),
+                1 if payload.get("is_auto") else 0,
+                str(payload.get("source_opportunity_id") or ""),
+                json.dumps(dict(payload.get("source_opportunity") or {}), ensure_ascii=False, sort_keys=True),
+                json.dumps(dict(payload.get("trust_report") or {}), ensure_ascii=False, sort_keys=True),
+                json.dumps(dict(payload.get("replay_report") or {}), ensure_ascii=False, sort_keys=True),
+                str(payload.get("applied_pattern_id") or ""),
+                str(payload.get("budget_decision") or ""),
+                str(payload.get("rollback_policy_id") or ""),
+                str(payload.get("reason") or ""),
+                json.dumps(dict(payload.get("details") or {}), ensure_ascii=False, sort_keys=True),
+                created_at,
+            ),
+        )
+        if commit:
+            self.conn.commit()
+        payload["id"] = ledger_id
+        payload["scope"] = {
+            "tenant_id": scope.tenant_id,
+            "agent_id": scope.agent_id,
+            "workspace_id": scope.workspace_id,
+            "user_id": scope.user_id,
+        }
+        payload["created_at"] = created_at
+        payload["record_date"] = record_date
+        return payload
 
     def _record_policy_rollout_ledger(
         self,
@@ -2172,6 +2341,7 @@ class SqliteRecordStore:
         ledger["source_opportunity_id"] = str(source_opportunity_id or "")
         ledger["created_at"] = created_at
         ledger["record_date"] = created_at[:10]
+        self._append_auxiliary_log("policy_rollout_ledger", ledger)
         return ledger
 
     def _pattern_row_for_scope(self, pattern_id: str, scope_ref: ScopeRef) -> sqlite3.Row | None:
@@ -2678,3 +2848,13 @@ def _normalize_datetime_bound(value: str | None, *, end_of_day: bool) -> str:
     if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw):
         return f"{raw}T23:59:59.999999+00:00" if end_of_day else f"{raw}T00:00:00+00:00"
     return raw
+
+
+def _record_meta_keys_from_json(meta_json: str) -> tuple[str, str]:
+    try:
+        meta = json.loads(str(meta_json or "{}"))
+    except json.JSONDecodeError:
+        meta = {}
+    if not isinstance(meta, dict):
+        meta = {}
+    return str(meta.get("idempotency_key") or ""), str(meta.get("semantic_key") or "")

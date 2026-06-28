@@ -48,7 +48,18 @@ def test_runtime_ingest_rejects_thin_chatter_without_persisting(tmp_path) -> Non
 
     assert record.status == "rejected"
     assert record.meta["quality"]["capture_decision"] == "reject"
+    assert record.meta["capture_warnings"][0]["code"] == "thin_or_noisy_risk"
     assert persisted == []
+
+
+def test_runtime_create_uses_eimemory_root_env(tmp_path, monkeypatch) -> None:
+    root = tmp_path / "env-runtime"
+    monkeypatch.setenv("EIMEMORY_ROOT", str(root))
+
+    runtime = Runtime.create()
+
+    assert runtime.store.root == root
+    runtime.close()
 
 
 def test_runtime_ingest_can_force_capture_low_salience_memory(tmp_path) -> None:

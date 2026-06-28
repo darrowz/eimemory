@@ -71,6 +71,7 @@ def _build_parser() -> argparse.ArgumentParser:
     ingest.add_argument("text")
     ingest.add_argument("--title", default="CLI ingest")
     ingest.add_argument("--memory-type", default="fact")
+    ingest.add_argument("--force-capture", action="store_true")
 
     recall = sub.add_parser("recall")
     recall.add_argument("query")
@@ -197,6 +198,10 @@ def _build_parser() -> argparse.ArgumentParser:
 
     backup_verify_cmd = backup_sub.add_parser("verify")
     backup_verify_cmd.add_argument("path")
+
+    rebuild_sqlite = sub.add_parser("rebuild-sqlite")
+    rebuild_sqlite.add_argument("--from-jsonl", action="store_true", dest="from_jsonl")
+    rebuild_sqlite.add_argument("--replace", action="store_true")
 
     migrate = sub.add_parser("migrate")
     migrate_sub = migrate.add_subparsers(dest="migrate_command")
@@ -853,7 +858,7 @@ def main(argv: list[str] | None = None) -> int:
         print(
             json.dumps(
                 {
-                    "usage": "eimemory init|emergency-stop|ingest|recall|paper|source|intake|export|import|backup|migrate|brief|nightly|quality|identity|living|reflect|experience|learn|governance|evolve|eval|patch|serve-eibrain-rpc",
+                    "usage": "eimemory init|emergency-stop|ingest|recall|paper|source|intake|export|import|backup|rebuild-sqlite|migrate|brief|nightly|quality|identity|living|reflect|experience|learn|governance|evolve|eval|patch|serve-eibrain-rpc",
                 }
             )
         )
@@ -914,6 +919,13 @@ def main(argv: list[str] | None = None) -> int:
         emergency_stop()
         print(json.dumps({"ok": True, "command": "emergency-stop"}, ensure_ascii=False))
         return 0
+    if parsed.command == "rebuild-sqlite":
+        if not bool(parsed.from_jsonl):
+            print(json.dumps({"ok": False, "error": "missing_from_jsonl"}, ensure_ascii=False))
+            return 2
+        report = runtime.store.rebuild_sqlite_from_jsonl(replace=bool(parsed.replace))
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0
     if parsed.command == "ingest":
         record = runtime.memory.ingest(
             text=parsed.text,
@@ -921,8 +933,12 @@ def main(argv: list[str] | None = None) -> int:
             title=parsed.title,
             scope=scope,
             source="cli",
+            force_capture=bool(parsed.force_capture),
         )
-        print(json.dumps(record.to_dict(), ensure_ascii=False, indent=2))
+        payload = record.to_dict()
+        if record.status == "rejected":
+            payload["warnings"] = list(record.meta.get("capture_warnings") or [])
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0
     if parsed.command == "experience":
         if parsed.experience_command == "outcome":

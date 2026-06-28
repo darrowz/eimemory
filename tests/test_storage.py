@@ -120,6 +120,81 @@ def test_runtime_store_bulk_upserts_memory_edges_in_one_call(tmp_path) -> None:
     assert {edge.edge_id for edge in stored} == {edge.edge_id for edge in edges}
 
 
+def test_runtime_store_uses_wal_for_concurrent_learning_reads(tmp_path) -> None:
+    store = RuntimeStore(root=tmp_path)
+
+    journal_mode = str(store.sqlite.conn.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+    synchronous = int(store.sqlite.conn.execute("PRAGMA synchronous").fetchone()[0])
+
+    assert journal_mode == "wal"
+    assert synchronous <= 1
+
+
+def test_runtime_store_rebuilds_sqlite_business_tables_from_jsonl(tmp_path) -> None:
+    store = RuntimeStore(root=tmp_path)
+    scope = ScopeRef(agent_id="main", workspace_id="rebuild")
+    memory = store.append(
+        RecordEnvelope.create(
+            kind="memory",
+            title="Rebuild source",
+            summary="Business table rebuild source memory",
+            scope=scope,
+        )
+    )
+    linked = store.append(
+        RecordEnvelope.create(
+            kind="memory",
+            title="Rebuild linked",
+            summary="Business table linked memory",
+            scope=scope,
+        )
+    )
+    event = store.record_event(
+        {"user_phrase": "deploy safely", "event_type": "deploy", "interpreted_intent": "deploy with health check"},
+        scope=scope,
+    )
+    outcome = store.record_outcome(event["id"], {"outcome": "good", "reason": "health ok"}, scope=scope)
+    pattern = store.upsert_intent_pattern(
+        {"pattern": "deploy safely", "default_event_type": "deploy", "interpreted_intent": "run gated deploy"},
+        scope=scope,
+    )
+    edge = store.upsert_memory_edge(
+        MemoryEdge.create(
+            from_id=memory.record_id,
+            to_id=linked.record_id,
+            edge_type="causal",
+            confidence=0.8,
+            evidence_id=memory.record_id,
+            scope=scope,
+        )
+    )
+    ledger = store.sqlite._record_policy_rollout_ledger(
+        action_type="promotion",
+        scope=scope,
+        promotion_id="promo_rebuild",
+        source_opportunity_id="opp_rebuild",
+        source_opportunity={"kind": "test"},
+        trust_report={"ok": True},
+        replay_report={"ok": True},
+        is_auto=True,
+        applied_pattern_id=pattern["id"],
+        budget_decision="ok",
+        reason="rebuild test",
+        details={"event_id": event["id"]},
+    )
+    store.sqlite.conn.commit()
+
+    report = store.rebuild_sqlite_from_jsonl(replace=True)
+
+    assert report["ok"] is True
+    assert store.get_by_id(memory.record_id, scope=scope).record_id == memory.record_id
+    assert store.sqlite.conn.execute("SELECT COUNT(*) FROM events WHERE id = ?", (event["id"],)).fetchone()[0] == 1
+    assert store.sqlite.conn.execute("SELECT COUNT(*) FROM event_outcomes WHERE id = ?", (outcome["id"],)).fetchone()[0] == 1
+    assert store.sqlite.conn.execute("SELECT COUNT(*) FROM intent_patterns WHERE id = ?", (pattern["id"],)).fetchone()[0] == 1
+    assert store.sqlite.conn.execute("SELECT COUNT(*) FROM policy_rollout_ledger WHERE id = ?", (ledger["id"],)).fetchone()[0] == 1
+    assert store.list_memory_edges(scope=scope, record_ids=[memory.record_id], limit=5)[0].edge_id == edge.edge_id
+
+
 def test_runtime_store_returns_active_policy_rules(tmp_path) -> None:
     store = RuntimeStore(root=tmp_path)
     scope = ScopeRef(agent_id="eibrain", workspace_id="robot")

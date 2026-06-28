@@ -69,6 +69,7 @@ class EIBrainRPCBridge:
             tags = params.get("tags", [])
             evidence = params.get("evidence", [])
             links = params.get("links", [])
+            force_capture = params.get("force_capture", False)
             if (
                 not isinstance(text, str)
                 or not text.strip()
@@ -82,6 +83,7 @@ class EIBrainRPCBridge:
                 or not self._valid_tags(tags)
                 or not self._valid_list(evidence)
                 or not self._valid_list(links)
+                or not isinstance(force_capture, bool)
                 or not self._valid_scope(scope)
             ):
                 return self._with_contract(self._invalid_request())
@@ -97,6 +99,7 @@ class EIBrainRPCBridge:
                 content=content,
                 evidence=self._normalize_evidence(evidence),
                 links=self._normalize_links(links),
+                force_capture=force_capture,
                 meta=hongtu_identity_meta(
                     source=source,
                     channel="eibrain",
@@ -110,7 +113,10 @@ class EIBrainRPCBridge:
                     },
                 ),
             )
-            return self._with_contract({"ok": True, "result": record.to_dict()})
+            result = record.to_dict()
+            if record.status == "rejected":
+                result["warnings"] = list(record.meta.get("capture_warnings") or [])
+            return self._with_contract({"ok": True, "result": result})
         if method in {"memory.record_event", "memory.recordEvent"}:
             params = dict(params)
             scope: BridgeScope = params.get("scope", {})

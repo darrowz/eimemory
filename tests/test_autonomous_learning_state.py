@@ -115,3 +115,37 @@ def test_append_learning_record_once_returns_existing_record(tmp_path) -> None:
 
     assert second.record_id == first.record_id
     assert len(runtime.store.list_records(kinds=["learning_goal"], scope=scope, limit=10)) == 1
+
+
+def test_append_learning_record_once_uses_indexed_idempotency_lookup(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu"}
+    loop = start_learning_loop(runtime, scope=scope, trigger="manual")
+    loop_id = str(loop.meta["loop_id"])
+    first = append_learning_record_once(
+        runtime,
+        kind="replay_result",
+        title="Capability replay",
+        summary="Replay once",
+        scope=scope,
+        loop_id=loop_id,
+        step_name="capability_replay",
+        semantic_key="memory.recall.case",
+    )
+
+    def fail_paged_lookup(*_args, **_kwargs):
+        raise AssertionError("idempotency lookup must not page through records")
+
+    monkeypatch.setattr(runtime.store, "list_records", fail_paged_lookup)
+    second = append_learning_record_once(
+        runtime,
+        kind="replay_result",
+        title="Capability replay duplicate",
+        summary="Replay duplicate",
+        scope=scope,
+        loop_id=loop_id,
+        step_name="capability_replay",
+        semantic_key="memory.recall.case",
+    )
+
+    assert second.record_id == first.record_id
