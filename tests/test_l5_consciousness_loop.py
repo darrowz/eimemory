@@ -97,6 +97,7 @@ def test_l5_cycle_runs_autonomous_learning_and_assesses_full_closed_loop(tmp_pat
         runtime.close()
 
     assert calls["apply"] is True
+    assert calls["dry_run"] is False
     assert calls["force"] is True
     assert calls["max_goals"] == 4
     assert calls["max_promotions"] == 2
@@ -108,6 +109,54 @@ def test_l5_cycle_runs_autonomous_learning_and_assesses_full_closed_loop(tmp_pat
     assert report["assessment"]["level"] == "L5"
     assert report["assessment"]["missing_evidence"] == []
     assert report["consciousness_research_layer"]["enabled"] is True
+
+
+def test_l5_observation_mode_persists_evidence_without_apply(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    calls: dict[str, object] = {}
+
+    def fake_observation_cycle(**kwargs):
+        calls.update(kwargs)
+        return {
+            "ok": True,
+            "loop_id": "observer-loop",
+            "candidate_id": "cand-observer",
+            "candidate_ids": ["cand-observer"],
+            "goal_graph": {"persisted_record_id": "goal-graph-observer"},
+            "real_task_replay": {"ok": True, "verdict": "pass", "pass_count": 2, "sample_count": 2, "pass_rate": 1.0},
+            "replay_gate_passed": True,
+            "promotion": {
+                "ok": True,
+                "applied": False,
+                "promotion_request_id": "promotion-observer",
+                "blocked_reason": "observation_mode_no_apply",
+            },
+            "promotions": [
+                {
+                    "ok": True,
+                    "applied": False,
+                    "promotion_request_id": "promotion-observer",
+                    "blocked_reason": "observation_mode_no_apply",
+                }
+            ],
+            "capability_score_id": "cap-score-observer",
+            "replay_dataset": {"case_count": 2},
+        }
+
+    monkeypatch.setattr(runtime, "run_autonomous_learning_cycle", fake_observation_cycle)
+    try:
+        report = runtime.run_l5_cycle(scope=SCOPE, apply=False, force=True, max_goals=2, max_promotions=1)
+        reassessed = runtime.assess_l5_closed_loop(scope=SCOPE, persist=True)
+    finally:
+        runtime.close()
+
+    assert calls["apply"] is False
+    assert calls["dry_run"] is False
+    assert report["assessment"]["level"] == "L5"
+    assert report["assessment"]["missing_evidence"] == []
+    assert report["rollback_refs"] == ["observation_mode_no_apply"]
+    assert reassessed["level"] == "L5"
+    assert reassessed["missing_evidence"] == []
 
 
 def test_l5_assessment_downgrades_when_loop_evidence_is_missing(tmp_path) -> None:

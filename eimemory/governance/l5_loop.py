@@ -203,7 +203,7 @@ def run_l5_cycle(
     autonomous = runtime.run_autonomous_learning_cycle(
         scope=asdict(scope_ref),
         apply=bool(apply),
-        dry_run=not bool(apply),
+        dry_run=False,
         full=True,
         force=bool(force),
         max_goals=max(1, int(max_goals or 1)),
@@ -243,7 +243,7 @@ def run_l5_cycle(
         "autonomous_learning": autonomous,
         "self_continuity": self_continuity,
         "reward": reward,
-        "rollback_refs": _rollback_refs(autonomous),
+        "rollback_refs": _rollback_evidence_refs({"apply": bool(apply), "autonomous_learning": autonomous}),
         "consciousness_research_layer": dict(CONSCIOUSNESS_RESEARCH_LAYER),
         "persisted_record_id": "",
     }
@@ -344,6 +344,8 @@ def assess_l5_closed_loop(
 ) -> dict[str, Any]:
     scope_ref = _scope_ref(scope)
     report = dict(loop_report or {})
+    if not report:
+        report = _latest_l5_closed_loop_report(runtime, scope=scope_ref)
     missing = _missing_evidence(report)
     level = _level_for(report, missing)
     assessment = {
@@ -362,7 +364,7 @@ def assess_l5_closed_loop(
             "self_continuity_record_id": _record_id(report.get("self_continuity")),
             "reward_transition_id": str((report.get("reward") or {}).get("transition_record_id") or ""),
             "candidate_ids": _candidate_ids(report.get("autonomous_learning") or {}),
-            "rollback_refs": _rollback_refs(report.get("autonomous_learning") or {}),
+            "rollback_refs": _rollback_evidence_refs(report),
         },
         "consciousness_research_layer": dict(CONSCIOUSNESS_RESEARCH_LAYER),
         "persisted_record_id": "",
@@ -618,7 +620,7 @@ def _missing_evidence(report: dict[str, Any]) -> list[str]:
         "promotion_or_block": _has_promotion_or_block(auto),
         "reward": bool(reward.get("transition_record_id")),
         "self_continuity": bool(_record_id(self_continuity) or self_continuity.get("narrative")),
-        "rollback": bool(_rollback_refs(auto)),
+        "rollback": _has_rollback_evidence(report),
     }
     return [name for name, ok in checks.items() if not ok]
 
@@ -695,6 +697,35 @@ def _rollback_refs(auto: dict[str, Any]) -> list[str]:
         if isinstance(item, dict):
             refs.append(str(item.get("rollback_command") or ""))
     return _compact_ids(refs)
+
+
+def _rollback_evidence_refs(report: dict[str, Any]) -> list[str]:
+    auto = report.get("autonomous_learning") if isinstance(report.get("autonomous_learning"), dict) else {}
+    refs = _rollback_refs(auto)
+    if refs:
+        return refs
+    if _observation_mode_no_apply(report):
+        return ["observation_mode_no_apply"]
+    return []
+
+
+def _has_rollback_evidence(report: dict[str, Any]) -> bool:
+    return bool(_rollback_evidence_refs(report))
+
+
+def _observation_mode_no_apply(report: dict[str, Any]) -> bool:
+    auto = report.get("autonomous_learning") if isinstance(report.get("autonomous_learning"), dict) else {}
+    return bool(report.get("apply") is False and _has_promotion_or_block(auto))
+
+
+def _latest_l5_closed_loop_report(runtime: Any, *, scope: ScopeRef) -> dict[str, Any]:
+    records = runtime.store.list_records(kinds=["l5_closed_loop"], scope=scope, limit=1)
+    if not records:
+        return {}
+    content = records[0].content if isinstance(records[0].content, dict) else {}
+    report = dict(content)
+    report.setdefault("persisted_record_id", records[0].record_id)
+    return report
 
 
 def _record_id(value: Any) -> str:
