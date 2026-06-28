@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import json
 import os
 from pathlib import Path
@@ -14,6 +15,30 @@ from eimemory.api.runtime import Runtime
 from eimemory.ei_bridge.protocol import EIMEMORY_RPC_CONTRACT_VERSION
 from eimemory.ei_bridge.protocol import EIMemoryRPCRequest, EIMemoryRPCResponse
 from eimemory.version import __version__
+
+
+_CLIENT_DISCONNECT_ERRNOS = {errno.EPIPE, errno.ECONNRESET, errno.ECONNABORTED}
+
+
+def _is_client_disconnect(exc: OSError) -> bool:
+    return isinstance(exc, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)) or (
+        getattr(exc, "errno", None) in _CLIENT_DISCONNECT_ERRNOS
+    )
+
+
+def _send_json_response(handler: BaseHTTPRequestHandler, status_code: int, payload: EIMemoryRPCResponse) -> None:
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    try:
+        handler.send_response(status_code)
+        handler.send_header("Content-Type", "application/json")
+        handler.send_header("Content-Length", str(len(body)))
+        handler.end_headers()
+        handler.wfile.write(body)
+    except OSError as exc:
+        if _is_client_disconnect(exc):
+            handler.close_connection = True
+            return
+        raise
 
 
 class _RPCHandler(BaseHTTPRequestHandler):
@@ -80,12 +105,7 @@ class _RPCHandler(BaseHTTPRequestHandler):
             self._send_json(500, {"ok": False, "error": "internal_error"})
 
     def _send_json(self, status_code: int, payload: EIMemoryRPCResponse) -> None:
-        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        self.send_response(status_code)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        _send_json_response(self, status_code, payload)
 
     def log_message(self, format: str, *args) -> None:  # noqa: A003
         return
@@ -114,12 +134,7 @@ class _HealthOnlyHandler(BaseHTTPRequestHandler):
         )
 
     def _send_json(self, status_code: int, payload: EIMemoryRPCResponse) -> None:
-        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        self.send_response(status_code)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        _send_json_response(self, status_code, payload)
 
     def log_message(self, format: str, *args) -> None:  # noqa: A003
         return

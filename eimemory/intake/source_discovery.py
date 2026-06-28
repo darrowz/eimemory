@@ -4,6 +4,8 @@ from hashlib import sha256
 from typing import Any
 from urllib.parse import parse_qs, quote_plus, urlparse
 
+from eimemory.intake.title_normalization import strip_candidate_title_prefixes
+
 
 _CHATPAPER_DASHBOARD_PREFIX = "https://www.chatpaper.ai/zh/dashboard/arxiv"
 _CATEGORY_HINTS: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -150,8 +152,8 @@ def _looks_like_news_or_product_gap(evidence: list[str]) -> bool:
 def _best_query(evidence: list[str]) -> str:
     for text in evidence:
         if any(hint in text.lower() for hint in _NEWS_HINTS):
-            return text[:120]
-    return (evidence[0] if evidence else "source discovery")[:120]
+            return strip_candidate_title_prefixes(text, default="source discovery")[:120]
+    return strip_candidate_title_prefixes(evidence[0] if evidence else "", default="source discovery")[:120]
 
 
 def _dedupe_new_proposals(

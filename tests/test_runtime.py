@@ -464,6 +464,38 @@ def test_runtime_collect_external_sources_can_persist_fetched_candidates_and_ded
     assert records[0].provenance["fingerprint"]
 
 
+def test_runtime_collect_external_sources_strips_recursive_candidate_title_prefixes(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "main", "workspace_id": "rss"}
+    runtime.sources.add_source(
+        {
+            "source_kind": "rss",
+            "title": "Recursive RSS",
+            "uri": "https://example.test/rss.xml",
+            "enabled": True,
+        }
+    )
+
+    def fake_fetch(_url: str) -> str:
+        return """<?xml version="1.0"?>
+        <rss version="2.0"><channel><item>
+          <title>News RSS candidate: Knowledge candidate: Graph memory update</title>
+          <link>https://example.test/item</link>
+          <description>Graph memory update summary.</description>
+        </item></channel></rss>
+        """
+
+    report = runtime.collect_external_sources(fetch=True, persist=True, scope=scope, fetch_text=fake_fetch)
+    records = runtime.store.list_records(kinds=["news"], scope=scope, limit=10)
+
+    assert report["written_count"] == 1
+    assert len(records) == 1
+    assert records[0].title == "News item: Graph memory update"
+    assert records[0].content["title"] == "Graph memory update"
+    assert "Knowledge candidate:" not in records[0].title
+    assert "News RSS candidate:" not in records[0].title
+
+
 def test_runtime_context_manager_closes_store(tmp_path) -> None:
     db_path = tmp_path / "state" / "eimemory.sqlite"
 

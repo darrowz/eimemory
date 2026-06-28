@@ -58,3 +58,17 @@ def test_news_and_product_opportunity_gap_proposes_rss_and_manual_review_needing
     assert {"rss", "manual"}.issubset(kinds)
     assert product_proposals
     assert all(proposal["decision"] == "needs_review" for proposal in product_proposals)
+
+
+def test_news_source_discovery_strips_recursive_candidate_prefixes_from_query() -> None:
+    proposals = discover_source_proposals(
+        gap_queries=["News RSS candidate: Knowledge candidate: AI memory launch news"],
+        sources=[],
+        recent_titles=[],
+    )
+
+    titles = [proposal["title"] for proposal in proposals]
+
+    assert "News RSS candidate: AI memory launch news" in titles
+    assert all("Knowledge candidate:" not in title for title in titles)
+    assert all("News RSS candidate: News RSS candidate:" not in title for title in titles)

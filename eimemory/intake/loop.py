@@ -11,6 +11,7 @@ from urllib.parse import unquote, urlparse
 from eimemory.core.clock import now_iso
 from eimemory.core.ids import generate_record_id
 from eimemory.intake.registry import SourceEntry, SourceRegistry, VALID_SOURCE_KINDS
+from eimemory.intake.title_normalization import strip_candidate_title_prefixes
 from eimemory.models.records import RecordEnvelope, ScopeRef, TimeRef
 
 KIND_NAME = "knowledge_candidate"
@@ -327,11 +328,13 @@ def candidates_to_records(candidates: Iterable[dict[str, Any]], scope: dict[str,
         if candidate.get("decision") != DECISION_CANDIDATE:
             continue
         fingerprint = str(candidate.get("fingerprint") or "")
-        title = str(candidate.get("title") or candidate.get("source_id") or "Knowledge candidate")
+        raw_title = str(candidate.get("title") or candidate.get("source_id") or "Knowledge candidate")
+        title = strip_candidate_title_prefixes(raw_title, default="Knowledge candidate")
         content = {
             "source_id": str(candidate.get("source_id") or ""),
             "source_kind": str(candidate.get("source_kind") or ""),
             "title": title,
+            "original_title": raw_title,
             "uri": str(candidate.get("uri") or ""),
             "summary": str(candidate.get("summary") or ""),
             "content_excerpt": str(candidate.get("content_excerpt") or ""),

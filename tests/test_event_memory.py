@@ -255,3 +255,27 @@ def test_openclaw_session_end_marks_success_without_verification_as_missing(tmp_
     policy = runtime.search_policy("整理今天的会议纪要", scope=scope)
     assert policy["policy_suggestions"][0]["source"] == "event_outcome"
     assert policy["policy_suggestions"][0]["outcome"] == "verification_missing"
+
+
+def test_openclaw_agent_end_success_without_verification_is_non_regression_uncertain(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    hooks = OpenClawMemoryHooks(runtime)
+
+    result = hooks.on_agent_end(
+        {
+            "session_id": "sess-agent-no-verification",
+            "agent_id": "main",
+            "workspace_id": "repo-x",
+            "user_messages": [{"content": "整理一下今天的状态"}],
+            "assistant_messages": [{"content": "Summary: 已整理。"}],
+            "task_context": {
+                "event_type": "status_summary",
+                "interpreted_intent": "整理状态",
+            },
+            "outcome": {"success": True, "notes": "done"},
+        }
+    )
+
+    assert result["outcome"]["outcome"] == "uncertain"
+    assert result["outcome"]["reason"] == "agent_end_success_without_explicit_verification"
+    assert result["outcome"]["verification"] == ""

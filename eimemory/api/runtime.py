@@ -19,6 +19,7 @@ from eimemory.api.memory import MemoryAPI
 from eimemory.core.clock import now_iso
 from eimemory.intake.registry import SourceRegistry
 from eimemory.intake.papers.sources import ingest_paper_source
+from eimemory.intake.title_normalization import strip_candidate_title_prefixes
 from eimemory.knowledge.compiler import KnowledgeCompilation, compile_paper_knowledge
 from eimemory.knowledge.extract import PaperMemoryExtraction, extract_paper_memory
 from eimemory.knowledge.projectors import project_operational_knowledge
@@ -1484,7 +1485,8 @@ def _collected_item_record(
 ) -> RecordEnvelope:
     fingerprint = str(getattr(item, "fingerprint", "") or "")
     item_source_kind = str(getattr(item, "source_kind", "") or "")
-    title = str(getattr(item, "title", "") or "Fetched knowledge candidate")
+    original_title = str(getattr(item, "title", "") or "")
+    title = strip_candidate_title_prefixes(original_title, default="Fetched knowledge candidate")
     content = str(getattr(item, "content", "") or "")
     item_url = str(getattr(item, "url", "") or "")
     metadata = dict(getattr(item, "metadata", {}) or {})
@@ -1499,6 +1501,7 @@ def _collected_item_record(
         "source_kind": str(source_kind or ""),
         "item_url": item_url,
         "fingerprint": fingerprint,
+        "original_title": original_title,
         "fetch_source": item_source_kind,
         "fetch_metadata": dict(fetch_metadata or {}),
         "published_at": str(getattr(item, "published_at", "") or ""),
@@ -1509,6 +1512,7 @@ def _collected_item_record(
         "fetch_source": item_source_kind,
         "item_url": item_url,
         "fingerprint": fingerprint,
+        "original_title": original_title,
         "title": title,
         "summary": summary,
         "content_excerpt": content_excerpt,
@@ -1521,6 +1525,8 @@ def _collected_item_record(
             source_id=str(source_id or ""),
             scope=scope,
             record_kind=record_kind,
+            item_url=item_url,
+            title=title,
         ),
         kind=record_kind,
         status=status,
@@ -1541,6 +1547,7 @@ def _collected_item_record(
             "source_kind": str(source_kind or ""),
             "item_url": item_url,
             "fingerprint": fingerprint,
+            "original_title": original_title,
             "fetch_source": item_source_kind,
             "safety": dict(metadata.get("safety") or {}) if isinstance(metadata.get("safety"), dict) else {},
         },
@@ -1564,8 +1571,17 @@ def _collected_item_tags(record_kind: str) -> list[str]:
     return ["news", "external"] if record_kind == "news" else []
 
 
-def _collected_item_record_id(fingerprint: str, *, source_id: str, scope: ScopeRef, record_kind: str = "knowledge_candidate") -> str:
-    stable = fingerprint or sha256(source_id.encode("utf-8", errors="ignore")).hexdigest()
+def _collected_item_record_id(
+    fingerprint: str,
+    *,
+    source_id: str,
+    scope: ScopeRef,
+    record_kind: str = "knowledge_candidate",
+    item_url: str = "",
+    title: str = "",
+) -> str:
+    fallback = "\x1f".join([source_id, item_url, title])
+    stable = fingerprint or sha256(fallback.encode("utf-8", errors="ignore")).hexdigest()
     prefix = "news_fetch" if record_kind == "news" else "kc_fetch"
     return f"{prefix}_{stable[:12]}_{_scope_hash(scope)}"
 

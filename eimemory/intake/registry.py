@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from eimemory.core.clock import now_iso
+from eimemory.intake.title_normalization import strip_candidate_title_prefixes
 from eimemory.models.records import RecordEnvelope, ScopeRef, TimeRef
 from eimemory.storage.runtime_store import RuntimeStore
 
@@ -292,7 +293,8 @@ class SourceRegistry:
         }
 
     def _candidate_record(self, candidate: dict[str, Any], *, scope: ScopeRef) -> RecordEnvelope:
-        title = str(candidate.get("title") or candidate["source_id"])
+        raw_title = str(candidate.get("title") or candidate["source_id"])
+        title = strip_candidate_title_prefixes(raw_title, default=str(candidate["source_id"]))
         summary = str(candidate.get("summary") or "")
         detail = "\n".join(
             [
@@ -314,7 +316,8 @@ class SourceRegistry:
             content={
                 "source_id": candidate["source_id"],
                 "source_kind": candidate["source_kind"],
-                "title": candidate["title"],
+                "title": title,
+                "original_title": raw_title,
                 "uri": candidate["uri"],
                 "tags": list(candidate.get("tags") or []),
                 "summary": summary,

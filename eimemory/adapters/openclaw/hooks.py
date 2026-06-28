@@ -1267,6 +1267,9 @@ class OpenClawMemoryHooks:
         elif success is True and verification:
             outcome_name = "good"
             reason = self._first_text(outcome.get("reason"), outcome.get("notes"), "success verified")
+        elif success is True and end_kind == "agent_end":
+            outcome_name = "uncertain"
+            reason = "agent_end_success_without_explicit_verification"
         elif success is True:
             outcome_name = "verification_missing"
             reason = "verification missing at terminal hook"

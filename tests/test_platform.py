@@ -305,6 +305,35 @@ def test_http_rpc_server_health_reports_release_and_store_readiness(tmp_path, mo
     assert payload["checks"]["ready"] is True
 
 
+def test_http_rpc_server_silences_client_disconnect_during_json_write() -> None:
+    from eimemory.adapters.eibrain.rpc_server import _RPCHandler
+
+    class BrokenWriter:
+        def write(self, _body: bytes) -> None:
+            raise BrokenPipeError("client disconnected")
+
+    class FakeHandler:
+        wfile = BrokenWriter()
+        close_connection = False
+        responses: list[int] = []
+
+        def send_response(self, status_code: int) -> None:
+            self.responses.append(status_code)
+
+        def send_header(self, _key: str, _value: str) -> None:
+            return
+
+        def end_headers(self) -> None:
+            return
+
+    handler = FakeHandler()
+
+    _RPCHandler._send_json(handler, 200, {"ok": True})
+
+    assert handler.close_connection is True
+    assert handler.responses == [200]
+
+
 def test_health_payload_infers_commit_from_release_working_directory(tmp_path, monkeypatch) -> None:
     from eimemory.adapters.eibrain.rpc_server import build_health_payload
 
