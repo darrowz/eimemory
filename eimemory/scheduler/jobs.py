@@ -1297,9 +1297,9 @@ def _run_l5_loop(runtime: Runtime, *, scope: dict) -> dict[str, Any]:
     apply_changes = _env_bool("EIMEMORY_L5_LOOP_APPLY", default=False)
     force = _env_bool("EIMEMORY_L5_LOOP_FORCE", default=False)
     allow_network = _env_bool("EIMEMORY_L5_LOOP_NETWORK", default=True)
-    max_goals = _env_int("EIMEMORY_L5_MAX_GOALS", default=5, minimum=1, maximum=20)
-    max_promotions = _env_int("EIMEMORY_L5_MAX_PROMOTIONS", default=3, minimum=0, maximum=20)
-    timeout_seconds = _env_int("EIMEMORY_L5_LOOP_TIMEOUT_SECONDS", default=1200, minimum=30, maximum=7200)
+    max_goals = _env_int("EIMEMORY_L5_MAX_GOALS", default=1, minimum=1, maximum=20)
+    max_promotions = _env_int("EIMEMORY_L5_MAX_PROMOTIONS", default=0, minimum=0, maximum=20)
+    timeout_seconds = _env_int("EIMEMORY_L5_LOOP_TIMEOUT_SECONDS", default=300, minimum=30, maximum=7200)
     try:
         started = time.monotonic()
         report = _json_safe(
