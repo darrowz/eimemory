@@ -51,6 +51,11 @@ VALID_KINDS: frozenset[str] = frozenset(
         "autonomy_goal_queue",
         "regression_watch",
         "learning_playbook",
+        "l5_world_model",
+        "l5_strategic_roadmap",
+        "l5_self_continuity",
+        "l5_assessment",
+        "l5_closed_loop",
     }
 )
 

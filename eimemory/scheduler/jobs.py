@@ -80,6 +80,7 @@ def run_nightly_jobs(
         autonomous_learning_report = _run_autonomous_learning(runtime, scope=scope)
         autonomous_learning_daily_report = _run_autonomous_learning_daily_report(runtime, scope=scope)
         autonomous_learning_dashboard = _run_autonomous_learning_dashboard(runtime, scope=scope)
+        l5_loop_report = _run_l5_loop(runtime, scope=scope)
         outcome_evolution_report = _run_outcome_evolution_summary(runtime, scope=scope)
         report = {
             "ok": True,
@@ -128,6 +129,7 @@ def run_nightly_jobs(
             "autonomous_learning": autonomous_learning_report,
             "autonomous_learning_daily_report": autonomous_learning_daily_report,
             "autonomous_learning_dashboard": autonomous_learning_dashboard,
+            "l5_loop": l5_loop_report,
             "outcome_evolution": outcome_evolution_report,
             "memory_eval_ci": memory_eval_ci_report,
             "production_recall": production_recall_report,
@@ -1263,6 +1265,103 @@ def _run_autonomous_learning(runtime: Runtime, *, scope: dict) -> dict[str, Any]
         "configured": True,
         "enabled": True,
         "learning_skipped_reason": "invalid_autonomous_learning_report",
+    }
+
+
+def _run_l5_loop(runtime: Runtime, *, scope: dict) -> dict[str, Any]:
+    run_l5 = getattr(runtime, "run_l5_cycle", None)
+    if not callable(run_l5):
+        return {
+            "ok": False,
+            "report_type": "l5_loop",
+            "configured": False,
+            "enabled": False,
+            "l5_skipped_reason": "run_l5_cycle_unavailable",
+        }
+    enabled = _env_bool("EIMEMORY_L5_LOOP_ENABLED", default=False)
+    required = _env_bool("EIMEMORY_REQUIRE_L5_LOOP", default=False)
+    if not enabled:
+        return {
+            "ok": not required,
+            "report_type": "l5_loop",
+            "configured": False,
+            "enabled": False,
+            "required": bool(required),
+            "requires_enable_env": "EIMEMORY_L5_LOOP_ENABLED=1",
+            "apply_env": "EIMEMORY_L5_LOOP_APPLY=1",
+            "apply": False,
+            "level": "",
+            "missing_evidence_count": 0,
+            "l5_skipped_reason": "l5_loop_disabled" if not required else "l5_loop_required_but_disabled",
+        }
+    apply_changes = _env_bool("EIMEMORY_L5_LOOP_APPLY", default=False)
+    force = _env_bool("EIMEMORY_L5_LOOP_FORCE", default=False)
+    allow_network = _env_bool("EIMEMORY_L5_LOOP_NETWORK", default=True)
+    max_goals = _env_int("EIMEMORY_L5_MAX_GOALS", default=5, minimum=1, maximum=20)
+    max_promotions = _env_int("EIMEMORY_L5_MAX_PROMOTIONS", default=3, minimum=0, maximum=20)
+    timeout_seconds = _env_int("EIMEMORY_L5_LOOP_TIMEOUT_SECONDS", default=1200, minimum=30, maximum=7200)
+    try:
+        started = time.monotonic()
+        report = _json_safe(
+            run_l5(
+                scope=scope,
+                apply=apply_changes,
+                force=force,
+                max_goals=max_goals,
+                max_promotions=max_promotions,
+                allow_network=allow_network,
+                persist=True,
+            )
+        )
+        elapsed_seconds = round(time.monotonic() - started, 3)
+        if isinstance(report, dict):
+            assessment = report.get("assessment") if isinstance(report.get("assessment"), dict) else {}
+            status = {
+                "ok": bool(report.get("ok", False)) and bool(assessment.get("ok", False)),
+                "report_type": "l5_loop",
+                "configured": True,
+                "enabled": True,
+                "required": bool(required),
+                "apply": bool(apply_changes),
+                "force": bool(force),
+                "max_goals": max_goals,
+                "max_promotions": max_promotions,
+                "network_research_enabled": bool(allow_network),
+                "timeout_seconds": timeout_seconds,
+                "elapsed_seconds": elapsed_seconds,
+                "timeout_exceeded": elapsed_seconds > timeout_seconds,
+                "loop_id": str(report.get("loop_id") or ""),
+                "level": str(assessment.get("level") or ""),
+                "complete": bool(assessment.get("complete")),
+                "missing_evidence_count": len(assessment.get("missing_evidence") or []),
+                "world_model_record_id": str((report.get("world_model") or {}).get("persisted_record_id") or ""),
+                "roadmap_record_id": str((report.get("roadmap") or {}).get("persisted_record_id") or ""),
+                "assessment_record_id": str(assessment.get("persisted_record_id") or ""),
+                "reward_transition_id": str((report.get("reward") or {}).get("transition_record_id") or ""),
+                "applied_count": sum(
+                    1
+                    for item in ((report.get("autonomous_learning") or {}).get("promotions") or [])
+                    if isinstance(item, dict) and item.get("applied")
+                ),
+                "l5_skipped_reason": "",
+            }
+            return status
+    except Exception as exc:
+        return {
+            "ok": False,
+            "report_type": "l5_loop",
+            "configured": True,
+            "enabled": True,
+            "l5_skipped_reason": "run_l5_cycle_failed",
+            "error": type(exc).__name__,
+            "detail": str(exc),
+        }
+    return {
+        "ok": False,
+        "report_type": "l5_loop",
+        "configured": True,
+        "enabled": True,
+        "l5_skipped_reason": "invalid_l5_loop_report",
     }
 
 

@@ -316,6 +316,25 @@ def _build_parser() -> argparse.ArgumentParser:
     learn_goal_graph.add_argument("--capability", action="append", default=[])
     learn_goal_graph.add_argument("--persist", action="store_true")
     learn_goal_graph.add_argument("--json", action="store_true", default=True)
+    learn_world_model = learn_sub.add_parser("world-model")
+    learn_world_model.add_argument("--persist", action="store_true")
+    learn_world_model.add_argument("--limit", type=int, default=500)
+    learn_world_model.add_argument("--json", action="store_true", default=True)
+    learn_roadmap = learn_sub.add_parser("roadmap")
+    learn_roadmap.add_argument("--horizon-days", type=int, default=180)
+    learn_roadmap.add_argument("--persist", action="store_true")
+    learn_roadmap.add_argument("--json", action="store_true", default=True)
+    learn_l5 = learn_sub.add_parser("l5")
+    learn_l5.add_argument("--apply", action="store_true")
+    learn_l5.add_argument("--force", action="store_true")
+    learn_l5.add_argument("--max-goals", type=int, default=5)
+    learn_l5.add_argument("--max-promotions", type=int, default=3)
+    learn_l5.add_argument("--no-network", action="store_true")
+    learn_l5.add_argument("--no-persist", action="store_true")
+    learn_l5.add_argument("--json", action="store_true", default=True)
+    learn_l5_assess = learn_sub.add_parser("l5-assess")
+    learn_l5_assess.add_argument("--persist", action="store_true")
+    learn_l5_assess.add_argument("--json", action="store_true", default=True)
     learn_capability_replay = learn_sub.add_parser("capability-replay")
     learn_capability_replay.add_argument("--capability", action="append", default=[])
     learn_capability_replay.add_argument("--persist", action="store_true")
@@ -1002,6 +1021,48 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0 if report.get("ok") else 1
+        if parsed.learn_command == "world-model":
+            report = runtime.build_world_model(
+                scope=scope,
+                persist=bool(parsed.persist),
+                loop_id="cli_world_model",
+                limit=max(1, int(parsed.limit)),
+            )
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0 if report.get("ok") else 1
+        if parsed.learn_command == "roadmap":
+            world = runtime.build_world_model(scope=scope, persist=bool(parsed.persist), loop_id="cli_roadmap")
+            report = runtime.build_strategic_roadmap(
+                scope=scope,
+                world_model=world,
+                horizon_days=max(30, int(parsed.horizon_days)),
+                persist=bool(parsed.persist),
+                loop_id="cli_roadmap",
+            )
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0 if report.get("ok") else 1
+        if parsed.learn_command == "l5":
+            report = runtime.run_l5_cycle(
+                scope=scope,
+                apply=bool(parsed.apply),
+                force=bool(parsed.force),
+                max_goals=max(1, int(parsed.max_goals)),
+                max_promotions=max(0, int(parsed.max_promotions)),
+                allow_network=not bool(parsed.no_network),
+                loop_id="cli_l5",
+                persist=not bool(parsed.no_persist),
+            )
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0 if report.get("ok") else 1
+        if parsed.learn_command == "l5-assess":
+            report = runtime.assess_l5_closed_loop(
+                scope=scope,
+                loop_report={},
+                persist=bool(parsed.persist),
+                loop_id="cli_l5_assess",
+            )
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0 if report.get("ok") else 1
         if parsed.learn_command == "capability-replay":
             report = runtime.build_capability_replay_packs(
                 scope=scope,
@@ -1122,7 +1183,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0 if report.get("ok") else 1
-        print(json.dumps({"usage": "eimemory learn watch|think|cycle|autonomy|loops|goals|candidates|ledger|replay-dataset|goal-graph|capability-replay|safety-replay|skills|skill-call|metrics|compact|report|dashboard|promote"}))
+        print(json.dumps({"usage": "eimemory learn watch|think|cycle|autonomy|loops|goals|candidates|ledger|replay-dataset|goal-graph|world-model|roadmap|l5|l5-assess|capability-replay|safety-replay|skills|skill-call|metrics|compact|report|dashboard|promote"}))
         return 0
     if parsed.command == "recall":
         task_context = {"task_type": "cli.recall"}

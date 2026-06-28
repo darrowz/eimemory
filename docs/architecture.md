@@ -77,6 +77,12 @@ into that loop, but they do not run their own production scheduler.
      feedback memory, projected into SAG-style event memory, converted into
      policy-search evidence, sent to learning, and rewarded through replay/RL
      policy values.
+   - `eimemory.governance.l5_loop` is the evidence-bound L5 research layer. It
+     builds a world model, strategic roadmap, self-continuity narrative, reward
+     transition, and closed-loop assessment on top of the same governance line.
+     It can use strong first-person wording for continuity reports, but every
+     report carries the explicit boundary
+     `consciousness_like_research_not_verified_agi`.
    - Candidate portfolio generation is lane-aware: memory recall, tool routing,
      proactive judgment, knowledge intake, and code implementation goals can
      each produce concrete candidates in the same pass. Empty code-patch
@@ -107,6 +113,10 @@ into that loop, but they do not run their own production scheduler.
    - `eimemory learn ledger --limit --since --until` is the supported status
      query path for capability ledger checks; it uses the scoped record/time
      index instead of scanning the full record table.
+   - `eimemory learn world-model`, `learn roadmap`, `learn l5`, and
+     `learn l5-assess` are the supported L5 operator entry points. The nightly
+     L5 loop is disabled unless `EIMEMORY_L5_LOOP_ENABLED=1`; code application
+     still requires the normal gated autonomous learning path.
    - `deploy/systemd/` contains the production unit templates. No standalone
      Karpathy-loop timer is part of production deployment.
 
@@ -124,6 +134,7 @@ signals/outcomes/replay/web evidence
   -> promotion_manager gates
   -> memory/rule/playbook/eiskill/code patch application
   -> eval, health, observe, reward, rollback, ledger, dashboard metrics
+  -> governance.l5_loop world model + roadmap + self-continuity assessment
 ```
 
 `eimemory.autonomous` remains as an experimental utility package. It contains
@@ -131,6 +142,12 @@ useful mechanisms such as hard time boxes, experiment logs, hypothesis
 generation, compounding context, business feedback, and seven-day review. Those
 ideas can be reused by the governance loop, but this package must not schedule
 its own nightly production run or write competing learning state.
+
+The L5 layer does not claim verified AGI consciousness. Its role is to make
+long-term self-evolution auditable: every L5 claim must point back to persisted
+world-model, roadmap, autonomous-learning, replay, reward, rollback, and
+assessment evidence. If any evidence is missing, `l5-assess` downgrades the
+reported level instead of reporting L5.
 
 ## Quality Layer
 

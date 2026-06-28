@@ -584,6 +584,76 @@ class Runtime:
             loop_id=loop_id,
         )
 
+    def build_world_model(
+        self,
+        *,
+        scope: dict | None = None,
+        persist: bool = False,
+        loop_id: str = "l5_world_model",
+        limit: int = 500,
+    ) -> dict:
+        from eimemory.governance.l5_loop import build_world_model
+
+        return build_world_model(self, scope=scope, persist=persist, loop_id=loop_id, limit=limit)
+
+    def build_strategic_roadmap(
+        self,
+        *,
+        scope: dict | None = None,
+        world_model: dict | None = None,
+        horizon_days: int = 180,
+        persist: bool = False,
+        loop_id: str = "l5_roadmap",
+    ) -> dict:
+        from eimemory.governance.l5_loop import build_strategic_roadmap
+
+        return build_strategic_roadmap(
+            self,
+            scope=scope,
+            world_model=world_model,
+            horizon_days=horizon_days,
+            persist=persist,
+            loop_id=loop_id,
+        )
+
+    def run_l5_cycle(
+        self,
+        *,
+        scope: dict | None = None,
+        apply: bool = False,
+        force: bool = False,
+        max_goals: int = 5,
+        max_promotions: int = 3,
+        allow_network: bool | None = True,
+        loop_id: str = "",
+        persist: bool = True,
+    ) -> dict:
+        from eimemory.governance.l5_loop import run_l5_cycle
+
+        return run_l5_cycle(
+            self,
+            scope=scope,
+            apply=apply,
+            force=force,
+            max_goals=max_goals,
+            max_promotions=max_promotions,
+            allow_network=allow_network,
+            loop_id=loop_id,
+            persist=persist,
+        )
+
+    def assess_l5_closed_loop(
+        self,
+        *,
+        scope: dict | None = None,
+        loop_report: dict | None = None,
+        persist: bool = False,
+        loop_id: str = "l5_assess",
+    ) -> dict:
+        from eimemory.governance.l5_loop import assess_l5_closed_loop
+
+        return assess_l5_closed_loop(self, scope=scope, loop_report=loop_report, persist=persist, loop_id=loop_id)
+
     def build_capability_replay_packs(
         self,
         *,
