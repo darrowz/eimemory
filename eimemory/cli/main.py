@@ -335,6 +335,10 @@ def _build_parser() -> argparse.ArgumentParser:
     learn_l5_assess = learn_sub.add_parser("l5-assess")
     learn_l5_assess.add_argument("--persist", action="store_true")
     learn_l5_assess.add_argument("--json", action="store_true", default=True)
+    learn_l5_readiness = learn_sub.add_parser("l5-readiness")
+    learn_l5_readiness.add_argument("--persist", action="store_true")
+    learn_l5_readiness.add_argument("--limit", type=int, default=500)
+    learn_l5_readiness.add_argument("--json", action="store_true", default=True)
     learn_capability_replay = learn_sub.add_parser("capability-replay")
     learn_capability_replay.add_argument("--capability", action="append", default=[])
     learn_capability_replay.add_argument("--persist", action="store_true")
@@ -1063,6 +1067,15 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0 if report.get("ok") else 1
+        if parsed.learn_command == "l5-readiness":
+            report = runtime.build_l5_readiness_report(
+                scope=scope,
+                persist=bool(parsed.persist),
+                limit=max(1, int(parsed.limit)),
+                loop_id="cli_l5_readiness",
+            )
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0 if report.get("ok") else 1
         if parsed.learn_command == "capability-replay":
             report = runtime.build_capability_replay_packs(
                 scope=scope,
@@ -1183,7 +1196,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0 if report.get("ok") else 1
-        print(json.dumps({"usage": "eimemory learn watch|think|cycle|autonomy|loops|goals|candidates|ledger|replay-dataset|goal-graph|world-model|roadmap|l5|l5-assess|capability-replay|safety-replay|skills|skill-call|metrics|compact|report|dashboard|promote"}))
+        print(json.dumps({"usage": "eimemory learn watch|think|cycle|autonomy|loops|goals|candidates|ledger|replay-dataset|goal-graph|world-model|roadmap|l5|l5-assess|l5-readiness|capability-replay|safety-replay|skills|skill-call|metrics|compact|report|dashboard|promote"}))
         return 0
     if parsed.command == "recall":
         task_context = {"task_type": "cli.recall"}

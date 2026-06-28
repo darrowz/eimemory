@@ -654,6 +654,18 @@ class Runtime:
 
         return assess_l5_closed_loop(self, scope=scope, loop_report=loop_report, persist=persist, loop_id=loop_id)
 
+    def build_l5_readiness_report(
+        self,
+        *,
+        scope: dict | None = None,
+        persist: bool = False,
+        limit: int = 500,
+        loop_id: str = "l5_readiness",
+    ) -> dict:
+        from eimemory.governance.l5_readiness import build_l5_readiness_report
+
+        return build_l5_readiness_report(self, scope=scope, persist=persist, limit=limit, loop_id=loop_id)
+
     def build_capability_replay_packs(
         self,
         *,
