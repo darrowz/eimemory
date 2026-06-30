@@ -11,6 +11,12 @@ from eimemory.models.records import ScopeRef
 CORRECTION_TEXT = "\u4e0d\u8981\u8bf4\u505a\u4e0d\u5230\uff0c\u8981\u8865\u80fd\u529b\u89e3\u51b3"
 CORRECTION_QUERY = "\u9047\u5230\u505a\u4e0d\u5230\u7684\u80fd\u529b\u600e\u4e48\u529e\uff1f\u4e0d\u8981\u8bf4\u505a\u4e0d\u5230\uff0c\u8981\u8865\u80fd\u529b\u89e3\u51b3"
 LOOP_ID = "l5_closure_rehearsal"
+WEAK_REPLAY_CAPABILITIES = [
+    "search.discovery",
+    "research.synthesis",
+    "operations.uumit",
+    "device.control",
+]
 
 
 def run_l5_closure_rehearsal(
@@ -37,6 +43,12 @@ def run_l5_closure_rehearsal(
     )
     outcome_trace = _record_successful_task_outcome(runtime, scope=scope_ref, persist=persist)
     playbook_ids = _seed_eiskill_playbooks(runtime, scope=scope_ref, persist=persist)
+    weak_capability_replay = runtime.build_capability_replay_packs(
+        scope=asdict(scope_ref),
+        capabilities=WEAK_REPLAY_CAPABILITIES,
+        persist=persist,
+        loop_id=LOOP_ID,
+    )
     skill_promotion = runtime.promote_repeated_sops_to_skill_candidates(
         scope=asdict(scope_ref),
         min_repeats=3,
@@ -60,12 +72,19 @@ def run_l5_closure_rehearsal(
         persist=persist,
         loop_id=LOOP_ID,
     )
+    l5_readiness = runtime.build_l5_readiness_report(
+        scope=asdict(scope_ref),
+        persist=persist,
+        loop_id=LOOP_ID,
+    )
     return {
         "ok": bool(
             correction_replay.get("ok")
             and pre_answer_gate.get("matched_rule_count", 0) >= 1
+            and weak_capability_replay.get("ok")
             and skill_call.get("ok")
             and rollback.get("ok")
+            and l5_readiness.get("ok")
         ),
         "report_type": "l5_closure_rehearsal",
         "scope": asdict(scope_ref),
@@ -73,10 +92,12 @@ def run_l5_closure_rehearsal(
         "pre_answer_gate": pre_answer_gate,
         "outcome_trace": outcome_trace,
         "playbook_record_ids": playbook_ids,
+        "weak_capability_replay": weak_capability_replay,
         "skill_promotion": skill_promotion,
         "skill_call": skill_call,
         "rollback": rollback,
         "capability_dashboard": capability_dashboard,
+        "l5_readiness": l5_readiness,
     }
 
 

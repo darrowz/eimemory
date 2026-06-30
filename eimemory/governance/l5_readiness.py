@@ -120,7 +120,11 @@ def _evidence_counts(runtime: Any, *, scope: ScopeRef, limit: int) -> dict[str, 
         except Exception:
             counts[kind] = 0
     counts["promotion_applied"] = _count_status(runtime, scope=scope, kind="promotion_request", statuses={"promoted", "active", "deployed"}, limit=limit)
-    counts["rollback_or_quarantine"] = _count_status(runtime, scope=scope, kind="promotion_request", statuses={"rolled_back", "quarantined"}, limit=limit)
+    counts["rollback_or_quarantine"] = _count_status(runtime, scope=scope, kind="promotion_request", statuses={"rolled_back", "quarantined"}, limit=limit) + _policy_rollback_count(
+        runtime,
+        scope=scope,
+        limit=limit,
+    )
     return counts
 
 
@@ -130,6 +134,17 @@ def _count_status(runtime: Any, *, scope: ScopeRef, kind: str, statuses: set[str
     except Exception:
         return 0
     return sum(1 for record in records if str(record.status or "").lower() in statuses)
+
+
+def _policy_rollback_count(runtime: Any, *, scope: ScopeRef, limit: int) -> int:
+    getter = getattr(runtime, "get_policy_rollout_ledger", None)
+    if not callable(getter):
+        return 0
+    try:
+        records = getter(scope=scope, action="rollback", limit=max(0, int(limit)))
+    except Exception:
+        return 0
+    return sum(1 for record in records if str(record.get("action_type") or "").lower() in {"rollback", "quarantine", "quarantined"})
 
 
 def _capability_gaps(ledger: dict[str, Any]) -> list[dict[str, Any]]:

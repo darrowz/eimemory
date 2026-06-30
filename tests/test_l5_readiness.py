@@ -79,6 +79,35 @@ def test_l5_readiness_report_uses_existing_evidence_without_running_learning(tmp
     assert stored.meta["report_type"] == "l5_readiness_report"
 
 
+def test_l5_readiness_counts_policy_rollout_rollback_evidence(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        pattern_id = "readiness-policy-rollback"
+        runtime.upsert_intent_pattern(
+            {
+                "id": pattern_id,
+                "pattern": "readiness rollback rehearsal",
+                "default_event_type": "repair",
+                "interpreted_intent": "non-destructive readiness rollback",
+                "confidence": 0.9,
+            },
+            scope=SCOPE,
+        )
+        rollback = runtime.rollback_intent_pattern(
+            pattern_id,
+            scope=SCOPE,
+            reason="readiness should count policy rollback ledger",
+        )
+
+        report = runtime.build_l5_readiness_report(scope=SCOPE)
+    finally:
+        runtime.close()
+
+    assert rollback["ok"] is True
+    assert report["hard_metrics"]["rollback_count"] == 1
+    assert report["evidence_counts"]["rollback_or_quarantine"] == 1
+
+
 def test_cli_l5_readiness_returns_json(tmp_path, monkeypatch, capsys) -> None:
     monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path))
 
