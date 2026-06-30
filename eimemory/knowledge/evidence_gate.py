@@ -9,24 +9,8 @@ GATED_SOURCE_MARKERS = ("research", "knowledge.synthesis", "daily_brief", "news"
 
 def grade_research_evidence(record: Any) -> dict[str, Any]:
     payload = _payload(record)
-    source = _first(
-        _deep(payload, "content", "canonical_url"),
-        _deep(payload, "content", "source_url"),
-        _deep(payload, "content", "item_url"),
-        _deep(payload, "content", "url"),
-        _deep(payload, "content", "uri"),
-        _deep(payload, "meta", "source_url"),
-        _deep(payload, "meta", "item_url"),
-        _deep(payload, "meta", "url"),
-        _deep(payload, "provenance", "source_uri"),
-        _deep(payload, "provenance", "source_url"),
-    )
-    published_at = _first(
-        _deep(payload, "content", "published_at"),
-        _deep(payload, "content", "published"),
-        _deep(payload, "meta", "published_at"),
-        _deep(payload, "provenance", "published_at"),
-    )
+    source = _evidence_source(payload)
+    published_at = _evidence_date(payload)
     confidence = _float(
         _deep(payload, "content", "confidence"),
         _deep(payload, "meta", "confidence"),
@@ -109,6 +93,96 @@ def _first(*values: Any) -> str:
         if text:
             return text
     return ""
+
+
+def _first_from_list(value: Any) -> str:
+    if isinstance(value, list | tuple):
+        return _first(*value)
+    return _first(value)
+
+
+def _evidence_source(payload: dict[str, Any]) -> str:
+    source = _first(
+        _deep(payload, "content", "canonical_url"),
+        _deep(payload, "content", "source_url"),
+        _deep(payload, "content", "item_url"),
+        _deep(payload, "content", "url"),
+        _deep(payload, "content", "uri"),
+        _deep(payload, "meta", "source_url"),
+        _deep(payload, "meta", "item_url"),
+        _deep(payload, "meta", "url"),
+        _deep(payload, "meta", "source_uri"),
+        _deep(payload, "provenance", "source_uri"),
+        _deep(payload, "provenance", "source_url"),
+    )
+    if source:
+        return source
+    kind = str(payload.get("kind") or "").lower()
+    if kind == "news":
+        return ""
+    digest_items = _deep(payload, "content", "digest", "items")
+    if isinstance(digest_items, list):
+        source = _first(
+            *(
+                _first(
+                    _deep(item, "url"),
+                    _deep(item, "source_url"),
+                    _deep(item, "canonical_url"),
+                    _deep(item, "uri"),
+                )
+                for item in digest_items
+                if isinstance(item, Mapping)
+            )
+        )
+        if source:
+            return source
+    if _is_internal_research_artifact(payload):
+        return _first(
+            _deep(payload, "content", "paper_source_id"),
+            _deep(payload, "meta", "paper_source_id"),
+            _deep(payload, "provenance", "paper_source_id"),
+            _first_from_list(_deep(payload, "content", "source_ids")),
+            _first_from_list(payload.get("evidence")),
+            payload.get("record_id"),
+            payload.get("source"),
+        )
+    return ""
+
+
+def _evidence_date(payload: dict[str, Any]) -> str:
+    published_at = _first(
+        _deep(payload, "content", "published_at"),
+        _deep(payload, "content", "published"),
+        _deep(payload, "meta", "published_at"),
+        _deep(payload, "provenance", "published_at"),
+    )
+    if published_at:
+        return published_at
+    if _can_use_record_time_as_evidence_date(payload):
+        return _first(
+            _deep(payload, "time", "occurred_at"),
+            _deep(payload, "time", "created_at"),
+            _deep(payload, "time", "updated_at"),
+        )
+    return ""
+
+
+def _is_internal_research_artifact(payload: dict[str, Any]) -> bool:
+    kind = str(payload.get("kind") or "").lower()
+    if kind in {"paper_source", "paper_extract", "claim_card", "knowledge_page"}:
+        return True
+    tags = {str(item).lower() for item in (payload.get("tags") or [])}
+    source = str(payload.get("source") or "").lower()
+    return "research_digest" in tags or "research_digest" in source
+
+
+def _can_use_record_time_as_evidence_date(payload: dict[str, Any]) -> bool:
+    kind = str(payload.get("kind") or "").lower()
+    if kind in {"news", "paper_source", "knowledge_page"}:
+        return True
+    tags = {str(item).lower() for item in (payload.get("tags") or [])}
+    source = str(payload.get("source") or "").lower()
+    return "research_digest" in tags or "research_digest" in source
 
 
 def _float(*values: Any, default: float = 0.0) -> float:

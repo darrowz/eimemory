@@ -105,6 +105,13 @@ def test_l5_observation_gate_enables_autonomous_code_after_48_hours() -> None:
     assert "systemctl --user disable --now" in script_text
 
 
+def test_l5_observation_gate_requires_exact_l5_stage_before_apply() -> None:
+    script_text = Path("deploy/systemd/eimemory-l5-observation-gate.sh").read_text(encoding="utf-8")
+
+    assert 'if [ "$stage" != "L5" ]; then' in script_text
+    assert "L4|L4.5|L5" not in script_text
+
+
 def test_nightly_systemd_unit_sets_autonomous_learning_promotion_budget() -> None:
     unit_text = Path("deploy/systemd/eimemory-nightly.service").read_text(encoding="utf-8")
 

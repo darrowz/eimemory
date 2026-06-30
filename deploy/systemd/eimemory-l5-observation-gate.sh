@@ -58,13 +58,10 @@ require_file "$NIGHTLY_UNIT"
 
 readiness_json="$("$EIMEMORY_BIN" learn l5-readiness --persist --json)"
 stage="$(printf '%s' "$readiness_json" | /opt/eimemory/current/.venv/bin/python -c 'import json,sys; print(json.load(sys.stdin).get("current_stage",""))')"
-case "$stage" in
-  L4|L4.5|L5) ;;
-  *)
-    echo "blocked_stage=$stage" >&2
-    exit 3
-    ;;
-esac
+if [ "$stage" != "L5" ]; then
+  echo "blocked_stage=$stage" >&2
+  exit 3
+fi
 
 "$EIMEMORY_BIN" ops timer-monitor --stale-after-minutes 90 >/tmp/eimemory-l5-observation-gate-timer-monitor.json
 

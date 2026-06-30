@@ -666,11 +666,13 @@ module.exports.default = {
           return bridgeContext ? { prependContext: bridgeContext } : {};
         }
         const bundle = payload.memory_bundle || {};
+        const personaContext = buildPersonaGuidanceContext(payload.persona_guidance || bundle?.explanation?.persona_guidance);
         const memoryContext = buildMemoryPrependContext(bundle, payload.injection_plan);
-        if (!memoryContext) {
-          return bridgeContext ? { prependContext: bridgeContext } : {};
+        const prependContext = [bridgeContext, personaContext, memoryContext].filter(Boolean).join('\n\n');
+        if (!prependContext) {
+          return {};
         }
-        return { prependContext: [bridgeContext, memoryContext].filter(Boolean).join('\n\n') };
+        return { prependContext };
       });
     } else {
       api?.logger?.info?.('eimemory-bridge: before_prompt_build disabled; set EIMEMORY_ENABLE_PROMPT_INJECTION=true and allowPromptInjection=true to enable recall injection');
@@ -686,6 +688,14 @@ function buildBridgePrependContext(payload) {
   }
   const context = cleanInjectedMemoryText(payload.prepend_context || payload.reply || '');
   return context ? `Live eibrain context:\n${context}` : '';
+}
+
+function buildPersonaGuidanceContext(guidance) {
+  if (!guidance || guidance.enabled === false) {
+    return '';
+  }
+  const text = cleanInjectedMemoryText(guidance.text || '');
+  return text ? text : '';
 }
 
 function buildMemoryPrependContext(bundleOrItems, injectionPlan) {

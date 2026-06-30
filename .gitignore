@@ -6,6 +6,7 @@ pytest_*_tmp*/
 py_manual_tmp/
 tmp_pytest/
 tmp*/
+.tmp/
 *.tar.gz
 memory/
 

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from eimemory.knowledge.daily_brief import build_daily_brief
-from eimemory.knowledge.evidence_gate import filter_answer_evidence
+from eimemory.knowledge.evidence_gate import filter_answer_evidence, grade_research_evidence
 from eimemory.knowledge.synthesis import build_research_digest
-from eimemory.models.records import RecordEnvelope, ScopeRef
+from eimemory.models.records import RecordEnvelope, ScopeRef, TimeRef
 
 
 SCOPE = ScopeRef(agent_id="research", workspace_id="evidence-gate")
@@ -80,3 +80,42 @@ def test_final_answer_context_filters_research_and_news_without_evidence_gate() 
     assert report["evidence_gate"]["excluded"][0]["record_id"] == bad_news.record_id
     assert report["evidence_gate"]["excluded"][0]["reason"] == "missing_source"
     assert report["evidence_gate"]["kept_count"] == 2
+
+
+def test_news_evidence_gate_uses_record_time_but_still_requires_url() -> None:
+    good_news = _record("news", "Timed news", source_url="https://example.com/news")
+    good_news.time = TimeRef(
+        created_at="2026-06-30T08:00:00+08:00",
+        updated_at="2026-06-30T08:00:00+08:00",
+        occurred_at="2026-06-30T08:00:00+08:00",
+    )
+    no_url = _record("news", "Untethered news", source_url="")
+    no_url.time = good_news.time
+
+    assert grade_research_evidence(good_news)["ok"] is True
+    assert grade_research_evidence(good_news)["published_at"] == "2026-06-30"
+    assert grade_research_evidence(no_url)["reason"] == "missing_source"
+
+
+def test_claim_evidence_gate_accepts_internal_paper_source_attribution() -> None:
+    claim = RecordEnvelope.create(
+        kind="claim_card",
+        title="Memory retrieval improves long horizon agent performance.",
+        summary="Memory retrieval improves long horizon agent performance.",
+        scope=SCOPE,
+        source="eimemory.knowledge.claims",
+        content={
+            "paper_source_id": "paper_123",
+            "claim_text": "Memory retrieval improves long horizon agent performance.",
+            "confidence": 0.72,
+        },
+        evidence=["paper_123"],
+        provenance={"published_at": "2026-04-20", "paper_source_id": "paper_123"},
+        meta={"paper_source_id": "paper_123", "confidence": 0.72},
+    )
+
+    gate = grade_research_evidence(claim)
+
+    assert gate["ok"] is True
+    assert gate["source"] == "paper_123"
+    assert gate["published_at"] == "2026-04-20"

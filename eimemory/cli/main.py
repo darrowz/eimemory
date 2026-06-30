@@ -28,6 +28,7 @@ from eimemory.knowledge.compiler import compile_paper_knowledge
 from eimemory.governance.console import write_evolution_console
 from eimemory.governance.snapshot import build_governance_snapshot
 from eimemory.ei_bridge.openclaw_runtime import handle_openclaw_feishu_event
+from eimemory.persona.cli import add_persona_parser, handle_persona_command
 from eimemory.scheduler.jobs import run_nightly_jobs
 
 
@@ -416,6 +417,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "hook",
         choices=["message_received", "before_prompt_build", "agent_end", "task_end", "session_end"],
     )
+
+    add_persona_parser(sub)
 
     ei_bridge = sub.add_parser("ei-bridge")
     ei_bridge_sub = ei_bridge.add_subparsers(dest="ei_bridge_command")
@@ -870,7 +873,7 @@ def main(argv: list[str] | None = None) -> int:
         print(
             json.dumps(
                 {
-                    "usage": "eimemory init|emergency-stop|ingest|recall|paper|source|intake|export|import|backup|rebuild-sqlite|migrate|brief|nightly|quality|identity|living|reflect|experience|learn|governance|evolve|eval|patch|ops|serve-eibrain-rpc",
+                    "usage": "eimemory init|emergency-stop|ingest|recall|paper|source|intake|export|import|backup|rebuild-sqlite|migrate|brief|nightly|quality|identity|living|reflect|experience|learn|governance|evolve|eval|patch|ops|persona|serve-eibrain-rpc",
                 }
             )
         )
@@ -1633,6 +1636,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if report.get("ok") else 2
         print(json.dumps({"usage": "eimemory living enrich|timeline|posture"}))
         return 0
+    if parsed.command == "persona":
+        return handle_persona_command(parsed, runtime, scope)
     if parsed.command == "openclaw-hook":
         try:
             event = json.loads(sys.stdin.read() or "{}")

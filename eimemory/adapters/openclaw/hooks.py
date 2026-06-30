@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from time import perf_counter
 from typing import Any
@@ -9,12 +10,22 @@ from eimemory.api.runtime import Runtime
 from eimemory.identity import hongtu_identity_meta, hongtu_scope
 from eimemory.metadata import business_metadata
 from eimemory.models.records import RecallBundle, RecordEnvelope, ScopeRef
+from eimemory.persona.prompt import build_persona_guidance, disabled_persona_guidance, persona_enabled
+from eimemory.persona.store import PersonaStore
 
 
 DEFAULT_RECALL_MODE = "fast"
 DEFAULT_RECALL_BUDGET_MS = 800
 DEFAULT_FAST_CANDIDATE_LIMIT = 24
 DEFAULT_INJECTION_TOKEN_BUDGET = 1800
+
+
+def _int_env(name: str, default: int) -> int:
+    try:
+        value = int(str(os.environ.get(name, "") or "").strip())
+    except ValueError:
+        return default
+    return value if value > 0 else default
 
 
 class OpenClawMemoryHooks:
@@ -49,6 +60,9 @@ class OpenClawMemoryHooks:
         recall_context["trace_context"] = trace_context
         event = dict(event)
         event["task_context"] = recall_context
+        persona_guidance = self._build_persona_guidance_safely(event=event, query=query, task_context=recall_context)
+        if persona_guidance.get("enabled"):
+            recall_context["persona_guidance"] = persona_guidance
         if not query:
             recall_context["policy_suggestion_ids"] = []
             recall_context["policy_sources"] = []
@@ -60,6 +74,7 @@ class OpenClawMemoryHooks:
             injection_plan = self._build_injection_plan(bundle=bundle, task_context=recall_context)
             recall_context["injection_plan"] = injection_plan
             bundle.explanation["injection_plan"] = injection_plan
+            bundle.explanation["persona_guidance"] = persona_guidance
             latency_ms = round((perf_counter() - start) * 1000.0, 3)
             recall_context["latency_ms"] = latency_ms
             bundle.explanation["latency_ms"] = latency_ms
@@ -71,6 +86,7 @@ class OpenClawMemoryHooks:
                 "trace_context": trace_context,
                 "task_context": recall_context,
                 "policy_attribution": policy_attribution,
+                "persona_guidance": persona_guidance,
             }
         scope = self._scope_from_event(event)
         policy_search = self._run_policy_search_safely(
@@ -98,6 +114,7 @@ class OpenClawMemoryHooks:
         injection_plan = self._build_injection_plan(bundle=bundle, task_context=recall_context)
         recall_context["injection_plan"] = injection_plan
         bundle.explanation["injection_plan"] = injection_plan
+        bundle.explanation["persona_guidance"] = persona_guidance
         latency_ms = round((perf_counter() - start) * 1000.0, 3)
         recall_context["latency_ms"] = latency_ms
         bundle.explanation["latency_ms"] = latency_ms
@@ -109,6 +126,7 @@ class OpenClawMemoryHooks:
             "trace_context": trace_context,
             "task_context": recall_context,
             "policy_attribution": policy_attribution,
+            "persona_guidance": persona_guidance,
         }
 
     def on_agent_end(self, event: dict) -> dict:
@@ -425,6 +443,30 @@ class OpenClawMemoryHooks:
             return {"ok": False, "policy_suggestions": [], "matched_event_type": ""}
         return result if isinstance(result, dict) else {"ok": False, "policy_suggestions": [], "matched_event_type": ""}
 
+    def _build_persona_guidance_safely(self, *, event: dict, query: str, task_context: dict) -> dict:
+        if not persona_enabled():
+            return disabled_persona_guidance()
+        try:
+            store = PersonaStore(self.runtime.store)
+            state = store.load_state()
+            message = event.get("message") if isinstance(event.get("message"), dict) else {}
+            source_text = self._first_text(
+                query,
+                event.get("raw_query"),
+                event.get("rawQuery"),
+                event.get("prompt"),
+                message.get("content"),
+            )
+            guidance = build_persona_guidance(
+                text=source_text,
+                state=state,
+                recent_context=task_context,
+                max_chars=_int_env("EIMEMORY_PERSONA_MAX_CHARS", 800),
+            )
+            return guidance.to_dict()
+        except Exception as exc:
+            return {"enabled": False, "text": "", "scene": "", "risk_level": "", "tone": "", "error": str(exc)}
+
     def _merge_policy_search(self, *, bundle: RecallBundle, policy_search: dict) -> None:
         suggestions = policy_search.get("policy_suggestions") if isinstance(policy_search, dict) else []
         if isinstance(suggestions, list) and suggestions:
@@ -521,6 +563,7 @@ class OpenClawMemoryHooks:
             "selected_records": selected_records,
             "source_composition": dict(bundle.explanation.get("source_composition") or {}),
             "injection_plan": injection_plan,
+            "persona_guidance": bundle.explanation.get("persona_guidance") or {},
             "injection_token_estimate": injection_plan["token_estimate"],
             "injection_lane_composition": dict(injection_plan["lane_composition"]),
             "injection_withheld_reasons": dict(injection_plan["withheld_reasons"]),
@@ -542,6 +585,7 @@ class OpenClawMemoryHooks:
             "injection_lane_composition": dict(injection_plan["lane_composition"]),
             "injection_withheld_reasons": dict(injection_plan["withheld_reasons"]),
             "latency_ms": latency_ms,
+            "persona_scene": str((bundle.explanation.get("persona_guidance") or {}).get("scene") or ""),
         }
         record = RecordEnvelope.create(
             kind="recall_view",
