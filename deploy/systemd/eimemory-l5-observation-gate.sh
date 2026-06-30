@@ -3,6 +3,10 @@ set -euo pipefail
 
 EIMEMORY_BIN="${EIMEMORY_BIN:-/opt/eimemory/current/.venv/bin/eimemory}"
 NIGHTLY_UNIT="${EIMEMORY_NIGHTLY_UNIT_PATH:-$HOME/.config/systemd/user/eimemory-nightly.service}"
+OPENCLAW_CONFIG="${OPENCLAW_CONFIG_PATH:-$HOME/.openclaw/openclaw.json}"
+OPENCLAW_GATEWAY_DROPIN_DIR="${OPENCLAW_GATEWAY_DROPIN_DIR:-$HOME/.config/systemd/user/openclaw-gateway.service.d}"
+OPENCLAW_GATEWAY_DROPIN="${OPENCLAW_GATEWAY_DROPIN:-$OPENCLAW_GATEWAY_DROPIN_DIR/eimemory-prompt-injection.conf}"
+OPENCLAW_GATEWAY_UNIT="${OPENCLAW_GATEWAY_UNIT:-openclaw-gateway.service}"
 GATE_TIMER="${EIMEMORY_L5_GATE_TIMER:-eimemory-l5-observation-gate.timer}"
 
 require_file() {
@@ -21,6 +25,32 @@ ensure_env() {
   else
     printf '%s\n' "$line" >> "$NIGHTLY_UNIT"
   fi
+}
+
+enable_openclaw_memory_behavior() {
+  require_file "$OPENCLAW_CONFIG"
+  /opt/eimemory/current/.venv/bin/python - "$OPENCLAW_CONFIG" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+config = json.loads(path.read_text(encoding="utf-8"))
+plugins = config.setdefault("plugins", {})
+entries = plugins.setdefault("entries", {})
+bridge = entries.setdefault("eimemory-bridge", {})
+hooks = bridge.setdefault("hooks", {})
+hooks["allowPromptInjection"] = True
+path.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+PY
+  mkdir -p "$OPENCLAW_GATEWAY_DROPIN_DIR"
+  cat >"$OPENCLAW_GATEWAY_DROPIN" <<'EOF'
+[Service]
+Environment=EIMEMORY_ENABLE_PROMPT_INJECTION=true
+EOF
+  systemctl --user daemon-reload
+  systemctl --user restart "$OPENCLAW_GATEWAY_UNIT"
+  curl -fsS http://127.0.0.1:18789/readyz >/dev/null
 }
 
 require_file "$EIMEMORY_BIN"
@@ -50,6 +80,7 @@ ensure_env "EIMEMORY_AUTONOMOUS_CODE_DEPLOY" "Environment=EIMEMORY_AUTONOMOUS_CO
 ensure_env "EIMEMORY_AUTONOMOUS_CODE_VERIFY_COMMAND" "Environment=\"EIMEMORY_AUTONOMOUS_CODE_VERIFY_COMMAND=/opt/eimemory/current/.venv/bin/python -m compileall -q eimemory\""
 ensure_env "EIMEMORY_AUTONOMOUS_CODE_DEPLOY_COMMAND" "Environment=\"EIMEMORY_AUTONOMOUS_CODE_DEPLOY_COMMAND=COMMIT=\\\"\\$(git rev-parse HEAD)\\\" && bash ./deploy/install_immutable_release.sh \\\"\\$COMMIT\\\" && systemctl --user restart eimemory-rpc.service\""
 ensure_env "EIMEMORY_AUTONOMOUS_CODE_HEALTH_COMMAND" "Environment=\"EIMEMORY_AUTONOMOUS_CODE_HEALTH_COMMAND=curl -fsS http://127.0.0.1:8091/health\""
+enable_openclaw_memory_behavior
 
 systemctl --user daemon-reload
 systemctl --user disable --now "$GATE_TIMER" >/dev/null 2>&1 || true
@@ -59,3 +90,4 @@ echo "stage=$stage"
 echo "autonomous_learning_apply=1"
 echo "autonomous_code_commit=1"
 echo "autonomous_code_deploy=1"
+echo "openclaw_memory_behavior=enabled"
