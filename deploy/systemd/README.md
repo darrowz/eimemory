@@ -76,7 +76,7 @@ timers unless a deployment document explicitly says otherwise:
 | `eimemory-learn-watch.timer` | Lightweight signal capture every 15 minutes. |
 | `eimemory-learn-think.timer` | Hourly proactive thinking over local evidence. |
 | `eimemory-learn-dashboard.timer` | Daily operator dashboard after the nightly run. |
-| `eimemory-l5-observation-gate.timer` | One-shot 48-hour observation gate; if healthy, enables autonomous code commits without production deploy. |
+| `eimemory-l5-observation-gate.timer` | One-shot 48-hour observation gate; if healthy, enables autonomous code commit and guarded deploy. |
 | `eimemory-timer-monitor.timer` | User-systemd health monitor for masked, stale, inactive, or failed eimemory timers; sends Feishu/webhook alerts when configured. |
 
 Do not install a standalone Karpathy-loop timer in production. The reusable
@@ -114,7 +114,7 @@ The 1.0.0 proactive learning layer runs three additional timers:
 - `eimemory-learn-watch.timer`: every 15 minutes, capture lightweight local/outcome/world signals.
 - `eimemory-learn-think.timer`: hourly, turn signals and long-term goals into persisted thoughts.
 - `eimemory-learn-dashboard.timer`: daily at 03:45 local time, summarize learned/applied/blocked/next items.
-- `eimemory-l5-observation-gate.timer`: once after 48 hours of observation, persist L5 readiness and enable autonomous code commits if health checks pass.
+- `eimemory-l5-observation-gate.timer`: once after 48 hours of observation, persist L5 readiness and enable autonomous code commits plus guarded deploy if health checks pass.
 - `eimemory-timer-monitor.timer`: every 5 minutes, alert when watch/think/nightly timers are masked, stale, inactive, or failed.
 
 Install as user services:

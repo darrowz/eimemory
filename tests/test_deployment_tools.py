@@ -93,7 +93,11 @@ def test_l5_observation_gate_enables_autonomous_code_after_48_hours() -> None:
     assert "Persistent=true" in timer_text
     assert "EIMEMORY_AUTONOMOUS_LEARNING_APPLY=1" in script_text
     assert "EIMEMORY_AUTONOMOUS_CODE_COMMIT=1" in script_text
-    assert "EIMEMORY_AUTONOMOUS_CODE_DEPLOY=0" in script_text
+    assert "EIMEMORY_AUTONOMOUS_CODE_DEPLOY=1" in script_text
+    assert "EIMEMORY_AUTONOMOUS_CODE_DEPLOY_COMMAND" in script_text
+    assert "install_immutable_release.sh" in script_text
+    assert "systemctl --user restart eimemory-rpc.service" in script_text
+    assert "EIMEMORY_AUTONOMOUS_CODE_HEALTH_COMMAND" in script_text
     assert "systemctl --user disable --now" in script_text
 
 

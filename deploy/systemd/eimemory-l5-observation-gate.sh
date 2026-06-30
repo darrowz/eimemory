@@ -46,8 +46,10 @@ fi
 ensure_env "EIMEMORY_AUTONOMOUS_LEARNING_APPLY" "Environment=EIMEMORY_AUTONOMOUS_LEARNING_APPLY=1"
 ensure_env "EIMEMORY_AUTONOMOUS_CODE_REPO" "Environment=EIMEMORY_AUTONOMOUS_CODE_REPO=/dev-project/eimemory"
 ensure_env "EIMEMORY_AUTONOMOUS_CODE_COMMIT" "Environment=EIMEMORY_AUTONOMOUS_CODE_COMMIT=1"
-ensure_env "EIMEMORY_AUTONOMOUS_CODE_DEPLOY" "Environment=EIMEMORY_AUTONOMOUS_CODE_DEPLOY=0"
+ensure_env "EIMEMORY_AUTONOMOUS_CODE_DEPLOY" "Environment=EIMEMORY_AUTONOMOUS_CODE_DEPLOY=1"
 ensure_env "EIMEMORY_AUTONOMOUS_CODE_VERIFY_COMMAND" "Environment=\"EIMEMORY_AUTONOMOUS_CODE_VERIFY_COMMAND=/opt/eimemory/current/.venv/bin/python -m compileall -q eimemory\""
+ensure_env "EIMEMORY_AUTONOMOUS_CODE_DEPLOY_COMMAND" "Environment=\"EIMEMORY_AUTONOMOUS_CODE_DEPLOY_COMMAND=COMMIT=\\\"\\$(git rev-parse HEAD)\\\" && bash ./deploy/install_immutable_release.sh \\\"\\$COMMIT\\\" && systemctl --user restart eimemory-rpc.service\""
+ensure_env "EIMEMORY_AUTONOMOUS_CODE_HEALTH_COMMAND" "Environment=\"EIMEMORY_AUTONOMOUS_CODE_HEALTH_COMMAND=curl -fsS http://127.0.0.1:8091/health\""
 
 systemctl --user daemon-reload
 systemctl --user disable --now "$GATE_TIMER" >/dev/null 2>&1 || true
@@ -56,4 +58,4 @@ echo "ok=l5_observation_gate"
 echo "stage=$stage"
 echo "autonomous_learning_apply=1"
 echo "autonomous_code_commit=1"
-echo "autonomous_code_deploy=0"
+echo "autonomous_code_deploy=1"
