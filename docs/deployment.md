@@ -131,6 +131,7 @@ rollback evidence. The companion timers are lightweight helpers:
 | `eimemory-learn-watch.timer` | Capture local/outcome/world signals every 15 minutes. |
 | `eimemory-learn-think.timer` | Turn signals, corrections, and stale goals into persisted thoughts hourly. |
 | `eimemory-learn-dashboard.timer` | Write the operator dashboard after nightly at 03:45. |
+| `eimemory-timer-monitor.timer` | Check user timers for masked, stale, inactive, or failed states and alert through Feishu/webhook when configured. |
 
 Install them only when the host should run proactive learning:
 
@@ -138,8 +139,10 @@ Install them only when the host should run proactive learning:
 mkdir -p ~/.config/systemd/user
 cp /dev-project/eimemory/deploy/systemd/eimemory-learn-*.service ~/.config/systemd/user/
 cp /dev-project/eimemory/deploy/systemd/eimemory-learn-*.timer ~/.config/systemd/user/
+cp /dev-project/eimemory/deploy/systemd/eimemory-timer-monitor.service ~/.config/systemd/user/
+cp /dev-project/eimemory/deploy/systemd/eimemory-timer-monitor.timer ~/.config/systemd/user/
 systemctl --user daemon-reload
-systemctl --user enable --now eimemory-learn-watch.timer eimemory-learn-think.timer eimemory-learn-dashboard.timer
+systemctl --user enable --now eimemory-learn-watch.timer eimemory-learn-think.timer eimemory-learn-dashboard.timer eimemory-timer-monitor.timer
 ```
 
 Do not install a separate Karpathy-loop timer in production. Experimental

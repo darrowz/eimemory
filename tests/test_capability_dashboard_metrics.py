@@ -29,6 +29,10 @@ def test_capability_dashboard_metrics_report_hard_numbers(tmp_path) -> None:
         assert metrics["metrics"]["auto_patch_success_rate"] == 0.5
         assert metrics["metrics"]["rollback_count"] == 1
         assert metrics["metrics"]["skill_reuse_count"] == 1
+        assert metrics["metric_quality"]["task_success_rate"]["sample_count"] == 2
+        assert metrics["metric_quality"]["task_success_rate"]["sufficient"] is False
+        assert metrics["metric_quality"]["auto_patch_success_rate"]["sample_count"] == 2
+        assert metrics["metric_quality"]["auto_patch_success_rate"]["sufficient"] is False
         assert metrics["persisted_record_id"]
     finally:
         runtime.close()

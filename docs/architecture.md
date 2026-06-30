@@ -65,6 +65,12 @@ into that loop, but they do not run their own production scheduler.
      `RAN_COMMAND`, `FAILED_WITH`, `DECIDED_BECAUSE`, `PRODUCED_OUTCOME`,
      `VERIFIED_BY`, and `PREVENTED_BY_REPLAY` so coding memory can be queried
      as evidence paths rather than loose text snippets.
+   - `eimemory.governance.correction_replay` turns operator corrections into a
+     closed loop: lesson, replay case, replay result, graph edges, and a T0
+     ground-truth behavior rule. Ground-truth rules are not ordinary recall
+     memories; they carry `priority=T0` and `must_use=True` so future behavior
+     can treat them as higher-priority operating constraints. Trivial messages
+     such as acknowledgements are skipped to avoid replay and memory pollution.
    - `eimemory.governance.capability_replay_packs` gives non-code capabilities
      real replay evidence. The required active set is `memory.recall`,
      `tool.routing`, `knowledge.intake`, `proactive.judgment`, and
@@ -76,10 +82,13 @@ into that loop, but they do not run their own production scheduler.
      gate.
    - `eimemory.governance.skill_sedimentation` converts repeated SOP/playbook
      evidence into queryable and callable `eiskill` registry entries after
-     repeat and replay checks.
+     repeat and replay checks. Executable eiskills carry trigger conditions,
+     action, verification, and rollback metadata.
    - `eimemory.governance.capability_dashboard` reports hard improvement
      metrics: recall hit rate, user correction rate, task success rate,
-     automatic patch success rate, rollback count, and skill reuse count.
+     automatic patch success rate, rollback count, and skill reuse count. Sparse
+     metrics include sample sufficiency flags so weak evidence is not mistaken
+     for stable capability.
    - `eimemory.governance.closed_loop.post_experience_hook` is the immediate
      Memory 3.0 feedback path: an outcome is evaluated, written back as
      feedback memory, projected into SAG-style event memory, converted into
@@ -95,7 +104,12 @@ into that loop, but they do not run their own production scheduler.
      proactive judgment, knowledge intake, and code implementation goals can
      each produce concrete candidates in the same pass. Empty code-patch
      outputs are converted to SOP/eval candidates rather than promoted as
-     patches.
+     patches. Candidate promotion artifacts must include trigger condition,
+     action, verification, rollback, and replay references before they are
+     treated as promotion-ready.
+   - Research and news synthesis uses an evidence gate: source, publication
+     date, evidence tier, and conflict status are required before an item can
+     enter research digests or daily briefs.
    - `eimemory.governance.autonomous_evolution` mines bad outcomes and replay
      evidence into concrete improvement opportunities.
    - `eimemory.governance.promotion_manager` owns promotion gates, file-update
@@ -141,6 +155,7 @@ signals/outcomes/replay/web evidence
   -> closed_loop event projection
   -> SAG-style event_trace memory + memory_edges
   -> Graph-first Coding Memory Contract observation/query/replay
+  -> correction_replay T0 ground-truth behavior rules
   -> governance.autonomous_learning
   -> goal_graph task episodes + capability replay packs + safety replay
   -> governance.autonomous_evolution
@@ -176,6 +191,13 @@ memory.observe
 Observation alone is not treated as capability improvement. A coding-memory
 change is considered useful only when replay can prove that the graph preserves
 the relations needed by future coding behavior.
+
+Ground-truth behavior rules sit above normal memory recall. They are produced
+from explicit operator corrections, must include replay evidence, and should be
+injected or checked before softer semantic memories when they apply to the
+current task. Each rule carries a pre-action protocol: inventory ground-truth
+rules, match the current task, apply a matching rule or record the gap, then
+verify behavior with a replay gate.
 
 ## Quality Layer
 

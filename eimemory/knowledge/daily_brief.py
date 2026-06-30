@@ -11,6 +11,7 @@ import re
 from typing import Any, Iterable, Mapping
 
 from eimemory.core.clock import now_iso
+from eimemory.knowledge.evidence_gate import grade_research_evidence
 from eimemory.models.records import RecordEnvelope
 
 DAILY_BRIEF_SCHEMA_VERSION = 1
@@ -41,6 +42,7 @@ def build_daily_brief(
         if _is_research_digest_record(record)
         and _is_within_research_window(record, day, research_lookback_days)
     ]
+    digest_records, research_excluded = _apply_evidence_gate(digest_records)
     digest_records.sort(key=_record_sort_key)
     news_records = [
         record
@@ -48,6 +50,7 @@ def build_daily_brief(
         if _is_news_digest_record(record)
         and _is_news_within_window(record, day, research_lookback_days)
     ]
+    news_records, news_excluded = _apply_evidence_gate(news_records)
     news_records.sort(key=_record_sort_key)
     news_records = _dedupe_records_by_url(news_records)
 
@@ -77,7 +80,7 @@ def build_daily_brief(
             "items": [_news_item(record) for record in news_records],
         },
         "followups": followups,
-        "source_health": _source_health(day_records),
+        "source_health": _source_health(day_records, evidence_excluded=[*research_excluded, *news_excluded]),
     }
 
 
@@ -229,6 +232,7 @@ def _brief_record(record: Mapping[str, Any]) -> dict[str, Any]:
 def _research_item(record: Mapping[str, Any]) -> dict[str, Any]:
     content = record.get("content") if isinstance(record.get("content"), dict) else {}
     meta = record.get("meta") if isinstance(record.get("meta"), dict) else {}
+    gate = grade_research_evidence(record)
     return {
         "record_id": str(record.get("record_id") or ""),
         "kind": str(record.get("kind") or ""),
@@ -237,11 +241,15 @@ def _research_item(record: Mapping[str, Any]) -> dict[str, Any]:
         "source": str(record.get("source") or ""),
         "url": str(
             content.get("canonical_url")
+            or content.get("source_url")
             or content.get("url")
             or content.get("uri")
             or meta.get("source_uri")
+            or meta.get("source_url")
             or ""
         ),
+        "published_at": gate["published_at"],
+        "evidence_gate": gate,
     }
 
 
@@ -253,14 +261,16 @@ def _news_item(record: Mapping[str, Any]) -> dict[str, Any]:
     summary = _clean_digest_text(raw_summary)
     if _looks_like_broken_html(summary) or ("<" in raw_summary and not summary):
         summary = _clean_digest_text(str(content.get("title") or title))
+    gate = grade_research_evidence(record)
     return {
         "record_id": str(record.get("record_id") or ""),
         "kind": str(record.get("kind") or ""),
         "title": title,
         "summary": summary,
         "source": str(record.get("source") or ""),
-        "url": str(content.get("item_url") or content.get("url") or meta.get("item_url") or ""),
+        "url": str(content.get("item_url") or content.get("source_url") or content.get("url") or meta.get("item_url") or meta.get("source_url") or ""),
         "published_at": str(content.get("published_at") or ""),
+        "evidence_gate": gate,
     }
 
 
@@ -294,7 +304,19 @@ def _looks_like_broken_html(value: str) -> bool:
     return "<" in value or ">" in value or value.lower().startswith(("http://", "https://"))
 
 
-def _source_health(records: list[Mapping[str, Any]]) -> dict[str, Any]:
+def _apply_evidence_gate(records: list[Mapping[str, Any]]) -> tuple[list[Mapping[str, Any]], list[dict[str, Any]]]:
+    accepted: list[Mapping[str, Any]] = []
+    excluded: list[dict[str, Any]] = []
+    for record in records:
+        gate = grade_research_evidence(record)
+        if gate["ok"]:
+            accepted.append(record)
+        else:
+            excluded.append({"record_id": str(record.get("record_id") or ""), "title": str(record.get("title") or ""), "reason": gate["reason"], "reasons": gate["reasons"]})
+    return accepted, excluded
+
+
+def _source_health(records: list[Mapping[str, Any]], *, evidence_excluded: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     by_kind: dict[str, int] = {}
     by_source: dict[str, int] = {}
     by_status: dict[str, int] = {}
@@ -310,6 +332,10 @@ def _source_health(records: list[Mapping[str, Any]]) -> dict[str, Any]:
         "by_kind": dict(sorted(by_kind.items())),
         "by_source": dict(sorted(by_source.items())),
         "by_status": dict(sorted(by_status.items())),
+        "evidence_gate": {
+            "excluded_count": len(evidence_excluded or []),
+            "excluded": list(evidence_excluded or []),
+        },
     }
 
 

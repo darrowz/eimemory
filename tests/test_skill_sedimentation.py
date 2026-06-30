@@ -54,3 +54,49 @@ def test_repeated_sops_become_queryable_callable_eiskill_candidates(tmp_path) ->
         assert invoked["record_id"]
     finally:
         runtime.close()
+
+
+def test_wechat_and_douyin_playbooks_sediment_into_executable_skills(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        scope_ref = ScopeRef.from_dict(SCOPE)
+        for index, channel in enumerate(["wechat", "wechat", "douyin"]):
+            runtime.store.append(
+                RecordEnvelope.create(
+                    kind="learning_playbook",
+                    title="Publish social content through standard toolchain",
+                    summary=f"{channel} standard publishing workflow.",
+                    detail="Trigger: user asks to publish. Action: use standard connector. Verification: check platform draft/post id. Rollback: keep draft inactive or delete failed draft.",
+                    scope=scope_ref,
+                    source="test.skill_sedimentation",
+                    status="active",
+                    content={
+                        "sop_key": "social-publish-standard-toolchain",
+                        "target_capability": "operations.social_publish",
+                        "steps": ["open standard connector", "prepare payload", "publish or draft", "verify platform id"],
+                        "trigger_conditions": ["wechat publish request", "douyin publish request"],
+                        "action": "use standard connector toolchain",
+                        "verification": "platform draft/post id exists",
+                        "rollback": "keep draft inactive or delete failed draft",
+                        "replay_passed": True,
+                        "source_repeat": index + 1,
+                    },
+                    meta={
+                        "sop_key": "social-publish-standard-toolchain",
+                        "target_capability": "operations.social_publish",
+                        "replay_passed": True,
+                    },
+                )
+            )
+
+        report = runtime.promote_repeated_sops_to_skill_candidates(scope=SCOPE, min_repeats=3, persist=True)
+
+        skill = report["skills"][0]
+        assert skill["trigger_conditions"] == ["wechat publish request", "douyin publish request"]
+        assert skill["action"] == "use standard connector toolchain"
+        assert skill["verification"] == "platform draft/post id exists"
+        assert skill["rollback"] == "keep draft inactive or delete failed draft"
+        registry = runtime.list_eiskills(scope=SCOPE)
+        assert registry["skills"][0]["verification"] == "platform draft/post id exists"
+    finally:
+        runtime.close()

@@ -1112,6 +1112,7 @@ def _candidate_patch(
     target_capability = str(goal.get("target_capability") or "proactive.judgment")
     summary = str(goal.get("success_criteria") or goal.get("question") or "")
     kind = str(candidate_kind or _candidate_kind_for_goal(goal))
+    replay_case_ids = [str(case.get("case_id") or "") for case in (replay_dataset or {}).get("cases", [])[:10] if case.get("case_id")]
     base = {
         "summary": summary,
         "target_capability": target_capability,
@@ -1121,8 +1122,9 @@ def _candidate_patch(
         "execution_policy": [summary or str(goal.get("question") or goal.get("title") or "Apply learned operating policy.")],
         "success_criteria": summary,
         "evidence_refs": [str(item.get("ref") or "") for item in evidence[:10] if item.get("ref")],
-        "replay_case_ids": [str(case.get("case_id") or "") for case in (replay_dataset or {}).get("cases", [])[:10] if case.get("case_id")],
+        "replay_case_ids": replay_case_ids,
     }
+    base.update(_candidate_contract_fields(goal, kind=kind, summary=summary, replay_case_ids=replay_case_ids))
     if kind == "eval_case":
         cases = list((replay_dataset or {}).get("cases") or [])
         first = cases[0] if cases else {}
@@ -1214,6 +1216,32 @@ def _candidate_summary(goal: dict[str, Any], *, candidate_kind: str, patch: dict
     if criteria and criteria != title:
         return _short_text(f"{capability} {artifact}: {title}. Success: {criteria}", 280)
     return _short_text(f"{capability} {artifact}: {title or criteria or 'Create a reusable learning asset.'}", 280)
+
+
+def _candidate_contract_fields(goal: dict[str, Any], *, kind: str, summary: str, replay_case_ids: list[str]) -> dict[str, Any]:
+    trigger = _first_text(goal.get("trigger_condition"), goal.get("title"), goal.get("question"), goal.get("target_capability"))
+    action = _first_text(goal.get("action"), summary, goal.get("success_criteria"), f"Produce {kind} candidate for {goal.get('target_capability') or 'capability'}")
+    verification = _first_text(goal.get("verification"), goal.get("success_criteria"), "Run replay/eval gate and inspect persisted evidence.")
+    rollback = _first_text(goal.get("rollback"), "Disable candidate, keep it in candidate status, or restore previous policy/artifact.")
+    blocked_reasons: list[str] = []
+    if not trigger:
+        blocked_reasons.append("missing_trigger_condition")
+    if not action:
+        blocked_reasons.append("missing_action")
+    if not verification:
+        blocked_reasons.append("missing_verification")
+    if not rollback:
+        blocked_reasons.append("missing_rollback")
+    if kind != "eval_case" and not replay_case_ids:
+        blocked_reasons.append("missing_replay_case_ids")
+    return {
+        "trigger_condition": trigger,
+        "action": action,
+        "verification": verification,
+        "rollback": rollback,
+        "promotion_ready": not blocked_reasons,
+        "blocked_reasons": blocked_reasons,
+    }
 
 
 def _candidate_artifact_label(candidate_kind: str) -> str:

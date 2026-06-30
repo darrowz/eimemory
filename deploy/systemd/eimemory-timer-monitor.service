@@ -1,0 +1,8 @@
+[Unit]
+Description=eimemory user timer monitor
+
+[Service]
+Type=oneshot
+Environment=EIMEMORY_ROOT=/var/lib/eimemory
+Environment=EIMEMORY_CONFIG_DIR=/etc/eimemory
+ExecStart=/opt/eimemory/current/.venv/bin/eimemory ops timer-monitor --stale-after-minutes 90

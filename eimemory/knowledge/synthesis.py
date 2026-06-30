@@ -4,6 +4,7 @@ from collections import Counter
 from typing import Iterable
 
 from eimemory.core.clock import now_iso
+from eimemory.knowledge.evidence_gate import grade_research_evidence
 from eimemory.knowledge.pages import stable_compiled_id
 from eimemory.models.knowledge_pages import KnowledgePage
 from eimemory.models.records import RecordEnvelope, ScopeRef
@@ -36,7 +37,8 @@ def build_research_digest(
     source_ids = _source_ids(papers, claims, pages)
     top_papers = _top_papers(papers, pages, max_items)
     themes = _themes(papers, pages, max_items)
-    notable_claims = _notable_claims(claims, max_items)
+    gated_claims, excluded_claims = _gated_records(claims)
+    notable_claims = _notable_claims(gated_claims, max_items)
     open_questions = _open_questions(claims, pages, max_items)
     skipped = _skipped_summary(claims, candidate_records)
     summary = _summary(top_papers, themes, notable_claims, open_questions)
@@ -54,6 +56,10 @@ def build_research_digest(
         "notable_claims": notable_claims,
         "open_questions": open_questions,
         "skipped_low_confidence": skipped,
+        "evidence_gate": {
+            "excluded_count": len(excluded_claims),
+            "excluded": excluded_claims,
+        },
         "source_ids": source_ids,
         "persisted": False,
         "persisted_page_id": "",
@@ -204,15 +210,34 @@ def _notable_claims(claims: list[RecordEnvelope], limit: int) -> list[dict]:
         key=lambda record: (float(record.content.get("confidence") or record.meta.get("confidence") or 0.0), _record_date(record), record.record_id),
         reverse=True,
     )
-    return [
-        {
+    items = []
+    for record in ranked[:limit]:
+        gate = grade_research_evidence(record)
+        items.append(
+            {
             "claim_id": record.record_id,
             "paper_source_id": _paper_source_id(record),
             "text": str(record.content.get("claim_text") or record.summary or record.title),
             "confidence": float(record.content.get("confidence") or record.meta.get("confidence") or 0.0),
-        }
-        for record in ranked[:limit]
-    ]
+            "source": gate["source"],
+            "published_at": gate["published_at"],
+            "evidence_tier": gate["evidence_tier"],
+            "conflict_check": gate["conflict_check"],
+            }
+        )
+    return items
+
+
+def _gated_records(records: list[RecordEnvelope]) -> tuple[list[RecordEnvelope], list[dict]]:
+    accepted: list[RecordEnvelope] = []
+    excluded: list[dict] = []
+    for record in records:
+        gate = grade_research_evidence(record)
+        if gate["ok"]:
+            accepted.append(record)
+        else:
+            excluded.append({"record_id": record.record_id, "title": record.title, "reason": gate["reason"], "reasons": gate["reasons"]})
+    return accepted, excluded
 
 
 def _open_questions(claims: list[RecordEnvelope], pages: list[RecordEnvelope], limit: int) -> list[str]:

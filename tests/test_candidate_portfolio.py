@@ -68,6 +68,42 @@ def test_candidate_patch_shapes_differ_by_candidate_kind() -> None:
     assert "execution_policy" in tool_route
 
 
+def test_all_actionable_candidate_patches_have_trigger_action_verification_and_rollback() -> None:
+    goal = {
+        "target_capability": "operations.uumit",
+        "goal_type": "capability_gap",
+        "title": "Close UUMit operations loop",
+        "success_criteria": "Inspect current evidence, act, verify, and rollback safely.",
+    }
+    replay_dataset = {"cases": [{"case_id": "uumit-ops", "query": "uumit delivery issue"}]}
+
+    for kind in ["sop_draft", "tool_route", "source_policy", "skill_draft", "memory_rule"]:
+        patch = _candidate_patch(goal, [], candidate_kind=kind, replay_dataset=replay_dataset)
+        assert patch["trigger_condition"]
+        assert patch["action"]
+        assert patch["verification"]
+        assert patch["rollback"]
+
+
+def test_generic_sop_fallback_is_not_promotion_ready_without_replay_contract() -> None:
+    kind, patch = _resolved_candidate_kind_and_patch(
+        {
+            "target_capability": "code.implementation",
+            "goal_type": "bugfix",
+            "title": "Empty generated code patch",
+            "success_criteria": "Must produce structured file updates.",
+        },
+        [],
+        candidate_kind="code_patch",
+        replay_dataset={"cases": []},
+    )
+
+    assert kind == "sop_draft"
+    assert patch["fallback_reason"] == "code_patch_missing_file_updates"
+    assert patch["promotion_ready"] is False
+    assert "missing_replay_case_ids" in patch["blocked_reasons"]
+
+
 def test_empty_code_patch_downgrades_to_sop_candidate() -> None:
     goal = {
         "target_capability": "code.implementation",

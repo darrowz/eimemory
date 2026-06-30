@@ -399,6 +399,13 @@ def _build_parser() -> argparse.ArgumentParser:
     status = sub.add_parser("status")
     status.add_argument("--json", action="store_true", default=True)
 
+    ops = sub.add_parser("ops")
+    ops_sub = ops.add_subparsers(dest="ops_command")
+    ops_timer_monitor = ops_sub.add_parser("timer-monitor")
+    ops_timer_monitor.add_argument("--stale-after-minutes", type=int, default=90)
+    ops_timer_monitor.add_argument("--no-persist", action="store_true")
+    ops_timer_monitor.add_argument("--json", action="store_true", default=True)
+
     openclaw_hook = sub.add_parser("openclaw-hook")
     openclaw_hook.add_argument(
         "hook",
@@ -858,7 +865,7 @@ def main(argv: list[str] | None = None) -> int:
         print(
             json.dumps(
                 {
-                    "usage": "eimemory init|emergency-stop|ingest|recall|paper|source|intake|export|import|backup|rebuild-sqlite|migrate|brief|nightly|quality|identity|living|reflect|experience|learn|governance|evolve|eval|patch|serve-eibrain-rpc",
+                    "usage": "eimemory init|emergency-stop|ingest|recall|paper|source|intake|export|import|backup|rebuild-sqlite|migrate|brief|nightly|quality|identity|living|reflect|experience|learn|governance|evolve|eval|patch|ops|serve-eibrain-rpc",
                 }
             )
         )
@@ -887,6 +894,20 @@ def main(argv: list[str] | None = None) -> int:
         )
         health_payload["supervisor"] = build_supervisor_contract(runtime, scope=scope)
         print(json.dumps(health_payload, ensure_ascii=False, indent=2))
+        return 0
+    if parsed.command == "ops":
+        if parsed.ops_command == "timer-monitor":
+            from eimemory.ops.timer_monitor import check_user_systemd_timers
+
+            report = check_user_systemd_timers(
+                runtime,
+                scope=scope,
+                stale_after_minutes=max(1, int(parsed.stale_after_minutes)),
+                persist=not bool(parsed.no_persist),
+            )
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0 if report.get("ok") else 1
+        print(json.dumps({"usage": "eimemory ops timer-monitor"}))
         return 0
     if parsed.command == "serve-eibrain-rpc":
         host = parsed.host or settings.rpc_host

@@ -633,6 +633,17 @@ class Runtime:
 
         return audit_coding_memory_contract(self, scope=scope, limit=limit)
 
+    def record_user_correction_replay(
+        self,
+        correction: dict,
+        *,
+        scope: dict | None = None,
+        persist: bool = True,
+    ) -> dict:
+        from eimemory.governance.correction_replay import record_user_correction_replay
+
+        return record_user_correction_replay(self, correction, scope=scope, persist=persist)
+
     def build_world_model(
         self,
         *,

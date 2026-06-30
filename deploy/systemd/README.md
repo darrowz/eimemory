@@ -76,6 +76,7 @@ timers unless a deployment document explicitly says otherwise:
 | `eimemory-learn-watch.timer` | Lightweight signal capture every 15 minutes. |
 | `eimemory-learn-think.timer` | Hourly proactive thinking over local evidence. |
 | `eimemory-learn-dashboard.timer` | Daily operator dashboard after the nightly run. |
+| `eimemory-timer-monitor.timer` | User-systemd health monitor for masked, stale, inactive, or failed eimemory timers; sends Feishu/webhook alerts when configured. |
 
 Do not install a standalone Karpathy-loop timer in production. The reusable
 experiment helpers under `eimemory.autonomous` feed into the governance path;
@@ -112,6 +113,7 @@ The 1.0.0 proactive learning layer runs three additional timers:
 - `eimemory-learn-watch.timer`: every 15 minutes, capture lightweight local/outcome/world signals.
 - `eimemory-learn-think.timer`: hourly, turn signals and long-term goals into persisted thoughts.
 - `eimemory-learn-dashboard.timer`: daily at 03:45 local time, summarize learned/applied/blocked/next items.
+- `eimemory-timer-monitor.timer`: every 5 minutes, alert when watch/think/nightly timers are masked, stale, inactive, or failed.
 
 Install as user services:
 
@@ -119,7 +121,9 @@ Install as user services:
 mkdir -p ~/.config/systemd/user
 cp /dev-project/eimemory/deploy/systemd/eimemory-learn-*.service ~/.config/systemd/user/
 cp /dev-project/eimemory/deploy/systemd/eimemory-learn-*.timer ~/.config/systemd/user/
+cp /dev-project/eimemory/deploy/systemd/eimemory-timer-monitor.service ~/.config/systemd/user/
+cp /dev-project/eimemory/deploy/systemd/eimemory-timer-monitor.timer ~/.config/systemd/user/
 systemctl --user daemon-reload
-systemctl --user enable --now eimemory-learn-watch.timer eimemory-learn-think.timer eimemory-learn-dashboard.timer
-systemctl --user list-timers 'eimemory-learn-*.timer'
+systemctl --user enable --now eimemory-learn-watch.timer eimemory-learn-think.timer eimemory-learn-dashboard.timer eimemory-timer-monitor.timer
+systemctl --user list-timers 'eimemory-*.timer'
 ```

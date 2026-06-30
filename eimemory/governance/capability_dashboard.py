@@ -51,6 +51,14 @@ def build_capability_dashboard_metrics(
         "rollback_count": rollback_count,
         "skill_reuse_count": skill_reuse_count,
     }
+    metric_quality = {
+        "recall_hit_rate": _quality(recall_total),
+        "user_correction_rate": _quality(recall_total),
+        "task_success_rate": _quality(len(task_evals)),
+        "auto_patch_success_rate": _quality(len(patch_promotions)),
+        "rollback_count": _quality(len(promotions), minimum=1),
+        "skill_reuse_count": _quality(skill_reuse_count, minimum=1),
+    }
     record_id = ""
     if persist:
         record = append_learning_record_once(
@@ -68,8 +76,8 @@ def build_capability_dashboard_metrics(
             semantic_key=stable_semantic_key("capability_dashboard_metrics", scope_ref, metrics),
             authority_tier="L0",
             status="active",
-            content={"report_type": "capability_dashboard_metrics", "metrics": metrics},
-            meta={"report_type": "capability_dashboard_metrics", **metrics},
+            content={"report_type": "capability_dashboard_metrics", "metrics": metrics, "metric_quality": metric_quality},
+            meta={"report_type": "capability_dashboard_metrics", **metrics, "metric_quality": metric_quality},
             source="eimemory.capability_dashboard",
         )
         record_id = record.record_id
@@ -78,6 +86,7 @@ def build_capability_dashboard_metrics(
         "report_type": "capability_dashboard_metrics",
         "scope": asdict(scope_ref),
         "metrics": metrics,
+        "metric_quality": metric_quality,
         "persisted_record_id": record_id,
         "sample_counts": {
             "recall": recall_total,
@@ -119,3 +128,12 @@ def _truthy(value: Any) -> bool:
 
 def _rate(numerator: int, denominator: int) -> float:
     return round(numerator / denominator, 3) if denominator else 0.0
+
+
+def _quality(sample_count: int, *, minimum: int = 10) -> dict[str, Any]:
+    count = max(0, int(sample_count or 0))
+    return {
+        "sample_count": count,
+        "minimum": minimum,
+        "sufficient": count >= minimum,
+    }

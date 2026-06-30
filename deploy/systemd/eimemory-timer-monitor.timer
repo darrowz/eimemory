@@ -1,0 +1,10 @@
+[Unit]
+Description=Check eimemory user timers and alert on stale/masked/failed state
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Unit=eimemory-timer-monitor.service
+
+[Install]
+WantedBy=timers.target

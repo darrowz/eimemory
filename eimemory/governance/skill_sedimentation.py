@@ -148,6 +148,10 @@ def _skill_entry(key: str, records: list[RecordEnvelope], *, scope: ScopeRef) ->
         "repeat_count": len(records),
         "source_record_ids": [record.record_id for record in records],
         "steps": steps,
+        "trigger_conditions": _trigger_conditions(records),
+        "action": _first_payload_text(records, "action", default="Run the standard skill steps."),
+        "verification": _first_payload_text(records, "verification", default="Run replay or inspect concrete output evidence."),
+        "rollback": _first_payload_text(records, "rollback", default="Keep the skill inactive or disable the registry entry."),
         "callable": True,
         "status": "sandbox_ready",
         "candidate_id": "",
@@ -170,6 +174,10 @@ def _upsert_skill_candidate(runtime: Any, entry: dict[str, Any], records: list[R
             "sop_key": entry["sop_key"],
             "target_capability": entry["target_capability"],
             "steps": list(entry.get("steps") or []),
+            "trigger_conditions": list(entry.get("trigger_conditions") or []),
+            "action": entry["action"],
+            "verification": entry["verification"],
+            "rollback": entry["rollback"],
             "source_playbook_ids": list(entry.get("source_record_ids") or []),
             "status": "sandbox_ready",
             "generated_by": "eimemory.skill_sedimentation",
@@ -215,6 +223,10 @@ def _upsert_registry_entry(
         "sop_key": entry["sop_key"],
         "target_capability": entry["target_capability"],
         "steps": list(entry.get("steps") or []),
+        "trigger_conditions": list(entry.get("trigger_conditions") or []),
+        "action": entry["action"],
+        "verification": entry["verification"],
+        "rollback": entry["rollback"],
         "callable": True,
         "source_playbook_ids": list(entry.get("source_record_ids") or []),
         "reuse_count": int(getattr(existing, "content", {}).get("reuse_count") or 0) if existing is not None else 0,
@@ -260,6 +272,10 @@ def _registry_skill(record: RecordEnvelope) -> dict[str, Any]:
         "sop_key": str(content.get("sop_key") or record.meta.get("sop_key") or ""),
         "target_capability": str(content.get("target_capability") or record.meta.get("target_capability") or ""),
         "steps": [str(step) for step in (content.get("steps") or [])],
+        "trigger_conditions": [str(item) for item in (content.get("trigger_conditions") or [])],
+        "action": str(content.get("action") or ""),
+        "verification": str(content.get("verification") or ""),
+        "rollback": str(content.get("rollback") or ""),
         "callable": bool(content.get("callable") or record.meta.get("callable")),
         "reuse_count": int(content.get("reuse_count") or record.meta.get("reuse_count") or 0),
         "record_id": record.record_id,
@@ -284,6 +300,30 @@ def _steps(records: list[RecordEnvelope]) -> list[str]:
     items = re.split(r"\s*\d+[\.)]\s+|[;\n]+", text)
     steps = [item.strip(" .:-")[:240] for item in items if item.strip(" .:-")]
     return steps[:6] or ["Run the repeated SOP and verify replay evidence before activation."]
+
+
+def _trigger_conditions(records: list[RecordEnvelope]) -> list[str]:
+    result: list[str] = []
+    for record in records:
+        raw = record.content.get("trigger_conditions") or record.meta.get("trigger_conditions") or record.content.get("triggers")
+        if isinstance(raw, str):
+            raw = [raw]
+        if not isinstance(raw, list):
+            continue
+        for item in raw:
+            text = str(item or "").strip()
+            if text and text not in result:
+                result.append(text)
+    return result or ["Use when this repeated SOP trigger appears."]
+
+
+def _first_payload_text(records: list[RecordEnvelope], key: str, *, default: str) -> str:
+    for record in records:
+        for payload in (record.content, record.meta):
+            value = str(payload.get(key) or "").strip()
+            if value:
+                return value
+    return default
 
 
 def _slug(value: str) -> str:
