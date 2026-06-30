@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from hashlib import sha256
 from typing import Any
 
 from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
@@ -166,7 +167,7 @@ def _seed_eiskill_playbooks(runtime: Any, *, scope: ScopeRef, persist: bool) -> 
 
 
 def _run_non_destructive_rollback(runtime: Any, *, scope: ScopeRef, persist: bool) -> dict[str, Any]:
-    pattern_id = "closure-rehearsal-rollback"
+    pattern_id = f"closure-rehearsal-rollback-{_scope_hash(scope)}"
     if persist:
         runtime.upsert_intent_pattern(
             {
@@ -186,3 +187,8 @@ def _run_non_destructive_rollback(runtime: Any, *, scope: ScopeRef, persist: boo
             auto=False,
         )
     return {"ok": True, "status": "dry_run", "pattern_id": pattern_id}
+
+
+def _scope_hash(scope: ScopeRef) -> str:
+    payload = "|".join([scope.tenant_id, scope.agent_id, scope.workspace_id, scope.user_id])
+    return sha256(payload.encode("utf-8")).hexdigest()[:12]
