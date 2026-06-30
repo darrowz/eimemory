@@ -10,7 +10,9 @@ from eimemory.api.runtime import Runtime
 from eimemory.identity import hongtu_identity_meta, hongtu_scope
 from eimemory.metadata import business_metadata
 from eimemory.models.records import RecallBundle, RecordEnvelope, ScopeRef
+from eimemory.persona.correction import persona_feedback_from_user_text
 from eimemory.persona.prompt import build_persona_guidance, disabled_persona_guidance, persona_enabled
+from eimemory.persona.schema import PersonaTraceEvent
 from eimemory.persona.store import PersonaStore
 
 
@@ -35,8 +37,9 @@ class OpenClawMemoryHooks:
     def on_message_received(self, event: dict) -> dict:
         message = dict(event.get("message") or {})
         if str(message.get("role") or "").lower() != "user":
-            return {"stored": None}
+            return {"stored": None, "persona_feedback": None}
         text = self._clean_user_memory_text(str(message.get("content") or "").strip())
+        persona_feedback = self._record_persona_feedback(event=event, text=text)
         if self._should_capture_message(text=text, event=event):
             stored = self.runtime.memory.ingest(
                 text=text,
@@ -48,9 +51,9 @@ class OpenClawMemoryHooks:
                 meta=self._identity_meta(event, organ="cognition", modality="text"),
             )
             if stored.status == "rejected":
-                return {"stored": None, "rejected": stored.to_dict()}
-            return {"stored": stored.to_dict()}
-        return {"stored": None}
+                return {"stored": None, "rejected": stored.to_dict(), "persona_feedback": persona_feedback}
+            return {"stored": stored.to_dict(), "persona_feedback": persona_feedback}
+        return {"stored": None, "persona_feedback": persona_feedback}
 
     def before_prompt_build(self, event: dict) -> dict:
         start = perf_counter()
@@ -79,6 +82,11 @@ class OpenClawMemoryHooks:
             recall_context["latency_ms"] = latency_ms
             bundle.explanation["latency_ms"] = latency_ms
             self._audit_prompt_recall(event=event, bundle=bundle, injected=False)
+            persona_trace = self._record_persona_trace(
+                event=event,
+                persona_guidance=persona_guidance,
+                injection_latency_ms=latency_ms,
+            )
             return {
                 "memory_bundle": bundle.to_dict(),
                 "injection_plan": injection_plan,
@@ -87,6 +95,7 @@ class OpenClawMemoryHooks:
                 "task_context": recall_context,
                 "policy_attribution": policy_attribution,
                 "persona_guidance": persona_guidance,
+                "persona_trace": persona_trace,
             }
         scope = self._scope_from_event(event)
         policy_search = self._run_policy_search_safely(
@@ -119,6 +128,11 @@ class OpenClawMemoryHooks:
         recall_context["latency_ms"] = latency_ms
         bundle.explanation["latency_ms"] = latency_ms
         self._audit_prompt_recall(event=event, bundle=bundle, injected=bool(bundle.items))
+        persona_trace = self._record_persona_trace(
+            event=event,
+            persona_guidance=persona_guidance,
+            injection_latency_ms=latency_ms,
+        )
         return {
             "memory_bundle": bundle.to_dict(),
             "injection_plan": injection_plan,
@@ -127,6 +141,7 @@ class OpenClawMemoryHooks:
             "task_context": recall_context,
             "policy_attribution": policy_attribution,
             "persona_guidance": persona_guidance,
+            "persona_trace": persona_trace,
         }
 
     def on_agent_end(self, event: dict) -> dict:
@@ -443,9 +458,26 @@ class OpenClawMemoryHooks:
             return {"ok": False, "policy_suggestions": [], "matched_event_type": ""}
         return result if isinstance(result, dict) else {"ok": False, "policy_suggestions": [], "matched_event_type": ""}
 
+    def _record_persona_feedback(self, *, event: dict, text: str) -> dict | None:
+        normalized = "".join(ch for ch in text if ch.isalnum() or ch.isspace()).strip().lower()
+        if not normalized or self._looks_like_prompt_injection(normalized):
+            return None
+        correction = persona_feedback_from_user_text(text)
+        if correction is None:
+            return None
+        stored = PersonaStore(self.runtime.store).record_correction(correction, scope=self._scope_from_event(event))
+        return {
+            "stored": stored.to_dict(),
+            "category": correction.category,
+            "severity": correction.severity,
+        }
+
     def _build_persona_guidance_safely(self, *, event: dict, query: str, task_context: dict) -> dict:
+        start = perf_counter()
         if not persona_enabled():
-            return disabled_persona_guidance()
+            guidance = disabled_persona_guidance()
+            guidance["duration_ms"] = round((perf_counter() - start) * 1000.0, 3)
+            return guidance
         try:
             store = PersonaStore(self.runtime.store)
             state = store.load_state()
@@ -463,9 +495,34 @@ class OpenClawMemoryHooks:
                 recent_context=task_context,
                 max_chars=_int_env("EIMEMORY_PERSONA_MAX_CHARS", 800),
             )
-            return guidance.to_dict()
+            payload = guidance.to_dict()
+            payload["duration_ms"] = round((perf_counter() - start) * 1000.0, 3)
+            return payload
         except Exception as exc:
-            return {"enabled": False, "text": "", "scene": "", "risk_level": "", "tone": "", "error": str(exc)}
+            return {
+                "enabled": False,
+                "text": "",
+                "scene": "",
+                "risk_level": "",
+                "tone": "",
+                "error": str(exc),
+                "duration_ms": round((perf_counter() - start) * 1000.0, 3),
+            }
+
+    def _record_persona_trace(self, *, event: dict, persona_guidance: dict, injection_latency_ms: float) -> dict:
+        trace = PersonaTraceEvent(
+            session_id=self._session_id_from_event(event),
+            scene=str(persona_guidance.get("scene") or ""),
+            guidance_length=len(str(persona_guidance.get("text") or "")),
+            guidance_latency_ms=float(persona_guidance.get("duration_ms") or 0.0),
+            injection_latency_ms=float(injection_latency_ms or 0.0),
+            enabled=bool(persona_guidance.get("enabled")),
+        )
+        try:
+            stored = PersonaStore(self.runtime.store).record_trace(trace, scope=self._scope_from_event(event))
+            return {"stored": stored.to_dict(), **trace.to_dict()}
+        except Exception as exc:
+            return {"stored": None, **trace.to_dict(), "error": str(exc)}
 
     def _merge_policy_search(self, *, bundle: RecallBundle, policy_search: dict) -> None:
         suggestions = policy_search.get("policy_suggestions") if isinstance(policy_search, dict) else []

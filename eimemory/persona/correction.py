@@ -3,6 +3,39 @@ from __future__ import annotations
 from eimemory.persona.schema import PersonaCorrectionEvent
 
 
+PERSONA_FEEDBACK_MARKERS: tuple[str, ...] = (
+    "too verbose",
+    "too wordy",
+    "good reply",
+    "nice reply",
+    "wrong",
+    "incorrect",
+    "太啰嗦",
+    "太罗嗦",
+    "别演",
+    "废话",
+    "短一点",
+    "直接说",
+    "不错",
+    "很好",
+    "这样就对",
+    "不对",
+    "错了",
+    "弄错",
+    "查证据",
+)
+
+
+def persona_feedback_from_user_text(text: str) -> PersonaCorrectionEvent | None:
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+    lowered = raw.lower()
+    if not _has_any(lowered, PERSONA_FEEDBACK_MARKERS):
+        return None
+    return correction_from_user_text(raw)
+
+
 def correction_from_user_text(text: str) -> PersonaCorrectionEvent:
     raw = str(text or "").strip()
     lowered = raw.lower()
@@ -14,13 +47,21 @@ def correction_from_user_text(text: str) -> PersonaCorrectionEvent:
             trait_delta={"safety": 0.08, "precision": 0.05, "autonomy": -0.05},
             rule_candidate="Never store, quote, or log plaintext secrets; use approved secret aliases and confirmation gates.",
         )
-    if _has_any(lowered, ("戏很多", "别演", "废话", "短一点", "直接说", "少说")):
+    if _has_any(lowered, ("戏很多", "别演", "废话", "短一点", "直接说", "少说", "太啰嗦", "太罗嗦")):
         return PersonaCorrectionEvent(
             raw_text=raw,
             category="verbosity",
             severity=0.85,
             trait_delta={"verbosity": -0.15, "humor": -0.05, "latency_priority": 0.08},
             rule_candidate="When the user says the agent is overacting or verbose, answer direct result first.",
+        )
+    if _has_any(lowered, ("不错", "很好", "这样就对", "good reply", "nice reply")):
+        return PersonaCorrectionEvent(
+            raw_text=raw,
+            category="reinforcement",
+            severity=0.55,
+            trait_delta={"precision": 0.03, "empathy": 0.02},
+            rule_candidate="Keep the current reply style when the user explicitly says it worked well.",
         )
     if _has_any(lowered, ("不要说做不到", "解决", "换路", "想办法")):
         return PersonaCorrectionEvent(
@@ -30,7 +71,7 @@ def correction_from_user_text(text: str) -> PersonaCorrectionEvent:
             trait_delta={"resourcefulness": 0.1, "execution": 0.05},
             rule_candidate="When the first path fails, try an alternate tool or route before reporting a blocker.",
         )
-    if _has_any(lowered, ("不对", "错了", "弄错", "校验")):
+    if _has_any(lowered, ("不对", "错了", "弄错", "校验", "查证据", "wrong", "incorrect")):
         return PersonaCorrectionEvent(
             raw_text=raw,
             category="correctness",

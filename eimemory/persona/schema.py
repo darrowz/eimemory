@@ -112,6 +112,21 @@ class PersonaCorrectionEvent:
 
 
 @dataclass(slots=True)
+class PersonaTraceEvent:
+    session_id: str
+    scene: str
+    guidance_length: int
+    guidance_latency_ms: float
+    injection_latency_ms: float
+    enabled: bool
+    event_type: str = "persona.trace"
+    created_at: str = field(default_factory=now_iso)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(slots=True)
 class PersonaGuidance:
     text: str
     scene: str

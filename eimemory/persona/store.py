@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from eimemory.models.records import RecordEnvelope, ScopeRef
-from eimemory.persona.schema import PersonaCorrectionEvent, PersonaState
+from eimemory.persona.schema import PersonaCorrectionEvent, PersonaState, PersonaTraceEvent
 from eimemory.persona.state import default_persona_state, enforce_hard_boundaries
 
 
@@ -59,6 +59,32 @@ class PersonaStore:
             source="persona.correction",
             scope=ScopeRef.from_dict(scope or {}),
             meta={"category": correction.category, "severity": correction.severity},
+        )
+        return self._append(record)
+
+    def record_trace(self, trace: PersonaTraceEvent, *, scope: dict[str, Any] | None = None) -> RecordEnvelope:
+        payload = trace.to_dict()
+        record = RecordEnvelope.create(
+            kind="recall_view",
+            title="Persona trace",
+            summary=(
+                f"Persona {'enabled' if trace.enabled else 'disabled'} "
+                f"scene={trace.scene or 'none'} guidance={trace.guidance_length} "
+                f"injection={trace.injection_latency_ms:.3f}ms"
+            ),
+            detail="Runtime trace for OpenClaw persona guidance injection.",
+            content=payload,
+            tags=["persona", "trace"],
+            source="persona.trace",
+            scope=ScopeRef.from_dict(scope or {}),
+            meta={
+                "report_type": "persona.trace",
+                "scene": trace.scene,
+                "enabled": trace.enabled,
+                "guidance_length": trace.guidance_length,
+                "guidance_latency_ms": trace.guidance_latency_ms,
+                "injection_latency_ms": trace.injection_latency_ms,
+            },
         )
         return self._append(record)
 

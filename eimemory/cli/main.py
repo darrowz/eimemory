@@ -61,6 +61,26 @@ def _dispatch_exit(result: Any) -> int:
     return 0
 
 
+def _read_stdin_text() -> str:
+    buffer = getattr(sys.stdin, "buffer", None)
+    if buffer is not None:
+        data = buffer.read()
+        if isinstance(data, bytes):
+            return data.decode("utf-8")
+        return str(data or "")
+    return sys.stdin.read()
+
+
+def _write_json(payload: Any, *, indent: int | None = 2) -> None:
+    text = json.dumps(payload, ensure_ascii=False, indent=indent) + "\n"
+    buffer = getattr(sys.stdout, "buffer", None)
+    if buffer is not None:
+        buffer.write(text.encode("utf-8"))
+        buffer.flush()
+        return
+    print(text, end="")
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="eimemory")
     sub = parser.add_subparsers(dest="command")
@@ -1640,12 +1660,12 @@ def main(argv: list[str] | None = None) -> int:
         return handle_persona_command(parsed, runtime, scope)
     if parsed.command == "openclaw-hook":
         try:
-            event = json.loads(sys.stdin.read() or "{}")
+            event = json.loads(_read_stdin_text() or "{}")
         except json.JSONDecodeError:
-            print(json.dumps({"ok": False, "error": "invalid_json"}, ensure_ascii=False))
+            _write_json({"ok": False, "error": "invalid_json"})
             return 2
         if not isinstance(event, dict):
-            print(json.dumps({"ok": False, "error": "invalid_event"}, ensure_ascii=False))
+            _write_json({"ok": False, "error": "invalid_event"})
             return 2
         hooks = OpenClawMemoryHooks(runtime)
         if parsed.hook == "message_received":
@@ -1658,23 +1678,23 @@ def main(argv: list[str] | None = None) -> int:
             payload = hooks.on_task_end(event)
         else:
             payload = hooks.on_session_end(event)
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        _write_json(payload)
         return 0
     if parsed.command == "ei-bridge":
         if parsed.ei_bridge_command == "feishu":
             try:
-                event = json.loads(sys.stdin.read() or "{}")
+                event = json.loads(_read_stdin_text() or "{}")
             except json.JSONDecodeError:
-                print(json.dumps({"ok": False, "error": "invalid_json"}, ensure_ascii=False))
+                _write_json({"ok": False, "error": "invalid_json"})
                 return 2
             if not isinstance(event, dict):
-                print(json.dumps({"ok": False, "error": "invalid_event"}, ensure_ascii=False))
+                _write_json({"ok": False, "error": "invalid_event"})
                 return 2
             try:
                 payload = handle_openclaw_feishu_event(event, runtime)
             except Exception as exc:
                 return _print_error("ei_bridge_failed", exc)
-            print(json.dumps(payload, ensure_ascii=False, indent=2))
+            _write_json(payload)
             return 0
         print(json.dumps({"usage": "eimemory ei-bridge feishu"}, ensure_ascii=False))
         return 0
