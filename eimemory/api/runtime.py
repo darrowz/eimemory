@@ -738,6 +738,16 @@ class Runtime:
 
         return build_l5_readiness_report(self, scope=scope, persist=persist, limit=limit, loop_id=loop_id)
 
+    def run_l5_closure_rehearsal(
+        self,
+        *,
+        scope: dict | None = None,
+        persist: bool = True,
+    ) -> dict:
+        from eimemory.governance.closure_rehearsal import run_l5_closure_rehearsal
+
+        return run_l5_closure_rehearsal(self, scope=scope, persist=persist)
+
     def build_capability_replay_packs(
         self,
         *,

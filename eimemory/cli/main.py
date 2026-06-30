@@ -344,6 +344,11 @@ def _build_parser() -> argparse.ArgumentParser:
     learn_l5_readiness.add_argument("--persist", action="store_true")
     learn_l5_readiness.add_argument("--limit", type=int, default=500)
     learn_l5_readiness.add_argument("--json", action="store_true", default=True)
+    learn_closure_rehearsal = learn_sub.add_parser("closure-rehearsal")
+    learn_closure_rehearsal.add_argument("--scope-agent", default="")
+    learn_closure_rehearsal.add_argument("--scope-workspace", default="")
+    learn_closure_rehearsal.add_argument("--scope-user", default="")
+    learn_closure_rehearsal.add_argument("--json", action="store_true", default=True)
     learn_capability_replay = learn_sub.add_parser("capability-replay")
     learn_capability_replay.add_argument("--capability", action="append", default=[])
     learn_capability_replay.add_argument("--persist", action="store_true")
@@ -1110,6 +1115,13 @@ def main(argv: list[str] | None = None) -> int:
                 persist=bool(parsed.persist),
                 limit=max(1, int(parsed.limit)),
                 loop_id="cli_l5_readiness",
+            )
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0 if report.get("ok") else 1
+        if parsed.learn_command == "closure-rehearsal":
+            report = runtime.run_l5_closure_rehearsal(
+                scope=_cli_scope(parsed, defaults=scope),
+                persist=True,
             )
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0 if report.get("ok") else 1

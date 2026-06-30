@@ -11,6 +11,12 @@ CORE_CAPABILITIES = {
     "proactive.judgment",
     "safety.boundary",
 }
+WEAK_CAPABILITIES = {
+    "search.discovery",
+    "research.synthesis",
+    "operations.uumit",
+    "device.control",
+}
 
 
 def test_capability_replay_packs_activate_non_code_capabilities(tmp_path) -> None:
@@ -54,5 +60,32 @@ def test_capability_replay_packs_are_queryable_as_replay_results(tmp_path) -> No
         assert {record.meta["report_type"] for record in records} == {"capability_replay_pack"}
         assert {record.meta["capability"] for record in records} == {"memory.recall"}
         assert all(record.meta["verdict"] == "pass" for record in records)
+    finally:
+        runtime.close()
+
+
+def test_capability_replay_packs_include_named_weak_capability_cases(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        report = runtime.build_capability_replay_packs(
+            scope=SCOPE,
+            persist=True,
+            capabilities=sorted(WEAK_CAPABILITIES),
+        )
+
+        assert set(report["capabilities"]) == WEAK_CAPABILITIES
+        for pack in report["packs"]:
+            capability = pack["capability"]
+            case_ids = {case["case_id"] for case in pack["cases"]}
+            assert not any(case_id.startswith("generic_") for case_id in case_ids)
+            assert len(case_ids) >= 3
+            assert all(case["target_capability"] == capability for case in pack["cases"])
+
+        ledger = runtime.learning_ledger(scope=SCOPE, attribute_outcomes=False)
+        for capability in WEAK_CAPABILITIES:
+            item = ledger["capabilities"][capability]
+            assert item["status"] == "active"
+            assert item["score"] >= 0.75
+            assert item["evidence_count"] >= 3
     finally:
         runtime.close()

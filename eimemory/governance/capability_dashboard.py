@@ -8,6 +8,46 @@ from eimemory.governance.learning_state import append_learning_record_once, stab
 from eimemory.models.records import ScopeRef
 
 
+SUCCESS_LABELS = {
+    "1",
+    "true",
+    "yes",
+    "ok",
+    "good",
+    "success",
+    "succeeded",
+    "pass",
+    "passed",
+    "complete",
+    "completed",
+    "delivered",
+    "done",
+    "verified",
+    "health_ok",
+    "all_ok",
+    "ready",
+    "readyz_ok",
+}
+FAILURE_LABELS = {
+    "0",
+    "false",
+    "no",
+    "bad",
+    "fail",
+    "failed",
+    "failure",
+    "error",
+    "errored",
+    "timeout",
+    "timed_out",
+    "rollback",
+    "rolled_back",
+    "quarantined",
+    "verification_missing",
+    "missing_verification",
+}
+
+
 def build_capability_dashboard_metrics(
     runtime: Any,
     *,
@@ -42,8 +82,15 @@ def build_capability_dashboard_metrics(
         or str(_field(record, "action") or "").lower() in {"promote", "rollback", "code_patch"}
     ]
     patch_success = sum(1 for record in patch_promotions if str(record.status or "").lower() in {"promoted", "active", "deployed"})
-    rollback_count = sum(1 for record in promotions if str(record.status or "").lower() in {"rolled_back", "quarantined"} or str(_field(record, "action") or "").lower() == "rollback")
-    skill_reuse_count = sum(1 for record in evals if str(_field(record, "report_type") or "") == "eiskill_invocation")
+    policy_rollbacks = _policy_rollback_records(runtime, scope_ref, limit)
+    rollback_count = sum(1 for record in promotions if str(record.status or "").lower() in {"rolled_back", "quarantined"} or str(_field(record, "action") or "").lower() == "rollback") + len(policy_rollbacks)
+    skill_invocations = sum(1 for record in evals if str(_field(record, "report_type") or "") == "eiskill_invocation")
+    skill_registry_reuse = sum(
+        max(0, _int(_field(record, "reuse_count")))
+        for record in _records(runtime, scope_ref, ["learning_playbook"], limit)
+        if str(_field(record, "report_type") or "") == "eiskill_registry_entry"
+    )
+    skill_reuse_count = max(skill_invocations, skill_registry_reuse)
 
     metrics = {
         "recall_hit_rate": _rate(recall_hits, recall_total),
@@ -58,7 +105,7 @@ def build_capability_dashboard_metrics(
         "user_correction_rate": _quality(recall_total),
         "task_success_rate": _quality(len(task_outcomes)),
         "auto_patch_success_rate": _quality(len(patch_promotions)),
-        "rollback_count": _quality(len(promotions), minimum=1),
+        "rollback_count": _quality(len(promotions) + len(policy_rollbacks), minimum=1),
         "skill_reuse_count": _quality(skill_reuse_count, minimum=1),
     }
     record_id = ""
@@ -96,6 +143,7 @@ def build_capability_dashboard_metrics(
             "task_evals": len(task_evals),
             "task_outcomes": len(task_outcomes),
             "patch_promotions": len(patch_promotions),
+            "policy_rollbacks": len(policy_rollbacks),
         },
     }
 
@@ -142,6 +190,17 @@ def _event_outcome_records(runtime: Any, scope: ScopeRef, limit: int) -> list[di
     return outcomes
 
 
+def _policy_rollback_records(runtime: Any, scope: ScopeRef, limit: int) -> list[dict[str, Any]]:
+    getter = getattr(runtime, "get_policy_rollout_ledger", None)
+    if not callable(getter):
+        return []
+    try:
+        records = getter(scope=scope, action="rollback", limit=max(0, int(limit)))
+    except Exception:
+        return []
+    return [record for record in records if str(record.get("action_type") or "").lower() in {"rollback", "quarantine", "quarantined"}]
+
+
 def _field(record: Any, key: str) -> Any:
     if isinstance(record, dict):
         if key in record:
@@ -178,7 +237,20 @@ def _truthy(value: Any) -> bool:
 
 
 def _has_outcome_signal(record: Any) -> bool:
-    return _field(record, "task_success") is not None or _field(record, "outcome") is not None or _field(record, "status") is not None
+    return any(
+        _field(record, key) is not None
+        for key in (
+            "task_success",
+            "outcome",
+            "status",
+            "result",
+            "ok",
+            "success",
+            "verified",
+            "verification",
+            "verdict",
+        )
+    )
 
 
 def _outcome_success(record: Any) -> bool:
@@ -186,14 +258,29 @@ def _outcome_success(record: Any) -> bool:
     if task_success is not None:
         return _truthy(task_success)
     outcome = _field(record, "outcome")
+    labels: list[str] = []
+    bool_values: list[Any] = []
     if isinstance(outcome, dict):
+        labels.extend(str(outcome.get(key) or "").strip().lower() for key in ("status", "outcome", "result"))
         for key in ("success", "verified", "ok"):
             if key in outcome:
-                return _truthy(outcome.get(key))
-        return str(outcome.get("status") or outcome.get("outcome") or "").strip().lower() in {"good", "success", "passed", "pass"}
-    if outcome is not None:
-        return str(outcome or "").strip().lower() in {"good", "success", "passed", "pass"}
-    return _verdict(record) == "pass"
+                bool_values.append(outcome.get(key))
+    elif outcome is not None:
+        labels.append(str(outcome or "").strip().lower())
+    labels.extend(str(_field(record, key) or "").strip().lower() for key in ("status", "result", "verdict"))
+    for label in labels:
+        if label in FAILURE_LABELS:
+            return False
+    for value in bool_values:
+        return _truthy(value)
+    for key in ("success", "verified", "ok"):
+        value = _field(record, key)
+        if value is not None:
+            return _truthy(value)
+    for label in labels:
+        if label in SUCCESS_LABELS:
+            return True
+    return _verdict(record) in SUCCESS_LABELS
 
 
 def _rate(numerator: int, denominator: int) -> float:
@@ -207,3 +294,10 @@ def _quality(sample_count: int, *, minimum: int = 10) -> dict[str, Any]:
         "minimum": minimum,
         "sufficient": count >= minimum,
     }
+
+
+def _int(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0

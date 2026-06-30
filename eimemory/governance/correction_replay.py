@@ -157,7 +157,7 @@ def build_ground_truth_pre_answer_gate(
         for record in runtime.store.list_records(kinds=["rule"], scope=scope_ref, limit=max(1, int(limit)))
         if _is_ground_truth_rule(record)
     ]
-    matched = [rule for rule in rules if _rule_matches(query, rule)] or rules
+    matched = [rule for rule in rules if _rule_matches(query, rule)] if str(query or "").strip() else rules
     replay_gate = _merged_replay_gate(matched)
     record_id = ""
     if persist and matched:
@@ -326,13 +326,25 @@ def _rule_matches(query: str, rule: dict[str, Any]) -> bool:
         for key in ("target_capability", "trigger_condition", "expected_behavior", "gate", "behavior_check")
     )
     tokens = [token for token in _split_words(text) if len(token) >= 2]
-    return not tokens or any(token in haystack for token in tokens)
+    anchors = tokens + [anchor for token in tokens for anchor in _cjk_anchors(token)]
+    return not anchors or any(anchor in haystack for anchor in anchors)
 
 
 def _split_words(text: str) -> list[str]:
     import re
 
     return [part for part in re.split(r"[^0-9a-zA-Z_\u4e00-\u9fff]+", text) if part]
+
+
+def _cjk_anchors(token: str) -> list[str]:
+    import re
+
+    chars = "".join(re.findall(r"[\u4e00-\u9fff]", str(token or "")))
+    if len(chars) < 2:
+        return []
+    anchors = {chars[index : index + 2] for index in range(max(0, len(chars) - 1))}
+    anchors.update(chars[index : index + 3] for index in range(max(0, len(chars) - 2)))
+    return sorted(anchor for anchor in anchors if len(anchor) >= 2)
 
 
 def _merged_replay_gate(rules: list[dict[str, Any]]) -> dict[str, Any]:

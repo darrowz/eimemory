@@ -86,3 +86,30 @@ def test_ground_truth_rules_are_returned_as_pre_answer_gate(tmp_path) -> None:
     assert gate["rules"][0]["must_use"] is True
     assert gate["replay_gate"]["expected_behavior"] == "Query git/runtime/deploy evidence before answering status questions."
     assert gate["record_id"]
+
+
+def test_ground_truth_pre_answer_gate_does_not_fallback_to_unrelated_rules(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+
+    runtime.record_user_correction_replay(
+        {
+            "text": "\u4e0d\u8981\u8bf4\u505a\u4e0d\u5230\uff0c\u8981\u8865\u80fd\u529b\u89e3\u51b3",
+            "context": "assistant stopped at inability",
+            "target_capability": "proactive.judgment",
+            "expected_behavior": "When a capability is missing, create a concrete plan, replay, and gated implementation path.",
+        },
+        scope=SCOPE,
+        persist=True,
+    )
+
+    unrelated = runtime.build_ground_truth_pre_answer_gate(
+        query="\u4eca\u5929\u5929\u6c14\u600e\u4e48\u6837",
+        scope=SCOPE,
+        persist=True,
+    )
+
+    assert unrelated["ok"] is True
+    assert unrelated["gate_required"] is False
+    assert unrelated["matched_rule_count"] == 0
+    assert unrelated["rules"] == []
+    assert unrelated["record_id"] == ""

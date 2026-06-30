@@ -85,6 +85,88 @@ def test_capability_dashboard_metrics_include_real_task_outcome_traces(tmp_path)
         runtime.close()
 
 
+def test_capability_dashboard_maps_real_completion_labels_to_success(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        scope_ref = ScopeRef.from_dict(SCOPE)
+        _append(
+            runtime,
+            scope_ref,
+            "reflection",
+            "completed outcome trace",
+            {
+                "report_type": "outcome_trace",
+                "schema_version": "outcome_trace.v1",
+                "status": "completed",
+                "verification": "health check passed",
+            },
+        )
+        _append(
+            runtime,
+            scope_ref,
+            "reflection",
+            "delivered outcome trace",
+            {
+                "report_type": "outcome_trace",
+                "schema_version": "outcome_trace.v1",
+                "result": "delivered",
+            },
+        )
+        _append(
+            runtime,
+            scope_ref,
+            "reflection",
+            "health ok outcome trace",
+            {
+                "report_type": "outcome_trace",
+                "schema_version": "outcome_trace.v1",
+                "outcome": "health_ok",
+            },
+        )
+        completed_event = runtime.store.record_event(
+            {"event_type": "agent_end", "summary": "runtime completed", "task_type": "ops"},
+            scope=scope_ref,
+        )
+        missing_event = runtime.store.record_event(
+            {"event_type": "agent_end", "summary": "verification missing", "task_type": "ops"},
+            scope=scope_ref,
+        )
+        runtime.record_outcome(completed_event["id"], {"ok": True, "status": "completed"}, scope=SCOPE)
+        runtime.record_outcome(missing_event["id"], {"outcome": "verification_missing", "success": True}, scope=SCOPE)
+
+        metrics = runtime.build_capability_dashboard_metrics(scope=SCOPE, persist=False)
+
+        assert metrics["sample_counts"]["task_outcomes"] == 5
+        assert metrics["metrics"]["task_success_rate"] == 0.8
+    finally:
+        runtime.close()
+
+
+def test_capability_dashboard_counts_registry_reuse_when_invocation_records_are_compacted(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        scope_ref = ScopeRef.from_dict(SCOPE)
+        _append(
+            runtime,
+            scope_ref,
+            "learning_playbook",
+            "registry skill",
+            {
+                "report_type": "eiskill_registry_entry",
+                "skill_id": "skill-research-1",
+                "reuse_count": 3,
+            },
+        )
+
+        metrics = runtime.build_capability_dashboard_metrics(scope=SCOPE, persist=False)
+
+        assert metrics["metrics"]["skill_reuse_count"] == 3
+        assert metrics["metric_quality"]["skill_reuse_count"]["sample_count"] == 3
+        assert metrics["metric_quality"]["skill_reuse_count"]["sufficient"] is True
+    finally:
+        runtime.close()
+
+
 def _append(runtime: Runtime, scope: ScopeRef, kind: str, title: str, meta: dict, *, status: str = "active") -> None:
     runtime.store.append(
         RecordEnvelope.create(
