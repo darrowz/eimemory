@@ -88,20 +88,40 @@ def _collect_unit_states(units: list[str], *, runner: Callable[[list[str]], str]
     states: list[dict[str, Any]] = []
     for unit in units:
         try:
-            raw = call(
-                [
-                    "systemctl",
-                    "--user",
-                    "show",
-                    unit,
-                    "--property=LoadState,ActiveState,SubState,UnitFileState,LastTriggerUSec,NextElapseUSecRealtime,Result",
-                    "--no-page",
-                ]
-            )
+            raw = _show_unit(call, unit, user=True)
+        except Exception as user_exc:
+            try:
+                raw = _show_unit(call, unit, user=False)
+            except Exception as system_exc:
+                states.append(
+                    {
+                        "unit": unit,
+                        "load_state": "unknown",
+                        "active_state": "unknown",
+                        "error": f"user={user_exc}; system={system_exc}",
+                    }
+                )
+                continue
+        try:
             states.append(_parse_systemctl_show(unit, raw))
         except Exception as exc:
             states.append({"unit": unit, "load_state": "unknown", "active_state": "unknown", "error": str(exc)})
     return states
+
+
+def _show_unit(call: Callable[[list[str]], str], unit: str, *, user: bool) -> str:
+    args = ["systemctl"]
+    if user:
+        args.append("--user")
+    args.extend(
+        [
+            "show",
+            unit,
+            "--property=LoadState,ActiveState,SubState,UnitFileState,LastTriggerUSec,NextElapseUSecRealtime,Result",
+            "--no-page",
+        ]
+    )
+    return call(args)
 
 
 def _run_systemctl(args: list[str]) -> str:
