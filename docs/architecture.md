@@ -69,8 +69,11 @@ into that loop, but they do not run their own production scheduler.
      closed loop: lesson, replay case, replay result, graph edges, and a T0
      ground-truth behavior rule. Ground-truth rules are not ordinary recall
      memories; they carry `priority=T0` and `must_use=True` so future behavior
-     can treat them as higher-priority operating constraints. Trivial messages
-     such as acknowledgements are skipped to avoid replay and memory pollution.
+     can treat them as higher-priority operating constraints. OpenClaw
+     `before_prompt_build` runs a pre-answer gate, persists the gate result,
+     and injects matching T0 rules as policy-only context before the next
+     answer. Trivial messages such as acknowledgements are skipped to avoid
+     replay and memory pollution.
    - `eimemory.governance.capability_replay_packs` gives non-code capabilities
      real replay evidence. The required active set is `memory.recall`,
      `tool.routing`, `knowledge.intake`, `proactive.judgment`, and
@@ -83,12 +86,16 @@ into that loop, but they do not run their own production scheduler.
    - `eimemory.governance.skill_sedimentation` converts repeated SOP/playbook
      evidence into queryable and callable `eiskill` registry entries after
      repeat and replay checks. Executable eiskills carry trigger conditions,
-     action, verification, and rollback metadata.
+     action, verification, and rollback metadata. Missing any one of those four
+     fields blocks promotion and call-time execution, including legacy registry
+     entries that still claim `callable=True`.
    - `eimemory.governance.capability_dashboard` reports hard improvement
      metrics: recall hit rate, user correction rate, task success rate,
      automatic patch success rate, rollback count, and skill reuse count. Sparse
      metrics include sample sufficiency flags so weak evidence is not mistaken
-     for stable capability.
+     for stable capability. Task success is sourced from learning evals, durable
+     `outcome_trace` records, and SQLite `event_outcomes`, so production task
+     results affect the L5 score path.
    - `eimemory.governance.closed_loop.post_experience_hook` is the immediate
      Memory 3.0 feedback path: an outcome is evaluated, written back as
      feedback memory, projected into SAG-style event memory, converted into
@@ -109,7 +116,7 @@ into that loop, but they do not run their own production scheduler.
      treated as promotion-ready.
    - Research and news synthesis uses an evidence gate: source, publication
      date, evidence tier, and conflict status are required before an item can
-     enter research digests or daily briefs.
+     enter research digests, daily briefs, or OpenClaw answer context.
    - `eimemory.governance.autonomous_evolution` mines bad outcomes and replay
      evidence into concrete improvement opportunities.
    - `eimemory.governance.promotion_manager` owns promotion gates, file-update

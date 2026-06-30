@@ -25,6 +25,10 @@ def test_repeated_sops_become_queryable_callable_eiskill_candidates(tmp_path) ->
                         "sop_key": "recall-evidence-refs",
                         "steps": ["route recall", "collect evidence refs", "answer with ids", "run replay"],
                         "target_capability": "memory.recall",
+                        "trigger_conditions": ["memory status answer needs evidence refs"],
+                        "action": "route recall, collect evidence refs, answer with ids, run replay",
+                        "verification": "answer includes record id, commit, ledger id, and timeline",
+                        "rollback": "disable registry entry if replay misses evidence refs",
                         "replay_passed": True,
                         "source_repeat": index + 1,
                     },
@@ -98,5 +102,71 @@ def test_wechat_and_douyin_playbooks_sediment_into_executable_skills(tmp_path) -
         assert skill["rollback"] == "keep draft inactive or delete failed draft"
         registry = runtime.list_eiskills(scope=SCOPE)
         assert registry["skills"][0]["verification"] == "platform draft/post id exists"
+    finally:
+        runtime.close()
+
+
+def test_sop_without_full_execution_contract_does_not_become_callable(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        scope_ref = ScopeRef.from_dict(SCOPE)
+        for index in range(3):
+            runtime.store.append(
+                RecordEnvelope.create(
+                    kind="learning_playbook",
+                    title="Vague SOP fallback",
+                    summary="Do the useful thing when this happens.",
+                    detail="This lacks a concrete verification and rollback contract.",
+                    scope=scope_ref,
+                    source="test.skill_sedimentation",
+                    status="active",
+                    content={
+                        "sop_key": "vague-sop-fallback",
+                        "target_capability": "proactive.judgment",
+                        "trigger_conditions": ["vague situation"],
+                        "action": "do the useful thing",
+                        "replay_passed": True,
+                        "source_repeat": index + 1,
+                    },
+                    meta={
+                        "sop_key": "vague-sop-fallback",
+                        "target_capability": "proactive.judgment",
+                        "replay_passed": True,
+                    },
+                )
+            )
+
+        report = runtime.promote_repeated_sops_to_skill_candidates(scope=SCOPE, min_repeats=3, persist=True)
+
+        assert report["skill_candidate_count"] == 0
+        assert report["blocked_skill_count"] == 1
+        assert report["blocked_skills"][0]["missing_contract"] == ["verification", "rollback"]
+        assert runtime.list_eiskills(scope=SCOPE)["skill_count"] == 0
+
+        legacy = RecordEnvelope.create(
+            kind="learning_playbook",
+            title="legacy incomplete eiskill",
+            summary="Should not run",
+            scope=scope_ref,
+            source="test.skill_sedimentation",
+            status="active",
+            content={
+                "report_type": "eiskill_registry_entry",
+                "skill_id": "legacy-incomplete",
+                "name": "legacy incomplete",
+                "steps": ["try something"],
+                "callable": True,
+            },
+            meta={"report_type": "eiskill_registry_entry", "callable": True},
+        )
+        runtime.store.append(legacy)
+
+        blocked_call = runtime.call_eiskill(skill_id="legacy-incomplete", scope=SCOPE)
+        assert blocked_call == {
+            "ok": False,
+            "error": "eiskill_contract_incomplete",
+            "skill_id": "legacy-incomplete",
+            "missing_contract": ["trigger_conditions", "action", "verification", "rollback"],
+        }
     finally:
         runtime.close()

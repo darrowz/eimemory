@@ -3,6 +3,10 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 
+GATED_ANSWER_KINDS = {"claim_card", "news", "paper_source", "paper_extract"}
+GATED_SOURCE_MARKERS = ("research", "knowledge.synthesis", "daily_brief", "news", "rss", "paper")
+
+
 def grade_research_evidence(record: Any) -> dict[str, Any]:
     payload = _payload(record)
     source = _first(
@@ -51,6 +55,37 @@ def grade_research_evidence(record: Any) -> dict[str, Any]:
     }
 
 
+def filter_answer_evidence(records: list[Any], *, task_type: str = "") -> dict[str, Any]:
+    kept: list[Any] = []
+    excluded: list[dict[str, Any]] = []
+    for record in records:
+        if not _requires_answer_gate(record, task_type=task_type):
+            kept.append(record)
+            continue
+        gate = grade_research_evidence(record)
+        if gate["ok"]:
+            kept.append(record)
+            continue
+        excluded.append(
+            {
+                "record_id": str(_record_id(record)),
+                "kind": str(_record_kind(record)),
+                "title": str(_record_title(record)),
+                "reason": gate["reason"],
+                "reasons": list(gate.get("reasons") or []),
+            }
+        )
+    return {
+        "ok": True,
+        "records": kept,
+        "evidence_gate": {
+            "kept_count": len(kept),
+            "excluded_count": len(excluded),
+            "excluded": excluded,
+        },
+    }
+
+
 def _payload(record: Any) -> dict[str, Any]:
     if hasattr(record, "to_dict"):
         return record.to_dict()
@@ -89,3 +124,51 @@ def _truthy(value: Any) -> bool:
     if isinstance(value, bool):
         return value
     return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on", "conflict", "unresolved"}
+
+
+def _requires_answer_gate(record: Any, *, task_type: str) -> bool:
+    kind = _record_kind(record).lower()
+    if kind in GATED_ANSWER_KINDS:
+        return True
+    payload = _payload(record)
+    source = str(
+        _deep(payload, "source")
+        or _deep(payload, "content", "source")
+        or _deep(payload, "meta", "source")
+        or _deep(payload, "provenance", "source")
+        or ""
+    ).lower()
+    text = " ".join(
+        str(value or "").lower()
+        for value in (
+            task_type,
+            kind,
+            source,
+            _deep(payload, "content", "page_type"),
+            _deep(payload, "meta", "page_type"),
+            _deep(payload, "content", "report_type"),
+            _deep(payload, "meta", "report_type"),
+        )
+    )
+    return kind == "knowledge_page" and any(marker in text for marker in GATED_SOURCE_MARKERS)
+
+
+def _record_id(record: Any) -> str:
+    if hasattr(record, "record_id"):
+        return str(record.record_id)
+    payload = _payload(record)
+    return str(payload.get("record_id") or payload.get("id") or "")
+
+
+def _record_kind(record: Any) -> str:
+    if hasattr(record, "kind"):
+        return str(record.kind)
+    payload = _payload(record)
+    return str(payload.get("kind") or "")
+
+
+def _record_title(record: Any) -> str:
+    if hasattr(record, "title"):
+        return str(record.title)
+    payload = _payload(record)
+    return str(payload.get("title") or "")

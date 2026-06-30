@@ -86,6 +86,7 @@ class OpenClawMemoryHooks:
             limit=8,
         )
         self._merge_policy_search(bundle=bundle, policy_search=policy_search)
+        self._apply_pre_answer_gates(bundle=bundle, query=query, scope=scope, task_context=recall_context)
         recall_context["policy_suggestion_ids"] = self._coerce_string_list(
             bundle.explanation.get("policy_suggestion_ids")
         )
@@ -445,6 +446,56 @@ class OpenClawMemoryHooks:
             or ""
         )
         bundle.explanation["matched_event_type"] = matched_event_type
+
+    def _apply_pre_answer_gates(self, *, bundle: RecallBundle, query: str, scope: dict, task_context: dict) -> None:
+        gate = self._run_ground_truth_gate_safely(query=query, scope=scope)
+        if gate.get("ok"):
+            self._inject_ground_truth_rules(bundle=bundle, gate=gate, scope=scope)
+            bundle.explanation["ground_truth_pre_answer_gate"] = gate
+            task_context["ground_truth_pre_answer_gate"] = {
+                "gate_required": bool(gate.get("gate_required")),
+                "matched_rule_count": int(gate.get("matched_rule_count") or 0),
+                "record_id": str(gate.get("record_id") or ""),
+            }
+        evidence_gate = self._run_answer_evidence_gate_safely(bundle=bundle, task_context=task_context)
+        bundle.explanation["answer_evidence_gate"] = dict(evidence_gate.get("evidence_gate") or {})
+        task_context["answer_evidence_gate"] = dict(evidence_gate.get("evidence_gate") or {})
+
+    def _run_ground_truth_gate_safely(self, *, query: str, scope: dict) -> dict:
+        try:
+            result = self.runtime.build_ground_truth_pre_answer_gate(query=query, scope=scope, persist=True)
+        except Exception:
+            return {"ok": False, "error": "ground_truth_pre_answer_gate_failed"}
+        return result if isinstance(result, dict) else {"ok": False, "error": "invalid_ground_truth_pre_answer_gate"}
+
+    def _inject_ground_truth_rules(self, *, bundle: RecallBundle, gate: dict, scope: dict) -> None:
+        seen = {record.record_id for record in [*bundle.items, *bundle.rules]}
+        scope_ref = ScopeRef.from_dict(scope)
+        for rule in gate.get("rules") or []:
+            if not isinstance(rule, dict):
+                continue
+            rule_id = str(rule.get("rule_id") or "")
+            if not rule_id or rule_id in seen:
+                continue
+            record = self.runtime.store.get_by_id(rule_id, scope=scope_ref)
+            if record is None:
+                continue
+            bundle.rules.append(record)
+            bundle.items.insert(0, record)
+            seen.add(rule_id)
+
+    def _run_answer_evidence_gate_safely(self, *, bundle: RecallBundle, task_context: dict) -> dict:
+        try:
+            result = self.runtime.filter_answer_evidence(
+                list(bundle.items),
+                task_type=str(task_context.get("task_type") or task_context.get("intent") or ""),
+            )
+        except Exception:
+            return {"ok": False, "evidence_gate": {"kept_count": len(bundle.items), "excluded_count": 0, "excluded": []}}
+        if isinstance(result, dict) and result.get("ok") is True:
+            bundle.items = [record for record in result.get("records") or [] if isinstance(record, RecordEnvelope)]
+            return result
+        return {"ok": False, "evidence_gate": {"kept_count": len(bundle.items), "excluded_count": 0, "excluded": []}}
 
     def _audit_prompt_recall(self, *, event: dict, bundle: RecallBundle, injected: bool) -> RecordEnvelope:
         scope = ScopeRef.from_dict(self._scope_from_event(event))

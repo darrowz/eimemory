@@ -38,6 +38,53 @@ def test_capability_dashboard_metrics_report_hard_numbers(tmp_path) -> None:
         runtime.close()
 
 
+def test_capability_dashboard_metrics_include_real_task_outcome_traces(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        scope_ref = ScopeRef.from_dict(SCOPE)
+        _append(
+            runtime,
+            scope_ref,
+            "reflection",
+            "successful outcome trace",
+            {
+                "report_type": "outcome_trace",
+                "schema_version": "outcome_trace.v1",
+                "task_success": True,
+                "outcome": {"success": True},
+            },
+        )
+        _append(
+            runtime,
+            scope_ref,
+            "reflection",
+            "failed outcome trace",
+            {
+                "report_type": "outcome_trace",
+                "schema_version": "outcome_trace.v1",
+                "task_success": False,
+                "outcome": {"success": False},
+            },
+        )
+        event = runtime.store.record_event(
+            {
+                "event_type": "agent_end",
+                "summary": "task completed",
+                "task_type": "coding",
+            },
+            scope=scope_ref,
+        )
+        runtime.record_outcome(event["id"], {"outcome": "good", "success": True, "verified": True}, scope=SCOPE)
+
+        metrics = runtime.build_capability_dashboard_metrics(scope=SCOPE, persist=False)
+
+        assert metrics["metrics"]["task_success_rate"] == 0.667
+        assert metrics["metric_quality"]["task_success_rate"]["sample_count"] == 3
+        assert metrics["sample_counts"]["task_outcomes"] == 3
+    finally:
+        runtime.close()
+
+
 def _append(runtime: Runtime, scope: ScopeRef, kind: str, title: str, meta: dict, *, status: str = "active") -> None:
     runtime.store.append(
         RecordEnvelope.create(

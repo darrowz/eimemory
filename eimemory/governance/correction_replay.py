@@ -143,6 +143,65 @@ def record_user_correction_replay(
     }
 
 
+def build_ground_truth_pre_answer_gate(
+    runtime: Any,
+    *,
+    query: str = "",
+    scope: dict[str, Any] | ScopeRef | None = None,
+    persist: bool = True,
+    limit: int = 100,
+) -> dict[str, Any]:
+    scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+    rules = [
+        _rule_payload(record)
+        for record in runtime.store.list_records(kinds=["rule"], scope=scope_ref, limit=max(1, int(limit)))
+        if _is_ground_truth_rule(record)
+    ]
+    matched = [rule for rule in rules if _rule_matches(query, rule)] or rules
+    replay_gate = _merged_replay_gate(matched)
+    record_id = ""
+    if persist and matched:
+        record = RecordEnvelope.create(
+            kind="learning_eval",
+            title="Ground truth pre-answer gate",
+            summary=f"{len(matched)} T0 ground-truth rule(s) checked before answer.",
+            scope=scope_ref,
+            source="eimemory.correction_replay",
+            status="active",
+            content={
+                "report_type": "ground_truth_pre_answer_gate",
+                "query": str(query or ""),
+                "verdict": "pass",
+                "gate_required": bool(matched),
+                "matched_rule_count": len(matched),
+                "rules": matched,
+                "replay_gate": replay_gate,
+            },
+            meta={
+                "report_type": "ground_truth_pre_answer_gate",
+                "verdict": "pass",
+                "gate_required": bool(matched),
+                "matched_rule_count": len(matched),
+            },
+            evidence=[rule["rule_id"] for rule in matched if rule.get("rule_id")],
+            tags=["ground-truth", "pre-answer-gate"],
+        )
+        runtime.store.append(record)
+        record_id = record.record_id
+    return {
+        "ok": True,
+        "report_type": "ground_truth_pre_answer_gate",
+        "scope": asdict(scope_ref),
+        "query": str(query or ""),
+        "gate_required": bool(matched),
+        "verdict": "pass",
+        "matched_rule_count": len(matched),
+        "rules": matched,
+        "replay_gate": replay_gate,
+        "record_id": record_id,
+    }
+
+
 def _normalize(correction: dict[str, Any]) -> dict[str, str]:
     text = _first(correction.get("text"), correction.get("correction"))
     expected = _first(
@@ -226,11 +285,84 @@ def _first(*values: Any) -> str:
     return ""
 
 
-def _is_trivial(text: str) -> bool:
-    normalized = "".join(str(text or "").strip().lower().split())
-    return normalized in {"ok", "okay", "好", "好的", "收到", "嗯", "嗯嗯", "谢谢", "thanks", "thankyou"}
-
-
 def _stable_hash(*parts: Any) -> str:
     raw = json.dumps(parts, ensure_ascii=False, sort_keys=True, default=str)
     return sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _is_ground_truth_rule(record: RecordEnvelope) -> bool:
+    return (
+        str(record.meta.get("report_type") or record.content.get("report_type") or "") == "ground_truth_behavior_rule"
+        and str(record.meta.get("priority") or record.content.get("priority") or "").upper() == "T0"
+        and bool(record.meta.get("must_use") or record.content.get("must_use"))
+        and str(record.status or "").lower() == "active"
+    )
+
+
+def _rule_payload(record: RecordEnvelope) -> dict[str, Any]:
+    content = dict(record.content or {})
+    return {
+        "rule_id": record.record_id,
+        "title": record.title,
+        "priority": str(content.get("priority") or record.meta.get("priority") or ""),
+        "must_use": bool(content.get("must_use") or record.meta.get("must_use")),
+        "target_capability": str(content.get("target_capability") or record.meta.get("target_capability") or ""),
+        "trigger_condition": str(content.get("trigger_condition") or ""),
+        "expected_behavior": str(content.get("expected_behavior") or record.summary or ""),
+        "gate": str(content.get("gate") or ""),
+        "behavior_check": str(content.get("behavior_check") or ""),
+        "pre_action_protocol": [str(item) for item in (content.get("pre_action_protocol") or [])],
+        "lesson_record_id": str(content.get("lesson_record_id") or record.meta.get("lesson_record_id") or ""),
+        "replay_record_id": str(content.get("replay_record_id") or record.meta.get("replay_record_id") or ""),
+    }
+
+
+def _rule_matches(query: str, rule: dict[str, Any]) -> bool:
+    text = str(query or "").lower()
+    if not text:
+        return True
+    haystack = " ".join(
+        str(rule.get(key) or "").lower()
+        for key in ("target_capability", "trigger_condition", "expected_behavior", "gate", "behavior_check")
+    )
+    tokens = [token for token in _split_words(text) if len(token) >= 2]
+    return not tokens or any(token in haystack for token in tokens)
+
+
+def _split_words(text: str) -> list[str]:
+    import re
+
+    return [part for part in re.split(r"[^0-9a-zA-Z_\u4e00-\u9fff]+", text) if part]
+
+
+def _merged_replay_gate(rules: list[dict[str, Any]]) -> dict[str, Any]:
+    if not rules:
+        return {"expected_behavior": "", "gate": "", "behavior_check": "", "pre_action_protocol": []}
+    first = rules[0]
+    protocol: list[str] = []
+    for rule in rules:
+        for item in rule.get("pre_action_protocol") or []:
+            if item and item not in protocol:
+                protocol.append(str(item))
+    return {
+        "expected_behavior": first.get("expected_behavior", ""),
+        "gate": first.get("gate", ""),
+        "behavior_check": first.get("behavior_check", ""),
+        "pre_action_protocol": protocol,
+    }
+
+
+def _is_trivial(text: str) -> bool:
+    normalized = "".join(str(text or "").strip().lower().split())
+    return normalized in {
+        "ok",
+        "okay",
+        "\u597d",
+        "\u597d\u7684",
+        "\u6536\u5230",
+        "\u55ef",
+        "\u55ef\u55ef",
+        "\u8c22\u8c22",
+        "thanks",
+        "thankyou",
+    }

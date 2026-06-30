@@ -644,6 +644,18 @@ class Runtime:
 
         return record_user_correction_replay(self, correction, scope=scope, persist=persist)
 
+    def build_ground_truth_pre_answer_gate(
+        self,
+        *,
+        query: str = "",
+        scope: dict | None = None,
+        persist: bool = True,
+        limit: int = 100,
+    ) -> dict:
+        from eimemory.governance.correction_replay import build_ground_truth_pre_answer_gate
+
+        return build_ground_truth_pre_answer_gate(self, query=query, scope=scope, persist=persist, limit=limit)
+
     def build_world_model(
         self,
         *,
@@ -1335,6 +1347,16 @@ class Runtime:
             self.store.append(record)
             digest = {**digest, "persisted": True, "persisted_page_id": record.record_id}
         return digest
+
+    def filter_answer_evidence(
+        self,
+        records: list[Any],
+        *,
+        task_type: str = "",
+    ) -> dict:
+        from eimemory.knowledge.evidence_gate import filter_answer_evidence
+
+        return filter_answer_evidence(records, task_type=task_type)
 
 
 def _list_all_runtime_records(

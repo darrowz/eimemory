@@ -11,7 +11,7 @@ def test_user_correction_becomes_lesson_replay_and_graph_edges(tmp_path) -> None
 
     report = runtime.record_user_correction_replay(
         {
-            "text": "不要说做不到，要补能力解决",
+            "text": "\u4e0d\u8981\u8bf4\u505a\u4e0d\u5230\uff0c\u8981\u8865\u80fd\u529b\u89e3\u51b3",
             "context": "assistant refused instead of building missing capability",
             "target_capability": "proactive.judgment",
             "expected_behavior": "When a capability is missing, create a concrete plan, replay, and gated implementation path.",
@@ -49,9 +49,40 @@ def test_user_correction_becomes_lesson_replay_and_graph_edges(tmp_path) -> None
 def test_trivial_user_correction_is_skipped_to_avoid_memory_pollution(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
 
-    report = runtime.record_user_correction_replay({"text": "好的"}, scope=SCOPE, persist=True)
+    report = runtime.record_user_correction_replay({"text": "\u597d\u7684"}, scope=SCOPE, persist=True)
 
     assert report["ok"] is True
     assert report["skipped"] is True
     assert report["skipped_reason"] == "trivial_message"
     assert runtime.store.list_records(kinds=["replay_result", "reflection", "rule"], scope=SCOPE, limit=10) == []
+
+
+def test_ground_truth_rules_are_returned_as_pre_answer_gate(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+
+    replay = runtime.record_user_correction_replay(
+        {
+            "text": "\u56de\u7b54\u7248\u672c\u3001\u90e8\u7f72\u3001\u72b6\u6001\u95ee\u9898\u524d\u5fc5\u987b\u5148\u67e5\u8fd0\u884c\u6001\u8bc1\u636e",
+            "context": "assistant answered version status from memory",
+            "target_capability": "evidence.query_first",
+            "expected_behavior": "Query git/runtime/deploy evidence before answering status questions.",
+        },
+        scope=SCOPE,
+        persist=True,
+    )
+
+    gate = runtime.build_ground_truth_pre_answer_gate(
+        query="\u73b0\u5728 eimemory \u90e8\u7f72\u7248\u672c\u662f\u591a\u5c11\uff1f",
+        scope=SCOPE,
+        persist=True,
+    )
+
+    assert gate["ok"] is True
+    assert gate["gate_required"] is True
+    assert gate["verdict"] == "pass"
+    assert gate["matched_rule_count"] == 1
+    assert gate["rules"][0]["rule_id"] == replay["ground_truth_rule_id"]
+    assert gate["rules"][0]["priority"] == "T0"
+    assert gate["rules"][0]["must_use"] is True
+    assert gate["replay_gate"]["expected_behavior"] == "Query git/runtime/deploy evidence before answering status questions."
+    assert gate["record_id"]

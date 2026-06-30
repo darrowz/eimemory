@@ -21,6 +21,7 @@ def promote_repeated_sops_to_skill_candidates(
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
     groups = _sop_groups(runtime, scope=scope_ref, limit=limit)
     skills: list[dict[str, Any]] = []
+    blocked_skills: list[dict[str, Any]] = []
     candidate_ids: list[str] = []
     registry_ids: list[str] = []
     for key, records in sorted(groups.items()):
@@ -29,6 +30,17 @@ def promote_repeated_sops_to_skill_candidates(
         if not any(_replay_passed(record) for record in records):
             continue
         entry = _skill_entry(key, records, scope=scope_ref)
+        missing_contract = _missing_execution_contract(entry)
+        if missing_contract:
+            blocked_skills.append(
+                {
+                    "sop_key": key,
+                    "target_capability": entry["target_capability"],
+                    "source_record_ids": list(entry.get("source_record_ids") or []),
+                    "missing_contract": missing_contract,
+                }
+            )
+            continue
         if persist:
             candidate = _upsert_skill_candidate(runtime, entry, records, scope=scope_ref)
             registry = _upsert_registry_entry(runtime, entry, candidate.record_id, records, scope=scope_ref)
@@ -44,6 +56,8 @@ def promote_repeated_sops_to_skill_candidates(
         "min_repeats": max(1, int(min_repeats)),
         "sop_group_count": len(groups),
         "skill_candidate_count": len(skills),
+        "blocked_skill_count": len(blocked_skills),
+        "blocked_skills": blocked_skills,
         "candidate_ids": candidate_ids,
         "registry_record_ids": registry_ids,
         "skills": skills,
@@ -81,6 +95,14 @@ def call_eiskill(
     if registry is None:
         return {"ok": False, "error": "eiskill_not_found", "skill_id": str(skill_id)}
     skill = _registry_skill(registry)
+    missing_contract = _missing_execution_contract(skill)
+    if missing_contract:
+        return {
+            "ok": False,
+            "error": "eiskill_contract_incomplete",
+            "skill_id": skill["skill_id"],
+            "missing_contract": missing_contract,
+        }
     record_id = ""
     if persist:
         record = RecordEnvelope.create(
@@ -139,6 +161,7 @@ def _skill_entry(key: str, records: list[RecordEnvelope], *, scope: ScopeRef) ->
     first = records[0]
     target_capability = str(first.meta.get("target_capability") or first.content.get("target_capability") or "proactive.judgment")
     steps = _steps(records)
+    trigger_conditions = _trigger_conditions(records)
     skill_id = f"eiskill_{_stable_hash(key, target_capability, asdict(scope))[:16]}"
     return {
         "skill_id": skill_id,
@@ -148,10 +171,10 @@ def _skill_entry(key: str, records: list[RecordEnvelope], *, scope: ScopeRef) ->
         "repeat_count": len(records),
         "source_record_ids": [record.record_id for record in records],
         "steps": steps,
-        "trigger_conditions": _trigger_conditions(records),
-        "action": _first_payload_text(records, "action", default="Run the standard skill steps."),
-        "verification": _first_payload_text(records, "verification", default="Run replay or inspect concrete output evidence."),
-        "rollback": _first_payload_text(records, "rollback", default="Keep the skill inactive or disable the registry entry."),
+        "trigger_conditions": trigger_conditions,
+        "action": _first_payload_text(records, "action", default=""),
+        "verification": _first_payload_text(records, "verification", default=""),
+        "rollback": _first_payload_text(records, "rollback", default=""),
         "callable": True,
         "status": "sandbox_ready",
         "candidate_id": "",
@@ -265,7 +288,7 @@ def _upsert_registry_entry(
 
 def _registry_skill(record: RecordEnvelope) -> dict[str, Any]:
     content = dict(record.content or {})
-    return {
+    raw_skill = {
         "skill_id": str(content.get("skill_id") or record.record_id),
         "candidate_id": str(content.get("candidate_id") or record.meta.get("candidate_id") or ""),
         "name": str(content.get("name") or record.title),
@@ -276,10 +299,24 @@ def _registry_skill(record: RecordEnvelope) -> dict[str, Any]:
         "action": str(content.get("action") or ""),
         "verification": str(content.get("verification") or ""),
         "rollback": str(content.get("rollback") or ""),
-        "callable": bool(content.get("callable") or record.meta.get("callable")),
         "reuse_count": int(content.get("reuse_count") or record.meta.get("reuse_count") or 0),
         "record_id": record.record_id,
     }
+    missing_contract = _missing_execution_contract(raw_skill)
+    raw_skill["callable"] = bool(content.get("callable") or record.meta.get("callable")) and not missing_contract
+    raw_skill["missing_contract"] = missing_contract
+    return raw_skill
+
+
+def _missing_execution_contract(skill: dict[str, Any]) -> list[str]:
+    missing: list[str] = []
+    trigger_conditions = [str(item).strip() for item in (skill.get("trigger_conditions") or []) if str(item).strip()]
+    if not trigger_conditions:
+        missing.append("trigger_conditions")
+    for key in ("action", "verification", "rollback"):
+        if not str(skill.get(key) or "").strip():
+            missing.append(key)
+    return missing
 
 
 def _find_registry_by_skill_id(runtime: Any, skill_id: str, *, scope: ScopeRef) -> RecordEnvelope | None:
@@ -314,7 +351,7 @@ def _trigger_conditions(records: list[RecordEnvelope]) -> list[str]:
             text = str(item or "").strip()
             if text and text not in result:
                 result.append(text)
-    return result or ["Use when this repeated SOP trigger appears."]
+    return result
 
 
 def _first_payload_text(records: list[RecordEnvelope], key: str, *, default: str) -> str:

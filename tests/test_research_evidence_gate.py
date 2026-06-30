@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from eimemory.knowledge.daily_brief import build_daily_brief
+from eimemory.knowledge.evidence_gate import filter_answer_evidence
 from eimemory.knowledge.synthesis import build_research_digest
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
@@ -65,3 +66,17 @@ def test_daily_brief_hides_ungated_research_and_news_items() -> None:
     assert brief["news_digest"]["items"][0]["title"] == "Good news"
     assert brief["news_digest"]["items"][0]["evidence_gate"]["ok"] is True
     assert brief["source_health"]["evidence_gate"]["excluded_count"] == 1
+
+
+def test_final_answer_context_filters_research_and_news_without_evidence_gate() -> None:
+    good_news = _record("news", "Good news", source_url="https://example.com/news", published_at="2026-06-30")
+    bad_news = _record("news", "Bad news", source_url="", published_at="2026-06-30")
+    ordinary = _record("reflection", "Local operator preference")
+
+    report = filter_answer_evidence([good_news, bad_news, ordinary], task_type="research.answer")
+
+    assert [record.title for record in report["records"]] == ["Good news", "Local operator preference"]
+    assert report["evidence_gate"]["excluded_count"] == 1
+    assert report["evidence_gate"]["excluded"][0]["record_id"] == bad_news.record_id
+    assert report["evidence_gate"]["excluded"][0]["reason"] == "missing_source"
+    assert report["evidence_gate"]["kept_count"] == 2

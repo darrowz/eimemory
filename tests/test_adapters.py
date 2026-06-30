@@ -685,6 +685,61 @@ def test_openclaw_hooks_capture_recall_and_agent_end(tmp_path) -> None:
     assert audits[0].content["session_id"] == "sess-1"
 
 
+def test_openclaw_before_prompt_build_applies_ground_truth_and_evidence_gates(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    hooks = OpenClawMemoryHooks(runtime)
+    event = {
+        "session_id": "sess-gate",
+        "agent_id": "main",
+        "workspace_id": "repo-x",
+        "task_context": {"task_type": "research.answer"},
+        "query": "现在 eimemory 部署版本是多少？",
+    }
+    scope = hooks._scope_from_event(event)
+    runtime.record_user_correction_replay(
+        {
+            "text": "回答版本、部署、状态问题前必须先查运行态证据",
+            "target_capability": "evidence.query_first",
+            "expected_behavior": "Query git/runtime/deploy evidence before answering status questions.",
+        },
+        scope=scope,
+        persist=True,
+    )
+    bad_news = RecordEnvelope.create(
+        kind="news",
+        title="Ungated research news",
+        summary="This news lacks a source and must not enter prompt context.",
+        scope=ScopeRef.from_dict(scope),
+        source="test.openclaw",
+        content={"published_at": "2026-06-30"},
+        meta={"published_at": "2026-06-30"},
+    )
+
+    def fake_recall(*, query: str, scope: dict, task_context: dict, limit: int) -> RecallBundle:
+        return RecallBundle(
+            items=[bad_news],
+            rules=[],
+            reflections=[],
+            confidence=0.8,
+            next_action_hint="",
+            explanation={"query": query, "task_context": dict(task_context)},
+        )
+
+    monkeypatch.setattr(runtime.memory, "recall", fake_recall)
+
+    result = hooks.before_prompt_build(event)
+
+    item_titles = [item["title"] for item in result["memory_bundle"]["items"]]
+    assert "Ground truth behavior: evidence.query_first" in item_titles
+    assert "Ungated research news" not in item_titles
+    assert result["task_context"]["ground_truth_pre_answer_gate"]["matched_rule_count"] == 1
+    assert result["task_context"]["answer_evidence_gate"]["excluded_count"] == 1
+    policy_entries = [
+        entry for entry in result["injection_plan"]["entries"] if entry["record_id"] == result["memory_bundle"]["items"][0]["record_id"]
+    ]
+    assert policy_entries[0]["lane"] == "policy_only"
+
+
 def test_openclaw_before_prompt_build_defaults_to_fast_recall_context(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path)
     hooks = OpenClawMemoryHooks(runtime)
