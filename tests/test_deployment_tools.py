@@ -82,15 +82,19 @@ def test_learning_dashboard_timer_runs_daily_after_nightly() -> None:
     assert "Mon *-*-* 09:00:00" not in timer_text
 
 
-def test_l5_readiness_systemd_timer_runs_every_48_hours_read_only() -> None:
-    unit_text = Path("deploy/systemd/eimemory-learn-l5-readiness.service").read_text(encoding="utf-8")
-    timer_text = Path("deploy/systemd/eimemory-learn-l5-readiness.timer").read_text(encoding="utf-8")
+def test_l5_observation_gate_enables_autonomous_code_after_48_hours() -> None:
+    unit_text = Path("deploy/systemd/eimemory-l5-observation-gate.service").read_text(encoding="utf-8")
+    timer_text = Path("deploy/systemd/eimemory-l5-observation-gate.timer").read_text(encoding="utf-8")
+    script_text = Path("deploy/systemd/eimemory-l5-observation-gate.sh").read_text(encoding="utf-8")
 
-    assert "48-hour L5 readiness assessment" in unit_text
-    assert "/opt/eimemory/current/.venv/bin/eimemory learn l5-readiness --persist" in unit_text
-    assert "learn l5 --apply" not in unit_text
-    assert "OnUnitActiveSec=48h" in timer_text
+    assert "48-hour observation gate" in unit_text
+    assert "ExecStart=%h/.config/systemd/user/eimemory-l5-observation-gate.sh" in unit_text
+    assert "OnActiveSec=48h" in timer_text
     assert "Persistent=true" in timer_text
+    assert "EIMEMORY_AUTONOMOUS_LEARNING_APPLY=1" in script_text
+    assert "EIMEMORY_AUTONOMOUS_CODE_COMMIT=1" in script_text
+    assert "EIMEMORY_AUTONOMOUS_CODE_DEPLOY=0" in script_text
+    assert "systemctl --user disable --now" in script_text
 
 
 def test_nightly_systemd_unit_sets_autonomous_learning_promotion_budget() -> None:

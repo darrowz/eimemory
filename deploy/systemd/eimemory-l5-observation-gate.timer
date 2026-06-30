@@ -1,0 +1,10 @@
+[Unit]
+Description=Run eimemory L5 observation gate after 48 hours
+
+[Timer]
+OnActiveSec=48h
+Persistent=true
+Unit=eimemory-l5-observation-gate.service
+
+[Install]
+WantedBy=timers.target
