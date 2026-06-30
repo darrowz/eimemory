@@ -163,6 +163,7 @@ def build_capability_ledger(
         regression_count = sum(int(item.meta.get("regression_count") or 0) for item in ordered)
         evidence_tiers = sorted({value for item in ordered for value in _record_list(item, "evidence_tiers")})
         evidence_sources = sorted({value for item in ordered for value in _record_list(item, "evidence_sources")})
+        evidence_source_counts = _evidence_source_counts(ordered)
         latest_score = scores[0] if scores else 0.0
         confidence = _ledger_confidence(score=latest_score, evidence_count=evidence_count)
         capabilities[capability] = {
@@ -174,6 +175,7 @@ def build_capability_ledger(
             "regression_count": regression_count,
             "evidence_tiers": evidence_tiers,
             "evidence_sources": evidence_sources,
+            "evidence_source_counts": evidence_source_counts,
             "confidence": confidence,
             "status": _ledger_status(score=latest_score, evidence_count=evidence_count),
             "needs_outcome_recalculation": bool(latest_score < 0.5 or evidence_count < 3),
@@ -192,6 +194,7 @@ def build_capability_ledger(
                 "regression_count": 0,
                 "evidence_tiers": [],
                 "evidence_sources": [],
+                "evidence_source_counts": {},
                 "confidence": "none",
                 "status": "stale_unverified",
                 "needs_outcome_recalculation": True,
@@ -248,6 +251,24 @@ def _record_list(record: RecordEnvelope, key: str) -> list[str]:
     if not isinstance(value, list):
         return []
     return [str(item) for item in value if str(item or "").strip()]
+
+
+def _evidence_source_counts(records: list[RecordEnvelope]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for record in records:
+        items = record.content.get("evidence_items") if isinstance(record.content, dict) else None
+        if isinstance(items, list) and items:
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                source = str(item.get("source_kind") or "").strip()
+                if source:
+                    counts[source] = counts.get(source, 0) + 1
+            continue
+        evidence_count = int(record.meta.get("evidence_count") or len(_record_list(record, "evidence_record_ids")) or 0)
+        for source in _record_list(record, "evidence_sources"):
+            counts[source] = counts.get(source, 0) + max(1, evidence_count)
+    return dict(sorted(counts.items()))
 
 
 def _normalize_date_bound(value: str | None, *, end_of_day: bool) -> str:

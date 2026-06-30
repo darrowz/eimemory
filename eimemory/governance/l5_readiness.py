@@ -36,11 +36,12 @@ def build_l5_readiness_report(
     """Build a read-only L5 readiness report from existing governance evidence."""
 
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
-    ledger = build_capability_ledger(runtime, scope=scope_ref, limit=limit, attribute_outcomes=False)
+    ledger = build_capability_ledger(runtime, scope=scope_ref, limit=limit, attribute_outcomes=True)
     hard_metrics = _safe_hard_metrics(runtime, scope=scope_ref, limit=limit)
     evidence_counts = _evidence_counts(runtime, scope=scope_ref, limit=limit)
+    weak_outcome_evidence = _weak_outcome_evidence(ledger)
     capability_gaps = _capability_gaps(ledger)
-    stage = _stage_for(ledger, hard_metrics, evidence_counts, capability_gaps)
+    stage = _stage_for(ledger, hard_metrics, evidence_counts, capability_gaps, weak_outcome_evidence)
     next_actions = _next_actions(stage, capability_gaps, evidence_counts)
     report = {
         "ok": True,
@@ -56,7 +57,9 @@ def build_l5_readiness_report(
         "risk_boundary": stage["risk_boundary"],
         "evidence_counts": evidence_counts,
         "hard_metrics": hard_metrics.get("metrics", {}),
+        "hard_metric_quality": hard_metrics.get("metric_quality", {}),
         "hard_metric_samples": hard_metrics.get("sample_counts", {}),
+        "weak_outcome_evidence": weak_outcome_evidence,
         "capability_gaps": capability_gaps,
         "next_actions": next_actions,
         "ledger": ledger,
@@ -154,6 +157,19 @@ def _capability_gaps(ledger: dict[str, Any]) -> list[dict[str, Any]]:
         item = dict(capabilities.get(name) or {})
         score = float(item.get("score") or 0.0)
         evidence_count = int(item.get("evidence_count") or 0)
+        outcome_count = _outcome_evidence_count(item)
+        if name in WEAK_CAPABILITIES and outcome_count < 3:
+            gaps.append(
+                {
+                    "capability": name,
+                    "score": round(score, 3),
+                    "evidence_count": evidence_count,
+                    "outcome_evidence_count": outcome_count,
+                    "reason": "insufficient_attributed_outcome_evidence",
+                    "priority": "high",
+                }
+            )
+            continue
         if score >= 0.7 and evidence_count >= 3:
             continue
         gaps.append(
@@ -161,6 +177,7 @@ def _capability_gaps(ledger: dict[str, Any]) -> list[dict[str, Any]]:
                 "capability": name,
                 "score": round(score, 3),
                 "evidence_count": evidence_count,
+                "outcome_evidence_count": outcome_count,
                 "reason": str(item.get("goal_gap_reason") or item.get("status") or "insufficient_evidence"),
                 "priority": "high" if name in WEAK_CAPABILITIES else "medium",
             }
@@ -173,8 +190,10 @@ def _stage_for(
     hard_metrics: dict[str, Any],
     evidence_counts: dict[str, int],
     capability_gaps: list[dict[str, Any]],
+    weak_outcome_evidence: dict[str, Any],
 ) -> dict[str, Any]:
     metrics = dict(hard_metrics.get("metrics") or {})
+    metric_quality = dict(hard_metrics.get("metric_quality") or {})
     replay_count = int(evidence_counts.get("replay_result") or 0)
     l5_artifacts = sum(int(evidence_counts.get(kind) or 0) for kind in ("l5_world_model", "l5_strategic_roadmap", "l5_assessment", "l5_closed_loop"))
     promotion_count = int(evidence_counts.get("promotion_applied") or 0)
@@ -184,18 +203,33 @@ def _stage_for(
     core_ready_count = _ready_count(ledger, set(READINESS_CAPABILITIES))
     task_success = float(metrics.get("task_success_rate") or 0.0)
     recall_hit = float(metrics.get("recall_hit_rate") or 0.0)
+    patch_success = float(metrics.get("auto_patch_success_rate") or 0.0)
+    patch_quality_ok = bool((metric_quality.get("auto_patch_success_rate") or {}).get("sufficient"))
+    weak_outcome_ok = not weak_outcome_evidence.get("missing")
 
     readiness_score = round(
         min(1.0, (core_ready_count / len(READINESS_CAPABILITIES) * 0.45) + (min(replay_count, 10) / 10 * 0.2) + (min(l5_artifacts, 4) / 4 * 0.2) + (min(promotion_count, 5) / 5 * 0.15)),
         3,
     )
+    if not weak_outcome_ok or not patch_quality_ok:
+        readiness_score = min(readiness_score, 0.8)
     common = {
         "readiness_score": readiness_score,
         "risk_boundary": "read-only reporting; no autonomous apply, deployment, external send, spend, deletion, or credential use.",
     }
-    if l5_artifacts >= 4 and weak_gap_count == 0 and replay_count >= 10 and promotion_count >= 3 and rollback_count >= 1:
+    if (
+        l5_artifacts >= 4
+        and weak_gap_count == 0
+        and weak_outcome_ok
+        and replay_count >= 10
+        and promotion_count >= 3
+        and rollback_count >= 1
+        and patch_quality_ok
+        and patch_success >= 0.8
+    ):
         return {
             **common,
+            "readiness_score": 1.0,
             "stage": "L5",
             "label": "evidence-bound co-growth loop",
             "reason": "world model, roadmap, assessment, replay, promotion, and rollback evidence are all present.",
@@ -234,6 +268,21 @@ def _ready_count(ledger: dict[str, Any], capability_names: set[str]) -> int:
         if float(item.get("score") or 0.0) >= 0.7 and int(item.get("evidence_count") or 0) >= 3:
             total += 1
     return total
+
+
+def _weak_outcome_evidence(ledger: dict[str, Any]) -> dict[str, Any]:
+    capabilities = dict(ledger.get("capabilities") or {})
+    counts = {name: _outcome_evidence_count(dict(capabilities.get(name) or {})) for name in sorted(WEAK_CAPABILITIES)}
+    return {
+        "minimum_per_capability": 3,
+        "counts": counts,
+        "missing": [name for name, count in counts.items() if count < 3],
+    }
+
+
+def _outcome_evidence_count(item: dict[str, Any]) -> int:
+    source_counts = item.get("evidence_source_counts") if isinstance(item.get("evidence_source_counts"), dict) else {}
+    return int(source_counts.get("event_outcome") or 0) + int(source_counts.get("outcome_trace") or 0)
 
 
 def _next_actions(stage: dict[str, Any], capability_gaps: list[dict[str, Any]], evidence_counts: dict[str, int]) -> list[str]:

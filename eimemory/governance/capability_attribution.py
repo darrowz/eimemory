@@ -44,7 +44,12 @@ CAPABILITY_TERMS: dict[str, tuple[str, ...]] = {
         "github_star_ranking",
         "github",
         "web search",
-        "source",
+        "source verification",
+        "搜索",
+        "查找",
+        "热门",
+        "趋势",
+        "最高星",
     ),
     "office.daily_task": (
         "office",

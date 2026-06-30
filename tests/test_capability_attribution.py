@@ -90,6 +90,20 @@ def test_low_evidence_business_capability_triggers_recalculation_gap(tmp_path) -
     assert item["goal_gap_reason"] == "insufficient_outcome_evidence"
 
 
+def test_policy_source_field_does_not_pollute_search_discovery(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu", "workspace_id": "office-source-field"}
+    record_outcome_trace(
+        runtime,
+        _trace_payload("trace-office-source", task_type="meeting_notes", summary="Office daily meeting notes verified"),
+        scope=scope,
+    )
+
+    report = attribute_capability_outcomes(runtime, scope=scope, loop_id="attr_source_noise")
+
+    assert "search.discovery" not in report["capabilities"]
+
+
 def test_attribution_covers_research_synthesis_and_device_control(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     scope = {"agent_id": "hongtu", "workspace_id": "mixed"}
@@ -110,3 +124,23 @@ def test_attribution_covers_research_synthesis_and_device_control(tmp_path) -> N
     assert {"research.synthesis", "device.control"} <= set(report["capabilities"])
     assert ledger["capabilities"]["research.synthesis"]["evidence_count"] == 1
     assert ledger["capabilities"]["device.control"]["evidence_count"] == 1
+
+
+def test_attribution_maps_chinese_search_tasks_to_search_discovery(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu", "workspace_id": "search-cn"}
+    record_outcome_trace(
+        runtime,
+        _trace_payload(
+            "trace-search-cn-1",
+            task_type="搜索最近热门项目",
+            summary="按创建时间范围查找最高星项目，并说明热门趋势口径",
+        ),
+        scope=scope,
+    )
+
+    report = attribute_capability_outcomes(runtime, scope=scope, loop_id="attr_search_cn")
+    ledger = build_capability_ledger(runtime, scope=scope)
+
+    assert "search.discovery" in report["capabilities"]
+    assert ledger["capabilities"]["search.discovery"]["evidence_sources"] == ["outcome_trace"]
