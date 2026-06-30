@@ -82,6 +82,17 @@ def test_learning_dashboard_timer_runs_daily_after_nightly() -> None:
     assert "Mon *-*-* 09:00:00" not in timer_text
 
 
+def test_l5_readiness_systemd_timer_runs_every_48_hours_read_only() -> None:
+    unit_text = Path("deploy/systemd/eimemory-learn-l5-readiness.service").read_text(encoding="utf-8")
+    timer_text = Path("deploy/systemd/eimemory-learn-l5-readiness.timer").read_text(encoding="utf-8")
+
+    assert "48-hour L5 readiness assessment" in unit_text
+    assert "/opt/eimemory/current/.venv/bin/eimemory learn l5-readiness --persist" in unit_text
+    assert "learn l5 --apply" not in unit_text
+    assert "OnUnitActiveSec=48h" in timer_text
+    assert "Persistent=true" in timer_text
+
+
 def test_nightly_systemd_unit_sets_autonomous_learning_promotion_budget() -> None:
     unit_text = Path("deploy/systemd/eimemory-nightly.service").read_text(encoding="utf-8")
 

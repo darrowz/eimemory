@@ -1,0 +1,11 @@
+[Unit]
+Description=Run eimemory L5 readiness assessment every 48 hours
+
+[Timer]
+OnBootSec=30min
+OnUnitActiveSec=48h
+Persistent=true
+Unit=eimemory-learn-l5-readiness.service
+
+[Install]
+WantedBy=timers.target
