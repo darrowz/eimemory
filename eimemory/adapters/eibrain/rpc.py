@@ -31,7 +31,7 @@ class EIBrainRPCBridge:
             params = {}
         if not isinstance(params, dict):
             return self._with_contract(self._invalid_request())
-        if method == "memory.recall":
+        if method in {"memory.recall", "memory.search"}:
             limit = params.get("limit", 8)
             scope: BridgeScope = params.get("scope", {})
             task_context = params.get("task_context", {})
@@ -57,7 +57,7 @@ class EIBrainRPCBridge:
             if scope.get("preserve_scope") is True:
                 result = self._filter_recall_result_to_scope(result, resolved_scope)
             return self._with_contract({"ok": True, "result": result})
-        if method == "memory.ingest":
+        if method in {"memory.ingest", "memory.remember"}:
             params = dict(params)
             scope: BridgeScope = params.get("scope", {})
             text = params.get("text", "")
@@ -117,6 +117,68 @@ class EIBrainRPCBridge:
             if record.status == "rejected":
                 result["warnings"] = list(record.meta.get("capture_warnings") or [])
             return self._with_contract({"ok": True, "result": result})
+        if method == "memory.observe":
+            params = dict(params)
+            scope: BridgeScope = params.get("scope", {})
+            observation = params.get("observation", params.get("payload", {}))
+            if not isinstance(observation, dict) or not self._valid_scope(scope):
+                return self._with_contract(self._invalid_request())
+            result = self.runtime.observe_coding_memory(observation, scope=self._resolve_scope(scope))
+            return self._with_contract({"ok": bool(result.get("ok")), "result": result})
+        if method == "memory.graph":
+            params = dict(params)
+            scope: BridgeScope = params.get("scope", {})
+            query = params.get("query", "")
+            limit = params.get("limit", 5)
+            if (
+                not isinstance(query, str)
+                or not query.strip()
+                or not isinstance(limit, int)
+                or isinstance(limit, bool)
+                or limit <= 0
+                or not self._valid_scope(scope)
+            ):
+                return self._with_contract(self._invalid_request())
+            result = self.runtime.query_coding_memory_graph(
+                query,
+                scope=self._resolve_scope(scope),
+                limit=limit,
+            )
+            return self._with_contract({"ok": bool(result.get("ok")), "result": result})
+        if method == "memory.replay":
+            params = dict(params)
+            scope: BridgeScope = params.get("scope", {})
+            query = params.get("query", "")
+            expected_relations = params.get("expected_relations", [])
+            persist = params.get("persist", False)
+            if (
+                not isinstance(query, str)
+                or not query.strip()
+                or not self._valid_list(expected_relations)
+                or not isinstance(persist, bool)
+                or not self._valid_scope(scope)
+            ):
+                return self._with_contract(self._invalid_request())
+            result = self.runtime.run_coding_graph_replay(
+                query=query,
+                expected_relations=[str(item) for item in expected_relations],
+                scope=self._resolve_scope(scope),
+                persist=persist,
+            )
+            return self._with_contract({"ok": bool(result.get("ok")), "result": result})
+        if method == "memory.audit":
+            params = dict(params)
+            scope: BridgeScope = params.get("scope", {})
+            limit = params.get("limit", 50)
+            if (
+                not isinstance(limit, int)
+                or isinstance(limit, bool)
+                or limit <= 0
+                or not self._valid_scope(scope)
+            ):
+                return self._with_contract(self._invalid_request())
+            result = self.runtime.audit_coding_memory_contract(scope=self._resolve_scope(scope), limit=limit)
+            return self._with_contract({"ok": bool(result.get("ok")), "result": result})
         if method in {"memory.record_event", "memory.recordEvent"}:
             params = dict(params)
             scope: BridgeScope = params.get("scope", {})

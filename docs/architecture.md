@@ -57,6 +57,14 @@ into that loop, but they do not run their own production scheduler.
      memory records. Each episode keeps event, entity, decision, artifact,
      failure, and outcome facets, then anchors them with semantic, temporal,
      causal, and entity `memory_edges`.
+   - `eimemory.governance.coding_memory_contract` is the Graph-first Coding
+     Memory Contract. Coding sessions are observed once, then projected into
+     typed graph nodes for agent, project, file, tool, command, error,
+     decision, outcome, replay, and evidence facets. The stable relation layer
+     uses `PERFORMED_BY`, `IN_PROJECT`, `TOUCHED_FILE`, `USED_TOOL`,
+     `RAN_COMMAND`, `FAILED_WITH`, `DECIDED_BECAUSE`, `PRODUCED_OUTCOME`,
+     `VERIFIED_BY`, and `PREVENTED_BY_REPLAY` so coding memory can be queried
+     as evidence paths rather than loose text snippets.
    - `eimemory.governance.capability_replay_packs` gives non-code capabilities
      real replay evidence. The required active set is `memory.recall`,
      `tool.routing`, `knowledge.intake`, `proactive.judgment`, and
@@ -102,6 +110,10 @@ into that loop, but they do not run their own production scheduler.
    - `eimemory.adapters.openclaw` and `eimemory.adapters.eibrain` are boundary
      layers. They translate external events into memory records and recall
      requests without owning the governance loop.
+   - External agent memory access is intentionally narrow. The stable contract
+     is `memory.observe`, `memory.remember`, `memory.search`, `memory.graph`,
+     `memory.replay`, and `memory.audit`. New adapter features should map into
+     those verbs first instead of exposing one-off tools.
 
 7. **Schedulers and deployment**
    - `eimemory nightly` is the daily production orchestrator for intake,
@@ -128,6 +140,7 @@ There is one production self-improvement line:
 signals/outcomes/replay/web evidence
   -> closed_loop event projection
   -> SAG-style event_trace memory + memory_edges
+  -> Graph-first Coding Memory Contract observation/query/replay
   -> governance.autonomous_learning
   -> goal_graph task episodes + capability replay packs + safety replay
   -> governance.autonomous_evolution
@@ -148,6 +161,21 @@ long-term self-evolution auditable: every L5 claim must point back to persisted
 world-model, roadmap, autonomous-learning, replay, reward, rollback, and
 assessment evidence. If any evidence is missing, `l5-assess` downgrades the
 reported level instead of reporting L5.
+
+The coding memory contract is also closed-loop by design:
+
+```text
+memory.observe
+  -> typed coding graph projection
+  -> memory.graph evidence-path retrieval
+  -> memory.replay expected-relation gate
+  -> memory.audit stable-tool and replay evidence check
+  -> next coding behavior
+```
+
+Observation alone is not treated as capability improvement. A coding-memory
+change is considered useful only when replay can prove that the graph preserves
+the relations needed by future coding behavior.
 
 ## Quality Layer
 

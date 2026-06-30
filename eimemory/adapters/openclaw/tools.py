@@ -35,6 +35,35 @@ class OpenClawMemoryTools:
         )
         return {"ok": True, "record": record.to_dict()}
 
+    def memory_remember(self, *, text: str, title: str, scope: dict, memory_type: str = "fact") -> dict:
+        return self.memory_store(text=text, title=title, scope=scope, memory_type=memory_type)
+
+    def memory_observe(self, *, observation: dict, scope: dict) -> dict:
+        return dict(self.runtime.observe_coding_memory(dict(observation or {}), scope=scope))
+
+    def memory_graph(self, *, query: str, scope: dict, limit: int = 5) -> dict:
+        return dict(self.runtime.query_coding_memory_graph(query, scope=scope, limit=limit))
+
+    def memory_replay(
+        self,
+        *,
+        query: str,
+        expected_relations: list[str] | None = None,
+        scope: dict,
+        persist: bool = False,
+    ) -> dict:
+        return dict(
+            self.runtime.run_coding_graph_replay(
+                query=query,
+                expected_relations=expected_relations,
+                scope=scope,
+                persist=bool(persist),
+            )
+        )
+
+    def memory_audit(self, *, scope: dict, limit: int = 50) -> dict:
+        return dict(self.runtime.audit_coding_memory_contract(scope=scope, limit=limit))
+
     def memory_explain(self, *, query: str, task_context: dict, scope: dict, limit: int = 5) -> dict:
         bundle = self.runtime.memory.recall(
             query=query,

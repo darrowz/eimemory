@@ -584,6 +584,55 @@ class Runtime:
             loop_id=loop_id,
         )
 
+    def observe_coding_memory(
+        self,
+        observation: dict,
+        *,
+        scope: dict | None = None,
+    ) -> dict:
+        from eimemory.governance.coding_memory_contract import observe_coding_memory
+
+        return observe_coding_memory(self, observation, scope=scope)
+
+    def query_coding_memory_graph(
+        self,
+        query: str,
+        *,
+        scope: dict | None = None,
+        limit: int = 5,
+    ) -> dict:
+        from eimemory.governance.coding_memory_contract import query_coding_memory_graph
+
+        return query_coding_memory_graph(self, query, scope=scope, limit=limit)
+
+    def run_coding_graph_replay(
+        self,
+        *,
+        query: str,
+        expected_relations: list[str] | None = None,
+        scope: dict | None = None,
+        persist: bool = False,
+    ) -> dict:
+        from eimemory.governance.coding_memory_contract import run_coding_graph_replay
+
+        return run_coding_graph_replay(
+            self,
+            query=query,
+            expected_relations=expected_relations,
+            scope=scope,
+            persist=persist,
+        )
+
+    def audit_coding_memory_contract(
+        self,
+        *,
+        scope: dict | None = None,
+        limit: int = 50,
+    ) -> dict:
+        from eimemory.governance.coding_memory_contract import audit_coding_memory_contract
+
+        return audit_coding_memory_contract(self, scope=scope, limit=limit)
+
     def build_world_model(
         self,
         *,
