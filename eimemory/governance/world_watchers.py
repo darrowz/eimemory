@@ -175,6 +175,14 @@ def collect_world_signals(
 
 
 def _memory_peak_bytes() -> int:
+    if sys.platform.startswith("linux"):
+        try:
+            for line in Path("/proc/self/status").read_text(encoding="utf-8", errors="ignore").splitlines():
+                if line.startswith("VmRSS:"):
+                    parts = line.split()
+                    return int(parts[1]) * 1024 if len(parts) >= 2 else 0
+        except Exception:
+            return 0
     try:
         import resource
     except ImportError:
