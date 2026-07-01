@@ -140,6 +140,47 @@ def test_repeated_bad_outcomes_merge_only_new_source_records(tmp_path) -> None:
     assert stored[0].meta["repeat_count"] == 3
 
 
+def test_world_watch_dedupes_by_signal_hash_without_full_world_signal_scan(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu"}
+    watch = SourceWatch(name="outcomes", kind="local_outcome_trace", enabled=True, dry_run=False)
+    for _ in range(2):
+        runtime.store.append(
+            RecordEnvelope.create(
+                kind="reflection",
+                title="Outcome trace",
+                summary="Tool routing failed",
+                scope=ScopeRef.from_dict(scope),
+                source="test",
+                meta={"report_type": "outcome_trace", "schema_version": "outcome_trace.v1", "primary_label": "missing_tool_call"},
+            )
+        )
+    collect_world_signals(runtime, scope=scope, watches=[watch], dry_run=False, loop_id="learn_test")
+    runtime.store.append(
+        RecordEnvelope.create(
+            kind="reflection",
+            title="Outcome trace",
+            summary="Tool routing failed",
+            scope=ScopeRef.from_dict(scope),
+            source="test",
+            meta={"report_type": "outcome_trace", "schema_version": "outcome_trace.v1", "primary_label": "missing_tool_call"},
+        )
+    )
+    original_list_records = runtime.store.list_records
+
+    def block_world_signal_scan(*args, **kwargs):
+        if kwargs.get("kinds") == ["world_signal"]:
+            raise AssertionError("world_signal dedupe must use indexed signal_hash lookup")
+        return original_list_records(*args, **kwargs)
+
+    monkeypatch.setattr(runtime.store, "list_records", block_world_signal_scan)
+
+    second = collect_world_signals(runtime, scope=scope, watches=[watch], dry_run=False, loop_id="learn_test")
+
+    assert second["signal_count"] == 0
+    assert second["updated_record_ids"]
+
+
 def test_world_watch_uses_incremental_cursor_and_fixed_supervisor_summary(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     scope = {"agent_id": "hongtu"}

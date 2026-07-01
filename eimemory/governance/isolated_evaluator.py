@@ -276,7 +276,9 @@ def _verdict_blocked_reasons(*, roles: dict[str, Any], evaluator_context: dict[s
     if str(roles.get("generator_model") or "").strip() == str(roles.get("evaluator_model") or "").strip():
         blocked.append("model_not_isolated")
     real_execution = _real_execution_summary(evaluator_context)
-    if real_execution["replay_status_passed"] and not real_execution["replay_quality_passed"]:
+    if real_execution["command_failed_count"] > 0:
+        blocked.append("verification_command_failed")
+    elif real_execution["replay_status_passed"] and not real_execution["replay_quality_passed"]:
         blocked.append("insufficient_replay_quality")
     elif not real_execution["passed"]:
         blocked.append("missing_real_execution_evidence")
@@ -295,13 +297,19 @@ def _real_execution_summary(evaluator_context: dict[str, Any]) -> dict[str, Any]
     pass_rate = _replay_pass_rate(replay_gate=replay_gate, replay=replay, replay_status_passed=replay_status_passed)
     threshold = _float_value(_first_present(replay_gate, "threshold", "min_pass_rate"), default=1.0)
     replay_quality_passed = replay_status_passed and sample_count > 0 and fail_count == 0 and pass_rate >= threshold
-    command_passed = any(item.get("ok") is True or _exit_code(item) == 0 for item in verifications)
+    command_total = len(verifications)
+    command_passed_count = sum(1 for item in verifications if _verification_result_passed(item))
+    command_failed_count = command_total - command_passed_count
+    command_passed = command_total > 0 and command_failed_count == 0
     return {
         "passed": bool(replay_quality_passed or command_passed),
         "replay_passed": bool(replay_quality_passed),
         "replay_status_passed": bool(replay_status_passed),
         "replay_quality_passed": bool(replay_quality_passed),
         "command_passed": bool(command_passed),
+        "command_total": command_total,
+        "command_passed_count": command_passed_count,
+        "command_failed_count": command_failed_count,
         "sample_count": sample_count,
         "fail_count": fail_count,
         "pass_rate": pass_rate,
@@ -467,6 +475,14 @@ def _exit_code(item: dict[str, Any]) -> int:
         return int(raw)
     except (TypeError, ValueError):
         return 1
+
+
+def _verification_result_passed(item: dict[str, Any]) -> bool:
+    if item.get("ok") is True:
+        return True
+    if item.get("ok") is False:
+        return False
+    return _exit_code(item) == 0
 
 
 __all__ = [

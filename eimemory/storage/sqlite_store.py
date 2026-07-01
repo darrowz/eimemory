@@ -1309,6 +1309,13 @@ class SqliteRecordStore:
         if not clean_kinds or not key:
             return None
         placeholders = ",".join("?" for _ in clean_kinds)
+        user_clause = "user_id = ?"
+        user_params: list[object] = [scope.user_id]
+        order_prefix = ""
+        if scope.user_id:
+            user_clause = "(user_id = ? OR user_id = '')"
+            user_params = [scope.user_id]
+            order_prefix = "CASE WHEN user_id = ? THEN 1 ELSE 0 END DESC, "
         row = self.conn.execute(
             f"""
             SELECT payload_json
@@ -1317,9 +1324,9 @@ class SqliteRecordStore:
               AND tenant_id = ?
               AND agent_id = ?
               AND workspace_id = ?
-              AND user_id = ?
+              AND {user_clause}
               AND idempotency_key = ?
-            ORDER BY updated_at DESC, record_id DESC
+            ORDER BY {order_prefix}updated_at DESC, record_id DESC
             LIMIT 1
             """,
             [
@@ -1327,8 +1334,9 @@ class SqliteRecordStore:
                 scope.tenant_id,
                 scope.agent_id,
                 scope.workspace_id,
-                scope.user_id,
+                *user_params,
                 key,
+                *([scope.user_id] if scope.user_id else []),
             ],
         ).fetchone()
         if not row:

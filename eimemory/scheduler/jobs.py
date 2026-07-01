@@ -80,7 +80,7 @@ def run_nightly_jobs(
         autonomous_learning_report = _run_autonomous_learning(runtime, scope=scope)
         autonomous_learning_daily_report = _run_autonomous_learning_daily_report(runtime, scope=scope)
         autonomous_learning_dashboard = _run_autonomous_learning_dashboard(runtime, scope=scope)
-        l5_loop_report = _run_l5_loop(runtime, scope=scope)
+        l5_loop_report = _run_l5_loop(runtime, scope=scope, autonomous_learning_report=autonomous_learning_report)
         outcome_evolution_report = _run_outcome_evolution_summary(runtime, scope=scope)
         report = {
             "ok": True,
@@ -231,15 +231,7 @@ def _coerce_non_negative_int(value: Any) -> int:
 
 
 def _run_outcome_evolution_summary(runtime: Runtime, *, scope: dict) -> dict[str, Any]:
-    traces: list[RecordEnvelope] = []
-    limit = 500
-    offset = 0
-    while True:
-        records = runtime.store.list_records(kinds=["reflection"], scope=scope, limit=limit, offset=offset)
-        traces.extend(record for record in records if _is_outcome_trace(record))
-        if len(records) < limit:
-            break
-        offset += limit
+    traces = _list_outcome_trace_records(runtime, scope=scope, limit=500)
     outcome_rules = [
         rule
         for rule in runtime.store.list_records(kinds=["rule"], scope=scope, limit=500)
@@ -253,6 +245,30 @@ def _run_outcome_evolution_summary(runtime: Runtime, *, scope: dict) -> dict[str
         except Exception:
             rollout_ledger = []
     return _outcome_evolution_summary(traces, rules=outcome_rules, rollout_ledger=rollout_ledger)
+
+
+def _list_outcome_trace_records(runtime: Runtime, *, scope: dict, limit: int = 500) -> list[RecordEnvelope]:
+    list_by_meta = getattr(runtime.store, "list_records_by_meta_value", None)
+    if callable(list_by_meta):
+        records = list_by_meta(
+            kinds=["reflection"],
+            scope=scope,
+            meta_key="report_type",
+            meta_value="outcome_trace",
+            limit=limit,
+        )
+        if records is not None:
+            return [record for record in records if _is_outcome_trace(record)]
+    traces: list[RecordEnvelope] = []
+    offset = 0
+    page_size = max(1, min(500, int(limit or 500)))
+    while len(traces) < limit:
+        records = runtime.store.list_records(kinds=["reflection"], scope=scope, limit=page_size, offset=offset)
+        traces.extend(record for record in records if _is_outcome_trace(record))
+        if len(records) < page_size:
+            break
+        offset += page_size
+    return traces[:limit]
 
 
 def _is_outcome_trace(record: RecordEnvelope) -> bool:
@@ -1218,7 +1234,7 @@ def _run_autonomous_learning(runtime: Runtime, *, scope: dict) -> dict[str, Any]
         elapsed_seconds = round(time.monotonic() - started, 3)
         if isinstance(report, dict):
             status = {
-                "ok": bool(report.get("ok", False)),
+                "ok": bool(report.get("ok", False)) and elapsed_seconds <= timeout_seconds,
                 "report_type": "autonomous_learning",
                 "configured": True,
                 "enabled": True,
@@ -1239,14 +1255,23 @@ def _run_autonomous_learning(runtime: Runtime, *, scope: dict) -> dict[str, Any]
                 "loop_id": str(report.get("loop_id") or ""),
                 "goal_count": int(report.get("goal_count") or 0),
                 "thought_count": int(report.get("thought_count") or 0),
+                "candidate_ids": list(report.get("candidate_ids") or ([] if not report.get("candidate_id") else [report.get("candidate_id")])),
                 "candidate_count": len(report.get("candidate_ids") or ([] if not report.get("candidate_id") else [report.get("candidate_id")])),
                 "applied_count": sum(1 for item in (report.get("promotions") or []) if item.get("applied")) or (1 if (report.get("promotion") or {}).get("applied") else 0),
                 "replay_case_count": int((report.get("replay_dataset") or {}).get("case_count") or 0),
+                "real_task_replay": report.get("real_task_replay") or report.get("replay") or {},
+                "replay_dataset": report.get("replay_dataset") or {},
+                "replay_gate_passed": bool(report.get("replay_gate_passed", False)),
+                "promotion": report.get("promotion") or {},
+                "promotions": list(report.get("promotions") or []),
+                "goal_graph": report.get("goal_graph") or {},
+                "blocked_reason": str(report.get("blocked_reason") or ""),
+                "promotion_blocked_reason": str(report.get("promotion_blocked_reason") or ""),
                 "eval_verdict": str(report.get("eval_verdict") or ""),
                 "capability_score_id": str(report.get("capability_score_id") or ""),
                 "regressed": bool((report.get("regression_watch") or {}).get("regressed")),
                 "retention_disabled_count": int((report.get("retention") or {}).get("disabled_count") or 0),
-                "learning_skipped_reason": "",
+                "learning_skipped_reason": "autonomous_learning_timeout_exceeded" if elapsed_seconds > timeout_seconds else "",
             }
             return _with_query_first_evidence(status, report)
     except Exception as exc:
@@ -1268,7 +1293,7 @@ def _run_autonomous_learning(runtime: Runtime, *, scope: dict) -> dict[str, Any]
     }
 
 
-def _run_l5_loop(runtime: Runtime, *, scope: dict) -> dict[str, Any]:
+def _run_l5_loop(runtime: Runtime, *, scope: dict, autonomous_learning_report: dict[str, Any] | None = None) -> dict[str, Any]:
     run_l5 = getattr(runtime, "run_l5_cycle", None)
     if not callable(run_l5):
         return {
@@ -1302,22 +1327,24 @@ def _run_l5_loop(runtime: Runtime, *, scope: dict) -> dict[str, Any]:
     timeout_seconds = _env_int("EIMEMORY_L5_LOOP_TIMEOUT_SECONDS", default=300, minimum=30, maximum=7200)
     try:
         started = time.monotonic()
-        report = _json_safe(
-            run_l5(
-                scope=scope,
-                apply=apply_changes,
-                force=force,
-                max_goals=max_goals,
-                max_promotions=max_promotions,
-                allow_network=allow_network,
-                persist=True,
-            )
-        )
+        kwargs: dict[str, Any] = {
+            "scope": scope,
+            "apply": apply_changes,
+            "force": force,
+            "max_goals": max_goals,
+            "max_promotions": max_promotions,
+            "allow_network": allow_network,
+            "persist": True,
+        }
+        if _is_reusable_autonomous_learning_report(autonomous_learning_report):
+            kwargs["autonomous_learning_report"] = autonomous_learning_report
+        report = _json_safe(run_l5(**kwargs))
         elapsed_seconds = round(time.monotonic() - started, 3)
         if isinstance(report, dict):
             assessment = report.get("assessment") if isinstance(report.get("assessment"), dict) else {}
+            timeout_exceeded = elapsed_seconds > timeout_seconds
             status = {
-                "ok": bool(report.get("ok", False)) and bool(assessment.get("ok", False)),
+                "ok": bool(report.get("ok", False)) and bool(assessment.get("ok", False)) and not timeout_exceeded,
                 "report_type": "l5_loop",
                 "configured": True,
                 "enabled": True,
@@ -1329,7 +1356,7 @@ def _run_l5_loop(runtime: Runtime, *, scope: dict) -> dict[str, Any]:
                 "network_research_enabled": bool(allow_network),
                 "timeout_seconds": timeout_seconds,
                 "elapsed_seconds": elapsed_seconds,
-                "timeout_exceeded": elapsed_seconds > timeout_seconds,
+                "timeout_exceeded": timeout_exceeded,
                 "loop_id": str(report.get("loop_id") or ""),
                 "level": str(assessment.get("level") or ""),
                 "complete": bool(assessment.get("complete")),
@@ -1343,7 +1370,8 @@ def _run_l5_loop(runtime: Runtime, *, scope: dict) -> dict[str, Any]:
                     for item in ((report.get("autonomous_learning") or {}).get("promotions") or [])
                     if isinstance(item, dict) and item.get("applied")
                 ),
-                "l5_skipped_reason": "",
+                "reused_autonomous_learning_report": bool(kwargs.get("autonomous_learning_report")),
+                "l5_skipped_reason": "l5_loop_timeout_exceeded" if timeout_exceeded else "",
             }
             return status
     except Exception as exc:
@@ -1363,6 +1391,17 @@ def _run_l5_loop(runtime: Runtime, *, scope: dict) -> dict[str, Any]:
         "enabled": True,
         "l5_skipped_reason": "invalid_l5_loop_report",
     }
+
+
+def _is_reusable_autonomous_learning_report(report: dict[str, Any] | None) -> bool:
+    if not isinstance(report, dict):
+        return False
+    if not report.get("enabled", True):
+        return False
+    if report.get("timeout_exceeded"):
+        return False
+    skipped = str(report.get("learning_skipped_reason") or "").strip()
+    return not skipped and bool(report.get("loop_id") or report.get("candidate_ids") or report.get("candidate_id"))
 
 
 def _run_autonomous_learning_daily_report(runtime: Runtime, *, scope: dict) -> dict[str, Any]:

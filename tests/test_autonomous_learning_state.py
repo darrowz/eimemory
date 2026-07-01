@@ -5,10 +5,12 @@ import pytest
 from eimemory.api.runtime import Runtime
 from eimemory.governance.learning_state import (
     append_learning_record_once,
+    active_learning_loops,
     complete_learning_loop,
     mark_step,
     start_learning_loop,
 )
+from eimemory.models.records import RecordEnvelope, ScopeRef
 from eimemory.models.records import VALID_KINDS
 
 
@@ -40,6 +42,43 @@ def test_start_learning_loop_blocks_duplicate_active_loop(tmp_path) -> None:
 
     with pytest.raises(RuntimeError, match=loop.record_id):
         start_learning_loop(runtime, scope=scope, trigger="nightly")
+
+
+def test_active_learning_loops_finds_active_loop_beyond_first_page(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu", "workspace_id": "personal"}
+    scope_ref = ScopeRef.from_dict(scope)
+    active = RecordEnvelope.create(
+        kind="learning_loop",
+        title="Old active loop",
+        summary="Still active but no longer in the newest page",
+        scope=scope_ref,
+        source="test",
+        status="running",
+        content={"loop_id": "old-active"},
+        meta={"loop_id": "old-active", "status": "running"},
+    )
+    active.time.created_at = "2026-01-01T00:00:00+00:00"
+    active.time.updated_at = "2026-01-01T00:00:00+00:00"
+    runtime.store.append(active)
+    for idx in range(55):
+        completed = RecordEnvelope.create(
+            kind="learning_loop",
+            title=f"Completed loop {idx}",
+            summary="Closed loop",
+            scope=scope_ref,
+            source="test",
+            status="completed",
+            content={"loop_id": f"completed-{idx}"},
+            meta={"loop_id": f"completed-{idx}", "status": "completed"},
+        )
+        completed.time.created_at = f"2026-02-01T00:{idx % 60:02d}:00+00:00"
+        completed.time.updated_at = f"2026-02-01T00:{idx % 60:02d}:00+00:00"
+        runtime.store.append(completed)
+
+    loops = active_learning_loops(runtime, scope=scope)
+
+    assert [loop.record_id for loop in loops] == [active.record_id]
 
 
 def test_learning_loop_can_complete_and_restart(tmp_path) -> None:
@@ -115,6 +154,34 @@ def test_append_learning_record_once_returns_existing_record(tmp_path) -> None:
 
     assert second.record_id == first.record_id
     assert len(runtime.store.list_records(kinds=["learning_goal"], scope=scope, limit=10)) == 1
+
+
+def test_append_learning_record_once_matches_shared_user_scope_idempotency(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    shared_scope = {"agent_id": "hongtu", "workspace_id": "personal"}
+    user_scope = {"agent_id": "hongtu", "workspace_id": "personal", "user_id": "darrow"}
+    first = append_learning_record_once(
+        runtime,
+        kind="learning_goal",
+        title="Shared loop goal",
+        summary="Shared record should dedupe for a specific user in the same workspace.",
+        scope=shared_scope,
+        loop_id="loop-shared",
+        step_name="goals",
+        semantic_key="memory.recall.shared",
+    )
+    second = append_learning_record_once(
+        runtime,
+        kind="learning_goal",
+        title="User loop goal duplicate",
+        summary="This should reuse the shared idempotency key.",
+        scope=user_scope,
+        loop_id="loop-shared",
+        step_name="goals",
+        semantic_key="memory.recall.shared",
+    )
+
+    assert second.record_id == first.record_id
 
 
 def test_append_learning_record_once_uses_indexed_idempotency_lookup(tmp_path, monkeypatch) -> None:

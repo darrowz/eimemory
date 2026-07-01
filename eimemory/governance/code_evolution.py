@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import tempfile
 from dataclasses import asdict
 from datetime import datetime
@@ -19,7 +20,24 @@ CODE_EVOLUTION_SCHEMA_VERSION = "code_evolution_sandbox.v1"
 class _DefaultSandboxRunner:
     def prepare_worktree(self, *, branch_name: str, root: Path) -> Path:
         path = root / branch_name
-        path.mkdir(parents=True, exist_ok=True)
+        if path.exists():
+            raise FileExistsError(f"sandbox path already exists: {path}")
+        root.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(
+            Path.cwd(),
+            path,
+            ignore=shutil.ignore_patterns(
+                ".git",
+                ".venv",
+                "__pycache__",
+                ".pytest_cache",
+                ".mypy_cache",
+                ".ruff_cache",
+                ".tmp",
+                "reports",
+                "state",
+            ),
+        )
         return path
 
 

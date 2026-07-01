@@ -42,19 +42,54 @@ class OpenClawMemoryHooks:
         text = self._clean_user_memory_text(str(message.get("content") or "").strip())
         persona_feedback = self._record_persona_feedback(event=event, text=text)
         if self._should_capture_message(text=text, event=event):
+            scope = self._scope_from_event(event)
+            idempotency_key = self._message_idempotency_key(event=event, text=text)
+            if idempotency_key:
+                existing = self.runtime.store.get_by_idempotency_key(
+                    kinds=["memory"],
+                    scope=scope,
+                    idempotency_key=idempotency_key,
+                )
+                if existing is not None:
+                    return {"stored": existing.to_dict(), "persona_feedback": persona_feedback}
+            meta = self._identity_meta(event, organ="cognition", modality="text")
+            if idempotency_key:
+                meta["idempotency_key"] = idempotency_key
             stored = self.runtime.memory.ingest(
                 text=text,
                 memory_type="conversation",
                 title="OpenClaw user message",
-                scope=self._scope_from_event(event),
+                scope=scope,
                 source="openclaw.message_received",
                 force_capture=self._force_capture_requested(event),
-                meta=self._identity_meta(event, organ="cognition", modality="text"),
+                meta=meta,
             )
             if stored.status == "rejected":
                 return {"stored": None, "rejected": stored.to_dict(), "persona_feedback": persona_feedback}
             return {"stored": stored.to_dict(), "persona_feedback": persona_feedback}
         return {"stored": None, "persona_feedback": persona_feedback}
+
+    def _message_idempotency_key(self, *, event: dict, text: str) -> str:
+        explicit = self._first_text(
+            event.get("idempotency_key"),
+            event.get("idempotencyKey"),
+            event.get("message_id"),
+            event.get("messageId"),
+            event.get("event_id"),
+            event.get("eventId"),
+            (event.get("message") or {}).get("id") if isinstance(event.get("message"), dict) else "",
+            (event.get("message") or {}).get("messageId") if isinstance(event.get("message"), dict) else "",
+        )
+        if explicit:
+            return "openclaw.message_received:" + self._stable_hash(
+                {
+                    "session_id": self._session_id_from_event(event),
+                    "message_id": explicit,
+                }
+            )[:24]
+        if not text:
+            return ""
+        return ""
 
     def before_prompt_build(self, event: dict) -> dict:
         start = perf_counter()
@@ -1231,6 +1266,17 @@ class OpenClawMemoryHooks:
             "confidence": self._terminal_confidence(correction=correction, verification=verification, outcome=outcome),
             "notify_policy": self._first_text(event.get("notify_policy"), task_context.get("notify_policy")),
         }
+        terminal_key = self._terminal_idempotency_key(event=event, end_kind=end_kind)
+        if terminal_key:
+            event_payload["id"] = "evt_openclaw_" + self._stable_hash(
+                {
+                    "scope": scope,
+                    "end_kind": end_kind,
+                    "terminal_key": terminal_key,
+                }
+            )[:24]
+            event_payload["idempotency_key"] = terminal_key
+            event_payload["timestamp"] = self._first_text(event.get("started_at"), event.get("startedAt")) or event_payload.get("timestamp", "")
         recorded_event = self.runtime.record_event(event_payload, scope=scope)
         outcome_payload = self._terminal_outcome_payload(
             event=event,
@@ -1275,6 +1321,30 @@ class OpenClawMemoryHooks:
             "pattern": pattern,
             **outcome_trace,
         }
+
+    def _terminal_idempotency_key(self, *, event: dict, end_kind: str) -> str:
+        explicit = self._first_text(
+            event.get("idempotency_key"),
+            event.get("idempotencyKey"),
+            event.get("event_id"),
+            event.get("eventId"),
+            event.get("trace_id"),
+            event.get("traceId"),
+            event.get("task_id"),
+            event.get("taskId"),
+            event.get("turn_id"),
+            event.get("turnId"),
+            event.get("request_id"),
+            event.get("requestId"),
+        )
+        if not explicit:
+            return ""
+        return f"openclaw.{end_kind}:" + self._stable_hash(
+            {
+                "session_id": self._session_id_from_event(event),
+                "terminal_id": explicit,
+            }
+        )[:24]
 
     def _task_context_from_event(self, event: dict) -> dict:
         task_context = event.get("task_context") or event.get("taskContext") or {}

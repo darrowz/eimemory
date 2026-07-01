@@ -92,6 +92,31 @@ def test_code_sandbox_create_worktree_is_safe_root(tmp_path, monkeypatch) -> Non
     assert report["sandbox_plan"]["branch_name"]
 
 
+def test_code_sandbox_default_runner_creates_nonempty_sandbox_copy(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = hongtu_scope({})
+    sandbox_root = tmp_path / "sandbox-copy-root"
+
+    report = runtime.run_code_sandbox(
+        incident={
+            "incident_type": "CodeRegression",
+            "title": "Fix broken recall path",
+            "summary": "The recall path crashes with AttributeError after a refactor.",
+        },
+        scope=scope,
+        create_worktree=True,
+        persist_report=False,
+        worktree_root=sandbox_root,
+    )
+
+    path = Path(report["sandbox_plan"]["worktree_path"])
+    assert report["sandbox_plan"]["worktree_created"] is True
+    assert path.exists()
+    assert (path / "pyproject.toml").exists()
+    assert (path / "eimemory").is_dir()
+    assert not (path / ".git").exists()
+
+
 def test_code_sandbox_cli_rejects_policy_fixable_issue(tmp_path, monkeypatch, capsys) -> None:
     monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path / "runtime"))
     incident = {

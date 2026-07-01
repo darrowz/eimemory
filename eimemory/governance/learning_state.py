@@ -85,8 +85,20 @@ def active_learning_loops(
     limit: int = 50,
 ) -> list[RecordEnvelope]:
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
-    loops = runtime.store.list_records(kinds=["learning_loop"], scope=scope_ref, limit=limit)
-    return [loop for loop in loops if str(loop.status or "").strip().lower() in ACTIVE_LOOP_STATUSES]
+    max_results = max(1, int(limit or 50))
+    page_size = max(50, min(500, max_results))
+    active: list[RecordEnvelope] = []
+    offset = 0
+    while True:
+        page = runtime.store.list_records(kinds=["learning_loop"], scope=scope_ref, limit=page_size, offset=offset)
+        for loop in page:
+            if str(loop.status or "").strip().lower() in ACTIVE_LOOP_STATUSES:
+                active.append(loop)
+                if len(active) >= max_results:
+                    return active
+        if len(page) < page_size:
+            return active
+        offset += len(page)
 
 
 def recover_stale_learning_loops(

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from eimemory.api.runtime import Runtime
 from eimemory.governance.snapshot import build_governance_snapshot
+from eimemory.scheduler import jobs
 from eimemory.scheduler.jobs import run_nightly_jobs
+from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
 def test_nightly_jobs_skip_autonomous_learning_by_default(tmp_path, monkeypatch) -> None:
@@ -97,6 +99,132 @@ def test_nightly_jobs_allows_network_research_by_default(tmp_path, monkeypatch) 
 
     assert calls["allow_network"] is True
     assert report["autonomous_learning"]["network_research_enabled"] is True
+
+
+def test_nightly_l5_reuses_same_autonomous_learning_report(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    calls: dict[str, object] = {"learning_count": 0}
+    monkeypatch.setenv("EIMEMORY_AUTONOMOUS_LEARNING_ENABLED", "1")
+    monkeypatch.setenv("EIMEMORY_AUTONOMOUS_LEARNING_DRY_RUN", "0")
+    monkeypatch.setenv("EIMEMORY_L5_LOOP_ENABLED", "1")
+    monkeypatch.setattr(runtime, "run_memory_eval_ci", lambda dataset, *, emit_incidents=False: {"ok": True, "pass_rate": 1.0, "passed_threshold": True, "fail_count": 0, "name": "stub"})
+
+    def fake_learning(**kwargs):
+        calls["learning_count"] = int(calls["learning_count"]) + 1
+        return {
+            "ok": True,
+            "loop_id": "auto-nightly-1",
+            "dry_run": False,
+            "apply": False,
+            "goal_count": 1,
+            "candidate_ids": ["candidate-nightly"],
+            "promotions": [],
+            "real_task_replay": {"ok": True, "sample_count": 1, "pass_count": 1},
+            "replay_dataset": {"case_count": 1},
+            "promotion": {"blocked_reason": "observation_mode_no_apply"},
+        }
+
+    def fake_l5(**kwargs):
+        calls["l5_kwargs"] = kwargs
+        return {
+            "ok": True,
+            "loop_id": "l5-nightly-1",
+            "assessment": {"ok": True, "level": "L5", "complete": True, "missing_evidence": []},
+            "world_model": {"persisted_record_id": "world-1"},
+            "roadmap": {"persisted_record_id": "roadmap-1"},
+            "reward": {"transition_record_id": "reward-1"},
+            "autonomous_learning": kwargs.get("autonomous_learning_report") or {},
+        }
+
+    monkeypatch.setattr(runtime, "run_autonomous_learning_cycle", fake_learning)
+    monkeypatch.setattr(runtime, "run_l5_cycle", fake_l5)
+
+    report = run_nightly_jobs(runtime, scope={"agent_id": "main"})
+
+    assert calls["learning_count"] == 1
+    assert calls["l5_kwargs"]["autonomous_learning_report"]["loop_id"] == "auto-nightly-1"
+    assert report["l5_loop"]["ok"] is True
+
+
+def test_autonomous_learning_timeout_is_unhealthy(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    monkeypatch.setenv("EIMEMORY_AUTONOMOUS_LEARNING_ENABLED", "1")
+    monkeypatch.setenv("EIMEMORY_AUTONOMOUS_LEARNING_TIMEOUT_SECONDS", "30")
+    ticks = iter([100.0, 131.0])
+    monkeypatch.setattr(jobs.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(
+        runtime,
+        "run_autonomous_learning_cycle",
+        lambda **_: {
+            "ok": True,
+            "loop_id": "auto-timeout",
+            "dry_run": False,
+            "apply": False,
+            "goal_count": 1,
+            "candidate_ids": ["candidate-timeout"],
+            "promotions": [],
+        },
+    )
+
+    report = jobs._run_autonomous_learning(runtime, scope={"agent_id": "main"})
+
+    assert report["timeout_exceeded"] is True
+    assert report["ok"] is False
+    assert report["learning_skipped_reason"] == "autonomous_learning_timeout_exceeded"
+
+
+def test_l5_timeout_is_unhealthy(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    monkeypatch.setenv("EIMEMORY_L5_LOOP_ENABLED", "1")
+    monkeypatch.setenv("EIMEMORY_L5_LOOP_TIMEOUT_SECONDS", "30")
+    ticks = iter([200.0, 231.0])
+    monkeypatch.setattr(jobs.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(
+        runtime,
+        "run_l5_cycle",
+        lambda **_: {
+            "ok": True,
+            "loop_id": "l5-timeout",
+            "assessment": {"ok": True, "level": "L5", "complete": True, "missing_evidence": []},
+            "world_model": {"persisted_record_id": "world-1"},
+            "roadmap": {"persisted_record_id": "roadmap-1"},
+            "reward": {"transition_record_id": "reward-1"},
+            "autonomous_learning": {},
+        },
+    )
+
+    report = jobs._run_l5_loop(runtime, scope={"agent_id": "main"})
+
+    assert report["timeout_exceeded"] is True
+    assert report["ok"] is False
+    assert report["l5_skipped_reason"] == "l5_loop_timeout_exceeded"
+
+
+def test_outcome_evolution_summary_uses_indexed_outcome_trace_lookup(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "main"}
+    runtime.store.append(
+        RecordEnvelope.create(
+            kind="reflection",
+            title="Outcome trace",
+            summary="Verification missing",
+            scope=ScopeRef.from_dict(scope),
+            source="test",
+            meta={"report_type": "outcome_trace", "schema_version": "outcome_trace.v1", "primary_label": "verification_missing"},
+        )
+    )
+    original_list_records = runtime.store.list_records
+
+    def block_reflection_scan(*args, **kwargs):
+        if kwargs.get("kinds") == ["reflection"]:
+            raise AssertionError("outcome evolution must not scan all reflection records")
+        return original_list_records(*args, **kwargs)
+
+    monkeypatch.setattr(runtime.store, "list_records", block_reflection_scan)
+
+    report = jobs._run_outcome_evolution_summary(runtime, scope=scope)
+
+    assert report["outcome_trace_count"] == 1
 
 
 def test_governance_snapshot_exposes_autonomous_learning_state(tmp_path, monkeypatch) -> None:

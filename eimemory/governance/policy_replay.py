@@ -223,6 +223,9 @@ def _command_texts(patch: dict[str, Any]) -> list[str]:
     if isinstance(rollback_plan, dict):
         values.extend(_flatten_command_text(rollback_plan.get("commands")))
         values.extend(_flatten_command_text(rollback_plan.get("command")))
+    nested_code_patch = patch.get("code_patch")
+    if isinstance(nested_code_patch, dict):
+        values.extend(_command_texts(nested_code_patch))
     return [value for value in values if value]
 
 

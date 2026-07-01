@@ -21,7 +21,10 @@ def distill_capability_candidate(
     _validate_eval(eval_result)
     scores = dict(eval_result.get("scores") or {})
     tier = _tier_for_target(promotion_target)
-    semantic_key = stable_semantic_key("capability_candidate", experiment_id, promotion_target, summary)
+    semantic_key = stable_semantic_key("capability_candidate", target_capability, promotion_target, summary)
+    existing = _existing_candidate_by_semantic_key(runtime, scope=scope, semantic_key=semantic_key)
+    if existing:
+        return existing
     readable_title = _candidate_title(
         target_capability=target_capability,
         promotion_target=promotion_target,
@@ -70,6 +73,30 @@ def distill_capability_candidate(
         meta={"candidate_id": record.record_id, "target_capability": target_capability},
     )
     return record.record_id
+
+
+def _existing_candidate_by_semantic_key(
+    runtime: Any,
+    *,
+    scope: dict[str, Any] | ScopeRef | None,
+    semantic_key: str,
+) -> str:
+    list_by_meta = getattr(runtime.store, "list_records_by_meta_value", None)
+    if callable(list_by_meta):
+        records = list_by_meta(
+            kinds=["capability_candidate"],
+            scope=scope,
+            meta_key="semantic_key",
+            meta_value=semantic_key,
+            limit=1,
+        )
+        if records:
+            return str(records[0].record_id)
+    scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+    for record in runtime.store.list_records(kinds=["capability_candidate"], scope=scope_ref, limit=500):
+        if str(record.meta.get("semantic_key") or "") == semantic_key:
+            return str(record.record_id)
+    return ""
 
 
 def _candidate_title(*, target_capability: str, promotion_target: str, summary: str) -> str:

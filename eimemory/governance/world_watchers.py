@@ -71,8 +71,7 @@ def collect_world_signals(
     watcher_cursors: list[dict[str, str]] = []
     skipped_disabled = 0
     duplicate_count = 0
-    existing_records = _existing_signal_records(runtime, scope=scope_ref)
-    seen_hashes = set(existing_records)
+    seen_hashes: dict[str, RecordEnvelope | None] = {}
     for watch in normalized:
         if not watch.enabled:
             skipped_disabled += 1
@@ -94,14 +93,15 @@ def collect_world_signals(
             normalized_signals.append(signal)
         for signal in normalized_signals:
             signal_hash = _signal_hash(watch, signal)
-            if signal_hash in seen_hashes:
+            existing = seen_hashes.get(signal_hash) if signal_hash in seen_hashes else _existing_signal_record(runtime, scope=scope_ref, signal_hash=signal_hash)
+            if signal_hash in seen_hashes or existing is not None:
                 duplicate_count += 1
-                existing = existing_records.get(signal_hash)
+                seen_hashes[signal_hash] = existing
                 if existing is not None and not dry_run and not watch.dry_run:
                     if _increment_repeat_count(runtime, existing, signal):
                         updated_ids.append(existing.record_id)
                 continue
-            seen_hashes.add(signal_hash)
+            seen_hashes[signal_hash] = None
             payload = {
                 **signal,
                 "watch_name": watch.name,
@@ -548,19 +548,33 @@ def _signals_from_repo(runtime: Any, *, watch: SourceWatch) -> list[dict[str, An
     return signals
 
 
-def _existing_signal_records(runtime: Any, *, scope: ScopeRef) -> dict[str, RecordEnvelope]:
-    records_by_hash: dict[str, RecordEnvelope] = {}
+def _existing_signal_record(runtime: Any, *, scope: ScopeRef, signal_hash: str) -> RecordEnvelope | None:
+    value = str(signal_hash or "").strip()
+    if not value:
+        return None
+    list_by_meta = getattr(runtime.store, "list_records_by_meta_value", None)
+    if callable(list_by_meta):
+        records = list_by_meta(
+            kinds=["world_signal"],
+            scope=scope,
+            meta_key="signal_hash",
+            meta_value=value,
+            limit=1,
+        )
+        if records:
+            return records[0]
+        if records == []:
+            return None
     offset = 0
     while True:
         page = runtime.store.list_records(kinds=["world_signal"], scope=scope, limit=500, offset=offset)
         for record in page:
-            value = str(record.meta.get("signal_hash") or record.content.get("signal_hash") or "")
-            if value:
-                records_by_hash[value] = record
+            existing_hash = str(record.meta.get("signal_hash") or record.content.get("signal_hash") or "")
+            if existing_hash == value:
+                return record
         if len(page) < 500:
-            break
+            return None
         offset += len(page)
-    return records_by_hash
 
 
 def _with_cursor(runtime: Any, *, scope: ScopeRef, watch: SourceWatch) -> SourceWatch:

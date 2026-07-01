@@ -467,7 +467,8 @@ def test_openclaw_js_bridge_ignores_user_body_json_when_deriving_feishu_scope(tm
     script = """
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const handlers = {};
-plugin.register({ on(name, handler) { handlers[name] = handler; } });
+process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
+plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = handler; } });
 const prompt = [
   'System: Feishu wrapper [msg:msg-safe]',
   '',
@@ -530,7 +531,8 @@ def test_openclaw_js_bridge_only_trusts_leading_wrapper_metadata(tmp_path) -> No
     script = """
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const handlers = {};
-plugin.register({ on(name, handler) { handlers[name] = handler; } });
+process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
+plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = handler; } });
 const prompt = [
   'Please answer this ordinary question first.',
   '',
@@ -1238,6 +1240,34 @@ def test_openclaw_hooks_mark_feishu_as_official_hongtu_channel(tmp_path) -> None
     assert stored["meta"]["runtime_meta"]["hardware_node"] == "honxin"
 
 
+def test_openclaw_message_received_is_idempotent_by_message_id(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    hooks = OpenClawMemoryHooks(runtime)
+    event = {
+        "session_id": "feishu:user:darrow",
+        "agent_id": "main",
+        "workspace_id": "repo-x",
+        "user_id": "darrow",
+        "message_id": "msg-repeat-1",
+        "message": {
+            "role": "user",
+            "content": "Remember this duplicated OpenClaw message only once.",
+        },
+    }
+
+    first = hooks.on_message_received(event)
+    second = hooks.on_message_received(event)
+
+    scope = {"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"}
+    memories = [
+        record
+        for record in runtime.store.list_records(kinds=["memory"], scope=scope, limit=10)
+        if record.source == "openclaw.message_received"
+    ]
+    assert first["stored"]["record_id"] == second["stored"]["record_id"]
+    assert len(memories) == 1
+
+
 def test_openclaw_agent_end_failure_records_incident(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     hooks = OpenClawMemoryHooks(runtime)
@@ -1260,6 +1290,32 @@ def test_openclaw_agent_end_failure_records_incident(tmp_path) -> None:
 
     assert incidents
     assert incidents[0].summary == "tool invocation failed"
+
+
+def test_openclaw_terminal_hook_is_idempotent_by_event_id(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    hooks = OpenClawMemoryHooks(runtime)
+    event = {
+        "session_id": "sess-terminal-idempotent",
+        "agent_id": "main",
+        "workspace_id": "repo-x",
+        "user_id": "darrow",
+        "event_id": "agent-end-repeat-1",
+        "query": "remember terminal idempotency",
+        "assistant_messages": [{"content": "Decision summary: use stable terminal ids."}],
+        "outcome": {"success": True, "verified": True, "verification": "checked"},
+    }
+
+    first = hooks.on_agent_end(event)
+    second = hooks.on_agent_end(event)
+
+    conn = runtime.store.sqlite.conn
+    events = conn.execute("SELECT id FROM events WHERE source = ?", ("openclaw.agent_end",)).fetchall()
+    outcomes = conn.execute("SELECT id FROM event_outcomes WHERE event_id = ?", (first["event"]["id"],)).fetchall()
+    assert first["event"]["id"] == second["event"]["id"]
+    assert first["outcome"]["id"] == second["outcome"]["id"]
+    assert len(events) == 1
+    assert len(outcomes) == 1
 
 
 def test_openclaw_hooks_skip_low_value_user_messages(tmp_path) -> None:

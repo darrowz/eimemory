@@ -129,6 +129,35 @@ def test_verification_returncode_zero_counts_as_real_execution(tmp_path) -> None
     assert verdict.content["real_execution"]["command_passed"] is True
 
 
+def test_verification_results_fail_closed_when_any_command_fails(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+
+    packet = build_evaluation_packet(
+        runtime,
+        scope={"agent_id": "main"},
+        loop_id="loop_iso_mixed_verification",
+        goal={"title": "Mixed verification must not promote"},
+        candidate_kind="code_patch",
+        artifact={"summary": "one smoke command passed but targeted test failed"},
+        generator_claim="The smoke command passed.",
+        replay_gate={"ok": False, "reason": "not_run"},
+        real_task_replay={},
+        verification_results=[
+            {"command": "python -m compileall eimemory", "returncode": 0},
+            {"command": "python -m pytest tests/test_target.py", "returncode": 1},
+        ],
+    )
+    verdict = run_isolated_evaluator(runtime, packet, scope={"agent_id": "main"}, loop_id="loop_iso_mixed_verification")
+    judgment = judge_stop_condition(runtime, verdict, scope={"agent_id": "main"}, loop_id="loop_iso_mixed_verification")
+
+    assert verdict.content["verdict"] == "fail"
+    assert verdict.content["promotion_allowed"] is False
+    assert "verification_command_failed" in verdict.content["blocked_reasons"]
+    assert verdict.content["real_execution"]["command_passed"] is False
+    assert verdict.content["real_execution"]["command_failed_count"] == 1
+    assert judgment.content["decision"] == "require_human"
+
+
 def test_stop_judge_stops_only_after_passed_isolated_verdict(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     scope = {"agent_id": "main"}

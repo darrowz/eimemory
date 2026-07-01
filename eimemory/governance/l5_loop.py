@@ -181,6 +181,7 @@ def run_l5_cycle(
     allow_network: bool | None = True,
     loop_id: str = "",
     persist: bool = True,
+    autonomous_learning_report: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     scope_ref = _scope_ref(scope)
     resolved_loop_id = loop_id or f"l5_{now_iso().replace('-', '').replace(':', '').replace('+', '_')}"
@@ -200,16 +201,22 @@ def run_l5_cycle(
         capabilities=CORE_GOAL_CAPABILITIES,
         loop_id=resolved_loop_id,
     )
-    autonomous = runtime.run_autonomous_learning_cycle(
-        scope=asdict(scope_ref),
-        apply=bool(apply),
-        dry_run=False,
-        full=True,
-        force=bool(force),
-        max_goals=max(1, int(max_goals or 1)),
-        max_promotions=max(0, int(max_promotions or 0)),
-        allow_network=allow_network,
+    autonomous = (
+        dict(autonomous_learning_report)
+        if isinstance(autonomous_learning_report, dict)
+        else runtime.run_autonomous_learning_cycle(
+            scope=asdict(scope_ref),
+            apply=bool(apply),
+            dry_run=False,
+            full=True,
+            force=bool(force),
+            max_goals=max(1, int(max_goals or 1)),
+            max_promotions=max(0, int(max_promotions or 0)),
+            allow_network=allow_network,
+        )
     )
+    if isinstance(autonomous_learning_report, dict):
+        autonomous["reused_by_l5"] = True
     self_continuity = build_self_continuity_report(
         runtime,
         scope=scope_ref,

@@ -74,6 +74,35 @@ def test_distill_capability_candidate_uses_specific_readable_title(tmp_path) -> 
     assert "Generate a policy/SOP/eval case" not in candidate.summary
 
 
+def test_distill_capability_candidate_dedupes_across_loops_by_semantic_key(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu"}
+
+    first = distill_capability_candidate(
+        runtime,
+        scope=scope,
+        loop_id="learn_loop_a",
+        experiment_id="experiment-a",
+        eval_result=PASSING_EVAL,
+        promotion_target="tool_route",
+        summary="Use memory-first routing when answering stable project facts.",
+        target_capability="tool.routing",
+    )
+    second = distill_capability_candidate(
+        runtime,
+        scope=scope,
+        loop_id="learn_loop_b",
+        experiment_id="experiment-b",
+        eval_result=PASSING_EVAL,
+        promotion_target="tool_route",
+        summary="Use memory-first routing when answering stable project facts.",
+        target_capability="tool.routing",
+    )
+
+    assert second == first
+    assert len(runtime.store.list_records(kinds=["capability_candidate"], scope=scope, limit=10)) == 1
+
+
 def test_distillation_rejects_low_safety_eval(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
 
@@ -911,6 +940,56 @@ def test_code_patch_blocks_dirty_repo_before_mutation_when_committing(tmp_path, 
     assert subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip() == seed_sha
 
 
+def test_code_patch_requires_explicit_allowed_files_before_mutation(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = {"agent_id": "hongtu", "workspace_id": "code", "user_id": "darrow"}
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setenv("EIMEMORY_AUTONOMOUS_CODE_REPO", str(repo))
+    target = repo / "unlisted.py"
+    target.write_text("VALUE = 'old'\n", encoding="utf-8")
+    experiment_id = create_sandbox_experiment(
+        runtime,
+        scope=scope,
+        loop_id="learn_test",
+        learning_goal_id="goal_1",
+        research_note_id="note_1",
+        candidate_kind="code_patch",
+        candidate_patch={
+            "summary": "Invalid missing allowed files",
+            "repo_root": str(repo),
+            "apply_to_repo": True,
+            "deploy_to_production": False,
+            "commit_to_repo": False,
+            "file_updates": [{"path": "unlisted.py", "content": "VALUE = 'new'\n"}],
+            "verification_commands": [[sys.executable, "-c", "print('ok')"]],
+        },
+    )
+    candidate_id = distill_capability_candidate(
+        runtime,
+        scope=scope,
+        loop_id="learn_test",
+        experiment_id=experiment_id,
+        eval_result={**PASSING_EVAL, "gate_bundle": _l2_gate_bundle()},
+        promotion_target="code_patch",
+        summary="Code patch candidate",
+        target_capability="code.implementation",
+    )
+
+    result = promote_candidate(
+        runtime,
+        candidate_id=candidate_id,
+        scope=scope,
+        loop_id="learn_test",
+        eval_result={**PASSING_EVAL, "gate_bundle": _l2_gate_bundle()},
+        health={"ok": True},
+    )
+
+    assert result["ok"] is False
+    assert result["blocked_reason"] == "code_patch_requires_allowed_files"
+    assert target.read_text(encoding="utf-8") == "VALUE = 'old'\n"
+
+
 def test_code_patch_requires_strict_rollout_contract(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path / "runtime")
     scope = {"agent_id": "hongtu", "workspace_id": "code", "user_id": "darrow"}
@@ -1005,6 +1084,67 @@ def test_code_patch_rolls_back_when_post_deploy_health_fails(tmp_path, monkeypat
     assert result["side_effect"]["rollback"]["ok"] is True
     assert rollback_marker.read_text(encoding="utf-8") == "rolled back"
     ledger = runtime.get_policy_rollout_ledger(scope=scope, action="rolled_back", limit=10)
+    assert ledger[0]["source_opportunity_id"] == candidate_id
+
+
+def test_code_patch_marks_rollback_failed_when_rollback_command_fails(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = {"agent_id": "hongtu", "workspace_id": "code", "user_id": "darrow"}
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+    target = repo / "module.py"
+    target.write_text("VALUE = 'old'\n", encoding="utf-8")
+    subprocess.run(["git", "add", "module.py"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "seed"], cwd=repo, check=True)
+    monkeypatch.setenv("EIMEMORY_AUTONOMOUS_CODE_REPO", str(repo))
+    experiment_id = create_sandbox_experiment(
+        runtime,
+        scope=scope,
+        loop_id="learn_test",
+        learning_goal_id="goal_1",
+        research_note_id="note_1",
+        candidate_kind="code_patch",
+        candidate_patch={
+            "summary": "Patch module with failing health and failing rollback command",
+            "repo_root": str(repo),
+            "apply_to_repo": True,
+            "deploy_to_production": True,
+            "commit_to_repo": True,
+            "allowed_files": ["module.py"],
+            "file_updates": [{"path": "module.py", "content": "VALUE = 'new'\n"}],
+            "verification_commands": [[sys.executable, "-c", "print('tests ok')"]],
+            "deployment_commands": [[sys.executable, "-c", "print('release=/tmp/bad-release')"]],
+            "post_deploy_health_commands": [[sys.executable, "-c", "raise SystemExit(9)"]],
+            "rollback_plan": {"commands": [[sys.executable, "-c", "raise SystemExit(6)"]]},
+        },
+    )
+    candidate_id = distill_capability_candidate(
+        runtime,
+        scope=scope,
+        loop_id="learn_test",
+        experiment_id=experiment_id,
+        eval_result={**PASSING_EVAL, "gate_bundle": _l2_gate_bundle()},
+        promotion_target="code_patch",
+        summary="Code patch candidate",
+        target_capability="code.implementation",
+    )
+
+    result = promote_candidate(
+        runtime,
+        candidate_id=candidate_id,
+        scope=scope,
+        loop_id="learn_test",
+        eval_result={**PASSING_EVAL, "gate_bundle": _l2_gate_bundle()},
+        health={"ok": True},
+    )
+
+    assert result["ok"] is False
+    assert result["blocked_reason"] == "code_patch_post_deploy_health_failed"
+    assert result["side_effect"]["rollback"]["ok"] is False
+    assert result["side_effect"]["rolled_back"] is False
+    assert result["side_effect"]["rollback_failed"] is True
+    ledger = runtime.get_policy_rollout_ledger(scope=scope, action="rollback_failed", limit=10)
     assert ledger[0]["source_opportunity_id"] == candidate_id
 
 

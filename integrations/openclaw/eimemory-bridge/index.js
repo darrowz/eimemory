@@ -68,6 +68,20 @@ function cacheKeyFor(kind, hook, payload) {
   return `${kind}:${hook}:${stableJson(payload)}`;
 }
 
+function normalizeTraceFields(event) {
+  return {
+    event_id: String(event?.event_id || event?.eventId || event?.id || ''),
+    message_id: String(event?.message_id || event?.messageId || event?.message?.id || event?.message?.messageId || ''),
+    trace_id: String(event?.trace_id || event?.traceId || event?.trace?.id || ''),
+    idempotency_key: String(event?.idempotency_key || event?.idempotencyKey || ''),
+    task_id: String(event?.task_id || event?.taskId || ''),
+    turn_id: String(event?.turn_id || event?.turnId || ''),
+    request_id: String(event?.request_id || event?.requestId || ''),
+    started_at: String(event?.started_at || event?.startedAt || ''),
+    attempt: String(event?.attempt || event?.attempt_id || event?.attemptId || ''),
+  };
+}
+
 function resolveTransportLedgerPath() {
   const configured = (process.env.EIMEMORY_BRIDGE_TRANSPORT_LEDGER || '').trim();
   if (configured) {
@@ -186,6 +200,7 @@ function normalizeEventPayload(hook, event) {
       return {
         session_id: String(event?.sessionId || event?.session_id || ''),
         ...scope,
+        ...normalizeTraceFields(event),
         capture_memory: Boolean(event?.capture_memory || event?.captureMemory),
         message: {
           role,
@@ -200,6 +215,7 @@ function normalizeEventPayload(hook, event) {
     return {
       session_id: normalizeSessionId(event, promptMetadata),
       ...scope,
+      ...normalizeTraceFields(event),
       query: cleanPromptQuery(rawQuery),
       raw_query: rawQuery,
       task_context: normalizeRecallContext(event?.task_context || event?.taskContext || {}),
@@ -212,6 +228,7 @@ function normalizeEventPayload(hook, event) {
   return {
     session_id: normalizeSessionId(event),
     ...scope,
+    ...normalizeTraceFields(event),
     query: cleanPromptQuery(rawQuery),
     raw_query: rawQuery,
     task_context: taskContext,
@@ -548,10 +565,13 @@ function normalizeContent(content) {
 function invokeHook(hook, event) {
   const payload = normalizeEventPayload(hook, event);
   const key = cacheKeyFor('hook', hook, payload);
-  pruneHookCache();
-  const cached = hookResultCache.get(key);
-  if (cached) {
-    return cached.value;
+  const cacheable = hook === 'before_prompt_build';
+  if (cacheable) {
+    pruneHookCache();
+    const cached = hookResultCache.get(key);
+    if (cached) {
+      return cached.value;
+    }
   }
   const command = resolveHookCommand();
   const result = spawnSync(command[0], [...command.slice(1), hook], {
@@ -566,7 +586,9 @@ function invokeHook(hook, event) {
     throw new Error(result.stderr || result.stdout || `eimemory hook ${hook} failed`);
   }
   const parsed = JSON.parse(result.stdout || '{}');
-  hookResultCache.set(key, { createdAt: nowMs(), value: parsed });
+  if (cacheable) {
+    hookResultCache.set(key, { createdAt: nowMs(), value: parsed });
+  }
   return parsed;
 }
 
@@ -832,7 +854,24 @@ function registerMemoryE2ETool(api) {
       if (input.user_id) {
         args.push('--scope-user', String(input.user_id));
       }
-      const result = invokeCli(args);
+      let result;
+      try {
+        result = invokeCli(args);
+      } catch (error) {
+        const command = resolveCliCommand();
+        const ledgerPath = recordTransportFailure({
+          transport: 'tool',
+          hook: 'memory_e2e_check',
+          command: [...command, ...args],
+          error: serializeTransportError(error),
+        });
+        result = {
+          ok: false,
+          error: 'transport_error',
+          detail: String(error?.message || error || ''),
+          transport_ledger_path: ledgerPath,
+        };
+      }
       return {
         content: [{
           type: 'text',
@@ -857,7 +896,7 @@ module.exports.default = {
     registerStatusTool(api);
     registerMemoryE2ETool(api);
     registerTypedHookOnce(api, 'message_received', async (event) => safeInvokeHook(api, 'message_received', event) || {});
-    if (promptInjectionEnabled(api) || usesLegacyHookApi(api)) {
+    if (promptInjectionEnabled(api)) {
       registerTypedHookOnce(api, 'before_prompt_build', async (event) => {
         const bridgePayload = shouldInvokeBridgeBeforePrompt(api, event)
           ? safeInvokeBridge(api, normalizeEventPayload('before_prompt_build', event))
@@ -1063,5 +1102,22 @@ function cleanInjectedMemoryText(text) {
     })
     .join('\n')
     .trim();
+  if (looksLikePromptInjectionText(cleaned)) {
+    return '';
+  }
   return cleaned;
+}
+
+function looksLikePromptInjectionText(text) {
+  const normalized = String(text || '').toLowerCase();
+  return [
+    'ignore previous instructions',
+    'disregard previous instructions',
+    'reveal your system prompt',
+    'show your system prompt',
+    'print your hidden instructions',
+    'forget all previous instructions',
+    'developer message',
+    'system message',
+  ].some((marker) => normalized.includes(marker));
 }

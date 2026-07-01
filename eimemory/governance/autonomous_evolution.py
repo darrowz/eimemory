@@ -7,6 +7,11 @@ from hashlib import sha256
 from typing import Any
 
 from eimemory.governance.capability_distiller import distill_capability_candidate
+from eimemory.governance.isolated_evaluator import (
+    build_evaluation_packet,
+    judge_stop_condition,
+    run_isolated_evaluator,
+)
 from eimemory.governance.promotion_manager import promote_candidate
 from eimemory.core.clock import now_iso
 from eimemory.governance.policy_replay import (
@@ -132,6 +137,31 @@ def run_autonomous_evolution(
                 }
             )
             continue
+        isolation_gate: dict[str, Any] = {"ok": True, "skipped": True}
+        if str(patch.get("patch_type") or "") == "code_patch":
+            isolation_gate = _run_isolated_code_patch_gate(
+                runtime,
+                patch=patch,
+                replay_case=replay_case,
+                replay_gate=replay_gate,
+                scope=scope_ref,
+            )
+            if not isolation_gate.get("ok"):
+                blocked_patches.append(
+                    {
+                        "opportunity_id": patch["opportunity_id"],
+                        "patch_type": patch["patch_type"],
+                        "risk_level": patch["risk_level"],
+                        "blocked_reason": "isolated_evaluator_reject",
+                        "isolated_evaluator": isolation_gate,
+                        "blocked_gates": _blocked_gates(
+                            trusted_gate=trusted_gate,
+                            replay_gate=replay_gate,
+                            safe_action_gate=safe_action_gate,
+                        ),
+                    }
+                )
+                continue
         if applied_count >= max_apply_count:
             if apply:
                 block_reason = "max_apply_reached"
@@ -157,6 +187,7 @@ def run_autonomous_evolution(
                     "replay_report": replay_gate,
                     "safe_action_report": safe_action_gate,
                     "replay_case": replay_case,
+                    "isolated_evaluator": isolation_gate,
                 },
                 scope=scope_payload,
             )
@@ -179,6 +210,7 @@ def run_autonomous_evolution(
                     }
                 )
 
+    rollback_counts = _rollback_counts(applied_patches=applied_patches, blocked_patches=blocked_patches)
     report: dict[str, Any] = {
         "ok": True,
         "apply": bool(apply),
@@ -199,7 +231,8 @@ def run_autonomous_evolution(
         "applied_patches": applied_patches,
         "promotion_ledger_ids": [str(item.get("promotion_id") or "") for item in applied_patches if item.get("promotion_id")],
         "rollout_ledger_ids": [str(item.get("rollout_ledger_id") or "") for item in applied_patches if item.get("rollout_ledger_id")],
-        "rolled_back_count": 0,
+        "rolled_back_count": rollback_counts["rolled_back_count"],
+        "rollback_failed_count": rollback_counts["rollback_failed_count"],
         "blocked_patches": blocked_patches,
         "circuit_breaker": {"open": False, "reason": ""},
         "max_apply": max_apply_count,
@@ -533,6 +566,108 @@ def _apply_safe_patch(runtime: Any, patch: dict[str, Any], *, scope: dict[str, A
         "promotion_budget_decision": budget_decision,
         "applied": bool(applied),
         "blocked_reason": "" if applied else (budget_decision or "pattern_not_active"),
+    }
+
+
+def _rollback_counts(*, applied_patches: list[dict[str, Any]], blocked_patches: list[dict[str, Any]]) -> dict[str, int]:
+    results: list[dict[str, Any]] = [dict(item) for item in applied_patches]
+    for item in blocked_patches:
+        apply_result = item.get("apply_result")
+        if isinstance(apply_result, dict):
+            results.append(dict(apply_result))
+    rolled_back_count = 0
+    rollback_failed_count = 0
+    for result in results:
+        side_effect = result.get("side_effect") if isinstance(result.get("side_effect"), dict) else {}
+        rollback = side_effect.get("rollback") if isinstance(side_effect.get("rollback"), dict) else {}
+        rolled_back = bool(result.get("rolled_back") or side_effect.get("rolled_back") or rollback.get("ok"))
+        rollback_failed = bool(result.get("rollback_failed") or side_effect.get("rollback_failed"))
+        if rolled_back:
+            rolled_back_count += 1
+        if rollback_failed:
+            rollback_failed_count += 1
+    return {"rolled_back_count": rolled_back_count, "rollback_failed_count": rollback_failed_count}
+
+
+def _run_isolated_code_patch_gate(
+    runtime: Any,
+    *,
+    patch: dict[str, Any],
+    replay_case: dict[str, Any],
+    replay_gate: dict[str, Any],
+    scope: ScopeRef,
+) -> dict[str, Any]:
+    loop_id = f"autonomous_evolution:{patch.get('opportunity_id') or 'code_patch'}:isolated_evaluator"
+    code_patch = dict(patch.get("code_patch") or {})
+    try:
+        packet = build_evaluation_packet(
+            runtime,
+            scope=scope,
+            loop_id=loop_id,
+            goal={
+                "title": str(patch.get("summary") or code_patch.get("summary") or "Autonomous code patch"),
+                "target_capability": str(code_patch.get("target_capability") or "code.implementation"),
+                "success_criteria": str(patch.get("success_criteria") or code_patch.get("summary") or ""),
+            },
+            candidate_kind="code_patch",
+            artifact={
+                "summary": str(patch.get("summary") or code_patch.get("summary") or ""),
+                "target_capability": str(code_patch.get("target_capability") or "code.implementation"),
+                "file_updates": _code_patch_file_updates(code_patch),
+                "replay_case_ids": [str(replay_case.get("case_id") or replay_case.get("id") or "")],
+            },
+            generator_claim=str(patch.get("summary") or code_patch.get("summary") or ""),
+            replay_gate=replay_gate,
+            real_task_replay=_real_task_replay_from_replay_gate(replay_gate),
+            verification_results=[],
+        )
+        verdict = run_isolated_evaluator(runtime, packet, scope=scope, loop_id=loop_id)
+        judgment = judge_stop_condition(runtime, verdict, scope=scope, loop_id=loop_id)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "blocked_reasons": ["isolated_evaluator_error"],
+            "error": str(exc),
+            "packet_id": "",
+            "verdict_id": "",
+            "stop_judgment_id": "",
+        }
+    verdict_content = dict(verdict.content or {})
+    judgment_content = dict(judgment.content or {})
+    blocked_reasons = list(verdict_content.get("blocked_reasons") or [])
+    blocked_reasons.extend(
+        reason
+        for reason in list(judgment_content.get("blocked_reasons") or [])
+        if reason not in blocked_reasons
+    )
+    ok = bool(verdict_content.get("promotion_allowed")) and bool(judgment_content.get("promotion_allowed"))
+    return {
+        "ok": ok,
+        "packet_id": packet.record_id,
+        "verdict_id": verdict.record_id,
+        "stop_judgment_id": judgment.record_id,
+        "verdict": str(verdict_content.get("verdict") or ""),
+        "decision": str(judgment_content.get("decision") or ""),
+        "blocked_reasons": blocked_reasons,
+        "model_roles": dict(judgment_content.get("model_roles") or verdict_content.get("model_roles") or {}),
+    }
+
+
+def _real_task_replay_from_replay_gate(replay_gate: dict[str, Any]) -> dict[str, Any]:
+    ok = bool(replay_gate.get("ok"))
+    pass_rate = _coerce_float(replay_gate.get("pass_rate"), default=1.0 if ok else 0.0)
+    sample_count = int(_coerce_float(replay_gate.get("sample_count") or replay_gate.get("case_count") or 1, default=1.0))
+    fail_count = 0 if ok else max(1, sample_count)
+    return {
+        "ok": ok,
+        "report_type": "real_task_replay",
+        "verdict": "pass" if ok else "fail",
+        "pass_rate": pass_rate,
+        "threshold": _coerce_float(replay_gate.get("threshold"), default=0.6),
+        "sample_count": max(1, sample_count),
+        "pass_count": max(0, sample_count - fail_count),
+        "fail_count": fail_count,
+        "source": "autonomous_evolution_isolated_gate",
     }
 
 

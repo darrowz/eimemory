@@ -262,3 +262,23 @@ def test_safe_action_gate_blocks_high_risk_execution_commands() -> None:
     assert report["ok"] is False
     assert "destructive_change" in report["blocked_categories"]
     assert "system_disruption" in report["blocked_categories"]
+
+
+def test_safe_action_gate_blocks_nested_code_patch_commands() -> None:
+    report = evaluate_safe_action_gate(
+        patch={
+            "patch_type": "code_patch",
+            "pattern": "safe looking direct repo patch",
+            "interpreted_intent": "apply a verified source edit",
+            "execution_policy": ["Run normal verification."],
+            "code_patch": {
+                "verification_commands": [["python", "-m", "pytest", "tests/test_target.py"]],
+                "rollback_plan": {"commands": [["bash", "-lc", "rm -rf /tmp/eimemory-cache"]]},
+                "deployment_commands": [["bash", "-lc", "shutdown now"]],
+            },
+        }
+    )
+
+    assert report["ok"] is False
+    assert "destructive_change" in report["blocked_categories"]
+    assert "system_disruption" in report["blocked_categories"]

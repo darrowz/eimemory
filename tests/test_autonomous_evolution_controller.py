@@ -296,3 +296,106 @@ def test_autonomous_evolution_applies_structured_code_patch_from_bad_outcome(tmp
     ledger = runtime.get_policy_rollout_ledger(scope=scope, action="capability_promotion", limit=10)
     assert report["rollout_ledger_ids"] == [report["applied_patches"][0]["rollout_ledger_id"]]
     assert any(item["promotion_id"] == report["applied_patches"][0]["promotion_id"] for item in ledger)
+
+
+def test_autonomous_evolution_blocks_code_patch_when_evaluator_is_not_isolated(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("EIMEMORY_GENERATOR_MODEL", "gpt")
+    monkeypatch.setenv("EIMEMORY_EVALUATOR_MODEL", "gpt")
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"}
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setenv("EIMEMORY_AUTONOMOUS_CODE_REPO", str(repo))
+    target = repo / "module.py"
+    target.write_text("VALUE = 'broken'\n", encoding="utf-8")
+    event = runtime.record_event(
+        {
+            "id": "evt_code_not_isolated",
+            "timestamp": "2026-06-19T10:00:00+08:00",
+            "source": "autonomous_test",
+            "user_phrase": "fix module with non-isolated evaluator",
+            "event_type": "code.implementation",
+            "goal": "module imports with corrected value",
+            "verification": "python import check passes",
+            "confidence": 0.92,
+        },
+        scope=scope,
+    )
+    runtime.record_outcome(
+        event["id"],
+        {
+            "outcome": "bad",
+            "reason": "Traceback: module returned broken value",
+            "policy_update": "apply a direct code patch and verify it imports",
+            "source_trust": "system_verified",
+            "code_patch": {
+                "summary": "Fix broken VALUE constant",
+                "repo_root": str(repo),
+                "apply_to_repo": True,
+                "deploy_to_production": False,
+                "commit_to_repo": False,
+                "allowed_files": ["module.py"],
+                "file_updates": [{"path": "module.py", "content": "VALUE = 'fixed'\n"}],
+                "verification_commands": [[sys.executable, "-c", "print('ok')"]],
+            },
+        },
+        scope=scope,
+    )
+
+    report = run_autonomous_evolution(runtime, scope=scope, apply=True, max_apply=1)
+
+    assert report["applied_count"] == 0
+    assert report["blocked_patches"][0]["blocked_reason"] == "isolated_evaluator_reject"
+    assert "model_not_isolated" in report["blocked_patches"][0]["isolated_evaluator"]["blocked_reasons"]
+    assert target.read_text(encoding="utf-8") == "VALUE = 'broken'\n"
+
+
+def test_autonomous_evolution_counts_code_patch_rollbacks(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"}
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setenv("EIMEMORY_AUTONOMOUS_CODE_REPO", str(repo))
+    target = repo / "module.py"
+    target.write_text("VALUE = 'broken'\n", encoding="utf-8")
+    event = runtime.record_event(
+        {
+            "id": "evt_code_verify_fail",
+            "timestamp": "2026-06-19T11:00:00+08:00",
+            "source": "autonomous_test",
+            "user_phrase": "fix module but verification catches failure",
+            "event_type": "code.implementation",
+            "goal": "module imports with corrected value",
+            "verification": "python import check passes",
+            "confidence": 0.92,
+        },
+        scope=scope,
+    )
+    runtime.record_outcome(
+        event["id"],
+        {
+            "outcome": "bad",
+            "reason": "Traceback: module returned broken value",
+            "policy_update": "apply a direct code patch and verify it imports",
+            "source_trust": "system_verified",
+            "code_patch": {
+                "summary": "Fix broken VALUE constant",
+                "repo_root": str(repo),
+                "apply_to_repo": True,
+                "deploy_to_production": False,
+                "commit_to_repo": False,
+                "allowed_files": ["module.py"],
+                "file_updates": [{"path": "module.py", "content": "VALUE = 'fixed'\n"}],
+                "verification_commands": [[sys.executable, "-c", "raise SystemExit(3)"]],
+            },
+        },
+        scope=scope,
+    )
+
+    report = run_autonomous_evolution(runtime, scope=scope, apply=True, max_apply=1)
+
+    assert report["applied_count"] == 0
+    assert report["rolled_back_count"] == 1
+    assert report["rollback_failed_count"] == 0
+    assert report["blocked_patches"][0]["apply_result"]["side_effect"]["rolled_back"] is True
+    assert target.read_text(encoding="utf-8") == "VALUE = 'broken'\n"

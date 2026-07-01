@@ -723,6 +723,7 @@ class Runtime:
         allow_network: bool | None = True,
         loop_id: str = "",
         persist: bool = True,
+        autonomous_learning_report: dict | None = None,
     ) -> dict:
         from eimemory.governance.l5_loop import run_l5_cycle
 
@@ -736,6 +737,7 @@ class Runtime:
             allow_network=allow_network,
             loop_id=loop_id,
             persist=persist,
+            autonomous_learning_report=autonomous_learning_report,
         )
 
     def assess_l5_closed_loop(
