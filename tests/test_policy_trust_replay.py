@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from eimemory.api.runtime import Runtime
 from eimemory.governance.autonomous_evolution import run_autonomous_evolution
+from eimemory.governance.policy_replay import evaluate_safe_action_gate
 from eimemory.governance.policy_trust import classify_outcome_source
 
 
@@ -245,3 +246,19 @@ def test_safe_action_gate_blocks_high_risk_action_text(tmp_path) -> None:
     assert report["applied_count"] == 0
     assert report["experiments"][0]["safe_action_gate"]["ok"] is False
     assert "destructive_change" in report["experiments"][0]["safe_action_gate"]["blocked_categories"]
+
+
+def test_safe_action_gate_blocks_high_risk_execution_commands() -> None:
+    report = evaluate_safe_action_gate(
+        patch={
+            "pattern": "safe looking read-only repair",
+            "interpreted_intent": "inspect service state before replying",
+            "execution_policy": ["Only inspect status and logs."],
+            "deployment_commands": [["bash", "-lc", "rm -rf /tmp/eimemory-cache"]],
+            "rollback_plan": {"commands": [["bash", "-lc", "shutdown now"]]},
+        }
+    )
+
+    assert report["ok"] is False
+    assert "destructive_change" in report["blocked_categories"]
+    assert "system_disruption" in report["blocked_categories"]

@@ -180,8 +180,17 @@ def judge_stop_condition(
     verdict_content = dict(verdict_record.content or {})
     roles = dict(verdict_content.get("model_roles") or {})
     roles["stop_judge_model"] = _model_id(stop_judge_model, env_name="EIMEMORY_STOP_JUDGE_MODEL", default=roles.get("stop_judge_model") or DEFAULT_STOP_JUDGE_MODEL)
-    decision = _stop_decision(verdict_content)
-    semantic_key = stable_semantic_key("stop_judgment", verdict_record.record_id, decision)
+    stop_blocked_reasons = _stop_judge_blocked_reasons(roles)
+    blocked_reasons = list(verdict_content.get("blocked_reasons") or []) + stop_blocked_reasons
+    decision = _stop_decision(verdict_content, stop_blocked_reasons=stop_blocked_reasons)
+    promotion_allowed = decision == "stop" and bool(verdict_content.get("promotion_allowed")) and not stop_blocked_reasons
+    semantic_key = stable_semantic_key(
+        "stop_judgment",
+        verdict_record.record_id,
+        roles["stop_judge_model"],
+        decision,
+        ",".join(blocked_reasons),
+    )
     record = append_learning_record_once(
         runtime,
         kind="stop_judgment",
@@ -199,8 +208,8 @@ def judge_stop_condition(
             "loop_id": loop_id or str(verdict_content.get("loop_id") or ""),
             "verdict_id": verdict_record.record_id,
             "decision": decision,
-            "promotion_allowed": decision == "stop" and bool(verdict_content.get("promotion_allowed")),
-            "blocked_reasons": list(verdict_content.get("blocked_reasons") or []),
+            "promotion_allowed": promotion_allowed,
+            "blocked_reasons": blocked_reasons,
             "model_roles": roles,
             "debt_metrics": dict(verdict_content.get("debt_metrics") or {}),
         },
@@ -208,7 +217,7 @@ def judge_stop_condition(
             "schema_version": SCHEMA_VERSION,
             "verdict_id": verdict_record.record_id,
             "decision": decision,
-            "promotion_allowed": decision == "stop" and bool(verdict_content.get("promotion_allowed")),
+            "promotion_allowed": promotion_allowed,
             "stop_judge_model": roles["stop_judge_model"],
         },
         evidence=[verdict_record.record_id],
@@ -300,7 +309,10 @@ def _real_execution_summary(evaluator_context: dict[str, Any]) -> dict[str, Any]
     }
 
 
-def _stop_decision(verdict_content: dict[str, Any]) -> str:
+def _stop_decision(verdict_content: dict[str, Any], *, stop_blocked_reasons: list[str] | None = None) -> str:
+    stop_blocked = set(str(item) for item in stop_blocked_reasons or [])
+    if stop_blocked:
+        return "quarantine"
     if verdict_content.get("promotion_allowed") is True and not verdict_content.get("blocked_reasons"):
         return "stop"
     blocked = set(str(item) for item in verdict_content.get("blocked_reasons") or [])
@@ -309,6 +321,14 @@ def _stop_decision(verdict_content: dict[str, Any]) -> str:
     if "missing_real_execution_evidence" in blocked or "insufficient_replay_quality" in blocked:
         return "continue"
     return "require_human"
+
+
+def _stop_judge_blocked_reasons(roles: dict[str, Any]) -> list[str]:
+    generator_model = str(roles.get("generator_model") or "").strip()
+    stop_judge_model = str(roles.get("stop_judge_model") or "").strip()
+    if generator_model and stop_judge_model and generator_model == stop_judge_model:
+        return ["stop_judge_not_isolated"]
+    return []
 
 
 def _packet_debt_metrics(*, evaluator_context: dict[str, Any], generator_claim: str) -> dict[str, int]:

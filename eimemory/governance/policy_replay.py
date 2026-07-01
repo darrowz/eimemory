@@ -36,6 +36,11 @@ SAFE_ACTION_CATEGORY_RULES: dict[str, tuple[str, ...]] = {
         "删除",
         "del ",
         "delete ",
+        "rm ",
+        "rm -",
+        "rmdir",
+        "remove-item",
+        "remove ",
         "wipe",
         "格式化",
         "drop ",
@@ -164,6 +169,7 @@ def evaluate_safe_action_gate(
     action_texts.append(_coerce_text(patch.get("pattern") or ""))
     action_texts.append(_coerce_text(patch.get("interpreted_intent") or ""))
     action_texts.append(_coerce_text(patch.get("success_criteria") or ""))
+    action_texts.extend(_command_texts(patch))
 
     blocked = _find_action_risk_categories(action_texts)
     if blocked:
@@ -195,6 +201,50 @@ def _coerce_string_list(value: Any) -> list[str]:
 
 def _coerce_text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _command_texts(patch: dict[str, Any]) -> list[str]:
+    values: list[str] = []
+    for key in (
+        "verification_commands",
+        "verify_commands",
+        "deployment_commands",
+        "deploy_commands",
+        "post_deploy_health_commands",
+        "health_commands",
+        "smoke_commands",
+        "rollback_commands",
+        "rollback_command",
+        "canary_commands",
+        "shadow_observe_commands",
+    ):
+        values.extend(_flatten_command_text(patch.get(key)))
+    rollback_plan = patch.get("rollback_plan")
+    if isinstance(rollback_plan, dict):
+        values.extend(_flatten_command_text(rollback_plan.get("commands")))
+        values.extend(_flatten_command_text(rollback_plan.get("command")))
+    return [value for value in values if value]
+
+
+def _flatten_command_text(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value.strip()] if value.strip() else []
+    if isinstance(value, dict):
+        values: list[str] = []
+        for item in value.values():
+            values.extend(_flatten_command_text(item))
+        return values
+    if isinstance(value, (list, tuple, set)):
+        if value and all(not isinstance(item, (list, tuple, set, dict)) for item in value):
+            command = " ".join(str(item).strip() for item in value if str(item).strip())
+            return [command] if command else []
+        values: list[str] = []
+        for item in value:
+            values.extend(_flatten_command_text(item))
+        return values
+    return []
 
 
 def _extract_positive_expected(items: list[str] | tuple[str, ...] | str) -> list[str]:

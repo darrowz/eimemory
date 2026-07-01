@@ -154,6 +154,56 @@ def test_stop_judge_stops_only_after_passed_isolated_verdict(tmp_path) -> None:
     assert judgment.content["promotion_allowed"] is True
 
 
+def test_stop_judge_must_not_share_generator_model_even_after_passed_verdict(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "main"}
+    packet = build_evaluation_packet(
+        runtime,
+        scope=scope,
+        loop_id="loop_iso_stop_separation",
+        goal={"title": "Verified candidate with unsafe stop judge"},
+        candidate_kind="eval_case",
+        artifact={"summary": "replay case"},
+        generator_claim="Generator rationale should not decide stop.",
+        replay_gate={"ok": True, "pass_rate": 1.0, "sample_count": 3},
+        real_task_replay={"ok": True, "verdict": "pass", "pass_rate": 1.0, "pass_count": 3, "fail_count": 0},
+        generator_model="gpt",
+        evaluator_model="minimax",
+        stop_judge_model="minimax",
+    )
+    verdict = run_isolated_evaluator(runtime, packet, scope=scope, loop_id="loop_iso_stop_separation")
+
+    judgment = judge_stop_condition(runtime, verdict, scope=scope, loop_id="loop_iso_stop_separation", stop_judge_model="gpt")
+
+    assert verdict.content["verdict"] == "pass"
+    assert judgment.content["decision"] == "quarantine"
+    assert judgment.content["promotion_allowed"] is False
+    assert "stop_judge_not_isolated" in judgment.content["blocked_reasons"]
+
+
+def test_stop_judge_model_changes_do_not_reuse_previous_judgment(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "main"}
+    packet = build_evaluation_packet(
+        runtime,
+        scope=scope,
+        loop_id="loop_iso_stop_reuse",
+        goal={"title": "Verified candidate with two stop judges"},
+        candidate_kind="eval_case",
+        artifact={"summary": "replay case"},
+        generator_claim="Generator rationale should not decide stop.",
+        replay_gate={"ok": True, "pass_rate": 1.0, "sample_count": 3},
+        real_task_replay={"ok": True, "verdict": "pass", "pass_rate": 1.0, "pass_count": 3, "fail_count": 0},
+    )
+    verdict = run_isolated_evaluator(runtime, packet, scope=scope, loop_id="loop_iso_stop_reuse")
+    safe = judge_stop_condition(runtime, verdict, scope=scope, loop_id="loop_iso_stop_reuse", stop_judge_model="minimax")
+    unsafe = judge_stop_condition(runtime, verdict, scope=scope, loop_id="loop_iso_stop_reuse", stop_judge_model="gpt")
+
+    assert safe.record_id != unsafe.record_id
+    assert safe.content["decision"] == "stop"
+    assert unsafe.content["decision"] == "quarantine"
+
+
 def test_model_role_changes_do_not_reuse_previous_packet(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
 
