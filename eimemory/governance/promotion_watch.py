@@ -122,7 +122,9 @@ def record_promotion_observation(
             watch["improvement_count"] = int(watch.get("improvement_count") or 0) + 1
         if observation["regressed"]:
             watch["regression_count"] = int(watch.get("regression_count") or 0) + 1
-    if outcome_status == "bad":
+        if observation["regressed"] or outcome_status == "bad":
+            watch["failure_count"] = int(watch.get("failure_count") or 0) + 1
+        if outcome_status == "bad":
             watch["bad_outcome_count"] = int(watch.get("bad_outcome_count") or 0) + 1
     watch["failure_rate"] = _failure_rate(watch)
     watch["updated_at"] = now_utc()
@@ -157,6 +159,7 @@ def _initial_watch(*, candidate_id: str, promotion_request_id: str, pattern_id: 
         "improvement_count": 0,
         "regression_count": 0,
         "bad_outcome_count": 0,
+        "failure_count": 0,
         "failure_rate": 0.0,
         "observations": [],
         "started_at": now,
@@ -176,6 +179,7 @@ def _watch_state(pattern: dict[str, Any], *, pattern_id: str) -> dict[str, Any]:
     watch.setdefault("improvement_count", 0)
     watch.setdefault("regression_count", 0)
     watch.setdefault("bad_outcome_count", 0)
+    watch.setdefault("failure_count", max(int(watch.get("regression_count") or 0), int(watch.get("bad_outcome_count") or 0)))
     watch.setdefault("failure_rate", _failure_rate(watch))
     watch.setdefault("observations", [])
     return watch
@@ -193,7 +197,10 @@ def _failure_rate(watch: dict[str, Any]) -> float:
     observed = int(watch.get("observed_count") or 0)
     if observed <= 0:
         return 0.0
-    failures = int(watch.get("regression_count") or 0) + int(watch.get("bad_outcome_count") or 0)
+    if "failure_count" in watch:
+        failures = int(watch.get("failure_count") or 0)
+    else:
+        failures = max(int(watch.get("regression_count") or 0), int(watch.get("bad_outcome_count") or 0))
     return round(min(1.0, max(0.0, failures / observed)), 6)
 
 
@@ -205,6 +212,7 @@ def _activate_shadow_pattern(runtime: Any, *, pattern: dict[str, Any], scope: di
     pattern["post_promotion_watch"] = watch
     _write_pattern(runtime, pattern, scope=scope)
     _update_candidate_status(runtime, watch, scope=scope, status="promoted")
+    _update_promotion_request_status(runtime, watch, scope=scope, status="active")
     _record_watch_ledger(runtime, pattern=pattern, scope=scope, watch=watch, decision="active")
     return {"ok": True, "status": "active", "activated": True, "pattern_id": str(pattern.get("id") or ""), "watch": watch}
 
@@ -217,6 +225,7 @@ def _quarantine_shadow_pattern(runtime: Any, *, pattern: dict[str, Any], scope: 
     pattern["post_promotion_watch"] = watch
     _write_pattern(runtime, pattern, scope=scope)
     _update_candidate_status(runtime, watch, scope=scope, status="quarantined")
+    _update_promotion_request_status(runtime, watch, scope=scope, status="quarantined")
     _record_watch_ledger(runtime, pattern=pattern, scope=scope, watch=watch, decision="quarantined")
     return {"ok": True, "status": "quarantined", "quarantined": True, "pattern_id": str(pattern.get("id") or ""), "watch": watch}
 
@@ -236,6 +245,7 @@ def _rollback_shadow_pattern(
     _write_pattern(runtime, pattern, scope=scope)
     rollback = runtime.rollback_intent_pattern(str(pattern.get("id") or ""), scope=_scope_dict(scope), reason=str(reason or "bad outcome during shadow observe"), auto=True)
     _update_candidate_status(runtime, watch, scope=scope, status="rolled_back")
+    _update_promotion_request_status(runtime, watch, scope=scope, status="rolled_back")
     _record_watch_ledger(runtime, pattern=pattern, scope=scope, watch=watch, decision="rolled_back")
     return {"ok": bool(rollback.get("ok")), "status": "rolled_back", "rolled_back": bool(rollback.get("ok")), "pattern_id": str(pattern.get("id") or ""), "rollback": rollback, "watch": watch}
 
@@ -298,6 +308,7 @@ def _record_watch_ledger(
         "improvement_count": int(watch.get("improvement_count") or 0),
         "regression_count": int(watch.get("regression_count") or 0),
         "bad_outcome_count": int(watch.get("bad_outcome_count") or 0),
+        "failure_count": int(watch.get("failure_count") or 0),
         "failure_rate": _failure_rate(watch),
     }
     record_lifecycle_event(
@@ -359,8 +370,45 @@ def _update_candidate_status(runtime: Any, watch: dict[str, Any], *, scope: dict
         "improvement_count": int(watch.get("improvement_count") or 0),
         "regression_count": int(watch.get("regression_count") or 0),
         "bad_outcome_count": int(watch.get("bad_outcome_count") or 0),
+        "failure_count": int(watch.get("failure_count") or 0),
     }
     runtime.store.rewrite(candidate)
+
+
+def _update_promotion_request_status(runtime: Any, watch: dict[str, Any], *, scope: dict[str, Any] | ScopeRef | None, status: str) -> None:
+    promotion_request_id = str(watch.get("promotion_request_id") or "")
+    if not promotion_request_id:
+        return
+    record = runtime.store.get_by_id(promotion_request_id, scope=scope)
+    if record is None:
+        return
+    summary = _watch_summary(watch, status=status)
+    record.status = str(status)
+    record.content = {
+        **dict(record.content or {}),
+        "post_promotion_status": str(status),
+        "post_promotion_watch": summary,
+    }
+    record.meta = {
+        **dict(record.meta or {}),
+        "post_promotion_status": str(status),
+        "post_promotion_watch": summary,
+    }
+    runtime.store.rewrite(record)
+
+
+def _watch_summary(watch: dict[str, Any], *, status: str) -> dict[str, Any]:
+    return {
+        "status": str(watch.get("status") or status),
+        "pattern_id": str(watch.get("pattern_id") or ""),
+        "observed_count": int(watch.get("observed_count") or 0),
+        "hit_count": int(watch.get("hit_count") or 0),
+        "improvement_count": int(watch.get("improvement_count") or 0),
+        "regression_count": int(watch.get("regression_count") or 0),
+        "bad_outcome_count": int(watch.get("bad_outcome_count") or 0),
+        "failure_count": int(watch.get("failure_count") or 0),
+        "failure_rate": _failure_rate(watch),
+    }
 
 
 def _coerce_improved(value: bool | None, *, outcome: str) -> bool:

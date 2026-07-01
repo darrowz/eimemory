@@ -1585,6 +1585,9 @@ def _ensure_promotion_rollout_ledger(
     side_effect = _jsonable(content.get("side_effect") if isinstance(content.get("side_effect"), dict) else {})
     eval_result = _jsonable(content.get("eval_result") if isinstance(content.get("eval_result"), dict) else {})
     health = _jsonable(content.get("health") if isinstance(content.get("health"), dict) else {})
+    ledger_test_result = _promotion_ledger_test_result(eval_result=eval_result, side_effect=side_effect)
+    ledger_health_result = _promotion_ledger_health_result(health=health, side_effect=side_effect)
+    ledger_rollback_command = _promotion_ledger_rollback_command(side_effect=side_effect)
     applied_artifact_ids = _applied_artifact_ids(candidate=candidate, content=content, side_effect=side_effect)
     budget_decision = _capability_budget_decision(promotion_record.status, action)
     applied_pattern_id = applied_artifact_ids[0] if budget_decision == "ok" and applied_artifact_ids else ""
@@ -1616,7 +1619,7 @@ def _ensure_promotion_rollout_ledger(
             {
                 "ok": budget_decision == "ok" and bool(gate.get("ok", True)),
                 "gate": gate,
-                "health": health,
+                "health": ledger_health_result,
             }
         ),
         replay_report=_promotion_replay_report(eval_result=eval_result, gate=gate),
@@ -1630,9 +1633,9 @@ def _ensure_promotion_rollout_ledger(
                 patch_id=str((candidate.content or {}).get("experiment_id") or (candidate.meta or {}).get("experiment_id") or candidate_id) if candidate is not None else candidate_id,
                 commit_sha=str(side_effect.get("commit_sha") or (side_effect.get("commit") or {}).get("commit_sha") or ""),
                 release_path=str((side_effect.get("rollback_evidence") or {}).get("release_path") or ""),
-                test_result=eval_result,
-                health_result=health,
-                rollback_command=str((side_effect.get("rollback") or {}).get("command") or ""),
+                test_result=ledger_test_result,
+                health_result=ledger_health_result,
+                rollback_command=ledger_rollback_command,
                 observed_count=0,
                 failure_rate=0.0,
                 extra={
@@ -1727,6 +1730,33 @@ def _promotion_ledger_reason(*, action: str, gate: dict[str, Any], side_effect: 
         return "l3_requires_approval"
     if action in {"gate_failed", "adapter_failed"}:
         return action
+    return ""
+
+
+def _promotion_ledger_test_result(*, eval_result: dict[str, Any], side_effect: dict[str, Any]) -> dict[str, Any]:
+    verification = side_effect.get("verification")
+    if isinstance(verification, dict) and verification:
+        return verification
+    return eval_result
+
+
+def _promotion_ledger_health_result(*, health: dict[str, Any], side_effect: dict[str, Any]) -> dict[str, Any]:
+    post_deploy_health = side_effect.get("post_deploy_health")
+    if isinstance(post_deploy_health, dict) and post_deploy_health:
+        return post_deploy_health
+    canary = side_effect.get("canary")
+    if isinstance(canary, dict) and canary and not bool(canary.get("skipped")):
+        return canary
+    return health
+
+
+def _promotion_ledger_rollback_command(*, side_effect: dict[str, Any]) -> str:
+    rollback = side_effect.get("rollback")
+    if isinstance(rollback, dict) and rollback.get("command"):
+        return str(rollback.get("command") or "")
+    rollback_evidence = side_effect.get("rollback_evidence")
+    if isinstance(rollback_evidence, dict) and rollback_evidence.get("rollback_command"):
+        return str(rollback_evidence.get("rollback_command") or "")
     return ""
 
 

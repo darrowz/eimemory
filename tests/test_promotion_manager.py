@@ -639,6 +639,10 @@ def test_code_patch_rollout_writes_full_lifecycle_ledger(tmp_path, monkeypatch) 
     }
     for entry in ledger:
         assert required_fields.issubset(entry["details"])
+    aggregate = next(item for item in ledger if item["action_type"] == "capability_promotion")
+    assert aggregate["details"]["test_result"]["reports"][0]["phase"] == "verify"
+    assert aggregate["details"]["health_result"]["reports"][0]["phase"] == "post_deploy_health"
+    assert aggregate["details"]["rollback_command"]
 
 
 def test_code_patch_rollout_auto_canary_promotes_active(tmp_path, monkeypatch) -> None:

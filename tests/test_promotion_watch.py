@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 
 from eimemory.api.runtime import Runtime
+from eimemory.governance.autonomy_controller import _post_promotion_watch_summary
 from eimemory.governance.capability_distiller import distill_capability_candidate
 from eimemory.governance.promotion_manager import promote_candidate
 from eimemory.governance.promotion_watch import record_promotion_observation
 from eimemory.governance.sandbox_lab import create_sandbox_experiment
+from eimemory.models.records import ScopeRef
 
 
 PASSING_EVAL = {"verdict": "pass", "scores": {"capability": 0.9, "safety": 1.0, "regression": 1.0, "cost": 0.8, "evidence": 1.0}}
@@ -78,6 +80,32 @@ def test_shadow_observe_activates_after_three_hit_improvement_observations(tmp_p
     ledger = runtime.get_policy_rollout_ledger(scope=scope, action="shadow_observe", limit=10)
     assert ledger[0]["details"]["decision"] == "active"
     assert ledger[0]["details"]["observed_count"] == 3
+
+
+def test_shadow_observe_decision_updates_autonomy_watch_summary(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"}
+    scope_ref = ScopeRef.from_dict(scope)
+    candidate_id = _policy_candidate(runtime, scope=scope, pattern_id="watch-summary-active")
+    promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", eval_result=_passing_eval(), health={"ok": True})
+
+    before = _post_promotion_watch_summary(runtime, scope=scope_ref)
+    assert before["observing_count"] == 1
+
+    for index in range(3):
+        record_promotion_observation(
+            runtime,
+            pattern_id="watch-summary-active",
+            scope=scope,
+            event_id=f"evt-summary-active-{index}",
+            hit=True,
+            improved=True,
+            outcome="good",
+        )
+
+    after = _post_promotion_watch_summary(runtime, scope=scope_ref)
+    assert after["observing_count"] == 0
+    assert after["active_count"] == 1
 
 
 def test_shadow_observe_quarantines_after_three_real_tasks_without_hits(tmp_path) -> None:
@@ -176,6 +204,43 @@ def test_shadow_observe_waits_for_three_events_and_uses_failure_rate_threshold(t
     ledger = runtime.get_policy_rollout_ledger(scope=scope, action="rolled_back", limit=10)
     assert ledger[0]["details"]["observed_count"] == 3
     assert ledger[0]["details"]["failure_rate"] >= 0.2
+
+
+def test_shadow_observe_bad_outcome_is_idempotent_and_not_double_counted(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"}
+    candidate_id = _policy_candidate(runtime, scope=scope, pattern_id="watch-idempotent-bad")
+    promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", eval_result=_passing_eval(), health={"ok": True})
+
+    first = record_promotion_observation(
+        runtime,
+        pattern_id="watch-idempotent-bad",
+        scope=scope,
+        event_id="evt-bad-duplicate",
+        hit=True,
+        improved=False,
+        outcome="bad",
+        reason="same bad observation should count once",
+    )
+    second = record_promotion_observation(
+        runtime,
+        pattern_id="watch-idempotent-bad",
+        scope=scope,
+        event_id="evt-bad-duplicate",
+        hit=True,
+        improved=False,
+        outcome="bad",
+        reason="duplicate replay of same bad observation",
+    )
+
+    assert first["status"] == "shadow_observe"
+    assert second["status"] == "shadow_observe"
+    watch = _intent_pattern(runtime, "watch-idempotent-bad")["post_promotion_watch"]
+    assert watch["observed_count"] == 1
+    assert watch["regression_count"] == 1
+    assert watch["bad_outcome_count"] == 1
+    assert watch["failure_count"] == 1
+    assert watch["failure_rate"] == 1.0
 
 
 def test_shadow_observe_promotes_active_with_low_failure_rate_ledger(tmp_path) -> None:
