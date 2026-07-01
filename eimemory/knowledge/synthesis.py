@@ -34,22 +34,25 @@ def build_research_digest(
     )
     candidate_records = _recent_records([record for record in candidates if record.kind == "knowledge_candidate"])
 
-    source_ids = _source_ids(papers, claims, pages)
-    top_papers = _top_papers(papers, pages, max_items)
-    themes = _themes(papers, pages, max_items)
+    gated_papers, excluded_papers = _gated_records(papers)
     gated_claims, excluded_claims = _gated_records(claims)
+    gated_pages, excluded_pages = _gated_records(pages)
+    source_ids = _source_ids(gated_papers, gated_claims, gated_pages)
+    top_papers = _top_papers(gated_papers, gated_pages, max_items)
+    themes = _themes(gated_papers, gated_pages, max_items)
     notable_claims = _notable_claims(gated_claims, max_items)
-    open_questions = _open_questions(claims, pages, max_items)
+    open_questions = _open_questions(gated_claims, gated_pages, max_items)
     skipped = _skipped_summary(claims, candidate_records)
     summary = _summary(top_papers, themes, notable_claims, open_questions)
+    excluded = [*excluded_papers, *excluded_claims, *excluded_pages]
 
     return {
-        "ok": bool(source_ids or top_papers or notable_claims or pages),
+        "ok": bool(source_ids or top_papers or notable_claims or gated_pages),
         "digest_date": date,
         "summary": summary,
         "paper_count": len(source_ids) or len(top_papers),
         "claim_count": len(claims),
-        "knowledge_page_count": len(pages),
+        "knowledge_page_count": len(gated_pages),
         "candidate_count": len(candidate_records),
         "top_papers": top_papers,
         "themes": themes,
@@ -57,8 +60,8 @@ def build_research_digest(
         "open_questions": open_questions,
         "skipped_low_confidence": skipped,
         "evidence_gate": {
-            "excluded_count": len(excluded_claims),
-            "excluded": excluded_claims,
+            "excluded_count": len(excluded),
+            "excluded": excluded,
         },
         "source_ids": source_ids,
         "persisted": False,

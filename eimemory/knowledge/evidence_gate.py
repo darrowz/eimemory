@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 
-GATED_ANSWER_KINDS = {"claim_card", "news", "paper_source", "paper_extract"}
+GATED_ANSWER_KINDS = {"claim_card", "knowledge_candidate", "news", "paper_source", "paper_extract", "source_candidate"}
 GATED_SOURCE_MARKERS = ("research", "knowledge.synthesis", "daily_brief", "news", "rss", "paper")
 
 
@@ -143,8 +143,6 @@ def _evidence_source(payload: dict[str, Any]) -> str:
             _deep(payload, "provenance", "paper_source_id"),
             _first_from_list(_deep(payload, "content", "source_ids")),
             _first_from_list(payload.get("evidence")),
-            payload.get("record_id"),
-            payload.get("source"),
         )
     return ""
 
@@ -224,7 +222,10 @@ def _requires_answer_gate(record: Any, *, task_type: str) -> bool:
             _deep(payload, "meta", "report_type"),
         )
     )
-    return kind == "knowledge_page" and any(marker in text for marker in GATED_SOURCE_MARKERS)
+    return (
+        kind in {"knowledge_page", "knowledge_candidate", "source_candidate"}
+        and any(marker in text for marker in GATED_SOURCE_MARKERS)
+    )
 
 
 def _record_id(record: Any) -> str:

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from dataclasses import asdict
+from hashlib import sha256
 from typing import Any
 
 from eimemory.models.records import RecordEnvelope, ScopeRef
@@ -50,8 +52,15 @@ class PersonaStore:
         )
         return self._append(record)
 
-    def record_correction(self, correction: PersonaCorrectionEvent, *, scope: dict[str, Any] | None = None) -> RecordEnvelope:
+    def record_correction(
+        self,
+        correction: PersonaCorrectionEvent,
+        *,
+        scope: dict[str, Any] | None = None,
+        idempotency_key: str = "",
+    ) -> RecordEnvelope:
         payload = correction.to_dict()
+        scope_ref = ScopeRef.from_dict(scope or {})
         record = RecordEnvelope.create(
             kind="feedback",
             title=f"Persona correction: {correction.category}",
@@ -60,9 +69,17 @@ class PersonaStore:
             content=payload,
             tags=["persona", "correction", correction.category],
             source="persona.correction",
-            scope=ScopeRef.from_dict(scope or {}),
+            scope=scope_ref,
             meta={"category": correction.category, "severity": correction.severity},
         )
+        if idempotency_key:
+            record.record_id = "personacorr_" + _stable_hash(asdict(scope_ref), idempotency_key)[:24]
+            record.meta["idempotency_key"] = idempotency_key
+            record.content["idempotency_key"] = idempotency_key
+            if self.record_store is not None:
+                existing = self.record_store.get_by_id(record.record_id, scope=scope_ref)
+                if existing is not None:
+                    return existing
         return self._append(record)
 
     def record_trace(self, trace: PersonaTraceEvent, *, scope: dict[str, Any] | None = None) -> RecordEnvelope:
@@ -155,6 +172,11 @@ class PersonaStore:
 
 def _safe_ts(value: str) -> str:
     return "".join(ch if ch.isalnum() else "-" for ch in str(value or ""))[:48] or "snapshot"
+
+
+def _stable_hash(*values: Any) -> str:
+    raw = json.dumps(values, ensure_ascii=False, sort_keys=True, default=str)
+    return sha256(raw.encode("utf-8")).hexdigest()
 
 
 def _float_or_default(value: Any, *, default: float = 0.0) -> float:

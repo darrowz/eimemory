@@ -43,6 +43,25 @@ def test_existing_chatpaper_category_is_not_proposed_again() -> None:
     assert all(proposal["metadata"].get("category") != "cs.RO" for proposal in proposals)
 
 
+def test_existing_chatpaper_singular_category_metadata_is_not_proposed_again() -> None:
+    proposals = discover_source_proposals(
+        gap_queries=["Need robotics papers for embodied agents"],
+        sources=[
+            SourceEntry(
+                source_id="src_chatpaper",
+                source_kind="url",
+                title="ChatPaper arXiv cs.RO",
+                uri="manual://chatpaper-robotics",
+                tags=["chatpaper", "arxiv"],
+                metadata={"category": "cs.RO"},
+            )
+        ],
+        recent_titles=[],
+    )
+
+    assert all(proposal["metadata"].get("category") != "cs.RO" for proposal in proposals)
+
+
 def test_news_and_product_opportunity_gap_proposes_rss_and_manual_review_needing_review() -> None:
     proposals = discover_source_proposals(
         gap_queries=["Track news and product launches for AI memory tools"],

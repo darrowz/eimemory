@@ -67,6 +67,7 @@ def build_incremental_memory_edges(
         if _is_graph_record_candidate(record)
     ]
     by_id = {record.record_id: record for record in references}
+    _augment_explicit_causal_references(runtime, by_id=by_id, records=records, scope=scope_ref)
     edges: list[MemoryEdge] = []
     for record in records:
         candidates = [item for item in references if item.record_id != record.record_id]
@@ -99,6 +100,28 @@ def build_incremental_memory_edges(
         "high_watermark": _high_watermark(records),
         "cursor_record_ids": [record.record_id for record in records if _record_time(record) == _high_watermark(records)],
     }
+
+
+def _augment_explicit_causal_references(
+    runtime: Any,
+    *,
+    by_id: dict[str, RecordEnvelope],
+    records: list[RecordEnvelope],
+    scope: ScopeRef,
+) -> None:
+    missing_ids = {
+        causal_id
+        for record in records
+        for causal_id in _causal_source_ids(record)
+        if causal_id and causal_id != record.record_id and causal_id not in by_id
+    }
+    for causal_id in sorted(missing_ids):
+        try:
+            referenced = runtime.store.get_by_id(causal_id, scope=scope)
+        except Exception:
+            referenced = None
+        if referenced is not None and _is_graph_record_candidate(referenced):
+            by_id[referenced.record_id] = referenced
 
 
 def graph_route_for_query(query: str, *, intent_name: str = "", task_context: dict[str, Any] | None = None) -> dict[str, Any]:

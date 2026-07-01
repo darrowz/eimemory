@@ -56,6 +56,23 @@ def test_research_digest_excludes_items_without_source_date_or_conflict_check() 
     assert {item["reason"] for item in digest["evidence_gate"]["excluded"]} == {"missing_date", "conflict_unresolved"}
 
 
+def test_research_digest_gates_papers_not_only_claims() -> None:
+    good = _record("paper_source", "Grounded paper", source_url="https://example.com/paper", published_at="2026-06-29")
+    weak = _record("paper_source", "Untethered paper")
+    weak.time = TimeRef(
+        created_at="2026-06-30T08:00:00+08:00",
+        updated_at="2026-06-30T08:00:00+08:00",
+        occurred_at="2026-06-30T08:00:00+08:00",
+    )
+
+    digest = build_research_digest(paper_sources=[weak, good], claim_cards=[], knowledge_pages=[], limit=5, digest_date="2026-06-30")
+
+    assert [item["record_id"] for item in digest["top_papers"]] == [good.record_id]
+    assert digest["evidence_gate"]["excluded_count"] == 1
+    assert digest["evidence_gate"]["excluded"][0]["record_id"] == weak.record_id
+    assert digest["evidence_gate"]["excluded"][0]["reason"] == "missing_source"
+
+
 def test_daily_brief_hides_ungated_research_and_news_items() -> None:
     good_news = _record("news", "Good news", source_url="https://example.com/news", published_at="2026-06-30")
     bad_news = _record("news", "Bad news", source_url="", published_at="2026-06-30")
@@ -82,6 +99,26 @@ def test_final_answer_context_filters_research_and_news_without_evidence_gate() 
     assert report["evidence_gate"]["kept_count"] == 2
 
 
+def test_final_answer_context_filters_weak_knowledge_candidates() -> None:
+    candidate = RecordEnvelope.create(
+        kind="knowledge_candidate",
+        title="Weak generated knowledge candidate",
+        summary="Weak generated knowledge candidate",
+        scope=SCOPE,
+        source="eimemory.news.collect",
+        content={"published_at": "2026-06-30", "confidence": 0.9},
+        meta={"published_at": "2026-06-30", "confidence": 0.9},
+    )
+    ordinary = _record("reflection", "Local operator preference")
+
+    report = filter_answer_evidence([candidate, ordinary], task_type="research.answer")
+
+    assert [record.title for record in report["records"]] == ["Local operator preference"]
+    assert report["evidence_gate"]["excluded_count"] == 1
+    assert report["evidence_gate"]["excluded"][0]["record_id"] == candidate.record_id
+    assert report["evidence_gate"]["excluded"][0]["reason"] == "missing_source"
+
+
 def test_news_evidence_gate_uses_record_time_but_still_requires_url() -> None:
     good_news = _record("news", "Timed news", source_url="https://example.com/news")
     good_news.time = TimeRef(
@@ -95,6 +132,21 @@ def test_news_evidence_gate_uses_record_time_but_still_requires_url() -> None:
     assert grade_research_evidence(good_news)["ok"] is True
     assert grade_research_evidence(good_news)["published_at"] == "2026-06-30"
     assert grade_research_evidence(no_url)["reason"] == "missing_source"
+
+
+def test_internal_research_artifact_without_real_source_is_rejected_even_with_record_time() -> None:
+    paper = _record("paper_source", "Internal paper without URL")
+    paper.time = TimeRef(
+        created_at="2026-06-30T08:00:00+08:00",
+        updated_at="2026-06-30T08:00:00+08:00",
+        occurred_at="2026-06-30T08:00:00+08:00",
+    )
+
+    gate = grade_research_evidence(paper)
+
+    assert gate["ok"] is False
+    assert gate["reason"] == "missing_source"
+    assert gate["published_at"] == "2026-06-30"
 
 
 def test_claim_evidence_gate_accepts_internal_paper_source_attribution() -> None:

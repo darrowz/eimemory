@@ -47,6 +47,8 @@ def test_persona_guidance_can_be_disabled_for_openclaw_hook(tmp_path, monkeypatc
     )
 
     assert result["persona_guidance"]["enabled"] is False
+    assert result["persona_trace"]["stored"] is None
+    assert result["persona_trace"]["skipped_reason"] == "persona_disabled"
     assert "persona_guidance" not in result["task_context"]
 
 
@@ -82,7 +84,7 @@ def test_openclaw_before_prompt_build_records_persona_trace(tmp_path, monkeypatc
     assert trace["injection_latency_ms"] >= trace["guidance_latency_ms"] >= 0.0
 
 
-def test_openclaw_before_prompt_build_records_disabled_persona_trace(tmp_path, monkeypatch) -> None:
+def test_openclaw_before_prompt_build_does_not_record_disabled_persona_trace(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("EIMEMORY_PERSONA_ENABLED", "0")
     runtime = Runtime.create(root=tmp_path)
 
@@ -105,13 +107,10 @@ def test_openclaw_before_prompt_build_records_disabled_persona_trace(tmp_path, m
         )
         if record.source == "persona.trace"
     ]
-    assert traces
-    trace = traces[0].content
     assert result["persona_guidance"]["enabled"] is False
-    assert trace["enabled"] is False
-    assert trace["scene"] == ""
-    assert trace["guidance_length"] == 0
-    assert trace["injection_latency_ms"] >= trace["guidance_latency_ms"] >= 0.0
+    assert result["persona_trace"]["stored"] is None
+    assert result["persona_trace"]["skipped_reason"] == "persona_disabled"
+    assert traces == []
 
 
 def test_openclaw_persona_trace_tolerates_malformed_duration(tmp_path, monkeypatch) -> None:

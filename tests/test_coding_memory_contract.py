@@ -114,3 +114,49 @@ def test_graph_replay_gate_persists_pass_or_fail_evidence(tmp_path) -> None:
     assert failed["ok"] is False
     assert failed["verdict"] == "fail"
     assert failed["missing_relations"] == ["ROLLED_BACK_BY"]
+
+
+def test_graph_replay_does_not_pass_from_unrelated_fallback_paths(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    runtime.observe_coding_memory(_coding_observation(), scope=SCOPE)
+
+    replay = runtime.run_coding_graph_replay(
+        query="totally unrelated banana",
+        expected_relations=["FAILED_WITH"],
+        scope=SCOPE,
+    )
+
+    assert replay["ok"] is False
+    assert replay["verdict"] == "fail"
+    assert replay["graph_path_count"] == 0
+
+
+def test_non_verification_command_does_not_create_verified_by_edge(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    observation = {
+        **_coding_observation(),
+        "session_id": "sess-run-command-only",
+        "commands": [{"command": "python app.py", "summary": "Ran application manually."}],
+        "replay_cases": [],
+    }
+
+    report = runtime.observe_coding_memory(observation, scope=SCOPE)
+
+    assert "RAN_COMMAND" in report["relations"]
+    assert "VERIFIED_BY" not in report["relations"]
+    edges = runtime.store.list_memory_edges(scope=SCOPE, record_ids=[report["record_id"]], limit=50)
+    assert "VERIFIED_BY" not in {edge.meta.get("relation") for edge in edges}
+
+
+def test_observe_coding_memory_is_idempotent_without_explicit_observed_at(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    import eimemory.governance.coding_memory_contract as contract
+
+    monkeypatch.setattr(contract, "now_iso", lambda: "2026-07-02T01:00:00+08:00")
+    first = runtime.observe_coding_memory(_coding_observation(), scope=SCOPE)
+    monkeypatch.setattr(contract, "now_iso", lambda: "2026-07-02T01:00:05+08:00")
+    second = runtime.observe_coding_memory(_coding_observation(), scope=SCOPE)
+
+    assert first["record_id"] == second["record_id"]
+    audit = runtime.audit_coding_memory_contract(scope=SCOPE)
+    assert audit["observation_count"] == 1

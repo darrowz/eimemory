@@ -40,7 +40,7 @@ def observe_coding_memory(
         return {"ok": False, "error": "invalid_observation"}
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
     normalized = _normalize_observation(observation)
-    record_id = f"codingobs_{_stable_hash(asdict(scope_ref), normalized)[:24]}"
+    record_id = f"codingobs_{_stable_hash(asdict(scope_ref), _observation_identity(normalized))[:24]}"
     nodes = _typed_nodes(record_id, normalized)
     edges = _typed_edges(record_id=record_id, nodes=nodes, scope=scope_ref, observation=normalized)
     relations = sorted({str(edge.meta.get("relation") or "") for edge in edges if edge.meta.get("relation")})
@@ -113,7 +113,7 @@ def query_coding_memory_graph(
         reverse=True,
     )
     selected = [record for record, score in ranked if score > 0][:safe_limit]
-    if not selected and records:
+    if not selected and records and not terms:
         selected = records[:safe_limit]
     paths = []
     all_edges = []
@@ -242,6 +242,12 @@ def _normalize_observation(observation: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _observation_identity(observation: dict[str, Any]) -> dict[str, Any]:
+    identity = dict(observation)
+    identity.pop("observed_at", None)
+    return identity
+
+
 def _typed_nodes(record_id: str, observation: dict[str, Any]) -> list[dict[str, str]]:
     nodes = [{"id": record_id, "type": "coding_session", "label": _first_text(observation.get("session_id"), record_id)}]
     agent = observation.get("agent") or {}
@@ -294,12 +300,16 @@ def _typed_edges(*, record_id: str, nodes: list[dict[str, str]], scope: ScopeRef
     edges.extend(_edges_to_type(record_id, node_by_type, "error", "FAILED_WITH", scope, "coding_session_error"))
     edges.extend(_edges_to_type(record_id, node_by_type, "decision", "DECIDED_BECAUSE", scope, "coding_session_decision"))
     edges.extend(_edges_to_type(record_id, node_by_type, "outcome", "PRODUCED_OUTCOME", scope, "coding_session_outcome"))
-    edges.extend(_edges_to_type(record_id, node_by_type, "command", "VERIFIED_BY", scope, "coding_session_verification"))
+    edges.extend(_edges_to_nodes(record_id, _verification_command_nodes(node_by_type, observation), "command", "VERIFIED_BY", scope, "coding_session_verification"))
     edges.extend(_edges_to_type(record_id, node_by_type, "replay_case", "PREVENTED_BY_REPLAY", scope, "coding_session_replay"))
     return edges
 
 
 def _edges_to_type(record_id: str, node_by_type: dict[str, list[dict[str, str]]], node_type: str, relation: str, scope: ScopeRef, reason: str) -> list[MemoryEdge]:
+    return _edges_to_nodes(record_id, node_by_type.get(node_type, []), node_type, relation, scope, reason)
+
+
+def _edges_to_nodes(record_id: str, nodes: list[dict[str, str]], node_type: str, relation: str, scope: ScopeRef, reason: str) -> list[MemoryEdge]:
     return [
         MemoryEdge.create(
             from_id=record_id,
@@ -311,8 +321,36 @@ def _edges_to_type(record_id: str, node_by_type: dict[str, list[dict[str, str]]]
             reason=reason,
             meta={"relation": relation, "node_type": node_type, "label": node.get("label", "")},
         )
-        for node in node_by_type.get(node_type, [])
+        for node in nodes
     ]
+
+
+def _verification_command_nodes(node_by_type: dict[str, list[dict[str, str]]], observation: dict[str, Any]) -> list[dict[str, str]]:
+    allowed_ids = {
+        f"command:{_stable_hash(_first_text(item.get('command'), item.get('cmd')))[:16]}"
+        for item in observation.get("commands", [])
+        if _is_verification_command(item)
+    }
+    return [node for node in node_by_type.get("command", []) if node.get("id") in allowed_ids]
+
+
+def _is_verification_command(command: dict[str, Any]) -> bool:
+    if not isinstance(command, dict):
+        return False
+    status = str(command.get("status") or command.get("outcome") or command.get("result") or "").strip().lower()
+    if status in {"failed", "fail", "error", "bad"}:
+        return False
+    text = " ".join(
+        str(value or "")
+        for value in (
+            command.get("command"),
+            command.get("cmd"),
+            command.get("tool"),
+            command.get("summary"),
+            command.get("purpose"),
+        )
+    ).lower()
+    return any(token in text for token in ("pytest", "unittest", "compileall", "verify", "verified", "test ", "tests/", "replay", "health check", "smoke"))
 
 
 def _coding_observation_records(runtime: Any, *, scope: ScopeRef, limit: int) -> list[RecordEnvelope]:

@@ -188,7 +188,10 @@ def _existing_chatpaper_categories(sources: list[Any]) -> set[str]:
         metadata = _source_value(source, "metadata")
         if not isinstance(metadata, dict):
             continue
-        for category in metadata.get("categories") or []:
+        raw_categories = metadata.get("categories") or metadata.get("category") or []
+        if isinstance(raw_categories, str):
+            raw_categories = [raw_categories]
+        for category in raw_categories:
             text = str(category or "").strip()
             if text:
                 categories.add(text)

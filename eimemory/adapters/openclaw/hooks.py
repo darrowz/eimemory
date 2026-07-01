@@ -190,13 +190,13 @@ class OpenClawMemoryHooks:
     def _should_capture_message(self, *, text: str, event: dict) -> bool:
         if not text:
             return False
-        if self._force_capture_requested(event):
-            return True
         normalized = "".join(ch for ch in text if ch.isalnum() or ch.isspace()).strip().lower()
         if not normalized:
             return False
         if self._looks_like_prompt_injection(normalized):
             return False
+        if self._force_capture_requested(event):
+            return True
         durable_markers = (
             "remember",
             "prefer",
@@ -465,12 +465,29 @@ class OpenClawMemoryHooks:
         correction = persona_feedback_from_user_text(text)
         if correction is None:
             return None
-        stored = PersonaStore(self.runtime.store).record_correction(correction, scope=self._scope_from_event(event))
+        stored = PersonaStore(self.runtime.store).record_correction(
+            correction,
+            scope=self._scope_from_event(event),
+            idempotency_key=self._persona_feedback_key(event=event, text=text, category=correction.category),
+        )
         return {
             "stored": stored.to_dict(),
             "category": correction.category,
             "severity": correction.severity,
         }
+
+    def _persona_feedback_key(self, *, event: dict, text: str, category: str) -> str:
+        return "|".join(
+            str(value or "").strip()
+            for value in (
+                event.get("event_id"),
+                event.get("id"),
+                event.get("message_id"),
+                self._session_id_from_event(event),
+                category,
+                text,
+            )
+        )
 
     def _build_persona_guidance_safely(self, *, event: dict, query: str, task_context: dict) -> dict:
         start = perf_counter()
@@ -510,6 +527,16 @@ class OpenClawMemoryHooks:
             }
 
     def _record_persona_trace(self, *, event: dict, persona_guidance: dict, injection_latency_ms: float) -> dict:
+        if not bool(persona_guidance.get("enabled")) and not persona_enabled():
+            return {
+                "stored": None,
+                "enabled": False,
+                "scene": str(persona_guidance.get("scene") or ""),
+                "guidance_length": 0,
+                "guidance_latency_ms": self._float_or_zero(persona_guidance.get("duration_ms")),
+                "injection_latency_ms": self._float_or_zero(injection_latency_ms),
+                "skipped_reason": "persona_disabled",
+            }
         trace = PersonaTraceEvent(
             session_id=self._session_id_from_event(event),
             scene=str(persona_guidance.get("scene") or ""),
@@ -589,12 +616,55 @@ class OpenClawMemoryHooks:
                 list(bundle.items),
                 task_type=str(task_context.get("task_type") or task_context.get("intent") or ""),
             )
-        except Exception:
-            return {"ok": False, "evidence_gate": {"kept_count": len(bundle.items), "excluded_count": 0, "excluded": []}}
+        except Exception as exc:
+            return self._fail_closed_answer_evidence_gate(bundle=bundle, error=str(exc))
         if isinstance(result, dict) and result.get("ok") is True:
             bundle.items = [record for record in result.get("records") or [] if isinstance(record, RecordEnvelope)]
             return result
-        return {"ok": False, "evidence_gate": {"kept_count": len(bundle.items), "excluded_count": 0, "excluded": []}}
+        return self._fail_closed_answer_evidence_gate(bundle=bundle, error="invalid_answer_evidence_gate")
+
+    def _fail_closed_answer_evidence_gate(self, *, bundle: RecallBundle, error: str) -> dict:
+        kept: list[RecordEnvelope] = []
+        excluded: list[dict[str, Any]] = []
+        for record in list(bundle.items):
+            if self._record_requires_research_evidence(record):
+                excluded.append(
+                    {
+                        "record_id": record.record_id,
+                        "kind": record.kind,
+                        "title": record.title,
+                        "reason": "evidence_gate_unavailable",
+                    }
+                )
+                continue
+            kept.append(record)
+        bundle.items = kept
+        return {
+            "ok": False,
+            "evidence_gate": {
+                "kept_count": len(kept),
+                "excluded_count": len(excluded),
+                "excluded": excluded,
+                "error": "answer_evidence_gate_failed",
+                "detail": str(error or ""),
+            },
+        }
+
+    def _record_requires_research_evidence(self, record: RecordEnvelope) -> bool:
+        kind = str(record.kind or "").lower()
+        if kind in {"claim_card", "knowledge_candidate", "news", "paper_source", "paper_extract", "source_candidate"}:
+            return True
+        text = " ".join(
+            str(value or "").lower()
+            for value in (
+                record.source,
+                record.content.get("page_type") if isinstance(record.content, dict) else "",
+                record.meta.get("page_type") if isinstance(record.meta, dict) else "",
+                record.content.get("report_type") if isinstance(record.content, dict) else "",
+                record.meta.get("report_type") if isinstance(record.meta, dict) else "",
+            )
+        )
+        return kind == "knowledge_page" and any(marker in text for marker in ("research", "knowledge.synthesis", "daily_brief", "news", "rss", "paper"))
 
     def _audit_prompt_recall(self, *, event: dict, bundle: RecallBundle, injected: bool) -> RecordEnvelope:
         scope = ScopeRef.from_dict(self._scope_from_event(event))

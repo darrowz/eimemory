@@ -151,6 +151,7 @@ def test_daily_brief_can_include_recent_research_without_counting_it_as_today_he
                 summary="A recent paper can still be surfaced in the research digest.",
                 source="eimemory.paper_intake",
                 occurred_at="2026-04-28T10:00:00+08:00",
+                content={"canonical_url": "https://arxiv.org/abs/2604.00002"},
             )
         ],
         date=DAY,

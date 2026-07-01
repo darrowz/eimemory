@@ -7,7 +7,7 @@ import pytest
 
 from eimemory.api.runtime import Runtime
 from eimemory.governance.capability_distiller import distill_capability_candidate
-from eimemory.governance.promotion_manager import backfill_promotion_rollout_ledger, promote_candidate, _run_patch_commands
+from eimemory.governance.promotion_manager import backfill_promotion_rollout_ledger, promote_candidate, _deployment_commands, _run_patch_commands
 from eimemory.governance.sandbox_lab import create_sandbox_experiment
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
@@ -790,6 +790,125 @@ def test_code_patch_rollout_auto_canary_failure_rolls_back(tmp_path, monkeypatch
     rolled_back = next(item for item in ledger if item["action_type"] == "rolled_back")
     assert rolled_back["details"]["observed_count"] == 1
     assert rolled_back["details"]["failure_rate"] == 1.0
+
+
+def test_default_code_patch_deployment_command_uses_user_systemd_without_sudo(tmp_path, monkeypatch) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    installer = repo / "deploy" / "install_immutable_release.sh"
+    installer.parent.mkdir(parents=True)
+    installer.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    monkeypatch.delenv("EIMEMORY_AUTONOMOUS_CODE_DEPLOY_COMMAND", raising=False)
+
+    commands = _deployment_commands({}, repo)
+
+    assert commands
+    command_text = " ".join(commands[0]) if isinstance(commands[0], list) else commands[0]
+    assert "sudo" not in command_text
+    assert "systemctl --user" in command_text
+    assert "install_immutable_release.sh" in command_text
+
+
+def test_code_patch_deployment_failure_reverts_created_commit(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = {"agent_id": "hongtu", "workspace_id": "code", "user_id": "darrow"}
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+    target = repo / "module.py"
+    target.write_text("VALUE = 'old'\n", encoding="utf-8")
+    subprocess.run(["git", "add", "module.py"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "seed"], cwd=repo, check=True)
+    seed_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+    monkeypatch.setenv("EIMEMORY_AUTONOMOUS_CODE_REPO", str(repo))
+    experiment_id = create_sandbox_experiment(
+        runtime,
+        scope=scope,
+        loop_id="learn_test",
+        learning_goal_id="goal_1",
+        research_note_id="note_1",
+        candidate_kind="code_patch",
+        candidate_patch={
+            "summary": "Patch module but rollback failed deployment cleanly",
+            "repo_root": str(repo),
+            "apply_to_repo": True,
+            "deploy_to_production": True,
+            "commit_to_repo": True,
+            "allowed_files": ["module.py"],
+            "file_updates": [{"path": "module.py", "content": "VALUE = 'new'\n"}],
+            "verification_commands": [[sys.executable, "-c", "print('tests ok')"]],
+            "deployment_commands": [[sys.executable, "-c", "raise SystemExit(8)"]],
+            "post_deploy_health_commands": [[sys.executable, "-c", "print('health ok')"]],
+            "rollback_plan": {"commands": [[sys.executable, "-c", "print('rollback ready')"]]},
+        },
+    )
+    candidate_id = distill_capability_candidate(
+        runtime,
+        scope=scope,
+        loop_id="learn_test",
+        experiment_id=experiment_id,
+        eval_result={**PASSING_EVAL, "gate_bundle": _l2_gate_bundle()},
+        promotion_target="code_patch",
+        summary="Code patch candidate",
+        target_capability="code.implementation",
+    )
+
+    result = promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", eval_result={**PASSING_EVAL, "gate_bundle": _l2_gate_bundle()}, health={"ok": True})
+
+    assert result["ok"] is False
+    assert result["blocked_reason"] == "code_patch_deployment_failed"
+    assert target.read_text(encoding="utf-8") == "VALUE = 'old'\n"
+    assert subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip() == seed_sha
+    assert subprocess.check_output(["git", "status", "--porcelain"], cwd=repo, text=True).strip() == ""
+
+
+def test_code_patch_blocks_dirty_repo_before_mutation_when_committing(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = {"agent_id": "hongtu", "workspace_id": "code", "user_id": "darrow"}
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+    target = repo / "module.py"
+    target.write_text("VALUE = 'old'\n", encoding="utf-8")
+    subprocess.run(["git", "add", "module.py"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "seed"], cwd=repo, check=True)
+    seed_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+    target.write_text("VALUE = 'local'\n", encoding="utf-8")
+    monkeypatch.setenv("EIMEMORY_AUTONOMOUS_CODE_REPO", str(repo))
+    experiment_id = create_sandbox_experiment(
+        runtime,
+        scope=scope,
+        loop_id="learn_test",
+        learning_goal_id="goal_1",
+        research_note_id="note_1",
+        candidate_kind="code_patch",
+        candidate_patch={
+            "summary": "Patch module only when repo is clean",
+            "repo_root": str(repo),
+            "apply_to_repo": True,
+            "commit_to_repo": True,
+            "allowed_files": ["module.py"],
+            "file_updates": [{"path": "module.py", "content": "VALUE = 'new'\n"}],
+            "verification_commands": [[sys.executable, "-c", "print('tests ok')"]],
+        },
+    )
+    candidate_id = distill_capability_candidate(
+        runtime,
+        scope=scope,
+        loop_id="learn_test",
+        experiment_id=experiment_id,
+        eval_result={**PASSING_EVAL, "gate_bundle": _l2_gate_bundle()},
+        promotion_target="code_patch",
+        summary="Code patch candidate",
+        target_capability="code.implementation",
+    )
+
+    result = promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", eval_result={**PASSING_EVAL, "gate_bundle": _l2_gate_bundle()}, health={"ok": True})
+
+    assert result["ok"] is False
+    assert result["blocked_reason"] == "code_patch_repo_not_clean"
+    assert target.read_text(encoding="utf-8") == "VALUE = 'local'\n"
+    assert subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip() == seed_sha
 
 
 def test_code_patch_requires_strict_rollout_contract(tmp_path, monkeypatch) -> None:

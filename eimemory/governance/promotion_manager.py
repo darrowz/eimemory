@@ -532,7 +532,7 @@ def _apply_code_patch_candidate(
     )
     rollback_evidence = _rollback_evidence(repo_root=repo_root, patch=patch, applied=applied, backups=backups, prior_commit_sha=prior_commit_sha, commit=commit)
     if not commit["ok"]:
-        rollback = _rollback_code_patch(repo_root=repo_root, patch=patch, backups=backups, timeout_seconds=timeout_seconds, phase="commit")
+        rollback = _rollback_code_patch(repo_root=repo_root, patch=patch, backups=backups, timeout_seconds=timeout_seconds, phase="commit", prior_commit_sha=prior_commit_sha)
         _record_candidate_lifecycle(runtime, candidate, scope=scope, action_type="rolled_back", test_result=verification, rollback_command=_rollback_command_display(patch), reason="code_patch_commit_failed", side_effect={"rollback": rollback, "rollback_evidence": rollback_evidence, "commit": commit})
         return {
             "ok": False,
@@ -563,7 +563,7 @@ def _apply_code_patch_candidate(
     if _truthy(patch.get("deploy_to_production"), default=False):
         deploy_commands = _deployment_commands(patch, repo_root)
         if not deploy_commands:
-            rollback = _rollback_code_patch(repo_root=repo_root, patch=patch, backups=backups, timeout_seconds=timeout_seconds, phase="deploy")
+            rollback = _rollback_code_patch(repo_root=repo_root, patch=patch, backups=backups, timeout_seconds=timeout_seconds, phase="deploy", prior_commit_sha=prior_commit_sha)
             _record_candidate_lifecycle(runtime, candidate, scope=scope, action_type="rolled_back", test_result=verification, commit_sha=str(commit.get("commit_sha") or ""), rollback_command=_rollback_command_display(patch), reason="code_patch_deployment_commands_missing", side_effect={"rollback": rollback, "rollback_evidence": rollback_evidence})
             return {
                 "ok": False,
@@ -580,7 +580,7 @@ def _apply_code_patch_candidate(
         deployment = _run_patch_commands(deploy_commands, cwd=repo_root, timeout_seconds=timeout_seconds, phase="deploy")
         rollback_evidence = _rollback_evidence(repo_root=repo_root, patch=patch, applied=applied, backups=backups, prior_commit_sha=prior_commit_sha, commit=commit, deployment=deployment)
         if not deployment["ok"]:
-            rollback = _rollback_code_patch(repo_root=repo_root, patch=patch, backups=backups, timeout_seconds=timeout_seconds, phase="deploy")
+            rollback = _rollback_code_patch(repo_root=repo_root, patch=patch, backups=backups, timeout_seconds=timeout_seconds, phase="deploy", prior_commit_sha=prior_commit_sha)
             _record_candidate_lifecycle(runtime, candidate, scope=scope, action_type="rolled_back", test_result=verification, commit_sha=str(commit.get("commit_sha") or ""), release_path=str(rollback_evidence.get("release_path") or ""), rollback_command=_rollback_command_display(patch), reason="code_patch_deployment_failed", side_effect={"rollback": rollback, "deployment": deployment, "rollback_evidence": rollback_evidence})
             return {
                 "ok": False,
@@ -608,7 +608,7 @@ def _apply_code_patch_candidate(
         )
         post_deploy_health = _run_patch_commands(_post_deploy_health_commands(patch), cwd=repo_root, timeout_seconds=timeout_seconds, phase="post_deploy_health")
         if not post_deploy_health["ok"] or post_deploy_health.get("skipped"):
-            rollback = _rollback_code_patch(repo_root=repo_root, patch=patch, backups=backups, timeout_seconds=timeout_seconds, phase="post_deploy_health")
+            rollback = _rollback_code_patch(repo_root=repo_root, patch=patch, backups=backups, timeout_seconds=timeout_seconds, phase="post_deploy_health", prior_commit_sha=prior_commit_sha)
             _record_candidate_lifecycle(runtime, candidate, scope=scope, action_type="rolled_back", test_result=verification, health_result=post_deploy_health, commit_sha=str(commit.get("commit_sha") or ""), release_path=str(rollback_evidence.get("release_path") or ""), rollback_command=_rollback_command_display(patch), reason="code_patch_post_deploy_health_failed", side_effect={"rollback": rollback, "deployment": deployment, "post_deploy_health": post_deploy_health, "rollback_evidence": rollback_evidence})
             return {
                 "ok": False,
@@ -650,6 +650,7 @@ def _apply_code_patch_candidate(
             commit=commit,
             rollback_evidence=rollback_evidence,
             backups=backups,
+            prior_commit_sha=prior_commit_sha,
             timeout_seconds=timeout_seconds,
         )
         if not canary["ok"]:
@@ -739,6 +740,7 @@ def _run_code_patch_canary(
     commit: dict[str, Any],
     rollback_evidence: dict[str, Any],
     backups: list[dict[str, Any]],
+    prior_commit_sha: str,
     timeout_seconds: int,
 ) -> dict[str, Any]:
     commands = _canary_commands(patch)
@@ -797,6 +799,7 @@ def _run_code_patch_canary(
                 backups=backups,
                 timeout_seconds=timeout_seconds,
                 phase="canary",
+                prior_commit_sha=prior_commit_sha,
             )
             _record_code_patch_canary_lifecycle(
                 runtime,
@@ -852,6 +855,7 @@ def _run_code_patch_canary(
         backups=backups,
         timeout_seconds=timeout_seconds,
         phase="canary_quarantine",
+        prior_commit_sha=prior_commit_sha,
     )
     _record_code_patch_canary_lifecycle(
         runtime,
@@ -1002,6 +1006,8 @@ def _code_patch_contract_error(patch: dict[str, Any], *, repo_root: Path, file_u
             return "code_patch_requires_commit_to_repo"
         if not _rollback_commands(patch):
             return "code_patch_requires_rollback_plan"
+    if _truthy(patch.get("commit_to_repo"), default=False) and _repo_has_dirty_worktree(repo_root):
+        return "code_patch_repo_not_clean"
     return ""
 
 
@@ -1084,6 +1090,23 @@ def _repo_child(repo_root: Path, relative_path: str) -> Path:
     return child
 
 
+def _repo_has_dirty_worktree(repo_root: Path) -> bool:
+    if not (repo_root / ".git").exists():
+        return False
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=str(repo_root),
+            text=True,
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+    except Exception:
+        return True
+    return result.returncode != 0 or bool(result.stdout.strip())
+
+
 def _path_allowed(relative_path: str, allowed_files: list[str]) -> bool:
     normalized_allowed = [_safe_repo_relative_path(item) for item in allowed_files if str(item).strip()]
     return any(relative_path == item or fnmatch.fnmatch(relative_path, item) for item in normalized_allowed)
@@ -1096,16 +1119,64 @@ def _rollback_code_patch(
     backups: list[dict[str, Any]],
     timeout_seconds: int,
     phase: str,
+    prior_commit_sha: str = "",
 ) -> dict[str, Any]:
     _restore_file_updates(backups)
+    repo_reset = _reset_repo_to_commit(repo_root, prior_commit_sha=prior_commit_sha, timeout_seconds=timeout_seconds)
     commands = _rollback_commands(patch)
     command_report = _run_patch_commands(commands, cwd=repo_root, timeout_seconds=timeout_seconds, phase=f"rollback:{phase}") if commands else {"ok": True, "skipped": True, "reports": []}
     return {
-        "ok": bool(command_report.get("ok")),
+        "ok": bool(repo_reset.get("ok")) and bool(command_report.get("ok")),
         "phase": str(phase),
         "file_restore": {"ok": True, "restored_count": len(backups)},
+        "repo_reset": repo_reset,
         "command": _rollback_command_display(patch),
         "command_report": command_report,
+    }
+
+
+def _reset_repo_to_commit(repo_root: Path, *, prior_commit_sha: str, timeout_seconds: int) -> dict[str, Any]:
+    sha = str(prior_commit_sha or "").strip()
+    if not sha:
+        return {"ok": True, "skipped": True, "reason": "prior_commit_missing"}
+    if not (repo_root / ".git").exists():
+        return {"ok": True, "skipped": True, "reason": "git_repo_missing"}
+    verify = subprocess.run(
+        ["git", "rev-parse", "--verify", f"{sha}^{{commit}}"],
+        cwd=str(repo_root),
+        text=True,
+        capture_output=True,
+        timeout=timeout_seconds,
+        check=False,
+    )
+    if verify.returncode != 0:
+        return {
+            "ok": False,
+            "skipped": False,
+            "reason": "prior_commit_not_found",
+            "stderr": (verify.stderr or "")[-4000:],
+        }
+    reset = _run_patch_commands(
+        [["git", "reset", "--hard", sha]],
+        cwd=repo_root,
+        timeout_seconds=timeout_seconds,
+        phase="rollback:git_reset",
+    )
+    clean = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=str(repo_root),
+        text=True,
+        capture_output=True,
+        timeout=timeout_seconds,
+        check=False,
+    )
+    return {
+        "ok": bool(reset.get("ok")) and clean.returncode == 0 and not clean.stdout.strip(),
+        "skipped": False,
+        "prior_commit_sha": sha,
+        "reports": list(reset.get("reports") or []),
+        "dirty_after_reset": clean.stdout.strip(),
+        "status_stderr": (clean.stderr or "")[-4000:],
     }
 
 
@@ -1238,7 +1309,11 @@ def _deployment_commands(patch: dict[str, Any], repo_root: Path) -> list[str | l
         return [env_command]
     installer = repo_root / "deploy" / "install_immutable_release.sh"
     if installer.exists():
-        return [["bash", "-lc", 'COMMIT="$(git rev-parse HEAD)" && sudo ./deploy/install_immutable_release.sh "$COMMIT" && systemctl --user restart eimemory-rpc.service']]
+        return [[
+            "bash",
+            "-lc",
+            'COMMIT="$(git rev-parse --short HEAD)" && bash ./deploy/install_immutable_release.sh "$COMMIT" && systemctl --user daemon-reload && systemctl --user restart eimemory-rpc.service',
+        ]]
     return []
 
 

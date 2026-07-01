@@ -105,6 +105,31 @@ def test_openclaw_user_persona_feedback_records_correction(tmp_path, text: str, 
     assert corrections[0].content["category"] == category
 
 
+def test_openclaw_persona_feedback_is_idempotent_for_same_event(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    hooks = OpenClawMemoryHooks(runtime)
+    event = {
+        "event_id": "evt-persona-feedback-once",
+        "session_id": "sess-persona-feedback-idempotent",
+        "agent_id": "main",
+        "workspace_id": "repo-x",
+        "user_id": "darrow",
+        "message": {"role": "user", "content": "\u592a\u5570\u55e6\uff0c\u4e0b\u6b21\u76f4\u63a5\u8bf4\u7ed3\u679c"},
+    }
+
+    first = hooks.on_message_received(event)
+    second = hooks.on_message_received(event)
+
+    assert first["persona_feedback"]["stored"]["record_id"] == second["persona_feedback"]["stored"]["record_id"]
+    records = runtime.store.list_records(
+        kinds=["feedback"],
+        scope=ScopeRef.from_dict({"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"}),
+        limit=10,
+    )
+    corrections = [record for record in records if record.source == "persona.correction"]
+    assert len(corrections) == 1
+
+
 def test_openclaw_regular_user_message_does_not_record_persona_feedback(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
 

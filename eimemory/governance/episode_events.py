@@ -37,7 +37,7 @@ def record_task_episode(
     outcome_payload = dict(outcome or {"status": "planned", "ok": True})
     decision_items = list(decisions or _default_decisions(task_payload))
     artifact_items = list(artifacts or _default_artifacts(task_payload))
-    failure_items = list(failures or _default_failures(outcome_payload))
+    failure_items = list(failures) if failures is not None else _default_failures(outcome_payload)
     entities = _episode_entities(task_payload, decision_items, artifact_items, failure_items)
     episode = {
         "event_id": event_id,
@@ -209,7 +209,7 @@ def _default_artifacts(task: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _default_failures(outcome: dict[str, Any]) -> list[dict[str, Any]]:
     if bool(outcome.get("ok", True)):
-        return [{"failure_id": "none", "status": "none", "reason": "No failure observed in planning episode."}]
+        return []
     return [
         {
             "failure_id": str(outcome.get("failure_id") or "episode_failure"),
