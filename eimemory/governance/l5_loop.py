@@ -234,6 +234,7 @@ def run_l5_cycle(
         goal_graph=graph,
         autonomous_learning=autonomous,
         self_continuity=self_continuity,
+        apply=bool(apply),
         persist=persist,
     )
     report = {
@@ -372,7 +373,12 @@ def assess_l5_closed_loop(
             "reward_transition_id": str((report.get("reward") or {}).get("transition_record_id") or ""),
             "candidate_ids": _candidate_ids(report.get("autonomous_learning") or {}),
             "rollback_refs": _rollback_evidence_refs(report),
+            "rollback_not_required": _rollback_not_required(report),
+            "rollback_stop_condition": _rollback_stop_condition(report),
         },
+        "rollback_refs": _rollback_evidence_refs(report),
+        "rollback_not_required": _rollback_not_required(report),
+        "rollback_stop_condition": _rollback_stop_condition(report),
         "consciousness_research_layer": dict(CONSCIOUSNESS_RESEARCH_LAYER),
         "persisted_record_id": "",
     }
@@ -570,6 +576,7 @@ def _record_l5_reward(
     goal_graph: dict[str, Any],
     autonomous_learning: dict[str, Any],
     self_continuity: dict[str, Any],
+    apply: bool,
     persist: bool,
 ) -> dict[str, Any]:
     eval_result = {
@@ -605,6 +612,9 @@ def _record_l5_reward(
                 "replay": _has_replay(autonomous_learning),
                 "promotion": _has_promotion_or_block(autonomous_learning),
                 "rollback": bool(_rollback_refs(autonomous_learning)),
+                "rollback_or_stop_condition": _has_rollback_or_stop_condition(
+                    {"apply": bool(apply), "autonomous_learning": autonomous_learning}
+                ),
             },
         },
         scope=scope,
@@ -627,7 +637,7 @@ def _missing_evidence(report: dict[str, Any]) -> list[str]:
         "promotion_or_block": _has_promotion_or_block(auto),
         "reward": bool(reward.get("transition_record_id")),
         "self_continuity": bool(_record_id(self_continuity) or self_continuity.get("narrative")),
-        "rollback": _has_rollback_evidence(report),
+        "rollback_or_stop_condition": _has_rollback_or_stop_condition(report),
     }
     return [name for name, ok in checks.items() if not ok]
 
@@ -708,16 +718,25 @@ def _rollback_refs(auto: dict[str, Any]) -> list[str]:
 
 def _rollback_evidence_refs(report: dict[str, Any]) -> list[str]:
     auto = report.get("autonomous_learning") if isinstance(report.get("autonomous_learning"), dict) else {}
-    refs = _rollback_refs(auto)
-    if refs:
-        return refs
-    if _observation_mode_no_apply(report):
-        return ["observation_mode_no_apply"]
-    return []
+    return _rollback_refs(auto)
 
 
 def _has_rollback_evidence(report: dict[str, Any]) -> bool:
     return bool(_rollback_evidence_refs(report))
+
+
+def _has_rollback_or_stop_condition(report: dict[str, Any]) -> bool:
+    return _has_rollback_evidence(report) or _rollback_not_required(report)
+
+
+def _rollback_not_required(report: dict[str, Any]) -> bool:
+    return bool(_rollback_stop_condition(report))
+
+
+def _rollback_stop_condition(report: dict[str, Any]) -> str:
+    if _observation_mode_no_apply(report):
+        return "observation_mode_no_apply"
+    return ""
 
 
 def _observation_mode_no_apply(report: dict[str, Any]) -> bool:

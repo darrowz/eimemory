@@ -81,6 +81,11 @@ def _write_json(payload: Any, *, indent: int | None = 2) -> None:
     print(text, end="")
 
 
+def _print_report_exit(report: dict[str, Any]) -> int:
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0 if report.get("ok") is not False else 1
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="eimemory")
     sub = parser.add_subparsers(dest="command")
@@ -1793,8 +1798,7 @@ def main(argv: list[str] | None = None) -> int:
                 min_roi=min_roi,
                 persist_report=bool(parsed.persist_report),
             )
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0
+            return _print_report_exit(report)
         if parsed.evolve_command == "autonomous":
             max_apply = int(parsed.max_apply)
             if max_apply < 0:
@@ -1817,8 +1821,7 @@ def main(argv: list[str] | None = None) -> int:
                 web_hypotheses=web_evidence,
                 persist_report=bool(parsed.persist_report),
             )
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0
+            return _print_report_exit(report)
         if parsed.evolve_command == "web-scout":
             timeout_seconds = max(1, int(parsed.timeout_seconds))
             try:
@@ -1837,8 +1840,7 @@ def main(argv: list[str] | None = None) -> int:
                 evidence=evidence,
                 timeout_seconds=timeout_seconds,
             )
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0
+            return _print_report_exit(report)
         if parsed.evolve_command == "code-sandbox":
             try:
                 incident = _load_json_argument(
@@ -1862,8 +1864,7 @@ def main(argv: list[str] | None = None) -> int:
                 create_worktree=bool(parsed.create_worktree),
                 persist_report=bool(parsed.persist_report),
             )
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0
+            return _print_report_exit(report)
         if parsed.evolve_command == "gates":
             report = {
                 "ok": True,
@@ -1882,8 +1883,7 @@ def main(argv: list[str] | None = None) -> int:
                 reason=str(parsed.reason or "manual rollback"),
                 auto=False,
             )
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0
+            return _print_report_exit(report)
         print(json.dumps({"usage": "eimemory evolve evaluate|promotions|loop|autonomous|code-sandbox|web-scout|gates|rollback"}))
         return 0
     if parsed.command == "eval":

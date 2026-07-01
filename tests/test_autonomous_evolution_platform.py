@@ -116,6 +116,22 @@ def test_cli_evolve_autonomous_prints_report(monkeypatch, tmp_path, capsys) -> N
     assert output["scope"]["user_id"] == "darrow"
 
 
+def test_cli_evolve_autonomous_returns_nonzero_on_failed_report(monkeypatch, tmp_path, capsys) -> None:
+    class _FakeRuntime:
+        def run_autonomous_evolution(self, **_kwargs):
+            return {"ok": False, "report_type": "autonomous_evolution", "blocked_reason": "gate_failed"}
+
+    monkeypatch.setattr("eimemory.cli.main.Runtime.create", lambda *_args, **_kwargs: _FakeRuntime())
+    monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path))
+
+    exit_code = cli_main(["evolve", "autonomous"])
+    output = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert output["ok"] is False
+    assert output["blocked_reason"] == "gate_failed"
+
+
 def test_cli_evolve_web_scout_prints_report(monkeypatch, tmp_path, capsys) -> None:
     class _FakeRuntime:
         def scout_web_learning(self, *, scope=None, urls=None, evidence=None, timeout_seconds=8):
@@ -158,3 +174,19 @@ def test_cli_evolve_web_scout_prints_report(monkeypatch, tmp_path, capsys) -> No
     assert output["requested_urls"] == ["https://example.com/memory"]
     assert output["provided_evidence_count"] == 1
     assert output["timeout_seconds"] == 5
+
+
+def test_cli_evolve_web_scout_returns_nonzero_on_failed_report(monkeypatch, tmp_path, capsys) -> None:
+    class _FakeRuntime:
+        def scout_web_learning(self, **_kwargs):
+            return {"ok": False, "source": "web_learning_scout", "error": "network_blocked"}
+
+    monkeypatch.setattr("eimemory.cli.main.Runtime.create", lambda *_args, **_kwargs: _FakeRuntime())
+    monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path))
+
+    exit_code = cli_main(["evolve", "web-scout"])
+    output = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert output["ok"] is False
+    assert output["error"] == "network_blocked"
