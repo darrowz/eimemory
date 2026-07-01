@@ -82,8 +82,15 @@ class PersonaStore:
                     return existing
         return self._append(record)
 
-    def record_trace(self, trace: PersonaTraceEvent, *, scope: dict[str, Any] | None = None) -> RecordEnvelope:
+    def record_trace(
+        self,
+        trace: PersonaTraceEvent,
+        *,
+        scope: dict[str, Any] | None = None,
+        idempotency_key: str = "",
+    ) -> RecordEnvelope:
         payload = trace.to_dict()
+        scope_ref = ScopeRef.from_dict(scope or {})
         record = RecordEnvelope.create(
             kind="reflection",
             title="Persona trace",
@@ -96,7 +103,7 @@ class PersonaStore:
             content=payload,
             tags=["persona", "trace"],
             source="persona.trace",
-            scope=ScopeRef.from_dict(scope or {}),
+            scope=scope_ref,
             meta={
                 "report_type": "persona.trace",
                 "scene": trace.scene,
@@ -106,6 +113,14 @@ class PersonaStore:
                 "injection_latency_ms": trace.injection_latency_ms,
             },
         )
+        if idempotency_key:
+            record.record_id = "personatrace_" + _stable_hash(asdict(scope_ref), idempotency_key)[:24]
+            record.meta["idempotency_key"] = idempotency_key
+            record.content["idempotency_key"] = idempotency_key
+            if self.record_store is not None:
+                existing = self.record_store.get_by_id(record.record_id, scope=scope_ref)
+                if existing is not None:
+                    return existing
         return self._append(record)
 
     def list_corrections(self, *, scope: dict[str, Any] | None = None, limit: int = 50) -> list[PersonaCorrectionEvent]:

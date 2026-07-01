@@ -1082,6 +1082,8 @@ handlers.before_prompt_build({ prompt: 'hello' })
 """.strip()
     env = os.environ.copy()
     env["EIMEMORY_HOOK_COMMAND"] = "does-not-exist openclaw-hook"
+    transport_ledger = tmp_path / "transport-failures.jsonl"
+    env["EIMEMORY_BRIDGE_TRANSPORT_LEDGER"] = str(transport_ledger)
     result = subprocess.run(
         ["node", "-e", script],
         cwd=Path.cwd(),
@@ -1095,6 +1097,11 @@ handlers.before_prompt_build({ prompt: 'hello' })
 
     assert result.returncode == 0
     assert json.loads(result.stdout or "{}") == {}
+    incidents = [json.loads(line) for line in transport_ledger.read_text(encoding="utf-8").splitlines()]
+    assert len(incidents) == 1
+    assert incidents[0]["event_type"] == "openclaw.bridge.transport_error"
+    assert incidents[0]["hook"] == "before_prompt_build"
+    assert incidents[0]["command"][0] == "does-not-exist"
 
 
 def test_openclaw_js_bridge_degrades_gracefully_on_malformed_hook_output(tmp_path) -> None:

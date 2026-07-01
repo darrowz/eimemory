@@ -68,6 +68,48 @@ function cacheKeyFor(kind, hook, payload) {
   return `${kind}:${hook}:${stableJson(payload)}`;
 }
 
+function resolveTransportLedgerPath() {
+  const configured = (process.env.EIMEMORY_BRIDGE_TRANSPORT_LEDGER || '').trim();
+  if (configured) {
+    return configured;
+  }
+  const root = (process.env.EIMEMORY_ROOT || '').trim();
+  if (root) {
+    return path.join(root, 'openclaw_bridge_transport_failures.jsonl');
+  }
+  return path.join(os.tmpdir(), 'eimemory-openclaw-bridge-transport-failures.jsonl');
+}
+
+function serializeTransportError(error) {
+  return {
+    name: String(error?.name || ''),
+    message: String(error?.message || error || ''),
+    code: String(error?.code || ''),
+    errno: String(error?.errno || ''),
+    syscall: String(error?.syscall || ''),
+    path: String(error?.path || ''),
+  };
+}
+
+function recordTransportFailure(details) {
+  try {
+    const ledgerPath = resolveTransportLedgerPath();
+    fs.mkdirSync(path.dirname(ledgerPath), { recursive: true });
+    fs.appendFileSync(
+      ledgerPath,
+      `${JSON.stringify({
+        event_type: 'openclaw.bridge.transport_error',
+        observed_at: new Date().toISOString(),
+        ...details,
+      })}\n`,
+      'utf-8',
+    );
+    return ledgerPath;
+  } catch (_) {
+    return '';
+  }
+}
+
 function splitCommand(command) {
   const parts = [];
   let current = '';
@@ -573,7 +615,16 @@ function safeInvokeHook(api, hook, event) {
     api?.logger?.info?.(`eimemory-bridge: ${hook} completed`);
     return result;
   } catch (error) {
+    const ledgerPath = recordTransportFailure({
+      transport: 'hook',
+      hook,
+      command: resolveHookCommand(),
+      error: serializeTransportError(error),
+    });
     api?.logger?.warn?.(`eimemory-bridge: ${hook} failed: ${error?.message || String(error)}`);
+    if (ledgerPath) {
+      api?.logger?.warn?.(`eimemory-bridge: transport failure recorded at ${ledgerPath}`);
+    }
     return null;
   }
 }
@@ -584,7 +635,16 @@ function safeInvokeBridge(api, event) {
     api?.logger?.info?.('eimemory-bridge: ei-bridge feishu completed');
     return result;
   } catch (error) {
+    const ledgerPath = recordTransportFailure({
+      transport: 'bridge',
+      hook: 'ei-bridge feishu',
+      command: resolveBridgeCommand(),
+      error: serializeTransportError(error),
+    });
     api?.logger?.warn?.(`eimemory-bridge: ei-bridge feishu failed: ${error?.message || String(error)}`);
+    if (ledgerPath) {
+      api?.logger?.warn?.(`eimemory-bridge: transport failure recorded at ${ledgerPath}`);
+    }
     return null;
   }
 }

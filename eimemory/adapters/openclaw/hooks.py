@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from hashlib import sha256
 from time import perf_counter
 from typing import Any
 
@@ -546,10 +547,37 @@ class OpenClawMemoryHooks:
             enabled=bool(persona_guidance.get("enabled")),
         )
         try:
-            stored = PersonaStore(self.runtime.store).record_trace(trace, scope=self._scope_from_event(event))
+            stored = PersonaStore(self.runtime.store).record_trace(
+                trace,
+                scope=self._scope_from_event(event),
+                idempotency_key=self._persona_trace_idempotency_key(
+                    event=event,
+                    persona_guidance=persona_guidance,
+                    trace=trace,
+                ),
+            )
             return {"stored": stored.to_dict(), **trace.to_dict()}
         except Exception as exc:
             return {"stored": None, **trace.to_dict(), "error": str(exc)}
+
+    def _persona_trace_idempotency_key(
+        self,
+        *,
+        event: dict,
+        persona_guidance: dict,
+        trace: PersonaTraceEvent,
+    ) -> str:
+        return self._stable_hash(
+            {
+                "session_id": trace.session_id,
+                "query": self._clean_prompt_query(str(event.get("query") or event.get("raw_query") or "").strip()),
+                "raw_query": str(event.get("raw_query") or event.get("rawQuery") or event.get("query") or "").strip(),
+                "scene": trace.scene,
+                "enabled": trace.enabled,
+                "guidance_length": trace.guidance_length,
+                "guidance_text": str(persona_guidance.get("text") or ""),
+            }
+        )
 
     def _merge_policy_search(self, *, bundle: RecallBundle, policy_search: dict) -> None:
         suggestions = policy_search.get("policy_suggestions") if isinstance(policy_search, dict) else []
@@ -725,23 +753,71 @@ class OpenClawMemoryHooks:
             scope=scope,
             meta=meta,
         )
-        stored = self.runtime.store.append(record)
+        record.record_id = self._prompt_audit_record_id(scope=scope, content=content)
+        record.meta["idempotency_key"] = record.record_id
+        record.content["idempotency_key"] = record.record_id
+        existing = self.runtime.store.get_by_id(record.record_id, scope=scope)
+        if existing is not None:
+            stored = existing
+        else:
+            stored = self.runtime.store.append(record)
         raw_scope = ScopeRef.from_dict(self._raw_scope_from_event(event))
         if raw_scope != scope:
-            self.runtime.store.append(
-                RecordEnvelope.create(
-                    kind="recall_view",
-                    title="OpenClaw memory injection audit",
-                    summary=f"Injected {len(injected_ids)} memory records before prompt build",
-                    detail="Audit record for OpenClaw before_prompt_build memory recall.",
-                    content=content,
-                    tags=["openclaw", "before_prompt_build", "injection_audit"],
-                    source="openclaw.before_prompt_build",
-                    scope=raw_scope,
-                    meta=meta,
-                )
+            raw_record = RecordEnvelope.create(
+                kind="recall_view",
+                title="OpenClaw memory injection audit",
+                summary=f"Injected {len(injected_ids)} memory records before prompt build",
+                detail="Audit record for OpenClaw before_prompt_build memory recall.",
+                content=dict(content),
+                tags=["openclaw", "before_prompt_build", "injection_audit"],
+                source="openclaw.before_prompt_build",
+                scope=raw_scope,
+                meta=dict(meta),
             )
+            raw_record.record_id = self._prompt_audit_record_id(scope=raw_scope, content=content)
+            raw_record.meta["idempotency_key"] = raw_record.record_id
+            raw_record.content["idempotency_key"] = raw_record.record_id
+            if self.runtime.store.get_by_id(raw_record.record_id, scope=raw_scope) is None:
+                self.runtime.store.append(raw_record)
         return stored
+
+    def _prompt_audit_record_id(self, *, scope: ScopeRef, content: dict) -> str:
+        selected_record_ids = [
+            str(record.get("record_id") or "")
+            for record in content.get("selected_records") or []
+            if isinstance(record, dict)
+        ]
+        persona_guidance = content.get("persona_guidance") if isinstance(content.get("persona_guidance"), dict) else {}
+        return "promptaudit_" + self._stable_hash(
+            {
+                "scope": self._scope_payload(scope),
+                "session_id": str(content.get("session_id") or ""),
+                "query": str(content.get("query") or ""),
+                "raw_query": str(content.get("raw_query") or ""),
+                "injected": bool(content.get("injected")),
+                "injected_record_ids": self._coerce_string_list(content.get("injected_record_ids")),
+                "policy_suggestion_ids": self._coerce_string_list(content.get("policy_suggestion_ids")),
+                "policy_sources": self._coerce_string_list(content.get("policy_sources")),
+                "matched_event_type": str(content.get("matched_event_type") or ""),
+                "selected_record_ids": selected_record_ids,
+                "view_type": str(content.get("view_type") or ""),
+                "persona_enabled": bool(persona_guidance.get("enabled")),
+                "persona_scene": str(persona_guidance.get("scene") or ""),
+                "persona_guidance_length": len(str(persona_guidance.get("text") or "")),
+            }
+        )[:24]
+
+    def _stable_hash(self, value: Any) -> str:
+        raw = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+        return sha256(raw.encode("utf-8")).hexdigest()
+
+    def _scope_payload(self, scope: ScopeRef) -> dict[str, str]:
+        return {
+            "tenant_id": str(scope.tenant_id or "default"),
+            "agent_id": str(scope.agent_id or ""),
+            "workspace_id": str(scope.workspace_id or ""),
+            "user_id": str(scope.user_id or ""),
+        }
 
     def _usage_telemetry(self, bundle: RecallBundle) -> dict:
         injection_plan = self._coerce_injection_plan(bundle.explanation.get("injection_plan"))

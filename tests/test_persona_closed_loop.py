@@ -84,6 +84,39 @@ def test_openclaw_before_prompt_build_records_persona_trace(tmp_path, monkeypatc
     assert trace["injection_latency_ms"] >= trace["guidance_latency_ms"] >= 0.0
 
 
+def test_openclaw_before_prompt_build_is_idempotent_for_persona_trace_and_prompt_audit(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("EIMEMORY_PERSONA_ENABLED", "1")
+    runtime = Runtime.create(root=tmp_path)
+    hooks = OpenClawMemoryHooks(runtime)
+    event = {
+        "session_id": "sess-persona-idempotent",
+        "agent_id": "main",
+        "workspace_id": "repo-x",
+        "user_id": "darrow",
+        "query": "repeat before prompt build should not duplicate closed-loop evidence",
+    }
+
+    first = hooks.before_prompt_build(event)
+    second = hooks.before_prompt_build(event)
+
+    scope = ScopeRef.from_dict({"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"})
+    traces = [
+        record
+        for record in runtime.store.list_records(kinds=["reflection"], scope=scope, limit=20)
+        if record.source == "persona.trace" and record.scope == scope
+    ]
+    audits = [
+        record
+        for record in runtime.store.list_records(kinds=["recall_view"], scope=scope, limit=20)
+        if record.source == "openclaw.before_prompt_build" and record.scope == scope
+    ]
+    assert len(traces) == 1
+    assert len(audits) == 1
+    assert first["persona_trace"]["stored"]["record_id"] == second["persona_trace"]["stored"]["record_id"]
+
+
 def test_openclaw_before_prompt_build_does_not_record_disabled_persona_trace(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("EIMEMORY_PERSONA_ENABLED", "0")
     runtime = Runtime.create(root=tmp_path)
