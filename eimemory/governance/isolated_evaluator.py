@@ -277,8 +277,8 @@ def _real_execution_summary(evaluator_context: dict[str, Any]) -> dict[str, Any]
         "passed": bool(replay_passed or command_passed),
         "replay_passed": bool(replay_passed),
         "command_passed": bool(command_passed),
-        "sample_count": int(replay_gate.get("sample_count") or replay.get("pass_count") or replay.get("case_count") or 0),
-        "pass_rate": float(replay_gate.get("pass_rate") or replay.get("pass_rate") or (1.0 if replay_passed else 0.0)),
+        "sample_count": _int_value(_first_present(replay_gate, "sample_count", "case_count", "pass_count") if replay_gate else _first_present(replay, "pass_count", "case_count", "sample_count")),
+        "pass_rate": _float_value(_first_present(replay_gate, "pass_rate") if replay_gate else _first_present(replay, "pass_rate"), default=1.0 if replay_passed else 0.0),
     }
 
 
@@ -367,6 +367,22 @@ def _int_value(value: Any) -> int:
         return max(0, int(value or 0))
     except (TypeError, ValueError):
         return 0
+
+
+def _float_value(value: Any, *, default: float = 0.0) -> float:
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _first_present(payload: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in payload and payload.get(key) is not None:
+            return payload.get(key)
+    return None
 
 
 def _exit_code(item: dict[str, Any]) -> int:

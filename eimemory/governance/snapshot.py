@@ -310,7 +310,7 @@ def _daily_brief_summary(record: RecordEnvelope) -> dict[str, Any]:
     return {
         "record_id": record.record_id,
         "date": str(brief.get("date") or record.meta.get("date") or ""),
-        "message_count": int(conversation_summary.get("message_count") or 0),
+        "message_count": _as_int(conversation_summary.get("message_count"), default=0),
         "decision_count": len(brief.get("decisions") or []),
         "followup_count": len(brief.get("followups") or []),
         "research_item_count": len(research_digest.get("items") or []),
@@ -325,9 +325,9 @@ def _rule_evolution_summary(record: RecordEnvelope) -> dict[str, Any]:
     record_ids = report.get("record_ids") if isinstance(report.get("record_ids"), dict) else {}
     return {
         "record_id": record.record_id,
-        "candidate_count": int(report.get("candidate_count") or record.meta.get("candidate_count") or 0),
-        "promoted_count": int(report.get("promoted_count") or record.meta.get("promoted_count") or 0),
-        "replay_count": int(report.get("replay_count") or record.meta.get("replay_count") or 0),
+        "candidate_count": _as_int(_first_present(report, record.meta, key="candidate_count"), default=0),
+        "promoted_count": _as_int(_first_present(report, record.meta, key="promoted_count"), default=0),
+        "replay_count": _as_int(_first_present(report, record.meta, key="replay_count"), default=0),
         "created_rule_count": len(record_ids.get("created_rules") or []),
         "promotion_candidate_count": len(record_ids.get("promotion_candidates") or []),
         "time": asdict(record.time),
@@ -341,9 +341,9 @@ def _memory_eval_summary(record: RecordEnvelope) -> dict[str, Any]:
     return {
         "record_id": record.record_id,
         "name": str(report.get("name") or record.title),
-        "pass_rate": float(report.get("pass_rate") or 0.0),
+        "pass_rate": _as_float(report.get("pass_rate"), default=0.0),
         "passed_threshold": bool(report.get("passed_threshold")),
-        "fail_count": int(fail_count if fail_count is not None else 0),
+        "fail_count": _as_int(fail_count, default=0),
         "incident_count": len(incidents) if isinstance(incidents, list) else 0,
         "time": asdict(record.time),
     }
@@ -356,12 +356,12 @@ def _longmemeval_summary(record: RecordEnvelope) -> dict[str, Any]:
         "name": str(report.get("name") or record.title),
         "mode": str(report.get("mode") or record.meta.get("mode") or ""),
         "granularity": str(report.get("granularity") or record.meta.get("granularity") or ""),
-        "sample_count": int(report.get("sample_count") or 0),
-        "retrieval_recall_at_1": float(report.get("retrieval_recall_at_1") or 0.0),
-        "retrieval_recall_at_5": float(report.get("retrieval_recall_at_5") or 0.0),
-        "retrieval_recall_at_10": float(report.get("retrieval_recall_at_10") or 0.0),
-        "mrr": float(report.get("mrr") or 0.0),
-        "latency_ms_p95": float(report.get("latency_ms_p95") or 0.0),
+        "sample_count": _as_int(report.get("sample_count"), default=0),
+        "retrieval_recall_at_1": _as_float(report.get("retrieval_recall_at_1"), default=0.0),
+        "retrieval_recall_at_5": _as_float(report.get("retrieval_recall_at_5"), default=0.0),
+        "retrieval_recall_at_10": _as_float(report.get("retrieval_recall_at_10"), default=0.0),
+        "mrr": _as_float(report.get("mrr"), default=0.0),
+        "latency_ms_p95": _as_float(report.get("latency_ms_p95"), default=0.0),
         "time": asdict(record.time),
     }
 
@@ -404,12 +404,12 @@ def _actionable_memory_summary(record: RecordEnvelope) -> dict[str, Any]:
         "payload": {
             "record_id": record.record_id,
             "name": str(report.get("name") or record.title),
-            "pass_rate": float(report.get("pass_rate") or 0.0),
-            "posture_pass_rate": float(report.get("posture_pass_rate") or 0.0),
-            "recall_topk_pass_rate": float(report.get("recall_topk_pass_rate") or 0.0),
-            "contamination_rate": float(report.get("contamination_rate") or 0.0),
-            "project_query_contamination_rate": float(report.get("project_query_contamination_rate") or 0.0),
-            "sample_count": int(report.get("sample_count") or 0),
+            "pass_rate": _as_float(report.get("pass_rate"), default=0.0),
+            "posture_pass_rate": _as_float(report.get("posture_pass_rate"), default=0.0),
+            "recall_topk_pass_rate": _as_float(report.get("recall_topk_pass_rate"), default=0.0),
+            "contamination_rate": _as_float(report.get("contamination_rate"), default=0.0),
+            "project_query_contamination_rate": _as_float(report.get("project_query_contamination_rate"), default=0.0),
+            "sample_count": _as_int(report.get("sample_count"), default=0),
             "time": asdict(record.time),
         },
         "summary": {
@@ -440,7 +440,7 @@ def _build_autonomous_learning_summary(runtime, *, scope: ScopeRef) -> dict[str,
         "active_loop_count": sum(1 for item in loops if str(item.status or "") in {"running", "collecting", "researching", "experimenting", "evaluating", "promoting"}),
         "latest_loop": _record_to_dict(loops[0]) if loops else None,
         "signal_count": len(signals),
-        "repeated_signal_count": sum(1 for item in signals if int(item.meta.get("repeat_count") or 1) > 1),
+        "repeated_signal_count": sum(1 for item in signals if _as_int(item.meta.get("repeat_count"), default=1) > 1),
         "latest_signal": _record_to_dict(signals[0]) if signals else None,
         "goal_count": len(goals),
         "latest_goal": _record_to_dict(goals[0]) if goals else None,
@@ -573,6 +573,31 @@ def _first_text(*containers: dict[str, Any], keys: tuple[str, ...]) -> str:
             if value is not None and str(value).strip():
                 return str(value)
     return ""
+
+
+def _first_present(*containers: dict[str, Any], key: str) -> Any:
+    for container in containers:
+        if isinstance(container, dict) and key in container and container.get(key) is not None:
+            return container.get(key)
+    return None
+
+
+def _as_int(value: Any, *, default: int = 0) -> int:
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _as_float(value: Any, *, default: float = 0.0) -> float:
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _record_to_dict(record: RecordEnvelope) -> dict[str, Any]:

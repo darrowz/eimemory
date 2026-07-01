@@ -61,3 +61,32 @@ def test_evaluate_harness_gate_rejects_missing_card(monkeypatch) -> None:
         baseline_held_out=0.80,
     )
     assert result["verdict"] == "REJECT"
+
+
+def test_evaluate_harness_gate_tolerates_malformed_numeric_card_fields(monkeypatch) -> None:
+    monkeypatch.setenv("HARNESS_PATCH_V2", "1")
+    runtime = _make_runtime(
+        {
+            "proposal_card": {
+                "target_surface": "INSTRUCTION",
+                "evidence_record_ids": ["r1"],
+                "expected_delta": "bad",
+                "target_agent": "eibrain",
+                "risk_tier": "L1",
+                "rollback_plan": "revert",
+                "diff_lines": "bad",
+                "diff_tokens": "bad",
+            }
+        }
+    )
+
+    result = evaluate_harness_gate(
+        runtime,
+        candidate_id="c3",
+        held_in_scores={"accuracy": 0.85},
+        held_out_scores={"accuracy": 0.82},
+        baseline_held_in=0.80,
+        baseline_held_out=0.80,
+    )
+
+    assert result["verdict"] in {"ACCEPT", "WARN", "REJECT"}

@@ -256,3 +256,71 @@ def test_governance_snapshot_surfaces_active_intake_records(tmp_path) -> None:
     assert snapshot["memory_eval_ci"]["latest"]["pass_rate"] == 0.75
     assert snapshot["memory_eval_ci"]["latest"]["fail_count"] == 1
     assert snapshot["memory_eval_ci"]["latest"]["incident_count"] == 2
+
+
+def test_governance_snapshot_tolerates_malformed_metric_records(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "main"}
+    scope_ref = ScopeRef.from_dict(scope)
+    runtime.store.append(
+        RecordEnvelope.create(
+            kind="reflection",
+            title="Malformed memory eval",
+            scope=scope_ref,
+            source="eimemory.memory_eval_ci",
+            content={"report": {"name": "bad-memory-eval", "pass_rate": "bad", "fail_count": "bad"}},
+            meta={"report_type": "memory_eval_ci"},
+        )
+    )
+    runtime.store.append(
+        RecordEnvelope.create(
+            kind="reflection",
+            title="Malformed longmemeval",
+            scope=scope_ref,
+            source="eimemory.longmemeval",
+            content={
+                "report": {
+                    "name": "bad-longmemeval",
+                    "sample_count": "bad",
+                    "retrieval_recall_at_1": "bad",
+                    "retrieval_recall_at_5": "bad",
+                    "retrieval_recall_at_10": "bad",
+                    "mrr": "bad",
+                    "latency_ms_p95": "bad",
+                }
+            },
+            meta={"report_type": "longmemeval_eval"},
+        )
+    )
+    runtime.store.append(
+        RecordEnvelope.create(
+            kind="reflection",
+            title="Malformed actionable memory",
+            scope=scope_ref,
+            source="eimemory.actionable_memory",
+            content={
+                "report": {
+                    "name": "bad-actionable-memory",
+                    "pass_rate": "bad",
+                    "posture_pass_rate": "bad",
+                    "recall_topk_pass_rate": "bad",
+                    "contamination_rate": "bad",
+                    "project_query_contamination_rate": "bad",
+                    "sample_count": "bad",
+                    "samples": [],
+                }
+            },
+            meta={"report_type": "actionable_memory_eval"},
+        )
+    )
+
+    from eimemory.governance.snapshot import build_governance_snapshot
+
+    snapshot = build_governance_snapshot(runtime, scope)
+
+    assert snapshot["memory_eval_ci"]["latest"]["pass_rate"] == 0.0
+    assert snapshot["memory_eval_ci"]["latest"]["fail_count"] == 0
+    assert snapshot["longmemeval"]["latest"]["sample_count"] == 0
+    assert snapshot["longmemeval"]["latest"]["mrr"] == 0.0
+    assert snapshot["actionable_memory"]["latest"]["pass_rate"] == 0.0
+    assert snapshot["actionable_memory"]["latest"]["sample_count"] == 0

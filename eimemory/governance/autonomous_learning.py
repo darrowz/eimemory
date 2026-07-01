@@ -201,6 +201,7 @@ def run_autonomous_learning_cycle(
             },
         )
         safety_replay = run_safety_boundary_replay(runtime, scope=scope_ref, persist=True, loop_id=loop_id)
+        safety_gate_passed = bool(safety_replay.get("ok"))
         mark_step(
             runtime,
             loop,
@@ -210,6 +211,7 @@ def run_autonomous_learning_cycle(
             metrics={
                 "case_count": safety_replay.get("case_count", 0),
                 "pass_rate": safety_replay.get("pass_rate", 0.0),
+                "safety_gate_passed": safety_gate_passed,
             },
         )
 
@@ -247,7 +249,7 @@ def run_autonomous_learning_cycle(
         stop_judgments: list[dict[str, Any]] = []
         isolation_blocked_reasons: list[str] = []
         isolation_gate_passed = True
-        promotion_budget = max(0, int(max_promotions)) if max_promotions is not None else len(candidate_kinds)
+        promotion_budget = max(0, _as_int(max_promotions, default=0)) if max_promotions is not None else len(candidate_kinds)
         for spec in candidate_specs:
             candidate_kind = str(spec.get("promotion_target") or "")
             goal_for_candidate = dict(spec.get("goal") or selected_goal)
@@ -312,7 +314,7 @@ def run_autonomous_learning_cycle(
                 "stop_judgment": stop_judgment_content,
             }
             eval_results.append(eval_result)
-            if eval_result.get("ok") and replay_gate_passed and candidate_isolation_passed:
+            if eval_result.get("ok") and replay_gate_passed and candidate_isolation_passed and safety_gate_passed:
                 candidate_id = distill_capability_candidate(
                     runtime,
                     scope=scope_ref,
@@ -368,12 +370,14 @@ def run_autonomous_learning_cycle(
             runtime,
             loop,
             step_name="promotion",
-            status="completed" if replay_gate_passed and isolation_gate_passed else "blocked",
+            status="completed" if replay_gate_passed and isolation_gate_passed and safety_gate_passed else "blocked",
             record_ids=[item for report in promotion_reports for item in [report.get("promotion_request_id", "")] if item] + candidate_ids,
             metrics={
                 "applied_count": sum(1 for report in promotion_reports if report.get("applied")),
                 "replay_gate_passed": replay_gate_passed,
                 "replay_gate_reason": str(replay_gate.get("reason") or ""),
+                "safety_gate_passed": safety_gate_passed,
+                "safety_gate_reason": str(safety_replay.get("blocked_reason") or safety_replay.get("reason") or ""),
                 "isolation_gate_passed": bool(isolation_gate_passed),
                 "isolation_blocked_reasons": sorted(set(isolation_blocked_reasons)),
             },
@@ -384,7 +388,7 @@ def run_autonomous_learning_cycle(
             scope=scope_ref,
             loop_id=loop_id,
             capability=str(selected_goal.get("target_capability") or "proactive.judgment"),
-            score=0.8 if eval_result.get("ok") and replay_gate_passed and isolation_gate_passed else 0.4,
+            score=0.8 if eval_result.get("ok") and replay_gate_passed and isolation_gate_passed and safety_gate_passed else 0.4,
             evidence_record_ids=[item for item in [research_note_id, eval_result.get("record_id", ""), candidate_id] if item],
         )
         skill_sedimentation = promote_repeated_sops_to_skill_candidates(
@@ -432,8 +436,8 @@ def run_autonomous_learning_cycle(
             "scope": asdict(scope_ref),
             "dry_run": bool(dry_run),
             "apply": bool(apply),
-            "watch_signal_count": int(watch_report.get("signal_count") or 0),
-            "thought_count": int(thought_report.get("thought_count") or 0),
+            "watch_signal_count": _as_int(watch_report.get("signal_count"), default=0),
+            "thought_count": _as_int(thought_report.get("thought_count"), default=0),
             "goal_count": len(goals),
             "selected_goal_id": selected_goal_id,
             "selected_goal": selected_goal,
@@ -460,6 +464,7 @@ def run_autonomous_learning_cycle(
             "real_task_replay": real_task_replay,
             "replay_gate": replay_gate,
             "replay_gate_passed": replay_gate_passed,
+            "safety_gate_passed": safety_gate_passed,
             "isolation_gate_passed": bool(isolation_gate_passed),
             "evaluator_packet_ids": evaluator_packet_ids,
             "evaluator_verdict_ids": evaluator_verdict_ids,
@@ -579,9 +584,9 @@ def _replay_gate_report(report: dict[str, Any]) -> dict[str, Any]:
             "real_task_replay": report,
         }
     verdict = str(report.get("verdict") or "").strip().lower()
-    sample_count = int(report.get("sample_count") or report.get("case_count") or report.get("pass_count") or 0)
-    pass_rate = float(report.get("pass_rate") or 0.0)
-    threshold = float(report.get("threshold") or 0.6)
+    sample_count = _as_int(_first_present(report, "sample_count", "case_count", "pass_count"), default=0)
+    pass_rate = _as_float(report.get("pass_rate"), default=0.0)
+    threshold = _as_float(report.get("threshold"), default=0.6)
     ok = verdict == "pass" and sample_count > 0 and pass_rate >= threshold
     reason = "passed" if ok else "real_task_replay_threshold_failed"
     if verdict != "pass":
@@ -613,7 +618,7 @@ def _aggregate_isolation_debt(verdicts: list[dict[str, Any]]) -> dict[str, int]:
         debt = dict(verdict.get("debt_metrics") or {})
         for key in aggregate:
             try:
-                aggregate[key] += max(0, int(debt.get(key) or 0))
+                aggregate[key] += max(0, _as_int(debt.get(key), default=0))
             except (TypeError, ValueError):
                 continue
     return aggregate
@@ -727,8 +732,8 @@ def _run_autonomous_learning_dry_run(
         "dry_run": True,
         "apply": bool(apply),
         "full": bool(full),
-        "watch_signal_count": int(watch_report.get("signal_count") or 0),
-        "thought_count": int(thought_report.get("thought_count") or 0),
+        "watch_signal_count": _as_int(watch_report.get("signal_count"), default=0),
+        "thought_count": _as_int(thought_report.get("thought_count"), default=0),
         "goal_count": len(goals),
         "selected_goal_id": "",
         "selected_goal": selected_goal,
@@ -889,7 +894,7 @@ def _network_output_gate(
                     "candidate_kinds": list(candidate_kinds),
                     "research_note_id": research_note_id,
                     "web_evidence": _network_output_evidence(web_items),
-                    "replay_case_count": int((replay_dataset or {}).get("case_count") or len((replay_dataset or {}).get("cases") or [])),
+                    "replay_case_count": _replay_case_count(replay_dataset),
                 },
                 tags=["autonomous_learning", "network_learning", "output_gate", str(report["decision"])],
                 evidence=[str(item.get("ref") or "") for item in web_items[:10] if item.get("ref")],
@@ -931,7 +936,7 @@ def _network_output_gate_report(
         "candidate_kinds": list(candidate_kinds),
         "target_capability": target_capability,
         "research_note_id": research_note_id,
-        "replay_case_count": int((replay_dataset or {}).get("case_count") or len((replay_dataset or {}).get("cases") or [])),
+        "replay_case_count": _replay_case_count(replay_dataset),
         "summary_record_id": "",
         "source_score_record_ids": [],
     }
@@ -1019,6 +1024,26 @@ def _as_float(value: Any, *, default: float = 0.0) -> float:
         return default
 
 
+def _as_int(value: Any, *, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _replay_case_count(replay_dataset: dict[str, Any] | None) -> int:
+    dataset = replay_dataset or {}
+    cases = dataset.get("cases") if isinstance(dataset.get("cases"), list) else []
+    return _as_int(dataset.get("case_count"), default=len(cases))
+
+
+def _first_present(payload: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in payload and payload.get(key) is not None:
+            return payload.get(key)
+    return None
+
+
 def _all_t6_evidence(evidence: list[dict[str, Any]]) -> bool:
     return bool(evidence) and all(str(item.get("tier") or "").upper() == "T6" for item in evidence)
 
@@ -1096,7 +1121,7 @@ def _candidate_specs_for_goals(
 
 
 def _candidate_goal_portfolio(goals: list[dict[str, Any]], *, max_goals: int = 3) -> list[dict[str, Any]]:
-    limit = max(1, int(max_goals or 1))
+    limit = max(1, _as_int(max_goals, default=1))
     selected: list[dict[str, Any]] = []
     seen_categories: set[str] = set()
     for goal in goals:
@@ -1165,7 +1190,7 @@ def choose_candidate_kinds_for_goal(goal: dict[str, Any], *, max_candidates: int
     for kind in kinds:
         if kind not in deduped:
             deduped.append(kind)
-        if len(deduped) >= max(1, int(max_candidates or 3)):
+        if len(deduped) >= max(1, _as_int(max_candidates, default=3)):
             break
     return deduped
 

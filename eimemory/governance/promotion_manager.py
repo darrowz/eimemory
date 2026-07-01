@@ -69,8 +69,8 @@ def _enforce_harness_patch_v2(runtime: Any, candidate: Any, *, scope: Any) -> No
         enforce_one_active_per_surface,
     )
     enforce_diff_size(
-        diff_lines=int(card_data.get("diff_lines") or 0),
-        diff_tokens=int(card_data.get("diff_tokens") or 0),
+        diff_lines=_int_value(card_data.get("diff_lines"), default=0),
+        diff_tokens=_int_value(card_data.get("diff_tokens"), default=0),
     )
     surface = str(card_data.get("target_surface") or "")
     if not surface:
@@ -167,12 +167,20 @@ def promote_candidate(
     if candidate is None or candidate.kind != "capability_candidate":
         raise ValueError(f"capability candidate not found: {candidate_id}")
     tier = str(candidate.meta.get("authority_tier") or candidate.content.get("authority_tier") or "L0").upper()
-    _check_safety_wire(
-        authority_tier=str(candidate.meta.get("authority_tier") or ""),
-        safety_wire=tuple((candidate.content or {}).get("safety_wire") or ()),
-    )
-    _enforce_harness_patch_v2(runtime, candidate, scope=scope)
     _record_candidate_lifecycle(runtime, candidate, scope=scope, action_type="proposed")
+    try:
+        _check_safety_wire(
+            authority_tier=tier,
+            safety_wire=tuple((candidate.content or {}).get("safety_wire") or ()),
+        )
+    except ValueError as exc:
+        gate = {"ok": False, "blocked_reasons": ["safety_wire_missing"], "error": str(exc)}
+        eval_payload = eval_result or candidate.content.get("eval_result") or {}
+        health_payload = health or {"ok": True}
+        _record_candidate_lifecycle(runtime, candidate, scope=scope, action_type="gate_failed", test_result=eval_payload, health_result=health_payload, reason="safety_wire_missing", details={"gate": gate})
+        request_id = _promotion_record(runtime, candidate, scope=scope, loop_id=loop_id, status="blocked", action="gate_failed", eval_result=eval_payload, health=health_payload, gate=gate)
+        return {"ok": False, "applied": False, "blocked_reason": "safety_wire_missing", "promotion_request_id": request_id}
+    _enforce_harness_patch_v2(runtime, candidate, scope=scope)
     if tier == "L3":
         _record_candidate_lifecycle(runtime, candidate, scope=scope, action_type="gate_failed", reason="l3_requires_approval")
         request_id = _promotion_record(runtime, candidate, scope=scope, loop_id=loop_id, status="blocked", action="blocked_l3", eval_result=eval_result or {}, health=health or {})
@@ -293,9 +301,9 @@ def _rollout_gate(eval_result: dict[str, Any], health: dict[str, Any], *, tier: 
     blocked = []
     if str(eval_result.get("verdict") or "pass") != "pass":
         blocked.append("eval_not_pass")
-    if float(scores.get("safety") or (1.0 if tier in {"L0", "L1"} else 0.0)) < (0.95 if tier == "L2" else SAFETY_THRESHOLD):
+    if _score_value(scores, "safety", default=1.0 if tier in {"L0", "L1"} else 0.0) < (0.95 if tier == "L2" else SAFETY_THRESHOLD):
         blocked.append("safety_gate")
-    if float(scores.get("regression") or (1.0 if tier in {"L0", "L1"} else 0.0)) < (0.95 if tier == "L2" else REGRESSION_THRESHOLD):
+    if _score_value(scores, "regression", default=1.0 if tier in {"L0", "L1"} else 0.0) < (0.95 if tier == "L2" else REGRESSION_THRESHOLD):
         blocked.append("regression_gate")
     if tier == "L2" and not health.get("ok", False):
         blocked.append("health_gate")
@@ -309,7 +317,7 @@ def _rollout_gate(eval_result: dict[str, Any], health: dict[str, Any], *, tier: 
             blocked.append("rollback_gate")
         if not _canary_gate(gate_bundle):
             blocked.append("canary_gate")
-        if int(gate_bundle.get("timeout_seconds") or 0) <= 0:
+        if _int_value(gate_bundle.get("timeout_seconds"), default=0) <= 0:
             blocked.append("timeout_gate")
         if not bool((gate_bundle.get("audit") or {}).get("enabled")):
             blocked.append("audit_gate")
@@ -319,6 +327,33 @@ def _rollout_gate(eval_result: dict[str, Any], health: dict[str, Any], *, tier: 
         if target in {"prompt_policy", "system_prompt_patch"} and not _prompt_safety_gate(gate_bundle):
             blocked.append("prompt_safety_gate")
     return {"ok": not blocked, "blocked_reasons": blocked, "gate_bundle": gate_bundle}
+
+
+def _score_value(scores: dict[str, Any], key: str, *, default: float) -> float:
+    if key not in scores or scores.get(key) is None:
+        return float(default)
+    try:
+        return float(scores.get(key))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _int_value(value: Any, *, default: int = 0) -> int:
+    if value is None:
+        return int(default)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def _float_value(value: Any, *, default: float = 0.0) -> float:
+    if value is None:
+        return float(default)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
 
 
 def _apply_candidate(
@@ -370,7 +405,7 @@ def _apply_policy_candidate(
         "first_questions": _list_text(patch.get("first_questions")),
         "ask_first_boundaries": _list_text(patch.get("ask_first_boundaries")),
         "success_criteria": str(patch.get("success_criteria") or patch.get("summary") or candidate.summary),
-        "confidence": min(0.95, max(0.75, float((eval_result.get("scores") or {}).get("confidence") or 0.8))),
+        "confidence": min(0.95, max(0.75, _score_value(dict(eval_result.get("scores") or {}), "confidence", default=0.8))),
         "source_opportunity_id": candidate.record_id,
         "source_opportunity": {
             "opportunity_id": candidate.record_id,
@@ -451,7 +486,9 @@ def _apply_code_patch_candidate(
     if contract_error:
         return {"ok": False, "blocked_reason": contract_error, "promotion_target": "code_patch", "repo_root": str(repo_root)}
     allowed_files = _allowed_files(patch, file_updates)
-    timeout_seconds = int(patch.get("timeout_seconds") or (gate.get("gate_bundle") or {}).get("timeout_seconds") or 300)
+    gate_bundle = gate.get("gate_bundle") if isinstance(gate.get("gate_bundle"), dict) else {}
+    timeout_seconds = _int_value(patch.get("timeout_seconds"), default=_int_value(gate_bundle.get("timeout_seconds"), default=300))
+    timeout_seconds = max(1, timeout_seconds)
     prior_commit_sha = _current_commit_sha(repo_root, timeout_seconds=timeout_seconds)
     applied, backups, error = _apply_file_updates(repo_root, file_updates, allowed_files=allowed_files)
     rollback_evidence = _rollback_evidence(repo_root=repo_root, patch=patch, applied=applied, backups=backups, prior_commit_sha=prior_commit_sha, commit={})
@@ -909,7 +946,7 @@ def _apply_playbook_candidate(
         loop_id=loop_id,
         step_name="promotion_apply",
         semantic_key=stable_semantic_key("activated_playbook", candidate.record_id, patch),
-        authority_tier=str(candidate.meta.get("authority_tier") or "L0"),
+        authority_tier=str(candidate.meta.get("authority_tier") or candidate.content.get("authority_tier") or "L0"),
         status="active",
         content={"candidate_id": candidate.record_id, "patch": patch, "eval_result": eval_result, "gate": gate},
         meta={"candidate_id": candidate.record_id, "promotion_target": _promotion_target(candidate)},
@@ -1350,7 +1387,7 @@ def _evidence_gate(gate_bundle: dict[str, Any], scores: dict[str, Any]) -> bool:
         return True
     if sum(1 for tier in tiers if tier in {"T2", "T3"}) >= 2:
         return True
-    return float(scores.get("evidence") or 0.0) >= 0.9
+    return _score_value(scores, "evidence", default=0.0) >= 0.9
 
 
 def _rollback_gate(gate_bundle: dict[str, Any]) -> bool:
@@ -1379,11 +1416,11 @@ def _real_task_replay_gate(gate_bundle: dict[str, Any]) -> bool:
     if not bool(report.get("ok")):
         return False
     verdict = str(report.get("verdict") or "").strip().lower()
-    sample_count = int(report.get("sample_count") or report.get("case_count") or report.get("pass_count") or 0)
+    sample_count = _int_value(report.get("sample_count") or report.get("case_count") or report.get("pass_count"), default=0)
     if verdict != "pass" or sample_count <= 0:
         return False
-    pass_rate = float(report.get("pass_rate") or 0.0)
-    threshold = float(report.get("threshold") or 0.6)
+    pass_rate = _float_value(report.get("pass_rate"), default=0.0)
+    threshold = _float_value(report.get("threshold"), default=0.6)
     return pass_rate >= threshold
 
 
@@ -1493,7 +1530,7 @@ def _promotion_record(
         loop_id=loop_id,
         step_name="promotion",
         semantic_key=semantic_key,
-        authority_tier=str(candidate.meta.get("authority_tier") or "L0"),
+        authority_tier=str(candidate.meta.get("authority_tier") or candidate.content.get("authority_tier") or "L0"),
         status=status,
         content={
             "candidate_id": candidate.record_id,

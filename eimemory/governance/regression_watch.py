@@ -19,8 +19,8 @@ def run_regression_watch(
     if candidate is None:
         raise ValueError(f"candidate not found: {candidate_id}")
     scores = dict(eval_result.get("scores") or {})
-    regressed = str(eval_result.get("verdict") or "") == "fail" or float(scores.get("regression") or 1.0) < 0.9
-    tier = str(candidate.meta.get("authority_tier") or "L0").upper()
+    regressed = str(eval_result.get("verdict") or "") == "fail" or _score_value(scores, "regression", default=1.0) < 0.9
+    tier = str(candidate.meta.get("authority_tier") or candidate.content.get("authority_tier") or "L0").upper()
     action = "observed"
     if regressed:
         action = "disabled" if tier in {"L0", "L1"} else "rollback_requested"
@@ -49,6 +49,33 @@ def run_regression_watch(
         meta={"candidate_id": candidate.record_id, "action": action, "authority_tier": tier, "regressed": bool(regressed)},
     )
     return {"ok": True, "regressed": bool(regressed), "action": action, "record_id": record.record_id}
+
+
+def _score_value(scores: dict[str, Any], key: str, *, default: float) -> float:
+    if key not in scores or scores.get(key) is None:
+        return float(default)
+    try:
+        return float(scores.get(key))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _int_value(value: Any, *, default: int = 0) -> int:
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _float_value(value: Any, *, default: float = 0.0) -> float:
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def evaluate_harness_gate(
@@ -98,12 +125,12 @@ def evaluate_harness_gate(
         card = ProposalCard(
             target_surface=HarnessSurface(card_data["target_surface"]),
             evidence_record_ids=tuple(card_data.get("evidence_record_ids") or ()),
-            expected_delta=float(card_data.get("expected_delta") or 0.0),
+            expected_delta=_float_value(card_data.get("expected_delta"), default=0.0),
             target_agent=str(card_data.get("target_agent") or ""),
             risk_tier=str(card_data.get("risk_tier") or "L0"),
             rollback_plan=str(card_data.get("rollback_plan") or ""),
-            diff_lines=int(card_data.get("diff_lines") or 0),
-            diff_tokens=int(card_data.get("diff_tokens") or 0),
+            diff_lines=_int_value(card_data.get("diff_lines"), default=0),
+            diff_tokens=_int_value(card_data.get("diff_tokens"), default=0),
         )
     else:
         # Legacy mode: synthesize a minimal card so the gate still runs.

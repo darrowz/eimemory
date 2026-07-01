@@ -54,3 +54,29 @@ def test_regression_watch_persists_pass_observation(tmp_path) -> None:
     assert record.kind == "regression_watch"
     assert record.content["regressed"] is False
     assert runtime.store.get_by_id(candidate_id).status == "candidate"
+
+
+def test_regression_watch_treats_explicit_zero_regression_as_regressed(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu"}
+    candidate_id = distill_capability_candidate(
+        runtime,
+        scope=scope,
+        loop_id="learn_test",
+        experiment_id="exp_1",
+        eval_result={"verdict": "pass", "scores": {"safety": 1.0, "regression": 1.0}},
+        promotion_target="tool_route",
+        summary="Tool route",
+    )
+
+    result = run_regression_watch(
+        runtime,
+        candidate_id=candidate_id,
+        scope=scope,
+        loop_id="learn_test",
+        eval_result={"verdict": "pass", "scores": {"regression": 0.0}},
+    )
+
+    assert result["regressed"] is True
+    assert result["action"] == "disabled"
+    assert runtime.store.get_by_id(candidate_id, scope=scope).status == "disabled"

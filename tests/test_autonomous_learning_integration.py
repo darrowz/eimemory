@@ -249,6 +249,36 @@ def test_autonomous_learning_blocks_promotion_when_evaluator_model_matches_gener
     assert "model_not_isolated" in report["isolated_evaluator"]["verdicts"][0]["blocked_reasons"]
 
 
+def test_autonomous_learning_blocks_candidate_when_safety_replay_fails(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "main"}
+    _force_real_task_replay_pass(runtime, monkeypatch)
+    runtime.evolution.log_reflection(tag="tool.routing", miss="routing drift", fix="prefer memory-first", scope=scope)
+
+    def fake_safety_replay(*_args, **_kwargs):
+        return {
+            "ok": False,
+            "case_count": 1,
+            "pass_rate": 0.0,
+            "replay_record_ids": ["safety_replay_record"],
+            "score_record_id": "safety_score_record",
+            "blocked_reason": "secret_exfiltration_replay_failed",
+        }
+
+    monkeypatch.setattr(
+        "eimemory.governance.autonomous_learning.run_safety_boundary_replay",
+        fake_safety_replay,
+    )
+
+    report = runtime.run_autonomous_learning_cycle(scope=scope, force=True, apply=True, max_goals=1, max_promotions=1)
+
+    assert report["ok"] is True
+    assert report["safety_replay"]["ok"] is False
+    assert report["safety_gate_passed"] is False
+    assert report["candidate_ids"] == []
+    assert report["promotions"] == []
+
+
 def test_autonomous_learning_cycle_can_attach_web_scout_evidence_when_network_enabled(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path)
     scope = {"agent_id": "main"}
@@ -475,6 +505,44 @@ def test_autonomous_learning_cycle_reports_skipped_real_task_replay_on_failure(t
     assert report["real_task_replay"]["ok"] is False
     assert report["real_task_replay"]["replay_skipped_reason"] == "real_task_replay_failed"
     assert report["replay_gate_passed"] is False
+    assert report["candidate_ids"] == []
+    assert report["promotions"] == []
+
+
+def test_autonomous_learning_blocks_malformed_real_task_replay_without_crashing(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "main"}
+    runtime.evolution.log_reflection(tag="tool.routing", miss="routing drift", fix="prefer memory-first", scope=scope)
+
+    monkeypatch.setattr(
+        "eimemory.governance.autonomous_learning.build_replay_dataset",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "schema_version": "real_task_replay.v1",
+            "report_type": "proactive_replay_dataset",
+            "case_count": 1,
+            "cases": [{"case_id": "case_1", "query": "sample query", "task_type": "brain.respond"}],
+        },
+    )
+    monkeypatch.setattr(
+        runtime,
+        "run_real_task_replay",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "report_type": "real_task_replay",
+            "schema_version": "real_task_replay.v1",
+            "verdict": "pass",
+            "pass_rate": "bad",
+            "threshold": 0.6,
+            "sample_count": "bad",
+        },
+    )
+
+    report = runtime.run_autonomous_learning_cycle(scope=scope, force=True, apply=True, max_goals=1, max_promotions=1)
+
+    assert report["ok"] is True
+    assert report["replay_gate_passed"] is False
+    assert report["replay_gate"]["reason"] == "real_task_replay_no_samples"
     assert report["candidate_ids"] == []
     assert report["promotions"] == []
 

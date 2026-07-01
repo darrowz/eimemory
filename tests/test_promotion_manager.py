@@ -168,6 +168,64 @@ def test_l2_promotion_blocks_without_health_gate(tmp_path) -> None:
     assert "health_gate" in result["blocked_reason"]
 
 
+def test_l1_promotion_respects_explicit_zero_safety_score(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu"}
+    candidate_id = distill_capability_candidate(
+        runtime,
+        scope=scope,
+        loop_id="learn_test",
+        experiment_id="exp_1",
+        eval_result=PASSING_EVAL,
+        promotion_target="tool_route",
+        summary="Use memory-first routing.",
+        target_capability="tool.routing",
+    )
+
+    result = promote_candidate(
+        runtime,
+        candidate_id=candidate_id,
+        scope=scope,
+        loop_id="learn_test",
+        apply=False,
+        eval_result={"verdict": "pass", "scores": {"safety": 0.0, "regression": 1.0}},
+        health={"ok": True},
+    )
+
+    assert result["ok"] is False
+    assert "safety_gate" in result["blocked_reason"]
+    assert runtime.store.get_by_id(candidate_id, scope=scope).status == "candidate"
+
+
+def test_l1_promotion_respects_explicit_zero_regression_score(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu"}
+    candidate_id = distill_capability_candidate(
+        runtime,
+        scope=scope,
+        loop_id="learn_test",
+        experiment_id="exp_1",
+        eval_result=PASSING_EVAL,
+        promotion_target="tool_route",
+        summary="Use memory-first routing.",
+        target_capability="tool.routing",
+    )
+
+    result = promote_candidate(
+        runtime,
+        candidate_id=candidate_id,
+        scope=scope,
+        loop_id="learn_test",
+        apply=False,
+        eval_result={"verdict": "pass", "scores": {"safety": 1.0, "regression": 0.0}},
+        health={"ok": True},
+    )
+
+    assert result["ok"] is False
+    assert "regression_gate" in result["blocked_reason"]
+    assert runtime.store.get_by_id(candidate_id, scope=scope).status == "candidate"
+
+
 def test_l2_prompt_policy_blocks_when_prompt_safety_is_stub_notready(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     scope = {"agent_id": "hongtu"}
@@ -189,6 +247,178 @@ def test_l2_prompt_policy_blocks_when_prompt_safety_is_stub_notready(tmp_path) -
 
     assert result["ok"] is False
     assert "prompt_safety_gate" in result["blocked_reason"]
+
+
+def test_l2_promotion_blocks_malformed_evidence_score_without_crashing(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu"}
+    gate_bundle = _l2_gate_bundle()
+    gate_bundle["evidence"] = []
+    eval_result = {
+        "verdict": "pass",
+        "scores": {"capability": 0.9, "safety": 1.0, "regression": 1.0, "evidence": "bad"},
+        "gate_bundle": gate_bundle,
+    }
+    candidate_id = distill_capability_candidate(
+        runtime,
+        scope=scope,
+        loop_id="learn_test",
+        experiment_id="exp_1",
+        eval_result={**PASSING_EVAL, "gate_bundle": _l2_gate_bundle()},
+        promotion_target="system_prompt_patch",
+        summary="Prompt policy update",
+    )
+
+    result = promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", apply=False, eval_result=eval_result, health={"ok": True})
+
+    assert result["ok"] is False
+    assert "evidence_gate" in result["blocked_reason"]
+
+
+def test_l2_promotion_blocks_malformed_timeout_without_crashing(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu"}
+    gate_bundle = _l2_gate_bundle()
+    gate_bundle["timeout_seconds"] = "bad"
+    eval_result = {**PASSING_EVAL, "gate_bundle": gate_bundle}
+    candidate_id = distill_capability_candidate(
+        runtime,
+        scope=scope,
+        loop_id="learn_test",
+        experiment_id="exp_1",
+        eval_result={**PASSING_EVAL, "gate_bundle": _l2_gate_bundle()},
+        promotion_target="system_prompt_patch",
+        summary="Prompt policy update",
+    )
+
+    result = promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", apply=False, eval_result=eval_result, health={"ok": True})
+
+    assert result["ok"] is False
+    assert "timeout_gate" in result["blocked_reason"]
+
+
+def test_l2_code_patch_blocks_malformed_real_task_replay_without_crashing(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu"}
+    gate_bundle = _l2_gate_bundle()
+    gate_bundle["real_task_replay"] = {
+        "ok": True,
+        "verdict": "pass",
+        "pass_rate": 1.0,
+        "threshold": 0.6,
+        "sample_count": "bad",
+    }
+    eval_result = {**PASSING_EVAL, "gate_bundle": gate_bundle}
+    candidate_id = distill_capability_candidate(
+        runtime,
+        scope=scope,
+        loop_id="learn_test",
+        experiment_id="exp_1",
+        eval_result={**PASSING_EVAL, "gate_bundle": _l2_gate_bundle()},
+        promotion_target="code_patch",
+        summary="Code patch update",
+    )
+
+    result = promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", apply=False, eval_result=eval_result, health={"ok": True})
+
+    assert result["ok"] is False
+    assert "real_task_replay_gate" in result["blocked_reason"]
+
+
+def test_l2_code_patch_uses_gate_timeout_when_patch_timeout_is_malformed(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu"}
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setenv("EIMEMORY_AUTONOMOUS_CODE_REPO", str(repo))
+    target = repo / "health_probe.py"
+    target.write_text("VERSION = 'old'\n", encoding="utf-8")
+    experiment_id = create_sandbox_experiment(
+        runtime,
+        scope=scope,
+        loop_id="learn_test",
+        learning_goal_id="goal_1",
+        research_note_id="note_1",
+        candidate_kind="code_patch",
+        candidate_patch={
+            "summary": "Patch health probe version",
+            "target_capability": "code.implementation",
+            "repo_root": str(repo),
+            "apply_to_repo": True,
+            "commit_to_repo": False,
+            "allowed_files": ["health_probe.py"],
+            "timeout_seconds": "bad",
+            "file_updates": [{"path": "health_probe.py", "content": "VERSION = 'new'\n"}],
+            "verification_commands": [[sys.executable, "-c", "from pathlib import Path; assert Path('health_probe.py').read_text(encoding='utf-8') == \"VERSION = 'new'\\n\""]],
+        },
+    )
+    gate_bundle = _l2_gate_bundle()
+    gate_bundle["timeout_seconds"] = 60
+    eval_result = {**PASSING_EVAL, "gate_bundle": gate_bundle}
+    candidate_id = distill_capability_candidate(
+        runtime,
+        scope=scope,
+        loop_id="learn_test",
+        experiment_id=experiment_id,
+        eval_result=eval_result,
+        promotion_target="code_patch",
+        summary="Code patch candidate",
+        target_capability="code.implementation",
+    )
+
+    result = promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", eval_result=eval_result, health={"ok": True})
+
+    assert result["ok"] is True
+    assert result["applied"] is True
+    assert target.read_text(encoding="utf-8") == "VERSION = 'new'\n"
+
+
+def test_promotion_request_preserves_content_authority_tier(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu"}
+    candidate = RecordEnvelope.create(
+        kind="capability_candidate",
+        title="Content-tier prompt policy",
+        summary="Content-only L2 authority must be preserved in promotion records.",
+        status="candidate",
+        scope=ScopeRef.from_dict(scope),
+        content={
+            "authority_tier": "L2",
+            "promotion_target": "system_prompt_patch",
+            "target_capability": "tool.routing",
+        },
+        meta={"promotion_target": "system_prompt_patch", "target_capability": "tool.routing"},
+    )
+    runtime.store.append(candidate)
+    eval_result = {**PASSING_EVAL, "gate_bundle": _l2_gate_bundle()}
+
+    result = promote_candidate(runtime, candidate_id=candidate.record_id, scope=scope, loop_id="learn_test", apply=False, eval_result=eval_result, health={"ok": True})
+    promotion = runtime.store.get_by_id(result["promotion_request_id"], scope=scope)
+
+    assert result["ok"] is True
+    assert promotion is not None
+    assert promotion.meta["authority_tier"] == "L2"
+
+
+def test_tool_route_promotion_defaults_malformed_confidence_without_crashing(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu"}
+    candidate_id = distill_capability_candidate(
+        runtime,
+        scope=scope,
+        loop_id="learn_test",
+        experiment_id="exp_1",
+        eval_result=PASSING_EVAL,
+        promotion_target="tool_route",
+        summary="Use memory-first routing.",
+        target_capability="tool.routing",
+    )
+    eval_result = {"verdict": "pass", "scores": {"safety": 1.0, "regression": 1.0, "confidence": "bad"}}
+
+    result = promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", eval_result=eval_result, health={"ok": True})
+
+    assert result["ok"] is True
+    assert result["applied"] is True
 
 
 def test_promotion_request_records_target_metadata(tmp_path) -> None:
