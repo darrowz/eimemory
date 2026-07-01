@@ -67,7 +67,7 @@ def test_openclaw_before_prompt_build_records_persona_trace(tmp_path, monkeypatc
     traces = [
         record
         for record in runtime.store.list_records(
-            kinds=["recall_view"],
+            kinds=["reflection"],
             scope=ScopeRef.from_dict({"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"}),
             limit=10,
         )
@@ -99,7 +99,7 @@ def test_openclaw_before_prompt_build_records_disabled_persona_trace(tmp_path, m
     traces = [
         record
         for record in runtime.store.list_records(
-            kinds=["recall_view"],
+            kinds=["reflection"],
             scope=ScopeRef.from_dict({"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"}),
             limit=10,
         )

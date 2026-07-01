@@ -13,6 +13,11 @@ from eimemory.governance.curiosity import generate_learning_goals, persist_learn
 from eimemory.governance.evidence_collector import collect
 from eimemory.governance.goal_graph import build_goal_graph_loop
 from eimemory.governance.goal_registry import load_goal_registry
+from eimemory.governance.isolated_evaluator import (
+    build_evaluation_packet,
+    judge_stop_condition,
+    run_isolated_evaluator,
+)
 from eimemory.governance.learning_eval import run_learning_eval
 from eimemory.governance.learning_retention import compact_learning_records
 from eimemory.governance.learning_state import (
@@ -235,6 +240,13 @@ def run_autonomous_learning_cycle(
         candidate_ids: list[str] = []
         promotion_reports: list[dict[str, Any]] = []
         regression_reports: list[dict[str, Any]] = []
+        evaluator_packet_ids: list[str] = []
+        evaluator_verdict_ids: list[str] = []
+        stop_judgment_ids: list[str] = []
+        evaluator_verdicts: list[dict[str, Any]] = []
+        stop_judgments: list[dict[str, Any]] = []
+        isolation_blocked_reasons: list[str] = []
+        isolation_gate_passed = True
         promotion_budget = max(0, int(max_promotions)) if max_promotions is not None else len(candidate_kinds)
         for spec in candidate_specs:
             candidate_kind = str(spec.get("promotion_target") or "")
@@ -268,8 +280,39 @@ def run_autonomous_learning_cycle(
                 real_task_replay=real_task_replay,
                 replay_gate=replay_gate,
             )
+            evaluator_packet = build_evaluation_packet(
+                runtime,
+                scope=scope_ref,
+                loop_id=loop_id,
+                goal=goal_for_candidate,
+                candidate_kind=candidate_kind,
+                artifact=candidate_patch,
+                generator_claim=_candidate_summary(goal_for_candidate, candidate_kind=candidate_kind, patch=candidate_patch),
+                replay_gate=replay_gate,
+                real_task_replay=real_task_replay,
+            )
+            evaluator_verdict = run_isolated_evaluator(runtime, evaluator_packet, scope=scope_ref, loop_id=loop_id)
+            stop_judgment = judge_stop_condition(runtime, evaluator_verdict, scope=scope_ref, loop_id=loop_id)
+            evaluator_packet_ids.append(evaluator_packet.record_id)
+            evaluator_verdict_ids.append(evaluator_verdict.record_id)
+            stop_judgment_ids.append(stop_judgment.record_id)
+            evaluator_verdict_content = dict(evaluator_verdict.content or {})
+            stop_judgment_content = dict(stop_judgment.content or {})
+            evaluator_verdicts.append(evaluator_verdict_content)
+            stop_judgments.append(stop_judgment_content)
+            candidate_isolation_passed = bool(evaluator_verdict_content.get("promotion_allowed")) and bool(stop_judgment_content.get("promotion_allowed"))
+            if not candidate_isolation_passed:
+                isolation_gate_passed = False
+                isolation_blocked_reasons.extend(str(item) for item in evaluator_verdict_content.get("blocked_reasons") or [])
+            eval_result["isolated_evaluator"] = {
+                "packet_id": evaluator_packet.record_id,
+                "verdict_id": evaluator_verdict.record_id,
+                "stop_judgment_id": stop_judgment.record_id,
+                "verdict": evaluator_verdict_content,
+                "stop_judgment": stop_judgment_content,
+            }
             eval_results.append(eval_result)
-            if eval_result.get("ok") and replay_gate_passed:
+            if eval_result.get("ok") and replay_gate_passed and candidate_isolation_passed:
                 candidate_id = distill_capability_candidate(
                     runtime,
                     scope=scope_ref,
@@ -310,13 +353,29 @@ def run_autonomous_learning_cycle(
         mark_step(
             runtime,
             loop,
+            step_name="isolated_evaluator",
+            status="completed" if isolation_gate_passed else "blocked",
+            record_ids=evaluator_packet_ids + evaluator_verdict_ids + stop_judgment_ids,
+            metrics={
+                "packet_count": len(evaluator_packet_ids),
+                "verdict_count": len(evaluator_verdict_ids),
+                "stop_judgment_count": len(stop_judgment_ids),
+                "isolation_gate_passed": bool(isolation_gate_passed),
+                "blocked_reason_count": len(set(isolation_blocked_reasons)),
+            },
+        )
+        mark_step(
+            runtime,
+            loop,
             step_name="promotion",
-            status="completed" if replay_gate_passed else "blocked",
+            status="completed" if replay_gate_passed and isolation_gate_passed else "blocked",
             record_ids=[item for report in promotion_reports for item in [report.get("promotion_request_id", "")] if item] + candidate_ids,
             metrics={
                 "applied_count": sum(1 for report in promotion_reports if report.get("applied")),
                 "replay_gate_passed": replay_gate_passed,
                 "replay_gate_reason": str(replay_gate.get("reason") or ""),
+                "isolation_gate_passed": bool(isolation_gate_passed),
+                "isolation_blocked_reasons": sorted(set(isolation_blocked_reasons)),
             },
         )
 
@@ -325,7 +384,7 @@ def run_autonomous_learning_cycle(
             scope=scope_ref,
             loop_id=loop_id,
             capability=str(selected_goal.get("target_capability") or "proactive.judgment"),
-            score=0.8 if eval_result.get("ok") and replay_gate_passed else 0.4,
+            score=0.8 if eval_result.get("ok") and replay_gate_passed and isolation_gate_passed else 0.4,
             evidence_record_ids=[item for item in [research_note_id, eval_result.get("record_id", ""), candidate_id] if item],
         )
         skill_sedimentation = promote_repeated_sops_to_skill_candidates(
@@ -401,6 +460,19 @@ def run_autonomous_learning_cycle(
             "real_task_replay": real_task_replay,
             "replay_gate": replay_gate,
             "replay_gate_passed": replay_gate_passed,
+            "isolation_gate_passed": bool(isolation_gate_passed),
+            "evaluator_packet_ids": evaluator_packet_ids,
+            "evaluator_verdict_ids": evaluator_verdict_ids,
+            "stop_judgment_ids": stop_judgment_ids,
+            "isolated_evaluator": {
+                "packet_ids": evaluator_packet_ids,
+                "verdict_ids": evaluator_verdict_ids,
+                "stop_judgment_ids": stop_judgment_ids,
+                "verdicts": evaluator_verdicts,
+                "stop_judgments": stop_judgments,
+                "blocked_reasons": sorted(set(isolation_blocked_reasons)),
+                "debt_metrics": _aggregate_isolation_debt(evaluator_verdicts),
+            },
             "goal_graph": goal_graph,
             "capability_replay": capability_replay,
             "safety_replay": safety_replay,
@@ -527,6 +599,24 @@ def _replay_gate_report(report: dict[str, Any]) -> dict[str, Any]:
         "threshold": threshold,
         "real_task_replay": report,
     }
+
+
+def _aggregate_isolation_debt(verdicts: list[dict[str, Any]]) -> dict[str, int]:
+    aggregate = {
+        "verification_debt": 0,
+        "unverified_generator_claims": 0,
+        "comprehension_rot": 0,
+        "cognitive_surrender": 0,
+        "token_blowout": 0,
+    }
+    for verdict in verdicts:
+        debt = dict(verdict.get("debt_metrics") or {})
+        for key in aggregate:
+            try:
+                aggregate[key] += max(0, int(debt.get(key) or 0))
+            except (TypeError, ValueError):
+                continue
+    return aggregate
 
 
 def _replay_seed_records_from_cases(cases: list[dict[str, Any]], *, scope: ScopeRef) -> list[dict[str, Any]]:

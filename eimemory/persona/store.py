@@ -65,7 +65,7 @@ class PersonaStore:
     def record_trace(self, trace: PersonaTraceEvent, *, scope: dict[str, Any] | None = None) -> RecordEnvelope:
         payload = trace.to_dict()
         record = RecordEnvelope.create(
-            kind="recall_view",
+            kind="reflection",
             title="Persona trace",
             summary=(
                 f"Persona {'enabled' if trace.enabled else 'disabled'} "

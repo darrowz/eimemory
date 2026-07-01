@@ -202,6 +202,53 @@ def test_autonomous_learning_cycle_returns_real_task_replay_report(tmp_path, mon
     assert report["real_task_replay"]["report_type"] == "real_task_replay"
 
 
+def test_autonomous_learning_cycle_records_isolated_evaluator_gate(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "main"}
+    monkeypatch.delenv("EIMEMORY_GENERATOR_MODEL", raising=False)
+    monkeypatch.delenv("EIMEMORY_EVALUATOR_MODEL", raising=False)
+    monkeypatch.delenv("EIMEMORY_STOP_JUDGE_MODEL", raising=False)
+    _force_real_task_replay_pass(runtime, monkeypatch)
+    runtime.evolution.log_reflection(tag="tool.routing", miss="routing drift", fix="prefer memory-first", scope=scope)
+
+    report = runtime.run_autonomous_learning_cycle(scope=scope, force=True, apply=False, max_goals=1)
+
+    assert report["ok"] is True
+    assert report["isolation_gate_passed"] is True
+    assert report["evaluator_packet_ids"]
+    assert report["evaluator_verdict_ids"]
+    assert report["stop_judgment_ids"]
+    assert report["isolated_evaluator"]["verdicts"][0]["verdict"] == "pass"
+    assert report["isolated_evaluator"]["stop_judgments"][0]["decision"] == "stop"
+    packet = runtime.store.get_by_id(report["evaluator_packet_ids"][0], scope=scope)
+    verdict = runtime.store.get_by_id(report["evaluator_verdict_ids"][0], scope=scope)
+    assert packet is not None
+    assert verdict is not None
+    assert packet.kind == "evaluation_packet"
+    assert verdict.kind == "evaluator_verdict"
+    assert packet.content["model_roles"]["generator_model"] == "gpt"
+    assert packet.content["model_roles"]["evaluator_model"] == "minimax"
+
+
+def test_autonomous_learning_blocks_promotion_when_evaluator_model_matches_generator(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "main"}
+    monkeypatch.setenv("EIMEMORY_GENERATOR_MODEL", "gpt")
+    monkeypatch.setenv("EIMEMORY_EVALUATOR_MODEL", "gpt")
+    monkeypatch.setenv("EIMEMORY_STOP_JUDGE_MODEL", "minimax")
+    _force_real_task_replay_pass(runtime, monkeypatch)
+    runtime.evolution.log_reflection(tag="tool.routing", miss="routing drift", fix="prefer memory-first", scope=scope)
+
+    report = runtime.run_autonomous_learning_cycle(scope=scope, force=True, apply=True, max_goals=1, max_promotions=1)
+
+    assert report["ok"] is True
+    assert report["isolation_gate_passed"] is False
+    assert report["candidate_ids"] == []
+    assert report["promotions"] == []
+    assert report["isolated_evaluator"]["verdicts"][0]["verdict"] == "fail"
+    assert "model_not_isolated" in report["isolated_evaluator"]["verdicts"][0]["blocked_reasons"]
+
+
 def test_autonomous_learning_cycle_can_attach_web_scout_evidence_when_network_enabled(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path)
     scope = {"agent_id": "main"}

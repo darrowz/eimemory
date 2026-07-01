@@ -318,6 +318,12 @@ def _build_parser() -> argparse.ArgumentParser:
     learn_autonomy.add_argument("--max-promotions", type=int, default=3)
     learn_autonomy.add_argument("--smoke", action="store_true")
     learn_autonomy.add_argument("--json", action="store_true", default=True)
+    learn_evaluator_harness = learn_sub.add_parser("evaluator-harness")
+    learn_evaluator_harness.add_argument("--generator-model", default="")
+    learn_evaluator_harness.add_argument("--evaluator-model", default="")
+    learn_evaluator_harness.add_argument("--stop-judge-model", default="")
+    learn_evaluator_harness.add_argument("--fail-replay", action="store_true")
+    learn_evaluator_harness.add_argument("--json", action="store_true", default=True)
     learn_loops = learn_sub.add_parser("loops")
     learn_loops.add_argument("--limit", type=int, default=10)
     learn_loops.add_argument("--json", action="store_true", default=True)
@@ -1048,6 +1054,33 @@ def main(argv: list[str] | None = None) -> int:
                 )
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0 if report.get("ok") else 1
+        if parsed.learn_command == "evaluator-harness":
+            replay_ok = not bool(parsed.fail_replay)
+            report = runtime.run_isolated_evaluator_harness(
+                scope=scope,
+                loop_id="cli_isolated_evaluator",
+                generator_model=str(parsed.generator_model or "") or None,
+                evaluator_model=str(parsed.evaluator_model or "") or None,
+                stop_judge_model=str(parsed.stop_judge_model or "") or None,
+                replay_gate={
+                    "ok": replay_ok,
+                    "verdict": "pass" if replay_ok else "fail",
+                    "pass_rate": 1.0 if replay_ok else 0.0,
+                    "sample_count": 1,
+                    "threshold": 0.6,
+                    "reason": "cli_smoke",
+                },
+                real_task_replay={
+                    "ok": replay_ok,
+                    "verdict": "pass" if replay_ok else "fail",
+                    "pass_rate": 1.0 if replay_ok else 0.0,
+                    "pass_count": 1 if replay_ok else 0,
+                    "fail_count": 0 if replay_ok else 1,
+                    "report_type": "cli_isolated_evaluator_smoke",
+                },
+            )
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0 if report.get("ok") else 1
         if parsed.learn_command == "loops":
             print(json.dumps(runtime.list_learning_loops(scope=scope, limit=max(0, int(parsed.limit))), ensure_ascii=False, indent=2))
             return 0
@@ -1268,7 +1301,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0 if report.get("ok") else 1
-        print(json.dumps({"usage": "eimemory learn watch|think|cycle|autonomy|loops|goals|candidates|ledger|replay-dataset|goal-graph|world-model|roadmap|l5|l5-assess|l5-readiness|capability-replay|safety-replay|skills|skill-call|metrics|compact|report|dashboard|promote"}))
+        print(json.dumps({"usage": "eimemory learn watch|think|cycle|autonomy|evaluator-harness|loops|goals|candidates|ledger|replay-dataset|goal-graph|world-model|roadmap|l5|l5-assess|l5-readiness|capability-replay|safety-replay|skills|skill-call|metrics|compact|report|dashboard|promote"}))
         return 0
     if parsed.command == "recall":
         task_context = {"task_type": "cli.recall"}

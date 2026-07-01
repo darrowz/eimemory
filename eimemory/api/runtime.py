@@ -457,6 +457,30 @@ class Runtime:
             allow_network=allow_network,
         )
 
+    def run_isolated_evaluator_harness(
+        self,
+        *,
+        scope: dict | None = None,
+        loop_id: str = "isolated_evaluator_smoke",
+        generator_model: str | None = None,
+        evaluator_model: str | None = None,
+        stop_judge_model: str | None = None,
+        replay_gate: dict | None = None,
+        real_task_replay: dict | None = None,
+    ) -> dict:
+        from eimemory.governance.isolated_evaluator import run_isolated_evaluator_harness
+
+        return run_isolated_evaluator_harness(
+            self,
+            scope=scope,
+            loop_id=loop_id,
+            generator_model=generator_model,
+            evaluator_model=evaluator_model,
+            stop_judge_model=stop_judge_model,
+            replay_gate=replay_gate,
+            real_task_replay=real_task_replay,
+        )
+
     def run_autonomy_cycle(
         self,
         *,
