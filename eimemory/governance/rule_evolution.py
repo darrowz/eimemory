@@ -242,7 +242,7 @@ def _replay_and_promote_outcome_rules(
         if (
             bool(promotion_gate.get("allow_auto_promote"))
             and str(replay.meta.get("verdict") or "") == "pass"
-            and float(replay.meta.get("pass_rate") or 0.0) >= DEFAULT_MIN_PASS_RATE
+            and _float_or_default(replay.meta.get("pass_rate"), default=0.0) >= DEFAULT_MIN_PASS_RATE
         ):
             promoted = runtime.evolution.promote_rule(
                 record_id=rule.record_id,
@@ -784,7 +784,7 @@ def _promotion_candidates(
     min_roi: float,
     roi_summary: dict,
 ) -> list[RecordEnvelope]:
-    if float(roi_summary.get("roi_signal") or 0.0) < float(min_roi):
+    if _float_or_default(roi_summary.get("roi_signal"), default=0.0) < _float_or_default(min_roi, default=0.0):
         return []
     accepted_rules = [rule for rule in rules if rule.status == "accepted"]
     candidates: list[RecordEnvelope] = []
@@ -795,7 +795,7 @@ def _promotion_candidates(
             continue
         if replay is None or str(replay.meta.get("verdict") or "") != "pass":
             continue
-        if float(replay.meta.get("pass_rate") or 0.0) < DEFAULT_MIN_PASS_RATE:
+        if _float_or_default(replay.meta.get("pass_rate"), default=0.0) < DEFAULT_MIN_PASS_RATE:
             continue
         candidates.append(rule)
     return candidates
@@ -804,8 +804,8 @@ def _promotion_candidates(
 def _build_roi_summary(runtime: Any, scope: dict, replay_results: list[RecordEnvelope]) -> dict:
     base = dict(runtime.evolution.build_roi_report(scope=scope))
     replay_count = len(replay_results)
-    pass_count = sum(1 for item in replay_results if str(item.meta.get("verdict") or "") == "pass")
-    pass_rates = [float(item.meta.get("pass_rate") or 0.0) for item in replay_results]
+    pass_count = sum(1 for item in replay_results if _replay_result_counts_as_pass(item))
+    pass_rates = [_float_or_default(item.meta.get("pass_rate"), default=0.0) for item in replay_results]
     base["replay_pass_rate"] = round(pass_count / replay_count, 3) if replay_count else 0.0
     base["average_pass_rate"] = round(sum(pass_rates) / replay_count, 3) if replay_count else 0.0
     return base
@@ -858,6 +858,24 @@ def _is_actual_replay_result(record: RecordEnvelope) -> bool:
     if isinstance(record.content.get("report"), dict):
         return False
     return True
+
+
+def _float_or_default(value: Any, *, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _replay_result_counts_as_pass(record: RecordEnvelope) -> bool:
+    if str(record.meta.get("verdict") or "").strip().lower() != "pass":
+        return False
+    if "pass_rate" not in record.meta:
+        return True
+    try:
+        return float(record.meta.get("pass_rate")) >= DEFAULT_MIN_PASS_RATE
+    except (TypeError, ValueError):
+        return False
 
 
 def _is_actual_reflection(record: RecordEnvelope) -> bool:

@@ -123,6 +123,46 @@ def test_rule_evolution_ignores_non_replay_report_records(tmp_path) -> None:
     assert report["roi_summary"]["replay_pass_rate"] == 0.0
 
 
+def test_rule_evolution_treats_malformed_replay_pass_rate_as_zero_without_promoting(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "eibrain", "workspace_id": "robot"}
+    rule = runtime.evolution.store_rule(
+        title="Malformed replay rule",
+        summary="Do not promote without numeric replay evidence",
+        task_type="brain.respond",
+        retrieval_policy={"route_hint": "task_context_first"},
+        scope=scope,
+        status="accepted",
+    )
+    runtime.evolution.feedback(
+        target_ref={"kind": "rule", "record_id": rule.record_id},
+        decision="accept",
+        reason="Accepted after review",
+        reviewed_by="operator",
+        scope=scope,
+    )
+    runtime.store.append(
+        RecordEnvelope.create(
+            kind="replay_result",
+            title="Malformed replay pass rate",
+            summary="Replay verdict text is pass but pass_rate is malformed.",
+            source="test.rule_evolution_loop",
+            scope=ScopeRef.from_dict(scope),
+            content={"target_rule_id": rule.record_id, "verdict": "pass", "pass_rate": "bad"},
+            meta={"target_rule_id": rule.record_id, "verdict": "pass", "pass_rate": "bad"},
+        )
+    )
+
+    report = run_rule_evolution_loop(runtime, scope, apply=True, min_roi=0.0)
+
+    persisted = runtime.store.get_by_id(rule.record_id)
+    assert report["replay_count"] == 1
+    assert report["roi_summary"]["replay_pass_rate"] == 0.0
+    assert report["roi_summary"]["average_pass_rate"] == 0.0
+    assert report["promoted_count"] == 0
+    assert persisted.status == "accepted"
+
+
 def test_rule_evolution_ignores_daily_brief_reflections_as_rule_evidence(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     scope = {"agent_id": "eibrain", "workspace_id": "robot"}

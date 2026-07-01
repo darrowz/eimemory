@@ -160,9 +160,21 @@ def _record_is_failure(record: RecordEnvelope) -> bool:
         return True
     if record.kind == "learning_eval" and record.meta.get("ok") is False:
         return True
-    if record.kind == "replay_result" and float(record.meta.get("pass_rate") or 1.0) < 0.8:
-        return True
+    if record.kind == "replay_result":
+        pass_rate = _optional_float(record.meta.get("pass_rate"))
+        if pass_rate is None:
+            return record.meta.get("pass_rate") is not None
+        return pass_rate < 0.8
     return False
+
+
+def _optional_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _queue_record(

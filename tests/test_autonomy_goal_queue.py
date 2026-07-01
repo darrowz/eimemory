@@ -93,7 +93,32 @@ def test_persist_writes_autonomy_goal_queue_record(tmp_path) -> None:
     assert record.meta["scoring_factors"] == ["user_value", "failure_frequency", "potential_gain", "risk", "evidence_gap"]
 
 
-def _append_signal(runtime: Runtime, kind: str, *, capability: str, verdict: str) -> RecordEnvelope:
+def test_goal_queue_treats_malformed_replay_pass_rate_as_failure_without_crashing(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    _append_signal(runtime, "replay_result", capability="search.discovery", verdict="", pass_rate="bad")
+
+    queue = runtime.build_autonomy_goal_queue(
+        scope=SCOPE,
+        max_goals=2,
+        capabilities=["search.discovery", "office.daily_task"],
+    )
+
+    search_goal = next(goal for goal in queue["goals"] if goal["capability"] == "search.discovery")
+    assert search_goal["source_signal_counts"]["failures"] == 1
+    assert search_goal["scoring_factors"]["failure_frequency"] > 0
+
+
+def _append_signal(
+    runtime: Runtime,
+    kind: str,
+    *,
+    capability: str,
+    verdict: str,
+    pass_rate: object | None = None,
+) -> RecordEnvelope:
+    meta = {"capability": capability, "target_capability": capability, "verdict": verdict}
+    if pass_rate is not None:
+        meta["pass_rate"] = pass_rate
     return runtime.store.append(
         RecordEnvelope.create(
             kind=kind,
@@ -102,6 +127,6 @@ def _append_signal(runtime: Runtime, kind: str, *, capability: str, verdict: str
             scope=ScopeRef.from_dict(SCOPE),
             source="test.autonomy_goal_queue",
             content={"capability": capability, "verdict": verdict},
-            meta={"capability": capability, "target_capability": capability, "verdict": verdict},
+            meta=meta,
         )
     )
