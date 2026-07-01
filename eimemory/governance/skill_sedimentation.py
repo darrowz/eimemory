@@ -27,9 +27,17 @@ def promote_repeated_sops_to_skill_candidates(
     for key, records in sorted(groups.items()):
         if len(records) < max(1, int(min_repeats)):
             continue
-        if not any(_replay_passed(record) for record in records):
-            continue
         entry = _skill_entry(key, records, scope=scope_ref)
+        if not any(_replay_passed(record) for record in records):
+            blocked_skills.append(
+                {
+                    "sop_key": key,
+                    "target_capability": entry["target_capability"],
+                    "source_record_ids": list(entry.get("source_record_ids") or []),
+                    "missing_contract": ["replay_evidence"],
+                }
+            )
+            continue
         missing_contract = _missing_execution_contract(entry)
         if missing_contract:
             blocked_skills.append(
@@ -154,7 +162,16 @@ def _sop_key(record: RecordEnvelope) -> str:
 
 
 def _replay_passed(record: RecordEnvelope) -> bool:
-    return bool(record.meta.get("replay_passed") or record.content.get("replay_passed") or record.status == "active")
+    for payload in (record.meta, record.content):
+        if payload.get("replay_passed") is True:
+            return True
+        if str(payload.get("replay_verdict") or payload.get("verdict") or "").strip().lower() == "pass":
+            return True
+        pass_rate = _float_or_none(payload.get("pass_rate") or payload.get("replay_pass_rate"))
+        threshold = _float_or_none(payload.get("threshold") or payload.get("min_pass_rate")) or 1.0
+        if pass_rate is not None and pass_rate >= threshold:
+            return True
+    return False
 
 
 def _skill_entry(key: str, records: list[RecordEnvelope], *, scope: ScopeRef) -> dict[str, Any]:
@@ -370,3 +387,12 @@ def _slug(value: str) -> str:
 
 def _stable_hash(*parts: Any) -> str:
     return sha256(json.dumps(parts, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+
+
+def _float_or_none(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None

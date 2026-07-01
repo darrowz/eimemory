@@ -89,6 +89,21 @@ def test_distillation_rejects_low_safety_eval(tmp_path) -> None:
         )
 
 
+def test_distillation_rejects_failed_eval_even_when_verdict_text_says_pass(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+
+    with pytest.raises(ValueError, match="eval ok"):
+        distill_capability_candidate(
+            runtime,
+            scope={"agent_id": "hongtu"},
+            loop_id="learn_test",
+            experiment_id="exp_1",
+            eval_result={"ok": False, "verdict": "pass", "scores": {"safety": 1.0, "regression": 1.0}},
+            promotion_target="tool_route",
+            summary="Contradictory eval must not distill.",
+        )
+
+
 def test_l2_promotion_blocks_without_structured_gate_bundle(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     candidate_id = distill_capability_candidate(

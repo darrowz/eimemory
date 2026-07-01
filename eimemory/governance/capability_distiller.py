@@ -108,6 +108,8 @@ def _short_summary(summary: str, *, limit: int = 88) -> str:
 
 
 def _validate_eval(eval_result: dict[str, Any]) -> None:
+    if eval_result.get("ok") is False:
+        raise ValueError("eval ok must not be false")
     if str(eval_result.get("verdict") or "") != "pass":
         raise ValueError("eval verdict must pass")
     scores = dict(eval_result.get("scores") or {})

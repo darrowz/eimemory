@@ -170,3 +170,44 @@ def test_sop_without_full_execution_contract_does_not_become_callable(tmp_path) 
         }
     finally:
         runtime.close()
+
+
+def test_sop_with_full_contract_but_without_replay_evidence_does_not_become_callable(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        scope_ref = ScopeRef.from_dict(SCOPE)
+        for index in range(3):
+            runtime.store.append(
+                RecordEnvelope.create(
+                    kind="learning_playbook",
+                    title="Complete but unverified SOP",
+                    summary="This SOP has fields but no replay evidence.",
+                    detail="Trigger: status answer. Action: cite ids. Verification: run replay. Rollback: disable skill.",
+                    scope=scope_ref,
+                    source="test.skill_sedimentation",
+                    status="active",
+                    content={
+                        "sop_key": "complete-unverified-sop",
+                        "target_capability": "memory.recall",
+                        "steps": ["route recall", "collect evidence", "answer with ids"],
+                        "trigger_conditions": ["memory status answer"],
+                        "action": "route recall and cite evidence ids",
+                        "verification": "run replay and confirm required ids are present",
+                        "rollback": "disable registry entry if replay fails",
+                        "source_repeat": index + 1,
+                    },
+                    meta={
+                        "sop_key": "complete-unverified-sop",
+                        "target_capability": "memory.recall",
+                    },
+                )
+            )
+
+        report = runtime.promote_repeated_sops_to_skill_candidates(scope=SCOPE, min_repeats=3, persist=True)
+
+        assert report["skill_candidate_count"] == 0
+        assert report["blocked_skill_count"] == 1
+        assert report["blocked_skills"][0]["missing_contract"] == ["replay_evidence"]
+        assert runtime.list_eiskills(scope=SCOPE)["skill_count"] == 0
+    finally:
+        runtime.close()
