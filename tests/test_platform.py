@@ -973,6 +973,38 @@ process.stdout.write(JSON.stringify(names));
     assert json.loads(result.stdout) == ["message_received", "before_prompt_build", "agent_end", "session_end"]
 
 
+def test_openclaw_js_bridge_register_is_idempotent_across_api_wrappers() -> None:
+    script = """
+const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
+const names = [];
+process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
+function makeApi() {
+  return { config: { allowPromptInjection: true }, hooks: { on(name, handler) { names.push(name); } } };
+}
+plugin.register(makeApi());
+plugin.register(makeApi());
+plugin.register(makeApi());
+process.stdout.write(JSON.stringify(names));
+""".strip()
+    result = subprocess.run(["node", "-e", script], cwd=Path.cwd(), capture_output=True, text=True, check=True)
+
+    assert json.loads(result.stdout) == ["message_received", "before_prompt_build", "agent_end", "session_end"]
+
+
+def test_openclaw_js_bridge_can_register_before_prompt_after_policy_becomes_enabled() -> None:
+    script = """
+const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
+const names = [];
+plugin.register({ hooks: { on(name, handler) { names.push(name); } } });
+process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
+plugin.register({ config: { allowPromptInjection: true }, hooks: { on(name, handler) { names.push(name); } } });
+process.stdout.write(JSON.stringify(names));
+""".strip()
+    result = subprocess.run(["node", "-e", script], cwd=Path.cwd(), capture_output=True, text=True, check=True)
+
+    assert json.loads(result.stdout) == ["message_received", "agent_end", "session_end", "before_prompt_build"]
+
+
 def test_openclaw_js_bridge_reads_openclaw_prompt_injection_policy(tmp_path) -> None:
     config_path = tmp_path / "openclaw.json"
     config_path.write_text(

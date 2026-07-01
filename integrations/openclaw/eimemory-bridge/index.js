@@ -33,6 +33,7 @@ function registrationState() {
     globalThis[REGISTRATION_STATE_KEY] = {
       hookRegistrations: new WeakMap(),
       fallbackHookNames: new Set(),
+      globalHookNames: new Set(),
     };
   }
   return globalThis[REGISTRATION_STATE_KEY];
@@ -514,7 +515,7 @@ function invokeHook(hook, event) {
   const result = spawnSync(command[0], [...command.slice(1), hook], {
     input: JSON.stringify(payload),
     encoding: 'utf-8',
-    timeout: Number(process.env.EIMEMORY_HOOK_TIMEOUT_MS || 1500),
+    timeout: Number(process.env.EIMEMORY_HOOK_TIMEOUT_MS || 3000),
   });
   if (result.error) {
     throw result.error;
@@ -538,7 +539,7 @@ function invokeBridge(event) {
   const result = spawnSync(command[0], [...command.slice(1)], {
     input: JSON.stringify(event),
     encoding: 'utf-8',
-    timeout: Number(process.env.EIMEMORY_BRIDGE_TIMEOUT_MS || 1000),
+    timeout: Number(process.env.EIMEMORY_BRIDGE_TIMEOUT_MS || 2000),
   });
   if (result.error) {
     throw result.error;
@@ -610,6 +611,10 @@ function hookRegistrationTarget(api) {
 
 function registerTypedHookOnce(api, name, handler) {
   const state = registrationState();
+  if (state.globalHookNames.has(name)) {
+    api?.logger?.debug?.(`eimemory-bridge: ${name} hook already registered`);
+    return;
+  }
   const target = hookRegistrationTarget(api);
   if (!target) {
     if (state.fallbackHookNames.has(name)) {
@@ -618,6 +623,7 @@ function registerTypedHookOnce(api, name, handler) {
     }
     registerTypedHook(api, name, handler);
     state.fallbackHookNames.add(name);
+    state.globalHookNames.add(name);
     return;
   }
   let names = state.hookRegistrations.get(target);
@@ -631,6 +637,7 @@ function registerTypedHookOnce(api, name, handler) {
   }
   registerTypedHook(api, name, handler);
   names.add(name);
+  state.globalHookNames.add(name);
 }
 
 function truthy(value) {
