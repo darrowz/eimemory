@@ -75,3 +75,43 @@ def test_persona_store_clamps_corrupted_state_on_load(tmp_path) -> None:
     assert loaded.relationship.familiarity == 0.0
     assert loaded.boundaries.no_fake_consciousness_claims is True
     assert loaded.boundaries.no_plaintext_secret_storage is True
+
+
+def test_persona_store_falls_back_when_state_contains_malformed_numbers(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    store = PersonaStore(runtime.store)
+    state_path = tmp_path / "state" / "persona_state.json"
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(
+        """
+{
+  "identity": "hongtu",
+  "version": "bad",
+  "traits": {"verbosity": "bad", "safety": "bad"},
+  "runtime_state": {"confidence": "bad"},
+  "relationship": {"trust_level": "bad", "familiarity": "bad"},
+  "boundaries": {"no_fake_consciousness_claims": false}
+}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    loaded = store.load_state()
+
+    assert isinstance(loaded, PersonaState)
+    assert loaded.identity == "hongtu"
+    assert loaded.version == 1
+    assert loaded.boundaries.no_fake_consciousness_claims is True
+    assert loaded.boundaries.no_plaintext_secret_storage is True
+    assert 0.0 <= loaded.traits.verbosity <= 1.0
+    assert loaded.traits.safety >= 0.8
+
+
+def test_persona_store_records_malformed_eval_pass_rate_as_zero(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    store = PersonaStore(runtime.store)
+
+    record = store.record_eval_result({"pass_rate": "bad", "ok": False}, scope={"agent_id": "main"})
+
+    assert record.summary == "Persona eval pass rate 0.000"
+    assert record.content["pass_rate"] == "bad"

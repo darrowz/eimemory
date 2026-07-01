@@ -514,8 +514,8 @@ class OpenClawMemoryHooks:
             session_id=self._session_id_from_event(event),
             scene=str(persona_guidance.get("scene") or ""),
             guidance_length=len(str(persona_guidance.get("text") or "")),
-            guidance_latency_ms=float(persona_guidance.get("duration_ms") or 0.0),
-            injection_latency_ms=float(injection_latency_ms or 0.0),
+            guidance_latency_ms=self._float_or_zero(persona_guidance.get("duration_ms")),
+            injection_latency_ms=self._float_or_zero(injection_latency_ms),
             enabled=bool(persona_guidance.get("enabled")),
         )
         try:
@@ -553,7 +553,7 @@ class OpenClawMemoryHooks:
             bundle.explanation["ground_truth_pre_answer_gate"] = gate
             task_context["ground_truth_pre_answer_gate"] = {
                 "gate_required": bool(gate.get("gate_required")),
-                "matched_rule_count": int(gate.get("matched_rule_count") or 0),
+                "matched_rule_count": self._int_or_default(gate.get("matched_rule_count"), default=0),
                 "record_id": str(gate.get("record_id") or ""),
             }
         evidence_gate = self._run_answer_evidence_gate_safely(bundle=bundle, task_context=task_context)
@@ -605,7 +605,7 @@ class OpenClawMemoryHooks:
         policy_sources = self._coerce_string_list(bundle.explanation.get("policy_sources"))
         matched_event_type = str(bundle.explanation.get("matched_event_type") or "")
         injection_plan = self._coerce_injection_plan(bundle.explanation.get("injection_plan"))
-        latency_ms = float(bundle.explanation.get("latency_ms") or 0.0)
+        latency_ms = self._float_or_zero(bundle.explanation.get("latency_ms"))
         content = {
             "session_id": self._session_id_from_event(event),
             "query": self._clean_prompt_query(str(event.get("query") or event.get("raw_query") or "").strip()),
@@ -681,7 +681,7 @@ class OpenClawMemoryHooks:
             "confidence": bundle.confidence,
             "source_composition": dict(bundle.explanation.get("source_composition") or {}),
             "selected_records": self._selected_records(bundle),
-            "latency_ms": float(bundle.explanation.get("latency_ms") or 0.0),
+            "latency_ms": self._float_or_zero(bundle.explanation.get("latency_ms")),
             "injection_token_estimate": injection_plan["token_estimate"],
             "injection_lane_composition": lane_composition,
             "injection_withheld_reasons": dict(injection_plan["withheld_reasons"]),
@@ -912,27 +912,47 @@ class OpenClawMemoryHooks:
 
     def _coerce_injection_plan(self, value: Any) -> dict:
         if isinstance(value, dict):
-            lane_composition = dict(value.get("lane_composition") or {})
-            entries = [dict(entry) for entry in value.get("entries") or value.get("items") or [] if isinstance(entry, dict)]
+            lane_raw = value.get("lane_composition") or {}
+            lane_composition = lane_raw if isinstance(lane_raw, dict) else {}
+            entries_raw = value.get("entries") or value.get("items") or []
+            entries = [dict(entry) for entry in entries_raw if isinstance(entry, dict)]
+            token_budget = self._int_or_default(value.get("token_budget"), default=DEFAULT_INJECTION_TOKEN_BUDGET)
+            if token_budget <= 0:
+                token_budget = DEFAULT_INJECTION_TOKEN_BUDGET
+            withheld_raw = value.get("withheld_reasons") or {}
+            withheld_items = withheld_raw.items() if isinstance(withheld_raw, dict) else []
+            withheld_reasons = {
+                str(key): self._int_or_default(count, default=0)
+                for key, count in withheld_items
+                if str(key).strip()
+            }
             return {
                 "mode": str(value.get("mode") or "strict"),
-                "token_budget": int(value.get("token_budget") or DEFAULT_INJECTION_TOKEN_BUDGET),
-                "token_estimate": int(value.get("token_estimate") or 0),
+                "token_budget": token_budget,
+                "token_estimate": self._int_or_default(value.get("token_estimate"), default=0),
                 "lane_composition": {
-                    "full_text": int(lane_composition.get("full_text") or 0),
-                    "summary_only": int(lane_composition.get("summary_only") or 0),
-                    "policy_only": int(lane_composition.get("policy_only") or 0),
-                    "withheld": int(lane_composition.get("withheld") or 0),
+                    "full_text": self._int_or_default(lane_composition.get("full_text"), default=0),
+                    "summary_only": self._int_or_default(lane_composition.get("summary_only"), default=0),
+                    "policy_only": self._int_or_default(lane_composition.get("policy_only"), default=0),
+                    "withheld": self._int_or_default(lane_composition.get("withheld"), default=0),
                 },
-                "withheld_reasons": {
-                    str(key): int(count)
-                    for key, count in dict(value.get("withheld_reasons") or {}).items()
-                    if str(key).strip()
-                },
-                "full_text_count": int(value.get("full_text_count") or lane_composition.get("full_text") or 0),
-                "summary_only_count": int(value.get("summary_only_count") or lane_composition.get("summary_only") or 0),
-                "policy_only_count": int(value.get("policy_only_count") or lane_composition.get("policy_only") or 0),
-                "withheld_count": int(value.get("withheld_count") or lane_composition.get("withheld") or 0),
+                "withheld_reasons": withheld_reasons,
+                "full_text_count": self._int_or_default(
+                    self._first_present(value.get("full_text_count"), lane_composition.get("full_text"), 0),
+                    default=0,
+                ),
+                "summary_only_count": self._int_or_default(
+                    self._first_present(value.get("summary_only_count"), lane_composition.get("summary_only"), 0),
+                    default=0,
+                ),
+                "policy_only_count": self._int_or_default(
+                    self._first_present(value.get("policy_only_count"), lane_composition.get("policy_only"), 0),
+                    default=0,
+                ),
+                "withheld_count": self._int_or_default(
+                    self._first_present(value.get("withheld_count"), lane_composition.get("withheld"), 0),
+                    default=0,
+                ),
                 "entries": entries,
                 "items": entries,
             }
@@ -1857,6 +1877,14 @@ class OpenClawMemoryHooks:
             return float(value)
         except (TypeError, ValueError):
             return 0.0
+
+    def _int_or_default(self, value: Any, *, default: int = 0) -> int:
+        if value is None:
+            return default
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
 
     def _assistant_messages_from_event(self, event: dict) -> list[dict]:
         messages = event.get("messages") or []

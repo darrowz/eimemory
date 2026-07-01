@@ -11,6 +11,7 @@ from eimemory.api.runtime import Runtime
 from eimemory.models.records import ScopeRef
 from eimemory.persona.correction import correction_from_user_text
 from eimemory.persona.evolver import evolve_persona
+from eimemory.persona.schema import PersonaCorrectionEvent
 from eimemory.persona.state import default_persona_state
 from eimemory.persona.store import PersonaStore
 
@@ -52,6 +53,23 @@ def test_evolver_applies_high_severity_correction_and_records_event(tmp_path) ->
         limit=5,
     )
     assert any(record.source == "persona.evolution" for record in records)
+
+
+def test_evolver_ignores_malformed_trait_delta_without_breaking_loop() -> None:
+    state = default_persona_state()
+    correction = PersonaCorrectionEvent(
+        raw_text="bad correction payload",
+        category="verbosity",
+        severity=0.9,
+        trait_delta={"verbosity": "bad"},
+        rule_candidate="Prefer concise replies.",
+    )
+
+    result = evolve_persona(state, [correction], dry_run=True)
+
+    assert result.ok is True
+    assert result.applied_categories == ["verbosity"]
+    assert result.state.traits.verbosity == state.traits.verbosity
 
 
 @pytest.mark.parametrize(

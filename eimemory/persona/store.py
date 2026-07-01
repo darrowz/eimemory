@@ -25,7 +25,10 @@ class PersonaStore:
             payload = json.loads(self.state_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return default_persona_state()
-        return enforce_hard_boundaries(PersonaState.from_dict(payload if isinstance(payload, dict) else {}))
+        try:
+            return enforce_hard_boundaries(PersonaState.from_dict(payload if isinstance(payload, dict) else {}))
+        except (TypeError, ValueError):
+            return default_persona_state()
 
     def save_state(self, state: PersonaState, *, scope: dict[str, Any] | None = None) -> RecordEnvelope:
         self.state_dir.mkdir(parents=True, exist_ok=True)
@@ -130,10 +133,11 @@ class PersonaStore:
         return self._append(record)
 
     def record_eval_result(self, report: dict[str, Any], *, scope: dict[str, Any] | None = None) -> RecordEnvelope:
+        pass_rate = _float_or_default(report.get("pass_rate"), default=0.0)
         record = RecordEnvelope.create(
             kind="replay_result",
             title="Persona eval result",
-            summary=f"Persona eval pass rate {report.get('pass_rate', 0):.3f}",
+            summary=f"Persona eval pass rate {pass_rate:.3f}",
             detail="Deterministic persona guidance replay result.",
             content={"event_type": "persona.eval_result", **dict(report)},
             tags=["persona", "eval"],
@@ -151,3 +155,10 @@ class PersonaStore:
 
 def _safe_ts(value: str) -> str:
     return "".join(ch if ch.isalnum() else "-" for ch in str(value or ""))[:48] or "snapshot"
+
+
+def _float_or_default(value: Any, *, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default

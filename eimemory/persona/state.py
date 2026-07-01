@@ -36,8 +36,12 @@ def apply_trait_delta(state: PersonaState, trait_delta: dict[str, float]) -> Per
     for key, delta in dict(trait_delta or {}).items():
         if key not in trait_names:
             continue
+        try:
+            parsed_delta = float(delta)
+        except (TypeError, ValueError):
+            continue
         floor = 0.8 if key == "safety" else 0.0
-        setattr(updated.traits, key, clamp_trait(getattr(updated.traits, key) + float(delta), floor=floor))
+        setattr(updated.traits, key, clamp_trait(getattr(updated.traits, key) + parsed_delta, floor=floor))
     return enforce_hard_boundaries(updated)
 
 

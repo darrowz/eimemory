@@ -21,6 +21,17 @@ def test_prompt_guidance_is_short_scene_specific_and_no_fake_consciousness() -> 
     assert all(item.lower() not in guidance.text.lower() for item in forbidden)
 
 
+def test_prompt_guidance_tolerates_malformed_max_chars() -> None:
+    guidance = build_persona_guidance(
+        text="keep the response concise",
+        state=default_persona_state(),
+        max_chars="bad",
+    )
+
+    assert guidance.text.startswith("Persona guidance:")
+    assert len(guidance.text) <= 800
+
+
 def test_openclaw_before_prompt_build_includes_persona_guidance(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("EIMEMORY_PERSONA_ENABLED", "1")
     runtime = Runtime.create(root=tmp_path)

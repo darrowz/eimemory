@@ -33,7 +33,7 @@ def build_persona_guidance(
         line = f"- {item}"
         if line not in lines:
             lines.append(line)
-    text_payload = _fit_lines(lines, max_chars=max(120, int(max_chars or 800)))
+    text_payload = _fit_lines(lines, max_chars=_safe_max_chars(max_chars))
     return PersonaGuidance(
         text=text_payload,
         scene=route.scene,
@@ -57,3 +57,11 @@ def _fit_lines(lines: list[str], *, max_chars: int) -> str:
     if selected:
         return "\n".join(selected)
     return lines[0][:max_chars]
+
+
+def _safe_max_chars(value: Any) -> int:
+    try:
+        parsed = int(value or 800)
+    except (TypeError, ValueError):
+        parsed = 800
+    return max(120, parsed)

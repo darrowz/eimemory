@@ -112,3 +112,34 @@ def test_openclaw_before_prompt_build_records_disabled_persona_trace(tmp_path, m
     assert trace["scene"] == ""
     assert trace["guidance_length"] == 0
     assert trace["injection_latency_ms"] >= trace["guidance_latency_ms"] >= 0.0
+
+
+def test_openclaw_persona_trace_tolerates_malformed_duration(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("EIMEMORY_PERSONA_ENABLED", "1")
+    runtime = Runtime.create(root=tmp_path)
+    hooks = OpenClawMemoryHooks(runtime)
+    monkeypatch.setattr(
+        hooks,
+        "_build_persona_guidance_safely",
+        lambda **_: {
+            "enabled": True,
+            "text": "Persona guidance:\n- Keep it concise.",
+            "scene": "coding_plan",
+            "risk_level": "medium",
+            "tone": "direct",
+            "duration_ms": "bad",
+        },
+    )
+
+    result = hooks.before_prompt_build(
+        {
+            "session_id": "sess-persona-trace-bad-duration",
+            "agent_id": "main",
+            "workspace_id": "repo-x",
+            "user_id": "darrow",
+            "query": "persona trace should not break prompt build",
+        }
+    )
+
+    assert result["persona_trace"]["guidance_latency_ms"] == 0.0
+    assert result["persona_trace"]["scene"] == "coding_plan"

@@ -55,7 +55,11 @@ def _merged_delta(events: list[PersonaCorrectionEvent]) -> dict[str, float]:
     totals: dict[str, float] = {}
     for event in events:
         for key, value in event.trait_delta.items():
-            totals[key] = totals.get(key, 0.0) + float(value)
+            try:
+                delta = float(value)
+            except (TypeError, ValueError):
+                continue
+            totals[key] = totals.get(key, 0.0) + delta
     count = max(1, len(events))
     return {key: max(-0.2, min(0.2, value / count)) for key, value in totals.items()}
 

@@ -740,6 +740,85 @@ def test_openclaw_before_prompt_build_applies_ground_truth_and_evidence_gates(tm
     assert policy_entries[0]["lane"] == "policy_only"
 
 
+def test_openclaw_before_prompt_build_tolerates_malformed_ground_truth_gate_count(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    hooks = OpenClawMemoryHooks(runtime)
+    event = {
+        "session_id": "sess-gate-bad-count",
+        "agent_id": "main",
+        "workspace_id": "repo-x",
+        "task_context": {"task_type": "research.answer"},
+        "query": "status check",
+    }
+
+    monkeypatch.setattr(
+        runtime,
+        "build_ground_truth_pre_answer_gate",
+        lambda **_: {"ok": True, "gate_required": True, "matched_rule_count": "bad", "rules": [], "record_id": "gate_1"},
+    )
+    monkeypatch.setattr(
+        runtime.memory,
+        "recall",
+        lambda *, query, scope, task_context, limit: RecallBundle(
+            items=[],
+            rules=[],
+            reflections=[],
+            confidence=0.0,
+            next_action_hint="",
+            explanation={"query": query, "task_context": dict(task_context)},
+        ),
+    )
+
+    result = hooks.before_prompt_build(event)
+
+    assert result["task_context"]["ground_truth_pre_answer_gate"]["matched_rule_count"] == 0
+    assert result["task_context"]["ground_truth_pre_answer_gate"]["record_id"] == "gate_1"
+
+
+def test_openclaw_usage_telemetry_tolerates_malformed_numeric_injection_plan(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    hooks = OpenClawMemoryHooks(runtime)
+    bundle = RecallBundle(
+        items=[],
+        rules=[],
+        reflections=[],
+        confidence=0.0,
+        next_action_hint="",
+        explanation={
+            "latency_ms": "bad",
+            "injection_plan": {
+                "mode": "strict",
+                "token_budget": "bad",
+                "token_estimate": "bad",
+                "lane_composition": {
+                    "full_text": "bad",
+                    "summary_only": "bad",
+                    "policy_only": "bad",
+                    "withheld": "bad",
+                },
+                "withheld_reasons": {"context_token_budget": "bad"},
+                "full_text_count": "bad",
+                "summary_only_count": "bad",
+                "policy_only_count": "bad",
+                "withheld_count": "bad",
+            },
+        },
+    )
+
+    telemetry = hooks._usage_telemetry(bundle)
+
+    assert telemetry["latency_ms"] == 0.0
+    assert telemetry["injection_plan"]["token_budget"] == 1800
+    assert telemetry["injection_plan"]["token_estimate"] == 0
+    assert telemetry["injection_plan"]["lane_composition"] == {
+        "full_text": 0,
+        "summary_only": 0,
+        "policy_only": 0,
+        "withheld": 0,
+    }
+    assert telemetry["injection_plan"]["withheld_reasons"] == {"context_token_budget": 0}
+
+
 def test_openclaw_before_prompt_build_defaults_to_fast_recall_context(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path)
     hooks = OpenClawMemoryHooks(runtime)
