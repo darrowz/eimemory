@@ -183,6 +183,37 @@ def test_stop_judge_stops_only_after_passed_isolated_verdict(tmp_path) -> None:
     assert judgment.content["promotion_allowed"] is True
 
 
+def test_evaluator_accepts_equivalent_success_replay_statuses(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "main"}
+
+    packet = build_evaluation_packet(
+        runtime,
+        scope=scope,
+        loop_id="loop_iso_status_alias",
+        goal={"title": "Verified candidate from external replay adapter"},
+        candidate_kind="eval_case",
+        artifact={"summary": "adapter replay case"},
+        generator_claim="Generator rationale should not decide status parsing.",
+        replay_gate={"ok": True, "pass_rate": 1.0, "sample_count": 2},
+        real_task_replay={
+            "success": True,
+            "verdict": "PASSED",
+            "pass_rate": 1.0,
+            "pass_count": 2,
+            "fail_count": 0,
+        },
+    )
+
+    verdict = run_isolated_evaluator(runtime, packet, scope=scope, loop_id="loop_iso_status_alias")
+    judgment = judge_stop_condition(runtime, verdict, scope=scope, loop_id="loop_iso_status_alias")
+
+    assert verdict.content["verdict"] == "pass"
+    assert verdict.content["real_execution"]["replay_passed"] is True
+    assert judgment.content["decision"] == "stop"
+    assert judgment.content["promotion_allowed"] is True
+
+
 def test_stop_judge_must_not_share_generator_model_even_after_passed_verdict(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     scope = {"agent_id": "main"}

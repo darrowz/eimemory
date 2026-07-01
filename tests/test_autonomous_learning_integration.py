@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from eimemory.api.runtime import Runtime
+from eimemory.governance.autonomous_learning import _replay_gate_report
 from eimemory.governance.snapshot import build_governance_snapshot
 from eimemory.scheduler import jobs
 from eimemory.scheduler.jobs import run_nightly_jobs
@@ -17,6 +18,25 @@ def test_nightly_jobs_skip_autonomous_learning_by_default(tmp_path, monkeypatch)
     assert report["autonomous_learning"]["ok"] is True
     assert report["autonomous_learning"]["enabled"] is False
     assert report["autonomous_learning"]["learning_skipped_reason"] == "autonomous_learning_disabled"
+
+
+def test_replay_gate_accepts_equivalent_success_statuses() -> None:
+    report = _replay_gate_report(
+        {
+            "success": True,
+            "report_type": "real_task_replay",
+            "schema_version": "real_task_replay.v1",
+            "verdict": "PASSED",
+            "pass_rate": 1.0,
+            "sample_count": 2,
+            "pass_count": 2,
+            "fail_count": 0,
+        }
+    )
+
+    assert report["ok"] is True
+    assert report["reason"] == "passed"
+    assert report["verdict"] == "passed"
 
 
 def test_nightly_jobs_include_autonomous_learning_summary(tmp_path, monkeypatch) -> None:

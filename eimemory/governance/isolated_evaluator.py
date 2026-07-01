@@ -291,7 +291,7 @@ def _real_execution_summary(evaluator_context: dict[str, Any]) -> dict[str, Any]
     replay_gate = dict(evaluator_context.get("replay_gate") or {})
     replay = dict(evaluator_context.get("real_task_replay") or {})
     verifications = [dict(item) for item in evaluator_context.get("verification_results") or [] if isinstance(item, dict)]
-    replay_status_passed = bool(replay_gate.get("ok")) and bool(replay.get("ok")) and str(replay.get("verdict") or "pass") == "pass"
+    replay_status_passed = _status_passed(replay_gate) and _status_passed(replay)
     sample_count = _replay_sample_count(replay_gate=replay_gate, replay=replay)
     fail_count = _int_value(_first_present(replay, "fail_count", "failed_count", "failures"))
     pass_rate = _replay_pass_rate(replay_gate=replay_gate, replay=replay, replay_status_passed=replay_status_passed)
@@ -483,6 +483,32 @@ def _verification_result_passed(item: dict[str, Any]) -> bool:
     if item.get("ok") is False:
         return False
     return _exit_code(item) == 0
+
+
+SUCCESS_LABELS = {"pass", "passed", "success", "succeeded", "ok", "true", "green"}
+FAILURE_LABELS = {"fail", "failed", "failure", "error", "blocked", "reject", "rejected", "false", "red"}
+
+
+def _status_passed(payload: dict[str, Any]) -> bool:
+    if not payload:
+        return False
+    explicit_ok = payload.get("ok")
+    if explicit_ok is False:
+        return False
+    explicit_success = payload.get("success")
+    if explicit_success is False:
+        return False
+    for key in ("verdict", "status", "result", "decision"):
+        if key not in payload:
+            continue
+        label = str(payload.get(key) or "").strip().lower()
+        if label in FAILURE_LABELS:
+            return False
+        if label in SUCCESS_LABELS:
+            return True
+    if explicit_ok is True or explicit_success is True:
+        return True
+    return False
 
 
 __all__ = [

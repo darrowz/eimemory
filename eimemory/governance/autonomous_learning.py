@@ -577,20 +577,21 @@ def _replay_gate_passed(report: dict[str, Any]) -> bool:
 
 
 def _replay_gate_report(report: dict[str, Any]) -> dict[str, Any]:
-    if not bool(report.get("ok")):
+    status_passed = _status_passed(report)
+    if not status_passed:
         return {
             "ok": False,
             "reason": str(report.get("replay_skipped_reason") or "real_task_replay_not_ok"),
             "real_task_replay": report,
         }
-    verdict = str(report.get("verdict") or "").strip().lower()
+    verdict = str(report.get("verdict") or "pass").strip().lower()
     sample_count = _as_int(_first_present(report, "sample_count", "case_count", "pass_count"), default=0)
     fail_count = _as_int(_first_present(report, "fail_count", "failed_count", "failures"), default=0)
     pass_rate = _as_float(report.get("pass_rate"), default=0.0)
     threshold = _as_float(report.get("threshold"), default=0.6)
-    ok = verdict == "pass" and sample_count > 0 and fail_count == 0 and pass_rate >= threshold
+    ok = status_passed and sample_count > 0 and fail_count == 0 and pass_rate >= threshold
     reason = "passed" if ok else "real_task_replay_threshold_failed"
-    if verdict != "pass":
+    if not status_passed:
         reason = "real_task_replay_verdict_not_pass"
     elif sample_count <= 0:
         reason = "real_task_replay_no_samples"
@@ -608,6 +609,28 @@ def _replay_gate_report(report: dict[str, Any]) -> dict[str, Any]:
         "threshold": threshold,
         "real_task_replay": report,
     }
+
+
+SUCCESS_LABELS = {"pass", "passed", "success", "succeeded", "ok", "true", "green"}
+FAILURE_LABELS = {"fail", "failed", "failure", "error", "blocked", "reject", "rejected", "false", "red"}
+
+
+def _status_passed(payload: dict[str, Any]) -> bool:
+    if not payload:
+        return False
+    if payload.get("ok") is False or payload.get("success") is False:
+        return False
+    for key in ("verdict", "status", "result", "decision"):
+        if key not in payload:
+            continue
+        label = str(payload.get(key) or "").strip().lower()
+        if label in FAILURE_LABELS:
+            return False
+        if label in SUCCESS_LABELS:
+            return True
+    if payload.get("ok") is True or payload.get("success") is True:
+        return True
+    return False
 
 
 def _aggregate_isolation_debt(verdicts: list[dict[str, Any]]) -> dict[str, int]:
