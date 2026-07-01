@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import json
 import os
 from typing import Any
 
@@ -72,6 +73,12 @@ def build_evaluation_packet(
         roles["stop_judge_model"],
         goal_payload.get("semantic_key") or goal_payload.get("title") or "",
         artifact_payload.get("summary") or artifact_payload.get("policy") or "",
+        _evidence_signature(
+            generator_claim=generator_claim,
+            replay_gate=replay_gate_payload,
+            real_task_replay=replay_payload,
+            verification_results=verification_payload,
+        ),
     )
     record = append_learning_record_once(
         runtime,
@@ -260,7 +267,9 @@ def _verdict_blocked_reasons(*, roles: dict[str, Any], evaluator_context: dict[s
     if str(roles.get("generator_model") or "").strip() == str(roles.get("evaluator_model") or "").strip():
         blocked.append("model_not_isolated")
     real_execution = _real_execution_summary(evaluator_context)
-    if not real_execution["passed"]:
+    if real_execution["replay_status_passed"] and not real_execution["replay_quality_passed"]:
+        blocked.append("insufficient_replay_quality")
+    elif not real_execution["passed"]:
         blocked.append("missing_real_execution_evidence")
     if _generator_claim_leaked(evaluator_context):
         blocked.append("generator_claim_visible_to_evaluator")
@@ -271,14 +280,23 @@ def _real_execution_summary(evaluator_context: dict[str, Any]) -> dict[str, Any]
     replay_gate = dict(evaluator_context.get("replay_gate") or {})
     replay = dict(evaluator_context.get("real_task_replay") or {})
     verifications = [dict(item) for item in evaluator_context.get("verification_results") or [] if isinstance(item, dict)]
-    replay_passed = bool(replay_gate.get("ok")) and bool(replay.get("ok")) and str(replay.get("verdict") or "pass") == "pass"
+    replay_status_passed = bool(replay_gate.get("ok")) and bool(replay.get("ok")) and str(replay.get("verdict") or "pass") == "pass"
+    sample_count = _replay_sample_count(replay_gate=replay_gate, replay=replay)
+    fail_count = _int_value(_first_present(replay, "fail_count", "failed_count", "failures"))
+    pass_rate = _replay_pass_rate(replay_gate=replay_gate, replay=replay, replay_status_passed=replay_status_passed)
+    threshold = _float_value(_first_present(replay_gate, "threshold", "min_pass_rate"), default=1.0)
+    replay_quality_passed = replay_status_passed and sample_count > 0 and fail_count == 0 and pass_rate >= threshold
     command_passed = any(item.get("ok") is True or _exit_code(item) == 0 for item in verifications)
     return {
-        "passed": bool(replay_passed or command_passed),
-        "replay_passed": bool(replay_passed),
+        "passed": bool(replay_quality_passed or command_passed),
+        "replay_passed": bool(replay_quality_passed),
+        "replay_status_passed": bool(replay_status_passed),
+        "replay_quality_passed": bool(replay_quality_passed),
         "command_passed": bool(command_passed),
-        "sample_count": _int_value(_first_present(replay_gate, "sample_count", "case_count", "pass_count") if replay_gate else _first_present(replay, "pass_count", "case_count", "sample_count")),
-        "pass_rate": _float_value(_first_present(replay_gate, "pass_rate") if replay_gate else _first_present(replay, "pass_rate"), default=1.0 if replay_passed else 0.0),
+        "sample_count": sample_count,
+        "fail_count": fail_count,
+        "pass_rate": pass_rate,
+        "threshold": threshold,
     }
 
 
@@ -288,7 +306,7 @@ def _stop_decision(verdict_content: dict[str, Any]) -> str:
     blocked = set(str(item) for item in verdict_content.get("blocked_reasons") or [])
     if "model_not_isolated" in blocked or "generator_claim_visible_to_evaluator" in blocked:
         return "quarantine"
-    if "missing_real_execution_evidence" in blocked:
+    if "missing_real_execution_evidence" in blocked or "insufficient_replay_quality" in blocked:
         return "continue"
     return "require_human"
 
@@ -383,6 +401,44 @@ def _first_present(payload: dict[str, Any], *keys: str) -> Any:
         if key in payload and payload.get(key) is not None:
             return payload.get(key)
     return None
+
+
+def _evidence_signature(
+    *,
+    generator_claim: str,
+    replay_gate: dict[str, Any],
+    real_task_replay: dict[str, Any],
+    verification_results: list[dict[str, Any]],
+) -> str:
+    payload = {
+        "generator_claim": str(generator_claim or ""),
+        "replay_gate": replay_gate,
+        "real_task_replay": real_task_replay,
+        "verification_results": verification_results,
+    }
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+
+
+def _replay_sample_count(*, replay_gate: dict[str, Any], replay: dict[str, Any]) -> int:
+    explicit = _first_present(replay_gate, "sample_count", "case_count", "pass_count")
+    if explicit is None:
+        explicit = _first_present(replay, "sample_count", "case_count")
+    if explicit is not None:
+        return _int_value(explicit)
+    pass_count = _int_value(_first_present(replay, "pass_count", "passed_count", "passes"))
+    fail_count = _int_value(_first_present(replay, "fail_count", "failed_count", "failures"))
+    return pass_count + fail_count
+
+
+def _replay_pass_rate(*, replay_gate: dict[str, Any], replay: dict[str, Any], replay_status_passed: bool) -> float:
+    rates = [
+        _float_value(value)
+        for value in (_first_present(replay_gate, "pass_rate"), _first_present(replay, "pass_rate"))
+        if value is not None
+    ]
+    if rates:
+        return min(rates)
+    return 1.0 if replay_status_passed else 0.0
 
 
 def _exit_code(item: dict[str, Any]) -> int:

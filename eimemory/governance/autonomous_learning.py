@@ -585,14 +585,17 @@ def _replay_gate_report(report: dict[str, Any]) -> dict[str, Any]:
         }
     verdict = str(report.get("verdict") or "").strip().lower()
     sample_count = _as_int(_first_present(report, "sample_count", "case_count", "pass_count"), default=0)
+    fail_count = _as_int(_first_present(report, "fail_count", "failed_count", "failures"), default=0)
     pass_rate = _as_float(report.get("pass_rate"), default=0.0)
     threshold = _as_float(report.get("threshold"), default=0.6)
-    ok = verdict == "pass" and sample_count > 0 and pass_rate >= threshold
+    ok = verdict == "pass" and sample_count > 0 and fail_count == 0 and pass_rate >= threshold
     reason = "passed" if ok else "real_task_replay_threshold_failed"
     if verdict != "pass":
         reason = "real_task_replay_verdict_not_pass"
     elif sample_count <= 0:
         reason = "real_task_replay_no_samples"
+    elif fail_count > 0:
+        reason = "real_task_replay_failures_present"
     elif pass_rate < threshold:
         reason = "real_task_replay_pass_rate_below_threshold"
     return {
@@ -600,6 +603,7 @@ def _replay_gate_report(report: dict[str, Any]) -> dict[str, Any]:
         "reason": reason,
         "verdict": verdict,
         "sample_count": sample_count,
+        "fail_count": fail_count,
         "pass_rate": pass_rate,
         "threshold": threshold,
         "real_task_replay": report,

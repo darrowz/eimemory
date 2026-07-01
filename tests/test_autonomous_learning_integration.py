@@ -547,6 +547,49 @@ def test_autonomous_learning_blocks_malformed_real_task_replay_without_crashing(
     assert report["promotions"] == []
 
 
+def test_autonomous_learning_blocks_real_task_replay_with_failures_present(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "main"}
+    runtime.evolution.log_reflection(tag="tool.routing", miss="routing drift", fix="prefer memory-first", scope=scope)
+
+    monkeypatch.setattr(
+        "eimemory.governance.autonomous_learning.build_replay_dataset",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "schema_version": "real_task_replay.v1",
+            "report_type": "proactive_replay_dataset",
+            "case_count": 2,
+            "cases": [
+                {"case_id": "case_1", "query": "sample query", "task_type": "brain.respond"},
+                {"case_id": "case_2", "query": "sample query 2", "task_type": "brain.respond"},
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        runtime,
+        "run_real_task_replay",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "report_type": "real_task_replay",
+            "schema_version": "real_task_replay.v1",
+            "verdict": "pass",
+            "pass_rate": 1.0,
+            "threshold": 0.6,
+            "sample_count": 2,
+            "pass_count": 1,
+            "fail_count": 1,
+        },
+    )
+
+    report = runtime.run_autonomous_learning_cycle(scope=scope, force=True, apply=True, max_goals=1, max_promotions=1)
+
+    assert report["ok"] is True
+    assert report["replay_gate_passed"] is False
+    assert report["replay_gate"]["reason"] == "real_task_replay_failures_present"
+    assert report["candidate_ids"] == []
+    assert report["promotions"] == []
+
+
 def test_autonomous_learning_required_env_fails_when_disabled(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path)
     monkeypatch.delenv("EIMEMORY_AUTONOMOUS_LEARNING_ENABLED", raising=False)

@@ -83,6 +83,31 @@ def test_evaluator_requires_model_separation_even_with_passing_replay(tmp_path) 
     assert "model_not_isolated" in verdict.content["blocked_reasons"]
 
 
+def test_evaluator_rejects_low_quality_replay_even_when_verdict_says_pass(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+
+    packet = build_evaluation_packet(
+        runtime,
+        scope={"agent_id": "main"},
+        loop_id="loop_iso_low_quality",
+        goal={"title": "Weak replay should not promote"},
+        candidate_kind="eval_case",
+        artifact={"summary": "replay reported pass with poor metrics"},
+        generator_claim="Replay says pass.",
+        replay_gate={"ok": True, "pass_rate": 0.5, "sample_count": 4, "threshold": 0.8},
+        real_task_replay={"ok": True, "verdict": "pass", "pass_rate": 0.5, "pass_count": 2, "fail_count": 2},
+    )
+    verdict = run_isolated_evaluator(runtime, packet, scope={"agent_id": "main"}, loop_id="loop_iso_low_quality")
+    judgment = judge_stop_condition(runtime, verdict, scope={"agent_id": "main"}, loop_id="loop_iso_low_quality")
+
+    assert verdict.content["verdict"] == "fail"
+    assert "insufficient_replay_quality" in verdict.content["blocked_reasons"]
+    assert verdict.content["real_execution"]["passed"] is False
+    assert verdict.content["real_execution"]["sample_count"] == 4
+    assert verdict.content["real_execution"]["pass_rate"] == 0.5
+    assert judgment.content["decision"] == "continue"
+
+
 def test_verification_returncode_zero_counts_as_real_execution(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
 
@@ -145,3 +170,22 @@ def test_model_role_changes_do_not_reuse_previous_packet(tmp_path) -> None:
     assert first["promotion_allowed"] is True
     assert second["promotion_allowed"] is False
     assert second["decision"] == "quarantine"
+
+
+def test_replay_evidence_changes_do_not_reuse_previous_packet(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+
+    first = run_isolated_evaluator_harness(runtime, scope={"agent_id": "main"}, loop_id="same_loop")
+    second = run_isolated_evaluator_harness(
+        runtime,
+        scope={"agent_id": "main"},
+        loop_id="same_loop",
+        replay_gate={"ok": False, "verdict": "fail", "pass_rate": 0.0, "sample_count": 1, "threshold": 0.6},
+        real_task_replay={"ok": False, "verdict": "fail", "pass_rate": 0.0, "pass_count": 0, "fail_count": 1},
+    )
+
+    assert first["packet_id"] != second["packet_id"]
+    assert first["promotion_allowed"] is True
+    assert second["promotion_allowed"] is False
+    assert second["verdict"] == "fail"
+    assert second["decision"] == "continue"

@@ -93,6 +93,22 @@ def test_cli_learn_autonomy_smoke_runs_closed_loop_without_heavy_learning(tmp_pa
     assert report["rl"]["policy_update"]["action_key"] == "autonomy_cycle:run_autonomy_cycle"
 
 
+def test_cli_evaluator_harness_fail_replay_does_not_reuse_prior_pass(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path))
+
+    assert cli_main(["learn", "evaluator-harness", "--json"]) == 0
+    first = json.loads(capsys.readouterr().out)
+    assert first["promotion_allowed"] is True
+
+    assert cli_main(["learn", "evaluator-harness", "--fail-replay", "--json"]) == 0
+    second = json.loads(capsys.readouterr().out)
+
+    assert second["packet_id"] != first["packet_id"]
+    assert second["verdict"] == "fail"
+    assert second["decision"] == "continue"
+    assert second["promotion_allowed"] is False
+
+
 def test_cli_learn_promote_applies_candidate(tmp_path, monkeypatch, capsys) -> None:
     monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path))
 
