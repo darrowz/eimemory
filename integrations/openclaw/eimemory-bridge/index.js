@@ -11,6 +11,7 @@ const DEFAULT_OPERATOR_USER_ID = 'darrow';
 const DEFAULT_RECALL_MODE = 'fast';
 const DEFAULT_RECALL_BUDGET_MS = 800;
 const DEFAULT_FAST_CANDIDATE_LIMIT = 24;
+const DEFAULT_HOOK_CACHE_TTL_MS = 10000;
 const REGISTRATION_STATE_KEY = Symbol.for('eimemory.bridge.registrationState');
 const VISION_BRIDGE_QUERY_MARKERS = [
   '看到了什么',
@@ -35,6 +36,35 @@ function registrationState() {
     };
   }
   return globalThis[REGISTRATION_STATE_KEY];
+}
+
+const hookResultCache = new Map();
+
+function nowMs() {
+  return Date.now();
+}
+
+function pruneHookCache() {
+  const cutoff = nowMs() - DEFAULT_HOOK_CACHE_TTL_MS;
+  for (const [key, entry] of hookResultCache.entries()) {
+    if (!entry || entry.createdAt < cutoff) {
+      hookResultCache.delete(key);
+    }
+  }
+}
+
+function stableJson(value) {
+  if (value == null || typeof value !== 'object') {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableJson(item)).join(',')}]`;
+  }
+  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`;
+}
+
+function cacheKeyFor(kind, hook, payload) {
+  return `${kind}:${hook}:${stableJson(payload)}`;
 }
 
 function splitCommand(command) {
@@ -473,11 +503,18 @@ function normalizeContent(content) {
 }
 
 function invokeHook(hook, event) {
+  const payload = normalizeEventPayload(hook, event);
+  const key = cacheKeyFor('hook', hook, payload);
+  pruneHookCache();
+  const cached = hookResultCache.get(key);
+  if (cached) {
+    return cached.value;
+  }
   const command = resolveHookCommand();
   const result = spawnSync(command[0], [...command.slice(1), hook], {
-    input: JSON.stringify(normalizeEventPayload(hook, event)),
+    input: JSON.stringify(payload),
     encoding: 'utf-8',
-    timeout: Number(process.env.EIMEMORY_HOOK_TIMEOUT_MS || 15000),
+    timeout: Number(process.env.EIMEMORY_HOOK_TIMEOUT_MS || 1500),
   });
   if (result.error) {
     throw result.error;
@@ -485,15 +522,23 @@ function invokeHook(hook, event) {
   if (result.status !== 0) {
     throw new Error(result.stderr || result.stdout || `eimemory hook ${hook} failed`);
   }
-  return JSON.parse(result.stdout || '{}');
+  const parsed = JSON.parse(result.stdout || '{}');
+  hookResultCache.set(key, { createdAt: nowMs(), value: parsed });
+  return parsed;
 }
 
 function invokeBridge(event) {
+  const key = cacheKeyFor('bridge', 'feishu', event);
+  pruneHookCache();
+  const cached = hookResultCache.get(key);
+  if (cached) {
+    return cached.value;
+  }
   const command = resolveBridgeCommand();
   const result = spawnSync(command[0], [...command.slice(1)], {
     input: JSON.stringify(event),
     encoding: 'utf-8',
-    timeout: Number(process.env.EIMEMORY_BRIDGE_TIMEOUT_MS || 5000),
+    timeout: Number(process.env.EIMEMORY_BRIDGE_TIMEOUT_MS || 1000),
   });
   if (result.error) {
     throw result.error;
@@ -501,7 +546,9 @@ function invokeBridge(event) {
   if (result.status !== 0) {
     throw new Error(result.stderr || result.stdout || 'ei-bridge feishu failed');
   }
-  return JSON.parse(result.stdout || '{}');
+  const parsed = JSON.parse(result.stdout || '{}');
+  hookResultCache.set(key, { createdAt: nowMs(), value: parsed });
+  return parsed;
 }
 
 function invokeCli(args) {
