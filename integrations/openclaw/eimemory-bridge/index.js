@@ -11,6 +11,31 @@ const DEFAULT_OPERATOR_USER_ID = 'darrow';
 const DEFAULT_RECALL_MODE = 'fast';
 const DEFAULT_RECALL_BUDGET_MS = 800;
 const DEFAULT_FAST_CANDIDATE_LIMIT = 24;
+const REGISTRATION_STATE_KEY = Symbol.for('eimemory.bridge.registrationState');
+const VISION_BRIDGE_QUERY_MARKERS = [
+  '看到了什么',
+  '现在看到',
+  '视觉',
+  '摄像头',
+  '画面',
+  '有没有人',
+  '有人吗',
+  '茶室',
+  'what do you see',
+  'camera',
+  'vision',
+  'scene',
+];
+
+function registrationState() {
+  if (!globalThis[REGISTRATION_STATE_KEY]) {
+    globalThis[REGISTRATION_STATE_KEY] = {
+      hookRegistrations: new WeakMap(),
+      fallbackHookNames: new Set(),
+    };
+  }
+  return globalThis[REGISTRATION_STATE_KEY];
+}
 
 function splitCommand(command) {
   const parts = [];
@@ -526,6 +551,41 @@ function registerTypedHook(api, name, handler) {
   }
 }
 
+function hookRegistrationTarget(api) {
+  if (api?.hooks && (typeof api.hooks === 'object' || typeof api.hooks === 'function')) {
+    return api.hooks;
+  }
+  if (api && (typeof api === 'object' || typeof api === 'function')) {
+    return api;
+  }
+  return null;
+}
+
+function registerTypedHookOnce(api, name, handler) {
+  const state = registrationState();
+  const target = hookRegistrationTarget(api);
+  if (!target) {
+    if (state.fallbackHookNames.has(name)) {
+      api?.logger?.debug?.(`eimemory-bridge: ${name} hook already registered`);
+      return;
+    }
+    registerTypedHook(api, name, handler);
+    state.fallbackHookNames.add(name);
+    return;
+  }
+  let names = state.hookRegistrations.get(target);
+  if (!names) {
+    names = new Set();
+    state.hookRegistrations.set(target, names);
+  }
+  if (names.has(name)) {
+    api?.logger?.debug?.(`eimemory-bridge: ${name} hook already registered`);
+    return;
+  }
+  registerTypedHook(api, name, handler);
+  names.add(name);
+}
+
 function truthy(value) {
   return /^(1|true|yes|on)$/i.test(String(value || '').trim());
 }
@@ -552,6 +612,31 @@ function promptInjectionAllowed(api) {
 
 function promptInjectionEnabled(api) {
   return truthy(process.env.EIMEMORY_ENABLE_PROMPT_INJECTION) && promptInjectionAllowed(api);
+}
+
+function promptBridgeEnabled(api) {
+  const config = api?.config || {};
+  return config.enableFeishuBridgePrompt === true
+    || config.enable_feishu_bridge_prompt === true
+    || config.enablePromptBridge === true
+    || config.enable_prompt_bridge === true
+    || truthy(process.env.EIMEMORY_ENABLE_FEISHU_BRIDGE_PROMPT)
+    || truthy(process.env.EIMEMORY_ENABLE_PROMPT_BRIDGE);
+}
+
+function shouldInvokeBridgeBeforePrompt(api, event) {
+  if (promptBridgeEnabled(api)) {
+    return true;
+  }
+  const query = String(
+    event?.query
+    || event?.prompt
+    || event?.text
+    || event?.content
+    || event?.message?.content
+    || ''
+  ).toLowerCase();
+  return VISION_BRIDGE_QUERY_MARKERS.some((marker) => query.includes(marker));
 }
 
 function memoryE2EToolEnabled(api) {
@@ -587,6 +672,7 @@ function registerStatusTool(api) {
         promptInjectionEnabled: promptInjectionEnabled(api),
         promptInjectionEnvEnabled: truthy(process.env.EIMEMORY_ENABLE_PROMPT_INJECTION),
         allowPromptInjection: promptInjectionAllowed(api),
+        promptBridgeEnabled: promptBridgeEnabled(api),
       };
       return {
         content: [{
@@ -656,10 +742,12 @@ module.exports.default = {
     api?.logger?.info?.('eimemory-bridge: registering OpenClaw hooks');
     registerStatusTool(api);
     registerMemoryE2ETool(api);
-    registerTypedHook(api, 'message_received', async (event) => safeInvokeHook(api, 'message_received', event) || {});
+    registerTypedHookOnce(api, 'message_received', async (event) => safeInvokeHook(api, 'message_received', event) || {});
     if (promptInjectionEnabled(api) || usesLegacyHookApi(api)) {
-      registerTypedHook(api, 'before_prompt_build', async (event) => {
-        const bridgePayload = safeInvokeBridge(api, normalizeEventPayload('before_prompt_build', event));
+      registerTypedHookOnce(api, 'before_prompt_build', async (event) => {
+        const bridgePayload = shouldInvokeBridgeBeforePrompt(api, event)
+          ? safeInvokeBridge(api, normalizeEventPayload('before_prompt_build', event))
+          : null;
         const payload = safeInvokeHook(api, 'before_prompt_build', event);
         const bridgeContext = buildBridgePrependContext(bridgePayload);
         if (!payload) {
@@ -677,8 +765,8 @@ module.exports.default = {
     } else {
       api?.logger?.info?.('eimemory-bridge: before_prompt_build disabled; set EIMEMORY_ENABLE_PROMPT_INJECTION=true and allowPromptInjection=true to enable recall injection');
     }
-    registerTypedHook(api, 'agent_end', async (event) => safeInvokeHook(api, 'agent_end', event) || {});
-    registerTypedHook(api, 'session_end', async (event) => safeInvokeHook(api, 'session_end', event) || {});
+    registerTypedHookOnce(api, 'agent_end', async (event) => safeInvokeHook(api, 'agent_end', event) || {});
+    registerTypedHookOnce(api, 'session_end', async (event) => safeInvokeHook(api, 'session_end', event) || {});
   },
 };
 

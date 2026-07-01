@@ -957,6 +957,22 @@ process.stdout.write(JSON.stringify(names));
     assert json.loads(result.stdout) == ["message_received", "before_prompt_build", "agent_end", "session_end"]
 
 
+def test_openclaw_js_bridge_register_is_idempotent_for_same_api() -> None:
+    script = """
+const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
+const names = [];
+process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
+const api = { config: { allowPromptInjection: true }, hooks: { on(name, handler) { names.push(name); } } };
+plugin.register(api);
+plugin.register(api);
+plugin.register(api);
+process.stdout.write(JSON.stringify(names));
+""".strip()
+    result = subprocess.run(["node", "-e", script], cwd=Path.cwd(), capture_output=True, text=True, check=True)
+
+    assert json.loads(result.stdout) == ["message_received", "before_prompt_build", "agent_end", "session_end"]
+
+
 def test_openclaw_js_bridge_reads_openclaw_prompt_injection_policy(tmp_path) -> None:
     config_path = tmp_path / "openclaw.json"
     config_path.write_text(
@@ -1204,6 +1220,52 @@ process.stdout.write(JSON.stringify({
     payload = json.loads(result.stdout or "{}")
     assert "Live eibrain context" in payload["prependContext"]
     assert "实时 eibrain 视觉上下文：现在看到了什么" in payload["prependContext"]
+
+
+def test_openclaw_js_bridge_skips_feishu_bridge_for_plain_prompt(tmp_path) -> None:
+    marker_path = tmp_path / "bridge-called.txt"
+    script = """
+const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
+const handlers = {};
+process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
+plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = handler; } });
+handlers.before_prompt_build({ prompt: 'hello', senderId: 'ou_user' })
+  .then((result) => { process.stdout.write(JSON.stringify(result)); })
+  .catch((error) => { console.error(error && error.stack ? error.stack : String(error)); process.exit(1); });
+""".strip()
+    bridge_script = tmp_path / "bridge.js"
+    bridge_script.write_text(
+        f"""
+const fs = require('node:fs');
+fs.writeFileSync({json.dumps(str(marker_path))}, 'called');
+process.stdout.write(JSON.stringify({{ matched: true, prepend_context: 'should not be used' }}));
+""".strip(),
+        encoding="utf-8",
+    )
+    hook_script = tmp_path / "memory-hook.js"
+    hook_script.write_text(
+        "process.stdout.write(JSON.stringify({ memory_bundle: { items: [{ title: 'Plain memory', summary: 'ok' }] } }));",
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env["EIMEMORY_BRIDGE_COMMAND"] = f'node "{bridge_script}"'
+    env["EIMEMORY_HOOK_COMMAND"] = f'node "{hook_script}"'
+    result = subprocess.run(
+        ["node", "-e", script],
+        cwd=Path.cwd(),
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=10,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout or "{}")
+    assert "Plain memory" in payload["prependContext"]
+    assert "should not be used" not in payload["prependContext"]
+    assert not marker_path.exists()
 
 
 def test_openclaw_js_bridge_filters_ei_bridge_audit_from_memory_context(tmp_path) -> None:
