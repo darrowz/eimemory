@@ -152,6 +152,34 @@ def test_l2_promotion_blocks_without_structured_gate_bundle(tmp_path) -> None:
     assert runtime.store.get_by_id(candidate_id).status == "candidate"
 
 
+def test_l2_promotion_blocks_without_loop_doctor_and_smoke_gate(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu"}
+    candidate_id = distill_capability_candidate(
+        runtime,
+        scope=scope,
+        loop_id="learn_test",
+        experiment_id="exp_1",
+        eval_result=PASSING_EVAL,
+        promotion_target="system_prompt_patch",
+        summary="Prompt policy update",
+    )
+    gate_bundle = _l2_gate_bundle()
+    gate_bundle.pop("closed_loop", None)
+
+    result = promote_candidate(
+        runtime,
+        candidate_id=candidate_id,
+        scope=scope,
+        loop_id="learn_test",
+        eval_result={**PASSING_EVAL, "gate_bundle": gate_bundle},
+        health={"ok": True},
+    )
+
+    assert result["ok"] is False
+    assert "closed_loop_gate" in result["blocked_reason"]
+
+
 def test_l2_prompt_policy_applies_to_search_policy_after_gates(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     scope = {"agent_id": "hongtu"}
@@ -1314,6 +1342,10 @@ def _l2_gate_bundle() -> dict:
         "audit": {"enabled": True},
         "prompt_shadow_eval": {"passed": True},
         "prompt_injection_check": {"passed": True},
+        "closed_loop": {
+            "doctor": {"ok": True, "source": "eimemory doctor"},
+            "smoke": {"ok": True, "source": "openclaw_loop smoke"},
+        },
         "real_task_replay": {
             "ok": True,
             "report_type": "real_task_replay",

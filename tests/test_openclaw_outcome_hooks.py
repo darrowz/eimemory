@@ -3,6 +3,7 @@ from __future__ import annotations
 from eimemory.adapters.openclaw.hooks import OpenClawMemoryHooks
 from eimemory.api.runtime import Runtime
 from eimemory.models.records import RecallBundle, RecordEnvelope, ScopeRef
+from eimemory.ops import openclaw_loop as loop
 
 
 def _build_bundle(*, task_context: dict, query: str = "open dashboard") -> RecallBundle:
@@ -62,6 +63,7 @@ def _record(
 def test_openclaw_before_prompt_build_returns_trace_context_and_policy_attribution(
     tmp_path, monkeypatch
 ) -> None:
+    monkeypatch.setenv("OPENCLAW_LOOP_HOME", str(tmp_path / "loop"))
     runtime = Runtime.create(root=tmp_path)
     hooks = OpenClawMemoryHooks(runtime)
     captured: dict[str, object] = {}
@@ -109,6 +111,42 @@ def test_openclaw_before_prompt_build_returns_trace_context_and_policy_attributi
     assert result["task_context"]["policy_attribution"]["matched_event_type"] == "browser_task"
     assert result["task_context"]["policy_attribution"]["selected_records"][0]["record_id"] == "rec-1"
     assert result["memory_bundle"]["explanation"]["policy_suggestion_ids"] == ["policy-1"]
+    assert result["task_context"]["openclaw_loop_task_id"]
+    assert loop.get_task(result["task_context"]["openclaw_loop_task_id"])["status"] == "running"
+
+
+def test_openclaw_task_end_closes_loop_task_and_records_lesson_on_failure(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("OPENCLAW_LOOP_HOME", str(tmp_path / "loop"))
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    hooks = OpenClawMemoryHooks(runtime)
+    task = loop.create_task(
+        title="OpenClaw user request",
+        objective="complete user request",
+        source="openclaw.before_prompt_build",
+        dedupe_key="openclaw:sess-failed",
+        report_policy="always",
+    )
+    loop.record_heartbeat(task["task_id"], progress="started")
+
+    result = hooks.on_task_end(
+        {
+            "session_id": "sess-failed",
+            "agent_id": "main",
+            "workspace_id": "repo-x",
+            "user_id": "darrow",
+            "query": "check dashboard",
+            "task_context": {"openclaw_loop_task_id": task["task_id"], "task_type": "browser_task"},
+            "outcome": {"success": False, "verified": False, "notes": "health check timeout"},
+        }
+    )
+
+    closed = loop.get_task(task["task_id"])
+    assert closed["status"] == "failed"
+    assert result["loop_task"]["status"] == "failed"
+    assert loop.read_jsonl("verifications.jsonl")[-1]["passed"] is False
+    lessons = loop.read_jsonl("lesson_candidates.jsonl")
+    assert lessons[-1]["task_id"] == task["task_id"]
+    assert "health check timeout" in lessons[-1]["failure_reason"]
 
 
 def test_openclaw_before_prompt_build_strict_injection_plan_classifies_and_audits_lanes(

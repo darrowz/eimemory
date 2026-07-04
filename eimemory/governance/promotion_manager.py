@@ -326,7 +326,20 @@ def _rollout_gate(eval_result: dict[str, Any], health: dict[str, Any], *, tier: 
             blocked.append("real_task_replay_gate")
         if target in {"prompt_policy", "system_prompt_patch"} and not _prompt_safety_gate(gate_bundle):
             blocked.append("prompt_safety_gate")
+        if not _closed_loop_gate(gate_bundle):
+            blocked.append("closed_loop_gate")
     return {"ok": not blocked, "blocked_reasons": blocked, "gate_bundle": gate_bundle}
+
+
+def _closed_loop_gate(gate_bundle: dict[str, Any]) -> bool:
+    closed_loop = gate_bundle.get("closed_loop") or gate_bundle.get("loop_closure") or {}
+    if not isinstance(closed_loop, dict):
+        return False
+    doctor = closed_loop.get("doctor") or {}
+    smoke = closed_loop.get("smoke") or {}
+    if not isinstance(doctor, dict) or not isinstance(smoke, dict):
+        return False
+    return bool(doctor.get("ok")) and bool(smoke.get("ok"))
 
 
 def _score_value(scores: dict[str, Any], key: str, *, default: float) -> float:

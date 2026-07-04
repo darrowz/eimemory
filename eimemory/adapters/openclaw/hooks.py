@@ -15,6 +15,7 @@ from eimemory.persona.correction import persona_feedback_from_user_text
 from eimemory.persona.prompt import build_persona_guidance, disabled_persona_guidance, persona_enabled
 from eimemory.persona.schema import PersonaTraceEvent
 from eimemory.persona.store import PersonaStore
+from eimemory.ops import openclaw_loop
 
 
 DEFAULT_RECALL_MODE = "fast"
@@ -95,6 +96,9 @@ class OpenClawMemoryHooks:
         start = perf_counter()
         query = self._clean_prompt_query(str(event.get("query") or event.get("raw_query") or "").strip())
         recall_context = self._resolve_recall_context(event)
+        loop_task = self._openclaw_loop_start(event=event, query=query)
+        if loop_task:
+            recall_context["openclaw_loop_task_id"] = loop_task.get("task_id", "")
         trace_context = self._trace_context_from_event(event, task_context=recall_context, query=query)
         recall_context["trace_context"] = trace_context
         event = dict(event)
@@ -1185,6 +1189,108 @@ class OpenClawMemoryHooks:
             for item in bundle.items
         ]
 
+    def _openclaw_loop_start(self, *, event: dict, query: str) -> dict:
+        if os.environ.get("EIMEMORY_OPENCLAW_LOOP_DISABLED") == "1":
+            return {}
+        title = self._first_text(event.get("title"), event.get("task_title"), query, "OpenClaw user request")
+        objective = self._first_text(event.get("goal"), event.get("objective"), query, title)
+        try:
+            task = openclaw_loop.create_task(
+                title=title[:160],
+                objective=objective[:500],
+                source="openclaw.before_prompt_build",
+                owner=str(event.get("agent_id") or "openclaw"),
+                report_policy=str(event.get("report_policy") or event.get("reportPolicy") or "on_done"),
+                dedupe_key=self._openclaw_loop_dedupe_key(event=event, query=query),
+            )
+            openclaw_loop.record_heartbeat(
+                str(task.get("task_id") or ""),
+                lease_seconds=300,
+                progress="before_prompt_build",
+                source="openclaw.before_prompt_build",
+            )
+            return task
+        except Exception as exc:
+            return {"error": str(exc)}
+
+    def _openclaw_loop_close(
+        self,
+        *,
+        event: dict,
+        task_context: dict,
+        outcome: dict,
+        result: str,
+        verification: str,
+        end_kind: str,
+    ) -> dict:
+        if os.environ.get("EIMEMORY_OPENCLAW_LOOP_DISABLED") == "1":
+            return {}
+        query = self._first_text(event.get("query"), event.get("raw_query"), task_context.get("query"), result, "OpenClaw task")
+        task_id = self._first_text(
+            task_context.get("openclaw_loop_task_id"),
+            task_context.get("loop_task_id"),
+            event.get("openclaw_loop_task_id"),
+            event.get("loop_task_id"),
+        )
+        try:
+            if not task_id:
+                task = self._openclaw_loop_start(event=event, query=query)
+                task_id = str(task.get("task_id") or "")
+            if not task_id:
+                return {"error": "missing_loop_task_id"}
+            success = outcome.get("success")
+            verified = outcome.get("verified")
+            passed = success is not False and verified is not False and str(result or "").lower() not in {"bad", "failed", "failure"}
+            failure_reason = "" if passed else self._first_text(
+                outcome.get("notes"),
+                outcome.get("error"),
+                outcome.get("feedback"),
+                result,
+                verification,
+            )
+            openclaw_loop.record_verification(
+                task_id,
+                verifier=f"openclaw.{end_kind}",
+                checks={
+                    "success": success,
+                    "verified": verified,
+                    "result": result,
+                    "verification": verification,
+                },
+                passed=passed,
+                failure_reason=failure_reason,
+                next_action="report_done" if passed else "repair",
+            )
+            status = "done" if passed else "failed"
+            return openclaw_loop.finish_task(
+                task_id,
+                status=status,
+                summary=self._first_text(outcome.get("notes"), outcome.get("feedback"), result, status),
+            )
+        except Exception as exc:
+            return {"error": str(exc), "task_id": task_id}
+
+    def _openclaw_loop_dedupe_key(self, *, event: dict, query: str) -> str:
+        explicit = self._first_text(
+            event.get("idempotency_key"),
+            event.get("idempotencyKey"),
+            event.get("message_id"),
+            event.get("messageId"),
+            event.get("event_id"),
+            event.get("eventId"),
+            event.get("trace_id"),
+            event.get("traceId"),
+            event.get("task_id"),
+            event.get("taskId"),
+        )
+        return "openclaw:" + self._stable_hash(
+            {
+                "session_id": self._session_id_from_event(event),
+                "explicit": explicit,
+                "query": "" if explicit else query,
+            }
+        )[:24]
+
     def _record_terminal_memory(self, event: dict, *, end_kind: str, assistant_text: str = "") -> dict:
         scope = self._scope_from_event(event)
         task_context = self._task_context_from_event(event)
@@ -1315,10 +1421,19 @@ class OpenClawMemoryHooks:
             )
             if pattern_payload:
                 pattern = self.runtime.upsert_intent_pattern(pattern_payload, scope=scope)
+        loop_task = self._openclaw_loop_close(
+            event=event,
+            task_context=task_context,
+            outcome=outcome,
+            result=result,
+            verification=verification,
+            end_kind=end_kind,
+        )
         return {
             "event": recorded_event,
             "outcome": recorded_outcome,
             "pattern": pattern,
+            "loop_task": loop_task,
             **outcome_trace,
         }
 

@@ -147,6 +147,26 @@ class OpenClawLoopTests(unittest.TestCase):
         loop.finish_task(on_blocked["task_id"], status="blocked", summary="blocked")
         self.assertEqual(len(loop.read_jsonl("reports.jsonl")), 1)
 
+    def test_report_policy_delivers_to_configured_outbox(self):
+        outbox = self.root / "report-outbox.jsonl"
+        old_outbox = os.environ.get("OPENCLAW_LOOP_REPORT_OUTBOX")
+        os.environ["OPENCLAW_LOOP_REPORT_OUTBOX"] = str(outbox)
+        try:
+            task = loop.create_task(title="report", objective="send report", report_policy="always")
+            loop.record_verification(task["task_id"], verifier="unit", checks={}, passed=True)
+            loop.finish_task(task["task_id"], status="done", summary="sent")
+        finally:
+            if old_outbox is None:
+                os.environ.pop("OPENCLAW_LOOP_REPORT_OUTBOX", None)
+            else:
+                os.environ["OPENCLAW_LOOP_REPORT_OUTBOX"] = old_outbox
+
+        delivered = [json.loads(line) for line in outbox.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(delivered[0]["channel"], "feishu")
+        self.assertEqual(delivered[0]["summary"], "sent")
+        report = loop.read_jsonl("reports.jsonl")[0]
+        self.assertTrue(report["delivery"]["delivered"])
+
     def test_doctor_cli_accepts_config_path(self):
         config = self.root / "openclaw.json"
         config.write_text(json.dumps({"gateway": {}}), encoding="utf-8")
@@ -162,6 +182,77 @@ class OpenClawLoopTests(unittest.TestCase):
         result = loop.main(["watch", "--config", str(config), "--no-live"])
 
         self.assertEqual(result, 0)
+
+    def test_failed_verification_records_lesson_candidate(self):
+        task = loop.create_task(title="deploy", objective="deploy safely", source="system")
+
+        verification = loop.record_verification(
+            task["task_id"],
+            verifier="deploy_smoke",
+            checks={"health": "timeout"},
+            passed=False,
+            failure_reason="health timeout",
+            next_action="repair",
+        )
+
+        lessons = loop.read_jsonl("lesson_candidates.jsonl")
+        self.assertEqual(len(lessons), 1)
+        self.assertEqual(lessons[0]["task_id"], task["task_id"])
+        self.assertEqual(lessons[0]["verification_id"], verification["verification_id"])
+        self.assertEqual(lessons[0]["failure_reason"], "health timeout")
+        self.assertEqual(lessons[0]["source"], "openclaw_loop.verification_failed")
+
+    def test_record_dispatch_heartbeats_and_actions_background_work(self):
+        task = loop.create_task(title="cron", objective="nightly run", source="cron")
+
+        dispatch = loop.record_dispatch(
+            task["task_id"],
+            dispatch_type="cron",
+            command_or_tool="eimemory nightly",
+            lease_seconds=900,
+            progress="nightly started",
+        )
+
+        latest = loop.get_task(task["task_id"])
+        self.assertEqual(dispatch["action"]["action_type"], "dispatch")
+        self.assertEqual(dispatch["heartbeat"]["heartbeat_source"], "cron")
+        self.assertEqual(latest["status"], "running")
+        self.assertEqual(latest["current_step"], "acting")
+
+    def test_dispatch_cli_does_not_clobber_subcommand_name_with_cmd_option(self):
+        task = loop.create_task(title="cron", objective="nightly run", source="cron")
+
+        result = loop.main([
+            "dispatch",
+            task["task_id"],
+            "--type",
+            "cron",
+            "--cmd",
+            "eimemory-nightly",
+            "--progress",
+            "nightly-started",
+        ])
+
+        self.assertEqual(result, 0)
+        self.assertEqual(loop.read_jsonl("actions.jsonl")[0]["command_or_tool"], "eimemory-nightly")
+
+    def test_deploy_verify_creates_verification_evidence_for_release(self):
+        config = self.root / "openclaw.json"
+        config.write_text(json.dumps({"gateway": {}}), encoding="utf-8")
+
+        result = loop.run_deploy_verify(
+            commit="abc1234",
+            release_path="/opt/eimemory/releases/abc1234",
+            config_path=config,
+            run_live_checks=False,
+        )
+
+        self.assertTrue(result["ok"])
+        task = loop.get_task(result["task_id"])
+        self.assertEqual(task["status"], "done")
+        self.assertIn("deploy:abc1234", task["dedupe_key"])
+        self.assertEqual(loop.read_jsonl("actions.jsonl")[-1]["action_type"], "dispatch")
+        self.assertTrue(loop.read_jsonl("verifications.jsonl")[-1]["passed"])
 
 
 if __name__ == "__main__":

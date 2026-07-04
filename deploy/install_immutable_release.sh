@@ -13,6 +13,9 @@ EIMEMORY_LOG_DIR="${EIMEMORY_LOG_DIR:-$SERVICE_HOME/.openclaw/logs}"
 USER_SYSTEMD_ENABLE_SERVICE="${USER_SYSTEMD_ENABLE_SERVICE:-1}"
 USER_SYSTEMD_DIR="${USER_SYSTEMD_DIR:-$SERVICE_HOME/.config/systemd/user}"
 SYSTEM_RPC_UNIT_PATH="${SYSTEM_RPC_UNIT_PATH:-/etc/systemd/system/eimemory-rpc.service}"
+OPENCLAW_LOOP_DEPLOY_VERIFY="${OPENCLAW_LOOP_DEPLOY_VERIFY:-1}"
+OPENCLAW_LOOP_DEPLOY_LIVE_CHECKS="${OPENCLAW_LOOP_DEPLOY_LIVE_CHECKS:-0}"
+OPENCLAW_LOOP_CONFIG_PATH="${OPENCLAW_LOOP_CONFIG_PATH:-$SERVICE_HOME/.openclaw/openclaw.json}"
 COMMIT="${1:-$(git -C "$REPO_DIR" rev-parse --short HEAD)}"
 RELEASE_DIR="$INSTALL_ROOT/releases/$COMMIT"
 CURRENT_LINK="$INSTALL_ROOT/current"
@@ -45,6 +48,25 @@ _retire_system_rpc_unit() {
     echo "retired_systemd_unit=$retired_path"
   fi
   systemctl daemon-reload >/dev/null 2>&1 || true
+}
+
+_run_openclaw_loop_deploy_verify() {
+  if [ "$OPENCLAW_LOOP_DEPLOY_VERIFY" != "1" ]; then
+    return
+  fi
+  local live_arg=(--no-live)
+  if [ "$OPENCLAW_LOOP_DEPLOY_LIVE_CHECKS" = "1" ]; then
+    live_arg=()
+  fi
+  local config_arg=()
+  if [ -n "$OPENCLAW_LOOP_CONFIG_PATH" ] && [ -f "$OPENCLAW_LOOP_CONFIG_PATH" ]; then
+    config_arg=(--config "$OPENCLAW_LOOP_CONFIG_PATH")
+  fi
+  "$RELEASE_DIR/.venv/bin/python" "$RELEASE_DIR/scripts/openclaw_loop.py" deploy-verify \
+    --commit "$COMMIT" \
+    --release-path "$RELEASE_DIR" \
+    "${config_arg[@]}" \
+    "${live_arg[@]}"
 }
 
 if ! git -C "$REPO_DIR" rev-parse --verify "$COMMIT^{commit}" >/dev/null 2>&1; then
@@ -88,6 +110,8 @@ if [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ] && command -v systemctl >/dev/null 2
     systemctl --user enable eimemory-rpc.service
   fi
 fi
+
+_run_openclaw_loop_deploy_verify
 
 echo "release=$RELEASE_DIR"
 echo "current=$CURRENT_LINK"

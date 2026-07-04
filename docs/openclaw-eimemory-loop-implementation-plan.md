@@ -975,6 +975,16 @@ systemctl --user status openclaw-loop-watch.timer --no-pager
 5. verification failed 自动生成 lesson_candidate 给 eimemory。
 6. L2 promotion 必须读取 `doctor/smoke` 结果作为 gate。
 
+2026-07-04 / 1.8.17 状态：以上 6 项已接入到代码路径：
+
+- Feishu bridge 命令在 route 前写入 loop task，route 作为 dispatch，结果写 verification/report。
+- OpenClaw `before_prompt_build` 自动创建/续租 task，`task_end/agent_end/session_end` 自动 verify/finish。
+- `openclaw_loop.py dispatch` 同时写 action 和 heartbeat，供 cron/subagent/后台命令统一调用。
+- `deploy/install_immutable_release.sh` 在 release 切换后调用 `openclaw_loop.py deploy-verify`。
+- `record_verification(passed=False)` 自动写 `lesson_candidates.jsonl`。
+- L2 promotion gate 强制要求 `closed_loop.doctor.ok` 与 `closed_loop.smoke.ok`。
+- `report_policy` 触发 `reports.jsonl`，并在配置 `OPENCLAW_LOOP_FEISHU_WEBHOOK` / `EIMEMORY_FEISHU_WEBHOOK` / outbox 时发送 Feishu 格式报告。
+
 ### 24.3 已固化运行态
 
 已在 honxin 安装 systemd user timer：

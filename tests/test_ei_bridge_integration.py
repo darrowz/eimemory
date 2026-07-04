@@ -10,6 +10,7 @@ from eimemory.ei_bridge.agents import EIBrainAgentAdapter
 from eimemory.ei_bridge.audit import EIMemoryAuditSink
 from eimemory.ei_bridge.channels.openclaw_feishu import format_reply, parse_event
 from eimemory.ei_bridge.protocol import BridgeCommand
+from eimemory.ops import openclaw_loop as loop
 
 
 def test_feishu_message_routes_to_eibrain_and_records_audit() -> None:
@@ -123,3 +124,42 @@ def test_cli_ei_bridge_feishu_health_does_not_inject_visual_context(tmp_path, mo
     assert payload["matched"] is True
     assert payload["reply"].startswith("已完成：系统健康：healthy")
     assert payload["prepend_context"] == ""
+
+
+def test_cli_ei_bridge_feishu_creates_and_closes_loop_task(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path / "runtime"))
+    monkeypatch.setenv("OPENCLAW_LOOP_HOME", str(tmp_path / "loop"))
+    status_path = tmp_path / "status.json"
+    status_path.write_text(
+        json.dumps(
+            {
+                "system_health": "healthy",
+                "visual_diagnostics": {
+                    "data_status": "live",
+                    "data_health": "healthy",
+                    "scene_summary": "person and keyboard in front of camera",
+                    "scene_labels": ["person", "keyboard"],
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EIBRAIN_MONITOR_URL", status_path.as_uri())
+    previous_stdin = sys.stdin
+    sys.stdin = io.StringIO(json.dumps({"query": "现在看到了什么", "user_id": "user-1", "message_id": "msg-loop"}, ensure_ascii=False))
+    try:
+        assert cli_main(["ei-bridge", "feishu"]) == 0
+    finally:
+        sys.stdin = previous_stdin
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["matched"] is True
+    assert payload["loop_task"]["status"] == "done"
+    tasks = loop.load_tasks()
+    assert len(tasks) == 1
+    assert tasks[0]["source"] == "feishu"
+    assert tasks[0]["dedupe_key"] == "feishu:msg-loop"
+    assert loop.read_jsonl("actions.jsonl")[0]["action_type"] == "dispatch"
+    assert loop.read_jsonl("verifications.jsonl")[0]["passed"] is True
+    assert len(loop.read_jsonl("reports.jsonl")) == 1
