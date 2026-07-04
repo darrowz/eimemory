@@ -16,6 +16,7 @@ SYSTEM_RPC_UNIT_PATH="${SYSTEM_RPC_UNIT_PATH:-/etc/systemd/system/eimemory-rpc.s
 OPENCLAW_LOOP_DEPLOY_VERIFY="${OPENCLAW_LOOP_DEPLOY_VERIFY:-1}"
 OPENCLAW_LOOP_DEPLOY_LIVE_CHECKS="${OPENCLAW_LOOP_DEPLOY_LIVE_CHECKS:-0}"
 OPENCLAW_LOOP_CONFIG_PATH="${OPENCLAW_LOOP_CONFIG_PATH:-$SERVICE_HOME/.openclaw/openclaw.json}"
+OPENCLAW_LOOP_COMPAT_SCRIPT="${OPENCLAW_LOOP_COMPAT_SCRIPT:-$SERVICE_HOME/.openclaw/workspace/scripts/openclaw_loop.py}"
 COMMIT="${1:-$(git -C "$REPO_DIR" rev-parse --short HEAD)}"
 RELEASE_DIR="$INSTALL_ROOT/releases/$COMMIT"
 CURRENT_LINK="$INSTALL_ROOT/current"
@@ -69,6 +70,19 @@ _run_openclaw_loop_deploy_verify() {
     "${live_arg[@]}"
 }
 
+_install_openclaw_loop_compat_script() {
+  if [ -z "$OPENCLAW_LOOP_COMPAT_SCRIPT" ]; then
+    return
+  fi
+  local compat_dir
+  compat_dir="$(dirname "$OPENCLAW_LOOP_COMPAT_SCRIPT")"
+  mkdir -p "$compat_dir"
+  ln -sfn "$RELEASE_DIR/scripts/openclaw_loop.py" "$OPENCLAW_LOOP_COMPAT_SCRIPT"
+  if [ "$(id -u)" -eq 0 ] && id "$SERVICE_USER" >/dev/null 2>&1; then
+    chown -h "$SERVICE_USER:$SERVICE_GROUP" "$OPENCLAW_LOOP_COMPAT_SCRIPT" 2>/dev/null || true
+  fi
+}
+
 if ! git -C "$REPO_DIR" rev-parse --verify "$COMMIT^{commit}" >/dev/null 2>&1; then
   echo "Unknown commit: $COMMIT" >&2
   exit 2
@@ -111,6 +125,7 @@ if [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ] && command -v systemctl >/dev/null 2
   fi
 fi
 
+_install_openclaw_loop_compat_script
 _run_openclaw_loop_deploy_verify
 
 echo "release=$RELEASE_DIR"
