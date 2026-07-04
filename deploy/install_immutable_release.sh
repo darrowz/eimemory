@@ -77,6 +77,7 @@ _install_openclaw_loop_compat_script() {
   local compat_dir
   compat_dir="$(dirname "$OPENCLAW_LOOP_COMPAT_SCRIPT")"
   mkdir -p "$compat_dir"
+  chmod +x "$RELEASE_DIR/scripts/openclaw_loop.py" 2>/dev/null || true
   ln -sfn "$RELEASE_DIR/scripts/openclaw_loop.py" "$OPENCLAW_LOOP_COMPAT_SCRIPT"
   if [ "$(id -u)" -eq 0 ] && id "$SERVICE_USER" >/dev/null 2>&1; then
     chown -h "$SERVICE_USER:$SERVICE_GROUP" "$OPENCLAW_LOOP_COMPAT_SCRIPT" 2>/dev/null || true
