@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import calendar
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -22,7 +23,7 @@ from urllib.error import URLError
 from urllib.request import urlopen
 
 SCHEMA_VERSION = "openclaw.loop.v1"
-TERMINAL_STATUSES = {"done", "failed", "blocked", "rolled_back"}
+TERMINAL_STATUSES = {"done", "failed", "rolled_back"}
 ACTIVE_STATUSES = {"planned", "running", "waiting", "verifying"}
 _TEST_NOW: float | None = None
 
@@ -63,10 +64,56 @@ def path_for(name: str) -> Path:
     return data_dir() / name
 
 
+@contextmanager
+def _append_lock(name: str):
+    lock_path = path_for(f"{name}.lock")
+    with lock_path.open("a+b") as handle:
+        handle.seek(0)
+        if not handle.read(1):
+            handle.write(b"\0")
+            handle.flush()
+        handle.seek(0)
+        if os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
 def append_jsonl(name: str, record: dict[str, Any]) -> None:
     record = {"schema_version": SCHEMA_VERSION, "writer_version": "1", **record}
-    with path_for(name).open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+    line = json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n"
+    with _append_lock(name):
+        with path_for(name).open("a", encoding="utf-8") as handle:
+            handle.write(line)
+
+
+def _record_corrupt_line(name: str, *, line_number: int, raw: str, error: str) -> None:
+    if name == "corrupt.jsonl":
+        return
+    append_jsonl(
+        "corrupt.jsonl",
+        {
+            "corrupt_id": new_id("corrupt"),
+            "source_file": name,
+            "line_number": line_number,
+            "raw": raw[:1000],
+            "error": error,
+            "created_at": iso_ts(),
+        },
+    )
 
 
 def read_jsonl(name: str) -> list[dict[str, Any]]:
@@ -74,10 +121,13 @@ def read_jsonl(name: str) -> list[dict[str, Any]]:
     if not path.exists():
         return []
     rows: list[dict[str, Any]] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
         if not line.strip():
             continue
-        rows.append(json.loads(line))
+        try:
+            rows.append(json.loads(line))
+        except json.JSONDecodeError as exc:
+            _record_corrupt_line(name, line_number=line_number, raw=line, error=str(exc))
     return rows
 
 
@@ -249,9 +299,32 @@ def record_report(task_id: str, *, status: str, summary: str, evidence_refs: lis
     return report
 
 
-def finish_task(task_id: str, *, status: str = "done", summary: str = "") -> dict[str, Any]:
+def _latest_verification(task_id: str) -> dict[str, Any] | None:
+    latest: dict[str, Any] | None = None
+    for row in read_jsonl("verifications.jsonl"):
+        if row.get("task_id") == task_id:
+            latest = row
+    return latest
+
+
+def _should_record_report(report_policy: str, status: str) -> bool:
+    if report_policy == "silent":
+        return False
+    if report_policy == "always":
+        return True
+    if report_policy == "on_blocked":
+        return status == "blocked"
+    return status == "done"
+
+
+def finish_task(task_id: str, *, status: str = "done", summary: str = "", force: bool = False) -> dict[str, Any]:
+    if status == "done" and not force:
+        verification = _latest_verification(task_id)
+        if not verification or not verification.get("passed"):
+            raise RuntimeError("cannot mark task done without a passing verification; use force=True to override")
     task = update_task(task_id, status=status, result_summary=summary, current_step=status, last_action="finished")
-    record_report(task_id, status=status, summary=summary or status, evidence_refs=task.get("evidence_refs") or [])
+    if _should_record_report(str(task.get("report_policy") or "on_done"), status):
+        record_report(task_id, status=status, summary=summary or status, evidence_refs=task.get("evidence_refs") or [])
     return task
 
 
@@ -442,6 +515,7 @@ def main(argv: list[str] | None = None) -> int:
     p_done.add_argument("task_id")
     p_done.add_argument("--summary", default="done")
     p_done.add_argument("--status", default="done")
+    p_done.add_argument("--force", action="store_true")
 
     sub.add_parser("list")
     sub.add_parser("stale")
@@ -468,7 +542,7 @@ def main(argv: list[str] | None = None) -> int:
         checks = {item.split("=", 1)[0]: item.split("=", 1)[1] if "=" in item else True for item in args.check}
         return emit(record_verification(args.task_id, verifier=args.verifier, checks=checks, passed=args.passed, evidence_refs=args.evidence))
     if args.cmd == "done":
-        return emit(finish_task(args.task_id, status=args.status, summary=args.summary))
+        return emit(finish_task(args.task_id, status=args.status, summary=args.summary, force=args.force))
     if args.cmd == "list":
         return emit(load_tasks())
     if args.cmd == "stale":

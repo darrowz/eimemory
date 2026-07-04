@@ -90,6 +90,63 @@ class OpenClawLoopTests(unittest.TestCase):
         self.assertIn("gateway_token_mismatch", task["result_summary"])
         self.assertEqual(len(loop.read_jsonl("watch.jsonl")), 1)
 
+    def test_watch_reuses_existing_blocked_task_for_same_drift(self):
+        config = self.root / "openclaw.json"
+        config.write_text(json.dumps({
+            "gateway": {
+                "auth": {"mode": "token", "token": "server-token"},
+                "remote": {"url": "ws://127.0.0.1:18789", "token": "client-token"},
+            }
+        }), encoding="utf-8")
+
+        first = loop.run_watch(config_path=config, run_live_checks=False)
+        second = loop.run_watch(config_path=config, run_live_checks=False)
+
+        self.assertEqual(first["task_id"], second["task_id"])
+        self.assertEqual(second["tasks_created"], 0)
+        self.assertEqual(len(loop.load_tasks()), 1)
+
+    def test_read_jsonl_skips_corrupt_lines_and_records_quarantine(self):
+        path = loop.path_for("tasks.jsonl")
+        path.write_text(
+            '{"task_id":"ok-1","status":"planned"}\n'
+            '{"task_id":\n'
+            '{"task_id":"ok-2","status":"done"}\n',
+            encoding="utf-8",
+        )
+
+        rows = loop.read_jsonl("tasks.jsonl")
+
+        self.assertEqual([row["task_id"] for row in rows], ["ok-1", "ok-2"])
+        corrupt = loop.read_jsonl("corrupt.jsonl")
+        self.assertEqual(len(corrupt), 1)
+        self.assertEqual(corrupt[0]["source_file"], "tasks.jsonl")
+
+    def test_append_jsonl_uses_lock_file(self):
+        loop.append_jsonl("tasks.jsonl", {"task_id": "locked", "status": "planned"})
+
+        self.assertTrue(loop.path_for("tasks.jsonl.lock").exists())
+
+    def test_done_requires_latest_verification_to_pass_unless_forced(self):
+        task = loop.create_task(title="deploy", objective="deploy safely")
+        loop.record_verification(task["task_id"], verifier="unit", checks={}, passed=False)
+
+        with self.assertRaises(RuntimeError):
+            loop.finish_task(task["task_id"], status="done", summary="done")
+
+        forced = loop.finish_task(task["task_id"], status="done", summary="forced", force=True)
+        self.assertEqual(forced["status"], "done")
+
+    def test_report_policy_controls_internal_report_records(self):
+        silent = loop.create_task(title="quiet", objective="do not report", report_policy="silent")
+        loop.record_verification(silent["task_id"], verifier="unit", checks={}, passed=True)
+        loop.finish_task(silent["task_id"], status="done", summary="quiet")
+        self.assertEqual(loop.read_jsonl("reports.jsonl"), [])
+
+        on_blocked = loop.create_task(title="blocked", objective="report only when blocked", report_policy="on_blocked")
+        loop.finish_task(on_blocked["task_id"], status="blocked", summary="blocked")
+        self.assertEqual(len(loop.read_jsonl("reports.jsonl")), 1)
+
     def test_doctor_cli_accepts_config_path(self):
         config = self.root / "openclaw.json"
         config.write_text(json.dumps({"gateway": {}}), encoding="utf-8")
