@@ -18,7 +18,7 @@ import sys
 import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.error import URLError
 from urllib import request
 from urllib.request import urlopen
@@ -535,12 +535,94 @@ def run_smoke(*, config_path: str | Path | None = None, run_live_checks: bool = 
     }
 
 
+def _systemctl_output(args: list[str], *, timeout: float = 3.0) -> str:
+    try:
+        result = subprocess.run(
+            ["systemctl", *args],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
+        return f"unavailable:{type(exc).__name__}"
+    return (result.stdout or result.stderr or "").strip()
+
+
+def _user_systemctl_output(args: list[str], *, timeout: float = 3.0) -> str:
+    if os.name == "nt":
+        return "unavailable:windows"
+    service_user = os.environ.get("SERVICE_USER") or os.environ.get("EIMEMORY_SERVICE_USER")
+    if service_user and hasattr(os, "geteuid") and os.geteuid() == 0 and service_user != "root":
+        import pwd
+
+        try:
+            user_info = pwd.getpwnam(service_user)
+        except KeyError:
+            return "unavailable:service_user_missing"
+        command = [
+            "runuser",
+            "-u",
+            service_user,
+            "--",
+            "env",
+            f"XDG_RUNTIME_DIR=/run/user/{user_info.pw_uid}",
+            "systemctl",
+            "--user",
+            *args,
+        ]
+        try:
+            result = subprocess.run(
+                command,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
+            return f"unavailable:{type(exc).__name__}"
+        return (result.stdout or result.stderr or "").strip()
+    return _systemctl_output(["--user", *args], timeout=timeout)
+
+
+def check_rpc_user_systemd_owner() -> dict[str, Any]:
+    if os.name == "nt":
+        return {"ok": True, "skipped": True, "reason": "systemctl_unavailable_on_windows"}
+
+    system_owner_active = _systemctl_output(["is-active", "eimemory-rpc.service"])
+    system_owner_enabled = _systemctl_output(["is-enabled", "eimemory-rpc.service"])
+    system_owner_fragment = _systemctl_output(["show", "eimemory-rpc.service", "-p", "FragmentPath", "--value"])
+    user_owner_active = _user_systemctl_output(["is-active", "eimemory-rpc.service"])
+    user_owner_enabled = _user_systemctl_output(["is-enabled", "eimemory-rpc.service"])
+    reasons: list[str] = []
+    if system_owner_active == "active":
+        reasons.append("system_rpc_service_active")
+    if system_owner_enabled == "enabled":
+        reasons.append("system_rpc_service_enabled")
+    if system_owner_fragment:
+        reasons.append("system_rpc_service_unit_present")
+    if user_owner_active != "active":
+        reasons.append("user_rpc_service_not_active")
+    if user_owner_enabled != "enabled":
+        reasons.append("user_rpc_service_not_enabled")
+    return {
+        "ok": not reasons,
+        "reason": ",".join(reasons),
+        "system_owner_active": system_owner_active or "unknown",
+        "system_owner_enabled": system_owner_enabled or "unknown",
+        "system_owner_fragment": system_owner_fragment,
+        "user_owner_active": user_owner_active or "unknown",
+        "user_owner_enabled": user_owner_enabled or "unknown",
+    }
+
+
 def run_deploy_verify(
     *,
     commit: str = "",
     release_path: str = "",
     config_path: str | Path | None = None,
     run_live_checks: bool = True,
+    service_owner_checker: Callable[[], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     release_label = commit or Path(release_path).name or "unknown"
     task = create_task(
@@ -561,25 +643,30 @@ def run_deploy_verify(
         progress=f"release switched: {release_path or release_label}",
     )
     drift = check_config_drift(config_path=config_path, run_live_checks=run_live_checks)
+    rpc_service_owner = (service_owner_checker or check_rpc_user_systemd_owner)()
     checks = {
         "commit": commit,
         "release_path": release_path,
         "config_drift": drift,
+        "rpc_service_owner": rpc_service_owner,
     }
-    passed = bool(drift.get("ok"))
+    passed = bool(drift.get("ok")) and bool(rpc_service_owner.get("ok"))
+    failure_reason = ",".join(
+        [part for part in [";".join(drift.get("codes") or []), str(rpc_service_owner.get("reason") or "")] if part]
+    )
     verification = record_verification(
         task_id,
         verifier="deploy.install_immutable_release",
         checks=checks,
         passed=passed,
         evidence_refs=[f"action:{dispatch['action']['action_id']}"],
-        failure_reason=";".join(drift.get("codes") or []),
+        failure_reason=failure_reason,
         next_action="report_done" if passed else "repair",
     )
     finish_task(
         task_id,
         status="done" if passed else "blocked",
-        summary="deploy verify passed" if passed else "deploy verify failed: " + ",".join(drift.get("codes") or []),
+        summary="deploy verify passed" if passed else "deploy verify failed: " + failure_reason,
     )
     return {
         "ok": passed,
@@ -588,6 +675,7 @@ def run_deploy_verify(
         "commit": commit,
         "release_path": release_path,
         "drift": drift,
+        "rpc_service_owner": rpc_service_owner,
     }
 
 

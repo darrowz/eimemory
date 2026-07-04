@@ -254,6 +254,55 @@ class OpenClawLoopTests(unittest.TestCase):
         self.assertEqual(loop.read_jsonl("actions.jsonl")[-1]["action_type"], "dispatch")
         self.assertTrue(loop.read_jsonl("verifications.jsonl")[-1]["passed"])
 
+    def test_deploy_verify_records_rpc_user_systemd_owner_check(self):
+        config = self.root / "openclaw.json"
+        config.write_text(json.dumps({"gateway": {}}), encoding="utf-8")
+
+        result = loop.run_deploy_verify(
+            commit="abc1234",
+            release_path="/opt/eimemory/releases/abc1234",
+            config_path=config,
+            run_live_checks=False,
+            service_owner_checker=lambda: {
+                "ok": True,
+                "system_owner_active": "inactive",
+                "system_owner_enabled": "not-found",
+                "user_owner_active": "active",
+                "user_owner_enabled": "enabled",
+            },
+        )
+
+        self.assertTrue(result["ok"])
+        checks = loop.read_jsonl("verifications.jsonl")[-1]["checks"]
+        self.assertEqual(checks["rpc_service_owner"]["user_owner_active"], "active")
+        self.assertEqual(checks["rpc_service_owner"]["user_owner_enabled"], "enabled")
+
+    def test_deploy_verify_blocks_when_rpc_owner_check_fails(self):
+        config = self.root / "openclaw.json"
+        config.write_text(json.dumps({"gateway": {}}), encoding="utf-8")
+
+        result = loop.run_deploy_verify(
+            commit="abc1234",
+            release_path="/opt/eimemory/releases/abc1234",
+            config_path=config,
+            run_live_checks=False,
+            service_owner_checker=lambda: {
+                "ok": False,
+                "reason": "user_rpc_service_not_enabled",
+                "system_owner_active": "inactive",
+                "system_owner_enabled": "not-found",
+                "user_owner_active": "active",
+                "user_owner_enabled": "disabled",
+            },
+        )
+
+        self.assertFalse(result["ok"])
+        task = loop.get_task(result["task_id"])
+        self.assertEqual(task["status"], "blocked")
+        verification = loop.read_jsonl("verifications.jsonl")[-1]
+        self.assertFalse(verification["passed"])
+        self.assertIn("user_rpc_service_not_enabled", verification["failure_reason"])
+
 
 if __name__ == "__main__":
     unittest.main()
