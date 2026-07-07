@@ -1394,21 +1394,30 @@ class OpenClawMemoryHooks:
             end_kind=end_kind,
             policy_attribution=policy_attribution,
         )
-        recorded_outcome = self.runtime.record_outcome(recorded_event["id"], outcome_payload, scope=scope)
-        outcome_trace = self._record_outcome_trace_safely(
-            event=event,
-            scope=scope,
-            task_context=task_context,
-            outcome=outcome,
-            correction=correction,
-            verification=verification,
-            result=result,
-            policy_attribution=policy_attribution,
-            event_type=event_type,
-            action_path=action_path,
-            tools=tools,
-            end_kind=end_kind,
-        )
+        if self._should_record_terminal_outcome(outcome_payload, end_kind=end_kind):
+            recorded_outcome = self.runtime.record_outcome(recorded_event["id"], outcome_payload, scope=scope)
+            outcome_trace = self._record_outcome_trace_safely(
+                event=event,
+                scope=scope,
+                task_context=task_context,
+                outcome=outcome,
+                correction=correction,
+                verification=verification,
+                result=result,
+                policy_attribution=policy_attribution,
+                event_type=event_type,
+                action_path=action_path,
+                tools=tools,
+                end_kind=end_kind,
+            )
+        else:
+            recorded_outcome = {
+                **outcome_payload,
+                "outcome": "not_recorded",
+                "event_id": recorded_event["id"],
+                "recorded": False,
+            }
+            outcome_trace = {}
         pattern = None
         if correction:
             pattern_payload = self._intent_pattern_from_correction(
@@ -1436,6 +1445,14 @@ class OpenClawMemoryHooks:
             "loop_task": loop_task,
             **outcome_trace,
         }
+
+    def _should_record_terminal_outcome(self, outcome_payload: dict, *, end_kind: str) -> bool:
+        return not (
+            end_kind == "agent_end"
+            and str(outcome_payload.get("outcome") or "") == "uncertain"
+            and str(outcome_payload.get("reason") or "")
+            == "agent_end_success_without_explicit_verification"
+        )
 
     def _terminal_idempotency_key(self, *, event: dict, end_kind: str) -> str:
         explicit = self._first_text(

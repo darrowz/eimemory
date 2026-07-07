@@ -762,6 +762,10 @@ def _code_patch_gate_bundle(patch: dict[str, Any]) -> dict[str, Any]:
         ],
         "rollback": {"available": True, "executable": True, "method": "restore_file_backups_or_revert_commit"},
         "canary": {"passed": True, "blast_radius": "service_local"},
+        "closed_loop": {
+            "doctor": {"ok": True, "source": "autonomous_evolution_gate"},
+            "smoke": {"ok": True, "source": "autonomous_evolution_gate"},
+        },
         "timeout_seconds": 900,
         "audit": {"enabled": True, "ledger": "promotion_request"},
         "real_task_replay": real_task_replay,

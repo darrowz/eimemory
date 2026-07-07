@@ -1,4 +1,4 @@
-﻿"""Hard kill switch for any autonomous eimemory process. Always available.
+"""Hard kill switch for any autonomous eimemory process. Always available.
 
 Cross-platform implementation:
 - Windows: ``signal.SIGTERM`` is mapped by the standard signal module to
@@ -63,9 +63,11 @@ def emergency_stop(*, pid: int | None = None, scope_to_pgid: bool = True) -> Non
                 capture_output=True,
             )
         else:
-            target = -pid if scope_to_pgid else pid
             try:
-                os.kill(target, signal.SIGKILL)
+                if scope_to_pgid:
+                    os.killpg(os.getpgid(pid), signal.SIGKILL)
+                else:
+                    os.kill(pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
     _append_audit({"event": "emergency_stop", "at": _now_iso(), "pid": pid})

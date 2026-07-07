@@ -322,6 +322,10 @@ def _l2_gate_bundle() -> dict:
         "evidence": [{"tier": "T0", "ref": "evt_1", "summary": "User correction verified"}],
         "rollback": {"available": True, "executable": True},
         "canary": {"passed": True, "blast_radius": "single_scope"},
+        "closed_loop": {
+            "doctor": {"ok": True, "source": "eimemory doctor"},
+            "smoke": {"ok": True, "source": "openclaw_loop smoke"},
+        },
         "timeout_seconds": 300,
         "audit": {"enabled": True},
         "prompt_shadow_eval": {"passed": True},

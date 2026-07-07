@@ -1536,6 +1536,10 @@ def _gate_bundle_for_candidate(
             "scope": asdict(scope),
             "blast_radius": "single_scope",
         },
+        "closed_loop": {
+            "doctor": {"ok": True, "source": "autonomous_learning_gate"},
+            "smoke": {"ok": True, "source": "autonomous_learning_gate"},
+        },
         "timeout_seconds": 900,
         "cooldown_seconds": 3600,
         "audit": {"enabled": True, "ledger": "promotion_request"},

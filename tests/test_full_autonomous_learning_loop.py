@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+
 from eimemory.api.runtime import Runtime
 from eimemory.governance.autonomous_learning import run_autonomous_learning_cycle
 
@@ -134,7 +136,7 @@ def test_autonomous_learning_cycle_applies_code_patch_directly_to_repo(tmp_path,
             "file_updates": [{"path": "module.py", "content": "VALUE = 'fixed'\n"}],
             "verification_commands": [
                 [
-                    "python",
+                    sys.executable,
                     "-c",
                     "from pathlib import Path; assert Path('module.py').read_text(encoding='utf-8') == \"VALUE = 'fixed'\\n\"",
                 ]

@@ -257,9 +257,10 @@ def test_openclaw_session_end_marks_success_without_verification_as_missing(tmp_
     assert policy["policy_suggestions"][0]["outcome"] == "verification_missing"
 
 
-def test_openclaw_agent_end_success_without_verification_is_non_regression_uncertain(tmp_path) -> None:
+def test_openclaw_agent_end_success_without_verification_does_not_feed_replay_samples(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     hooks = OpenClawMemoryHooks(runtime)
+    scope = {"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"}
 
     result = hooks.on_agent_end(
         {
@@ -276,6 +277,17 @@ def test_openclaw_agent_end_success_without_verification_is_non_regression_uncer
         }
     )
 
-    assert result["outcome"]["outcome"] == "uncertain"
+    assert result["outcome"]["outcome"] == "not_recorded"
     assert result["outcome"]["reason"] == "agent_end_success_without_explicit_verification"
+    assert result["outcome"]["recorded"] is False
     assert result["outcome"]["verification"] == ""
+    assert "outcome_trace" not in result
+
+    rows = runtime.store.sqlite.conn.execute(
+        "SELECT id FROM event_outcomes WHERE event_id = ?",
+        (result["event"]["id"],),
+    ).fetchall()
+    assert rows == []
+
+    policy = runtime.search_policy("整理一下今天的状态", scope=scope)
+    assert all(item["source"] != "event_outcome" for item in policy["policy_suggestions"])
