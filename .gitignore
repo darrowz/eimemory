@@ -28,6 +28,7 @@ plans/*/notes/
 
 # local development and runtime artifacts
 .harness/
+.superpowers/
 STATUS.md
 DEPLOY_RUNBOOK.md
 state/autonomous_learning/**/*.jsonl

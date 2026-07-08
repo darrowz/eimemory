@@ -108,3 +108,48 @@ python -m pytest tests/test_openclaw_outcome_hooks.py -q
 ## Concerns
 
 - The classifier is intentionally small and keyword-based. Task 1 now covers the specified cooldown/rate-limit case and plumbs the broader failure classes, but timeout/context-overflow/model/bridge variants do not yet have explicit tests in this file.
+
+## Review Follow-Up RED
+
+Command:
+
+```powershell
+python -m pytest tests/test_openclaw_outcome_hooks.py -q
+```
+
+Output:
+
+```text
+.....FF.F.......                                                         [100%]
+================================== FAILURES ===================================
+FAILED tests/test_openclaw_outcome_hooks.py::test_openclaw_agent_end_terminal_bridge_statuses_fail_closed[rate_limit-rate_limit_cooldown]
+FAILED tests/test_openclaw_outcome_hooks.py::test_openclaw_agent_end_terminal_bridge_statuses_fail_closed[rate_limited-rate_limit_cooldown]
+FAILED tests/test_openclaw_outcome_hooks.py::test_openclaw_agent_end_terminal_bridge_statuses_fail_closed[context_overflow-context_overflow]
+3 failed, 13 passed in 1.13s
+```
+
+## Review Follow-Up GREEN
+
+Command:
+
+```powershell
+python -m pytest tests/test_openclaw_outcome_hooks.py -q
+```
+
+Output:
+
+```text
+................                                                         [100%]
+16 passed in 1.05s
+```
+
+## Review Follow-Up Files Changed
+
+- `tests/test_openclaw_outcome_hooks.py`
+- `eimemory/adapters/openclaw/hooks.py`
+- `.superpowers/sdd/task-1-report.md`
+
+## Review Follow-Up Notes
+
+- Added focused terminal-failure regressions for plain rate-limit, timeout, context-overflow, bridge failure, and model failure status tokens.
+- Tightened `_classify_terminal_failure()` to fail closed on normalized `bridge_status` tokens before falling back to prose matching.
