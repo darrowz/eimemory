@@ -230,9 +230,9 @@ def test_cli_doctor_reports_ops_diagnostics(tmp_path, monkeypatch, capsys) -> No
     assert payload["store"]["ready"] is True
     assert payload["checks"]["ready"] is True
     assert payload["supervisor"]["status"] in {"healthy", "degraded", "stuck", "unknown"}
-    assert "learn-watch" in payload["supervisor"]["runs"]
+    assert list(payload["supervisor"]["runs"]) == ["nightly"]
     for key in ("last_success_at", "last_error_at", "duration_ms", "memory_peak", "produced_count", "promoted_count", "rolled_back_count"):
-        assert key in payload["supervisor"]["runs"]["learn-watch"]
+        assert key in payload["supervisor"]["runs"]["nightly"]
 
 
 def test_http_rpc_server_serves_recall_and_policy(tmp_path) -> None:

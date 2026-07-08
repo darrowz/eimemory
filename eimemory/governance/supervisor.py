@@ -8,7 +8,8 @@ from eimemory.governance.learning_state import append_learning_record_once, stab
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
-SUPERVISOR_COMMANDS = ("nightly", "learn-think", "learn-watch")
+SUPERVISOR_COMMANDS = ("nightly",)
+LEGACY_SUPERVISOR_COMMANDS = ("learn-think", "learn-watch")
 SUMMARY_DEFAULTS = {
     "last_success_at": "",
     "last_error_at": "",

@@ -440,6 +440,7 @@ def _build_parser() -> argparse.ArgumentParser:
     ops_sub = ops.add_subparsers(dest="ops_command")
     ops_timer_monitor = ops_sub.add_parser("timer-monitor")
     ops_timer_monitor.add_argument("--stale-after-minutes", type=int, default=90)
+    ops_timer_monitor.add_argument("--include-legacy-learning-timers", action="store_true")
     ops_timer_monitor.add_argument("--no-persist", action="store_true")
     ops_timer_monitor.add_argument("--json", action="store_true", default=True)
 
@@ -942,6 +943,7 @@ def main(argv: list[str] | None = None) -> int:
                 runtime,
                 scope=scope,
                 stale_after_minutes=max(1, int(parsed.stale_after_minutes)),
+                include_legacy_learning_timers=bool(parsed.include_legacy_learning_timers),
                 persist=not bool(parsed.no_persist),
             )
             print(json.dumps(report, ensure_ascii=False, indent=2))

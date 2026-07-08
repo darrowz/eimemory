@@ -12,14 +12,20 @@ from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
 DEFAULT_TIMER_UNITS = [
-    "eimemory-learn-watch.timer",
-    "eimemory-learn-think.timer",
     "eimemory-nightly.timer",
 ]
 DEFAULT_SERVICE_UNITS = [
+    "eimemory-nightly.service",
+]
+LEGACY_LEARNING_TIMER_UNITS = [
+    "eimemory-learn-watch.timer",
+    "eimemory-learn-think.timer",
+    "eimemory-learn-dashboard.timer",
+]
+LEGACY_LEARNING_SERVICE_UNITS = [
     "eimemory-learn-watch.service",
     "eimemory-learn-think.service",
-    "eimemory-nightly.service",
+    "eimemory-learn-dashboard.service",
 ]
 
 
@@ -34,10 +40,11 @@ def check_user_systemd_timers(
     runner: Callable[[list[str]], str] | None = None,
     notifier: Callable[[dict[str, Any]], Any] | None = None,
     webhook_url: str | None = None,
+    include_legacy_learning_timers: bool = False,
     persist: bool = True,
 ) -> dict[str, Any]:
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
-    selected_units = list(units or [*DEFAULT_TIMER_UNITS, *DEFAULT_SERVICE_UNITS])
+    selected_units = list(units or _default_units(include_legacy_learning_timers=include_legacy_learning_timers))
     states = list(unit_states or _collect_unit_states(selected_units, runner=runner))
     issues = _timer_issues(states, now=now, stale_after_minutes=stale_after_minutes)
     payload = _alert_payload(issues, states=states, now=now)
@@ -81,6 +88,13 @@ def check_user_systemd_timers(
         "unit_count": len(states),
         "units": states,
     }
+
+
+def _default_units(*, include_legacy_learning_timers: bool = False) -> list[str]:
+    units = [*DEFAULT_TIMER_UNITS, *DEFAULT_SERVICE_UNITS]
+    if include_legacy_learning_timers:
+        units.extend([*LEGACY_LEARNING_TIMER_UNITS, *LEGACY_LEARNING_SERVICE_UNITS])
+    return units
 
 
 def _collect_unit_states(units: list[str], *, runner: Callable[[list[str]], str] | None = None) -> list[dict[str, Any]]:

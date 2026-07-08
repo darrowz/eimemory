@@ -73,11 +73,6 @@ timers unless a deployment document explicitly says otherwise:
 | Timer | Purpose |
 | --- | --- |
 | `eimemory-nightly.timer` | Daily intake, governance, evaluation summaries, autonomous evolution, autonomous learning, and dashboards. |
-| `eimemory-learn-watch.timer` | Lightweight signal capture every 15 minutes. |
-| `eimemory-learn-think.timer` | Hourly proactive thinking over local evidence. |
-| `eimemory-learn-dashboard.timer` | Daily operator dashboard after the nightly run. |
-| `eimemory-l5-observation-gate.timer` | One-shot 48-hour observation gate; if healthy, enables autonomous code commit and guarded deploy. |
-| `eimemory-timer-monitor.timer` | User-systemd health monitor for masked, stale, inactive, or failed eimemory timers; sends Feishu/webhook alerts when configured. |
 
 Do not install a standalone Karpathy-loop timer in production. The reusable
 experiment helpers under `eimemory.autonomous` feed into the governance path;
@@ -107,9 +102,12 @@ systemctl --user start eimemory-nightly.service
 journalctl --user -u eimemory-nightly.service -n 100 --no-pager
 ```
 
-## Companion Learning Timers
+## Legacy / Manual Timers
 
-The 1.0.0 proactive learning layer runs three additional timers:
+The 1.0.0 proactive learning layer used several companion timers. They remain
+packaged for manual diagnostics, migrations, and incident drills, but they are
+not part of the default production schedule because `eimemory-nightly.timer`
+is the single governance orchestrator.
 
 - `eimemory-learn-watch.timer`: every 15 minutes, capture lightweight local/outcome/world signals.
 - `eimemory-learn-think.timer`: hourly, turn signals and long-term goals into persisted thoughts.
@@ -117,18 +115,11 @@ The 1.0.0 proactive learning layer runs three additional timers:
 - `eimemory-l5-observation-gate.timer`: once after 48 hours of observation, persist L5 readiness and enable autonomous code commits plus guarded deploy if health checks pass.
 - `eimemory-timer-monitor.timer`: every 5 minutes, alert when watch/think/nightly timers are masked, stale, inactive, or failed.
 
-Install as user services:
+Run one of these manually only when debugging that path:
 
 ```bash
-mkdir -p ~/.config/systemd/user
-cp /dev-project/eimemory/deploy/systemd/eimemory-learn-*.service ~/.config/systemd/user/
-cp /dev-project/eimemory/deploy/systemd/eimemory-learn-*.timer ~/.config/systemd/user/
-cp /dev-project/eimemory/deploy/systemd/eimemory-l5-observation-gate.service ~/.config/systemd/user/
-cp /dev-project/eimemory/deploy/systemd/eimemory-l5-observation-gate.timer ~/.config/systemd/user/
-cp /dev-project/eimemory/deploy/systemd/eimemory-l5-observation-gate.sh ~/.config/systemd/user/
-cp /dev-project/eimemory/deploy/systemd/eimemory-timer-monitor.service ~/.config/systemd/user/
-cp /dev-project/eimemory/deploy/systemd/eimemory-timer-monitor.timer ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable --now eimemory-learn-watch.timer eimemory-learn-think.timer eimemory-learn-dashboard.timer eimemory-l5-observation-gate.timer eimemory-timer-monitor.timer
-systemctl --user list-timers 'eimemory-*.timer'
+/opt/eimemory/current/.venv/bin/eimemory learn watch --persist
+/opt/eimemory/current/.venv/bin/eimemory learn think --persist
+/opt/eimemory/current/.venv/bin/eimemory learn dashboard --persist
+/opt/eimemory/current/.venv/bin/eimemory ops timer-monitor --include-legacy-learning-timers
 ```

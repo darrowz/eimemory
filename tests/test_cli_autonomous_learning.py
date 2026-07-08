@@ -165,6 +165,5 @@ def test_cli_learn_think_persists_supervisor_contract(tmp_path, monkeypatch, cap
     assert cli_main(["doctor"]) == 0
     doctor = json.loads(capsys.readouterr().out)
 
-    assert doctor["supervisor"]["runs"]["learn-think"]["last_success_at"]
-    assert doctor["supervisor"]["runs"]["learn-think"]["error"] == ""
-    assert doctor["supervisor"]["runs"]["learn-watch"]["error"] == "no_run_record"
+    assert list(doctor["supervisor"]["runs"]) == ["nightly"]
+    assert doctor["supervisor"]["runs"]["nightly"]["error"] == "no_run_record"

@@ -133,6 +133,16 @@ def test_production_systemd_has_single_autonomous_scheduler_owner() -> None:
         assert "karpathy_loop_cron" not in unit_text
 
 
+def test_systemd_readme_recommends_only_nightly_timer_for_production() -> None:
+    readme = Path("deploy/systemd/README.md").read_text(encoding="utf-8")
+
+    assert "systemctl --user enable --now eimemory-nightly.timer" in readme
+    assert "enable --now eimemory-learn-watch.timer" not in readme
+    assert "enable --now eimemory-learn-think.timer" not in readme
+    assert "enable --now eimemory-learn-dashboard.timer" not in readme
+    assert "Legacy / Manual Timers" in readme
+
+
 def test_eimemory_rpc_systemd_unit_uses_honxin_tailscale_endpoint() -> None:
     unit_text = Path("deploy/systemd/eimemory-rpc.service").read_text(encoding="utf-8")
 
