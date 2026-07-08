@@ -104,6 +104,28 @@ class OpenClawLoopTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertIn("openclaw_loopback_proxy_inactive", result["codes"])
 
+    def test_config_drift_requires_loopback_proxy_user_service_enabled(self):
+        config = self.root / "openclaw.json"
+        config.write_text(json.dumps({"gateway": {}}), encoding="utf-8")
+
+        old_http_json = loop_impl._http_json
+        old_proxy_state = loop_impl.check_openclaw_loopback_proxy_user_service
+        loop_impl._http_json = lambda url, timeout=3.0: {"ok": True}
+        loop_impl.check_openclaw_loopback_proxy_user_service = lambda: {
+            "ok": False,
+            "reason": "openclaw_loopback_proxy_not_enabled",
+            "active": "active",
+            "enabled": "disabled",
+        }
+        try:
+            result = loop.check_config_drift(config_path=config, run_live_checks=True)
+        finally:
+            loop_impl._http_json = old_http_json
+            loop_impl.check_openclaw_loopback_proxy_user_service = old_proxy_state
+
+        self.assertFalse(result["ok"])
+        self.assertIn("openclaw_loopback_proxy_not_enabled", result["codes"])
+
     def test_smoke_creates_closed_loop_records(self):
         config = self.root / "openclaw.json"
         config.write_text(json.dumps({"gateway": {}}), encoding="utf-8")
@@ -219,6 +241,27 @@ class OpenClawLoopTests(unittest.TestCase):
         result = loop.main(["doctor", "--config", str(config), "--no-live"])
 
         self.assertEqual(result, 0)
+
+    def test_doctor_cli_returns_failure_when_live_gate_fails(self):
+        config = self.root / "openclaw.json"
+        config.write_text(json.dumps({"gateway": {}}), encoding="utf-8")
+
+        old_http_json = loop_impl._http_json
+        old_proxy_state = loop_impl.check_openclaw_loopback_proxy_user_service
+        loop_impl._http_json = lambda url, timeout=3.0: {"ok": True}
+        loop_impl.check_openclaw_loopback_proxy_user_service = lambda: {
+            "ok": False,
+            "reason": "openclaw_loopback_proxy_inactive",
+            "active": "inactive",
+            "enabled": "enabled",
+        }
+        try:
+            result = loop.main(["doctor", "--config", str(config)])
+        finally:
+            loop_impl._http_json = old_http_json
+            loop_impl.check_openclaw_loopback_proxy_user_service = old_proxy_state
+
+        self.assertEqual(result, 2)
 
     def test_watch_cli_accepts_config_path(self):
         config = self.root / "openclaw.json"
