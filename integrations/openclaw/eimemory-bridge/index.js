@@ -12,6 +12,8 @@ const DEFAULT_RECALL_MODE = 'fast';
 const DEFAULT_RECALL_BUDGET_MS = 800;
 const DEFAULT_FAST_CANDIDATE_LIMIT = 24;
 const DEFAULT_HOOK_CACHE_TTL_MS = 10000;
+const DEFAULT_HOOK_TIMEOUT_MS = 8000;
+const DEFAULT_BRIDGE_TIMEOUT_MS = 8000;
 const REGISTRATION_STATE_KEY = Symbol.for('eimemory.bridge.registrationState');
 const VISION_BRIDGE_QUERY_MARKERS = [
   '看到了什么',
@@ -577,7 +579,7 @@ function invokeHook(hook, event) {
   const result = spawnSync(command[0], [...command.slice(1), hook], {
     input: JSON.stringify(payload),
     encoding: 'utf-8',
-    timeout: Number(process.env.EIMEMORY_HOOK_TIMEOUT_MS || 3000),
+    timeout: positiveIntEnv('EIMEMORY_HOOK_TIMEOUT_MS', DEFAULT_HOOK_TIMEOUT_MS),
   });
   if (result.error) {
     throw result.error;
@@ -603,7 +605,7 @@ function invokeBridge(event) {
   const result = spawnSync(command[0], [...command.slice(1)], {
     input: JSON.stringify(event),
     encoding: 'utf-8',
-    timeout: Number(process.env.EIMEMORY_BRIDGE_TIMEOUT_MS || 2000),
+    timeout: positiveIntEnv('EIMEMORY_BRIDGE_TIMEOUT_MS', DEFAULT_BRIDGE_TIMEOUT_MS),
   });
   if (result.error) {
     throw result.error;
@@ -724,6 +726,11 @@ function registerTypedHookOnce(api, name, handler) {
 
 function truthy(value) {
   return /^(1|true|yes|on)$/i.test(String(value || '').trim());
+}
+
+function positiveIntEnv(name, fallback) {
+  const parsed = Number(process.env[name] || 0);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function readOpenClawPromptInjectionPolicy() {

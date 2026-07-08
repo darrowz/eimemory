@@ -33,6 +33,8 @@ var is unset.
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 import time
 import warnings
 from pathlib import Path
@@ -56,6 +58,7 @@ from eimemory.governance.safety.profile import (
 # this env var. Module-level so the worker (which is re-imported in
 # the child process) can read it on its first import.
 _SIDE_EFFECT_DIR_ENV = "EIMEMORY_TEST_SIDE_EFFECT_DIR"
+_PROCESS_TREE_DIR_ENV = "EIMEMORY_TEST_PROCESS_TREE_DIR"
 
 
 # ---------- module-level experiment functions (must be picklable) ----------
@@ -101,6 +104,23 @@ def _writes_two_markers_then_slow_return() -> float:
 def _write_results_to_disk() -> float:
     """Name matches the side-effect heuristic; sleeps past the time box."""
     time.sleep(5.0)
+    return 0.0
+
+
+def _spawns_grandchild_writer_then_sleeps() -> float:
+    tmp = Path(os.environ[_PROCESS_TREE_DIR_ENV])
+    after = tmp / "grandchild-after-timeout"
+    started = tmp / "grandchild-started"
+    code = (
+        "import pathlib, sys, time; "
+        "started=pathlib.Path(sys.argv[1]); after=pathlib.Path(sys.argv[2]); "
+        "started.write_text('ok', encoding='utf-8'); "
+        "time.sleep(2.0); "
+        "after.write_text('late-write', encoding='utf-8')"
+    )
+    subprocess.Popen([sys.executable, "-c", code, str(started), str(after)])
+    (tmp / "worker-started").write_text("ok", encoding="utf-8")
+    time.sleep(10.0)
     return 0.0
 
 
@@ -363,3 +383,32 @@ def test_timebox_warns_on_side_effect_terminated_worker(tmp_path: Path) -> None:
     text = str(user_warnings[0].message)
     assert "_write_results_to_disk" in text
     assert "terminated" in text.lower() or "time box" in text.lower()
+
+
+def test_timebox_kills_worker_process_tree(tmp_path: Path, monkeypatch) -> None:
+    """A timed-out worker must also stop subprocesses it spawned.
+
+    The worker launches a grandchild that writes a file two seconds
+    later. Killing only the worker leaves that grandchild alive, and
+    the late file appears. Process-tree termination prevents the
+    write.
+    """
+    monkeypatch.setenv(_PROCESS_TREE_DIR_ENV, str(tmp_path))
+
+    with pytest.raises(ExperimentTimeout):
+        run_single_experiment(
+            profile_ini=_learning_profile(tmp_path),
+            audit_path=tmp_path / "audit.jsonl",
+            experiment_id="exp-process-tree",
+            hypothesis={"kind": "sandbox_timeout", "text": "grandchild"},
+            experiment_fn=_spawns_grandchild_writer_then_sleeps,
+            baseline_value=0.40,
+            time_box_seconds=1.0,
+        )
+
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline and not (tmp_path / "grandchild-started").exists():
+        time.sleep(0.05)
+    assert (tmp_path / "grandchild-started").exists()
+    time.sleep(2.4)
+    assert not (tmp_path / "grandchild-after-timeout").exists()

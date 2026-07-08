@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import calendar
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 import hashlib
 import json
 import os
@@ -27,6 +28,18 @@ SCHEMA_VERSION = "openclaw.loop.v1"
 TERMINAL_STATUSES = {"done", "failed", "rolled_back"}
 ACTIVE_STATUSES = {"planned", "running", "waiting", "verifying"}
 _TEST_NOW: float | None = None
+
+
+@dataclass
+class _JsonlCacheEntry:
+    rows: list[dict[str, Any]] = field(default_factory=list)
+    offset: int = 0
+    line_count: int = 0
+    mtime_ns: int = 0
+    size: int = 0
+
+
+_JSONL_CACHE: dict[str, _JsonlCacheEntry] = {}
 
 
 def reset_clock_for_tests() -> None:
@@ -65,6 +78,14 @@ def path_for(name: str) -> Path:
     return data_dir() / name
 
 
+def reset_jsonl_cache_for_tests() -> None:
+    _JSONL_CACHE.clear()
+
+
+def _jsonl_cache_key(path: Path) -> str:
+    return str(path.absolute())
+
+
 @contextmanager
 def _append_lock(name: str):
     lock_path = path_for(f"{name}.lock")
@@ -97,8 +118,27 @@ def append_jsonl(name: str, record: dict[str, Any]) -> None:
     record = {"schema_version": SCHEMA_VERSION, "writer_version": "1", **record}
     line = json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n"
     with _append_lock(name):
-        with path_for(name).open("a", encoding="utf-8") as handle:
+        path = path_for(name)
+        with path.open("a", encoding="utf-8") as handle:
             handle.write(line)
+        _append_cached_jsonl_row(path, record)
+
+
+def _append_cached_jsonl_row(path: Path, record: dict[str, Any]) -> None:
+    key = _jsonl_cache_key(path)
+    entry = _JSONL_CACHE.get(key)
+    if entry is None:
+        return
+    try:
+        stat = path.stat()
+    except OSError:
+        _JSONL_CACHE.pop(key, None)
+        return
+    entry.rows.append(dict(record))
+    entry.line_count += 1
+    entry.offset = stat.st_size
+    entry.size = stat.st_size
+    entry.mtime_ns = stat.st_mtime_ns
 
 
 def _record_corrupt_line(name: str, *, line_number: int, raw: str, error: str) -> None:
@@ -119,17 +159,59 @@ def _record_corrupt_line(name: str, *, line_number: int, raw: str, error: str) -
 
 def read_jsonl(name: str) -> list[dict[str, Any]]:
     path = path_for(name)
+    key = _jsonl_cache_key(path)
     if not path.exists():
+        _JSONL_CACHE.pop(key, None)
         return []
-    rows: list[dict[str, Any]] = []
-    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
-        if not line.strip():
-            continue
-        try:
-            rows.append(json.loads(line))
-        except json.JSONDecodeError as exc:
-            _record_corrupt_line(name, line_number=line_number, raw=line, error=str(exc))
-    return rows
+    try:
+        stat = path.stat()
+    except OSError:
+        _JSONL_CACHE.pop(key, None)
+        return []
+
+    entry = _JSONL_CACHE.get(key)
+    if entry is not None and stat.st_size == entry.offset and stat.st_mtime_ns == entry.mtime_ns:
+        return [dict(row) for row in entry.rows]
+
+    if entry is not None and stat.st_size > entry.offset:
+        rows = list(entry.rows)
+        offset = entry.offset
+        line_number = entry.line_count
+    else:
+        rows = []
+        offset = 0
+        line_number = 0
+
+    with path.open("rb") as handle:
+        handle.seek(offset)
+        for raw in handle:
+            line_number += 1
+            try:
+                line = raw.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                _record_corrupt_line(name, line_number=line_number, raw=raw[:1000].decode("utf-8", errors="replace"), error=str(exc))
+                continue
+            if not line.strip():
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError as exc:
+                _record_corrupt_line(name, line_number=line_number, raw=line, error=str(exc))
+        offset = handle.tell()
+
+    try:
+        stat = path.stat()
+    except OSError:
+        _JSONL_CACHE.pop(key, None)
+        return [dict(row) for row in rows]
+    _JSONL_CACHE[key] = _JsonlCacheEntry(
+        rows=[dict(row) for row in rows],
+        offset=offset,
+        line_count=line_number,
+        mtime_ns=stat.st_mtime_ns,
+        size=stat.st_size,
+    )
+    return [dict(row) for row in rows]
 
 
 def latest_by_id(name: str, id_field: str) -> dict[str, dict[str, Any]]:

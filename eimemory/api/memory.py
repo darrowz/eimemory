@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
 import re
@@ -20,6 +21,29 @@ from eimemory.storage.runtime_store import RuntimeStore
 _KNOWLEDGE_CONTENT_DEDUPE_KINDS = {"knowledge_page", "claim_card", "paper_source", "paper_extract"}
 _MAX_RECORDS_PER_KNOWLEDGE_SOURCE = 2
 _DEFAULT_BLOCKED_RECALL_LANES = ("run_log", "audit_record", "incident_report", "evolution_artifact")
+_MEMORY_USAGE_TELEMETRY_REPORT_TYPE = "memory_usage_telemetry"
+_MEMORY_USAGE_TELEMETRY_SCHEMA = "memory_usage_telemetry.v1"
+_MEMORY_USAGE_PROMOTION_WEIGHT = 0.08
+_MEMORY_USAGE_REJECTION_WEIGHT = -0.12
+_MEMORY_USAGE_MAX_ADJUSTMENT = 0.30
+_RECALL_PIPELINE_SCHEMA = "recall_pipeline.v1"
+_RECALL_PIPELINE_PHASES = ("prepare", "retrieve", "graph_expand", "score_filter", "package")
+_DEFAULT_PREFERENCE_QUERY_MARKERS = (
+    "preference",
+    "reply style",
+    "communication style",
+    "operator preference",
+    "user preference",
+    "偏好",
+    "喜欢",
+    "讨厌",
+    "沟通风格",
+    "回复风格",
+    "废话",
+    "简洁",
+    "极简",
+    "直接",
+)
 _RECALL_LANE_MEMORY_TYPE_ALIASES = {
     "audit": "audit_record",
     "audit_record": "audit_record",
@@ -42,6 +66,19 @@ _RECALL_LANE_MEMORY_TYPE_ALIASES = {
     "context": "task_context",
     "task_context": "task_context",
 }
+
+
+@dataclass(slots=True)
+class RecallPipelineSnapshot:
+    search_limit: int
+    raw_hybrid: bool
+    recall_profile: str
+    recall_profile_source: str
+    recall_intent_name: str
+    graph_depth: int
+    query_scope_count: int
+    report_query: bool
+    operational_recall_allowed: bool
 
 
 def _capture_warnings(score) -> list[dict[str, object]]:
@@ -143,6 +180,98 @@ class MemoryAPI:
             return record
         return self.store.append(record)
 
+    def record_memory_usage(
+        self,
+        *,
+        query_id: str,
+        scope: dict,
+        used_record_ids: list[str] | None = None,
+        rejected_record_ids: list[str] | None = None,
+        query: str = "",
+        source: str = "openclaw.gateway",
+        meta: dict | None = None,
+        persist: bool = True,
+    ) -> RecordEnvelope:
+        normalized_query_id = str(query_id or "").strip()
+        if not normalized_query_id:
+            raise ValueError("query_id is required for memory usage telemetry")
+
+        scope_ref = ScopeRef.from_dict(scope)
+        used_ids = self._unique_record_ids(used_record_ids)
+        rejected_ids = self._unique_record_ids(rejected_record_ids)
+        idempotency_key = sha256(
+            "|".join(
+                [
+                    _MEMORY_USAGE_TELEMETRY_SCHEMA,
+                    scope_ref.tenant_id,
+                    scope_ref.agent_id,
+                    scope_ref.workspace_id,
+                    scope_ref.user_id,
+                    normalized_query_id,
+                ]
+            ).encode("utf-8")
+        ).hexdigest()
+        if persist:
+            existing = self.store.get_by_idempotency_key(
+                kinds=["feedback"],
+                scope=scope_ref,
+                idempotency_key=idempotency_key,
+            )
+            if existing is not None:
+                return existing
+
+        meta_payload = {
+            "report_type": _MEMORY_USAGE_TELEMETRY_REPORT_TYPE,
+            "schema_version": _MEMORY_USAGE_TELEMETRY_SCHEMA,
+            "query_id": normalized_query_id,
+            "idempotency_key": idempotency_key,
+            "used_count": len(used_ids),
+            "rejected_count": len(rejected_ids),
+        }
+        if meta:
+            meta_payload.update(dict(meta))
+            meta_payload.update(
+                {
+                    "report_type": _MEMORY_USAGE_TELEMETRY_REPORT_TYPE,
+                    "schema_version": _MEMORY_USAGE_TELEMETRY_SCHEMA,
+                    "query_id": normalized_query_id,
+                    "idempotency_key": idempotency_key,
+                    "used_count": len(used_ids),
+                    "rejected_count": len(rejected_ids),
+                }
+            )
+        content = {
+            "report_type": _MEMORY_USAGE_TELEMETRY_REPORT_TYPE,
+            "schema_version": _MEMORY_USAGE_TELEMETRY_SCHEMA,
+            "query_id": normalized_query_id,
+            "query": str(query or ""),
+            "used_record_ids": used_ids,
+            "rejected_record_ids": rejected_ids,
+            "used_count": len(used_ids),
+            "rejected_count": len(rejected_ids),
+        }
+        links = [
+            *(LinkRef(relation="used_memory", target_kind="record", target_id=record_id) for record_id in used_ids),
+            *(
+                LinkRef(relation="rejected_memory", target_kind="record", target_id=record_id)
+                for record_id in rejected_ids
+            ),
+        ]
+        record = RecordEnvelope.create(
+            kind="feedback",
+            title=f"Memory usage telemetry {normalized_query_id}",
+            summary=f"Memory usage telemetry: used={len(used_ids)} rejected={len(rejected_ids)}",
+            content=content,
+            scope=scope_ref,
+            source=source,
+            tags=["memory_usage_telemetry"],
+            links=links,
+            meta=meta_payload,
+        )
+        if not persist:
+            return record
+        return self.store.append(record)
+
     def recall(
         self,
         *,
@@ -232,6 +361,17 @@ class MemoryAPI:
                     ]
                 )
             )
+        pipeline_snapshot = RecallPipelineSnapshot(
+            search_limit=search_limit,
+            raw_hybrid=raw_hybrid,
+            recall_profile=recall_profile,
+            recall_profile_source=recall_profile_source,
+            recall_intent_name=recall_intent.name,
+            graph_depth=int(profile_config["graph_depth"]),
+            query_scope_count=len(query_scope_refs),
+            report_query=report_query,
+            operational_recall_allowed=operational_recall_allowed,
+        )
         raw_evidence: list[dict] = []
         if raw_hybrid:
             seen_raw_ids: set[str] = set()
@@ -293,7 +433,11 @@ class MemoryAPI:
         )
         blocked_counts.update(suppressed_counts)
         report_items = [item for item in items if report_query and self._is_recallable_report_record(item)]
-        preference_query = self._is_preference_query(normalized_query, task_context) and not report_query
+        preference_query = self._is_preference_query(
+            normalized_query,
+            task_context,
+            recall_intent=recall_intent,
+        ) and not report_query
         if preference_query:
             items = [item for item in items if self._is_preference_recall_candidate(item, normalized_query)]
         graph_expanded = 0
@@ -354,6 +498,8 @@ class MemoryAPI:
             recall_filters,
         )
         blocked_counts.update(hard_filter_counts)
+        memory_usage_adjustments = self._memory_usage_adjustments(scope_ref)
+        items = self._apply_memory_usage_feedback(items, memory_usage_adjustments)
         items = items[:limit]
         if report_items:
             items = self._dedupe_records([*report_items, *items])[:limit]
@@ -379,6 +525,7 @@ class MemoryAPI:
         blocked_counts.update(online_gate_counts)
         if blocked_counts:
             recall_filters["blocked_counts"] = dict(sorted(blocked_counts.items()))
+        memory_telemetry_summary = self._memory_usage_summary(items, memory_usage_adjustments)
         final_view = build_recall_view(
             view_type=view.view_type,
             claims=[item for item in items if item.kind == "claim_card"],
@@ -439,12 +586,24 @@ class MemoryAPI:
                 "selected_records": self._selected_record_summaries(items),
                 "evidence_refs": build_evidence_refs(items, graph_edge_refs),
                 "timeline": build_timeline(items),
+                "pipeline": self._recall_pipeline_summary(
+                    pipeline_snapshot,
+                    retrieved_count=len(search_report.get("scored_items") or []),
+                    candidate_count=len(base_items),
+                    selected_count=len(items),
+                    blocked_counts=blocked_counts,
+                ),
+                "memory_telemetry": memory_telemetry_summary,
                 "online_recall_gate": {
                     "ok": True,
                     "mode": "bypassed" if operational_recall_allowed else "enforced",
                     "blocked_counts": dict(sorted(online_gate_counts.items())),
                 },
-                "scoring": self._scoring_for_items(items, search_report),
+                "scoring": self._scoring_for_items(
+                    items,
+                    search_report,
+                    memory_usage_adjustments=memory_usage_adjustments,
+                ),
                 "recall_intent": self._recall_intent_summary(recall_intent),
                 "query_scopes": [self._scope_dict(item) for item in query_scope_refs],
                 "recall_scope_aliases": recall_scope_aliases,
@@ -456,6 +615,159 @@ class MemoryAPI:
                 "recall_view": final_view.to_dict(),
             },
         )
+
+    @staticmethod
+    def _unique_record_ids(record_ids: list[str] | None) -> list[str]:
+        unique: list[str] = []
+        seen: set[str] = set()
+        for record_id in record_ids or []:
+            normalized = str(record_id or "").strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            unique.append(normalized)
+        return unique
+
+    @staticmethod
+    def _bounded_score(value: object, default: float = 0.0) -> float:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            parsed = default
+        return max(0.0, min(1.0, parsed))
+
+    @staticmethod
+    def _bounded_adjustment(value: object) -> float:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return 0.0
+        return max(-_MEMORY_USAGE_MAX_ADJUSTMENT, min(_MEMORY_USAGE_MAX_ADJUSTMENT, parsed))
+
+    def _memory_usage_adjustments(self, scope: ScopeRef) -> dict[str, dict[str, object]]:
+        feedback_records = self.store.list_records_by_meta_value(
+            kinds=["feedback"],
+            scope=scope,
+            meta_key="report_type",
+            meta_value=_MEMORY_USAGE_TELEMETRY_REPORT_TYPE,
+            status="active",
+            limit=500,
+        )
+        if feedback_records is None:
+            feedback_records = self.store.list_records(kinds=["feedback"], scope=scope, status="active", limit=500)
+
+        adjustments: dict[str, dict[str, object]] = {}
+        for feedback in feedback_records:
+            meta = business_metadata(feedback.meta)
+            content = feedback.content if isinstance(feedback.content, dict) else {}
+            report_type = str(meta.get("report_type") or content.get("report_type") or "")
+            if report_type != _MEMORY_USAGE_TELEMETRY_REPORT_TYPE:
+                continue
+            for record_id in self._unique_record_ids(self._string_list(content.get("used_record_ids"))):
+                entry = adjustments.setdefault(
+                    record_id,
+                    {"adjustment": 0.0, "used_count": 0, "rejected_count": 0, "latest_feedback_at": ""},
+                )
+                entry["adjustment"] = float(entry["adjustment"]) + _MEMORY_USAGE_PROMOTION_WEIGHT
+                entry["used_count"] = int(entry["used_count"]) + 1
+                entry["latest_feedback_at"] = max(str(entry["latest_feedback_at"]), str(feedback.time.updated_at or ""))
+            for record_id in self._unique_record_ids(self._string_list(content.get("rejected_record_ids"))):
+                entry = adjustments.setdefault(
+                    record_id,
+                    {"adjustment": 0.0, "used_count": 0, "rejected_count": 0, "latest_feedback_at": ""},
+                )
+                entry["adjustment"] = float(entry["adjustment"]) + _MEMORY_USAGE_REJECTION_WEIGHT
+                entry["rejected_count"] = int(entry["rejected_count"]) + 1
+                entry["latest_feedback_at"] = max(str(entry["latest_feedback_at"]), str(feedback.time.updated_at or ""))
+
+        for entry in adjustments.values():
+            entry["adjustment"] = round(self._bounded_adjustment(entry.get("adjustment")), 3)
+        return adjustments
+
+    def _apply_memory_usage_feedback(
+        self,
+        items: list[RecordEnvelope],
+        adjustments: dict[str, dict[str, object]],
+    ) -> list[RecordEnvelope]:
+        if not items or not adjustments:
+            return items
+        indexed = list(enumerate(items))
+        indexed.sort(
+            key=lambda pair: (
+                float(adjustments.get(pair[1].record_id, {}).get("adjustment") or 0.0),
+                -pair[0],
+            ),
+            reverse=True,
+        )
+        return [item for _index, item in indexed]
+
+    def _memory_usage_summary(
+        self,
+        items: list[RecordEnvelope],
+        adjustments: dict[str, dict[str, object]],
+    ) -> dict[str, object]:
+        selected_adjustments = {
+            item.record_id: adjustments[item.record_id]
+            for item in items
+            if item.record_id in adjustments
+        }
+        return {
+            "schema_version": _MEMORY_USAGE_TELEMETRY_SCHEMA,
+            "applied": bool(adjustments),
+            "known_adjusted_count": len(adjustments),
+            "selected_adjusted_count": len(selected_adjustments),
+            "positive_selected_count": sum(
+                1 for entry in selected_adjustments.values() if float(entry.get("adjustment") or 0.0) > 0.0
+            ),
+            "negative_selected_count": sum(
+                1 for entry in selected_adjustments.values() if float(entry.get("adjustment") or 0.0) < 0.0
+            ),
+            "selected_adjustments": selected_adjustments,
+        }
+
+    @staticmethod
+    def _recall_pipeline_summary(
+        snapshot: RecallPipelineSnapshot,
+        *,
+        retrieved_count: int,
+        candidate_count: int,
+        selected_count: int,
+        blocked_counts: Counter[str],
+    ) -> dict[str, object]:
+        return {
+            "schema_version": _RECALL_PIPELINE_SCHEMA,
+            "phase_names": list(_RECALL_PIPELINE_PHASES),
+            "phases": [
+                {
+                    "name": "prepare",
+                    "recall_profile": snapshot.recall_profile,
+                    "recall_profile_source": snapshot.recall_profile_source,
+                    "recall_intent": snapshot.recall_intent_name,
+                    "query_scope_count": snapshot.query_scope_count,
+                    "raw_hybrid": snapshot.raw_hybrid,
+                },
+                {
+                    "name": "retrieve",
+                    "search_limit": snapshot.search_limit,
+                    "retrieved_count": int(retrieved_count),
+                    "report_query": snapshot.report_query,
+                    "operational_recall_allowed": snapshot.operational_recall_allowed,
+                },
+                {
+                    "name": "graph_expand",
+                    "graph_depth": snapshot.graph_depth,
+                    "candidate_count": int(candidate_count),
+                },
+                {
+                    "name": "score_filter",
+                    "blocked_counts": dict(sorted(blocked_counts.items())),
+                },
+                {
+                    "name": "package",
+                    "selected_count": int(selected_count),
+                },
+            ],
+        }
 
     def _recall_filters_from_task_context(self, task_context: dict) -> dict:
         filters = {
@@ -865,13 +1177,25 @@ class MemoryAPI:
             return "preference"
         return normalized or "fact"
 
-    def _is_preference_query(self, query: str, task_context: dict) -> bool:
+    def _is_preference_query(
+        self,
+        query: str,
+        task_context: dict,
+        *,
+        recall_intent: RecallIntent | None = None,
+    ) -> bool:
         haystack = f"{query} " + " ".join(str(task_context.get(key) or "") for key in ("intent", "goal", "task_type"))
         lowered = haystack.lower()
-        return any(
-            marker in haystack
-            for marker in ("沟通风格", "偏好", "喜欢", "讨厌", "废话", "简洁", "极简")
-        ) or any(marker in lowered for marker in ("preference", "reply style", "communication style"))
+        custom_markers = self._string_list(task_context.get("preference_query_markers"))
+        markers = tuple(dict.fromkeys([*_DEFAULT_PREFERENCE_QUERY_MARKERS, *custom_markers]))
+        marker_match = any(marker in lowered or marker in haystack for marker in markers)
+        if marker_match:
+            return True
+        if recall_intent is None or recall_intent.name not in {"operator_preference", "living_posture"}:
+            return False
+        intent_terms = " ".join(str(term or "") for term in recall_intent.query_terms).lower()
+        intent_marker_match = any(marker in intent_terms for marker in ("preference", "reply style", "communication style"))
+        return recall_intent.confidence >= 0.65 and intent_marker_match
 
     def _is_preference_recall_candidate(self, item: RecordEnvelope, query: str) -> bool:
         if item.kind != "memory":
@@ -1477,18 +1801,42 @@ class MemoryAPI:
             return False
         return True
 
-    def _scoring_for_items(self, items: list[RecordEnvelope], search_report: dict) -> list[dict]:
+    def _scoring_for_items(
+        self,
+        items: list[RecordEnvelope],
+        search_report: dict,
+        *,
+        memory_usage_adjustments: dict[str, dict[str, object]] | None = None,
+    ) -> list[dict]:
         scored_by_id = {
             str(entry.get("record_id")): dict(entry)
             for entry in (search_report.get("scored_items") or [])
             if isinstance(entry, dict)
         }
+        memory_usage_adjustments = memory_usage_adjustments or {}
         scoring: list[dict] = []
         for item in items:
             entry = dict(scored_by_id.get(item.record_id) or {})
             quality = business_metadata(item.meta).get("quality") if isinstance(item.meta, dict) else {}
             if not isinstance(quality, dict):
                 quality = {}
+            telemetry = dict(memory_usage_adjustments.get(item.record_id) or {})
+            telemetry_adjustment = self._bounded_adjustment(telemetry.get("adjustment"))
+            base_quality_score = self._bounded_score(
+                entry.get("quality_score", quality.get("salience_score", 0.0)),
+                default=0.0,
+            )
+            adjusted_quality_score = self._bounded_score(base_quality_score + telemetry_adjustment, default=base_quality_score)
+            raw_final_score = entry.get("final_score", 0.0)
+            try:
+                base_final_score = float(raw_final_score)
+            except (TypeError, ValueError):
+                base_final_score = 0.0
+            final_score = (
+                round(base_final_score + telemetry_adjustment, 3)
+                if telemetry_adjustment
+                else raw_final_score
+            )
             scoring.append(
                 {
                     "record_id": item.record_id,
@@ -1497,10 +1845,14 @@ class MemoryAPI:
                     "lexical_score": entry.get("lexical_score", 0),
                     "semantic_score": entry.get("semantic_score", 0.0),
                     "vector_score": entry.get("vector_score", 0.0),
-                    "quality_score": entry.get("quality_score", quality.get("salience_score", 0.0)),
+                    "quality_score": adjusted_quality_score,
+                    "base_quality_score": base_quality_score,
+                    "telemetry_adjustment": telemetry_adjustment,
+                    "telemetry_used_count": int(telemetry.get("used_count") or 0),
+                    "telemetry_rejected_count": int(telemetry.get("rejected_count") or 0),
                     "quality_tier": str(quality.get("quality_tier") or "unscored"),
                     "modality_boost": entry.get("modality_boost", 0.0),
-                    "final_score": entry.get("final_score", 0.0),
+                    "final_score": final_score,
                     "scoring_version": entry.get("scoring_version", "memory_score.v1"),
                     "memory_score": entry.get(
                         "memory_score",

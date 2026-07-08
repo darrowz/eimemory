@@ -79,6 +79,29 @@ class Runtime:
     def close(self) -> None:
         self.store.close()
 
+    def record_memory_usage(
+        self,
+        *,
+        query_id: str,
+        scope: dict,
+        used_record_ids: list[str] | None = None,
+        rejected_record_ids: list[str] | None = None,
+        query: str = "",
+        source: str = "openclaw.gateway",
+        meta: dict | None = None,
+        persist: bool = True,
+    ) -> RecordEnvelope:
+        return self.memory.record_memory_usage(
+            query_id=query_id,
+            scope=scope,
+            used_record_ids=used_record_ids,
+            rejected_record_ids=rejected_record_ids,
+            query=query,
+            source=source,
+            meta=meta,
+            persist=persist,
+        )
+
     def knowledge_intake_loop(self):
         from eimemory.intake.loop import KnowledgeIntakeLoop
 

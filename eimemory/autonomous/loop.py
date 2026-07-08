@@ -70,6 +70,8 @@ from __future__ import annotations
 import multiprocessing
 import os
 import pickle
+import signal
+import subprocess
 import time
 import warnings
 from dataclasses import dataclass, field
@@ -345,6 +347,7 @@ def _time_box_worker(fn: Callable[[], Any], queue: Any) -> None:
     ``SystemExit`` in the child are reported as an error rather than
     leaving the parent waiting forever.
     """
+    _isolate_worker_process_group()
     # Test-only hook: if ``EIMEMORY_TEST_PID_FILE`` is set, write
     # this child's PID to that file so tests can verify the worker
     # was actually terminated. Errors writing the file are silently
@@ -369,6 +372,16 @@ def _time_box_worker(fn: Callable[[], Any], queue: Any) -> None:
     try:
         queue.put(("ok", result))
     except Exception:
+        pass
+
+
+def _isolate_worker_process_group() -> None:
+    """Put the worker in its own process group where the OS supports it."""
+    if os.name == "nt" or not hasattr(os, "setpgrp"):
+        return
+    try:
+        os.setpgrp()
+    except OSError:
         pass
 
 
@@ -397,6 +410,36 @@ def _looks_like_side_effect(fn: Any) -> bool:
     name = getattr(fn, "__name__", "") or ""
     name = name.lower()
     return any(hint in name for hint in _SIDE_EFFECT_NAME_HINTS)
+
+
+def _terminate_process_tree(process: multiprocessing.Process, *, force: bool) -> None:
+    """Terminate the worker and best-effort terminate descendants too."""
+    pid = process.pid
+    if not pid:
+        return
+    if os.name == "nt":
+        # On Windows, non-forced taskkill can let console subprocesses
+        # outlive their parent. Use /F on the first pass so /T still
+        # has the original parent/child tree to work with.
+        args = ["taskkill", "/F", "/T", "/PID", str(pid)]
+        try:
+            subprocess.run(args, check=False, capture_output=True, timeout=5)
+            return
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    elif hasattr(os, "killpg"):
+        sig = signal.SIGKILL if force else signal.SIGTERM
+        try:
+            os.killpg(pid, sig)
+            return
+        except ProcessLookupError:
+            return
+        except OSError:
+            pass
+    if force:
+        process.kill()
+    else:
+        process.terminate()
 
 
 def _run_with_time_box(
@@ -462,10 +505,10 @@ def _run_with_time_box(
                 UserWarning,
                 stacklevel=2,
             )
-        process.terminate()
+        _terminate_process_tree(process, force=False)
         process.join(_TERMINATE_GRACE_SECONDS)
         if process.is_alive():
-            process.kill()
+            _terminate_process_tree(process, force=True)
             process.join()
         process.close()
         raise _TimeBoxTimeout(time_box_seconds)

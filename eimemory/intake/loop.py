@@ -50,6 +50,7 @@ class _SourceMaterial:
     title: str
     summary: str
     content_excerpt: str
+    screening_text: str
     provenance: dict[str, Any]
     reason: str
 
@@ -210,6 +211,7 @@ class KnowledgeIntakeLoop:
             title=f"Quarantined source: {source.source_id or source.source_kind}",
             summary=f"Quarantined during intake: {reason}",
             content_excerpt=f"[redacted:{reason}]",
+            screening_text="",
             provenance=provenance,
             reason=material.reason,
         )
@@ -229,12 +231,13 @@ class KnowledgeIntakeLoop:
             provenance["read_mode"] = "local_file"
             provenance["file_path"] = str(local_path)
             provenance["file_format"] = local_path.suffix.lower()
-            excerpt, read_reason = self._read_local_excerpt(local_path)
+            excerpt, screening_text, read_reason = self._read_local_excerpt(local_path)
             summary = _summary_from_text(excerpt) if excerpt else self._metadata_summary(source)
             return _SourceMaterial(
                 title=base_title,
                 summary=summary,
                 content_excerpt=excerpt,
+                screening_text=screening_text,
                 provenance=provenance,
                 reason=read_reason,
             )
@@ -245,24 +248,26 @@ class KnowledgeIntakeLoop:
             title=base_title,
             summary=summary,
             content_excerpt=excerpt,
+            screening_text=excerpt,
             provenance=provenance,
             reason="metadata_dry_run",
         )
 
-    def _read_local_excerpt(self, path: Path) -> tuple[str, str]:
+    def _read_local_excerpt(self, path: Path) -> tuple[str, str, str]:
         suffix = path.suffix.lower()
         if suffix not in LOCAL_TEXT_SUFFIXES:
-            return "", "unsupported_local_file"
+            return "", "", "unsupported_local_file"
         if not path.exists() or not path.is_file():
-            return "", "local_file_missing"
+            return "", "", "local_file_missing"
         with path.open("rb") as handle:
             raw_bytes = handle.read(MAX_LOCAL_READ_BYTES)
         raw = raw_bytes.decode("utf-8", errors="replace")
+        screening_text = _clean_excerpt(raw, MAX_LOCAL_READ_BYTES)
         if suffix == ".json":
-            return _excerpt_from_json(raw, self.excerpt_chars), "local_file_read"
+            return _excerpt_from_json(raw, self.excerpt_chars), screening_text, "local_file_read"
         if suffix == ".jsonl":
-            return _excerpt_from_jsonl(raw, self.excerpt_chars), "local_file_read"
-        return _clean_excerpt(raw, self.excerpt_chars), "local_file_read"
+            return _excerpt_from_jsonl(raw, self.excerpt_chars), screening_text, "local_file_read"
+        return _clean_excerpt(raw, self.excerpt_chars), screening_text, "local_file_read"
 
     def _metadata_summary(self, source: SourceEntry) -> str:
         title = source.title or source.source_id or "untitled source"
@@ -278,7 +283,9 @@ class KnowledgeIntakeLoop:
         has_metadata = bool(source.title or source.uri or source.tags or _meaningful_source_metadata(source.metadata))
         if not has_metadata:
             return DECISION_REJECTED, "empty_source"
-        combined = " ".join([material.title, source.uri, material.summary, material.content_excerpt]).strip()
+        combined = " ".join(
+            [material.title, source.uri, material.summary, material.content_excerpt, material.screening_text]
+        ).strip()
         if _looks_like_prompt_injection(combined):
             return DECISION_QUARANTINED, "prompt_injection_detected"
         if _looks_like_secret(combined):
@@ -508,7 +515,14 @@ def _alnum_text(text: str) -> str:
 
 def _looks_like_prompt_injection(text: str) -> bool:
     lowered = str(text or "").lower()
-    return any(pattern in lowered for pattern in _INJECTION_PATTERNS)
+    normalized = re.sub(r"\s+", " ", lowered)
+    compact = re.sub(r"[^a-z0-9]+", "", lowered)
+    for pattern in _INJECTION_PATTERNS:
+        normalized_pattern = re.sub(r"\s+", " ", pattern.lower())
+        compact_pattern = re.sub(r"[^a-z0-9]+", "", pattern.lower())
+        if normalized_pattern in normalized or compact_pattern in compact:
+            return True
+    return False
 
 
 def _looks_like_secret(text: str) -> bool:
