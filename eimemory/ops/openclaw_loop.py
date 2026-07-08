@@ -487,7 +487,15 @@ def check_config_drift(*, config_path: str | Path | None = None, run_live_checks
     if run_live_checks:
         rpc_url = os.environ.get("EIMEMORY_HEALTH_URL", "http://100.105.189.120:8091/health")
         gateway_health_url = os.environ.get("OPENCLAW_HEALTH_URL", "http://100.105.189.120:18789/health")
-        for code, url in [("eimemory_health_failed", rpc_url), ("openclaw_gateway_health_failed", gateway_health_url)]:
+        loopback_gateway_health_url = os.environ.get(
+            "OPENCLAW_LOOPBACK_HEALTH_URL",
+            "http://127.0.0.1:18789/health",
+        )
+        for code, url in [
+            ("eimemory_health_failed", rpc_url),
+            ("openclaw_gateway_health_failed", gateway_health_url),
+            ("openclaw_loopback_health_failed", loopback_gateway_health_url),
+        ]:
             try:
                 payload = _http_json(url)
                 if not payload.get("ok"):
@@ -496,7 +504,18 @@ def check_config_drift(*, config_path: str | Path | None = None, run_live_checks
             except (OSError, URLError, TimeoutError, json.JSONDecodeError) as exc:
                 codes.append(code)
                 findings.append({"code": code, "url": url, "error": str(exc)})
+        _append_service_health(codes, findings, check_openclaw_loopback_proxy_user_service())
     return {"ok": not codes, "codes": codes, "findings": findings, "config_path": str(path)}
+
+
+def _append_service_health(codes: list[str], findings: list[dict[str, Any]], service: dict[str, Any]) -> None:
+    if service.get("ok"):
+        return
+    reason_codes = [part.strip() for part in str(service.get("reason") or "").split(",") if part.strip()]
+    if not reason_codes:
+        reason_codes = ["openclaw_loopback_proxy_unhealthy"]
+    codes.extend(reason_codes)
+    findings.append({"code": "openclaw_loopback_proxy_unhealthy", "reasons": reason_codes, "service": service})
 
 
 def run_smoke(*, config_path: str | Path | None = None, run_live_checks: bool = True) -> dict[str, Any]:
@@ -613,6 +632,25 @@ def check_rpc_user_systemd_owner() -> dict[str, Any]:
         "system_owner_fragment": system_owner_fragment,
         "user_owner_active": user_owner_active or "unknown",
         "user_owner_enabled": user_owner_enabled or "unknown",
+    }
+
+
+def check_openclaw_loopback_proxy_user_service() -> dict[str, Any]:
+    if os.name == "nt":
+        return {"ok": True, "skipped": True, "reason": "systemctl_unavailable_on_windows"}
+
+    active = _user_systemctl_output(["is-active", "openclaw-loopback-proxy.service"])
+    enabled = _user_systemctl_output(["is-enabled", "openclaw-loopback-proxy.service"])
+    reasons: list[str] = []
+    if active != "active":
+        reasons.append("openclaw_loopback_proxy_inactive")
+    if enabled not in {"enabled", "static"}:
+        reasons.append("openclaw_loopback_proxy_not_enabled")
+    return {
+        "ok": not reasons,
+        "reason": ",".join(reasons),
+        "active": active or "unknown",
+        "enabled": enabled or "unknown",
     }
 
 

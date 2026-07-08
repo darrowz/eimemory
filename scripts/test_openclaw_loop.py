@@ -8,6 +8,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import openclaw_loop as loop
+from eimemory.ops import openclaw_loop as loop_impl
 
 
 class OpenClawLoopTests(unittest.TestCase):
@@ -58,6 +59,50 @@ class OpenClawLoopTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertIn("gateway_token_mismatch", result["codes"])
         self.assertIn("gateway_remote_loopback", result["codes"])
+
+    def test_config_drift_requires_loopback_gateway_health(self):
+        config = self.root / "openclaw.json"
+        config.write_text(json.dumps({"gateway": {}}), encoding="utf-8")
+
+        def fake_http_json(url, timeout=3.0):
+            if "127.0.0.1:18789" in url:
+                raise TimeoutError("loopback gateway timeout")
+            return {"ok": True}
+
+        old_http_json = loop_impl._http_json
+        old_proxy_state = loop_impl.check_openclaw_loopback_proxy_user_service
+        loop_impl._http_json = fake_http_json
+        loop_impl.check_openclaw_loopback_proxy_user_service = lambda: {"ok": True}
+        try:
+            result = loop.check_config_drift(config_path=config, run_live_checks=True)
+        finally:
+            loop_impl._http_json = old_http_json
+            loop_impl.check_openclaw_loopback_proxy_user_service = old_proxy_state
+
+        self.assertFalse(result["ok"])
+        self.assertIn("openclaw_loopback_health_failed", result["codes"])
+
+    def test_config_drift_requires_loopback_proxy_user_service(self):
+        config = self.root / "openclaw.json"
+        config.write_text(json.dumps({"gateway": {}}), encoding="utf-8")
+
+        old_http_json = loop_impl._http_json
+        old_proxy_state = loop_impl.check_openclaw_loopback_proxy_user_service
+        loop_impl._http_json = lambda url, timeout=3.0: {"ok": True}
+        loop_impl.check_openclaw_loopback_proxy_user_service = lambda: {
+            "ok": False,
+            "reason": "openclaw_loopback_proxy_inactive",
+            "active": "inactive",
+            "enabled": "enabled",
+        }
+        try:
+            result = loop.check_config_drift(config_path=config, run_live_checks=True)
+        finally:
+            loop_impl._http_json = old_http_json
+            loop_impl.check_openclaw_loopback_proxy_user_service = old_proxy_state
+
+        self.assertFalse(result["ok"])
+        self.assertIn("openclaw_loopback_proxy_inactive", result["codes"])
 
     def test_smoke_creates_closed_loop_records(self):
         config = self.root / "openclaw.json"
