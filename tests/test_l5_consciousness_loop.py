@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 
 from eimemory.api.runtime import Runtime
+from eimemory.governance.l5_loop import _weaknesses
 from eimemory.cli.main import main as cli_main
 from eimemory.governance.capability_ledger import record_capability_score
+from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
 SCOPE = {"agent_id": "agent-l5", "workspace_id": "l5-loop", "user_id": "darrow"}
@@ -55,6 +57,30 @@ def test_l5_world_model_and_roadmap_include_consciousness_research_layer(tmp_pat
         assert roadmap["consciousness_research_layer"]["enabled"] is True
     finally:
         runtime.close()
+
+
+def test_l5_weaknesses_handles_string_record_content() -> None:
+    scope = ScopeRef.from_dict(SCOPE)
+    record = RecordEnvelope.create(
+        kind="incident",
+        title="String content incident",
+        summary="Fallback lesson from summary.",
+        scope=scope,
+        content={"text": "original"},
+    )
+    record.content = "raw unstructured incident content"
+
+    class Store:
+        def list_records(self, **kwargs):
+            return [record]
+
+    class FakeRuntime:
+        store = Store()
+
+    weaknesses = _weaknesses(FakeRuntime(), {}, scope)
+
+    assert weaknesses[0]["lesson"] == "Fallback lesson from summary."
+    assert weaknesses[0]["source_record_ids"] == [record.record_id]
 
 
 def test_l5_cycle_runs_autonomous_learning_and_assesses_full_closed_loop(tmp_path, monkeypatch) -> None:

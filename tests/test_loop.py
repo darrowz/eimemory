@@ -24,6 +24,7 @@ Mirrors ``eimemory/autonomous/loop.py``. RED-GREEN TDD per
 from __future__ import annotations
 
 import json
+import math
 import time
 from pathlib import Path
 
@@ -68,6 +69,10 @@ def _fn_returns_0_402() -> float:
 
 def _fn_returns_0_30() -> float:
     return 0.30
+
+
+def _fn_returns_0_00() -> float:
+    return 0.0
 
 
 def _fn_returns_0_41() -> float:
@@ -190,6 +195,42 @@ def test_discarded_on_regression(tmp_path: Path):
     )
     assert result.outcome == "discarded"
     assert result.improvement_pct < 0
+
+
+def test_kept_when_baseline_zero_and_candidate_positive(tmp_path: Path):
+    """Learning from 0% to a positive score is real progress, not failure."""
+    ini = _write_learning_profile(tmp_path)
+    audit = _new_audit_path(tmp_path)
+    result = run_single_experiment(
+        profile_ini=ini,
+        audit_path=audit,
+        experiment_id="exp-zero-baseline-positive",
+        hypothesis={"kind": "new_skill", "text": "0-to-1"},
+        experiment_fn=_fn_returns_0_50,
+        baseline_value=0.0,
+        keep_threshold=0.01,
+        time_box_seconds=5.0,
+    )
+    assert result.outcome == "kept"
+    assert math.isinf(result.improvement_pct or 0.0)
+    assert (result.improvement_pct or 0.0) > 0
+
+
+def test_discarded_when_baseline_zero_and_candidate_zero(tmp_path: Path):
+    ini = _write_learning_profile(tmp_path)
+    audit = _new_audit_path(tmp_path)
+    result = run_single_experiment(
+        profile_ini=ini,
+        audit_path=audit,
+        experiment_id="exp-zero-baseline-zero",
+        hypothesis={"kind": "new_skill", "text": "still-zero"},
+        experiment_fn=_fn_returns_0_00,
+        baseline_value=0.0,
+        keep_threshold=0.01,
+        time_box_seconds=5.0,
+    )
+    assert result.outcome == "discarded"
+    assert result.improvement_pct == pytest.approx(0.0)
 
 
 # ---------- time box ----------

@@ -452,7 +452,7 @@ class MemoryAPI:
         if related_ids and profile_config["graph_depth"] > 0:
             items = self._expand_graph_items(
                 base_items=base_items,
-                scope=scope_ref,
+                scopes=query_scope_refs,
                 graph_depth=profile_config["graph_depth"],
             )
             items, graph_suppressed_counts = self._filter_default_suppressed_items(
@@ -466,7 +466,7 @@ class MemoryAPI:
         if base_items and profile_config["graph_depth"] > 0:
             edge_items, graph_edge_refs = self._expand_memory_edge_items(
                 base_items=base_items,
-                scope=scope_ref,
+                scopes=query_scope_refs,
                 edge_types=list(graph_route.get("edge_types") or []),
                 limit=max(limit * 2, limit),
             )
@@ -1571,9 +1571,10 @@ class MemoryAPI:
         self,
         *,
         base_items: list[RecordEnvelope],
-        scope: ScopeRef,
+        scopes: list[ScopeRef],
         graph_depth: int,
     ) -> list[RecordEnvelope]:
+        query_scopes = scopes or []
         existing_ids: set[str] = set()
         expanded_items: list[RecordEnvelope] = []
         frontier = list(base_items)
@@ -1589,14 +1590,14 @@ class MemoryAPI:
                         related_ids.append(link.target_id)
             if not related_ids:
                 break
-            related_records = self.store.get_many_by_ids(related_ids, scope=scope)
+            related_records = self._get_many_by_ids_across_scopes(related_ids, query_scopes)
             next_frontier: list[RecordEnvelope] = []
             for record in related_records:
                 if record.record_id in existing_ids:
                     continue
                 if not self._is_returnable_memory_record(record):
                     continue
-                if not self._record_matches_scope(record, scope):
+                if not self._record_matches_any_scope(record, query_scopes):
                     continue
                 expanded_items.append(record)
                 existing_ids.add(record.record_id)
@@ -1613,30 +1614,40 @@ class MemoryAPI:
         self,
         *,
         base_items: list[RecordEnvelope],
-        scope: ScopeRef,
+        scopes: list[ScopeRef],
         edge_types: list[str],
         limit: int,
     ) -> tuple[list[RecordEnvelope], list]:
         base_ids = [item.record_id for item in base_items]
         if not base_ids:
             return [], []
-        edges = self.store.list_memory_edges(
-            scope=scope,
-            edge_types=edge_types,
-            record_ids=base_ids,
-            limit=max(1, int(limit)) * 4,
-        )
+        query_scopes = scopes or []
+        edges = []
+        seen_edge_ids: set[str] = set()
+        for scope in query_scopes:
+            for edge in self.store.list_memory_edges(
+                scope=scope,
+                edge_types=edge_types,
+                record_ids=base_ids,
+                limit=max(1, int(limit)) * 4,
+            ):
+                edge_id = str(getattr(edge, "edge_id", "") or "")
+                if edge_id and edge_id in seen_edge_ids:
+                    continue
+                if edge_id:
+                    seen_edge_ids.add(edge_id)
+                edges.append(edge)
         related_ids: list[str] = []
         for edge in edges:
             if edge.from_id in base_ids and edge.to_id not in base_ids:
                 related_ids.append(edge.to_id)
             if edge.to_id in base_ids and edge.from_id not in base_ids:
                 related_ids.append(edge.from_id)
-        related = self.store.get_many_by_ids(list(dict.fromkeys(related_ids)), scope=scope)
+        related = self._get_many_by_ids_across_scopes(list(dict.fromkeys(related_ids)), query_scopes)
         expanded = [
             record
             for record in related
-            if self._is_returnable_memory_record(record) and self._record_matches_scope(record, scope)
+            if self._is_returnable_memory_record(record) and self._record_matches_any_scope(record, query_scopes)
         ]
         return expanded[: max(0, int(limit))], edges
 
@@ -1800,6 +1811,26 @@ class MemoryAPI:
         if not scope.user_id and record.scope.user_id:
             return False
         return True
+
+    def _record_matches_any_scope(self, record: RecordEnvelope, scopes: list[ScopeRef]) -> bool:
+        if not scopes:
+            return True
+        return any(self._record_matches_scope(record, scope) for scope in scopes)
+
+    def _get_many_by_ids_across_scopes(
+        self,
+        record_ids: list[str],
+        scopes: list[ScopeRef],
+    ) -> list[RecordEnvelope]:
+        resolved: list[RecordEnvelope] = []
+        seen: set[str] = set()
+        for scope in scopes or [None]:
+            for record in self.store.get_many_by_ids(record_ids, scope=scope):
+                if record.record_id in seen:
+                    continue
+                seen.add(record.record_id)
+                resolved.append(record)
+        return resolved
 
     def _scoring_for_items(
         self,

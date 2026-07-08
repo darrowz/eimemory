@@ -70,6 +70,7 @@ from __future__ import annotations
 import multiprocessing
 import os
 import pickle
+import queue as queue_module
 import signal
 import subprocess
 import time
@@ -300,10 +301,12 @@ def run_single_experiment(
 
     # ---- 4. keep / discard ----
     if baseline_value <= 0:
-        # Fail-closed: with a non-positive baseline, the relative
-        # improvement is undefined. Discard to avoid a divide-by-zero
-        # / "negative means infinite improvement" trap.
-        improvement = float("-inf")
+        if candidate > baseline_value:
+            improvement = float("inf")
+        elif candidate == baseline_value:
+            improvement = 0.0
+        else:
+            improvement = float("-inf")
     else:
         improvement = (candidate - baseline_value) / baseline_value
     outcome = "kept" if improvement >= keep_threshold else "discarded"
@@ -491,8 +494,30 @@ def _run_with_time_box(
             "(module-level function, no shared state with the parent process)"
         ) from exc
 
-    process.join(time_box_seconds)
-    if process.is_alive():
+    deadline = time.monotonic() + max(0.0, float(time_box_seconds))
+    message: tuple[Any, ...] | None = None
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            message = tuple(queue.get(timeout=min(0.05, remaining)))
+            break
+        except queue_module.Empty:
+            if not process.is_alive():
+                try:
+                    message = tuple(queue.get_nowait())
+                except Exception:
+                    message = None
+                break
+
+    if message is None and not process.is_alive():
+        try:
+            message = tuple(queue.get_nowait())
+        except Exception:
+            message = None
+
+    if message is None and process.is_alive():
         # Timeout: terminate the worker so it can no longer mutate
         # state. SIGTERM first (graceful), then SIGKILL after a short
         # grace window if the process is still alive (busy-wait or
@@ -513,14 +538,18 @@ def _run_with_time_box(
         process.close()
         raise _TimeBoxTimeout(time_box_seconds)
 
-    # Worker exited within the time box. Drain the result queue.
-    process.close()
-    try:
-        status, *payload = queue.get_nowait()
-    except Exception as exc:
+    if message is None:
+        process.close()
         raise RuntimeError(
-            f"time-boxed function exited without reporting a result: {exc!r}"
-        ) from exc
+            "time-boxed function exited without reporting a result"
+        )
+
+    process.join(_TERMINATE_GRACE_SECONDS)
+    if process.is_alive():
+        _terminate_process_tree(process, force=True)
+        process.join()
+    process.close()
+    status, *payload = message
 
     if status == "ok":
         return payload[0]

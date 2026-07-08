@@ -423,7 +423,8 @@ def _weaknesses(runtime: Any, self_model: dict[str, Any], scope: ScopeRef) -> li
     records = runtime.store.list_records(kinds=["reflection", "incident"], scope=scope, limit=50)
     fallback = []
     for record in records:
-        lesson = str(record.meta.get("fix") or record.content.get("fix") or record.summary or "").strip()
+        content = record.content if isinstance(record.content, dict) else {}
+        lesson = str(record.meta.get("fix") or content.get("fix") or record.summary or "").strip()
         if not lesson:
             continue
         fallback.append(

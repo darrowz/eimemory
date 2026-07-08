@@ -948,6 +948,44 @@ def test_runtime_recall_expands_graph_linked_memories(tmp_path) -> None:
     assert bundle.explanation["graph_expanded"] >= 1
 
 
+def test_runtime_recall_expands_graph_linked_memories_from_alias_scope(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    alias_scope = ScopeRef(agent_id="eibrain", workspace_id="robot", user_id="darrow")
+    supporting = RecordEnvelope.create(
+        kind="memory",
+        title="Alias linked catalog entry",
+        summary="Ceramic glaze catalog entry.",
+        scope=alias_scope,
+    )
+    primary = RecordEnvelope.create(
+        kind="memory",
+        title="Alias operator reply preference",
+        summary="Respond briefly to the operator from the shared robot scope",
+        scope=alias_scope,
+        links=[
+            LinkRef(
+                relation="supports",
+                target_kind="memory",
+                target_id=supporting.record_id,
+            )
+        ],
+    )
+    runtime.store.append(supporting)
+    runtime.store.append(primary)
+
+    bundle = runtime.memory.recall(
+        query="brief operator shared robot reply",
+        scope={"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"},
+        task_context={"task_type": "chat.reply"},
+        limit=5,
+    )
+
+    titles = [item.title for item in bundle.items]
+    assert "Alias operator reply preference" in titles
+    assert "Alias linked catalog entry" in titles
+    assert bundle.explanation["graph_expanded"] >= 1
+
+
 def test_runtime_recall_dedupes_recall_gaps_for_same_query(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     runtime.evolution.store_rule(

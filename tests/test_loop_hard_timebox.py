@@ -85,6 +85,10 @@ def _raises_value_error() -> float:
     raise ValueError("synthetic worker failure")
 
 
+def _raises_large_value_error() -> float:
+    raise ValueError("x" * 2_000_000)
+
+
 def _writes_two_markers_then_slow_return() -> float:
     """Module-level worker that uses the env-var shared tmp dir.
 
@@ -383,6 +387,16 @@ def test_timebox_warns_on_side_effect_terminated_worker(tmp_path: Path) -> None:
     text = str(user_warnings[0].message)
     assert "_write_results_to_disk" in text
     assert "terminated" in text.lower() or "time box" in text.lower()
+
+
+def test_timebox_drains_large_worker_errors_without_timeout() -> None:
+    start = time.monotonic()
+    with pytest.raises(RuntimeError) as excinfo:
+        _run_with_time_box(_raises_large_value_error, 5.0)
+
+    elapsed = time.monotonic() - start
+    assert elapsed < 5.0
+    assert "ValueError" in str(excinfo.value)
 
 
 def test_timebox_kills_worker_process_tree(tmp_path: Path, monkeypatch) -> None:
