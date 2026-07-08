@@ -318,6 +318,40 @@ def test_openclaw_agent_end_records_success_outcome_trace(tmp_path, monkeypatch)
     assert payload["operator_gap"] == {"missing": "none"}
 
 
+def test_openclaw_agent_end_rate_limit_cooldown_success_is_bad_trace(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    hooks = OpenClawMemoryHooks(runtime)
+    traces: list[dict] = []
+
+    def fake_record_outcome_trace(payload: dict, *, scope: dict) -> dict:
+        traces.append(payload)
+        return {"id": "trace-rate-limit"}
+
+    monkeypatch.setattr(runtime, "record_outcome_trace", fake_record_outcome_trace, raising=False)
+
+    result = hooks.on_agent_end(
+        {
+            "session_id": "sess-rate-limit",
+            "agent_id": "main",
+            "workspace_id": "repo-x",
+            "user_id": "darrow",
+            "query": "summarize current state",
+            "task_context": {"task_type": "chat.reply", "bridge_status": "cooldown"},
+            "outcome": {
+                "success": True,
+                "verified": True,
+                "notes": "OpenAI rate limit cooldown active; fallback response used.",
+            },
+        }
+    )
+
+    assert result["outcome"]["outcome"] == "bad"
+    assert result["outcome"]["failure_class"] == "rate_limit_cooldown"
+    assert result["outcome"]["source_trust"] == "system_diagnostic"
+    assert traces[0]["outcome"] == "bad"
+    assert traces[0]["failure_class"] == "rate_limit_cooldown"
+
+
 def test_openclaw_agent_end_persists_outcome_trace_through_runtime(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     hooks = OpenClawMemoryHooks(runtime)

@@ -1775,12 +1775,21 @@ class OpenClawMemoryHooks:
         end_kind: str,
         policy_attribution: dict,
     ) -> dict:
+        terminal_failure = self._classify_terminal_failure(event=event, outcome=outcome)
         success = self._bool_or_none(outcome.get("success"))
         if success is None:
             success = self._bool_or_none(event.get("success"))
         if correction:
             outcome_name = "bad"
             reason = "user_correction_detected"
+        elif terminal_failure:
+            outcome_name = "bad"
+            reason = self._first_text(
+                outcome.get("notes"),
+                outcome.get("reason"),
+                event.get("error"),
+                terminal_failure["failure_class"],
+            )
         elif success is False:
             outcome_name = "bad"
             reason = self._first_text(outcome.get("notes"), outcome.get("reason"), event.get("error"), "execution failed")
@@ -1802,6 +1811,7 @@ class OpenClawMemoryHooks:
             "correction_from_user": correction,
             "policy_attribution": self._normalize_policy_attribution(policy_attribution),
             "policy_update": policy_update,
+            "failure_class": terminal_failure["failure_class"] if terminal_failure else "",
             "source_trust": self._classify_source_trust(
                 event=event,
                 outcome=outcome,
@@ -1865,6 +1875,7 @@ class OpenClawMemoryHooks:
         tools: list[str],
         end_kind: str,
     ) -> dict:
+        terminal_failure = self._classify_terminal_failure(event=event, outcome=outcome)
         query = self._clean_prompt_query(str(event.get("query") or event.get("raw_query") or "").strip())
         trace_context = self._trace_context_from_event(event, task_context=task_context, query=query)
         input_summary = self._first_text(
@@ -1895,7 +1906,12 @@ class OpenClawMemoryHooks:
             "input_summary": input_summary,
             "selected_tools": self._dedupe_strings([*tools, *self._terminal_tools(event, task_context=task_context)]),
             "actions": self._dedupe_strings([*action_path, *self._terminal_action_path(event, task_context=task_context)]),
-            "outcome": self._outcome_trace_result(event=event, outcome=outcome, correction=correction),
+            "outcome": self._outcome_trace_result(
+                event=event,
+                outcome=outcome,
+                correction=correction,
+                terminal_failure=terminal_failure,
+            ),
             "verifier": self._first_text(
                 event.get("verifier"),
                 outcome.get("verifier"),
@@ -1909,6 +1925,7 @@ class OpenClawMemoryHooks:
             )
             or "",
             "policy_attribution": self._normalize_policy_attribution(policy_attribution),
+            "failure_class": terminal_failure["failure_class"] if terminal_failure else "",
         }
         for key in ("world_state", "visual_evidence", "operator_gap"):
             value = self._first_present(event.get(key), outcome.get(key), task_context.get(key), None)
@@ -1916,11 +1933,18 @@ class OpenClawMemoryHooks:
                 payload[key] = value
         return payload
 
-    def _outcome_trace_result(self, *, event: dict, outcome: dict, correction: str) -> str:
+    def _outcome_trace_result(
+        self,
+        *,
+        event: dict,
+        outcome: dict,
+        correction: str,
+        terminal_failure: dict[str, str] | None = None,
+    ) -> str:
         success = self._bool_or_none(outcome.get("success"))
         if success is None:
             success = self._bool_or_none(event.get("success"))
-        if correction or success is False:
+        if correction or terminal_failure or success is False:
             return "bad"
         if success is True:
             return "success"
@@ -2048,6 +2072,8 @@ class OpenClawMemoryHooks:
         )
         if explicit:
             return explicit
+        if self._classify_terminal_failure(event=event, outcome=outcome):
+            return "system_diagnostic"
         if correction:
             return "user_explicit"
         if self._has_system_verification(
@@ -2057,6 +2083,52 @@ class OpenClawMemoryHooks:
         ):
             return "system_verified"
         return "agent_inferred"
+
+    def _classify_terminal_failure(self, *, event: dict, outcome: dict) -> dict[str, str] | None:
+        task_context = dict(event.get("task_context") or event.get("taskContext") or {})
+        bridge_status = self._first_text(
+            task_context.get("bridge_status"),
+            task_context.get("bridgeStatus"),
+            event.get("bridge_status"),
+            event.get("bridgeStatus"),
+            outcome.get("bridge_status"),
+            outcome.get("bridgeStatus"),
+        ).lower()
+        diagnostic_text = " ".join(
+            text.lower()
+            for text in (
+                self._first_text(outcome.get("notes")),
+                self._first_text(outcome.get("reason")),
+                self._first_text(event.get("error")),
+                self._first_text(task_context.get("bridge_status")),
+                self._first_text(task_context.get("bridgeStatus")),
+                self._first_text(event.get("bridge_status")),
+                self._first_text(event.get("bridgeStatus")),
+            )
+            if text
+        )
+        if ("rate limit" in diagnostic_text or bridge_status in {"cooldown", "rate_limit", "rate_limited"}) and (
+            "cooldown" in diagnostic_text or bridge_status == "cooldown"
+        ):
+            return {"failure_class": "rate_limit_cooldown"}
+        if "timeout" in diagnostic_text or "timed out" in diagnostic_text or bridge_status == "timeout":
+            return {"failure_class": "timeout"}
+        if (
+            "context overflow" in diagnostic_text
+            or "context length" in diagnostic_text
+            or "maximum context" in diagnostic_text
+            or "too many tokens" in diagnostic_text
+        ):
+            return {"failure_class": "context_overflow"}
+        if "bridge" in diagnostic_text and any(
+            marker in diagnostic_text for marker in ("failed", "failure", "error", "offline", "unavailable")
+        ):
+            return {"failure_class": "bridge_failure"}
+        if "model" in diagnostic_text and any(
+            marker in diagnostic_text for marker in ("failed", "failure", "error", "unavailable", "overloaded")
+        ):
+            return {"failure_class": "model_failure"}
+        return None
 
     def _has_system_verification(
         self,
