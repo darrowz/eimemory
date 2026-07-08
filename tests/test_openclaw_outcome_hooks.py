@@ -401,6 +401,102 @@ def test_openclaw_agent_end_terminal_bridge_statuses_fail_closed(
     assert traces[0]["failure_class"] == failure_class
 
 
+def test_openclaw_agent_end_assistant_text_failure_fails_closed(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    hooks = OpenClawMemoryHooks(runtime)
+    traces: list[dict] = []
+
+    def fake_record_outcome_trace(payload: dict, *, scope: dict) -> dict:
+        traces.append(payload)
+        return {"id": "trace-assistant-text"}
+
+    monkeypatch.setattr(runtime, "record_outcome_trace", fake_record_outcome_trace, raising=False)
+
+    result = hooks.on_agent_end(
+        {
+            "session_id": "sess-assistant-text",
+            "agent_id": "main",
+            "workspace_id": "repo-x",
+            "user_id": "darrow",
+            "query": "summarize current state",
+            "task_context": {"task_type": "chat.reply"},
+            "assistant_messages": [
+                {"content": "OpenAI rate limit cooldown active; fallback response used."}
+            ],
+            "outcome": {"success": True, "verified": True},
+        }
+    )
+
+    assert result["outcome"]["outcome"] == "bad"
+    assert result["outcome"]["failure_class"] == "rate_limit_cooldown"
+    assert result["outcome"]["source_trust"] == "system_diagnostic"
+    assert traces[0]["outcome"] == "bad"
+
+
+def test_openclaw_agent_end_terminal_failure_closes_loop_as_failed(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("OPENCLAW_LOOP_HOME", str(tmp_path / "loop"))
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    hooks = OpenClawMemoryHooks(runtime)
+    task = loop.create_task(
+        title="OpenClaw user request",
+        objective="complete user request",
+        source="openclaw.before_prompt_build",
+        dedupe_key="openclaw:sess-loop-failure",
+        report_policy="always",
+    )
+    loop.record_heartbeat(task["task_id"], progress="started")
+
+    result = hooks.on_agent_end(
+        {
+            "session_id": "sess-loop-failure",
+            "agent_id": "main",
+            "workspace_id": "repo-x",
+            "user_id": "darrow",
+            "query": "summarize current state",
+            "task_context": {"openclaw_loop_task_id": task["task_id"], "task_type": "chat.reply"},
+            "outcome": {
+                "success": True,
+                "verified": True,
+                "notes": "Model failure: fallback response used.",
+            },
+        }
+    )
+
+    closed = loop.get_task(task["task_id"])
+    verification = loop.read_jsonl("verifications.jsonl")[-1]
+    assert result["outcome"]["outcome"] == "bad"
+    assert result["outcome"]["failure_class"] == "model_failure"
+    assert closed["status"] == "failed"
+    assert result["loop_task"]["status"] == "failed"
+    assert verification["passed"] is False
+    assert verification["checks"]["failure_class"] == "model_failure"
+
+
+def test_openclaw_agent_end_terminal_failure_overrides_explicit_source_trust(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    hooks = OpenClawMemoryHooks(runtime)
+
+    result = hooks.on_agent_end(
+        {
+            "session_id": "sess-source-trust",
+            "agent_id": "main",
+            "workspace_id": "repo-x",
+            "user_id": "darrow",
+            "query": "summarize current state",
+            "task_context": {"task_type": "chat.reply", "bridge_status": "timeout"},
+            "outcome": {
+                "success": True,
+                "verified": True,
+                "source_trust": "system_verified",
+            },
+        }
+    )
+
+    assert result["outcome"]["outcome"] == "bad"
+    assert result["outcome"]["failure_class"] == "timeout"
+    assert result["outcome"]["source_trust"] == "system_diagnostic"
+
+
 def test_openclaw_agent_end_persists_outcome_trace_through_runtime(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     hooks = OpenClawMemoryHooks(runtime)

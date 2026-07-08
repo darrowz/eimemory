@@ -1240,13 +1240,22 @@ class OpenClawMemoryHooks:
                 return {"error": "missing_loop_task_id"}
             success = outcome.get("success")
             verified = outcome.get("verified")
-            passed = success is not False and verified is not False and str(result or "").lower() not in {"bad", "failed", "failure"}
+            terminal_failure = self._classify_terminal_failure(event=event, outcome=outcome, result=result)
+            passed = (
+                not terminal_failure
+                and success is not False
+                and verified is not False
+                and str(result or "").lower() not in {"bad", "failed", "failure"}
+            )
             failure_reason = "" if passed else self._first_text(
                 outcome.get("notes"),
+                outcome.get("reason"),
                 outcome.get("error"),
+                event.get("error"),
                 outcome.get("feedback"),
                 result,
                 verification,
+                terminal_failure["failure_class"] if terminal_failure else "",
             )
             openclaw_loop.record_verification(
                 task_id,
@@ -1256,6 +1265,7 @@ class OpenClawMemoryHooks:
                     "verified": verified,
                     "result": result,
                     "verification": verification,
+                    "failure_class": terminal_failure["failure_class"] if terminal_failure else "",
                 },
                 passed=passed,
                 failure_reason=failure_reason,
@@ -1775,7 +1785,7 @@ class OpenClawMemoryHooks:
         end_kind: str,
         policy_attribution: dict,
     ) -> dict:
-        terminal_failure = self._classify_terminal_failure(event=event, outcome=outcome)
+        terminal_failure = self._classify_terminal_failure(event=event, outcome=outcome, result=result)
         success = self._bool_or_none(outcome.get("success"))
         if success is None:
             success = self._bool_or_none(event.get("success"))
@@ -1817,6 +1827,7 @@ class OpenClawMemoryHooks:
                 outcome=outcome,
                 correction=correction,
                 verification=verification,
+                terminal_failure=terminal_failure,
             ),
             "verification": verification,
             "result": result,
@@ -1875,7 +1886,7 @@ class OpenClawMemoryHooks:
         tools: list[str],
         end_kind: str,
     ) -> dict:
-        terminal_failure = self._classify_terminal_failure(event=event, outcome=outcome)
+        terminal_failure = self._classify_terminal_failure(event=event, outcome=outcome, result=result)
         query = self._clean_prompt_query(str(event.get("query") or event.get("raw_query") or "").strip())
         trace_context = self._trace_context_from_event(event, task_context=task_context, query=query)
         input_summary = self._first_text(
@@ -2066,14 +2077,15 @@ class OpenClawMemoryHooks:
         outcome: dict,
         correction: str,
         verification: str,
+        terminal_failure: dict[str, str] | None = None,
     ) -> str:
+        if terminal_failure or self._classify_terminal_failure(event=event, outcome=outcome):
+            return "system_diagnostic"
         explicit = str(
             str(outcome.get("source_trust") or outcome.get("trust") or event.get("source_trust") or "").strip()
         )
         if explicit:
             return explicit
-        if self._classify_terminal_failure(event=event, outcome=outcome):
-            return "system_diagnostic"
         if correction:
             return "user_explicit"
         if self._has_system_verification(
@@ -2084,7 +2096,7 @@ class OpenClawMemoryHooks:
             return "system_verified"
         return "agent_inferred"
 
-    def _classify_terminal_failure(self, *, event: dict, outcome: dict) -> dict[str, str] | None:
+    def _classify_terminal_failure(self, *, event: dict, outcome: dict, result: str = "") -> dict[str, str] | None:
         task_context = dict(event.get("task_context") or event.get("taskContext") or {})
         bridge_status = self._first_text(
             task_context.get("bridge_status"),
@@ -2101,6 +2113,7 @@ class OpenClawMemoryHooks:
                 self._first_text(outcome.get("notes")),
                 self._first_text(outcome.get("reason")),
                 self._first_text(event.get("error")),
+                self._first_text(result),
                 self._first_text(task_context.get("bridge_status")),
                 self._first_text(task_context.get("bridgeStatus")),
                 self._first_text(event.get("bridge_status")),
