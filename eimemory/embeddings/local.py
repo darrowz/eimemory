@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from functools import lru_cache
 import math
 import re
 
@@ -10,10 +11,15 @@ VECTOR_SIZE = 128
 
 
 def embed_text(text: str, *, size: int = VECTOR_SIZE) -> list[float]:
+    return list(_embed_text_cached(str(text or ""), int(size or VECTOR_SIZE)))
+
+
+@lru_cache(maxsize=4096)
+def _embed_text_cached(text: str, size: int = VECTOR_SIZE) -> tuple[float, ...]:
     vector = [0.0] * size
     tokens = _tokens(text)
     if not tokens:
-        return vector
+        return tuple(vector)
     for token in tokens:
         digest = hashlib.sha1(token.encode("utf-8")).digest()
         bucket = int.from_bytes(digest[:2], "big") % size
@@ -22,8 +28,8 @@ def embed_text(text: str, *, size: int = VECTOR_SIZE) -> list[float]:
         vector[bucket] += sign * weight
     norm = math.sqrt(sum(value * value for value in vector))
     if norm == 0:
-        return vector
-    return [value / norm for value in vector]
+        return tuple(vector)
+    return tuple(value / norm for value in vector)
 
 
 def cosine_similarity(left: list[float], right: list[float]) -> float:
