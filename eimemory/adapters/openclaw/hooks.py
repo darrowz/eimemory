@@ -2094,6 +2094,7 @@ class OpenClawMemoryHooks:
             outcome.get("bridge_status"),
             outcome.get("bridgeStatus"),
         ).lower()
+        bridge_status_token = bridge_status.replace("-", "_").replace(" ", "_")
         diagnostic_text = " ".join(
             text.lower()
             for text in (
@@ -2107,11 +2108,20 @@ class OpenClawMemoryHooks:
             )
             if text
         )
-        if ("rate limit" in diagnostic_text or bridge_status in {"cooldown", "rate_limit", "rate_limited"}) and (
-            "cooldown" in diagnostic_text or bridge_status == "cooldown"
-        ):
+        status_failures = {
+            "cooldown": "rate_limit_cooldown",
+            "rate_limit": "rate_limit_cooldown",
+            "rate_limited": "rate_limit_cooldown",
+            "timeout": "timeout",
+            "context_overflow": "context_overflow",
+            "bridge_failure": "bridge_failure",
+            "model_failure": "model_failure",
+        }
+        if bridge_status_token in status_failures:
+            return {"failure_class": status_failures[bridge_status_token]}
+        if "rate limit" in diagnostic_text and "cooldown" in diagnostic_text:
             return {"failure_class": "rate_limit_cooldown"}
-        if "timeout" in diagnostic_text or "timed out" in diagnostic_text or bridge_status == "timeout":
+        if "timeout" in diagnostic_text or "timed out" in diagnostic_text:
             return {"failure_class": "timeout"}
         if (
             "context overflow" in diagnostic_text

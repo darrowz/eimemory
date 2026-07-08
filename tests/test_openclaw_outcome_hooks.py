@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from eimemory.adapters.openclaw.hooks import OpenClawMemoryHooks
 from eimemory.api.runtime import Runtime
 from eimemory.models.records import RecallBundle, RecordEnvelope, ScopeRef
@@ -350,6 +352,53 @@ def test_openclaw_agent_end_rate_limit_cooldown_success_is_bad_trace(tmp_path, m
     assert result["outcome"]["source_trust"] == "system_diagnostic"
     assert traces[0]["outcome"] == "bad"
     assert traces[0]["failure_class"] == "rate_limit_cooldown"
+
+
+@pytest.mark.parametrize(
+    ("bridge_status", "failure_class"),
+    [
+        ("rate_limit", "rate_limit_cooldown"),
+        ("rate_limited", "rate_limit_cooldown"),
+        ("timeout", "timeout"),
+        ("context_overflow", "context_overflow"),
+        ("bridge_failure", "bridge_failure"),
+        ("model_failure", "model_failure"),
+    ],
+)
+def test_openclaw_agent_end_terminal_bridge_statuses_fail_closed(
+    tmp_path, monkeypatch, bridge_status: str, failure_class: str
+) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    hooks = OpenClawMemoryHooks(runtime)
+    traces: list[dict] = []
+
+    def fake_record_outcome_trace(payload: dict, *, scope: dict) -> dict:
+        traces.append(payload)
+        return {"id": f"trace-{bridge_status}"}
+
+    monkeypatch.setattr(runtime, "record_outcome_trace", fake_record_outcome_trace, raising=False)
+
+    result = hooks.on_agent_end(
+        {
+            "session_id": f"sess-{bridge_status}",
+            "agent_id": "main",
+            "workspace_id": "repo-x",
+            "user_id": "darrow",
+            "query": "summarize current state",
+            "task_context": {"task_type": "chat.reply", "bridge_status": bridge_status},
+            "outcome": {
+                "success": True,
+                "verified": True,
+                "notes": "Fallback response used.",
+            },
+        }
+    )
+
+    assert result["outcome"]["outcome"] == "bad"
+    assert result["outcome"]["failure_class"] == failure_class
+    assert result["outcome"]["source_trust"] == "system_diagnostic"
+    assert traces[0]["outcome"] == "bad"
+    assert traces[0]["failure_class"] == failure_class
 
 
 def test_openclaw_agent_end_persists_outcome_trace_through_runtime(tmp_path) -> None:
