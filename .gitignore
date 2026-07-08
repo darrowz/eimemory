@@ -8,10 +8,12 @@ tmp_pytest/
 tmp*/
 .tmp/
 *.tar.gz
+*.zip
 memory/
 
 # local benchmark artifacts
 .bench-artifacts/
+.pilot/
 
 # raw eval data (multi-hundred-MB JSONs, never in git)
 data/
