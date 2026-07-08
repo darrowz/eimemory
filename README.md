@@ -184,3 +184,15 @@ the default production schedule.
 The project is under active development. The current focus is production-grade
 memory governance: scoped recall, evidence-first learning, replay gates,
 capability ledgers, and conservative rollout paths for agent self-improvement.
+
+## Contributors
+
+`eimemory` is built in the open. Thanks to the contributors who help push the
+project from a private memory runtime toward a practical, reusable foundation
+for long-running agents:
+
+- [darrowz](https://github.com/darrowz)
+- [Garry Tan](https://github.com/garrytan)
+
+External contributions, review, and real-world use are part of the project's
+signal that local-first agent memory is worth building carefully.
