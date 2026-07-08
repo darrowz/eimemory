@@ -89,7 +89,9 @@ def _jsonl_cache_key(path: Path) -> str:
 @contextmanager
 def _append_lock(name: str):
     lock_path = path_for(f"{name}.lock")
-    with lock_path.open("a+b") as handle:
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.touch(exist_ok=True)
+    with lock_path.open("r+b") as handle:
         handle.seek(0)
         if not handle.read(1):
             handle.write(b"\0")

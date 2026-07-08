@@ -86,6 +86,13 @@ def default_living_memory_meta() -> dict[str, Any]:
             "trust_risk": "low",
             "ripeness": "low",
         },
+        "quality_snapshot": {
+            "quality_tier": "unscored",
+            "capture_decision": "",
+            "salience_score": 0.0,
+            "final_score": 0.0,
+            "scoring_schema_version": "",
+        },
     }
 
 
@@ -101,6 +108,18 @@ def enrich_living_memory(record_or_text: Any, *, meta: Mapping[str, Any] | None 
     _apply_affective(living, lowered)
     _apply_action_posture(living, lowered)
     _apply_perspective(living)
+    _apply_quality_snapshot(living, source_meta)
+    return living
+
+
+def refresh_living_quality_snapshot(
+    living_meta: Mapping[str, Any],
+    *,
+    meta: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return living metadata with its compact quality snapshot refreshed."""
+    living = _merge_living_defaults(living_meta)
+    _apply_quality_snapshot(living, meta or {})
     return living
 
 
@@ -149,7 +168,7 @@ def write_living_memory_meta(
 def _merge_living_defaults(existing: Mapping[str, Any]) -> dict[str, Any]:
     merged = default_living_memory_meta()
     for key, value in existing.items():
-        if key in {"temporal", "motive", "affective", "perspective", "action_posture"} and isinstance(value, Mapping):
+        if key in {"temporal", "motive", "affective", "perspective", "action_posture", "quality_snapshot"} and isinstance(value, Mapping):
             merged[key].update(dict(value))
         else:
             merged[str(key)] = deepcopy(value)
@@ -279,6 +298,37 @@ def _apply_perspective(living: dict[str, Any]) -> None:
     }
 
 
+def _apply_quality_snapshot(living: dict[str, Any], meta: Mapping[str, Any]) -> None:
+    quality = _business_mapping(meta, "quality")
+    scoring = _business_mapping(meta, "scoring")
+    score_payload = scoring.get("memory_score_v1") if isinstance(scoring.get("memory_score_v1"), Mapping) else {}
+    snapshot = dict(living.get("quality_snapshot") or {})
+    if quality:
+        snapshot.update(
+            {
+                "quality_tier": str(quality.get("quality_tier") or snapshot.get("quality_tier") or "unscored"),
+                "capture_decision": str(quality.get("capture_decision") or snapshot.get("capture_decision") or ""),
+                "salience_score": _float_value(quality.get("salience_score"), snapshot.get("salience_score", 0.0)),
+            }
+        )
+    if score_payload:
+        snapshot.update(
+            {
+                "final_score": _float_value(score_payload.get("final_score"), snapshot.get("final_score", 0.0)),
+                "scoring_schema_version": str(
+                    score_payload.get("schema_version") or snapshot.get("scoring_schema_version") or ""
+                ),
+            }
+        )
+    living["quality_snapshot"] = {
+        "quality_tier": str(snapshot.get("quality_tier") or "unscored"),
+        "capture_decision": str(snapshot.get("capture_decision") or ""),
+        "salience_score": _float_value(snapshot.get("salience_score"), 0.0),
+        "final_score": _float_value(snapshot.get("final_score"), 0.0),
+        "scoring_schema_version": str(snapshot.get("scoring_schema_version") or ""),
+    }
+
+
 def _record_text(record_or_text: Any) -> str:
     if isinstance(record_or_text, str):
         return record_or_text
@@ -334,6 +384,25 @@ def _meta_mapping(record_or_meta: Any) -> Mapping[str, Any]:
     if isinstance(meta, Mapping):
         return meta
     return {}
+
+
+def _business_mapping(meta: Mapping[str, Any], key: str) -> dict[str, Any]:
+    value = meta.get(key)
+    if isinstance(value, Mapping):
+        return dict(value)
+    business_meta = meta.get("business_meta")
+    if isinstance(business_meta, Mapping):
+        nested = business_meta.get(key)
+        if isinstance(nested, Mapping):
+            return dict(nested)
+    return {}
+
+
+def _float_value(value: Any, default: float) -> float:
+    try:
+        return round(float(value), 4)
+    except (TypeError, ValueError):
+        return round(float(default), 4)
 
 
 def _nested_get(value: Any, *attrs: str) -> Any:

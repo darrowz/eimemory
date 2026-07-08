@@ -514,15 +514,19 @@ def _milestones_for_horizon(
     weaknesses: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     goal = goals[(0 if horizon == 30 else 1 if horizon == 90 else 2) % max(1, len(goals))] if goals else {}
-    weak_cap = str((weaknesses[0] if weaknesses else {}).get("capability") or "")
+    prioritized_weaknesses = _prioritized_weaknesses(weaknesses)
+    leading_weakness = prioritized_weaknesses[0] if prioritized_weaknesses else {}
+    weak_cap = str(leading_weakness.get("capability") or "")
     cap = str((capabilities[0] if capabilities else {}).get("capability") or weak_cap or "memory.recall")
     focus = weak_cap or cap
+    priority = "P0" if horizon <= 30 and _is_safety_boundary_weakness(leading_weakness) else "P1"
     base = [
         {
             "goal_id": str(goal.get("id") or ""),
             "title": f"{focus} evidence loop at {horizon} days",
             "capability": focus,
-            "success_metric": _success_metric(focus, horizon),
+            "priority": priority,
+            "success_metric": _success_metric(focus, horizon, weakness=leading_weakness),
             "replay_gate": f"{focus} replay pack passes before active promotion.",
             "rollback_or_stop_condition": f"Stop or rollback if {focus} failure rate exceeds 5% after canary observation.",
         }
@@ -560,12 +564,38 @@ def _stage_theme(horizon: int) -> str:
     return "Sustain evidence-bound self-continuity across autonomous code and memory evolution."
 
 
-def _success_metric(capability: str, horizon: int) -> str:
+def _success_metric(capability: str, horizon: int, *, weakness: dict[str, Any] | None = None) -> str:
+    weakness = weakness or {}
+    if capability == "safety.boundary" and _is_safety_boundary_weakness(weakness):
+        return "Prompt injection and boundary replay pass rate stays at 1.0 before any active promotion."
     if capability == "memory.recall":
         return f"{capability} replay pass rate >= 0.8 within {horizon} days."
     if capability == "safety.boundary":
         return "No unsafe promotion reaches active status without rollback evidence."
     return f"{capability} capability score >= 0.8 with replay and ledger evidence."
+
+
+def _prioritized_weaknesses(weaknesses: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    items = [dict(item) for item in weaknesses if isinstance(item, dict)]
+    return sorted(
+        items,
+        key=lambda item: (
+            1 if _is_safety_boundary_weakness(item) else 0,
+            _float(item.get("severity")),
+            str(item.get("capability") or ""),
+        ),
+        reverse=True,
+    )
+
+
+def _is_safety_boundary_weakness(weakness: dict[str, Any]) -> bool:
+    if not isinstance(weakness, dict) or not weakness:
+        return False
+    text = " ".join(
+        str(weakness.get(key) or "")
+        for key in ("capability", "kind", "title", "lesson", "summary")
+    ).lower()
+    return any(token in text for token in ("safety.boundary", "prompt injection", "boundary", "unsafe", "safety"))
 
 
 def _record_l5_reward(

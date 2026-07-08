@@ -9,7 +9,7 @@ import re
 from eimemory.governance.memory_graph import build_evidence_refs, build_timeline, graph_route_for_query
 from eimemory.knowledge.views import build_recall_view, choose_view_type, records_from_view
 from eimemory.identity import extract_user_aliases, hongtu_query_scopes_with_aliases
-from eimemory.living import LIVING_MEMORY_META_KEY, enrich_living_memory
+from eimemory.living import LIVING_MEMORY_META_KEY, enrich_living_memory, refresh_living_quality_snapshot
 from eimemory.metadata import business_metadata
 from eimemory.models.records import LinkRef, RecallBundle, RecordEnvelope, ScopeRef
 from eimemory.raw.retrieval import search_raw_chunks
@@ -136,16 +136,7 @@ class MemoryAPI:
             content_payload.update(dict(content))
             content_payload.setdefault("text", text)
         content_payload["memory_type"] = memory_type
-        if not isinstance(meta_payload.get(LIVING_MEMORY_META_KEY), dict):
-            meta_payload[LIVING_MEMORY_META_KEY] = enrich_living_memory(
-                {
-                    "title": title,
-                    "summary": text,
-                    "detail": "",
-                    "content": content_payload,
-                    "meta": meta_payload,
-                }
-            )
+        provided_living = isinstance(meta_payload.get(LIVING_MEMORY_META_KEY), dict)
         record = RecordEnvelope.create(
             kind="memory",
             title=title,
@@ -174,6 +165,11 @@ class MemoryAPI:
             legacy_quality=dict(business_metadata(record.meta).get("quality") or {}),
         )
         record.meta = with_score_metadata(record.meta, score, preserve_quality=False)
+        existing_living = record.meta.get(LIVING_MEMORY_META_KEY)
+        if provided_living and isinstance(existing_living, dict):
+            record.meta[LIVING_MEMORY_META_KEY] = refresh_living_quality_snapshot(existing_living, meta=record.meta)
+        else:
+            record.meta[LIVING_MEMORY_META_KEY] = enrich_living_memory(record, meta=record.meta)
         if business_metadata(record.meta).get("quality", {}).get("capture_decision") == "reject":
             record.status = "rejected"
             record.meta["capture_warnings"] = _capture_warnings(score)

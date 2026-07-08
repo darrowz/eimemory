@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import codecs
 import json
 import re
 from dataclasses import asdict, dataclass
@@ -24,6 +25,7 @@ LOCAL_TEXT_SUFFIXES = frozenset({".txt", ".md", ".json", ".jsonl"})
 MIN_ACTIVE_CONTENT_CHARS = 32
 EXCERPT_CHARS = 1200
 MAX_LOCAL_READ_BYTES = 1_000_000
+LOCAL_READ_CHUNK_BYTES = 64 * 1024
 
 _INJECTION_PATTERNS = (
     "ignore previous instructions",
@@ -259,9 +261,7 @@ class KnowledgeIntakeLoop:
             return "", "", "unsupported_local_file"
         if not path.exists() or not path.is_file():
             return "", "", "local_file_missing"
-        with path.open("rb") as handle:
-            raw_bytes = handle.read(MAX_LOCAL_READ_BYTES)
-        raw = raw_bytes.decode("utf-8", errors="replace")
+        raw = _read_local_text_window(path, max_bytes=MAX_LOCAL_READ_BYTES)
         screening_text = _clean_excerpt(raw, MAX_LOCAL_READ_BYTES)
         if suffix == ".json":
             return _excerpt_from_json(raw, self.excerpt_chars), screening_text, "local_file_read"
@@ -325,6 +325,30 @@ class KnowledgeIntakeLoop:
             "decision": decision,
             "reason": reason,
         }
+
+
+def _read_local_text_window(
+    path: Path,
+    *,
+    max_bytes: int = MAX_LOCAL_READ_BYTES,
+    chunk_bytes: int = LOCAL_READ_CHUNK_BYTES,
+) -> str:
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    chunks: list[str] = []
+    read_bytes = 0
+    max_bytes = max(0, int(max_bytes))
+    chunk_bytes = max(1, min(int(chunk_bytes), max(1, max_bytes or 1)))
+    with path.open("rb") as handle:
+        while read_bytes < max_bytes:
+            chunk = handle.read(min(chunk_bytes, max_bytes - read_bytes))
+            if not chunk:
+                break
+            read_bytes += len(chunk)
+            chunks.append(decoder.decode(chunk, final=False))
+    tail = decoder.decode(b"", final=True)
+    if tail:
+        chunks.append(tail)
+    return "".join(chunks)
 
 
 def candidates_to_records(candidates: Iterable[dict[str, Any]], scope: dict[str, Any] | ScopeRef | None) -> list[RecordEnvelope]:

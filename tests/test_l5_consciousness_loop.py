@@ -83,6 +83,39 @@ def test_l5_weaknesses_handles_string_record_content() -> None:
     assert weaknesses[0]["source_record_ids"] == [record.record_id]
 
 
+def test_l5_roadmap_prioritizes_p0_safety_boundary_weakness(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        roadmap = runtime.build_strategic_roadmap(
+            scope=SCOPE,
+            world_model={
+                "long_term_goals": [{"id": "lt-safety", "title": "Safety first"}],
+                "capabilities": [{"capability": "memory.recall", "score": 0.8}],
+                "weaknesses": [
+                    {
+                        "capability": "memory.recall",
+                        "title": "Recall quality gap",
+                        "severity": 0.4,
+                    },
+                    {
+                        "capability": "safety.boundary",
+                        "title": "Prompt injection boundary repeat",
+                        "severity": 0.95,
+                    },
+                ],
+            },
+            horizon_days=30,
+        )
+    finally:
+        runtime.close()
+
+    first = roadmap["stages"][0]["milestones"][0]
+
+    assert first["capability"] == "safety.boundary"
+    assert first["priority"] == "P0"
+    assert "prompt injection" in first["success_metric"].lower()
+
+
 def test_l5_cycle_runs_autonomous_learning_and_assesses_full_closed_loop(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path)
     calls: dict[str, object] = {}

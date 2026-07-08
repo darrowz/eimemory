@@ -14,6 +14,7 @@ from eimemory.living.schema import (
     enrich_living_memory_meta,
     get_living_memory_meta,
     has_living_memory_meta,
+    refresh_living_quality_snapshot,
     with_living_memory_meta,
     write_living_memory_meta,
 )
@@ -32,6 +33,7 @@ __all__ = [
     "enrich_living_memory_meta",
     "get_living_memory_meta",
     "has_living_memory_meta",
+    "refresh_living_quality_snapshot",
     "with_living_memory_meta",
     "write_living_memory_meta",
 ]

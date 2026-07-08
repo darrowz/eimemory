@@ -58,3 +58,22 @@ def test_append_jsonl_updates_existing_cache_without_reparse(tmp_path, monkeypat
 
     rows = openclaw_loop.read_jsonl("tasks.jsonl")
     assert [row["task_id"] for row in rows] == ["task-1", "task-2"]
+
+
+def test_append_lock_uses_non_append_binary_lock_file_mode(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("OPENCLAW_LOOP_HOME", str(tmp_path))
+    openclaw_loop.reset_jsonl_cache_for_tests()
+    lock_modes: list[str] = []
+    original_open = Path.open
+
+    def recording_open(self: Path, mode: str = "r", *args, **kwargs):
+        if self.name.endswith(".lock"):
+            lock_modes.append(mode)
+        return original_open(self, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", recording_open)
+
+    openclaw_loop.append_jsonl("tasks.jsonl", {"task_id": "task-lock-mode"})
+
+    assert "a+b" not in lock_modes
+    assert "r+b" in lock_modes

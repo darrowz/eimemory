@@ -133,3 +133,26 @@ def test_runtime_ingest_and_observe_auto_attach_living_memory(tmp_path) -> None:
 
     assert memory.meta[LIVING_MEMORY_META_KEY]["motive"]["motive"] == "efficiency"
     assert incident.meta[LIVING_MEMORY_META_KEY]["affective"]["repair_needed"] is True
+
+
+def test_runtime_ingest_living_memory_snapshot_reflects_score_metadata(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu", "workspace_id": "living", "user_id": "darrow"}
+    try:
+        memory = runtime.memory.ingest(
+            text="Remember that deployment health checks must verify both RPC and gateway health.",
+            memory_type="operational",
+            title="Deployment health checks",
+            scope=scope,
+            force_capture=True,
+        )
+    finally:
+        runtime.close()
+
+    living = memory.meta[LIVING_MEMORY_META_KEY]
+    quality = memory.meta["quality"]
+
+    assert living["quality_snapshot"]["capture_decision"] == quality["capture_decision"]
+    assert living["quality_snapshot"]["quality_tier"] == quality["quality_tier"]
+    assert living["quality_snapshot"]["salience_score"] == quality["salience_score"]
+    assert living["quality_snapshot"]["scoring_schema_version"] == "memory_score.v1"
