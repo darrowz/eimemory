@@ -184,6 +184,14 @@ class SqliteRecordStore:
             "CREATE INDEX IF NOT EXISTS idx_records_kind_scope_updated "
             "ON records(kind, tenant_id, agent_id, workspace_id, user_id, updated_at DESC, record_id DESC)"
         )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_records_kind_scope_status_updated "
+            "ON records(kind, tenant_id, agent_id, workspace_id, user_id, status, updated_at DESC, record_id DESC)"
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_records_kind_scope_created "
+            "ON records(kind, tenant_id, agent_id, workspace_id, user_id, created_at DESC, record_id DESC)"
+        )
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_records_source_kind ON records(source, kind)")
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_records_idempotency "

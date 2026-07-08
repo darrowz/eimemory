@@ -1,6 +1,8 @@
 import json
+import re
 
 from eimemory.api.runtime import Runtime
+from eimemory.api import memory as memory_module
 from eimemory.cli.main import main as cli_main
 from eimemory.models.records import LinkRef, RecordEnvelope, ScopeRef
 
@@ -60,6 +62,18 @@ def test_runtime_create_uses_eimemory_root_env(tmp_path, monkeypatch) -> None:
 
     assert runtime.store.root == root
     runtime.close()
+
+
+def test_runtime_preference_query_uses_compiled_default_markers(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+
+    assert isinstance(memory_module._DEFAULT_PREFERENCE_QUERY_MARKER_RE, re.Pattern)
+    assert runtime.memory._is_preference_query("鸿哥 沟通风格", {}, recall_intent=None)
+    assert runtime.memory._is_preference_query(
+        "how should this route",
+        {"goal": "honor persona route", "preference_query_markers": ["persona route"]},
+        recall_intent=None,
+    )
 
 
 def test_runtime_ingest_can_force_capture_low_salience_memory(tmp_path) -> None:

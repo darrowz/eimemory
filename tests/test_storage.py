@@ -85,6 +85,14 @@ def test_runtime_store_list_records_filters_by_updated_at_with_index(tmp_path) -
     assert "idx_records_kind_scope_updated" in index_names
 
 
+def test_runtime_store_creates_hot_path_records_indexes(tmp_path) -> None:
+    store = RuntimeStore(root=tmp_path)
+    index_names = {str(row["name"]) for row in store.sqlite.conn.execute("PRAGMA index_list(records)").fetchall()}
+
+    assert "idx_records_kind_scope_status_updated" in index_names
+    assert "idx_records_kind_scope_created" in index_names
+
+
 def test_runtime_store_bulk_upserts_memory_edges_in_one_call(tmp_path) -> None:
     store = RuntimeStore(root=tmp_path)
     scope = ScopeRef(agent_id="main", workspace_id="graph")
