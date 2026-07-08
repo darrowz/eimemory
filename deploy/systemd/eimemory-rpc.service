@@ -10,6 +10,7 @@ WorkingDirectory=/opt/eimemory/current
 Environment=HOME=/home/darrow
 Environment=EIMEMORY_ROOT=/var/lib/eimemory
 Environment=EIMEMORY_CONFIG_DIR=/etc/eimemory
+EnvironmentFile=-/home/darrow/.config/eimemory/rpc.env
 KillMode=mixed
 TimeoutStopSec=10
 ExecStartPre=/opt/eimemory/current/deploy/systemd/eimemory-rpc-cleanup-port.sh 8091 serve-eibrain-rpc

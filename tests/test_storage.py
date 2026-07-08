@@ -138,6 +138,83 @@ def test_runtime_store_uses_wal_for_concurrent_learning_reads(tmp_path) -> None:
     assert synchronous <= 1
 
 
+def test_runtime_store_rewrite_preserves_old_scope_when_new_write_fails(tmp_path, monkeypatch) -> None:
+    store = RuntimeStore(root=tmp_path)
+    old_scope = ScopeRef(agent_id="main", workspace_id="rewrite", user_id="old")
+    new_scope = ScopeRef(agent_id="main", workspace_id="rewrite", user_id="new")
+    original = store.append(
+        RecordEnvelope.create(
+            kind="memory",
+            title="Rewrite transaction",
+            summary="Old scoped record should survive failed move.",
+            scope=old_scope,
+        )
+    )
+    moved_payload = original.to_dict()
+    moved_payload["scope"] = {
+        "tenant_id": new_scope.tenant_id,
+        "agent_id": new_scope.agent_id,
+        "workspace_id": new_scope.workspace_id,
+        "user_id": new_scope.user_id,
+    }
+    moved = RecordEnvelope.from_dict(moved_payload)
+
+    def _fail_upsert(record, *, commit=True):
+        raise RuntimeError("simulated upsert failure")
+
+    monkeypatch.setattr(store.sqlite, "upsert", _fail_upsert)
+
+    try:
+        store.sqlite.rewrite(moved, previous_scope=old_scope)
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("expected rewrite upsert failure")
+
+    assert store.sqlite.get_by_id(original.record_id, scope=old_scope) is not None
+    assert store.sqlite.get_by_id(original.record_id, scope=new_scope) is None
+
+
+def test_runtime_store_search_skips_corrupt_payload_rows(tmp_path) -> None:
+    store = RuntimeStore(root=tmp_path)
+    scope = ScopeRef(agent_id="main", workspace_id="corrupt")
+    good = store.append(
+        RecordEnvelope.create(
+            kind="memory",
+            title="Healthy payload shared needle",
+            summary="Healthy payload shared needle survives corrupt neighbors.",
+            scope=scope,
+            meta={"force_capture": True},
+        )
+    )
+    bad = store.append(
+        RecordEnvelope.create(
+            kind="memory",
+            title="Corrupt payload shared needle",
+            summary="Healthy payload shared needle should not crash recall.",
+            scope=scope,
+            meta={"force_capture": True},
+        )
+    )
+    storage_key = store.sqlite._storage_key(bad)
+    store.sqlite.conn.execute(
+        "UPDATE records SET payload_json = ? WHERE storage_key = ?",
+        ("{}", storage_key),
+    )
+    store.sqlite.conn.commit()
+
+    records, diagnostics = store.search_with_diagnostics(
+        query="healthy payload shared needle",
+        kinds=["memory"],
+        scope=scope,
+        limit=5,
+    )
+
+    assert all(record.record_id != bad.record_id for record in records)
+    assert store.sqlite.get_by_id(good.record_id, scope=scope).record_id == good.record_id
+    assert diagnostics["blocked_counts"]["corrupt_record"] == 1
+
+
 def test_runtime_store_rebuilds_sqlite_business_tables_from_jsonl(tmp_path) -> None:
     store = RuntimeStore(root=tmp_path)
     scope = ScopeRef(agent_id="main", workspace_id="rebuild")

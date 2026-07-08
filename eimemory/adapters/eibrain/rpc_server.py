@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import errno
+import hmac
 import json
 import os
 from pathlib import Path
@@ -18,6 +19,7 @@ from eimemory.version import __version__
 
 
 _CLIENT_DISCONNECT_ERRNOS = {errno.EPIPE, errno.ECONNRESET, errno.ECONNABORTED}
+MAX_RPC_BODY_BYTES = 1_000_000
 
 
 def _is_client_disconnect(exc: OSError) -> bool:
@@ -46,6 +48,7 @@ class _RPCHandler(BaseHTTPRequestHandler):
     runtime: Runtime
     listen_host: str
     listen_port: int
+    auth_token: str = ""
     loopback_health: dict[str, object] | None = None
 
     def do_GET(self) -> None:  # noqa: N802
@@ -64,6 +67,9 @@ class _RPCHandler(BaseHTTPRequestHandler):
             return
         if parsed.path not in {"", "/", "/daily-brief", "/diagnostics"}:
             self._send_json(404, {"ok": False, "error": "not_found"})
+            return
+        if self._auth_required() and not self._authorized():
+            self._send_json(401, {"ok": False, "error": "unauthorized"})
             return
         query = parse_qs(parsed.query)
         scope = {
@@ -90,8 +96,16 @@ class _RPCHandler(BaseHTTPRequestHandler):
         self._send_json(200, payload)
 
     def do_POST(self) -> None:  # noqa: N802
+        if self._auth_required() and not self._authorized():
+            self._send_json(401, {"ok": False, "error": "unauthorized"})
+            return
         try:
             length = int(self.headers.get("Content-Length", "0"))
+            if length < 0:
+                raise ValueError("negative content length")
+            if length > MAX_RPC_BODY_BYTES:
+                self._send_json(413, {"ok": False, "error": "request_too_large"})
+                return
             raw = self.rfile.read(length) if length else b"{}"
             request: EIMemoryRPCRequest = json.loads(raw.decode("utf-8"))
             if not isinstance(request, dict):
@@ -106,6 +120,17 @@ class _RPCHandler(BaseHTTPRequestHandler):
 
     def _send_json(self, status_code: int, payload: EIMemoryRPCResponse) -> None:
         _send_json_response(self, status_code, payload)
+
+    def _auth_required(self) -> bool:
+        return bool(str(self.auth_token or "").strip())
+
+    def _authorized(self) -> bool:
+        token = str(self.auth_token or "").strip()
+        header = str(self.headers.get("Authorization", "") or "")
+        prefix = "Bearer "
+        if not token or not header.startswith(prefix):
+            return False
+        return hmac.compare_digest(header[len(prefix) :].strip(), token)
 
     def log_message(self, format: str, *args) -> None:  # noqa: A003
         return
@@ -149,13 +174,16 @@ class EIBrainRPCServer:
         port: int,
         loopback_health_host: str = "",
         loopback_health_port: int | None = None,
+        auth_token: str | None = None,
     ) -> None:
         self.runtime = runtime
         self.host = host
         self.port = port
+        self.auth_token = str(auth_token if auth_token is not None else os.environ.get("EIMEMORY_RPC_AUTH_TOKEN", "")).strip()
         handler = type("EIMemoryRPCHandler", (_RPCHandler,), {})
         handler.bridge = EIBrainRPCBridge(runtime)
         handler.runtime = runtime
+        handler.auth_token = self.auth_token
         self._server = ThreadingHTTPServer((host, port), handler)
         self.address = self._server.server_address
         handler.listen_host = str(self.address[0])
@@ -219,10 +247,13 @@ class EIBrainRPCServer:
 
     def request(self, payload: EIMemoryRPCRequest) -> EIMemoryRPCResponse:
         url = f"http://{self.address[0]}:{self.address[1]}/"
+        headers = {"Content-Type": "application/json"}
+        if self.auth_token:
+            headers["Authorization"] = f"Bearer {self.auth_token}"
         req = urllib.request.Request(
             url,
             data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers=headers,
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=5) as response:

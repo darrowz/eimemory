@@ -74,9 +74,9 @@ ensure_env "EIMEMORY_AUTONOMOUS_LEARNING_APPLY" "Environment=EIMEMORY_AUTONOMOUS
 ensure_env "EIMEMORY_AUTONOMOUS_CODE_REPO" "Environment=EIMEMORY_AUTONOMOUS_CODE_REPO=/dev-project/eimemory"
 ensure_env "EIMEMORY_AUTONOMOUS_CODE_COMMIT" "Environment=EIMEMORY_AUTONOMOUS_CODE_COMMIT=1"
 ensure_env "EIMEMORY_AUTONOMOUS_CODE_DEPLOY" "Environment=EIMEMORY_AUTONOMOUS_CODE_DEPLOY=1"
-ensure_env "EIMEMORY_AUTONOMOUS_CODE_VERIFY_COMMAND" "Environment=\"EIMEMORY_AUTONOMOUS_CODE_VERIFY_COMMAND=/opt/eimemory/current/.venv/bin/python -m compileall -q eimemory\""
-ensure_env "EIMEMORY_AUTONOMOUS_CODE_DEPLOY_COMMAND" "Environment=\"EIMEMORY_AUTONOMOUS_CODE_DEPLOY_COMMAND=COMMIT=\\\"\\$(git rev-parse HEAD)\\\" && bash ./deploy/install_immutable_release.sh \\\"\\$COMMIT\\\" && systemctl --user restart eimemory-rpc.service\""
-ensure_env "EIMEMORY_AUTONOMOUS_CODE_HEALTH_COMMAND" "Environment=\"EIMEMORY_AUTONOMOUS_CODE_HEALTH_COMMAND=curl -fsS http://127.0.0.1:8091/health\""
+ensure_env "EIMEMORY_AUTONOMOUS_CODE_VERIFY_COMMAND" 'Environment="EIMEMORY_AUTONOMOUS_CODE_VERIFY_COMMAND=[\"/opt/eimemory/current/.venv/bin/python\",\"-m\",\"compileall\",\"-q\",\"eimemory\"]"'
+ensure_env "EIMEMORY_AUTONOMOUS_CODE_DEPLOY_COMMAND" 'Environment="EIMEMORY_AUTONOMOUS_CODE_DEPLOY_COMMAND=[\"bash\",\"-lc\",\"COMMIT=\\\"$(git rev-parse HEAD)\\\" && bash ./deploy/install_immutable_release.sh \\\"$COMMIT\\\" && systemctl --user restart eimemory-rpc.service\"]"'
+ensure_env "EIMEMORY_AUTONOMOUS_CODE_HEALTH_COMMAND" 'Environment="EIMEMORY_AUTONOMOUS_CODE_HEALTH_COMMAND=[\"curl\",\"-fsS\",\"http://127.0.0.1:8091/health\"]"'
 enable_openclaw_memory_behavior
 
 systemctl --user daemon-reload

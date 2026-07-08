@@ -1230,9 +1230,20 @@ def _run_patch_commands(commands: Any, *, cwd: Path, timeout_seconds: int, phase
     normalized = _normalize_commands(commands)
     reports: list[dict[str, Any]] = []
     for command in normalized:
-        shell = isinstance(command, str)
-        run_command = command if shell else _resolve_patch_command(command)
-        display = run_command if shell else [str(part) for part in run_command]
+        if isinstance(command, str):
+            report = {
+                "phase": phase,
+                "command": command,
+                "returncode": None,
+                "stdout": "",
+                "stderr": "shell string commands are not supported; provide argv JSON/list commands",
+                "ok": False,
+                "error_type": "unsupported_shell_command",
+            }
+            reports.append(report)
+            return {"ok": False, "reports": reports}
+        run_command = _resolve_patch_command(command)
+        display = [str(part) for part in run_command]
         try:
             completed = subprocess.run(
                 run_command,
@@ -1240,7 +1251,7 @@ def _run_patch_commands(commands: Any, *, cwd: Path, timeout_seconds: int, phase
                 text=True,
                 capture_output=True,
                 timeout=timeout_seconds,
-                shell=shell,
+                shell=False,
                 check=False,
             )
             report = {
@@ -1304,6 +1315,31 @@ def _normalize_commands(commands: Any) -> list[str | list[str]]:
     return normalized
 
 
+def _normalize_env_commands(name: str) -> list[list[str]]:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if _is_argv_command(parsed):
+        return [_coerce_argv_command(parsed)]
+    if not isinstance(parsed, list):
+        return []
+    return [_coerce_argv_command(item) for item in parsed if _is_argv_command(item)]
+
+
+def _is_argv_command(value: Any) -> bool:
+    return isinstance(value, (list, tuple)) and bool(value) and all(
+        not isinstance(part, (dict, list, tuple)) for part in value
+    )
+
+
+def _coerce_argv_command(value: Any) -> list[str]:
+    return [str(part) for part in value]
+
+
 def _commit_repo_patch(
     repo_root: Path,
     *,
@@ -1338,9 +1374,9 @@ def _deployment_commands(patch: dict[str, Any], repo_root: Path) -> list[str | l
     explicit = _normalize_commands(patch.get("deployment_commands") or patch.get("deploy_commands"))
     if explicit:
         return explicit
-    env_command = os.environ.get("EIMEMORY_AUTONOMOUS_CODE_DEPLOY_COMMAND", "").strip()
-    if env_command:
-        return [env_command]
+    env_commands = _normalize_env_commands("EIMEMORY_AUTONOMOUS_CODE_DEPLOY_COMMAND")
+    if env_commands:
+        return env_commands
     installer = repo_root / "deploy" / "install_immutable_release.sh"
     if installer.exists():
         return [[
@@ -1359,9 +1395,9 @@ def _post_deploy_health_commands(patch: dict[str, Any]) -> list[str | list[str]]
     )
     if explicit:
         return explicit
-    env_command = os.environ.get("EIMEMORY_AUTONOMOUS_CODE_HEALTH_COMMAND", "").strip()
-    if env_command:
-        return [env_command]
+    env_commands = _normalize_env_commands("EIMEMORY_AUTONOMOUS_CODE_HEALTH_COMMAND")
+    if env_commands:
+        return env_commands
     return [["bash", "-lc", "curl -fsS http://127.0.0.1:8091/health"]]
 
 
@@ -1369,9 +1405,9 @@ def _canary_commands(patch: dict[str, Any]) -> list[str | list[str]]:
     explicit = _normalize_commands(patch.get("canary_commands") or patch.get("shadow_observe_commands"))
     if explicit:
         return explicit
-    env_command = os.environ.get("EIMEMORY_AUTONOMOUS_CODE_CANARY_COMMAND", "").strip()
-    if env_command:
-        return [env_command]
+    env_commands = _normalize_env_commands("EIMEMORY_AUTONOMOUS_CODE_CANARY_COMMAND")
+    if env_commands:
+        return env_commands
     return _post_deploy_health_commands(patch)
 
 

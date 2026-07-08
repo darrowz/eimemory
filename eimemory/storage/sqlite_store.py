@@ -498,7 +498,7 @@ class SqliteRecordStore:
                 (idempotency_key, semantic_key, str(row["storage_key"])),
             )
 
-    def upsert(self, record: RecordEnvelope) -> None:
+    def upsert(self, record: RecordEnvelope, *, commit: bool = True) -> None:
         payload = record.to_dict()
         raw_index_parts = []
         if record.kind == "raw_chunk":
@@ -573,7 +573,8 @@ class SqliteRecordStore:
             ),
         )
         self._upsert_recall_index(record=record, storage_key=storage_key, content_text=content_text)
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
 
     def _upsert_recall_index(self, *, record: RecordEnvelope, storage_key: str, content_text: str) -> None:
         lane, visibility, source_class, memory_type, projection_type, quality_score = self._recall_index_traits(record)
@@ -675,12 +676,32 @@ class SqliteRecordStore:
             if self._has_fts_table():
                 self.conn.execute("DELETE FROM recall_index_fts")
         for row in rows:
-            record = RecordEnvelope.from_dict(json.loads(row["payload_json"]))
+            record = self._record_from_payload_json(row["payload_json"])
+            if record is None:
+                continue
             self._upsert_recall_index(
                 record=record,
                 storage_key=str(row["storage_key"]),
                 content_text=str(row["content_text"] or ""),
             )
+
+    def _payload_dict_from_json(self, payload_json: Any) -> dict[str, Any] | None:
+        try:
+            payload = json.loads(str(payload_json))
+        except (TypeError, json.JSONDecodeError):
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    def _record_from_payload_dict(self, payload: dict[str, Any] | None) -> RecordEnvelope | None:
+        if not isinstance(payload, dict):
+            return None
+        try:
+            return RecordEnvelope.from_dict(payload)
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    def _record_from_payload_json(self, payload_json: Any) -> RecordEnvelope | None:
+        return self._record_from_payload_dict(self._payload_dict_from_json(payload_json))
 
     def _has_fts_table(self) -> bool:
         return bool(
@@ -741,12 +762,16 @@ class SqliteRecordStore:
         blocked_counts: Counter[str] = Counter()
         for row in rows:
             haystack = str(row["content_text"] or "").lower()
-            payload = json.loads(row["payload_json"])
+            payload = self._payload_dict_from_json(row["payload_json"])
+            record = self._record_from_payload_dict(payload)
+            if record is None:
+                blocked_counts["corrupt_record"] += 1
+                continue
             lexical_signal = analyze_lexical_signal(
                 query,
                 haystack,
-                record_kind=str(payload.get("kind", "")) if isinstance(payload, dict) else "",
-                record_source=str(payload.get("source", "")) if isinstance(payload, dict) else "",
+                record_kind=str(payload.get("kind", "")),
+                record_source=str(payload.get("source", "")),
                 recall_filters=recall_filters,
             )
             lexical_count = self._lexical_count_for_recall(
@@ -758,7 +783,6 @@ class SqliteRecordStore:
             vector_score = max(0.0, cosine_similarity(query_embedding, stored_embedding))
             if vector_score >= 0.12:
                 vector_hits += 1
-            record = RecordEnvelope.from_dict(payload) if isinstance(payload, dict) else RecordEnvelope.from_dict({})
             blocked_reason = self._record_recall_filter_block_reason(record, recall_filters)
             if blocked_reason:
                 blocked_counts[blocked_reason] += 1
@@ -1285,7 +1309,9 @@ class SqliteRecordStore:
             params,
         ).fetchall()
         for row in rows:
-            record = RecordEnvelope.from_dict(json.loads(row["payload_json"]))
+            record = self._record_from_payload_json(row["payload_json"])
+            if record is None:
+                continue
             if str(business_metadata(record.meta).get("task_type", "")) == task_type:
                 return dict(business_metadata(record.meta))
         return {"retrieval_policy": {}, "response_policy": {}}
@@ -1303,7 +1329,7 @@ class SqliteRecordStore:
         ).fetchone()
         if not row:
             return None
-        return RecordEnvelope.from_dict(json.loads(row["payload_json"]))
+        return self._record_from_payload_json(row["payload_json"])
 
     def get_by_idempotency_key(
         self,
@@ -1349,7 +1375,7 @@ class SqliteRecordStore:
         ).fetchone()
         if not row:
             return None
-        return RecordEnvelope.from_dict(json.loads(row["payload_json"]))
+        return self._record_from_payload_json(row["payload_json"])
 
     def list_records(
         self,
@@ -1388,7 +1414,11 @@ class SqliteRecordStore:
             + " ORDER BY updated_at DESC, record_id DESC LIMIT ? OFFSET ?",
             [*params, limit, offset],
         ).fetchall()
-        return [RecordEnvelope.from_dict(json.loads(row["payload_json"])) for row in rows]
+        return [
+            record
+            for row in rows
+            if (record := self._record_from_payload_json(row["payload_json"])) is not None
+        ]
 
     def count_records_by_meta_value(
         self,
@@ -1454,7 +1484,11 @@ class SqliteRecordStore:
             ).fetchall()
         except sqlite3.OperationalError:
             return None
-        return [RecordEnvelope.from_dict(json.loads(row["payload_json"])) for row in rows]
+        return [
+            record
+            for row in rows
+            if (record := self._record_from_payload_json(row["payload_json"])) is not None
+        ]
 
     def upsert_memory_edge(self, edge: MemoryEdge) -> MemoryEdge:
         self.upsert_memory_edges([edge])
@@ -1593,9 +1627,11 @@ class SqliteRecordStore:
             )
         new_key = self._storage_key(record)
         if previous_key and previous_key != new_key:
-            self.conn.execute("DELETE FROM records WHERE storage_key = ?", (previous_key,))
-            self._delete_recall_index(previous_key)
-            self.conn.commit()
+            with self.conn:
+                self.conn.execute("DELETE FROM records WHERE storage_key = ?", (previous_key,))
+                self._delete_recall_index(previous_key)
+                self.upsert(record, commit=False)
+            return
         self.upsert(record)
 
     def _storage_key(self, record: RecordEnvelope) -> str:

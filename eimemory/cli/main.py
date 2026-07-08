@@ -430,6 +430,7 @@ def _build_parser() -> argparse.ArgumentParser:
     serve_rpc.add_argument("--port", type=int, default=None)
     serve_rpc.add_argument("--loopback-health-host", default="")
     serve_rpc.add_argument("--loopback-health-port", type=int, default=None)
+    serve_rpc.add_argument("--auth-token", default=None)
 
     doctor = sub.add_parser("doctor")
     doctor.add_argument("--json", action="store_true", default=True)
@@ -965,6 +966,8 @@ def main(argv: list[str] | None = None) -> int:
                 "loopback_health_host": loopback_health_host,
                 "loopback_health_port": loopback_health_port,
             }
+        if parsed.auth_token:
+            server_kwargs["auth_token"] = parsed.auth_token
         server = EIBrainRPCServer(runtime, host=host, port=port, **server_kwargs)
         print(json.dumps({"ok": True, "host": server.address[0], "port": server.address[1]}, ensure_ascii=False))
         server.serve_forever()

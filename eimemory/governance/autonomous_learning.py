@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import json
 import os
 from typing import Any
 
@@ -1279,8 +1280,8 @@ def _candidate_patch(
         }
     if kind == "code_patch":
         structured_patch = _structured_code_patch(goal=goal, replay_dataset=replay_dataset)
-        verify_command = str(os.environ.get("EIMEMORY_AUTONOMOUS_CODE_VERIFY_COMMAND") or "").strip()
-        deploy_command = str(os.environ.get("EIMEMORY_AUTONOMOUS_CODE_DEPLOY_COMMAND") or "").strip()
+        verify_commands = _env_argv_commands("EIMEMORY_AUTONOMOUS_CODE_VERIFY_COMMAND")
+        deploy_commands = _env_argv_commands("EIMEMORY_AUTONOMOUS_CODE_DEPLOY_COMMAND")
         deploy_default = bool(structured_patch.get("deploy_to_production")) if "deploy_to_production" in structured_patch else True
         deploy_enabled = _env_truthy("EIMEMORY_AUTONOMOUS_CODE_DEPLOY", default=deploy_default)
         commit_default = bool(structured_patch.get("commit_to_repo")) if "commit_to_repo" in structured_patch else deploy_enabled
@@ -1294,8 +1295,8 @@ def _candidate_patch(
             "commit_to_repo": commit_enabled,
             "allowed_files": list(structured_patch.get("allowed_files") or []),
             "file_updates": list(structured_patch.get("file_updates") or []),
-            "verification_commands": list(structured_patch.get("verification_commands") or ([verify_command] if verify_command else [])),
-            "deployment_commands": [deploy_command] if deploy_command else [],
+            "verification_commands": list(structured_patch.get("verification_commands") or verify_commands),
+            "deployment_commands": list(structured_patch.get("deployment_commands") or deploy_commands),
             "rollback_plan": dict(structured_patch.get("rollback_plan") or {"type": "restore_files"}),
         }
     if kind == "skill_draft":
@@ -1447,6 +1448,27 @@ def _env_truthy(name: str, *, default: bool = False) -> bool:
     if value is None:
         return default
     return str(value).strip().lower() in {"1", "true", "yes", "on", "y", "enabled", "apply"}
+
+
+def _env_argv_commands(name: str) -> list[list[str]]:
+    raw = str(os.environ.get(name) or "").strip()
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if _is_argv_command(parsed):
+        return [[str(part) for part in parsed]]
+    if not isinstance(parsed, list):
+        return []
+    return [[str(part) for part in item] for item in parsed if _is_argv_command(item)]
+
+
+def _is_argv_command(value: Any) -> bool:
+    return isinstance(value, (list, tuple)) and bool(value) and all(
+        not isinstance(part, (dict, list, tuple)) for part in value
+    )
 
 
 def _evidence_score(evidence: list[dict[str, Any]]) -> float:

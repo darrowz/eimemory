@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import subprocess
 
@@ -28,6 +29,39 @@ def test_patch_command_resolves_python_to_current_interpreter_when_path_lacks_py
     assert report["ok"] is True
     assert report["reports"][0]["command"][0] == sys.executable
     assert sys.executable in report["reports"][0]["stdout"]
+
+
+def test_patch_commands_reject_shell_string_commands(tmp_path) -> None:
+    marker = tmp_path / "shell-command-ran.txt"
+    command = (
+        f'"{sys.executable}" -c '
+        f'"from pathlib import Path; Path(r\'{marker}\').write_text(\'bad\', encoding=\'utf-8\')"'
+    )
+
+    report = _run_patch_commands([command], cwd=tmp_path, timeout_seconds=10, phase="verify")
+
+    assert report["ok"] is False
+    assert report["reports"][0]["error_type"] == "unsupported_shell_command"
+    assert not marker.exists()
+
+
+def test_deployment_commands_ignore_raw_env_shell_strings(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("EIMEMORY_AUTONOMOUS_CODE_DEPLOY_COMMAND", "echo unsafe")
+
+    commands = _deployment_commands({}, tmp_path)
+
+    assert commands == []
+
+
+def test_deployment_commands_accept_json_argv_from_env(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv(
+        "EIMEMORY_AUTONOMOUS_CODE_DEPLOY_COMMAND",
+        json.dumps(["python", "-c", "print('deploy')"]),
+    )
+
+    commands = _deployment_commands({}, tmp_path)
+
+    assert commands == [["python", "-c", "print('deploy')"]]
 
 
 def test_distill_capability_candidate_requires_passing_eval(tmp_path) -> None:

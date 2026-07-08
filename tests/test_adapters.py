@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import socket
 import subprocess
 import sys
 import urllib.error
@@ -447,6 +448,77 @@ def test_eibrain_rpc_server_returns_400_without_detail_for_invalid_request(tmp_p
 
     assert body["ok"] is False
     assert body["error"] == "invalid_request"
+
+
+def test_eibrain_rpc_server_requires_bearer_token_when_configured(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("EIMEMORY_RPC_AUTH_TOKEN", "secret-token")
+    runtime = Runtime.create(root=tmp_path)
+    server = EIBrainRPCServer(runtime, host="127.0.0.1", port=0)
+    server.start()
+    try:
+        payload = json.dumps(
+            {
+                "method": "memory.recall",
+                "params": {
+                    "query": "status",
+                    "scope": {"agent_id": "eibrain", "workspace_id": "robot"},
+                    "task_context": {"task_type": "brain.respond"},
+                    "limit": 1,
+                },
+            }
+        ).encode("utf-8")
+        with socket.create_connection((server.address[0], server.address[1]), timeout=5) as client:
+            client.sendall(
+                b"POST / HTTP/1.1\r\n"
+                + f"Host: {server.address[0]}:{server.address[1]}\r\n".encode("ascii")
+                + b"Content-Type: application/json\r\n"
+                + f"Content-Length: {len(payload)}\r\n".encode("ascii")
+                + b"Connection: close\r\n\r\n"
+                + payload
+            )
+            chunks = []
+            while True:
+                chunk = client.recv(4096)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+            raw_response = b"".join(chunks).decode("utf-8")
+    finally:
+        server.stop()
+
+    assert " 401 " in raw_response.splitlines()[0]
+    body = json.loads(raw_response.split("\r\n\r\n", 1)[1])
+    assert body["ok"] is False
+    assert body["error"] == "unauthorized"
+
+
+def test_eibrain_rpc_server_rejects_oversized_post_body(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    server = EIBrainRPCServer(runtime, host="127.0.0.1", port=0)
+    server.start()
+    try:
+        with socket.create_connection((server.address[0], server.address[1]), timeout=5) as client:
+            client.sendall(
+                b"POST / HTTP/1.1\r\n"
+                + f"Host: {server.address[0]}:{server.address[1]}\r\n".encode("ascii")
+                + b"Content-Type: application/json\r\n"
+                + b"Content-Length: 1100002\r\n"
+                + b"Connection: close\r\n\r\n"
+            )
+            chunks = []
+            while True:
+                chunk = client.recv(4096)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+            raw_response = b"".join(chunks).decode("utf-8")
+    finally:
+        server.stop()
+
+    assert " 413 " in raw_response.splitlines()[0]
+    body = json.loads(raw_response.split("\r\n\r\n", 1)[1])
+    assert body["ok"] is False
+    assert body["error"] == "request_too_large"
 
 
 def test_cli_openclaw_hook_rejects_non_object_stdin_json(tmp_path, monkeypatch, capsys) -> None:
