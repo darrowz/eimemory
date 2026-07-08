@@ -187,11 +187,10 @@ capability ledgers, and conservative rollout paths for agent self-improvement.
 
 ## Contributors
 
-`eimemory` is built in the open. Thanks to the contributors who help push the
-project from a private memory runtime toward a practical, reusable foundation
-for long-running agents:
+`eimemory` is built in the open. Special thanks to external contributors who
+help push the project from a private memory runtime toward a practical,
+reusable foundation for long-running agents:
 
-- [darrowz](https://github.com/darrowz)
 - [Garry Tan](https://github.com/garrytan)
 
 External contributions, review, and real-world use are part of the project's
