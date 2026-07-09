@@ -564,7 +564,7 @@ function normalizeContent(content) {
   return String(content);
 }
 
-function invokeHook(hook, event) {
+function invokeHook(api, hook, event) {
   const payload = normalizeEventPayload(hook, event);
   const key = cacheKeyFor('hook', hook, payload);
   const cacheable = hook === 'before_prompt_build';
@@ -579,7 +579,7 @@ function invokeHook(hook, event) {
   const result = spawnSync(command[0], [...command.slice(1), hook], {
     input: JSON.stringify(payload),
     encoding: 'utf-8',
-    timeout: positiveIntEnv('EIMEMORY_HOOK_TIMEOUT_MS', DEFAULT_HOOK_TIMEOUT_MS),
+    timeout: configuredHookTimeout(api, hook, DEFAULT_HOOK_TIMEOUT_MS),
   });
   if (result.error) {
     throw result.error;
@@ -594,7 +594,7 @@ function invokeHook(hook, event) {
   return parsed;
 }
 
-function invokeBridge(event) {
+function invokeBridge(api, event) {
   const key = cacheKeyFor('bridge', 'feishu', event);
   pruneHookCache();
   const cached = hookResultCache.get(key);
@@ -605,7 +605,7 @@ function invokeBridge(event) {
   const result = spawnSync(command[0], [...command.slice(1)], {
     input: JSON.stringify(event),
     encoding: 'utf-8',
-    timeout: positiveIntEnv('EIMEMORY_BRIDGE_TIMEOUT_MS', DEFAULT_BRIDGE_TIMEOUT_MS),
+    timeout: configuredBridgeTimeout(api, DEFAULT_BRIDGE_TIMEOUT_MS),
   });
   if (result.error) {
     throw result.error;
@@ -635,7 +635,7 @@ function invokeCli(args) {
 
 function safeInvokeHook(api, hook, event) {
   try {
-    const result = invokeHook(hook, event);
+    const result = invokeHook(api, hook, event);
     api?.logger?.info?.(`eimemory-bridge: ${hook} completed`);
     return result;
   } catch (error) {
@@ -655,7 +655,7 @@ function safeInvokeHook(api, hook, event) {
 
 function safeInvokeBridge(api, event) {
   try {
-    const result = invokeBridge(event);
+    const result = invokeBridge(api, event);
     api?.logger?.info?.('eimemory-bridge: ei-bridge feishu completed');
     return result;
   } catch (error) {
@@ -733,12 +733,54 @@ function positiveIntEnv(name, fallback) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-function readOpenClawPromptInjectionPolicy() {
+function positiveIntValue(value, fallback) {
+  const parsed = Number(value || 0);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function readOpenClawBridgeHooksConfig() {
   try {
     const configPath = process.env.OPENCLAW_CONFIG_PATH
       || path.join(process.env.OPENCLAW_STATE_DIR || path.join(os.homedir(), '.openclaw'), 'openclaw.json');
     const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    return config?.plugins?.entries?.['eimemory-bridge']?.hooks?.allowPromptInjection === true;
+    return config?.plugins?.entries?.['eimemory-bridge']?.hooks || {};
+  } catch {
+    return {};
+  }
+}
+
+function configuredHookTimeout(api, hook, fallback) {
+  const envTimeout = positiveIntEnv('EIMEMORY_HOOK_TIMEOUT_MS', fallback);
+  const config = api?.config || {};
+  const hookPolicy = api?.hookPolicy || api?.hooksPolicy || config.hooks || {};
+  const filePolicy = readOpenClawBridgeHooksConfig();
+  return positiveIntValue(
+    hookPolicy?.timeouts?.[hook]
+      ?? config?.timeouts?.[hook]
+      ?? filePolicy?.timeouts?.[hook],
+    envTimeout
+  );
+}
+
+function configuredBridgeTimeout(api, fallback) {
+  const envTimeout = positiveIntEnv('EIMEMORY_BRIDGE_TIMEOUT_MS', fallback);
+  const config = api?.config || {};
+  const hookPolicy = api?.hookPolicy || api?.hooksPolicy || config.hooks || {};
+  const filePolicy = readOpenClawBridgeHooksConfig();
+  return positiveIntValue(
+    hookPolicy?.timeouts?.bridge
+      ?? hookPolicy?.timeouts?.feishu_bridge
+      ?? config?.timeouts?.bridge
+      ?? config?.timeouts?.feishu_bridge
+      ?? filePolicy?.timeouts?.bridge
+      ?? filePolicy?.timeouts?.feishu_bridge,
+    envTimeout
+  );
+}
+
+function readOpenClawPromptInjectionPolicy() {
+  try {
+    return readOpenClawBridgeHooksConfig()?.allowPromptInjection === true;
   } catch {
     return false;
   }
