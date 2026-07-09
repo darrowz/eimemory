@@ -186,6 +186,74 @@ def test_promote_collected_paper_candidates_includes_reviewed_records(tmp_path) 
     assert report["promoted"] == 1
 
 
+def test_promote_collected_paper_candidates_persists_research_closure_reviews(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"tenant_id": "tenant-a", "agent_id": "agent-a"}
+    babycl = RecordEnvelope.create(
+        kind="knowledge_candidate",
+        title="Knowledge candidate: BabyCL",
+        summary="Continual multimodal learning from egocentric video via single-pass streaming.",
+        detail=(
+            "BabyCL uses dual replay buffer design, temporal stream segmentation, and eviction policy ideas "
+            "that map directly to eimemory policy_replay replay_count repair."
+        ),
+        scope=ScopeRef.from_dict(scope),
+        status="candidate",
+        source="unit-test",
+        content={
+            "source_kind": "arxiv",
+            "title": "BabyCL",
+            "url": "https://arxiv.org/abs/2601.00031",
+            "content_excerpt": (
+                "Dual replay buffer, single-pass streaming, stream segmentation, and eviction policy can "
+                "inform policy_replay replay_count closure."
+            ),
+            "metadata": {"arxiv_id": "2601.00031"},
+        },
+        meta={"source_kind": "arxiv"},
+    )
+    grow2 = RecordEnvelope.create(
+        kind="knowledge_candidate",
+        title="Knowledge candidate: GROW2",
+        summary="Hierarchical VLM and geometry grounding for open-world robotic tool use.",
+        detail=(
+            "GROW2 combines semantic and geometric grounding. It is a candidate for self_model uncertainty "
+            "observe planning, not a direct replay_count repair."
+        ),
+        scope=ScopeRef.from_dict(scope),
+        status="candidate",
+        source="unit-test",
+        content={
+            "source_kind": "arxiv",
+            "title": "GROW2",
+            "url": "https://arxiv.org/abs/2601.00032",
+            "content_excerpt": "Hierarchical VLM plus semantic and geometric grounding for uncertainty-aware observe.",
+            "metadata": {"arxiv_id": "2601.00032"},
+        },
+        meta={"source_kind": "arxiv"},
+    )
+    runtime.store.append(babycl)
+    runtime.store.append(grow2)
+
+    report = promote_collected_paper_candidates(runtime, scope, auto=True)
+    closure_records = runtime.store.list_records(kinds=["replay_result"], scope=scope, limit=10)
+    decisions = {record.meta["source_candidate_id"]: record.meta["decision"] for record in closure_records}
+    landing_points = {record.meta["source_candidate_id"]: record.meta["landing_point"] for record in closure_records}
+
+    assert report["scanned"] == 2
+    assert report["promoted"] == 2
+    assert report["closure_review_count"] == 2
+    assert len(closure_records) == 2
+    assert all(record.meta["report_type"] == "research_closure_review" for record in closure_records)
+    assert all(record.meta["review_model_requested"] == "gpt-5.5" for record in closure_records)
+    assert decisions[babycl.record_id] == "enter_closure"
+    assert landing_points[babycl.record_id] == "policy_replay"
+    assert decisions[grow2.record_id] == "observe_only"
+    assert landing_points[grow2.record_id] == "self_model_observe"
+    assert runtime.store.get_by_id(babycl.record_id).meta["closure_decision"] == "enter_closure"
+    assert runtime.store.get_by_id(grow2.record_id).meta["closure_decision"] == "observe_only"
+
+
 def test_promote_collected_paper_candidates_skips_unsafe_and_thin_generic_url(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     scope = {"tenant_id": "tenant-a", "agent_id": "agent-a"}

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from eimemory.intake.closure import build_research_closure_review
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 SKIPPED_REPORT = {
@@ -64,6 +65,18 @@ class PaperIntakePipeline:
             "skipped_reason": "",
             "record_ids": _dedupe(record_ids),
         }
+        closure_review = build_research_closure_review(
+            self.runtime,
+            candidate_record_or_dict,
+            report,
+            scope=scope,
+            persist=True,
+        )
+        if closure_review.get("record_id"):
+            report["record_ids"] = _dedupe([*report["record_ids"], str(closure_review["record_id"])])
+        report["closure_review"] = closure_review
+        report["closure_review_record_id"] = str(closure_review.get("record_id") or "")
+        report["closure_decision"] = str(closure_review.get("decision") or "")
         if isinstance(candidate_record_or_dict, RecordEnvelope):
             _mark_paper_promoted(self.runtime, candidate_record_or_dict, report)
         return report
@@ -123,6 +136,9 @@ def promote_collected_paper_candidates(
         "scanned": len(records),
         "promoted": promoted,
         "skipped": skipped,
+        "closure_review_count": sum(
+            1 for report in promoted_reports if str(report.get("closure_review_record_id") or "")
+        ),
         "reasons": reasons,
         "promoted_reports": promoted_reports,
         "skipped_reports": skipped_reports,

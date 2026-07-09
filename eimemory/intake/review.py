@@ -182,6 +182,8 @@ def mark_candidate_paper_promoted(
         **dict(record.meta or {}),
         "promoted_to_paper_source_id": str(report.get("paper_source_id") or ""),
         "promotion_record_ids": list(report.get("record_ids") or []),
+        "closure_review_record_id": str(report.get("closure_review_record_id") or ""),
+        "closure_decision": str(report.get("closure_decision") or ""),
     }
     _append_review_history(record, decision="paper_promote", actor="pipeline", note=str(report.get("paper_source_id") or ""))
     return _save(runtime, record)
