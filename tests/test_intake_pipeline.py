@@ -254,6 +254,85 @@ def test_promote_collected_paper_candidates_persists_research_closure_reviews(tm
     assert runtime.store.get_by_id(grow2.record_id).meta["closure_decision"] == "observe_only"
 
 
+def test_review_pending_research_closures_consumes_pending_queue(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"tenant_id": "tenant-a", "agent_id": "agent-a"}
+    candidate = RecordEnvelope.create(
+        kind="knowledge_candidate",
+        title="Knowledge candidate: BabyCL",
+        summary="Continual learning with replay buffers.",
+        detail="Dual replay buffer design maps to policy_replay replay_count repair.",
+        scope=ScopeRef.from_dict(scope),
+        status="candidate",
+        source="unit-test",
+        content={
+            "source_kind": "arxiv",
+            "title": "BabyCL",
+            "url": "https://arxiv.org/abs/2601.00031",
+            "content_excerpt": "Dual replay buffer can inform policy_replay replay_count closure.",
+            "metadata": {"arxiv_id": "2601.00031"},
+        },
+        meta={"source_kind": "arxiv"},
+    )
+    runtime.store.append(candidate)
+    promotion = promote_collected_paper_candidates(runtime, scope, auto=True)
+    closure_record_id = promotion["promoted_reports"][0]["closure_review_record_id"]
+
+    def executor(model: str, prompt: str) -> str:
+        assert model == "gpt-5.5"
+        assert "Research closure review" in prompt
+        return '{"verdict":"approve","rationale":"landing point is supported","required_followup":"add replay case","risk":"low"}'
+
+    report = runtime.review_pending_research_closures(scope=scope, executor=executor)
+    closure_record = runtime.store.get_by_id(closure_record_id, scope=ScopeRef.from_dict(scope))
+
+    assert report["reviewed"] == 1
+    assert report["unavailable"] == 0
+    assert closure_record.meta["review_status"] == "reviewed"
+    assert closure_record.meta["review_model_used"] == "gpt-5.5"
+    assert "add replay case" in closure_record.content["model_review"]
+
+    second_report = runtime.review_pending_research_closures(scope=scope, executor=executor)
+
+    assert second_report["scanned"] == 0
+
+
+def test_review_pending_research_closures_marks_model_unavailable(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"tenant_id": "tenant-a", "agent_id": "agent-a"}
+    candidate = RecordEnvelope.create(
+        kind="knowledge_candidate",
+        title="Knowledge candidate: BabyCL",
+        summary="Continual learning with replay buffers.",
+        detail="Dual replay buffer design maps to policy_replay replay_count repair.",
+        scope=ScopeRef.from_dict(scope),
+        status="candidate",
+        source="unit-test",
+        content={
+            "source_kind": "arxiv",
+            "title": "BabyCL",
+            "url": "https://arxiv.org/abs/2601.00031",
+            "content_excerpt": "Dual replay buffer can inform policy_replay replay_count closure.",
+            "metadata": {"arxiv_id": "2601.00031"},
+        },
+        meta={"source_kind": "arxiv"},
+    )
+    runtime.store.append(candidate)
+    promotion = promote_collected_paper_candidates(runtime, scope, auto=True)
+    closure_record_id = promotion["promoted_reports"][0]["closure_review_record_id"]
+
+    def executor(_model: str, _prompt: str) -> str:
+        raise RuntimeError("401 auth failed")
+
+    report = runtime.review_pending_research_closures(scope=scope, executor=executor)
+    closure_record = runtime.store.get_by_id(closure_record_id, scope=ScopeRef.from_dict(scope))
+
+    assert report["reviewed"] == 0
+    assert report["unavailable"] == 1
+    assert closure_record.meta["review_status"] == "review_unavailable"
+    assert "401 auth failed" in closure_record.meta["review_error"]
+
+
 def test_promote_collected_paper_candidates_skips_unsafe_and_thin_generic_url(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     scope = {"tenant_id": "tenant-a", "agent_id": "agent-a"}

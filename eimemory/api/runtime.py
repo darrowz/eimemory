@@ -242,6 +242,24 @@ class Runtime:
 
         return promote_collected_paper_candidates(self, scope, limit=limit, auto=auto)
 
+    def review_pending_research_closures(
+        self,
+        *,
+        scope: dict | None = None,
+        limit: int = 20,
+        review_model: str = "gpt-5.5",
+        executor=None,
+    ) -> dict:
+        from eimemory.intake.closure_review import review_pending_research_closures
+
+        return review_pending_research_closures(
+            self,
+            scope=scope,
+            limit=limit,
+            review_model=review_model,
+            executor=executor,
+        )
+
     def list_intake_review_queue(self, *, scope: dict | None = None, status=None, limit: int = 100) -> list[dict]:
         from eimemory.intake.review import list_review_queue
 
