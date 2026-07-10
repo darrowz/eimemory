@@ -132,6 +132,10 @@ def evaluate_replay_gate(replay_case: dict[str, Any]) -> dict[str, Any]:
         return {
             "ok": False,
             "allow": False,
+            "case_valid": False,
+            "executed": False,
+            "evidence_kind": "case_definition",
+            "verdict": "invalid",
             "blocked_reason": "missing_positive_replay",
             "signals": [],
         }
@@ -140,6 +144,10 @@ def evaluate_replay_gate(replay_case: dict[str, Any]) -> dict[str, Any]:
         return {
             "ok": False,
             "allow": False,
+            "case_valid": False,
+            "executed": False,
+            "evidence_kind": "case_definition",
+            "verdict": "invalid",
             "blocked_reason": "negative_replay_signal",
             "signals": list(_coerce_string_list(replay_case.get("negative_expected_text"))),
         }
@@ -148,6 +156,10 @@ def evaluate_replay_gate(replay_case: dict[str, Any]) -> dict[str, Any]:
         return {
             "ok": False,
             "allow": False,
+            "case_valid": False,
+            "executed": False,
+            "evidence_kind": "case_definition",
+            "verdict": "invalid",
             "blocked_reason": "regression_seed_pattern",
             "signals": list(_coerce_string_list(replay_case.get("regression_seed_patterns"))),
         }
@@ -155,6 +167,10 @@ def evaluate_replay_gate(replay_case: dict[str, Any]) -> dict[str, Any]:
     return {
         "ok": True,
         "allow": True,
+        "case_valid": True,
+        "executed": False,
+        "evidence_kind": "case_definition",
+        "verdict": "defined",
         "blocked_reason": "",
         "signals": [],
     }

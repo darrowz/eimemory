@@ -12,7 +12,7 @@ from eimemory.governance.isolated_evaluator import (
     judge_stop_condition,
     run_isolated_evaluator,
 )
-from eimemory.governance.promotion_manager import promote_candidate
+from eimemory.governance.promotion_manager import promote_candidate, run_code_patch_preflight
 from eimemory.core.clock import now_iso
 from eimemory.governance.policy_replay import (
     build_replay_case,
@@ -476,6 +476,8 @@ def _evaluate_patch(patch: dict[str, Any]) -> dict[str, Any]:
             return {"ok": False, "blocked_reason": "missing_allowed_files"}
         if not _code_patch_file_updates(code_patch):
             return {"ok": False, "blocked_reason": "missing_file_updates"}
+        if not _command_list(code_patch.get("verification_commands") or code_patch.get("verify_commands")):
+            return {"ok": False, "blocked_reason": "missing_verification_commands"}
         if _normalize_risk_level(str(patch.get("risk_level") or "medium")) == "high":
             return {"ok": False, "blocked_reason": "risk_level_high"}
         return {"ok": True, "blocked_reason": ""}
@@ -600,6 +602,18 @@ def _run_isolated_code_patch_gate(
     loop_id = f"autonomous_evolution:{patch.get('opportunity_id') or 'code_patch'}:isolated_evaluator"
     code_patch = dict(patch.get("code_patch") or {})
     try:
+        preflight = run_code_patch_preflight(
+            runtime,
+            code_patch,
+            scope=scope,
+            loop_id=loop_id,
+        )
+        replay_evidence = dict(preflight.get("replay") or {})
+        verification_results = [
+            dict(item)
+            for item in (preflight.get("verification") or {}).get("reports") or []
+            if isinstance(item, dict)
+        ]
         packet = build_evaluation_packet(
             runtime,
             scope=scope,
@@ -617,9 +631,9 @@ def _run_isolated_code_patch_gate(
                 "replay_case_ids": [str(replay_case.get("case_id") or replay_case.get("id") or "")],
             },
             generator_claim=str(patch.get("summary") or code_patch.get("summary") or ""),
-            replay_gate=replay_gate,
-            real_task_replay=_real_task_replay_from_replay_gate(replay_gate),
-            verification_results=[],
+            replay_gate=replay_evidence,
+            real_task_replay=replay_evidence,
+            verification_results=verification_results,
         )
         verdict = run_isolated_evaluator(runtime, packet, scope=scope, loop_id=loop_id)
         judgment = judge_stop_condition(runtime, verdict, scope=scope, loop_id=loop_id)
@@ -650,34 +664,27 @@ def _run_isolated_code_patch_gate(
         "decision": str(judgment_content.get("decision") or ""),
         "blocked_reasons": blocked_reasons,
         "model_roles": dict(judgment_content.get("model_roles") or verdict_content.get("model_roles") or {}),
-    }
-
-
-def _real_task_replay_from_replay_gate(replay_gate: dict[str, Any]) -> dict[str, Any]:
-    ok = bool(replay_gate.get("ok"))
-    pass_rate = _coerce_float(replay_gate.get("pass_rate"), default=1.0 if ok else 0.0)
-    sample_count = int(_coerce_float(replay_gate.get("sample_count") or replay_gate.get("case_count") or 1, default=1.0))
-    fail_count = 0 if ok else max(1, sample_count)
-    return {
-        "ok": ok,
-        "report_type": "real_task_replay",
-        "verdict": "pass" if ok else "fail",
-        "pass_rate": pass_rate,
-        "threshold": _coerce_float(replay_gate.get("threshold"), default=0.6),
-        "sample_count": max(1, sample_count),
-        "pass_count": max(0, sample_count - fail_count),
-        "fail_count": fail_count,
-        "source": "autonomous_evolution_isolated_gate",
+        "preflight": preflight,
+        "structural_replay_gate": dict(replay_gate or {}),
     }
 
 
 def _apply_code_patch(runtime: Any, patch: dict[str, Any], *, scope: dict[str, Any]) -> dict[str, Any]:
     code_patch = dict(patch.get("code_patch") or {})
     loop_id = f"autonomous_evolution:{patch.get('opportunity_id') or 'code_patch'}"
+    isolated_evaluator = dict(patch.get("isolated_evaluator") or {})
+    preflight = dict(isolated_evaluator.get("preflight") or {})
+    evidence_ok = bool(isolated_evaluator.get("ok")) and bool(preflight.get("ok")) and bool(preflight.get("executed"))
     eval_result = {
-        "ok": True,
-        "verdict": "pass",
-        "scores": {"capability": 0.9, "safety": 1.0, "regression": 1.0, "evidence": 1.0, "cost": 0.85},
+        "ok": evidence_ok,
+        "verdict": "pass" if evidence_ok else "fail",
+        "scores": {
+            "capability": 1.0 if evidence_ok else 0.0,
+            "safety": 1.0 if bool((patch.get("safe_action_report") or {}).get("ok")) else 0.0,
+            "regression": 1.0 if bool((preflight.get("replay") or {}).get("ok")) else 0.0,
+            "evidence": 1.0 if str(preflight.get("record_id") or "") else 0.0,
+            "cost": 0.85,
+        },
         "gate_bundle": _code_patch_gate_bundle(patch),
     }
     experiment_id = create_sandbox_experiment(
@@ -707,7 +714,11 @@ def _apply_code_patch(runtime: Any, patch: dict[str, Any], *, scope: dict[str, A
         loop_id=loop_id,
         apply=True,
         eval_result=eval_result,
-        health={"ok": True, "source": "autonomous_evolution"},
+        health={
+            "ok": bool((preflight.get("doctor") or {}).get("ok")) and bool((preflight.get("smoke") or {}).get("ok")),
+            "source": "eimemory.code_patch_preflight",
+            "evidence_ref": str(preflight.get("record_id") or ""),
+        },
     )
     side_effect = dict(promotion.get("side_effect") or {})
     applied = bool(promotion.get("ok") and promotion.get("applied") and side_effect.get("repo_mutated"))
@@ -725,6 +736,7 @@ def _apply_code_patch(runtime: Any, patch: dict[str, Any], *, scope: dict[str, A
         "blocked_reason": "" if applied else str(promotion.get("blocked_reason") or side_effect.get("blocked_reason") or "code_patch_promotion_failed"),
         "promotion": promotion,
         "side_effect": side_effect,
+        "isolated_evaluator": isolated_evaluator,
     }
 
 
@@ -742,36 +754,56 @@ def _rollout_ledger_id_for_promotion(runtime: Any, *, scope: dict[str, Any], pro
 
 
 def _code_patch_gate_bundle(patch: dict[str, Any]) -> dict[str, Any]:
-    replay_report = dict((patch.get("replay_report") or {}))
-    real_task_replay = {
-        "ok": bool(replay_report.get("ok", True)),
-        "report_type": "real_task_replay",
-        "verdict": "pass" if bool(replay_report.get("ok", True)) else "fail",
-        "pass_rate": 1.0 if bool(replay_report.get("ok", True)) else 0.0,
-        "threshold": 0.6,
-        "sample_count": 1,
-        "source": "autonomous_evolution_replay_gate",
-    }
+    isolated_evaluator = dict(patch.get("isolated_evaluator") or {})
+    preflight = dict(isolated_evaluator.get("preflight") or {})
+    evidence_ref = str(preflight.get("record_id") or "")
     return {
         "evidence": [
             {
                 "tier": "T1",
-                "ref": str(patch.get("opportunity_id") or ""),
-                "summary": "Autonomous evolution trust, replay, and safe-action gates passed.",
+                "ref": evidence_ref,
+                "summary": "Exact code patch executed in isolated preflight.",
+                "executed": bool(preflight.get("executed")),
             }
         ],
-        "rollback": {"available": True, "executable": True, "method": "restore_file_backups_or_revert_commit"},
-        "canary": {"passed": True, "blast_radius": "service_local"},
+        "code_preflight": preflight,
+        "rollback": {
+            "available": True,
+            "executable": True,
+            "method": "restore_file_backups_or_revert_commit",
+            "source": "eimemory.promotion_manager",
+        },
+        "canary": {
+            "passed": bool(preflight.get("ok")),
+            "executed": bool(preflight.get("executed")),
+            "blast_radius": "low",
+            "mode": str(preflight.get("sandbox_mode") or "isolated_preflight"),
+            "evidence_ref": evidence_ref,
+        },
         "closed_loop": {
-            "doctor": {"ok": True, "source": "autonomous_evolution_gate"},
-            "smoke": {"ok": True, "source": "autonomous_evolution_gate"},
+            "doctor": dict(preflight.get("doctor") or {}),
+            "smoke": dict(preflight.get("smoke") or {}),
         },
         "timeout_seconds": 900,
-        "audit": {"enabled": True, "ledger": "promotion_request"},
-        "real_task_replay": real_task_replay,
-        "prompt_shadow_eval": {"passed": True},
-        "prompt_injection_check": {"passed": True},
+        "audit": {"enabled": True, "ledger": "promotion_request", "evidence_ref": evidence_ref},
+        "real_task_replay": dict(preflight.get("replay") or {}),
+        "isolated_evaluator": {
+            "packet_id": str(isolated_evaluator.get("packet_id") or ""),
+            "verdict_id": str(isolated_evaluator.get("verdict_id") or ""),
+            "stop_judgment_id": str(isolated_evaluator.get("stop_judgment_id") or ""),
+            "promotion_allowed": bool(isolated_evaluator.get("ok")),
+        },
     }
+
+
+def _command_list(value: Any) -> list[list[str]]:
+    if not isinstance(value, list):
+        return []
+    commands: list[list[str]] = []
+    for item in value:
+        if isinstance(item, (list, tuple)) and item and all(not isinstance(part, (dict, list, tuple)) for part in item):
+            commands.append([str(part) for part in item])
+    return commands
 
 
 def _load_recent_event_outcome_pairs(runtime: Any, *, scope: ScopeRef, limit: int) -> list[dict[str, Any]]:

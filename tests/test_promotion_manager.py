@@ -8,7 +8,8 @@ import pytest
 
 from eimemory.api.runtime import Runtime
 from eimemory.governance.capability_distiller import distill_capability_candidate
-from eimemory.governance.promotion_manager import backfill_promotion_rollout_ledger, promote_candidate, _deployment_commands, _run_patch_commands
+import eimemory.governance.promotion_manager as promotion_manager
+from eimemory.governance.promotion_manager import backfill_promotion_rollout_ledger, promote_candidate, _deployment_commands, _matching_code_preflight, _run_patch_commands, run_code_patch_preflight
 from eimemory.governance.sandbox_lab import create_sandbox_experiment
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
@@ -43,6 +44,166 @@ def test_patch_commands_reject_shell_string_commands(tmp_path) -> None:
     assert report["ok"] is False
     assert report["reports"][0]["error_type"] == "unsupported_shell_command"
     assert not marker.exists()
+
+
+def test_patch_commands_fail_closed_when_verification_list_is_empty(tmp_path) -> None:
+    report = _run_patch_commands([], cwd=tmp_path, timeout_seconds=10, phase="verify")
+
+    assert report["ok"] is False
+    assert report["skipped"] is True
+    assert report["error_type"] == "missing_required_commands"
+    assert report["reports"] == []
+
+
+def test_code_preflight_persists_failure_when_sandbox_setup_raises(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = {"agent_id": "hongtu", "workspace_id": "code", "user_id": "darrow"}
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "module.py").write_text("VALUE = 'old'\n", encoding="utf-8")
+    monkeypatch.setenv("EIMEMORY_AUTONOMOUS_CODE_REPO", str(repo))
+    monkeypatch.setattr(
+        promotion_manager,
+        "_prepare_code_preflight_sandbox",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("sandbox unavailable")),
+    )
+
+    report = run_code_patch_preflight(
+        runtime,
+        {
+            "summary": "Sandbox setup must fail closed",
+            "repo_root": str(repo),
+            "apply_to_repo": True,
+            "allowed_files": ["module.py"],
+            "file_updates": [{"path": "module.py", "content": "VALUE = 'new'\n"}],
+            "verification_commands": [[sys.executable, "-c", "print('ok')"]],
+        },
+        scope=scope,
+        loop_id="preflight_setup_failure",
+    )
+
+    assert report["ok"] is False
+    assert report["executed"] is False
+    assert report["setup"]["ok"] is False
+    assert report["setup"]["error"] == "code_preflight_setup_failed"
+    assert "sandbox unavailable" in report["setup"]["detail"]
+    persisted = runtime.store.get_by_id(report["record_id"], scope=scope)
+    assert persisted is not None
+    assert persisted.content["verdict"] == "fail"
+
+
+def test_non_git_preflight_is_invalidated_when_repository_state_changes(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = {"agent_id": "hongtu", "workspace_id": "code", "user_id": "darrow"}
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    target = repo / "module.py"
+    target.write_text("VALUE = 'old'\n", encoding="utf-8")
+    monkeypatch.setenv("EIMEMORY_AUTONOMOUS_CODE_REPO", str(repo))
+    patch = {
+        "summary": "Bind preflight to repository state",
+        "repo_root": str(repo),
+        "apply_to_repo": True,
+        "allowed_files": ["module.py"],
+        "file_updates": [{"path": "module.py", "content": "VALUE = 'new'\n"}],
+        "verification_commands": [[sys.executable, "-c", "print('ok')"]],
+    }
+    preflight = run_code_patch_preflight(runtime, patch, scope=scope, loop_id="preflight_state")
+    eval_result = {"gate_bundle": {"code_preflight": preflight}}
+
+    assert preflight["ok"] is True
+    assert preflight["subject_state_digest"]
+    target.write_text("VALUE = 'drifted'\n", encoding="utf-8")
+
+    assert _matching_code_preflight(runtime, patch, eval_result=eval_result, scope=scope) is None
+
+
+def test_git_preflight_is_invalidated_when_worktree_becomes_dirty(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = {"agent_id": "hongtu", "workspace_id": "code", "user_id": "darrow"}
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+    (repo / "module.py").write_text("VALUE = 'old'\n", encoding="utf-8")
+    subprocess.run(["git", "add", "module.py"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "seed"], cwd=repo, check=True)
+    monkeypatch.setenv("EIMEMORY_AUTONOMOUS_CODE_REPO", str(repo))
+    patch = {
+        "summary": "Reject stale evidence after dirty worktree drift",
+        "repo_root": str(repo),
+        "apply_to_repo": True,
+        "allowed_files": ["module.py"],
+        "file_updates": [{"path": "module.py", "content": "VALUE = 'new'\n"}],
+        "verification_commands": [[sys.executable, "-c", "print('ok')"]],
+    }
+    preflight = run_code_patch_preflight(runtime, patch, scope=scope, loop_id="preflight_git_state")
+    eval_result = {"gate_bundle": {"code_preflight": preflight}}
+
+    assert preflight["ok"] is True
+    (repo / "untracked.py").write_text("DRIFT = True\n", encoding="utf-8")
+
+    assert _matching_code_preflight(runtime, patch, eval_result=eval_result, scope=scope) is None
+
+
+def test_code_patch_rechecks_subject_state_immediately_before_repo_mutation(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = {"agent_id": "hongtu", "workspace_id": "code", "user_id": "darrow"}
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    target = repo / "module.py"
+    target.write_text("VALUE = 'old'\n", encoding="utf-8")
+    monkeypatch.setenv("EIMEMORY_AUTONOMOUS_CODE_REPO", str(repo))
+    experiment_id = create_sandbox_experiment(
+        runtime,
+        scope=scope,
+        loop_id="learn_test",
+        learning_goal_id="goal_subject_race",
+        research_note_id="note_subject_race",
+        candidate_kind="code_patch",
+        candidate_patch={
+            "summary": "Reject repository drift after preflight",
+            "repo_root": str(repo),
+            "apply_to_repo": True,
+            "commit_to_repo": False,
+            "deploy_to_production": False,
+            "allowed_files": ["module.py"],
+            "file_updates": [{"path": "module.py", "content": "VALUE = 'new'\n"}],
+            "verification_commands": [[sys.executable, "-c", "print('ok')"]],
+        },
+    )
+    candidate_id = distill_capability_candidate(
+        runtime,
+        scope=scope,
+        loop_id="learn_test",
+        experiment_id=experiment_id,
+        eval_result={**PASSING_EVAL, "gate_bundle": _l2_gate_bundle()},
+        promotion_target="code_patch",
+        summary="Code patch candidate",
+        target_capability="code.implementation",
+    )
+    original_rollout_gate = promotion_manager._rollout_gate
+
+    def mutate_after_gate(*args, **kwargs):
+        result = original_rollout_gate(*args, **kwargs)
+        if result["ok"]:
+            target.write_text("VALUE = 'concurrent-drift'\n", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(promotion_manager, "_rollout_gate", mutate_after_gate)
+
+    result = promote_candidate(
+        runtime,
+        candidate_id=candidate_id,
+        scope=scope,
+        loop_id="learn_test",
+        eval_result={**PASSING_EVAL, "gate_bundle": _l2_gate_bundle()},
+        health={"ok": True},
+    )
+
+    assert result["ok"] is False
+    assert result["blocked_reason"] == "code_patch_subject_changed"
+    assert result["side_effect"]["repo_mutated"] is False
+    assert target.read_text(encoding="utf-8") == "VALUE = 'concurrent-drift'\n"
 
 
 def test_deployment_commands_ignore_raw_env_shell_strings(tmp_path, monkeypatch) -> None:
@@ -428,7 +589,7 @@ def test_l2_code_patch_blocks_malformed_real_task_replay_without_crashing(tmp_pa
     result = promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", apply=False, eval_result=eval_result, health={"ok": True})
 
     assert result["ok"] is False
-    assert "real_task_replay_gate" in result["blocked_reason"]
+    assert result["blocked_reason"] == "code_patch_requires_file_updates"
 
 
 def test_l2_code_patch_uses_gate_timeout_when_patch_timeout_is_malformed(tmp_path, monkeypatch) -> None:
@@ -658,6 +819,69 @@ def test_l2_code_patch_applies_repo_patch_and_deploys_after_gates(tmp_path, monk
     assert entry["budget_decision"] == "ok"
     assert entry["details"]["promotion_target"] == "code_patch"
     assert entry["details"]["rollout_action"] == "applied"
+
+
+def test_code_patch_failing_verification_is_blocked_in_isolation_before_repo_mutation(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = {"agent_id": "hongtu", "workspace_id": "code", "user_id": "darrow"}
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+    target = repo / "module.py"
+    target.write_text("VALUE = 'old'\n", encoding="utf-8")
+    subprocess.run(["git", "add", "module.py"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "seed"], cwd=repo, check=True)
+    seed_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+    monkeypatch.setenv("EIMEMORY_AUTONOMOUS_CODE_REPO", str(repo))
+    experiment_id = create_sandbox_experiment(
+        runtime,
+        scope=scope,
+        loop_id="learn_test",
+        learning_goal_id="goal_preflight",
+        research_note_id="note_preflight",
+        candidate_kind="code_patch",
+        candidate_patch={
+            "summary": "Patch must fail in isolated verification",
+            "repo_root": str(repo),
+            "apply_to_repo": True,
+            "deploy_to_production": False,
+            "commit_to_repo": False,
+            "allowed_files": ["module.py"],
+            "file_updates": [{"path": "module.py", "content": "VALUE = 'new'\n"}],
+            "verification_commands": [[sys.executable, "-c", "raise SystemExit(9)"]],
+        },
+    )
+    candidate_id = distill_capability_candidate(
+        runtime,
+        scope=scope,
+        loop_id="learn_test",
+        experiment_id=experiment_id,
+        eval_result={**PASSING_EVAL, "gate_bundle": _l2_gate_bundle()},
+        promotion_target="code_patch",
+        summary="Code patch candidate",
+        target_capability="code.implementation",
+    )
+
+    result = promote_candidate(
+        runtime,
+        candidate_id=candidate_id,
+        scope=scope,
+        loop_id="learn_test",
+        eval_result={**PASSING_EVAL, "gate_bundle": _l2_gate_bundle()},
+        health={"ok": True},
+    )
+
+    assert result["ok"] is False
+    assert result["applied"] is False
+    assert result["blocked_reason"] == "code_preflight_gate"
+    assert "side_effect" not in result
+    assert target.read_text(encoding="utf-8") == "VALUE = 'old'\n"
+    assert subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip() == seed_sha
+    preflights = runtime.store.list_records(kinds=["replay_result"], scope=scope, limit=10)
+    assert len(preflights) == 1
+    assert preflights[0].meta["report_type"] == "code_patch_preflight"
+    assert preflights[0].content["executed"] is True
+    assert preflights[0].content["verdict"] == "fail"
 
 
 def test_code_patch_rollout_writes_full_lifecycle_ledger(tmp_path, monkeypatch) -> None:
@@ -1264,11 +1488,12 @@ def test_l2_code_patch_blocks_when_post_deploy_health_fails(tmp_path, monkeypatc
     assert runtime.store.get_by_id(candidate_id).status == "candidate"
 
 
-def test_l2_code_patch_blocks_when_real_task_replay_gate_fails(tmp_path) -> None:
+def test_l2_code_patch_ignores_untrusted_replay_and_requires_executed_preflight(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path)
     scope = {"agent_id": "hongtu"}
     repo = tmp_path / "repo"
     repo.mkdir()
+    monkeypatch.setenv("EIMEMORY_AUTONOMOUS_CODE_REPO", str(repo))
     target = repo / "health_probe.py"
     target.write_text("VERSION = 'old'\n", encoding="utf-8")
     gate_bundle = _l2_gate_bundle()
@@ -1313,14 +1538,14 @@ def test_l2_code_patch_blocks_when_real_task_replay_gate_fails(tmp_path) -> None
     result = promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", eval_result=eval_result, health={"ok": True})
 
     assert result["ok"] is False
-    assert "real_task_replay_gate" in result["blocked_reason"]
+    assert result["blocked_reason"] == "code_patch_requires_verification_commands"
     assert target.read_text(encoding="utf-8") == "VERSION = 'old'\n"
     assert runtime.store.get_by_id(candidate_id).status == "candidate"
     ledger = runtime.get_policy_rollout_ledger(scope=scope, action="capability_promotion", limit=10)
     entry = next(item for item in ledger if item["promotion_id"] == result["promotion_request_id"])
     assert entry["source_opportunity_id"] == candidate_id
     assert entry["budget_decision"] == "blocked"
-    assert entry["reason"] == "real_task_replay_gate"
+    assert entry["reason"] == "code_patch_requires_verification_commands"
     assert entry["details"]["rollout_action"] == "gate_failed"
 
 

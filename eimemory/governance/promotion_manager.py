@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from dataclasses import asdict
 import fnmatch
+from hashlib import sha256
 import json
 import os
 from pathlib import Path, PurePosixPath
+import shutil
 import subprocess
 import sys
+import tempfile
 from typing import Any
 
 from eimemory.governance.learning_eval import REGRESSION_THRESHOLD, SAFETY_THRESHOLD
@@ -187,6 +190,15 @@ def promote_candidate(
         return {"ok": False, "applied": False, "blocked_reason": "l3_requires_approval", "promotion_request_id": request_id}
     eval_payload = eval_result or candidate.content.get("eval_result") or {}
     health_payload = health or {"ok": True}
+    if tier == "L2" and _promotion_target(candidate) in CODE_ASSET_TARGETS:
+        eval_payload, health_payload = _canonicalize_code_patch_evidence(
+            runtime,
+            candidate,
+            scope=scope,
+            loop_id=loop_id,
+            eval_result=eval_payload,
+            health=health_payload,
+        )
     gate = _rollout_gate(eval_payload, health_payload, tier=tier, candidate=candidate)
     if not gate["ok"]:
         _record_candidate_lifecycle(runtime, candidate, scope=scope, action_type="gate_failed", test_result=eval_payload, health_result=health_payload, reason=",".join(gate["blocked_reasons"]), details={"gate": gate})
@@ -299,6 +311,14 @@ def backfill_promotion_rollout_ledger(
 def _rollout_gate(eval_result: dict[str, Any], health: dict[str, Any], *, tier: str, candidate: RecordEnvelope) -> dict[str, Any]:
     scores = dict(eval_result.get("scores") or {})
     blocked = []
+    gate_bundle = _gate_bundle(candidate, eval_result)
+    target = _promotion_target(candidate)
+    if tier == "L2" and target in CODE_ASSET_TARGETS and not _code_preflight_gate(gate_bundle):
+        return {
+            "ok": False,
+            "blocked_reasons": [_code_preflight_blocked_reason(gate_bundle)],
+            "gate_bundle": gate_bundle,
+        }
     if str(eval_result.get("verdict") or "pass") != "pass":
         blocked.append("eval_not_pass")
     if _score_value(scores, "safety", default=1.0 if tier in {"L0", "L1"} else 0.0) < (0.95 if tier == "L2" else SAFETY_THRESHOLD):
@@ -307,7 +327,6 @@ def _rollout_gate(eval_result: dict[str, Any], health: dict[str, Any], *, tier: 
         blocked.append("regression_gate")
     if tier == "L2" and not health.get("ok", False):
         blocked.append("health_gate")
-    gate_bundle = _gate_bundle(candidate, eval_result)
     if tier == "L2":
         if not gate_bundle:
             blocked.append("gate_bundle_missing")
@@ -321,7 +340,6 @@ def _rollout_gate(eval_result: dict[str, Any], health: dict[str, Any], *, tier: 
             blocked.append("timeout_gate")
         if not bool((gate_bundle.get("audit") or {}).get("enabled")):
             blocked.append("audit_gate")
-        target = _promotion_target(candidate)
         if target in CODE_ASSET_TARGETS and not _real_task_replay_gate(gate_bundle):
             blocked.append("real_task_replay_gate")
         if target in {"prompt_policy", "system_prompt_patch"} and not _prompt_safety_gate(gate_bundle):
@@ -475,6 +493,519 @@ def _apply_memory_rule_candidate(
     return {"ok": True, "promotion_target": "memory_rule", "adapter": "rule", "applied_artifact_ids": [rule.record_id]}
 
 
+def run_code_patch_preflight(
+    runtime: Any,
+    patch: dict[str, Any],
+    *,
+    scope: dict[str, Any] | ScopeRef | None,
+    loop_id: str,
+) -> dict[str, Any]:
+    """Apply and verify an exact code patch in an isolated repository.
+
+    The returned report is persisted as a ``replay_result`` and is the only
+    accepted source for autonomous code replay/canary/doctor/smoke evidence.
+    """
+
+    repo_root = _code_repo_root(patch)
+    file_updates = _file_updates(patch)
+    verification_commands = _normalize_commands(
+        patch.get("verification_commands") or patch.get("verify_commands")
+    )
+    subject_commit = _current_commit_sha(repo_root, timeout_seconds=30) if repo_root else ""
+    subject_state_digest = _code_patch_subject_state_digest(repo_root, subject_commit=subject_commit)
+    patch_digest = _code_patch_digest(
+        patch,
+        repo_root=repo_root,
+        subject_commit=subject_commit,
+        subject_state_digest=subject_state_digest,
+        file_updates=file_updates,
+        verification_commands=verification_commands,
+    )
+    contract_error = ""
+    if repo_root is None:
+        contract_error = "code_patch_repo_root_missing"
+    elif not repo_root.exists() or not repo_root.is_dir():
+        contract_error = "code_patch_repo_root_not_found"
+    elif not file_updates:
+        contract_error = "code_patch_requires_file_updates"
+    elif not subject_state_digest:
+        contract_error = "code_patch_subject_state_unavailable"
+    else:
+        contract_error = _code_patch_contract_error(patch, repo_root=repo_root, file_updates=file_updates)
+
+    timeout_seconds = max(1, _int_value(patch.get("timeout_seconds"), default=300))
+    setup = {"ok": False, "mode": "", "reports": [], "error": contract_error}
+    verification: dict[str, Any] = {
+        "ok": False,
+        "skipped": True,
+        "reports": [],
+        "error_type": "preflight_not_started",
+    }
+    cleanup = {"ok": True, "skipped": True, "reports": []}
+    applied_paths: list[str] = []
+    patch_error = contract_error
+    temp_root: Path | None = None
+    sandbox_root: Path | None = None
+    sandbox_mode = ""
+
+    if not contract_error and repo_root is not None:
+        try:
+            temp_root = Path(tempfile.mkdtemp(prefix="eimemory-code-preflight-"))
+            sandbox_root = temp_root / "repo"
+            sandbox_mode, setup = _prepare_code_preflight_sandbox(
+                repo_root,
+                sandbox_root,
+                subject_commit=subject_commit,
+                timeout_seconds=timeout_seconds,
+            )
+        except Exception as exc:
+            setup = {
+                "ok": False,
+                "mode": sandbox_mode,
+                "reports": [],
+                "error": "code_preflight_setup_failed",
+                "detail": str(exc),
+            }
+        if setup.get("ok"):
+            applied, _backups, patch_error = _apply_file_updates(
+                sandbox_root,
+                file_updates,
+                allowed_files=_allowed_files(patch, file_updates),
+            )
+            applied_paths = [str(item.get("path") or "") for item in applied]
+            if not patch_error:
+                verification = _run_patch_commands(
+                    verification_commands,
+                    cwd=sandbox_root,
+                    timeout_seconds=timeout_seconds,
+                    phase="verify",
+                )
+        try:
+            cleanup = _cleanup_code_preflight_sandbox(
+                repo_root,
+                temp_root,
+                sandbox_root,
+                mode=sandbox_mode,
+                timeout_seconds=timeout_seconds,
+            )
+        except Exception as exc:
+            cleanup = {
+                "ok": False,
+                "skipped": False,
+                "reports": [],
+                "error": "code_preflight_cleanup_failed",
+                "detail": str(exc),
+            }
+            if temp_root is not None:
+                try:
+                    shutil.rmtree(temp_root)
+                except Exception:
+                    pass
+
+    command_reports = [dict(item) for item in verification.get("reports") or [] if isinstance(item, dict)]
+    executed = bool(command_reports)
+    verification_ok = bool(verification.get("ok")) and not bool(verification.get("skipped")) and executed
+    ok = bool(setup.get("ok")) and not patch_error and verification_ok and bool(cleanup.get("ok"))
+    pass_count = sum(1 for item in command_reports if item.get("ok") is True and item.get("returncode") == 0)
+    fail_count = max(0, len(command_reports) - pass_count)
+    scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+    record = RecordEnvelope.create(
+        kind="replay_result",
+        title=f"Code patch preflight: {str(patch.get('summary') or patch_digest[:12] or 'candidate')}",
+        summary=f"isolated code preflight verdict={'pass' if ok else 'fail'} commands={len(command_reports)}",
+        scope=scope_ref,
+        source="eimemory.code_patch_preflight",
+        status="pass" if ok else "fail",
+    )
+    evidence_ref = record.record_id
+    replay = {
+        "ok": ok,
+        "report_type": "code_patch_verification_replay",
+        "verdict": "pass" if ok else "fail",
+        "pass_rate": round(pass_count / len(command_reports), 3) if command_reports else 0.0,
+        "threshold": 1.0,
+        "sample_count": len(command_reports),
+        "pass_count": pass_count,
+        "fail_count": fail_count,
+        "executed": executed,
+        "skipped": bool(verification.get("skipped")),
+        "source": "eimemory.code_patch_preflight",
+        "evidence_ref": evidence_ref,
+        "subject_commit": subject_commit,
+        "subject_state_digest": subject_state_digest,
+        "patch_digest": patch_digest,
+    }
+    doctor = {
+        "ok": bool(setup.get("ok")) and not patch_error,
+        "executed": bool(setup.get("ok")),
+        "source": "eimemory.code_patch_preflight",
+        "evidence_ref": evidence_ref,
+        "sandbox_mode": sandbox_mode,
+    }
+    smoke = {
+        "ok": verification_ok,
+        "executed": executed,
+        "source": "eimemory.code_patch_preflight",
+        "evidence_ref": evidence_ref,
+        "command_count": len(command_reports),
+    }
+    report = {
+        "ok": ok,
+        "executed": executed,
+        "verdict": "pass" if ok else "fail",
+        "report_type": "code_patch_preflight",
+        "record_id": evidence_ref,
+        "loop_id": str(loop_id or ""),
+        "repo_root": str(repo_root or ""),
+        "subject_commit": subject_commit,
+        "subject_state_digest": subject_state_digest,
+        "patch_digest": patch_digest,
+        "sandbox_mode": sandbox_mode,
+        "setup": setup,
+        "applied_paths": applied_paths,
+        "patch_error": patch_error,
+        "verification": verification,
+        "cleanup": cleanup,
+        "replay": replay,
+        "doctor": doctor,
+        "smoke": smoke,
+    }
+    record.content = report
+    record.meta = {
+        "report_type": "code_patch_preflight",
+        "verdict": report["verdict"],
+        "executed": executed,
+        "subject_commit": subject_commit,
+        "subject_state_digest": subject_state_digest,
+        "patch_digest": patch_digest,
+        "command_count": len(command_reports),
+    }
+    runtime.store.append(record)
+    return report
+
+
+def _canonicalize_code_patch_evidence(
+    runtime: Any,
+    candidate: RecordEnvelope,
+    *,
+    scope: dict[str, Any] | ScopeRef | None,
+    loop_id: str,
+    eval_result: dict[str, Any],
+    health: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    patch = _candidate_patch(runtime, candidate, scope=scope)
+    preflight = _matching_code_preflight(runtime, patch, eval_result=eval_result, scope=scope)
+    if preflight is None:
+        preflight = run_code_patch_preflight(runtime, patch, scope=scope, loop_id=loop_id)
+    canonical_eval = dict(eval_result or {})
+    canonical_eval["gate_bundle"] = _canonical_code_gate_bundle(
+        _gate_bundle(candidate, canonical_eval),
+        preflight,
+    )
+    canonical_health = {
+        **dict(health or {}),
+        "ok": bool(preflight.get("ok")) and bool((preflight.get("doctor") or {}).get("ok")),
+        "source": "eimemory.code_patch_preflight",
+        "evidence_ref": str(preflight.get("record_id") or ""),
+        "subject_commit": str(preflight.get("subject_commit") or ""),
+    }
+    return canonical_eval, canonical_health
+
+
+def _matching_code_preflight(
+    runtime: Any,
+    patch: dict[str, Any],
+    *,
+    eval_result: dict[str, Any],
+    scope: dict[str, Any] | ScopeRef | None,
+) -> dict[str, Any] | None:
+    gate_bundle = eval_result.get("gate_bundle") if isinstance(eval_result.get("gate_bundle"), dict) else {}
+    supplied = gate_bundle.get("code_preflight") if isinstance(gate_bundle.get("code_preflight"), dict) else {}
+    record_id = str(supplied.get("record_id") or "").strip()
+    if not record_id:
+        return None
+    record = runtime.store.get_by_id(record_id, scope=scope)
+    if record is None or record.kind != "replay_result" or record.source != "eimemory.code_patch_preflight":
+        return None
+    content = dict(record.content or {})
+    repo_root = _code_repo_root(patch)
+    file_updates = _file_updates(patch)
+    if (
+        repo_root is None
+        or not repo_root.exists()
+        or not repo_root.is_dir()
+        or not file_updates
+        or _code_patch_contract_error(patch, repo_root=repo_root, file_updates=file_updates)
+    ):
+        return None
+    subject_commit = _current_commit_sha(repo_root, timeout_seconds=30) if repo_root else ""
+    subject_state_digest = _code_patch_subject_state_digest(repo_root, subject_commit=subject_commit)
+    expected_digest = _code_patch_digest(
+        patch,
+        repo_root=repo_root,
+        subject_commit=subject_commit,
+        subject_state_digest=subject_state_digest,
+        file_updates=file_updates,
+        verification_commands=_normalize_commands(
+            patch.get("verification_commands") or patch.get("verify_commands")
+        ),
+    )
+    if str(content.get("record_id") or "") != record_id:
+        return None
+    if str(content.get("patch_digest") or "") != expected_digest:
+        return None
+    if str(content.get("subject_commit") or "") != subject_commit:
+        return None
+    if str(content.get("subject_state_digest") or "") != subject_state_digest:
+        return None
+    if not _code_preflight_report_passed(content):
+        return None
+    return content
+
+
+def _canonical_code_gate_bundle(existing: dict[str, Any], preflight: dict[str, Any]) -> dict[str, Any]:
+    evidence_ref = str(preflight.get("record_id") or "")
+    result = dict(existing or {})
+    result.pop("prompt_shadow_eval", None)
+    result.pop("prompt_injection_check", None)
+    result["evidence"] = [
+        {
+            "tier": "T1",
+            "ref": evidence_ref,
+            "summary": "Exact code patch executed in isolated preflight.",
+            "executed": bool(preflight.get("executed")),
+        }
+    ]
+    result["code_preflight"] = dict(preflight)
+    result["rollback"] = {
+        "available": True,
+        "executable": True,
+        "method": "restore_file_backups_or_revert_commit",
+        "source": "eimemory.promotion_manager",
+    }
+    result["canary"] = {
+        "passed": bool(preflight.get("ok")),
+        "executed": bool(preflight.get("executed")),
+        "blast_radius": "low",
+        "mode": str(preflight.get("sandbox_mode") or "isolated_preflight"),
+        "evidence_ref": evidence_ref,
+    }
+    result["closed_loop"] = {
+        "doctor": dict(preflight.get("doctor") or {}),
+        "smoke": dict(preflight.get("smoke") or {}),
+    }
+    result["real_task_replay"] = dict(preflight.get("replay") or {})
+    result["timeout_seconds"] = max(1, _int_value(result.get("timeout_seconds"), default=300))
+    result["audit"] = {"enabled": True, "ledger": "promotion_request", "evidence_ref": evidence_ref}
+    return result
+
+
+def _code_preflight_gate(gate_bundle: dict[str, Any]) -> bool:
+    preflight = gate_bundle.get("code_preflight") if isinstance(gate_bundle.get("code_preflight"), dict) else {}
+    if not _code_preflight_report_passed(preflight):
+        return False
+    evidence_ref = str(preflight.get("record_id") or "")
+    if not evidence_ref:
+        return False
+    replay = gate_bundle.get("real_task_replay") if isinstance(gate_bundle.get("real_task_replay"), dict) else {}
+    canary = gate_bundle.get("canary") if isinstance(gate_bundle.get("canary"), dict) else {}
+    closed_loop = gate_bundle.get("closed_loop") if isinstance(gate_bundle.get("closed_loop"), dict) else {}
+    doctor = closed_loop.get("doctor") if isinstance(closed_loop.get("doctor"), dict) else {}
+    smoke = closed_loop.get("smoke") if isinstance(closed_loop.get("smoke"), dict) else {}
+    if str(replay.get("report_type") or "") != "code_patch_verification_replay":
+        return False
+    if not bool(replay.get("ok")) or not bool(replay.get("executed")) or bool(replay.get("skipped")):
+        return False
+    if str(replay.get("evidence_ref") or "") != evidence_ref:
+        return False
+    for item in (canary, doctor, smoke):
+        if not bool(item.get("executed")) or str(item.get("evidence_ref") or "") != evidence_ref:
+            return False
+    return bool(canary.get("passed")) and bool(doctor.get("ok")) and bool(smoke.get("ok"))
+
+
+def _code_preflight_blocked_reason(gate_bundle: dict[str, Any]) -> str:
+    preflight = gate_bundle.get("code_preflight") if isinstance(gate_bundle.get("code_preflight"), dict) else {}
+    setup = preflight.get("setup") if isinstance(preflight.get("setup"), dict) else {}
+    for value in (preflight.get("patch_error"), setup.get("error")):
+        reason = str(value or "").strip()
+        if reason.startswith("code_patch_"):
+            return reason
+    return "code_preflight_gate"
+
+
+def _code_preflight_report_passed(report: dict[str, Any]) -> bool:
+    if not bool(report.get("ok")) or not bool(report.get("executed")) or str(report.get("verdict") or "") != "pass":
+        return False
+    verification = report.get("verification") if isinstance(report.get("verification"), dict) else {}
+    reports = [dict(item) for item in verification.get("reports") or [] if isinstance(item, dict)]
+    if not bool(verification.get("ok")) or bool(verification.get("skipped")) or not reports:
+        return False
+    if not all(item.get("ok") is True and item.get("returncode") == 0 for item in reports):
+        return False
+    cleanup = report.get("cleanup") if isinstance(report.get("cleanup"), dict) else {}
+    return bool(cleanup.get("ok"))
+
+
+def _code_patch_digest(
+    patch: dict[str, Any],
+    *,
+    repo_root: Path | None,
+    subject_commit: str,
+    subject_state_digest: str,
+    file_updates: list[dict[str, str]],
+    verification_commands: list[str | list[str]],
+) -> str:
+    payload = {
+        "repo_root": str(repo_root.resolve()) if repo_root else "",
+        "subject_commit": str(subject_commit or ""),
+        "subject_state_digest": str(subject_state_digest or ""),
+        "allowed_files": sorted(_declared_allowed_files(patch)),
+        "file_updates": sorted(file_updates, key=lambda item: (item["path"], item["content"])),
+        "verification_commands": verification_commands,
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _code_patch_subject_state_digest(repo_root: Path | None, *, subject_commit: str) -> str:
+    if repo_root is None or not repo_root.exists() or not repo_root.is_dir():
+        return ""
+    if subject_commit:
+        encoded = f"git:{subject_commit}".encode("utf-8")
+        return sha256(encoded).hexdigest()
+    ignored_parts = {".git", ".venv", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache"}
+    digest = sha256()
+    try:
+        paths = sorted(
+            (
+                path
+                for path in repo_root.rglob("*")
+                if not any(part in ignored_parts for part in path.relative_to(repo_root).parts)
+            ),
+            key=lambda path: path.relative_to(repo_root).as_posix(),
+        )
+        for path in paths:
+            relative = path.relative_to(repo_root).as_posix()
+            if path.is_symlink():
+                digest.update(f"link:{relative}\0{os.readlink(path)}\0".encode("utf-8"))
+                continue
+            if not path.is_file():
+                continue
+            digest.update(f"file:{relative}\0".encode("utf-8"))
+            with path.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            digest.update(b"\0")
+    except Exception:
+        return ""
+    return digest.hexdigest()
+
+
+def _code_preflight_subject_matches(gate_bundle: dict[str, Any], *, repo_root: Path) -> bool:
+    preflight = gate_bundle.get("code_preflight") if isinstance(gate_bundle.get("code_preflight"), dict) else {}
+    expected_commit = str(preflight.get("subject_commit") or "")
+    expected_state_digest = str(preflight.get("subject_state_digest") or "")
+    if not expected_state_digest:
+        return False
+    current_commit = _current_commit_sha(repo_root, timeout_seconds=30)
+    current_state_digest = _code_patch_subject_state_digest(repo_root, subject_commit=current_commit)
+    return expected_commit == current_commit and expected_state_digest == current_state_digest
+
+
+def _prepare_code_preflight_sandbox(
+    repo_root: Path,
+    sandbox_root: Path,
+    *,
+    subject_commit: str,
+    timeout_seconds: int,
+) -> tuple[str, dict[str, Any]]:
+    git_probe = subprocess.run(
+        ["git", "-C", str(repo_root), "rev-parse", "--is-inside-work-tree"],
+        text=True,
+        capture_output=True,
+        timeout=timeout_seconds,
+        check=False,
+    )
+    if git_probe.returncode == 0 and git_probe.stdout.strip().lower() == "true":
+        command = ["git", "-C", str(repo_root), "worktree", "add", "--detach", str(sandbox_root), subject_commit or "HEAD"]
+        result = subprocess.run(
+            command,
+            text=True,
+            capture_output=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+        report = {
+            "ok": result.returncode == 0,
+            "mode": "git_worktree",
+            "reports": [
+                {
+                    "command": command,
+                    "returncode": result.returncode,
+                    "stdout": (result.stdout or "")[-4000:],
+                    "stderr": (result.stderr or "")[-4000:],
+                    "ok": result.returncode == 0,
+                }
+            ],
+            "error": "" if result.returncode == 0 else "git_worktree_add_failed",
+        }
+        return "git_worktree", report
+    try:
+        shutil.copytree(
+            repo_root,
+            sandbox_root,
+            ignore=shutil.ignore_patterns(".git", ".venv", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache"),
+        )
+    except Exception as exc:
+        return "copy", {"ok": False, "mode": "copy", "reports": [], "error": str(exc)}
+    return "copy", {"ok": True, "mode": "copy", "reports": [], "error": ""}
+
+
+def _cleanup_code_preflight_sandbox(
+    repo_root: Path,
+    temp_root: Path | None,
+    sandbox_root: Path | None,
+    *,
+    mode: str,
+    timeout_seconds: int,
+) -> dict[str, Any]:
+    if temp_root is None:
+        return {"ok": True, "skipped": True, "reports": []}
+    reports: list[dict[str, Any]] = []
+    ok = True
+    if mode == "git_worktree" and sandbox_root is not None:
+        command = ["git", "-C", str(repo_root), "worktree", "remove", "--force", str(sandbox_root)]
+        result = subprocess.run(command, text=True, capture_output=True, timeout=timeout_seconds, check=False)
+        reports.append(
+            {
+                "command": command,
+                "returncode": result.returncode,
+                "stdout": (result.stdout or "")[-4000:],
+                "stderr": (result.stderr or "")[-4000:],
+                "ok": result.returncode == 0,
+            }
+        )
+        ok = result.returncode == 0
+        if ok:
+            subprocess.run(
+                ["git", "-C", str(repo_root), "worktree", "prune"],
+                text=True,
+                capture_output=True,
+                timeout=timeout_seconds,
+                check=False,
+            )
+    if ok:
+        try:
+            shutil.rmtree(temp_root)
+        except FileNotFoundError:
+            pass
+        except Exception as exc:
+            ok = False
+            reports.append({"command": ["remove_tree", str(temp_root)], "returncode": None, "stderr": str(exc), "ok": False})
+    return {"ok": ok, "skipped": False, "reports": reports}
+
+
 def _apply_code_patch_candidate(
     runtime: Any,
     candidate: RecordEnvelope,
@@ -498,8 +1029,16 @@ def _apply_code_patch_candidate(
     contract_error = _code_patch_contract_error(patch, repo_root=repo_root, file_updates=file_updates)
     if contract_error:
         return {"ok": False, "blocked_reason": contract_error, "promotion_target": "code_patch", "repo_root": str(repo_root)}
-    allowed_files = _allowed_files(patch, file_updates)
     gate_bundle = gate.get("gate_bundle") if isinstance(gate.get("gate_bundle"), dict) else {}
+    if not _code_preflight_subject_matches(gate_bundle, repo_root=repo_root):
+        return {
+            "ok": False,
+            "blocked_reason": "code_patch_subject_changed",
+            "promotion_target": "code_patch",
+            "repo_root": str(repo_root),
+            "repo_mutated": False,
+        }
+    allowed_files = _allowed_files(patch, file_updates)
     timeout_seconds = _int_value(patch.get("timeout_seconds"), default=_int_value(gate_bundle.get("timeout_seconds"), default=300))
     timeout_seconds = max(1, timeout_seconds)
     prior_commit_sha = _current_commit_sha(repo_root, timeout_seconds=timeout_seconds)
@@ -1026,7 +1565,7 @@ def _code_patch_contract_error(patch: dict[str, Any], *, repo_root: Path, file_u
             return "code_patch_requires_commit_to_repo"
         if not _rollback_commands(patch):
             return "code_patch_requires_rollback_plan"
-    if _truthy(patch.get("commit_to_repo"), default=False) and _repo_has_dirty_worktree(repo_root):
+    if _repo_has_dirty_worktree(repo_root):
         return "code_patch_repo_not_clean"
     return ""
 
@@ -1228,6 +1767,13 @@ def _rollback_command_display(patch: dict[str, Any]) -> str:
 
 def _run_patch_commands(commands: Any, *, cwd: Path, timeout_seconds: int, phase: str) -> dict[str, Any]:
     normalized = _normalize_commands(commands)
+    if not normalized and str(phase or "").startswith("verify"):
+        return {
+            "ok": False,
+            "reports": [],
+            "skipped": True,
+            "error_type": "missing_required_commands",
+        }
     reports: list[dict[str, Any]] = []
     for command in normalized:
         if isinstance(command, str):

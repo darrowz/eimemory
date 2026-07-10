@@ -292,10 +292,79 @@ def test_autonomous_evolution_applies_structured_code_patch_from_bad_outcome(tmp
     assert report["applied_count"] == 1
     assert report["applied_patches"][0]["patch_type"] == "code_patch"
     assert report["applied_patches"][0]["side_effect"]["adapter"] == "direct_repo_patch"
+    isolated = report["applied_patches"][0]["isolated_evaluator"]
+    preflight = isolated["preflight"]
+    assert preflight["ok"] is True
+    assert preflight["executed"] is True
+    assert preflight["record_id"]
+    assert preflight["verification"]["skipped"] is False
+    assert preflight["verification"]["reports"]
+    promotion = runtime.store.get_by_id(report["applied_patches"][0]["promotion_id"], scope=scope)
+    assert promotion is not None
+    gate_bundle = promotion.content["eval_result"]["gate_bundle"]
+    evidence_id = preflight["record_id"]
+    assert gate_bundle["code_preflight"]["record_id"] == evidence_id
+    assert gate_bundle["real_task_replay"]["executed"] is True
+    assert gate_bundle["real_task_replay"]["evidence_ref"] == evidence_id
+    assert gate_bundle["canary"]["executed"] is True
+    assert gate_bundle["canary"]["evidence_ref"] == evidence_id
+    assert gate_bundle["closed_loop"]["doctor"]["evidence_ref"] == evidence_id
+    assert gate_bundle["closed_loop"]["smoke"]["evidence_ref"] == evidence_id
+    assert "prompt_shadow_eval" not in gate_bundle
+    assert "prompt_injection_check" not in gate_bundle
     assert target.read_text(encoding="utf-8") == "VALUE = 'fixed'\n"
     ledger = runtime.get_policy_rollout_ledger(scope=scope, action="capability_promotion", limit=10)
     assert report["rollout_ledger_ids"] == [report["applied_patches"][0]["rollout_ledger_id"]]
     assert any(item["promotion_id"] == report["applied_patches"][0]["promotion_id"] for item in ledger)
+
+
+def test_autonomous_evolution_blocks_code_patch_without_verification_before_evaluator(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = {"agent_id": "hongtu", "workspace_id": "code", "user_id": "darrow"}
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setenv("EIMEMORY_AUTONOMOUS_CODE_REPO", str(repo))
+    target = repo / "module.py"
+    target.write_text("VALUE = 'broken'\n", encoding="utf-8")
+    event = runtime.record_event(
+        {
+            "id": "evt_code_missing_verify",
+            "timestamp": "2026-07-10T10:00:00+08:00",
+            "source": "autonomous_test",
+            "user_phrase": "fix module without a verification command",
+            "event_type": "code.implementation",
+            "goal": "module is corrected",
+            "confidence": 0.92,
+        },
+        scope=scope,
+    )
+    runtime.record_outcome(
+        event["id"],
+        {
+            "outcome": "bad",
+            "reason": "module returned broken value",
+            "policy_update": "apply the direct code patch",
+            "source_trust": "system_verified",
+            "code_patch": {
+                "summary": "Fix broken VALUE constant",
+                "repo_root": str(repo),
+                "apply_to_repo": True,
+                "deploy_to_production": False,
+                "commit_to_repo": False,
+                "allowed_files": ["module.py"],
+                "file_updates": [{"path": "module.py", "content": "VALUE = 'fixed'\n"}],
+            },
+        },
+        scope=scope,
+    )
+
+    report = run_autonomous_evolution(runtime, scope=scope, apply=True, max_apply=1)
+
+    assert report["applied_count"] == 0
+    assert report["experiments"][0]["evaluation"]["blocked_reason"] == "missing_verification_commands"
+    assert report["blocked_patches"][0]["blocked_reason"] == "missing_verification_commands"
+    assert target.read_text(encoding="utf-8") == "VALUE = 'broken'\n"
+    assert runtime.store.list_records(kinds=["evaluation_packet"], scope=scope, limit=10) == []
 
 
 def test_autonomous_evolution_blocks_code_patch_when_evaluator_is_not_isolated(tmp_path, monkeypatch) -> None:
@@ -350,7 +419,7 @@ def test_autonomous_evolution_blocks_code_patch_when_evaluator_is_not_isolated(t
     assert target.read_text(encoding="utf-8") == "VALUE = 'broken'\n"
 
 
-def test_autonomous_evolution_counts_code_patch_rollbacks(tmp_path, monkeypatch) -> None:
+def test_autonomous_evolution_rejects_failed_code_patch_before_repo_mutation(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path)
     scope = {"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"}
     repo = tmp_path / "repo"
@@ -395,7 +464,10 @@ def test_autonomous_evolution_counts_code_patch_rollbacks(tmp_path, monkeypatch)
     report = run_autonomous_evolution(runtime, scope=scope, apply=True, max_apply=1)
 
     assert report["applied_count"] == 0
-    assert report["rolled_back_count"] == 1
+    assert report["rolled_back_count"] == 0
     assert report["rollback_failed_count"] == 0
-    assert report["blocked_patches"][0]["apply_result"]["side_effect"]["rolled_back"] is True
+    assert report["blocked_patches"][0]["blocked_reason"] == "isolated_evaluator_reject"
+    preflight = report["blocked_patches"][0]["isolated_evaluator"]["preflight"]
+    assert preflight["executed"] is True
+    assert preflight["verification"]["ok"] is False
     assert target.read_text(encoding="utf-8") == "VALUE = 'broken'\n"
