@@ -325,6 +325,74 @@ def test_openclaw_agent_end_records_success_outcome_trace(tmp_path, monkeypatch)
     assert payload["operator_gap"] == {"missing": "none"}
 
 
+@pytest.mark.parametrize("verification_state", ["not_run", "not run", "skipped", "missing", "unknown", "uncertain"])
+def test_openclaw_agent_end_does_not_pass_unexecuted_or_unknown_verification(
+    tmp_path, monkeypatch, verification_state: str
+) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    hooks = OpenClawMemoryHooks(runtime)
+    traces: list[dict] = []
+
+    def fake_record_outcome_trace(payload: dict, *, scope: dict) -> dict:
+        traces.append(payload)
+        return {"id": "trace-not-run"}
+
+    monkeypatch.setattr(runtime, "record_outcome_trace", fake_record_outcome_trace, raising=False)
+
+    hooks.on_agent_end(
+        {
+            "session_id": f"sess-{verification_state}",
+            "agent_id": "main",
+            "workspace_id": "repo-x",
+            "user_id": "darrow",
+            "query": "verify dashboard",
+            "verification": verification_state,
+            "outcome": {"success": True, "verified": True},
+        }
+    )
+
+    assert traces[0]["verifier"]["passed"] is False
+
+
+def test_openclaw_probe_contract_without_rehearsal_is_rejected_by_outcome_recorder(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    hooks = OpenClawMemoryHooks(runtime)
+    scope = {"tenant_id": "default", "agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"}
+    source = runtime.store.append(
+        RecordEnvelope.create(
+            kind="reflection",
+            title="Probe source evidence",
+            summary="verified official source",
+            scope=ScopeRef.from_dict(scope),
+        )
+    )
+    contract = {
+        "schema_version": "capability_contract.v1",
+        "capability": "search.discovery",
+        "case_id": "search_primary_source",
+        "observations": {"source_tier": "official", "source_verified": True},
+        "checks": [{"name": "official_source", "passed": True, "evidence_ref": source.record_id}],
+        "source_record_ids": [source.record_id],
+        "probe": True,
+    }
+
+    result = hooks.on_agent_end(
+        {
+            "session_id": "sess-probe-without-rehearsal",
+            "agent_id": "main",
+            "workspace_id": "repo-x",
+            "user_id": "darrow",
+            "query": "verify official source",
+            "capability_contract": contract,
+            "outcome": {"success": True, "verified": True, "verification": "source checked"},
+        }
+    )
+
+    assert result["outcome_trace"]["ok"] is False
+    assert "probe" in result["outcome_trace"]["error"]
+    assert "rehearsal" in result["outcome_trace"]["error"]
+
+
 def test_openclaw_agent_end_rate_limit_cooldown_success_is_bad_trace(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path)
     hooks = OpenClawMemoryHooks(runtime)

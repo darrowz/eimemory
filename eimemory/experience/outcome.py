@@ -33,6 +33,11 @@ def record_outcome_trace(runtime: Any, payload: dict[str, Any], scope: dict | Sc
         )
         if error:
             return {"ok": False, "error": error}
+        outcome = payload.get("outcome")
+        if contract.get("probe") is True and (
+            not isinstance(outcome, dict) or outcome.get("rehearsal") is not True
+        ):
+            return {"ok": False, "error": "capability contract probe requires outcome.rehearsal to be true"}
         for source_id in contract_source_ids(contract):
             if runtime.store.get_by_id(source_id, scope=scope_ref) is None:
                 return {"ok": False, "error": f"capability contract source record unavailable in scope: {source_id}"}

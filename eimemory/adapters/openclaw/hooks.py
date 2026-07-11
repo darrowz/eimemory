@@ -1927,7 +1927,18 @@ class OpenClawMemoryHooks:
         verified = self._bool_or_none(outcome.get("verified"))
         if verified is None:
             verified = self._bool_or_none(event.get("verified"))
-        passed = bool(status == "success" and success is True and verification and verified is not False)
+        verification_states = {
+            " ".join(str(value or "").strip().lower().replace("_", " ").replace("-", " ").split())
+            for value in (verification, result, status)
+        }
+        unexecuted_states = {"not run", "skipped", "missing", "unknown", "uncertain"}
+        passed = bool(
+            status == "success"
+            and success is True
+            and verification
+            and verified is not False
+            and verification_states.isdisjoint(unexecuted_states)
+        )
         payload = {
             "source": f"openclaw.{end_kind}",
             "session_id": self._session_id_from_event(event),

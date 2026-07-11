@@ -209,6 +209,44 @@ def test_record_outcome_trace_rejects_invalid_source_id_without_normalizing_it_a
     assert "source_record_ids" in result["error"]
 
 
+@pytest.mark.parametrize("rehearsal", [None, False, "true", 1])
+def test_record_outcome_trace_rejects_probe_contract_without_strict_rehearsal_true(
+    tmp_path, rehearsal: object
+) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "contract-agent", "workspace_id": "contract-workspace"}
+    source = _source_record(runtime, scope)
+    contract = _capability_contract(source.record_id, probe=True)
+    outcome = {"status": "success"}
+    if rehearsal is not None:
+        outcome["rehearsal"] = rehearsal
+
+    result = record_outcome_trace(
+        runtime,
+        _payload(capability_contract=contract, outcome=outcome),
+        scope=scope,
+    )
+
+    assert result["ok"] is False
+    assert "probe" in result["error"]
+    assert "rehearsal" in result["error"]
+
+
+def test_record_outcome_trace_accepts_probe_contract_with_strict_rehearsal_true(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "contract-agent", "workspace_id": "contract-workspace"}
+    source = _source_record(runtime, scope)
+    contract = _capability_contract(source.record_id, probe=True)
+
+    result = record_outcome_trace(
+        runtime,
+        _payload(capability_contract=contract, outcome={"status": "success", "rehearsal": True}),
+        scope=scope,
+    )
+
+    assert result["ok"] is True
+
+
 def test_record_outcome_trace_writes_reflection_with_diagnosis_and_schema(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     scope = {"tenant_id": "tenant-a", "agent_id": "eibrain", "workspace_id": "repo"}
