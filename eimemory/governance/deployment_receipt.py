@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from dataclasses import asdict
 import json
+import os
 from pathlib import Path
+from pathlib import PurePosixPath
 import re
+import stat
 import subprocess
 import tomllib
 from typing import Any
@@ -17,6 +20,9 @@ from eimemory.models.records import ScopeRef
 
 MAX_HEALTH_RESPONSE_BYTES = 64 * 1024
 RELEASE_IDENTITY_PATHS = ("pyproject.toml", "eimemory/version.py")
+DEFAULT_DEPLOYMENT_REPO_ROOT = "/dev-project/eimemory"
+DEFAULT_DEPLOYMENT_CURRENT_LINK = "/opt/eimemory/current"
+DEFAULT_DEPLOYMENT_HEALTH_URL = "http://127.0.0.1:8091/health"
 
 
 def verify_and_record_deployment(
@@ -31,11 +37,29 @@ def verify_and_record_deployment(
     """Cross-check a live immutable release and persist its executed receipt."""
 
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
-    repo = Path(repo_root).expanduser().resolve()
-    link = Path(current_link).expanduser().absolute()
+    caller_repo = Path(repo_root).expanduser().resolve()
+    trusted_repo = Path(
+        os.environ.get("EIMEMORY_DEPLOYMENT_REPO_ROOT", DEFAULT_DEPLOYMENT_REPO_ROOT)
+    ).expanduser().resolve()
+    if _normalized_path_key(caller_repo) != _normalized_path_key(trusted_repo):
+        return {"ok": False, "error": "untrusted_repo_root"}
+    caller_link = Path(current_link).expanduser().absolute()
+    trusted_link = Path(
+        os.environ.get("EIMEMORY_DEPLOYMENT_CURRENT_LINK", DEFAULT_DEPLOYMENT_CURRENT_LINK)
+    ).expanduser().absolute()
+    if _normalized_path_key(caller_link) != _normalized_path_key(trusted_link):
+        return {"ok": False, "error": "untrusted_current_link"}
     normalized_health_url = _normalize_health_url(str(health_url or ""))
     if not normalized_health_url:
         return {"ok": False, "error": "health_url_scheme_not_allowed"}
+    trusted_health_url = _normalize_health_url(
+        os.environ.get("EIMEMORY_DEPLOYMENT_HEALTH_URL", DEFAULT_DEPLOYMENT_HEALTH_URL)
+    )
+    if not trusted_health_url or normalized_health_url != trusted_health_url:
+        return {"ok": False, "error": "untrusted_health_url"}
+    repo = trusted_repo
+    link = trusted_link
+    normalized_health_url = trusted_health_url
     if not (repo / ".git").exists():
         return {"ok": False, "error": "repo_not_git_checkout"}
     head = _git(repo, "rev-parse", "HEAD")
@@ -54,25 +78,39 @@ def verify_and_record_deployment(
         release = link.resolve(strict=True)
     except OSError:
         return {"ok": False, "error": "current_link_unresolvable"}
+    literal_releases_root = link.parent / "releases"
+    literal_expected_release = literal_releases_root / head
+    if (
+        not literal_releases_root.is_dir()
+        or _is_link_like(literal_releases_root)
+        or not literal_expected_release.is_dir()
+        or _is_link_like(literal_expected_release)
+    ):
+        return {"ok": False, "error": "current_release_untrusted"}
     try:
-        trusted_releases_root = (link.parent / "releases").resolve(strict=True)
-        expected_release = (trusted_releases_root / head).resolve(strict=True)
+        trusted_releases_root = literal_releases_root.resolve(strict=True)
+        expected_release = literal_expected_release.resolve(strict=True)
     except OSError:
         return {"ok": False, "error": "current_release_untrusted"}
     if (
         not release.is_dir()
         or release != expected_release
         or release.name != head
-        or not expected_release.is_relative_to(trusted_releases_root)
+        or expected_release.parent != trusted_releases_root
     ):
         return {"ok": False, "error": "current_release_untrusted"}
     release_identity_error = _release_identity_error(repo, release, head=head)
     if release_identity_error:
         return release_identity_error
+    release_tree_error = _release_tree_error(repo, release, head=head)
+    if release_tree_error:
+        return release_tree_error
     health = _fetch_health(normalized_health_url)
     if health.get("_fetch_error"):
         if health["_fetch_error"] == "health_response_too_large":
             return {"ok": False, "error": "health_response_too_large"}
+        if health["_fetch_error"] == "health_redirect_not_allowed":
+            return {"ok": False, "error": "health_redirect_not_allowed"}
         return {"ok": False, "error": "health_fetch_failed", "detail": health["_fetch_error"]}
     identity_error = _health_identity_error(
         health,
@@ -247,6 +285,9 @@ def _is_rollback_ancestor(repo: Path, prior_commit: str, head: str) -> bool:
 def _fetch_health(url: str) -> dict[str, Any]:
     try:
         with urlopen(url, timeout=5) as response:
+            final_url = _normalize_health_url(str(response.geturl() or ""))
+            if not final_url or final_url != url:
+                return {"_fetch_error": "health_redirect_not_allowed"}
             content_length = str(response.headers.get("Content-Length") or "").strip()
             if content_length and int(content_length) > MAX_HEALTH_RESPONSE_BYTES:
                 return {"_fetch_error": "health_response_too_large"}
@@ -279,6 +320,13 @@ def _normalized_path_key(path: Path) -> str:
     return str(path.expanduser().absolute()).replace("\\", "/").rstrip("/").casefold()
 
 
+def _is_link_like(path: Path) -> bool:
+    try:
+        return path.is_symlink() or bool(getattr(path, "is_junction", lambda: False)())
+    except OSError:
+        return True
+
+
 def _release_identity_error(repo: Path, release: Path, *, head: str) -> dict[str, Any]:
     for relative_path in RELEASE_IDENTITY_PATHS:
         expected = _git_blob(repo, head=head, relative_path=relative_path)
@@ -291,6 +339,99 @@ def _release_identity_error(repo: Path, release: Path, *, head: str) -> dict[str
         if observed != expected:
             return {"ok": False, "error": "release_identity_mismatch", "path": relative_path}
     return {}
+
+
+def _release_tree_error(repo: Path, release: Path, *, head: str) -> dict[str, Any]:
+    entries = _git_tree_entries(repo, head=head)
+    if entries is None:
+        return {"ok": False, "error": "repo_release_tree_unavailable"}
+    for mode, object_id, relative_path in entries:
+        git_path = PurePosixPath(relative_path)
+        if (
+            not relative_path
+            or git_path.is_absolute()
+            or ".." in git_path.parts
+            or "\\" in relative_path
+        ):
+            return {"ok": False, "error": "repo_release_tree_unavailable", "path": relative_path}
+        destination = release.joinpath(*git_path.parts)
+        parent = release
+        for part in git_path.parts[:-1]:
+            parent = parent / part
+            if not parent.is_dir() or _is_link_like(parent):
+                return {"ok": False, "error": "release_tree_mismatch", "path": relative_path}
+            try:
+                if not parent.resolve(strict=True).is_relative_to(release):
+                    return {"ok": False, "error": "release_tree_mismatch", "path": relative_path}
+            except OSError:
+                return {"ok": False, "error": "release_tree_mismatch", "path": relative_path}
+        expected = _git_blob_by_id(repo, object_id)
+        if expected is None:
+            return {"ok": False, "error": "repo_release_tree_unavailable", "path": relative_path}
+        if mode == "120000":
+            if not destination.is_symlink():
+                return {"ok": False, "error": "release_tree_mismatch", "path": relative_path}
+            try:
+                observed = os.fsencode(os.readlink(destination))
+            except OSError:
+                return {"ok": False, "error": "release_tree_mismatch", "path": relative_path}
+        elif mode in {"100644", "100755"}:
+            if not destination.is_file() or _is_link_like(destination):
+                return {"ok": False, "error": "release_tree_mismatch", "path": relative_path}
+            try:
+                observed = destination.read_bytes()
+                executable = bool(destination.stat().st_mode & stat.S_IXUSR)
+            except OSError:
+                return {"ok": False, "error": "release_tree_mismatch", "path": relative_path}
+            if os.name != "nt" and (mode == "100755") != executable:
+                return {"ok": False, "error": "release_tree_mismatch", "path": relative_path}
+        else:
+            return {"ok": False, "error": "repo_release_tree_unavailable", "path": relative_path}
+        if observed != expected:
+            return {"ok": False, "error": "release_tree_mismatch", "path": relative_path}
+    return {}
+
+
+def _git_tree_entries(repo: Path, *, head: str) -> list[tuple[str, str, str]] | None:
+    try:
+        result = subprocess.run(
+            ["git", "ls-tree", "-r", "-z", head],
+            cwd=repo,
+            check=False,
+            capture_output=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    entries: list[tuple[str, str, str]] = []
+    try:
+        for raw_entry in result.stdout.split(b"\0"):
+            if not raw_entry:
+                continue
+            metadata, raw_path = raw_entry.split(b"\t", 1)
+            mode, object_type, object_id = metadata.decode("ascii").split(" ", 2)
+            if object_type != "blob":
+                return None
+            entries.append((mode, object_id, os.fsdecode(raw_path)))
+    except (UnicodeDecodeError, ValueError):
+        return None
+    return entries
+
+
+def _git_blob_by_id(repo: Path, object_id: str) -> bytes | None:
+    try:
+        result = subprocess.run(
+            ["git", "cat-file", "blob", object_id],
+            cwd=repo,
+            check=False,
+            capture_output=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return bytes(result.stdout) if result.returncode == 0 else None
 
 
 def _git_blob(repo: Path, *, head: str, relative_path: str) -> bytes | None:

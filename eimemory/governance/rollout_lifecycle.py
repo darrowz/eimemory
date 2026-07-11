@@ -34,39 +34,50 @@ def is_executed_rollback_ledger_record(item: dict[str, Any]) -> bool:
     execution = rollback or side_rollback
     if execution.get("ok") is not True or execution.get("skipped") is True:
         return False
-    top_level_identities = _rollback_ledger_identities(item)
-    if not top_level_identities:
-        return False
     if action in {"rollback", "quarantine"}:
         if str(item.get("budget_decision") or "").strip().lower() not in {"ok", "manual_ok"}:
             return False
         if not str(item.get("applied_pattern_id") or "").strip():
             return False
-    return _has_verifiable_rollback_execution(
-        execution,
-        top_level_identities=top_level_identities,
-    )
+    if str(execution.get("execution_type") or "").strip() == "intent_pattern_status_transition":
+        return _is_verified_policy_transition(item, execution)
+    return _is_verified_candidate_rollback(item, execution)
 
 
-def _has_verifiable_rollback_execution(
-    execution: dict[str, Any],
-    *,
-    top_level_identities: set[str],
-) -> bool:
+def _is_verified_policy_transition(item: dict[str, Any], execution: dict[str, Any]) -> bool:
+    source = item.get("source_opportunity") if isinstance(item.get("source_opportunity"), dict) else {}
+    policy_ids = [
+        str(item.get("applied_pattern_id") or "").strip(),
+        str(item.get("rollback_policy_id") or "").strip(),
+        str(source.get("pattern_id") or "").strip(),
+    ]
+    declared_policy_ids = [value for value in policy_ids if value]
+    if not declared_policy_ids or len(set(declared_policy_ids)) != 1:
+        return False
+    canonical_pattern_id = declared_policy_ids[0]
     transition = execution.get("status_transition") if isinstance(execution.get("status_transition"), dict) else {}
     previous = str(transition.get("from") or "").strip()
     current = str(transition.get("to") or "").strip().lower()
-    transition_artifact = str(
-        transition.get("pattern_id")
-        or transition.get("candidate_id")
-        or transition.get("artifact_id")
-        or ""
-    ).strip()
-    if transition_artifact and transition_artifact not in top_level_identities:
+    execution_pattern_id = str(execution.get("pattern_id") or "").strip()
+    transition_pattern_id = str(transition.get("pattern_id") or "").strip()
+    if execution_pattern_id != canonical_pattern_id or transition_pattern_id != canonical_pattern_id:
         return False
-    if previous and current in {"rolled_back", "quarantined"} and previous.lower() != current:
-        if transition_artifact:
-            return True
+    if not previous or current not in {"rolled_back", "quarantined"} or previous.lower() == current:
+        return False
+    execution_candidate_id = str(execution.get("candidate_id") or "").strip()
+    if execution_candidate_id:
+        canonical_candidate_id = _canonical_candidate_id(item)
+        if not canonical_candidate_id or execution_candidate_id != canonical_candidate_id:
+            return False
+    return True
+
+
+def _is_verified_candidate_rollback(item: dict[str, Any], execution: dict[str, Any]) -> bool:
+    canonical_candidate_id = _canonical_candidate_id(item)
+    if not canonical_candidate_id:
+        return False
+    if str(execution.get("candidate_id") or "").strip() != canonical_candidate_id:
+        return False
 
     file_restore = execution.get("file_restore") if isinstance(execution.get("file_restore"), dict) else {}
     if file_restore.get("ok") is True and int(file_restore.get("restored_count") or 0) > 0:
@@ -84,17 +95,18 @@ def _has_verifiable_rollback_execution(
     return False
 
 
-def _rollback_ledger_identities(item: dict[str, Any]) -> set[str]:
+def _canonical_candidate_id(item: dict[str, Any]) -> str:
+    details = item.get("details") if isinstance(item.get("details"), dict) else {}
     source = item.get("source_opportunity") if isinstance(item.get("source_opportunity"), dict) else {}
-    values = (
-        item.get("applied_pattern_id"),
+    declared = [
         item.get("source_opportunity_id"),
-        item.get("rollback_policy_id"),
-        source.get("pattern_id"),
+        details.get("candidate_id"),
         source.get("candidate_id"),
-        source.get("opportunity_id"),
-    )
-    return {str(value).strip() for value in values if str(value or "").strip()}
+    ]
+    values = [str(value).strip() for value in declared if str(value or "").strip()]
+    if not values or len(set(values)) != 1:
+        return ""
+    return values[0]
 
 
 def _executed_command_report(value: Any) -> bool:

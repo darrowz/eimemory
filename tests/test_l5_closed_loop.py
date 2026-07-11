@@ -39,6 +39,7 @@ def test_l5_assessment_imports_only_executed_policy_and_lifecycle_rollback_refs(
                     "ok": True,
                     "skipped": False,
                     "phase": "verify",
+                    "candidate_id": "candidate-lifecycle-rollback",
                     "file_restore": {"ok": True, "restored_count": 1},
                     "repo_reset": {"ok": True, "skipped": True},
                     "command_report": {"ok": True, "skipped": True, "reports": []},
@@ -97,6 +98,59 @@ def test_executed_rollback_predicate_rejects_forged_status_shapes() -> None:
             "applied_pattern_id": "forged-pattern",
             "budget_decision": "ok",
             "details": {},
+        }
+    ) is False
+    assert is_executed_rollback_ledger_record(
+        {
+            "action_type": "rolled_back",
+            "source_opportunity_id": "candidate-a",
+            "details": {
+                "candidate_id": "candidate-a",
+                "rollback": {
+                    "ok": True,
+                    "skipped": False,
+                    "execution_type": "file_restore",
+                    "file_restore": {"ok": True, "restored_count": 1},
+                },
+            },
+        }
+    ) is False
+    assert is_executed_rollback_ledger_record(
+        {
+            "action_type": "rolled_back",
+            "source_opportunity_id": "candidate-a",
+            "details": {
+                "candidate_id": "candidate-a",
+                "rollback": {
+                    "ok": True,
+                    "skipped": False,
+                    "execution_type": "file_restore",
+                    "candidate_id": "candidate-b",
+                    "file_restore": {"ok": True, "restored_count": 1},
+                },
+            },
+        }
+    ) is False
+    assert is_executed_rollback_ledger_record(
+        {
+            "action_type": "rollback",
+            "applied_pattern_id": "pattern-a",
+            "rollback_policy_id": "pattern-a",
+            "source_opportunity": {"pattern_id": "pattern-b"},
+            "budget_decision": "ok",
+            "details": {
+                "rollback": {
+                    "ok": True,
+                    "skipped": False,
+                    "execution_type": "intent_pattern_status_transition",
+                    "pattern_id": "pattern-b",
+                    "status_transition": {
+                        "from": "active",
+                        "to": "rolled_back",
+                        "pattern_id": "pattern-b",
+                    },
+                },
+            },
         }
     ) is False
     assert is_executed_rollback_ledger_record(

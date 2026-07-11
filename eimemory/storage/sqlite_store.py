@@ -2638,6 +2638,7 @@ class SqliteRecordStore:
             "ok": True,
             "skipped": False,
             "execution_type": "intent_pattern_status_transition",
+            "pattern_id": str(pattern_id),
             "status_transition": {
                 "from": previous_status,
                 "to": "rolled_back",

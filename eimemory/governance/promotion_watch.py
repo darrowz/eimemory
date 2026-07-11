@@ -237,6 +237,8 @@ def _quarantine_shadow_pattern(runtime: Any, *, pattern: dict[str, Any], scope: 
             "ok": True,
             "skipped": False,
             "execution_type": "intent_pattern_status_transition",
+            "pattern_id": str(pattern.get("id") or ""),
+            "candidate_id": str(watch.get("candidate_id") or ""),
             "status_transition": {
                 "from": previous_status,
                 "to": "quarantined",
@@ -274,6 +276,8 @@ def _rollback_shadow_pattern(
             "ok": rollback.get("ok") is True,
             "skipped": False,
             "execution_type": "intent_pattern_status_transition",
+            "pattern_id": str(pattern.get("id") or ""),
+            "candidate_id": str(watch.get("candidate_id") or ""),
             "status_transition": {
                 "from": str(rollback.get("previous_status") or previous_status),
                 "to": str(rollback.get("status") or "rolled_back"),
@@ -362,7 +366,7 @@ def _record_watch_ledger(
         replay_report={"post_promotion_watch": watch},
         reason=str(watch.get("decision_reason") or ""),
         details=details,
-        applied_artifact_id=pattern_id if decision == "active" else "",
+        applied_artifact_id=pattern_id if decision in {"active", "rolled_back", "quarantined"} else "",
         budget_decision="ok" if decision in {"active", WATCH_STATUS} else "blocked",
     )
     runtime.store.sqlite._record_policy_rollout_ledger(

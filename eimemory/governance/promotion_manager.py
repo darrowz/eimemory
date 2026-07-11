@@ -1459,6 +1459,12 @@ def _record_code_patch_canary_lifecycle(
     details: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     patch_id = str(patch.get("id") or patch.get("patch_id") or candidate.content.get("experiment_id") or candidate.meta.get("experiment_id") or candidate.record_id)
+    lifecycle_details = dict(details or {})
+    if isinstance(lifecycle_details.get("rollback"), dict):
+        lifecycle_details["rollback"] = {
+            **dict(lifecycle_details["rollback"]),
+            "candidate_id": candidate.record_id,
+        }
     return record_lifecycle_event(
         runtime,
         scope=scope or candidate.scope,
@@ -1483,7 +1489,7 @@ def _record_code_patch_canary_lifecycle(
         details={
             "promotion_target": "code_patch",
             "target_capability": str(candidate.meta.get("target_capability") or candidate.content.get("target_capability") or ""),
-            **dict(details or {}),
+            **lifecycle_details,
         },
         applied_artifact_id=commit_sha if action_type == "promoted_active" else "",
         budget_decision="ok" if action_type in {"shadow_observed", "promoted_active"} else "blocked",
@@ -2162,6 +2168,11 @@ def _record_candidate_lifecycle(
     patch = _candidate_patch(runtime, candidate, scope=scope)
     patch_id = str(patch.get("id") or patch.get("patch_id") or candidate.content.get("experiment_id") or candidate.meta.get("experiment_id") or candidate.record_id)
     side = dict(side_effect or {})
+    if isinstance(side.get("rollback"), dict):
+        side["rollback"] = {
+            **dict(side["rollback"]),
+            "candidate_id": candidate.record_id,
+        }
     release = str(release_path or (side.get("rollback_evidence") or {}).get("release_path") or "")
     commit = str(commit_sha or (side.get("commit") or {}).get("commit_sha") or "")
     rollback = str(rollback_command or (side.get("rollback") or {}).get("command") or _rollback_command_display(patch))

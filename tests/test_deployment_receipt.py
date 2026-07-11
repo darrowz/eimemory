@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import os
 from pathlib import Path
 import subprocess
 from threading import Thread
@@ -11,7 +12,7 @@ import pytest
 
 from eimemory.api.runtime import Runtime
 from eimemory.cli.main import main as cli_main
-from eimemory.governance.deployment_receipt import verify_and_record_deployment
+from eimemory.governance.deployment_receipt import verify_and_record_deployment as _verify_deployment_receipt
 
 
 SCOPE = {"agent_id": "agent-deployment", "workspace_id": "deployment-receipt", "user_id": "darrow"}
@@ -374,8 +375,9 @@ def test_deployment_receipt_cli_persists_verified_receipt(tmp_path, monkeypatch,
     with _health_server(
         _health_payload(commit=head_commit, version="9.8.7", current_link=current_link, release_dir=release_dir)
     ) as health_url:
-        exit_code = cli_main(
-            [
+        with _trusted_anchors(repo, current_link, health_url):
+            exit_code = cli_main(
+                [
                 "learn",
                 "deployment-receipt",
                 "--repo-root",
@@ -393,14 +395,140 @@ def test_deployment_receipt_cli_persists_verified_receipt(tmp_path, monkeypatch,
                 "--scope-user",
                 SCOPE["user_id"],
                 "--json",
-            ]
-        )
+                ]
+            )
     payload = json.loads(capsys.readouterr().out)
 
     assert exit_code == 0
     assert payload["ok"] is True
     assert payload["commit"] == head_commit
     assert payload["promotion_request_id"]
+
+
+@pytest.mark.parametrize("mutation", ["missing", "tampered"])
+def test_deployment_receipt_rejects_non_identity_tracked_file_changes(tmp_path, mutation) -> None:
+    repo, prior_commit, head_commit = _git_release_repo(tmp_path, version="9.8.7")
+    release_dir, current_link = _release_link(tmp_path, head_commit, repo=repo)
+    readme = release_dir / "README.md"
+    readme.write_bytes(_git_bytes(repo, "show", f"{head_commit}:README.md"))
+    if mutation == "missing":
+        readme.unlink()
+    else:
+        readme.write_text("forged\n", encoding="utf-8")
+    health = _health_payload(
+        commit=head_commit,
+        version="9.8.7",
+        current_link=current_link,
+        release_dir=release_dir,
+    )
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    try:
+        with _health_server(health) as health_url, _trusted_anchors(repo, current_link, health_url):
+            report = verify_and_record_deployment(
+                runtime,
+                scope=SCOPE,
+                repo_root=repo,
+                current_link=current_link,
+                health_url=health_url,
+                prior_commit=prior_commit,
+            )
+    finally:
+        runtime.close()
+
+    assert report == {"ok": False, "error": "release_tree_mismatch", "path": "README.md"}
+
+
+def test_deployment_receipt_rejects_literal_releases_root_symlink_escape(tmp_path) -> None:
+    repo, prior_commit, head_commit = _git_release_repo(tmp_path, version="9.8.7")
+    outside_release, _outside_link = _release_link(
+        tmp_path,
+        head_commit,
+        repo=repo,
+        release_root=tmp_path / "outside-releases",
+        link_name="outside-current",
+    )
+    (outside_release / "README.md").write_bytes(_git_bytes(repo, "show", f"{head_commit}:README.md"))
+    _create_dir_link(tmp_path / "releases", tmp_path / "outside-releases")
+    current_link = tmp_path / "current"
+    _create_dir_link(current_link, tmp_path / "releases" / head_commit)
+    health = _health_payload(
+        commit=head_commit,
+        version="9.8.7",
+        current_link=current_link,
+        release_dir=outside_release,
+    )
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    try:
+        with _health_server(health) as health_url, _trusted_anchors(repo, current_link, health_url):
+            report = verify_and_record_deployment(
+                runtime,
+                scope=SCOPE,
+                repo_root=repo,
+                current_link=current_link,
+                health_url=health_url,
+                prior_commit=prior_commit,
+            )
+    finally:
+        runtime.close()
+
+    assert report == {"ok": False, "error": "current_release_untrusted"}
+
+
+@pytest.mark.parametrize("anchor", ["repo", "current_link", "health_url"])
+def test_deployment_receipt_rejects_caller_selected_anchor(tmp_path, anchor) -> None:
+    repo, prior_commit, head_commit = _git_release_repo(tmp_path, version="9.8.7")
+    release_dir, current_link = _release_link(tmp_path, head_commit, repo=repo)
+    (release_dir / "README.md").write_bytes(_git_bytes(repo, "show", f"{head_commit}:README.md"))
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    try:
+        with _health_server(
+            _health_payload(commit=head_commit, version="9.8.7", current_link=current_link, release_dir=release_dir)
+        ) as health_url:
+            trusted_repo = repo if anchor != "repo" else tmp_path / "trusted-repo"
+            trusted_link = current_link if anchor != "current_link" else tmp_path / "trusted-current"
+            trusted_url = health_url if anchor != "health_url" else health_url.replace("/health", "/trusted-health")
+            with _trusted_anchors(trusted_repo, trusted_link, trusted_url):
+                report = _verify_deployment_receipt(
+                    runtime,
+                    scope=SCOPE,
+                    repo_root=repo,
+                    current_link=current_link,
+                    health_url=health_url,
+                    prior_commit=prior_commit,
+                )
+    finally:
+        runtime.close()
+
+    expected_error = "untrusted_repo_root" if anchor == "repo" else f"untrusted_{anchor}"
+    assert report == {"ok": False, "error": expected_error}
+
+
+def test_deployment_receipt_rejects_health_redirect(tmp_path) -> None:
+    repo, prior_commit, head_commit = _git_release_repo(tmp_path, version="9.8.7")
+    release_dir, current_link = _release_link(tmp_path, head_commit, repo=repo)
+    (release_dir / "README.md").write_bytes(_git_bytes(repo, "show", f"{head_commit}:README.md"))
+    health = _health_payload(
+        commit=head_commit,
+        version="9.8.7",
+        current_link=current_link,
+        release_dir=release_dir,
+    )
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    try:
+        with _health_server(health) as target_url, _redirect_server(target_url) as redirect_url:
+            with _trusted_anchors(repo, current_link, redirect_url):
+                report = verify_and_record_deployment(
+                    runtime,
+                    scope=SCOPE,
+                    repo_root=repo,
+                    current_link=current_link,
+                    health_url=redirect_url,
+                    prior_commit=prior_commit,
+                )
+    finally:
+        runtime.close()
+
+    assert report == {"ok": False, "error": "health_redirect_not_allowed"}
 
 
 def _git_release_repo(tmp_path: Path, *, version: str) -> tuple[Path, str, str]:
@@ -435,6 +563,7 @@ def _release_link(
 ) -> tuple[Path, Path]:
     release_dir = (release_root or tmp_path / "releases") / commit
     release_dir.mkdir(parents=True)
+    (release_dir / "README.md").write_bytes(_git_bytes(repo, "show", f"{commit}:README.md"))
     (release_dir / "pyproject.toml").write_bytes(_git_bytes(repo, "show", f"{commit}:pyproject.toml"))
     version_file = release_dir / "eimemory" / "version.py"
     version_file.parent.mkdir(parents=True)
@@ -491,6 +620,52 @@ def _health_server(payload: dict):
         server.shutdown()
         thread.join(timeout=5)
         server.server_close()
+
+
+@contextmanager
+def _redirect_server(target_url: str):
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(302)
+            self.send_header("Location", target_url)
+            self.end_headers()
+
+        def log_message(self, _format, *_args):
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}/health"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+@contextmanager
+def _trusted_anchors(repo: Path, current_link: Path, health_url: str):
+    names = {
+        "EIMEMORY_DEPLOYMENT_REPO_ROOT": str(repo),
+        "EIMEMORY_DEPLOYMENT_CURRENT_LINK": str(current_link),
+        "EIMEMORY_DEPLOYMENT_HEALTH_URL": health_url,
+    }
+    previous = {name: os.environ.get(name) for name in names}
+    os.environ.update(names)
+    try:
+        yield
+    finally:
+        for name, value in previous.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
+def verify_and_record_deployment(runtime, **kwargs):
+    with _trusted_anchors(kwargs["repo_root"], kwargs["current_link"], kwargs["health_url"]):
+        return _verify_deployment_receipt(runtime, **kwargs)
 
 
 def _git(repo: Path, *args: str) -> str:
