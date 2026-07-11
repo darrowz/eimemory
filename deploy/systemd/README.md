@@ -1,5 +1,13 @@
 # systemd Templates
 
+Immutable release installation trusts the deployment UID and all same-UID
+processes as part of the deployment TCB. The installer locks the releases root
+to its owner, rejects pre-existing links and other-UID ownership, and restores
+the prior release on partial failure. A host that must defend against hostile
+same-UID rename, injection, or ptrace activity must use a separate privileged
+deployment account; that stronger isolation is outside the `darrow` deployment
+model.
+
 This directory contains service templates for production eimemory deployments.
 
 Copy templates into the operator's user systemd scope and replace placeholder

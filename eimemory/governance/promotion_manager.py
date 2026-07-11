@@ -1935,7 +1935,7 @@ def _deployment_commands(patch: dict[str, Any], repo_root: Path) -> list[str | l
         return [[
             "bash",
             "-lc",
-            'COMMIT="$(git rev-parse --short HEAD)" && bash ./deploy/install_immutable_release.sh "$COMMIT" && systemctl --user daemon-reload && systemctl --user restart eimemory-rpc.service',
+            'COMMIT="$(git rev-parse HEAD)" && bash ./deploy/install_immutable_release.sh "$COMMIT" && systemctl --user daemon-reload && systemctl --user restart eimemory-rpc.service',
         ]]
     return []
 

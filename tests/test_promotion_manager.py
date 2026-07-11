@@ -1126,6 +1126,8 @@ def test_default_code_patch_deployment_command_uses_user_systemd_without_sudo(tm
     assert "sudo" not in command_text
     assert "systemctl --user" in command_text
     assert "install_immutable_release.sh" in command_text
+    assert "git rev-parse HEAD" in command_text
+    assert "git rev-parse --short HEAD" not in command_text
 
 
 def test_code_patch_deployment_failure_reverts_created_commit(tmp_path, monkeypatch) -> None:

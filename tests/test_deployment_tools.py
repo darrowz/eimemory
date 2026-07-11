@@ -1,6 +1,13 @@
 from __future__ import annotations
 
+import importlib.util
+import os
 from pathlib import Path
+import shutil
+import subprocess
+import sys
+
+import pytest
 
 from deploy.rotate_console_token import main as rotate_main
 from deploy.rotate_console_token import rotate_token
@@ -227,9 +234,258 @@ def test_immutable_release_installer_documents_non_editable_runtime() -> None:
     script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
 
     assert "git -C \"$REPO_DIR\" archive \"$COMMIT\"" in script
-    assert "pip install \"$RELEASE_DIR\"" in script
+    assert "pip install \"$STAGE_DIR\"" in script
     assert "pip install -e" not in script
     assert "/opt/eimemory" in script
+
+
+def test_release_bytecode_cleaner_cleans_only_source_bytecode(tmp_path) -> None:
+    cleaner = _load_release_bytecode_cleaner()
+    if os.name != "posix":
+        pytest.skip("dir_fd cleanup behavior requires POSIX")
+    commit = "a" * 40
+    install_root = tmp_path / "install"
+    releases_root = install_root / "releases"
+    release_dir = releases_root / commit
+    source_cache = release_dir / "eimemory" / "__pycache__"
+    source_cache.mkdir(parents=True)
+    (source_cache / "module.cpython-314.pyc").write_bytes(b"source cache")
+    (release_dir / "eimemory" / "orphan.pyc").write_bytes(b"source pyc")
+    (release_dir / "eimemory" / "orphan.pyo").write_bytes(b"source pyo")
+    untracked_source = release_dir / "eimemory" / "untracked.py"
+    untracked_source.write_text("KEEP = True\n", encoding="utf-8")
+    venv_cache = release_dir / ".venv" / "lib" / "site-packages" / "dependency" / "__pycache__"
+    venv_cache.mkdir(parents=True)
+    venv_bytecode = venv_cache / "module.cpython-314.pyc"
+    venv_bytecode.write_bytes(b"venv cache")
+
+    cleaner.clean_release_bytecode(release_dir=release_dir, releases_root=releases_root)
+
+    assert not source_cache.exists()
+    assert not (release_dir / "eimemory" / "orphan.pyc").exists()
+    assert not (release_dir / "eimemory" / "orphan.pyo").exists()
+    assert untracked_source.exists()
+    assert venv_bytecode.read_bytes() == b"venv cache"
+
+
+def test_release_bytecode_cleaner_does_not_follow_source_symlink(tmp_path) -> None:
+    cleaner = _load_release_bytecode_cleaner()
+    if os.name != "posix":
+        pytest.skip("dir_fd symlink behavior requires POSIX")
+    releases_root = tmp_path / "releases"
+    release_dir = releases_root / ("b" * 40)
+    release_dir.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside_cache = outside / "__pycache__"
+    outside_cache.mkdir(parents=True)
+    marker = outside_cache / "marker.pyc"
+    marker.write_bytes(b"outside")
+    (release_dir / "eimemory").symlink_to(outside, target_is_directory=True)
+
+    cleaner.clean_release_bytecode(release_dir=release_dir, releases_root=releases_root)
+
+    assert marker.read_bytes() == b"outside"
+    assert (release_dir / "eimemory").is_symlink()
+
+
+def test_release_bytecode_cleaner_rejects_unsafe_release_paths(tmp_path) -> None:
+    cleaner = _load_release_bytecode_cleaner()
+    releases_root = tmp_path / "releases"
+    releases_root.mkdir()
+    non_commit_release = releases_root / "test-release"
+    non_commit_release.mkdir()
+    outside_release = tmp_path / ("c" * 40)
+    outside_release.mkdir()
+
+    with pytest.raises(cleaner.CleanupError, match="40-character commit"):
+        cleaner.resolve_release_paths(non_commit_release, releases_root)
+    with pytest.raises(cleaner.CleanupError, match="direct child"):
+        cleaner.resolve_release_paths(outside_release, releases_root)
+
+
+def test_release_bytecode_cleaner_scan_failure_returns_nonzero(tmp_path, monkeypatch, capsys) -> None:
+    cleaner = _load_release_bytecode_cleaner()
+    releases_root = tmp_path / "releases"
+    release_dir = releases_root / ("d" * 40)
+    release_dir.mkdir(parents=True)
+
+    def fail_scan(*, release_dir, releases_root, allow_stage=False):
+        raise PermissionError("simulated scan failure")
+
+    monkeypatch.setattr(cleaner, "clean_release_bytecode", fail_scan)
+    result = cleaner.main(["--release-dir", str(release_dir), "--releases-root", str(releases_root)])
+
+    assert result != 0
+    assert "simulated scan failure" in capsys.readouterr().err
+
+
+def test_immutable_release_installer_runs_fd_safe_cleanup_before_switch() -> None:
+    script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
+
+    assert script.startswith("#!/usr/bin/env bash\nset -euo pipefail\n")
+    assert "export PYTHONDONTWRITEBYTECODE=1" in script
+    assert 'PYTHON_BIN="${PYTHON_BIN:-/usr/bin/python3}"' in script
+    assert '[[ "$PYTHON_BIN" != /* ]]' in script
+    assert 'git -C "$REPO_DIR" rev-parse HEAD' in script
+    assert "rev-parse --short HEAD" not in script
+    assert '[[ ! "$COMMIT" =~ ^[0-9a-fA-F]{40}$ ]]' in script
+    assert '"$REPO_DIR/deploy/clean_release_bytecode.py"' in script
+    assert "--validate-source" in script
+    assert 'mktemp -d "$INSTALL_ROOT/releases/.eimemory-stage-${COMMIT}-XXXXXXXX"' in script
+    assert '"$PYTHON_BIN" -I -B -m venv --clear "$STAGE_DIR/.venv"' in script
+    assert '--release-dir "$RELEASE_DIR"' in script
+    assert '--releases-root "$INSTALL_ROOT/releases"' in script
+    install_at = script.index('pip install "$STAGE_DIR"')
+    verify_at = script.rindex("\n_run_openclaw_loop_deploy_verify ")
+    stage_at = script.index('STAGE_DIR="$(mktemp')
+    stage_python_at = script.rindex('"$STAGE_DIR/.venv/bin/python"')
+    cleanup_at = script.index("--allow-stage --release-dir", install_at)
+    switch_at = script.index('\nln -sfn "$RELEASE_DIR"')
+    assert stage_at < stage_python_at
+    assert install_at < verify_at < cleanup_at < switch_at
+    assert '_ensure_runtime_dir "$INSTALL_ROOT"' not in script
+
+
+@pytest.mark.parametrize("attack", ["release_link", "releases_root_link"])
+def test_immutable_release_installer_never_executes_linked_release_python(tmp_path, attack) -> None:
+    commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+    install_root = tmp_path / "install"
+    releases_root = install_root / "releases"
+    outside_root = tmp_path / "outside-releases"
+    outside_root.mkdir()
+    outside_root.chmod(0o755)
+    outside_release = outside_root / commit
+    fake_python = outside_release / ".venv" / "bin" / "python"
+    fake_python.parent.mkdir(parents=True)
+    marker = tmp_path / "malicious-python-ran"
+    fake_python.write_text(f"#!/usr/bin/env bash\nprintf ran > '{marker.as_posix()}'\n", encoding="utf-8")
+    fake_python.chmod(0o755)
+    if attack == "release_link":
+        releases_root.mkdir(parents=True)
+        _create_directory_link(releases_root / commit, outside_release)
+    else:
+        install_root.mkdir(parents=True)
+        _create_directory_link(releases_root, outside_root)
+    old_release = tmp_path / "old-release"
+    old_release.mkdir()
+    current_link = install_root / "current"
+    _create_directory_link(current_link, old_release)
+    bash = _bash_binary()
+    env = dict(os.environ)
+    env.update(
+        {
+            "REPO_DIR": Path.cwd().as_posix(),
+            "INSTALL_ROOT": install_root.as_posix(),
+            "PYTHON_BIN": _bash_path(Path(sys.executable)),
+            "EIMEMORY_ROOT": (tmp_path / "runtime").as_posix(),
+            "EIMEMORY_CONFIG_DIR": (tmp_path / "config").as_posix(),
+            "EIMEMORY_LOG_DIR": (tmp_path / "logs").as_posix(),
+            "USER_SYSTEMD_ENABLE_SERVICE": "0",
+            "OPENCLAW_LOOP_DEPLOY_VERIFY": "0",
+            "OPENCLAW_LOOP_COMPAT_SCRIPT": "",
+        }
+    )
+
+    result = subprocess.run(
+        [bash, "deploy/install_immutable_release.sh", commit],
+        cwd=Path.cwd(),
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert not marker.exists()
+    assert current_link.resolve() == old_release.resolve()
+    if attack == "releases_root_link" and os.name == "posix":
+        assert outside_root.stat().st_mode & 0o777 == 0o755
+
+
+@pytest.mark.parametrize("source_valid", [True, False])
+def test_immutable_release_installer_does_not_rebuild_active_existing_release(tmp_path, source_valid) -> None:
+    commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+    install_root = tmp_path / "install"
+    release_dir = install_root / "releases" / commit
+    fake_python = release_dir / ".venv" / "bin" / "python"
+    fake_python.parent.mkdir(parents=True)
+    marker = tmp_path / "active-python-ran"
+    fake_python.write_text(f"#!/usr/bin/env bash\nprintf ran > '{marker.as_posix()}'\n", encoding="utf-8")
+    fake_python.chmod(0o755)
+    trusted_python = tmp_path / "trusted-python"
+    trusted_python.write_text(
+        f"#!{_bash_path(Path(sys.executable))}\n"
+        "import sys\n"
+        "if '--validate-source' in sys.argv:\n"
+        f"    raise SystemExit({0 if source_valid else 2})\n"
+        "raise SystemExit(0)\n",
+        encoding="utf-8",
+    )
+    trusted_python.chmod(0o755)
+    current_link = install_root / "current"
+    _create_directory_link(current_link, release_dir)
+    env = dict(os.environ)
+    env.update(
+        {
+            "REPO_DIR": Path.cwd().as_posix(),
+            "INSTALL_ROOT": install_root.as_posix(),
+            "PYTHON_BIN": _bash_path(trusted_python),
+            "USER_SYSTEMD_ENABLE_SERVICE": "0",
+            "OPENCLAW_LOOP_DEPLOY_VERIFY": "0",
+            "OPENCLAW_LOOP_COMPAT_SCRIPT": "",
+        }
+    )
+
+    result = subprocess.run(
+        [_bash_binary(), "deploy/install_immutable_release.sh", commit],
+        cwd=Path.cwd(),
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == (0 if source_valid else 2)
+    assert ("already_current=1" in result.stdout) is source_valid
+    assert not marker.exists()
+    assert current_link.resolve() == release_dir.resolve()
+
+
+def _bash_binary() -> str:
+    git_bash = Path("C:/Program Files/Git/bin/bash.exe")
+    bash = str(git_bash) if git_bash.exists() else shutil.which("bash")
+    if not bash:
+        raise AssertionError("bash is required for installer behavior tests")
+    return bash
+
+
+def _bash_path(path: Path) -> str:
+    value = path.as_posix()
+    if os.name == "nt" and len(value) > 2 and value[1] == ":":
+        return f"/{value[0].lower()}{value[2:]}"
+    return value
+
+
+def _create_directory_link(link: Path, target: Path) -> None:
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except OSError:
+        subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+
+def _load_release_bytecode_cleaner():
+    cleaner_path = Path("deploy/clean_release_bytecode.py")
+    assert cleaner_path.exists(), "release bytecode cleaner is missing"
+    spec = importlib.util.spec_from_file_location("clean_release_bytecode", cleaner_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_immutable_release_installer_normalizes_service_ownership() -> None:
