@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 from eimemory.api.runtime import Runtime
 from eimemory.experience import record_outcome_trace
 from eimemory.experience.capability_contract import SCHEMA_VERSION as CONTRACT_SCHEMA_VERSION
@@ -353,6 +355,146 @@ def test_runtime_executor_replays_twelve_contract_backed_acceptance_traces(tmp_p
     assert {item["contract_schema"] for item in results} == {CONTRACT_SCHEMA_VERSION}
     assert all(isinstance(item["observation"], dict) and item["observation"] for item in results)
     assert all(record is not None and record.content["result"]["observation"] for record in persisted)
+
+
+def test_runtime_executor_prefers_freshest_valid_acceptance_trace(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        first = run_capability_acceptance(runtime, scope=SCOPE, persist=True)["results"][0]
+        second = run_capability_acceptance(runtime, scope=SCOPE, persist=True)["results"][0]
+        stale, fresh = sorted((first, second), key=lambda item: item["trace_record_id"])
+        now = datetime.now(timezone.utc)
+        record_times = {
+            stale["probe_id"]: now - timedelta(seconds=1),
+            stale["trace_record_id"]: now - timedelta(seconds=3),
+            fresh["probe_id"]: now - timedelta(seconds=2),
+            fresh["trace_record_id"]: now,
+        }
+        for record_id, created_at in record_times.items():
+            timestamp = created_at.isoformat(timespec="microseconds")
+            record = runtime.store.get_by_id(record_id, scope=SCOPE)
+            assert record is not None
+            record.time.created_at = timestamp
+            record.time.updated_at = timestamp
+            record.time.occurred_at = timestamp
+            runtime.store.rewrite(record)
+
+        replay = execute_capability_replay_case(
+            runtime,
+            {
+                "case_id": fresh["case_id"],
+                "target_capability": fresh["capability"],
+                "scope": SCOPE,
+            },
+        )
+    finally:
+        runtime.close()
+
+    assert replay["verdict"] == "pass"
+    assert replay["probe_source_id"] == fresh["probe_id"]
+    assert replay["trace_record_id"] == fresh["trace_record_id"]
+
+
+def test_runtime_executor_does_not_fallback_when_freshest_trace_is_invalid(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        old = run_capability_acceptance(runtime, scope=SCOPE, persist=True)["results"][0]
+        latest = run_capability_acceptance(runtime, scope=SCOPE, persist=True)["results"][0]
+        old_time = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat(timespec="microseconds")
+        for record_id in (old["probe_id"], old["trace_record_id"]):
+            record = runtime.store.get_by_id(record_id, scope=SCOPE)
+            assert record is not None
+            record.time.created_at = old_time
+            runtime.store.rewrite(record)
+        latest_trace = runtime.store.get_by_id(latest["trace_record_id"], scope=SCOPE)
+        assert latest_trace is not None
+        latest_trace.content["schema_version"] = "outcome_trace.invalid"
+        runtime.store.rewrite(latest_trace)
+
+        replay = execute_capability_replay_case(
+            runtime,
+            {"case_id": latest["case_id"], "target_capability": latest["capability"], "scope": SCOPE},
+        )
+    finally:
+        runtime.close()
+
+    assert replay["verdict"] == "fail"
+    assert replay["reason"] == "outcome_trace_schema_mismatch"
+
+
+def test_runtime_executor_binds_requested_acceptance_execution_and_probe(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        bound_report = run_capability_acceptance(runtime, scope=SCOPE, persist=True)
+        bound = bound_report["results"][0]
+        run_capability_acceptance(runtime, scope=SCOPE, persist=True)
+
+        replay = execute_capability_replay_case(
+            runtime,
+            {
+                "case_id": bound["case_id"],
+                "target_capability": bound["capability"],
+                "scope": SCOPE,
+                "acceptance_execution_id": bound_report["execution_id"],
+                "required_probe_source_id": bound["probe_id"],
+            },
+        )
+    finally:
+        runtime.close()
+
+    assert replay["verdict"] == "pass"
+    assert replay["probe_source_id"] == bound["probe_id"]
+
+
+def test_runtime_executor_rejects_inactive_trace_or_probe(tmp_path) -> None:
+    for inactive_record in ("trace", "probe"):
+        runtime = Runtime.create(root=tmp_path / inactive_record)
+        try:
+            accepted = run_capability_acceptance(runtime, scope=SCOPE, persist=True)["results"][0]
+            record_id = accepted["trace_record_id"] if inactive_record == "trace" else accepted["probe_id"]
+            record = runtime.store.get_by_id(record_id, scope=SCOPE)
+            assert record is not None
+            record.status = "quarantined"
+            runtime.store.rewrite(record)
+            replay = execute_capability_replay_case(
+                runtime,
+                {"case_id": accepted["case_id"], "target_capability": accepted["capability"], "scope": SCOPE},
+            )
+        finally:
+            runtime.close()
+
+        assert replay["verdict"] == "fail", inactive_record
+        assert replay["reason"] in {"outcome_trace_status_invalid", "invalid_capability_probe"}, inactive_record
+
+
+def test_runtime_executor_rejects_invalid_or_future_candidate_times(tmp_path) -> None:
+    unsafe_times = {
+        "malformed": "not-a-timestamp",
+        "naive": "2026-07-12T05:00:00",
+        "future": (datetime.now(timezone.utc) + timedelta(days=1)).isoformat(timespec="microseconds"),
+        "inconsistent": (datetime.now(timezone.utc) - timedelta(days=1)).isoformat(timespec="microseconds"),
+    }
+    for label, unsafe_time in unsafe_times.items():
+        runtime = Runtime.create(root=tmp_path / label)
+        try:
+            accepted = run_capability_acceptance(runtime, scope=SCOPE, persist=True)["results"][0]
+            trace = runtime.store.get_by_id(accepted["trace_record_id"], scope=SCOPE)
+            assert trace is not None
+            trace.time.created_at = unsafe_time
+            runtime.store.rewrite(trace)
+            replay = execute_capability_replay_case(
+                runtime,
+                {"case_id": accepted["case_id"], "target_capability": accepted["capability"], "scope": SCOPE},
+            )
+        finally:
+            runtime.close()
+
+        assert replay["verdict"] == "fail", label
+        assert replay["reason"] in {
+            "candidate_evidence_time_invalid",
+            "candidate_evidence_time_in_future",
+            "candidate_evidence_time_inconsistent",
+        }, label
 
 
 def test_runtime_executor_rejects_generic_outcomes_for_specific_cases(tmp_path) -> None:

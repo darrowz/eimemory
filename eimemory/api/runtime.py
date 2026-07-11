@@ -838,6 +838,8 @@ class Runtime:
         capabilities: list[str] | None = None,
         persist: bool = False,
         loop_id: str = "capability_replay_1_6_9",
+        acceptance_execution_id: str = "",
+        acceptance_probe_ids_by_case: dict[str, str] | None = None,
     ) -> dict:
         from eimemory.governance.capability_replay_packs import build_capability_replay_packs
 
@@ -847,6 +849,8 @@ class Runtime:
             capabilities=capabilities,
             persist=persist,
             loop_id=loop_id,
+            acceptance_execution_id=acceptance_execution_id,
+            acceptance_probe_ids_by_case=acceptance_probe_ids_by_case,
         )
 
     def run_capability_replay_case(self, case: dict) -> dict:

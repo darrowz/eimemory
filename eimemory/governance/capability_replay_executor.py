@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from eimemory.experience.capability_contract import (
@@ -32,17 +33,25 @@ def execute_capability_replay_case(runtime: Any, case: dict[str, Any]) -> dict[s
     capability = str(case.get("target_capability") or "").strip()
     case_id = str(case.get("case_id") or "").strip()
     evidence_by_capability = collect_capability_evidence(runtime, scope=scope, limit=500)
-    candidates = sorted(
-        (
+    candidates = [
+        item
+        for item in evidence_by_capability.get(capability, [])
+        if item.get("contract_verified") is True
+        and str(item.get("case_id") or "") == case_id
+        and str(item.get("source_kind") or "") == "outcome_trace"
+        and str(item.get("source_id") or "")
+    ]
+    expected_execution_id = str(case.get("acceptance_execution_id") or "").strip()
+    expected_probe_id = str(case.get("required_probe_source_id") or "").strip()
+    if bool(expected_execution_id) != bool(expected_probe_id):
+        return _failure("fail", "acceptance_replay_binding_incomplete")
+    if expected_probe_id:
+        candidates = [
             item
-            for item in evidence_by_capability.get(capability, [])
-            if item.get("contract_verified") is True
-            and str(item.get("case_id") or "") == case_id
-            and str(item.get("source_kind") or "") == "outcome_trace"
-            and str(item.get("source_id") or "")
-        ),
-        key=lambda item: str(item.get("source_id") or ""),
-    )
+            for item in candidates
+            if [str(value or "").strip() for value in item.get("source_record_ids") or []]
+            == [expected_probe_id]
+        ]
     if not candidates:
         return _failure("not_run", "contract_backed_outcome_evidence_missing")
 
@@ -61,19 +70,58 @@ def execute_capability_replay_case(runtime: Any, case: dict[str, Any]) -> dict[s
             probe_source_id=reused_probe_ids[0],
         )
 
-    failures: list[dict[str, Any]] = []
+    ranked: list[tuple[tuple[float, float, str], dict[str, Any]]] = []
     for evidence in candidates:
-        result = _validate_contract_chain(
-            runtime,
-            evidence=evidence,
-            scope=scope,
-            capability=capability,
-            case_id=case_id,
-        )
-        if result.get("verdict") == "pass":
-            return result
-        failures.append(result)
-    return failures[0] if failures else _failure("not_run", "contract_backed_outcome_evidence_missing")
+        key, error = _trace_recency_key(runtime, scope=scope, evidence=evidence)
+        if error:
+            verdict = "not_run" if error in {"outcome_trace_not_retrievable", "probe_source_unavailable_in_scope"} else "fail"
+            return _failure(verdict, error)
+        ranked.append((key, evidence))
+    ranked.sort(key=lambda item: item[0], reverse=True)
+    return _validate_contract_chain(
+        runtime,
+        evidence=ranked[0][1],
+        scope=scope,
+        capability=capability,
+        case_id=case_id,
+        expected_acceptance_execution_id=expected_execution_id,
+        expected_probe_source_id=expected_probe_id,
+    )
+
+
+def _trace_recency_key(
+    runtime: Any, *, scope: ScopeRef, evidence: dict[str, Any]
+) -> tuple[tuple[float, float, str], str]:
+    source_id = str(evidence.get("source_id") or "").strip()
+    probe_ids = [str(value or "").strip() for value in evidence.get("source_record_ids") or []]
+    if len(probe_ids) != 1 or not probe_ids[0]:
+        return (0.0, 0.0, source_id), "candidate_probe_binding_invalid"
+    trace = runtime.store.get_by_id(source_id, scope=scope)
+    probe = runtime.store.get_by_id(probe_ids[0], scope=scope)
+    if trace is None:
+        return (0.0, 0.0, source_id), "outcome_trace_not_retrievable"
+    if probe is None:
+        return (0.0, 0.0, source_id), "probe_source_unavailable_in_scope"
+    timestamps: list[float] = []
+    normalized_times: list[datetime] = []
+    now = datetime.now(timezone.utc)
+    for record in (probe, trace):
+        created_at = str(getattr(getattr(record, "time", None), "created_at", "") or "")
+        try:
+            parsed = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                raise ValueError("timezone required")
+            normalized = parsed.astimezone(timezone.utc)
+            timestamp = normalized.timestamp()
+        except (ValueError, OverflowError, OSError):
+            return (0.0, 0.0, source_id), "candidate_evidence_time_invalid"
+        if normalized > now + timedelta(minutes=5):
+            return (0.0, 0.0, source_id), "candidate_evidence_time_in_future"
+        timestamps.append(timestamp)
+        normalized_times.append(normalized)
+    if abs((normalized_times[1] - normalized_times[0]).total_seconds()) > timedelta(minutes=15).total_seconds():
+        return (0.0, 0.0, source_id), "candidate_evidence_time_inconsistent"
+    return (timestamps[1], timestamps[0], source_id), ""
 
 
 def validate_capability_replay_result(
@@ -128,11 +176,15 @@ def _validate_contract_chain(
     scope: ScopeRef,
     capability: str,
     case_id: str,
+    expected_acceptance_execution_id: str = "",
+    expected_probe_source_id: str = "",
 ) -> dict[str, Any]:
     trace_record_id = str(evidence.get("source_id") or "").strip()
     trace_record = runtime.store.get_by_id(trace_record_id, scope=scope)
     if trace_record is None:
         return _failure("not_run", "outcome_trace_not_retrievable", trace_record_id=trace_record_id)
+    if trace_record.status != "active":
+        return _failure("fail", "outcome_trace_status_invalid", trace_record_id=trace_record_id)
     if trace_record.kind != "reflection" or trace_record.source != "eimemory.experience.outcome_trace":
         return _failure("fail", "untrusted_outcome_trace_source", trace_record_id=trace_record_id)
 
@@ -184,6 +236,14 @@ def _validate_contract_chain(
     if len(source_ids) != 1:
         return _failure("fail", "single_probe_source_required", trace_id=trace_id, trace_record_id=trace_record_id)
     probe_source_id = source_ids[0]
+    if expected_probe_source_id and probe_source_id != expected_probe_source_id:
+        return _failure(
+            "fail",
+            "acceptance_probe_binding_mismatch",
+            trace_id=trace_id,
+            trace_record_id=trace_record_id,
+            probe_source_id=probe_source_id,
+        )
     if list(evidence.get("source_record_ids") or []) != source_ids:
         return _failure(
             "fail",
@@ -244,6 +304,7 @@ def _validate_contract_chain(
     validator = probe_content.get("validator") if isinstance(probe_content.get("validator"), dict) else {}
     if (
         probe_record.kind != "replay_result"
+        or probe_record.status != "active"
         or probe_record.source != "eimemory.capability_acceptance"
         or str(probe_meta.get("report_type") or "") != PROBE_REPORT_TYPE
         or str(probe_meta.get("schema_version") or "") != PROBE_SCHEMA_VERSION
@@ -280,6 +341,14 @@ def _validate_contract_chain(
         return _failure(
             "fail",
             "probe_execution_id_mismatch",
+            trace_id=trace_id,
+            trace_record_id=trace_record_id,
+            probe_source_id=probe_source_id,
+        )
+    if expected_acceptance_execution_id and execution_id != expected_acceptance_execution_id:
+        return _failure(
+            "fail",
+            "acceptance_execution_binding_mismatch",
             trace_id=trace_id,
             trace_record_id=trace_record_id,
             probe_source_id=probe_source_id,

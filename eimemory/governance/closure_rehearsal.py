@@ -39,6 +39,12 @@ def run_l5_closure_rehearsal(
         capabilities=WEAK_REPLAY_CAPABILITIES,
         persist=persist,
         loop_id=LOOP_ID,
+        acceptance_execution_id=str(acceptance.get("execution_id") or ""),
+        acceptance_probe_ids_by_case={
+            str(result.get("case_id") or ""): str(result.get("probe_record_id") or "")
+            for result in acceptance.get("results") or []
+            if isinstance(result, dict)
+        },
     )
     replay_gate = _weak_replay_gate(weak_capability_replay)
     report["weak_capability_replay"] = weak_capability_replay

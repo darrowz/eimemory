@@ -43,6 +43,13 @@ def test_l5_closure_rehearsal_opens_success_skill_and_rollback_metrics(tmp_path)
             "device.control",
         ]
         assert report["weak_capability_replay"]["persisted_replay_count"] == 12
+        acceptance_probe_ids = set(report["capability_acceptance"]["probe_record_ids"])
+        replay_probe_ids = {
+            result["probe_source_id"]
+            for pack in report["weak_capability_replay"]["packs"]
+            for result in pack["case_results"]
+        }
+        assert replay_probe_ids == acceptance_probe_ids
         assert report["skill_call"]["ok"] is True
         assert report["skill_call"]["record_id"]
         assert report["rollback"]["status"] in {"rolled_back", "quarantined"}

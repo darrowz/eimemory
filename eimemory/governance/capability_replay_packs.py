@@ -31,6 +31,8 @@ def build_capability_replay_packs(
     capabilities: list[str] | None = None,
     persist: bool = False,
     loop_id: str = "capability_replay_1_6_9",
+    acceptance_execution_id: str = "",
+    acceptance_probe_ids_by_case: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
     selected = _dedupe(capabilities or CORE_REPLAY_CAPABILITIES)
@@ -46,6 +48,11 @@ def build_capability_replay_packs(
         for capability, cases in cases_by_capability.items()
     }
     score_record_ids: list[str] = []
+    bound_probe_ids = {
+        str(case_id): str(probe_id or "").strip()
+        for case_id, probe_id in (acceptance_probe_ids_by_case or {}).items()
+        if str(case_id).strip() and str(probe_id or "").strip()
+    }
     manifest = None
     if persist:
         initial_payload = _manifest_payload(
@@ -81,7 +88,13 @@ def build_capability_replay_packs(
         for evidence_index, case in enumerate(cases):
             result = _run_case(
                 runtime,
-                {**case, "scope": asdict(scope_ref), "evidence_index": evidence_index},
+                {
+                    **case,
+                    "scope": asdict(scope_ref),
+                    "evidence_index": evidence_index,
+                    "acceptance_execution_id": str(acceptance_execution_id or "").strip(),
+                    "required_probe_source_id": bound_probe_ids.get(str(case["case_id"]), ""),
+                },
             )
             case_results.append(result)
             if persist:
