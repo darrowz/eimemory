@@ -38,6 +38,7 @@ def test_l5_assessment_imports_only_executed_policy_and_lifecycle_rollback_refs(
                 "rollback": {
                     "ok": True,
                     "skipped": False,
+                    "execution_type": "code_patch_rollback",
                     "phase": "verify",
                     "candidate_id": "candidate-lifecycle-rollback",
                     "file_restore": {"ok": True, "restored_count": 1},
@@ -98,6 +99,45 @@ def test_executed_rollback_predicate_rejects_forged_status_shapes() -> None:
             "applied_pattern_id": "forged-pattern",
             "budget_decision": "ok",
             "details": {},
+        }
+    ) is False
+
+
+def test_executed_rollback_predicate_rejects_missing_unknown_or_action_incompatible_type() -> None:
+    candidate_execution = {
+        "ok": True,
+        "skipped": False,
+        "candidate_id": "candidate-b",
+        "file_restore": {"ok": True, "restored_count": 1},
+    }
+    for execution_type in (None, "unknown_rollback"):
+        execution = dict(candidate_execution)
+        if execution_type is not None:
+            execution["execution_type"] = execution_type
+        assert is_executed_rollback_ledger_record(
+            {
+                "action_type": "rolled_back",
+                "source_opportunity_id": "candidate-b",
+                "source_opportunity": {"candidate_id": "candidate-b"},
+                "details": {"candidate_id": "candidate-b", "rollback": execution},
+            }
+        ) is False
+
+    assert is_executed_rollback_ledger_record(
+        {
+            "action_type": "rollback",
+            "applied_pattern_id": "pattern-a",
+            "rollback_policy_id": "pattern-a",
+            "source_opportunity_id": "candidate-b",
+            "source_opportunity": {"candidate_id": "candidate-b", "pattern_id": "pattern-a"},
+            "budget_decision": "ok",
+            "details": {
+                "candidate_id": "candidate-b",
+                "rollback": {
+                    **candidate_execution,
+                    "execution_type": "code_patch_rollback",
+                },
+            },
         }
     ) is False
     assert is_executed_rollback_ledger_record(

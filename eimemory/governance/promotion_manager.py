@@ -1706,6 +1706,7 @@ def _rollback_code_patch(
     command_report = _run_patch_commands(commands, cwd=repo_root, timeout_seconds=timeout_seconds, phase=f"rollback:{phase}") if commands else {"ok": True, "skipped": True, "reports": []}
     return {
         "ok": bool(repo_reset.get("ok")) and bool(command_report.get("ok")),
+        "execution_type": "code_patch_rollback",
         "phase": str(phase),
         "file_restore": {"ok": True, "restored_count": len(backups)},
         "repo_reset": repo_reset,

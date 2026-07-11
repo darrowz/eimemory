@@ -131,6 +131,7 @@ def test_shadow_observe_quarantines_after_three_real_tasks_without_hits(tmp_path
     assert runtime.store.get_by_id(candidate_id).status == "quarantined"
     assert _intent_pattern(runtime, "watch-quarantine")["status"] == "quarantined"
     quarantine_ledger = runtime.get_policy_rollout_ledger(scope=scope, action="quarantined", limit=10)
+    assert quarantine_ledger[0]["details"]["rollback"]["execution_type"] == "intent_pattern_status_transition"
     assert quarantine_ledger[0]["details"]["rollback"]["pattern_id"] == "watch-quarantine"
     assert quarantine_ledger[0]["details"]["rollback"]["candidate_id"] == candidate_id
     assert is_executed_rollback_ledger_record(quarantine_ledger[0]) is True
@@ -165,6 +166,7 @@ def test_shadow_observe_bad_outcome_rolls_back_pattern(tmp_path) -> None:
     ledger = runtime.get_policy_rollout_ledger(scope=scope, action="rollback", limit=10)
     assert ledger[0]["rollback_policy_id"] == "watch-rollback"
     lifecycle = runtime.get_policy_rollout_ledger(scope=scope, action="rolled_back", limit=10)
+    assert lifecycle[0]["details"]["rollback"]["execution_type"] == "intent_pattern_status_transition"
     assert lifecycle[0]["details"]["rollback"]["pattern_id"] == "watch-rollback"
     assert lifecycle[0]["details"]["rollback"]["candidate_id"] == candidate_id
     assert is_executed_rollback_ledger_record(lifecycle[0]) is True

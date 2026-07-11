@@ -1106,6 +1106,7 @@ def test_code_patch_rollout_auto_canary_failure_rolls_back(tmp_path, monkeypatch
     rolled_back = next(item for item in ledger if item["action_type"] == "rolled_back")
     assert rolled_back["details"]["observed_count"] == 1
     assert rolled_back["details"]["failure_rate"] == 1.0
+    assert rolled_back["details"]["rollback"]["execution_type"] == "code_patch_rollback"
     assert rolled_back["details"]["rollback"]["candidate_id"] == candidate_id
     assert is_executed_rollback_ledger_record(rolled_back) is True
 
@@ -1374,6 +1375,7 @@ def test_code_patch_rolls_back_when_post_deploy_health_fails(tmp_path, monkeypat
     assert rollback_marker.read_text(encoding="utf-8") == "rolled back"
     ledger = runtime.get_policy_rollout_ledger(scope=scope, action="rolled_back", limit=10)
     assert ledger[0]["source_opportunity_id"] == candidate_id
+    assert ledger[0]["details"]["side_effect"]["rollback"]["execution_type"] == "code_patch_rollback"
     assert ledger[0]["details"]["side_effect"]["rollback"]["candidate_id"] == candidate_id
     assert is_executed_rollback_ledger_record(ledger[0]) is True
 

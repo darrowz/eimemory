@@ -12,6 +12,7 @@ import pytest
 
 from eimemory.api.runtime import Runtime
 from eimemory.cli.main import main as cli_main
+from eimemory.governance import deployment_receipt as deployment_receipt_module
 from eimemory.governance.deployment_receipt import verify_and_record_deployment as _verify_deployment_receipt
 
 
@@ -375,7 +376,7 @@ def test_deployment_receipt_cli_persists_verified_receipt(tmp_path, monkeypatch,
     with _health_server(
         _health_payload(commit=head_commit, version="9.8.7", current_link=current_link, release_dir=release_dir)
     ) as health_url:
-        with _trusted_anchors(repo, current_link, health_url):
+        with _module_trust_anchors(repo, current_link, health_url):
             exit_code = cli_main(
                 [
                 "learn",
@@ -423,7 +424,7 @@ def test_deployment_receipt_rejects_non_identity_tracked_file_changes(tmp_path, 
     )
     runtime = Runtime.create(root=tmp_path / "runtime")
     try:
-        with _health_server(health) as health_url, _trusted_anchors(repo, current_link, health_url):
+        with _health_server(health) as health_url:
             report = verify_and_record_deployment(
                 runtime,
                 scope=SCOPE,
@@ -459,7 +460,7 @@ def test_deployment_receipt_rejects_literal_releases_root_symlink_escape(tmp_pat
     )
     runtime = Runtime.create(root=tmp_path / "runtime")
     try:
-        with _health_server(health) as health_url, _trusted_anchors(repo, current_link, health_url):
+        with _health_server(health) as health_url:
             report = verify_and_record_deployment(
                 runtime,
                 scope=SCOPE,
@@ -487,7 +488,7 @@ def test_deployment_receipt_rejects_caller_selected_anchor(tmp_path, anchor) -> 
             trusted_repo = repo if anchor != "repo" else tmp_path / "trusted-repo"
             trusted_link = current_link if anchor != "current_link" else tmp_path / "trusted-current"
             trusted_url = health_url if anchor != "health_url" else health_url.replace("/health", "/trusted-health")
-            with _trusted_anchors(trusted_repo, trusted_link, trusted_url):
+            with _module_trust_anchors(trusted_repo, trusted_link, trusted_url):
                 report = _verify_deployment_receipt(
                     runtime,
                     scope=SCOPE,
@@ -516,19 +517,44 @@ def test_deployment_receipt_rejects_health_redirect(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path / "runtime")
     try:
         with _health_server(health) as target_url, _redirect_server(target_url) as redirect_url:
-            with _trusted_anchors(repo, current_link, redirect_url):
-                report = verify_and_record_deployment(
-                    runtime,
-                    scope=SCOPE,
-                    repo_root=repo,
-                    current_link=current_link,
-                    health_url=redirect_url,
-                    prior_commit=prior_commit,
-                )
+            report = verify_and_record_deployment(
+                runtime,
+                scope=SCOPE,
+                repo_root=repo,
+                current_link=current_link,
+                health_url=redirect_url,
+                prior_commit=prior_commit,
+            )
     finally:
         runtime.close()
 
     assert report == {"ok": False, "error": "health_redirect_not_allowed"}
+
+
+def test_deployment_receipt_environment_cannot_rebind_all_trust_anchors(tmp_path) -> None:
+    repo, prior_commit, head_commit = _git_release_repo(tmp_path, version="9.8.7")
+    release_dir, current_link = _release_link(tmp_path, head_commit, repo=repo)
+    health = _health_payload(
+        commit=head_commit,
+        version="9.8.7",
+        current_link=current_link,
+        release_dir=release_dir,
+    )
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    try:
+        with _health_server(health) as health_url, _trusted_anchors(repo, current_link, health_url):
+            report = _verify_deployment_receipt(
+                runtime,
+                scope=SCOPE,
+                repo_root=repo,
+                current_link=current_link,
+                health_url=health_url,
+                prior_commit=prior_commit,
+            )
+    finally:
+        runtime.close()
+
+    assert report == {"ok": False, "error": "untrusted_repo_root"}
 
 
 def _git_release_repo(tmp_path: Path, *, version: str) -> tuple[Path, str, str]:
@@ -663,8 +689,25 @@ def _trusted_anchors(repo: Path, current_link: Path, health_url: str):
                 os.environ[name] = value
 
 
+@contextmanager
+def _module_trust_anchors(repo: Path, current_link: Path, health_url: str):
+    names = {
+        "DEFAULT_DEPLOYMENT_REPO_ROOT": str(repo),
+        "DEFAULT_DEPLOYMENT_CURRENT_LINK": str(current_link),
+        "DEFAULT_DEPLOYMENT_HEALTH_URL": health_url,
+    }
+    previous = {name: getattr(deployment_receipt_module, name) for name in names}
+    for name, value in names.items():
+        setattr(deployment_receipt_module, name, value)
+    try:
+        yield
+    finally:
+        for name, value in previous.items():
+            setattr(deployment_receipt_module, name, value)
+
+
 def verify_and_record_deployment(runtime, **kwargs):
-    with _trusted_anchors(kwargs["repo_root"], kwargs["current_link"], kwargs["health_url"]):
+    with _module_trust_anchors(kwargs["repo_root"], kwargs["current_link"], kwargs["health_url"]):
         return _verify_deployment_receipt(runtime, **kwargs)
 
 

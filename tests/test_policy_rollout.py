@@ -172,6 +172,7 @@ def test_bad_attributed_outcome_rolls_back_active_pattern_and_hides_it(tmp_path)
     assert rollback_entry
     assert rollback_entry[0]["is_auto"] is True
     assert rollback_entry[0]["budget_decision"] == "ok"
+    assert rollback_entry[0]["details"]["rollback"]["execution_type"] == "intent_pattern_status_transition"
     assert rollback_entry[0]["details"]["rollback"]["pattern_id"] == pattern_id
 
 
@@ -204,6 +205,7 @@ def test_manual_rollback_hides_pattern_and_writes_ledger(tmp_path) -> None:
     manual_entry = [entry for entry in ledger if entry["rollback_policy_id"] == pattern_id]
     assert manual_entry
     assert manual_entry[0]["is_auto"] is False
+    assert manual_entry[0]["details"]["rollback"]["execution_type"] == "intent_pattern_status_transition"
     assert manual_entry[0]["details"]["rollback"]["pattern_id"] == pattern_id
     assert manual_entry[0]["reason"] == "回归测试手动回滚"
 

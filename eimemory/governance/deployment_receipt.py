@@ -38,23 +38,17 @@ def verify_and_record_deployment(
 
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
     caller_repo = Path(repo_root).expanduser().resolve()
-    trusted_repo = Path(
-        os.environ.get("EIMEMORY_DEPLOYMENT_REPO_ROOT", DEFAULT_DEPLOYMENT_REPO_ROOT)
-    ).expanduser().resolve()
+    trusted_repo = Path(DEFAULT_DEPLOYMENT_REPO_ROOT).expanduser().resolve()
     if _normalized_path_key(caller_repo) != _normalized_path_key(trusted_repo):
         return {"ok": False, "error": "untrusted_repo_root"}
     caller_link = Path(current_link).expanduser().absolute()
-    trusted_link = Path(
-        os.environ.get("EIMEMORY_DEPLOYMENT_CURRENT_LINK", DEFAULT_DEPLOYMENT_CURRENT_LINK)
-    ).expanduser().absolute()
+    trusted_link = Path(DEFAULT_DEPLOYMENT_CURRENT_LINK).expanduser().absolute()
     if _normalized_path_key(caller_link) != _normalized_path_key(trusted_link):
         return {"ok": False, "error": "untrusted_current_link"}
     normalized_health_url = _normalize_health_url(str(health_url or ""))
     if not normalized_health_url:
         return {"ok": False, "error": "health_url_scheme_not_allowed"}
-    trusted_health_url = _normalize_health_url(
-        os.environ.get("EIMEMORY_DEPLOYMENT_HEALTH_URL", DEFAULT_DEPLOYMENT_HEALTH_URL)
-    )
+    trusted_health_url = _normalize_health_url(DEFAULT_DEPLOYMENT_HEALTH_URL)
     if not trusted_health_url or normalized_health_url != trusted_health_url:
         return {"ok": False, "error": "untrusted_health_url"}
     repo = trusted_repo

@@ -19,6 +19,9 @@ LIFECYCLE_DETAIL_FIELDS = {
 }
 
 ROLLBACK_ACTION_TYPES = {"rollback", "rolled_back", "quarantine", "quarantined"}
+ROLLBACK_EXECUTION_TYPES = {"intent_pattern_status_transition", "code_patch_rollback"}
+POLICY_ROLLBACK_ACTION_TYPES = ROLLBACK_ACTION_TYPES
+CANDIDATE_ROLLBACK_ACTION_TYPES = {"rolled_back", "quarantined"}
 
 
 def is_executed_rollback_ledger_record(item: dict[str, Any]) -> bool:
@@ -39,9 +42,18 @@ def is_executed_rollback_ledger_record(item: dict[str, Any]) -> bool:
             return False
         if not str(item.get("applied_pattern_id") or "").strip():
             return False
-    if str(execution.get("execution_type") or "").strip() == "intent_pattern_status_transition":
+    execution_type = str(execution.get("execution_type") or "").strip()
+    if execution_type not in ROLLBACK_EXECUTION_TYPES:
+        return False
+    if execution_type == "intent_pattern_status_transition":
+        if action not in POLICY_ROLLBACK_ACTION_TYPES:
+            return False
         return _is_verified_policy_transition(item, execution)
-    return _is_verified_candidate_rollback(item, execution)
+    if execution_type == "code_patch_rollback":
+        if action not in CANDIDATE_ROLLBACK_ACTION_TYPES:
+            return False
+        return _is_verified_candidate_rollback(item, execution)
+    return False
 
 
 def _is_verified_policy_transition(item: dict[str, Any], execution: dict[str, Any]) -> bool:
