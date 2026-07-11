@@ -335,12 +335,15 @@ def test_immutable_release_installer_deploys_python_runtime_protection_dropins()
         "eimemory-nightly.service",
         "eimemory-rpc.service",
         "eimemory-timer-monitor.service",
+        "openclaw-loop-watch.service",
         "openclaw-stuck-watchdog.service",
     }
 
     assert 'eimemory-python-runtime.conf' in script
     assert '90-eimemory-python-runtime.conf' in script
     assert script.count('--render-commit "$COMMIT"') == 2
+    assert 'for unit_path in "$USER_SYSTEMD_DIR"/*.service' in script
+    assert "grep -Fq '/opt/eimemory/current'" in script
     for unit in expected_units:
         assert unit in script
 

@@ -265,9 +265,23 @@ if [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ] && command -v systemctl >/dev/null 2
     eimemory-nightly.service
     eimemory-rpc.service
     eimemory-timer-monitor.service
+    openclaw-loop-watch.service
     openclaw-stuck-watchdog.service
   )
+  for unit_path in "$USER_SYSTEMD_DIR"/*.service; do
+    [ -e "$unit_path" ] || continue
+    runtime_unit="$(basename "$unit_path")"
+    if [[ "$runtime_unit" =~ ^[A-Za-z0-9_.@-]+\.service$ ]] && \
+       _run_as_service_user grep -Fq '/opt/eimemory/current' "$unit_path"; then
+      PYTHON_RUNTIME_UNITS+=("$runtime_unit")
+    fi
+  done
+  declare -A SEEN_PYTHON_RUNTIME_UNITS=()
   for runtime_unit in "${PYTHON_RUNTIME_UNITS[@]}"; do
+    if [ -n "${SEEN_PYTHON_RUNTIME_UNITS[$runtime_unit]:-}" ]; then
+      continue
+    fi
+    SEEN_PYTHON_RUNTIME_UNITS["$runtime_unit"]=1
     _run_as_service_user mkdir -p "$USER_SYSTEMD_DIR/$runtime_unit.d"
     "$PYTHON_BIN" -I -B "$RELEASE_DIR/deploy/install_managed_systemd_dropin.py" \
       --source "$RELEASE_DIR/deploy/systemd/eimemory-python-runtime.conf" \
