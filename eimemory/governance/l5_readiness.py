@@ -39,10 +39,26 @@ def build_l5_readiness_report(
     ledger = build_capability_ledger(runtime, scope=scope_ref, limit=limit, attribute_outcomes=True)
     hard_metrics = _safe_hard_metrics(runtime, scope=scope_ref, limit=limit)
     evidence_counts = _evidence_counts(runtime, scope=scope_ref, limit=limit)
+    verified_replay = _verified_replay_summary(runtime, scope=scope_ref, limit=limit)
+    latest_l5_assessment = _latest_l5_assessment(runtime, scope=scope_ref)
     weak_outcome_evidence = _weak_outcome_evidence(ledger)
     capability_gaps = _capability_gaps(ledger)
-    stage = _stage_for(ledger, hard_metrics, evidence_counts, capability_gaps, weak_outcome_evidence)
-    next_actions = _next_actions(stage, capability_gaps, evidence_counts)
+    stage = _stage_for(
+        ledger,
+        hard_metrics,
+        evidence_counts,
+        capability_gaps,
+        weak_outcome_evidence,
+        verified_replay,
+        latest_l5_assessment,
+    )
+    next_actions = _next_actions(
+        stage,
+        capability_gaps,
+        evidence_counts,
+        verified_replay=verified_replay,
+        latest_l5_assessment=latest_l5_assessment,
+    )
     report = {
         "ok": True,
         "report_type": "l5_readiness_report",
@@ -59,6 +75,8 @@ def build_l5_readiness_report(
         "hard_metrics": hard_metrics.get("metrics", {}),
         "hard_metric_quality": hard_metrics.get("metric_quality", {}),
         "hard_metric_samples": hard_metrics.get("sample_counts", {}),
+        "verified_replay": verified_replay,
+        "latest_l5_assessment": latest_l5_assessment,
         "weak_outcome_evidence": weak_outcome_evidence,
         "capability_gaps": capability_gaps,
         "next_actions": next_actions,
@@ -123,11 +141,7 @@ def _evidence_counts(runtime: Any, *, scope: ScopeRef, limit: int) -> dict[str, 
         except Exception:
             counts[kind] = 0
     counts["promotion_applied"] = _count_status(runtime, scope=scope, kind="promotion_request", statuses={"promoted", "active", "deployed"}, limit=limit)
-    counts["rollback_or_quarantine"] = _count_status(runtime, scope=scope, kind="promotion_request", statuses={"rolled_back", "quarantined"}, limit=limit) + _policy_rollback_count(
-        runtime,
-        scope=scope,
-        limit=limit,
-    )
+    counts["rollback_or_quarantine"] = _policy_rollback_count(runtime, scope=scope, limit=limit)
     return counts
 
 
@@ -144,10 +158,126 @@ def _policy_rollback_count(runtime: Any, *, scope: ScopeRef, limit: int) -> int:
     if not callable(getter):
         return 0
     try:
-        records = getter(scope=scope, action="rollback", limit=max(0, int(limit)))
+        records = getter(scope=scope, limit=max(0, int(limit)))
     except Exception:
         return 0
-    return sum(1 for record in records if str(record.get("action_type") or "").lower() in {"rollback", "quarantine", "quarantined"})
+    return sum(1 for record in records if str(record.get("action_type") or "").lower() in {"rollback", "rolled_back", "quarantine", "quarantined"})
+
+
+def _verified_replay_summary(runtime: Any, *, scope: ScopeRef, limit: int) -> dict[str, Any]:
+    try:
+        records = runtime.store.list_records(kinds=["replay_result"], scope=scope, limit=max(1, int(limit)))
+    except Exception:
+        records = []
+    by_capability = {
+        capability: {
+            "executed_count": 0,
+            "pass_count": 0,
+            "fail_count": 0,
+            "not_run_count": 0,
+            "pass_rate": 0.0,
+            "distinct_evidence_count": 0,
+        }
+        for capability in sorted(WEAK_CAPABILITIES)
+    }
+    evidence_sources = {capability: set() for capability in WEAK_CAPABILITIES}
+    pass_count = 0
+    fail_count = 0
+    not_run_count = 0
+    for record in records:
+        verdict = str(_record_field(record, "verdict") or "").strip().lower()
+        capability = str(_record_field(record, "capability") or _record_field(record, "target_capability") or "").strip()
+        report_type = str(_record_field(record, "report_type") or "").strip()
+        source = str(record.get("source", "") if isinstance(record, dict) else getattr(record, "source", "") or "").strip()
+        hit = _record_field(record, "hit")
+        trusted_replay = report_type == "capability_replay_pack" and source == "eimemory.capability_replay"
+        if not trusted_replay:
+            continue
+        evidence_source_id = str(_record_field(record, "evidence_source_id") or "").strip()
+        if verdict == "pass" and (hit is not True or not evidence_source_id):
+            verdict = "fail"
+        bucket = by_capability.get(capability)
+        if verdict == "pass":
+            pass_count += 1
+            if bucket is not None:
+                bucket["executed_count"] += 1
+                bucket["pass_count"] += 1
+                evidence_sources[capability].add(evidence_source_id)
+        elif verdict == "fail":
+            fail_count += 1
+            if bucket is not None:
+                bucket["executed_count"] += 1
+                bucket["fail_count"] += 1
+        elif verdict == "not_run":
+            not_run_count += 1
+            if bucket is not None:
+                bucket["not_run_count"] += 1
+    for bucket in by_capability.values():
+        executed = int(bucket["executed_count"])
+        bucket["pass_rate"] = round(int(bucket["pass_count"]) / executed, 3) if executed else 0.0
+    for capability, bucket in by_capability.items():
+        bucket["distinct_evidence_count"] = len(evidence_sources[capability])
+    executed_count = pass_count + fail_count
+    weak_capabilities_missing = [
+        capability
+        for capability, bucket in by_capability.items()
+        if int(bucket["executed_count"]) < 3
+        or float(bucket["pass_rate"]) < 0.8
+        or int(bucket["distinct_evidence_count"]) < 3
+    ]
+    return {
+        "executed_count": executed_count,
+        "pass_count": pass_count,
+        "fail_count": fail_count,
+        "not_run_count": not_run_count,
+        "pass_rate": round(pass_count / executed_count, 3) if executed_count else 0.0,
+        "minimum_executed": 10,
+        "minimum_pass_rate": 0.8,
+        "minimum_per_weak_capability": 3,
+        "by_capability": by_capability,
+        "weak_capabilities_missing": weak_capabilities_missing,
+    }
+
+
+def _latest_l5_assessment(runtime: Any, *, scope: ScopeRef) -> dict[str, Any]:
+    try:
+        records = runtime.store.list_records(kinds=["l5_assessment"], scope=scope, limit=1)
+    except Exception:
+        records = []
+    if not records:
+        return {"present": False, "trusted": False, "complete": False, "level": "", "missing_evidence": [], "record_id": ""}
+    record = records[0]
+    missing = _record_field(record, "missing_evidence")
+    missing_evidence = [str(item) for item in missing] if isinstance(missing, list) else []
+    level = str(_record_field(record, "level") or "")
+    source = str(record.get("source", "") if isinstance(record, dict) else getattr(record, "source", "") or "")
+    trusted = (
+        source == "eimemory.l5_loop"
+        and str(_record_field(record, "report_type") or "") == "l5_assessment"
+        and str(_record_field(record, "schema_version") or "") == "l5_closed_loop.v1"
+    )
+    complete = trusted and bool(_record_field(record, "complete")) and level == "L5" and not missing_evidence
+    return {
+        "present": True,
+        "trusted": trusted,
+        "complete": complete,
+        "level": level,
+        "missing_evidence": missing_evidence,
+        "record_id": str(getattr(record, "record_id", "") or ""),
+    }
+
+
+def _record_field(record: Any, key: str) -> Any:
+    if isinstance(record, dict):
+        if key in record:
+            return record.get(key)
+        payloads = (record.get("content"), record.get("meta"))
+    else:
+        payloads = (getattr(record, "content", None), getattr(record, "meta", None))
+    for payload in payloads:
+        if isinstance(payload, dict) and key in payload:
+            return payload.get(key)
+    return None
 
 
 def _capability_gaps(ledger: dict[str, Any]) -> list[dict[str, Any]]:
@@ -191,10 +321,13 @@ def _stage_for(
     evidence_counts: dict[str, int],
     capability_gaps: list[dict[str, Any]],
     weak_outcome_evidence: dict[str, Any],
+    verified_replay: dict[str, Any],
+    latest_l5_assessment: dict[str, Any],
 ) -> dict[str, Any]:
     metrics = dict(hard_metrics.get("metrics") or {})
     metric_quality = dict(hard_metrics.get("metric_quality") or {})
-    replay_count = int(evidence_counts.get("replay_result") or 0)
+    replay_count = int(verified_replay.get("executed_count") or 0)
+    replay_pass_rate = float(verified_replay.get("pass_rate") or 0.0)
     l5_artifacts = sum(int(evidence_counts.get(kind) or 0) for kind in ("l5_world_model", "l5_strategic_roadmap", "l5_assessment", "l5_closed_loop"))
     promotion_count = int(evidence_counts.get("promotion_applied") or 0)
     rollback_count = int(evidence_counts.get("rollback_or_quarantine") or 0)
@@ -203,15 +336,22 @@ def _stage_for(
     core_ready_count = _ready_count(ledger, set(READINESS_CAPABILITIES))
     task_success = float(metrics.get("task_success_rate") or 0.0)
     recall_hit = float(metrics.get("recall_hit_rate") or 0.0)
-    patch_success = float(metrics.get("auto_patch_success_rate") or 0.0)
-    patch_quality_ok = bool((metric_quality.get("auto_patch_success_rate") or {}).get("sufficient"))
+    patch_success = float(metrics.get("patch_promotion_success_rate") or metrics.get("auto_patch_success_rate") or 0.0)
+    patch_quality_ok = bool(
+        (metric_quality.get("patch_promotion_success_rate") or metric_quality.get("auto_patch_success_rate") or {}).get("sufficient")
+    )
     weak_outcome_ok = not weak_outcome_evidence.get("missing")
 
     readiness_score = round(
         min(1.0, (core_ready_count / len(READINESS_CAPABILITIES) * 0.45) + (min(replay_count, 10) / 10 * 0.2) + (min(l5_artifacts, 4) / 4 * 0.2) + (min(promotion_count, 5) / 5 * 0.15)),
         3,
     )
-    if not weak_outcome_ok or not patch_quality_ok:
+    if (
+        not weak_outcome_ok
+        or not patch_quality_ok
+        or verified_replay.get("weak_capabilities_missing")
+        or not latest_l5_assessment.get("complete")
+    ):
         readiness_score = min(readiness_score, 0.8)
     common = {
         "readiness_score": readiness_score,
@@ -222,6 +362,9 @@ def _stage_for(
         and weak_gap_count == 0
         and weak_outcome_ok
         and replay_count >= 10
+        and replay_pass_rate >= 0.8
+        and not verified_replay.get("weak_capabilities_missing")
+        and latest_l5_assessment.get("complete") is True
         and promotion_count >= 3
         and rollback_count >= 1
         and patch_quality_ok
@@ -285,14 +428,25 @@ def _outcome_evidence_count(item: dict[str, Any]) -> int:
     return int(source_counts.get("event_outcome") or 0) + int(source_counts.get("outcome_trace") or 0)
 
 
-def _next_actions(stage: dict[str, Any], capability_gaps: list[dict[str, Any]], evidence_counts: dict[str, int]) -> list[str]:
+def _next_actions(
+    stage: dict[str, Any],
+    capability_gaps: list[dict[str, Any]],
+    evidence_counts: dict[str, int],
+    *,
+    verified_replay: dict[str, Any],
+    latest_l5_assessment: dict[str, Any],
+) -> list[str]:
     actions = []
-    if int(evidence_counts.get("replay_result") or 0) < 5:
-        actions.append("Build replay packs from existing outcome traces before promoting new behavior.")
+    if int(verified_replay.get("executed_count") or 0) < 5:
+        actions.append("Execute replay packs from existing outcome traces before promoting new behavior; not_run records do not count.")
+    for capability in list(verified_replay.get("weak_capabilities_missing") or [])[:4]:
+        actions.append(f"Execute at least three replays for {capability} with pass rate >=0.8.")
     for gap in capability_gaps[:4]:
         actions.append(f"Add replay-backed evidence for {gap['capability']} ({gap['reason']}).")
     if int(evidence_counts.get("l5_world_model") or 0) == 0:
         actions.append("Run or persist an L5 world-model report after the read-only readiness report is reviewed.")
     if stage["stage"] in {"L4", "L4.5"} and int(evidence_counts.get("rollback_or_quarantine") or 0) == 0:
         actions.append("Exercise a non-destructive rollback/quarantine rehearsal so reversibility is proven.")
+    if not latest_l5_assessment.get("complete"):
+        actions.append("Complete an L5 assessment with zero missing evidence before claiming L5.")
     return actions[:6] or ["Keep running readiness, replay, and dashboard reports; do not claim L5 unless assessment evidence is complete."]

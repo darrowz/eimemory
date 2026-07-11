@@ -144,3 +144,25 @@ def test_attribution_maps_chinese_search_tasks_to_search_discovery(tmp_path) -> 
 
     assert "search.discovery" in report["capabilities"]
     assert ledger["capabilities"]["search.discovery"]["evidence_sources"] == ["outcome_trace"]
+
+
+def test_unverified_success_is_not_capability_evidence(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu", "workspace_id": "unverified"}
+    record_outcome_trace(
+        runtime,
+        {
+            "trace_id": "trace-unverified-search",
+            "idempotency_key": "idem-unverified-search",
+            "task_type": "search_discovery",
+            "input_summary": "Search GitHub sources",
+            "outcome": {"status": "success"},
+            "verifier": {"passed": False},
+            "feedback": {"summary": "not verified"},
+        },
+        scope=scope,
+    )
+
+    report = attribute_capability_outcomes(runtime, scope=scope, loop_id="attr_unverified")
+
+    assert "search.discovery" not in report["capabilities"]

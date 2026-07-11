@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from eimemory.api.runtime import Runtime
+from eimemory.experience import record_outcome_trace
 
 
 SCOPE = {"agent_id": "agent-replay-packs", "workspace_id": "capability-replay"}
@@ -93,8 +94,145 @@ def test_capability_replay_packs_include_named_weak_capability_cases(tmp_path) -
         runtime.close()
 
 
+def test_capability_replay_rejects_inconsistent_pass_claims(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    runtime.run_capability_replay_case = lambda _case: {"verdict": "pass", "hit": False, "observed": ""}  # type: ignore[attr-defined]
+    try:
+        report = runtime.build_capability_replay_packs(
+            scope=SCOPE,
+            persist=True,
+            capabilities=["search.discovery"],
+        )
+    finally:
+        runtime.close()
+
+    assert report["packs"][0]["pass_rate"] == 0.0
+    assert {item["verdict"] for item in report["packs"][0]["case_results"]} == {"fail"}
+    assert {item["reason"] for item in report["packs"][0]["case_results"]} == {"inconsistent_pass_evidence"}
+
+
+def test_capability_replay_rejects_pass_without_source_evidence(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    runtime.run_capability_replay_case = lambda case: {  # type: ignore[attr-defined]
+        "verdict": "pass",
+        "hit": True,
+        "observed": f"verified:{case['case_id']}",
+    }
+    try:
+        report = runtime.build_capability_replay_packs(
+            scope=SCOPE,
+            persist=True,
+            capabilities=["search.discovery"],
+        )
+    finally:
+        runtime.close()
+
+    assert report["packs"][0]["pass_rate"] == 0.0
+    assert {item["reason"] for item in report["packs"][0]["case_results"]} == {"missing_replay_evidence_source"}
+
+
+def test_runtime_executor_replays_verified_outcome_evidence(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        summaries = [
+            "Recent recency window and source quality verified",
+            "GitHub trending projects use created range and stars sort",
+            "Official docs and primary source verification completed",
+        ]
+        for index, summary in enumerate(summaries):
+            record_outcome_trace(
+                runtime,
+                {
+                    "trace_id": f"search-verified-{index}",
+                    "idempotency_key": f"idem-search-verified-{index}",
+                    "task_type": "search_discovery",
+                    "input_summary": summary,
+                    "outcome": {"status": "success"},
+                    "verifier": {"passed": True},
+                    "feedback": {"summary": "primary source verified"},
+                },
+                scope=SCOPE,
+            )
+
+        report = runtime.build_capability_replay_packs(
+            scope=SCOPE,
+            persist=True,
+            capabilities=["search.discovery"],
+        )
+    finally:
+        runtime.close()
+
+    assert report["packs"][0]["pass_rate"] == 1.0
+    assert all(item["hit"] is True for item in report["packs"][0]["case_results"])
+    assert all("source_id=" in item["observed"] for item in report["packs"][0]["case_results"])
+
+
+def test_runtime_executor_rejects_generic_outcomes_for_specific_cases(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        for index in range(3):
+            record_outcome_trace(
+                runtime,
+                {
+                    "trace_id": f"search-generic-{index}",
+                    "idempotency_key": f"idem-search-generic-{index}",
+                    "task_type": "search_discovery",
+                    "input_summary": f"Lookup task completed {index}",
+                    "outcome": {"status": "success"},
+                    "verifier": {"passed": True},
+                    "feedback": {"summary": "completed"},
+                },
+                scope=SCOPE,
+            )
+
+        report = runtime.build_capability_replay_packs(
+            scope=SCOPE,
+            persist=True,
+            capabilities=["search.discovery"],
+        )
+    finally:
+        runtime.close()
+
+    assert report["packs"][0]["pass_rate"] == 0.0
+    assert {item["reason"] for item in report["packs"][0]["case_results"]} == {"case_specific_outcome_evidence_missing"}
+
+
+def test_runtime_executor_accepts_verified_chinese_case_evidence(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    summaries = [
+        "核验近期时间窗口与来源质量可信度",
+        "GitHub 热门趋势按创建时间与星标数量排序",
+        "完成官方一手来源核验并标记已验证",
+    ]
+    try:
+        for index, summary in enumerate(summaries):
+            record_outcome_trace(
+                runtime,
+                {
+                    "trace_id": f"search-cn-{index}",
+                    "idempotency_key": f"idem-search-cn-{index}",
+                    "task_type": "search_discovery",
+                    "input_summary": summary,
+                    "outcome": {"status": "success"},
+                    "verifier": {"passed": True},
+                    "feedback": {"summary": "已核验"},
+                },
+                scope=SCOPE,
+            )
+
+        report = runtime.build_capability_replay_packs(scope=SCOPE, persist=True, capabilities=["search.discovery"])
+    finally:
+        runtime.close()
+
+    assert report["packs"][0]["pass_rate"] == 1.0
+
+
 def _install_successful_executor(runtime: Runtime) -> None:
     def executor(case):
-        return {"observed": str(case.get("expected") or ""), "hit": True}
+        return {
+            "observed": str(case.get("expected") or ""),
+            "hit": True,
+            "evidence_source_id": f"test:{case.get('case_id')}",
+        }
 
     runtime.run_capability_replay_case = executor  # type: ignore[attr-defined]

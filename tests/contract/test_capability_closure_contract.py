@@ -42,6 +42,7 @@ def test_capability_replay_uses_real_executor_before_recording_pass(tmp_path) ->
         return {
             "observed": f"met: {case['expected']}",
             "hit": True,
+            "evidence_source_id": f"contract:{case['case_id']}",
         }
 
     runtime.run_capability_replay_case = executor  # type: ignore[attr-defined]

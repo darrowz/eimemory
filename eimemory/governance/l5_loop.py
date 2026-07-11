@@ -702,14 +702,23 @@ def _has_replay(auto: dict[str, Any]) -> bool:
     if not isinstance(auto, dict):
         return False
     replay = auto.get("real_task_replay") or auto.get("replay") or {}
-    if isinstance(replay, dict) and replay.get("ok") is True:
-        sample_count = int(replay.get("sample_count") or replay.get("case_count") or replay.get("pass_count") or 0)
-        pass_count = int(replay.get("pass_count") or 0)
-        return sample_count > 0 and pass_count >= sample_count
-    if auto.get("replay_gate_passed") is True:
-        return True
-    dataset = auto.get("replay_dataset") or {}
-    return int(dataset.get("case_count") or 0) > 0 and bool(auto.get("ok"))
+    if not isinstance(replay, dict) or replay.get("ok") is not True:
+        return False
+    sample_count = int(replay.get("sample_count") or replay.get("case_count") or replay.get("pass_count") or 0)
+    pass_count = int(replay.get("pass_count") or 0)
+    fail_count = int(replay.get("fail_count") or 0)
+    verdict = str(replay.get("verdict") or "").strip().lower()
+    try:
+        pass_rate = float(replay.get("pass_rate"))
+    except (TypeError, ValueError):
+        pass_rate = pass_count / sample_count if sample_count else 0.0
+    return bool(
+        verdict == "pass"
+        and sample_count > 0
+        and pass_count == sample_count
+        and fail_count == 0
+        and pass_rate >= 0.8
+    )
 
 
 def _has_promotion_or_block(auto: dict[str, Any]) -> bool:

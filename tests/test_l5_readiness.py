@@ -52,9 +52,22 @@ def test_l5_readiness_report_uses_existing_evidence_without_running_learning(tmp
                     title=f"Replay {index}",
                     summary="pass",
                     scope=scope_ref,
-                    content={"verdict": "pass", "capability": "memory.recall", "hit": True},
-                    meta={"verdict": "pass", "capability": "memory.recall", "hit": True},
-                )
+                        content={
+                            "report_type": "capability_replay_pack",
+                            "verdict": "pass",
+                            "capability": "memory.recall",
+                            "hit": True,
+                            "evidence_source_id": f"memory-replay-{index}",
+                        },
+                        meta={
+                            "report_type": "capability_replay_pack",
+                            "verdict": "pass",
+                            "capability": "memory.recall",
+                            "hit": True,
+                            "evidence_source_id": f"memory-replay-{index}",
+                        },
+                        source="eimemory.capability_replay",
+                    )
             )
         runtime.store.append(
             RecordEnvelope.create(
@@ -109,10 +122,42 @@ def test_l5_readiness_counts_policy_rollout_rollback_evidence(tmp_path) -> None:
     assert report["evidence_counts"]["rollback_or_quarantine"] == 1
 
 
+def test_l5_readiness_rejects_status_only_rollback_evidence(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope_ref = ScopeRef.from_dict(SCOPE)
+    try:
+        runtime.store.append(
+            RecordEnvelope.create(
+                kind="promotion_request",
+                title="Unverified rollback",
+                summary="status only",
+                scope=scope_ref,
+                status="rolled_back",
+                content={"action": "rollback"},
+                meta={"action": "rollback"},
+            )
+        )
+
+        report = runtime.build_l5_readiness_report(scope=SCOPE)
+    finally:
+        runtime.close()
+
+    assert report["evidence_counts"]["rollback_or_quarantine"] == 0
+    assert report["hard_metrics"]["rollback_count"] == 0
+
+
 def test_l5_readiness_does_not_treat_replay_only_weak_capabilities_as_l5(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     try:
-        _seed_l5_prerequisites(runtime, scope=SCOPE, weak_outcomes=False, patch_samples=10)
+        _seed_l5_prerequisites(
+            runtime,
+            scope=SCOPE,
+            weak_outcomes=False,
+            patch_samples=10,
+            execute_weak_replays=True,
+            assessment_complete=True,
+            verified_patch_evidence=True,
+        )
 
         report = runtime.build_l5_readiness_report(scope=SCOPE)
     finally:
@@ -127,7 +172,15 @@ def test_l5_readiness_does_not_treat_replay_only_weak_capabilities_as_l5(tmp_pat
 def test_l5_readiness_requires_sufficient_auto_patch_success_samples(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     try:
-        _seed_l5_prerequisites(runtime, scope=SCOPE, weak_outcomes=True, patch_samples=2)
+        _seed_l5_prerequisites(
+            runtime,
+            scope=SCOPE,
+            weak_outcomes=True,
+            patch_samples=2,
+            execute_weak_replays=True,
+            assessment_complete=True,
+            verified_patch_evidence=True,
+        )
 
         report = runtime.build_l5_readiness_report(scope=SCOPE)
     finally:
@@ -140,7 +193,15 @@ def test_l5_readiness_requires_sufficient_auto_patch_success_samples(tmp_path) -
 def test_l5_readiness_reaches_l5_only_with_attributed_weak_outcomes_and_patch_samples(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     try:
-        _seed_l5_prerequisites(runtime, scope=SCOPE, weak_outcomes=True, patch_samples=10)
+        _seed_l5_prerequisites(
+            runtime,
+            scope=SCOPE,
+            weak_outcomes=True,
+            patch_samples=10,
+            execute_weak_replays=True,
+            assessment_complete=True,
+            verified_patch_evidence=True,
+        )
 
         report = runtime.build_l5_readiness_report(scope=SCOPE)
     finally:
@@ -150,6 +211,103 @@ def test_l5_readiness_reaches_l5_only_with_attributed_weak_outcomes_and_patch_sa
     assert report["readiness_score"] == 1.0
     assert report["hard_metric_quality"]["auto_patch_success_rate"]["sufficient"] is True
     assert report["weak_outcome_evidence"]["missing"] == []
+    assert report["verified_replay"]["weak_capabilities_missing"] == []
+    assert all(item["distinct_evidence_count"] == 3 for item in report["verified_replay"]["by_capability"].values())
+    assert report["latest_l5_assessment"]["complete"] is True
+
+
+def test_l5_readiness_rejects_not_run_weak_replays(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        _seed_l5_prerequisites(
+            runtime,
+            scope=SCOPE,
+            weak_outcomes=True,
+            patch_samples=10,
+            execute_weak_replays=False,
+            assessment_complete=True,
+            verified_patch_evidence=True,
+        )
+
+        report = runtime.build_l5_readiness_report(scope=SCOPE)
+    finally:
+        runtime.close()
+
+    assert report["current_stage"] != "L5"
+    assert report["verified_replay"]["executed_count"] == 0
+    assert report["verified_replay"]["weak_capabilities_missing"] == sorted(WEAK_CAPABILITIES)
+    assert report["verified_replay"]["not_run_count"] == 12
+
+
+def test_l5_readiness_rejects_incomplete_latest_assessment(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        _seed_l5_prerequisites(
+            runtime,
+            scope=SCOPE,
+            weak_outcomes=True,
+            patch_samples=10,
+            execute_weak_replays=True,
+            assessment_complete=False,
+            verified_patch_evidence=True,
+        )
+
+        report = runtime.build_l5_readiness_report(scope=SCOPE)
+    finally:
+        runtime.close()
+
+    assert report["current_stage"] != "L5"
+    assert report["latest_l5_assessment"]["complete"] is False
+    assert report["latest_l5_assessment"]["missing_evidence"] == ["promotion_or_block"]
+
+
+def test_l5_readiness_rejects_untrusted_pass_records_and_assessment(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope_ref = ScopeRef.from_dict(SCOPE)
+    try:
+        _seed_l5_prerequisites(
+            runtime,
+            scope=SCOPE,
+            weak_outcomes=True,
+            patch_samples=10,
+            execute_weak_replays=False,
+            assessment_complete=False,
+            verified_patch_evidence=True,
+            assessment_present=False,
+        )
+        for capability in WEAK_CAPABILITIES:
+            for index in range(3):
+                runtime.store.append(
+                    RecordEnvelope.create(
+                        kind="replay_result",
+                        title=f"untrusted {capability} {index}",
+                        summary="pass",
+                        scope=scope_ref,
+                        content={"verdict": "pass", "capability": capability, "hit": True},
+                        meta={"verdict": "pass", "capability": capability, "hit": True},
+                        source="external.untrusted",
+                    )
+                )
+        runtime.store.append(
+            RecordEnvelope.create(
+                kind="l5_assessment",
+                title="untrusted assessment",
+                summary="complete",
+                scope=scope_ref,
+                content={"report_type": "l5_assessment", "level": "L5", "complete": True, "missing_evidence": []},
+                meta={"report_type": "l5_assessment", "level": "L5", "missing_evidence_count": 0},
+                source="external.untrusted",
+            )
+        )
+
+        report = runtime.build_l5_readiness_report(scope=SCOPE)
+    finally:
+        runtime.close()
+
+    assert report["current_stage"] != "L5"
+    assert report["verified_replay"]["weak_capabilities_missing"] == sorted(WEAK_CAPABILITIES)
+    assert report["latest_l5_assessment"]["complete"] is False
+    assert report["latest_l5_assessment"]["trusted"] is False
 
 
 def test_cli_l5_readiness_returns_json(tmp_path, monkeypatch, capsys) -> None:
@@ -178,7 +336,17 @@ READINESS_CAPABILITIES = {
 }
 
 
-def _seed_l5_prerequisites(runtime: Runtime, *, scope: dict, weak_outcomes: bool, patch_samples: int) -> None:
+def _seed_l5_prerequisites(
+    runtime: Runtime,
+    *,
+    scope: dict,
+    weak_outcomes: bool,
+    patch_samples: int,
+    execute_weak_replays: bool = False,
+    assessment_complete: bool = False,
+    verified_patch_evidence: bool = False,
+    assessment_present: bool = True,
+) -> None:
     scope_ref = ScopeRef.from_dict(scope)
     for capability in READINESS_CAPABILITIES - WEAK_CAPABILITIES:
         record_capability_score(
@@ -189,6 +357,13 @@ def _seed_l5_prerequisites(runtime: Runtime, *, scope: dict, weak_outcomes: bool
             score=0.84,
             evidence_record_ids=[f"{capability}-e1", f"{capability}-e2", f"{capability}-e3"],
         )
+    if execute_weak_replays:
+        runtime.run_capability_replay_case = lambda case: {
+            "verdict": "pass",
+            "hit": True,
+            "observed": f"verified:{case['case_id']}",
+            "evidence_source_id": f"test:{case['case_id']}",
+        }
     runtime.build_capability_replay_packs(scope=scope, capabilities=sorted(WEAK_CAPABILITIES), persist=True, loop_id="seed_weak_replay")
     if weak_outcomes:
         for capability, task_type, summary in (
@@ -222,7 +397,7 @@ def _seed_l5_prerequisites(runtime: Runtime, *, scope: dict, weak_outcomes: bool
                 meta={"verdict": "pass", "capability": "memory.recall", "hit": True},
             )
         )
-    for kind in ("l5_world_model", "l5_strategic_roadmap", "l5_assessment", "l5_closed_loop"):
+    for kind in ("l5_world_model", "l5_strategic_roadmap", "l5_closed_loop"):
         runtime.store.append(
             RecordEnvelope.create(
                 kind=kind,
@@ -231,6 +406,29 @@ def _seed_l5_prerequisites(runtime: Runtime, *, scope: dict, weak_outcomes: bool
                 scope=scope_ref,
                 content={"report_type": kind},
                 meta={"report_type": kind},
+            )
+        )
+    if assessment_present:
+        assessment_payload = {
+            "report_type": "l5_assessment",
+            "schema_version": "l5_closed_loop.v1",
+            "level": "L5" if assessment_complete else "L4",
+            "complete": assessment_complete,
+            "missing_evidence": [] if assessment_complete else ["promotion_or_block"],
+        }
+        runtime.store.append(
+            RecordEnvelope.create(
+                kind="l5_assessment",
+                title="l5_assessment",
+                summary="complete" if assessment_complete else "incomplete",
+                scope=scope_ref,
+                content=assessment_payload,
+                meta={
+                    "report_type": "l5_assessment",
+                    "level": assessment_payload["level"],
+                    "missing_evidence_count": len(assessment_payload["missing_evidence"]),
+                },
+                source="eimemory.l5_loop",
             )
         )
     for index in range(3):
@@ -245,18 +443,35 @@ def _seed_l5_prerequisites(runtime: Runtime, *, scope: dict, weak_outcomes: bool
                 meta={"action": "promote", "target_capability": "memory.recall"},
             )
         )
-    runtime.store.append(
-        RecordEnvelope.create(
-            kind="promotion_request",
-            title="Rollback rehearsal",
-            summary="rolled back",
-            scope=scope_ref,
-            status="rolled_back",
-            content={"action": "rollback"},
-            meta={"action": "rollback"},
-        )
+    pattern_id = "seed-l5-policy-rollback"
+    runtime.upsert_intent_pattern(
+        {
+            "id": pattern_id,
+            "pattern": "seed L5 rollback",
+            "default_event_type": "repair",
+            "interpreted_intent": "verify reversible L5 policy path",
+            "confidence": 0.9,
+            "status": "active",
+        },
+        scope=scope,
     )
+    runtime.rollback_intent_pattern(pattern_id, scope=scope, reason="seed verified L5 rollback", auto=False)
     for index in range(patch_samples):
+        patch_evidence = (
+            {
+                "gate": {"ok": True},
+                "side_effect": {
+                    "ok": True,
+                    "production_applied": True,
+                    "verification": {"ok": True, "skipped": False},
+                    "post_deploy_health": {"ok": True, "skipped": False},
+                    "commit": {"ok": True, "commit_sha": f"{index + 1:040x}"},
+                    "rollback_evidence": {"service_name": "eimemory-rpc.service", "prior_commit_sha": f"{index:040x}"},
+                },
+            }
+            if verified_patch_evidence
+            else {}
+        )
         runtime.store.append(
             RecordEnvelope.create(
                 kind="promotion_request",
@@ -264,7 +479,7 @@ def _seed_l5_prerequisites(runtime: Runtime, *, scope: dict, weak_outcomes: bool
                 summary="deployed",
                 scope=scope_ref,
                 status="deployed",
-                content={"action": "code_patch", "promotion_target": "code_patch"},
-                meta={"action": "code_patch", "promotion_target": "code_patch"},
+                content={"action": "code_patch", "promotion_target": "code_patch", **patch_evidence},
+                meta={"action": "code_patch", "promotion_target": "code_patch", "gate_ok": bool(patch_evidence)},
             )
         )

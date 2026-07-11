@@ -16,9 +16,21 @@ def test_capability_dashboard_metrics_report_hard_numbers(tmp_path) -> None:
         _append(runtime, scope_ref, "feedback", "user correction", {"report_type": "user_correction", "capability": "memory.recall"})
         _append(runtime, scope_ref, "learning_eval", "task success", {"task_success": True, "verdict": "pass"})
         _append(runtime, scope_ref, "learning_eval", "task failed", {"task_success": False, "verdict": "fail"})
-        _append(runtime, scope_ref, "promotion_request", "patch promoted", {"promotion_target": "code_patch", "action": "promote"}, status="promoted")
+        _append(runtime, scope_ref, "promotion_request", "patch promoted", _verified_patch_evidence(), status="promoted")
         _append(runtime, scope_ref, "promotion_request", "patch rollback", {"promotion_target": "code_patch", "action": "rollback"}, status="rolled_back")
         _append(runtime, scope_ref, "learning_eval", "skill call", {"report_type": "eiskill_invocation", "skill_id": "skill-1"})
+        runtime.upsert_intent_pattern(
+            {
+                "id": "dashboard-rollback",
+                "pattern": "dashboard rollback",
+                "default_event_type": "repair",
+                "interpreted_intent": "verify dashboard rollback evidence",
+                "confidence": 0.9,
+                "status": "active",
+            },
+            scope=SCOPE,
+        )
+        runtime.rollback_intent_pattern("dashboard-rollback", scope=SCOPE, reason="verified dashboard rollback", auto=False)
 
         metrics = runtime.build_capability_dashboard_metrics(scope=SCOPE, persist=True)
 
@@ -27,6 +39,7 @@ def test_capability_dashboard_metrics_report_hard_numbers(tmp_path) -> None:
         assert metrics["metrics"]["user_correction_rate"] == 0.5
         assert metrics["metrics"]["task_success_rate"] == 0.5
         assert metrics["metrics"]["auto_patch_success_rate"] == 0.5
+        assert metrics["metrics"]["patch_promotion_success_rate"] == 0.5
         assert metrics["metrics"]["rollback_count"] == 1
         assert metrics["metrics"]["skill_reuse_count"] == 1
         assert metrics["metric_quality"]["task_success_rate"]["sample_count"] == 2
@@ -36,6 +49,29 @@ def test_capability_dashboard_metrics_report_hard_numbers(tmp_path) -> None:
         assert metrics["persisted_record_id"]
     finally:
         runtime.close()
+
+
+def test_capability_dashboard_rejects_generic_and_status_only_patch_success(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        scope_ref = ScopeRef.from_dict(SCOPE)
+        _append(runtime, scope_ref, "promotion_request", "generic promoted", {"action": "promote"}, status="promoted")
+        _append(
+            runtime,
+            scope_ref,
+            "promotion_request",
+            "status only patch",
+            {"promotion_target": "code_patch", "action": "code_patch"},
+            status="deployed",
+        )
+
+        metrics = runtime.build_capability_dashboard_metrics(scope=SCOPE, persist=False)
+    finally:
+        runtime.close()
+
+    assert metrics["sample_counts"]["patch_promotions"] == 1
+    assert metrics["metrics"]["patch_promotion_success_rate"] == 0.0
+    assert metrics["metrics"]["auto_patch_success_rate"] == 0.0
 
 
 def test_capability_dashboard_metrics_include_real_task_outcome_traces(tmp_path) -> None:
@@ -180,3 +216,19 @@ def _append(runtime: Runtime, scope: ScopeRef, kind: str, title: str, meta: dict
             meta=dict(meta),
         )
     )
+
+
+def _verified_patch_evidence() -> dict:
+    return {
+        "promotion_target": "code_patch",
+        "action": "code_patch",
+        "gate": {"ok": True},
+        "side_effect": {
+            "ok": True,
+            "production_applied": True,
+            "verification": {"ok": True, "skipped": False},
+            "post_deploy_health": {"ok": True, "skipped": False},
+            "commit": {"ok": True, "commit_sha": "a" * 40},
+            "rollback_evidence": {"service_name": "eimemory-rpc.service", "prior_commit_sha": "b" * 40},
+        },
+    }

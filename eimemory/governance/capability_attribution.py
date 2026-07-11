@@ -144,6 +144,11 @@ def _evidence_from_outcome_traces(runtime: Any, *, scope: ScopeRef, limit: int) 
             continue
         payload = record.content.get("payload") if isinstance(record.content, dict) else {}
         payload = payload if isinstance(payload, dict) else {}
+        verifier = payload.get("verifier") if isinstance(payload.get("verifier"), dict) else {}
+        outcome = payload.get("outcome") if isinstance(payload.get("outcome"), dict) else {}
+        outcome_status = str(meta.get("outcome_status") or outcome.get("status") or "").strip().lower()
+        if outcome_status in {"success", "good", "passed", "pass", "completed"} and verifier.get("passed") is not True:
+            continue
         policy_attribution = _dict_value(record.content.get("policy_attribution") if isinstance(record.content, dict) else None) or _dict_value(payload.get("policy_attribution"))
         text = _join_text(
             record.title,

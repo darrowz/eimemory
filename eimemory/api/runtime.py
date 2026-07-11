@@ -833,6 +833,11 @@ class Runtime:
             loop_id=loop_id,
         )
 
+    def run_capability_replay_case(self, case: dict) -> dict:
+        from eimemory.governance.capability_replay_executor import execute_capability_replay_case
+
+        return execute_capability_replay_case(self, case)
+
     def run_safety_boundary_replay(
         self,
         *,

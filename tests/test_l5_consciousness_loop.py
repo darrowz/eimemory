@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 from eimemory.api.runtime import Runtime
-from eimemory.governance.l5_loop import _weaknesses
+from eimemory.governance.l5_loop import _has_replay, _weaknesses
 from eimemory.cli.main import main as cli_main
 from eimemory.governance.capability_ledger import record_capability_score
 from eimemory.models.records import RecordEnvelope, ScopeRef
@@ -83,6 +83,27 @@ def test_l5_weaknesses_handles_string_record_content() -> None:
     assert weaknesses[0]["source_record_ids"] == [record.record_id]
 
 
+def test_l5_assessment_does_not_accept_boolean_only_replay_claim() -> None:
+    assert _has_replay({"ok": True, "replay_gate_passed": True}) is False
+
+
+def test_l5_assessment_does_not_accept_unexecuted_or_contradictory_replay() -> None:
+    assert _has_replay({"ok": True, "replay_dataset": {"case_count": 3}}) is False
+    assert _has_replay(
+        {
+            "ok": True,
+            "real_task_replay": {
+                "ok": True,
+                "verdict": "fail",
+                "sample_count": 3,
+                "pass_count": 3,
+                "fail_count": 0,
+                "pass_rate": 1.0,
+            },
+        }
+    ) is False
+
+
 def test_l5_roadmap_prioritizes_p0_safety_boundary_weakness(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     try:
@@ -129,7 +150,7 @@ def test_l5_cycle_runs_autonomous_learning_and_assesses_full_closed_loop(tmp_pat
             "candidate_ids": ["cand-memory"],
             "goal_count": 2,
             "goal_graph": {"persisted_record_id": "goal-graph-record", "root_goal_count": 2},
-            "real_task_replay": {"ok": True, "pass_count": 3, "sample_count": 3},
+            "real_task_replay": {"ok": True, "verdict": "pass", "pass_count": 3, "fail_count": 0, "sample_count": 3, "pass_rate": 1.0},
             "replay_gate_passed": True,
             "promotion": {
                 "applied": True,

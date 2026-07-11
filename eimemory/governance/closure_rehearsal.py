@@ -41,32 +41,46 @@ def run_l5_closure_rehearsal(
         scope=asdict(scope_ref),
         persist=persist,
     )
-    outcome_trace = _record_successful_task_outcome(runtime, scope=scope_ref, persist=persist)
-    playbook_ids = _seed_eiskill_playbooks(runtime, scope=scope_ref, persist=persist)
     weak_capability_replay = runtime.build_capability_replay_packs(
         scope=asdict(scope_ref),
         capabilities=WEAK_REPLAY_CAPABILITIES,
         persist=persist,
         loop_id=LOOP_ID,
     )
-    skill_promotion = runtime.promote_repeated_sops_to_skill_candidates(
-        scope=asdict(scope_ref),
-        min_repeats=3,
-        persist=persist,
-        limit=50,
-    )
-    skill_id = str((skill_promotion.get("skills") or [{}])[0].get("skill_id") or "")
-    skill_call = (
-        runtime.call_eiskill(
-            skill_id=skill_id,
+    replay_gate = _weak_replay_gate(weak_capability_replay)
+    playbook_ids: list[str] = []
+    skill_promotion: dict[str, Any] = {"ok": False, "status": "not_run", "reason": "replay_gate_failed", "skills": []}
+    skill_call: dict[str, Any] = {"ok": False, "status": "not_run", "error": "replay_gate_failed"}
+    rollback: dict[str, Any] = {"ok": False, "status": "not_run", "reason": "replay_gate_failed"}
+    outcome_trace: dict[str, Any] = {"ok": False, "status": "not_run", "reason": "closure_gate_failed"}
+    if replay_gate["ok"]:
+        playbook_ids = _seed_eiskill_playbooks(runtime, scope=scope_ref, persist=persist)
+        skill_promotion = runtime.promote_repeated_sops_to_skill_candidates(
             scope=asdict(scope_ref),
-            context={"query": CORRECTION_QUERY, "rehearsal": True},
+            min_repeats=3,
             persist=persist,
+            limit=50,
         )
-        if skill_id
-        else {"ok": False, "error": "skill_not_generated"}
-    )
-    rollback = _run_non_destructive_rollback(runtime, scope=scope_ref, persist=persist)
+        skill_id = str((skill_promotion.get("skills") or [{}])[0].get("skill_id") or "")
+        skill_call = (
+            runtime.call_eiskill(
+                skill_id=skill_id,
+                scope=asdict(scope_ref),
+                context={"query": CORRECTION_QUERY, "rehearsal": True},
+                persist=persist,
+            )
+            if skill_id
+            else {"ok": False, "status": "not_run", "error": "skill_not_generated"}
+        )
+        if skill_call.get("ok"):
+            rollback = _run_non_destructive_rollback(runtime, scope=scope_ref, persist=persist)
+        if (
+            correction_replay.get("ok")
+            and pre_answer_gate.get("matched_rule_count", 0) >= 1
+            and skill_call.get("ok")
+            and rollback.get("ok")
+        ):
+            outcome_trace = _record_successful_task_outcome(runtime, scope=scope_ref, persist=persist)
     capability_dashboard = runtime.build_capability_dashboard_metrics(
         scope=asdict(scope_ref),
         persist=persist,
@@ -77,15 +91,24 @@ def run_l5_closure_rehearsal(
         persist=persist,
         loop_id=LOOP_ID,
     )
+    blocked_reasons: list[str] = []
+    if not correction_replay.get("ok"):
+        blocked_reasons.append("correction_replay_failed")
+    if pre_answer_gate.get("matched_rule_count", 0) < 1:
+        blocked_reasons.append("ground_truth_rule_not_matched")
+    blocked_reasons.extend(replay_gate["blocked_reasons"])
+    if replay_gate["ok"] and not skill_call.get("ok"):
+        blocked_reasons.append("skill_call_failed")
+    if replay_gate["ok"] and skill_call.get("ok") and not rollback.get("ok"):
+        blocked_reasons.append("rollback_rehearsal_failed")
+    if outcome_trace.get("status") == "not_run":
+        blocked_reasons.append("successful_outcome_not_verified")
+    blocked_reasons = list(dict.fromkeys(blocked_reasons))
+    closure_complete = not blocked_reasons
     return {
-        "ok": bool(
-            correction_replay.get("ok")
-            and pre_answer_gate.get("matched_rule_count", 0) >= 1
-            and weak_capability_replay.get("ok")
-            and skill_call.get("ok")
-            and rollback.get("ok")
-            and l5_readiness.get("ok")
-        ),
+        "ok": closure_complete,
+        "closure_complete": closure_complete,
+        "blocked_reasons": blocked_reasons,
         "report_type": "l5_closure_rehearsal",
         "scope": asdict(scope_ref),
         "correction_replay": correction_replay,
@@ -93,11 +116,54 @@ def run_l5_closure_rehearsal(
         "outcome_trace": outcome_trace,
         "playbook_record_ids": playbook_ids,
         "weak_capability_replay": weak_capability_replay,
+        "replay_gate": replay_gate,
         "skill_promotion": skill_promotion,
         "skill_call": skill_call,
         "rollback": rollback,
         "capability_dashboard": capability_dashboard,
         "l5_readiness": l5_readiness,
+    }
+
+
+def _weak_replay_gate(report: dict[str, Any]) -> dict[str, Any]:
+    packs = [pack for pack in report.get("packs") or [] if isinstance(pack, dict)]
+    blocked_reasons: list[str] = []
+    capabilities = [str(pack.get("capability") or "") for pack in packs]
+    if (
+        report.get("ok") is not True
+        or len(packs) != len(WEAK_REPLAY_CAPABILITIES)
+        or sorted(capabilities) != sorted(WEAK_REPLAY_CAPABILITIES)
+    ):
+        blocked_reasons.append("weak_capability_replay_invalid")
+    not_executed: list[str] = []
+    failed: list[str] = []
+    duplicate_evidence: list[str] = []
+    for pack in packs:
+        capability = str(pack.get("capability") or "")
+        results = [item for item in pack.get("case_results") or [] if isinstance(item, dict)]
+        case_count = len(pack.get("cases") or [])
+        executed = [item for item in results if str(item.get("verdict") or "").lower() in {"pass", "fail"}]
+        if case_count <= 0 or len(executed) != case_count:
+            not_executed.append(capability)
+            continue
+        threshold = max((float(case.get("threshold") or 0.8) for case in pack.get("cases") or [] if isinstance(case, dict)), default=0.8)
+        if float(pack.get("pass_rate") or 0.0) < threshold:
+            failed.append(capability)
+        source_ids = {str(item.get("evidence_source_id") or "") for item in executed if str(item.get("evidence_source_id") or "")}
+        if len(source_ids) != case_count:
+            duplicate_evidence.append(capability)
+    if not_executed:
+        blocked_reasons.append("weak_capability_replay_not_executed")
+    if failed:
+        blocked_reasons.append("weak_capability_replay_failed")
+    if duplicate_evidence:
+        blocked_reasons.append("weak_capability_replay_evidence_not_distinct")
+    return {
+        "ok": not blocked_reasons,
+        "blocked_reasons": blocked_reasons,
+        "not_executed_capabilities": sorted(not_executed),
+        "failed_capabilities": sorted(failed),
+        "duplicate_evidence_capabilities": sorted(duplicate_evidence),
     }
 
 
@@ -123,6 +189,7 @@ def _record_successful_task_outcome(runtime: Any, *, scope: ScopeRef, persist: b
             "verification": "dashboard counts task success, skill reuse, and rollback evidence",
             "result": "completed",
             "confidence": 0.93,
+            "rehearsal": True,
         },
         scope=asdict(scope),
     )
@@ -134,6 +201,7 @@ def _record_successful_task_outcome(runtime: Any, *, scope: ScopeRef, persist: b
             "ok": True,
             "success": True,
             "verified": True,
+            "rehearsal": True,
             "reason": "L5 closure rehearsal completed without destructive actions.",
         },
         scope=asdict(scope),

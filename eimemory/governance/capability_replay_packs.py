@@ -35,8 +35,11 @@ def build_capability_replay_packs(
         cases = _cases_for_capability(capability)
         replay_ids: list[str] = []
         case_results: list[dict[str, Any]] = []
-        for case in cases:
-            result = _run_case(runtime, case)
+        for evidence_index, case in enumerate(cases):
+            result = _run_case(
+                runtime,
+                {**case, "scope": asdict(scope_ref), "evidence_index": evidence_index},
+            )
             case_results.append(result)
             if persist:
                 record = append_learning_record_once(
@@ -57,6 +60,7 @@ def build_capability_replay_packs(
                         "result": result,
                         "verdict": result["verdict"],
                         "hit": result.get("hit"),
+                        "evidence_source_id": result.get("evidence_source_id", ""),
                     },
                     meta={
                         "report_type": "capability_replay_pack",
@@ -65,6 +69,7 @@ def build_capability_replay_packs(
                         "verdict": result["verdict"],
                         "pass_rate": 1.0 if result["verdict"] == "pass" else 0.0,
                         "hit": result.get("hit"),
+                        "evidence_source_id": result.get("evidence_source_id", ""),
                     },
                     source="eimemory.capability_replay",
                 )
@@ -206,12 +211,24 @@ def _run_case(runtime: Any, case: dict[str, Any]) -> dict[str, Any]:
     verdict = str(result.get("verdict") or "").strip().lower()
     if verdict not in {"pass", "fail", "not_run"}:
         verdict = "pass" if hit is True else "fail"
+    observed = str(result.get("observed") or "")
+    evidence_source_id = str(result.get("evidence_source_id") or "").strip()
+    reason = str(result.get("reason") or "")
+    if verdict == "pass" and (hit is not True or not observed.strip()):
+        verdict = "fail"
+        hit = False
+        reason = "inconsistent_pass_evidence"
+    elif verdict == "pass" and not evidence_source_id:
+        verdict = "fail"
+        hit = False
+        reason = "missing_replay_evidence_source"
     return {
         "case_id": str(case.get("case_id") or ""),
         "verdict": verdict,
         "hit": hit if hit in {True, False, None} else bool(hit),
-        "observed": str(result.get("observed") or ""),
-        **({"reason": str(result.get("reason"))} if result.get("reason") else {}),
+        "evidence_source_id": evidence_source_id,
+        "observed": observed,
+        **({"reason": reason} if reason else {}),
     }
 
 

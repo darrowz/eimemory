@@ -145,7 +145,8 @@ Best existing modules to extend:
   authority boundary, rollout ledger, post-promotion monitoring, rollback.
 
 Main gaps:
-- weak capabilities need explicit replay packs and outcome labels;
+- weak capabilities still need real, verified outcome traces in each production
+  scope; replay packs now execute those traces instead of defaulting to pass;
 - `l5-assess` can assess a supplied loop, but the CLI default currently assesses
   an empty report and therefore mainly shows missing evidence;
 - rollback rehearsals are counted indirectly through promotion status, not yet
@@ -177,3 +178,24 @@ Next implementation steps:
    of only assessing an empty report.
 3. Add a rollback rehearsal record type or normalized report field.
 4. Require readiness report + replay pack pass before any L4.5/L5 claim.
+
+## Evidence Integrity Rules Added In 1.9.15
+
+- A capability replay pass requires `hit=true`, a non-empty observation, and a
+  distinct `evidence_source_id` from a verified outcome trace.
+- Weak-capability replay cases are case-specific. Generic success outcomes do
+  not satisfy search, research, UUMit, or device acceptance checks.
+- `not_run` replay records remain visible for diagnostics but do not enter L4
+  or L5 executed replay counts.
+- L5 requires at least ten executed replays, overall pass rate at least 0.8,
+  and at least three distinct passing evidence sources for each weak
+  capability.
+- The latest assessment must be produced by `eimemory.l5_loop`, use schema
+  `l5_closed_loop.v1`, set `complete=true`, and contain no missing evidence.
+- Patch promotion success requires an explicit code-patch target, executed
+  gate, verification, production apply, post-deploy health, commit identity,
+  and rollback evidence. A status-only `deployed` record is not success.
+- Rollback readiness counts executed policy/lifecycle ledger actions, not a
+  mutable promotion status alone.
+- Closure rehearsal outcomes are labelled as rehearsals and never inflate the
+  production task-success metric.
