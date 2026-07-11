@@ -99,6 +99,7 @@ def test_l5_observation_gate_enables_autonomous_code_after_48_hours() -> None:
     assert "systemctl --user restart eimemory-rpc.service" in script_text
     assert "EIMEMORY_AUTONOMOUS_CODE_HEALTH_COMMAND" in script_text
     assert "allowPromptInjection" in script_text
+    assert "allowConversationAccess" in script_text
     assert "EIMEMORY_ENABLE_PROMPT_INJECTION=true" in script_text
     assert "systemctl --user restart \"$OPENCLAW_GATEWAY_UNIT\"" in script_text
     assert "http://127.0.0.1:18789/readyz" in script_text
@@ -152,6 +153,7 @@ def test_eimemory_rpc_systemd_unit_uses_honxin_tailscale_endpoint() -> None:
     assert "Environment=HOME=/home/darrow" in unit_text
     assert "Environment=PYTHONPATH=/opt/eimemory/current" in unit_text
     assert unit_text.index("EnvironmentFile=") < unit_text.index("Environment=PYTHONPATH=")
+    assert "Environment=PYTHONDONTWRITEBYTECODE=1" in unit_text
     assert (
         "ExecStart=/opt/eimemory/current/.venv/bin/python -m eimemory.cli.main serve-eibrain-rpc "
         "--host 100.105.189.120 --port 8091"

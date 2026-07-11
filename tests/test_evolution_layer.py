@@ -274,12 +274,24 @@ def test_eibrain_rpc_bridge_handles_recall_and_observe(tmp_path) -> None:
 def test_openclaw_plugin_manifest_points_to_bridge_plugin() -> None:
     manifest_path = Path("integrations/openclaw/openclaw.plugin.json")
     payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    bridge_payload = json.loads(
+        Path("integrations/openclaw/eimemory-bridge/openclaw.plugin.json").read_text(encoding="utf-8")
+    )
 
     assert payload["name"] == "eimemory-bridge"
     assert payload["id"] == "eimemory-bridge"
     assert payload["activation"] == {"onStartup": True, "onCapabilities": ["hook"]}
-    assert payload["hooks"] == ["message_received", "before_prompt_build", "agent_end", "session_end"]
-    assert payload["contracts"]["tools"] == ["eimemory_bridge_status"]
+    assert payload["hooks"] == bridge_payload["hooks"]
+    assert payload["contracts"]["tools"] == bridge_payload["contracts"]["tools"]
+    assert payload["hooks"] == [
+        "message_received",
+        "before_prompt_build",
+        "agent_end",
+        "session_end",
+        "before_agent_finalize",
+        "before_tool_call",
+    ]
+    assert payload["contracts"]["tools"] == ["eimemory_bridge_status", "memory_e2e_check"]
     assert payload["main"] == "./eimemory-bridge/index.js"
     assert payload["configSchema"]["type"] == "object"
     assert "Bridge" in payload["displayName"]

@@ -41,6 +41,7 @@ entries = plugins.setdefault("entries", {})
 bridge = entries.setdefault("eimemory-bridge", {})
 hooks = bridge.setdefault("hooks", {})
 hooks["allowPromptInjection"] = True
+hooks["allowConversationAccess"] = True
 path.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 PY
   mkdir -p "$OPENCLAW_GATEWAY_DROPIN_DIR"

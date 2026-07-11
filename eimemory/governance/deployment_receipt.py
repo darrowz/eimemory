@@ -100,9 +100,6 @@ def verify_and_record_deployment(
     release_tree_error = _release_tree_error(repo, release, head=head)
     if release_tree_error:
         return release_tree_error
-    for import_hook in (release / "sitecustomize.py", release / "usercustomize.py"):
-        if import_hook.exists() or import_hook.is_symlink():
-            return {"ok": False, "error": "release_tree_mismatch", "path": import_hook.name}
     health = _fetch_health(normalized_health_url)
     if health.get("_fetch_error"):
         if health["_fetch_error"] == "health_response_too_large":
@@ -346,6 +343,8 @@ def _release_tree_error(repo: Path, release: Path, *, head: str) -> dict[str, An
     entries = _git_tree_entries(repo, head=head)
     if entries is None:
         return {"ok": False, "error": "repo_release_tree_unavailable"}
+    tracked_paths: set[str] = set()
+    tracked_directories: set[str] = set()
     for mode, object_id, relative_path in entries:
         git_path = PurePosixPath(relative_path)
         if (
@@ -355,6 +354,8 @@ def _release_tree_error(repo: Path, release: Path, *, head: str) -> dict[str, An
             or "\\" in relative_path
         ):
             return {"ok": False, "error": "repo_release_tree_unavailable", "path": relative_path}
+        tracked_paths.add(relative_path)
+        tracked_directories.update(str(parent) for parent in git_path.parents if str(parent) != ".")
         destination = release.joinpath(*git_path.parts)
         parent = release
         for part in git_path.parts[:-1]:
@@ -390,6 +391,34 @@ def _release_tree_error(repo: Path, release: Path, *, head: str) -> dict[str, An
             return {"ok": False, "error": "repo_release_tree_unavailable", "path": relative_path}
         if observed != expected:
             return {"ok": False, "error": "release_tree_mismatch", "path": relative_path}
+
+    pending_directories: list[tuple[Path, str]] = [(release, "")]
+    while pending_directories:
+        directory, relative_directory = pending_directories.pop()
+        try:
+            with os.scandir(directory) as iterator:
+                children = sorted(iterator, key=lambda entry: entry.name)
+        except OSError:
+            path = relative_directory or "."
+            return {"ok": False, "error": "release_tree_mismatch", "path": path}
+        for child in children:
+            relative_path = f"{relative_directory}/{child.name}" if relative_directory else child.name
+            destination = Path(child.path)
+            if relative_path == ".venv":
+                if _is_link_like(destination) or not destination.is_dir():
+                    return {"ok": False, "error": "release_tree_mismatch", "path": relative_path}
+                continue
+            if relative_path in tracked_paths:
+                continue
+            if _is_link_like(destination):
+                return {"ok": False, "error": "release_tree_mismatch", "path": relative_path}
+            try:
+                is_directory = child.is_dir(follow_symlinks=False)
+            except OSError:
+                return {"ok": False, "error": "release_tree_mismatch", "path": relative_path}
+            if not is_directory or relative_path not in tracked_directories:
+                return {"ok": False, "error": "release_tree_mismatch", "path": relative_path}
+            pending_directories.append((destination, relative_path))
     return {}
 
 

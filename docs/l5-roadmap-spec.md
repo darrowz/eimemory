@@ -168,7 +168,10 @@ Current closure facts:
   records a distinct ancestor rollback commit. Runtime health also reports the
   actual imported `eimemory` root and a deterministic package-tree digest;
   receipt verification requires the import root to be the verified release
-  package and independently recomputes the same digest. The RPC unit runs the
+  package and independently recomputes the same digest. Receipt verification
+  also covers the full effective import surface: every release-root entry must
+  belong to the tracked Git tree, with only the real `.venv/**` subtree allowed
+  to remain untracked. The RPC unit runs the
   release interpreter with `PYTHONPATH=/opt/eimemory/current`, not an installed
   console-script package.
 - rollback evidence is first-class only when an executed ledger row has an

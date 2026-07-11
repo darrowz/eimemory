@@ -977,7 +977,14 @@ def test_openclaw_bridge_assets_exist() -> None:
     manifest = json.loads(Path("integrations/openclaw/eimemory-bridge/openclaw.plugin.json").read_text(encoding="utf-8"))
     assert manifest["id"] == "eimemory-bridge"
     assert manifest["activation"] == {"onStartup": True, "onCapabilities": ["hook"]}
-    assert manifest["hooks"] == ["message_received", "before_prompt_build", "agent_end", "session_end"]
+    assert manifest["hooks"] == [
+        "message_received",
+        "before_prompt_build",
+        "agent_end",
+        "session_end",
+        "before_agent_finalize",
+        "before_tool_call",
+    ]
     assert manifest["contracts"]["tools"] == ["eimemory_bridge_status", "memory_e2e_check"]
     assert manifest["configSchema"]["type"] == "object"
     assert Path("integrations/openclaw/eimemory-bridge/package.json").exists()
@@ -992,7 +999,13 @@ process.stdout.write(JSON.stringify(names));
 """.strip()
     result = subprocess.run(["node", "-e", script], cwd=Path.cwd(), capture_output=True, text=True, check=True)
 
-    assert json.loads(result.stdout) == ["message_received", "agent_end", "session_end"]
+    assert json.loads(result.stdout) == [
+        "message_received",
+        "agent_end",
+        "session_end",
+        "before_agent_finalize",
+        "before_tool_call",
+    ]
 
 
 def test_openclaw_js_bridge_registers_before_prompt_build_only_when_enabled() -> None:
@@ -1005,7 +1018,14 @@ process.stdout.write(JSON.stringify(names));
 """.strip()
     result = subprocess.run(["node", "-e", script], cwd=Path.cwd(), capture_output=True, text=True, check=True)
 
-    assert json.loads(result.stdout) == ["message_received", "before_prompt_build", "agent_end", "session_end"]
+    assert json.loads(result.stdout) == [
+        "message_received",
+        "before_prompt_build",
+        "agent_end",
+        "session_end",
+        "before_agent_finalize",
+        "before_tool_call",
+    ]
 
 
 def test_openclaw_js_bridge_legacy_api_respects_prompt_injection_switch() -> None:
@@ -1018,7 +1038,13 @@ process.stdout.write(JSON.stringify(names));
 """.strip()
     result = subprocess.run(["node", "-e", script], cwd=Path.cwd(), capture_output=True, text=True, check=True)
 
-    assert json.loads(result.stdout) == ["message_received", "agent_end", "session_end"]
+    assert json.loads(result.stdout) == [
+        "message_received",
+        "agent_end",
+        "session_end",
+        "before_agent_finalize",
+        "before_tool_call",
+    ]
 
 
 def test_openclaw_js_bridge_register_is_idempotent_for_same_api() -> None:
@@ -1034,7 +1060,14 @@ process.stdout.write(JSON.stringify(names));
 """.strip()
     result = subprocess.run(["node", "-e", script], cwd=Path.cwd(), capture_output=True, text=True, check=True)
 
-    assert json.loads(result.stdout) == ["message_received", "before_prompt_build", "agent_end", "session_end"]
+    assert json.loads(result.stdout) == [
+        "message_received",
+        "before_prompt_build",
+        "agent_end",
+        "session_end",
+        "before_agent_finalize",
+        "before_tool_call",
+    ]
 
 
 def test_openclaw_js_bridge_register_is_idempotent_across_api_wrappers() -> None:
@@ -1052,7 +1085,14 @@ process.stdout.write(JSON.stringify(names));
 """.strip()
     result = subprocess.run(["node", "-e", script], cwd=Path.cwd(), capture_output=True, text=True, check=True)
 
-    assert json.loads(result.stdout) == ["message_received", "before_prompt_build", "agent_end", "session_end"]
+    assert json.loads(result.stdout) == [
+        "message_received",
+        "before_prompt_build",
+        "agent_end",
+        "session_end",
+        "before_agent_finalize",
+        "before_tool_call",
+    ]
 
 
 def test_openclaw_js_bridge_can_register_before_prompt_after_policy_becomes_enabled() -> None:
@@ -1066,7 +1106,14 @@ process.stdout.write(JSON.stringify(names));
 """.strip()
     result = subprocess.run(["node", "-e", script], cwd=Path.cwd(), capture_output=True, text=True, check=True)
 
-    assert json.loads(result.stdout) == ["message_received", "agent_end", "session_end", "before_prompt_build"]
+    assert json.loads(result.stdout) == [
+        "message_received",
+        "agent_end",
+        "session_end",
+        "before_agent_finalize",
+        "before_tool_call",
+        "before_prompt_build",
+    ]
 
 
 def test_openclaw_js_bridge_reads_openclaw_prompt_injection_policy(tmp_path) -> None:
@@ -1086,7 +1133,14 @@ process.stdout.write(JSON.stringify(names));
     env["OPENCLAW_CONFIG_PATH"] = str(config_path)
     result = subprocess.run(["node", "-e", script], cwd=Path.cwd(), env=env, capture_output=True, text=True, check=True)
 
-    assert json.loads(result.stdout) == ["message_received", "before_prompt_build", "agent_end", "session_end"]
+    assert json.loads(result.stdout) == [
+        "message_received",
+        "before_prompt_build",
+        "agent_end",
+        "session_end",
+        "before_agent_finalize",
+        "before_tool_call",
+    ]
 
 
 def test_openclaw_js_bridge_registers_status_tool() -> None:

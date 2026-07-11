@@ -12,7 +12,9 @@
     "message_received",
     "before_prompt_build",
     "agent_end",
-    "session_end"
+    "session_end",
+    "before_agent_finalize",
+    "before_tool_call"
   ],
   "contracts": {
     "tools": [

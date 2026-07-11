@@ -558,7 +558,10 @@ def test_deployment_receipt_environment_cannot_rebind_all_trust_anchors(tmp_path
     assert report == {"ok": False, "error": "untrusted_repo_root"}
 
 
-@pytest.mark.parametrize("attack", ["fake_import_root", "digest_mismatch", "extra_source", "sitecustomize"])
+@pytest.mark.parametrize(
+    "attack",
+    ["fake_import_root", "digest_mismatch", "extra_source", "sitecustomize", "json_module", "extra_package"],
+)
 def test_deployment_receipt_rejects_runtime_package_identity_attacks(tmp_path, attack) -> None:
     repo, prior_commit, head_commit = _git_release_repo(tmp_path, version="9.8.7")
     release_dir, current_link = _release_link(tmp_path, head_commit, repo=repo)
@@ -578,6 +581,12 @@ def test_deployment_receipt_rejects_runtime_package_identity_attacks(tmp_path, a
         health["package_tree_digest"] = package_tree_digest(release_dir / "eimemory")
     elif attack == "sitecustomize":
         (release_dir / "sitecustomize.py").write_text("RUNTIME_TAMPER = True\n", encoding="utf-8")
+    elif attack == "json_module":
+        (release_dir / "json.py").write_text("RUNTIME_TAMPER = True\n", encoding="utf-8")
+    elif attack == "extra_package":
+        package = release_dir / "shadow_package"
+        package.mkdir()
+        (package / "__init__.py").write_text("RUNTIME_TAMPER = True\n", encoding="utf-8")
     runtime = Runtime.create(root=tmp_path / "runtime")
     try:
         with _health_server(health) as health_url:
@@ -593,11 +602,42 @@ def test_deployment_receipt_rejects_runtime_package_identity_attacks(tmp_path, a
         runtime.close()
 
     assert report["ok"] is False
-    assert report["error"] in {
-        "health_import_root_mismatch",
-        "health_package_tree_digest_mismatch",
-        "release_tree_mismatch",
-    }
+    if attack in {"extra_source", "sitecustomize", "json_module", "extra_package"}:
+        assert report["error"] == "release_tree_mismatch"
+    else:
+        assert report["error"] in {
+            "health_import_root_mismatch",
+            "health_package_tree_digest_mismatch",
+        }
+
+
+def test_deployment_receipt_allows_untracked_virtual_environment_subtree(tmp_path) -> None:
+    repo, prior_commit, head_commit = _git_release_repo(tmp_path, version="9.8.7")
+    release_dir, current_link = _release_link(tmp_path, head_commit, repo=repo)
+    installed_module = release_dir / ".venv" / "Lib" / "site-packages" / "installed_dependency.py"
+    installed_module.parent.mkdir(parents=True)
+    installed_module.write_text("DEPENDENCY = True\n", encoding="utf-8")
+    health = _health_payload(
+        commit=head_commit,
+        version="9.8.7",
+        current_link=current_link,
+        release_dir=release_dir,
+    )
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    try:
+        with _health_server(health) as health_url:
+            report = verify_and_record_deployment(
+                runtime,
+                scope=SCOPE,
+                repo_root=repo,
+                current_link=current_link,
+                health_url=health_url,
+                prior_commit=prior_commit,
+            )
+    finally:
+        runtime.close()
+
+    assert report["ok"] is True
 
 
 def _git_release_repo(tmp_path: Path, *, version: str) -> tuple[Path, str, str]:
