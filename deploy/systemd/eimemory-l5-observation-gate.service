@@ -8,4 +8,5 @@ Type=oneshot
 WorkingDirectory=/opt/eimemory/current
 Environment=EIMEMORY_ROOT=/var/lib/eimemory
 Environment=EIMEMORY_CONFIG_DIR=/etc/eimemory
+Environment=PYTHONDONTWRITEBYTECODE=1
 ExecStart=%h/.config/systemd/user/eimemory-l5-observation-gate.sh

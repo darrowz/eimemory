@@ -224,10 +224,27 @@ def test_openclaw_gateway_override_uses_production_eimemory_runtime() -> None:
 
     assert "Environment=EIMEMORY_ROOT=/var/lib/eimemory" in override_text
     assert "Environment=EIMEMORY_CONFIG_DIR=/etc/eimemory" in override_text
+    assert "Environment=PYTHONDONTWRITEBYTECODE=1" in override_text
     assert 'Environment="EIMEMORY_HOOK_COMMAND=/opt/eimemory/current/.venv/bin/eimemory openclaw-hook"' in override_text
     assert 'Environment="EIMEMORY_BRIDGE_COMMAND=/opt/eimemory/current/.venv/bin/eimemory ei-bridge feishu"' in override_text
     assert "/dev-project/eimemory/.venv" not in override_text
     assert "PYTHONPATH=/dev-project/eimemory" not in override_text
+
+
+def test_python_systemd_units_never_write_bytecode_into_immutable_release() -> None:
+    for unit_path in Path("deploy/systemd").glob("*.service"):
+        unit_text = unit_path.read_text(encoding="utf-8")
+        launches_release_python = "/opt/eimemory/current/.venv/bin/" in unit_text
+        for script_path in Path("deploy/systemd").glob("*.sh"):
+            if script_path.name in unit_text and "/opt/eimemory/current/.venv/bin/" in script_path.read_text(
+                encoding="utf-8"
+            ):
+                launches_release_python = True
+        if launches_release_python:
+            assert "Environment=PYTHONDONTWRITEBYTECODE=1" in unit_text, unit_path.name
+
+    gate_script = Path("deploy/systemd/eimemory-l5-observation-gate.sh").read_text(encoding="utf-8")
+    assert "export PYTHONDONTWRITEBYTECODE=1" in gate_script
 
 
 def test_immutable_release_installer_documents_non_editable_runtime() -> None:
@@ -237,6 +254,102 @@ def test_immutable_release_installer_documents_non_editable_runtime() -> None:
     assert "pip install \"$STAGE_DIR\"" in script
     assert "pip install -e" not in script
     assert "/opt/eimemory" in script
+
+
+def test_immutable_release_installer_deploys_gateway_runtime_override() -> None:
+    script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
+
+    assert 'install_managed_systemd_dropin.py' in script
+    assert '_run_as_service_user mkdir -p "$USER_SYSTEMD_DIR/openclaw-gateway.service.d"' in script
+    assert '"$RELEASE_DIR/deploy/systemd/openclaw-gateway-eimemory.conf"' in script
+    assert '"$USER_SYSTEMD_DIR/openclaw-gateway.service.d/90-eimemory-runtime.conf"' in script
+    assert script.index("install_managed_systemd_dropin.py") < script.index(
+        '"$RELEASE_DIR/deploy/systemd/eimemory-rpc.service"'
+    )
+
+
+def test_managed_systemd_dropin_installer_uses_posix_directory_fds() -> None:
+    helper = Path("deploy/install_managed_systemd_dropin.py").read_text(encoding="utf-8")
+
+    assert "os.O_DIRECTORY | os.O_NOFOLLOW" in helper
+    assert "for component in parts[1:]" in helper
+    assert "dir_fd=root_fd" in helper
+    assert "src_dir_fd=parent_fd, dst_dir_fd=parent_fd" in helper
+
+
+def test_managed_systemd_dropin_installer_is_atomic_and_preserves_unmanaged_files(tmp_path) -> None:
+    helper = _load_managed_systemd_dropin_installer()
+    source = tmp_path / "source.conf"
+    source.write_text(f"{helper.MANAGED_MARKER}\n[Service]\nEnvironment=SAFE=1\n", encoding="utf-8")
+    root = tmp_path / "systemd"
+    dropin_dir = root / "openclaw-gateway.service.d"
+    dropin_dir.mkdir(parents=True)
+    unmanaged = dropin_dir / "local-secret.conf"
+    unmanaged.write_text("Environment=LOCAL_SECRET=preserve\n", encoding="utf-8")
+    target = dropin_dir / "90-eimemory-runtime.conf"
+
+    helper.install_managed_dropin(source=source, target=target, root=root)
+
+    assert target.read_text(encoding="utf-8") == source.read_text(encoding="utf-8")
+    assert unmanaged.read_text(encoding="utf-8") == "Environment=LOCAL_SECRET=preserve\n"
+    assert not list(dropin_dir.glob(".eimemory-dropin-*"))
+
+    source.write_text(f"{helper.MANAGED_MARKER}\n[Service]\nEnvironment=SAFE=2\n", encoding="utf-8")
+    helper.install_managed_dropin(source=source, target=target, root=root)
+    assert "Environment=SAFE=2" in target.read_text(encoding="utf-8")
+
+
+def test_managed_systemd_dropin_installer_rejects_unmanaged_target(tmp_path) -> None:
+    helper = _load_managed_systemd_dropin_installer()
+    source = tmp_path / "source.conf"
+    source.write_text(f"{helper.MANAGED_MARKER}\n[Service]\n", encoding="utf-8")
+    root = tmp_path / "systemd"
+    target = root / "openclaw-gateway.service.d" / "90-eimemory-runtime.conf"
+    target.parent.mkdir(parents=True)
+    target.write_text("Environment=LOCAL_SECRET=do-not-overwrite\n", encoding="utf-8")
+
+    with pytest.raises(helper.ManagedDropinError, match="not managed"):
+        helper.install_managed_dropin(source=source, target=target, root=root)
+
+    assert target.read_text(encoding="utf-8") == "Environment=LOCAL_SECRET=do-not-overwrite\n"
+
+
+def test_managed_systemd_dropin_installer_rejects_symlink_target(tmp_path) -> None:
+    helper = _load_managed_systemd_dropin_installer()
+    source = tmp_path / "source.conf"
+    source.write_text(f"{helper.MANAGED_MARKER}\n[Service]\n", encoding="utf-8")
+    root = tmp_path / "systemd"
+    target = root / "openclaw-gateway.service.d" / "90-eimemory-runtime.conf"
+    target.parent.mkdir(parents=True)
+    outside = tmp_path / "outside.conf"
+    outside.write_text("outside\n", encoding="utf-8")
+    try:
+        target.symlink_to(outside)
+    except OSError:
+        pytest.skip("file symlinks require additional Windows privileges")
+
+    with pytest.raises(helper.ManagedDropinError, match="symlink"):
+        helper.install_managed_dropin(source=source, target=target, root=root)
+
+    assert outside.read_text(encoding="utf-8") == "outside\n"
+
+
+def test_managed_systemd_dropin_installer_rejects_ancestor_symlink(tmp_path) -> None:
+    if os.name != "posix":
+        pytest.skip("POSIX openat behavior is required")
+    helper = _load_managed_systemd_dropin_installer()
+    source = tmp_path / "source.conf"
+    source.write_text(f"{helper.MANAGED_MARKER}\n[Service]\n", encoding="utf-8")
+    real_home = tmp_path / "real-home"
+    root = real_home / "systemd" / "user"
+    root.mkdir(parents=True)
+    linked_home = tmp_path / "linked-home"
+    linked_home.symlink_to(real_home, target_is_directory=True)
+    linked_root = linked_home / "systemd" / "user"
+    target = linked_root / "openclaw-gateway.service.d" / "90-eimemory-runtime.conf"
+
+    with pytest.raises(helper.ManagedDropinError, match="without symlink components"):
+        helper.install_managed_dropin(source=source, target=target, root=linked_root)
 
 
 def test_release_bytecode_cleaner_cleans_only_source_bytecode(tmp_path) -> None:
@@ -543,6 +656,15 @@ def _load_release_bytecode_cleaner():
     return module
 
 
+def _load_managed_systemd_dropin_installer():
+    path = Path("deploy/install_managed_systemd_dropin.py")
+    spec = importlib.util.spec_from_file_location("install_managed_systemd_dropin", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def test_immutable_release_installer_normalizes_service_ownership() -> None:
     script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
 
@@ -560,7 +682,8 @@ def test_immutable_release_installer_normalizes_service_ownership() -> None:
     assert '"$EIMEMORY_LOG_DIR"' in script
     assert 'id "$SERVICE_USER" >/dev/null 2>&1' in script
     assert 'chown -R "$SERVICE_USER:$SERVICE_GROUP"' in script
-    assert 'install -m 0644 "$RELEASE_DIR/deploy/systemd/eimemory-rpc.service" "$USER_SYSTEMD_DIR/eimemory-rpc.service"' in script
+    assert '_install_as_service_user 0644' in script
+    assert '"$RELEASE_DIR/deploy/systemd/eimemory-rpc.service" "$USER_SYSTEMD_DIR/eimemory-rpc.service"' in script
     assert "systemctl --user daemon-reload" in script
     assert "systemctl --user enable eimemory-rpc.service" in script
     assert "systemctl enable eimemory-rpc.service" not in script

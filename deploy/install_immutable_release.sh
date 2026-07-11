@@ -48,6 +48,37 @@ _ensure_runtime_dir() {
   fi
 }
 
+_run_as_service_user() {
+  if [ "$(id -u)" -eq 0 ] && id "$SERVICE_USER" >/dev/null 2>&1; then
+    if ! command -v runuser >/dev/null 2>&1; then
+      echo "runuser is required for root deployment into service-user paths" >&2
+      return 2
+    fi
+    runuser -u "$SERVICE_USER" -- "$@"
+  else
+    "$@"
+  fi
+}
+
+_install_as_service_user() {
+  local mode="$1"
+  local source="$2"
+  local target="$3"
+  if [ "$(id -u)" -eq 0 ] && id "$SERVICE_USER" >/dev/null 2>&1; then
+    local staged_source
+    staged_source="$(mktemp)"
+    if ! install -m "$mode" "$source" "$staged_source" || \
+       ! chown "$SERVICE_USER:$SERVICE_GROUP" "$staged_source" || \
+       ! _run_as_service_user install -m "$mode" "$staged_source" "$target"; then
+      rm -f "$staged_source"
+      return 2
+    fi
+    rm -f "$staged_source"
+  else
+    install -m "$mode" "$source" "$target"
+  fi
+}
+
 _retire_system_rpc_unit() {
   if [ "$(id -u)" -ne 0 ] || ! command -v systemctl >/dev/null 2>&1; then
     return
@@ -87,13 +118,11 @@ _install_openclaw_loop_compat_script() {
   fi
   local compat_dir
   compat_dir="$(dirname "$OPENCLAW_LOOP_COMPAT_SCRIPT")"
-  mkdir -p "$compat_dir"
+  _run_as_service_user mkdir -p "$compat_dir"
   chmod +x "$RELEASE_DIR/scripts/openclaw_loop.py" 2>/dev/null || true
-  rm -f "$OPENCLAW_LOOP_COMPAT_SCRIPT"
-  install -m 0755 "$RELEASE_DIR/scripts/openclaw_loop.py" "$OPENCLAW_LOOP_COMPAT_SCRIPT"
-  if [ "$(id -u)" -eq 0 ] && id "$SERVICE_USER" >/dev/null 2>&1; then
-    chown "$SERVICE_USER:$SERVICE_GROUP" "$OPENCLAW_LOOP_COMPAT_SCRIPT" 2>/dev/null || true
-  fi
+  _run_as_service_user rm -f "$OPENCLAW_LOOP_COMPAT_SCRIPT"
+  _install_as_service_user 0755 \
+    "$RELEASE_DIR/scripts/openclaw_loop.py" "$OPENCLAW_LOOP_COMPAT_SCRIPT"
 }
 
 if [[ ! "$COMMIT" =~ ^[0-9a-fA-F]{40}$ ]]; then
@@ -219,10 +248,16 @@ _ensure_runtime_dir "$EIMEMORY_CONFIG_DIR" 0750
 _ensure_runtime_dir "$EIMEMORY_LOG_DIR" 0750
 _retire_system_rpc_unit
 if [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ] && command -v systemctl >/dev/null 2>&1; then
-  mkdir -p "$USER_SYSTEMD_DIR"
-  install -m 0644 "$RELEASE_DIR/deploy/systemd/eimemory-rpc.service" "$USER_SYSTEMD_DIR/eimemory-rpc.service"
+  _run_as_service_user mkdir -p "$USER_SYSTEMD_DIR"
+  _run_as_service_user mkdir -p "$USER_SYSTEMD_DIR/openclaw-gateway.service.d"
+  SERVICE_UID="$(id -u "$SERVICE_USER" 2>/dev/null || id -u)"
+  "$PYTHON_BIN" -I -B "$RELEASE_DIR/deploy/install_managed_systemd_dropin.py" \
+    --source "$RELEASE_DIR/deploy/systemd/openclaw-gateway-eimemory.conf" \
+    --target "$USER_SYSTEMD_DIR/openclaw-gateway.service.d/90-eimemory-runtime.conf" \
+    --root "$USER_SYSTEMD_DIR" --owner-uid "$SERVICE_UID"
+  _install_as_service_user 0644 \
+    "$RELEASE_DIR/deploy/systemd/eimemory-rpc.service" "$USER_SYSTEMD_DIR/eimemory-rpc.service"
   if [ "$(id -u)" -eq 0 ] && id "$SERVICE_USER" >/dev/null 2>&1; then
-    chown -R "$SERVICE_USER:$SERVICE_GROUP" "$USER_SYSTEMD_DIR"
     echo "user_systemd_enable_hint=run as $SERVICE_USER: systemctl --user enable eimemory-rpc.service"
   else
     systemctl --user daemon-reload
