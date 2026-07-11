@@ -6,6 +6,7 @@ import json
 from typing import Any
 
 from eimemory.core.clock import now_iso
+from eimemory.knowledge.safety import evaluate_knowledge_safety
 from eimemory.models.records import LinkRef, RecordEnvelope, ScopeRef, TimeRef
 from eimemory.storage.runtime_store import RuntimeStore
 
@@ -187,12 +188,19 @@ def _sandbox_checks(candidate: dict[str, Any]) -> list[dict[str, Any]]:
     acceptance = _as_list(candidate.get("acceptance_criteria"))
     source_trust = _float(candidate.get("source_trust"), default=0.0)
     risk_level = str(candidate.get("risk_level") or "").strip().lower()
+    knowledge_safety = evaluate_knowledge_safety(candidate, task="capability")
     return [
         {"name": "trigger_conditions", "pass": bool(trigger_conditions), "reason": "missing_trigger_conditions"},
         {"name": "steps", "pass": len(steps) >= 2, "reason": "insufficient_steps"},
         {"name": "acceptance_criteria", "pass": bool(acceptance), "reason": "missing_acceptance_criteria"},
         {"name": "source_trust", "pass": source_trust >= 0.6, "reason": "source_trust_below_0_6"},
         {"name": "risk_level", "pass": risk_level != "high", "reason": "risk_level_high"},
+        {
+            "name": "knowledge_safety",
+            "pass": bool(knowledge_safety.get("capability_allowed")),
+            "reason": "knowledge_safety_not_capability_allowed",
+            "report": knowledge_safety,
+        },
     ]
 
 

@@ -2,8 +2,17 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+from eimemory.knowledge.safety import evaluate_knowledge_safety
 
-GATED_ANSWER_KINDS = {"claim_card", "knowledge_candidate", "news", "paper_source", "paper_extract", "source_candidate"}
+GATED_ANSWER_KINDS = {
+    "claim_card",
+    "knowledge_candidate",
+    "knowledge_unit",
+    "news",
+    "paper_source",
+    "paper_extract",
+    "source_candidate",
+}
 GATED_SOURCE_MARKERS = ("research", "knowledge.synthesis", "daily_brief", "news", "rss", "paper")
 
 
@@ -45,6 +54,21 @@ def filter_answer_evidence(records: list[Any], *, task_type: str = "") -> dict[s
     for record in records:
         if not _requires_answer_gate(record, task_type=task_type):
             kept.append(record)
+            continue
+        if _record_kind(record).lower() == "knowledge_unit":
+            safety = evaluate_knowledge_safety(record, task="answer")
+            if safety["recall_allowed"]:
+                kept.append(record)
+                continue
+            excluded.append(
+                {
+                    "record_id": str(_record_id(record)),
+                    "kind": str(_record_kind(record)),
+                    "title": str(_record_title(record)),
+                    "reason": str((safety.get("reasons") or ["knowledge_safety_reject"])[0]),
+                    "reasons": list(safety.get("reasons") or []),
+                }
+            )
             continue
         gate = grade_research_evidence(record)
         if gate["ok"]:

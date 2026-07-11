@@ -140,6 +140,16 @@ def test_runtime_recall_pollution_guard_blocks_operational_lanes_by_default(tmp_
     }
 
     def add_memory(memory_type: str, title: str) -> RecordEnvelope:
+        meta = {"memory_type": memory_type, "quality": quality}
+        if memory_type == "external_knowledge":
+            meta.update(
+                {
+                    "source_kind": "official_docs",
+                    "source_uri": "https://example.test/openclaw/docs",
+                    "source_trust": 1.0,
+                    "trust_tier": "high",
+                }
+            )
         return runtime.store.append(
             RecordEnvelope.create(
                 kind="memory",
@@ -151,7 +161,7 @@ def test_runtime_recall_pollution_guard_blocks_operational_lanes_by_default(tmp_
                     "text": f"OpenClaw recall pollution guard shared marker for {memory_type}.",
                     "memory_type": memory_type,
                 },
-                meta={"memory_type": memory_type, "quality": quality},
+                meta=meta,
             )
         )
 
@@ -185,6 +195,55 @@ def test_runtime_recall_pollution_guard_blocks_operational_lanes_by_default(tmp_
             "incident_report",
             "evolution_artifact",
         }
+    finally:
+        runtime.close()
+
+
+def test_runtime_recall_blocks_low_trust_external_knowledge_by_default(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu", "workspace_id": "embodied"}
+    marker = "OpenClaw low trust external knowledge marker"
+    try:
+        low_trust = runtime.memory.ingest(
+            text=f"{marker} from an unreviewed blog should not be default recalled.",
+            memory_type="external_knowledge",
+            title="Low trust external knowledge",
+            scope=scope,
+            source="eimemory.knowledge_ingest",
+            force_capture=True,
+            meta={
+                "source_kind": "blog",
+                "source_uri": "https://example.test/blog",
+                "source_trust": 0.5,
+                "trust_tier": "low",
+            },
+        )
+        trusted = runtime.memory.ingest(
+            text=f"{marker} from official docs can be default recalled.",
+            memory_type="external_knowledge",
+            title="Trusted external knowledge",
+            scope=scope,
+            source="eimemory.knowledge_ingest",
+            force_capture=True,
+            meta={
+                "source_kind": "official_docs",
+                "source_uri": "https://example.test/docs",
+                "source_trust": 1.0,
+                "trust_tier": "high",
+            },
+        )
+
+        bundle = runtime.memory.recall(
+            query=marker,
+            scope=scope,
+            task_context={"task_type": "chat.reply"},
+            limit=10,
+        )
+
+        ids = {item.record_id for item in bundle.items}
+        assert trusted.record_id in ids
+        assert low_trust.record_id not in ids
+        assert bundle.explanation["online_recall_gate"]["blocked_counts"]["external_knowledge_untrusted"] >= 1
     finally:
         runtime.close()
 

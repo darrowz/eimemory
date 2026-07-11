@@ -4,6 +4,7 @@ from hashlib import sha256
 import re
 from typing import Any
 
+from eimemory.knowledge.safety import evaluate_knowledge_safety, source_trust_for_kind, trust_tier_for_score
 from eimemory.models.records import RecordEnvelope, ScopeRef, TimeRef
 
 
@@ -29,20 +30,6 @@ UNIT_TYPES = {
     "verification",
 }
 
-SOURCE_TRUST = {
-    "official_docs": 1.0,
-    "docs": 1.0,
-    "api_docs": 0.95,
-    "github_repo": 0.9,
-    "paper": 0.85,
-    "feishu_doc": 0.8,
-    "webpage": 0.65,
-    "manual": 0.6,
-    "blog": 0.5,
-    "summary": 0.5,
-}
-
-
 def ingest_knowledge_source(
     runtime: Any,
     payload: dict[str, Any],
@@ -62,23 +49,50 @@ def ingest_knowledge_source(
     if not source_text:
         raise ValueError("text is required")
 
-    source_trust = _source_trust(source_kind)
-    trust_tier = _trust_tier(source_trust)
+    safety_report = evaluate_knowledge_safety(
+        {
+            **dict(payload or {}),
+            "source_kind": source_kind,
+            "source_uri": source_uri,
+            "uri": source_uri,
+            "title": title,
+            "text": source_text,
+        },
+        task="ingest",
+    )
+    source_trust = float(safety_report["source_trust"])
+    trust_tier = str(safety_report["trust_tier"])
+    unit_status = str(safety_report["status"])
+    redaction_reason = str(safety_report.get("redaction_reason") or "")
 
     units = _extract_units(title=title, text=source_text, source_kind=source_kind)
+    if redaction_reason:
+        units = [{"title": title, "unit_type": "anti_pattern", "text": f"[redacted:{redaction_reason}]"}]
     for unit in units:
         unit["source_kind"] = source_kind
         unit["source_uri"] = source_uri
         unit["source_trust"] = source_trust
         unit["trust_tier"] = trust_tier
+        unit["knowledge_safety"] = dict(safety_report)
+        unit["status"] = unit_status
 
     persisted_record_ids: list[str] = []
+    quarantined_count = 0
     if persist:
         for unit in units:
-            record = _unit_record(unit=unit, scope=scope_ref, source_uri=source_uri, source_kind=source_kind)
+            record = _unit_record(
+                unit=unit,
+                scope=scope_ref,
+                source_uri=source_uri,
+                source_kind=source_kind,
+                status=unit_status,
+                safety_report=safety_report,
+            )
             runtime.store.append(record)
             persisted_record_ids.append(record.record_id)
             unit["record_id"] = record.record_id
+            if record.status == "quarantined":
+                quarantined_count += 1
 
     return {
         "ok": True,
@@ -87,8 +101,10 @@ def ingest_knowledge_source(
         "source_uri": source_uri,
         "source_trust": source_trust,
         "trust_tier": trust_tier,
+        "safety_report": safety_report,
         "knowledge_units": units,
         "persisted_count": len(persisted_record_ids),
+        "quarantined_count": quarantined_count,
         "persisted_record_ids": persisted_record_ids,
     }
 
@@ -105,15 +121,11 @@ def _normalize_source_kind(value: Any) -> str:
 
 
 def _source_trust(source_kind: str) -> float:
-    return float(SOURCE_TRUST.get(source_kind, 0.5))
+    return source_trust_for_kind(source_kind)
 
 
 def _trust_tier(value: float) -> str:
-    if value >= 0.9:
-        return "high"
-    if value >= 0.6:
-        return "medium"
-    return "low"
+    return trust_tier_for_score(value)
 
 
 def _extract_units(*, title: str, text: str, source_kind: str) -> list[dict[str, Any]]:
@@ -263,6 +275,8 @@ def _unit_record(
     scope: ScopeRef,
     source_uri: str,
     source_kind: str,
+    status: str = "active",
+    safety_report: dict[str, Any] | None = None,
 ) -> RecordEnvelope:
     unit_type = str(unit.get("unit_type") or "concept")
     if unit_type not in UNIT_TYPES:
@@ -279,7 +293,7 @@ def _unit_record(
             title=title,
         ),
         kind="knowledge_unit",
-        status="active",
+        status=status if status in {"active", "quarantined"} else "active",
         title=title,
         summary=unit_text,
         detail=unit_text,
@@ -302,6 +316,7 @@ def _unit_record(
             "source_trust": float(unit.get("source_trust") or 0.0),
             "trust_tier": str(unit.get("trust_tier") or "low"),
             "unit_type": unit_type,
+            "knowledge_safety": dict(safety_report or unit.get("knowledge_safety") or {}),
         },
     )
 

@@ -119,6 +119,31 @@ def test_final_answer_context_filters_weak_knowledge_candidates() -> None:
     assert report["evidence_gate"]["excluded"][0]["reason"] == "missing_source"
 
 
+def test_final_answer_context_filters_low_trust_knowledge_units() -> None:
+    low_trust_unit = RecordEnvelope.create(
+        kind="knowledge_unit",
+        title="Low trust external workflow",
+        summary="Low trust external workflow",
+        scope=SCOPE,
+        source="eimemory.knowledge_ingest",
+        content={
+            "text": "Low trust external workflow",
+            "source_kind": "blog",
+            "source_uri": "https://example.com/blog",
+        },
+        provenance={"source_kind": "blog", "source_uri": "https://example.com/blog"},
+        meta={"source_kind": "blog", "source_uri": "https://example.com/blog", "source_trust": 0.5, "trust_tier": "low"},
+    )
+    ordinary = _record("reflection", "Local operator preference")
+
+    report = filter_answer_evidence([low_trust_unit, ordinary], task_type="research.answer")
+
+    assert [record.title for record in report["records"]] == ["Local operator preference"]
+    assert report["evidence_gate"]["excluded_count"] == 1
+    assert report["evidence_gate"]["excluded"][0]["record_id"] == low_trust_unit.record_id
+    assert report["evidence_gate"]["excluded"][0]["reason"] == "source_trust_below_0_6"
+
+
 def test_news_evidence_gate_uses_record_time_but_still_requires_url() -> None:
     good_news = _record("news", "Timed news", source_url="https://example.com/news")
     good_news.time = TimeRef(

@@ -7,6 +7,7 @@ from hashlib import sha256
 import re
 
 from eimemory.governance.memory_graph import build_evidence_refs, build_timeline, graph_route_for_query
+from eimemory.knowledge.safety import evaluate_knowledge_safety
 from eimemory.knowledge.views import build_recall_view, choose_view_type, records_from_view
 from eimemory.identity import extract_user_aliases, hongtu_query_scopes_with_aliases
 from eimemory.living import LIVING_MEMORY_META_KEY, enrich_living_memory, refresh_living_quality_snapshot
@@ -963,6 +964,14 @@ class MemoryAPI:
         lane = self._record_recall_lane(item)
         if lane in _DEFAULT_BLOCKED_RECALL_LANES:
             return lane
+        if lane == "external_knowledge":
+            safety = evaluate_knowledge_safety(item, task="recall")
+            if safety["recall_allowed"]:
+                return ""
+            reasons = set(safety.get("reasons") or [])
+            if any(str(reason).startswith("status_") for reason in reasons):
+                return "external_knowledge_quarantined"
+            return "external_knowledge_untrusted"
         return ""
 
     def _record_allowed_by_recall_filters(self, item: RecordEnvelope, recall_filters: dict) -> bool:

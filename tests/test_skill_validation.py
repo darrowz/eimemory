@@ -96,6 +96,34 @@ def test_low_quality_high_risk_candidate_fails_and_records_quarantine(tmp_path) 
         runtime.close()
 
 
+def test_external_knowledge_candidate_requires_high_trust_for_canary(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "agent-skill", "workspace_id": "validation"}
+    try:
+        candidate = _append_candidate(
+            runtime,
+            scope=scope,
+            record_id="skillcand_medium_trust_external",
+            source_trust=0.65,
+            risk_level="low",
+            source_kind="blog",
+            source_uri="https://example.test/blog",
+            trust_tier="medium",
+        )
+
+        report = runtime.validate_skill_candidate(candidate_id=candidate.record_id, scope=scope)
+
+        stored = runtime.store.get_by_id(candidate.record_id, scope=scope)
+        assert report["pass"] is False
+        assert report["proposal_status"] == "quarantined"
+        assert "knowledge_safety_not_capability_allowed" in report["reasons"]
+        assert any(check["name"] == "knowledge_safety" and check["pass"] is False for check in report["checks"])
+        assert stored is not None
+        assert stored.status == "quarantined"
+    finally:
+        runtime.close()
+
+
 def test_replay_and_sandbox_good_observations_do_not_promote_canary_to_active(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     scope = {"agent_id": "agent-skill", "workspace_id": "validation"}
