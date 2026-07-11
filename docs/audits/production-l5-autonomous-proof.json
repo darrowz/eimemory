@@ -1,0 +1,25 @@
+{
+  "change": "guard strict path resolution with a real non-symlink release-directory check",
+  "evidence_location": "/var/lib/eimemory governance records for scope default/hongtu/embodied/darrow",
+  "governance_path": [
+    "create_sandbox_experiment",
+    "distill_capability_candidate",
+    "promote_candidate",
+    "isolated_preflight",
+    "commit",
+    "immutable_deploy",
+    "post_deploy_health",
+    "three_observation_canary"
+  ],
+  "prior_commit": "007aaed21edda73b1f979481ab1b258e72a3e3e9",
+  "regression_test": "test_immutable_release_installer_checks_release_exists_before_strict_resolution",
+  "schema_version": "eimemory.production_l5_autonomous_proof.v1",
+  "scope": {
+    "agent_id": "hongtu",
+    "tenant_id": "default",
+    "user_id": "darrow",
+    "workspace_id": "embodied"
+  },
+  "trigger": "live immutable deploy emitted FileNotFoundError while checking a not-yet-created release",
+  "version": "1.9.18"
+}

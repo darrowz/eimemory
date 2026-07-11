@@ -121,6 +121,7 @@ chmod 0700 "$INSTALL_ROOT/releases"
 # This transaction rejects pre-existing links, other-UID writes, and partial
 # failures. A hostile same-UID process requires a separate deployment account.
 if { [ -e "$CURRENT_LINK" ] || [ -L "$CURRENT_LINK" ] || [ -d "$CURRENT_LINK" ]; } && \
+   [[ -d "$RELEASE_DIR" && ! -L "$RELEASE_DIR" ]] && \
    "$PYTHON_BIN" -I -B -c \
    'from pathlib import Path; import sys; raise SystemExit(0 if Path(sys.argv[1]).resolve(strict=True) == Path(sys.argv[2]).resolve(strict=True) else 1)' \
    "$CURRENT_LINK" "$RELEASE_DIR"; then

@@ -392,6 +392,15 @@ def test_immutable_release_installer_runs_fd_safe_cleanup_before_switch() -> Non
     assert '_ensure_runtime_dir "$INSTALL_ROOT"' not in script
 
 
+def test_immutable_release_installer_checks_release_exists_before_strict_resolution() -> None:
+    script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
+
+    existence_guard = '[[ -d "$RELEASE_DIR" && ! -L "$RELEASE_DIR" ]]'
+    strict_resolution = "resolve(strict=True)"
+    assert existence_guard in script
+    assert script.index(existence_guard) < script.index(strict_resolution)
+
+
 @pytest.mark.parametrize("attack", ["release_link", "releases_root_link"])
 def test_immutable_release_installer_never_executes_linked_release_python(tmp_path, attack) -> None:
     commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
