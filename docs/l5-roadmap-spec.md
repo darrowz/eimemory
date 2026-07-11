@@ -144,17 +144,40 @@ Best existing modules to extend:
 - `eimemory.governance.safety.*`, `promotion_manager`, `promotion_watch`:
   authority boundary, rollout ledger, post-promotion monitoring, rollback.
 
-Main gaps:
-- weak capabilities still need real, verified outcome traces in each production
-  scope; replay packs now execute those traces instead of defaulting to pass;
-- `l5-assess` can assess a supplied loop, but the CLI default currently assesses
-  an empty report and therefore mainly shows missing evidence;
-- rollback rehearsals are counted indirectly through promotion status, not yet
-  first-class L5 evidence;
-- readiness and self-growth reporting needs to be routine before any larger
-  behavior change;
-- search/research/operations/device capabilities need domain-specific success
-  metrics, not only generic capability scores.
+Current closure facts:
+- capability observations use the nested `capability_contract.v1` schema. An
+  acceptance probe is one case-specific, non-external execution; it must record
+  `outcome.rehearsal=true`. The closure rehearsal is the larger ordered gate
+  that runs acceptance, replay, skill/rollback, assessment, dashboard, and
+  readiness. Neither acceptance probes nor closure rehearsals enter production
+  task-success metrics or create task-success evidence.
+- weak-capability replay is contract-only: the trace must match the canonical
+  acceptance case, current probe execution, expected capability, verified
+  rehearsal outcome, and distinct evidence source. Keyword-only, generic, or
+  wrong-case outcomes fail closed. Readiness uses the latest execution per
+  capability/case.
+- a deployment receipt verifies the complete `git ls-tree -r -z HEAD` tracked
+  tree, including exact regular-file blobs/modes and tracked symlink targets.
+  It rejects parent/final symlink or junction escape, binds the live release to
+  fixed repo/current-link/health trust anchors, rejects health redirects, and
+  records a distinct ancestor rollback commit.
+- rollback evidence is first-class only when an executed ledger row has an
+  allowlisted execution type and one canonical subject. Policy transitions use
+  `intent_pattern_status_transition`; candidate code rollback uses
+  `code_patch_rollback`. Missing, unknown, mixed-subject, and action-incompatible
+  evidence is excluded.
+- patch metrics collapse retries to the latest record per candidate, separate
+  candidate validity from executed deployment success, and exclude preflight-
+  invalid or status-only records from deployment denominators.
+- closure can complete only after the ordered run produces a trusted final
+  assessment with `complete=true` and zero missing evidence, followed by
+  readiness reporting `current_stage=L5` and numeric `readiness_score=1.0`.
+
+Remaining operational gap:
+- these controls are locally verified for release 1.9.17, but production L5 is
+  not established until that exact release is deployed through the governed
+  immutable-release path and the production scope independently satisfies every
+  evidence and readiness gate.
 
 ## Phase 1 Minimal Implementation
 
@@ -171,13 +194,23 @@ Behavior:
 - `--persist` writes one `reflection` report with
   `meta.report_type=l5_readiness_report`.
 
-Next implementation steps:
+Current implementation state for 1.9.17:
 
-1. Generate weak-capability replay packs from existing outcome traces.
-2. Make `learn l5-assess` optionally read the latest persisted L5 loop instead
-   of only assessing an empty report.
-3. Add a rollback rehearsal record type or normalized report field.
-4. Require readiness report + replay pack pass before any L4.5/L5 claim.
+1. Capability contracts, case-specific acceptance probes, canonical contract-
+   only replay, and latest-per-case readiness inputs are implemented.
+2. Closure produces and consumes the final persisted L5 assessment only after
+   acceptance, replay, and rollback gates pass; a failed gate stops downstream
+   success evidence.
+3. Executed deployment receipts and typed, subject-bound rollback ledgers are
+   first-class L5 evidence.
+4. Final completion requires a complete trusted assessment, `current_stage=L5`,
+   and `readiness_score=1.0`; lower or malformed values fail closed.
+
+Next operational steps are deployment and evidence collection, not additional
+stage shortcuts: publish the exact reviewed release through the authoritative
+immutable-release workflow, record its live receipt, run production closure and
+readiness in the official scope, and retain a lower stage unless every gate is
+satisfied.
 
 ## Evidence Integrity Rules Added In 1.9.15
 
