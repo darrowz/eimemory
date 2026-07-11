@@ -254,7 +254,26 @@ if [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ] && command -v systemctl >/dev/null 2
   "$PYTHON_BIN" -I -B "$RELEASE_DIR/deploy/install_managed_systemd_dropin.py" \
     --source "$RELEASE_DIR/deploy/systemd/openclaw-gateway-eimemory.conf" \
     --target "$USER_SYSTEMD_DIR/openclaw-gateway.service.d/90-eimemory-runtime.conf" \
-    --root "$USER_SYSTEMD_DIR" --owner-uid "$SERVICE_UID"
+    --root "$USER_SYSTEMD_DIR" --owner-uid "$SERVICE_UID" --render-commit "$COMMIT"
+  PYTHON_RUNTIME_UNITS=(
+    eimemory-audit-verify.service
+    eimemory-console.service
+    eimemory-l5-observation-gate.service
+    eimemory-learn-dashboard.service
+    eimemory-learn-think.service
+    eimemory-learn-watch.service
+    eimemory-nightly.service
+    eimemory-rpc.service
+    eimemory-timer-monitor.service
+    openclaw-stuck-watchdog.service
+  )
+  for runtime_unit in "${PYTHON_RUNTIME_UNITS[@]}"; do
+    _run_as_service_user mkdir -p "$USER_SYSTEMD_DIR/$runtime_unit.d"
+    "$PYTHON_BIN" -I -B "$RELEASE_DIR/deploy/install_managed_systemd_dropin.py" \
+      --source "$RELEASE_DIR/deploy/systemd/eimemory-python-runtime.conf" \
+      --target "$USER_SYSTEMD_DIR/$runtime_unit.d/90-eimemory-python-runtime.conf" \
+      --root "$USER_SYSTEMD_DIR" --owner-uid "$SERVICE_UID" --render-commit "$COMMIT"
+  done
   _install_as_service_user 0644 \
     "$RELEASE_DIR/deploy/systemd/eimemory-rpc.service" "$USER_SYSTEMD_DIR/eimemory-rpc.service"
   if [ "$(id -u)" -eq 0 ] && id "$SERVICE_USER" >/dev/null 2>&1; then

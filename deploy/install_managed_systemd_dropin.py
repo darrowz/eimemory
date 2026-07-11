@@ -7,6 +7,7 @@ import argparse
 import errno
 import os
 from pathlib import Path
+import re
 import secrets
 import stat
 import tempfile
@@ -33,6 +34,7 @@ def install_managed_dropin(
     target: Path,
     root: Path,
     owner_uid: int | None = None,
+    render_commit: str = "",
 ) -> None:
     source = Path(source)
     target = Path(target)
@@ -42,6 +44,13 @@ def install_managed_dropin(
     payload = source.read_bytes()
     if not _is_managed(payload):
         raise ManagedDropinError("source is missing the managed marker")
+    if render_commit:
+        if not re.fullmatch(r"[0-9a-fA-F]{40}", render_commit):
+            raise ManagedDropinError("render commit must be a full 40-character SHA")
+        token = b"@EIMEMORY_COMMIT@"
+        if token not in payload:
+            raise ManagedDropinError("managed source is missing the commit token")
+        payload = payload.replace(token, render_commit.encode("ascii"))
 
     if target.parent.parent != root or not target.parent.name.endswith(".service.d"):
         raise ManagedDropinError("target must be a direct service drop-in under systemd root")
@@ -194,6 +203,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--target", required=True, type=Path)
     parser.add_argument("--root", required=True, type=Path)
     parser.add_argument("--owner-uid", type=int)
+    parser.add_argument("--render-commit", default="")
     args = parser.parse_args(argv)
     try:
         install_managed_dropin(
@@ -201,6 +211,7 @@ def main(argv: list[str] | None = None) -> int:
             target=args.target,
             root=args.root,
             owner_uid=args.owner_uid,
+            render_commit=args.render_commit,
         )
     except (ManagedDropinError, OSError) as exc:
         parser.exit(2, f"managed drop-in install failed: {exc}\n")

@@ -225,6 +225,7 @@ def test_openclaw_gateway_override_uses_production_eimemory_runtime() -> None:
     assert "Environment=EIMEMORY_ROOT=/var/lib/eimemory" in override_text
     assert "Environment=EIMEMORY_CONFIG_DIR=/etc/eimemory" in override_text
     assert "Environment=PYTHONDONTWRITEBYTECODE=1" in override_text
+    assert "Environment=PYTHONPYCACHEPREFIX=/var/lib/eimemory/.pycache/@EIMEMORY_COMMIT@" in override_text
     assert 'Environment="EIMEMORY_HOOK_COMMAND=/opt/eimemory/current/.venv/bin/eimemory openclaw-hook"' in override_text
     assert 'Environment="EIMEMORY_BRIDGE_COMMAND=/opt/eimemory/current/.venv/bin/eimemory ei-bridge feishu"' in override_text
     assert "/dev-project/eimemory/.venv" not in override_text
@@ -232,6 +233,7 @@ def test_openclaw_gateway_override_uses_production_eimemory_runtime() -> None:
 
 
 def test_python_systemd_units_never_write_bytecode_into_immutable_release() -> None:
+    version = Path("eimemory/version.py").read_text(encoding="utf-8").split('"')[1]
     for unit_path in Path("deploy/systemd").glob("*.service"):
         unit_text = unit_path.read_text(encoding="utf-8")
         launches_release_python = "/opt/eimemory/current/.venv/bin/" in unit_text
@@ -242,9 +244,62 @@ def test_python_systemd_units_never_write_bytecode_into_immutable_release() -> N
                 launches_release_python = True
         if launches_release_python:
             assert "Environment=PYTHONDONTWRITEBYTECODE=1" in unit_text, unit_path.name
+            assert f"Environment=PYTHONPYCACHEPREFIX=/var/lib/eimemory/.pycache/{version}" in unit_text, unit_path.name
 
     gate_script = Path("deploy/systemd/eimemory-l5-observation-gate.sh").read_text(encoding="utf-8")
     assert "export PYTHONDONTWRITEBYTECODE=1" in gate_script
+    assert 'release_id="$(basename "$(readlink -f /opt/eimemory/current)")"' in gate_script
+    assert 'export PYTHONPYCACHEPREFIX="/var/lib/eimemory/.pycache/$release_id"' in gate_script
+
+
+def test_runtime_pycache_prefix_redirects_explicit_compileall(tmp_path) -> None:
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / "module.py").write_text("VALUE = 1\n", encoding="utf-8")
+    pycache_root = tmp_path / "runtime-pycache"
+    env = os.environ.copy()
+    env["PYTHONPYCACHEPREFIX"] = str(pycache_root)
+
+    result = subprocess.run(
+        [sys.executable, "-m", "compileall", "-q", str(package)],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not (package / "__pycache__").exists()
+    assert list(pycache_root.rglob("*.pyc"))
+
+
+def test_commit_scoped_pycache_does_not_reuse_same_mtime_same_size_bytecode(tmp_path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    module = source / "release_module.py"
+    fixed_mtime = 1_700_000_000
+
+    def import_value(commit: str, content: str) -> str:
+        module.write_text(content, encoding="utf-8")
+        os.utime(module, (fixed_mtime, fixed_mtime))
+        env = os.environ.copy()
+        env["PYTHONPYCACHEPREFIX"] = str(tmp_path / "pycache" / commit)
+        result = subprocess.run(
+            [sys.executable, "-c", "import release_module; print(release_module.VALUE)"],
+            cwd=source,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        return result.stdout.strip()
+
+    first = import_value("a" * 40, "VALUE = 'one'\n")
+    second = import_value("b" * 40, "VALUE = 'two'\n")
+
+    assert first == "one"
+    assert second == "two"
 
 
 def test_immutable_release_installer_documents_non_editable_runtime() -> None:
@@ -266,6 +321,28 @@ def test_immutable_release_installer_deploys_gateway_runtime_override() -> None:
     assert script.index("install_managed_systemd_dropin.py") < script.index(
         '"$RELEASE_DIR/deploy/systemd/eimemory-rpc.service"'
     )
+
+
+def test_immutable_release_installer_deploys_python_runtime_protection_dropins() -> None:
+    script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
+    expected_units = {
+        "eimemory-audit-verify.service",
+        "eimemory-console.service",
+        "eimemory-l5-observation-gate.service",
+        "eimemory-learn-dashboard.service",
+        "eimemory-learn-think.service",
+        "eimemory-learn-watch.service",
+        "eimemory-nightly.service",
+        "eimemory-rpc.service",
+        "eimemory-timer-monitor.service",
+        "openclaw-stuck-watchdog.service",
+    }
+
+    assert 'eimemory-python-runtime.conf' in script
+    assert '90-eimemory-python-runtime.conf' in script
+    assert script.count('--render-commit "$COMMIT"') == 2
+    for unit in expected_units:
+        assert unit in script
 
 
 def test_managed_systemd_dropin_installer_uses_posix_directory_fds() -> None:
@@ -297,6 +374,25 @@ def test_managed_systemd_dropin_installer_is_atomic_and_preserves_unmanaged_file
     source.write_text(f"{helper.MANAGED_MARKER}\n[Service]\nEnvironment=SAFE=2\n", encoding="utf-8")
     helper.install_managed_dropin(source=source, target=target, root=root)
     assert "Environment=SAFE=2" in target.read_text(encoding="utf-8")
+
+
+def test_managed_systemd_dropin_installer_renders_release_commit(tmp_path) -> None:
+    helper = _load_managed_systemd_dropin_installer()
+    source = tmp_path / "source.conf"
+    source.write_text(
+        f"{helper.MANAGED_MARKER}\n[Service]\nEnvironment=PYTHONPYCACHEPREFIX=/cache/@EIMEMORY_COMMIT@\n",
+        encoding="utf-8",
+    )
+    root = tmp_path / "systemd"
+    target = root / "example.service.d" / "90-runtime.conf"
+    target.parent.mkdir(parents=True)
+    commit = "a" * 40
+
+    helper.install_managed_dropin(source=source, target=target, root=root, render_commit=commit)
+
+    rendered = target.read_text(encoding="utf-8")
+    assert f"Environment=PYTHONPYCACHEPREFIX=/cache/{commit}" in rendered
+    assert "@EIMEMORY_COMMIT@" not in rendered
 
 
 def test_managed_systemd_dropin_installer_rejects_unmanaged_target(tmp_path) -> None:

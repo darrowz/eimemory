@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 export PYTHONDONTWRITEBYTECODE=1
+release_id="$(basename "$(readlink -f /opt/eimemory/current)")"
+export PYTHONPYCACHEPREFIX="/var/lib/eimemory/.pycache/$release_id"
 
 EIMEMORY_BIN="${EIMEMORY_BIN:-/opt/eimemory/current/.venv/bin/eimemory}"
 NIGHTLY_UNIT="${EIMEMORY_NIGHTLY_UNIT_PATH:-$HOME/.config/systemd/user/eimemory-nightly.service}"
