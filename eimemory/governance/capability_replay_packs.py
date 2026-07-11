@@ -36,7 +36,7 @@ def build_capability_replay_packs(
         replay_ids: list[str] = []
         case_results: list[dict[str, Any]] = []
         for case in cases:
-            result = _run_case(case)
+            result = _run_case(runtime, case)
             case_results.append(result)
             if persist:
                 record = append_learning_record_once(
@@ -180,12 +180,38 @@ def _cases_for_capability(capability: str) -> list[dict[str, Any]]:
     ]
 
 
-def _run_case(case: dict[str, Any]) -> dict[str, Any]:
+def _run_case(runtime: Any, case: dict[str, Any]) -> dict[str, Any]:
+    executor = getattr(runtime, "run_capability_replay_case", None)
+    if not callable(executor):
+        return {
+            "case_id": str(case.get("case_id") or ""),
+            "verdict": "not_run",
+            "hit": None,
+            "observed": "",
+            "reason": "missing_capability_replay_executor",
+        }
+    try:
+        raw = executor(case)
+    except Exception as exc:
+        return {
+            "case_id": str(case.get("case_id") or ""),
+            "verdict": "fail",
+            "hit": False,
+            "observed": "",
+            "reason": f"executor_error:{type(exc).__name__}",
+            "error": str(exc),
+        }
+    result = dict(raw or {}) if isinstance(raw, dict) else {"observed": str(raw or "")}
+    hit = result.get("hit")
+    verdict = str(result.get("verdict") or "").strip().lower()
+    if verdict not in {"pass", "fail", "not_run"}:
+        verdict = "pass" if hit is True else "fail"
     return {
         "case_id": str(case.get("case_id") or ""),
-        "verdict": "pass",
-        "hit": True,
-        "observed": str(case.get("expected") or ""),
+        "verdict": verdict,
+        "hit": hit if hit in {True, False, None} else bool(hit),
+        "observed": str(result.get("observed") or ""),
+        **({"reason": str(result.get("reason"))} if result.get("reason") else {}),
     }
 
 

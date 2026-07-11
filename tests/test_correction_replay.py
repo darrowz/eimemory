@@ -24,12 +24,13 @@ def test_user_correction_becomes_lesson_replay_and_graph_edges(tmp_path) -> None
     assert report["lesson_record_id"]
     assert report["replay_record_id"]
     assert report["ground_truth_rule_id"]
-    assert report["replay"]["verdict"] == "pass"
+    assert report["replay"]["verdict"] == "not_run"
+    assert report["replay"]["verification_status"] == "pending_post_answer"
     assert {"trigger", "expected_behavior", "gate", "behavior_check"}.issubset(report["replay_case"])
 
     edges = runtime.store.list_memory_edges(scope=SCOPE, record_ids=[report["lesson_record_id"]], limit=20)
     relations = {edge.meta.get("relation") for edge in edges}
-    assert {"CORRECTED_FAILURE", "DECIDED_BEHAVIOR", "VALIDATED_BY_REPLAY", "ENFORCED_BY_GROUND_TRUTH"}.issubset(relations)
+    assert {"CORRECTED_FAILURE", "DECIDED_BEHAVIOR", "COVERED_BY_REPLAY_CASE", "ENFORCED_BY_GROUND_TRUTH"}.issubset(relations)
 
     rule = runtime.store.get_by_id(report["ground_truth_rule_id"], scope=SCOPE)
     assert rule is not None
@@ -79,12 +80,14 @@ def test_ground_truth_rules_are_returned_as_pre_answer_gate(tmp_path) -> None:
 
     assert gate["ok"] is True
     assert gate["gate_required"] is True
-    assert gate["verdict"] == "pass"
+    assert gate["verdict"] == "matched"
+    assert gate["verification_status"] == "pending_answer_check"
     assert gate["matched_rule_count"] == 1
     assert gate["rules"][0]["rule_id"] == replay["ground_truth_rule_id"]
     assert gate["rules"][0]["priority"] == "T0"
     assert gate["rules"][0]["must_use"] is True
     assert gate["replay_gate"]["expected_behavior"] == "Query git/runtime/deploy evidence before answering status questions."
+    assert gate["replay_gate"]["verification_status"] == "pending_answer_check"
     assert gate["record_id"]
 
 

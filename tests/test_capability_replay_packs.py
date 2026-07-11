@@ -21,6 +21,7 @@ WEAK_CAPABILITIES = {
 
 def test_capability_replay_packs_activate_non_code_capabilities(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
+    _install_successful_executor(runtime)
     try:
         report = runtime.build_capability_replay_packs(scope=SCOPE, persist=True)
 
@@ -59,13 +60,14 @@ def test_capability_replay_packs_are_queryable_as_replay_results(tmp_path) -> No
         assert len(records) == report["case_count"]
         assert {record.meta["report_type"] for record in records} == {"capability_replay_pack"}
         assert {record.meta["capability"] for record in records} == {"memory.recall"}
-        assert all(record.meta["verdict"] == "pass" for record in records)
+        assert {record.meta["verdict"] for record in records} == {"not_run"}
     finally:
         runtime.close()
 
 
 def test_capability_replay_packs_include_named_weak_capability_cases(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
+    _install_successful_executor(runtime)
     try:
         report = runtime.build_capability_replay_packs(
             scope=SCOPE,
@@ -89,3 +91,10 @@ def test_capability_replay_packs_include_named_weak_capability_cases(tmp_path) -
             assert item["evidence_count"] >= 3
     finally:
         runtime.close()
+
+
+def _install_successful_executor(runtime: Runtime) -> None:
+    def executor(case):
+        return {"observed": str(case.get("expected") or ""), "hit": True}
+
+    runtime.run_capability_replay_case = executor  # type: ignore[attr-defined]

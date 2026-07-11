@@ -58,6 +58,7 @@ def test_circuit_breaker_resets_hourly() -> None:
         cb.state[action]["reset_at"] = (
             datetime.now(timezone.utc) - timedelta(hours=1)
         ).isoformat()
+        cb._save()
         # Should not raise — the window has rolled over, count back to 1.
         cb.consume(action)
         assert cb.remaining(action) == 4

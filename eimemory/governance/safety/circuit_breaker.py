@@ -19,6 +19,8 @@ import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from eimemory.governance.safety.file_lock import exclusive_file_lock
+
 log = logging.getLogger(__name__)
 
 
@@ -64,6 +66,7 @@ class CircuitBreaker:
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.path = self.root / "circuit_breaker.json"
+        self.lock_path = self.root / "circuit_breaker.lock"
         self.state: dict[str, dict[str, object]] = self._load()
         self.default_budget = default_budget
 
@@ -96,39 +99,43 @@ class CircuitBreaker:
 
     def consume(self, action_class: str) -> None:
         """Charge one call to ``action_class``. Raises on overflow."""
-        if action_class not in self.state:
-            self.state[action_class] = {
-                "count": 0,
-                "reset_at": (
-                    datetime.now(timezone.utc) + timedelta(hours=1)
-                ).isoformat(),
-            }
-        self._maybe_reset(action_class)
-        budget = self._budget_for(action_class)
-        current = self.state[action_class].get("count", 0)
-        if not isinstance(current, int):
-            current = 0
-        if current >= budget:
-            log.warning(
-                "circuit_breaker_trip action_class=%s count=%d budget=%d",
-                action_class, current, budget,
+        with exclusive_file_lock(self.lock_path):
+            self.state = self._load()
+            if action_class not in self.state:
+                self.state[action_class] = {
+                    "count": 0,
+                    "reset_at": (
+                        datetime.now(timezone.utc) + timedelta(hours=1)
+                    ).isoformat(),
+                }
+            self._maybe_reset(action_class)
+            budget = self._budget_for(action_class)
+            current = self.state[action_class].get("count", 0)
+            if not isinstance(current, int):
+                current = 0
+            if current >= budget:
+                log.warning(
+                    "circuit_breaker_trip action_class=%s count=%d budget=%d",
+                    action_class, current, budget,
+                )
+                raise BudgetExceeded(action_class)
+            log.info(
+                "circuit_breaker_consume action_class=%s new_count=%d budget=%d",
+                action_class, current + 1, budget,
             )
-            raise BudgetExceeded(action_class)
-        log.info(
-            "circuit_breaker_consume action_class=%s new_count=%d budget=%d",
-            action_class, current + 1, budget,
-        )
-        self.state[action_class]["count"] = current + 1
-        self._save()
+            self.state[action_class]["count"] = current + 1
+            self._save()
 
     def remaining(self, action_class: str) -> int:
         """Return the remaining budget for ``action_class`` in this window."""
-        self._maybe_reset(action_class)
-        budget = self._budget_for(action_class)
-        entry = self.state.get(action_class)
-        if not isinstance(entry, dict):
-            return budget
-        current = entry.get("count", 0)
-        if not isinstance(current, int):
-            current = 0
-        return max(0, budget - current)
+        with exclusive_file_lock(self.lock_path):
+            self.state = self._load()
+            self._maybe_reset(action_class)
+            budget = self._budget_for(action_class)
+            entry = self.state.get(action_class)
+            if not isinstance(entry, dict):
+                return budget
+            current = entry.get("count", 0)
+            if not isinstance(current, int):
+                current = 0
+            return max(0, budget - current)

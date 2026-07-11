@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+import http.client
 import socket
 from dataclasses import asdict
 from hashlib import sha256
@@ -199,8 +200,42 @@ class _ValidatedRedirectHandler(urllib.request.HTTPRedirectHandler):
 
 
 def _open_validated_request(request: urllib.request.Request, *, timeout_seconds: int):
-    opener = urllib.request.build_opener(_ValidatedRedirectHandler)
+    opener = urllib.request.build_opener(_ValidatedRedirectHandler, _ValidatedHTTPHandler, _ValidatedHTTPSHandler)
     return opener.open(request, timeout=timeout_seconds)
+
+
+class _ValidatedHTTPConnection(http.client.HTTPConnection):
+    def connect(self) -> None:
+        self.sock = _create_validated_socket(self.host, self.port, timeout=self.timeout, source_address=self.source_address)
+
+
+class _ValidatedHTTPSConnection(http.client.HTTPSConnection):
+    def connect(self) -> None:
+        sock = _create_validated_socket(self.host, self.port, timeout=self.timeout, source_address=self.source_address)
+        self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
+
+
+class _ValidatedHTTPHandler(urllib.request.HTTPHandler):
+    def http_open(self, req):  # noqa: D401, ANN001
+        return self.do_open(_ValidatedHTTPConnection, req)
+
+
+class _ValidatedHTTPSHandler(urllib.request.HTTPSHandler):
+    def https_open(self, req):  # noqa: D401, ANN001
+        return self.do_open(_ValidatedHTTPSConnection, req)
+
+
+def _create_validated_socket(host: str, port: int, *, timeout: float | object, source_address=None):
+    addresses = _validated_resolved_addresses(str(host or ""), int(port))
+    last_error: Exception | None = None
+    for address in addresses:
+        try:
+            return socket.create_connection((address, int(port)), timeout, source_address)
+        except OSError as exc:
+            last_error = exc
+    if last_error is not None:
+        raise last_error
+    raise ValueError("unable to resolve fetch URL host")
 
 
 def _is_private_fetch_host(hostname: str) -> bool:
@@ -215,18 +250,29 @@ def _is_private_fetch_host(hostname: str) -> bool:
 
 
 def _host_resolves_to_private(hostname: str, port: int) -> bool:
+    return any(_is_disallowed_address(_coerce_ip_address(address) or address) for address in _validated_resolved_addresses(hostname, port))
+
+
+def _validated_resolved_addresses(hostname: str, port: int) -> list[str]:
     try:
         infos = socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
     except socket.gaierror as exc:
         raise ValueError("unable to resolve fetch URL host") from exc
+    addresses: list[str] = []
     for info in infos:
         sockaddr = info[-1]
         if not sockaddr:
             continue
         address = _coerce_ip_address(str(sockaddr[0]))
         if address is not None and _is_disallowed_address(address):
-            return True
-    return False
+            raise ValueError("unsafe fetch URL host")
+        if address is not None:
+            text = str(address)
+            if text not in addresses:
+                addresses.append(text)
+    if not addresses:
+        raise ValueError("unable to resolve fetch URL host")
+    return addresses
 
 
 def _coerce_ip_address(hostname: str):

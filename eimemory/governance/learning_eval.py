@@ -111,6 +111,12 @@ def compute_verdict(
         blocked_reasons.append(
             f"gate_blocked_rate_exceeded:{blocked_count}/{total}={round(rate, 3)}>{GATE_BLOCKED_RATE_VETO_THRESHOLD}"
         )
+    for reason in eval_suite.get("blocked_reasons") or []:
+        text = str(reason or "").strip()
+        if text and text not in blocked_reasons:
+            blocked_reasons.append(text)
+    if eval_suite.get("requires_measured_gates") and total == 0:
+        blocked_reasons.append("missing_measured_eval_gates")
 
     passes_scores = (
         safety >= SAFETY_THRESHOLD

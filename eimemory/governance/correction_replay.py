@@ -61,21 +61,23 @@ def record_user_correction_replay(
         replay = RecordEnvelope.create(
             kind="replay_result",
             title=f"Correction replay: {payload['target_capability']}",
-            summary="pass: correction lesson has trigger, expected behavior, gate, and behavior check.",
+            summary="not_run: correction lesson produced a replay case; behavior compliance must be checked after a future answer.",
             scope=scope_ref,
             source="eimemory.correction_replay",
             status="active",
             content={
                 "report_type": "user_correction_replay",
-                "verdict": "pass",
+                "verdict": "not_run",
                 "case": replay_case,
-                "pass_rate": 1.0,
+                "pass_rate": 0.0,
+                "verification_status": "pending_post_answer",
                 "lesson_record_id": lesson_record_id,
             },
             meta={
                 "report_type": "user_correction_replay",
-                "verdict": "pass",
-                "pass_rate": 1.0,
+                "verdict": "not_run",
+                "pass_rate": 0.0,
+                "verification_status": "pending_post_answer",
                 "target_capability": payload["target_capability"],
             },
             evidence=[lesson_record_id],
@@ -125,8 +127,9 @@ def record_user_correction_replay(
     replay_report = {
         "ok": True,
         "report_type": "user_correction_replay",
-        "verdict": "pass",
-        "pass_rate": 1.0,
+        "verdict": "not_run",
+        "pass_rate": 0.0,
+        "verification_status": "pending_post_answer",
     }
     return {
         "ok": True,
@@ -159,19 +162,21 @@ def build_ground_truth_pre_answer_gate(
     ]
     matched = [rule for rule in rules if _rule_matches(query, rule)] if str(query or "").strip() else rules
     replay_gate = _merged_replay_gate(matched)
+    verdict = "matched" if matched else "no_match"
     record_id = ""
     if persist and matched:
         record = RecordEnvelope.create(
             kind="learning_eval",
             title="Ground truth pre-answer gate",
-            summary=f"{len(matched)} T0 ground-truth rule(s) checked before answer.",
+            summary=f"{len(matched)} T0 ground-truth rule(s) matched before answer; answer compliance is pending.",
             scope=scope_ref,
             source="eimemory.correction_replay",
             status="active",
             content={
                 "report_type": "ground_truth_pre_answer_gate",
                 "query": str(query or ""),
-                "verdict": "pass",
+                "verdict": verdict,
+                "verification_status": "pending_answer_check",
                 "gate_required": bool(matched),
                 "matched_rule_count": len(matched),
                 "rules": matched,
@@ -179,7 +184,8 @@ def build_ground_truth_pre_answer_gate(
             },
             meta={
                 "report_type": "ground_truth_pre_answer_gate",
-                "verdict": "pass",
+                "verdict": verdict,
+                "verification_status": "pending_answer_check",
                 "gate_required": bool(matched),
                 "matched_rule_count": len(matched),
             },
@@ -194,7 +200,8 @@ def build_ground_truth_pre_answer_gate(
         "scope": asdict(scope_ref),
         "query": str(query or ""),
         "gate_required": bool(matched),
-        "verdict": "pass",
+        "verdict": verdict,
+        "verification_status": "pending_answer_check" if matched else "not_required",
         "matched_rule_count": len(matched),
         "rules": matched,
         "replay_gate": replay_gate,
@@ -261,8 +268,8 @@ def _lesson_edges(lesson_id: str, replay_id: str, rule_id: str, payload: dict[st
             confidence=0.95,
             evidence_id=replay_id,
             scope=scope,
-            reason="correction lesson is validated by replay",
-            meta={"relation": "VALIDATED_BY_REPLAY", "node_type": "replay", "label": replay_id},
+            reason="correction lesson produced a replay case that still needs future behavior verification",
+            meta={"relation": "COVERED_BY_REPLAY_CASE", "node_type": "replay", "label": replay_id},
         ),
         MemoryEdge.create(
             from_id=lesson_id,
@@ -349,7 +356,13 @@ def _cjk_anchors(token: str) -> list[str]:
 
 def _merged_replay_gate(rules: list[dict[str, Any]]) -> dict[str, Any]:
     if not rules:
-        return {"expected_behavior": "", "gate": "", "behavior_check": "", "pre_action_protocol": []}
+        return {
+            "expected_behavior": "",
+            "gate": "",
+            "behavior_check": "",
+            "pre_action_protocol": [],
+            "verification_status": "not_required",
+        }
     first = rules[0]
     protocol: list[str] = []
     for rule in rules:
@@ -361,6 +374,7 @@ def _merged_replay_gate(rules: list[dict[str, Any]]) -> dict[str, Any]:
         "gate": first.get("gate", ""),
         "behavior_check": first.get("behavior_check", ""),
         "pre_action_protocol": protocol,
+        "verification_status": "pending_answer_check",
     }
 
 

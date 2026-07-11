@@ -16,6 +16,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from eimemory.governance.safety.file_lock import exclusive_file_lock
+
 
 class ChainBroken(Exception):
     """Raised by :meth:`AuditLog.verify` when the on-disk chain is corrupt.
@@ -73,21 +75,22 @@ class AuditLog:
             The :class:`AuditRow` written, including the derived
             ``row_index``, ``prev_hash``, and ``row_hash``.
         """
-        rows = self.read_all()
-        prev_hash = rows[-1].row_hash if rows else "0" * 64
-        ts = payload.get("ts") or datetime.now(timezone.utc).isoformat()
-        row_index = len(rows)
-        body = {
-            "ts": ts,
-            "row_index": row_index,
-            "prev_hash": prev_hash,
-            **payload,
-        }
-        body_str = json.dumps(body, sort_keys=True, ensure_ascii=False)
-        row_hash = hashlib.sha256(body_str.encode("utf-8")).hexdigest()
-        body["row_hash"] = row_hash
-        with self.path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(body, sort_keys=True, ensure_ascii=False) + "\n")
+        with exclusive_file_lock(self.path.with_suffix(self.path.suffix + ".lock")):
+            rows = self.read_all()
+            prev_hash = rows[-1].row_hash if rows else "0" * 64
+            ts = payload.get("ts") or datetime.now(timezone.utc).isoformat()
+            row_index = len(rows)
+            body = {
+                "ts": ts,
+                "row_index": row_index,
+                "prev_hash": prev_hash,
+                **payload,
+            }
+            body_str = json.dumps(body, sort_keys=True, ensure_ascii=False)
+            row_hash = hashlib.sha256(body_str.encode("utf-8")).hexdigest()
+            body["row_hash"] = row_hash
+            with self.path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(body, sort_keys=True, ensure_ascii=False) + "\n")
         return AuditRow(payload=body, prev_hash=prev_hash, row_hash=row_hash, row_index=row_index)
 
     def read_all(self) -> list[AuditRow]:

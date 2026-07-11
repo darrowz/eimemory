@@ -274,7 +274,12 @@ def run_autonomous_learning_cycle(
                 experiment,
                 scope=scope_ref,
                 loop_id=loop_id,
-                eval_suite={"scores": {"capability": 0.82, "safety": 1.0, "regression": 1.0, "evidence": _evidence_score(evidence), "cost": 0.85}},
+                eval_suite=_measured_learning_eval_suite(
+                    evidence=evidence,
+                    replay_gate=replay_gate,
+                    safety_replay=safety_replay,
+                    isolation_gate_passed=None,
+                ),
             )
             eval_result["gate_bundle"] = _gate_bundle_for_candidate(
                 candidate_kind,
@@ -389,8 +394,21 @@ def run_autonomous_learning_cycle(
             scope=scope_ref,
             loop_id=loop_id,
             capability=str(selected_goal.get("target_capability") or "proactive.judgment"),
-            score=0.8 if eval_result.get("ok") and replay_gate_passed and isolation_gate_passed and safety_gate_passed else 0.4,
+            score=_measured_capability_score(
+                eval_result=eval_result,
+                replay_gate=replay_gate,
+                safety_replay=safety_replay,
+                isolation_gate_passed=isolation_gate_passed,
+            ),
             evidence_record_ids=[item for item in [research_note_id, eval_result.get("record_id", ""), candidate_id] if item],
+            meta={
+                "kind": "autonomous_learning_measured",
+                "measurement_source": "autonomous_learning_gates",
+                "eval_verdict": str(eval_result.get("verdict") or ""),
+                "replay_gate_passed": bool(replay_gate_passed),
+                "safety_gate_passed": bool(safety_gate_passed),
+                "isolation_gate_passed": bool(isolation_gate_passed),
+            },
         )
         skill_sedimentation = promote_repeated_sops_to_skill_candidates(
             runtime,
@@ -612,6 +630,74 @@ def _replay_gate_report(report: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _measured_learning_eval_suite(
+    *,
+    evidence: list[dict[str, Any]],
+    replay_gate: dict[str, Any],
+    safety_replay: dict[str, Any],
+    isolation_gate_passed: bool | None,
+) -> dict[str, Any]:
+    replay_ok = bool(replay_gate.get("ok"))
+    safety_ok = bool(safety_replay.get("ok"))
+    replay_reason = str(replay_gate.get("reason") or "")
+    safety_reason = str(safety_replay.get("blocked_reason") or safety_replay.get("reason") or "")
+    replay_pass_rate = _as_float(replay_gate.get("pass_rate"), default=0.0) if replay_ok else 0.0
+    safety_pass_rate = _as_float(safety_replay.get("pass_rate"), default=0.0) if safety_ok else 0.0
+    blocked_reasons: list[str] = []
+    if not replay_ok:
+        blocked_reasons.append(replay_reason or "real_task_replay_not_passed")
+    if not safety_ok:
+        blocked_reasons.append(safety_reason or "safety_replay_not_passed")
+    if isolation_gate_passed is False:
+        blocked_reasons.append("isolated_evaluator_not_passed")
+    gates = [
+        {"name": "real_task_replay", "outcome": "pass" if replay_ok else "blocked", "reason": replay_reason},
+        {"name": "safety_replay", "outcome": "pass" if safety_ok else "blocked", "reason": safety_reason},
+    ]
+    if isolation_gate_passed is not None:
+        gates.append(
+            {
+                "name": "isolated_evaluator",
+                "outcome": "pass" if isolation_gate_passed else "blocked",
+                "reason": "" if isolation_gate_passed else "isolated_evaluator_not_passed",
+            }
+        )
+    return {
+        "measurement_source": "autonomous_learning_gates",
+        "requires_measured_gates": True,
+        "scores": {
+            "capability": replay_pass_rate,
+            "safety": safety_pass_rate,
+            "regression": replay_pass_rate,
+            "evidence": _evidence_score(evidence),
+            "cost": 0.0 if blocked_reasons else 1.0,
+            "maintainability": min(replay_pass_rate, safety_pass_rate) if blocked_reasons else 0.75,
+            "confidence": min(replay_pass_rate, safety_pass_rate) if blocked_reasons else 0.7,
+        },
+        "gates": gates,
+        "blocked_reasons": blocked_reasons,
+    }
+
+
+def _measured_capability_score(
+    *,
+    eval_result: dict[str, Any],
+    replay_gate: dict[str, Any],
+    safety_replay: dict[str, Any],
+    isolation_gate_passed: bool,
+) -> float:
+    if not (eval_result.get("ok") and replay_gate.get("ok") and safety_replay.get("ok") and isolation_gate_passed):
+        return 0.0
+    scores = eval_result.get("scores") if isinstance(eval_result.get("scores"), dict) else {}
+    measured = [
+        _as_float(scores.get("capability"), default=0.0),
+        _as_float(scores.get("safety"), default=0.0),
+        _as_float(scores.get("regression"), default=0.0),
+        _as_float(scores.get("evidence"), default=0.0),
+    ]
+    return round(sum(measured) / len(measured), 3) if measured else 0.0
+
+
 SUCCESS_LABELS = {"pass", "passed", "success", "succeeded", "ok", "true", "green"}
 FAILURE_LABELS = {"fail", "failed", "failure", "error", "blocked", "reject", "rejected", "false", "red"}
 
@@ -748,7 +834,12 @@ def _run_autonomous_learning_dry_run(
         },
         scope=scope,
         loop_id="dry_run",
-        eval_suite={"scores": {"capability": 0.82, "safety": 1.0, "regression": 1.0, "evidence": _evidence_score(evidence), "cost": 0.85}},
+        eval_suite=_measured_learning_eval_suite(
+            evidence=evidence,
+            replay_gate={"ok": False, "reason": "dry_run_real_task_replay_not_executed"},
+            safety_replay={"ok": False, "reason": "dry_run_safety_replay_not_executed"},
+            isolation_gate_passed=None,
+        ),
         persist=False,
     )
     eval_result["gate_bundle"] = _gate_bundle_for_candidate(candidate_kind, evidence=evidence, scope=scope)
