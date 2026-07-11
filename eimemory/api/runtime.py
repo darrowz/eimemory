@@ -815,6 +815,22 @@ class Runtime:
 
         return run_l5_closure_rehearsal(self, scope=scope, persist=persist)
 
+    def run_capability_acceptance(
+        self,
+        *,
+        scope: dict | None = None,
+        persist: bool = True,
+        execution_id: str = "",
+    ) -> dict:
+        from eimemory.governance.capability_acceptance import run_capability_acceptance
+
+        return run_capability_acceptance(
+            self,
+            scope=scope,
+            persist=persist,
+            execution_id=execution_id,
+        )
+
     def build_capability_replay_packs(
         self,
         *,

@@ -381,6 +381,8 @@ def _build_parser() -> argparse.ArgumentParser:
     learn_closure_rehearsal.add_argument("--scope-workspace", default="")
     learn_closure_rehearsal.add_argument("--scope-user", default="")
     learn_closure_rehearsal.add_argument("--json", action="store_true", default=True)
+    learn_capability_acceptance = learn_sub.add_parser("capability-acceptance")
+    learn_capability_acceptance.add_argument("--json", action="store_true", default=True)
     learn_capability_replay = learn_sub.add_parser("capability-replay")
     learn_capability_replay.add_argument("--capability", action="append", default=[])
     learn_capability_replay.add_argument("--persist", action="store_true")
@@ -885,6 +887,27 @@ def _living_posture_report(runtime, scope: dict, *, query: str, limit: int) -> d
     return runtime.recommend_action_posture(query, scope=scope, limit=limit)
 
 
+def _capability_acceptance_succeeded(report: dict[str, Any]) -> bool:
+    results = report.get("results")
+    if not isinstance(results, list) or len(results) != 12:
+        return False
+    probe_ids = [str(item.get("source_record_id") or item.get("probe_id") or "") for item in results if isinstance(item, dict)]
+    trace_ids = [str(item.get("trace_id") or "") for item in results if isinstance(item, dict)]
+    return (
+        report.get("ok") is True
+        and report.get("all_passed") is True
+        and report.get("case_count") == 12
+        and report.get("pass_count") == 12
+        and report.get("distinct_probe_sources") is True
+        and report.get("distinct_trace_ids") is True
+        and all(isinstance(item, dict) and item.get("passed") is True for item in results)
+        and len(probe_ids) == len(set(probe_ids)) == 12
+        and len(trace_ids) == len(set(trace_ids)) == 12
+        and all(probe_ids)
+        and all(trace_ids)
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     args_list = list(sys.argv[1:] if argv is None else argv)
     if args_list and args_list[0] == "qmd":
@@ -1191,6 +1214,10 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0 if report.get("ok") else 1
+        if parsed.learn_command == "capability-acceptance":
+            report = runtime.run_capability_acceptance(scope=scope, persist=True)
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0 if _capability_acceptance_succeeded(report) else 1
         if parsed.learn_command == "capability-replay":
             report = runtime.build_capability_replay_packs(
                 scope=scope,
@@ -1311,7 +1338,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0 if report.get("ok") else 1
-        print(json.dumps({"usage": "eimemory learn watch|think|cycle|autonomy|evaluator-harness|loops|goals|candidates|ledger|replay-dataset|goal-graph|world-model|roadmap|l5|l5-assess|l5-readiness|capability-replay|safety-replay|skills|skill-call|metrics|compact|report|dashboard|promote"}))
+        print(json.dumps({"usage": "eimemory learn watch|think|cycle|autonomy|evaluator-harness|loops|goals|candidates|ledger|replay-dataset|goal-graph|world-model|roadmap|l5|l5-assess|l5-readiness|closure-rehearsal|capability-acceptance|capability-replay|safety-replay|skills|skill-call|metrics|compact|report|dashboard|promote"}))
         return 0
     if parsed.command == "recall":
         task_context = {"task_type": "cli.recall"}
