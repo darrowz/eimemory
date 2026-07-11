@@ -319,6 +319,47 @@ def test_release_bytecode_cleaner_scan_failure_returns_nonzero(tmp_path, monkeyp
     assert "simulated scan failure" in capsys.readouterr().err
 
 
+def test_release_bytecode_cleaner_relocates_virtualenv_console_scripts(tmp_path) -> None:
+    cleaner = _load_release_bytecode_cleaner()
+    if os.name != "posix":
+        pytest.skip("dir_fd relocation behavior requires POSIX")
+    releases_root = tmp_path / "releases"
+    release_dir = releases_root / ("e" * 40)
+    bin_dir = release_dir / ".venv" / "bin"
+    bin_dir.mkdir(parents=True)
+    old_stage = releases_root / f".eimemory-stage-{'e' * 40}-abcdefgh"
+    scripts = {
+        "eimemory": "python",
+        "eimemory-qmd": "python3.14",
+        "pip": "python3",
+        "pip3": "python3.14",
+    }
+    for name, interpreter in scripts.items():
+        (bin_dir / name).write_text(
+            f"#!{old_stage}/.venv/bin/{interpreter}\nprint('ok')\n",
+            encoding="utf-8",
+        )
+    binary = bin_dir / "binary-tool"
+    binary.write_bytes(b"\x00\x01binary")
+    outside = tmp_path / "outside-script"
+    outside.write_text("unchanged\n", encoding="utf-8")
+    (bin_dir / "linked-tool").symlink_to(outside)
+
+    changed = cleaner.relocate_virtualenv_scripts(
+        release_dir=release_dir,
+        releases_root=releases_root,
+        from_stage=old_stage,
+        to_release=release_dir,
+    )
+
+    assert set(changed) == set(scripts)
+    for name, interpreter in scripts.items():
+        first_line = (bin_dir / name).read_text(encoding="utf-8").splitlines()[0]
+        assert first_line == f"#!{release_dir}/.venv/bin/{interpreter}"
+    assert binary.read_bytes() == b"\x00\x01binary"
+    assert outside.read_text(encoding="utf-8") == "unchanged\n"
+
+
 def test_immutable_release_installer_runs_fd_safe_cleanup_before_switch() -> None:
     script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
 
@@ -331,6 +372,9 @@ def test_immutable_release_installer_runs_fd_safe_cleanup_before_switch() -> Non
     assert '[[ ! "$COMMIT" =~ ^[0-9a-fA-F]{40}$ ]]' in script
     assert '"$REPO_DIR/deploy/clean_release_bytecode.py"' in script
     assert "--validate-source" in script
+    assert "--relocate-venv" in script
+    assert '--from-stage "$OLD_STAGE_PATH"' in script
+    assert '--to-release "$RELEASE_DIR"' in script
     assert 'mktemp -d "$INSTALL_ROOT/releases/.eimemory-stage-${COMMIT}-XXXXXXXX"' in script
     assert '"$PYTHON_BIN" -I -B -m venv --clear "$STAGE_DIR/.venv"' in script
     assert '--release-dir "$RELEASE_DIR"' in script
@@ -340,9 +384,11 @@ def test_immutable_release_installer_runs_fd_safe_cleanup_before_switch() -> Non
     stage_at = script.index('STAGE_DIR="$(mktemp')
     stage_python_at = script.rindex('"$STAGE_DIR/.venv/bin/python"')
     cleanup_at = script.index("--allow-stage --release-dir", install_at)
+    relocate_at = script.index("--relocate-venv")
     switch_at = script.index('\nln -sfn "$RELEASE_DIR"')
     assert stage_at < stage_python_at
     assert install_at < verify_at < cleanup_at < switch_at
+    assert cleanup_at < relocate_at < switch_at
     assert '_ensure_runtime_dir "$INSTALL_ROOT"' not in script
 
 

@@ -291,6 +291,77 @@ def remove_stage_directory(*, stage_dir: str | Path, releases_root: str | Path) 
         os.close(root_fd)
 
 
+def relocate_virtualenv_scripts(
+    *,
+    release_dir: str | Path,
+    releases_root: str | Path,
+    from_stage: str | Path,
+    to_release: str | Path,
+) -> list[str]:
+    release, root = resolve_release_paths(release_dir, releases_root)
+    stage = Path(from_stage)
+    try:
+        stage_parent = stage.parent.resolve(strict=True)
+        target = Path(to_release).resolve(strict=True)
+    except OSError as exc:
+        raise CleanupError(f"unsafe virtualenv relocation path: {exc}") from exc
+    if stage_parent != root or STAGE_DIRECTORY_PATTERN.fullmatch(stage.name) is None:
+        raise CleanupError("unsafe virtualenv relocation stage")
+    if target != release:
+        raise CleanupError("unsafe virtualenv relocation target")
+    flags = _directory_open_flags()
+    root_fd = os.open(root, flags)
+    changed: list[str] = []
+    try:
+        release_fd = _open_directory_at(root_fd, release.name, flags)
+        try:
+            venv_fd = _open_directory_at(release_fd, ".venv", flags)
+            try:
+                bin_fd = _open_directory_at(venv_fd, "bin", flags)
+                try:
+                    old_prefix = os.fsencode(f"#!{stage}/.venv/bin/")
+                    new_prefix = os.fsencode(f"#!{release}/.venv/bin/")
+                    interpreter_pattern = re.compile(br"python(?:3(?:\.\d+)*)?")
+                    for name in os.listdir(bin_fd):
+                        entry_stat = os.stat(name, dir_fd=bin_fd, follow_symlinks=False)
+                        if not stat.S_ISREG(entry_stat.st_mode):
+                            continue
+                        content = _read_file_at(bin_fd, name, flags)
+                        if b"\0" in content or b"\n" not in content:
+                            continue
+                        first_line, remainder = content.split(b"\n", 1)
+                        if not first_line.startswith(old_prefix):
+                            continue
+                        interpreter = first_line[len(old_prefix) :]
+                        if interpreter_pattern.fullmatch(interpreter) is None:
+                            continue
+                        output = new_prefix + interpreter + b"\n" + remainder
+                        file_fd = os.open(
+                            name,
+                            os.O_WRONLY | os.O_TRUNC | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
+                            dir_fd=bin_fd,
+                        )
+                        try:
+                            view = memoryview(output)
+                            while view:
+                                written = os.write(file_fd, view)
+                                if written <= 0:
+                                    raise OSError("short write while relocating virtualenv script")
+                                view = view[written:]
+                        finally:
+                            os.close(file_fd)
+                        changed.append(name)
+                finally:
+                    os.close(bin_fd)
+            finally:
+                os.close(venv_fd)
+        finally:
+            os.close(release_fd)
+    finally:
+        os.close(root_fd)
+    return changed
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--release-dir", required=True)
@@ -301,7 +372,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     action.add_argument("--prepare", action="store_true")
     action.add_argument("--validate-source", action="store_true")
     action.add_argument("--remove-stage", action="store_true")
+    action.add_argument("--relocate-venv", action="store_true")
     parser.add_argument("--allow-stage", action="store_true")
+    parser.add_argument("--from-stage")
+    parser.add_argument("--to-release")
     args = parser.parse_args(argv)
     try:
         if args.prepare or args.validate_source:
@@ -326,6 +400,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         elif args.remove_stage:
             remove_stage_directory(stage_dir=args.release_dir, releases_root=args.releases_root)
+        elif args.relocate_venv:
+            if not args.from_stage or not args.to_release:
+                raise CleanupError("from-stage and to-release are required")
+            changed = relocate_virtualenv_scripts(
+                release_dir=args.release_dir,
+                releases_root=args.releases_root,
+                from_stage=args.from_stage,
+                to_release=args.to_release,
+            )
+            print("\n".join(changed))
         else:
             clean_release_bytecode(
                 release_dir=args.release_dir,

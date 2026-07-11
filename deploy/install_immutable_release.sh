@@ -187,6 +187,7 @@ if [ -e "$RELEASE_DIR" ]; then
   rmdir "$BACKUP_DIR"
   mv -T "$RELEASE_DIR" "$BACKUP_DIR"
 fi
+OLD_STAGE_PATH="$STAGE_DIR"
 if ! mv -T "$STAGE_DIR" "$RELEASE_DIR"; then
   if [ -n "$BACKUP_DIR" ] && [ -e "$BACKUP_DIR" ]; then
     mv -T "$BACKUP_DIR" "$RELEASE_DIR"
@@ -195,6 +196,21 @@ if ! mv -T "$STAGE_DIR" "$RELEASE_DIR"; then
 fi
 STAGE_DIR=""
 FINAL_REPLACED=1
+
+"$PYTHON_BIN" -I -B "$REPO_DIR/deploy/clean_release_bytecode.py" \
+  --relocate-venv \
+  --release-dir "$RELEASE_DIR" \
+  --releases-root "$INSTALL_ROOT/releases" \
+  --from-stage "$OLD_STAGE_PATH" \
+  --to-release "$RELEASE_DIR"
+for console_script in eimemory eimemory-qmd pip pip3; do
+  if [ -f "$RELEASE_DIR/.venv/bin/$console_script" ] && \
+     head -n 1 "$RELEASE_DIR/.venv/bin/$console_script" | grep -F "$OLD_STAGE_PATH" >/dev/null; then
+    echo "Virtualenv script still references staging path: $console_script" >&2
+    exit 2
+  fi
+done
+"$RELEASE_DIR/.venv/bin/eimemory" --help >/dev/null
 
 chmod 0755 "$INSTALL_ROOT" 2>/dev/null || true
 _ensure_runtime_dir "$EIMEMORY_ROOT" 0750
