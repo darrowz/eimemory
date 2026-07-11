@@ -14,6 +14,18 @@ const DEFAULT_FAST_CANDIDATE_LIMIT = 24;
 const DEFAULT_HOOK_CACHE_TTL_MS = 10000;
 const DEFAULT_HOOK_TIMEOUT_MS = 8000;
 const DEFAULT_BRIDGE_TIMEOUT_MS = 8000;
+const COMPLETION_GATE_RETRY_KEY = 'eimemory-completion-gate-v1';
+const UNRESOLVED_COMPLETION_MARKERS = [
+  /(?:当前|仍有|剩余|存在|还有).{0,12}(?:验证缺口|系统性缺口|已知问题|待修复|未完成)/i,
+  /(?:验证缺口|known_fixable_issues|verification_gaps).{0,24}(?:尚未|未清零|非零|待|后面|以后|later|pending)/i,
+  /(?:尚未|还没|未能).{0,18}(?:应用|部署|修复|验证|完成)/i,
+  /(?:后面|以后|稍后|下次|later).{0,12}(?:再|处理|修|验证|完成)/i,
+];
+const TRUE_BOUNDARY_MARKERS = [
+  /需要(?:用户|鸿哥|曾总).{0,12}(?:确认|决定|授权|提供|操作)/i,
+  /(?:付费|费用|购买|充值|资金|授权|权限|密钥|凭据|不可逆|删除|发布|外发).{0,18}(?:确认|决定|批准|提供|操作|边界)/i,
+  /(?:external|外部).{0,12}(?:state|状态|coordination|协调|权限|授权)/i,
+];
 const REGISTRATION_STATE_KEY = Symbol.for('eimemory.bridge.registrationState');
 const VISION_BRIDGE_QUERY_MARKERS = [
   '看到了什么',
@@ -733,6 +745,43 @@ function positiveIntEnv(name, fallback) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function hasUnresolvedCompletion(text) {
+  const normalized = String(text || '').trim();
+  if (!normalized || TRUE_BOUNDARY_MARKERS.some((pattern) => pattern.test(normalized))) {
+    return false;
+  }
+  return UNRESOLVED_COMPLETION_MARKERS.some((pattern) => pattern.test(normalized));
+}
+
+function completionGateRevision(event) {
+  if (!hasUnresolvedCompletion(event?.lastAssistantMessage)) {
+    return undefined;
+  }
+  return {
+    action: 'revise',
+    reason: 'Completion Gate: answer still reports a safe, fixable unresolved issue.',
+    retry: {
+      instruction: 'Do not finalize yet. Continue safe in-scope work until known_fixable_issues = 0 and verification_gaps = 0. Only stop for a real user-confirmation, cost, authorization, irreversible-action, external-coordination, or external-state boundary.',
+      idempotencyKey: COMPLETION_GATE_RETRY_KEY,
+      maxAttempts: 1,
+    },
+  };
+}
+
+function completionGateBeforeToolCall(event) {
+  if (String(event?.toolName || '') !== 'message') {
+    return undefined;
+  }
+  const params = event?.params || {};
+  if (String(params.action || '') !== 'send' || !hasUnresolvedCompletion(params.message)) {
+    return undefined;
+  }
+  return {
+    block: true,
+    blockReason: 'Completion Gate：消息仍包含可安全修复的已知缺口。继续修复并完成验证后再发送；只有真实授权、费用、不可逆操作、外部协调或外部状态阻塞可以停止。',
+  };
+}
+
 function positiveIntValue(value, fallback) {
   const parsed = Number(value || 0);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
@@ -969,6 +1018,8 @@ module.exports.default = {
     }
     registerTypedHookOnce(api, 'agent_end', async (event) => safeInvokeHook(api, 'agent_end', event) || {});
     registerTypedHookOnce(api, 'session_end', async (event) => safeInvokeHook(api, 'session_end', event) || {});
+    registerTypedHookOnce(api, 'before_agent_finalize', async (event) => completionGateRevision(event));
+    registerTypedHookOnce(api, 'before_tool_call', async (event) => completionGateBeforeToolCall(event));
   },
 };
 
