@@ -3,7 +3,11 @@ from __future__ import annotations
 from eimemory.api.runtime import Runtime
 from eimemory.experience import record_outcome_trace
 from eimemory.experience.capability_contract import SCHEMA_VERSION as CONTRACT_SCHEMA_VERSION
-from eimemory.governance.capability_acceptance import CAPABILITY_ACCEPTANCE_CASES, run_capability_acceptance
+from eimemory.governance import capability_acceptance
+from eimemory.governance.capability_acceptance import (
+    capability_acceptance_digest,
+    run_capability_acceptance,
+)
 from eimemory.governance.capability_replay_executor import execute_capability_replay_case
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
@@ -205,6 +209,86 @@ def test_runtime_executor_rejects_trace_schema_mismatch_in_content_meta_or_prove
         assert result["reason"] == "outcome_trace_schema_mismatch", location
 
 
+def test_runtime_executor_rejects_probe_input_even_with_synchronized_digest(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        acceptance = run_capability_acceptance(runtime, scope=SCOPE, persist=True)
+        accepted = acceptance["results"][0]
+        probe = runtime.store.get_by_id(accepted["probe_id"], scope=SCOPE)
+        trace = runtime.store.get_by_id(accepted["trace_record_id"], scope=SCOPE)
+        assert probe is not None and trace is not None
+        forged_input = {**probe.content["input"], "recency_window": "forged-window"}
+        forged_digest = capability_acceptance_digest(
+            capability=accepted["capability"],
+            case_id=accepted["case_id"],
+            input_data=forged_input,
+            observation=probe.content["observation"],
+        )
+        probe.content["input"] = forged_input
+        probe.content["digest"] = forged_digest
+        probe.meta["artifact_digest"] = forged_digest
+        probe.provenance["artifact_digest"] = forged_digest
+        trace.content["payload"]["verifier"]["artifact_digest"] = forged_digest
+        runtime.store.append(probe)
+        runtime.store.append(trace)
+
+        result = execute_capability_replay_case(
+            runtime,
+            {"case_id": accepted["case_id"], "target_capability": accepted["capability"], "scope": SCOPE},
+        )
+    finally:
+        runtime.close()
+
+    assert result["verdict"] == "fail"
+    assert result["reason"] == "probe_input_canonical_mismatch"
+
+
+def test_runtime_executor_rejects_wrong_canonical_acceptance_trace_id(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        acceptance = run_capability_acceptance(runtime, scope=SCOPE, persist=True)
+        accepted = acceptance["results"][0]
+        trace = runtime.store.get_by_id(accepted["trace_record_id"], scope=SCOPE)
+        assert trace is not None
+        wrong_trace_id = "capability-acceptance-wrong-execution-wrong-case-wrong-probe"
+        trace.content["payload"]["trace_id"] = wrong_trace_id
+        trace.meta["trace_id"] = wrong_trace_id
+        trace.meta["business_meta"]["trace_id"] = wrong_trace_id
+        trace.provenance["trace_id"] = wrong_trace_id
+        runtime.store.append(trace)
+
+        result = execute_capability_replay_case(
+            runtime,
+            {"case_id": accepted["case_id"], "target_capability": accepted["capability"], "scope": SCOPE},
+        )
+    finally:
+        runtime.close()
+
+    assert result["verdict"] == "fail"
+    assert result["reason"] == "outcome_trace_acceptance_id_mismatch"
+
+
+def test_runtime_executor_rejects_contract_with_probe_false(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        acceptance = run_capability_acceptance(runtime, scope=SCOPE, persist=True)
+        accepted = acceptance["results"][0]
+        trace = runtime.store.get_by_id(accepted["trace_record_id"], scope=SCOPE)
+        assert trace is not None
+        trace.content["payload"]["capability_contract"]["probe"] = False
+        runtime.store.append(trace)
+
+        result = execute_capability_replay_case(
+            runtime,
+            {"case_id": accepted["case_id"], "target_capability": accepted["capability"], "scope": SCOPE},
+        )
+    finally:
+        runtime.close()
+
+    assert result["verdict"] == "fail"
+    assert result["reason"] == "capability_contract_probe_required"
+
+
 def test_runtime_executor_replays_twelve_contract_backed_acceptance_traces(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     try:
@@ -291,36 +375,96 @@ def test_runtime_executor_rejects_text_only_case_evidence(tmp_path) -> None:
     assert {item["verdict"] for item in report["packs"][0]["case_results"]} <= {"not_run", "fail"}
 
 
-def test_runtime_executor_rejects_wrong_case_missing_source_failed_verifier_and_reused_source(tmp_path) -> None:
-    scenarios = (
-        ("wrong-case", "search_recent_source", "search_trending_github", True, False, False),
-        ("missing-source", "search_recent_source", "search_recent_source", True, True, False),
-        ("failed-verifier", "search_recent_source", "search_recent_source", False, False, False),
-        ("reused-source", "search_recent_source", "search_recent_source", True, False, True),
-    )
-    for name, contract_case, replay_case, verifier_passed, cross_scope, reuse_source in scenarios:
-        root = tmp_path / name
-        runtime = Runtime.create(root=root)
-        try:
-            _seed_contract_trace(
-                runtime,
-                scope=SCOPE,
-                case_id=contract_case,
-                verifier_passed=verifier_passed,
-                probe_scope={**SCOPE, "workspace_id": "other-scope"} if cross_scope else SCOPE,
-                trace_text="Recent recency window source trust GitHub trending created range stars verified",
-                duplicate_trace=reuse_source,
-            )
-            case = {
-                "case_id": replay_case,
-                "target_capability": "search.discovery",
-                "scope": SCOPE,
-            }
-            result = execute_capability_replay_case(runtime, case)
-        finally:
-            runtime.close()
+def test_runtime_executor_rejects_wrong_case_contract(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        _seed_contract_trace(
+            runtime,
+            scope=SCOPE,
+            case_id="search_recent_source",
+            verifier_passed=True,
+            probe_scope=SCOPE,
+            trace_text="Recent recency window source trust GitHub trending created range stars verified",
+            duplicate_trace=False,
+        )
+        result = execute_capability_replay_case(
+            runtime,
+            {"case_id": "search_trending_github", "target_capability": "search.discovery", "scope": SCOPE},
+        )
+    finally:
+        runtime.close()
 
-        assert result["verdict"] in {"not_run", "fail"}, name
+    assert result["verdict"] == "not_run"
+    assert result["reason"] == "contract_backed_outcome_evidence_missing"
+
+
+def test_runtime_executor_rejects_probe_missing_from_scope(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        _seed_contract_trace(
+            runtime,
+            scope=SCOPE,
+            case_id="search_recent_source",
+            verifier_passed=True,
+            probe_scope={**SCOPE, "workspace_id": "other-scope"},
+            trace_text="Recent recency window source trust verified",
+            duplicate_trace=False,
+        )
+        result = execute_capability_replay_case(
+            runtime,
+            {"case_id": "search_recent_source", "target_capability": "search.discovery", "scope": SCOPE},
+        )
+    finally:
+        runtime.close()
+
+    assert result["reason"] == "probe_source_unavailable_in_scope"
+    assert result["verdict"] == "not_run"
+
+
+def test_runtime_executor_rejects_failed_verifier(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        _seed_contract_trace(
+            runtime,
+            scope=SCOPE,
+            case_id="search_recent_source",
+            verifier_passed=False,
+            probe_scope=SCOPE,
+            trace_text="Recent recency window source trust verified",
+            duplicate_trace=False,
+        )
+        result = execute_capability_replay_case(
+            runtime,
+            {"case_id": "search_recent_source", "target_capability": "search.discovery", "scope": SCOPE},
+        )
+    finally:
+        runtime.close()
+
+    assert result["verdict"] == "not_run"
+    assert result["reason"] == "contract_backed_outcome_evidence_missing"
+
+
+def test_runtime_executor_rejects_reused_probe_source(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        _seed_contract_trace(
+            runtime,
+            scope=SCOPE,
+            case_id="search_recent_source",
+            verifier_passed=True,
+            probe_scope=SCOPE,
+            trace_text="Recent recency window source trust verified",
+            duplicate_trace=True,
+        )
+        result = execute_capability_replay_case(
+            runtime,
+            {"case_id": "search_recent_source", "target_capability": "search.discovery", "scope": SCOPE},
+        )
+    finally:
+        runtime.close()
+
+    assert result["verdict"] == "fail"
+    assert result["reason"] == "reused_probe_source"
 
 
 def _seed_contract_trace(
@@ -333,8 +477,16 @@ def _seed_contract_trace(
     trace_text: str,
     duplicate_trace: bool,
 ) -> None:
-    artifact = next(item for item in CAPABILITY_ACCEPTANCE_CASES if item["case_id"] == case_id)
+    artifact = capability_acceptance.capability_acceptance_case(case_id)
     probe_id = f"probe-{case_id}"
+    execution_id = "fixture-execution"
+    digest = capability_acceptance_digest(
+        capability=artifact["capability"],
+        case_id=case_id,
+        input_data=artifact["input"],
+        observation=artifact["observation"],
+    )
+    checks = [{"name": "canonical_observation_contract", "passed": True, "evidence_ref": probe_id}]
     probe = RecordEnvelope.create(
         kind="replay_result",
         title=f"Capability acceptance probe: {case_id}",
@@ -344,9 +496,13 @@ def _seed_contract_trace(
         content={
             "report_type": "capability_probe_result",
             "schema_version": "capability_probe_result.v1",
+            "execution_id": execution_id,
             "case_id": case_id,
             "capability": artifact["capability"],
+            "input": dict(artifact["input"]),
+            "checks": checks,
             "observation": dict(artifact["observation"]),
+            "digest": digest,
             "passed": True,
             "verdict": "pass",
             "validator": {"schema_version": CONTRACT_SCHEMA_VERSION, "passed": True, "error": ""},
@@ -354,10 +510,18 @@ def _seed_contract_trace(
         meta={
             "report_type": "capability_probe_result",
             "schema_version": "capability_probe_result.v1",
+            "execution_id": execution_id,
             "case_id": case_id,
             "capability": artifact["capability"],
+            "artifact_digest": digest,
             "passed": True,
             "verdict": "pass",
+        },
+        provenance={
+            "report_type": "capability_probe_result",
+            "schema_version": "capability_probe_result.v1",
+            "execution_id": execution_id,
+            "artifact_digest": digest,
         },
     )
     probe.record_id = probe_id
@@ -367,12 +531,12 @@ def _seed_contract_trace(
         "capability": artifact["capability"],
         "case_id": case_id,
         "observations": dict(artifact["observation"]),
-        "checks": [{"name": "canonical_observation_contract", "passed": True, "evidence_ref": probe_id}],
+        "checks": checks,
         "source_record_ids": [probe_id],
         "probe": True,
     }
     for index in range(2 if duplicate_trace else 1):
-        trace_id = f"trace-{case_id}-{index}"
+        trace_id = f"capability-acceptance-{execution_id}-{case_id}-{probe_id}"
         trace = RecordEnvelope.create(
             kind="reflection",
             title=f"Outcome trace: {trace_id}",
@@ -386,7 +550,12 @@ def _seed_contract_trace(
                     "task_type": "capability.acceptance",
                     "input_summary": trace_text,
                     "outcome": {"status": "success", "success": True, "rehearsal": True},
-                    "verifier": {"passed": verifier_passed, "evidence_ref": probe_id},
+                    "verifier": {
+                        "passed": verifier_passed,
+                        "method": "validate_capability_contract",
+                        "evidence_ref": probe_id,
+                        "artifact_digest": digest,
+                    },
                     "capability": artifact["capability"],
                     "capability_case_id": case_id,
                     "capability_contract": contract,
@@ -401,6 +570,22 @@ def _seed_contract_trace(
                 "capability": artifact["capability"],
                 "capability_case_id": case_id,
                 "contract_verified": True,
+                "business_meta": {
+                    "report_type": "outcome_trace",
+                    "schema_version": "outcome_trace.v1",
+                    "trace_id": trace_id,
+                    "outcome_status": "success",
+                    "primary_label": "success",
+                    "capability": artifact["capability"],
+                    "capability_case_id": case_id,
+                    "contract_verified": True,
+                },
+            },
+            provenance={
+                "report_type": "outcome_trace",
+                "schema_version": "outcome_trace.v1",
+                "trace_id": trace_id,
+                "idempotency_key": f"fixture-{case_id}-{index}",
             },
         )
         runtime.store.append(trace)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import asdict
 from hashlib import sha256
 import json
@@ -19,7 +20,7 @@ PROBE_REPORT_TYPE = "capability_probe_result"
 PROBE_SCHEMA_VERSION = "capability_probe_result.v1"
 
 
-CAPABILITY_ACCEPTANCE_CASES: tuple[dict[str, Any], ...] = (
+_CAPABILITY_ACCEPTANCE_CASES: tuple[dict[str, Any], ...] = (
     {
         "case_id": "search_recent_source",
         "capability": "search.discovery",
@@ -107,6 +108,18 @@ CAPABILITY_ACCEPTANCE_CASES: tuple[dict[str, Any], ...] = (
     },
 )
 
+CAPABILITY_ACCEPTANCE_CASE_IDS: tuple[str, ...] = tuple(
+    str(artifact["case_id"]) for artifact in _CAPABILITY_ACCEPTANCE_CASES
+)
+
+
+def capability_acceptance_case(case_id: str) -> dict[str, Any]:
+    expected = str(case_id or "").strip()
+    for artifact in _CAPABILITY_ACCEPTANCE_CASES:
+        if str(artifact.get("case_id") or "") == expected:
+            return deepcopy(artifact)
+    return {}
+
 
 def run_capability_acceptance(
     runtime: Any,
@@ -121,7 +134,8 @@ def run_capability_acceptance(
     persisted_probe_ids: list[str] = []
     trace_record_ids: list[str] = []
 
-    for artifact in CAPABILITY_ACCEPTANCE_CASES:
+    for case_id in CAPABILITY_ACCEPTANCE_CASE_IDS:
+        artifact = capability_acceptance_case(case_id)
         result = _run_probe(
             runtime,
             artifact=artifact,
@@ -137,16 +151,16 @@ def run_capability_acceptance(
 
     probe_ids = [str(item["probe_id"]) for item in results]
     trace_ids = [str(item["trace_id"]) for item in results]
-    distinct_probe_sources = len(probe_ids) == len(set(probe_ids)) == len(CAPABILITY_ACCEPTANCE_CASES)
-    distinct_trace_ids = len(trace_ids) == len(set(trace_ids)) == len(CAPABILITY_ACCEPTANCE_CASES)
+    distinct_probe_sources = len(probe_ids) == len(set(probe_ids)) == len(CAPABILITY_ACCEPTANCE_CASE_IDS)
+    distinct_trace_ids = len(trace_ids) == len(set(trace_ids)) == len(CAPABILITY_ACCEPTANCE_CASE_IDS)
     pass_count = sum(1 for item in results if item["passed"])
     failed_count = len(results) - pass_count
     all_passed = (
-        len(results) == len(CAPABILITY_ACCEPTANCE_CASES)
+        len(results) == len(CAPABILITY_ACCEPTANCE_CASE_IDS)
         and failed_count == 0
         and distinct_probe_sources
         and distinct_trace_ids
-        and (not persist or len(trace_record_ids) == len(CAPABILITY_ACCEPTANCE_CASES))
+        and (not persist or len(trace_record_ids) == len(CAPABILITY_ACCEPTANCE_CASE_IDS))
     )
     return {
         "ok": all_passed,

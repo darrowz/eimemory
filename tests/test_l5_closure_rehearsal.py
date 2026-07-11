@@ -13,12 +13,7 @@ SCOPE = {"agent_id": "hongtu", "workspace_id": "l5-closure", "user_id": "darrow"
 def test_l5_closure_rehearsal_opens_success_skill_and_rollback_metrics(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     try:
-        runtime.run_capability_replay_case = lambda case: {
-            "verdict": "pass",
-            "hit": True,
-            "observed": f"verified:{case['case_id']}",
-            "evidence_source_id": f"test:{case['case_id']}",
-        }
+        runtime.run_capability_acceptance(scope=SCOPE, persist=True)
         before = runtime.build_capability_dashboard_metrics(scope=SCOPE, persist=False)
         assert before["metrics"]["task_success_rate"] == 0.0
         assert before["metrics"]["skill_reuse_count"] == 0
@@ -52,7 +47,7 @@ def test_l5_closure_rehearsal_opens_success_skill_and_rollback_metrics(tmp_path)
             for gap in report["l5_readiness"]["capability_gaps"]
             if gap["capability"] in {"search.discovery", "research.synthesis", "operations.uumit", "device.control"}
         }
-        assert weak_gaps == {"search.discovery", "research.synthesis", "operations.uumit", "device.control"}
+        assert weak_gaps == set()
     finally:
         runtime.close()
 

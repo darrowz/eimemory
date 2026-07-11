@@ -14,6 +14,7 @@ from eimemory.experience.outcome import SCHEMA_VERSION as OUTCOME_TRACE_SCHEMA_V
 from eimemory.governance.capability_acceptance import (
     PROBE_REPORT_TYPE,
     PROBE_SCHEMA_VERSION,
+    capability_acceptance_case,
     capability_acceptance_digest,
 )
 from eimemory.governance.capability_attribution import collect_capability_evidence
@@ -165,6 +166,11 @@ def _validate_contract_chain(
     )
     if contract_error:
         return _failure("fail", "invalid_capability_contract", trace_id=trace_id, trace_record_id=trace_record_id)
+    canonical_artifact = capability_acceptance_case(case_id)
+    if not canonical_artifact or str(canonical_artifact.get("capability") or "") != capability:
+        return _failure("fail", "unknown_capability_acceptance_case", trace_id=trace_id, trace_record_id=trace_record_id)
+    if contract.get("probe") is not True:
+        return _failure("fail", "capability_contract_probe_required", trace_id=trace_id, trace_record_id=trace_record_id)
     if (
         trace_meta.get("contract_verified") is not True
         or str(trace_meta.get("capability") or "") != capability
@@ -202,6 +208,14 @@ def _validate_contract_chain(
         return _failure(
             "fail",
             "outcome_verifier_probe_mismatch",
+            trace_id=trace_id,
+            trace_record_id=trace_record_id,
+            probe_source_id=probe_source_id,
+        )
+    if str(verifier.get("method") or "") != "validate_capability_contract":
+        return _failure(
+            "fail",
+            "outcome_verifier_method_mismatch",
             trace_id=trace_id,
             trace_record_id=trace_record_id,
             probe_source_id=probe_source_id,
@@ -270,6 +284,15 @@ def _validate_contract_chain(
             trace_record_id=trace_record_id,
             probe_source_id=probe_source_id,
         )
+    expected_trace_id = f"capability-acceptance-{execution_id}-{case_id}-{probe_source_id}"
+    if trace_id != expected_trace_id:
+        return _failure(
+            "fail",
+            "outcome_trace_acceptance_id_mismatch",
+            trace_id=trace_id,
+            trace_record_id=trace_record_id,
+            probe_source_id=probe_source_id,
+        )
     probe_checks = probe_content.get("checks") if isinstance(probe_content.get("checks"), list) else []
     if not probe_checks or any(
         not isinstance(check, dict)
@@ -286,19 +309,26 @@ def _validate_contract_chain(
         )
 
     observation = probe_content.get("observation")
-    if not isinstance(observation, dict) or observation != contract.get("observations"):
+    canonical_observation = canonical_artifact.get("observation")
+    if (
+        not isinstance(observation, dict)
+        or not isinstance(canonical_observation, dict)
+        or observation != canonical_observation
+        or observation != contract.get("observations")
+    ):
         return _failure(
             "fail",
-            "probe_observation_contract_mismatch",
+            "probe_observation_canonical_mismatch",
             trace_id=trace_id,
             trace_record_id=trace_record_id,
             probe_source_id=probe_source_id,
         )
     input_data = probe_content.get("input")
-    if not isinstance(input_data, dict):
+    canonical_input = canonical_artifact.get("input")
+    if not isinstance(input_data, dict) or not isinstance(canonical_input, dict) or input_data != canonical_input:
         return _failure(
             "fail",
-            "probe_input_missing",
+            "probe_input_canonical_mismatch",
             trace_id=trace_id,
             trace_record_id=trace_record_id,
             probe_source_id=probe_source_id,
@@ -306,8 +336,8 @@ def _validate_contract_chain(
     expected_digest = capability_acceptance_digest(
         capability=capability,
         case_id=case_id,
-        input_data=input_data,
-        observation=observation,
+        input_data=canonical_input,
+        observation=canonical_observation,
     )
     if (
         str(probe_content.get("digest") or "") != expected_digest

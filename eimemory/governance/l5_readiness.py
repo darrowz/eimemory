@@ -44,7 +44,7 @@ def build_l5_readiness_report(
     verified_replay = _verified_replay_summary(runtime, scope=scope_ref, limit=limit)
     latest_l5_assessment = _latest_l5_assessment(runtime, scope=scope_ref)
     weak_outcome_evidence = _weak_outcome_evidence(runtime, scope=scope_ref, limit=limit)
-    capability_gaps = _capability_gaps(ledger)
+    capability_gaps = _capability_gaps(ledger, weak_outcome_evidence=weak_outcome_evidence)
     stage = _stage_for(
         ledger,
         hard_metrics,
@@ -344,14 +344,27 @@ def _record_field(record: Any, key: str) -> Any:
     return None
 
 
-def _capability_gaps(ledger: dict[str, Any]) -> list[dict[str, Any]]:
+def _capability_gaps(
+    ledger: dict[str, Any],
+    *,
+    weak_outcome_evidence: dict[str, Any],
+) -> list[dict[str, Any]]:
     capabilities = dict(ledger.get("capabilities") or {})
+    weak_outcome_counts = (
+        weak_outcome_evidence.get("counts")
+        if isinstance(weak_outcome_evidence.get("counts"), dict)
+        else {}
+    )
     gaps = []
     for name in READINESS_CAPABILITIES:
         item = dict(capabilities.get(name) or {})
         score = float(item.get("score") or 0.0)
         evidence_count = int(item.get("evidence_count") or 0)
-        outcome_count = _outcome_evidence_count(item)
+        outcome_count = (
+            int(weak_outcome_counts.get(name) or 0)
+            if name in WEAK_CAPABILITIES
+            else _outcome_evidence_count(item)
+        )
         if name in WEAK_CAPABILITIES and outcome_count < 3:
             gaps.append(
                 {

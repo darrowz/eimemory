@@ -32,7 +32,7 @@ def _outcome_records(runtime: Runtime) -> list:
 
 
 def test_public_acceptance_digest_preserves_canonical_artifact_hash() -> None:
-    artifact = capability_acceptance.CAPABILITY_ACCEPTANCE_CASES[0]
+    artifact = capability_acceptance.capability_acceptance_case("search_recent_source")
 
     digest = capability_acceptance.capability_acceptance_digest(
         capability=artifact["capability"],
@@ -42,6 +42,18 @@ def test_public_acceptance_digest_preserves_canonical_artifact_hash() -> None:
     )
 
     assert digest == "ebad46fc05e2393d772072ee687c07f4eedf897322f2baba596d6fe1c5d2be2e"
+
+
+def test_public_acceptance_case_returns_read_only_deep_copy() -> None:
+    first = capability_acceptance.capability_acceptance_case("search_recent_source")
+    first["input"]["recency_window"] = "forged"
+    first["observation"]["source_verified"] = False
+
+    second = capability_acceptance.capability_acceptance_case("search_recent_source")
+
+    assert second["input"]["recency_window"] == "30d"
+    assert second["observation"]["source_verified"] is True
+    assert capability_acceptance.capability_acceptance_case("unknown-case") == {}
 
 
 def test_acceptance_runs_all_twelve_cases_with_distinct_linked_probe_sources(tmp_path) -> None:

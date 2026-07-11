@@ -329,6 +329,14 @@ def test_l5_readiness_rejects_legacy_ledger_outcomes_without_verified_contracts(
 
     assert report["weak_outcome_evidence"]["counts"] == {capability: 0 for capability in sorted(WEAK_CAPABILITIES)}
     assert report["weak_outcome_evidence"]["missing"] == sorted(WEAK_CAPABILITIES)
+    weak_gaps = {
+        gap["capability"]: gap
+        for gap in report["capability_gaps"]
+        if gap["capability"] in WEAK_CAPABILITIES
+    }
+    assert set(weak_gaps) == WEAK_CAPABILITIES
+    assert {gap["outcome_evidence_count"] for gap in weak_gaps.values()} == {0}
+    assert {gap["reason"] for gap in weak_gaps.values()} == {"insufficient_attributed_outcome_evidence"}
     assert report["current_stage"] != "L5"
 
 
