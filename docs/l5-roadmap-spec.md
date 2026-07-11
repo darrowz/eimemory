@@ -183,6 +183,9 @@ Next implementation steps:
 
 - A capability replay pass requires `hit=true`, a non-empty observation, and a
   distinct `evidence_source_id` from a verified outcome trace.
+- Every replay invocation persists a distinct execution batch. Readiness uses
+  only the latest execution for each capability/case, so a fixed regression can
+  recover and an old pass cannot mask a new failure.
 - Weak-capability replay cases are case-specific. Generic success outcomes do
   not satisfy search, research, UUMit, or device acceptance checks.
 - `not_run` replay records remain visible for diagnostics but do not enter L4

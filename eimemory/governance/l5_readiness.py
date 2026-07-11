@@ -165,10 +165,7 @@ def _policy_rollback_count(runtime: Any, *, scope: ScopeRef, limit: int) -> int:
 
 
 def _verified_replay_summary(runtime: Any, *, scope: ScopeRef, limit: int) -> dict[str, Any]:
-    try:
-        records = runtime.store.list_records(kinds=["replay_result"], scope=scope, limit=max(1, int(limit)))
-    except Exception:
-        records = []
+    records = _capability_replay_records(runtime, scope=scope, limit=limit)
     by_capability = {
         capability: {
             "executed_count": 0,
@@ -184,7 +181,7 @@ def _verified_replay_summary(runtime: Any, *, scope: ScopeRef, limit: int) -> di
     pass_count = 0
     fail_count = 0
     not_run_count = 0
-    for record in records:
+    for record in _latest_capability_case_records(records):
         verdict = str(_record_field(record, "verdict") or "").strip().lower()
         capability = str(_record_field(record, "capability") or _record_field(record, "target_capability") or "").strip()
         report_type = str(_record_field(record, "report_type") or "").strip()
@@ -237,6 +234,54 @@ def _verified_replay_summary(runtime: Any, *, scope: ScopeRef, limit: int) -> di
         "by_capability": by_capability,
         "weak_capabilities_missing": weak_capabilities_missing,
     }
+
+
+def _capability_replay_records(runtime: Any, *, scope: ScopeRef, limit: int) -> list[Any]:
+    budget = max(1, int(limit))
+    lookup = getattr(runtime.store, "list_records_by_meta_value", None)
+    if callable(lookup):
+        try:
+            records = lookup(
+                kinds=["replay_result"],
+                scope=scope,
+                meta_key="report_type",
+                meta_value="capability_replay_pack",
+                limit=budget,
+            )
+            if records is not None:
+                return list(records)
+        except Exception:
+            pass
+    try:
+        return list(runtime.store.list_records(kinds=["replay_result"], scope=scope, limit=budget))
+    except Exception:
+        return []
+
+
+def _latest_capability_case_records(records: list[Any]) -> list[Any]:
+    latest: dict[tuple[str, str], tuple[tuple[str, str, str], Any]] = {}
+    for record in records:
+        report_type = str(_record_field(record, "report_type") or "").strip()
+        source = str(record.get("source", "") if isinstance(record, dict) else getattr(record, "source", "") or "").strip()
+        if report_type != "capability_replay_pack" or source != "eimemory.capability_replay":
+            continue
+        capability = str(_record_field(record, "capability") or _record_field(record, "target_capability") or "").strip()
+        case_id = str(_record_field(record, "case_id") or "").strip()
+        record_id = str(record.get("record_id", "") if isinstance(record, dict) else getattr(record, "record_id", "") or "")
+        if not case_id:
+            case_id = record_id
+        record_time = getattr(record, "time", None)
+        fallback_time = str(getattr(record_time, "updated_at", "") or getattr(record_time, "created_at", "") or "")
+        sort_key = (
+            str(_record_field(record, "executed_at") or fallback_time),
+            str(_record_field(record, "execution_id") or ""),
+            record_id,
+        )
+        key = (capability, case_id)
+        current = latest.get(key)
+        if current is None or sort_key > current[0]:
+            latest[key] = (sort_key, record)
+    return [item[1] for item in latest.values()]
 
 
 def _latest_l5_assessment(runtime: Any, *, scope: ScopeRef) -> dict[str, Any]:

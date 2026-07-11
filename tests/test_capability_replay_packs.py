@@ -227,6 +227,44 @@ def test_runtime_executor_accepts_verified_chinese_case_evidence(tmp_path) -> No
     assert report["packs"][0]["pass_rate"] == 1.0
 
 
+def test_replay_rerun_persists_new_execution_and_readiness_uses_latest(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    runtime.run_capability_replay_case = lambda case: {  # type: ignore[attr-defined]
+        "verdict": "pass",
+        "hit": True,
+        "observed": f"verified:{case['case_id']}",
+        "evidence_source_id": f"first:{case['case_id']}",
+    }
+    try:
+        first = runtime.build_capability_replay_packs(
+            scope=SCOPE,
+            persist=True,
+            capabilities=["search.discovery"],
+            loop_id="stable-replay-loop",
+        )
+        runtime.run_capability_replay_case = lambda case: {  # type: ignore[attr-defined]
+            "verdict": "fail",
+            "hit": False,
+            "observed": f"failed:{case['case_id']}",
+            "reason": "regression_detected",
+        }
+        second = runtime.build_capability_replay_packs(
+            scope=SCOPE,
+            persist=True,
+            capabilities=["search.discovery"],
+            loop_id="stable-replay-loop",
+        )
+        readiness = runtime.build_l5_readiness_report(scope=SCOPE)
+    finally:
+        runtime.close()
+
+    assert first["execution_id"] != second["execution_id"]
+    assert set(first["persisted_replay_ids"]).isdisjoint(second["persisted_replay_ids"])
+    assert readiness["verified_replay"]["executed_count"] == 3
+    assert readiness["verified_replay"]["pass_count"] == 0
+    assert readiness["verified_replay"]["fail_count"] == 3
+
+
 def _install_successful_executor(runtime: Runtime) -> None:
     def executor(case):
         return {

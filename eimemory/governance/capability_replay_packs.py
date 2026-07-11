@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from datetime import datetime, timezone
 from typing import Any
 
+from eimemory.core.ids import generate_record_id
 from eimemory.governance.capability_ledger import record_capability_score
 from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.models.records import ScopeRef
@@ -27,6 +29,8 @@ def build_capability_replay_packs(
 ) -> dict[str, Any]:
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
     selected = _dedupe(capabilities or CORE_REPLAY_CAPABILITIES)
+    execution_id = generate_record_id("replay_result")
+    executed_at = datetime.now(timezone.utc).astimezone().isoformat(timespec="microseconds")
     packs: list[dict[str, Any]] = []
     persisted_replay_ids: list[str] = []
     score_record_ids: list[str] = []
@@ -50,12 +54,14 @@ def build_capability_replay_packs(
                     scope=scope_ref,
                     loop_id=loop_id,
                     step_name="capability_replay",
-                    semantic_key=stable_semantic_key("capability_replay", capability, case["case_id"]),
+                    semantic_key=stable_semantic_key("capability_replay", capability, case["case_id"], execution_id),
                     authority_tier="L0",
                     status="active",
                     content={
                         "report_type": "capability_replay_pack",
                         "capability": capability,
+                        "execution_id": execution_id,
+                        "executed_at": executed_at,
                         "case": case,
                         "result": result,
                         "verdict": result["verdict"],
@@ -66,6 +72,8 @@ def build_capability_replay_packs(
                         "report_type": "capability_replay_pack",
                         "capability": capability,
                         "case_id": case["case_id"],
+                        "execution_id": execution_id,
+                        "executed_at": executed_at,
                         "verdict": result["verdict"],
                         "pass_rate": 1.0 if result["verdict"] == "pass" else 0.0,
                         "hit": result.get("hit"),
@@ -109,6 +117,8 @@ def build_capability_replay_packs(
         "ok": True,
         "report_type": "capability_replay_packs",
         "scope": asdict(scope_ref),
+        "execution_id": execution_id,
+        "executed_at": executed_at,
         "capabilities": selected,
         "pack_count": len(packs),
         "case_count": sum(len(pack["cases"]) for pack in packs),
