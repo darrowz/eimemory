@@ -68,10 +68,20 @@ def test_capability_replay_packs_are_queryable_as_replay_results(tmp_path) -> No
         )
 
         records = runtime.store.list_records(kinds=["replay_result"], scope=SCOPE, limit=20)
-        assert len(records) == report["case_count"]
-        assert {record.meta["report_type"] for record in records} == {"capability_replay_pack"}
-        assert {record.meta["capability"] for record in records} == {"memory.recall"}
-        assert {record.meta["verdict"] for record in records} == {"not_run"}
+        assert len(records) == report["case_count"] + 1
+        case_records = [record for record in records if record.meta["report_type"] == "capability_replay_pack"]
+        manifest = next(record for record in records if record.meta["report_type"] == "capability_replay_manifest")
+        assert {record.meta["capability"] for record in case_records} == {"memory.recall"}
+        assert {record.meta["verdict"] for record in case_records} == {"not_run"}
+        assert report["manifest_record_id"] == manifest.record_id
+        assert manifest.content["schema_version"] == "capability_replay_manifest.v1"
+        assert manifest.content["execution_id"] == report["execution_id"]
+        assert manifest.content["complete"] is True
+        assert manifest.content["member_record_ids"] == {"memory.recall": report["persisted_replay_ids"]}
+        assert manifest.content["expected_case_ids"] == {
+            "memory.recall": ["recall_version_truth", "recall_low_score_root_cause", "recall_graph_route"]
+        }
+        assert manifest.provenance["manifest_digest"] == manifest.content["manifest_digest"]
     finally:
         runtime.close()
 

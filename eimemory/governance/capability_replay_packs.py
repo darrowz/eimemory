@@ -2,13 +2,15 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from datetime import datetime, timezone
+from hashlib import sha256
+import json
 from typing import Any
 
 from eimemory.core.ids import generate_record_id
 from eimemory.governance.capability_ledger import record_capability_score
 from eimemory.governance.capability_replay_executor import validate_capability_replay_result
 from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
-from eimemory.models.records import ScopeRef
+from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
 CORE_REPLAY_CAPABILITIES = [
@@ -18,6 +20,8 @@ CORE_REPLAY_CAPABILITIES = [
     "proactive.judgment",
     "safety.boundary",
 ]
+MANIFEST_REPORT_TYPE = "capability_replay_manifest"
+MANIFEST_SCHEMA_VERSION = "capability_replay_manifest.v1"
 
 
 def build_capability_replay_packs(
@@ -32,12 +36,46 @@ def build_capability_replay_packs(
     selected = _dedupe(capabilities or CORE_REPLAY_CAPABILITIES)
     execution_id = generate_record_id("replay_result")
     executed_at = datetime.now(timezone.utc).astimezone().isoformat(timespec="microseconds")
+    cases_by_capability = {capability: _cases_for_capability(capability) for capability in selected}
+    sequence_by_capability = _next_manifest_sequences(runtime, scope=scope_ref, capabilities=selected)
     packs: list[dict[str, Any]] = []
     persisted_replay_ids: list[str] = []
+    member_record_ids: dict[str, list[str]] = {}
+    expected_case_ids = {
+        capability: [str(case["case_id"]) for case in cases]
+        for capability, cases in cases_by_capability.items()
+    }
     score_record_ids: list[str] = []
+    manifest = None
+    if persist:
+        initial_payload = _manifest_payload(
+            execution_id=execution_id,
+            executed_at=executed_at,
+            capabilities=selected,
+            sequence_by_capability=sequence_by_capability,
+            expected_case_ids=expected_case_ids,
+            member_record_ids={capability: [] for capability in selected},
+            member_digests={capability: {} for capability in selected},
+            complete=False,
+        )
+        manifest_record = RecordEnvelope.create(
+            kind="replay_result",
+            title=f"Capability replay manifest: {execution_id}",
+            summary="Replay batch started; incomplete until every declared case is persisted.",
+            scope=scope_ref,
+            source="eimemory.capability_replay",
+            status="candidate",
+            content=initial_payload,
+            meta=_manifest_metadata(initial_payload),
+            provenance=_manifest_metadata(initial_payload),
+        )
+        manifest_record.time.created_at = executed_at
+        manifest_record.time.updated_at = executed_at
+        manifest_record.time.occurred_at = executed_at
+        manifest = runtime.store.append(manifest_record)
 
     for capability in selected:
-        cases = _cases_for_capability(capability)
+        cases = cases_by_capability[capability]
         replay_ids: list[str] = []
         case_results: list[dict[str, Any]] = []
         for evidence_index, case in enumerate(cases):
@@ -93,6 +131,7 @@ def build_capability_replay_packs(
                 )
                 replay_ids.append(record.record_id)
                 persisted_replay_ids.append(record.record_id)
+        member_record_ids[capability] = list(replay_ids)
         pass_count = sum(1 for item in case_results if item["verdict"] == "pass")
         pass_rate = round(pass_count / len(case_results), 3) if case_results else 0.0
         score = _score_for(capability, pass_rate)
@@ -107,8 +146,20 @@ def build_capability_replay_packs(
                 evidence_record_ids=replay_ids,
                 evidence_tiers=["T1", "T2"],
                 evidence_sources=["capability_replay_pack"],
-                meta={"kind": "capability_replay_pack", "pass_rate": pass_rate},
+                meta={
+                    "kind": "capability_replay_pack",
+                    "pass_rate": pass_rate,
+                    "manifest_record_id": manifest.record_id if manifest is not None else "",
+                    "replay_execution_id": execution_id,
+                    "manifest_sequence": sequence_by_capability[capability],
+                },
             )
+            score_record = runtime.store.get_by_id(score_id, scope=scope_ref)
+            if score_record is not None:
+                score_record.time.created_at = executed_at
+                score_record.time.updated_at = executed_at
+                score_record.time.occurred_at = executed_at
+                runtime.store.rewrite(score_record)
             score_record_ids.append(score_id)
         packs.append(
             {
@@ -123,6 +174,36 @@ def build_capability_replay_packs(
                 "rollback_plan": {"command": "eimemory learn ledger --limit 20"},
             }
         )
+    manifest_record_id = manifest.record_id if manifest is not None else ""
+    if manifest is not None:
+        member_digests = {
+            capability: {
+                member_id: capability_replay_member_digest(runtime.store.get_by_id(member_id, scope=scope_ref))
+                for member_id in member_record_ids.get(capability) or []
+            }
+            for capability in selected
+        }
+        manifest_payload = _manifest_payload(
+            execution_id=execution_id,
+            executed_at=executed_at,
+            capabilities=selected,
+            sequence_by_capability=sequence_by_capability,
+            expected_case_ids=expected_case_ids,
+            member_record_ids=member_record_ids,
+            member_digests=member_digests,
+            complete=all(
+                len(member_record_ids.get(capability) or []) == len(expected_case_ids.get(capability) or [])
+                for capability in selected
+            ),
+        )
+        manifest.content = manifest_payload
+        manifest.meta = _manifest_metadata(manifest_payload)
+        manifest.provenance = _manifest_metadata(manifest_payload)
+        manifest.evidence = list(persisted_replay_ids)
+        manifest.status = "active" if manifest_payload["complete"] else "blocked"
+        manifest.summary = f"Manifest for {len(selected)} capability replay packs; complete={manifest_payload['complete']}."
+        manifest.time.updated_at = datetime.now(timezone.utc).astimezone().isoformat(timespec="microseconds")
+        runtime.store.rewrite(manifest)
     return {
         "ok": True,
         "report_type": "capability_replay_packs",
@@ -134,9 +215,180 @@ def build_capability_replay_packs(
         "case_count": sum(len(pack["cases"]) for pack in packs),
         "persisted_replay_count": len(persisted_replay_ids),
         "persisted_replay_ids": persisted_replay_ids,
+        "manifest_record_id": manifest_record_id,
         "score_record_ids": score_record_ids,
         "packs": packs,
     }
+
+
+def capability_replay_manifest_digest(payload: dict[str, Any]) -> str:
+    canonical = {
+        key: payload.get(key)
+        for key in (
+            "schema_version",
+            "report_type",
+            "execution_id",
+            "executed_at",
+            "capabilities",
+            "sequence_by_capability",
+            "expected_case_ids",
+            "member_record_ids",
+            "member_digests",
+            "complete",
+        )
+    }
+    encoded = json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def capability_replay_case_ids(capability: str) -> list[str]:
+    return [str(case["case_id"]) for case in _cases_for_capability(capability)]
+
+
+def capability_replay_member_digest(record: RecordEnvelope | None) -> str:
+    if record is None:
+        return ""
+    payload = {
+        "record_id": record.record_id,
+        "kind": record.kind,
+        "status": record.status,
+        "source": record.source,
+        "content": record.content,
+        "meta": record.meta,
+        "provenance": record.provenance,
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _manifest_payload(
+    *,
+    execution_id: str,
+    executed_at: str,
+    capabilities: list[str],
+    sequence_by_capability: dict[str, int],
+    expected_case_ids: dict[str, list[str]],
+    member_record_ids: dict[str, list[str]],
+    member_digests: dict[str, dict[str, str]],
+    complete: bool,
+) -> dict[str, Any]:
+    payload = {
+        "schema_version": MANIFEST_SCHEMA_VERSION,
+        "report_type": MANIFEST_REPORT_TYPE,
+        "execution_id": execution_id,
+        "executed_at": executed_at,
+        "capabilities": list(capabilities),
+        "sequence_by_capability": {key: int(value) for key, value in sequence_by_capability.items()},
+        "expected_case_ids": {key: list(value) for key, value in expected_case_ids.items()},
+        "member_record_ids": {key: list(value) for key, value in member_record_ids.items()},
+        "member_digests": {key: dict(value) for key, value in member_digests.items()},
+        "complete": bool(complete),
+    }
+    payload["manifest_digest"] = capability_replay_manifest_digest(payload)
+    return payload
+
+
+def _manifest_metadata(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "schema_version": MANIFEST_SCHEMA_VERSION,
+        "report_type": MANIFEST_REPORT_TYPE,
+        "execution_id": str(payload.get("execution_id") or ""),
+        "manifest_digest": str(payload.get("manifest_digest") or ""),
+        "complete": payload.get("complete") is True,
+    }
+
+
+def _next_manifest_sequences(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    capabilities: list[str],
+) -> dict[str, int]:
+    maxima = capability_replay_log_high_water(runtime, scope=scope, capabilities=capabilities)
+    lookup = getattr(runtime.store, "list_records_by_meta_value", None)
+    try:
+        records = (
+            lookup(
+                kinds=["replay_result"],
+                scope=scope,
+                meta_key="report_type",
+                meta_value=MANIFEST_REPORT_TYPE,
+                limit=500,
+            )
+            if callable(lookup)
+            else runtime.store.list_records(kinds=["replay_result"], scope=scope, limit=500)
+        )
+    except Exception:
+        records = []
+    for record in records:
+        if record.source != "eimemory.capability_replay" or record.meta.get("report_type") != MANIFEST_REPORT_TYPE:
+            continue
+        sequences = record.content.get("sequence_by_capability") if isinstance(record.content.get("sequence_by_capability"), dict) else {}
+        for capability in maxima:
+            try:
+                maxima[capability] = max(maxima[capability], int(sequences.get(capability) or 0))
+            except (TypeError, ValueError):
+                continue
+    return {capability: value + 1 for capability, value in maxima.items()}
+
+
+def capability_replay_log_high_water(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    capabilities: list[str] | set[str],
+) -> dict[str, int]:
+    state = capability_replay_log_sequence_state(runtime, scope=scope, capabilities=capabilities)
+    return {capability: int(value["sequence"]) for capability, value in state.items()}
+
+
+def capability_replay_log_sequence_state(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    capabilities: list[str] | set[str],
+) -> dict[str, dict[str, Any]]:
+    state = {
+        str(capability): {"sequence": 0, "manifest_record_ids": set()}
+        for capability in capabilities
+    }
+    log = getattr(runtime.store, "log", None)
+    path = getattr(log, "path", None)
+    if path is None:
+        return state
+    expected_scope = asdict(scope)
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                try:
+                    payload = json.loads(line)
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                if not isinstance(payload, dict) or payload.get("scope") != expected_scope:
+                    continue
+                if payload.get("kind") != "replay_result" or payload.get("source") != "eimemory.capability_replay":
+                    continue
+                meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
+                content = payload.get("content") if isinstance(payload.get("content"), dict) else {}
+                if meta.get("report_type") != MANIFEST_REPORT_TYPE:
+                    continue
+                sequences = content.get("sequence_by_capability") if isinstance(content.get("sequence_by_capability"), dict) else {}
+                manifest_record_id = str(payload.get("record_id") or "").strip()
+                for capability in state:
+                    try:
+                        sequence = int(sequences.get(capability) or 0)
+                    except (TypeError, ValueError):
+                        continue
+                    if sequence > int(state[capability]["sequence"]):
+                        state[capability] = {
+                            "sequence": sequence,
+                            "manifest_record_ids": {manifest_record_id} if manifest_record_id else set(),
+                        }
+                    elif sequence == int(state[capability]["sequence"]) and sequence > 0 and manifest_record_id:
+                        state[capability]["manifest_record_ids"].add(manifest_record_id)
+    except OSError:
+        return state
+    return state
 
 
 def _cases_for_capability(capability: str) -> list[dict[str, Any]]:

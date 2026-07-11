@@ -1,12 +1,21 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from eimemory.core.clock import now_iso
 from eimemory.governance.capability_attribution import collect_capability_evidence
 from eimemory.governance.capability_ledger import build_capability_ledger
 from eimemory.governance.capability_replay_executor import validate_capability_replay_result
+from eimemory.governance.capability_replay_packs import (
+    MANIFEST_REPORT_TYPE,
+    MANIFEST_SCHEMA_VERSION,
+    capability_replay_case_ids,
+    capability_replay_log_sequence_state,
+    capability_replay_manifest_digest,
+    capability_replay_member_digest,
+)
 from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.governance.rollout_lifecycle import is_executed_rollback_ledger_record
 from eimemory.models.records import ScopeRef
@@ -169,6 +178,11 @@ def _policy_rollback_count(runtime: Any, *, scope: ScopeRef, limit: int) -> int:
 
 def _verified_replay_summary(runtime: Any, *, scope: ScopeRef, limit: int) -> dict[str, Any]:
     records = _capability_replay_records(runtime, scope=scope, limit=limit)
+    selected_records, manifest_record_ids, manifest_rejection_reasons = _latest_manifest_case_records(
+        runtime,
+        scope=scope,
+        limit=limit,
+    )
     by_capability = {
         capability: {
             "executed_count": 0,
@@ -184,8 +198,16 @@ def _verified_replay_summary(runtime: Any, *, scope: ScopeRef, limit: int) -> di
     pass_count = 0
     fail_count = 0
     not_run_count = 0
+    observed_executed_count = sum(
+        1
+        for record in records
+        if str(record.get("source", "") if isinstance(record, dict) else getattr(record, "source", "") or "").strip()
+        == "eimemory.capability_replay"
+        and str(_record_field(record, "report_type") or "").strip() == "capability_replay_pack"
+        and str(_record_field(record, "verdict") or "").strip().lower() in {"pass", "fail"}
+    )
     rejection_reasons: dict[str, int] = {}
-    for record in _latest_capability_case_records(records):
+    for record in selected_records:
         content = record.get("content") if isinstance(record, dict) else getattr(record, "content", None)
         content = content if isinstance(content, dict) else {}
         persisted_result = content.get("result") if isinstance(content.get("result"), dict) else {}
@@ -198,6 +220,9 @@ def _verified_replay_summary(runtime: Any, *, scope: ScopeRef, limit: int) -> di
         hit = persisted_result.get("hit") if "hit" in persisted_result else _record_field(record, "hit")
         trusted_replay = report_type == "capability_replay_pack" and source == "eimemory.capability_replay"
         if not trusted_replay:
+            continue
+        bucket = by_capability.get(capability)
+        if bucket is None:
             continue
         evidence_source_id = str(persisted_result.get("evidence_source_id") or "").strip()
         if verdict == "pass":
@@ -212,22 +237,18 @@ def _verified_replay_summary(runtime: Any, *, scope: ScopeRef, limit: int) -> di
                 verdict = "fail"
                 reason = str(validation.get("reason") or "invalid_contract_replay_result")
                 rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
-        bucket = by_capability.get(capability)
         if verdict == "pass":
             pass_count += 1
-            if bucket is not None:
-                bucket["executed_count"] += 1
-                bucket["pass_count"] += 1
-                evidence_sources[capability].add(evidence_source_id)
+            bucket["executed_count"] += 1
+            bucket["pass_count"] += 1
+            evidence_sources[capability].add(evidence_source_id)
         elif verdict == "fail":
             fail_count += 1
-            if bucket is not None:
-                bucket["executed_count"] += 1
-                bucket["fail_count"] += 1
+            bucket["executed_count"] += 1
+            bucket["fail_count"] += 1
         elif verdict == "not_run":
             not_run_count += 1
-            if bucket is not None:
-                bucket["not_run_count"] += 1
+            bucket["not_run_count"] += 1
     for bucket in by_capability.values():
         executed = int(bucket["executed_count"])
         bucket["pass_rate"] = round(int(bucket["pass_count"]) / executed, 3) if executed else 0.0
@@ -242,6 +263,7 @@ def _verified_replay_summary(runtime: Any, *, scope: ScopeRef, limit: int) -> di
         or int(bucket["distinct_evidence_count"]) < 3
     ]
     return {
+        "observed_executed_count": observed_executed_count,
         "executed_count": executed_count,
         "pass_count": pass_count,
         "fail_count": fail_count,
@@ -253,6 +275,8 @@ def _verified_replay_summary(runtime: Any, *, scope: ScopeRef, limit: int) -> di
         "by_capability": by_capability,
         "weak_capabilities_missing": weak_capabilities_missing,
         "rejection_reasons": dict(sorted(rejection_reasons.items())),
+        "manifest_record_ids": manifest_record_ids,
+        "manifest_rejection_reasons": manifest_rejection_reasons,
     }
 
 
@@ -278,30 +302,296 @@ def _capability_replay_records(runtime: Any, *, scope: ScopeRef, limit: int) -> 
         return []
 
 
-def _latest_capability_case_records(records: list[Any]) -> list[Any]:
-    latest: dict[tuple[str, str], tuple[tuple[str, str, str], Any]] = {}
-    for record in records:
-        report_type = str(_record_field(record, "report_type") or "").strip()
-        source = str(record.get("source", "") if isinstance(record, dict) else getattr(record, "source", "") or "").strip()
-        if report_type != "capability_replay_pack" or source != "eimemory.capability_replay":
+def _latest_manifest_case_records(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    limit: int,
+) -> tuple[list[Any], dict[str, str], dict[str, str]]:
+    high_water = _latest_manifest_high_water(runtime, scope=scope, limit=limit)
+    log_state = capability_replay_log_sequence_state(runtime, scope=scope, capabilities=WEAK_CAPABILITIES)
+    latest: dict[str, tuple[int, Any]] = {}
+    for manifest in _capability_replay_manifest_records(runtime, scope=scope, limit=limit):
+        content = manifest.get("content") if isinstance(manifest, dict) else getattr(manifest, "content", None)
+        content = content if isinstance(content, dict) else {}
+        capabilities = content.get("capabilities") if isinstance(content.get("capabilities"), list) else []
+        sequences = content.get("sequence_by_capability") if isinstance(content.get("sequence_by_capability"), dict) else {}
+        for capability in {str(value or "").strip() for value in capabilities} & WEAK_CAPABILITIES:
+            try:
+                sequence = int(sequences.get(capability) or 0)
+            except (TypeError, ValueError):
+                sequence = 0
+            current = latest.get(capability)
+            if current is None or sequence > current[0]:
+                latest[capability] = (sequence, manifest)
+
+    selected: list[Any] = []
+    manifest_record_ids: dict[str, str] = {}
+    rejection_reasons: dict[str, str] = {}
+    for capability in sorted(WEAK_CAPABILITIES):
+        entry = latest.get(capability)
+        if entry is None:
+            rejection_reasons[capability] = "manifest_missing"
             continue
-        capability = str(_record_field(record, "capability") or _record_field(record, "target_capability") or "").strip()
-        case_id = str(_record_field(record, "case_id") or "").strip()
-        record_id = str(record.get("record_id", "") if isinstance(record, dict) else getattr(record, "record_id", "") or "")
-        if not case_id:
-            case_id = record_id
-        record_time = getattr(record, "time", None)
-        fallback_time = str(getattr(record_time, "updated_at", "") or getattr(record_time, "created_at", "") or "")
-        sort_key = (
-            str(_record_field(record, "executed_at") or fallback_time),
-            str(_record_field(record, "execution_id") or ""),
-            record_id,
-        )
-        key = (capability, case_id)
-        current = latest.get(key)
-        if current is None or sort_key > current[0]:
-            latest[key] = (sort_key, record)
-    return [item[1] for item in latest.values()]
+        manifest = entry[1]
+        manifest_record_ids[capability] = _record_id(manifest)
+        capability_log_state = log_state.get(capability) or {}
+        log_manifest_ids = set(capability_log_state.get("manifest_record_ids") or set())
+        if len(log_manifest_ids) > 1:
+            rejection_reasons[capability] = "manifest_sequence_collision"
+            continue
+        if int(capability_log_state.get("sequence") or 0) != int(entry[0] or 0):
+            rejection_reasons[capability] = "manifest_log_high_water_mismatch"
+            continue
+        high_water_entry = high_water.get(capability) or {}
+        expected_manifest_id = str(high_water_entry.get("manifest_record_id") or "")
+        if not expected_manifest_id:
+            rejection_reasons[capability] = "manifest_high_water_missing"
+            continue
+        if str(high_water_entry.get("status") or "") != "active" or str(high_water_entry.get("source") or "") != "eimemory.autonomous_learning":
+            rejection_reasons[capability] = "manifest_high_water_status_invalid"
+            continue
+        if expected_manifest_id != _record_id(manifest):
+            rejection_reasons[capability] = "manifest_high_water_mismatch"
+            continue
+        if int(high_water_entry.get("manifest_sequence") or 0) != int(entry[0] or 0):
+            rejection_reasons[capability] = "manifest_high_water_sequence_mismatch"
+            continue
+        manifest_content = manifest.content if isinstance(manifest.content, dict) else {}
+        if str(high_water_entry.get("execution_id") or "") != str(manifest_content.get("execution_id") or ""):
+            rejection_reasons[capability] = "manifest_high_water_execution_mismatch"
+            continue
+        records, reason = _validated_manifest_members(runtime, manifest, scope=scope, capability=capability)
+        if reason:
+            rejection_reasons[capability] = reason
+            continue
+        selected.extend(records)
+    return selected, manifest_record_ids, rejection_reasons
+
+
+def _latest_manifest_high_water(runtime: Any, *, scope: ScopeRef, limit: int) -> dict[str, dict[str, Any]]:
+    try:
+        records = runtime.store.list_records(kinds=["capability_score"], scope=scope, limit=max(1, int(limit)))
+    except Exception:
+        return {}
+    latest: dict[str, tuple[int, dict[str, Any]]] = {}
+    for record in records:
+        if str(record.meta.get("kind") or "") != "capability_replay_pack":
+            continue
+        capability = str(record.meta.get("capability") or record.content.get("capability") or "").strip()
+        if capability not in WEAK_CAPABILITIES:
+            continue
+        manifest_id = str(record.meta.get("manifest_record_id") or "").strip()
+        try:
+            score_sequence = int(record.meta.get("score_sequence") or record.content.get("score_sequence") or 0)
+        except (TypeError, ValueError):
+            score_sequence = 0
+        try:
+            manifest_sequence = int(record.meta.get("manifest_sequence") or 0)
+        except (TypeError, ValueError):
+            manifest_sequence = 0
+        payload = {
+            "manifest_record_id": manifest_id,
+            "manifest_sequence": manifest_sequence,
+            "execution_id": str(record.meta.get("replay_execution_id") or ""),
+            "score_record_id": record.record_id,
+            "score_sequence": score_sequence,
+            "status": str(record.status or ""),
+            "source": str(record.source or ""),
+        }
+        current = latest.get(capability)
+        if current is None or score_sequence > current[0]:
+            latest[capability] = (score_sequence, payload)
+    return {capability: value[1] for capability, value in latest.items()}
+
+
+def _capability_replay_manifest_records(runtime: Any, *, scope: ScopeRef, limit: int) -> list[Any]:
+    budget = max(1, int(limit))
+    lookup = getattr(runtime.store, "list_records_by_meta_value", None)
+    if callable(lookup):
+        try:
+            records = lookup(
+                kinds=["replay_result"],
+                scope=scope,
+                meta_key="report_type",
+                meta_value=MANIFEST_REPORT_TYPE,
+                limit=budget,
+            )
+            if records is not None:
+                return list(records)
+        except Exception:
+            pass
+    try:
+        return [
+            record
+            for record in runtime.store.list_records(kinds=["replay_result"], scope=scope, limit=budget)
+            if str(_record_field(record, "report_type") or "") == MANIFEST_REPORT_TYPE
+        ]
+    except Exception:
+        return []
+
+
+def _validated_manifest_members(
+    runtime: Any,
+    manifest: Any,
+    *,
+    scope: ScopeRef,
+    capability: str,
+) -> tuple[list[Any], str]:
+    content = manifest.get("content") if isinstance(manifest, dict) else getattr(manifest, "content", None)
+    content = content if isinstance(content, dict) else {}
+    meta = manifest.get("meta") if isinstance(manifest, dict) else getattr(manifest, "meta", None)
+    meta = meta if isinstance(meta, dict) else {}
+    provenance = manifest.get("provenance") if isinstance(manifest, dict) else getattr(manifest, "provenance", None)
+    provenance = provenance if isinstance(provenance, dict) else {}
+    source = str(manifest.get("source", "") if isinstance(manifest, dict) else getattr(manifest, "source", "") or "")
+    status = str(manifest.get("status", "") if isinstance(manifest, dict) else getattr(manifest, "status", "") or "")
+    execution_id = str(content.get("execution_id") or "").strip()
+    digest = str(content.get("manifest_digest") or "").strip()
+    if source != "eimemory.capability_replay":
+        return [], "manifest_source_untrusted"
+    if status != "active":
+        return [], "manifest_status_invalid"
+    if any(
+        str(container.get("report_type") or "") != MANIFEST_REPORT_TYPE
+        or str(container.get("schema_version") or "") != MANIFEST_SCHEMA_VERSION
+        for container in (content, meta, provenance)
+    ):
+        return [], "manifest_schema_mismatch"
+    if not execution_id or any(str(container.get("execution_id") or "").strip() != execution_id for container in (meta, provenance)):
+        return [], "manifest_execution_id_missing_or_mismatched"
+    if not digest or any(str(container.get("manifest_digest") or "").strip() != digest for container in (meta, provenance)):
+        return [], "manifest_digest_mismatch"
+    if capability_replay_manifest_digest(content) != digest:
+        return [], "manifest_digest_mismatch"
+    if any(container.get("complete") is not True for container in (content, meta, provenance)):
+        return [], "manifest_incomplete"
+
+    manifest_started = _record_created_at(manifest)
+    manifest_finished = _record_updated_at(manifest)
+    executed_at = _parse_timestamp(content.get("executed_at"))
+    if manifest_started is None or manifest_finished is None:
+        return [], "manifest_record_time_invalid"
+    now = datetime.now(timezone.utc)
+    if any(value > now + timedelta(minutes=5) for value in (manifest_started, manifest_finished)):
+        return [], "manifest_time_in_future"
+    if executed_at is None or executed_at > now + timedelta(minutes=5):
+        return [], "manifest_time_in_future" if executed_at is not None else "manifest_time_invalid"
+    if executed_at < manifest_started - timedelta(minutes=1) or executed_at > manifest_finished + timedelta(minutes=1):
+        return [], "manifest_time_invalid"
+    expected_map = content.get("expected_case_ids") if isinstance(content.get("expected_case_ids"), dict) else {}
+    member_map = content.get("member_record_ids") if isinstance(content.get("member_record_ids"), dict) else {}
+    member_digest_map = content.get("member_digests") if isinstance(content.get("member_digests"), dict) else {}
+    expected_case_ids = [str(value or "").strip() for value in expected_map.get(capability) or []]
+    member_ids = [str(value or "").strip() for value in member_map.get(capability) or []]
+    member_digests = member_digest_map.get(capability) if isinstance(member_digest_map.get(capability), dict) else {}
+    canonical_case_ids = capability_replay_case_ids(capability)
+    if expected_case_ids != canonical_case_ids:
+        return [], "manifest_expected_cases_mismatch"
+    if len(member_ids) != len(canonical_case_ids) or len(set(member_ids)) != len(member_ids):
+        return [], "manifest_member_count_mismatch"
+    manifest_evidence = [str(value or "").strip() for value in (manifest.get("evidence", []) if isinstance(manifest, dict) else getattr(manifest, "evidence", []) or [])]
+    all_member_ids = [
+        str(value or "").strip()
+        for values in member_map.values()
+        if isinstance(values, list)
+        for value in values
+    ]
+    if sorted(manifest_evidence) != sorted(all_member_ids):
+        return [], "manifest_evidence_members_mismatch"
+
+    records: list[Any] = []
+    seen_case_ids: set[str] = set()
+    seen_probe_ids: set[str] = set()
+    for member_id in member_ids:
+        record = runtime.store.get_by_id(member_id, scope=scope)
+        if record is None:
+            return [], "manifest_member_missing"
+        if str(member_digests.get(member_id) or "") != capability_replay_member_digest(record):
+            return [], "manifest_member_digest_mismatch"
+        record_content = record.content if isinstance(record.content, dict) else {}
+        result = record_content.get("result") if isinstance(record_content.get("result"), dict) else {}
+        verdict = str(result.get("verdict") or record_content.get("verdict") or "").strip().lower()
+        case_payload = record_content.get("case") if isinstance(record_content.get("case"), dict) else {}
+        case_id = str(case_payload.get("case_id") or record.meta.get("case_id") or "").strip()
+        probe_id = str(result.get("probe_source_id") or "").strip()
+        if (
+            record.source != "eimemory.capability_replay"
+            or record.kind != "replay_result"
+            or record.status != "active"
+            or str(record.meta.get("report_type") or "") != "capability_replay_pack"
+            or str(record.meta.get("execution_id") or "").strip() != execution_id
+            or str(record_content.get("execution_id") or "").strip() != execution_id
+            or str(record.meta.get("executed_at") or "") != str(content.get("executed_at") or "")
+            or str(record_content.get("executed_at") or "") != str(content.get("executed_at") or "")
+            or str(record.meta.get("capability") or "") != capability
+            or str(record_content.get("capability") or "") != capability
+            or case_id not in canonical_case_ids
+        ):
+            return [], "manifest_member_binding_mismatch"
+        member_created = _record_created_at(record)
+        if member_created is None:
+            return [], "manifest_member_time_invalid"
+        if member_created > now + timedelta(minutes=5):
+            return [], "manifest_time_in_future"
+        if member_created < manifest_started - timedelta(seconds=5) or member_created > manifest_finished + timedelta(seconds=5):
+            return [], "manifest_member_time_invalid"
+        if case_id in seen_case_ids:
+            return [], "manifest_duplicate_case_id"
+        seen_case_ids.add(case_id)
+        if verdict == "pass":
+            if not probe_id or probe_id in seen_probe_ids:
+                return [], "manifest_probe_binding_invalid"
+            seen_probe_ids.add(probe_id)
+            probe = runtime.store.get_by_id(probe_id, scope=scope)
+            if probe is None:
+                return [], "manifest_probe_missing"
+            if probe.kind != "replay_result" or probe.status != "active":
+                return [], "manifest_probe_status_invalid"
+            trace_record_id = str(result.get("trace_record_id") or "").strip()
+            trace = runtime.store.get_by_id(trace_record_id, scope=scope)
+            if trace is None or trace.kind != "reflection" or trace.status != "active":
+                return [], "manifest_trace_status_invalid"
+            probe_created = _record_created_at(probe)
+            if probe_created is None:
+                return [], "manifest_probe_time_invalid"
+            if probe_created > now + timedelta(minutes=5):
+                return [], "manifest_time_in_future"
+            if probe_created < manifest_started - timedelta(minutes=15) or probe_created > manifest_finished + timedelta(seconds=5):
+                return [], "manifest_probe_not_fresh"
+        records.append(record)
+    if seen_case_ids != set(canonical_case_ids):
+        return [], "manifest_case_coverage_incomplete"
+    return records, ""
+
+
+def _record_id(record: Any) -> str:
+    return str(record.get("record_id", "") if isinstance(record, dict) else getattr(record, "record_id", "") or "")
+
+
+def _record_created_at(record: Any) -> datetime | None:
+    time_ref = record.get("time") if isinstance(record, dict) else getattr(record, "time", None)
+    value = time_ref.get("created_at") if isinstance(time_ref, dict) else getattr(time_ref, "created_at", "")
+    return _parse_timestamp(value)
+
+
+def _record_updated_at(record: Any) -> datetime | None:
+    time_ref = record.get("time") if isinstance(record, dict) else getattr(record, "time", None)
+    value = time_ref.get("updated_at") if isinstance(time_ref, dict) else getattr(time_ref, "updated_at", "")
+    return _parse_timestamp(value) or _record_created_at(record)
+
+
+def _parse_timestamp(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(timezone.utc)
 
 
 def _latest_l5_assessment(runtime: Any, *, scope: ScopeRef) -> dict[str, Any]:
@@ -405,6 +695,7 @@ def _stage_for(
     metrics = dict(hard_metrics.get("metrics") or {})
     metric_quality = dict(hard_metrics.get("metric_quality") or {})
     replay_count = int(verified_replay.get("executed_count") or 0)
+    observed_replay_count = int(verified_replay.get("observed_executed_count") or replay_count)
     replay_pass_rate = float(verified_replay.get("pass_rate") or 0.0)
     l5_artifacts = sum(int(evidence_counts.get(kind) or 0) for kind in ("l5_world_model", "l5_strategic_roadmap", "l5_assessment", "l5_closed_loop"))
     promotion_count = int(evidence_counts.get("promotion_applied") or 0)
@@ -464,7 +755,7 @@ def _stage_for(
             "reason": "L5 artifacts exist, but repeated closed-loop promotion and rollback evidence is not complete.",
             "done_when": "Each weak capability has replay-backed score >=0.7 and at least one reversible promotion path.",
         }
-    if strong_ready_count >= 3 and replay_count >= 3 and (task_success > 0 or recall_hit > 0):
+    if strong_ready_count >= 3 and observed_replay_count >= 3 and (task_success > 0 or recall_hit > 0):
         return {
             **common,
             "stage": "L4",

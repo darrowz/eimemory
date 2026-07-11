@@ -6,6 +6,11 @@ from eimemory.api.runtime import Runtime
 from eimemory.cli.main import main as cli_main
 from eimemory.experience import record_outcome_trace
 from eimemory.governance.capability_ledger import record_capability_score
+from eimemory.governance.capability_replay_packs import (
+    MANIFEST_REPORT_TYPE,
+    MANIFEST_SCHEMA_VERSION,
+    capability_replay_manifest_digest,
+)
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
@@ -88,6 +93,8 @@ def test_l5_readiness_report_uses_existing_evidence_without_running_learning(tmp
 
     assert report["current_stage"] == "L4"
     assert report["evidence_counts"]["replay_result"] == 3
+    assert report["verified_replay"]["observed_executed_count"] == 3
+    assert report["verified_replay"]["executed_count"] == 0
     assert report["evidence_counts"]["promotion_applied"] == 1
     assert stored.kind == "reflection"
     assert stored.meta["report_type"] == "l5_readiness_report"
@@ -224,6 +231,423 @@ def test_l5_readiness_reaches_l5_only_with_attributed_weak_outcomes_and_patch_sa
     assert report["verified_replay"]["weak_capabilities_missing"] == []
     assert all(item["distinct_evidence_count"] == 3 for item in report["verified_replay"]["by_capability"].values())
     assert report["latest_l5_assessment"]["complete"] is True
+
+
+def test_l5_readiness_uses_latest_execution_batch_instead_of_legacy_case_ids(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope_ref = ScopeRef.from_dict(SCOPE)
+    try:
+        _seed_l5_prerequisites(
+            runtime,
+            scope=SCOPE,
+            weak_outcomes=True,
+            patch_samples=10,
+            execute_weak_replays=True,
+            assessment_complete=True,
+            verified_patch_evidence=True,
+        )
+        for capability in sorted(WEAK_CAPABILITIES):
+            for index in range(3):
+                case_id = f"legacy-{capability}-{index}"
+                payload = {
+                    "report_type": "capability_replay_pack",
+                    "capability": capability,
+                    "execution_id": f"legacy-{capability}",
+                    "executed_at": "2025-01-01T00:00:00+00:00",
+                    "case": {"case_id": case_id},
+                    "result": {
+                        "case_id": case_id,
+                        "verdict": "pass",
+                        "hit": True,
+                        "evidence_source_id": f"legacy-source-{capability}-{index}",
+                    },
+                }
+                runtime.store.append(
+                    RecordEnvelope.create(
+                        kind="replay_result",
+                        title=f"Legacy replay {case_id}",
+                        summary="legacy pass without a v2 replay trace",
+                        scope=scope_ref,
+                        content=payload,
+                        meta=payload,
+                        source="eimemory.capability_replay",
+                    )
+                )
+        for capability in ("code.implementation", "office.daily_task"):
+            for index in range(3):
+                case_id = f"non-weak-{capability}-{index}"
+                payload = {
+                    "report_type": "capability_replay_pack",
+                    "capability": capability,
+                    "execution_id": f"non-weak-{capability}",
+                    "executed_at": "2027-01-01T00:00:00+00:00",
+                    "case": {"case_id": case_id},
+                    "result": {
+                        "case_id": case_id,
+                        "verdict": "pass",
+                        "hit": True,
+                        "evidence_source_id": f"non-weak-source-{capability}-{index}",
+                    },
+                }
+                runtime.store.append(
+                    RecordEnvelope.create(
+                        kind="replay_result",
+                        title=f"Non-weak replay {case_id}",
+                        summary="non-weak replay must not change the weak-capability readiness rate",
+                        scope=scope_ref,
+                        content=payload,
+                        meta=payload,
+                        source="eimemory.capability_replay",
+                    )
+                )
+
+        report = runtime.build_l5_readiness_report(scope=SCOPE)
+    finally:
+        runtime.close()
+
+    assert report["verified_replay"]["executed_count"] == 12
+    assert report["verified_replay"]["pass_count"] == 12
+    assert report["verified_replay"]["fail_count"] == 0
+    assert report["verified_replay"]["pass_rate"] == 1.0
+    assert report["verified_replay"]["rejection_reasons"] == {}
+    assert report["verified_replay"]["weak_capabilities_missing"] == []
+    assert set(report["verified_replay"]["manifest_record_ids"]) == WEAK_CAPABILITIES
+    assert len(set(report["verified_replay"]["manifest_record_ids"].values())) == 1
+    assert report["current_stage"] == "L5"
+
+
+def test_l5_readiness_fails_closed_on_latest_incomplete_manifest_even_with_older_passes(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope_ref = ScopeRef.from_dict(SCOPE)
+    try:
+        _seed_l5_prerequisites(
+            runtime,
+            scope=SCOPE,
+            weak_outcomes=True,
+            patch_samples=10,
+            execute_weak_replays=True,
+            assessment_complete=True,
+            verified_patch_evidence=True,
+        )
+        search_record = next(
+            record
+            for record in runtime.store.list_records(kinds=["replay_result"], scope=SCOPE, limit=100)
+            if record.meta.get("report_type") == "capability_replay_pack"
+            and record.meta.get("capability") == "search.discovery"
+        )
+        manifest_payload = {
+            "schema_version": MANIFEST_SCHEMA_VERSION,
+            "report_type": MANIFEST_REPORT_TYPE,
+            "execution_id": "partial-new-execution",
+            "executed_at": "2000-01-01T00:00:00+08:00",
+            "capabilities": ["search.discovery"],
+            "sequence_by_capability": {"search.discovery": 999},
+            "expected_case_ids": {
+                "search.discovery": ["search_recent_source", "search_trending_github", "search_primary_source"]
+            },
+            "member_record_ids": {"search.discovery": [search_record.record_id]},
+            "member_digests": {"search.discovery": {}},
+            "complete": False,
+        }
+        manifest_payload["manifest_digest"] = capability_replay_manifest_digest(manifest_payload)
+        partial_manifest = RecordEnvelope.create(
+                kind="replay_result",
+                title="Partial latest replay manifest",
+                summary="must block fallback to the older complete manifest",
+                scope=scope_ref,
+                source="eimemory.capability_replay",
+                content=manifest_payload,
+                meta={
+                    "schema_version": MANIFEST_SCHEMA_VERSION,
+                    "report_type": MANIFEST_REPORT_TYPE,
+                    "execution_id": manifest_payload["execution_id"],
+                    "manifest_digest": manifest_payload["manifest_digest"],
+                    "complete": False,
+                },
+                provenance={
+                    "schema_version": MANIFEST_SCHEMA_VERSION,
+                    "report_type": MANIFEST_REPORT_TYPE,
+                    "execution_id": manifest_payload["execution_id"],
+                    "manifest_digest": manifest_payload["manifest_digest"],
+                },
+            )
+        partial_manifest.time.created_at = "2030-01-01T00:00:00+00:00"
+        partial_manifest.time.updated_at = "2030-01-01T00:00:00+00:00"
+        partial_manifest.time.occurred_at = "2030-01-01T00:00:00+00:00"
+        runtime.store.append(partial_manifest)
+
+        report = runtime.build_l5_readiness_report(scope=SCOPE)
+    finally:
+        runtime.close()
+
+    assert report["verified_replay"]["manifest_rejection_reasons"] == {
+        "search.discovery": "manifest_high_water_mismatch"
+    }
+    assert "search.discovery" in report["verified_replay"]["weak_capabilities_missing"]
+    assert report["current_stage"] != "L5"
+
+
+def test_l5_readiness_rejects_manifest_identity_time_and_membership_tampering(tmp_path) -> None:
+    cases = {
+        "missing_execution": "manifest_high_water_execution_mismatch",
+        "future_time": "manifest_time_in_future",
+        "duplicate_member": "manifest_member_count_mismatch",
+    }
+    for mode, expected_reason in cases.items():
+        runtime = Runtime.create(root=tmp_path / mode)
+        try:
+            _seed_l5_prerequisites(
+                runtime,
+                scope=SCOPE,
+                weak_outcomes=True,
+                patch_samples=10,
+                execute_weak_replays=True,
+                assessment_complete=True,
+                verified_patch_evidence=True,
+            )
+            manifest = next(
+                record
+                for record in runtime.store.list_records(kinds=["replay_result"], scope=SCOPE, limit=100)
+                if record.meta.get("report_type") == MANIFEST_REPORT_TYPE
+            )
+            if mode == "missing_execution":
+                manifest.content["execution_id"] = ""
+            elif mode == "future_time":
+                manifest.content["executed_at"] = "2100-01-01T00:00:00+00:00"
+            else:
+                members = list(manifest.content["member_record_ids"]["search.discovery"])
+                manifest.content["member_record_ids"]["search.discovery"] = [members[0], members[0], members[1]]
+            digest = capability_replay_manifest_digest(manifest.content)
+            manifest.content["manifest_digest"] = digest
+            manifest.meta["manifest_digest"] = digest
+            manifest.provenance["manifest_digest"] = digest
+            if mode == "missing_execution":
+                manifest.meta["execution_id"] = ""
+                manifest.provenance["execution_id"] = ""
+            runtime.store.rewrite(manifest)
+
+            report = runtime.build_l5_readiness_report(scope=SCOPE)
+        finally:
+            runtime.close()
+
+        assert report["verified_replay"]["manifest_rejection_reasons"]["search.discovery"] == expected_reason
+        assert "search.discovery" in report["verified_replay"]["weak_capabilities_missing"]
+        assert report["current_stage"] != "L5"
+
+
+def test_l5_readiness_uses_monotonic_batch_order_after_future_clock_skew(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        _seed_l5_prerequisites(
+            runtime,
+            scope=SCOPE,
+            weak_outcomes=True,
+            patch_samples=10,
+            execute_weak_replays=True,
+            assessment_complete=True,
+            verified_patch_evidence=True,
+        )
+        first_manifest = next(
+            record
+            for record in runtime.store.list_records(kinds=["replay_result"], scope=SCOPE, limit=100)
+            if record.meta.get("report_type") == MANIFEST_REPORT_TYPE
+        )
+        first_manifest.time.created_at = "2100-01-01T00:00:00+00:00"
+        first_manifest.time.updated_at = "2100-01-01T00:00:01+00:00"
+        runtime.store.rewrite(first_manifest)
+        for score in runtime.store.list_records(kinds=["capability_score"], scope=SCOPE, limit=100):
+            if score.meta.get("manifest_record_id") == first_manifest.record_id:
+                score.time.created_at = "2100-01-01T00:00:00+00:00"
+                score.time.updated_at = "2100-01-01T00:00:01+00:00"
+                runtime.store.rewrite(score)
+
+        runtime.run_capability_replay_case = lambda case: {  # type: ignore[attr-defined]
+            "verdict": "fail",
+            "hit": False,
+            "observed": f"failed:{case['case_id']}",
+            "reason": "regression_detected",
+        }
+        runtime.build_capability_replay_packs(
+            scope=SCOPE,
+            capabilities=sorted(WEAK_CAPABILITIES),
+            persist=True,
+            loop_id="post-clock-recovery-failure",
+        )
+
+        report = runtime.build_l5_readiness_report(scope=SCOPE)
+    finally:
+        runtime.close()
+
+    assert report["verified_replay"]["executed_count"] == 12
+    assert report["verified_replay"]["pass_count"] == 0
+    assert report["verified_replay"]["fail_count"] == 12
+    assert report["current_stage"] != "L5"
+
+
+def test_l5_readiness_rejects_disabled_manifest_and_high_water(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        _seed_l5_prerequisites(
+            runtime,
+            scope=SCOPE,
+            weak_outcomes=True,
+            patch_samples=10,
+            execute_weak_replays=True,
+            assessment_complete=True,
+            verified_patch_evidence=True,
+        )
+        manifest = next(
+            record
+            for record in runtime.store.list_records(kinds=["replay_result"], scope=SCOPE, limit=100)
+            if record.meta.get("report_type") == MANIFEST_REPORT_TYPE
+        )
+        manifest.status = "quarantined"
+        runtime.store.rewrite(manifest)
+        for score in runtime.store.list_records(kinds=["capability_score"], scope=SCOPE, limit=100):
+            if score.meta.get("manifest_record_id") == manifest.record_id:
+                score.status = "disabled"
+                runtime.store.rewrite(score)
+
+        report = runtime.build_l5_readiness_report(scope=SCOPE)
+    finally:
+        runtime.close()
+
+    assert set(report["verified_replay"]["manifest_rejection_reasons"].values()) == {
+        "manifest_high_water_status_invalid"
+    }
+    assert report["verified_replay"]["weak_capabilities_missing"] == sorted(WEAK_CAPABILITIES)
+    assert report["current_stage"] != "L5"
+
+
+def test_l5_readiness_rejects_disabled_member_probe_and_trace(tmp_path) -> None:
+    for target in ("member", "probe", "trace"):
+        runtime = Runtime.create(root=tmp_path / target)
+        try:
+            _seed_l5_prerequisites(
+                runtime,
+                scope=SCOPE,
+                weak_outcomes=True,
+                patch_samples=10,
+                execute_weak_replays=True,
+                assessment_complete=True,
+                verified_patch_evidence=True,
+            )
+            manifest = next(
+                record
+                for record in runtime.store.list_records(kinds=["replay_result"], scope=SCOPE, limit=100)
+                if record.meta.get("report_type") == MANIFEST_REPORT_TYPE
+            )
+            member_id = manifest.content["member_record_ids"]["search.discovery"][0]
+            member = runtime.store.get_by_id(member_id, scope=SCOPE)
+            assert member is not None
+            if target == "member":
+                record = member
+            elif target == "probe":
+                record = runtime.store.get_by_id(member.content["result"]["probe_source_id"], scope=SCOPE)
+            else:
+                record = runtime.store.get_by_id(member.content["result"]["trace_record_id"], scope=SCOPE)
+            assert record is not None
+            record.status = "quarantined"
+            runtime.store.rewrite(record)
+
+            report = runtime.build_l5_readiness_report(scope=SCOPE)
+        finally:
+            runtime.close()
+
+        assert "search.discovery" in report["verified_replay"]["weak_capabilities_missing"]
+        assert report["current_stage"] != "L5"
+
+
+def test_l5_readiness_does_not_fallback_after_latest_batch_is_physically_removed(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        _seed_l5_prerequisites(
+            runtime,
+            scope=SCOPE,
+            weak_outcomes=True,
+            patch_samples=10,
+            execute_weak_replays=True,
+            assessment_complete=True,
+            verified_patch_evidence=True,
+        )
+        runtime.run_capability_replay_case = lambda case: {  # type: ignore[attr-defined]
+            "verdict": "fail",
+            "hit": False,
+            "observed": f"failed:{case['case_id']}",
+            "reason": "regression_detected",
+        }
+        latest = runtime.build_capability_replay_packs(
+            scope=SCOPE,
+            capabilities=sorted(WEAK_CAPABILITIES),
+            persist=True,
+            loop_id="latest-failing-batch",
+        )
+        deleted_ids = [latest["manifest_record_id"], *latest["score_record_ids"], *latest["persisted_replay_ids"]]
+        placeholders = ",".join("?" for _ in deleted_ids)
+        runtime.store.sqlite.conn.execute(
+            f"DELETE FROM records WHERE record_id IN ({placeholders})",
+            deleted_ids,
+        )
+        runtime.store.sqlite.conn.commit()
+
+        report = runtime.build_l5_readiness_report(scope=SCOPE)
+    finally:
+        runtime.close()
+
+    assert set(report["verified_replay"]["manifest_rejection_reasons"].values()) == {
+        "manifest_log_high_water_mismatch"
+    }
+    assert report["verified_replay"]["weak_capabilities_missing"] == sorted(WEAK_CAPABILITIES)
+    assert report["current_stage"] != "L5"
+
+
+def test_l5_readiness_rejects_same_sequence_manifest_collision(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        _seed_l5_prerequisites(
+            runtime,
+            scope=SCOPE,
+            weak_outcomes=True,
+            patch_samples=10,
+            execute_weak_replays=True,
+            assessment_complete=True,
+            verified_patch_evidence=True,
+        )
+        original = next(
+            record
+            for record in runtime.store.list_records(kinds=["replay_result"], scope=SCOPE, limit=100)
+            if record.meta.get("report_type") == MANIFEST_REPORT_TYPE
+        )
+        duplicate = RecordEnvelope.create(
+            kind="replay_result",
+            title="Concurrent duplicate manifest",
+            summary="same sequence must fail closed",
+            scope=ScopeRef.from_dict(SCOPE),
+            source=original.source,
+            status="active",
+            content=dict(original.content),
+            meta=dict(original.meta),
+            provenance=dict(original.provenance),
+            evidence=list(original.evidence),
+        )
+        duplicate.time.created_at = original.time.created_at
+        duplicate.time.updated_at = original.time.updated_at
+        duplicate.time.occurred_at = original.time.occurred_at
+        runtime.store.append(duplicate)
+        for score in runtime.store.list_records(kinds=["capability_score"], scope=SCOPE, limit=100):
+            if score.meta.get("manifest_record_id") == original.record_id:
+                score.meta["manifest_record_id"] = duplicate.record_id
+                runtime.store.rewrite(score)
+
+        report = runtime.build_l5_readiness_report(scope=SCOPE)
+    finally:
+        runtime.close()
+
+    assert set(report["verified_replay"]["manifest_rejection_reasons"].values()) == {
+        "manifest_sequence_collision"
+    }
+    assert report["verified_replay"]["weak_capabilities_missing"] == sorted(WEAK_CAPABILITIES)
+    assert report["current_stage"] != "L5"
 
 
 def test_l5_readiness_rejects_not_run_weak_replays(tmp_path) -> None:
