@@ -1,8 +1,62 @@
+import pytest
+
 from eimemory.api.runtime import Runtime
 from eimemory.experience import record_outcome_trace
 from eimemory.experience.diagnosis import diagnose_outcome
 from eimemory.experience.sanitize import sanitize_outcome_payload
 from eimemory.models.records import RecordEnvelope, ScopeRef
+
+
+CAPABILITY_CASES = {
+    "search_recent_source": (
+        "search.discovery",
+        {"recency_window": "30d", "source_trust_score": 0.9, "source_verified": True},
+    ),
+    "search_trending_github": (
+        "search.discovery",
+        {"platform": "GitHub", "created_range": "2026-01-01..2026-01-31", "sort_by": "stars", "ranking_verified": True},
+    ),
+    "search_primary_source": (
+        "search.discovery",
+        {"source_tier": "official", "source_verified": True},
+    ),
+    "research_evidence_gate": (
+        "research.synthesis",
+        {"citation_count": 2, "facts_separated_from_inference": True},
+    ),
+    "research_conflict_resolution": (
+        "research.synthesis",
+        {"conflict_count": 1, "recency_compared": True, "confidence_reported": True},
+    ),
+    "research_actionable_takeaway": (
+        "research.synthesis",
+        {"decision": "adopt", "implementation_step": "add replay", "next_artifact": "replay"},
+    ),
+    "uumit_requirement_checklist": (
+        "operations.uumit",
+        {"requirement_count": 3, "checklist_complete": True, "acceptance_verified": True},
+    ),
+    "uumit_quality_gate": (
+        "operations.uumit",
+        {"version_verified": True, "visual_verified": True, "customer_constraints_verified": True},
+    ),
+    "uumit_post_delivery_followup": (
+        "operations.uumit",
+        {"outcome_recorded": True, "correction_recorded": True, "next_policy_recorded": True},
+    ),
+    "device_physical_channel": (
+        "device.control",
+        {"channel": "speaker", "control_action": "play", "output_verified": True},
+    ),
+    "device_missing_info": (
+        "device.control",
+        {"target_missing_detected": True, "resolution": "clarify"},
+    ),
+    "device_safe_boundary": (
+        "device.control",
+        {"reversible": True, "rollback_plan": "stop playback", "verification_signal": "speaker silent"},
+    ),
+}
 
 
 def _payload(**overrides) -> dict:
@@ -20,6 +74,139 @@ def _payload(**overrides) -> dict:
     }
     payload.update(overrides)
     return payload
+
+
+def _source_record(runtime: Runtime, scope: dict, *, title: str = "Capability evidence") -> RecordEnvelope:
+    return runtime.store.append(
+        RecordEnvelope.create(
+            kind="reflection",
+            title=title,
+            summary="same-scope verified source",
+            scope=ScopeRef.from_dict(scope),
+        )
+    )
+
+
+def _capability_contract(source_id: str, *, case_id: str = "search_recent_source", **overrides) -> dict:
+    capability, observations = CAPABILITY_CASES[case_id]
+    contract = {
+        "schema_version": "capability_contract.v1",
+        "capability": capability,
+        "case_id": case_id,
+        "observations": observations,
+        "checks": [{"name": "source_evidence", "passed": True, "evidence_ref": source_id}],
+        "source_record_ids": [source_id],
+        "probe": False,
+    }
+    contract.update(overrides)
+    return contract
+
+
+def test_record_outcome_trace_persists_verified_capability_contract_and_hoists_metadata(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "contract-agent", "workspace_id": "contract-workspace"}
+    source = _source_record(runtime, scope)
+    contract = _capability_contract(source.record_id)
+
+    result = record_outcome_trace(runtime, _payload(capability_contract=contract), scope=scope)
+
+    assert result["ok"] is True
+    record = runtime.store.get_by_id(result["record_id"], scope=scope)
+    assert record is not None
+    assert record.content["payload"]["capability_contract"] == contract
+    assert record.meta["capability"] == "search.discovery"
+    assert record.meta["capability_case_id"] == "search_recent_source"
+    assert record.meta["contract_verified"] is True
+
+
+@pytest.mark.parametrize("case_id", sorted(CAPABILITY_CASES))
+def test_record_outcome_trace_accepts_all_exact_capability_observation_contracts(tmp_path, case_id: str) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "contract-agent", "workspace_id": case_id}
+    source = _source_record(runtime, scope)
+
+    result = record_outcome_trace(
+        runtime,
+        _payload(trace_id=f"trace-{case_id}", idempotency_key=f"idem-{case_id}", capability_contract=_capability_contract(source.record_id, case_id=case_id)),
+        scope=scope,
+    )
+
+    assert result["ok"] is True
+    record = runtime.store.get_by_id(result["record_id"], scope=scope)
+    assert record is not None
+    assert record.meta["contract_verified"] is True
+
+
+@pytest.mark.parametrize("case_id", sorted(CAPABILITY_CASES))
+def test_record_outcome_trace_rejects_missing_exact_capability_observations(tmp_path, case_id: str) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "contract-agent", "workspace_id": case_id}
+    source = _source_record(runtime, scope)
+    contract = _capability_contract(source.record_id, case_id=case_id, observations={})
+
+    result = record_outcome_trace(runtime, _payload(capability_contract=contract), scope=scope)
+
+    assert result["ok"] is False
+    assert "observations" in result["error"]
+
+
+@pytest.mark.parametrize(
+    ("contract_override", "error_fragment"),
+    [
+        ({"case_id": "unknown_case"}, "unknown capability case"),
+        ({"checks": [{"name": "source_evidence", "passed": False, "evidence_ref": "source"}]}, "failed check"),
+        ({"capability": "research.synthesis"}, "capability mismatch"),
+        ({"source_record_ids": ["missing-source"]}, "source record"),
+    ],
+)
+def test_record_outcome_trace_rejects_invalid_capability_contracts(
+    tmp_path, contract_override: dict, error_fragment: str
+) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "contract-agent", "workspace_id": "contract-workspace"}
+    source = _source_record(runtime, scope)
+    contract = _capability_contract(source.record_id)
+    contract.update(contract_override)
+    if contract_override.get("checks"):
+        contract["checks"][0]["evidence_ref"] = source.record_id
+    if contract_override.get("source_record_ids"):
+        contract["checks"][0]["evidence_ref"] = contract["source_record_ids"][0]
+
+    result = record_outcome_trace(runtime, _payload(capability_contract=contract), scope=scope)
+
+    assert result["ok"] is False
+    assert error_fragment in result["error"]
+
+
+def test_record_outcome_trace_rejects_contract_source_from_another_scope(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    source = _source_record(runtime, {"agent_id": "other-agent", "workspace_id": "other-workspace"})
+    scope = {"agent_id": "contract-agent", "workspace_id": "contract-workspace"}
+
+    result = record_outcome_trace(
+        runtime,
+        _payload(capability_contract=_capability_contract(source.record_id)),
+        scope=scope,
+    )
+
+    assert result["ok"] is False
+    assert "source record" in result["error"]
+
+
+@pytest.mark.parametrize("invalid_source_id", ["", 123])
+def test_record_outcome_trace_rejects_invalid_source_id_without_normalizing_it_away(
+    tmp_path, invalid_source_id: object
+) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "contract-agent", "workspace_id": "contract-workspace"}
+    source = _source_record(runtime, scope)
+    contract = _capability_contract(source.record_id)
+    contract["source_record_ids"].append(invalid_source_id)
+
+    result = record_outcome_trace(runtime, _payload(capability_contract=contract), scope=scope)
+
+    assert result["ok"] is False
+    assert "source_record_ids" in result["error"]
 
 
 def test_record_outcome_trace_writes_reflection_with_diagnosis_and_schema(tmp_path) -> None:

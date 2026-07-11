@@ -309,8 +309,13 @@ def test_openclaw_agent_end_records_success_outcome_trace(tmp_path, monkeypatch)
     assert payload["input_summary"] == "open dashboard"
     assert payload["selected_tools"] == ["browser.open"]
     assert payload["actions"] == ["navigate dashboard"]
-    assert payload["outcome"] == "success"
-    assert payload["verifier"] == "verified"
+    assert payload["outcome"] == {"status": "success", "success": True, "rehearsal": False}
+    assert payload["verifier"] == {
+        "passed": True,
+        "method": "openclaw.agent_end",
+        "evidence_refs": [result["event"]["id"]],
+        "checks": {"verification": "verified", "result": ""},
+    }
     assert payload["feedback"] == "looks good"
     assert payload["risk"] == ""
     assert payload["policy_attribution"]["policy_suggestion_ids"] == ["policy-1"]
@@ -350,7 +355,7 @@ def test_openclaw_agent_end_rate_limit_cooldown_success_is_bad_trace(tmp_path, m
     assert result["outcome"]["outcome"] == "bad"
     assert result["outcome"]["failure_class"] == "rate_limit_cooldown"
     assert result["outcome"]["source_trust"] == "system_diagnostic"
-    assert traces[0]["outcome"] == "bad"
+    assert traces[0]["outcome"]["status"] == "bad"
     assert traces[0]["failure_class"] == "rate_limit_cooldown"
 
 
@@ -397,7 +402,7 @@ def test_openclaw_agent_end_terminal_bridge_statuses_fail_closed(
     assert result["outcome"]["outcome"] == "bad"
     assert result["outcome"]["failure_class"] == failure_class
     assert result["outcome"]["source_trust"] == "system_diagnostic"
-    assert traces[0]["outcome"] == "bad"
+    assert traces[0]["outcome"]["status"] == "bad"
     assert traces[0]["failure_class"] == failure_class
 
 
@@ -430,7 +435,7 @@ def test_openclaw_agent_end_assistant_text_failure_fails_closed(tmp_path, monkey
     assert result["outcome"]["outcome"] == "bad"
     assert result["outcome"]["failure_class"] == "rate_limit_cooldown"
     assert result["outcome"]["source_trust"] == "system_diagnostic"
-    assert traces[0]["outcome"] == "bad"
+    assert traces[0]["outcome"]["status"] == "bad"
 
 
 def test_openclaw_agent_end_terminal_failure_closes_loop_as_failed(tmp_path, monkeypatch) -> None:
@@ -628,9 +633,77 @@ def test_openclaw_agent_end_records_bad_outcome_trace_for_failure(tmp_path, monk
     )
 
     payload = traces[0]
-    assert payload["outcome"] == "bad"
+    assert payload["outcome"] == {"status": "bad", "success": False, "rehearsal": False}
     assert payload["feedback"] == "navigation failed"
     assert payload["risk"] == {"severity": "medium"}
+
+
+@pytest.mark.parametrize("contract_location", ["event", "outcome", "task_context"])
+def test_openclaw_outcome_trace_passes_through_explicit_capability_contract(
+    tmp_path, monkeypatch, contract_location: str
+) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    hooks = OpenClawMemoryHooks(runtime)
+    traces: list[dict] = []
+    contract = {
+        "schema_version": "capability_contract.v1",
+        "capability": "search.discovery",
+        "case_id": "search_primary_source",
+        "observations": {"source_tier": "official", "source_verified": True},
+        "checks": [{"name": "official_source", "passed": True, "evidence_ref": "source-1"}],
+        "source_record_ids": ["source-1"],
+        "probe": False,
+    }
+    event = {
+        "session_id": f"sess-contract-{contract_location}",
+        "agent_id": "main",
+        "workspace_id": "repo-x",
+        "user_id": "darrow",
+        "query": "verify with the official source",
+        "task_context": {"task_type": "search_task"},
+        "outcome": {"success": True, "verified": True},
+    }
+    if contract_location == "event":
+        event["capability_contract"] = contract
+    else:
+        event[contract_location]["capability_contract"] = contract
+
+    def fake_record_outcome_trace(payload: dict, *, scope: dict) -> dict:
+        traces.append(payload)
+        return {"id": "trace-contract"}
+
+    monkeypatch.setattr(runtime, "record_outcome_trace", fake_record_outcome_trace, raising=False)
+
+    hooks.on_agent_end(event)
+
+    assert traces[0]["capability_contract"] == contract
+
+
+def test_openclaw_outcome_trace_does_not_synthesize_contract_from_generic_terminal_text(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    hooks = OpenClawMemoryHooks(runtime)
+    traces: list[dict] = []
+
+    def fake_record_outcome_trace(payload: dict, *, scope: dict) -> dict:
+        traces.append(payload)
+        return {"id": "trace-generic"}
+
+    monkeypatch.setattr(runtime, "record_outcome_trace", fake_record_outcome_trace, raising=False)
+
+    hooks.on_agent_end(
+        {
+            "session_id": "sess-generic-terminal",
+            "agent_id": "main",
+            "workspace_id": "repo-x",
+            "user_id": "darrow",
+            "query": "find recent sources",
+            "result": "Recent sources were found and verified.",
+            "capability_contract": "search.discovery:search_recent_source",
+            "outcome": {"success": True, "verified": True},
+        }
+    )
+
+    assert "capability_contract" not in traces[0]
 
 
 def test_openclaw_record_outcome_trace_exception_degrades_without_raising(tmp_path, monkeypatch) -> None:

@@ -1408,6 +1408,7 @@ class OpenClawMemoryHooks:
             recorded_outcome = self.runtime.record_outcome(recorded_event["id"], outcome_payload, scope=scope)
             outcome_trace = self._record_outcome_trace_safely(
                 event=event,
+                recorded_event_id=str(recorded_event.get("id") or ""),
                 scope=scope,
                 task_context=task_context,
                 outcome=outcome,
@@ -1838,6 +1839,7 @@ class OpenClawMemoryHooks:
         self,
         *,
         event: dict,
+        recorded_event_id: str,
         scope: dict,
         task_context: dict,
         outcome: dict,
@@ -1855,6 +1857,7 @@ class OpenClawMemoryHooks:
             return {}
         payload = self._outcome_trace_payload(
             event=event,
+            recorded_event_id=recorded_event_id,
             task_context=task_context,
             outcome=outcome,
             correction=correction,
@@ -1875,6 +1878,7 @@ class OpenClawMemoryHooks:
         self,
         *,
         event: dict,
+        recorded_event_id: str,
         task_context: dict,
         outcome: dict,
         correction: str,
@@ -1901,6 +1905,29 @@ class OpenClawMemoryHooks:
             task_context.get("intent"),
             result,
         )
+        status = self._outcome_trace_result(
+            event=event,
+            outcome=outcome,
+            correction=correction,
+            terminal_failure=terminal_failure,
+        )
+        success = self._bool_or_none(outcome.get("success"))
+        if success is None:
+            success = self._bool_or_none(event.get("success"))
+        rehearsal = self._bool_or_none(
+            self._first_present(
+                event.get("rehearsal"),
+                outcome.get("rehearsal"),
+                task_context.get("rehearsal"),
+                False,
+            )
+        )
+        if rehearsal is None:
+            rehearsal = False
+        verified = self._bool_or_none(outcome.get("verified"))
+        if verified is None:
+            verified = self._bool_or_none(event.get("verified"))
+        passed = bool(status == "success" and success is True and verification and verified is not False)
         payload = {
             "source": f"openclaw.{end_kind}",
             "session_id": self._session_id_from_event(event),
@@ -1917,17 +1944,13 @@ class OpenClawMemoryHooks:
             "input_summary": input_summary,
             "selected_tools": self._dedupe_strings([*tools, *self._terminal_tools(event, task_context=task_context)]),
             "actions": self._dedupe_strings([*action_path, *self._terminal_action_path(event, task_context=task_context)]),
-            "outcome": self._outcome_trace_result(
-                event=event,
-                outcome=outcome,
-                correction=correction,
-                terminal_failure=terminal_failure,
-            ),
-            "verifier": self._first_text(
-                event.get("verifier"),
-                outcome.get("verifier"),
-                verification,
-            ),
+            "outcome": {"status": status, "success": success, "rehearsal": rehearsal},
+            "verifier": {
+                "passed": passed,
+                "method": f"openclaw.{end_kind}",
+                "evidence_refs": [recorded_event_id],
+                "checks": {"verification": verification, "result": result},
+            },
             "feedback": self._outcome_trace_feedback(event=event, outcome=outcome, correction=correction),
             "risk": self._first_present(
                 event.get("risk"),
@@ -1942,6 +1965,14 @@ class OpenClawMemoryHooks:
             value = self._first_present(event.get(key), outcome.get(key), task_context.get(key), None)
             if value is not None:
                 payload[key] = value
+        for contract in (
+            event.get("capability_contract"),
+            outcome.get("capability_contract"),
+            task_context.get("capability_contract"),
+        ):
+            if isinstance(contract, dict):
+                payload["capability_contract"] = dict(contract)
+                break
         return payload
 
     def _outcome_trace_result(

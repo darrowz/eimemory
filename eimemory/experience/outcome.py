@@ -3,6 +3,11 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from eimemory.experience.capability_contract import (
+    contract_source_ids,
+    normalize_capability_contract,
+    validate_capability_contract,
+)
 from eimemory.experience.diagnosis import diagnose_outcome
 from eimemory.experience.sanitize import OutcomeSanitizationError, sanitize_outcome_payload
 from eimemory.metadata import business_metadata
@@ -17,12 +22,26 @@ def record_outcome_trace(runtime: Any, payload: dict[str, Any], scope: dict | Sc
     error = _validate_outcome_trace(payload)
     if error:
         return {"ok": False, "error": error}
+    scope_ref = _scope_ref(scope)
+    contract: dict[str, Any] | None = None
+    if "capability_contract" in payload:
+        contract = normalize_capability_contract(payload.get("capability_contract"))
+        error = validate_capability_contract(
+            contract,
+            expected_capability=str(payload.get("capability") or "").strip(),
+            expected_case_id=str(payload.get("capability_case_id") or "").strip(),
+        )
+        if error:
+            return {"ok": False, "error": error}
+        for source_id in contract_source_ids(contract):
+            if runtime.store.get_by_id(source_id, scope=scope_ref) is None:
+                return {"ok": False, "error": f"capability contract source record unavailable in scope: {source_id}"}
+        payload = {**payload, "capability_contract": contract}
     try:
         safe_payload = sanitize_outcome_payload(payload)
     except OutcomeSanitizationError as exc:
         return {"ok": False, "error": f"unsafe payload: {exc}"}
 
-    scope_ref = _scope_ref(scope)
     existing = _existing_outcome_record(runtime, safe_payload, scope=scope_ref)
     if existing is not None:
         return {"ok": True, "record_id": existing.record_id, "kind": existing.kind, "idempotent": True}
@@ -55,6 +74,14 @@ def record_outcome_trace(runtime: Any, payload: dict[str, Any], scope: dict | Sc
         "risk_level": risk_level,
         "outcome_status": outcome_status,
     }
+    if contract is not None:
+        business_meta.update(
+            {
+                "capability": str(contract.get("capability") or ""),
+                "capability_case_id": str(contract.get("case_id") or ""),
+                "contract_verified": True,
+            }
+        )
     record = RecordEnvelope.create(
         kind="reflection",
         title=f"Outcome trace: {trace_id}",
