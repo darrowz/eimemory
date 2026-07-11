@@ -67,6 +67,11 @@ def build_capability_replay_packs(
                         "verdict": result["verdict"],
                         "hit": result.get("hit"),
                         "evidence_source_id": result.get("evidence_source_id", ""),
+                        "trace_id": result.get("trace_id", ""),
+                        "trace_record_id": result.get("trace_record_id", ""),
+                        "probe_source_id": result.get("probe_source_id", ""),
+                        "contract_schema": result.get("contract_schema", ""),
+                        "observation": dict(result.get("observation") or {}),
                     },
                     meta={
                         "report_type": "capability_replay_pack",
@@ -78,6 +83,10 @@ def build_capability_replay_packs(
                         "pass_rate": 1.0 if result["verdict"] == "pass" else 0.0,
                         "hit": result.get("hit"),
                         "evidence_source_id": result.get("evidence_source_id", ""),
+                        "trace_id": result.get("trace_id", ""),
+                        "trace_record_id": result.get("trace_record_id", ""),
+                        "probe_source_id": result.get("probe_source_id", ""),
+                        "contract_schema": result.get("contract_schema", ""),
                     },
                     source="eimemory.capability_replay",
                 )
@@ -223,6 +232,11 @@ def _run_case(runtime: Any, case: dict[str, Any]) -> dict[str, Any]:
         verdict = "pass" if hit is True else "fail"
     observed = str(result.get("observed") or "")
     evidence_source_id = str(result.get("evidence_source_id") or "").strip()
+    trace_id = str(result.get("trace_id") or "").strip()
+    trace_record_id = str(result.get("trace_record_id") or "").strip()
+    probe_source_id = str(result.get("probe_source_id") or "").strip()
+    contract_schema = str(result.get("contract_schema") or "").strip()
+    observation = dict(result.get("observation") or {}) if isinstance(result.get("observation"), dict) else {}
     reason = str(result.get("reason") or "")
     if verdict == "pass" and (hit is not True or not observed.strip()):
         verdict = "fail"
@@ -237,6 +251,11 @@ def _run_case(runtime: Any, case: dict[str, Any]) -> dict[str, Any]:
         "verdict": verdict,
         "hit": hit if hit in {True, False, None} else bool(hit),
         "evidence_source_id": evidence_source_id,
+        "trace_id": trace_id,
+        "trace_record_id": trace_record_id,
+        "probe_source_id": probe_source_id,
+        "contract_schema": contract_schema,
+        "observation": observation,
         "observed": observed,
         **({"reason": reason} if reason else {}),
     }

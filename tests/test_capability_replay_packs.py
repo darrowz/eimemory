@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from eimemory.api.runtime import Runtime
 from eimemory.experience import record_outcome_trace
+from eimemory.experience.capability_contract import SCHEMA_VERSION as CONTRACT_SCHEMA_VERSION
+from eimemory.governance.capability_acceptance import CAPABILITY_ACCEPTANCE_CASES, run_capability_acceptance
+from eimemory.governance.capability_replay_executor import execute_capability_replay_case
+from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
 SCOPE = {"agent_id": "agent-replay-packs", "workspace_id": "capability-replay"}
@@ -131,40 +135,29 @@ def test_capability_replay_rejects_pass_without_source_evidence(tmp_path) -> Non
     assert {item["reason"] for item in report["packs"][0]["case_results"]} == {"missing_replay_evidence_source"}
 
 
-def test_runtime_executor_replays_verified_outcome_evidence(tmp_path) -> None:
+def test_runtime_executor_replays_twelve_contract_backed_acceptance_traces(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     try:
-        summaries = [
-            "Recent recency window and source quality verified",
-            "GitHub trending projects use created range and stars sort",
-            "Official docs and primary source verification completed",
-        ]
-        for index, summary in enumerate(summaries):
-            record_outcome_trace(
-                runtime,
-                {
-                    "trace_id": f"search-verified-{index}",
-                    "idempotency_key": f"idem-search-verified-{index}",
-                    "task_type": "search_discovery",
-                    "input_summary": summary,
-                    "outcome": {"status": "success"},
-                    "verifier": {"passed": True},
-                    "feedback": {"summary": "primary source verified"},
-                },
-                scope=SCOPE,
-            )
+        acceptance = run_capability_acceptance(runtime, scope=SCOPE, persist=True)
 
         report = runtime.build_capability_replay_packs(
             scope=SCOPE,
             persist=True,
-            capabilities=["search.discovery"],
+            capabilities=sorted(WEAK_CAPABILITIES),
         )
+        persisted = [runtime.store.get_by_id(record_id, scope=SCOPE) for record_id in report["persisted_replay_ids"]]
     finally:
         runtime.close()
 
-    assert report["packs"][0]["pass_rate"] == 1.0
-    assert all(item["hit"] is True for item in report["packs"][0]["case_results"])
-    assert all("source_id=" in item["observed"] for item in report["packs"][0]["case_results"])
+    assert acceptance["all_passed"] is True
+    results = [item for pack in report["packs"] for item in pack["case_results"]]
+    assert len(results) == 12
+    assert {item["verdict"] for item in results} == {"pass"}
+    assert len({item["trace_id"] for item in results}) == 12
+    assert len({item["probe_source_id"] for item in results}) == 12
+    assert {item["contract_schema"] for item in results} == {CONTRACT_SCHEMA_VERSION}
+    assert all(isinstance(item["observation"], dict) and item["observation"] for item in results)
+    assert all(record is not None and record.content["result"]["observation"] for record in persisted)
 
 
 def test_runtime_executor_rejects_generic_outcomes_for_specific_cases(tmp_path) -> None:
@@ -194,10 +187,10 @@ def test_runtime_executor_rejects_generic_outcomes_for_specific_cases(tmp_path) 
         runtime.close()
 
     assert report["packs"][0]["pass_rate"] == 0.0
-    assert {item["reason"] for item in report["packs"][0]["case_results"]} == {"case_specific_outcome_evidence_missing"}
+    assert {item["verdict"] for item in report["packs"][0]["case_results"]} <= {"not_run", "fail"}
 
 
-def test_runtime_executor_accepts_verified_chinese_case_evidence(tmp_path) -> None:
+def test_runtime_executor_rejects_text_only_case_evidence(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     summaries = [
         "核验近期时间窗口与来源质量可信度",
@@ -224,7 +217,123 @@ def test_runtime_executor_accepts_verified_chinese_case_evidence(tmp_path) -> No
     finally:
         runtime.close()
 
-    assert report["packs"][0]["pass_rate"] == 1.0
+    assert report["packs"][0]["pass_rate"] == 0.0
+    assert {item["verdict"] for item in report["packs"][0]["case_results"]} <= {"not_run", "fail"}
+
+
+def test_runtime_executor_rejects_wrong_case_missing_source_failed_verifier_and_reused_source(tmp_path) -> None:
+    scenarios = (
+        ("wrong-case", "search_recent_source", "search_trending_github", True, False, False),
+        ("missing-source", "search_recent_source", "search_recent_source", True, True, False),
+        ("failed-verifier", "search_recent_source", "search_recent_source", False, False, False),
+        ("reused-source", "search_recent_source", "search_recent_source", True, False, True),
+    )
+    for name, contract_case, replay_case, verifier_passed, cross_scope, reuse_source in scenarios:
+        root = tmp_path / name
+        runtime = Runtime.create(root=root)
+        try:
+            _seed_contract_trace(
+                runtime,
+                scope=SCOPE,
+                case_id=contract_case,
+                verifier_passed=verifier_passed,
+                probe_scope={**SCOPE, "workspace_id": "other-scope"} if cross_scope else SCOPE,
+                trace_text="Recent recency window source trust GitHub trending created range stars verified",
+                duplicate_trace=reuse_source,
+            )
+            case = {
+                "case_id": replay_case,
+                "target_capability": "search.discovery",
+                "scope": SCOPE,
+            }
+            result = execute_capability_replay_case(runtime, case)
+        finally:
+            runtime.close()
+
+        assert result["verdict"] in {"not_run", "fail"}, name
+
+
+def _seed_contract_trace(
+    runtime: Runtime,
+    *,
+    scope: dict,
+    case_id: str,
+    verifier_passed: bool,
+    probe_scope: dict,
+    trace_text: str,
+    duplicate_trace: bool,
+) -> None:
+    artifact = next(item for item in CAPABILITY_ACCEPTANCE_CASES if item["case_id"] == case_id)
+    probe_id = f"probe-{case_id}"
+    probe = RecordEnvelope.create(
+        kind="replay_result",
+        title=f"Capability acceptance probe: {case_id}",
+        summary="pass: canonical non-destructive artifact validation",
+        scope=ScopeRef.from_dict(probe_scope),
+        source="eimemory.capability_acceptance",
+        content={
+            "report_type": "capability_probe_result",
+            "schema_version": "capability_probe_result.v1",
+            "case_id": case_id,
+            "capability": artifact["capability"],
+            "observation": dict(artifact["observation"]),
+            "passed": True,
+            "verdict": "pass",
+            "validator": {"schema_version": CONTRACT_SCHEMA_VERSION, "passed": True, "error": ""},
+        },
+        meta={
+            "report_type": "capability_probe_result",
+            "schema_version": "capability_probe_result.v1",
+            "case_id": case_id,
+            "capability": artifact["capability"],
+            "passed": True,
+            "verdict": "pass",
+        },
+    )
+    probe.record_id = probe_id
+    runtime.store.append(probe)
+    contract = {
+        "schema_version": CONTRACT_SCHEMA_VERSION,
+        "capability": artifact["capability"],
+        "case_id": case_id,
+        "observations": dict(artifact["observation"]),
+        "checks": [{"name": "canonical_observation_contract", "passed": True, "evidence_ref": probe_id}],
+        "source_record_ids": [probe_id],
+        "probe": True,
+    }
+    for index in range(2 if duplicate_trace else 1):
+        trace_id = f"trace-{case_id}-{index}"
+        trace = RecordEnvelope.create(
+            kind="reflection",
+            title=f"Outcome trace: {trace_id}",
+            summary=trace_text,
+            scope=ScopeRef.from_dict(scope),
+            source="eimemory.experience.outcome_trace",
+            content={
+                "schema_version": "outcome_trace.v1",
+                "payload": {
+                    "trace_id": trace_id,
+                    "task_type": "capability.acceptance",
+                    "input_summary": trace_text,
+                    "outcome": {"status": "success", "success": True, "rehearsal": True},
+                    "verifier": {"passed": verifier_passed, "evidence_ref": probe_id},
+                    "capability": artifact["capability"],
+                    "capability_case_id": case_id,
+                    "capability_contract": contract,
+                },
+            },
+            meta={
+                "report_type": "outcome_trace",
+                "schema_version": "outcome_trace.v1",
+                "trace_id": trace_id,
+                "outcome_status": "success",
+                "primary_label": "success",
+                "capability": artifact["capability"],
+                "capability_case_id": case_id,
+                "contract_verified": True,
+            },
+        )
+        runtime.store.append(trace)
 
 
 def test_replay_rerun_persists_new_execution_and_readiness_uses_latest(tmp_path) -> None:

@@ -1,98 +1,251 @@
 from __future__ import annotations
 
-import json
+from copy import deepcopy
 from typing import Any
 
+from eimemory.experience.capability_contract import (
+    SCHEMA_VERSION as CONTRACT_SCHEMA_VERSION,
+    contract_source_ids,
+    normalize_capability_contract,
+    validate_capability_contract,
+)
+from eimemory.governance.capability_acceptance import PROBE_REPORT_TYPE, PROBE_SCHEMA_VERSION
 from eimemory.governance.capability_attribution import collect_capability_evidence
+from eimemory.metadata import business_metadata
 from eimemory.models.records import ScopeRef
 
 
-CASE_EVIDENCE_REQUIREMENTS: dict[str, tuple[tuple[str, ...], ...]] = {
-    "search_recent_source": (("recent", "recency", "time window", "近期", "最近", "时间窗口"), ("source quality", "source trust", "trust score", "来源质量", "来源可信度", "可信度")),
-    "search_trending_github": (("github",), ("trending", "created range", "热门", "趋势", "创建时间"), ("stars", "star sort", "星标", "星数")),
-    "search_primary_source": (("official", "primary source", "官方", "一手来源"), ("verified", "verification", "已验证", "核验")),
-    "research_evidence_gate": (("evidence", "citation", "cite", "证据", "引用"), ("inference", "claim", "fact", "推断", "主张", "事实")),
-    "research_conflict_resolution": (("conflict", "disagree", "冲突", "不一致"), ("recency", "confidence", "时效", "置信度")),
-    "research_actionable_takeaway": (("actionable", "implementation", "可执行", "落地"), ("replay", "playbook", "decision", "回放", "剧本", "决策")),
-    "uumit_requirement_checklist": (("requirement", "checklist", "需求", "检查清单"), ("acceptance", "delivery", "验收", "交付")),
-    "uumit_quality_gate": (("quality", "质量"), ("version", "visual", "customer constraint", "版本", "视觉", "客户约束")),
-    "uumit_post_delivery_followup": (("follow-up", "followup", "after delivery", "后续", "交付后"), ("outcome", "correction", "policy", "结果", "纠正", "策略")),
-    "device_physical_channel": (("channel", "speaker", "audio output", "通道", "扬声器", "音频输出"), ("control", "playback", "控制", "播放")),
-    "device_missing_info": (("missing target", "target device", "缺少目标", "目标设备"), ("clarify", "safe inference", "澄清", "安全推断")),
-    "device_safe_boundary": (("reversible", "rollback", "可逆", "回滚"), ("verification signal", "verified output", "验证信号", "输出验证")),
-}
+SUCCESS_STATUSES = {"success", "good", "passed", "pass", "completed"}
 
 
 def execute_capability_replay_case(runtime: Any, case: dict[str, Any]) -> dict[str, Any]:
-    """Replay one capability case against verified, attributable outcome evidence."""
+    """Replay one case only from a verified outcome-trace and probe contract chain."""
 
     scope = ScopeRef.from_dict(case.get("scope") or {})
     capability = str(case.get("target_capability") or "").strip()
+    case_id = str(case.get("case_id") or "").strip()
     evidence_by_capability = collect_capability_evidence(runtime, scope=scope, limit=500)
-    evidence_items = sorted(
+    candidates = sorted(
         (
             item
             for item in evidence_by_capability.get(capability, [])
-            if float(item.get("score") or 0.0) >= 0.7
-            and str(item.get("source_kind") or "") in {"outcome_trace", "event_outcome"}
+            if item.get("contract_verified") is True
+            and str(item.get("case_id") or "") == case_id
+            and str(item.get("source_kind") or "") == "outcome_trace"
             and str(item.get("source_id") or "")
         ),
         key=lambda item: str(item.get("source_id") or ""),
     )
-    requirements = CASE_EVIDENCE_REQUIREMENTS.get(str(case.get("case_id") or ""), ())
-    matching_items = [item for item in evidence_items if _matches_requirements(_evidence_text(runtime, item, scope=scope), requirements)]
-    if not matching_items:
-        return {
-            "verdict": "not_run",
-            "hit": None,
-            "observed": "",
-            "reason": "case_specific_outcome_evidence_missing",
-        }
-    evidence = matching_items[0]
-    source_id = str(evidence.get("source_id") or "")
-    source_record = runtime.store.get_by_id(source_id, scope=scope)
-    if source_record is None:
-        return {
-            "verdict": "not_run",
-            "hit": None,
-            "observed": f"source_id={source_id}",
-            "reason": "outcome_evidence_not_retrievable",
-        }
-    content = source_record.content if isinstance(source_record.content, dict) else {}
+    if not candidates:
+        return _failure("not_run", "contract_backed_outcome_evidence_missing")
+
+    probe_uses: dict[str, int] = {}
+    for item in candidates:
+        for source_id in item.get("source_record_ids") or []:
+            probe_id = str(source_id or "").strip()
+            if probe_id:
+                probe_uses[probe_id] = probe_uses.get(probe_id, 0) + 1
+    reused_probe_ids = sorted(probe_id for probe_id, count in probe_uses.items() if count > 1)
+    if reused_probe_ids:
+        return _failure(
+            "fail",
+            "reused_probe_source",
+            observed=f"probe_source_id={reused_probe_ids[0]}",
+            probe_source_id=reused_probe_ids[0],
+        )
+
+    failures: list[dict[str, Any]] = []
+    for evidence in candidates:
+        result = _validate_contract_chain(
+            runtime,
+            evidence=evidence,
+            scope=scope,
+            capability=capability,
+            case_id=case_id,
+        )
+        if result.get("verdict") == "pass":
+            return result
+        failures.append(result)
+    return failures[0] if failures else _failure("not_run", "contract_backed_outcome_evidence_missing")
+
+
+def _validate_contract_chain(
+    runtime: Any,
+    *,
+    evidence: dict[str, Any],
+    scope: ScopeRef,
+    capability: str,
+    case_id: str,
+) -> dict[str, Any]:
+    trace_record_id = str(evidence.get("source_id") or "").strip()
+    trace_record = runtime.store.get_by_id(trace_record_id, scope=scope)
+    if trace_record is None:
+        return _failure("not_run", "outcome_trace_not_retrievable", trace_record_id=trace_record_id)
+    if trace_record.kind != "reflection" or trace_record.source != "eimemory.experience.outcome_trace":
+        return _failure("fail", "untrusted_outcome_trace_source", trace_record_id=trace_record_id)
+
+    trace_meta = business_metadata(trace_record.meta)
+    if str(trace_meta.get("report_type") or "") != "outcome_trace":
+        return _failure("fail", "invalid_outcome_trace_report_type", trace_record_id=trace_record_id)
+    content = trace_record.content if isinstance(trace_record.content, dict) else {}
     payload = content.get("payload") if isinstance(content.get("payload"), dict) else {}
+    trace_id = str(payload.get("trace_id") or "").strip()
+    if not trace_id or str(trace_meta.get("trace_id") or "").strip() != trace_id:
+        return _failure("fail", "outcome_trace_id_mismatch", trace_record_id=trace_record_id)
+
+    contract = normalize_capability_contract(payload.get("capability_contract"))
+    contract_error = validate_capability_contract(
+        contract,
+        expected_capability=capability,
+        expected_case_id=case_id,
+    )
+    if contract_error:
+        return _failure("fail", "invalid_capability_contract", trace_id=trace_id, trace_record_id=trace_record_id)
+    if (
+        trace_meta.get("contract_verified") is not True
+        or str(trace_meta.get("capability") or "") != capability
+        or str(trace_meta.get("capability_case_id") or "") != case_id
+        or str(payload.get("capability") or "") != capability
+        or str(payload.get("capability_case_id") or "") != case_id
+    ):
+        return _failure("fail", "trace_contract_attribution_mismatch", trace_id=trace_id, trace_record_id=trace_record_id)
+
+    source_ids = contract_source_ids(contract)
+    if len(source_ids) != 1:
+        return _failure("fail", "single_probe_source_required", trace_id=trace_id, trace_record_id=trace_record_id)
+    probe_source_id = source_ids[0]
+    if list(evidence.get("source_record_ids") or []) != source_ids:
+        return _failure(
+            "fail",
+            "attribution_source_mismatch",
+            trace_id=trace_id,
+            trace_record_id=trace_record_id,
+            probe_source_id=probe_source_id,
+        )
+
     verifier = payload.get("verifier") if isinstance(payload.get("verifier"), dict) else {}
     outcome = payload.get("outcome") if isinstance(payload.get("outcome"), dict) else {}
-    outcome_status = str(outcome.get("status") or source_record.meta.get("outcome_status") or "").lower()
-    hit = bool(
-        source_record.source == "eimemory.experience.outcome_trace"
-        and verifier.get("passed") is True
-        and outcome_status in {"success", "good", "passed", "pass", "completed"}
-    )
+    outcome_status = str(outcome.get("status") or trace_meta.get("outcome_status") or "").strip().lower()
+    if outcome_status not in SUCCESS_STATUSES or outcome.get("rehearsal") is not True:
+        return _failure(
+            "fail",
+            "verified_rehearsal_outcome_required",
+            trace_id=trace_id,
+            trace_record_id=trace_record_id,
+            probe_source_id=probe_source_id,
+        )
+    if verifier.get("passed") is not True or str(verifier.get("evidence_ref") or "") != probe_source_id:
+        return _failure(
+            "fail",
+            "outcome_verifier_probe_mismatch",
+            trace_id=trace_id,
+            trace_record_id=trace_record_id,
+            probe_source_id=probe_source_id,
+        )
+    if any(str(check.get("evidence_ref") or "") != probe_source_id for check in contract.get("checks") or []):
+        return _failure(
+            "fail",
+            "contract_check_probe_mismatch",
+            trace_id=trace_id,
+            trace_record_id=trace_record_id,
+            probe_source_id=probe_source_id,
+        )
+
+    probe_record = runtime.store.get_by_id(probe_source_id, scope=scope)
+    if probe_record is None:
+        return _failure(
+            "not_run",
+            "probe_source_unavailable_in_scope",
+            trace_id=trace_id,
+            trace_record_id=trace_record_id,
+            probe_source_id=probe_source_id,
+        )
+    probe_meta = business_metadata(probe_record.meta)
+    probe_content = probe_record.content if isinstance(probe_record.content, dict) else {}
+    validator = probe_content.get("validator") if isinstance(probe_content.get("validator"), dict) else {}
+    if (
+        probe_record.kind != "replay_result"
+        or probe_record.source != "eimemory.capability_acceptance"
+        or str(probe_meta.get("report_type") or "") != PROBE_REPORT_TYPE
+        or str(probe_meta.get("schema_version") or "") != PROBE_SCHEMA_VERSION
+        or str(probe_meta.get("capability") or "") != capability
+        or str(probe_meta.get("case_id") or "") != case_id
+        or probe_meta.get("passed") is not True
+        or str(probe_meta.get("verdict") or "") != "pass"
+        or str(probe_content.get("report_type") or "") != PROBE_REPORT_TYPE
+        or str(probe_content.get("schema_version") or "") != PROBE_SCHEMA_VERSION
+        or str(probe_content.get("capability") or "") != capability
+        or str(probe_content.get("case_id") or "") != case_id
+        or probe_content.get("passed") is not True
+        or str(probe_content.get("verdict") or "") != "pass"
+        or validator.get("passed") is not True
+        or str(validator.get("schema_version") or "") != CONTRACT_SCHEMA_VERSION
+    ):
+        return _failure(
+            "fail",
+            "invalid_capability_probe",
+            trace_id=trace_id,
+            trace_record_id=trace_record_id,
+            probe_source_id=probe_source_id,
+        )
+    probe_checks = probe_content.get("checks") if isinstance(probe_content.get("checks"), list) else []
+    if not probe_checks or any(
+        not isinstance(check, dict)
+        or check.get("passed") is not True
+        or str(check.get("evidence_ref") or "") != probe_source_id
+        for check in probe_checks
+    ):
+        return _failure(
+            "fail",
+            "invalid_probe_checks",
+            trace_id=trace_id,
+            trace_record_id=trace_record_id,
+            probe_source_id=probe_source_id,
+        )
+
+    observation = probe_content.get("observation")
+    if not isinstance(observation, dict) or observation != contract.get("observations"):
+        return _failure(
+            "fail",
+            "probe_observation_contract_mismatch",
+            trace_id=trace_id,
+            trace_record_id=trace_record_id,
+            probe_source_id=probe_source_id,
+        )
+    immutable_observation = deepcopy(observation)
     return {
-        "verdict": "pass" if hit else "fail",
-        "hit": hit,
-        "evidence_source_id": source_id,
-        "observed": f"source_id={source_id};trace_id={payload.get('trace_id', '')};verifier_passed={verifier.get('passed') is True}",
-        **({"reason": "verified_outcome_integrity_check_failed"} if not hit else {}),
+        "verdict": "pass",
+        "hit": True,
+        "evidence_source_id": trace_record_id,
+        "trace_id": trace_id,
+        "trace_record_id": trace_record_id,
+        "probe_source_id": probe_source_id,
+        "contract_schema": str(contract.get("schema_version") or ""),
+        "observation": immutable_observation,
+        "observed": (
+            f"trace_id={trace_id};trace_record_id={trace_record_id};"
+            f"probe_source_id={probe_source_id};contract_schema={contract.get('schema_version', '')}"
+        ),
     }
 
 
-def _evidence_text(runtime: Any, evidence: dict[str, Any], *, scope: ScopeRef) -> str:
-    source_id = str(evidence.get("source_id") or "")
-    record = runtime.store.get_by_id(source_id, scope=scope)
-    if record is None:
-        return str(evidence.get("summary") or "").lower()
-    return " ".join(
-        (
-            str(evidence.get("summary") or ""),
-            str(record.title or ""),
-            str(record.summary or ""),
-            str(record.detail or ""),
-            json.dumps(record.content if isinstance(record.content, dict) else {}, ensure_ascii=False, sort_keys=True, default=str),
-        )
-    ).lower()
-
-
-def _matches_requirements(text: str, requirements: tuple[tuple[str, ...], ...]) -> bool:
-    value = str(text or "").lower()
-    return bool(requirements) and all(any(term in value for term in group) for group in requirements)
+def _failure(
+    verdict: str,
+    reason: str,
+    *,
+    observed: str = "",
+    trace_id: str = "",
+    trace_record_id: str = "",
+    probe_source_id: str = "",
+) -> dict[str, Any]:
+    return {
+        "verdict": verdict,
+        "hit": False if verdict == "fail" else None,
+        "observed": observed,
+        "reason": reason,
+        "trace_id": trace_id,
+        "trace_record_id": trace_record_id,
+        "probe_source_id": probe_source_id,
+        "contract_schema": "",
+        "observation": {},
+    }

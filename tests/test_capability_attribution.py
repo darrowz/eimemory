@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from eimemory.api.runtime import Runtime
 from eimemory.experience import record_outcome_trace
-from eimemory.governance.capability_attribution import attribute_capability_outcomes
+from eimemory.experience.capability_contract import CASE_CONTRACTS
+from eimemory.governance.capability_acceptance import run_capability_acceptance
+from eimemory.governance.capability_attribution import attribute_capability_outcomes, collect_capability_evidence
 from eimemory.governance.capability_ledger import build_capability_ledger
 
 
@@ -166,3 +168,56 @@ def test_unverified_success_is_not_capability_evidence(tmp_path) -> None:
     report = attribute_capability_outcomes(runtime, scope=scope, loop_id="attr_unverified")
 
     assert "search.discovery" not in report["capabilities"]
+
+
+def test_explicit_contracts_attribute_exactly_one_capability_and_case(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu", "workspace_id": "contract-attribution"}
+    try:
+        acceptance = run_capability_acceptance(runtime, scope=scope, persist=True)
+        evidence_by_capability = collect_capability_evidence(runtime, scope=scope)
+    finally:
+        runtime.close()
+
+    assert acceptance["all_passed"] is True
+    contract_items = [
+        item
+        for items in evidence_by_capability.values()
+        for item in items
+        if item["contract_verified"] is True
+    ]
+    assert len(contract_items) == len(CASE_CONTRACTS) == 12
+    assert {item["case_id"] for item in contract_items} == set(CASE_CONTRACTS)
+    for item in contract_items:
+        expected_capability = CASE_CONTRACTS[item["case_id"]][0]
+        assert item["capabilities"] == [expected_capability]
+        assert item["capability"] == expected_capability
+        assert len(item["source_record_ids"]) == 1
+        assert item["source_record_ids"][0] in acceptance["probe_ids"]
+
+
+def test_legacy_keyword_trace_is_diagnostic_only(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu", "workspace_id": "legacy-attribution"}
+    try:
+        stored = record_outcome_trace(
+            runtime,
+            _trace_payload(
+                "legacy-search-trace",
+                task_type="search_discovery",
+                summary="Recent GitHub source discovery was verified",
+            ),
+            scope=scope,
+        )
+        evidence_by_capability = collect_capability_evidence(runtime, scope=scope)
+    finally:
+        runtime.close()
+
+    legacy = next(
+        item
+        for item in evidence_by_capability["search.discovery"]
+        if item["source_id"] == stored["record_id"]
+    )
+    assert legacy["contract_verified"] is False
+    assert legacy["case_id"] == ""
+    assert legacy["source_record_ids"] == []

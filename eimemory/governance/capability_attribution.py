@@ -4,6 +4,11 @@ import json
 from statistics import mean
 from typing import Any
 
+from eimemory.experience.capability_contract import (
+    contract_source_ids,
+    normalize_capability_contract,
+    validate_capability_contract,
+)
 from eimemory.governance.capability_ledger import SEEDED_LEDGER_CAPABILITIES, record_capability_score
 from eimemory.governance.learning_state import stable_semantic_key
 from eimemory.metadata import business_metadata
@@ -138,7 +143,14 @@ def attribute_capability_outcomes(
 
 def _evidence_from_outcome_traces(runtime: Any, *, scope: ScopeRef, limit: int) -> list[dict[str, Any]]:
     evidence: list[dict[str, Any]] = []
-    for record in runtime.store.list_records(kinds=["reflection"], scope=scope, limit=limit):
+    for record in _records_by_meta_value(
+        runtime,
+        kinds=["reflection"],
+        scope=scope,
+        meta_key="report_type",
+        meta_value="outcome_trace",
+        limit=limit,
+    ):
         meta = business_metadata(record.meta)
         if str(meta.get("report_type") or "") != "outcome_trace":
             continue
@@ -150,18 +162,28 @@ def _evidence_from_outcome_traces(runtime: Any, *, scope: ScopeRef, limit: int) 
         if outcome_status in {"success", "good", "passed", "pass", "completed"} and verifier.get("passed") is not True:
             continue
         policy_attribution = _dict_value(record.content.get("policy_attribution") if isinstance(record.content, dict) else None) or _dict_value(payload.get("policy_attribution"))
-        text = _join_text(
-            record.title,
-            record.summary,
-            meta.get("task_type"),
-            meta.get("primary_label"),
-            payload.get("task_type"),
-            payload.get("input_summary"),
-            payload.get("feedback"),
-            payload.get("outcome"),
-            policy_attribution,
-        )
-        capabilities = _capabilities_from_text(text)
+        contract = normalize_capability_contract(payload.get("capability_contract"))
+        contract_error = validate_capability_contract(contract) if contract else "capability contract missing"
+        contract_verified = not contract_error
+        if contract_verified:
+            capabilities = [str(contract["capability"])]
+            case_id = str(contract["case_id"])
+            source_record_ids = contract_source_ids(contract)
+        else:
+            text = _join_text(
+                record.title,
+                record.summary,
+                meta.get("task_type"),
+                meta.get("primary_label"),
+                payload.get("task_type"),
+                payload.get("input_summary"),
+                payload.get("feedback"),
+                payload.get("outcome"),
+                policy_attribution,
+            )
+            capabilities = _capabilities_from_text(text)
+            case_id = ""
+            source_record_ids = []
         if not capabilities:
             continue
         evidence.append(
@@ -172,6 +194,11 @@ def _evidence_from_outcome_traces(runtime: Any, *, scope: ScopeRef, limit: int) 
                 "score": _score_outcome(status=str(meta.get("outcome_status") or ""), primary_label=str(meta.get("primary_label") or "")),
                 "summary": record.summary,
                 "capabilities": capabilities,
+                "contract_verified": contract_verified,
+                "case_id": case_id,
+                "source_record_ids": source_record_ids,
+                "contract_schema": str(contract.get("schema_version") or "") if contract_verified else "",
+                "observation": dict(contract.get("observations") or {}) if contract_verified else {},
                 "policy_attribution": policy_attribution,
                 "regression": str(meta.get("primary_label") or "") not in {"", "success"},
                 "semantic_key": stable_semantic_key("capability_evidence", record.record_id),
@@ -242,6 +269,11 @@ def _evidence_from_event_outcomes(runtime: Any, *, scope: ScopeRef, limit: int) 
                 "score": _score_outcome(status=outcome_name, primary_label=""),
                 "summary": str(row["reason"] or row["correction_from_user"] or row["policy_update"] or event.get("user_phrase") or ""),
                 "capabilities": capabilities,
+                "contract_verified": False,
+                "case_id": "",
+                "source_record_ids": [],
+                "contract_schema": "",
+                "observation": {},
                 "policy_attribution": policy_attribution,
                 "regression": outcome_name.lower() in {"bad", "failure", "failed", "verification_missing"},
                 "semantic_key": stable_semantic_key("capability_evidence", source_id),
@@ -297,3 +329,26 @@ def _json_dict(value: Any) -> dict[str, Any]:
 
 def _dict_value(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
+
+
+def _records_by_meta_value(
+    runtime: Any,
+    *,
+    kinds: list[str],
+    scope: ScopeRef,
+    meta_key: str,
+    meta_value: Any,
+    limit: int,
+) -> list[Any]:
+    lookup = getattr(runtime.store, "list_records_by_meta_value", None)
+    if callable(lookup):
+        records = lookup(
+            kinds=kinds,
+            scope=scope,
+            meta_key=meta_key,
+            meta_value=meta_value,
+            limit=limit,
+        )
+        if records is not None:
+            return list(records)
+    return runtime.store.list_records(kinds=kinds, scope=scope, limit=limit)
