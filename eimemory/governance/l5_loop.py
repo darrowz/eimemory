@@ -9,6 +9,7 @@ from eimemory.governance.capability_ledger import build_capability_ledger
 from eimemory.governance.goal_graph import CORE_GOAL_CAPABILITIES
 from eimemory.governance.goal_registry import load_goal_registry
 from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
+from eimemory.governance.rollout_lifecycle import is_executed_rollback_ledger_record
 from eimemory.governance.self_model import build_self_model
 from eimemory.models.records import RecordEnvelope, ScopeRef
 from eimemory.storage.replay_buffer import ReplayBuffer
@@ -255,6 +256,9 @@ def run_l5_cycle(
         "consciousness_research_layer": dict(CONSCIOUSNESS_RESEARCH_LAYER),
         "persisted_record_id": "",
     }
+    report["rollback_refs"] = _compact_ids(
+        [*list(report.get("rollback_refs") or []), *_executed_rollback_ledger_refs(runtime, scope=scope_ref)]
+    )
     assessment = assess_l5_closed_loop(runtime, scope=scope_ref, loop_report=report, persist=persist, loop_id=resolved_loop_id)
     report["assessment"] = assessment
     if persist:
@@ -354,6 +358,7 @@ def assess_l5_closed_loop(
     report = dict(loop_report or {})
     if not report:
         report = _latest_l5_closed_loop_report(runtime, scope=scope_ref)
+    report["rollback_refs"] = _executed_rollback_ledger_refs(runtime, scope=scope_ref)
     missing = _missing_evidence(report)
     level = _level_for(report, missing)
     assessment = {
@@ -758,7 +763,25 @@ def _rollback_refs(auto: dict[str, Any]) -> list[str]:
 
 def _rollback_evidence_refs(report: dict[str, Any]) -> list[str]:
     auto = report.get("autonomous_learning") if isinstance(report.get("autonomous_learning"), dict) else {}
-    return _rollback_refs(auto)
+    return _compact_ids([*list(report.get("rollback_refs") or []), *_rollback_refs(auto)])
+
+
+def _executed_rollback_ledger_refs(runtime: Any, *, scope: ScopeRef, limit: int = 200) -> list[str]:
+    getter = getattr(runtime, "get_policy_rollout_ledger", None)
+    if not callable(getter):
+        return []
+    try:
+        ledger = list(getter(scope=scope, limit=max(1, int(limit))))
+    except Exception:
+        return []
+    refs: list[str] = []
+    for item in ledger:
+        if not isinstance(item, dict) or not is_executed_rollback_ledger_record(item):
+            continue
+        ledger_id = str(item.get("id") or "").strip()
+        if ledger_id:
+            refs.append(ledger_id)
+    return _compact_ids(refs)
 
 
 def _has_rollback_evidence(report: dict[str, Any]) -> bool:

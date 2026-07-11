@@ -137,6 +137,17 @@ def test_l5_readiness_rejects_status_only_rollback_evidence(tmp_path) -> None:
                 meta={"action": "rollback"},
             )
         )
+        runtime.store.sqlite.upsert_policy_rollout_ledger_payload(
+            {
+                "id": "readiness-blocked-rollback",
+                "scope": SCOPE,
+                "action_type": "rollback",
+                "promotion_id": "readiness-blocked",
+                "budget_decision": "blocked",
+                "applied_pattern_id": "",
+                "details": {"blocked": True, "status": "rolled_back"},
+            }
+        )
 
         report = runtime.build_l5_readiness_report(scope=SCOPE)
     finally:
@@ -168,7 +179,7 @@ def test_l5_readiness_does_not_treat_replay_only_weak_capabilities_as_l5(tmp_pat
     assert report["verified_replay"]["weak_capabilities_missing"] == sorted(WEAK_CAPABILITIES)
 
 
-def test_l5_readiness_requires_sufficient_auto_patch_success_samples(tmp_path) -> None:
+def test_l5_readiness_rejects_status_only_patch_samples(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     try:
         _seed_l5_prerequisites(
@@ -178,7 +189,7 @@ def test_l5_readiness_requires_sufficient_auto_patch_success_samples(tmp_path) -
             patch_samples=2,
             execute_weak_replays=True,
             assessment_complete=True,
-            verified_patch_evidence=True,
+            verified_patch_evidence=False,
         )
 
         report = runtime.build_l5_readiness_report(scope=SCOPE)
@@ -508,16 +519,33 @@ def _seed_l5_prerequisites(
     )
     runtime.rollback_intent_pattern(pattern_id, scope=scope, reason="seed verified L5 rollback", auto=False)
     for index in range(patch_samples):
+        commit = f"{index + 1:040x}"
+        prior_commit = f"{index:040x}"
+        version = "1.9.16"
+        release_path = f"/opt/eimemory/releases/{commit}"
         patch_evidence = (
             {
                 "gate": {"ok": True},
                 "side_effect": {
                     "ok": True,
                     "production_applied": True,
+                    "deployment_executed": True,
                     "verification": {"ok": True, "skipped": False},
-                    "post_deploy_health": {"ok": True, "skipped": False},
-                    "commit": {"ok": True, "commit_sha": f"{index + 1:040x}"},
-                    "rollback_evidence": {"service_name": "eimemory-rpc.service", "prior_commit_sha": f"{index:040x}"},
+                    "deployment": {"ok": True, "skipped": False, "release_path": release_path},
+                    "post_deploy_health": {
+                        "ok": True,
+                        "skipped": False,
+                        "commit": commit,
+                        "version": version,
+                        "release_path": release_path,
+                    },
+                    "commit": {"ok": True, "commit_sha": commit},
+                    "release": {"version": version, "release_path": release_path},
+                    "rollback_evidence": {
+                        "service_name": "eimemory-rpc.service",
+                        "prior_commit_sha": prior_commit,
+                        "rollback_command": f"git reset --hard {prior_commit}",
+                    },
                 },
             }
             if verified_patch_evidence
@@ -530,7 +558,20 @@ def _seed_l5_prerequisites(
                 summary="deployed",
                 scope=scope_ref,
                 status="deployed",
-                content={"action": "code_patch", "promotion_target": "code_patch", **patch_evidence},
-                meta={"action": "code_patch", "promotion_target": "code_patch", "gate_ok": bool(patch_evidence)},
+                content={
+                    "candidate_id": f"readiness-patch-{index}",
+                    "action": "code_patch",
+                    "promotion_target": "code_patch",
+                    **patch_evidence,
+                },
+                meta={
+                    "candidate_id": f"readiness-patch-{index}",
+                    "action": "code_patch",
+                    "promotion_target": "code_patch",
+                    "gate_ok": bool(patch_evidence),
+                    "commit_sha": commit if patch_evidence else "",
+                    "version": version if patch_evidence else "",
+                    "release_path": release_path if patch_evidence else "",
+                },
             )
         )

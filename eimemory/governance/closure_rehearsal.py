@@ -26,6 +26,27 @@ def run_l5_closure_rehearsal(
     persist: bool = True,
 ) -> dict[str, Any]:
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+    report = _initial_closure_report(scope_ref)
+
+    acceptance = runtime.run_capability_acceptance(scope=asdict(scope_ref), persist=persist)
+    report["capability_acceptance"] = acceptance
+    report["sequence"].append("acceptance")
+    if not _acceptance_gate(acceptance):
+        return _blocked_closure(report, "capability_acceptance_failed")
+
+    weak_capability_replay = runtime.build_capability_replay_packs(
+        scope=asdict(scope_ref),
+        capabilities=WEAK_REPLAY_CAPABILITIES,
+        persist=persist,
+        loop_id=LOOP_ID,
+    )
+    replay_gate = _weak_replay_gate(weak_capability_replay)
+    report["weak_capability_replay"] = weak_capability_replay
+    report["replay_gate"] = replay_gate
+    report["sequence"].append("replay")
+    if not replay_gate["ok"]:
+        return _blocked_closure(report, *replay_gate["blocked_reasons"])
+
     correction_replay = runtime.record_user_correction_replay(
         {
             "text": CORRECTION_TEXT,
@@ -36,92 +57,169 @@ def run_l5_closure_rehearsal(
         scope=asdict(scope_ref),
         persist=persist,
     )
+    report["correction_replay"] = correction_replay
+    report["sequence"].append("skill_rollback")
+    if correction_replay.get("ok") is not True:
+        return _blocked_closure(report, "correction_replay_failed")
+
     pre_answer_gate = runtime.build_ground_truth_pre_answer_gate(
         query=CORRECTION_QUERY,
         scope=asdict(scope_ref),
         persist=persist,
     )
-    weak_capability_replay = runtime.build_capability_replay_packs(
-        scope=asdict(scope_ref),
-        capabilities=WEAK_REPLAY_CAPABILITIES,
-        persist=persist,
-        loop_id=LOOP_ID,
+    report["pre_answer_gate"] = pre_answer_gate
+    if int(pre_answer_gate.get("matched_rule_count") or 0) < 1:
+        return _blocked_closure(report, "ground_truth_rule_not_matched")
+
+    playbook_ids = _seed_eiskill_playbooks(runtime, scope=scope_ref, persist=persist)
+    skill_promotion = runtime.promote_repeated_sops_to_skill_candidates(
+        scope=asdict(scope_ref), min_repeats=3, persist=persist, limit=50
     )
-    replay_gate = _weak_replay_gate(weak_capability_replay)
-    playbook_ids: list[str] = []
-    skill_promotion: dict[str, Any] = {"ok": False, "status": "not_run", "reason": "replay_gate_failed", "skills": []}
-    skill_call: dict[str, Any] = {"ok": False, "status": "not_run", "error": "replay_gate_failed"}
-    rollback: dict[str, Any] = {"ok": False, "status": "not_run", "reason": "replay_gate_failed"}
-    outcome_trace: dict[str, Any] = {"ok": False, "status": "not_run", "reason": "closure_gate_failed"}
-    if replay_gate["ok"]:
-        playbook_ids = _seed_eiskill_playbooks(runtime, scope=scope_ref, persist=persist)
-        skill_promotion = runtime.promote_repeated_sops_to_skill_candidates(
-            scope=asdict(scope_ref),
-            min_repeats=3,
-            persist=persist,
-            limit=50,
-        )
-        skill_id = str((skill_promotion.get("skills") or [{}])[0].get("skill_id") or "")
-        skill_call = (
-            runtime.call_eiskill(
-                skill_id=skill_id,
-                scope=asdict(scope_ref),
-                context={"query": CORRECTION_QUERY, "rehearsal": True},
-                persist=persist,
-            )
-            if skill_id
-            else {"ok": False, "status": "not_run", "error": "skill_not_generated"}
-        )
-        if skill_call.get("ok"):
-            rollback = _run_non_destructive_rollback(runtime, scope=scope_ref, persist=persist)
-        if (
-            correction_replay.get("ok")
-            and pre_answer_gate.get("matched_rule_count", 0) >= 1
-            and skill_call.get("ok")
-            and rollback.get("ok")
-        ):
-            outcome_trace = _record_successful_task_outcome(runtime, scope=scope_ref, persist=persist)
+    report["playbook_record_ids"] = playbook_ids
+    report["skill_promotion"] = skill_promotion
+    skill_id = str((skill_promotion.get("skills") or [{}])[0].get("skill_id") or "")
+    if not skill_id:
+        return _blocked_closure(report, "skill_call_failed")
+    skill_call = runtime.call_eiskill(
+        skill_id=skill_id,
+        scope=asdict(scope_ref),
+        context={"query": CORRECTION_QUERY, "rehearsal": True},
+        persist=persist,
+    )
+    report["skill_call"] = skill_call
+    if skill_call.get("ok") is not True:
+        return _blocked_closure(report, "skill_call_failed")
+
+    rollback = _run_non_destructive_rollback(runtime, scope=scope_ref, persist=persist)
+    report["rollback"] = rollback
+    if rollback.get("ok") is not True:
+        return _blocked_closure(report, "rollback_rehearsal_failed")
+
+    observation_input = _observation_autonomous_report(
+        replay_report=weak_capability_replay,
+        skill_promotion=skill_promotion,
+        rollback=rollback,
+    )
+    l5_observation = runtime.run_l5_cycle(
+        scope=asdict(scope_ref),
+        apply=False,
+        force=False,
+        max_goals=1,
+        max_promotions=0,
+        allow_network=False,
+        loop_id=f"{LOOP_ID}_observation",
+        persist=persist,
+        autonomous_learning_report=observation_input,
+    )
+    report["l5_observation"] = l5_observation
+    report["sequence"].append("l5_observation_assessment")
+    assessment = l5_observation.get("assessment") if isinstance(l5_observation.get("assessment"), dict) else {}
+    if l5_observation.get("ok") is not True or assessment.get("complete") is not True or assessment.get("level") != "L5":
+        return _blocked_closure(report, "l5_observation_assessment_incomplete")
+
     capability_dashboard = runtime.build_capability_dashboard_metrics(
-        scope=asdict(scope_ref),
-        persist=persist,
-        loop_id=LOOP_ID,
+        scope=asdict(scope_ref), persist=persist, loop_id=LOOP_ID
     )
+    report["capability_dashboard"] = capability_dashboard
+    report["sequence"].append("dashboard")
+    if capability_dashboard.get("ok") is not True:
+        return _blocked_closure(report, "capability_dashboard_failed")
+
     l5_readiness = runtime.build_l5_readiness_report(
-        scope=asdict(scope_ref),
-        persist=persist,
-        loop_id=LOOP_ID,
+        scope=asdict(scope_ref), persist=persist, loop_id=LOOP_ID
     )
-    blocked_reasons: list[str] = []
-    if not correction_replay.get("ok"):
-        blocked_reasons.append("correction_replay_failed")
-    if pre_answer_gate.get("matched_rule_count", 0) < 1:
-        blocked_reasons.append("ground_truth_rule_not_matched")
-    blocked_reasons.extend(replay_gate["blocked_reasons"])
-    if replay_gate["ok"] and not skill_call.get("ok"):
-        blocked_reasons.append("skill_call_failed")
-    if replay_gate["ok"] and skill_call.get("ok") and not rollback.get("ok"):
-        blocked_reasons.append("rollback_rehearsal_failed")
-    if outcome_trace.get("status") == "not_run":
-        blocked_reasons.append("successful_outcome_not_verified")
-    blocked_reasons = list(dict.fromkeys(blocked_reasons))
-    closure_complete = not blocked_reasons
+    report["l5_readiness"] = l5_readiness
+    report["sequence"].append("readiness")
+    if l5_readiness.get("ok") is not True or l5_readiness.get("current_stage") != "L5":
+        return _blocked_closure(report, "l5_readiness_not_l5")
+    report["outcome_trace"] = _record_successful_task_outcome(runtime, scope=scope_ref, persist=persist)
+    report["ok"] = True
+    report["closure_complete"] = True
+    report["blocked_reasons"] = []
+    return report
+
+
+def _initial_closure_report(scope: ScopeRef) -> dict[str, Any]:
+    not_run = {"ok": False, "status": "not_run", "reason": "upstream_gate_not_run"}
     return {
-        "ok": closure_complete,
-        "closure_complete": closure_complete,
-        "blocked_reasons": blocked_reasons,
+        "ok": False,
+        "closure_complete": False,
+        "blocked_reasons": [],
         "report_type": "l5_closure_rehearsal",
-        "scope": asdict(scope_ref),
-        "correction_replay": correction_replay,
-        "pre_answer_gate": pre_answer_gate,
-        "outcome_trace": outcome_trace,
-        "playbook_record_ids": playbook_ids,
-        "weak_capability_replay": weak_capability_replay,
-        "replay_gate": replay_gate,
-        "skill_promotion": skill_promotion,
-        "skill_call": skill_call,
-        "rollback": rollback,
-        "capability_dashboard": capability_dashboard,
-        "l5_readiness": l5_readiness,
+        "scope": asdict(scope),
+        "sequence": [],
+        "capability_acceptance": dict(not_run),
+        "correction_replay": dict(not_run),
+        "pre_answer_gate": dict(not_run),
+        "outcome_trace": dict(not_run),
+        "playbook_record_ids": [],
+        "weak_capability_replay": dict(not_run),
+        "replay_gate": {**not_run, "blocked_reasons": []},
+        "skill_promotion": {**not_run, "skills": []},
+        "skill_call": dict(not_run),
+        "rollback": dict(not_run),
+        "l5_observation": dict(not_run),
+        "capability_dashboard": dict(not_run),
+        "l5_readiness": dict(not_run),
+    }
+
+
+def _blocked_closure(report: dict[str, Any], *reasons: str) -> dict[str, Any]:
+    report["ok"] = False
+    report["closure_complete"] = False
+    report["blocked_reasons"] = list(dict.fromkeys(str(reason) for reason in reasons if str(reason)))
+    return report
+
+
+def _acceptance_gate(report: dict[str, Any]) -> bool:
+    return bool(
+        report.get("ok") is True
+        and report.get("all_passed") is True
+        and int(report.get("case_count") or 0) == 12
+        and int(report.get("pass_count") or 0) == 12
+        and report.get("distinct_probe_sources") is True
+        and report.get("distinct_trace_ids") is True
+    )
+
+
+def _observation_autonomous_report(
+    *,
+    replay_report: dict[str, Any],
+    skill_promotion: dict[str, Any],
+    rollback: dict[str, Any],
+) -> dict[str, Any]:
+    results = [
+        result
+        for pack in replay_report.get("packs") or []
+        if isinstance(pack, dict)
+        for result in pack.get("case_results") or []
+        if isinstance(result, dict)
+    ]
+    pass_count = sum(1 for result in results if str(result.get("verdict") or "").lower() == "pass")
+    fail_count = sum(1 for result in results if str(result.get("verdict") or "").lower() == "fail")
+    sample_count = pass_count + fail_count
+    candidate_ids = [str(value) for value in skill_promotion.get("candidate_ids") or [] if str(value)]
+    return {
+        "ok": sample_count > 0 and pass_count == sample_count and bool(candidate_ids) and bool(rollback.get("ledger_id")),
+        "loop_id": f"{LOOP_ID}_evidence",
+        "candidate_id": candidate_ids[0] if candidate_ids else "",
+        "candidate_ids": candidate_ids,
+        "real_task_replay": {
+            "ok": sample_count > 0 and pass_count == sample_count,
+            "verdict": "pass" if sample_count > 0 and pass_count == sample_count else "fail",
+            "sample_count": sample_count,
+            "pass_count": pass_count,
+            "fail_count": fail_count,
+            "pass_rate": round(pass_count / sample_count, 3) if sample_count else 0.0,
+        },
+        "replay_gate_passed": sample_count > 0 and pass_count == sample_count,
+        "blocked_reason": "observation_mode_no_apply",
+        "promotion": {
+            "ok": True,
+            "applied": False,
+            "blocked_reason": "observation_mode_no_apply",
+        },
+        "promotions": [],
     }
 
 

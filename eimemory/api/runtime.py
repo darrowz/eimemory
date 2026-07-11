@@ -912,6 +912,26 @@ class Runtime:
 
         return build_capability_dashboard_metrics(self, scope=scope, persist=persist, limit=limit, loop_id=loop_id)
 
+    def verify_and_record_deployment(
+        self,
+        *,
+        scope: dict | None = None,
+        repo_root: str,
+        current_link: str,
+        health_url: str,
+        prior_commit: str = "",
+    ) -> dict:
+        from eimemory.governance.deployment_receipt import verify_and_record_deployment
+
+        return verify_and_record_deployment(
+            self,
+            scope=scope,
+            repo_root=repo_root,
+            current_link=current_link,
+            health_url=health_url,
+            prior_commit=prior_commit,
+        )
+
     def ensure_capability_seeded(self, *, scope: dict | None = None) -> dict:
         from eimemory.governance.capability_seeding import ensure_all_seeded
 

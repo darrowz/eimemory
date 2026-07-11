@@ -5,6 +5,7 @@ import json
 from eimemory.api.runtime import Runtime
 from eimemory.cli.main import main as cli_main
 from eimemory.governance.closure_rehearsal import _weak_replay_gate
+from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
 SCOPE = {"agent_id": "hongtu", "workspace_id": "l5-closure", "user_id": "darrow"}
@@ -13,7 +14,7 @@ SCOPE = {"agent_id": "hongtu", "workspace_id": "l5-closure", "user_id": "darrow"
 def test_l5_closure_rehearsal_opens_success_skill_and_rollback_metrics(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     try:
-        runtime.run_capability_acceptance(scope=SCOPE, persist=True)
+        _seed_executed_deployment(runtime)
         before = runtime.build_capability_dashboard_metrics(scope=SCOPE, persist=False)
         assert before["metrics"]["task_success_rate"] == 0.0
         assert before["metrics"]["skill_reuse_count"] == 0
@@ -24,6 +25,15 @@ def test_l5_closure_rehearsal_opens_success_skill_and_rollback_metrics(tmp_path)
         assert report["ok"] is True
         assert report["closure_complete"] is True
         assert report["blocked_reasons"] == []
+        assert report["sequence"] == [
+            "acceptance",
+            "replay",
+            "skill_rollback",
+            "l5_observation_assessment",
+            "dashboard",
+            "readiness",
+        ]
+        assert report["capability_acceptance"]["all_passed"] is True
         assert report["correction_replay"]["ground_truth_rule_id"]
         assert report["pre_answer_gate"]["matched_rule_count"] == 1
         assert report["weak_capability_replay"]["capabilities"] == [
@@ -36,6 +46,8 @@ def test_l5_closure_rehearsal_opens_success_skill_and_rollback_metrics(tmp_path)
         assert report["skill_call"]["ok"] is True
         assert report["skill_call"]["record_id"]
         assert report["rollback"]["status"] in {"rolled_back", "quarantined"}
+        assert report["l5_observation"]["apply"] is False
+        assert report["l5_observation"]["assessment"]["complete"] is True
 
         metrics = report["capability_dashboard"]["metrics"]
         assert metrics["task_success_rate"] == 0.0
@@ -48,11 +60,12 @@ def test_l5_closure_rehearsal_opens_success_skill_and_rollback_metrics(tmp_path)
             if gap["capability"] in {"search.discovery", "research.synthesis", "operations.uumit", "device.control"}
         }
         assert weak_gaps == set()
+        assert report["l5_readiness"]["current_stage"] == "L5"
     finally:
         runtime.close()
 
 
-def test_l5_closure_rehearsal_fails_closed_without_replay_executor(tmp_path) -> None:
+def test_l5_closure_rehearsal_fails_closed_without_executed_deployment(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     try:
         report = runtime.run_l5_closure_rehearsal(scope=SCOPE, persist=True)
@@ -63,16 +76,18 @@ def test_l5_closure_rehearsal_fails_closed_without_replay_executor(tmp_path) -> 
 
     assert report["ok"] is False
     assert report["closure_complete"] is False
-    assert "weak_capability_replay_not_executed" in report["blocked_reasons"]
-    assert report["skill_call"]["error"] == "replay_gate_failed"
-    assert report["rollback"]["status"] == "not_run"
+    assert "l5_readiness_not_l5" in report["blocked_reasons"]
+    assert report["capability_acceptance"]["all_passed"] is True
+    assert report["skill_call"]["ok"] is True
+    assert report["rollback"]["status"] == "rolled_back"
+    assert report["l5_observation"]["assessment"]["complete"] is True
     assert report["outcome_trace"]["status"] == "not_run"
     assert metrics["metrics"]["task_success_rate"] == 0.0
-    assert metrics["metrics"]["skill_reuse_count"] == 0
-    assert metrics["metrics"]["rollback_count"] == 0
+    assert metrics["metrics"]["skill_reuse_count"] >= 1
+    assert metrics["metrics"]["rollback_count"] >= 1
 
 
-def test_l5_closure_rehearsal_cli_fails_closed_without_executor(tmp_path, monkeypatch, capsys) -> None:
+def test_l5_closure_rehearsal_cli_fails_closed_without_deployment_receipt(tmp_path, monkeypatch, capsys) -> None:
     monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path))
 
     assert cli_main(["learn", "closure-rehearsal", "--scope-agent", "hongtu", "--scope-workspace", "l5-closure", "--scope-user", "darrow"]) == 1
@@ -81,15 +96,75 @@ def test_l5_closure_rehearsal_cli_fails_closed_without_executor(tmp_path, monkey
     assert output["ok"] is False
     assert output["pre_answer_gate"]["matched_rule_count"] == 1
     assert output["weak_capability_replay"]["persisted_replay_count"] == 12
-    assert output["l5_readiness"]["evidence_counts"]["rollback_or_quarantine"] == 0
+    assert output["l5_readiness"]["evidence_counts"]["rollback_or_quarantine"] >= 1
     weak_gaps = {
         gap["capability"]
         for gap in output["l5_readiness"]["capability_gaps"]
         if gap["capability"] in {"search.discovery", "research.synthesis", "operations.uumit", "device.control"}
     }
-    assert weak_gaps == {"search.discovery", "research.synthesis", "operations.uumit", "device.control"}
-    assert output["capability_dashboard"]["metrics"]["skill_reuse_count"] == 0
-    assert output["capability_dashboard"]["metrics"]["rollback_count"] == 0
+    assert weak_gaps == set()
+    assert output["capability_dashboard"]["metrics"]["skill_reuse_count"] >= 1
+    assert output["capability_dashboard"]["metrics"]["rollback_count"] >= 1
+    assert "l5_readiness_not_l5" in output["blocked_reasons"]
+
+
+def test_l5_closure_stops_after_failed_acceptance_without_downstream_success(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    real_acceptance = runtime.run_capability_acceptance
+
+    def fail_after_real_acceptance(**kwargs):
+        report = real_acceptance(**kwargs)
+        return {**report, "ok": False, "all_passed": False, "failed_case_ids": ["search.discovery.basic"]}
+
+    monkeypatch.setattr(runtime, "run_capability_acceptance", fail_after_real_acceptance)
+    try:
+        report = runtime.run_l5_closure_rehearsal(scope=SCOPE, persist=True)
+        replay_records = [
+            record
+            for record in runtime.store.list_records(kinds=["replay_result"], scope=SCOPE, limit=100)
+            if str(record.meta.get("report_type") or "") == "capability_replay_pack"
+        ]
+        skill_records = runtime.store.list_records(kinds=["skill_candidate"], scope=SCOPE, limit=100)
+        assessment_records = runtime.store.list_records(kinds=["l5_assessment"], scope=SCOPE, limit=100)
+    finally:
+        runtime.close()
+
+    assert report["ok"] is False
+    assert report["sequence"] == ["acceptance"]
+    assert report["blocked_reasons"] == ["capability_acceptance_failed"]
+    assert report["weak_capability_replay"]["status"] == "not_run"
+    assert report["skill_call"]["status"] == "not_run"
+    assert report["l5_observation"]["status"] == "not_run"
+    assert report["capability_dashboard"]["status"] == "not_run"
+    assert report["l5_readiness"]["status"] == "not_run"
+    assert replay_records == []
+    assert skill_records == []
+    assert assessment_records == []
+
+
+def test_l5_closure_stops_inside_skill_stage_before_skill_and_rollback_success(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    real_gate = runtime.build_ground_truth_pre_answer_gate
+
+    def fail_after_real_gate(**kwargs):
+        report = real_gate(**kwargs)
+        return {**report, "matched_rule_count": 0, "matched_rule_ids": []}
+
+    monkeypatch.setattr(runtime, "build_ground_truth_pre_answer_gate", fail_after_real_gate)
+    try:
+        report = runtime.run_l5_closure_rehearsal(scope=SCOPE, persist=True)
+        skill_records = runtime.store.list_records(kinds=["skill_candidate"], scope=SCOPE, limit=100)
+        rollback_ledger = runtime.get_policy_rollout_ledger(scope=SCOPE, action="rollback", limit=100)
+    finally:
+        runtime.close()
+
+    assert report["sequence"] == ["acceptance", "replay", "skill_rollback"]
+    assert report["blocked_reasons"] == ["ground_truth_rule_not_matched"]
+    assert report["skill_call"]["status"] == "not_run"
+    assert report["rollback"]["status"] == "not_run"
+    assert report["l5_observation"]["status"] == "not_run"
+    assert skill_records == []
+    assert rollback_ledger == []
 
 
 def test_weak_replay_gate_requires_each_named_capability_once() -> None:
@@ -104,3 +179,57 @@ def test_weak_replay_gate_requires_each_named_capability_once() -> None:
 
     assert gate["ok"] is False
     assert "weak_capability_replay_invalid" in gate["blocked_reasons"]
+
+
+def _seed_executed_deployment(runtime: Runtime) -> None:
+    scope = ScopeRef.from_dict(SCOPE)
+    commit = "a" * 40
+    prior = "b" * 40
+    version = "1.9.16"
+    release_path = f"/opt/eimemory/releases/{commit}"
+    payload = {
+        "candidate_id": f"deployment:{commit}",
+        "promotion_target": "code_patch",
+        "action": "code_patch",
+        "gate": {"ok": True, "receipt_verified": True},
+        "side_effect": {
+            "ok": True,
+            "production_applied": True,
+            "deployment_executed": True,
+            "verification": {"ok": True, "skipped": False},
+            "deployment": {"ok": True, "skipped": False, "release_path": release_path},
+            "post_deploy_health": {
+                "ok": True,
+                "skipped": False,
+                "commit": commit,
+                "version": version,
+                "release_path": release_path,
+            },
+            "commit": {"ok": True, "commit_sha": commit},
+            "release": {"version": version, "release_path": release_path},
+            "rollback_evidence": {
+                "prior_commit_sha": prior,
+                "rollback_command": f"git reset --hard {prior}",
+            },
+        },
+    }
+    runtime.store.append(
+        RecordEnvelope.create(
+            kind="promotion_request",
+            title="Verified closure deployment",
+            summary="Executed deployment receipt",
+            scope=scope,
+            source="eimemory.deployment_receipt",
+            status="deployed",
+            content=payload,
+            meta={
+                "candidate_id": payload["candidate_id"],
+                "promotion_target": "code_patch",
+                "action": "code_patch",
+                "gate_ok": True,
+                "commit_sha": commit,
+                "version": version,
+                "release_path": release_path,
+            },
+        )
+    )

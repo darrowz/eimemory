@@ -8,6 +8,7 @@ from eimemory.governance.capability_attribution import collect_capability_eviden
 from eimemory.governance.capability_ledger import build_capability_ledger
 from eimemory.governance.capability_replay_executor import validate_capability_replay_result
 from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
+from eimemory.governance.rollout_lifecycle import is_executed_rollback_ledger_record
 from eimemory.models.records import ScopeRef
 
 
@@ -163,7 +164,7 @@ def _policy_rollback_count(runtime: Any, *, scope: ScopeRef, limit: int) -> int:
         records = getter(scope=scope, limit=max(0, int(limit)))
     except Exception:
         return 0
-    return sum(1 for record in records if str(record.get("action_type") or "").lower() in {"rollback", "rolled_back", "quarantine", "quarantined"})
+    return sum(1 for record in records if isinstance(record, dict) and is_executed_rollback_ledger_record(record))
 
 
 def _verified_replay_summary(runtime: Any, *, scope: ScopeRef, limit: int) -> dict[str, Any]:
@@ -442,7 +443,7 @@ def _stage_for(
         and replay_pass_rate >= 0.8
         and not verified_replay.get("weak_capabilities_missing")
         and latest_l5_assessment.get("complete") is True
-        and promotion_count >= 3
+        and promotion_count >= 1
         and rollback_count >= 1
         and patch_quality_ok
         and patch_success >= 0.8

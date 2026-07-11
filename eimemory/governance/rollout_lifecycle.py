@@ -18,6 +18,34 @@ LIFECYCLE_DETAIL_FIELDS = {
     "failure_rate": 0.0,
 }
 
+ROLLBACK_ACTION_TYPES = {"rollback", "rolled_back", "quarantine", "quarantined"}
+
+
+def is_executed_rollback_ledger_record(item: dict[str, Any]) -> bool:
+    action = str(item.get("action_type") or "").strip().lower()
+    if action not in ROLLBACK_ACTION_TYPES:
+        return False
+    details = item.get("details") if isinstance(item.get("details"), dict) else {}
+    if details.get("blocked") is True:
+        return False
+    if action in {"rollback", "quarantine"}:
+        return bool(
+            str(item.get("applied_pattern_id") or "").strip()
+            and str(item.get("budget_decision") or "").strip().lower() in {"ok", "manual_ok"}
+        )
+    rollback = details.get("rollback") if isinstance(details.get("rollback"), dict) else {}
+    side_effect = details.get("side_effect") if isinstance(details.get("side_effect"), dict) else {}
+    side_rollback = side_effect.get("rollback") if isinstance(side_effect.get("rollback"), dict) else {}
+    return bool(
+        str(details.get("candidate_id") or item.get("source_opportunity_id") or "").strip()
+        and (
+            details.get("rolled_back") is True
+            or details.get("quarantined") is True
+            or rollback.get("ok") is True
+            or side_rollback.get("ok") is True
+        )
+    )
+
 
 def record_lifecycle_event(
     runtime: Any,

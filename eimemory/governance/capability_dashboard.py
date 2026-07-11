@@ -5,6 +5,7 @@ import json
 from typing import Any
 
 from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
+from eimemory.governance.rollout_lifecycle import is_executed_rollback_ledger_record
 from eimemory.models.records import ScopeRef
 
 
@@ -85,7 +86,10 @@ def build_capability_dashboard_metrics(
         if str(_field(record, "promotion_target") or "").lower() == "code_patch"
         or str(_field(record, "action") or "").lower() == "code_patch"
     ]
-    patch_success = sum(1 for record in patch_promotions if _verified_code_patch_promotion(record))
+    latest_patch_candidates = _latest_patch_candidate_records(patch_promotions)
+    valid_patch_candidates = sum(1 for record in latest_patch_candidates if _valid_code_patch_candidate(record))
+    executed_patch_deployments = [record for record in latest_patch_candidates if _executed_code_patch_deployment(record)]
+    patch_success = sum(1 for record in executed_patch_deployments if _verified_code_patch_promotion(record))
     policy_rollbacks = _policy_rollback_records(runtime, scope_ref, limit)
     rollback_count = len(policy_rollbacks)
     skill_invocations = sum(1 for record in evals if str(_field(record, "report_type") or "") == "eiskill_invocation")
@@ -96,14 +100,17 @@ def build_capability_dashboard_metrics(
     )
     skill_reuse_count = max(skill_invocations, skill_registry_reuse)
 
-    patch_promotion_success_rate = _rate(patch_success, len(patch_promotions))
-    patch_metric_quality = _quality(len(patch_promotions))
+    patch_candidate_validity_rate = _rate(valid_patch_candidates, len(latest_patch_candidates))
+    patch_deployment_success_rate = _rate(patch_success, len(executed_patch_deployments))
+    patch_metric_quality = _quality(len(executed_patch_deployments), minimum=1)
     metrics = {
         "recall_hit_rate": _rate(recall_hits, recall_total),
         "user_correction_rate": _rate(len(corrections), recall_total),
         "task_success_rate": _rate(task_success, len(task_outcomes)),
-        "patch_promotion_success_rate": patch_promotion_success_rate,
-        "auto_patch_success_rate": patch_promotion_success_rate,
+        "patch_candidate_validity_rate": patch_candidate_validity_rate,
+        "patch_deployment_success_rate": patch_deployment_success_rate,
+        "patch_promotion_success_rate": patch_deployment_success_rate,
+        "auto_patch_success_rate": patch_deployment_success_rate,
         "rollback_count": rollback_count,
         "skill_reuse_count": skill_reuse_count,
     }
@@ -111,6 +118,8 @@ def build_capability_dashboard_metrics(
         "recall_hit_rate": _quality(recall_total),
         "user_correction_rate": _quality(recall_total),
         "task_success_rate": _quality(len(task_outcomes)),
+        "patch_candidate_validity_rate": _quality(len(latest_patch_candidates), minimum=1),
+        "patch_deployment_success_rate": patch_metric_quality,
         "patch_promotion_success_rate": patch_metric_quality,
         "auto_patch_success_rate": patch_metric_quality,
         "rollback_count": _quality(len(policy_rollbacks), minimum=1),
@@ -150,7 +159,9 @@ def build_capability_dashboard_metrics(
             "corrections": len(corrections),
             "task_evals": len(task_evals),
             "task_outcomes": len(task_outcomes),
-            "patch_promotions": len(patch_promotions),
+            "patch_candidates": len(latest_patch_candidates),
+            "patch_deployments": len(executed_patch_deployments),
+            "patch_promotions": len(executed_patch_deployments),
             "policy_rollbacks": len(policy_rollbacks),
         },
     }
@@ -206,7 +217,7 @@ def _policy_rollback_records(runtime: Any, scope: ScopeRef, limit: int) -> list[
         records = getter(scope=scope, limit=max(0, int(limit)))
     except Exception:
         return []
-    return [record for record in records if str(record.get("action_type") or "").lower() in {"rollback", "rolled_back", "quarantine", "quarantined"}]
+    return [record for record in records if isinstance(record, dict) and is_executed_rollback_ledger_record(record)]
 
 
 def _field(record: Any, key: str) -> Any:
@@ -236,20 +247,72 @@ def _verified_code_patch_promotion(record: Any) -> bool:
     gate = content.get("gate") if isinstance(content.get("gate"), dict) else {}
     side_effect = content.get("side_effect") if isinstance(content.get("side_effect"), dict) else {}
     verification = side_effect.get("verification") if isinstance(side_effect.get("verification"), dict) else {}
+    deployment = side_effect.get("deployment") if isinstance(side_effect.get("deployment"), dict) else {}
     health = side_effect.get("post_deploy_health") if isinstance(side_effect.get("post_deploy_health"), dict) else {}
     commit = side_effect.get("commit") if isinstance(side_effect.get("commit"), dict) else {}
+    release = side_effect.get("release") if isinstance(side_effect.get("release"), dict) else {}
     rollback = side_effect.get("rollback_evidence") if isinstance(side_effect.get("rollback_evidence"), dict) else {}
+    commit_sha = str(commit.get("commit_sha") or meta.get("commit_sha") or "").strip()
+    version = str(release.get("version") or meta.get("version") or "").strip()
+    release_path = str(release.get("release_path") or meta.get("release_path") or "").strip()
     return bool(
         (gate.get("ok") is True or meta.get("gate_ok") is True)
         and side_effect.get("ok") is True
         and side_effect.get("production_applied") is True
         and verification.get("ok") is True
         and verification.get("skipped") is not True
+        and deployment.get("ok") is True
+        and deployment.get("skipped") is not True
         and health.get("ok") is True
         and health.get("skipped") is not True
-        and str(commit.get("commit_sha") or meta.get("commit_sha") or "").strip()
-        and rollback
+        and commit_sha
+        and version
+        and release_path
+        and str(health.get("commit") or "") == commit_sha
+        and str(health.get("version") or "") == version
+        and _same_path(health.get("release_path"), release_path)
+        and _same_path(deployment.get("release_path"), release_path)
+        and str(rollback.get("prior_commit_sha") or "").strip()
+        and str(rollback.get("rollback_command") or "").strip()
     )
+
+
+def _latest_patch_candidate_records(records: list[Any]) -> list[Any]:
+    latest: dict[str, Any] = {}
+    for record in records:
+        candidate_id = str(_field(record, "candidate_id") or _record_id(record)).strip()
+        if candidate_id and candidate_id not in latest:
+            latest[candidate_id] = record
+    return list(latest.values())
+
+
+def _valid_code_patch_candidate(record: Any) -> bool:
+    content = record.get("content") if isinstance(record, dict) else getattr(record, "content", {})
+    meta = record.get("meta") if isinstance(record, dict) else getattr(record, "meta", {})
+    content = content if isinstance(content, dict) else {}
+    meta = meta if isinstance(meta, dict) else {}
+    gate = content.get("gate") if isinstance(content.get("gate"), dict) else {}
+    return gate.get("ok") is True or meta.get("gate_ok") is True
+
+
+def _executed_code_patch_deployment(record: Any) -> bool:
+    if not _valid_code_patch_candidate(record):
+        return False
+    content = record.get("content") if isinstance(record, dict) else getattr(record, "content", {})
+    content = content if isinstance(content, dict) else {}
+    side_effect = content.get("side_effect") if isinstance(content.get("side_effect"), dict) else {}
+    deployment = side_effect.get("deployment") if isinstance(side_effect.get("deployment"), dict) else {}
+    return side_effect.get("deployment_executed") is True and deployment.get("skipped") is not True
+
+
+def _record_id(record: Any) -> str:
+    if isinstance(record, dict):
+        return str(record.get("record_id") or record.get("id") or "")
+    return str(getattr(record, "record_id", "") or "")
+
+
+def _same_path(left: Any, right: Any) -> bool:
+    return str(left or "").replace("\\", "/").rstrip("/").casefold() == str(right or "").replace("\\", "/").rstrip("/").casefold()
 
 
 def _has_key(record: Any, key: str) -> bool:
