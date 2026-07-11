@@ -256,7 +256,7 @@ def _verified_code_patch_promotion(record: Any) -> bool:
     version = str(release.get("version") or meta.get("version") or "").strip()
     release_path = str(release.get("release_path") or meta.get("release_path") or "").strip()
     return bool(
-        (gate.get("ok") is True or meta.get("gate_ok") is True)
+        _gate_passed(gate, meta)
         and side_effect.get("ok") is True
         and side_effect.get("production_applied") is True
         and verification.get("ok") is True
@@ -292,7 +292,13 @@ def _valid_code_patch_candidate(record: Any) -> bool:
     content = content if isinstance(content, dict) else {}
     meta = meta if isinstance(meta, dict) else {}
     gate = content.get("gate") if isinstance(content.get("gate"), dict) else {}
-    return gate.get("ok") is True or meta.get("gate_ok") is True
+    return _gate_passed(gate, meta)
+
+
+def _gate_passed(gate: dict[str, Any], meta: dict[str, Any]) -> bool:
+    if "ok" in gate:
+        return gate.get("ok") is True
+    return meta.get("gate_ok") is True
 
 
 def _executed_code_patch_deployment(record: Any) -> bool:

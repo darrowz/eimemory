@@ -28,22 +28,91 @@ def is_executed_rollback_ledger_record(item: dict[str, Any]) -> bool:
     details = item.get("details") if isinstance(item.get("details"), dict) else {}
     if details.get("blocked") is True:
         return False
-    if action in {"rollback", "quarantine"}:
-        return bool(
-            str(item.get("applied_pattern_id") or "").strip()
-            and str(item.get("budget_decision") or "").strip().lower() in {"ok", "manual_ok"}
-        )
     rollback = details.get("rollback") if isinstance(details.get("rollback"), dict) else {}
     side_effect = details.get("side_effect") if isinstance(details.get("side_effect"), dict) else {}
     side_rollback = side_effect.get("rollback") if isinstance(side_effect.get("rollback"), dict) else {}
+    execution = rollback or side_rollback
+    if execution.get("ok") is not True or execution.get("skipped") is True:
+        return False
+    top_level_identities = _rollback_ledger_identities(item)
+    if not top_level_identities:
+        return False
+    if action in {"rollback", "quarantine"}:
+        if str(item.get("budget_decision") or "").strip().lower() not in {"ok", "manual_ok"}:
+            return False
+        if not str(item.get("applied_pattern_id") or "").strip():
+            return False
+    return _has_verifiable_rollback_execution(
+        execution,
+        top_level_identities=top_level_identities,
+    )
+
+
+def _has_verifiable_rollback_execution(
+    execution: dict[str, Any],
+    *,
+    top_level_identities: set[str],
+) -> bool:
+    transition = execution.get("status_transition") if isinstance(execution.get("status_transition"), dict) else {}
+    previous = str(transition.get("from") or "").strip()
+    current = str(transition.get("to") or "").strip().lower()
+    transition_artifact = str(
+        transition.get("pattern_id")
+        or transition.get("candidate_id")
+        or transition.get("artifact_id")
+        or ""
+    ).strip()
+    if transition_artifact and transition_artifact not in top_level_identities:
+        return False
+    if previous and current in {"rolled_back", "quarantined"} and previous.lower() != current:
+        if transition_artifact:
+            return True
+
+    file_restore = execution.get("file_restore") if isinstance(execution.get("file_restore"), dict) else {}
+    if file_restore.get("ok") is True and int(file_restore.get("restored_count") or 0) > 0:
+        return True
+    if _executed_command_report(execution.get("command_report")):
+        return True
+    repo_reset = execution.get("repo_reset") if isinstance(execution.get("repo_reset"), dict) else {}
+    if (
+        repo_reset.get("ok") is True
+        and repo_reset.get("skipped") is not True
+        and str(repo_reset.get("prior_commit_sha") or "").strip()
+        and _reports_include_success(repo_reset.get("reports"))
+    ):
+        return True
+    return False
+
+
+def _rollback_ledger_identities(item: dict[str, Any]) -> set[str]:
+    source = item.get("source_opportunity") if isinstance(item.get("source_opportunity"), dict) else {}
+    values = (
+        item.get("applied_pattern_id"),
+        item.get("source_opportunity_id"),
+        item.get("rollback_policy_id"),
+        source.get("pattern_id"),
+        source.get("candidate_id"),
+        source.get("opportunity_id"),
+    )
+    return {str(value).strip() for value in values if str(value or "").strip()}
+
+
+def _executed_command_report(value: Any) -> bool:
+    report = value if isinstance(value, dict) else {}
     return bool(
-        str(details.get("candidate_id") or item.get("source_opportunity_id") or "").strip()
-        and (
-            details.get("rolled_back") is True
-            or details.get("quarantined") is True
-            or rollback.get("ok") is True
-            or side_rollback.get("ok") is True
-        )
+        report.get("ok") is True
+        and report.get("skipped") is not True
+        and _reports_include_success(report.get("reports"))
+    )
+
+
+def _reports_include_success(value: Any) -> bool:
+    return any(
+        isinstance(report, dict)
+        and report.get("ok") is True
+        and report.get("returncode") == 0
+        and bool(report.get("command"))
+        for report in list(value or [])
     )
 
 

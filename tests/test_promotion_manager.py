@@ -11,6 +11,7 @@ from eimemory.governance.capability_distiller import distill_capability_candidat
 import eimemory.governance.promotion_manager as promotion_manager
 from eimemory.governance.promotion_manager import backfill_promotion_rollout_ledger, promote_candidate, _deployment_commands, _matching_code_preflight, _run_patch_commands, run_code_patch_preflight
 from eimemory.governance.sandbox_lab import create_sandbox_experiment
+from eimemory.governance.rollout_lifecycle import is_executed_rollback_ledger_record
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
@@ -1105,6 +1106,7 @@ def test_code_patch_rollout_auto_canary_failure_rolls_back(tmp_path, monkeypatch
     rolled_back = next(item for item in ledger if item["action_type"] == "rolled_back")
     assert rolled_back["details"]["observed_count"] == 1
     assert rolled_back["details"]["failure_rate"] == 1.0
+    assert is_executed_rollback_ledger_record(rolled_back) is True
 
 
 def test_default_code_patch_deployment_command_uses_user_systemd_without_sudo(tmp_path, monkeypatch) -> None:
@@ -1371,6 +1373,7 @@ def test_code_patch_rolls_back_when_post_deploy_health_fails(tmp_path, monkeypat
     assert rollback_marker.read_text(encoding="utf-8") == "rolled back"
     ledger = runtime.get_policy_rollout_ledger(scope=scope, action="rolled_back", limit=10)
     assert ledger[0]["source_opportunity_id"] == candidate_id
+    assert is_executed_rollback_ledger_record(ledger[0]) is True
 
 
 def test_code_patch_marks_rollback_failed_when_rollback_command_fails(tmp_path, monkeypatch) -> None:

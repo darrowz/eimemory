@@ -218,6 +218,7 @@ def _activate_shadow_pattern(runtime: Any, *, pattern: dict[str, Any], scope: di
 
 
 def _quarantine_shadow_pattern(runtime: Any, *, pattern: dict[str, Any], scope: dict[str, Any] | ScopeRef | None, watch: dict[str, Any]) -> dict[str, Any]:
+    previous_status = str(pattern.get("status") or "shadow")
     watch["status"] = "quarantined"
     watch["decision"] = "quarantined"
     watch["decided_at"] = now_utc()
@@ -226,7 +227,23 @@ def _quarantine_shadow_pattern(runtime: Any, *, pattern: dict[str, Any], scope: 
     _write_pattern(runtime, pattern, scope=scope)
     _update_candidate_status(runtime, watch, scope=scope, status="quarantined")
     _update_promotion_request_status(runtime, watch, scope=scope, status="quarantined")
-    _record_watch_ledger(runtime, pattern=pattern, scope=scope, watch=watch, decision="quarantined")
+    _record_watch_ledger(
+        runtime,
+        pattern=pattern,
+        scope=scope,
+        watch=watch,
+        decision="quarantined",
+        rollback_execution={
+            "ok": True,
+            "skipped": False,
+            "execution_type": "intent_pattern_status_transition",
+            "status_transition": {
+                "from": previous_status,
+                "to": "quarantined",
+                "pattern_id": str(pattern.get("id") or ""),
+            },
+        },
+    )
     return {"ok": True, "status": "quarantined", "quarantined": True, "pattern_id": str(pattern.get("id") or ""), "watch": watch}
 
 
@@ -238,6 +255,7 @@ def _rollback_shadow_pattern(
     watch: dict[str, Any],
     reason: str,
 ) -> dict[str, Any]:
+    previous_status = str(pattern.get("status") or "shadow")
     watch["status"] = "rolled_back"
     watch["decision"] = "rolled_back"
     watch["decided_at"] = now_utc()
@@ -246,7 +264,24 @@ def _rollback_shadow_pattern(
     rollback = runtime.rollback_intent_pattern(str(pattern.get("id") or ""), scope=_scope_dict(scope), reason=str(reason or "bad outcome during shadow observe"), auto=True)
     _update_candidate_status(runtime, watch, scope=scope, status="rolled_back")
     _update_promotion_request_status(runtime, watch, scope=scope, status="rolled_back")
-    _record_watch_ledger(runtime, pattern=pattern, scope=scope, watch=watch, decision="rolled_back")
+    _record_watch_ledger(
+        runtime,
+        pattern=pattern,
+        scope=scope,
+        watch=watch,
+        decision="rolled_back",
+        rollback_execution={
+            "ok": rollback.get("ok") is True,
+            "skipped": False,
+            "execution_type": "intent_pattern_status_transition",
+            "status_transition": {
+                "from": str(rollback.get("previous_status") or previous_status),
+                "to": str(rollback.get("status") or "rolled_back"),
+                "pattern_id": str(pattern.get("id") or ""),
+            },
+            "ledger_id": str(rollback.get("ledger_id") or ""),
+        },
+    )
     return {"ok": bool(rollback.get("ok")), "status": "rolled_back", "rolled_back": bool(rollback.get("ok")), "pattern_id": str(pattern.get("id") or ""), "rollback": rollback, "watch": watch}
 
 
@@ -286,6 +321,7 @@ def _record_watch_ledger(
     scope: dict[str, Any] | ScopeRef | None,
     watch: dict[str, Any],
     decision: str,
+    rollback_execution: dict[str, Any] | None = None,
 ) -> None:
     scope_ref = _scope(scope)
     pattern_id = str(pattern.get("id") or watch.get("pattern_id") or "")
@@ -311,6 +347,8 @@ def _record_watch_ledger(
         "failure_count": int(watch.get("failure_count") or 0),
         "failure_rate": _failure_rate(watch),
     }
+    if rollback_execution:
+        details["rollback"] = dict(rollback_execution)
     record_lifecycle_event(
         runtime,
         scope=scope_ref,

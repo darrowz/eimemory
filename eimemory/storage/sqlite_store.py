@@ -2634,6 +2634,16 @@ class SqliteRecordStore:
             source="auto" if auto else "manual",
             scope=scope_ref,
         )
+        rollback_execution = {
+            "ok": True,
+            "skipped": False,
+            "execution_type": "intent_pattern_status_transition",
+            "status_transition": {
+                "from": previous_status,
+                "to": "rolled_back",
+                "pattern_id": str(pattern_id),
+            },
+        }
         ledger = self._record_policy_rollout_ledger(
             action_type="rollback",
             scope=scope_ref,
@@ -2651,7 +2661,11 @@ class SqliteRecordStore:
             budget_decision=budget_decision,
             rollback_policy_id=str(pattern_id),
             reason=str(reason or ""),
-            details={"previous_status": previous_status, "follow_up_opportunities": follow_ups},
+            details={
+                "previous_status": previous_status,
+                "follow_up_opportunities": follow_ups,
+                "rollback": rollback_execution,
+            },
         )
         return {
             "ok": True,

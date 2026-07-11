@@ -87,6 +87,28 @@ def test_l5_closure_rehearsal_fails_closed_without_executed_deployment(tmp_path)
     assert metrics["metrics"]["rollback_count"] >= 1
 
 
+def test_l5_closure_rejects_l5_stage_below_full_readiness_score(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    _seed_executed_deployment(runtime)
+    real_readiness = runtime.build_l5_readiness_report
+
+    def lower_score_after_real_readiness(**kwargs):
+        report = real_readiness(**kwargs)
+        return {**report, "current_stage": "L5", "readiness_score": 0.99}
+
+    monkeypatch.setattr(runtime, "build_l5_readiness_report", lower_score_after_real_readiness)
+    try:
+        report = runtime.run_l5_closure_rehearsal(scope=SCOPE, persist=True)
+    finally:
+        runtime.close()
+
+    assert report["ok"] is False
+    assert report["blocked_reasons"] == ["l5_readiness_not_l5"]
+    assert report["l5_readiness"]["current_stage"] == "L5"
+    assert report["l5_readiness"]["readiness_score"] == 0.99
+    assert report["outcome_trace"]["status"] == "not_run"
+
+
 def test_l5_closure_rehearsal_cli_fails_closed_without_deployment_receipt(tmp_path, monkeypatch, capsys) -> None:
     monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path))
 

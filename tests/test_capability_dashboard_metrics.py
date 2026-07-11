@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from eimemory.api.runtime import Runtime
+from eimemory.governance.capability_dashboard import _verified_code_patch_promotion
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
@@ -170,6 +171,44 @@ def test_one_complete_executed_deployment_is_sufficient_metric_evidence(tmp_path
     assert report["metric_quality"]["patch_deployment_success_rate"]["sufficient"] is True
 
 
+def test_content_gate_false_cannot_be_overridden_by_meta_for_candidate_validity(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    payload = _executed_patch_evidence(candidate_id="gate-conflict", commit="5" * 40, success=True)
+    payload["gate"] = {"ok": False, "reason": "explicit_preflight_failure"}
+    try:
+        _append(
+            runtime,
+            ScopeRef.from_dict(SCOPE),
+            "promotion_request",
+            "conflicting gate candidate",
+            payload,
+            status="deployed",
+            record_meta={"candidate_id": "gate-conflict", "promotion_target": "code_patch", "gate_ok": True},
+        )
+        report = runtime.build_capability_dashboard_metrics(scope=SCOPE, persist=False)
+    finally:
+        runtime.close()
+
+    assert report["metrics"]["patch_candidate_validity_rate"] == 0.0
+    assert report["sample_counts"]["patch_deployments"] == 0
+
+
+def test_content_gate_false_cannot_be_overridden_by_meta_for_patch_success() -> None:
+    payload = _executed_patch_evidence(candidate_id="gate-conflict-success", commit="6" * 40, success=True)
+    payload["gate"] = {"ok": False, "reason": "explicit_preflight_failure"}
+    record = RecordEnvelope.create(
+        kind="promotion_request",
+        title="conflicting gate success",
+        summary="must fail closed",
+        scope=ScopeRef.from_dict(SCOPE),
+        status="deployed",
+        content=payload,
+        meta={"candidate_id": "gate-conflict-success", "promotion_target": "code_patch", "gate_ok": True},
+    )
+
+    assert _verified_code_patch_promotion(record) is False
+
+
 def test_capability_dashboard_metrics_include_real_task_outcome_traces(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     try:
@@ -308,7 +347,8 @@ def _append(
     *,
     status: str = "active",
     created_at: str = "",
-) -> None:
+    record_meta: dict | None = None,
+) -> RecordEnvelope:
     record = RecordEnvelope.create(
         kind=kind,
         title=title,
@@ -317,12 +357,13 @@ def _append(
         source="test.capability_dashboard",
         status=status,
         content=dict(meta),
-        meta=dict(meta),
+        meta=dict(meta if record_meta is None else record_meta),
     )
     if created_at:
         record.time.created_at = created_at
         record.time.updated_at = created_at
     runtime.store.append(record)
+    return record
 
 
 def _verified_patch_evidence() -> dict:

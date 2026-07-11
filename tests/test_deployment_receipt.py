@@ -19,7 +19,7 @@ SCOPE = {"agent_id": "agent-deployment", "workspace_id": "deployment-receipt", "
 
 def test_deployment_receipt_reads_and_cross_checks_live_release_evidence(tmp_path) -> None:
     repo, prior_commit, head_commit = _git_release_repo(tmp_path, version="9.8.7")
-    release_dir, current_link = _release_link(tmp_path, head_commit)
+    release_dir, current_link = _release_link(tmp_path, head_commit, repo=repo)
     health = _health_payload(
         commit=head_commit,
         version="9.8.7",
@@ -66,7 +66,7 @@ def test_deployment_receipt_reads_and_cross_checks_live_release_evidence(tmp_pat
 @pytest.mark.parametrize("mismatch", ["status_only", "commit", "version", "release"])
 def test_deployment_receipt_rejects_status_only_or_mismatched_identity(tmp_path, mismatch) -> None:
     repo, prior_commit, head_commit = _git_release_repo(tmp_path, version="9.8.7")
-    release_dir, current_link = _release_link(tmp_path, head_commit)
+    release_dir, current_link = _release_link(tmp_path, head_commit, repo=repo)
     health = _health_payload(
         commit=head_commit,
         version="9.8.7",
@@ -109,7 +109,7 @@ def test_deployment_receipt_rejects_status_only_or_mismatched_identity(tmp_path,
 
 def test_deployment_receipt_requires_prior_commit_to_be_rollback_ancestor(tmp_path) -> None:
     repo, _prior_commit, head_commit = _git_release_repo(tmp_path, version="9.8.7")
-    release_dir, current_link = _release_link(tmp_path, head_commit)
+    release_dir, current_link = _release_link(tmp_path, head_commit, repo=repo)
     runtime = Runtime.create(root=tmp_path / "runtime")
     try:
         with _health_server(
@@ -135,7 +135,7 @@ def test_deployment_receipt_reads_version_from_head_not_dirty_worktree(tmp_path)
         '[project]\nname = "deployment-test"\nversion = "9.8.8"\n',
         encoding="utf-8",
     )
-    release_dir, current_link = _release_link(tmp_path, head_commit)
+    release_dir, current_link = _release_link(tmp_path, head_commit, repo=repo)
     runtime = Runtime.create(root=tmp_path / "runtime")
     try:
         with _health_server(
@@ -161,7 +161,7 @@ def test_deployment_receipt_idempotency_includes_prior_rollback_commit(tmp_path)
     _git(repo, "add", "README.md")
     _git(repo, "commit", "-m", "third release")
     head_commit = _git(repo, "rev-parse", "HEAD")
-    release_dir, current_link = _release_link(tmp_path, head_commit)
+    release_dir, current_link = _release_link(tmp_path, head_commit, repo=repo)
     runtime = Runtime.create(root=tmp_path / "runtime")
     try:
         with _health_server(
@@ -194,9 +194,181 @@ def test_deployment_receipt_idempotency_includes_prior_rollback_commit(tmp_path)
     } == {first_prior, second_prior}
 
 
+def test_deployment_receipt_rejects_non_http_health_url(tmp_path) -> None:
+    repo, prior_commit, head_commit = _git_release_repo(tmp_path, version="9.8.7")
+    _release_dir, current_link = _release_link(tmp_path, head_commit, repo=repo)
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    try:
+        report = verify_and_record_deployment(
+            runtime,
+            scope=SCOPE,
+            repo_root=repo,
+            current_link=current_link,
+            health_url=(tmp_path / "health.json").as_uri(),
+            prior_commit=prior_commit,
+        )
+    finally:
+        runtime.close()
+
+    assert report == {"ok": False, "error": "health_url_scheme_not_allowed"}
+
+
+def test_deployment_receipt_rejects_release_outside_trusted_root(tmp_path) -> None:
+    repo, prior_commit, head_commit = _git_release_repo(tmp_path, version="9.8.7")
+    outside_release, current_link = _release_link(
+        tmp_path,
+        head_commit,
+        repo=repo,
+        release_root=tmp_path / "outside-releases",
+    )
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    try:
+        with _health_server(
+            _health_payload(commit=head_commit, version="9.8.7", current_link=current_link, release_dir=outside_release)
+        ) as health_url:
+            report = verify_and_record_deployment(
+                runtime,
+                scope=SCOPE,
+                repo_root=repo,
+                current_link=current_link,
+                health_url=health_url,
+                prior_commit=prior_commit,
+            )
+    finally:
+        runtime.close()
+
+    assert report == {"ok": False, "error": "current_release_untrusted"}
+
+
+def test_deployment_receipt_rejects_release_symlink_escape_from_trusted_root(tmp_path) -> None:
+    repo, prior_commit, head_commit = _git_release_repo(tmp_path, version="9.8.7")
+    outside_release, _outside_link = _release_link(
+        tmp_path,
+        head_commit,
+        repo=repo,
+        release_root=tmp_path / "outside-releases",
+        link_name="outside-current",
+    )
+    trusted_root = tmp_path / "releases"
+    trusted_root.mkdir()
+    _create_dir_link(trusted_root / head_commit, outside_release)
+    current_link = tmp_path / "current"
+    _create_dir_link(current_link, trusted_root / head_commit)
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    try:
+        with _health_server(
+            _health_payload(commit=head_commit, version="9.8.7", current_link=current_link, release_dir=outside_release)
+        ) as health_url:
+            report = verify_and_record_deployment(
+                runtime,
+                scope=SCOPE,
+                repo_root=repo,
+                current_link=current_link,
+                health_url=health_url,
+                prior_commit=prior_commit,
+            )
+    finally:
+        runtime.close()
+
+    assert report == {"ok": False, "error": "current_release_untrusted"}
+
+
+def test_deployment_receipt_rejects_release_identity_files_not_matching_head(tmp_path) -> None:
+    repo, prior_commit, head_commit = _git_release_repo(tmp_path, version="9.8.7")
+    release_dir, current_link = _release_link(tmp_path, head_commit, repo=repo)
+    (release_dir / "pyproject.toml").write_text(
+        '[project]\nname = "deployment-test"\nversion = "forged"\n',
+        encoding="utf-8",
+    )
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    try:
+        with _health_server(
+            _health_payload(commit=head_commit, version="9.8.7", current_link=current_link, release_dir=release_dir)
+        ) as health_url:
+            report = verify_and_record_deployment(
+                runtime,
+                scope=SCOPE,
+                repo_root=repo,
+                current_link=current_link,
+                health_url=health_url,
+                prior_commit=prior_commit,
+            )
+    finally:
+        runtime.close()
+
+    assert report == {"ok": False, "error": "release_identity_mismatch", "path": "pyproject.toml"}
+
+
+def test_deployment_receipt_rejects_oversized_health_response(tmp_path) -> None:
+    repo, prior_commit, head_commit = _git_release_repo(tmp_path, version="9.8.7")
+    release_dir, current_link = _release_link(tmp_path, head_commit, repo=repo)
+    health = _health_payload(commit=head_commit, version="9.8.7", current_link=current_link, release_dir=release_dir)
+    health["padding"] = "x" * 70_000
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    try:
+        with _health_server(health) as health_url:
+            report = verify_and_record_deployment(
+                runtime,
+                scope=SCOPE,
+                repo_root=repo,
+                current_link=current_link,
+                health_url=health_url,
+                prior_commit=prior_commit,
+            )
+    finally:
+        runtime.close()
+
+    assert report == {"ok": False, "error": "health_response_too_large"}
+
+
+def test_deployment_receipt_idempotency_binds_link_and_health_endpoint(tmp_path) -> None:
+    repo, prior_commit, head_commit = _git_release_repo(tmp_path, version="9.8.7")
+    release_dir, first_link = _release_link(tmp_path, head_commit, repo=repo, link_name="current-a")
+    second_link = tmp_path / "current-b"
+    _create_dir_link(second_link, release_dir)
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    try:
+        with _health_server(
+            _health_payload(commit=head_commit, version="9.8.7", current_link=first_link, release_dir=release_dir)
+        ) as first_url:
+            first = verify_and_record_deployment(
+                runtime,
+                scope=SCOPE,
+                repo_root=repo,
+                current_link=first_link,
+                health_url=first_url,
+                prior_commit=prior_commit,
+            )
+        with _health_server(
+            _health_payload(commit=head_commit, version="9.8.7", current_link=second_link, release_dir=release_dir)
+        ) as second_url:
+            second = verify_and_record_deployment(
+                runtime,
+                scope=SCOPE,
+                repo_root=repo,
+                current_link=second_link,
+                health_url=second_url,
+                prior_commit=prior_commit,
+            )
+        records = {
+            record.record_id: record
+            for record in runtime.store.list_records(kinds=["promotion_request"], scope=SCOPE, limit=10)
+        }
+    finally:
+        runtime.close()
+
+    assert first["promotion_request_id"] != second["promotion_request_id"]
+    first_record = records[first["promotion_request_id"]]
+    second_record = records[second["promotion_request_id"]]
+    assert first_record.content["side_effect"]["deployment"]["current_link"] == first["current_link"]
+    assert second_record.content["side_effect"]["deployment"]["current_link"] == second["current_link"]
+    assert first_record.content["side_effect"]["post_deploy_health"]["url"] == first["health_url"]
+    assert second_record.content["side_effect"]["post_deploy_health"]["url"] == second["health_url"]
+
+
 def test_deployment_receipt_cli_persists_verified_receipt(tmp_path, monkeypatch, capsys) -> None:
     repo, prior_commit, head_commit = _git_release_repo(tmp_path, version="9.8.7")
-    release_dir, current_link = _release_link(tmp_path, head_commit)
+    release_dir, current_link = _release_link(tmp_path, head_commit, repo=repo)
     monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path / "runtime"))
 
     with _health_server(
@@ -245,15 +417,34 @@ def _git_release_repo(tmp_path: Path, *, version: str) -> tuple[Path, str, str]:
         f'[project]\nname = "deployment-test"\nversion = "{version}"\n',
         encoding="utf-8",
     )
-    _git(repo, "add", "pyproject.toml")
+    version_file = repo / "eimemory" / "version.py"
+    version_file.parent.mkdir(parents=True)
+    version_file.write_text(f'__version__ = "{version}"\n', encoding="utf-8")
+    _git(repo, "add", "pyproject.toml", "eimemory/version.py")
     _git(repo, "commit", "-m", "release")
     return repo, prior_commit, _git(repo, "rev-parse", "HEAD")
 
 
-def _release_link(tmp_path: Path, commit: str) -> tuple[Path, Path]:
-    release_dir = tmp_path / "releases" / commit
+def _release_link(
+    tmp_path: Path,
+    commit: str,
+    *,
+    repo: Path,
+    release_root: Path | None = None,
+    link_name: str = "current",
+) -> tuple[Path, Path]:
+    release_dir = (release_root or tmp_path / "releases") / commit
     release_dir.mkdir(parents=True)
-    current_link = tmp_path / "current"
+    (release_dir / "pyproject.toml").write_bytes(_git_bytes(repo, "show", f"{commit}:pyproject.toml"))
+    version_file = release_dir / "eimemory" / "version.py"
+    version_file.parent.mkdir(parents=True)
+    version_file.write_bytes(_git_bytes(repo, "show", f"{commit}:eimemory/version.py"))
+    current_link = tmp_path / link_name
+    _create_dir_link(current_link, release_dir)
+    return release_dir, current_link
+
+
+def _create_dir_link(current_link: Path, release_dir: Path) -> None:
     try:
         current_link.symlink_to(release_dir, target_is_directory=True)
     except OSError:
@@ -263,7 +454,6 @@ def _release_link(tmp_path: Path, commit: str) -> tuple[Path, Path]:
             capture_output=True,
             text=True,
         )
-    return release_dir, current_link
 
 
 def _health_payload(*, commit: str, version: str, current_link: Path, release_dir: Path) -> dict:
@@ -312,3 +502,13 @@ def _git(repo: Path, *args: str) -> str:
         text=True,
     )
     return result.stdout.strip()
+
+
+def _git_bytes(repo: Path, *args: str) -> bytes:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    return bytes(result.stdout)

@@ -7,6 +7,7 @@ from eimemory.governance.autonomy_controller import _post_promotion_watch_summar
 from eimemory.governance.capability_distiller import distill_capability_candidate
 from eimemory.governance.promotion_manager import promote_candidate
 from eimemory.governance.promotion_watch import record_promotion_observation
+from eimemory.governance.rollout_lifecycle import is_executed_rollback_ledger_record
 from eimemory.governance.sandbox_lab import create_sandbox_experiment
 from eimemory.models.records import ScopeRef
 
@@ -129,6 +130,8 @@ def test_shadow_observe_quarantines_after_three_real_tasks_without_hits(tmp_path
     assert report["quarantined"] is True
     assert runtime.store.get_by_id(candidate_id).status == "quarantined"
     assert _intent_pattern(runtime, "watch-quarantine")["status"] == "quarantined"
+    quarantine_ledger = runtime.get_policy_rollout_ledger(scope=scope, action="quarantined", limit=10)
+    assert is_executed_rollback_ledger_record(quarantine_ledger[0]) is True
 
     shadow_policy = runtime.search_policy("post promotion hit sample", scope=scope, context={"include_shadow": True})
     assert "watch-quarantine" not in _intent_pattern_ids(shadow_policy)
@@ -159,6 +162,8 @@ def test_shadow_observe_bad_outcome_rolls_back_pattern(tmp_path) -> None:
 
     ledger = runtime.get_policy_rollout_ledger(scope=scope, action="rollback", limit=10)
     assert ledger[0]["rollback_policy_id"] == "watch-rollback"
+    lifecycle = runtime.get_policy_rollout_ledger(scope=scope, action="rolled_back", limit=10)
+    assert is_executed_rollback_ledger_record(lifecycle[0]) is True
 
 
 def test_shadow_observe_waits_for_three_events_and_uses_failure_rate_threshold(tmp_path) -> None:

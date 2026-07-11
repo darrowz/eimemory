@@ -130,7 +130,13 @@ def run_l5_closure_rehearsal(
     )
     report["l5_readiness"] = l5_readiness
     report["sequence"].append("readiness")
-    if l5_readiness.get("ok") is not True or l5_readiness.get("current_stage") != "L5":
+    readiness_score = l5_readiness.get("readiness_score")
+    full_readiness = (
+        isinstance(readiness_score, (int, float))
+        and not isinstance(readiness_score, bool)
+        and float(readiness_score) == 1.0
+    )
+    if l5_readiness.get("ok") is not True or l5_readiness.get("current_stage") != "L5" or not full_readiness:
         return _blocked_closure(report, "l5_readiness_not_l5")
     report["outcome_trace"] = _record_successful_task_outcome(runtime, scope=scope_ref, persist=persist)
     report["ok"] = True
