@@ -1924,9 +1924,20 @@ class OpenClawMemoryHooks:
         )
         if rehearsal is None:
             rehearsal = False
-        verified = self._bool_or_none(outcome.get("verified"))
-        if verified is None:
-            verified = self._bool_or_none(event.get("verified"))
+        explicit_verified_values = [
+            container[key]
+            for container in (outcome, event, task_context)
+            for key in ("verified", "is_verified", "isVerified")
+            if key in container
+        ]
+        parsed_verified_values = [self._bool_or_none(value) for value in explicit_verified_values]
+        verified_unparseable = any(value is None for value in parsed_verified_values)
+        if any(value is False for value in parsed_verified_values):
+            verified = False
+        elif any(value is True for value in parsed_verified_values):
+            verified = True
+        else:
+            verified = None
         verification_states = {
             " ".join(str(value or "").strip().lower().replace("_", " ").replace("-", " ").split())
             for value in (verification, result, status)
@@ -1937,6 +1948,7 @@ class OpenClawMemoryHooks:
             and success is True
             and verification
             and verified is not False
+            and not verified_unparseable
             and verification_states.isdisjoint(unexecuted_states)
         )
         payload = {

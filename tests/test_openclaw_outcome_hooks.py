@@ -354,6 +354,71 @@ def test_openclaw_agent_end_does_not_pass_unexecuted_or_unknown_verification(
     assert traces[0]["verifier"]["passed"] is False
 
 
+@pytest.mark.parametrize("verified_state", ["unknown", "not_run", "skipped", "missing", "uncertain"])
+@pytest.mark.parametrize("verified_field", ["verified", "is_verified", "isVerified"])
+@pytest.mark.parametrize("verified_location", ["event", "outcome", "task_context"])
+def test_openclaw_agent_end_fails_closed_for_explicit_unparseable_verified_field(
+    tmp_path,
+    monkeypatch,
+    verified_state: str,
+    verified_field: str,
+    verified_location: str,
+) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    hooks = OpenClawMemoryHooks(runtime)
+    traces: list[dict] = []
+    event = {
+        "session_id": f"sess-{verified_location}-{verified_field}-{verified_state}",
+        "agent_id": "main",
+        "workspace_id": "repo-x",
+        "user_id": "darrow",
+        "query": "verify dashboard",
+        "verification": "page loaded",
+        "task_context": {},
+        "outcome": {"success": True},
+    }
+    if verified_location == "event":
+        event[verified_field] = verified_state
+    else:
+        event[verified_location][verified_field] = verified_state
+
+    def fake_record_outcome_trace(payload: dict, *, scope: dict) -> dict:
+        traces.append(payload)
+        return {"id": "trace-invalid-verified"}
+
+    monkeypatch.setattr(runtime, "record_outcome_trace", fake_record_outcome_trace, raising=False)
+
+    hooks.on_agent_end(event)
+
+    assert traces[0]["verifier"]["passed"] is False
+
+
+def test_openclaw_agent_end_can_use_explicit_verification_when_verified_field_is_absent(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    hooks = OpenClawMemoryHooks(runtime)
+    traces: list[dict] = []
+
+    def fake_record_outcome_trace(payload: dict, *, scope: dict) -> dict:
+        traces.append(payload)
+        return {"id": "trace-missing-verified"}
+
+    monkeypatch.setattr(runtime, "record_outcome_trace", fake_record_outcome_trace, raising=False)
+
+    hooks.on_agent_end(
+        {
+            "session_id": "sess-missing-verified",
+            "agent_id": "main",
+            "workspace_id": "repo-x",
+            "user_id": "darrow",
+            "query": "verify dashboard",
+            "verification": "page loaded",
+            "outcome": {"success": True},
+        }
+    )
+
+    assert traces[0]["verifier"]["passed"] is True
+
+
 def test_openclaw_probe_contract_without_rehearsal_is_rejected_by_outcome_recorder(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     hooks = OpenClawMemoryHooks(runtime)
