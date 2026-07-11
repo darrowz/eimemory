@@ -4,6 +4,7 @@ from eimemory.api.runtime import Runtime
 from eimemory.cli.main import main as cli_main
 from eimemory.experience.capability_contract import CASE_CONTRACTS
 from eimemory.governance import capability_acceptance
+from eimemory.governance import capability_probe_executor
 from eimemory.governance.capability_acceptance import run_capability_acceptance
 
 
@@ -33,27 +34,100 @@ def _outcome_records(runtime: Runtime) -> list:
 
 def test_public_acceptance_digest_preserves_canonical_artifact_hash() -> None:
     artifact = capability_acceptance.capability_acceptance_case("search_recent_source")
+    execution = capability_probe_executor.execute_probe(artifact, runtime=None, evidence_ref="probe-source")
 
     digest = capability_acceptance.capability_acceptance_digest(
-        capability=artifact["capability"],
-        case_id=artifact["case_id"],
-        input_data=artifact["input"],
-        observation=artifact["observation"],
+        executor_id=execution["executor_id"],
+        executor_version=execution["executor_version"],
+        input_data=execution["input"],
+        output=execution["output"],
+        observation=execution["observation"],
+        checks=execution["checks"],
     )
 
-    assert digest == "ebad46fc05e2393d772072ee687c07f4eedf897322f2baba596d6fe1c5d2be2e"
+    assert digest == execution["execution_digest"]
+    assert len(digest) == 64
 
 
 def test_public_acceptance_case_returns_read_only_deep_copy() -> None:
     first = capability_acceptance.capability_acceptance_case("search_recent_source")
     first["input"]["recency_window"] = "forged"
-    first["observation"]["source_verified"] = False
+    first["fixture"]["sources"][0]["verified"] = False
 
     second = capability_acceptance.capability_acceptance_case("search_recent_source")
 
     assert second["input"]["recency_window"] == "30d"
-    assert second["observation"]["source_verified"] is True
+    assert second["fixture"]["sources"][0]["verified"] is True
     assert capability_acceptance.capability_acceptance_case("unknown-case") == {}
+
+
+def test_acceptance_cases_contain_only_executable_inputs_fixtures_and_invariants() -> None:
+    for case_id in CASE_CONTRACTS:
+        artifact = capability_acceptance.capability_acceptance_case(case_id)
+        assert set(artifact) == {"case_id", "capability", "input", "fixture", "expected_invariants"}
+        assert artifact["input"]
+        assert artifact["fixture"]
+        assert artifact["expected_invariants"]
+        assert "observation" not in artifact
+        assert "passed" not in artifact
+
+
+def test_empty_runtime_requires_all_real_probe_executors(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    monkeypatch.delitem(capability_probe_executor.PROBE_EXECUTORS, "search_recent_source")
+    try:
+        report = run_capability_acceptance(runtime, scope=SCOPE, persist=True)
+        failed_probe = next(record for record in _probe_records(runtime) if record.meta["case_id"] == "search_recent_source")
+    finally:
+        runtime.close()
+
+    assert report["ok"] is False
+    assert report["pass_count"] == 11
+    assert failed_probe.content["passed"] is False
+    assert "executor" in failed_probe.content["validator"]["error"]
+
+
+def test_executor_wrong_raw_output_fails_invariants_and_emits_no_success_trace(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+
+    def wrong_output(_input, _fixture, _runtime):
+        return {"selected_sources": [], "source_verified": False}
+
+    monkeypatch.setitem(capability_probe_executor.PROBE_EXECUTORS, "search_recent_source", wrong_output)
+    try:
+        report = run_capability_acceptance(runtime, scope=SCOPE, persist=True)
+        failed = next(item for item in report["results"] if item["case_id"] == "search_recent_source")
+        traces = _outcome_records(runtime)
+    finally:
+        runtime.close()
+
+    assert failed["passed"] is False
+    assert failed["trace_record_id"] == ""
+    assert len(traces) == 11
+
+
+def test_trace_persistence_failure_rewrites_probe_as_failed(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    original = runtime.record_outcome_trace
+
+    def fail_one(payload, *, scope):
+        if payload["capability_case_id"] == "search_recent_source":
+            return {"ok": False, "error": "forced trace write failure"}
+        return original(payload, scope=scope)
+
+    monkeypatch.setattr(runtime, "record_outcome_trace", fail_one)
+    try:
+        report = run_capability_acceptance(runtime, scope=SCOPE, persist=True)
+        failed = next(item for item in report["results"] if item["case_id"] == "search_recent_source")
+        probe = runtime.store.get_by_id(failed["probe_id"], scope=SCOPE)
+    finally:
+        runtime.close()
+
+    assert failed["passed"] is False
+    assert probe is not None
+    assert probe.content["passed"] is False
+    assert probe.content["verdict"] == "fail"
+    assert probe.meta["passed"] is False
 
 
 def test_acceptance_runs_all_twelve_cases_with_distinct_linked_probe_sources(tmp_path) -> None:
@@ -89,9 +163,13 @@ def test_acceptance_runs_all_twelve_cases_with_distinct_linked_probe_sources(tmp
         probe = probes_by_id[item["probe_id"]]
         trace = outcomes_by_id[item["trace_record_id"]]
         assert probe.content["input"]
+        assert probe.content["executor_id"]
+        assert probe.content["executor_version"]
+        assert probe.content["output"]
         assert probe.content["checks"]
         assert probe.content["observation"]
-        assert probe.content["digest"]
+        assert probe.content["execution_digest"]
+        assert all(check["passed"] is True for check in probe.content["checks"])
         assert probe.content["execution_id"] == report["execution_id"]
         assert probe.meta["case_id"] == item["case_id"]
         contract = trace.content["payload"]["capability_contract"]

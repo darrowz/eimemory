@@ -352,6 +352,57 @@ def test_health_payload_infers_commit_from_release_working_directory(tmp_path, m
     assert payload["paths"]["release"] == str(release_dir)
 
 
+def test_health_payload_reports_actual_import_root_and_package_tree_digest(tmp_path) -> None:
+    from eimemory.adapters.eibrain.rpc_server import build_health_payload
+    from eimemory.runtime_identity import package_import_root, package_tree_digest, runtime_package_tree_digest
+
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    try:
+        payload = build_health_payload(runtime, listen_host="127.0.0.1", listen_port=8091)
+    finally:
+        runtime.close()
+
+    import_root = package_import_root()
+    assert payload["import_root"] == str(import_root)
+    assert payload["package_tree_digest"] == runtime_package_tree_digest()
+    assert payload["package_tree_digest"] == package_tree_digest(import_root)
+    assert len(payload["package_tree_digest"]) == 64
+
+
+def test_runtime_import_root_is_frozen_when_current_symlink_changes(tmp_path, monkeypatch) -> None:
+    from eimemory import runtime_identity
+
+    release_a = tmp_path / "releases" / "a" / "eimemory"
+    release_b = tmp_path / "releases" / "b" / "eimemory"
+    release_a.mkdir(parents=True)
+    release_b.mkdir(parents=True)
+    (release_a / "module.py").write_text("RELEASE = 'a'\n", encoding="utf-8")
+    (release_b / "module.py").write_text("RELEASE = 'b'\n", encoding="utf-8")
+    current = tmp_path / "current"
+    try:
+        current.symlink_to(release_a.parent, target_is_directory=True)
+    except OSError:
+        subprocess.run(["cmd", "/c", "mklink", "/J", str(current), str(release_a.parent)], check=True, capture_output=True)
+    captured = (current / "eimemory").resolve()
+    monkeypatch.setattr(runtime_identity, "_PACKAGE_IMPORT_ROOT", captured)
+    captured_digest = runtime_identity.package_tree_digest(captured)
+    monkeypatch.setattr(runtime_identity, "_PACKAGE_TREE_DIGEST", captured_digest)
+
+    if current.is_symlink():
+        current.unlink()
+    else:
+        os.rmdir(current)
+    try:
+        current.symlink_to(release_b.parent, target_is_directory=True)
+    except OSError:
+        subprocess.run(["cmd", "/c", "mklink", "/J", str(current), str(release_b.parent)], check=True, capture_output=True)
+
+    assert runtime_identity.package_import_root() == release_a.resolve()
+    assert runtime_identity.package_import_root() != (current / "eimemory").resolve()
+    assert runtime_identity.runtime_package_tree_digest() == captured_digest
+    assert runtime_identity.runtime_package_tree_digest() != runtime_identity.package_tree_digest(current / "eimemory")
+
+
 def test_http_rpc_server_can_expose_loopback_health_proxy(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     server = EIBrainRPCServer(

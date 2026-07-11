@@ -24,6 +24,12 @@ DEFAULT_FAST_CANDIDATE_LIMIT = 24
 DEFAULT_INJECTION_TOKEN_BUDGET = 1800
 
 
+def _is_unexecuted_verification_state(value: Any) -> bool:
+    normalized = " ".join(re.sub(r"[^a-z0-9]+", " ", str(value or "").strip().lower()).split())
+    prefixes = ("not run", "not executed", "skipped", "skip", "unavailable", "unknown", "missing", "uncertain")
+    return any(normalized == prefix or normalized.startswith(prefix + " ") for prefix in prefixes)
+
+
 def _int_env(name: str, default: int) -> int:
     try:
         value = int(str(os.environ.get(name, "") or "").strip())
@@ -1938,18 +1944,16 @@ class OpenClawMemoryHooks:
             verified = True
         else:
             verified = None
-        verification_states = {
-            " ".join(str(value or "").strip().lower().replace("_", " ").replace("-", " ").split())
-            for value in (verification, result, status)
-        }
-        unexecuted_states = {"not run", "skipped", "missing", "unknown", "uncertain"}
+        verification_unexecuted = any(
+            _is_unexecuted_verification_state(value) for value in (verification, result, status)
+        )
         passed = bool(
             status == "success"
             and success is True
             and verification
             and verified is not False
             and not verified_unparseable
-            and verification_states.isdisjoint(unexecuted_states)
+            and not verification_unexecuted
         )
         payload = {
             "source": f"openclaw.{end_kind}",

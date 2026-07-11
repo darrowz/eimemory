@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import asdict
-from hashlib import sha256
-import json
 from typing import Any
 
 from eimemory.core.ids import generate_record_id
@@ -13,11 +11,12 @@ from eimemory.experience.capability_contract import (
     validate_capability_contract,
 )
 from eimemory.models.records import RecordEnvelope, ScopeRef
+from eimemory.governance.capability_probe_executor import execute_probe, execution_evidence_digest
 
 
 REPORT_TYPE = "capability_acceptance"
 PROBE_REPORT_TYPE = "capability_probe_result"
-PROBE_SCHEMA_VERSION = "capability_probe_result.v1"
+PROBE_SCHEMA_VERSION = "capability_probe_result.v2"
 
 
 _CAPABILITY_ACCEPTANCE_CASES: tuple[dict[str, Any], ...] = (
@@ -25,86 +24,164 @@ _CAPABILITY_ACCEPTANCE_CASES: tuple[dict[str, Any], ...] = (
         "case_id": "search_recent_source",
         "capability": "search.discovery",
         "input": {"query": "recent project updates", "recency_window": "30d"},
-        "observation": {"recency_window": "30d", "source_trust_score": 0.9, "source_verified": True},
+        "fixture": {"sources": [
+            {"id": "official-new", "age_days": 4, "trust": 0.9, "verified": True},
+            {"id": "community-new", "age_days": 7, "trust": 0.6, "verified": True},
+            {"id": "official-old", "age_days": 45, "trust": 1.0, "verified": True},
+        ]},
+        "expected_invariants": [
+            {"field": "selected_sources", "op": "nonempty"},
+            {"field": "recency_window", "op": "eq", "value": "30d"},
+            {"field": "source_trust_score", "op": "min", "value": 0.9},
+            {"field": "source_verified", "op": "eq", "value": True},
+        ],
     },
     {
         "case_id": "search_trending_github",
         "capability": "search.discovery",
         "input": {"query": "trending GitHub projects", "created_range": "2026-01-01..2026-01-31"},
-        "observation": {
-            "platform": "GitHub",
-            "created_range": "2026-01-01..2026-01-31",
-            "sort_by": "stars",
-            "ranking_verified": True,
-        },
+        "fixture": {"repositories": [
+            {"name": "alpha", "created_at": "2026-01-10", "stars": 120},
+            {"name": "beta", "created_at": "2026-01-20", "stars": 300},
+            {"name": "old", "created_at": "2025-12-20", "stars": 900},
+        ]},
+        "expected_invariants": [
+            {"field": "platform", "op": "eq", "value": "GitHub"},
+            {"field": "created_range", "op": "eq", "value": "2026-01-01..2026-01-31"},
+            {"field": "sort_by", "op": "eq", "value": "stars"},
+            {"field": "ranked_repositories", "op": "nonempty"},
+            {"field": "ranking_verified", "op": "eq", "value": True},
+        ],
     },
     {
         "case_id": "search_primary_source",
         "capability": "search.discovery",
         "input": {"query": "verify a technical fact", "preferred_source": "official"},
-        "observation": {"source_tier": "official", "source_verified": True},
+        "fixture": {"sources": [
+            {"id": "blog", "tier": "community", "verified": True},
+            {"id": "docs", "tier": "official", "verified": True},
+        ]},
+        "expected_invariants": [
+            {"field": "selected_source", "op": "nonempty"},
+            {"field": "source_tier", "op": "eq", "value": "official"},
+            {"field": "source_verified", "op": "eq", "value": True},
+        ],
     },
     {
         "case_id": "research_evidence_gate",
         "capability": "research.synthesis",
         "input": {"task": "summarize a paper", "evidence_required": True},
-        "observation": {"citation_count": 2, "facts_separated_from_inference": True},
+        "fixture": {"statements": [
+            {"text": "measured result", "kind": "fact", "citation": "paper-1"},
+            {"text": "likely implication", "kind": "inference", "citation": "paper-2"},
+        ]},
+        "expected_invariants": [
+            {"field": "citations", "op": "nonempty"},
+            {"field": "citation_count", "op": "min", "value": 2},
+            {"field": "facts_separated_from_inference", "op": "eq", "value": True},
+        ],
     },
     {
         "case_id": "research_conflict_resolution",
         "capability": "research.synthesis",
         "input": {"task": "resolve conflicting sources", "source_count": 2},
-        "observation": {"conflict_count": 1, "recency_compared": True, "confidence_reported": True},
+        "fixture": {"sources": [
+            {"claim": "adopt", "published_at": "2026-01-10", "confidence": 0.8},
+            {"claim": "reject", "published_at": "2025-12-01", "confidence": 0.6},
+        ]},
+        "expected_invariants": [
+            {"field": "conflict_count", "op": "min", "value": 1},
+            {"field": "recency_compared", "op": "eq", "value": True},
+            {"field": "confidence_reported", "op": "eq", "value": True},
+            {"field": "preferred_claim", "op": "eq", "value": "adopt"},
+        ],
     },
     {
         "case_id": "research_actionable_takeaway",
         "capability": "research.synthesis",
         "input": {"task": "turn research into an implementation step"},
-        "observation": {"decision": "adopt", "implementation_step": "add replay", "next_artifact": "replay"},
+        "fixture": {"findings": [
+            {"finding": "replay closes gap", "confidence": 0.9, "decision": "adopt", "implementation_step": "add replay", "next_artifact": "replay"},
+            {"finding": "wait", "confidence": 0.3, "decision": "defer", "implementation_step": "observe", "next_artifact": "note"},
+        ]},
+        "expected_invariants": [
+            {"field": "finding", "op": "nonempty"},
+            {"field": "decision", "op": "eq", "value": "adopt"},
+            {"field": "implementation_step", "op": "eq", "value": "add replay"},
+            {"field": "next_artifact", "op": "eq", "value": "replay"},
+        ],
     },
     {
         "case_id": "uumit_requirement_checklist",
         "capability": "operations.uumit",
         "input": {"task": "verify an external delivery", "requirements": ["format", "content", "deadline"]},
-        "observation": {"requirement_count": 3, "checklist_complete": True, "acceptance_verified": True},
+        "fixture": {"delivered": {"format": True, "content": True, "deadline": True}, "acceptance_signature": "customer-ok"},
+        "expected_invariants": [
+            {"field": "requirement_count", "op": "eq", "value": 3},
+            {"field": "checklist_complete", "op": "eq", "value": True},
+            {"field": "acceptance_verified", "op": "eq", "value": True},
+        ],
     },
     {
         "case_id": "uumit_quality_gate",
         "capability": "operations.uumit",
         "input": {"task": "quality-gate a delivery asset"},
-        "observation": {
-            "version_verified": True,
-            "visual_verified": True,
-            "customer_constraints_verified": True,
+        "fixture": {
+            "expected": {"version": "v2", "visual_hash": "sha256:asset", "constraints": ["16:9", "png"]},
+            "observed": {"version": "v2", "visual_hash": "sha256:asset", "constraints": ["16:9", "png"]},
         },
+        "expected_invariants": [
+            {"field": "version_verified", "op": "eq", "value": True},
+            {"field": "visual_verified", "op": "eq", "value": True},
+            {"field": "customer_constraints_verified", "op": "eq", "value": True},
+        ],
     },
     {
         "case_id": "uumit_post_delivery_followup",
         "capability": "operations.uumit",
         "input": {"task": "record post-delivery learning"},
-        "observation": {"outcome_recorded": True, "correction_recorded": True, "next_policy_recorded": True},
+        "fixture": {"delivery_outcome": "accepted", "delivery_correction": "none", "delivery_next_policy": "retain gate"},
+        "expected_invariants": [
+            {"field": "transaction_record_count", "op": "eq", "value": 3},
+            {"field": "outcome_recorded", "op": "eq", "value": True},
+            {"field": "correction_recorded", "op": "eq", "value": True},
+            {"field": "next_policy_recorded", "op": "eq", "value": True},
+        ],
     },
     {
         "case_id": "device_physical_channel",
         "capability": "device.control",
-        "input": {"task": "rehearse media output", "physical_action": False},
-        "observation": {"channel": "speaker", "control_action": "play", "output_verified": True},
+        "input": {"task": "rehearse media output", "media_type": "audio", "physical_action": False},
+        "fixture": {"routes": {"audio": {"channel": "speaker", "action": "play"}, "video": {"channel": "display", "action": "show"}}},
+        "expected_invariants": [
+            {"field": "channel", "op": "eq", "value": "speaker"},
+            {"field": "control_action", "op": "eq", "value": "play"},
+            {"field": "output_verified", "op": "eq", "value": True},
+            {"field": "physical_side_effect", "op": "eq", "value": False},
+        ],
     },
     {
         "case_id": "device_missing_info",
         "capability": "device.control",
-        "input": {"task": "detect a missing device target", "physical_action": False},
-        "observation": {"target_missing_detected": True, "resolution": "clarify"},
+        "input": {"task": "detect a missing device target", "target": "", "physical_action": False},
+        "fixture": {"known_targets": ["speaker", "display"]},
+        "expected_invariants": [
+            {"field": "target_missing_detected", "op": "eq", "value": True},
+            {"field": "resolution", "op": "eq", "value": "clarify"},
+            {"field": "clarification", "op": "nonempty"},
+        ],
     },
     {
         "case_id": "device_safe_boundary",
         "capability": "device.control",
-        "input": {"task": "rehearse a reversible device boundary", "physical_action": False},
-        "observation": {
-            "reversible": True,
-            "rollback_plan": "stop playback",
-            "verification_signal": "speaker silent",
-        },
+        "input": {"task": "rehearse a reversible device boundary", "requested_action": "play", "physical_action": False},
+        "fixture": {"rollback_by_action": {"play": "stop playback"}, "verification_signal": "speaker silent"},
+        "expected_invariants": [
+            {"field": "reversible", "op": "eq", "value": True},
+            {"field": "rollback_plan", "op": "eq", "value": "stop playback"},
+            {"field": "verification_signal", "op": "eq", "value": "speaker silent"},
+            {"field": "physical_side_effect", "op": "eq", "value": False},
+        ],
     },
 )
 
@@ -196,19 +273,15 @@ def _run_probe(
     capability = str(artifact["capability"])
     probe_id = generate_record_id("replay_result")
     trace_id = f"capability-acceptance-{execution_id}-{case_id}-{probe_id}"
-    digest = capability_acceptance_digest(
-        capability=capability,
-        case_id=case_id,
-        input_data=artifact["input"],
-        observation=artifact["observation"],
-    )
-    checks = [{"name": "canonical_observation_contract", "passed": True, "evidence_ref": probe_id}]
+    execution = execute_probe(artifact, runtime=runtime, evidence_ref=probe_id)
+    digest = str(execution["execution_digest"])
+    checks = [dict(check) for check in execution["checks"]]
     contract = normalize_capability_contract(
         {
             "schema_version": CONTRACT_SCHEMA_VERSION,
             "capability": capability,
             "case_id": case_id,
-            "observations": dict(artifact["observation"]),
+            "observations": dict(execution["observation"]),
             "checks": checks,
             "source_record_ids": [probe_id],
             "probe": True,
@@ -219,25 +292,26 @@ def _run_probe(
         expected_capability=capability,
         expected_case_id=case_id,
     )
-    validator_passed = not validation_error
-    probe_record = _probe_record(
-        probe_id=probe_id,
-        artifact=artifact,
-        scope=scope,
-        execution_id=execution_id,
-        digest=digest,
-        checks=checks,
-        passed=validator_passed,
-        error=validation_error,
-    )
+    validator_passed = execution.get("passed") is True and not validation_error
+    final_error = str(execution.get("error") or validation_error or "")
     if persist:
-        runtime.store.append(probe_record)
+        runtime.store.append(
+            _probe_record(
+                probe_id=probe_id,
+                artifact=artifact,
+                scope=scope,
+                execution_id=execution_id,
+                execution=execution,
+                passed=False,
+                error=final_error or "outcome trace pending",
+            )
+        )
 
     trace_record_id = ""
     trace_error = ""
     if validator_passed and persist:
-        trace_result = runtime.record_outcome_trace(
-            {
+        try:
+            trace_result = runtime.record_outcome_trace({
                 "trace_id": trace_id,
                 "idempotency_key": trace_id,
                 "task_type": "capability.acceptance",
@@ -247,22 +321,35 @@ def _run_probe(
                 "outcome": {"status": "success", "success": True, "rehearsal": True},
                 "verifier": {
                     "passed": True,
-                    "method": "validate_capability_contract",
+                    "method": "execute_capability_probe",
                     "evidence_ref": probe_id,
                     "artifact_digest": digest,
                 },
                 "capability": capability,
                 "capability_case_id": case_id,
                 "capability_contract": contract,
-            },
-            scope=asdict(scope),
-        )
-        if trace_result.get("ok") is True and trace_result.get("record_id"):
-            trace_record_id = str(trace_result["record_id"])
-        else:
-            trace_error = str(trace_result.get("error") or "outcome trace persistence failed")
+            }, scope=asdict(scope))
+            if trace_result.get("ok") is True and trace_result.get("record_id"):
+                trace_record_id = str(trace_result["record_id"])
+            else:
+                trace_error = str(trace_result.get("error") or "outcome trace persistence failed")
+        except Exception as exc:
+            trace_error = f"outcome trace persistence exception: {type(exc).__name__}"
 
     passed = validator_passed and (not persist or bool(trace_record_id))
+    durable_error = final_error or trace_error
+    if persist:
+        runtime.store.append(
+            _probe_record(
+                probe_id=probe_id,
+                artifact=artifact,
+                scope=scope,
+                execution_id=execution_id,
+                execution=execution,
+                passed=passed,
+                error=durable_error,
+            )
+        )
     return {
         "case_id": case_id,
         "capability": capability,
@@ -271,12 +358,14 @@ def _run_probe(
         "source_record_id": probe_id,
         "trace_id": trace_id,
         "trace_record_id": trace_record_id,
-        "digest": digest,
+        "execution_digest": digest,
+        "executor_id": execution["executor_id"],
+        "executor_version": execution["executor_version"],
         "validator_passed": validator_passed,
         "trace_emitted": bool(trace_record_id),
         "persisted": persist,
         "passed": passed,
-        "error": validation_error or trace_error,
+        "error": durable_error,
     }
 
 
@@ -286,14 +375,14 @@ def _probe_record(
     artifact: dict[str, Any],
     scope: ScopeRef,
     execution_id: str,
-    digest: str,
-    checks: list[dict[str, Any]],
+    execution: dict[str, Any],
     passed: bool,
     error: str,
 ) -> RecordEnvelope:
     case_id = str(artifact["case_id"])
     capability = str(artifact["capability"])
     verdict = "pass" if passed else "fail"
+    digest = str(execution["execution_digest"])
     record = RecordEnvelope.create(
         kind="replay_result",
         title=f"Capability acceptance probe: {case_id}",
@@ -305,10 +394,13 @@ def _probe_record(
             "execution_id": execution_id,
             "case_id": case_id,
             "capability": capability,
-            "input": dict(artifact["input"]),
-            "checks": [dict(check) for check in checks],
-            "observation": dict(artifact["observation"]),
-            "digest": digest,
+            "executor_id": str(execution["executor_id"]),
+            "executor_version": str(execution["executor_version"]),
+            "input": dict(execution["input"]),
+            "output": dict(execution["output"]),
+            "checks": [dict(check) for check in execution["checks"]],
+            "observation": dict(execution["observation"]),
+            "execution_digest": str(execution["execution_digest"]),
             "passed": passed,
             "verdict": verdict,
             "validator": {
@@ -342,16 +434,18 @@ def _probe_record(
 
 def capability_acceptance_digest(
     *,
-    capability: str,
-    case_id: str,
+    executor_id: str,
+    executor_version: str,
     input_data: dict[str, Any],
+    output: dict[str, Any],
     observation: dict[str, Any],
+    checks: list[dict[str, Any]],
 ) -> str:
-    artifact = {
-        "case_id": str(case_id),
-        "capability": str(capability),
-        "input": dict(input_data),
-        "observation": dict(observation),
-    }
-    canonical = json.dumps(artifact, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return sha256(canonical.encode("utf-8")).hexdigest()
+    return execution_evidence_digest(
+        executor_id=executor_id,
+        executor_version=executor_version,
+        input_data=input_data,
+        output=output,
+        observation=observation,
+        checks=checks,
+    )

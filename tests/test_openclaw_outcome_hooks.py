@@ -354,6 +354,45 @@ def test_openclaw_agent_end_does_not_pass_unexecuted_or_unknown_verification(
     assert traces[0]["verifier"]["passed"] is False
 
 
+@pytest.mark.parametrize(
+    "verification_state",
+    [
+        "not_run: verifier unavailable",
+        "not executed because browser closed",
+        "skipped - no target",
+        "unavailable (offline)",
+        "unknown: no evidence",
+        "missing verification artifact",
+    ],
+)
+def test_openclaw_agent_end_rejects_unexecuted_verification_prefixes(
+    tmp_path, monkeypatch, verification_state: str
+) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    hooks = OpenClawMemoryHooks(runtime)
+    traces: list[dict] = []
+
+    monkeypatch.setattr(
+        runtime,
+        "record_outcome_trace",
+        lambda payload, *, scope: traces.append(payload) or {"id": "trace-prefix"},
+        raising=False,
+    )
+    hooks.on_agent_end(
+        {
+            "session_id": "sess-prefix",
+            "agent_id": "main",
+            "workspace_id": "repo-x",
+            "user_id": "darrow",
+            "query": "verify dashboard",
+            "verification": verification_state,
+            "outcome": {"success": True, "verified": True},
+        }
+    )
+
+    assert traces[0]["verifier"]["passed"] is False
+
+
 @pytest.mark.parametrize("verified_state", ["unknown", "not_run", "skipped", "missing", "uncertain"])
 @pytest.mark.parametrize("verified_field", ["verified", "is_verified", "isVerified"])
 @pytest.mark.parametrize("verified_location", ["event", "outcome", "task_context"])

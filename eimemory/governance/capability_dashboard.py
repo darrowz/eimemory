@@ -222,17 +222,30 @@ def _policy_rollback_records(runtime: Any, scope: ScopeRef, limit: int) -> list[
 
 def _field(record: Any, key: str) -> Any:
     if isinstance(record, dict):
-        if key in record:
-            return record.get(key)
         meta = record.get("meta")
         content = record.get("content")
         for payload in (meta, content):
             if isinstance(payload, dict) and key in payload:
                 return payload.get(key)
+        nested = content.get("payload") if isinstance(content, dict) and isinstance(content.get("payload"), dict) else {}
+        if key in nested:
+            return nested.get(key)
+        nested_outcome = nested.get("outcome") if isinstance(nested.get("outcome"), dict) else {}
+        if key in nested_outcome:
+            return nested_outcome.get(key)
+        if key in record:
+            return record.get(key)
         return None
-    for payload in (getattr(record, "meta", {}) or {}, getattr(record, "content", {}) or {}):
+    content = getattr(record, "content", {}) or {}
+    for payload in (getattr(record, "meta", {}) or {}, content):
         if isinstance(payload, dict) and key in payload:
             return payload.get(key)
+    nested = content.get("payload") if isinstance(content, dict) and isinstance(content.get("payload"), dict) else {}
+    if key in nested:
+        return nested.get(key)
+    nested_outcome = nested.get("outcome") if isinstance(nested.get("outcome"), dict) else {}
+    if key in nested_outcome:
+        return nested_outcome.get(key)
     return None
 
 
@@ -358,12 +371,24 @@ def _has_outcome_signal(record: Any) -> bool:
 
 
 def _outcome_success(record: Any) -> bool:
-    task_success = _field(record, "task_success")
-    if task_success is not None:
-        return _truthy(task_success)
     outcome = _field(record, "outcome")
     labels: list[str] = []
     bool_values: list[Any] = []
+    for key in ("task_success", "success", "verified", "ok"):
+        value = _field(record, key)
+        if value is not None:
+            bool_values.append(value)
+    verifier = _field(record, "verifier")
+    if isinstance(verifier, dict) and "passed" in verifier:
+        bool_values.append(verifier.get("passed"))
+    verification = _field(record, "verification")
+    if isinstance(verification, dict):
+        for key in ("passed", "success", "verified", "ok"):
+            if key in verification:
+                bool_values.append(verification.get(key))
+        labels.extend(str(verification.get(key) or "").strip().lower() for key in ("status", "result", "verdict"))
+    elif verification is not None:
+        labels.append(str(verification or "").strip().lower())
     if isinstance(outcome, dict):
         labels.extend(str(outcome.get(key) or "").strip().lower() for key in ("status", "outcome", "result"))
         for key in ("success", "verified", "ok"):
@@ -373,14 +398,12 @@ def _outcome_success(record: Any) -> bool:
         labels.append(str(outcome or "").strip().lower())
     labels.extend(str(_field(record, key) or "").strip().lower() for key in ("status", "result", "verdict"))
     for label in labels:
-        if label in FAILURE_LABELS:
+        if _is_failure_label(label):
             return False
-    for value in bool_values:
-        return _truthy(value)
-    for key in ("success", "verified", "ok"):
-        value = _field(record, key)
-        if value is not None:
-            return _truthy(value)
+    if any(value is False or (not isinstance(value, bool) and str(value or "").strip().lower() in FAILURE_LABELS) for value in bool_values):
+        return False
+    if any(_truthy(value) for value in bool_values):
+        return True
     for label in labels:
         if label in SUCCESS_LABELS:
             return True
@@ -389,6 +412,15 @@ def _outcome_success(record: Any) -> bool:
 
 def _rate(numerator: int, denominator: int) -> float:
     return round(numerator / denominator, 3) if denominator else 0.0
+
+
+def _is_failure_label(value: Any) -> bool:
+    normalized = " ".join(
+        str(value or "").strip().lower().replace("_", " ").replace("-", " ").replace(":", " ").split()
+    )
+    prefixes = {" ".join(label.replace("_", " ").split()) for label in FAILURE_LABELS}
+    prefixes.update({"not run", "not executed", "skipped", "unavailable", "unknown", "missing"})
+    return any(normalized == prefix or normalized.startswith(prefix + " ") for prefix in prefixes)
 
 
 def _quality(sample_count: int, *, minimum: int = 10) -> dict[str, Any]:

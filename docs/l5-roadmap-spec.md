@@ -146,21 +146,31 @@ Best existing modules to extend:
 
 Current closure facts:
 - capability observations use the nested `capability_contract.v1` schema. An
-  acceptance probe is one case-specific, non-external execution; it must record
-  `outcome.rehearsal=true`. The closure rehearsal is the larger ordered gate
+  acceptance probe is one case-specific, non-external execution backed by an
+  allowlisted deterministic sandbox executor. Case artifacts contain only
+  inputs, fixtures, and expected invariants; executors compute raw output,
+  observation, checks, and an execution digest. A failed/missing executor or
+  invariant persists a failed probe and emits no successful trace. A successful
+  probe records `outcome.rehearsal=true`. The closure rehearsal is the larger ordered gate
   that runs acceptance, replay, skill/rollback, assessment, dashboard, and
   readiness. Neither acceptance probes nor closure rehearsals enter production
   task-success metrics or create task-success evidence.
 - weak-capability replay is contract-only: the trace must match the canonical
   acceptance case, current probe execution, expected capability, verified
-  rehearsal outcome, and distinct evidence source. Keyword-only, generic, or
-  wrong-case outcomes fail closed. Readiness uses the latest execution per
-  capability/case.
+  rehearsal outcome, allowlisted executor identity, recomputed deterministic
+  output/checks/digest, and distinct evidence source. Keyword-only, generic,
+  wrong-case, or tampered execution evidence fails closed. Readiness uses the
+  latest execution per capability/case.
 - a deployment receipt verifies the complete `git ls-tree -r -z HEAD` tracked
   tree, including exact regular-file blobs/modes and tracked symlink targets.
   It rejects parent/final symlink or junction escape, binds the live release to
   fixed repo/current-link/health trust anchors, rejects health redirects, and
-  records a distinct ancestor rollback commit.
+  records a distinct ancestor rollback commit. Runtime health also reports the
+  actual imported `eimemory` root and a deterministic package-tree digest;
+  receipt verification requires the import root to be the verified release
+  package and independently recomputes the same digest. The RPC unit runs the
+  release interpreter with `PYTHONPATH=/opt/eimemory/current`, not an installed
+  console-script package.
 - rollback evidence is first-class only when an executed ledger row has an
   allowlisted execution type and one canonical subject. Policy transitions use
   `intent_pattern_status_transition`; candidate code rollback uses
@@ -196,8 +206,9 @@ Behavior:
 
 Current implementation state for 1.9.17:
 
-1. Capability contracts, case-specific acceptance probes, canonical contract-
-   only replay, and latest-per-case readiness inputs are implemented.
+1. Capability contracts, executor-backed case-specific acceptance probes,
+   canonical contract-only replay with execution-evidence recomputation, and
+   latest-per-case readiness inputs are implemented.
 2. Closure produces and consumes the final persisted L5 assessment only after
    acceptance, replay, and rollback gates pass; a failed gate stops downstream
    success evidence.

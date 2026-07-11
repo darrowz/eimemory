@@ -5,10 +5,12 @@ from eimemory.experience import record_outcome_trace
 from eimemory.experience.capability_contract import SCHEMA_VERSION as CONTRACT_SCHEMA_VERSION
 from eimemory.governance import capability_acceptance
 from eimemory.governance.capability_acceptance import (
+    PROBE_SCHEMA_VERSION,
     capability_acceptance_digest,
     run_capability_acceptance,
 )
 from eimemory.governance.capability_replay_executor import execute_capability_replay_case
+from eimemory.governance.capability_probe_executor import execute_probe
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
@@ -219,13 +221,15 @@ def test_runtime_executor_rejects_probe_input_even_with_synchronized_digest(tmp_
         assert probe is not None and trace is not None
         forged_input = {**probe.content["input"], "recency_window": "forged-window"}
         forged_digest = capability_acceptance_digest(
-            capability=accepted["capability"],
-            case_id=accepted["case_id"],
+            executor_id=probe.content["executor_id"],
+            executor_version=probe.content["executor_version"],
             input_data=forged_input,
+            output=probe.content["output"],
             observation=probe.content["observation"],
+            checks=probe.content["checks"],
         )
         probe.content["input"] = forged_input
-        probe.content["digest"] = forged_digest
+        probe.content["execution_digest"] = forged_digest
         probe.meta["artifact_digest"] = forged_digest
         probe.provenance["artifact_digest"] = forged_digest
         trace.content["payload"]["verifier"]["artifact_digest"] = forged_digest
@@ -241,6 +245,33 @@ def test_runtime_executor_rejects_probe_input_even_with_synchronized_digest(tmp_
 
     assert result["verdict"] == "fail"
     assert result["reason"] == "probe_input_canonical_mismatch"
+
+
+def test_runtime_executor_rejects_output_checks_or_digest_tampering(tmp_path) -> None:
+    for field in ("output", "checks", "execution_digest"):
+        runtime = Runtime.create(root=tmp_path / field)
+        try:
+            acceptance = run_capability_acceptance(runtime, scope=SCOPE, persist=True)
+            accepted = acceptance["results"][0]
+            probe = runtime.store.get_by_id(accepted["probe_id"], scope=SCOPE)
+            assert probe is not None
+            if field == "output":
+                probe.content["output"] = {**probe.content["output"], "source_verified": False}
+            elif field == "checks":
+                probe.content["checks"][0]["observed"] = "tampered"
+            else:
+                probe.content["execution_digest"] = "0" * 64
+            runtime.store.append(probe)
+
+            result = execute_capability_replay_case(
+                runtime,
+                {"case_id": accepted["case_id"], "target_capability": accepted["capability"], "scope": SCOPE},
+            )
+        finally:
+            runtime.close()
+
+        assert result["verdict"] == "fail", field
+        assert result["reason"] == "probe_execution_evidence_mismatch", field
 
 
 def test_runtime_executor_rejects_wrong_canonical_acceptance_trace_id(tmp_path) -> None:
@@ -480,13 +511,9 @@ def _seed_contract_trace(
     artifact = capability_acceptance.capability_acceptance_case(case_id)
     probe_id = f"probe-{case_id}"
     execution_id = "fixture-execution"
-    digest = capability_acceptance_digest(
-        capability=artifact["capability"],
-        case_id=case_id,
-        input_data=artifact["input"],
-        observation=artifact["observation"],
-    )
-    checks = [{"name": "canonical_observation_contract", "passed": True, "evidence_ref": probe_id}]
+    execution = execute_probe(artifact, runtime=runtime, evidence_ref=probe_id)
+    digest = execution["execution_digest"]
+    checks = execution["checks"]
     probe = RecordEnvelope.create(
         kind="replay_result",
         title=f"Capability acceptance probe: {case_id}",
@@ -495,21 +522,24 @@ def _seed_contract_trace(
         source="eimemory.capability_acceptance",
         content={
             "report_type": "capability_probe_result",
-            "schema_version": "capability_probe_result.v1",
+            "schema_version": PROBE_SCHEMA_VERSION,
             "execution_id": execution_id,
             "case_id": case_id,
             "capability": artifact["capability"],
-            "input": dict(artifact["input"]),
+            "executor_id": execution["executor_id"],
+            "executor_version": execution["executor_version"],
+            "input": dict(execution["input"]),
+            "output": dict(execution["output"]),
             "checks": checks,
-            "observation": dict(artifact["observation"]),
-            "digest": digest,
+            "observation": dict(execution["observation"]),
+            "execution_digest": digest,
             "passed": True,
             "verdict": "pass",
             "validator": {"schema_version": CONTRACT_SCHEMA_VERSION, "passed": True, "error": ""},
         },
         meta={
             "report_type": "capability_probe_result",
-            "schema_version": "capability_probe_result.v1",
+            "schema_version": PROBE_SCHEMA_VERSION,
             "execution_id": execution_id,
             "case_id": case_id,
             "capability": artifact["capability"],
@@ -519,7 +549,7 @@ def _seed_contract_trace(
         },
         provenance={
             "report_type": "capability_probe_result",
-            "schema_version": "capability_probe_result.v1",
+            "schema_version": PROBE_SCHEMA_VERSION,
             "execution_id": execution_id,
             "artifact_digest": digest,
         },
@@ -530,7 +560,7 @@ def _seed_contract_trace(
         "schema_version": CONTRACT_SCHEMA_VERSION,
         "capability": artifact["capability"],
         "case_id": case_id,
-        "observations": dict(artifact["observation"]),
+        "observations": dict(execution["observation"]),
         "checks": checks,
         "source_record_ids": [probe_id],
         "probe": True,
@@ -552,7 +582,7 @@ def _seed_contract_trace(
                     "outcome": {"status": "success", "success": True, "rehearsal": True},
                     "verifier": {
                         "passed": verifier_passed,
-                        "method": "validate_capability_contract",
+                        "method": "execute_capability_probe",
                         "evidence_ref": probe_id,
                         "artifact_digest": digest,
                     },

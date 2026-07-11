@@ -15,8 +15,8 @@ from eimemory.governance.capability_acceptance import (
     PROBE_REPORT_TYPE,
     PROBE_SCHEMA_VERSION,
     capability_acceptance_case,
-    capability_acceptance_digest,
 )
+from eimemory.governance.capability_probe_executor import validate_execution_evidence
 from eimemory.governance.capability_attribution import collect_capability_evidence
 from eimemory.metadata import business_metadata
 from eimemory.models.records import ScopeRef
@@ -212,7 +212,7 @@ def _validate_contract_chain(
             trace_record_id=trace_record_id,
             probe_source_id=probe_source_id,
         )
-    if str(verifier.get("method") or "") != "validate_capability_contract":
+    if str(verifier.get("method") or "") != "execute_capability_probe":
         return _failure(
             "fail",
             "outcome_verifier_method_mismatch",
@@ -309,16 +309,10 @@ def _validate_contract_chain(
         )
 
     observation = probe_content.get("observation")
-    canonical_observation = canonical_artifact.get("observation")
-    if (
-        not isinstance(observation, dict)
-        or not isinstance(canonical_observation, dict)
-        or observation != canonical_observation
-        or observation != contract.get("observations")
-    ):
+    if not isinstance(observation, dict) or not observation or observation != contract.get("observations"):
         return _failure(
             "fail",
-            "probe_observation_canonical_mismatch",
+            "probe_observation_contract_mismatch",
             trace_id=trace_id,
             trace_record_id=trace_record_id,
             probe_source_id=probe_source_id,
@@ -333,14 +327,36 @@ def _validate_contract_chain(
             trace_record_id=trace_record_id,
             probe_source_id=probe_source_id,
         )
-    expected_digest = capability_acceptance_digest(
-        capability=capability,
-        case_id=case_id,
-        input_data=canonical_input,
-        observation=canonical_observation,
+    execution_evidence = {
+        key: deepcopy(probe_content.get(key))
+        for key in (
+            "executor_id",
+            "executor_version",
+            "input",
+            "output",
+            "observation",
+            "checks",
+            "execution_digest",
+            "passed",
+        )
+    }
+    execution_error = validate_execution_evidence(
+        canonical_artifact,
+        runtime=runtime,
+        evidence_ref=probe_source_id,
+        evidence=execution_evidence,
     )
+    if execution_error:
+        return _failure(
+            "fail",
+            execution_error,
+            trace_id=trace_id,
+            trace_record_id=trace_record_id,
+            probe_source_id=probe_source_id,
+        )
+    expected_digest = str(probe_content.get("execution_digest") or "")
     if (
-        str(probe_content.get("digest") or "") != expected_digest
+        not expected_digest
         or str(probe_record.meta.get("artifact_digest") or "") != expected_digest
         or str(probe_provenance.get("artifact_digest") or "") != expected_digest
     ):
@@ -355,6 +371,14 @@ def _validate_contract_chain(
         return _failure(
             "fail",
             "trace_verifier_artifact_digest_mismatch",
+            trace_id=trace_id,
+            trace_record_id=trace_record_id,
+            probe_source_id=probe_source_id,
+        )
+    if contract.get("checks") != probe_checks:
+        return _failure(
+            "fail",
+            "probe_checks_contract_mismatch",
             trace_id=trace_id,
             trace_record_id=trace_record_id,
             probe_source_id=probe_source_id,

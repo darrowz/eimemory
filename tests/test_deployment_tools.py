@@ -150,10 +150,14 @@ def test_eimemory_rpc_systemd_unit_uses_honxin_tailscale_endpoint() -> None:
     assert "Group=" not in unit_text
     assert "UMask=0027" in unit_text
     assert "Environment=HOME=/home/darrow" in unit_text
+    assert "Environment=PYTHONPATH=/opt/eimemory/current" in unit_text
+    assert unit_text.index("EnvironmentFile=") < unit_text.index("Environment=PYTHONPATH=")
     assert (
-        "ExecStart=/opt/eimemory/current/.venv/bin/eimemory serve-eibrain-rpc --host 100.105.189.120 --port 8091"
+        "ExecStart=/opt/eimemory/current/.venv/bin/python -m eimemory.cli.main serve-eibrain-rpc "
+        "--host 100.105.189.120 --port 8091"
         in unit_text
     )
+    assert "/opt/eimemory/current/.venv/bin/eimemory serve-eibrain-rpc" not in unit_text
     assert "--loopback-health-host 127.0.0.1 --loopback-health-port 8091" in unit_text
     assert "Environment=EIMEMORY_ROOT=/var/lib/eimemory" in unit_text
     assert "Environment=EIMEMORY_CONFIG_DIR=/etc/eimemory" in unit_text

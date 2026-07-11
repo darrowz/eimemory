@@ -16,6 +16,7 @@ from eimemory.api.runtime import Runtime
 from eimemory.ei_bridge.protocol import EIMEMORY_RPC_CONTRACT_VERSION
 from eimemory.ei_bridge.protocol import EIMemoryRPCRequest, EIMemoryRPCResponse
 from eimemory.version import __version__
+from eimemory.runtime_identity import package_import_root, runtime_package_tree_digest
 
 
 _CLIENT_DISCONNECT_ERRNOS = {errno.EPIPE, errno.ECONNRESET, errno.ECONNABORTED}
@@ -278,12 +279,15 @@ def _compact_health_payload(
     root = getattr(getattr(runtime, "store", None), "root", None)
     store_root = Path(root) if root else None
     store_ready = bool(store_root and store_root.exists())
+    import_root = package_import_root()
     payload: EIMemoryRPCResponse = {
         "ok": store_ready,
         "service": "eimemory-rpc",
         "version": __version__,
         "commit": _current_commit(),
         "contract_version": EIMEMORY_RPC_CONTRACT_VERSION,
+        "import_root": str(import_root),
+        "package_tree_digest": runtime_package_tree_digest(),
         "paths": {
             "current": str(_current_path()),
             "release": str(_release_path()),

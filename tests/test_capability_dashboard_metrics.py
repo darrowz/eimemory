@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from eimemory.api.runtime import Runtime
 from eimemory.governance.capability_dashboard import _verified_code_patch_promotion
 from eimemory.models.records import RecordEnvelope, ScopeRef
@@ -254,6 +256,80 @@ def test_capability_dashboard_metrics_include_real_task_outcome_traces(tmp_path)
         assert metrics["sample_counts"]["task_outcomes"] == 3
     finally:
         runtime.close()
+
+
+def test_dashboard_reads_real_outcome_trace_payload_and_excludes_nested_rehearsal(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        for trace_id, rehearsal in (("real-task", False), ("probe-task", True)):
+            result = runtime.record_outcome_trace(
+                {
+                    "trace_id": trace_id,
+                    "task_type": "coding",
+                    "input_summary": trace_id,
+                    "outcome": {"status": "success", "success": True, "rehearsal": rehearsal},
+                    "verifier": {"passed": True, "method": "test", "evidence_refs": [trace_id]},
+                },
+                scope=SCOPE,
+            )
+            assert result["ok"] is True
+
+        metrics = runtime.build_capability_dashboard_metrics(scope=SCOPE, persist=False)
+    finally:
+        runtime.close()
+
+    assert metrics["sample_counts"]["task_outcomes"] == 1
+    assert metrics["metrics"]["task_success_rate"] == 1.0
+
+
+def test_dashboard_explicit_failure_overrides_success_signal(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        _append(
+            runtime,
+            ScopeRef.from_dict(SCOPE),
+            "reflection",
+            "conflicting outcome",
+            {
+                "report_type": "outcome_trace",
+                "success": True,
+                "verified": False,
+            },
+        )
+        metrics = runtime.build_capability_dashboard_metrics(scope=SCOPE, persist=False)
+    finally:
+        runtime.close()
+
+    assert metrics["sample_counts"]["task_outcomes"] == 1
+    assert metrics["metrics"]["task_success_rate"] == 0.0
+
+
+@pytest.mark.parametrize(
+    "verification",
+    [
+        "failed: no evidence",
+        "not_run: verifier unavailable",
+        {"passed": False},
+        {"ok": False},
+        {"status": "failure"},
+    ],
+)
+def test_dashboard_verification_failure_label_overrides_success(tmp_path, verification) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        _append(
+            runtime,
+            ScopeRef.from_dict(SCOPE),
+            "reflection",
+            "verification conflict",
+            {"report_type": "outcome_trace", "success": True, "verification": verification},
+        )
+        metrics = runtime.build_capability_dashboard_metrics(scope=SCOPE, persist=False)
+    finally:
+        runtime.close()
+
+    assert metrics["sample_counts"]["task_outcomes"] == 1
+    assert metrics["metrics"]["task_success_rate"] == 0.0
 
 
 def test_capability_dashboard_maps_real_completion_labels_to_success(tmp_path) -> None:

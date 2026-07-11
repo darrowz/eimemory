@@ -16,6 +16,7 @@ from urllib.request import urlopen
 
 from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.models.records import ScopeRef
+from eimemory.runtime_identity import package_entries_digest
 
 
 MAX_HEALTH_RESPONSE_BYTES = 64 * 1024
@@ -99,6 +100,9 @@ def verify_and_record_deployment(
     release_tree_error = _release_tree_error(repo, release, head=head)
     if release_tree_error:
         return release_tree_error
+    for import_hook in (release / "sitecustomize.py", release / "usercustomize.py"):
+        if import_hook.exists() or import_hook.is_symlink():
+            return {"ok": False, "error": "release_tree_mismatch", "path": import_hook.name}
     health = _fetch_health(normalized_health_url)
     if health.get("_fetch_error"):
         if health["_fetch_error"] == "health_response_too_large":
@@ -108,6 +112,7 @@ def verify_and_record_deployment(
         return {"ok": False, "error": "health_fetch_failed", "detail": health["_fetch_error"]}
     identity_error = _health_identity_error(
         health,
+        repo=repo,
         head=head,
         version=version,
         current_link=link,
@@ -148,6 +153,8 @@ def verify_and_record_deployment(
             "version": version,
             "current_link": str(link),
             "release_path": str(release),
+            "import_root": str(health.get("import_root") or ""),
+            "package_tree_digest": str(health.get("package_tree_digest") or ""),
             "checks": dict(health.get("checks") or {}),
         },
         "commit": {"ok": True, "commit_sha": head},
@@ -445,6 +452,7 @@ def _git_blob(repo: Path, *, head: str, relative_path: str) -> bytes | None:
 def _health_identity_error(
     health: dict[str, Any],
     *,
+    repo: Path,
     head: str,
     version: str,
     current_link: Path,
@@ -453,6 +461,7 @@ def _health_identity_error(
     paths = health.get("paths") if isinstance(health.get("paths"), dict) else {}
     checks = health.get("checks") if isinstance(health.get("checks"), dict) else {}
     required = [health.get("commit"), health.get("version"), paths.get("current"), paths.get("release")]
+    required.extend([health.get("import_root"), health.get("package_tree_digest")])
     if health.get("ok") is not True or checks.get("ready") is not True or not all(str(value or "").strip() for value in required):
         return "health_identity_missing"
     if str(health.get("commit")) != head:
@@ -463,7 +472,39 @@ def _health_identity_error(
         return "health_current_link_mismatch"
     if _resolved_path(paths.get("release")) != _resolved_path(release_path):
         return "health_release_mismatch"
+    expected_import_root = release_path / "eimemory"
+    if _resolved_path(health.get("import_root")) != _resolved_path(expected_import_root):
+        return "health_import_root_mismatch"
+    expected_digest = _git_package_tree_digest(repo=repo, head=head)
+    if not expected_digest:
+        return "health_package_tree_digest_mismatch"
+    if str(health.get("package_tree_digest") or "") != expected_digest:
+        return "health_package_tree_digest_mismatch"
     return ""
+
+
+def _git_package_tree_digest(*, repo: Path, head: str) -> str:
+    tree = _git_tree_entries(repo, head=head)
+    if tree is None:
+        return ""
+    entries: list[tuple[str, str, bytes]] = []
+    for mode, object_id, relative_path in tree:
+        if not relative_path.startswith("eimemory/"):
+            continue
+        package_path = relative_path.removeprefix("eimemory/")
+        if not package_path or "__pycache__" in PurePosixPath(package_path).parts or package_path.endswith((".pyc", ".pyo")):
+            continue
+        blob = _git_blob_by_id(repo, object_id)
+        if blob is None:
+            return ""
+        if mode == "120000":
+            entry_type = "link"
+        elif mode in {"100644", "100755"}:
+            entry_type = "file"
+        else:
+            return ""
+        entries.append((entry_type, package_path, blob))
+    return package_entries_digest(entries) if entries else ""
 
 
 def _absolute_path(value: Any) -> str:

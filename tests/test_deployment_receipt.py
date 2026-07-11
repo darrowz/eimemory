@@ -14,6 +14,7 @@ from eimemory.api.runtime import Runtime
 from eimemory.cli.main import main as cli_main
 from eimemory.governance import deployment_receipt as deployment_receipt_module
 from eimemory.governance.deployment_receipt import verify_and_record_deployment as _verify_deployment_receipt
+from eimemory.runtime_identity import package_tree_digest
 
 
 SCOPE = {"agent_id": "agent-deployment", "workspace_id": "deployment-receipt", "user_id": "darrow"}
@@ -557,6 +558,48 @@ def test_deployment_receipt_environment_cannot_rebind_all_trust_anchors(tmp_path
     assert report == {"ok": False, "error": "untrusted_repo_root"}
 
 
+@pytest.mark.parametrize("attack", ["fake_import_root", "digest_mismatch", "extra_source", "sitecustomize"])
+def test_deployment_receipt_rejects_runtime_package_identity_attacks(tmp_path, attack) -> None:
+    repo, prior_commit, head_commit = _git_release_repo(tmp_path, version="9.8.7")
+    release_dir, current_link = _release_link(tmp_path, head_commit, repo=repo)
+    health = _health_payload(
+        commit=head_commit,
+        version="9.8.7",
+        current_link=current_link,
+        release_dir=release_dir,
+    )
+    health["import_root"] = str(release_dir / "eimemory")
+    if attack == "fake_import_root":
+        health["import_root"] = str(release_dir / ".venv" / "site-packages" / "eimemory")
+    elif attack == "digest_mismatch":
+        health["package_tree_digest"] = "a" * 64
+    elif attack == "extra_source":
+        (release_dir / "eimemory" / "extra.py").write_text("EXTRA = True\n", encoding="utf-8")
+        health["package_tree_digest"] = package_tree_digest(release_dir / "eimemory")
+    elif attack == "sitecustomize":
+        (release_dir / "sitecustomize.py").write_text("RUNTIME_TAMPER = True\n", encoding="utf-8")
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    try:
+        with _health_server(health) as health_url:
+            report = verify_and_record_deployment(
+                runtime,
+                scope=SCOPE,
+                repo_root=repo,
+                current_link=current_link,
+                health_url=health_url,
+                prior_commit=prior_commit,
+            )
+    finally:
+        runtime.close()
+
+    assert report["ok"] is False
+    assert report["error"] in {
+        "health_import_root_mismatch",
+        "health_package_tree_digest_mismatch",
+        "release_tree_mismatch",
+    }
+
+
 def _git_release_repo(tmp_path: Path, *, version: str) -> tuple[Path, str, str]:
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -617,6 +660,8 @@ def _health_payload(*, commit: str, version: str, current_link: Path, release_di
         "service": "eimemory-rpc",
         "version": version,
         "commit": commit,
+        "import_root": str(release_dir / "eimemory"),
+        "package_tree_digest": package_tree_digest(release_dir / "eimemory"),
         "paths": {"current": str(current_link), "release": str(release_dir)},
         "checks": {"process": True, "store": True, "ready": True},
     }
