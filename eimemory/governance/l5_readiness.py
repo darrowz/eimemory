@@ -4,7 +4,9 @@ from dataclasses import asdict
 from typing import Any
 
 from eimemory.core.clock import now_iso
+from eimemory.governance.capability_attribution import collect_capability_evidence
 from eimemory.governance.capability_ledger import build_capability_ledger
+from eimemory.governance.capability_replay_executor import validate_capability_replay_result
 from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.models.records import ScopeRef
 
@@ -41,7 +43,7 @@ def build_l5_readiness_report(
     evidence_counts = _evidence_counts(runtime, scope=scope_ref, limit=limit)
     verified_replay = _verified_replay_summary(runtime, scope=scope_ref, limit=limit)
     latest_l5_assessment = _latest_l5_assessment(runtime, scope=scope_ref)
-    weak_outcome_evidence = _weak_outcome_evidence(ledger)
+    weak_outcome_evidence = _weak_outcome_evidence(runtime, scope=scope_ref, limit=limit)
     capability_gaps = _capability_gaps(ledger)
     stage = _stage_for(
         ledger,
@@ -181,18 +183,34 @@ def _verified_replay_summary(runtime: Any, *, scope: ScopeRef, limit: int) -> di
     pass_count = 0
     fail_count = 0
     not_run_count = 0
+    rejection_reasons: dict[str, int] = {}
     for record in _latest_capability_case_records(records):
-        verdict = str(_record_field(record, "verdict") or "").strip().lower()
+        content = record.get("content") if isinstance(record, dict) else getattr(record, "content", None)
+        content = content if isinstance(content, dict) else {}
+        persisted_result = content.get("result") if isinstance(content.get("result"), dict) else {}
+        case_payload = content.get("case") if isinstance(content.get("case"), dict) else {}
+        verdict = str(persisted_result.get("verdict") or _record_field(record, "verdict") or "").strip().lower()
         capability = str(_record_field(record, "capability") or _record_field(record, "target_capability") or "").strip()
+        case_id = str(case_payload.get("case_id") or _record_field(record, "case_id") or "").strip()
         report_type = str(_record_field(record, "report_type") or "").strip()
         source = str(record.get("source", "") if isinstance(record, dict) else getattr(record, "source", "") or "").strip()
-        hit = _record_field(record, "hit")
+        hit = persisted_result.get("hit") if "hit" in persisted_result else _record_field(record, "hit")
         trusted_replay = report_type == "capability_replay_pack" and source == "eimemory.capability_replay"
         if not trusted_replay:
             continue
-        evidence_source_id = str(_record_field(record, "evidence_source_id") or "").strip()
-        if verdict == "pass" and (hit is not True or not evidence_source_id):
-            verdict = "fail"
+        evidence_source_id = str(persisted_result.get("evidence_source_id") or "").strip()
+        if verdict == "pass":
+            validation = validate_capability_replay_result(
+                runtime,
+                scope=scope,
+                capability=capability,
+                case_id=case_id,
+                result=persisted_result,
+            )
+            if validation.get("ok") is not True:
+                verdict = "fail"
+                reason = str(validation.get("reason") or "invalid_contract_replay_result")
+                rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
         bucket = by_capability.get(capability)
         if verdict == "pass":
             pass_count += 1
@@ -233,6 +251,7 @@ def _verified_replay_summary(runtime: Any, *, scope: ScopeRef, limit: int) -> di
         "minimum_per_weak_capability": 3,
         "by_capability": by_capability,
         "weak_capabilities_missing": weak_capabilities_missing,
+        "rejection_reasons": dict(sorted(rejection_reasons.items())),
     }
 
 
@@ -458,9 +477,18 @@ def _ready_count(ledger: dict[str, Any], capability_names: set[str]) -> int:
     return total
 
 
-def _weak_outcome_evidence(ledger: dict[str, Any]) -> dict[str, Any]:
-    capabilities = dict(ledger.get("capabilities") or {})
-    counts = {name: _outcome_evidence_count(dict(capabilities.get(name) or {})) for name in sorted(WEAK_CAPABILITIES)}
+def _weak_outcome_evidence(runtime: Any, *, scope: ScopeRef, limit: int) -> dict[str, Any]:
+    evidence_by_capability = collect_capability_evidence(runtime, scope=scope, limit=limit)
+    counts = {
+        name: len(
+            {
+                str(item.get("source_id") or "")
+                for item in evidence_by_capability.get(name, [])
+                if item.get("contract_verified") is True and str(item.get("source_id") or "")
+            }
+        )
+        for name in sorted(WEAK_CAPABILITIES)
+    }
     return {
         "minimum_per_capability": 3,
         "counts": counts,

@@ -6,6 +6,7 @@ from typing import Any
 
 from eimemory.core.ids import generate_record_id
 from eimemory.governance.capability_ledger import record_capability_score
+from eimemory.governance.capability_replay_executor import validate_capability_replay_result
 from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.models.records import ScopeRef
 
@@ -246,7 +247,7 @@ def _run_case(runtime: Any, case: dict[str, Any]) -> dict[str, Any]:
         verdict = "fail"
         hit = False
         reason = "missing_replay_evidence_source"
-    return {
+    normalized = {
         "case_id": str(case.get("case_id") or ""),
         "verdict": verdict,
         "hit": hit if hit in {True, False, None} else bool(hit),
@@ -259,6 +260,19 @@ def _run_case(runtime: Any, case: dict[str, Any]) -> dict[str, Any]:
         "observed": observed,
         **({"reason": reason} if reason else {}),
     }
+    if verdict == "pass":
+        validation = validate_capability_replay_result(
+            runtime,
+            scope=case.get("scope") or {},
+            capability=str(case.get("target_capability") or ""),
+            case_id=str(case.get("case_id") or ""),
+            result=normalized,
+        )
+        if validation.get("ok") is not True:
+            normalized["verdict"] = "fail"
+            normalized["hit"] = False
+            normalized["reason"] = str(validation.get("reason") or "invalid_contract_replay_result")
+    return normalized
 
 
 def _score_for(capability: str, pass_rate: float) -> float:

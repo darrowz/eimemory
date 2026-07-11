@@ -31,6 +31,19 @@ def _outcome_records(runtime: Runtime) -> list:
     ]
 
 
+def test_public_acceptance_digest_preserves_canonical_artifact_hash() -> None:
+    artifact = capability_acceptance.CAPABILITY_ACCEPTANCE_CASES[0]
+
+    digest = capability_acceptance.capability_acceptance_digest(
+        capability=artifact["capability"],
+        case_id=artifact["case_id"],
+        input_data=artifact["input"],
+        observation=artifact["observation"],
+    )
+
+    assert digest == "ebad46fc05e2393d772072ee687c07f4eedf897322f2baba596d6fe1c5d2be2e"
+
+
 def test_acceptance_runs_all_twelve_cases_with_distinct_linked_probe_sources(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     try:

@@ -152,9 +152,9 @@ def test_l5_readiness_does_not_treat_replay_only_weak_capabilities_as_l5(tmp_pat
         _seed_l5_prerequisites(
             runtime,
             scope=SCOPE,
-            weak_outcomes=False,
+            weak_outcomes=True,
             patch_samples=10,
-            execute_weak_replays=True,
+            execute_weak_replays=False,
             assessment_complete=True,
             verified_patch_evidence=True,
         )
@@ -165,8 +165,7 @@ def test_l5_readiness_does_not_treat_replay_only_weak_capabilities_as_l5(tmp_pat
 
     assert report["current_stage"] != "L5"
     assert report["readiness_score"] < 1.0
-    weak_gaps = {gap["capability"] for gap in report["capability_gaps"] if gap["capability"] in WEAK_CAPABILITIES}
-    assert weak_gaps == WEAK_CAPABILITIES
+    assert report["verified_replay"]["weak_capabilities_missing"] == sorted(WEAK_CAPABILITIES)
 
 
 def test_l5_readiness_requires_sufficient_auto_patch_success_samples(tmp_path) -> None:
@@ -310,6 +309,54 @@ def test_l5_readiness_rejects_untrusted_pass_records_and_assessment(tmp_path) ->
     assert report["latest_l5_assessment"]["trusted"] is False
 
 
+def test_l5_readiness_rejects_legacy_ledger_outcomes_without_verified_contracts(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        for capability in WEAK_CAPABILITIES:
+            record_capability_score(
+                runtime,
+                scope=SCOPE,
+                loop_id="historical_legacy_attribution",
+                capability=capability,
+                score=0.82,
+                evidence_record_ids=[f"legacy-{capability}-{index}" for index in range(3)],
+                evidence_sources=["outcome_trace"],
+            )
+
+        report = runtime.build_l5_readiness_report(scope=SCOPE)
+    finally:
+        runtime.close()
+
+    assert report["weak_outcome_evidence"]["counts"] == {capability: 0 for capability in sorted(WEAK_CAPABILITIES)}
+    assert report["weak_outcome_evidence"]["missing"] == sorted(WEAK_CAPABILITIES)
+    assert report["current_stage"] != "L5"
+
+
+def test_l5_readiness_reparses_contract_chain_and_rejects_forged_probe_digest(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        acceptance = runtime.run_capability_acceptance(scope=SCOPE, persist=True)
+        runtime.build_capability_replay_packs(
+            scope=SCOPE,
+            capabilities=sorted(WEAK_CAPABILITIES),
+            persist=True,
+            loop_id="forged_probe_readiness",
+        )
+        probe = runtime.store.get_by_id(acceptance["results"][0]["probe_id"], scope=SCOPE)
+        assert probe is not None
+        probe.provenance["artifact_digest"] = "forged-artifact-digest"
+        runtime.store.append(probe)
+
+        report = runtime.build_l5_readiness_report(scope=SCOPE)
+    finally:
+        runtime.close()
+
+    assert report["verified_replay"]["pass_count"] == 11
+    assert report["verified_replay"]["fail_count"] == 1
+    assert report["verified_replay"]["rejection_reasons"] == {"probe_artifact_digest_mismatch": 1}
+    assert "search.discovery" in report["verified_replay"]["weak_capabilities_missing"]
+
+
 def test_cli_l5_readiness_returns_json(tmp_path, monkeypatch, capsys) -> None:
     monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path))
 
@@ -358,14 +405,10 @@ def _seed_l5_prerequisites(
             evidence_record_ids=[f"{capability}-e1", f"{capability}-e2", f"{capability}-e3"],
         )
     if execute_weak_replays:
-        runtime.run_capability_replay_case = lambda case: {
-            "verdict": "pass",
-            "hit": True,
-            "observed": f"verified:{case['case_id']}",
-            "evidence_source_id": f"test:{case['case_id']}",
-        }
+        runtime.run_capability_acceptance(scope=scope, persist=True)
     runtime.build_capability_replay_packs(scope=scope, capabilities=sorted(WEAK_CAPABILITIES), persist=True, loop_id="seed_weak_replay")
-    if weak_outcomes:
+    if weak_outcomes and not execute_weak_replays:
+        runtime.run_capability_acceptance(scope=scope, persist=True)
         for capability, task_type, summary in (
             ("search.discovery", "搜索最近 GitHub 热门项目", "搜索 GitHub created range stars sort source verification"),
             ("research.synthesis", "research_synthesis", "Synthesized research papers and claim evidence into a brief"),

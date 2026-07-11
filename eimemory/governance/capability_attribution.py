@@ -108,7 +108,11 @@ def attribute_capability_outcomes(
     limit: int = 500,
 ) -> dict[str, Any]:
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
-    evidence_by_capability = collect_capability_evidence(runtime, scope=scope_ref, limit=limit)
+    evidence_by_capability = {
+        capability: [item for item in items if item.get("contract_verified") is True]
+        for capability, items in collect_capability_evidence(runtime, scope=scope_ref, limit=limit).items()
+    }
+    evidence_by_capability = {capability: items for capability, items in evidence_by_capability.items() if items}
     record_ids: list[str] = []
     capabilities: dict[str, dict[str, Any]] = {}
     for capability in sorted(evidence_by_capability):

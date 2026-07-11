@@ -9,7 +9,13 @@ from eimemory.experience.capability_contract import (
     normalize_capability_contract,
     validate_capability_contract,
 )
-from eimemory.governance.capability_acceptance import PROBE_REPORT_TYPE, PROBE_SCHEMA_VERSION
+from eimemory.experience.outcome import REPORT_TYPE as OUTCOME_TRACE_REPORT_TYPE
+from eimemory.experience.outcome import SCHEMA_VERSION as OUTCOME_TRACE_SCHEMA_VERSION
+from eimemory.governance.capability_acceptance import (
+    PROBE_REPORT_TYPE,
+    PROBE_SCHEMA_VERSION,
+    capability_acceptance_digest,
+)
 from eimemory.governance.capability_attribution import collect_capability_evidence
 from eimemory.metadata import business_metadata
 from eimemory.models.records import ScopeRef
@@ -69,6 +75,51 @@ def execute_capability_replay_case(runtime: Any, case: dict[str, Any]) -> dict[s
     return failures[0] if failures else _failure("not_run", "contract_backed_outcome_evidence_missing")
 
 
+def validate_capability_replay_result(
+    runtime: Any,
+    *,
+    scope: dict[str, Any] | ScopeRef | None,
+    capability: str,
+    case_id: str,
+    result: dict[str, Any],
+) -> dict[str, Any]:
+    """Re-resolve and compare one persisted contract replay result."""
+
+    if not isinstance(result, dict):
+        return _result_validation_failure("missing_contract_replay_result")
+    trace_id = str(result.get("trace_id") or "").strip()
+    if not trace_id:
+        return _result_validation_failure("missing_contract_replay_trace_id")
+    trace_record_id = str(result.get("trace_record_id") or "").strip()
+    if not trace_record_id:
+        return _result_validation_failure("missing_contract_replay_trace_record_id")
+    probe_source_id = str(result.get("probe_source_id") or "").strip()
+    if not probe_source_id:
+        return _result_validation_failure("missing_contract_replay_probe_source_id")
+    if str(result.get("contract_schema") or "").strip() != CONTRACT_SCHEMA_VERSION:
+        return _result_validation_failure("invalid_contract_replay_schema")
+    observation = result.get("observation")
+    if not isinstance(observation, dict) or not observation:
+        return _result_validation_failure("missing_contract_replay_observation")
+    if str(result.get("evidence_source_id") or "").strip() != trace_record_id:
+        return _result_validation_failure("contract_replay_evidence_trace_mismatch")
+
+    scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+    resolved = _validate_contract_chain(
+        runtime,
+        evidence={"source_id": trace_record_id, "source_record_ids": [probe_source_id]},
+        scope=scope_ref,
+        capability=str(capability or "").strip(),
+        case_id=str(case_id or "").strip(),
+    )
+    if resolved.get("verdict") != "pass":
+        return _result_validation_failure(str(resolved.get("reason") or "invalid_contract_replay_chain"))
+    resolved_result = {"case_id": str(case_id or "").strip(), **resolved}
+    if result != resolved_result:
+        return _result_validation_failure("persisted_contract_replay_result_mismatch", resolved_result=resolved_result)
+    return {"ok": True, "reason": "", "resolved_result": resolved_result}
+
+
 def _validate_contract_chain(
     runtime: Any,
     *,
@@ -85,12 +136,25 @@ def _validate_contract_chain(
         return _failure("fail", "untrusted_outcome_trace_source", trace_record_id=trace_record_id)
 
     trace_meta = business_metadata(trace_record.meta)
-    if str(trace_meta.get("report_type") or "") != "outcome_trace":
-        return _failure("fail", "invalid_outcome_trace_report_type", trace_record_id=trace_record_id)
+    trace_provenance = trace_record.provenance if isinstance(trace_record.provenance, dict) else {}
     content = trace_record.content if isinstance(trace_record.content, dict) else {}
+    if str(trace_meta.get("report_type") or "") != OUTCOME_TRACE_REPORT_TYPE:
+        return _failure("fail", "invalid_outcome_trace_report_type", trace_record_id=trace_record_id)
+    if (
+        str(content.get("schema_version") or "") != OUTCOME_TRACE_SCHEMA_VERSION
+        or str(trace_record.meta.get("schema_version") or "") != OUTCOME_TRACE_SCHEMA_VERSION
+        or str(trace_provenance.get("schema_version") or "") != OUTCOME_TRACE_SCHEMA_VERSION
+        or str(trace_provenance.get("report_type") or "") != OUTCOME_TRACE_REPORT_TYPE
+    ):
+        return _failure("fail", "outcome_trace_schema_mismatch", trace_record_id=trace_record_id)
     payload = content.get("payload") if isinstance(content.get("payload"), dict) else {}
     trace_id = str(payload.get("trace_id") or "").strip()
-    if not trace_id or str(trace_meta.get("trace_id") or "").strip() != trace_id:
+    if (
+        not trace_id
+        or str(trace_meta.get("trace_id") or "").strip() != trace_id
+        or str(trace_record.meta.get("trace_id") or "").strip() != trace_id
+        or str(trace_provenance.get("trace_id") or "").strip() != trace_id
+    ):
         return _failure("fail", "outcome_trace_id_mismatch", trace_record_id=trace_record_id)
 
     contract = normalize_capability_contract(payload.get("capability_contract"))
@@ -161,6 +225,7 @@ def _validate_contract_chain(
             probe_source_id=probe_source_id,
         )
     probe_meta = business_metadata(probe_record.meta)
+    probe_provenance = probe_record.provenance if isinstance(probe_record.provenance, dict) else {}
     probe_content = probe_record.content if isinstance(probe_record.content, dict) else {}
     validator = probe_content.get("validator") if isinstance(probe_content.get("validator"), dict) else {}
     if (
@@ -168,6 +233,10 @@ def _validate_contract_chain(
         or probe_record.source != "eimemory.capability_acceptance"
         or str(probe_meta.get("report_type") or "") != PROBE_REPORT_TYPE
         or str(probe_meta.get("schema_version") or "") != PROBE_SCHEMA_VERSION
+        or str(probe_record.meta.get("report_type") or "") != PROBE_REPORT_TYPE
+        or str(probe_record.meta.get("schema_version") or "") != PROBE_SCHEMA_VERSION
+        or str(probe_provenance.get("report_type") or "") != PROBE_REPORT_TYPE
+        or str(probe_provenance.get("schema_version") or "") != PROBE_SCHEMA_VERSION
         or str(probe_meta.get("capability") or "") != capability
         or str(probe_meta.get("case_id") or "") != case_id
         or probe_meta.get("passed") is not True
@@ -184,6 +253,19 @@ def _validate_contract_chain(
         return _failure(
             "fail",
             "invalid_capability_probe",
+            trace_id=trace_id,
+            trace_record_id=trace_record_id,
+            probe_source_id=probe_source_id,
+        )
+    execution_id = str(probe_content.get("execution_id") or "").strip()
+    if (
+        not execution_id
+        or str(probe_record.meta.get("execution_id") or "").strip() != execution_id
+        or str(probe_provenance.get("execution_id") or "").strip() != execution_id
+    ):
+        return _failure(
+            "fail",
+            "probe_execution_id_mismatch",
             trace_id=trace_id,
             trace_record_id=trace_record_id,
             probe_source_id=probe_source_id,
@@ -208,6 +290,41 @@ def _validate_contract_chain(
         return _failure(
             "fail",
             "probe_observation_contract_mismatch",
+            trace_id=trace_id,
+            trace_record_id=trace_record_id,
+            probe_source_id=probe_source_id,
+        )
+    input_data = probe_content.get("input")
+    if not isinstance(input_data, dict):
+        return _failure(
+            "fail",
+            "probe_input_missing",
+            trace_id=trace_id,
+            trace_record_id=trace_record_id,
+            probe_source_id=probe_source_id,
+        )
+    expected_digest = capability_acceptance_digest(
+        capability=capability,
+        case_id=case_id,
+        input_data=input_data,
+        observation=observation,
+    )
+    if (
+        str(probe_content.get("digest") or "") != expected_digest
+        or str(probe_record.meta.get("artifact_digest") or "") != expected_digest
+        or str(probe_provenance.get("artifact_digest") or "") != expected_digest
+    ):
+        return _failure(
+            "fail",
+            "probe_artifact_digest_mismatch",
+            trace_id=trace_id,
+            trace_record_id=trace_record_id,
+            probe_source_id=probe_source_id,
+        )
+    if str(verifier.get("artifact_digest") or "") != expected_digest:
+        return _failure(
+            "fail",
+            "trace_verifier_artifact_digest_mismatch",
             trace_id=trace_id,
             trace_record_id=trace_record_id,
             probe_source_id=probe_source_id,
@@ -249,3 +366,7 @@ def _failure(
         "contract_schema": "",
         "observation": {},
     }
+
+
+def _result_validation_failure(reason: str, *, resolved_result: dict[str, Any] | None = None) -> dict[str, Any]:
+    return {"ok": False, "reason": reason, "resolved_result": dict(resolved_result or {})}

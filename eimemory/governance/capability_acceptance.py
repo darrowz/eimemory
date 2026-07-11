@@ -182,7 +182,12 @@ def _run_probe(
     capability = str(artifact["capability"])
     probe_id = generate_record_id("replay_result")
     trace_id = f"capability-acceptance-{execution_id}-{case_id}-{probe_id}"
-    digest = _artifact_digest(artifact)
+    digest = capability_acceptance_digest(
+        capability=capability,
+        case_id=case_id,
+        input_data=artifact["input"],
+        observation=artifact["observation"],
+    )
     checks = [{"name": "canonical_observation_contract", "passed": True, "evidence_ref": probe_id}]
     contract = normalize_capability_contract(
         {
@@ -321,6 +326,18 @@ def _probe_record(
     return record
 
 
-def _artifact_digest(artifact: dict[str, Any]) -> str:
+def capability_acceptance_digest(
+    *,
+    capability: str,
+    case_id: str,
+    input_data: dict[str, Any],
+    observation: dict[str, Any],
+) -> str:
+    artifact = {
+        "case_id": str(case_id),
+        "capability": str(capability),
+        "input": dict(input_data),
+        "observation": dict(observation),
+    }
     canonical = json.dumps(artifact, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return sha256(canonical.encode("utf-8")).hexdigest()
