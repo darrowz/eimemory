@@ -9,5 +9,5 @@ WorkingDirectory=/opt/eimemory/current
 Environment=EIMEMORY_ROOT=/var/lib/eimemory
 Environment=EIMEMORY_CONFIG_DIR=/etc/eimemory
 Environment=PYTHONDONTWRITEBYTECODE=1
-Environment=PYTHONPYCACHEPREFIX=/var/lib/eimemory/.pycache/1.9.24
+Environment=PYTHONPYCACHEPREFIX=/var/lib/eimemory/.pycache/1.9.25
 ExecStart=%h/.config/systemd/user/eimemory-l5-observation-gate.sh

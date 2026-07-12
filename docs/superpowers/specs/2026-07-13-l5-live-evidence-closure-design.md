@@ -1,4 +1,4 @@
-# eimemory 1.9.24 L5 Live Evidence Closure Design
+# eimemory 1.9.24-1.9.25 L5 Live Evidence Closure Design
 
 ## Objective
 
@@ -62,6 +62,10 @@ closure without claiming production L5.
 `build_l5_readiness_report(..., persist=False)` must not attribute outcomes or
 append any record.  Outcome attribution remains an explicit learning-job side
 effect, never a reporting side effect.
+
+L5 assessments are append-only snapshots. Readiness selects the highest SQLite
+insertion `rowid`, whose allocation is serialized across runtime connections,
+rather than relying on second-resolution timestamps or random record ids.
 
 ## Deployment discovery verification
 

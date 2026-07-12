@@ -596,10 +596,33 @@ def _parse_timestamp(value: Any) -> datetime | None:
 
 
 def _latest_l5_assessment(runtime: Any, *, scope: ScopeRef) -> dict[str, Any]:
-    try:
-        records = runtime.store.list_records(kinds=["l5_assessment"], scope=scope, limit=1)
-    except Exception:
-        records = []
+    records = []
+    sqlite = getattr(getattr(runtime, "store", None), "sqlite", None)
+    conn = getattr(sqlite, "conn", None)
+    if conn is not None:
+        try:
+            row = conn.execute(
+                """
+                SELECT record_id
+                FROM records
+                WHERE kind = 'l5_assessment'
+                  AND source = 'eimemory.l5_loop'
+                  AND tenant_id = ? AND agent_id = ? AND workspace_id = ? AND user_id = ?
+                ORDER BY rowid DESC
+                LIMIT 1
+                """,
+                (scope.tenant_id, scope.agent_id, scope.workspace_id, scope.user_id),
+            ).fetchone()
+            if row is not None:
+                record = runtime.store.get_by_id(str(row[0]), scope=scope)
+                records = [record] if record is not None else []
+        except Exception:
+            records = []
+    if not records:
+        try:
+            records = runtime.store.list_records(kinds=["l5_assessment"], scope=scope, limit=1)
+        except Exception:
+            records = []
     if not records:
         return {"present": False, "trusted": False, "complete": False, "level": "", "missing_evidence": [], "record_id": ""}
     record = records[0]
@@ -617,6 +640,7 @@ def _latest_l5_assessment(runtime: Any, *, scope: ScopeRef) -> dict[str, Any]:
         "present": True,
         "trusted": trusted,
         "complete": complete,
+        "assessment_id": str(_record_field(record, "assessment_id") or ""),
         "level": level,
         "missing_evidence": missing_evidence,
         "record_id": str(getattr(record, "record_id", "") or ""),

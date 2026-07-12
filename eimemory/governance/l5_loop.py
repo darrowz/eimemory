@@ -4,6 +4,7 @@ from dataclasses import asdict
 from typing import Any
 
 from eimemory.core.clock import now_iso
+from eimemory.core.ids import generate_record_id
 from eimemory.evaluation.reward import RewardEngine
 from eimemory.governance.capability_ledger import build_capability_ledger
 from eimemory.governance.goal_graph import CORE_GOAL_CAPABILITIES
@@ -361,8 +362,10 @@ def assess_l5_closed_loop(
     report["rollback_refs"] = _executed_rollback_ledger_refs(runtime, scope=scope_ref)
     missing = _missing_evidence(report)
     level = _level_for(report, missing)
+    assessment_id = generate_record_id("l5_assessment")
     assessment = {
         "ok": True,
+        "assessment_id": assessment_id,
         "schema_version": L5_SCHEMA_VERSION,
         "report_type": "l5_assessment",
         "generated_at": now_iso(),
@@ -396,13 +399,14 @@ def assess_l5_closed_loop(
             scope=scope_ref,
             loop_id=loop_id,
             step_name="assessment",
-            semantic_key=stable_semantic_key("l5_assessment", loop_id, level, missing),
+            semantic_key=stable_semantic_key("l5_assessment", loop_id, assessment_id),
             authority_tier="L0",
             status="active" if level == "L5" else "candidate",
             content=assessment,
             meta={
                 "schema_version": L5_SCHEMA_VERSION,
                 "report_type": "l5_assessment",
+                "assessment_id": assessment_id,
                 "level": level,
                 "missing_evidence_count": len(missing),
             },

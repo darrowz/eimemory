@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import json
+from threading import Barrier
 
 from eimemory.api.runtime import Runtime
 from eimemory.governance.l5_loop import _has_replay, _weaknesses
+from eimemory.governance.l5_readiness import _latest_l5_assessment
 from eimemory.cli.main import main as cli_main
 from eimemory.governance.capability_ledger import record_capability_score
 from eimemory.models.records import RecordEnvelope, ScopeRef
@@ -303,6 +306,72 @@ def test_l5_assessment_downgrades_when_loop_evidence_is_missing(tmp_path) -> Non
     assert "autonomous_learning" in assessment["missing_evidence"]
     assert stored.kind == "l5_assessment"
     assert stored.meta["report_type"] == "l5_assessment"
+
+
+def test_l5_assessment_persists_each_snapshot_even_when_loop_id_and_verdict_repeat(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    loop_report = {"world_model": {}}
+    try:
+        first = runtime.assess_l5_closed_loop(
+            scope=SCOPE,
+            loop_report=loop_report,
+            persist=True,
+            loop_id="repeated-assessment",
+        )
+        second = runtime.assess_l5_closed_loop(
+            scope=SCOPE,
+            loop_report=loop_report,
+            persist=True,
+            loop_id="repeated-assessment",
+        )
+        for record_id in (first["persisted_record_id"], second["persisted_record_id"]):
+            record = runtime.store.get_by_id(record_id, scope=SCOPE)
+            record.time.created_at = "2026-07-13T04:30:00+08:00"
+            record.time.updated_at = "2026-07-13T04:30:00+08:00"
+            runtime.store.rewrite(record)
+        records = runtime.store.list_records(kinds=["l5_assessment"], scope=SCOPE, limit=10)
+        latest = _latest_l5_assessment(runtime, scope=ScopeRef.from_dict(SCOPE))
+    finally:
+        runtime.close()
+
+    assert first["assessment_id"] != second["assessment_id"]
+    assert first["persisted_record_id"] != second["persisted_record_id"]
+    assert len(records) == 2
+    assert latest["assessment_id"] == second["assessment_id"]
+
+
+def test_latest_l5_assessment_uses_global_sqlite_insert_order_across_runtime_connections(tmp_path) -> None:
+    runtimes = [Runtime.create(root=tmp_path), Runtime.create(root=tmp_path)]
+    barrier = Barrier(2)
+
+    def write_snapshot(runtime: Runtime, loop_id: str) -> dict:
+        barrier.wait()
+        return runtime.assess_l5_closed_loop(
+            scope=SCOPE,
+            loop_report={"world_model": {}},
+            persist=True,
+            loop_id=loop_id,
+        )
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [
+                executor.submit(write_snapshot, runtime, f"parallel-{index}")
+                for index, runtime in enumerate(runtimes)
+            ]
+            results = [future.result() for future in futures]
+        rows = runtimes[0].store.sqlite.conn.execute(
+            "SELECT rowid, record_id FROM records WHERE kind = 'l5_assessment' ORDER BY rowid DESC"
+        ).fetchall()
+        latest = _latest_l5_assessment(runtimes[0], scope=ScopeRef.from_dict(SCOPE))
+    finally:
+        for runtime in runtimes:
+            runtime.close()
+
+    assert len(results) == 2
+    assert len(rows) == 2
+    assert rows[0][0] != rows[1][0]
+    assert latest["record_id"] == rows[0][1]
 
 
 def test_cli_l5_assess_returns_json(tmp_path, monkeypatch, capsys) -> None:
