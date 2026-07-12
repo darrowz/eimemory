@@ -226,6 +226,7 @@ def test_openclaw_gateway_override_uses_production_eimemory_runtime() -> None:
     assert "Environment=EIMEMORY_CONFIG_DIR=/etc/eimemory" in override_text
     assert "Environment=PYTHONDONTWRITEBYTECODE=1" in override_text
     assert "Environment=PYTHONPYCACHEPREFIX=/var/lib/eimemory/.pycache/@EIMEMORY_COMMIT@" in override_text
+    assert "Environment=EIMEMORY_RUNTIME_COMMIT=@EIMEMORY_COMMIT@" in override_text
     assert 'Environment="EIMEMORY_HOOK_COMMAND=/opt/eimemory/current/.venv/bin/eimemory openclaw-hook"' in override_text
     assert 'Environment="EIMEMORY_BRIDGE_COMMAND=/opt/eimemory/current/.venv/bin/eimemory ei-bridge feishu"' in override_text
     assert "/dev-project/eimemory/.venv" not in override_text
@@ -325,6 +326,8 @@ def test_immutable_release_installer_deploys_gateway_runtime_override() -> None:
 
 def test_immutable_release_installer_deploys_python_runtime_protection_dropins() -> None:
     script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
+    discovery = Path("deploy/discover_python_runtime_units.sh").read_text(encoding="utf-8")
+    runtime_dropin = Path("deploy/systemd/eimemory-python-runtime.conf").read_text(encoding="utf-8")
     expected_units = {
         "eimemory-audit-verify.service",
         "eimemory-console.service",
@@ -342,10 +345,13 @@ def test_immutable_release_installer_deploys_python_runtime_protection_dropins()
     assert 'eimemory-python-runtime.conf' in script
     assert '90-eimemory-python-runtime.conf' in script
     assert script.count('--render-commit "$COMMIT"') == 2
-    assert 'for unit_path in "$USER_SYSTEMD_DIR"/*.service' in script
-    assert "grep -Fq '/opt/eimemory/current'" in script
+    assert 'bash -s -- "$USER_SYSTEMD_DIR"' in script
+    assert "Unable to discover Python runtime systemd units" in script
+    assert "Environment=EIMEMORY_RUNTIME_COMMIT=@EIMEMORY_COMMIT@" in runtime_dropin
+    assert "find \"$USER_SYSTEMD_DIR\" -maxdepth 1 -type f -name '*.service'" in discovery
+    assert "grep -Fq '/opt/eimemory/current'" in discovery
     for unit in expected_units:
-        assert unit in script
+        assert unit in discovery
 
 
 def test_managed_systemd_dropin_installer_uses_posix_directory_fds() -> None:
@@ -789,6 +795,69 @@ def test_immutable_release_installer_normalizes_service_ownership() -> None:
     assert "_retire_system_rpc_unit" in script
     assert "systemctl disable --now eimemory-rpc.service" in script
     assert "retired-by-eimemory-user-systemd" in script
+
+
+def test_python_runtime_unit_discovery_is_dynamic_deduplicated_and_regular_file_only(tmp_path) -> None:
+    systemd_dir = tmp_path / "systemd"
+    systemd_dir.mkdir()
+    (systemd_dir / "custom-worker.service").write_text(
+        "[Service]\nExecStart=/opt/eimemory/current/.venv/bin/python -m worker\n",
+        encoding="utf-8",
+    )
+    (systemd_dir / "eimemory-rpc.service").write_text(
+        "[Service]\nExecStart=/opt/eimemory/current/.venv/bin/python -m rpc\n",
+        encoding="utf-8",
+    )
+    (systemd_dir / "irrelevant.service").write_text("[Service]\nExecStart=/usr/bin/true\n", encoding="utf-8")
+    (systemd_dir / "directory.service").mkdir()
+    outside = tmp_path / "outside.service"
+    outside.write_text("[Service]\nExecStart=/opt/eimemory/current/.venv/bin/python -m outside\n", encoding="utf-8")
+    linked = systemd_dir / "linked.service"
+    try:
+        linked.symlink_to(outside)
+    except OSError:
+        linked = None
+
+    result = subprocess.run(
+        [_bash_binary(), "deploy/discover_python_runtime_units.sh", _bash_path(systemd_dir)],
+        cwd=Path.cwd(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    units = result.stdout.splitlines()
+    assert units.count("eimemory-rpc.service") == 1
+    assert units.count("custom-worker.service") == 1
+    assert "irrelevant.service" not in units
+    assert "directory.service" not in units
+    if linked is not None:
+        assert "linked.service" not in units
+
+
+def test_python_runtime_unit_discovery_failure_propagates_to_installer(tmp_path) -> None:
+    systemd_dir = tmp_path / "systemd"
+    systemd_dir.mkdir()
+    result = subprocess.run(
+        [
+            _bash_binary(),
+            "-c",
+            'find(){ return 7; }; export -f find; source "$1" "$2"',
+            "bash",
+            "deploy/discover_python_runtime_units.sh",
+            _bash_path(systemd_dir),
+        ],
+        cwd=Path.cwd(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    installer = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
+
+    assert result.returncode == 7
+    assert 'if ! PYTHON_RUNTIME_UNIT_OUTPUT="$(_run_as_service_user bash -s --' in installer
+    assert "Unable to discover Python runtime systemd units" in installer
 
 
 def test_user_systemd_owner_check_uses_only_user_service_as_rpc_owner() -> None:

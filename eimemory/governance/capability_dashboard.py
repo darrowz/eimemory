@@ -2,11 +2,16 @@ from __future__ import annotations
 
 from dataclasses import asdict
 import json
+import os
+from pathlib import Path
+import re
 from typing import Any
 
 from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
+from eimemory.governance.live_task_acceptance import validate_live_acceptance_case
 from eimemory.governance.rollout_lifecycle import is_executed_rollback_ledger_record
 from eimemory.models.records import ScopeRef
+from eimemory.runtime_identity import package_import_root
 
 
 SUCCESS_LABELS = {
@@ -78,6 +83,22 @@ def build_capability_dashboard_metrics(
         if not _truthy(_field(record, "rehearsal"))
     ]
     task_success = sum(1 for record in task_outcomes if _outcome_success(record))
+    verified_live_tasks = _verified_live_task_outcomes(
+        runtime,
+        scope=scope_ref,
+        records=_outcome_trace_records(runtime, scope_ref, limit),
+    )
+    verified_live_success = sum(1 for item in verified_live_tasks if item["success"] is True)
+    verified_live_task_types = {str(item.get("task_type") or "") for item in verified_live_tasks}
+    current_deployment_commit = _latest_verified_deployment_commit(runtime, scope=scope_ref, limit=limit)
+    current_deployment_tasks = [
+        item
+        for item in verified_live_tasks
+        if item.get("evidence_class") == "live_acceptance"
+        and str(item.get("deployment_commit") or "") == current_deployment_commit
+    ]
+    current_deployment_success = sum(1 for item in current_deployment_tasks if item["success"] is True)
+    current_deployment_task_types = {str(item.get("task_type") or "") for item in current_deployment_tasks}
 
     promotions = _records(runtime, scope_ref, ["promotion_request"], limit)
     patch_promotions = [
@@ -107,6 +128,8 @@ def build_capability_dashboard_metrics(
         "recall_hit_rate": _rate(recall_hits, recall_total),
         "user_correction_rate": _rate(len(corrections), recall_total),
         "task_success_rate": _rate(task_success, len(task_outcomes)),
+        "verified_live_task_success_rate": _rate(verified_live_success, len(verified_live_tasks)),
+        "current_deployment_live_task_success_rate": _rate(current_deployment_success, len(current_deployment_tasks)),
         "patch_candidate_validity_rate": patch_candidate_validity_rate,
         "patch_deployment_success_rate": patch_deployment_success_rate,
         "patch_promotion_success_rate": patch_deployment_success_rate,
@@ -118,6 +141,8 @@ def build_capability_dashboard_metrics(
         "recall_hit_rate": _quality(recall_total),
         "user_correction_rate": _quality(recall_total),
         "task_success_rate": _quality(len(task_outcomes)),
+        "verified_live_task_success_rate": _quality(len(verified_live_tasks)),
+        "current_deployment_live_task_success_rate": _quality(len(current_deployment_tasks)),
         "patch_candidate_validity_rate": _quality(len(latest_patch_candidates), minimum=1),
         "patch_deployment_success_rate": patch_metric_quality,
         "patch_promotion_success_rate": patch_metric_quality,
@@ -159,6 +184,10 @@ def build_capability_dashboard_metrics(
             "corrections": len(corrections),
             "task_evals": len(task_evals),
             "task_outcomes": len(task_outcomes),
+            "verified_live_tasks": len(verified_live_tasks),
+            "verified_live_task_types": len(verified_live_task_types),
+            "current_deployment_acceptance": len(current_deployment_tasks),
+            "current_deployment_live_task_types": len(current_deployment_task_types),
             "patch_candidates": len(latest_patch_candidates),
             "patch_deployments": len(executed_patch_deployments),
             "patch_promotions": len(executed_patch_deployments),
@@ -207,6 +236,155 @@ def _event_outcome_records(runtime: Any, scope: ScopeRef, limit: int) -> list[di
         payload.setdefault("report_type", "event_outcome")
         outcomes.append(payload)
     return outcomes
+
+
+def _verified_live_task_outcomes(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    records: list[Any],
+) -> list[dict[str, Any]]:
+    outcomes: list[dict[str, Any]] = []
+    seen_acceptance_cases: set[tuple[str, str]] = set()
+    for record in records:
+        if str(getattr(record, "source", "") or "") != "eimemory.experience.outcome_trace":
+            continue
+        if str(_field(record, "report_type") or "") != "outcome_trace":
+            continue
+        if str(_field(record, "schema_version") or "") != "outcome_trace.v1":
+            continue
+        task_type = str(_field(record, "task_type") or "").strip()
+        outcome = _field(record, "outcome")
+        verifier = _field(record, "verifier")
+        if (
+            not task_type
+            or not isinstance(outcome, dict)
+            or outcome.get("rehearsal") is not False
+            or not isinstance(outcome.get("success"), bool)
+            or not isinstance(verifier, dict)
+            or not isinstance(verifier.get("passed"), bool)
+        ):
+            continue
+        evidence_refs = verifier.get("evidence_refs")
+        if not isinstance(evidence_refs, list) or not evidence_refs or not all(str(item or "").strip() for item in evidence_refs):
+            continue
+        method = str(verifier.get("method") or "").strip()
+        if method == "eimemory.live_task_acceptance":
+            case_id = str(_field(record, "acceptance_case_id") or "").strip()
+            deployment_commit = str(_field(record, "deployment_commit") or "").strip()
+            key = (deployment_commit, case_id)
+            if not case_id or len(deployment_commit) != 40 or key in seen_acceptance_cases:
+                continue
+            if not _valid_live_acceptance_evidence(
+                runtime,
+                scope=scope,
+                evidence_id=str(evidence_refs[0]),
+                case_id=case_id,
+                task_type=task_type,
+                trace_id=str(_field(record, "trace_id") or ""),
+                deployment_commit=deployment_commit,
+                passed=verifier.get("passed"),
+            ):
+                continue
+            seen_acceptance_cases.add(key)
+        else:
+            continue
+        outcomes.append(
+            {
+                "record_id": _record_id(record),
+                "task_type": task_type,
+                "evidence_class": "live_acceptance",
+                "deployment_commit": str(_field(record, "deployment_commit") or ""),
+                "success": outcome.get("success") is True and verifier.get("passed") is True,
+            }
+        )
+    return outcomes
+
+
+def _valid_live_acceptance_evidence(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    evidence_id: str,
+    case_id: str,
+    task_type: str,
+    trace_id: str,
+    deployment_commit: str,
+    passed: bool,
+) -> bool:
+    evidence = runtime.store.get_by_id(evidence_id, scope=scope)
+    if evidence is None:
+        return False
+    return validate_live_acceptance_case(
+        runtime,
+        scope=scope,
+        evidence=evidence,
+        case_id=case_id,
+        task_type=task_type,
+        trace_id=trace_id,
+        deployment_commit=deployment_commit,
+        passed=passed,
+    )
+
+
+def _latest_verified_deployment_commit(runtime: Any, *, scope: ScopeRef, limit: int) -> str:
+    actual_commit, _production_runtime = _actual_runtime_commit()
+    test_override = False
+    if not actual_commit and os.environ.get("PYTEST_CURRENT_TEST"):
+        test_commit = str(getattr(runtime, "_test_runtime_commit", "") or "").strip().lower()
+        actual_commit = test_commit if re.fullmatch(r"[0-9a-f]{40}", test_commit) else ""
+        test_override = bool(actual_commit)
+    for record in _records(runtime, scope, ["promotion_request"], limit):
+        if str(getattr(record, "source", "") or "") != "eimemory.deployment_receipt":
+            continue
+        if not _verified_code_patch_promotion(record):
+            continue
+        content = record.content if isinstance(getattr(record, "content", None), dict) else {}
+        side_effect = content.get("side_effect") if isinstance(content.get("side_effect"), dict) else {}
+        commit = side_effect.get("commit") if isinstance(side_effect.get("commit"), dict) else {}
+        commit_sha = str(commit.get("commit_sha") or _field(record, "commit_sha") or "").strip()
+        if len(commit_sha) == 40:
+            if actual_commit:
+                if commit_sha != actual_commit:
+                    return ""
+                if not test_override and not _runtime_import_matches_receipt(record, commit_sha=commit_sha):
+                    return ""
+                return commit_sha
+            return ""
+    return ""
+
+
+def _actual_runtime_commit() -> tuple[str, bool]:
+    configured = str(os.environ.get("EIMEMORY_RUNTIME_COMMIT") or "").strip().lower()
+    root = package_import_root()
+    root_commit = ""
+    for release in (root, *root.parents):
+        releases_root = str(release.parent).replace("\\", "/").rstrip("/").casefold()
+        if releases_root == "/opt/eimemory/releases" and re.fullmatch(r"[0-9a-f]{40}", release.name):
+            root_commit = release.name.lower()
+            break
+    try:
+        production_runtime = root.is_relative_to(Path("/opt/eimemory"))
+    except (OSError, ValueError):
+        production_runtime = False
+    if re.fullmatch(r"[0-9a-f]{40}", configured) and root_commit and configured != root_commit:
+        return "", True
+    if root_commit:
+        return root_commit, True
+    return "", production_runtime
+
+
+def _runtime_import_matches_receipt(record: Any, *, commit_sha: str) -> bool:
+    content = record.content if isinstance(getattr(record, "content", None), dict) else {}
+    side_effect = content.get("side_effect") if isinstance(content.get("side_effect"), dict) else {}
+    release = side_effect.get("release") if isinstance(side_effect.get("release"), dict) else {}
+    try:
+        receipt_release = Path(str(release.get("release_path") or "")).resolve(strict=True)
+        canonical_release = (Path("/opt/eimemory/releases") / commit_sha).resolve(strict=True)
+        import_root = package_import_root().resolve(strict=True)
+    except OSError:
+        return False
+    return receipt_release == canonical_release and import_root.is_relative_to(receipt_release)
 
 
 def _policy_rollback_records(runtime: Any, scope: ScopeRef, limit: int) -> list[dict[str, Any]]:

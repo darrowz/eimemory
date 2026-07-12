@@ -5,7 +5,9 @@ import json
 from eimemory.api.runtime import Runtime
 from eimemory.cli.main import main as cli_main
 from eimemory.governance.closure_rehearsal import _weak_replay_gate
+from eimemory.governance.live_task_acceptance import LIVE_ACCEPTANCE_CASE_IDS, live_acceptance_task_type
 from eimemory.models.records import RecordEnvelope, ScopeRef
+from eimemory.runtime_identity import runtime_package_tree_digest
 
 
 SCOPE = {"agent_id": "hongtu", "workspace_id": "l5-closure", "user_id": "darrow"}
@@ -19,6 +21,7 @@ def test_l5_closure_rehearsal_opens_success_skill_and_rollback_metrics(tmp_path)
         assert before["metrics"]["task_success_rate"] == 0.0
         assert before["metrics"]["skill_reuse_count"] == 0
         assert before["metrics"]["rollback_count"] == 0
+        _seed_verified_live_tasks(runtime)
 
         report = runtime.run_l5_closure_rehearsal(scope=SCOPE, persist=True)
 
@@ -57,7 +60,8 @@ def test_l5_closure_rehearsal_opens_success_skill_and_rollback_metrics(tmp_path)
         assert report["l5_observation"]["assessment"]["complete"] is True
 
         metrics = report["capability_dashboard"]["metrics"]
-        assert metrics["task_success_rate"] == 0.0
+        assert metrics["task_success_rate"] == 1.0
+        assert metrics["verified_live_task_success_rate"] == 1.0
         assert metrics["skill_reuse_count"] >= 1
         assert metrics["rollback_count"] >= 1
         assert report["outcome_trace"]["outcome"]["rehearsal"] is True
@@ -217,6 +221,7 @@ def _seed_executed_deployment(runtime: Runtime) -> None:
     version = "1.9.16"
     release_path = f"/opt/eimemory/releases/{commit}"
     payload = {
+        "report_type": "deployment_receipt",
         "candidate_id": f"deployment:{commit}",
         "promotion_target": "code_patch",
         "action": "code_patch",
@@ -233,6 +238,9 @@ def _seed_executed_deployment(runtime: Runtime) -> None:
                 "commit": commit,
                 "version": version,
                 "release_path": release_path,
+                "import_root": f"{release_path}/eimemory",
+                "package_tree_digest": runtime_package_tree_digest(),
+                "checks": {"ready": True},
             },
             "commit": {"ok": True, "commit_sha": commit},
             "release": {"version": version, "release_path": release_path},
@@ -252,6 +260,7 @@ def _seed_executed_deployment(runtime: Runtime) -> None:
             status="deployed",
             content=payload,
             meta={
+                "report_type": "deployment_receipt",
                 "candidate_id": payload["candidate_id"],
                 "promotion_target": "code_patch",
                 "action": "code_patch",
@@ -262,3 +271,59 @@ def _seed_executed_deployment(runtime: Runtime) -> None:
             },
         )
     )
+
+
+def _seed_verified_live_tasks(runtime: Runtime) -> None:
+    scope = ScopeRef.from_dict(SCOPE)
+    commit = "a" * 40
+    runtime._test_runtime_commit = commit
+    receipts = [
+        record
+        for record in runtime.store.list_records(kinds=["promotion_request"], scope=scope, limit=20)
+        if record.source == "eimemory.deployment_receipt" and str(record.meta.get("commit_sha") or "") == commit
+    ]
+    assert receipts
+    version = str(receipts[0].meta.get("version") or "")
+    for index, case_id in enumerate(LIVE_ACCEPTANCE_CASE_IDS):
+        task_type = live_acceptance_task_type(case_id)
+        observation_digest = f"{index:064x}"
+        trace_id = f"live-acceptance:{commit}:{case_id}:{observation_digest[:12]}"
+        payload = {
+            "report_type": "live_task_acceptance_case",
+            "schema_version": "live_task_acceptance.v1",
+            "case_id": case_id,
+            "task_type": task_type,
+            "trace_id": trace_id,
+            "passed": True,
+            "deployment_commit": commit,
+            "deployment_version": version,
+            "release_path": f"/opt/eimemory/releases/{commit}",
+            "promotion_request_id": receipts[0].record_id,
+            "observation_digest": observation_digest,
+        }
+        evidence = runtime.store.append(
+            RecordEnvelope.create(
+                kind="learning_eval",
+                title=f"Closure live task {index}",
+                summary="passed",
+                scope=scope,
+                source="eimemory.live_task_acceptance",
+                content=payload,
+                meta=payload,
+            )
+        )
+        result = runtime.record_outcome_trace(
+            {
+                "source": "eimemory.live_task_acceptance",
+                "trace_id": trace_id,
+                "task_type": task_type,
+                "outcome": {"status": "success", "success": True, "rehearsal": False},
+                "verifier": {"passed": True, "method": "eimemory.live_task_acceptance", "evidence_refs": [evidence.record_id]},
+                "deployment_commit": commit,
+                "deployment_version": version,
+                "release_path": f"/opt/eimemory/releases/{commit}",
+                "acceptance_case_id": case_id,
+            },
+            scope=SCOPE,
+        )
+        assert result["ok"] is True

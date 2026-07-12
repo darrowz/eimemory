@@ -255,33 +255,12 @@ if [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ] && command -v systemctl >/dev/null 2
     --source "$RELEASE_DIR/deploy/systemd/openclaw-gateway-eimemory.conf" \
     --target "$USER_SYSTEMD_DIR/openclaw-gateway.service.d/90-eimemory-runtime.conf" \
     --root "$USER_SYSTEMD_DIR" --owner-uid "$SERVICE_UID" --render-commit "$COMMIT"
-  PYTHON_RUNTIME_UNITS=(
-    eimemory-audit-verify.service
-    eimemory-console.service
-    eimemory-l5-observation-gate.service
-    eimemory-learn-dashboard.service
-    eimemory-learn-think.service
-    eimemory-learn-watch.service
-    eimemory-nightly.service
-    eimemory-rpc.service
-    eimemory-timer-monitor.service
-    openclaw-loop-watch.service
-    openclaw-stuck-watchdog.service
-  )
-  for unit_path in "$USER_SYSTEMD_DIR"/*.service; do
-    [ -e "$unit_path" ] || continue
-    runtime_unit="$(basename "$unit_path")"
-    if [[ "$runtime_unit" =~ ^[A-Za-z0-9_.@-]+\.service$ ]] && \
-       _run_as_service_user grep -Fq '/opt/eimemory/current' "$unit_path"; then
-      PYTHON_RUNTIME_UNITS+=("$runtime_unit")
-    fi
-  done
-  declare -A SEEN_PYTHON_RUNTIME_UNITS=()
+  if ! PYTHON_RUNTIME_UNIT_OUTPUT="$(_run_as_service_user bash -s -- "$USER_SYSTEMD_DIR" < "$RELEASE_DIR/deploy/discover_python_runtime_units.sh")"; then
+    echo "Unable to discover Python runtime systemd units" >&2
+    exit 2
+  fi
+  mapfile -t PYTHON_RUNTIME_UNITS <<< "$PYTHON_RUNTIME_UNIT_OUTPUT"
   for runtime_unit in "${PYTHON_RUNTIME_UNITS[@]}"; do
-    if [ -n "${SEEN_PYTHON_RUNTIME_UNITS[$runtime_unit]:-}" ]; then
-      continue
-    fi
-    SEEN_PYTHON_RUNTIME_UNITS["$runtime_unit"]=1
     _run_as_service_user mkdir -p "$USER_SYSTEMD_DIR/$runtime_unit.d"
     "$PYTHON_BIN" -I -B "$RELEASE_DIR/deploy/install_managed_systemd_dropin.py" \
       --source "$RELEASE_DIR/deploy/systemd/eimemory-python-runtime.conf" \

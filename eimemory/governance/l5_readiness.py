@@ -48,7 +48,7 @@ def build_l5_readiness_report(
     """Build a read-only L5 readiness report from existing governance evidence."""
 
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
-    ledger = build_capability_ledger(runtime, scope=scope_ref, limit=limit, attribute_outcomes=True)
+    ledger = build_capability_ledger(runtime, scope=scope_ref, limit=limit, attribute_outcomes=False)
     hard_metrics = _safe_hard_metrics(runtime, scope=scope_ref, limit=limit)
     evidence_counts = _evidence_counts(runtime, scope=scope_ref, limit=limit)
     verified_replay = _verified_replay_summary(runtime, scope=scope_ref, limit=limit)
@@ -87,6 +87,7 @@ def build_l5_readiness_report(
         "hard_metrics": hard_metrics.get("metrics", {}),
         "hard_metric_quality": hard_metrics.get("metric_quality", {}),
         "hard_metric_samples": hard_metrics.get("sample_counts", {}),
+        "live_task_gate": stage["live_task_gate"],
         "verified_replay": verified_replay,
         "latest_l5_assessment": latest_l5_assessment,
         "weak_outcome_evidence": weak_outcome_evidence,
@@ -709,6 +710,27 @@ def _stage_for(
     patch_quality_ok = bool(
         (metric_quality.get("patch_promotion_success_rate") or metric_quality.get("auto_patch_success_rate") or {}).get("sufficient")
     )
+    verified_live_success = float(metrics.get("current_deployment_live_task_success_rate") or 0.0)
+    verified_live_quality = metric_quality.get("current_deployment_live_task_success_rate") or {}
+    sample_counts = hard_metrics.get("sample_counts") if isinstance(hard_metrics.get("sample_counts"), dict) else {}
+    verified_live_samples = int(sample_counts.get("current_deployment_acceptance") or 0)
+    verified_live_task_types = int(sample_counts.get("current_deployment_live_task_types") or 0)
+    current_deployment_acceptance = int(sample_counts.get("current_deployment_acceptance") or 0)
+    live_task_gate = {
+        "ok": bool(
+            verified_live_quality.get("sufficient")
+            and verified_live_success >= 0.8
+            and verified_live_task_types >= 5
+            and current_deployment_acceptance >= 10
+        ),
+        "success_rate": verified_live_success,
+        "sample_count": verified_live_samples,
+        "minimum_samples": 10,
+        "distinct_task_types": verified_live_task_types,
+        "minimum_task_types": 5,
+        "current_deployment_acceptance": current_deployment_acceptance,
+        "minimum_current_deployment_acceptance": 10,
+    }
     weak_outcome_ok = not weak_outcome_evidence.get("missing")
 
     readiness_score = round(
@@ -720,10 +742,12 @@ def _stage_for(
         or not patch_quality_ok
         or verified_replay.get("weak_capabilities_missing")
         or not latest_l5_assessment.get("complete")
+        or not live_task_gate["ok"]
     ):
         readiness_score = min(readiness_score, 0.8)
     common = {
         "readiness_score": readiness_score,
+        "live_task_gate": live_task_gate,
         "risk_boundary": "read-only reporting; no autonomous apply, deployment, external send, spend, deletion, or credential use.",
     }
     if (
@@ -738,22 +762,23 @@ def _stage_for(
         and rollback_count >= 1
         and patch_quality_ok
         and patch_success >= 0.8
+        and live_task_gate["ok"]
     ):
         return {
             **common,
             "readiness_score": 1.0,
             "stage": "L5",
             "label": "evidence-bound co-growth loop",
-            "reason": "world model, roadmap, assessment, replay, promotion, and rollback evidence are all present.",
-            "done_when": "Maintain zero missing L5 assessment evidence across repeated cycles and keep weak capabilities active.",
+            "reason": "world model, roadmap, assessment, replay, promotion, rollback, and verified live task evidence are all present.",
+            "done_when": "Maintain zero missing L5 assessment evidence and keep verified live task success at or above 0.8.",
         }
     if l5_artifacts >= 2 and replay_count >= 5 and weak_gap_count <= 2:
         return {
             **common,
             "stage": "L4.5",
             "label": "self-growth reporting with most weak gaps closing",
-            "reason": "L5 artifacts exist, but repeated closed-loop promotion and rollback evidence is not complete.",
-            "done_when": "Each weak capability has replay-backed score >=0.7 and at least one reversible promotion path.",
+            "reason": "L5 rehearsal artifacts exist, but one or more production evidence gates remain incomplete.",
+            "done_when": "Complete replay, reversible promotion, and at least ten current-deployment verified live tasks across five task types.",
         }
     if strong_ready_count >= 3 and observed_replay_count >= 3 and (task_success > 0 or recall_hit > 0):
         return {
@@ -815,6 +840,11 @@ def _next_actions(
     latest_l5_assessment: dict[str, Any],
 ) -> list[str]:
     actions = []
+    live_task_gate = stage.get("live_task_gate") if isinstance(stage.get("live_task_gate"), dict) else {}
+    if not live_task_gate.get("ok"):
+        actions.append(
+            "Run the current deployment live acceptance suite; L5 requires at least ten verified non-rehearsal tasks, five task types, and success rate >=0.8."
+        )
     if int(verified_replay.get("executed_count") or 0) < 5:
         actions.append("Execute replay packs from existing outcome traces before promoting new behavior; not_run records do not count.")
     for capability in list(verified_replay.get("weak_capabilities_missing") or [])[:4]:

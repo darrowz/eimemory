@@ -815,6 +815,26 @@ class Runtime:
 
         return run_l5_closure_rehearsal(self, scope=scope, persist=persist)
 
+    def run_live_task_acceptance(
+        self,
+        *,
+        scope: dict | None = None,
+        repo_root: str,
+        current_link: str,
+        health_url: str,
+        prior_commit: str = "",
+    ) -> dict:
+        from eimemory.governance.live_task_acceptance import run_live_task_acceptance
+
+        return run_live_task_acceptance(
+            self,
+            scope=scope,
+            repo_root=repo_root,
+            current_link=current_link,
+            health_url=health_url,
+            prior_commit=prior_commit,
+        )
+
     def run_capability_acceptance(
         self,
         *,

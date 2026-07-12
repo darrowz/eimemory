@@ -29,6 +29,22 @@ immutable release directory, then run services only through
 /dev-project/eimemory/deploy/install_immutable_release.sh
 ```
 
+After the service is healthy and the deployment receipt is available, execute
+the current-release live task gate before claiming L5:
+
+```bash
+/opt/eimemory/current/.venv/bin/eimemory learn live-acceptance \
+  --repo-root /dev-project/eimemory \
+  --current-link /opt/eimemory/current \
+  --health-url http://127.0.0.1:8091/health \
+  --prior-commit <previous-full-commit> \
+  --scope-agent hongtu --scope-workspace embodied --scope-user darrow
+```
+
+The command is fail-closed and records ten evidence-bound, non-rehearsal,
+current-deployment tasks. `learn l5-readiness` remains below L5 until this gate
+has at least ten samples, five task types, and success rate at or above 0.8.
+
 The release script copies the current repository commit into
 `/opt/eimemory/releases/<commit>`, creates a release-local virtual environment,
 installs eimemory non-editably, and atomically updates `/opt/eimemory/current`.
