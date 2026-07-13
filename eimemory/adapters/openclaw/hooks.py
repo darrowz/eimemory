@@ -1201,6 +1201,27 @@ class OpenClawMemoryHooks:
         title = self._first_text(event.get("title"), event.get("task_title"), query, "OpenClaw user request")
         objective = self._first_text(event.get("goal"), event.get("objective"), query, title)
         try:
+            task_context = self._merged_dict(event.get("task_context"), event.get("taskContext"))
+            existing_task_id = self._first_text(
+                task_context.get("openclaw_loop_task_id"),
+                task_context.get("loop_task_id"),
+                event.get("openclaw_loop_task_id"),
+                event.get("loop_task_id"),
+            )
+            if existing_task_id:
+                try:
+                    existing_task = openclaw_loop.get_task(existing_task_id)
+                except KeyError:
+                    existing_task = {}
+                if existing_task.get("status") in openclaw_loop.ACTIVE_STATUSES:
+                    task = openclaw_loop.record_heartbeat(
+                        existing_task_id,
+                        lease_seconds=300,
+                        progress="before_prompt_build",
+                        source="openclaw.before_prompt_build",
+                    )
+                    task["reused"] = True
+                    return task
             task = openclaw_loop.create_task(
                 title=title[:160],
                 objective=objective[:500],

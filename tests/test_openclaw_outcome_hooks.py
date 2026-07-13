@@ -117,6 +117,56 @@ def test_openclaw_before_prompt_build_returns_trace_context_and_policy_attributi
     assert loop.get_task(result["task_context"]["openclaw_loop_task_id"])["status"] == "running"
 
 
+def test_openclaw_before_prompt_build_reuses_active_loop_task_from_context(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("OPENCLAW_LOOP_HOME", str(tmp_path / "loop"))
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    hooks = OpenClawMemoryHooks(runtime)
+
+    monkeypatch.setattr(
+        runtime.memory,
+        "recall",
+        lambda *, query, scope, task_context, limit: _build_bundle(
+            task_context=task_context,
+            query=query,
+        ),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "search_policy",
+        lambda query, *, scope, context, limit: {
+            "ok": True,
+            "matched_event_type": "chat.reply",
+            "policy_suggestions": [],
+        },
+    )
+
+    first = hooks.before_prompt_build(
+        {
+            "session_id": "sess-rebuild",
+            "agent_id": "main",
+            "query": "inspect current service health",
+            "task_context": {"task_type": "chat.reply"},
+        }
+    )
+    first_task_id = first["task_context"]["openclaw_loop_task_id"]
+
+    rebuilt = hooks.before_prompt_build(
+        {
+            "session_id": "sess-rebuild",
+            "agent_id": "main",
+            "query": "write the final summary",
+            "task_context": {
+                "task_type": "chat.reply",
+                "openclaw_loop_task_id": first_task_id,
+            },
+        }
+    )
+
+    assert rebuilt["task_context"]["openclaw_loop_task_id"] == first_task_id
+    assert [task["task_id"] for task in loop.load_tasks()] == [first_task_id]
+    assert loop.get_task(first_task_id)["status"] == "running"
+
+
 def test_openclaw_task_end_closes_loop_task_and_records_lesson_on_failure(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("OPENCLAW_LOOP_HOME", str(tmp_path / "loop"))
     runtime = Runtime.create(root=tmp_path / "runtime")
