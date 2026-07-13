@@ -56,6 +56,7 @@ function createSessionsSendTool(opts) {
     const gatewayCall = opts?.callGateway ?? callGateway;
     return gatewayCall({ method: "sessions.resolve", params: {} });
 }
+let openClawToolsDeps = { callGateway };
 """.strip()
         + "\n",
         encoding="utf-8",
@@ -83,13 +84,31 @@ function createSessionsSendTool(opts) {
     assert json.loads(first.stdout)["status"] == "patched"
     assert second.returncode == 0, second.stderr
     assert json.loads(second.stdout)["status"] == "already_patched"
+    partially_patched = tools_runtime.read_text(encoding="utf-8").replace(
+        'const callGatewayAsCli = (request) => callGateway({ ...request, clientName: "cli", mode: "cli" });\n'
+        "let openClawToolsDeps = { callGateway: callGatewayAsCli };",
+        "let openClawToolsDeps = { callGateway };",
+    )
+    tools_runtime.write_text(partially_patched, encoding="utf-8")
+    upgrade = subprocess.run(
+        [sys.executable, str(script), "--openclaw-root", str(openclaw_root)],
+        cwd=Path.cwd(),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    assert upgrade.returncode == 0, upgrade.stderr
+    assert json.loads(upgrade.stdout)["status"] == "patched"
     patched = runtime.read_text(encoding="utf-8")
     assert patched.count('clientName: "cli"') == 2
     assert patched.count('mode: "cli"') == 2
     patched_tools = tools_runtime.read_text(encoding="utf-8")
-    assert patched_tools.count('clientName: "cli"') == 3
-    assert patched_tools.count('mode: "cli"') == 3
+    assert patched_tools.count('clientName: "cli"') == 4
+    assert patched_tools.count('mode: "cli"') == 4
     assert "opts?.callGateway ?? callGateway" not in patched_tools
+    assert "let openClawToolsDeps = { callGateway };" not in patched_tools
+    assert "let openClawToolsDeps = { callGateway: callGatewayAsCli };" in patched_tools
     dropin = Path("deploy/systemd/openclaw-gateway-eimemory.conf").read_text(encoding="utf-8")
     assert "ExecStartPre=" in dropin
     assert "patch_openclaw_restart_recovery_scope.py" in dropin

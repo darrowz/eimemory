@@ -22,6 +22,11 @@ AGENT_TOOL_GATEWAY_CLI = (
     'const gatewayCall = opts?.callGateway ?? ((request) => callGateway({ '
     '...request, clientName: "cli", mode: "cli" }));'
 )
+AGENT_TOOLS_DEPS_DEFAULT = "let openClawToolsDeps = { callGateway };"
+AGENT_TOOLS_DEPS_CLI = (
+    'const callGatewayAsCli = (request) => callGateway({ ...request, clientName: "cli", mode: "cli" });\n'
+    "let openClawToolsDeps = { callGateway: callGatewayAsCli };"
+)
 
 
 class PatchError(RuntimeError):
@@ -74,17 +79,30 @@ def _patch_runtime(path: Path) -> bool:
 
 def _patch_agent_tools(path: Path) -> bool:
     text = path.read_text(encoding="utf-8")
+    newline = "\r\n" if "\r\n" in text else "\n"
     original_count = text.count(AGENT_TOOL_GATEWAY_DEFAULT)
     patched_count = text.count(AGENT_TOOL_GATEWAY_CLI)
     expected_count = len(AGENT_TOOL_MARKERS)
-    if original_count == 0 and patched_count == expected_count:
-        return False
-    if original_count != expected_count or patched_count != 0:
+    changed = False
+    if original_count == expected_count and patched_count == 0:
+        text = text.replace(AGENT_TOOL_GATEWAY_DEFAULT, AGENT_TOOL_GATEWAY_CLI)
+        changed = True
+    elif original_count != 0 or patched_count != expected_count:
         raise PatchError(
-            f"expected {expected_count} unpatched agent tool gateway defaults in {path.name}"
+            f"expected {expected_count} consistent agent tool gateway defaults in {path.name}"
         )
-    _atomic_write(path, text.replace(AGENT_TOOL_GATEWAY_DEFAULT, AGENT_TOOL_GATEWAY_CLI))
-    return True
+
+    deps_default_count = text.count(AGENT_TOOLS_DEPS_DEFAULT)
+    deps_patched_count = text.count(AGENT_TOOLS_DEPS_CLI.replace("\n", newline))
+    if deps_default_count == 1 and deps_patched_count == 0:
+        text = text.replace(AGENT_TOOLS_DEPS_DEFAULT, AGENT_TOOLS_DEPS_CLI.replace("\n", newline))
+        changed = True
+    elif deps_default_count != 0 or deps_patched_count != 1:
+        raise PatchError(f"expected one consistent agent tools dependency boundary in {path.name}")
+
+    if changed:
+        _atomic_write(path, text)
+    return changed
 
 
 def patch_openclaw(openclaw_root: Path) -> dict[str, str]:
