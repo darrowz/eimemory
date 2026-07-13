@@ -70,14 +70,27 @@ function pruneHookCache() {
   }
 }
 
+function mergeHookEventContext(event, context) {
+  const merged = { ...normalizeObject(context) };
+  for (const [key, value] of Object.entries(normalizeObject(event))) {
+    if (value !== undefined && value !== null && value !== '') {
+      merged[key] = value;
+    }
+  }
+  return merged;
+}
+
 function loopCorrelationKeys(event) {
   const candidates = [
+    ['run', event?.runId || event?.run_id],
+    ['job', event?.jobId || event?.job_id],
     ['turn', event?.turnId || event?.turn_id],
     ['request', event?.requestId || event?.request_id],
     ['trace', event?.traceId || event?.trace_id || event?.trace?.id],
     ['task', event?.taskId || event?.task_id],
     ['event', event?.eventId || event?.event_id || event?.id],
     ['message', event?.messageId || event?.message_id || event?.message?.id],
+    ['session-key', event?.sessionKey || event?.session_key],
     ['session', normalizeSessionId(event)],
   ];
   const keys = [];
@@ -1070,14 +1083,17 @@ module.exports.default = {
     api?.logger?.info?.('eimemory-bridge: registering OpenClaw hooks');
     registerStatusTool(api);
     registerMemoryE2ETool(api);
-    registerTypedHookOnce(api, 'message_received', async (event) => safeInvokeHook(api, 'message_received', event) || {});
+    registerTypedHookOnce(api, 'message_received', async (event, context) => (
+      safeInvokeHook(api, 'message_received', mergeHookEventContext(event, context)) || {}
+    ));
     if (promptInjectionEnabled(api)) {
-      registerTypedHookOnce(api, 'before_prompt_build', async (event) => {
-        const bridgePayload = shouldInvokeBridgeBeforePrompt(api, event)
-          ? safeInvokeBridge(api, normalizeEventPayload('before_prompt_build', event))
+      registerTypedHookOnce(api, 'before_prompt_build', async (event, context) => {
+        const contextualEvent = mergeHookEventContext(event, context);
+        const bridgePayload = shouldInvokeBridgeBeforePrompt(api, contextualEvent)
+          ? safeInvokeBridge(api, normalizeEventPayload('before_prompt_build', contextualEvent))
           : null;
-        const payload = safeInvokeHook(api, 'before_prompt_build', event);
-        rememberLoopTask(event, payload);
+        const payload = safeInvokeHook(api, 'before_prompt_build', contextualEvent);
+        rememberLoopTask(contextualEvent, payload);
         const bridgeContext = buildBridgePrependContext(bridgePayload);
         if (!payload) {
           return bridgeContext ? { prependContext: bridgeContext } : {};
@@ -1094,20 +1110,24 @@ module.exports.default = {
     } else {
       api?.logger?.info?.('eimemory-bridge: before_prompt_build disabled; set EIMEMORY_ENABLE_PROMPT_INJECTION=true and allowPromptInjection=true to enable recall injection');
     }
-    registerTypedHookOnce(api, 'agent_end', async (event) => {
-      const correlatedEvent = correlateTerminalLoopTask(event);
+    registerTypedHookOnce(api, 'agent_end', async (event, context) => {
+      const correlatedEvent = correlateTerminalLoopTask(mergeHookEventContext(event, context));
       const result = safeInvokeHook(api, 'agent_end', correlatedEvent) || {};
       forgetTerminalLoopTask(correlatedEvent, result);
       return result;
     });
-    registerTypedHookOnce(api, 'session_end', async (event) => {
-      const correlatedEvent = correlateTerminalLoopTask(event);
+    registerTypedHookOnce(api, 'session_end', async (event, context) => {
+      const correlatedEvent = correlateTerminalLoopTask(mergeHookEventContext(event, context));
       const result = safeInvokeHook(api, 'session_end', correlatedEvent) || {};
       forgetTerminalLoopTask(correlatedEvent, result);
       return result;
     });
-    registerTypedHookOnce(api, 'before_agent_finalize', async (event) => completionGateRevision(event));
-    registerTypedHookOnce(api, 'before_tool_call', async (event) => completionGateBeforeToolCall(event));
+    registerTypedHookOnce(api, 'before_agent_finalize', async (event, context) => (
+      completionGateRevision(mergeHookEventContext(event, context))
+    ));
+    registerTypedHookOnce(api, 'before_tool_call', async (event, context) => (
+      completionGateBeforeToolCall(mergeHookEventContext(event, context))
+    ));
   },
 };
 

@@ -1762,6 +1762,55 @@ plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { ha
     assert payload["task_context"]["openclaw_loop_task_id"] == "task-original"
 
 
+def test_openclaw_js_bridge_correlates_loop_task_from_hook_context(tmp_path) -> None:
+    hook_script = tmp_path / "context-correlation-hook.js"
+    terminal_payload = tmp_path / "context-terminal-payload.json"
+    hook_script.write_text(
+        """
+const fs = require('node:fs');
+const hook = process.argv[2] || '';
+const payload = JSON.parse(fs.readFileSync(0, 'utf8') || '{}');
+if (hook === 'before_prompt_build') {
+  process.stdout.write(JSON.stringify({
+    memory_bundle: { items: [] },
+    task_context: { openclaw_loop_task_id: 'task-from-context' }
+  }));
+} else {
+  fs.writeFileSync(process.env.TERMINAL_PAYLOAD, JSON.stringify(payload));
+  process.stdout.write(JSON.stringify({ loop_task: { task_id: 'task-from-context', status: 'done' } }));
+}
+""".strip(),
+        encoding="utf-8",
+    )
+    script = """
+const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
+const handlers = {};
+process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
+plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = handler; } });
+(async () => {
+  await handlers.before_prompt_build(
+    { prompt: 'repair production loop', messages: [] },
+    { runId: 'run-context', sessionId: 'sess-context', sessionKey: 'agent:main:cron:test' }
+  );
+  await handlers.agent_end(
+    { success: true, messages: [] },
+    { runId: 'run-context', sessionId: 'sess-context', sessionKey: 'agent:main:cron:test' }
+  );
+  process.stdout.write('ok');
+})().catch((error) => { console.error(error && error.stack ? error.stack : String(error)); process.exit(1); });
+""".strip()
+    env = os.environ.copy()
+    env["EIMEMORY_HOOK_COMMAND"] = f"node {hook_script}"
+    env["TERMINAL_PAYLOAD"] = str(terminal_payload)
+
+    result = subprocess.run(["node", "-e", script], cwd=Path.cwd(), env=env, capture_output=True, text=True, check=False)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(terminal_payload.read_text(encoding="utf-8"))
+    assert payload["session_id"] == "sess-context"
+    assert payload["task_context"]["openclaw_loop_task_id"] == "task-from-context"
+
+
 def test_openclaw_js_bridge_agent_end_forwards_event_policy_context(tmp_path) -> None:
     script = """
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;

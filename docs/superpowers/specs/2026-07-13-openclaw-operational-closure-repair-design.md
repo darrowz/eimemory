@@ -49,4 +49,4 @@ The watchdog unit also masks its non-zero exit status with `|| true`.
 - A production cron smoke completes without approval timeout.
 - Fresh lifecycle traffic produces no stale running task.
 - Watchdog returns zero only when healthy and writes bounded records.
-- Health endpoints report version `1.9.27` and the deployed commit.
+- Health endpoints report version `1.9.28` and the deployed commit.
