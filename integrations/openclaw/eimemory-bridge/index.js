@@ -125,7 +125,7 @@ function rememberLoopTask(event, payload) {
   }
 }
 
-function correlateTerminalLoopTask(event) {
+function correlatePendingLoopTask(event) {
   const rawContext = normalizeObject(event?.task_context || event?.taskContext);
   if (String(rawContext.openclaw_loop_task_id || '').trim()) {
     return event;
@@ -1089,11 +1089,12 @@ module.exports.default = {
     if (promptInjectionEnabled(api)) {
       registerTypedHookOnce(api, 'before_prompt_build', async (event, context) => {
         const contextualEvent = mergeHookEventContext(event, context);
-        const bridgePayload = shouldInvokeBridgeBeforePrompt(api, contextualEvent)
-          ? safeInvokeBridge(api, normalizeEventPayload('before_prompt_build', contextualEvent))
+        const correlatedEvent = correlatePendingLoopTask(contextualEvent);
+        const bridgePayload = shouldInvokeBridgeBeforePrompt(api, correlatedEvent)
+          ? safeInvokeBridge(api, normalizeEventPayload('before_prompt_build', correlatedEvent))
           : null;
-        const payload = safeInvokeHook(api, 'before_prompt_build', contextualEvent);
-        rememberLoopTask(contextualEvent, payload);
+        const payload = safeInvokeHook(api, 'before_prompt_build', correlatedEvent);
+        rememberLoopTask(correlatedEvent, payload);
         const bridgeContext = buildBridgePrependContext(bridgePayload);
         if (!payload) {
           return bridgeContext ? { prependContext: bridgeContext } : {};
@@ -1111,13 +1112,13 @@ module.exports.default = {
       api?.logger?.info?.('eimemory-bridge: before_prompt_build disabled; set EIMEMORY_ENABLE_PROMPT_INJECTION=true and allowPromptInjection=true to enable recall injection');
     }
     registerTypedHookOnce(api, 'agent_end', async (event, context) => {
-      const correlatedEvent = correlateTerminalLoopTask(mergeHookEventContext(event, context));
+      const correlatedEvent = correlatePendingLoopTask(mergeHookEventContext(event, context));
       const result = safeInvokeHook(api, 'agent_end', correlatedEvent) || {};
       forgetTerminalLoopTask(correlatedEvent, result);
       return result;
     });
     registerTypedHookOnce(api, 'session_end', async (event, context) => {
-      const correlatedEvent = correlateTerminalLoopTask(mergeHookEventContext(event, context));
+      const correlatedEvent = correlatePendingLoopTask(mergeHookEventContext(event, context));
       const result = safeInvokeHook(api, 'session_end', correlatedEvent) || {};
       forgetTerminalLoopTask(correlatedEvent, result);
       return result;

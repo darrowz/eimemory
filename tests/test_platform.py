@@ -1765,15 +1765,18 @@ plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { ha
 def test_openclaw_js_bridge_correlates_loop_task_from_hook_context(tmp_path) -> None:
     hook_script = tmp_path / "context-correlation-hook.js"
     terminal_payload = tmp_path / "context-terminal-payload.json"
+    prompt_payloads = tmp_path / "context-prompt-payloads.jsonl"
     hook_script.write_text(
         """
 const fs = require('node:fs');
 const hook = process.argv[2] || '';
 const payload = JSON.parse(fs.readFileSync(0, 'utf8') || '{}');
 if (hook === 'before_prompt_build') {
+  fs.appendFileSync(process.env.PROMPT_PAYLOADS, `${JSON.stringify(payload)}\n`);
+  const taskId = payload.task_context?.openclaw_loop_task_id || 'task-from-context';
   process.stdout.write(JSON.stringify({
     memory_bundle: { items: [] },
-    task_context: { openclaw_loop_task_id: 'task-from-context' }
+    task_context: { openclaw_loop_task_id: taskId }
   }));
 } else {
   fs.writeFileSync(process.env.TERMINAL_PAYLOAD, JSON.stringify(payload));
@@ -1792,6 +1795,10 @@ plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { ha
     { prompt: 'repair production loop', messages: [] },
     { runId: 'run-context', sessionId: 'sess-context', sessionKey: 'agent:main:cron:test' }
   );
+  await handlers.before_prompt_build(
+    { prompt: 'revised final summary', messages: [] },
+    { runId: 'run-context', sessionId: 'sess-context', sessionKey: 'agent:main:cron:test' }
+  );
   await handlers.agent_end(
     { success: true, messages: [] },
     { runId: 'run-context', sessionId: 'sess-context', sessionKey: 'agent:main:cron:test' }
@@ -1802,10 +1809,13 @@ plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { ha
     env = os.environ.copy()
     env["EIMEMORY_HOOK_COMMAND"] = f"node {hook_script}"
     env["TERMINAL_PAYLOAD"] = str(terminal_payload)
+    env["PROMPT_PAYLOADS"] = str(prompt_payloads)
 
     result = subprocess.run(["node", "-e", script], cwd=Path.cwd(), env=env, capture_output=True, text=True, check=False)
 
     assert result.returncode == 0, result.stderr
+    prompt_events = [json.loads(line) for line in prompt_payloads.read_text(encoding="utf-8").splitlines()]
+    assert prompt_events[1]["task_context"]["openclaw_loop_task_id"] == "task-from-context"
     payload = json.loads(terminal_payload.read_text(encoding="utf-8"))
     assert payload["session_id"] == "sess-context"
     assert payload["task_context"]["openclaw_loop_task_id"] == "task-from-context"
