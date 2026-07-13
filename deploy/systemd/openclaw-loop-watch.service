@@ -7,5 +7,5 @@ Type=oneshot
 WorkingDirectory=/opt/eimemory/current
 Environment=OPENCLAW_LOOP_HOME=%h/.openclaw/task-ledger
 Environment=PYTHONDONTWRITEBYTECODE=1
-Environment=PYTHONPYCACHEPREFIX=/var/lib/eimemory/.pycache/1.9.38
+Environment=PYTHONPYCACHEPREFIX=/var/lib/eimemory/.pycache/1.9.39
 ExecStart=/opt/eimemory/current/.venv/bin/python /opt/eimemory/current/scripts/openclaw_loop.py watch

@@ -61,6 +61,36 @@ let openClawToolsDeps = { callGateway };
         + "\n",
         encoding="utf-8",
     )
+    gateway_runtime = dist / "gateway-test.js"
+    gateway_runtime.write_text(
+        """
+const AGENT_RUNTIME_IDENTITY_METHODS = new Set(["cron.status", "cron.run"]);
+async function callGatewayTool(method, opts, params, extra) {
+    const gateway = resolveGatewayOptions(opts);
+    const scopes = Array.isArray(extra?.scopes)
+        ? extra.scopes
+        : resolveLeastPrivilegeOperatorScopesForMethod(method, params);
+    const agentRuntimeIdentityToken = resolveAgentRuntimeIdentityTokenForGatewayTool({
+        method,
+        opts,
+        target: gateway.target,
+    });
+    return await callGateway({
+        url: gateway.url,
+        token: gateway.token,
+        method,
+        params,
+        clientName: GATEWAY_CLIENT_NAMES.GATEWAY_CLIENT,
+        clientDisplayName: "agent",
+        mode: GATEWAY_CLIENT_MODES.BACKEND,
+        ...(agentRuntimeIdentityToken ? { agentRuntimeIdentityToken } : {}),
+        scopes,
+    });
+}
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
     script = Path("deploy/patch_openclaw_restart_recovery_scope.py")
 
     first = subprocess.run(
@@ -109,6 +139,21 @@ let openClawToolsDeps = { callGateway };
     assert "opts?.callGateway ?? callGateway" not in patched_tools
     assert "let openClawToolsDeps = { callGateway };" not in patched_tools
     assert "let openClawToolsDeps = { callGateway: callGatewayAsCli };" in patched_tools
+    patched_gateway = gateway_runtime.read_text(encoding="utf-8")
+    assert "const useLocalOperatorReadIdentity =" in patched_gateway
+    assert "scopes.every((scope) => scope === \"operator.read\")" in patched_gateway
+    assert (
+        "clientName: useLocalOperatorReadIdentity ? GATEWAY_CLIENT_NAMES.CLI : "
+        "GATEWAY_CLIENT_NAMES.GATEWAY_CLIENT"
+    ) in patched_gateway
+    assert (
+        "mode: useLocalOperatorReadIdentity ? GATEWAY_CLIENT_MODES.CLI : "
+        "GATEWAY_CLIENT_MODES.BACKEND"
+    ) in patched_gateway
+    assert (
+        "agentRuntimeIdentityToken && !useLocalOperatorReadIdentity"
+        in patched_gateway
+    )
     dropin = Path("deploy/systemd/openclaw-gateway-eimemory.conf").read_text(encoding="utf-8")
     assert "ExecStartPre=" in dropin
     assert "patch_openclaw_restart_recovery_scope.py" in dropin

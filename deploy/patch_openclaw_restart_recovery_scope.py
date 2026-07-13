@@ -27,6 +27,30 @@ AGENT_TOOLS_DEPS_CLI = (
     'const callGatewayAsCli = (request) => callGateway({ ...request, clientName: "cli", mode: "cli" });\n'
     "let openClawToolsDeps = { callGateway: callGatewayAsCli };"
 )
+GATEWAY_TOOL_MARKERS = (
+    "const AGENT_RUNTIME_IDENTITY_METHODS",
+    "async function callGatewayTool(method, opts, params, extra)",
+)
+GATEWAY_TOOL_READ_IDENTITY_MARKER = "const useLocalOperatorReadIdentity ="
+GATEWAY_TOOL_CLIENT_DEFAULT = (
+    "clientName: GATEWAY_CLIENT_NAMES.GATEWAY_CLIENT,"
+)
+GATEWAY_TOOL_CLIENT_READ_ONLY = (
+    "clientName: useLocalOperatorReadIdentity ? GATEWAY_CLIENT_NAMES.CLI : "
+    "GATEWAY_CLIENT_NAMES.GATEWAY_CLIENT,"
+)
+GATEWAY_TOOL_MODE_DEFAULT = "mode: GATEWAY_CLIENT_MODES.BACKEND,"
+GATEWAY_TOOL_MODE_READ_ONLY = (
+    "mode: useLocalOperatorReadIdentity ? GATEWAY_CLIENT_MODES.CLI : "
+    "GATEWAY_CLIENT_MODES.BACKEND,"
+)
+GATEWAY_TOOL_AGENT_TOKEN_DEFAULT = (
+    "agentRuntimeIdentityToken ? { agentRuntimeIdentityToken } : {}"
+)
+GATEWAY_TOOL_AGENT_TOKEN_READ_ONLY = (
+    "agentRuntimeIdentityToken && !useLocalOperatorReadIdentity "
+    "? { agentRuntimeIdentityToken } : {}"
+)
 
 
 class PatchError(RuntimeError):
@@ -105,6 +129,73 @@ def _patch_agent_tools(path: Path) -> bool:
     return changed
 
 
+def _replace_gateway_tool_fragment(
+    text: str,
+    *,
+    original: str,
+    patched: str,
+    path: Path,
+) -> tuple[str, bool]:
+    original_count = text.count(original)
+    patched_count = text.count(patched)
+    if original_count == 1 and patched_count == 0:
+        return text.replace(original, patched, 1), True
+    if original_count == 0 and patched_count == 1:
+        return text, False
+    raise PatchError(f"expected one consistent gateway tool fragment in {path.name}")
+
+
+def _patch_gateway_tool(path: Path) -> bool:
+    text = path.read_text(encoding="utf-8")
+    newline = "\r\n" if "\r\n" in text else "\n"
+    changed = False
+
+    marker_count = text.count(GATEWAY_TOOL_READ_IDENTITY_MARKER)
+    if marker_count == 0:
+        anchor = re.compile(
+            r"^(?P<indent>[ \t]+)const agentRuntimeIdentityToken =",
+            re.MULTILINE,
+        )
+        matches = list(anchor.finditer(text))
+        if len(matches) != 1:
+            raise PatchError(
+                f"expected one agent runtime identity anchor in {path.name}"
+            )
+        indent = matches[0].group("indent")
+        read_identity = newline.join(
+            (
+                f"{indent}const useLocalOperatorReadIdentity =",
+                f'{indent}    gateway.target === "local" &&',
+                f"{indent}    trimToUndefined(opts.gatewayUrl) === void 0 &&",
+                f"{indent}    trimToUndefined(opts.gatewayToken) === void 0 &&",
+                f"{indent}    scopes.length > 0 &&",
+                f'{indent}    scopes.every((scope) => scope === "operator.read");',
+            )
+        )
+        anchor_start = matches[0].start()
+        text = text[:anchor_start] + read_identity + newline + text[anchor_start:]
+        changed = True
+    elif marker_count != 1:
+        raise PatchError(f"expected one gateway read identity marker in {path.name}")
+
+    for original, patched in (
+        (GATEWAY_TOOL_CLIENT_DEFAULT, GATEWAY_TOOL_CLIENT_READ_ONLY),
+        (GATEWAY_TOOL_MODE_DEFAULT, GATEWAY_TOOL_MODE_READ_ONLY),
+        (GATEWAY_TOOL_AGENT_TOKEN_DEFAULT, GATEWAY_TOOL_AGENT_TOKEN_READ_ONLY),
+    ):
+        text, fragment_changed = _replace_gateway_tool_fragment(
+            text,
+            original=original,
+            patched=patched,
+            path=path,
+        )
+        changed = changed or fragment_changed
+
+    if changed:
+        _atomic_write(path, text)
+    return changed
+
+
 def patch_openclaw(openclaw_root: Path) -> dict[str, str]:
     if openclaw_root.is_symlink():
         raise PatchError("OpenClaw root must not be a symlink")
@@ -138,13 +229,31 @@ def patch_openclaw(openclaw_root: Path) -> dict[str, str]:
     if len(agent_tool_candidates) != 1:
         raise PatchError(f"expected one agent tools implementation, found {len(agent_tool_candidates)}")
 
+    gateway_tool_candidates: list[Path] = []
+    for candidate in sorted(dist.glob("gateway-*.js")):
+        if candidate.is_symlink() or candidate.resolve(strict=True).parent != dist:
+            raise PatchError(f"unsafe gateway tool module path: {candidate.name}")
+        candidate_text = candidate.read_text(encoding="utf-8")
+        if all(marker in candidate_text for marker in GATEWAY_TOOL_MARKERS):
+            gateway_tool_candidates.append(candidate)
+    if len(gateway_tool_candidates) != 1:
+        raise PatchError(
+            f"expected one gateway tool implementation, found {len(gateway_tool_candidates)}"
+        )
+
     changed = _patch_runtime(candidates[0])
     agent_tools_changed = _patch_agent_tools(agent_tool_candidates[0])
+    gateway_tool_changed = _patch_gateway_tool(gateway_tool_candidates[0])
     return {
-        "status": "patched" if changed or agent_tools_changed else "already_patched",
+        "status": (
+            "patched"
+            if changed or agent_tools_changed or gateway_tool_changed
+            else "already_patched"
+        ),
         "version": version,
         "module": candidates[0].name,
         "agent_tools_module": agent_tool_candidates[0].name,
+        "gateway_tool_module": gateway_tool_candidates[0].name,
     }
 
 
