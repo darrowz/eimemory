@@ -91,6 +91,32 @@ async function callGatewayTool(method, opts, params, extra) {
         + "\n",
         encoding="utf-8",
     )
+    call_runtime = dist / "call-test.js"
+    call_runtime.write_text(
+        """
+async function callGateway(opts) {
+    const callerMode = opts.mode ?? GATEWAY_CLIENT_MODES.BACKEND;
+    const callerName = opts.clientName ?? GATEWAY_CLIENT_NAMES.GATEWAY_CLIENT;
+    if (callerMode === GATEWAY_CLIENT_MODES.CLI || callerName === GATEWAY_CLIENT_NAMES.CLI) {
+        return await callGatewayCli(opts);
+    }
+    if (Array.isArray(opts.scopes)) {
+        return await callGatewayWithScopes({
+            ...opts,
+            mode: callerMode,
+            clientName: callerName,
+        }, opts.scopes);
+    }
+    return await callGatewayLeastPrivilege({
+        ...opts,
+        mode: callerMode,
+        clientName: callerName,
+    });
+}
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
     script = Path("deploy/patch_openclaw_restart_recovery_scope.py")
 
     first = subprocess.run(
@@ -154,6 +180,11 @@ async function callGatewayTool(method, opts, params, extra) {
         "agentRuntimeIdentityToken && !useLocalOperatorReadIdentity"
         in patched_gateway
     )
+    patched_call = call_runtime.read_text(encoding="utf-8")
+    assert "const defaultReadScopes =" in patched_call
+    assert "opts.mode === void 0 && opts.clientName === void 0" in patched_call
+    assert "defaultReadScopes.every((scope) => scope === \"operator.read\")" in patched_call
+    assert "return await callGatewayCli({ ...opts, scopes: defaultReadScopes });" in patched_call
     dropin = Path("deploy/systemd/openclaw-gateway-eimemory.conf").read_text(encoding="utf-8")
     assert "ExecStartPre=" in dropin
     assert "patch_openclaw_restart_recovery_scope.py" in dropin

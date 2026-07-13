@@ -51,6 +51,11 @@ GATEWAY_TOOL_AGENT_TOKEN_READ_ONLY = (
     "agentRuntimeIdentityToken && !useLocalOperatorReadIdentity "
     "? { agentRuntimeIdentityToken } : {}"
 )
+CALL_GATEWAY_MARKERS = (
+    "async function callGateway(opts)",
+    "return await callGatewayLeastPrivilege({",
+)
+CALL_GATEWAY_READ_SCOPE_MARKER = "const defaultReadScopes ="
 
 
 class PatchError(RuntimeError):
@@ -196,6 +201,43 @@ def _patch_gateway_tool(path: Path) -> bool:
     return changed
 
 
+def _patch_call_gateway(path: Path) -> bool:
+    text = path.read_text(encoding="utf-8")
+    newline = "\r\n" if "\r\n" in text else "\n"
+    marker_count = text.count(CALL_GATEWAY_READ_SCOPE_MARKER)
+    if marker_count == 1:
+        return False
+    if marker_count != 0:
+        raise PatchError(f"expected one gateway read scope marker in {path.name}")
+
+    anchor = re.compile(
+        r"^(?P<indent>[ \t]+)return await callGatewayLeastPrivilege\(\{",
+        re.MULTILINE,
+    )
+    matches = list(anchor.finditer(text))
+    if len(matches) != 1:
+        raise PatchError(f"expected one default gateway call anchor in {path.name}")
+    indent = matches[0].group("indent")
+    read_fallback = newline.join(
+        (
+            f"{indent}const defaultReadScopes =",
+            f"{indent}    opts.mode === void 0 && opts.clientName === void 0",
+            f"{indent}        ? resolveLeastPrivilegeOperatorScopesForMethod(opts.method, opts.params)",
+            f"{indent}        : null;",
+            f"{indent}if (",
+            f"{indent}    defaultReadScopes?.length &&",
+            f'{indent}    defaultReadScopes.every((scope) => scope === "operator.read")',
+            f"{indent}) {{",
+            f"{indent}    return await callGatewayCli({{ ...opts, scopes: defaultReadScopes }});",
+            f"{indent}}}",
+        )
+    )
+    anchor_start = matches[0].start()
+    text = text[:anchor_start] + read_fallback + newline + text[anchor_start:]
+    _atomic_write(path, text)
+    return True
+
+
 def patch_openclaw(openclaw_root: Path) -> dict[str, str]:
     if openclaw_root.is_symlink():
         raise PatchError("OpenClaw root must not be a symlink")
@@ -241,19 +283,36 @@ def patch_openclaw(openclaw_root: Path) -> dict[str, str]:
             f"expected one gateway tool implementation, found {len(gateway_tool_candidates)}"
         )
 
+    call_gateway_candidates: list[Path] = []
+    for candidate in sorted(dist.glob("call-*.js")):
+        if candidate.is_symlink() or candidate.resolve(strict=True).parent != dist:
+            raise PatchError(f"unsafe gateway call module path: {candidate.name}")
+        candidate_text = candidate.read_text(encoding="utf-8")
+        if all(marker in candidate_text for marker in CALL_GATEWAY_MARKERS):
+            call_gateway_candidates.append(candidate)
+    if len(call_gateway_candidates) != 1:
+        raise PatchError(
+            f"expected one gateway call implementation, found {len(call_gateway_candidates)}"
+        )
+
     changed = _patch_runtime(candidates[0])
     agent_tools_changed = _patch_agent_tools(agent_tool_candidates[0])
     gateway_tool_changed = _patch_gateway_tool(gateway_tool_candidates[0])
+    call_gateway_changed = _patch_call_gateway(call_gateway_candidates[0])
     return {
         "status": (
             "patched"
-            if changed or agent_tools_changed or gateway_tool_changed
+            if changed
+            or agent_tools_changed
+            or gateway_tool_changed
+            or call_gateway_changed
             else "already_patched"
         ),
         "version": version,
         "module": candidates[0].name,
         "agent_tools_module": agent_tool_candidates[0].name,
         "gateway_tool_module": gateway_tool_candidates[0].name,
+        "call_gateway_module": call_gateway_candidates[0].name,
     }
 
 
