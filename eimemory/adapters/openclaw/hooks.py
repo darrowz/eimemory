@@ -1311,14 +1311,20 @@ class OpenClawMemoryHooks:
         explicit = self._first_text(
             event.get("idempotency_key"),
             event.get("idempotencyKey"),
+            event.get("run_id"),
+            event.get("runId"),
+            event.get("trace_id"),
+            event.get("traceId"),
+            event.get("request_id"),
+            event.get("requestId"),
+            event.get("turn_id"),
+            event.get("turnId"),
+            event.get("task_id"),
+            event.get("taskId"),
             event.get("message_id"),
             event.get("messageId"),
             event.get("event_id"),
             event.get("eventId"),
-            event.get("trace_id"),
-            event.get("traceId"),
-            event.get("task_id"),
-            event.get("taskId"),
         )
         return "openclaw:" + self._stable_hash(
             {

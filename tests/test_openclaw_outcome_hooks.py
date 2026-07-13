@@ -167,6 +167,25 @@ def test_openclaw_before_prompt_build_reuses_active_loop_task_from_context(tmp_p
     assert loop.get_task(first_task_id)["status"] == "running"
 
 
+def test_openclaw_loop_reuses_task_by_run_id_when_prompt_result_is_lost(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("OPENCLAW_LOOP_HOME", str(tmp_path / "loop"))
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    hooks = OpenClawMemoryHooks(runtime)
+
+    started = hooks._openclaw_loop_start(
+        event={"session_id": "sess-timeout", "run_id": "run-timeout", "agent_id": "main"},
+        query="inspect current service health",
+    )
+    recovered = hooks._openclaw_loop_start(
+        event={"session_id": "sess-timeout", "run_id": "run-timeout", "agent_id": "main"},
+        query="production health inspection completed",
+    )
+
+    assert recovered["task_id"] == started["task_id"]
+    assert recovered["reused"] is True
+    assert [task["task_id"] for task in loop.load_tasks()] == [started["task_id"]]
+
+
 def test_openclaw_task_end_closes_loop_task_and_records_lesson_on_failure(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("OPENCLAW_LOOP_HOME", str(tmp_path / "loop"))
     runtime = Runtime.create(root=tmp_path / "runtime")

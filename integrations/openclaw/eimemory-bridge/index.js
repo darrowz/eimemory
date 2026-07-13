@@ -175,6 +175,7 @@ function cacheKeyFor(kind, hook, payload) {
 
 function normalizeTraceFields(event) {
   return {
+    run_id: String(event?.run_id || event?.runId || ''),
     event_id: String(event?.event_id || event?.eventId || event?.id || ''),
     message_id: String(event?.message_id || event?.messageId || event?.message?.id || event?.message?.messageId || ''),
     trace_id: String(event?.trace_id || event?.traceId || event?.trace?.id || ''),

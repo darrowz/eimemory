@@ -1874,6 +1874,56 @@ plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { ha
     assert payload["task_context"]["openclaw_loop_task_id"] == "task-original"
 
 
+def test_openclaw_js_bridge_forwards_run_id_after_prompt_hook_timeout(tmp_path) -> None:
+    script = """
+const childProcess = require('node:child_process');
+const calls = [];
+childProcess.spawnSync = (_command, args, options) => {
+  const hook = args[args.length - 1];
+  calls.push({ hook, payload: JSON.parse(options.input || '{}') });
+  if (hook === 'before_prompt_build') {
+    const error = new Error('prompt hook timed out');
+    error.code = 'ETIMEDOUT';
+    return { error, status: null, stdout: '', stderr: '' };
+  }
+  return {
+    status: 0,
+    stdout: JSON.stringify({ loop_task: { task_id: 'task-run-timeout', status: 'done' } }),
+    stderr: '',
+  };
+};
+const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
+const handlers = {};
+process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
+plugin.register({
+  config: { allowPromptInjection: true },
+  hooks: { on(name, handler) { handlers[name] = handler; } },
+});
+(async () => {
+  const context = { runId: 'run-timeout', sessionId: 'sess-timeout' };
+  await handlers.before_prompt_build({ prompt: 'inspect service health' }, context);
+  await handlers.agent_end({ success: true, messages: [] }, context);
+  process.stdout.write(JSON.stringify(calls));
+})().catch((error) => { console.error(error && error.stack ? error.stack : String(error)); process.exit(1); });
+""".strip()
+    env = os.environ.copy()
+    env["OPENCLAW_CONFIG_PATH"] = str(tmp_path / "missing-openclaw.json")
+    result = subprocess.run(
+        ["node", "-e", script],
+        cwd=Path.cwd(),
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    calls = json.loads(result.stdout)
+    assert [call["hook"] for call in calls] == ["before_prompt_build", "agent_end"]
+    assert [call["payload"]["run_id"] for call in calls] == ["run-timeout", "run-timeout"]
+
+
 def test_openclaw_js_bridge_correlates_loop_task_from_hook_context(tmp_path) -> None:
     hook_script = tmp_path / "context-correlation-hook.js"
     terminal_payload = tmp_path / "context-terminal-payload.json"
