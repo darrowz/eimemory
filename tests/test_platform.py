@@ -1047,7 +1047,7 @@ process.stdout.write(JSON.stringify(names));
     ]
 
 
-def test_openclaw_js_bridge_gives_terminal_hooks_a_longer_default_timeout() -> None:
+def test_openclaw_js_bridge_gives_terminal_hooks_a_longer_default_timeout(tmp_path) -> None:
     script = """
 const childProcess = require('node:child_process');
 const calls = [];
@@ -1065,7 +1065,16 @@ Promise.resolve()
   .then(() => process.stdout.write(JSON.stringify(calls)))
   .catch((error) => { console.error(error && error.stack ? error.stack : String(error)); process.exit(1); });
 """.strip()
-    result = subprocess.run(["node", "-e", script], cwd=Path.cwd(), capture_output=True, text=True, check=True)
+    env = os.environ.copy()
+    env["OPENCLAW_CONFIG_PATH"] = str(tmp_path / "missing-openclaw.json")
+    result = subprocess.run(
+        ["node", "-e", script],
+        cwd=Path.cwd(),
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
 
     assert json.loads(result.stdout) == [
         {"hook": "message_received", "timeout": 8000},
