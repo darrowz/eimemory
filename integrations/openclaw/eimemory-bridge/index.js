@@ -14,6 +14,7 @@ const DEFAULT_FAST_CANDIDATE_LIMIT = 24;
 const DEFAULT_HOOK_CACHE_TTL_MS = 10000;
 const DEFAULT_HOOK_TIMEOUT_MS = 8000;
 const DEFAULT_BRIDGE_TIMEOUT_MS = 8000;
+const LOOP_TASK_CORRELATION_TTL_MS = 2 * 60 * 60 * 1000;
 const COMPLETION_GATE_RETRY_KEY = 'eimemory-completion-gate-v1';
 const UNRESOLVED_COMPLETION_MARKERS = [
   /(?:当前|仍有|剩余|存在|还有).{0,12}(?:验证缺口|系统性缺口|已知问题|待修复|未完成)/i,
@@ -54,6 +55,7 @@ function registrationState() {
 }
 
 const hookResultCache = new Map();
+const pendingLoopTasks = new Map();
 
 function nowMs() {
   return Date.now();
@@ -64,6 +66,81 @@ function pruneHookCache() {
   for (const [key, entry] of hookResultCache.entries()) {
     if (!entry || entry.createdAt < cutoff) {
       hookResultCache.delete(key);
+    }
+  }
+}
+
+function loopCorrelationKeys(event) {
+  const candidates = [
+    ['turn', event?.turnId || event?.turn_id],
+    ['request', event?.requestId || event?.request_id],
+    ['trace', event?.traceId || event?.trace_id || event?.trace?.id],
+    ['task', event?.taskId || event?.task_id],
+    ['event', event?.eventId || event?.event_id || event?.id],
+    ['message', event?.messageId || event?.message_id || event?.message?.id],
+    ['session', normalizeSessionId(event)],
+  ];
+  const keys = [];
+  for (const [kind, raw] of candidates) {
+    const value = String(raw || '').trim();
+    if (value) {
+      keys.push(`${kind}:${value}`);
+    }
+  }
+  return [...new Set(keys)];
+}
+
+function prunePendingLoopTasks() {
+  const cutoff = nowMs() - LOOP_TASK_CORRELATION_TTL_MS;
+  for (const [key, entry] of pendingLoopTasks.entries()) {
+    if (!entry || entry.createdAt < cutoff) {
+      pendingLoopTasks.delete(key);
+    }
+  }
+}
+
+function rememberLoopTask(event, payload) {
+  const taskId = String(payload?.task_context?.openclaw_loop_task_id || '').trim();
+  if (!taskId) {
+    return;
+  }
+  prunePendingLoopTasks();
+  const keys = loopCorrelationKeys(event);
+  const entry = { taskId, createdAt: nowMs(), keys };
+  for (const key of keys) {
+    pendingLoopTasks.set(key, entry);
+  }
+}
+
+function correlateTerminalLoopTask(event) {
+  const rawContext = normalizeObject(event?.task_context || event?.taskContext);
+  if (String(rawContext.openclaw_loop_task_id || '').trim()) {
+    return event;
+  }
+  prunePendingLoopTasks();
+  let entry = null;
+  for (const key of loopCorrelationKeys(event)) {
+    entry = pendingLoopTasks.get(key) || null;
+    if (entry) {
+      break;
+    }
+  }
+  if (!entry) {
+    return event;
+  }
+  const taskContext = { ...rawContext, openclaw_loop_task_id: entry.taskId };
+  return { ...event, task_context: taskContext, taskContext };
+}
+
+function forgetTerminalLoopTask(event, result) {
+  const status = String(result?.loop_task?.status || '').trim().toLowerCase();
+  if (!['done', 'failed', 'rolled_back'].includes(status)) {
+    return;
+  }
+  const taskId = String(result?.loop_task?.task_id || result?.loop_task?.id || '').trim();
+  for (const [key, entry] of pendingLoopTasks.entries()) {
+    if ((taskId && entry?.taskId === taskId) || loopCorrelationKeys(event).includes(key)) {
+      pendingLoopTasks.delete(key);
     }
   }
 }
@@ -1000,6 +1077,7 @@ module.exports.default = {
           ? safeInvokeBridge(api, normalizeEventPayload('before_prompt_build', event))
           : null;
         const payload = safeInvokeHook(api, 'before_prompt_build', event);
+        rememberLoopTask(event, payload);
         const bridgeContext = buildBridgePrependContext(bridgePayload);
         if (!payload) {
           return bridgeContext ? { prependContext: bridgeContext } : {};
@@ -1016,8 +1094,18 @@ module.exports.default = {
     } else {
       api?.logger?.info?.('eimemory-bridge: before_prompt_build disabled; set EIMEMORY_ENABLE_PROMPT_INJECTION=true and allowPromptInjection=true to enable recall injection');
     }
-    registerTypedHookOnce(api, 'agent_end', async (event) => safeInvokeHook(api, 'agent_end', event) || {});
-    registerTypedHookOnce(api, 'session_end', async (event) => safeInvokeHook(api, 'session_end', event) || {});
+    registerTypedHookOnce(api, 'agent_end', async (event) => {
+      const correlatedEvent = correlateTerminalLoopTask(event);
+      const result = safeInvokeHook(api, 'agent_end', correlatedEvent) || {};
+      forgetTerminalLoopTask(correlatedEvent, result);
+      return result;
+    });
+    registerTypedHookOnce(api, 'session_end', async (event) => {
+      const correlatedEvent = correlateTerminalLoopTask(event);
+      const result = safeInvokeHook(api, 'session_end', correlatedEvent) || {};
+      forgetTerminalLoopTask(correlatedEvent, result);
+      return result;
+    });
     registerTypedHookOnce(api, 'before_agent_finalize', async (event) => completionGateRevision(event));
     registerTypedHookOnce(api, 'before_tool_call', async (event) => completionGateBeforeToolCall(event));
   },

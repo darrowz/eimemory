@@ -1,0 +1,13 @@
+[Unit]
+Description=Run OpenClaw loop watchdog every 5 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Unit=openclaw-loop-watch.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+

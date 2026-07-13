@@ -250,6 +250,10 @@ _retire_system_rpc_unit
 if [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ] && command -v systemctl >/dev/null 2>&1; then
   _run_as_service_user mkdir -p "$USER_SYSTEMD_DIR"
   _run_as_service_user mkdir -p "$USER_SYSTEMD_DIR/openclaw-gateway.service.d"
+  _install_as_service_user 0644 \
+    "$RELEASE_DIR/deploy/systemd/openclaw-loop-watch.service" "$USER_SYSTEMD_DIR/openclaw-loop-watch.service"
+  _install_as_service_user 0644 \
+    "$RELEASE_DIR/deploy/systemd/openclaw-loop-watch.timer" "$USER_SYSTEMD_DIR/openclaw-loop-watch.timer"
   SERVICE_UID="$(id -u "$SERVICE_USER" 2>/dev/null || id -u)"
   "$PYTHON_BIN" -I -B "$RELEASE_DIR/deploy/install_managed_systemd_dropin.py" \
     --source "$RELEASE_DIR/deploy/systemd/openclaw-gateway-eimemory.conf" \
@@ -274,6 +278,7 @@ if [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ] && command -v systemctl >/dev/null 2
   else
     systemctl --user daemon-reload
     systemctl --user enable eimemory-rpc.service
+    systemctl --user enable --now openclaw-loop-watch.timer
   fi
 fi
 _install_openclaw_loop_compat_script

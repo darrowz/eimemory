@@ -354,6 +354,19 @@ def test_immutable_release_installer_deploys_python_runtime_protection_dropins()
         assert unit in discovery
 
 
+def test_immutable_release_installer_manages_truthful_loop_watchdog_unit() -> None:
+    script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
+    service = Path("deploy/systemd/openclaw-loop-watch.service").read_text(encoding="utf-8")
+    timer = Path("deploy/systemd/openclaw-loop-watch.timer").read_text(encoding="utf-8")
+
+    assert "openclaw-loop-watch.service" in script
+    assert "openclaw-loop-watch.timer" in script
+    assert "systemctl --user enable --now openclaw-loop-watch.timer" in script
+    assert "openclaw_loop.py watch" in service
+    assert "|| true" not in service
+    assert "OnUnitActiveSec=5min" in timer
+
+
 def test_managed_systemd_dropin_installer_uses_posix_directory_fds() -> None:
     helper = Path("deploy/install_managed_systemd_dropin.py").read_text(encoding="utf-8")
 

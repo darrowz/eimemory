@@ -8,18 +8,20 @@ from __future__ import annotations
 
 import argparse
 import calendar
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
+import gzip
 import hashlib
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterable, Iterator
 from urllib.error import URLError
 from urllib import request
 from urllib.request import urlopen
@@ -27,6 +29,16 @@ from urllib.request import urlopen
 SCHEMA_VERSION = "openclaw.loop.v1"
 TERMINAL_STATUSES = {"done", "failed", "rolled_back"}
 ACTIVE_STATUSES = {"planned", "running", "waiting", "verifying"}
+WATCH_STALE_SAMPLE_LIMIT = 20
+MAX_LEDGER_TEXT_CHARS = 4096
+LEDGER_NAMES = (
+    "actions.jsonl",
+    "lesson_candidates.jsonl",
+    "reports.jsonl",
+    "tasks.jsonl",
+    "verifications.jsonl",
+    "watch.jsonl",
+)
 _TEST_NOW: float | None = None
 
 
@@ -225,6 +237,45 @@ def latest_by_id(name: str, id_field: str) -> dict[str, dict[str, Any]]:
     return latest
 
 
+def _bounded_text(value: Any, *, max_chars: int = MAX_LEDGER_TEXT_CHARS) -> str:
+    text = str(value or "")
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + f"...[truncated {len(text) - max_chars} chars]"
+
+
+def _stale_summary(stale: list[dict[str, Any]], *, sample_limit: int = WATCH_STALE_SAMPLE_LIMIT) -> dict[str, Any]:
+    reason_counts: dict[str, int] = {}
+    task_ids: list[str] = []
+    for item in stale:
+        reason = str(item.get("stale_reason") or "unknown")
+        reason_counts[reason] = reason_counts.get(reason, 0) + 1
+        task_id = str(item.get("task_id") or "")
+        if task_id and len(task_ids) < sample_limit:
+            task_ids.append(task_id)
+    return {
+        "count": len(stale),
+        "reason_counts": dict(sorted(reason_counts.items())),
+        "sample_task_ids": task_ids,
+        "sample_truncated": len(stale) > len(task_ids),
+    }
+
+
+def _bounded_checks(checks: dict[str, Any]) -> dict[str, Any]:
+    bounded = dict(checks)
+    stale = bounded.pop("stale_tasks", None)
+    if isinstance(stale, list):
+        bounded["stale_summary"] = _stale_summary([item for item in stale if isinstance(item, dict)])
+    serialized = json.dumps(bounded, ensure_ascii=False, sort_keys=True, default=str)
+    if len(serialized) <= 8192:
+        return bounded
+    return {
+        "summary": "checks_truncated",
+        "check_keys": sorted(str(key) for key in bounded),
+        "serialized_chars": len(serialized),
+    }
+
+
 def load_tasks() -> list[dict[str, Any]]:
     return list(latest_by_id("tasks.jsonl", "task_id").values())
 
@@ -377,14 +428,15 @@ def record_lesson_candidate(
     failure_reason: str,
     next_action: str = "repair",
 ) -> dict[str, Any]:
+    bounded_checks = _bounded_checks(checks)
     lesson = {
         "lesson_candidate_id": new_id("lesson"),
         "task_id": task_id,
         "verification_id": verification_id,
         "source": "openclaw_loop.verification_failed",
         "verifier": verifier,
-        "checks": checks,
-        "failure_reason": failure_reason,
+        "checks": bounded_checks,
+        "failure_reason": _bounded_text(failure_reason),
         "next_action": next_action,
         "created_at": iso_ts(),
     }
@@ -402,14 +454,15 @@ def record_verification(
     failure_reason: str = "",
     next_action: str = "report_done",
 ) -> dict[str, Any]:
+    bounded_checks = _bounded_checks(checks)
     verification = {
         "verification_id": new_id("verification"),
         "task_id": task_id,
         "verifier": verifier,
-        "checks": checks,
+        "checks": bounded_checks,
         "passed": bool(passed),
         "evidence_refs": evidence_refs or [],
-        "failure_reason": failure_reason,
+        "failure_reason": _bounded_text(failure_reason),
         "next_action": next_action,
         "created_at": iso_ts(),
     }
@@ -419,7 +472,7 @@ def record_verification(
             task_id,
             verification_id=verification["verification_id"],
             verifier=verifier,
-            checks=checks,
+            checks=bounded_checks,
             failure_reason=failure_reason,
             next_action=next_action,
         )
@@ -539,6 +592,175 @@ def find_stale_tasks(*, now: float | None = None, older_than_seconds: int = 1200
             item["stale_reason"] = "updated_too_old"
             stale.append(item)
     return stale
+
+
+def reconcile_stale_tasks(*, apply: bool = False, limit: int | None = None) -> dict[str, Any]:
+    stale = sorted(find_stale_tasks(), key=lambda item: str(item.get("task_id") or ""))
+    selected = stale if limit is None else stale[: max(0, int(limit))]
+    summary = _stale_summary(stale)
+    reconciled: list[str] = []
+    if apply:
+        for item in selected:
+            task_id = str(item.get("task_id") or "")
+            if not task_id:
+                continue
+            stale_reason = str(item.get("stale_reason") or "unknown")
+            reconciled_task = dict(item)
+            reconciled_task.pop("stale_reason", None)
+            reconciled_task.update(
+                {
+                    "status": "failed",
+                    "current_step": "failed",
+                    "last_action": "stale task reconciled",
+                    "failure_class": f"{stale_reason}_reconciled",
+                    "blocker": "",
+                    "lease_expires_at": 0,
+                    "next_check_at": "",
+                    "result_summary": f"stale task reconciled after {stale_reason}",
+                    "updated_at": iso_ts(),
+                }
+            )
+            append_jsonl("tasks.jsonl", reconciled_task)
+            reconciled.append(task_id)
+    return {
+        "ok": True,
+        "applied": bool(apply),
+        "stale_count": len(stale),
+        "selected_count": len(selected),
+        "reconciled_count": len(reconciled),
+        "reconciled_task_ids": reconciled[:WATCH_STALE_SAMPLE_LIMIT],
+        "stale_summary": summary,
+    }
+
+
+def _compact_record(name: str, row: dict[str, Any]) -> dict[str, Any]:
+    compacted = dict(row)
+    if isinstance(compacted.get("checks"), dict):
+        compacted["checks"] = _bounded_checks(compacted["checks"])
+    for field in ("failure_reason", "objective", "result_summary", "summary", "blocker"):
+        if field in compacted:
+            compacted[field] = _bounded_text(compacted.get(field))
+    codes = compacted.get("codes")
+    if isinstance(codes, list):
+        compacted["codes"] = list(dict.fromkeys(str(code) for code in codes))[:100]
+    stale_ids = compacted.get("stale_task_ids")
+    if isinstance(stale_ids, list):
+        compacted.setdefault("stale_count", len(stale_ids))
+        compacted["stale_task_ids"] = [str(task_id) for task_id in stale_ids[:WATCH_STALE_SAMPLE_LIMIT]]
+    return compacted
+
+
+def _iter_jsonl_for_compaction(name: str) -> Iterator[dict[str, Any]]:
+    path = path_for(name)
+    with path.open("rb") as handle:
+        for line_number, raw in enumerate(handle, start=1):
+            try:
+                line = raw.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                _record_corrupt_line(
+                    name,
+                    line_number=line_number,
+                    raw=raw[:1000].decode("utf-8", errors="replace"),
+                    error=str(exc),
+                )
+                continue
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError as exc:
+                _record_corrupt_line(name, line_number=line_number, raw=line, error=str(exc))
+                continue
+            if isinstance(row, dict):
+                yield row
+
+
+def _write_jsonl_atomic(name: str, rows: Iterable[dict[str, Any]]) -> int:
+    path = path_for(name)
+    temp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    mode = (path.stat().st_mode & 0o777) if path.exists() else 0o660
+    count = 0
+    try:
+        with temp_path.open("w", encoding="utf-8", newline="\n") as handle:
+            for row in rows:
+                handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+                count += 1
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temp_path, mode)
+        os.replace(temp_path, path)
+    finally:
+        temp_path.unlink(missing_ok=True)
+    return count
+
+
+def compact_ledgers(*, archive_dir: str | Path | None = None) -> dict[str, Any]:
+    root = data_dir()
+    archive_root = Path(archive_dir) if archive_dir is not None else root / "archives"
+    if archive_root.exists() and archive_root.is_symlink():
+        raise RuntimeError("archive directory must not be a symlink")
+    archive_root.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(now_epoch()))
+    archive_path = archive_root / f"openclaw-loop-{stamp}-{uuid.uuid4().hex[:8]}.jsonl.gz"
+    archive_temp = archive_path.with_name(f".{archive_path.name}.tmp")
+    existing_names = [name for name in LEDGER_NAMES if path_for(name).exists()]
+    original_bytes = sum(path_for(name).stat().st_size for name in existing_names)
+    rows_before: dict[str, int] = {}
+    rows_after: dict[str, int] = {}
+
+    with ExitStack() as stack:
+        for name in existing_names:
+            stack.enter_context(_append_lock(name))
+        reset_jsonl_cache_for_tests()
+        try:
+            with gzip.open(archive_temp, "wb") as archive:
+                for name in existing_names:
+                    archive.write(f"# file={name}\n".encode("utf-8"))
+                    with path_for(name).open("rb") as source:
+                        shutil.copyfileobj(source, archive, length=1024 * 1024)
+                    archive.write(b"\n")
+            os.replace(archive_temp, archive_path)
+
+            for name in existing_names:
+                if name == "tasks.jsonl":
+                    latest: dict[str, dict[str, Any]] = {}
+                    before_count = 0
+                    for row in _iter_jsonl_for_compaction(name):
+                        before_count += 1
+                        task_id = str(row.get("task_id") or "")
+                        if task_id:
+                            latest[task_id] = row
+                    rows_before[name] = before_count
+                    rows_after[name] = _write_jsonl_atomic(
+                        name,
+                        (_compact_record(name, row) for row in latest.values()),
+                    )
+                    continue
+
+                before_count = 0
+
+                def compacted_rows() -> Iterator[dict[str, Any]]:
+                    nonlocal before_count
+                    for row in _iter_jsonl_for_compaction(name):
+                        before_count += 1
+                        yield _compact_record(name, row)
+
+                rows_after[name] = _write_jsonl_atomic(name, compacted_rows())
+                rows_before[name] = before_count
+        finally:
+            archive_temp.unlink(missing_ok=True)
+            reset_jsonl_cache_for_tests()
+
+    compacted_bytes = sum(path_for(name).stat().st_size for name in existing_names)
+    return {
+        "ok": True,
+        "archive_path": str(archive_path),
+        "original_bytes": original_bytes,
+        "compacted_bytes": compacted_bytes,
+        "reclaimed_bytes": max(0, original_bytes - compacted_bytes),
+        "rows_before": rows_before,
+        "rows_after": rows_after,
+    }
 
 
 def _hash_secret(value: str) -> str:
@@ -805,19 +1027,28 @@ def run_deploy_verify(
 def run_watch(*, config_path: str | Path | None = None, run_live_checks: bool = True) -> dict[str, Any]:
     drift = check_config_drift(config_path=config_path, run_live_checks=run_live_checks)
     stale = find_stale_tasks()
+    stale_summary = _stale_summary(stale)
     ok = bool(drift.get("ok")) and not stale
     watch = {
         "watch_id": new_id("watch"),
         "created_at": iso_ts(),
         "ok": ok,
         "drift_codes": drift.get("codes") or [],
-        "stale_task_ids": [item.get("task_id") for item in stale],
+        "stale_count": stale_summary["count"],
+        "stale_reason_counts": stale_summary["reason_counts"],
+        "stale_task_ids": stale_summary["sample_task_ids"],
+        "stale_sample_truncated": stale_summary["sample_truncated"],
     }
     append_jsonl("watch.jsonl", watch)
     if ok:
         return {"ok": True, "watch_id": watch["watch_id"], "tasks_created": 0, "drift": drift, "stale_count": 0}
 
-    codes = list(drift.get("codes") or []) + [f"stale:{item.get('stale_reason', 'unknown')}" for item in stale]
+    codes = list(
+        dict.fromkeys(
+            list(drift.get("codes") or [])
+            + [f"stale:{reason}" for reason in stale_summary["reason_counts"]]
+        )
+    )
     dedupe = "loop-watch:" + hashlib.sha256("|".join(sorted(codes)).encode("utf-8")).hexdigest()[:16]
     task = create_task(
         title="OpenClaw loop watchdog finding",
@@ -833,7 +1064,7 @@ def run_watch(*, config_path: str | Path | None = None, run_live_checks: bool = 
     record_verification(
         task_id,
         verifier="openclaw_loop_watch",
-        checks={"drift": drift, "stale_tasks": stale},
+        checks={"drift": drift, "stale_summary": stale_summary},
         passed=False,
         evidence_refs=[f"watch:{watch['watch_id']}"],
         failure_reason=",".join(codes),
@@ -898,6 +1129,11 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("list")
     sub.add_parser("stale")
+    p_reconcile = sub.add_parser("reconcile-stale")
+    p_reconcile.add_argument("--apply", action="store_true")
+    p_reconcile.add_argument("--limit", type=int)
+    p_compact = sub.add_parser("compact")
+    p_compact.add_argument("--archive-dir")
     p_doctor = sub.add_parser("doctor")
     p_doctor.add_argument("--no-live", action="store_true")
     p_doctor.add_argument("--config")
@@ -933,6 +1169,10 @@ def main(argv: list[str] | None = None) -> int:
         return emit(load_tasks())
     if args.cmd == "stale":
         return emit(find_stale_tasks())
+    if args.cmd == "reconcile-stale":
+        return emit(reconcile_stale_tasks(apply=args.apply, limit=args.limit))
+    if args.cmd == "compact":
+        return emit(compact_ledgers(archive_dir=args.archive_dir))
     if args.cmd == "doctor":
         result = check_config_drift(config_path=args.config, run_live_checks=not args.no_live)
         emit(result)

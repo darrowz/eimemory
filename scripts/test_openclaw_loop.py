@@ -4,6 +4,7 @@ import sys
 import tempfile
 import time
 import unittest
+import gzip
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -172,6 +173,108 @@ class OpenClawLoopTests(unittest.TestCase):
         self.assertEqual(first["task_id"], second["task_id"])
         self.assertEqual(second["tasks_created"], 0)
         self.assertEqual(len(loop.load_tasks()), 1)
+
+    def test_watch_records_bounded_stale_summary_instead_of_full_tasks(self):
+        config = self.root / "openclaw.json"
+        config.write_text(json.dumps({"gateway": {}}), encoding="utf-8")
+        for index in range(30):
+            task = loop.create_task(title=f"stale-{index}", objective="expire")
+            loop.record_heartbeat(task["task_id"], lease_seconds=1, progress="started")
+        loop_impl._TEST_NOW = loop.now_epoch() + 2
+
+        result = loop.run_watch(config_path=config, run_live_checks=False)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["stale_count"], 30)
+        self.assertEqual(result["codes"], ["stale:lease_expired"])
+        watch = loop.read_jsonl("watch.jsonl")[-1]
+        self.assertEqual(watch["stale_count"], 30)
+        self.assertEqual(watch["stale_reason_counts"], {"lease_expired": 30})
+        self.assertLessEqual(len(watch["stale_task_ids"]), 20)
+        verification = loop.read_jsonl("verifications.jsonl")[-1]
+        self.assertNotIn("stale_tasks", verification["checks"])
+        self.assertEqual(verification["checks"]["stale_summary"]["count"], 30)
+        lesson = loop.read_jsonl("lesson_candidates.jsonl")[-1]
+        self.assertLess(len(json.dumps(lesson)), 16_384)
+
+    def test_reconcile_stale_is_dry_run_by_default_and_apply_closes_tasks(self):
+        task_ids = []
+        for index in range(2):
+            task = loop.create_task(title=f"stale-{index}", objective="expire")
+            task_ids.append(task["task_id"])
+            loop.record_heartbeat(task["task_id"], lease_seconds=1, progress="started")
+        loop_impl._TEST_NOW = loop.now_epoch() + 2
+
+        preview = loop.reconcile_stale_tasks(apply=False)
+
+        self.assertFalse(preview["applied"])
+        self.assertEqual(preview["stale_count"], 2)
+        self.assertTrue(all(loop.get_task(task_id)["status"] == "running" for task_id in task_ids))
+
+        applied = loop.reconcile_stale_tasks(apply=True)
+
+        self.assertTrue(applied["applied"])
+        self.assertEqual(applied["reconciled_count"], 2)
+        self.assertEqual(loop.find_stale_tasks(), [])
+        for task_id in task_ids:
+            task = loop.get_task(task_id)
+            self.assertEqual(task["status"], "failed")
+            self.assertEqual(task["failure_class"], "lease_expired_reconciled")
+
+    def test_compact_ledgers_archives_original_and_bounds_oversized_checks(self):
+        task = loop.create_task(title="large", objective="compact")
+        loop.update_task(task["task_id"], status="running")
+        loop.append_jsonl(
+            "verifications.jsonl",
+            {
+                "verification_id": "legacy-large",
+                "task_id": task["task_id"],
+                "verifier": "watch",
+                "checks": {"stale_tasks": [{"task_id": f"task-{index}", "payload": "x" * 2000} for index in range(40)]},
+                "passed": False,
+                "failure_reason": "stale," * 20_000,
+                "created_at": loop.iso_ts(),
+            },
+        )
+        archive_dir = self.root / "archives"
+
+        result = loop.compact_ledgers(archive_dir=archive_dir)
+
+        self.assertTrue(result["ok"])
+        archive = Path(result["archive_path"])
+        self.assertTrue(archive.exists())
+        self.assertEqual(archive.suffix, ".gz")
+        with gzip.open(archive, "rt", encoding="utf-8") as handle:
+            self.assertIn('"stale_tasks"', handle.read())
+        self.assertEqual(len(loop.read_jsonl("tasks.jsonl")), 1)
+        compacted = loop.read_jsonl("verifications.jsonl")[-1]
+        self.assertNotIn("stale_tasks", compacted["checks"])
+        self.assertLess(len(json.dumps(compacted)), 16_384)
+
+    def test_compact_ledgers_streams_non_task_files_without_read_jsonl(self):
+        loop.append_jsonl(
+            "verifications.jsonl",
+            {
+                "verification_id": "legacy-stream",
+                "task_id": "task-stream",
+                "checks": {"stale_tasks": [{"task_id": "stale"}]},
+            },
+        )
+        original_read_jsonl = loop_impl.read_jsonl
+
+        def guarded_read_jsonl(name):
+            if name != "tasks.jsonl":
+                raise AssertionError(f"non-task ledger loaded eagerly: {name}")
+            return original_read_jsonl(name)
+
+        loop_impl.read_jsonl = guarded_read_jsonl
+        try:
+            result = loop.compact_ledgers(archive_dir=self.root / "archives")
+        finally:
+            loop_impl.read_jsonl = original_read_jsonl
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["rows_after"]["verifications.jsonl"], 1)
 
     def test_read_jsonl_skips_corrupt_lines_and_records_quarantine(self):
         path = loop.path_for("tasks.jsonl")

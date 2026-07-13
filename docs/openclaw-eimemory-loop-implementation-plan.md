@@ -1004,4 +1004,4 @@ systemctl --user status openclaw-loop-watch.timer --no-pager
 
 - 正常时写 `watch.jsonl`，证明系统持续活着。
 - 发现 config drift / stale task 时写 blocked task，附带 action、failed verification、report。
-- systemd service 使用 `watch || true`，避免“发现问题”被误判成 watchdog 自身崩溃；真实故障以 ledger/report 为准。
+- systemd service 直接执行 `watch`；发现 drift 或 stale task 时返回非零，使 systemd 与监控真实反映业务闭环降级，同时在 ledger/report 保留聚合证据。
