@@ -1008,6 +1008,33 @@ process.stdout.write(JSON.stringify(names));
     ]
 
 
+def test_openclaw_js_bridge_gives_terminal_hooks_a_longer_default_timeout() -> None:
+    script = """
+const childProcess = require('node:child_process');
+const calls = [];
+childProcess.spawnSync = (_command, args, options) => {
+  calls.push({ hook: args[args.length - 1], timeout: options.timeout });
+  return { status: 0, stdout: '{}', stderr: '' };
+};
+const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
+const handlers = {};
+plugin.register({ hooks: { on(name, handler) { handlers[name] = handler; } } });
+Promise.resolve()
+  .then(() => handlers.message_received({ content: 'remember this' }))
+  .then(() => handlers.agent_end({ success: true, messages: [] }))
+  .then(() => handlers.session_end({ success: true, messages: [] }))
+  .then(() => process.stdout.write(JSON.stringify(calls)))
+  .catch((error) => { console.error(error && error.stack ? error.stack : String(error)); process.exit(1); });
+""".strip()
+    result = subprocess.run(["node", "-e", script], cwd=Path.cwd(), capture_output=True, text=True, check=True)
+
+    assert json.loads(result.stdout) == [
+        {"hook": "message_received", "timeout": 8000},
+        {"hook": "agent_end", "timeout": 30000},
+        {"hook": "session_end", "timeout": 30000},
+    ]
+
+
 def test_openclaw_js_bridge_registers_before_prompt_build_only_when_enabled() -> None:
     script = """
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;

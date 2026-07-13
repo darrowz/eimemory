@@ -13,6 +13,7 @@ const DEFAULT_RECALL_BUDGET_MS = 800;
 const DEFAULT_FAST_CANDIDATE_LIMIT = 24;
 const DEFAULT_HOOK_CACHE_TTL_MS = 10000;
 const DEFAULT_HOOK_TIMEOUT_MS = 8000;
+const DEFAULT_TERMINAL_HOOK_TIMEOUT_MS = 30000;
 const DEFAULT_BRIDGE_TIMEOUT_MS = 8000;
 const LOOP_TASK_CORRELATION_TTL_MS = 2 * 60 * 60 * 1000;
 const COMPLETION_GATE_RETRY_KEY = 'eimemory-completion-gate-v1';
@@ -681,7 +682,7 @@ function invokeHook(api, hook, event) {
   const result = spawnSync(command[0], [...command.slice(1), hook], {
     input: JSON.stringify(payload),
     encoding: 'utf-8',
-    timeout: configuredHookTimeout(api, hook, DEFAULT_HOOK_TIMEOUT_MS),
+    timeout: configuredHookTimeout(api, hook, defaultHookTimeoutMs(hook)),
   });
   if (result.error) {
     throw result.error;
@@ -875,6 +876,12 @@ function completionGateBeforeToolCall(event) {
 function positiveIntValue(value, fallback) {
   const parsed = Number(value || 0);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function defaultHookTimeoutMs(hook) {
+  return hook === 'agent_end' || hook === 'session_end'
+    ? DEFAULT_TERMINAL_HOOK_TIMEOUT_MS
+    : DEFAULT_HOOK_TIMEOUT_MS;
 }
 
 function readOpenClawBridgeHooksConfig() {
