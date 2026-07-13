@@ -780,13 +780,25 @@ def check_config_drift(*, config_path: str | Path | None = None, run_live_checks
         return {"ok": False, "codes": ["openclaw_config_missing"], "findings": [{"code": "openclaw_config_missing", "path": str(path)}]}
     data = json.loads(path.read_text(encoding="utf-8"))
     gateway = data.get("gateway") or {}
-    auth_token = str(((gateway.get("auth") or {}).get("token")) or "")
+    auth_token_value = (gateway.get("auth") or {}).get("token")
     remote = gateway.get("remote") or {}
-    remote_token = str(remote.get("token") or "")
+    remote_token_value = remote.get("token")
     remote_url = str(remote.get("url") or "")
-    if auth_token and remote_token and auth_token != remote_token:
+    if (
+        isinstance(auth_token_value, str)
+        and isinstance(remote_token_value, str)
+        and auth_token_value
+        and remote_token_value
+        and auth_token_value != remote_token_value
+    ):
         codes.append("gateway_token_mismatch")
-        findings.append({"code": "gateway_token_mismatch", "auth_token_hash": _hash_secret(auth_token), "remote_token_hash": _hash_secret(remote_token)})
+        findings.append(
+            {
+                "code": "gateway_token_mismatch",
+                "auth_token_hash": _hash_secret(auth_token_value),
+                "remote_token_hash": _hash_secret(remote_token_value),
+            }
+        )
     if "127.0.0.1" in remote_url or "localhost" in remote_url:
         codes.append("gateway_remote_loopback")
         findings.append({"code": "gateway_remote_loopback", "remote_url": remote_url})

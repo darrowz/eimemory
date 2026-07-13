@@ -61,6 +61,28 @@ class OpenClawLoopTests(unittest.TestCase):
         self.assertIn("gateway_token_mismatch", result["codes"])
         self.assertIn("gateway_remote_loopback", result["codes"])
 
+    def test_config_drift_defers_structured_secret_refs_to_runtime_validation(self):
+        config = self.root / "openclaw.json"
+        config.write_text(
+            json.dumps(
+                {
+                    "gateway": {
+                        "auth": {"mode": "token", "token": {"source": "env", "id": "GATEWAY_AUTH_TOKEN"}},
+                        "remote": {
+                            "url": "ws://100.105.189.120:18789",
+                            "token": {"source": "env", "id": "GATEWAY_REMOTE_TOKEN"},
+                        },
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        result = loop.check_config_drift(config_path=config, run_live_checks=False)
+
+        self.assertTrue(result["ok"])
+        self.assertNotIn("gateway_token_mismatch", result["codes"])
+
     def test_config_drift_requires_loopback_gateway_health(self):
         config = self.root / "openclaw.json"
         config.write_text(json.dumps({"gateway": {}}), encoding="utf-8")

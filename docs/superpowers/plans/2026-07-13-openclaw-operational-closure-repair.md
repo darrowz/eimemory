@@ -36,7 +36,7 @@
 ## Task 5: Release And Deploy
 
 - Advance `pyproject.toml`, `eimemory/version.py`, and systemd bytecode-cache
-  versions to `1.9.26`.
+  versions to `1.9.27`.
 - Run focused tests, `compileall`, and `git diff --check`.
 - Commit and push `master`, then fast-forward `/dev-project/eimemory` on honxin.
 - Deploy the exact commit with the immutable installer.
@@ -48,4 +48,3 @@
   compact with archive, then restart the managed timer and gateway.
 - Run config validation, direct gateway/channel checks, cron smoke, loop health,
   ledger-size checks, and deployment identity checks.
-
