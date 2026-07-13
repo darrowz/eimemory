@@ -12,6 +12,16 @@ import sys
 
 AFFECTED_VERSION = re.compile(r"^2026\.7\.1-beta\.[2-6]$")
 RECOVERY_METHODS = ("message.action", "agent")
+AGENT_TOOL_MARKERS = (
+    "function createSessionsHistoryTool",
+    "function createSessionsListTool",
+    "function createSessionsSendTool",
+)
+AGENT_TOOL_GATEWAY_DEFAULT = "const gatewayCall = opts?.callGateway ?? callGateway;"
+AGENT_TOOL_GATEWAY_CLI = (
+    'const gatewayCall = opts?.callGateway ?? ((request) => callGateway({ '
+    '...request, clientName: "cli", mode: "cli" }));'
+)
 
 
 class PatchError(RuntimeError):
@@ -62,6 +72,21 @@ def _patch_runtime(path: Path) -> bool:
     return changed
 
 
+def _patch_agent_tools(path: Path) -> bool:
+    text = path.read_text(encoding="utf-8")
+    original_count = text.count(AGENT_TOOL_GATEWAY_DEFAULT)
+    patched_count = text.count(AGENT_TOOL_GATEWAY_CLI)
+    expected_count = len(AGENT_TOOL_MARKERS)
+    if original_count == 0 and patched_count == expected_count:
+        return False
+    if original_count != expected_count or patched_count != 0:
+        raise PatchError(
+            f"expected {expected_count} unpatched agent tool gateway defaults in {path.name}"
+        )
+    _atomic_write(path, text.replace(AGENT_TOOL_GATEWAY_DEFAULT, AGENT_TOOL_GATEWAY_CLI))
+    return True
+
+
 def patch_openclaw(openclaw_root: Path) -> dict[str, str]:
     if openclaw_root.is_symlink():
         raise PatchError("OpenClaw root must not be a symlink")
@@ -85,16 +110,28 @@ def patch_openclaw(openclaw_root: Path) -> dict[str, str]:
     if len(candidates) != 1:
         raise PatchError(f"expected one recovery implementation, found {len(candidates)}")
 
+    agent_tool_candidates: list[Path] = []
+    for candidate in sorted(dist.glob("openclaw-tools-*.js")):
+        if candidate.is_symlink() or candidate.resolve(strict=True).parent != dist:
+            raise PatchError(f"unsafe agent tools module path: {candidate.name}")
+        candidate_text = candidate.read_text(encoding="utf-8")
+        if all(marker in candidate_text for marker in AGENT_TOOL_MARKERS):
+            agent_tool_candidates.append(candidate)
+    if len(agent_tool_candidates) != 1:
+        raise PatchError(f"expected one agent tools implementation, found {len(agent_tool_candidates)}")
+
     changed = _patch_runtime(candidates[0])
+    agent_tools_changed = _patch_agent_tools(agent_tool_candidates[0])
     return {
-        "status": "patched" if changed else "already_patched",
+        "status": "patched" if changed or agent_tools_changed else "already_patched",
         "version": version,
         "module": candidates[0].name,
+        "agent_tools_module": agent_tool_candidates[0].name,
     }
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Patch affected OpenClaw restart recovery gateway scope handling.")
+    parser = argparse.ArgumentParser(description="Patch affected OpenClaw internal gateway scope handling.")
     parser.add_argument("--openclaw-root", required=True, type=Path)
     args = parser.parse_args(argv)
     try:

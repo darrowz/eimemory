@@ -41,6 +41,25 @@ async function resumeMainSession() {
         + "\n",
         encoding="utf-8",
     )
+    tools_runtime = dist / "openclaw-tools-test.js"
+    tools_runtime.write_text(
+        """
+function createSessionsHistoryTool(opts) {
+    const gatewayCall = opts?.callGateway ?? callGateway;
+    return gatewayCall({ method: "chat.history", params: {} });
+}
+function createSessionsListTool(opts) {
+    const gatewayCall = opts?.callGateway ?? callGateway;
+    return gatewayCall({ method: "sessions.list", params: {} });
+}
+function createSessionsSendTool(opts) {
+    const gatewayCall = opts?.callGateway ?? callGateway;
+    return gatewayCall({ method: "sessions.resolve", params: {} });
+}
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
     script = Path("deploy/patch_openclaw_restart_recovery_scope.py")
 
     first = subprocess.run(
@@ -67,6 +86,10 @@ async function resumeMainSession() {
     patched = runtime.read_text(encoding="utf-8")
     assert patched.count('clientName: "cli"') == 2
     assert patched.count('mode: "cli"') == 2
+    patched_tools = tools_runtime.read_text(encoding="utf-8")
+    assert patched_tools.count('clientName: "cli"') == 3
+    assert patched_tools.count('mode: "cli"') == 3
+    assert "opts?.callGateway ?? callGateway" not in patched_tools
     dropin = Path("deploy/systemd/openclaw-gateway-eimemory.conf").read_text(encoding="utf-8")
     assert "ExecStartPre=" in dropin
     assert "patch_openclaw_restart_recovery_scope.py" in dropin
