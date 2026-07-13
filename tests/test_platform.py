@@ -1083,6 +1083,43 @@ Promise.resolve()
     ]
 
 
+def test_openclaw_js_bridge_preserves_missing_and_explicit_verification_states(tmp_path) -> None:
+    hook_script = tmp_path / "echo-terminal-payload.js"
+    hook_script.write_text(
+        """
+const fs = require('node:fs');
+const payload = JSON.parse(fs.readFileSync(0, 'utf8') || '{}');
+process.stdout.write(JSON.stringify(payload));
+""".strip(),
+        encoding="utf-8",
+    )
+    script = """
+const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
+const handlers = {};
+plugin.register({ hooks: { on(name, handler) { handlers[name] = handler; } } });
+Promise.resolve()
+  .then(() => handlers.agent_end({ success: true, messages: [] }))
+  .then((missing) => handlers.agent_end({ success: true, verified: false, messages: [] })
+    .then((explicitFalse) => ({ missing: missing.outcome, explicitFalse: explicitFalse.outcome })))
+  .then((result) => process.stdout.write(JSON.stringify(result)))
+  .catch((error) => { console.error(error && error.stack ? error.stack : String(error)); process.exit(1); });
+""".strip()
+    env = os.environ.copy()
+    env["EIMEMORY_HOOK_COMMAND"] = f'node "{hook_script}"'
+    result = subprocess.run(
+        ["node", "-e", script],
+        cwd=Path.cwd(),
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    outcomes = json.loads(result.stdout)
+    assert "verified" not in outcomes["missing"]
+    assert outcomes["explicitFalse"]["verified"] is False
+
+
 def test_openclaw_js_bridge_registers_before_prompt_build_only_when_enabled() -> None:
     script = """
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;

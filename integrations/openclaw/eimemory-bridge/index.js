@@ -330,6 +330,7 @@ function normalizeEventPayload(hook, event) {
   const rawQuery = String(event?.query || event?.prompt || event?.userPhrase || event?.user_phrase || '');
   const taskContext = normalizeRecallContext(event?.task_context || event?.taskContext || {});
   const outcome = normalizeObject(event?.outcome);
+  const verifiedState = normalizeVerifiedState(event, outcome);
   return {
     session_id: normalizeSessionId(event),
     ...scope,
@@ -346,7 +347,7 @@ function normalizeEventPayload(hook, event) {
     outcome: {
       success: Object.prototype.hasOwnProperty.call(outcome, 'success') ? outcome.success !== false : event?.success !== false,
       notes: String(outcome.notes || outcome.reason || event?.error || ''),
-      verified: outcome.verified === true || event?.verified === true || event?.verification_status === 'verified',
+      ...(verifiedState.present ? { verified: verifiedState.value } : {}),
       verification: String(
         outcome.verification
         || outcome.verification_method
@@ -419,6 +420,36 @@ function normalizeObject(value) {
     return {};
   }
   return Object.assign({}, value);
+}
+
+function normalizeVerifiedState(event, outcome) {
+  const candidates = [
+    [outcome, 'verified'],
+    [outcome, 'is_verified'],
+    [outcome, 'isVerified'],
+    [event, 'verified'],
+    [event, 'is_verified'],
+    [event, 'isVerified'],
+    [event, 'verification_status'],
+  ];
+  for (const [container, key] of candidates) {
+    if (!container || !Object.prototype.hasOwnProperty.call(container, key)) {
+      continue;
+    }
+    const value = container[key];
+    if (key !== 'verification_status' || typeof value !== 'string') {
+      return { present: true, value };
+    }
+    const normalized = value.trim().toLowerCase();
+    if (['verified', 'passed', 'success', 'true'].includes(normalized)) {
+      return { present: true, value: true };
+    }
+    if (['unverified', 'failed', 'failure', 'false'].includes(normalized)) {
+      return { present: true, value: false };
+    }
+    return { present: true, value };
+  }
+  return { present: false, value: undefined };
 }
 
 function normalizeRecallContext(rawContext) {
