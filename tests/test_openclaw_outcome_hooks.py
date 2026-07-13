@@ -679,6 +679,24 @@ def test_openclaw_agent_end_assistant_text_failure_fails_closed(tmp_path, monkey
     assert traces[0]["outcome"]["status"] == "bad"
 
 
+def test_openclaw_terminal_failure_distinguishes_resolved_timeout_from_active_timeout(tmp_path) -> None:
+    hooks = OpenClawMemoryHooks(Runtime.create(root=tmp_path))
+
+    resolved = hooks._classify_terminal_failure(
+        event={},
+        outcome={"success": True, "verified": True},
+        result="OpenClaw timeout recovery completed; gateway health checks are passing.",
+    )
+    active = hooks._classify_terminal_failure(
+        event={},
+        outcome={"success": True, "verified": True},
+        result="OpenClaw timeout is still active; gateway health checks failed.",
+    )
+
+    assert resolved is None
+    assert active == {"failure_class": "timeout"}
+
+
 def test_openclaw_agent_end_terminal_failure_closes_loop_as_failed(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("OPENCLAW_LOOP_HOME", str(tmp_path / "loop"))
     runtime = Runtime.create(root=tmp_path / "runtime")

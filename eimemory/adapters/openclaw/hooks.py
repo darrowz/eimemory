@@ -2219,7 +2219,28 @@ class OpenClawMemoryHooks:
             return {"failure_class": status_failures[bridge_status_token]}
         if "rate limit" in diagnostic_text and "cooldown" in diagnostic_text:
             return {"failure_class": "rate_limit_cooldown"}
-        if "timeout" in diagnostic_text or "timed out" in diagnostic_text:
+        timeout_mentioned = "timeout" in diagnostic_text or "timed out" in diagnostic_text
+        timeout_resolved = bool(
+            re.search(
+                r"\b(?:timeout|timed out)\b.{0,80}\b(?:resolved|fixed|recovered|recovery|cleared|completed|healthy|passing)\b",
+                diagnostic_text,
+            )
+            or re.search(
+                r"\b(?:resolved|fixed|recovered|recovery|cleared)\b.{0,80}\b(?:timeout|timed out)\b",
+                diagnostic_text,
+            )
+        )
+        timeout_unresolved = bool(
+            re.search(
+                r"\b(?:timeout|timed out)\b.{0,80}\b(?:active|still|pending|unresolved|failed|failure|error|unavailable)\b",
+                diagnostic_text,
+            )
+            or re.search(
+                r"\b(?:failed|failure|error)\b.{0,80}\b(?:timeout|timed out)\b",
+                diagnostic_text,
+            )
+        )
+        if timeout_mentioned and (not timeout_resolved or timeout_unresolved):
             return {"failure_class": "timeout"}
         if (
             "context overflow" in diagnostic_text
