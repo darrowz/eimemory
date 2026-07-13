@@ -1,6 +1,6 @@
 [project]
 name = "eimemory"
-version = "1.9.35"
+version = "1.9.36"
 description = "Local-first memory and evolution runtime for OpenClaw and eibrain."
 readme = "README.md"
 requires-python = ">=3.11"

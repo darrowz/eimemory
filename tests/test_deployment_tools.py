@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 from pathlib import Path
 import shutil
@@ -11,6 +12,64 @@ import pytest
 
 from deploy.rotate_console_token import main as rotate_main
 from deploy.rotate_console_token import rotate_token
+
+
+def test_openclaw_restart_recovery_scope_patch_is_managed_and_idempotent(tmp_path) -> None:
+    openclaw_root = tmp_path / "openclaw"
+    dist = openclaw_root / "dist"
+    dist.mkdir(parents=True)
+    (openclaw_root / "package.json").write_text(
+        json.dumps({"version": "2026.7.1-beta.2"}),
+        encoding="utf-8",
+    )
+    runtime = dist / "main-session-restart-recovery-test.js"
+    runtime.write_text(
+        """
+async function sendUnresumableSessionNotice() {
+    await callGateway({
+        method: "message.action",
+        params: {},
+    });
+}
+async function resumeMainSession() {
+    await callGateway({
+        method: "agent",
+        params: {},
+    });
+}
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    script = Path("deploy/patch_openclaw_restart_recovery_scope.py")
+
+    first = subprocess.run(
+        [sys.executable, str(script), "--openclaw-root", str(openclaw_root)],
+        cwd=Path.cwd(),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    second = subprocess.run(
+        [sys.executable, str(script), "--openclaw-root", str(openclaw_root)],
+        cwd=Path.cwd(),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+
+    assert first.returncode == 0, first.stderr
+    assert json.loads(first.stdout)["status"] == "patched"
+    assert second.returncode == 0, second.stderr
+    assert json.loads(second.stdout)["status"] == "already_patched"
+    patched = runtime.read_text(encoding="utf-8")
+    assert patched.count('clientName: "cli"') == 2
+    assert patched.count('mode: "cli"') == 2
+    dropin = Path("deploy/systemd/openclaw-gateway-eimemory.conf").read_text(encoding="utf-8")
+    assert "ExecStartPre=" in dropin
+    assert "patch_openclaw_restart_recovery_scope.py" in dropin
 
 
 def test_rotate_console_token_updates_unit_file(tmp_path) -> None:
