@@ -84,7 +84,7 @@ def build_supervisor_contract(
     commands: tuple[str, ...] = SUPERVISOR_COMMANDS,
 ) -> dict[str, Any]:
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
-    latest = _latest_supervisor_records(runtime, scope=scope_ref)
+    latest = _latest_supervisor_records(runtime, scope=scope_ref, commands=commands)
     runs = {command: _summary_from_record(latest.get(command), command=command) for command in commands}
     if not latest:
         status = "unknown"
@@ -99,17 +99,51 @@ def build_supervisor_contract(
     return {"status": status, "runs": runs}
 
 
-def _latest_supervisor_records(runtime: Any, *, scope: ScopeRef) -> dict[str, RecordEnvelope]:
+def _latest_supervisor_records(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    commands: tuple[str, ...],
+) -> dict[str, RecordEnvelope]:
     latest: dict[str, RecordEnvelope] = {}
-    for record in runtime.store.list_records(kinds=["reflection"], scope=scope, limit=200):
-        meta = record.meta if isinstance(record.meta, dict) else {}
-        content = record.content if isinstance(record.content, dict) else {}
-        if str(meta.get("report_type") or content.get("report_type") or "") != "supervisor_run":
-            continue
-        command = str(meta.get("command") or content.get("command") or "")
-        if command and command not in latest:
-            latest[command] = record
+    wanted = {str(command) for command in commands if str(command)}
+    list_by_meta = getattr(runtime.store, "list_records_by_meta_value", None)
+    if callable(list_by_meta):
+        for command in wanted:
+            records = list_by_meta(
+                kinds=["reflection"],
+                scope=scope,
+                meta_key="command",
+                meta_value=command,
+                limit=1,
+            )
+            if records and _is_supervisor_record(records[0]):
+                latest[command] = records[0]
+
+    missing = wanted - latest.keys()
+    page_size = 200
+    offset = 0
+    while missing:
+        page = runtime.store.list_records(kinds=["reflection"], scope=scope, limit=page_size, offset=offset)
+        for record in page:
+            if not _is_supervisor_record(record):
+                continue
+            meta = record.meta if isinstance(record.meta, dict) else {}
+            content = record.content if isinstance(record.content, dict) else {}
+            command = str(meta.get("command") or content.get("command") or "")
+            if command in missing:
+                latest[command] = record
+                missing.remove(command)
+        if not missing or len(page) < page_size:
+            break
+        offset += page_size
     return latest
+
+
+def _is_supervisor_record(record: RecordEnvelope) -> bool:
+    meta = record.meta if isinstance(record.meta, dict) else {}
+    content = record.content if isinstance(record.content, dict) else {}
+    return str(meta.get("report_type") or content.get("report_type") or "") == "supervisor_run"
 
 
 def _summary_from_record(record: RecordEnvelope | None, *, command: str) -> dict[str, Any]:

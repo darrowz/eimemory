@@ -15,7 +15,7 @@ from eimemory.cli.main import main as cli_main
 from eimemory.compatibility.migration_helpers import export_records, import_records
 from eimemory.config.loader import load_settings
 from eimemory.models.records import RecordEnvelope, ScopeRef
-from eimemory.governance.supervisor import build_supervisor_contract
+from eimemory.governance.supervisor import build_supervisor_contract, persist_supervisor_summary, supervisor_summary
 from eimemory.scheduler.jobs import run_nightly_jobs
 
 
@@ -491,6 +491,45 @@ def test_scheduler_and_openclaw_tools_surface_runtime_state(tmp_path) -> None:
     assert nightly["supervisor_summary"]["command"] == "nightly"
     supervisor = build_supervisor_contract(runtime, scope={"agent_id": "main", "workspace_id": "repo-x"})
     assert supervisor["runs"]["nightly"]["last_success_at"]
+
+
+def test_supervisor_contract_finds_nightly_record_beyond_first_page(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = ScopeRef.from_dict({"agent_id": "main", "workspace_id": "repo-x"})
+    supervisor_record = persist_supervisor_summary(
+        runtime,
+        scope=scope,
+        summary=supervisor_summary(
+            command="nightly",
+            ok=True,
+            duration_ms=1234,
+            memory_peak=5678,
+            produced_count=9,
+            promoted_count=1,
+            rolled_back_count=0,
+        ),
+    )
+    supervisor_record.time.created_at = "2025-01-01T00:00:00Z"
+    supervisor_record.time.updated_at = "2025-01-01T00:00:00Z"
+    runtime.store.rewrite(supervisor_record)
+    for index in range(250):
+        runtime.store.append(
+            RecordEnvelope.create(
+                kind="reflection",
+                title=f"Newer reflection {index}",
+                summary="Push the nightly supervisor record beyond the first query page.",
+                scope=scope,
+            )
+        )
+    assert supervisor_record.record_id not in {
+        record.record_id for record in runtime.store.list_records(kinds=["reflection"], scope=scope, limit=200)
+    }
+
+    supervisor = build_supervisor_contract(runtime, scope=scope)
+
+    assert supervisor["status"] == "healthy"
+    assert supervisor["runs"]["nightly"]["last_success_at"]
+    assert supervisor["runs"]["nightly"]["error"] == ""
 
 
 def test_export_and_import_helpers_roundtrip(tmp_path) -> None:
