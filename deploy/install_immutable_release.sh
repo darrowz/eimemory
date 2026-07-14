@@ -79,6 +79,14 @@ _install_as_service_user() {
   fi
 }
 
+_clean_existing_release_and_validate_source() {
+  "$PYTHON_BIN" -I -B "$REPO_DIR/deploy/clean_release_bytecode.py" \
+    --release-dir "$RELEASE_DIR" --releases-root "$INSTALL_ROOT/releases"
+  "$PYTHON_BIN" -I -B "$REPO_DIR/deploy/clean_release_bytecode.py" \
+    --validate-source --release-dir "$RELEASE_DIR" \
+    --releases-root "$INSTALL_ROOT/releases" --repo-root "$REPO_DIR" --commit "$COMMIT"
+}
+
 _retire_system_rpc_unit() {
   if [ "$(id -u)" -ne 0 ] || ! command -v systemctl >/dev/null 2>&1; then
     return
@@ -154,9 +162,7 @@ if { [ -e "$CURRENT_LINK" ] || [ -L "$CURRENT_LINK" ] || [ -d "$CURRENT_LINK" ];
    "$PYTHON_BIN" -I -B -c \
    'from pathlib import Path; import sys; raise SystemExit(0 if Path(sys.argv[1]).resolve(strict=True) == Path(sys.argv[2]).resolve(strict=True) else 1)' \
    "$CURRENT_LINK" "$RELEASE_DIR"; then
-  "$PYTHON_BIN" -I -B "$REPO_DIR/deploy/clean_release_bytecode.py" \
-    --validate-source --release-dir "$RELEASE_DIR" \
-    --releases-root "$INSTALL_ROOT/releases" --repo-root "$REPO_DIR" --commit "$COMMIT"
+  _clean_existing_release_and_validate_source
   echo "release=$RELEASE_DIR"
   echo "current=$CURRENT_LINK"
   echo "commit=$COMMIT"
@@ -165,9 +171,7 @@ if { [ -e "$CURRENT_LINK" ] || [ -L "$CURRENT_LINK" ] || [ -d "$CURRENT_LINK" ];
 fi
 
 if [ -e "$RELEASE_DIR" ]; then
-  "$PYTHON_BIN" -I -B "$REPO_DIR/deploy/clean_release_bytecode.py" \
-    --validate-source --release-dir "$RELEASE_DIR" \
-    --releases-root "$INSTALL_ROOT/releases" --repo-root "$REPO_DIR" --commit "$COMMIT"
+  _clean_existing_release_and_validate_source
 fi
 
 STAGE_DIR="$(mktemp -d "$INSTALL_ROOT/releases/.eimemory-stage-${COMMIT}-XXXXXXXX")"

@@ -5,7 +5,7 @@ Wants=network-online.target
 
 [Service]
 Environment=PYTHONDONTWRITEBYTECODE=1
-Environment=PYTHONPYCACHEPREFIX=/var/lib/eimemory/.pycache/1.9.40
+Environment=PYTHONPYCACHEPREFIX=/var/lib/eimemory/.pycache/1.9.41
 Type=oneshot
 WorkingDirectory=/opt/eimemory/current
 Environment=EIMEMORY_ROOT=/var/lib/eimemory
@@ -25,4 +25,3 @@ Environment=EIMEMORY_L5_MAX_GOALS=1
 Environment=EIMEMORY_L5_MAX_PROMOTIONS=0
 Environment=EIMEMORY_L5_LOOP_TIMEOUT_SECONDS=300
 ExecStart=/opt/eimemory/current/.venv/bin/eimemory nightly
-
