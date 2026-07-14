@@ -22,6 +22,41 @@ def test_runtime_store_persists_and_searches_records(tmp_path) -> None:
     assert results[0].record_id == record.record_id
 
 
+def test_runtime_store_rewrite_updates_kind_projection(tmp_path) -> None:
+    store = RuntimeStore(root=tmp_path)
+    scope = ScopeRef(agent_id="main", workspace_id="kind-transition")
+    record = store.append(
+        RecordEnvelope.create(
+            kind="memory",
+            title="Tool routing policy",
+            summary="Promote this memory into a rule.",
+            scope=scope,
+        )
+    )
+    payload = record.to_dict()
+    payload["kind"] = "rule"
+
+    store.rewrite(RecordEnvelope.from_dict(payload))
+
+    stored = store.sqlite.conn.execute(
+        """
+        SELECT records.kind AS record_kind,
+               json_extract(records.payload_json, '$.kind') AS payload_kind,
+               recall_index.kind AS index_kind
+        FROM records
+        JOIN recall_index USING (storage_key)
+        WHERE records.record_id = ?
+        """,
+        (record.record_id,),
+    ).fetchone()
+    assert stored is not None
+    assert (stored["record_kind"], stored["payload_kind"], stored["index_kind"]) == (
+        "rule",
+        "rule",
+        "rule",
+    )
+
+
 def test_runtime_store_persists_scoped_memory_edges(tmp_path) -> None:
     store = RuntimeStore(root=tmp_path)
     scope = ScopeRef(agent_id="main", workspace_id="graph")

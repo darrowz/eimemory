@@ -532,6 +532,7 @@ class SqliteRecordStore:
                 embedding_json, idempotency_key, semantic_key, meta_json, payload_json, created_at, updated_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(storage_key) DO UPDATE SET
+                kind=excluded.kind,
                 status=excluded.status,
                 title=excluded.title,
                 summary=excluded.summary,
