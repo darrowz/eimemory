@@ -380,11 +380,16 @@ def test_eimemory_rpc_cleanup_script_kills_only_matching_port_listeners() -> Non
     assert "kill -KILL" in script
 
 
-def test_openclaw_watchdog_systemd_uses_primary_and_loopback_health_gates() -> None:
+def test_openclaw_watchdog_systemd_limits_stuck_and_hook_pressure() -> None:
     unit_text = Path("deploy/systemd/openclaw-stuck-watchdog.service").read_text(encoding="utf-8")
 
-    assert "--health-url http://100.105.189.120:8091/health" in unit_text
-    assert "--loopback-health-url http://127.0.0.1:8091/health" in unit_text
+    assert "--threshold-s 120" in unit_text
+    assert "--min-restart-interval-s 300" in unit_text
+    assert "--max-hook-processes 8" in unit_text
+    assert "--max-hook-rss-mib 1536" in unit_text
+    assert "--health-url" not in unit_text
+    assert "--loopback-health-url" not in unit_text
+    assert "TimeoutStartSec=30" in unit_text
 
 
 def test_systemd_units_use_immutable_current_release() -> None:
@@ -408,6 +413,13 @@ def test_openclaw_gateway_override_uses_production_eimemory_runtime() -> None:
     assert 'Environment="EIMEMORY_BRIDGE_COMMAND=/opt/eimemory/current/.venv/bin/eimemory ei-bridge feishu"' in override_text
     assert "/dev-project/eimemory/.venv" not in override_text
     assert "PYTHONPATH=/dev-project/eimemory" not in override_text
+    assert "MemoryAccounting=yes" in override_text
+    assert "MemoryHigh=3G" in override_text
+    assert "MemoryMax=4G" in override_text
+    assert "MemorySwapMax=512M" in override_text
+    assert "TasksAccounting=yes" in override_text
+    assert "TasksMax=96" in override_text
+    assert "OOMPolicy=kill" in override_text
 
 
 def test_python_systemd_units_never_write_bytecode_into_immutable_release() -> None:
@@ -542,6 +554,16 @@ def test_immutable_release_installer_manages_truthful_loop_watchdog_unit() -> No
     assert "openclaw_loop.py watch" in service
     assert "|| true" not in service
     assert "OnUnitActiveSec=5min" in timer
+
+
+def test_immutable_release_installer_manages_stuck_watchdog_timer() -> None:
+    script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
+
+    assert '"$RELEASE_DIR/deploy/systemd/openclaw-stuck-watchdog.service"' in script
+    assert '"$USER_SYSTEMD_DIR/openclaw-stuck-watchdog.service"' in script
+    assert '"$RELEASE_DIR/deploy/systemd/openclaw-stuck-watchdog.timer"' in script
+    assert '"$USER_SYSTEMD_DIR/openclaw-stuck-watchdog.timer"' in script
+    assert "systemctl --user enable --now openclaw-stuck-watchdog.timer" in script
 
 
 def test_managed_systemd_dropin_installer_uses_posix_directory_fds() -> None:
