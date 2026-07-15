@@ -10,7 +10,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 
-STUCK_SESSION_PATTERN = re.compile(r"stuck session: .*?\bage=(\d+)s\b")
+STUCK_SESSION_PATTERN = re.compile(r"(?:stuck|stalled) session: .*?\bage=(\d+)s\b")
 PROC_RSS_PATTERN = re.compile(r"^VmRSS:\s+(\d+)\s+kB$", re.MULTILINE)
 
 

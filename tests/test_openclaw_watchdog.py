@@ -16,9 +16,10 @@ def test_parse_stuck_session_ages_from_gateway_logs() -> None:
     logs = """
 2026-04-28T09:52:57 [diagnostic] stuck session: sessionId=main state=processing age=150s queueDepth=1
 2026-04-28T09:53:57 [diagnostic] stuck session: sessionId=main state=processing age=210s queueDepth=1
+2026-07-16T01:10:54 [diagnostic] stalled session: sessionId=main state=processing age=125s queueDepth=1
 """
 
-    assert parse_stuck_session_ages(logs) == [150, 210]
+    assert parse_stuck_session_ages(logs) == [150, 210, 125]
 
 
 def test_watchdog_restarts_only_after_threshold_and_cooldown() -> None:
