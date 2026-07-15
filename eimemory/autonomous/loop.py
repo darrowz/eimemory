@@ -118,6 +118,7 @@ _SIDE_EFFECT_NAME_HINTS = ("write", "save", "persist", "patch", "file", "upload"
 # stuck in a C extension or busy-wait loop, the second ``kill()`` is
 # the only thing that will free the CPU.
 _TERMINATE_GRACE_SECONDS = 2.0
+_WORKER_STARTUP_TIMEOUT_SECONDS = 10.0
 
 # Test-only env var. When set, the child worker writes its PID to
 # the file at this path so tests can verify the worker was actually
@@ -362,6 +363,10 @@ def _time_box_worker(fn: Callable[[], Any], queue: Any) -> None:
         except OSError:
             pass
     try:
+        queue.put(("ready",))
+    except Exception:
+        return
+    try:
         result = fn()
     except BaseException as exc:  # noqa: BLE001 — converted to RuntimeError in parent
         try:
@@ -436,7 +441,10 @@ def _terminate_process_tree(process: multiprocessing.Process, *, force: bool) ->
             os.killpg(pid, sig)
             return
         except ProcessLookupError:
-            return
+            # The spawned worker may not have reached setpgrp() yet. Fall
+            # back to terminating the process itself instead of waiting for
+            # the full grace window while it continues running.
+            pass
         except OSError:
             pass
     if force:
@@ -493,6 +501,36 @@ def _run_with_time_box(
             "time-boxed experiment_fn must be picklable and self-contained "
             "(module-level function, no shared state with the parent process)"
         ) from exc
+
+    # Record the spawned PID from the parent as well. Under heavy load the
+    # time box can expire before the child reaches its test hook, but the
+    # process still existed and must remain auditable as terminated.
+    pid_file = os.environ.get(_TEST_PID_FILE_ENV)
+    if pid_file and process.pid:
+        try:
+            Path(pid_file).write_text(str(process.pid), encoding="utf-8")
+        except OSError:
+            pass
+
+    startup_deadline = time.monotonic() + _WORKER_STARTUP_TIMEOUT_SECONDS
+    while True:
+        remaining = startup_deadline - time.monotonic()
+        if remaining <= 0:
+            _terminate_process_tree(process, force=True)
+            process.join()
+            process.close()
+            raise RuntimeError("time-boxed worker did not become ready")
+        try:
+            startup_message = tuple(queue.get(timeout=min(0.05, remaining)))
+        except queue_module.Empty:
+            if process.is_alive():
+                continue
+            process.close()
+            raise RuntimeError("time-boxed worker exited before becoming ready")
+        if startup_message == ("ready",):
+            break
+        process.close()
+        raise RuntimeError("time-boxed worker returned before readiness handshake")
 
     deadline = time.monotonic() + max(0.0, float(time_box_seconds))
     message: tuple[Any, ...] | None = None

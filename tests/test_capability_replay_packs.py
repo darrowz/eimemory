@@ -13,6 +13,8 @@ from eimemory.governance.capability_acceptance import (
 )
 from eimemory.governance.capability_replay_executor import execute_capability_replay_case
 from eimemory.governance.capability_probe_executor import execute_probe
+from eimemory.governance.capability_ledger import record_capability_score
+from eimemory.governance.autonomous_learning import _evidence_bound_capabilities
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
@@ -32,9 +34,17 @@ WEAK_CAPABILITIES = {
 }
 
 
-def test_capability_replay_packs_do_not_activate_core_capabilities_without_contracts(tmp_path) -> None:
+def test_capability_replay_packs_do_not_overwrite_scores_when_contracts_are_unavailable(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     try:
+        record_capability_score(
+            runtime,
+            scope=SCOPE,
+            loop_id="verified-baseline",
+            capability="memory.recall",
+            score=0.84,
+            evidence_record_ids=["verified-evidence-1", "verified-evidence-2", "verified-evidence-3"],
+        )
         report = runtime.build_capability_replay_packs(scope=SCOPE, persist=True)
 
         assert report["ok"] is True
@@ -45,19 +55,37 @@ def test_capability_replay_packs_do_not_activate_core_capabilities_without_contr
 
         for pack in report["packs"]:
             assert len(pack["cases"]) >= 3
-            assert pack["pass_rate"] == 0.0
+            assert pack["pass_rate"] is None
+            assert pack["executed_case_count"] == 0
+            assert pack["not_run_case_count"] == len(pack["cases"])
+            assert pack["score_record_id"] == ""
             assert {result["verdict"] for result in pack["case_results"]} == {"not_run"}
             assert pack["rollback_plan"]["command"]
             assert pack["observe_plan"]["min_observations"] >= 1
 
         ledger = runtime.learning_ledger(scope=SCOPE, attribute_outcomes=False)
-        for capability in CORE_CAPABILITIES:
-            item = ledger["capabilities"][capability]
-            assert item["status"] != "active"
-            assert item["score"] == 0.0
-            assert item["evidence_count"] >= 3
+        assert report["score_record_ids"] == []
+        assert ledger["capabilities"]["memory.recall"]["status"] == "active"
+        assert ledger["capabilities"]["memory.recall"]["score"] == 0.84
+        for capability in CORE_CAPABILITIES - {"memory.recall"}:
+            assert ledger["capabilities"][capability]["status"] == "stale_unverified"
+            assert ledger["capabilities"][capability]["evidence_count"] == 0
     finally:
         runtime.close()
+
+
+def test_capability_replay_empty_selection_does_not_persist_manifest(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        report = runtime.build_capability_replay_packs(scope=SCOPE, persist=True, capabilities=[])
+        records = runtime.store.list_records(kinds=["replay_result"], scope=SCOPE, limit=10)
+    finally:
+        runtime.close()
+
+    assert report["pack_count"] == 0
+    assert report["case_count"] == 0
+    assert report["manifest_record_id"] == ""
+    assert records == []
 
 
 def test_capability_replay_packs_are_queryable_as_replay_results(tmp_path) -> None:
@@ -112,6 +140,69 @@ def test_capability_replay_packs_include_named_weak_capability_cases(tmp_path) -
             assert item["status"] == "active"
             assert item["score"] >= 0.75
             assert item["evidence_count"] >= 3
+    finally:
+        runtime.close()
+
+
+def test_capability_replay_score_counts_only_executed_evidence_in_partial_pack(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        acceptance = run_capability_acceptance(runtime, scope=SCOPE, persist=True)
+        accepted = next(item for item in acceptance["results"] if item["case_id"] == "search_recent_source")
+        real_executor = runtime.run_capability_replay_case
+
+        def partial_executor(case):
+            if case["case_id"] == accepted["case_id"]:
+                return real_executor(case)
+            return {"verdict": "not_run", "hit": None, "observed": "", "reason": "missing evidence"}
+
+        runtime.run_capability_replay_case = partial_executor  # type: ignore[attr-defined]
+        report = runtime.build_capability_replay_packs(
+            scope=SCOPE,
+            persist=True,
+            capabilities=["search.discovery"],
+            acceptance_execution_id=acceptance["execution_id"],
+            acceptance_probe_ids_by_case={accepted["case_id"]: accepted["probe_id"]},
+        )
+
+        pack = report["packs"][0]
+        score = runtime.store.get_by_id(pack["score_record_id"], scope=SCOPE)
+        assert pack["executed_case_count"] == 1
+        assert pack["not_run_case_count"] == 2
+        assert score is not None
+        assert score.content["evidence_record_ids"] == [
+            record_id
+            for record_id in pack["replay_record_ids"]
+            if runtime.store.get_by_id(record_id, scope=SCOPE).meta["verdict"] == "pass"
+        ]
+    finally:
+        runtime.close()
+
+
+def test_capability_replay_failure_score_excludes_not_run_evidence(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+
+    def partial_failure(case):
+        if case["case_id"] == "search_recent_source":
+            return {"verdict": "fail", "hit": False, "observed": "failed check"}
+        return {"verdict": "not_run", "hit": None, "observed": "", "reason": "missing evidence"}
+
+    runtime.run_capability_replay_case = partial_failure  # type: ignore[attr-defined]
+    try:
+        report = runtime.build_capability_replay_packs(
+            scope=SCOPE,
+            persist=True,
+            capabilities=["search.discovery"],
+        )
+        pack = report["packs"][0]
+        score = runtime.store.get_by_id(pack["score_record_id"], scope=SCOPE)
+        assert pack["pass_rate"] == 0.0
+        assert pack["executed_case_count"] == 1
+        assert pack["not_run_case_count"] == 2
+        assert score is not None
+        assert len(score.content["evidence_record_ids"]) == 1
+        evidence = runtime.store.get_by_id(score.content["evidence_record_ids"][0], scope=SCOPE)
+        assert evidence is not None and evidence.meta["verdict"] == "fail"
     finally:
         runtime.close()
 
@@ -357,6 +448,31 @@ def test_runtime_executor_replays_twelve_contract_backed_acceptance_traces(tmp_p
     assert all(record is not None and record.content["result"]["observation"] for record in persisted)
 
 
+def test_autonomous_selection_replays_only_fully_bound_acceptance_capabilities(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        acceptance = run_capability_acceptance(runtime, scope=SCOPE, persist=True)
+        requested = [*sorted(CORE_CAPABILITIES), *sorted(WEAK_CAPABILITIES)]
+        eligible = _evidence_bound_capabilities(requested, acceptance["results"])
+        probe_ids = {item["case_id"]: item["probe_id"] for item in acceptance["results"]}
+        report = runtime.build_capability_replay_packs(
+            scope=SCOPE,
+            persist=True,
+            capabilities=eligible,
+            acceptance_execution_id=acceptance["execution_id"],
+            acceptance_probe_ids_by_case=probe_ids,
+        )
+    finally:
+        runtime.close()
+
+    assert set(eligible) == WEAK_CAPABILITIES
+    assert not CORE_CAPABILITIES.intersection(eligible)
+    assert report["pack_count"] == len(WEAK_CAPABILITIES)
+    assert len(report["score_record_ids"]) == len(WEAK_CAPABILITIES)
+    assert all(pack["executed_case_count"] == len(pack["cases"]) for pack in report["packs"])
+    assert all(pack["not_run_case_count"] == 0 for pack in report["packs"])
+
+
 def test_runtime_executor_prefers_freshest_valid_acceptance_trace(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     try:
@@ -523,8 +639,9 @@ def test_runtime_executor_rejects_generic_outcomes_for_specific_cases(tmp_path) 
     finally:
         runtime.close()
 
-    assert report["packs"][0]["pass_rate"] == 0.0
-    assert {item["verdict"] for item in report["packs"][0]["case_results"]} <= {"not_run", "fail"}
+    assert report["packs"][0]["pass_rate"] is None
+    assert report["packs"][0]["score_record_id"] == ""
+    assert {item["verdict"] for item in report["packs"][0]["case_results"]} == {"not_run"}
 
 
 def test_runtime_executor_rejects_text_only_case_evidence(tmp_path) -> None:
@@ -554,8 +671,9 @@ def test_runtime_executor_rejects_text_only_case_evidence(tmp_path) -> None:
     finally:
         runtime.close()
 
-    assert report["packs"][0]["pass_rate"] == 0.0
-    assert {item["verdict"] for item in report["packs"][0]["case_results"]} <= {"not_run", "fail"}
+    assert report["packs"][0]["pass_rate"] is None
+    assert report["packs"][0]["score_record_id"] == ""
+    assert {item["verdict"] for item in report["packs"][0]["case_results"]} == {"not_run"}
 
 
 def test_runtime_executor_rejects_wrong_case_contract(tmp_path) -> None:

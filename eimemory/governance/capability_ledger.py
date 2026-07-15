@@ -143,6 +143,11 @@ def build_capability_ledger(
         since=normalized_since,
         until=normalized_until,
     )
+    records = [
+        record
+        for record in records
+        if not _is_legacy_unexecuted_replay_score(runtime, record=record, scope=scope_ref)
+    ]
     by_capability: dict[str, list[RecordEnvelope]] = {}
     for record in records:
         by_capability.setdefault(str(record.meta.get("capability") or "general"), []).append(record)
@@ -251,6 +256,25 @@ def _record_list(record: RecordEnvelope, key: str) -> list[str]:
     if not isinstance(value, list):
         return []
     return [str(item) for item in value if str(item or "").strip()]
+
+
+def _is_legacy_unexecuted_replay_score(runtime: Any, *, record: RecordEnvelope, scope: ScopeRef) -> bool:
+    if str(record.meta.get("kind") or "") != "capability_replay_pack":
+        return False
+    if float(record.meta.get("score") or record.content.get("score") or 0.0) != 0.0:
+        return False
+    evidence_ids = _record_list(record, "evidence_record_ids")
+    if not evidence_ids:
+        return False
+    for evidence_id in evidence_ids:
+        evidence = runtime.store.get_by_id(evidence_id, scope=scope)
+        if evidence is None:
+            return False
+        if str(evidence.meta.get("report_type") or "") != "capability_replay_pack":
+            return False
+        if str(evidence.meta.get("verdict") or evidence.content.get("verdict") or "") != "not_run":
+            return False
+    return True
 
 
 def _evidence_source_counts(records: list[RecordEnvelope]) -> dict[str, int]:

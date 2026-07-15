@@ -51,7 +51,9 @@ def test_eibrain_rpc_health_returns_compact_payload(tmp_path: Path) -> None:
     finally:
         server.stop()
 
-    assert len(body) < 512
+    # Runtime paths are intentionally included as deployment identity evidence;
+    # their host-dependent length must not make the compact contract flaky.
+    assert len(body) < 1024
     assert payload["ok"] is True
     assert payload["checks"]["process"] is True
     assert "research_digest" not in payload

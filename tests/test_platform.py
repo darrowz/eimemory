@@ -1031,6 +1031,8 @@ def test_openclaw_bridge_assets_exist() -> None:
 
 def test_openclaw_js_bridge_registers_modern_typed_hooks_without_prompt_injection_by_default() -> None:
     script = """
+delete process.env.EIMEMORY_ENABLE_PROMPT_INJECTION;
+process.env.OPENCLAW_CONFIG_PATH = '/nonexistent/eimemory-openclaw-test.json';
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const names = [];
 plugin.register({ hooks: { on(name, handler) { names.push(name); } } });
@@ -1066,6 +1068,7 @@ Promise.resolve()
   .catch((error) => { console.error(error && error.stack ? error.stack : String(error)); process.exit(1); });
 """.strip()
     env = os.environ.copy()
+    env.pop("EIMEMORY_HOOK_TIMEOUT_MS", None)
     env["OPENCLAW_CONFIG_PATH"] = str(tmp_path / "missing-openclaw.json")
     result = subprocess.run(
         ["node", "-e", script],
@@ -1209,6 +1212,8 @@ process.stdout.write(JSON.stringify(names));
 
 def test_openclaw_js_bridge_can_register_before_prompt_after_policy_becomes_enabled() -> None:
     script = """
+delete process.env.EIMEMORY_ENABLE_PROMPT_INJECTION;
+process.env.OPENCLAW_CONFIG_PATH = '/nonexistent/eimemory-openclaw-test.json';
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const names = [];
 plugin.register({ hooks: { on(name, handler) { names.push(name); } } });

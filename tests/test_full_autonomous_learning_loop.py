@@ -176,6 +176,88 @@ def test_autonomous_learning_cycle_dry_run_does_not_persist_learning_records(tmp
     assert runtime.store.list_records(kinds=["capability_candidate"], scope=scope, limit=10) == []
 
 
+def test_autonomous_learning_cycle_binds_acceptance_evidence_to_capability_replay(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu", "workspace_id": "personal"}
+    runtime.evolution.log_reflection(
+        tag="search.discovery",
+        miss="Weak source selection",
+        fix="Prefer verified recent sources",
+        scope=scope,
+    )
+    _force_real_task_replay_pass(runtime, monkeypatch)
+    calls: list[tuple[str, object]] = []
+
+    def fake_acceptance(*, scope, persist=True):
+        calls.append(("acceptance", scope))
+        return {
+            "ok": True,
+            "execution_id": "acceptance-execution-1",
+            "results": [
+                {
+                    "case_id": case_id,
+                    "capability": "search.discovery",
+                    "probe_record_id": f"probe-{case_id}",
+                    "passed": True,
+                }
+                for case_id in ("search_recent_source", "search_trending_github", "search_primary_source")
+            ],
+        }
+
+    def fake_capability_replay(
+        _runtime,
+        *,
+        scope,
+        capabilities,
+        persist,
+        loop_id,
+        acceptance_execution_id="",
+        acceptance_probe_ids_by_case=None,
+    ):
+        calls.append(
+            (
+                "replay",
+                {
+                    "execution_id": acceptance_execution_id,
+                    "probe_ids": dict(acceptance_probe_ids_by_case or {}),
+                    "capabilities": list(capabilities),
+                },
+            )
+        )
+        return {
+            "ok": True,
+            "pack_count": len(capabilities),
+            "case_count": 0,
+            "persisted_replay_ids": [],
+            "score_record_ids": [],
+            "packs": [],
+        }
+
+    monkeypatch.setattr(runtime, "run_capability_acceptance", fake_acceptance)
+    monkeypatch.setattr(
+        "eimemory.governance.autonomous_learning._loop_capabilities",
+        lambda _goals: ["search.discovery"],
+    )
+    monkeypatch.setattr(
+        "eimemory.governance.autonomous_learning.build_capability_replay_packs",
+        fake_capability_replay,
+    )
+
+    report = run_autonomous_learning_cycle(runtime, scope=scope, apply=False, force=True)
+
+    assert report["ok"] is True
+    assert [name for name, _payload in calls[:2]] == ["acceptance", "replay"]
+    assert calls[1][1] == {
+        "execution_id": "acceptance-execution-1",
+        "probe_ids": {
+            "search_recent_source": "probe-search_recent_source",
+            "search_trending_github": "probe-search_trending_github",
+            "search_primary_source": "probe-search_primary_source",
+        },
+        "capabilities": ["search.discovery"],
+    }
+
+
 def _force_real_task_replay_pass(runtime: Runtime, monkeypatch, code_patch: dict | None = None) -> None:
     def fake_build_replay_dataset(
         _runtime,

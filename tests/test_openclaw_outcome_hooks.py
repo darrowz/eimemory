@@ -220,6 +220,233 @@ def test_openclaw_task_end_closes_loop_task_and_records_lesson_on_failure(tmp_pa
     assert "health check timeout" in lessons[-1]["failure_reason"]
 
 
+def test_openclaw_terminal_mixed_role_transcript_is_diagnostic_not_user_correction(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    hooks = OpenClawMemoryHooks(runtime)
+
+    result = hooks.on_task_end(
+        {
+            "session_id": "sess-mixed-role-noise",
+            "agent_id": "main",
+            "workspace_id": "repo-x",
+            "user_id": "darrow",
+            "user_messages": [
+                {
+                    "content": (
+                        "assistant: 我已经执行完成。 user: 不对，错了。 "
+                        "assistant: 将历史上下文继续拼接到这里。"
+                    )
+                }
+            ],
+            "outcome": {"success": True, "notes": "terminal transcript collected"},
+            "task_context": {"event_type": "communication"},
+        }
+    )
+
+    assert result["event"]["input_quality"] == {
+        "learnable": False,
+        "status": "diagnostic_only",
+        "reasons": ["mixed_role_transcript"],
+    }
+    assert result["outcome"]["correction_from_user"] == ""
+    assert result["outcome"]["outcome"] != "bad"
+    assert result["outcome"]["source_trust"] == "input_diagnostic"
+    assert result["pattern"] is None
+
+
+def test_openclaw_terminal_ignores_assistant_role_when_collecting_user_corrections(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    hooks = OpenClawMemoryHooks(runtime)
+
+    result = hooks.on_task_end(
+        {
+            "session_id": "sess-separated-roles",
+            "agent_id": "main",
+            "workspace_id": "repo-x",
+            "user_id": "darrow",
+            "user_messages": [
+                {"role": "assistant", "content": "历史记录里用户说不对，错了"},
+                {"role": "user", "content": "继续处理"},
+            ],
+            "outcome": {"success": True, "verified": True},
+        }
+    )
+
+    assert result["outcome"]["correction_from_user"] == ""
+    assert result["outcome"]["source_trust"] == "system_verified"
+    assert result["pattern"] is None
+
+
+def test_openclaw_terminal_low_confidence_asr_is_diagnostic_not_learning_evidence(
+    tmp_path, monkeypatch
+) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    hooks = OpenClawMemoryHooks(runtime)
+    traces: list[dict] = []
+
+    def fake_record_outcome_trace(payload: dict, *, scope: dict) -> dict:
+        traces.append(payload)
+        return {"id": "trace-asr-diagnostic"}
+
+    monkeypatch.setattr(runtime, "record_outcome_trace", fake_record_outcome_trace, raising=False)
+
+    result = hooks.on_task_end(
+        {
+            "session_id": "sess-asr-noise",
+            "agent_id": "main",
+            "workspace_id": "repo-x",
+            "user_id": "darrow",
+            "user_messages": [{"content": "不对，不行，错了"}],
+            "asr_confidence": 0.18,
+            "outcome": {"success": True, "notes": "voice turn completed"},
+            "task_context": {"event_type": "communication"},
+        }
+    )
+
+    assert result["event"]["input_quality"] == {
+        "learnable": False,
+        "status": "diagnostic_only",
+        "reasons": ["low_asr_confidence"],
+    }
+    assert result["event"]["confidence"] < 0.35
+    assert result["outcome"]["correction_from_user"] == ""
+    assert result["outcome"]["outcome"] != "bad"
+    assert result["outcome"]["source_trust"] == "input_diagnostic"
+    assert traces[0]["outcome"]["status"] == "uncertain"
+    assert traces[0]["verifier"]["passed"] is False
+    assert result["pattern"] is None
+
+
+def test_openclaw_terminal_low_confidence_asr_cannot_become_failure_evidence(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    hooks = OpenClawMemoryHooks(runtime)
+    traces: list[dict] = []
+
+    def fake_record_outcome_trace(payload: dict, *, scope: dict) -> dict:
+        traces.append(payload)
+        return {"id": "trace-input-diagnostic"}
+
+    monkeypatch.setattr(runtime, "record_outcome_trace", fake_record_outcome_trace, raising=False)
+
+    result = hooks.on_task_end(
+        {
+            "session_id": "sess-low-confidence-failure",
+            "agent_id": "main",
+            "workspace_id": "repo-x",
+            "user_id": "darrow",
+            "user_messages": [{"content": "不行，错了"}],
+            "asr_confidence": 0.18,
+            "outcome": {"success": False, "notes": "transcript indicated failure"},
+            "task_context": {"event_type": "communication"},
+        }
+    )
+
+    assert result["outcome"]["outcome"] == "uncertain"
+    assert result["outcome"]["source_trust"] == "input_diagnostic"
+    assert traces[0]["outcome"]["status"] == "uncertain"
+    assert traces[0]["verifier"]["passed"] is False
+    assert result["pattern"] is None
+
+
+def test_openclaw_terminal_voice_without_confidence_is_diagnostic_only(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    hooks = OpenClawMemoryHooks(runtime)
+
+    result = hooks.on_task_end(
+        {
+            "session_id": "sess-voice-confidence-missing",
+            "agent_id": "main",
+            "workspace_id": "repo-x",
+            "user_id": "darrow",
+            "message": {"role": "user", "type": "audio", "content": "不对，错了"},
+            "outcome": {"success": True},
+        }
+    )
+
+    assert result["event"]["input_quality"]["learnable"] is False
+    assert result["event"]["input_quality"]["reasons"] == ["missing_asr_confidence"]
+    assert result["outcome"]["correction_from_user"] == ""
+    assert result["outcome"]["source_trust"] == "input_diagnostic"
+
+
+def test_openclaw_terminal_normalizes_percent_asr_confidence(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    hooks = OpenClawMemoryHooks(runtime)
+
+    result = hooks.on_task_end(
+        {
+            "session_id": "sess-voice-percent-confidence",
+            "agent_id": "main",
+            "workspace_id": "repo-x",
+            "user_id": "darrow",
+            "message": {
+                "role": "user",
+                "type": "audio",
+                "content": "继续处理",
+                "metadata": {"asr_confidence": 86},
+            },
+            "outcome": {"success": True, "verified": True},
+        }
+    )
+
+    assert result["event"]["input_quality"] == {
+        "learnable": True,
+        "status": "learnable",
+        "reasons": [],
+    }
+
+
+def test_openclaw_terminal_rejects_invalid_asr_confidence(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    hooks = OpenClawMemoryHooks(runtime)
+
+    result = hooks.on_task_end(
+        {
+            "session_id": "sess-invalid-asr-confidence",
+            "agent_id": "main",
+            "workspace_id": "repo-x",
+            "user_id": "darrow",
+            "message": {
+                "role": "user",
+                "type": "audio",
+                "content": "继续处理",
+                "metadata": {"asr_confidence": "NaN"},
+            },
+            "outcome": {"success": True},
+        }
+    )
+
+    assert result["event"]["input_quality"]["learnable"] is False
+    assert result["event"]["input_quality"]["reasons"] == ["invalid_asr_confidence"]
+
+
+def test_openclaw_terminal_mojibake_is_diagnostic_not_user_correction(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    hooks = OpenClawMemoryHooks(runtime)
+
+    result = hooks.on_task_end(
+        {
+            "session_id": "sess-mojibake-noise",
+            "agent_id": "main",
+            "workspace_id": "repo-x",
+            "user_id": "darrow",
+            "user_messages": [{"content": "���不对����错了���"}],
+            "outcome": {"success": True, "notes": "terminal transcript collected"},
+            "task_context": {"event_type": "communication"},
+        }
+    )
+
+    assert result["event"]["input_quality"] == {
+        "learnable": False,
+        "status": "diagnostic_only",
+        "reasons": ["mojibake_or_noise"],
+    }
+    assert result["outcome"]["correction_from_user"] == ""
+    assert result["outcome"]["outcome"] != "bad"
+    assert result["outcome"]["source_trust"] == "input_diagnostic"
+    assert result["pattern"] is None
+
+
 def test_openclaw_before_prompt_build_strict_injection_plan_classifies_and_audits_lanes(
     tmp_path, monkeypatch
 ) -> None:

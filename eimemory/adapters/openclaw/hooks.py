@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 from hashlib import sha256
@@ -1339,7 +1340,13 @@ class OpenClawMemoryHooks:
         task_context = self._task_context_from_event(event)
         outcome = self._outcome_from_event(event)
         user_messages = self._user_messages_from_event(event)
-        correction = self._correction_from_event(event, outcome=outcome, user_messages=user_messages)
+        input_quality = self._terminal_input_quality(event, user_messages=user_messages)
+        terminal_event = {**event, "input_quality": input_quality}
+        correction = self._correction_from_event(
+            terminal_event,
+            outcome=outcome,
+            user_messages=user_messages,
+        )
         user_phrase = self._original_user_phrase(event, user_messages=user_messages, correction=correction)
         event_type = self._terminal_event_type(
             event,
@@ -1414,7 +1421,10 @@ class OpenClawMemoryHooks:
             ),
             "confidence": self._terminal_confidence(correction=correction, verification=verification, outcome=outcome),
             "notify_policy": self._first_text(event.get("notify_policy"), task_context.get("notify_policy")),
+            "input_quality": input_quality,
         }
+        if not input_quality["learnable"]:
+            event_payload["confidence"] = 0.2
         terminal_key = self._terminal_idempotency_key(event=event, end_kind=end_kind)
         if terminal_key:
             event_payload["id"] = "evt_openclaw_" + self._stable_hash(
@@ -1428,7 +1438,7 @@ class OpenClawMemoryHooks:
             event_payload["timestamp"] = self._first_text(event.get("started_at"), event.get("startedAt")) or event_payload.get("timestamp", "")
         recorded_event = self.runtime.record_event(event_payload, scope=scope)
         outcome_payload = self._terminal_outcome_payload(
-            event=event,
+            event=terminal_event,
             outcome=outcome,
             correction=correction,
             policy_update=policy_update,
@@ -1440,7 +1450,7 @@ class OpenClawMemoryHooks:
         if self._should_record_terminal_outcome(outcome_payload, end_kind=end_kind):
             recorded_outcome = self.runtime.record_outcome(recorded_event["id"], outcome_payload, scope=scope)
             outcome_trace = self._record_outcome_trace_safely(
-                event=event,
+                event=terminal_event,
                 recorded_event_id=str(recorded_event.get("id") or ""),
                 scope=scope,
                 task_context=task_context,
@@ -1540,7 +1550,13 @@ class OpenClawMemoryHooks:
         for key in ("user_messages", "userMessages"):
             raw = event.get(key)
             if isinstance(raw, list):
-                values.extend(raw)
+                values.extend(
+                    item
+                    for item in raw
+                    if not isinstance(item, dict)
+                    or not str(item.get("role") or "").strip()
+                    or str(item.get("role") or "").strip().lower() == "user"
+                )
         messages = event.get("messages")
         if isinstance(messages, list):
             values.extend(
@@ -1572,6 +1588,9 @@ class OpenClawMemoryHooks:
         return cleaned
 
     def _correction_from_event(self, event: dict, *, outcome: dict, user_messages: list[str]) -> str:
+        input_quality = event.get("input_quality") or {}
+        if isinstance(input_quality, dict) and input_quality.get("learnable") is False:
+            return ""
         named_corrections = [
             event.get("correction_from_user"),
             event.get("correctionFromUser"),
@@ -1596,6 +1615,83 @@ class OpenClawMemoryHooks:
             if text and self._looks_like_user_correction(text):
                 return text
         return ""
+
+    def _terminal_input_quality(self, event: dict, *, user_messages: list[str]) -> dict[str, Any]:
+        reasons: list[str] = []
+        if any(self._looks_like_mixed_role_transcript(text) for text in user_messages):
+            reasons.append("mixed_role_transcript")
+        confidence, confidence_present, confidence_valid = self._terminal_asr_confidence(event)
+        if confidence_present and not confidence_valid:
+            reasons.append("invalid_asr_confidence")
+        elif confidence is not None and confidence < 0.5:
+            reasons.append("low_asr_confidence")
+        elif self._terminal_is_voice_input(event) and not confidence_present:
+            reasons.append("missing_asr_confidence")
+        if any(self._looks_like_mojibake(text) for text in user_messages):
+            reasons.append("mojibake_or_noise")
+        return {
+            "learnable": not reasons,
+            "status": "learnable" if not reasons else "diagnostic_only",
+            "reasons": sorted(set(reasons)),
+        }
+
+    def _terminal_asr_confidence(self, event: dict) -> tuple[float | None, bool, bool]:
+        task_context = event.get("task_context") or event.get("taskContext") or {}
+        message = event.get("message") or {}
+        metadata = message.get("metadata") if isinstance(message, dict) else {}
+        containers = [event, task_context, metadata]
+        for container in containers:
+            if not isinstance(container, dict):
+                continue
+            for key in ("asr_confidence", "asrConfidence", "transcript_confidence", "transcriptConfidence"):
+                if key not in container:
+                    continue
+                try:
+                    value = float(container[key])
+                except (TypeError, ValueError):
+                    return None, True, False
+                if not math.isfinite(value) or value < 0.0 or value > 100.0:
+                    return None, True, False
+                return (value / 100.0 if value > 1.0 else value), True, True
+        return None, False, True
+
+    def _terminal_is_voice_input(self, event: dict) -> bool:
+        task_context = event.get("task_context") or event.get("taskContext") or {}
+        message = event.get("message") or {}
+        metadata = message.get("metadata") if isinstance(message, dict) else {}
+        markers: list[str] = []
+        for container in (event, task_context, message, metadata):
+            if not isinstance(container, dict):
+                continue
+            for key in (
+                "input_type",
+                "inputType",
+                "media_type",
+                "mediaType",
+                "message_type",
+                "messageType",
+                "msg_type",
+                "msgType",
+                "type",
+                "source",
+            ):
+                if key in container:
+                    markers.append(str(container.get(key) or "").strip().lower())
+        return any(any(token in marker for token in ("audio", "voice", "speech", "asr")) for marker in markers)
+
+    def _looks_like_mixed_role_transcript(self, text: str) -> bool:
+        compact = " ".join(str(text or "").lower().split())
+        assistant_marker = "assistant:" in compact or "assistant：" in compact or "助手：" in compact
+        user_marker = "user:" in compact or "user：" in compact or "用户：" in compact
+        return assistant_marker and user_marker
+
+    def _looks_like_mojibake(self, text: str) -> bool:
+        stripped = str(text or "").strip()
+        visible_count = sum(1 for char in stripped if not char.isspace())
+        if visible_count == 0:
+            return False
+        marker_count = stripped.count("?") + stripped.count("\ufffd")
+        return marker_count >= 3 and marker_count / visible_count >= 0.35
 
     def _original_user_phrase(self, event: dict, *, user_messages: list[str], correction: str) -> str:
         explicit = self._first_text(event.get("original_user_phrase"), event.get("originalUserPhrase"))
@@ -1820,10 +1916,15 @@ class OpenClawMemoryHooks:
         policy_attribution: dict,
     ) -> dict:
         terminal_failure = self._classify_terminal_failure(event=event, outcome=outcome, result=result)
+        input_quality = event.get("input_quality") or {}
+        diagnostic_only = isinstance(input_quality, dict) and input_quality.get("learnable") is False
         success = self._bool_or_none(outcome.get("success"))
         if success is None:
             success = self._bool_or_none(event.get("success"))
-        if correction:
+        if diagnostic_only:
+            outcome_name = "uncertain"
+            reason = "terminal_input_quality_gate"
+        elif correction:
             outcome_name = "bad"
             reason = "user_correction_detected"
         elif terminal_failure:
@@ -2040,6 +2141,9 @@ class OpenClawMemoryHooks:
         success = self._bool_or_none(outcome.get("success"))
         if success is None:
             success = self._bool_or_none(event.get("success"))
+        input_quality = event.get("input_quality") or {}
+        if isinstance(input_quality, dict) and input_quality.get("learnable") is False:
+            return "uncertain"
         if correction or terminal_failure or success is False:
             return "bad"
         if success is True:
@@ -2164,6 +2268,9 @@ class OpenClawMemoryHooks:
         verification: str,
         terminal_failure: dict[str, str] | None = None,
     ) -> str:
+        input_quality = event.get("input_quality") or {}
+        if isinstance(input_quality, dict) and input_quality.get("learnable") is False:
+            return "input_diagnostic"
         if terminal_failure or self._classify_terminal_failure(event=event, outcome=outcome):
             return "system_diagnostic"
         explicit = str(

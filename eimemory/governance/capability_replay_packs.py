@@ -35,7 +35,7 @@ def build_capability_replay_packs(
     acceptance_probe_ids_by_case: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
-    selected = _dedupe(capabilities or CORE_REPLAY_CAPABILITIES)
+    selected = _dedupe(CORE_REPLAY_CAPABILITIES if capabilities is None else capabilities)
     execution_id = generate_record_id("replay_result")
     executed_at = datetime.now(timezone.utc).astimezone().isoformat(timespec="microseconds")
     cases_by_capability = {capability: _cases_for_capability(capability) for capability in selected}
@@ -54,7 +54,7 @@ def build_capability_replay_packs(
         if str(case_id).strip() and str(probe_id or "").strip()
     }
     manifest = None
-    if persist:
+    if persist and selected:
         initial_payload = _manifest_payload(
             execution_id=execution_id,
             executed_at=executed_at,
@@ -84,16 +84,20 @@ def build_capability_replay_packs(
     for capability in selected:
         cases = cases_by_capability[capability]
         replay_ids: list[str] = []
+        executed_replay_ids: list[str] = []
         case_results: list[dict[str, Any]] = []
         for evidence_index, case in enumerate(cases):
+            required_probe_source_id = bound_probe_ids.get(str(case["case_id"]), "")
             result = _run_case(
                 runtime,
                 {
                     **case,
                     "scope": asdict(scope_ref),
                     "evidence_index": evidence_index,
-                    "acceptance_execution_id": str(acceptance_execution_id or "").strip(),
-                    "required_probe_source_id": bound_probe_ids.get(str(case["case_id"]), ""),
+                    "acceptance_execution_id": (
+                        str(acceptance_execution_id or "").strip() if required_probe_source_id else ""
+                    ),
+                    "required_probe_source_id": required_probe_source_id,
                 },
             )
             case_results.append(result)
@@ -132,7 +136,11 @@ def build_capability_replay_packs(
                         "execution_id": execution_id,
                         "executed_at": executed_at,
                         "verdict": result["verdict"],
-                        "pass_rate": 1.0 if result["verdict"] == "pass" else 0.0,
+                        "pass_rate": (
+                            None
+                            if result["verdict"] == "not_run"
+                            else 1.0 if result["verdict"] == "pass" else 0.0
+                        ),
                         "hit": result.get("hit"),
                         "evidence_source_id": result.get("evidence_source_id", ""),
                         "trace_id": result.get("trace_id", ""),
@@ -144,19 +152,22 @@ def build_capability_replay_packs(
                 )
                 replay_ids.append(record.record_id)
                 persisted_replay_ids.append(record.record_id)
+                if result["verdict"] in {"pass", "fail"}:
+                    executed_replay_ids.append(record.record_id)
         member_record_ids[capability] = list(replay_ids)
-        pass_count = sum(1 for item in case_results if item["verdict"] == "pass")
-        pass_rate = round(pass_count / len(case_results), 3) if case_results else 0.0
-        score = _score_for(capability, pass_rate)
+        executed_results = [item for item in case_results if item["verdict"] in {"pass", "fail"}]
+        pass_count = sum(1 for item in executed_results if item["verdict"] == "pass")
+        pass_rate = round(pass_count / len(executed_results), 3) if executed_results else None
+        score = _score_for(capability, pass_rate) if pass_rate is not None else None
         score_id = ""
-        if persist:
+        if persist and score is not None:
             score_id = record_capability_score(
                 runtime,
                 scope=scope_ref,
                 loop_id=loop_id,
                 capability=capability,
                 score=score,
-                evidence_record_ids=replay_ids,
+                evidence_record_ids=executed_replay_ids,
                 evidence_tiers=["T1", "T2"],
                 evidence_sources=["capability_replay_pack"],
                 meta={
@@ -181,6 +192,8 @@ def build_capability_replay_packs(
                 "case_results": case_results,
                 "pass_rate": pass_rate,
                 "score": score,
+                "executed_case_count": len(executed_results),
+                "not_run_case_count": sum(1 for item in case_results if item["verdict"] == "not_run"),
                 "replay_record_ids": replay_ids,
                 "score_record_id": score_id,
                 "observe_plan": {"min_observations": 3, "failure_rate_threshold": 0.05},
@@ -551,4 +564,4 @@ def _dedupe(values: list[str]) -> list[str]:
         text = str(value or "").strip()
         if text and text not in result:
             result.append(text)
-    return result or list(CORE_REPLAY_CAPABILITIES)
+    return result

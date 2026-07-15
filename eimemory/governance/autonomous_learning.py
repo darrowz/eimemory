@@ -8,7 +8,10 @@ from typing import Any
 from eimemory.governance.capability_distiller import distill_capability_candidate
 from eimemory.governance.capability_ledger import build_capability_ledger, record_capability_score
 from eimemory.governance.capability_dashboard import build_capability_dashboard_metrics
-from eimemory.governance.capability_replay_packs import build_capability_replay_packs
+from eimemory.governance.capability_replay_packs import (
+    build_capability_replay_packs,
+    capability_replay_case_ids,
+)
 from eimemory.governance.capability_seeding import ensure_all_seeded
 from eimemory.governance.curiosity import generate_learning_goals, persist_learning_goals
 from eimemory.governance.evidence_collector import collect
@@ -183,22 +186,70 @@ def run_autonomous_learning_cycle(
                 "episode_event_count": goal_graph.get("episode_event_count", 0),
             },
         )
+        capability_acceptance = runtime.run_capability_acceptance(
+            scope=asdict(scope_ref),
+            persist=True,
+        )
+        acceptance_probe_ids_by_case = {
+            str(result.get("case_id") or ""): str(
+                result.get("probe_record_id") or result.get("probe_id") or ""
+            )
+            for result in capability_acceptance.get("results") or []
+            if isinstance(result, dict)
+            and str(result.get("case_id") or "").strip()
+            and str(result.get("probe_record_id") or result.get("probe_id") or "").strip()
+        }
+        mark_step(
+            runtime,
+            loop,
+            step_name="capability_acceptance",
+            status="completed" if capability_acceptance.get("ok") else "blocked",
+            record_ids=list(capability_acceptance.get("probe_record_ids") or [])
+            + list(capability_acceptance.get("trace_record_ids") or []),
+            metrics={
+                "case_count": capability_acceptance.get("case_count", 0),
+                "pass_count": capability_acceptance.get("pass_count", 0),
+                "failed_count": capability_acceptance.get("failed_count", 0),
+            },
+        )
+        replay_capabilities = _evidence_bound_capabilities(
+            loop_capabilities,
+            capability_acceptance.get("results") or [],
+        )
         capability_replay = build_capability_replay_packs(
             runtime,
             scope=scope_ref,
-            capabilities=_closed_loop_capabilities(loop_capabilities),
+            capabilities=replay_capabilities,
             persist=True,
             loop_id=loop_id,
+            acceptance_execution_id=str(capability_acceptance.get("execution_id") or ""),
+            acceptance_probe_ids_by_case=acceptance_probe_ids_by_case,
         )
         mark_step(
             runtime,
             loop,
             step_name="capability_replay",
-            status="completed",
+            status=(
+                "skipped"
+                if not replay_capabilities
+                else "blocked"
+                if not capability_acceptance.get("ok")
+                or any(pack.get("not_run_case_count") for pack in capability_replay.get("packs") or [])
+                else "completed"
+            ),
             record_ids=list(capability_replay.get("persisted_replay_ids") or []) + list(capability_replay.get("score_record_ids") or []),
             metrics={
                 "pack_count": capability_replay.get("pack_count", 0),
                 "case_count": capability_replay.get("case_count", 0),
+                "eligible_capability_count": len(replay_capabilities),
+                "executed_case_count": sum(
+                    int(pack.get("executed_case_count") or 0)
+                    for pack in capability_replay.get("packs") or []
+                ),
+                "not_run_case_count": sum(
+                    int(pack.get("not_run_case_count") or 0)
+                    for pack in capability_replay.get("packs") or []
+                ),
             },
         )
         safety_replay = run_safety_boundary_replay(runtime, scope=scope_ref, persist=True, loop_id=loop_id)
@@ -893,12 +944,25 @@ def _loop_capabilities(goals: list[dict[str, Any]]) -> list[str]:
     return capabilities or ["memory.recall", "tool.routing", "safety.boundary"]
 
 
-def _closed_loop_capabilities(capabilities: list[str]) -> list[str]:
-    required = ["memory.recall", "tool.routing", "knowledge.intake", "proactive.judgment", "safety.boundary"]
+def _evidence_bound_capabilities(capabilities: list[str], acceptance_results: list[dict[str, Any]]) -> list[str]:
+    passed_case_ids_by_capability: dict[str, set[str]] = {}
+    for result in acceptance_results:
+        if not isinstance(result, dict) or result.get("passed") is not True:
+            continue
+        capability = str(result.get("capability") or "").strip()
+        case_id = str(result.get("case_id") or "").strip()
+        if capability and case_id:
+            passed_case_ids_by_capability.setdefault(capability, set()).add(case_id)
     result: list[str] = []
-    for value in [*capabilities, *required]:
+    for value in capabilities:
         text = str(value or "").strip()
-        if text and text not in result:
+        required_case_ids = set(capability_replay_case_ids(text)) if text else set()
+        if (
+            text
+            and required_case_ids
+            and required_case_ids.issubset(passed_case_ids_by_capability.get(text, set()))
+            and text not in result
+        ):
             result.append(text)
     return result
 

@@ -18,24 +18,29 @@ def test_capability_replay_without_executor_is_pending_not_passed(tmp_path) -> N
         assert report["ok"] is True
         pack = report["packs"][0]
         assert pack["capability"] == "memory.recall"
-        assert pack["pass_rate"] == 0.0
-        assert pack["score"] == 0.0
+        assert pack["pass_rate"] is None
+        assert pack["score"] is None
+        assert pack["executed_case_count"] == 0
+        assert pack["score_record_id"] == ""
         assert {result["verdict"] for result in pack["case_results"]} == {"not_run"}
         assert all(result["hit"] is None for result in pack["case_results"])
 
         records = runtime.store.list_records(kinds=["replay_result"], scope=SCOPE, limit=20)
         assert records
-        assert {record.meta["verdict"] for record in records} == {"not_run"}
+        case_records = [record for record in records if record.meta.get("report_type") == "capability_replay_pack"]
+        assert {record.meta["verdict"] for record in case_records} == {"not_run"}
+        assert {record.meta["pass_rate"] for record in case_records} == {None}
 
         ledger = runtime.learning_ledger(scope=SCOPE, attribute_outcomes=False)
         item = ledger["capabilities"]["memory.recall"]
         assert item["score"] == 0.0
-        assert item["status"] == "needs_outcome_recalculation"
+        assert item["status"] == "stale_unverified"
+        assert item["evidence_count"] == 0
     finally:
         runtime.close()
 
 
-def test_capability_replay_uses_real_executor_before_recording_pass(tmp_path) -> None:
+def test_capability_replay_rejects_uncontracted_executor_pass_claim(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
 
     def executor(case):
@@ -54,13 +59,13 @@ def test_capability_replay_uses_real_executor_before_recording_pass(tmp_path) ->
         )
 
         pack = report["packs"][0]
-        assert pack["pass_rate"] == 1.0
-        assert pack["score"] > 0.0
-        assert {result["verdict"] for result in pack["case_results"]} == {"pass"}
+        assert pack["pass_rate"] == 0.0
+        assert pack["score"] == 0.0
+        assert {result["verdict"] for result in pack["case_results"]} == {"fail"}
 
         ledger = runtime.learning_ledger(scope=SCOPE, attribute_outcomes=False)
         item = ledger["capabilities"]["memory.recall"]
-        assert item["status"] == "active"
+        assert item["status"] == "needs_outcome_recalculation"
         assert item["evidence_count"] >= 3
     finally:
         runtime.close()

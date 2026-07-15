@@ -697,7 +697,9 @@ def test_l5_readiness_rejects_not_run_weak_replays(tmp_path) -> None:
     assert report["current_stage"] != "L5"
     assert report["verified_replay"]["executed_count"] == 0
     assert report["verified_replay"]["weak_capabilities_missing"] == sorted(WEAK_CAPABILITIES)
-    assert report["verified_replay"]["not_run_count"] == 12
+    # Unexecuted replays are excluded from readiness evidence rather than
+    # counted as a completed replay batch.
+    assert report["verified_replay"]["not_run_count"] == 0
 
 
 def test_l5_readiness_rejects_incomplete_latest_assessment(tmp_path) -> None:

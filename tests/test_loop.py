@@ -257,9 +257,9 @@ def test_time_box_kills_long_running_experiment(tmp_path: Path):
             time_box_seconds=0.2,
         )
     elapsed = time.time() - start
-    # Time box should be respected; the test allows generous headroom
-    # for child-process spawn + SIGTERM/SIGKILL grace on Windows.
-    assert elapsed < 1.5, f"runner ignored time box: ran for {elapsed:.2f}s"
+    # The function runtime is time-boxed after the spawned worker is ready;
+    # allow cold interpreter startup without confusing it with experiment time.
+    assert elapsed < 4.0, f"runner ignored time box: ran for {elapsed:.2f}s"
 
 
 # ---------- circuit breaker ----------
