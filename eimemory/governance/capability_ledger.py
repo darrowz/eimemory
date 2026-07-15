@@ -147,6 +147,7 @@ def build_capability_ledger(
         record
         for record in records
         if not _is_legacy_unexecuted_replay_score(runtime, record=record, scope=scope_ref)
+        and not _is_candidate_gate_failure_score(record)
     ]
     by_capability: dict[str, list[RecordEnvelope]] = {}
     for record in records:
@@ -275,6 +276,19 @@ def _is_legacy_unexecuted_replay_score(runtime: Any, *, record: RecordEnvelope, 
         if str(evidence.meta.get("verdict") or evidence.content.get("verdict") or "") != "not_run":
             return False
     return True
+
+
+def _is_candidate_gate_failure_score(record: RecordEnvelope) -> bool:
+    if str(record.meta.get("kind") or "") != "autonomous_learning_measured":
+        return False
+    if float(record.meta.get("score") or record.content.get("score") or 0.0) != 0.0:
+        return False
+    return (
+        str(record.meta.get("eval_verdict") or "").strip().lower() in {"fail", "failed", "blocked"}
+        or record.meta.get("replay_gate_passed") is False
+        or record.meta.get("safety_gate_passed") is False
+        or record.meta.get("isolation_gate_passed") is False
+    )
 
 
 def _evidence_source_counts(records: list[RecordEnvelope]) -> dict[str, int]:

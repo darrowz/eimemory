@@ -10,6 +10,7 @@ Prevent unavailable replay evidence and noisy terminal transcripts from being re
 2. The autonomous learning loop runs capability acceptance first, then replays only capabilities whose complete case set has passing, bound probes. Capabilities without complete acceptance remain unassessed and keep their prior ledger state.
 3. Terminal OpenClaw events receive a quality gate before correction inference and learnable outcome persistence. Mixed transcript envelopes and low-quality voice text are retained only as diagnostics, not as trusted corrections or capability evidence.
 4. Reporting reuses the same noise classification so quarantined input cannot reappear as a learned item.
+5. A failed candidate experiment remains candidate-level evidence. It does not write a zero global capability score; legacy zero scores created by failed gates are excluded from the effective ledger.
 
 ## Verification
 
@@ -17,4 +18,5 @@ Prevent unavailable replay evidence and noisy terminal transcripts from being re
 - A bound acceptance/replay run produces passing scores; unbound capabilities create neither scores nor empty manifests.
 - Noisy mixed terminal input does not create a learnable bad outcome or correction.
 - Clean explicit corrections still work.
+- Failed candidate gates leave the last verified capability score unchanged.
 - Full test suite passes; production version is bumped, deployed, and `/health` reports the new version/commit.

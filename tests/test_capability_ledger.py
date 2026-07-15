@@ -148,3 +148,37 @@ def test_capability_ledger_ignores_legacy_scores_backed_only_by_not_run_replays(
     assert item["score"] == 0.84
     assert item["status"] == "active"
     assert set(item["evidence_record_ids"]) == {"verified-1", "verified-2", "verified-3"}
+
+
+def test_capability_ledger_ignores_legacy_candidate_gate_failure_zero(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu"}
+    record_capability_score(
+        runtime,
+        scope=scope,
+        loop_id="verified-baseline",
+        capability="proactive.judgment",
+        score=0.84,
+        evidence_record_ids=["verified-1", "verified-2", "verified-3"],
+    )
+    record_capability_score(
+        runtime,
+        scope=scope,
+        loop_id="legacy-candidate-failure",
+        capability="proactive.judgment",
+        score=0.0,
+        evidence_record_ids=["candidate", "failed-eval"],
+        meta={
+            "kind": "autonomous_learning_measured",
+            "eval_verdict": "fail",
+            "replay_gate_passed": False,
+            "safety_gate_passed": True,
+            "isolation_gate_passed": False,
+        },
+    )
+
+    item = build_capability_ledger(runtime, scope=scope, attribute_outcomes=False)["capabilities"]["proactive.judgment"]
+
+    assert item["score"] == 0.84
+    assert item["status"] == "active"
+    assert set(item["evidence_record_ids"]) == {"verified-1", "verified-2", "verified-3"}

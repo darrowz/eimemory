@@ -440,27 +440,30 @@ def run_autonomous_learning_cycle(
             },
         )
 
-        score_id = record_capability_score(
-            runtime,
-            scope=scope_ref,
-            loop_id=loop_id,
-            capability=str(selected_goal.get("target_capability") or "proactive.judgment"),
-            score=_measured_capability_score(
-                eval_result=eval_result,
-                replay_gate=replay_gate,
-                safety_replay=safety_replay,
-                isolation_gate_passed=isolation_gate_passed,
-            ),
-            evidence_record_ids=[item for item in [research_note_id, eval_result.get("record_id", ""), candidate_id] if item],
-            meta={
-                "kind": "autonomous_learning_measured",
-                "measurement_source": "autonomous_learning_gates",
-                "eval_verdict": str(eval_result.get("verdict") or ""),
-                "replay_gate_passed": bool(replay_gate_passed),
-                "safety_gate_passed": bool(safety_gate_passed),
-                "isolation_gate_passed": bool(isolation_gate_passed),
-            },
+        measured_score = _measured_capability_score(
+            eval_result=eval_result,
+            replay_gate=replay_gate,
+            safety_replay=safety_replay,
+            isolation_gate_passed=isolation_gate_passed,
         )
+        score_id = ""
+        if measured_score is not None:
+            score_id = record_capability_score(
+                runtime,
+                scope=scope_ref,
+                loop_id=loop_id,
+                capability=str(selected_goal.get("target_capability") or "proactive.judgment"),
+                score=measured_score,
+                evidence_record_ids=[item for item in [research_note_id, eval_result.get("record_id", ""), candidate_id] if item],
+                meta={
+                    "kind": "autonomous_learning_measured",
+                    "measurement_source": "autonomous_learning_gates",
+                    "eval_verdict": str(eval_result.get("verdict") or ""),
+                    "replay_gate_passed": bool(replay_gate_passed),
+                    "safety_gate_passed": bool(safety_gate_passed),
+                    "isolation_gate_passed": bool(isolation_gate_passed),
+                },
+            )
         skill_sedimentation = promote_repeated_sops_to_skill_candidates(
             runtime,
             scope=scope_ref,
@@ -736,9 +739,9 @@ def _measured_capability_score(
     replay_gate: dict[str, Any],
     safety_replay: dict[str, Any],
     isolation_gate_passed: bool,
-) -> float:
+) -> float | None:
     if not (eval_result.get("ok") and replay_gate.get("ok") and safety_replay.get("ok") and isolation_gate_passed):
-        return 0.0
+        return None
     scores = eval_result.get("scores") if isinstance(eval_result.get("scores"), dict) else {}
     measured = [
         _as_float(scores.get("capability"), default=0.0),

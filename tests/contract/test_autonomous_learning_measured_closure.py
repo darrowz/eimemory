@@ -1,12 +1,21 @@
 from __future__ import annotations
 
 from eimemory.api.runtime import Runtime
+from eimemory.governance.capability_ledger import record_capability_score
 
 
-def test_autonomous_learning_failure_gate_records_measured_eval_and_low_score(tmp_path, monkeypatch) -> None:
+def test_autonomous_learning_failure_gate_preserves_prior_capability_score(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path)
     scope = {"agent_id": "measured-closure"}
     runtime.evolution.log_reflection(tag="tool.routing", miss="routing drift", fix="prefer memory-first", scope=scope)
+    record_capability_score(
+        runtime,
+        scope=scope,
+        loop_id="verified-baseline",
+        capability="tool.routing",
+        score=0.84,
+        evidence_record_ids=["baseline-1", "baseline-2", "baseline-3"],
+    )
 
     monkeypatch.setattr(
         "eimemory.governance.autonomous_learning.build_replay_dataset",
@@ -45,7 +54,6 @@ def test_autonomous_learning_failure_gate_records_measured_eval_and_low_score(tm
     assert eval_record.content["scores"]["capability"] == 0.0
     assert "real_task_replay_no_samples" in eval_record.content["blocked_reasons"]
 
+    assert report["capability_score_id"] == ""
     ledger = runtime.learning_ledger(scope=scope, attribute_outcomes=False)
-    scored = [item for item in ledger["capabilities"].values() if item["last_record_id"] == report["capability_score_id"]]
-    assert scored
-    assert scored[0]["score"] == 0.0
+    assert ledger["capabilities"]["tool.routing"]["score"] == 0.84
