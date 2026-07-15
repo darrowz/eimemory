@@ -308,6 +308,237 @@ def test_l5_assessment_downgrades_when_loop_evidence_is_missing(tmp_path) -> Non
     assert stored.meta["report_type"] == "l5_assessment"
 
 
+def test_idle_l5_assessment_does_not_replace_verified_global_readiness(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    verified_report = {
+        "apply": False,
+        "world_model": {"report_type": "l5_world_model"},
+        "roadmap": {"persisted_record_id": "roadmap-verified"},
+        "goal_graph": {"persisted_record_id": "goal-graph-verified"},
+        "autonomous_learning": {
+            "ok": True,
+            "candidate_id": "candidate-verified",
+            "real_task_replay": {
+                "ok": True,
+                "verdict": "pass",
+                "sample_count": 1,
+                "pass_count": 1,
+                "fail_count": 0,
+                "pass_rate": 1.0,
+            },
+            "promotion": {
+                "promotion_request_id": "promotion-verified",
+                "applied": False,
+            },
+        },
+        "reward": {"transition_record_id": "reward-verified"},
+        "self_continuity": {"narrative": "Evidence-bound continuity."},
+    }
+    idle_report = {
+        "apply": True,
+        "world_model": {"report_type": "l5_world_model"},
+        "roadmap": {"persisted_record_id": "roadmap-idle"},
+        "goal_graph": {"persisted_record_id": "goal-graph-idle"},
+        "autonomous_learning": {
+            "ok": True,
+            "activity_status": "idle",
+            "candidate_count": 0,
+            "candidate_ids": [],
+            "promotions": [],
+        },
+        "reward": {"transition_record_id": "reward-idle"},
+        "self_continuity": {"narrative": "Evidence-bound continuity."},
+    }
+    try:
+        verified = runtime.assess_l5_closed_loop(
+            scope=SCOPE,
+            loop_report=verified_report,
+            persist=True,
+            loop_id="verified-global-readiness",
+        )
+        idle = runtime.assess_l5_closed_loop(
+            scope=SCOPE,
+            loop_report=idle_report,
+            persist=True,
+            loop_id="idle-activity",
+        )
+        latest = _latest_l5_assessment(runtime, scope=ScopeRef.from_dict(SCOPE))
+    finally:
+        runtime.close()
+
+    assert verified["level"] == "L5"
+    assert idle["activity_status"] == "idle"
+    assert idle["level"] == "L4"
+    assert idle["complete"] is False
+    assert idle["global_readiness"]["level"] == "L5"
+    assert idle["global_readiness"]["record_id"] == verified["persisted_record_id"]
+    assert latest["complete"] is True
+    assert latest["record_id"] == verified["persisted_record_id"]
+
+
+def test_idle_l5_assessments_preserve_verified_readiness_beyond_recent_window(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    verified_report = {
+        "apply": False,
+        "world_model": {"report_type": "l5_world_model"},
+        "roadmap": {"persisted_record_id": "roadmap-verified"},
+        "goal_graph": {"persisted_record_id": "goal-graph-verified"},
+        "autonomous_learning": {
+            "ok": True,
+            "candidate_id": "candidate-verified",
+            "real_task_replay": {
+                "ok": True,
+                "verdict": "pass",
+                "sample_count": 1,
+                "pass_count": 1,
+                "fail_count": 0,
+                "pass_rate": 1.0,
+            },
+            "promotion": {"promotion_request_id": "promotion-verified", "applied": False},
+        },
+        "reward": {"transition_record_id": "reward-verified"},
+        "self_continuity": {"narrative": "Evidence-bound continuity."},
+    }
+    try:
+        verified = runtime.assess_l5_closed_loop(
+            scope=SCOPE,
+            loop_report=verified_report,
+            persist=True,
+            loop_id="verified-before-long-idle-window",
+        )
+        for index in range(100):
+            runtime.assess_l5_closed_loop(
+                scope=SCOPE,
+                loop_report={"autonomous_learning": {"activity_status": "idle"}},
+                persist=True,
+                loop_id=f"idle-window-{index}",
+            )
+        latest = _latest_l5_assessment(runtime, scope=ScopeRef.from_dict(SCOPE))
+    finally:
+        runtime.close()
+
+    assert latest["complete"] is True
+    assert latest["record_id"] == verified["persisted_record_id"]
+
+
+def test_idle_l5_assessment_without_verified_history_remains_fail_closed(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        idle = runtime.assess_l5_closed_loop(
+            scope=SCOPE,
+            loop_report={
+                "world_model": {"report_type": "l5_world_model"},
+                "roadmap": {"persisted_record_id": "roadmap-idle"},
+                "goal_graph": {"persisted_record_id": "goal-graph-idle"},
+                "autonomous_learning": {
+                    "ok": True,
+                    "activity_status": "no_change",
+                    "candidate_count": 0,
+                    "candidate_ids": [],
+                    "promotions": [],
+                },
+                "reward": {"transition_record_id": "reward-idle"},
+                "self_continuity": {"narrative": "Evidence-bound continuity."},
+            },
+            persist=True,
+            loop_id="idle-without-history",
+        )
+        latest = _latest_l5_assessment(runtime, scope=ScopeRef.from_dict(SCOPE))
+    finally:
+        runtime.close()
+
+    assert idle["activity_status"] == "idle"
+    assert idle["level"] == "L4"
+    assert idle["complete"] is False
+    assert idle["global_readiness"]["complete"] is False
+    assert latest["complete"] is False
+
+
+def test_idle_l5_assessment_preserves_prior_non_idle_l4_readiness(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        failed = runtime.assess_l5_closed_loop(
+            scope=SCOPE,
+            loop_report={"world_model": {}},
+            persist=True,
+            loop_id="failed-before-idle",
+        )
+        idle = runtime.assess_l5_closed_loop(
+            scope=SCOPE,
+            loop_report={"autonomous_learning": {"activity_status": "idle"}},
+            persist=True,
+            loop_id="idle-after-failure",
+        )
+        latest = _latest_l5_assessment(runtime, scope=ScopeRef.from_dict(SCOPE))
+    finally:
+        runtime.close()
+
+    assert failed["complete"] is False
+    assert idle["global_readiness"]["complete"] is False
+    assert idle["global_readiness"]["record_id"] == failed["persisted_record_id"]
+    assert latest["record_id"] == failed["persisted_record_id"]
+
+
+def test_non_idle_failure_replaces_verified_global_readiness(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    verified_report = {
+        "world_model": {"report_type": "l5_world_model"},
+        "roadmap": {"persisted_record_id": "roadmap-verified"},
+        "goal_graph": {"persisted_record_id": "goal-graph-verified"},
+        "autonomous_learning": {
+            "ok": True,
+            "candidate_id": "candidate-verified",
+            "real_task_replay": {
+                "ok": True,
+                "verdict": "pass",
+                "sample_count": 1,
+                "pass_count": 1,
+                "fail_count": 0,
+                "pass_rate": 1.0,
+            },
+            "promotion": {"promotion_request_id": "promotion-verified", "applied": False},
+        },
+        "reward": {"transition_record_id": "reward-verified"},
+        "self_continuity": {"narrative": "Evidence-bound continuity."},
+    }
+    failed_report = {
+        "world_model": {"report_type": "l5_world_model"},
+        "roadmap": {"persisted_record_id": "roadmap-failed"},
+        "goal_graph": {"persisted_record_id": "goal-graph-failed"},
+        "autonomous_learning": {
+            "ok": True,
+            "activity_status": "active",
+            "candidate_count": 0,
+            "candidate_ids": [],
+            "real_task_replay": {"ok": True, "verdict": "fail", "sample_count": 1},
+            "promotions": [],
+        },
+        "reward": {"transition_record_id": "reward-failed"},
+        "self_continuity": {"narrative": "Evidence-bound continuity."},
+    }
+    try:
+        runtime.assess_l5_closed_loop(
+            scope=SCOPE,
+            loop_report=verified_report,
+            persist=True,
+            loop_id="verified-before-failure",
+        )
+        failed = runtime.assess_l5_closed_loop(
+            scope=SCOPE,
+            loop_report=failed_report,
+            persist=True,
+            loop_id="real-failure",
+        )
+        latest = _latest_l5_assessment(runtime, scope=ScopeRef.from_dict(SCOPE))
+    finally:
+        runtime.close()
+
+    assert failed["activity_status"] == "active"
+    assert failed["complete"] is False
+    assert latest["complete"] is False
+    assert latest["record_id"] == failed["persisted_record_id"]
+
+
 def test_l5_assessment_persists_each_snapshot_even_when_loop_id_and_verdict_repeat(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     loop_report = {"world_model": {}}

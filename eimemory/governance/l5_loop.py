@@ -359,6 +359,12 @@ def assess_l5_closed_loop(
     report = dict(loop_report or {})
     if not report:
         report = _latest_l5_closed_loop_report(runtime, scope=scope_ref)
+    activity_status = _l5_activity_status(report)
+    prior_global_readiness: dict[str, Any] = {}
+    if activity_status == "idle":
+        from eimemory.governance.l5_readiness import _latest_l5_assessment
+
+        prior_global_readiness = _latest_l5_assessment(runtime, scope=scope_ref)
     report["rollback_refs"] = _executed_rollback_ledger_refs(runtime, scope=scope_ref)
     missing = _missing_evidence(report)
     level = _level_for(report, missing)
@@ -372,6 +378,7 @@ def assess_l5_closed_loop(
         "scope": asdict(scope_ref),
         "level": level,
         "complete": level == "L5",
+        "activity_status": activity_status,
         "missing_evidence": missing,
         "evidence": {
             "world_model_record_id": _record_id(report.get("world_model")),
@@ -390,6 +397,19 @@ def assess_l5_closed_loop(
         "consciousness_research_layer": dict(CONSCIOUSNESS_RESEARCH_LAYER),
         "persisted_record_id": "",
     }
+    assessment["global_readiness"] = (
+        prior_global_readiness
+        if activity_status == "idle" and prior_global_readiness.get("present")
+        else {
+            "present": True,
+            "trusted": True,
+            "complete": assessment["complete"],
+            "assessment_id": assessment_id,
+            "level": level,
+            "missing_evidence": list(missing),
+            "record_id": "",
+        }
+    )
     if persist:
         record = append_learning_record_once(
             runtime,
@@ -408,13 +428,24 @@ def assess_l5_closed_loop(
                 "report_type": "l5_assessment",
                 "assessment_id": assessment_id,
                 "level": level,
+                "activity_status": activity_status,
                 "missing_evidence_count": len(missing),
             },
             evidence=_report_evidence(report),
             source="eimemory.l5_loop",
         )
         assessment["persisted_record_id"] = record.record_id
+        if activity_status != "idle" or not prior_global_readiness.get("present"):
+            assessment["global_readiness"]["record_id"] = record.record_id
     return assessment
+
+
+def _l5_activity_status(report: dict[str, Any]) -> str:
+    autonomous_learning = report.get("autonomous_learning")
+    if not isinstance(autonomous_learning, dict):
+        return "active"
+    status = str(autonomous_learning.get("activity_status") or "").strip().lower()
+    return "idle" if status in {"idle", "no_change"} else "active"
 
 
 def _scope_ref(scope: dict[str, Any] | ScopeRef | None) -> ScopeRef:

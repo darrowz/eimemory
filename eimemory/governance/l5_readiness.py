@@ -596,12 +596,12 @@ def _parse_timestamp(value: Any) -> datetime | None:
 
 
 def _latest_l5_assessment(runtime: Any, *, scope: ScopeRef) -> dict[str, Any]:
-    records = []
+    records: list[Any] = []
     sqlite = getattr(getattr(runtime, "store", None), "sqlite", None)
     conn = getattr(sqlite, "conn", None)
     if conn is not None:
         try:
-            row = conn.execute(
+            rows = conn.execute(
                 """
                 SELECT record_id
                 FROM records
@@ -609,23 +609,32 @@ def _latest_l5_assessment(runtime: Any, *, scope: ScopeRef) -> dict[str, Any]:
                   AND source = 'eimemory.l5_loop'
                   AND tenant_id = ? AND agent_id = ? AND workspace_id = ? AND user_id = ?
                 ORDER BY rowid DESC
-                LIMIT 1
                 """,
                 (scope.tenant_id, scope.agent_id, scope.workspace_id, scope.user_id),
-            ).fetchone()
-            if row is not None:
-                record = runtime.store.get_by_id(str(row[0]), scope=scope)
-                records = [record] if record is not None else []
+            ).fetchall()
+            records = [runtime.store.get_by_id(str(row[0]), scope=scope) for row in rows]
+            records = [record for record in records if record is not None]
         except Exception:
             records = []
     if not records:
         try:
-            records = runtime.store.list_records(kinds=["l5_assessment"], scope=scope, limit=1)
+            offset = 0
+            while True:
+                page = runtime.store.list_records(
+                    kinds=["l5_assessment"],
+                    scope=scope,
+                    limit=100,
+                    offset=offset,
+                )
+                records.extend(page)
+                if len(page) < 100:
+                    break
+                offset += len(page)
         except Exception:
             records = []
     if not records:
         return {"present": False, "trusted": False, "complete": False, "level": "", "missing_evidence": [], "record_id": ""}
-    record = records[0]
+    record = _global_l5_readiness_record(records)
     missing = _record_field(record, "missing_evidence")
     missing_evidence = [str(item) for item in missing] if isinstance(missing, list) else []
     level = str(_record_field(record, "level") or "")
@@ -645,6 +654,16 @@ def _latest_l5_assessment(runtime: Any, *, scope: ScopeRef) -> dict[str, Any]:
         "missing_evidence": missing_evidence,
         "record_id": str(getattr(record, "record_id", "") or ""),
     }
+
+
+def _global_l5_readiness_record(records: list[Any]) -> Any:
+    latest = records[0]
+    if str(_record_field(latest, "activity_status") or "").strip().lower() not in {"idle", "no_change"}:
+        return latest
+    for record in records[1:]:
+        if str(_record_field(record, "activity_status") or "").strip().lower() not in {"idle", "no_change"}:
+            return record
+    return latest
 
 
 def _record_field(record: Any, key: str) -> Any:
