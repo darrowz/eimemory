@@ -295,6 +295,14 @@ _install_openclaw_loop_compat_script
 ln -sfn "$RELEASE_DIR" "$CURRENT_LINK.next"
 mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"
 COMMITTED=1
+if [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ] && command -v systemctl >/dev/null 2>&1; then
+  if [ "$(id -u)" -eq 0 ] && id "$SERVICE_USER" >/dev/null 2>&1; then
+    echo "user_systemd_restart_hint=run as $SERVICE_USER: systemctl --user restart eimemory-rpc.service"
+  else
+    systemctl --user restart eimemory-rpc.service
+    systemctl --user try-restart openclaw-gateway.service
+  fi
+fi
 if [ -n "$BACKUP_DIR" ] && [ -e "$BACKUP_DIR" ]; then
   "$PYTHON_BIN" -I -B "$REPO_DIR/deploy/clean_release_bytecode.py" \
     --remove-stage --release-dir "$BACKUP_DIR" --releases-root "$INSTALL_ROOT/releases" || \

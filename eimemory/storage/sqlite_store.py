@@ -44,6 +44,7 @@ MAX_QUERY_LIMIT = 1000
 _MAX_LEXICAL_ADJUSTMENT = 0.18
 _DEFAULT_CANDIDATE_LIMIT = 360
 _MAX_CANDIDATE_LIMIT = 1200
+_RECORD_META_KEYS_MIGRATION = "records.meta_keys.v1"
 _RECALL_LANE_MEMORY_TYPE_ALIASES = {
     "audit": "audit_record",
     "audit_record": "audit_record",
@@ -109,6 +110,8 @@ class SqliteRecordStore:
         ).fetchone()
         if not existing:
             self._create_records_table()
+            self._create_schema_migrations_table()
+            self._mark_schema_migration(_RECORD_META_KEYS_MIGRATION)
             self._create_indexes()
             self._create_recall_index_tables()
             self._create_memory_edge_tables()
@@ -133,7 +136,9 @@ class SqliteRecordStore:
             self.conn.execute("ALTER TABLE records ADD COLUMN idempotency_key TEXT NOT NULL DEFAULT ''")
         if "semantic_key" not in columns:
             self.conn.execute("ALTER TABLE records ADD COLUMN semantic_key TEXT NOT NULL DEFAULT ''")
+        self._create_schema_migrations_table()
         self._create_indexes()
+        self.conn.commit()
         self._backfill_record_meta_keys_if_needed()
         self._create_recall_index_tables()
         self._create_memory_edge_tables()
@@ -481,22 +486,54 @@ class SqliteRecordStore:
         self.conn.execute("DROP TABLE records_legacy")
         self.conn.commit()
 
-    def _backfill_record_meta_keys_if_needed(self) -> None:
-        rows = self.conn.execute(
+    def _create_schema_migrations_table(self) -> None:
+        self.conn.execute(
             """
-            SELECT storage_key, meta_json
-            FROM records
-            WHERE (idempotency_key = '' OR semantic_key = '')
-            """
-        ).fetchall()
-        for row in rows:
-            idempotency_key, semantic_key = _record_meta_keys_from_json(str(row["meta_json"] or "{}"))
-            if not idempotency_key and not semantic_key:
-                continue
-            self.conn.execute(
-                "UPDATE records SET idempotency_key = ?, semantic_key = ? WHERE storage_key = ?",
-                (idempotency_key, semantic_key, str(row["storage_key"])),
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                migration_id TEXT PRIMARY KEY,
+                applied_at TEXT NOT NULL
             )
+            """
+        )
+
+    def _mark_schema_migration(self, migration_id: str) -> None:
+        self.conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (migration_id, applied_at) VALUES (?, ?)",
+            (migration_id, datetime.now(timezone.utc).isoformat()),
+        )
+
+    def _backfill_record_meta_keys_if_needed(self) -> None:
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            applied = self.conn.execute(
+                "SELECT 1 FROM schema_migrations WHERE migration_id = ?",
+                (_RECORD_META_KEYS_MIGRATION,),
+            ).fetchone()
+            if applied is not None:
+                self.conn.commit()
+                return
+            rows = self.conn.execute(
+                """
+                SELECT storage_key, meta_json
+                FROM records
+                WHERE (idempotency_key = '' OR semantic_key = '')
+                """
+            ).fetchall()
+            updates = []
+            for row in rows:
+                idempotency_key, semantic_key = _record_meta_keys_from_json(str(row["meta_json"] or "{}"))
+                if idempotency_key or semantic_key:
+                    updates.append((idempotency_key, semantic_key, str(row["storage_key"])))
+            if updates:
+                self.conn.executemany(
+                    "UPDATE records SET idempotency_key = ?, semantic_key = ? WHERE storage_key = ?",
+                    updates,
+                )
+            self._mark_schema_migration(_RECORD_META_KEYS_MIGRATION)
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
 
     def upsert(self, record: RecordEnvelope, *, commit: bool = True) -> None:
         payload = record.to_dict()

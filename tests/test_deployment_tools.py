@@ -1100,6 +1100,16 @@ def test_immutable_release_installer_normalizes_service_ownership() -> None:
     assert "retired-by-eimemory-user-systemd" in script
 
 
+def test_immutable_release_installer_restarts_runtimes_after_current_switch() -> None:
+    script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
+
+    current_switch = script.index('mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"')
+    rpc_restart = script.index("systemctl --user restart eimemory-rpc.service")
+    gateway_restart = script.index("systemctl --user try-restart openclaw-gateway.service")
+
+    assert current_switch < rpc_restart < gateway_restart
+
+
 def test_python_runtime_unit_discovery_is_dynamic_deduplicated_and_regular_file_only(tmp_path) -> None:
     systemd_dir = tmp_path / "systemd"
     systemd_dir.mkdir()

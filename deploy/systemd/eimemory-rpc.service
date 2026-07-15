@@ -13,7 +13,7 @@ Environment=EIMEMORY_CONFIG_DIR=/etc/eimemory
 EnvironmentFile=-/home/darrow/.config/eimemory/rpc.env
 Environment=PYTHONPATH=/opt/eimemory/current
 Environment=PYTHONDONTWRITEBYTECODE=1
-Environment=PYTHONPYCACHEPREFIX=/var/lib/eimemory/.pycache/1.9.47
+Environment=PYTHONPYCACHEPREFIX=/var/lib/eimemory/.pycache/1.9.48
 KillMode=mixed
 TimeoutStopSec=10
 ExecStartPre=/opt/eimemory/current/deploy/systemd/eimemory-rpc-cleanup-port.sh 8091 serve-eibrain-rpc

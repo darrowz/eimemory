@@ -1,5 +1,6 @@
 from eimemory.models.memory_edges import MemoryEdge
 from eimemory.models.records import RecordEnvelope, ScopeRef, TimeRef
+from eimemory.storage import sqlite_store as sqlite_store_module
 from eimemory.storage.runtime_store import RuntimeStore
 
 
@@ -126,6 +127,76 @@ def test_runtime_store_creates_hot_path_records_indexes(tmp_path) -> None:
 
     assert "idx_records_kind_scope_status_updated" in index_names
     assert "idx_records_kind_scope_created" in index_names
+
+
+def test_runtime_store_does_not_repeat_meta_key_backfill_after_migration(tmp_path, monkeypatch) -> None:
+    store = RuntimeStore(root=tmp_path)
+    scope = ScopeRef(agent_id="main", workspace_id="migration")
+    for index in range(25):
+        store.append(
+            RecordEnvelope.create(
+                kind="memory",
+                title=f"Ordinary record {index}",
+                summary="This record legitimately has no deduplication keys.",
+                scope=scope,
+            )
+        )
+    store.close()
+
+    calls = 0
+    original = sqlite_store_module._record_meta_keys_from_json
+
+    def _tracked(meta_json: str) -> tuple[str, str]:
+        nonlocal calls
+        calls += 1
+        return original(meta_json)
+
+    monkeypatch.setattr(sqlite_store_module, "_record_meta_keys_from_json", _tracked)
+
+    reopened = RuntimeStore(root=tmp_path)
+    reopened.close()
+
+    assert calls == 0
+
+
+def test_runtime_store_meta_key_migration_backfills_legacy_rows_once(tmp_path) -> None:
+    store = RuntimeStore(root=tmp_path)
+    scope = ScopeRef(agent_id="main", workspace_id="legacy-migration")
+    record = store.append(
+        RecordEnvelope.create(
+            kind="memory",
+            title="Legacy deduplication record",
+            summary="Migration must project keys from meta JSON.",
+            scope=scope,
+            meta={"idempotency_key": "legacy-idem", "semantic_key": "legacy-semantic"},
+        )
+    )
+    storage_key = store.sqlite._storage_key(record)
+    store.sqlite.conn.execute(
+        "UPDATE records SET idempotency_key = '', semantic_key = '' WHERE storage_key = ?",
+        (storage_key,),
+    )
+    store.sqlite.conn.execute(
+        "DELETE FROM schema_migrations WHERE migration_id = ?",
+        (sqlite_store_module._RECORD_META_KEYS_MIGRATION,),
+    )
+    store.sqlite.conn.commit()
+    store.close()
+
+    migrated = RuntimeStore(root=tmp_path)
+    row = migrated.sqlite.conn.execute(
+        "SELECT idempotency_key, semantic_key FROM records WHERE storage_key = ?",
+        (storage_key,),
+    ).fetchone()
+    marker = migrated.sqlite.conn.execute(
+        "SELECT 1 FROM schema_migrations WHERE migration_id = ?",
+        (sqlite_store_module._RECORD_META_KEYS_MIGRATION,),
+    ).fetchone()
+    migrated.close()
+
+    assert row is not None
+    assert (row["idempotency_key"], row["semantic_key"]) == ("legacy-idem", "legacy-semantic")
+    assert marker is not None
 
 
 def test_runtime_store_bulk_upserts_memory_edges_in_one_call(tmp_path) -> None:
