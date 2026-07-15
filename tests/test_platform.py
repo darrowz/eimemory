@@ -1049,13 +1049,172 @@ process.stdout.write(JSON.stringify(names));
     ]
 
 
+def test_openclaw_js_bridge_does_not_block_the_gateway_event_loop(tmp_path) -> None:
+    hook_script = tmp_path / "slow-hook.js"
+    hook_script.write_text(
+        """
+process.stdin.resume();
+process.stdin.on('end', () => {
+  setTimeout(() => process.stdout.write('{}'), 250);
+});
+""".strip(),
+        encoding="utf-8",
+    )
+    script = """
+const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
+const handlers = {};
+plugin.register({ hooks: { on(name, handler) { handlers[name] = handler; } } });
+(async () => {
+  let timerFired = false;
+  const pending = handlers.message_received({ content: 'remember this' });
+  setTimeout(() => { timerFired = true; }, 25);
+  await pending;
+  process.stdout.write(JSON.stringify({ timerFired }));
+})().catch((error) => { console.error(error && error.stack ? error.stack : String(error)); process.exit(1); });
+""".strip()
+    env = os.environ.copy()
+    env["EIMEMORY_HOOK_COMMAND"] = f'node "{hook_script}"'
+    result = subprocess.run(
+        ["node", "-e", script],
+        cwd=Path.cwd(),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"timerFired": True}
+
+
+def test_openclaw_js_bridge_bounds_concurrent_hook_processes(tmp_path) -> None:
+    hook_script = tmp_path / "bounded-hook.js"
+    events_path = tmp_path / "hook-events.jsonl"
+    hook_script.write_text(
+        """
+const fs = require('node:fs');
+process.stdin.resume();
+process.stdin.on('end', () => {
+  fs.appendFileSync(process.env.HOOK_EVENTS, `${JSON.stringify({ type: 'start', pid: process.pid, at: Date.now() })}\n`);
+  setTimeout(() => {
+    fs.appendFileSync(process.env.HOOK_EVENTS, `${JSON.stringify({ type: 'end', pid: process.pid, at: Date.now() })}\n`);
+    process.stdout.write('{}');
+  }, 150);
+});
+""".strip(),
+        encoding="utf-8",
+    )
+    script = """
+const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
+const handlers = {};
+plugin.register({ hooks: { on(name, handler) { handlers[name] = handler; } } });
+Promise.all(Array.from({ length: 5 }, (_, index) => (
+  handlers.agent_end({ sessionId: `session-${index}`, success: true, messages: [] })
+)))
+  .then(() => process.stdout.write('ok'))
+  .catch((error) => { console.error(error && error.stack ? error.stack : String(error)); process.exit(1); });
+""".strip()
+    env = os.environ.copy()
+    env["EIMEMORY_HOOK_COMMAND"] = f'node "{hook_script}"'
+    env["EIMEMORY_MAX_CONCURRENT_COMMANDS"] = "2"
+    env["HOOK_EVENTS"] = str(events_path)
+    result = subprocess.run(
+        ["node", "-e", script],
+        cwd=Path.cwd(),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "ok"
+    events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()]
+    active = 0
+    max_active = 0
+    for event in sorted(events, key=lambda item: (item["at"], item["type"] == "start")):
+        active += 1 if event["type"] == "start" else -1
+        max_active = max(max_active, active)
+    assert max_active == 2
+    assert active == 0
+
+
+def test_openclaw_js_bridge_coalesces_identical_prompt_recall(tmp_path) -> None:
+    hook_script = tmp_path / "coalesced-prompt-hook.js"
+    calls_path = tmp_path / "prompt-call-count.txt"
+    hook_script.write_text(
+        """
+const fs = require('node:fs');
+process.stdin.resume();
+process.stdin.on('end', () => {
+  fs.appendFileSync(process.env.HOOK_CALLS, '1');
+  setTimeout(() => process.stdout.write(JSON.stringify({
+    memory_bundle: {
+      items: [{ id: 'memory-1', summary: 'coalesced memory', memory_type: 'fact' }],
+      explanation: {}
+    }
+  })), 100);
+});
+""".strip(),
+        encoding="utf-8",
+    )
+    script = """
+process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
+const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
+const handlers = {};
+plugin.register({ config: { allowPromptInjection: true }, hooks: { on(name, handler) { handlers[name] = handler; } } });
+const event = { sessionId: 'same-session', prompt: 'same prompt' };
+Promise.all([handlers.before_prompt_build(event), handlers.before_prompt_build(event)])
+  .then((results) => process.stdout.write(JSON.stringify(results)))
+  .catch((error) => { console.error(error && error.stack ? error.stack : String(error)); process.exit(1); });
+""".strip()
+    env = os.environ.copy()
+    env["EIMEMORY_HOOK_COMMAND"] = f'node "{hook_script}"'
+    env["HOOK_CALLS"] = str(calls_path)
+    result = subprocess.run(
+        ["node", "-e", script],
+        cwd=Path.cwd(),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    results = json.loads(result.stdout)
+    assert results[0] == results[1]
+    assert "coalesced memory" in results[0]["prependContext"]
+    assert calls_path.read_text(encoding="utf-8") == "1"
+
+
 def test_openclaw_js_bridge_gives_terminal_hooks_a_longer_default_timeout(tmp_path) -> None:
     script = """
 const childProcess = require('node:child_process');
+const { EventEmitter } = require('node:events');
+const { PassThrough } = require('node:stream');
 const calls = [];
-childProcess.spawnSync = (_command, args, options) => {
-  calls.push({ hook: args[args.length - 1], timeout: options.timeout });
-  return { status: 0, stdout: '{}', stderr: '' };
+const realSetTimeout = global.setTimeout;
+childProcess.spawn = (_command, args) => {
+  const call = { hook: args[args.length - 1], timeout: null };
+  calls.push(call);
+  const child = new EventEmitter();
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  child.stdin = new PassThrough();
+  child.kill = () => true;
+  child.stdin.on('finish', () => setImmediate(() => {
+    child.stdout.end('{}');
+    child.stderr.end();
+    child.emit('close', 0, null);
+  }));
+  return child;
+};
+global.setTimeout = (handler, timeout, ...args) => {
+  if (calls.length && timeout >= 8000) calls[calls.length - 1].timeout = timeout;
+  return realSetTimeout(handler, timeout, ...args);
 };
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const handlers = {};
@@ -1880,23 +2039,27 @@ plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { ha
 
 
 def test_openclaw_js_bridge_forwards_run_id_after_prompt_hook_timeout(tmp_path) -> None:
-    script = """
-const childProcess = require('node:child_process');
-const calls = [];
-childProcess.spawnSync = (_command, args, options) => {
-  const hook = args[args.length - 1];
-  calls.push({ hook, payload: JSON.parse(options.input || '{}') });
+    hook_script = tmp_path / "timeout-then-record.js"
+    calls_path = tmp_path / "hook-calls.jsonl"
+    hook_script.write_text(
+        """
+const fs = require('node:fs');
+const hook = process.argv[2] || '';
+let input = '';
+process.stdin.on('data', (chunk) => { input += chunk; });
+process.stdin.on('end', () => {
+  const payload = JSON.parse(input || '{}');
+  fs.appendFileSync(process.env.HOOK_CALLS, `${JSON.stringify({ hook, payload })}\n`);
   if (hook === 'before_prompt_build') {
-    const error = new Error('prompt hook timed out');
-    error.code = 'ETIMEDOUT';
-    return { error, status: null, stdout: '', stderr: '' };
+    setTimeout(() => process.stdout.write('{}'), 250);
+    return;
   }
-  return {
-    status: 0,
-    stdout: JSON.stringify({ loop_task: { task_id: 'task-run-timeout', status: 'done' } }),
-    stderr: '',
-  };
-};
+  process.stdout.write(JSON.stringify({ loop_task: { task_id: 'task-run-timeout', status: 'done' } }));
+});
+""".strip(),
+        encoding="utf-8",
+    )
+    script = """
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const handlers = {};
 process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
@@ -1908,10 +2071,13 @@ plugin.register({
   const context = { runId: 'run-timeout', sessionId: 'sess-timeout' };
   await handlers.before_prompt_build({ prompt: 'inspect service health' }, context);
   await handlers.agent_end({ success: true, messages: [] }, context);
-  process.stdout.write(JSON.stringify(calls));
+  process.stdout.write('ok');
 })().catch((error) => { console.error(error && error.stack ? error.stack : String(error)); process.exit(1); });
 """.strip()
     env = os.environ.copy()
+    env["EIMEMORY_HOOK_COMMAND"] = f'node "{hook_script}"'
+    env["EIMEMORY_HOOK_TIMEOUT_MS"] = "75"
+    env["HOOK_CALLS"] = str(calls_path)
     env["OPENCLAW_CONFIG_PATH"] = str(tmp_path / "missing-openclaw.json")
     result = subprocess.run(
         ["node", "-e", script],
@@ -1924,7 +2090,8 @@ plugin.register({
     )
 
     assert result.returncode == 0, result.stderr
-    calls = json.loads(result.stdout)
+    assert result.stdout == "ok"
+    calls = [json.loads(line) for line in calls_path.read_text(encoding="utf-8").splitlines()]
     assert [call["hook"] for call in calls] == ["before_prompt_build", "agent_end"]
     assert [call["payload"]["run_id"] for call in calls] == ["run-timeout", "run-timeout"]
 

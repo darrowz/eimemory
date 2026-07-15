@@ -1,6 +1,6 @@
 'use strict';
 
-const { spawnSync } = require('node:child_process');
+const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -15,6 +15,9 @@ const DEFAULT_HOOK_CACHE_TTL_MS = 10000;
 const DEFAULT_HOOK_TIMEOUT_MS = 8000;
 const DEFAULT_TERMINAL_HOOK_TIMEOUT_MS = 30000;
 const DEFAULT_BRIDGE_TIMEOUT_MS = 8000;
+const DEFAULT_MAX_CONCURRENT_COMMANDS = 2;
+const DEFAULT_MAX_QUEUED_COMMANDS = 32;
+const DEFAULT_MAX_COMMAND_OUTPUT_BYTES = 4 * 1024 * 1024;
 const LOOP_TASK_CORRELATION_TTL_MS = 2 * 60 * 60 * 1000;
 const COMPLETION_GATE_RETRY_KEY = 'eimemory-completion-gate-v1';
 const UNRESOLVED_COMPLETION_MARKERS = [
@@ -56,7 +59,10 @@ function registrationState() {
 }
 
 const hookResultCache = new Map();
+const hookResultInflight = new Map();
 const pendingLoopTasks = new Map();
+const commandQueue = [];
+let activeCommandCount = 0;
 
 function nowMs() {
   return Date.now();
@@ -699,7 +705,117 @@ function normalizeContent(content) {
   return String(content);
 }
 
-function invokeHook(api, hook, event) {
+function drainCommandQueue() {
+  const maxConcurrent = positiveIntEnv(
+    'EIMEMORY_MAX_CONCURRENT_COMMANDS',
+    DEFAULT_MAX_CONCURRENT_COMMANDS
+  );
+  while (activeCommandCount < maxConcurrent && commandQueue.length) {
+    const queued = commandQueue.shift();
+    activeCommandCount += 1;
+    Promise.resolve()
+      .then(queued.start)
+      .then(queued.resolve, queued.reject)
+      .finally(() => {
+        activeCommandCount = Math.max(0, activeCommandCount - 1);
+        drainCommandQueue();
+      });
+  }
+}
+
+function scheduleCommand(start) {
+  const maxQueued = positiveIntEnv('EIMEMORY_MAX_QUEUED_COMMANDS', DEFAULT_MAX_QUEUED_COMMANDS);
+  if (commandQueue.length >= maxQueued) {
+    const error = new Error(`eimemory command queue is full (${maxQueued})`);
+    error.code = 'EIMEMORY_QUEUE_FULL';
+    return Promise.reject(error);
+  }
+  return new Promise((resolve, reject) => {
+    commandQueue.push({ start, resolve, reject });
+    drainCommandQueue();
+  });
+}
+
+function runCommand(command, args, { input = '', timeout = 0 } = {}) {
+  return scheduleCommand(() => new Promise((resolve, reject) => {
+    const maxOutputBytes = positiveIntEnv(
+      'EIMEMORY_MAX_COMMAND_OUTPUT_BYTES',
+      DEFAULT_MAX_COMMAND_OUTPUT_BYTES
+    );
+    const child = spawn(command, args, {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+    const stdout = [];
+    const stderr = [];
+    let outputBytes = 0;
+    let settled = false;
+    let timer;
+
+    const fail = (error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      reject(error);
+    };
+    const collect = (target, chunk) => {
+      outputBytes += chunk.length;
+      if (outputBytes > maxOutputBytes) {
+        const error = new Error(`eimemory command output exceeded ${maxOutputBytes} bytes`);
+        error.code = 'EIMEMORY_OUTPUT_LIMIT';
+        child.kill('SIGKILL');
+        fail(error);
+        return;
+      }
+      target.push(chunk);
+    };
+
+    child.stdout.on('data', (chunk) => collect(stdout, chunk));
+    child.stderr.on('data', (chunk) => collect(stderr, chunk));
+    child.on('error', fail);
+    child.on('close', (status, signal) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      const stdoutText = Buffer.concat(stdout).toString('utf-8');
+      const stderrText = Buffer.concat(stderr).toString('utf-8');
+      if (status !== 0) {
+        const error = new Error(
+          stderrText || stdoutText || `eimemory command exited with ${status ?? signal ?? 'unknown'}`
+        );
+        error.status = status;
+        error.signal = signal;
+        reject(error);
+        return;
+      }
+      resolve({ status, stdout: stdoutText, stderr: stderrText });
+    });
+
+    if (timeout > 0) {
+      timer = setTimeout(() => {
+        const error = new Error(`eimemory command timed out after ${timeout}ms`);
+        error.code = 'ETIMEDOUT';
+        child.kill('SIGTERM');
+        const forceKill = setTimeout(() => child.kill('SIGKILL'), 250);
+        forceKill.unref?.();
+        fail(error);
+      }, timeout);
+      timer.unref?.();
+    }
+    child.stdin.on('error', (error) => {
+      if (error?.code !== 'EPIPE') {
+        fail(error);
+      }
+    });
+    child.stdin.end(input);
+  }));
+}
+
+async function invokeHook(api, hook, event) {
   const payload = normalizeEventPayload(hook, event);
   const key = cacheKeyFor('hook', hook, payload);
   const cacheable = hook === 'before_prompt_build';
@@ -709,68 +825,77 @@ function invokeHook(api, hook, event) {
     if (cached) {
       return cached.value;
     }
+    const inflight = hookResultInflight.get(key);
+    if (inflight) {
+      return await inflight;
+    }
   }
   const command = resolveHookCommand();
-  const result = spawnSync(command[0], [...command.slice(1), hook], {
-    input: JSON.stringify(payload),
-    encoding: 'utf-8',
-    timeout: configuredHookTimeout(api, hook, defaultHookTimeoutMs(hook)),
-  });
-  if (result.error) {
-    throw result.error;
-  }
-  if (result.status !== 0) {
-    throw new Error(result.stderr || result.stdout || `eimemory hook ${hook} failed`);
-  }
-  const parsed = JSON.parse(result.stdout || '{}');
+  const pending = (async () => {
+    const result = await runCommand(command[0], [...command.slice(1), hook], {
+      input: JSON.stringify(payload),
+      timeout: configuredHookTimeout(api, hook, defaultHookTimeoutMs(hook)),
+    });
+    const parsed = JSON.parse(result.stdout || '{}');
+    if (cacheable) {
+      hookResultCache.set(key, { createdAt: nowMs(), value: parsed });
+    }
+    return parsed;
+  })();
   if (cacheable) {
-    hookResultCache.set(key, { createdAt: nowMs(), value: parsed });
+    hookResultInflight.set(key, pending);
   }
-  return parsed;
+  try {
+    return await pending;
+  } finally {
+    if (cacheable && hookResultInflight.get(key) === pending) {
+      hookResultInflight.delete(key);
+    }
+  }
 }
 
-function invokeBridge(api, event) {
+async function invokeBridge(api, event) {
   const key = cacheKeyFor('bridge', 'feishu', event);
   pruneHookCache();
   const cached = hookResultCache.get(key);
   if (cached) {
     return cached.value;
   }
+  const inflight = hookResultInflight.get(key);
+  if (inflight) {
+    return await inflight;
+  }
   const command = resolveBridgeCommand();
-  const result = spawnSync(command[0], [...command.slice(1)], {
-    input: JSON.stringify(event),
-    encoding: 'utf-8',
-    timeout: configuredBridgeTimeout(api, DEFAULT_BRIDGE_TIMEOUT_MS),
-  });
-  if (result.error) {
-    throw result.error;
+  const pending = (async () => {
+    const result = await runCommand(command[0], [...command.slice(1)], {
+      input: JSON.stringify(event),
+      timeout: configuredBridgeTimeout(api, DEFAULT_BRIDGE_TIMEOUT_MS),
+    });
+    const parsed = JSON.parse(result.stdout || '{}');
+    hookResultCache.set(key, { createdAt: nowMs(), value: parsed });
+    return parsed;
+  })();
+  hookResultInflight.set(key, pending);
+  try {
+    return await pending;
+  } finally {
+    if (hookResultInflight.get(key) === pending) {
+      hookResultInflight.delete(key);
+    }
   }
-  if (result.status !== 0) {
-    throw new Error(result.stderr || result.stdout || 'ei-bridge feishu failed');
-  }
-  const parsed = JSON.parse(result.stdout || '{}');
-  hookResultCache.set(key, { createdAt: nowMs(), value: parsed });
-  return parsed;
 }
 
-function invokeCli(args) {
+async function invokeCli(args) {
   const command = resolveCliCommand();
-  const result = spawnSync(command[0], [...command.slice(1), ...args], {
-    encoding: 'utf-8',
+  const result = await runCommand(command[0], [...command.slice(1), ...args], {
     timeout: Number(process.env.EIMEMORY_TOOL_TIMEOUT_MS || 30000),
   });
-  if (result.error) {
-    throw result.error;
-  }
-  if (result.status !== 0) {
-    throw new Error(result.stderr || result.stdout || `eimemory cli failed: ${args.join(' ')}`);
-  }
   return JSON.parse(result.stdout || '{}');
 }
 
-function safeInvokeHook(api, hook, event) {
+async function safeInvokeHook(api, hook, event) {
   try {
-    const result = invokeHook(api, hook, event);
+    const result = await invokeHook(api, hook, event);
     api?.logger?.info?.(`eimemory-bridge: ${hook} completed`);
     return result;
   } catch (error) {
@@ -788,9 +913,9 @@ function safeInvokeHook(api, hook, event) {
   }
 }
 
-function safeInvokeBridge(api, event) {
+async function safeInvokeBridge(api, event) {
   try {
-    const result = invokeBridge(api, event);
+    const result = await invokeBridge(api, event);
     api?.logger?.info?.('eimemory-bridge: ei-bridge feishu completed');
     return result;
   } catch (error) {
@@ -1083,7 +1208,7 @@ function registerMemoryE2ETool(api) {
       }
       let result;
       try {
-        result = invokeCli(args);
+        result = await invokeCli(args);
       } catch (error) {
         const command = resolveCliCommand();
         const ledgerPath = recordTransportFailure({
@@ -1123,16 +1248,16 @@ module.exports.default = {
     registerStatusTool(api);
     registerMemoryE2ETool(api);
     registerTypedHookOnce(api, 'message_received', async (event, context) => (
-      safeInvokeHook(api, 'message_received', mergeHookEventContext(event, context)) || {}
+      (await safeInvokeHook(api, 'message_received', mergeHookEventContext(event, context))) || {}
     ));
     if (promptInjectionEnabled(api)) {
       registerTypedHookOnce(api, 'before_prompt_build', async (event, context) => {
         const contextualEvent = mergeHookEventContext(event, context);
         const correlatedEvent = correlatePendingLoopTask(contextualEvent);
         const bridgePayload = shouldInvokeBridgeBeforePrompt(api, correlatedEvent)
-          ? safeInvokeBridge(api, normalizeEventPayload('before_prompt_build', correlatedEvent))
+          ? await safeInvokeBridge(api, normalizeEventPayload('before_prompt_build', correlatedEvent))
           : null;
-        const payload = safeInvokeHook(api, 'before_prompt_build', correlatedEvent);
+        const payload = await safeInvokeHook(api, 'before_prompt_build', correlatedEvent);
         rememberLoopTask(correlatedEvent, payload);
         const bridgeContext = buildBridgePrependContext(bridgePayload);
         if (!payload) {
@@ -1152,13 +1277,13 @@ module.exports.default = {
     }
     registerTypedHookOnce(api, 'agent_end', async (event, context) => {
       const correlatedEvent = correlatePendingLoopTask(mergeHookEventContext(event, context));
-      const result = safeInvokeHook(api, 'agent_end', correlatedEvent) || {};
+      const result = (await safeInvokeHook(api, 'agent_end', correlatedEvent)) || {};
       forgetTerminalLoopTask(correlatedEvent, result);
       return result;
     });
     registerTypedHookOnce(api, 'session_end', async (event, context) => {
       const correlatedEvent = correlatePendingLoopTask(mergeHookEventContext(event, context));
-      const result = safeInvokeHook(api, 'session_end', correlatedEvent) || {};
+      const result = (await safeInvokeHook(api, 'session_end', correlatedEvent)) || {};
       forgetTerminalLoopTask(correlatedEvent, result);
       return result;
     });
