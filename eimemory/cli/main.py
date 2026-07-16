@@ -390,6 +390,15 @@ def _build_parser() -> argparse.ArgumentParser:
     learn_live_acceptance.add_argument("--scope-workspace", default="")
     learn_live_acceptance.add_argument("--scope-user", default="")
     learn_live_acceptance.add_argument("--json", action="store_true", default=True)
+    learn_release_closure = learn_sub.add_parser("release-closure")
+    learn_release_closure.add_argument("--repo-root", required=True)
+    learn_release_closure.add_argument("--current-link", required=True)
+    learn_release_closure.add_argument("--health-url", required=True)
+    learn_release_closure.add_argument("--prior-commit", required=True)
+    learn_release_closure.add_argument("--scope-agent", default="")
+    learn_release_closure.add_argument("--scope-workspace", default="")
+    learn_release_closure.add_argument("--scope-user", default="")
+    learn_release_closure.add_argument("--json", action="store_true", default=True)
     learn_deployment_receipt = learn_sub.add_parser("deployment-receipt")
     learn_deployment_receipt.add_argument("--repo-root", required=True)
     learn_deployment_receipt.add_argument("--current-link", required=True)
@@ -1242,6 +1251,16 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0 if report.get("ok") else 1
+        if parsed.learn_command == "release-closure":
+            report = runtime.run_release_closure(
+                scope=_cli_scope(parsed, defaults=scope),
+                repo_root=str(parsed.repo_root),
+                current_link=str(parsed.current_link),
+                health_url=str(parsed.health_url),
+                prior_commit=str(parsed.prior_commit),
+            )
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0 if report.get("ok") else 1
         if parsed.learn_command == "deployment-receipt":
             report = runtime.verify_and_record_deployment(
                 scope=_cli_scope(parsed, defaults=scope),
@@ -1376,7 +1395,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0 if report.get("ok") else 1
-        print(json.dumps({"usage": "eimemory learn watch|think|cycle|autonomy|evaluator-harness|loops|goals|candidates|ledger|replay-dataset|goal-graph|world-model|roadmap|l5|l5-assess|l5-readiness|closure-rehearsal|live-acceptance|deployment-receipt|capability-acceptance|capability-replay|safety-replay|skills|skill-call|metrics|compact|report|dashboard|promote"}))
+        print(json.dumps({"usage": "eimemory learn watch|think|cycle|autonomy|evaluator-harness|loops|goals|candidates|ledger|replay-dataset|goal-graph|world-model|roadmap|l5|l5-assess|l5-readiness|closure-rehearsal|live-acceptance|release-closure|deployment-receipt|capability-acceptance|capability-replay|safety-replay|skills|skill-call|metrics|compact|report|dashboard|promote"}))
         return 0
     if parsed.command == "recall":
         task_context = {"task_type": "cli.recall"}

@@ -835,6 +835,26 @@ class Runtime:
             prior_commit=prior_commit,
         )
 
+    def run_release_closure(
+        self,
+        *,
+        scope: dict | None = None,
+        repo_root: str,
+        current_link: str,
+        health_url: str,
+        prior_commit: str,
+    ) -> dict:
+        from eimemory.governance.release_closure import run_release_closure
+
+        return run_release_closure(
+            self,
+            scope=scope,
+            repo_root=repo_root,
+            current_link=current_link,
+            health_url=health_url,
+            prior_commit=prior_commit,
+        )
+
     def run_capability_acceptance(
         self,
         *,

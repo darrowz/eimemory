@@ -4,6 +4,9 @@ from copy import deepcopy
 
 import pytest
 
+from eimemory.api.runtime import Runtime
+from eimemory.cli.main import main as cli_main
+from eimemory.governance import release_closure as release_closure_module
 from eimemory.governance.release_closure import run_release_closure
 
 
@@ -18,6 +21,73 @@ CURRENT_LINK = "/opt/eimemory/current"
 HEALTH_URL = "http://127.0.0.1:8091/health"
 PRIOR_COMMIT = "a" * 40
 CURRENT_COMMIT = "b" * 40
+
+
+def test_runtime_exposes_release_closure(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    calls: list[tuple[object, dict]] = []
+
+    def fake_run(runtime_arg, **kwargs):
+        calls.append((runtime_arg, kwargs))
+        return {"ok": True, "closure_complete": True}
+
+    monkeypatch.setattr(release_closure_module, "run_release_closure", fake_run)
+    try:
+        report = runtime.run_release_closure(**_identity_kwargs())
+    finally:
+        runtime.close()
+
+    assert report["ok"] is True
+    assert calls == [(runtime, _identity_kwargs())]
+
+
+@pytest.mark.parametrize(("ok", "expected_exit"), [(True, 0), (False, 1)])
+def test_release_closure_cli_dispatches_scoped_gate(
+    tmp_path,
+    monkeypatch,
+    capsys,
+    ok: bool,
+    expected_exit: int,
+) -> None:
+    monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path))
+    calls: list[dict] = []
+
+    def fake_run(_runtime, **kwargs):
+        calls.append(kwargs)
+        return {
+            "ok": ok,
+            "closure_complete": ok,
+            "blocked_stage": "" if ok else "readiness",
+            "blocked_reason": "" if ok else "readiness_not_l5",
+        }
+
+    monkeypatch.setattr(release_closure_module, "run_release_closure", fake_run)
+
+    exit_code = cli_main(
+        [
+            "learn",
+            "release-closure",
+            "--repo-root",
+            REPO_ROOT,
+            "--current-link",
+            CURRENT_LINK,
+            "--health-url",
+            HEALTH_URL,
+            "--prior-commit",
+            PRIOR_COMMIT,
+            "--scope-agent",
+            SCOPE["agent_id"],
+            "--scope-workspace",
+            SCOPE["workspace_id"],
+            "--scope-user",
+            SCOPE["user_id"],
+        ]
+    )
+    output = __import__("json").loads(capsys.readouterr().out)
+
+    assert exit_code == expected_exit
+    assert output["ok"] is ok
+    assert calls == [_identity_kwargs()]
 
 
 class FakeRuntime:
