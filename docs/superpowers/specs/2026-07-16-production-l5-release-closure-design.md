@@ -38,10 +38,11 @@ Historical records without explicit activity status remain active by default. Th
 Add one production command that executes these stages in order:
 
 1. Verify the immutable release and persist a deployment receipt for the current commit, using the prior mainline commit as rollback evidence.
-2. Run the ten commit-bound live acceptance cases and require all case records to validate against that deployment receipt.
-3. Run the L5 closure rehearsal. This creates a fresh capability acceptance execution and fresh replay manifests for `search.discovery`, `research.synthesis`, `operations.uumit`, and `device.control`; historical invalid manifests are not mutated or trusted.
-4. Build and persist the final readiness report.
-5. Return success only when closure rehearsal reports complete and the final report is exactly `current_stage=L5`, `readiness_score=1.0`, with current-deployment live evidence and verified weak-capability replay evidence present.
+2. Bootstrap a fresh capability acceptance execution and replay manifests for `search.discovery`, `research.synthesis`, `operations.uumit`, and `device.control`; historical invalid manifests are not mutated or trusted.
+3. Run the ten commit-bound live acceptance cases and require all case records, including replay integrity, to validate against that deployment receipt and the fresh manifests.
+4. Run the L5 closure rehearsal while reusing the validated bootstrap evidence, avoiding a duplicate replay execution.
+5. Build and persist the final readiness report.
+6. Return success only when closure rehearsal reports complete and the final report is exactly `current_stage=L5`, `readiness_score=1.0`, with current-deployment live evidence and verified weak-capability replay evidence present.
 
 The command returns a structured report containing each stage result, current commit/version/release identity, persisted record identifiers, and a single blocked stage/reason when it stops. A failed stage prevents later stages from running.
 
@@ -52,9 +53,9 @@ The existing individual commands remain available for diagnosis. The new command
 - `eimemory/governance/autonomous_learning.py`: produce explicit activity status from the full cycle.
 - `eimemory/scheduler/jobs.py`: preserve activity and gate evidence in the reusable nightly summary.
 - `eimemory/governance/l5_loop.py`: consume only explicit idle status and keep active failures authoritative.
-- `eimemory/governance/release_closure.py`: orchestrate deployment receipt, live acceptance, rehearsal, and readiness.
+- `eimemory/governance/release_closure.py`: orchestrate deployment receipt, replay bootstrap, live acceptance, rehearsal, and readiness.
 - `eimemory/api/runtime.py` and `eimemory/cli/main.py`: expose `learn release-closure`.
-- Deployment contract tests and systemd files: keep package and bytecode-cache versions aligned at `1.9.50`.
+- Deployment contract tests and systemd files: keep package and bytecode-cache versions aligned at `1.9.51`.
 
 ## Data Flow
 
@@ -67,8 +68,8 @@ full autonomous report
 
 immutable deploy + service restart
   -> verified deployment receipt
-  -> current-commit live acceptance
   -> fresh weak-capability replay manifests
+  -> current-commit live acceptance
   -> L5 closure rehearsal
   -> independent readiness report
   -> release accepted or blocked
@@ -96,12 +97,12 @@ Use TDD and observe each regression test fail before implementation.
 
 ## Release and Production Acceptance
 
-- Bump `pyproject.toml`, `eimemory/version.py`, and version-pinned systemd cache paths from `1.9.49` to `1.9.50`.
+- Bump `pyproject.toml`, `eimemory/version.py`, and version-pinned systemd cache paths to `1.9.51`; 1.9.50 exposed the replay/live-acceptance ordering dependency during production closure.
 - Commit on `fix/l5-closure-1.9.50`, push the branch, and fast-forward it into `master` from the clean authoritative honxin checkout at `/dev-project/eimemory` so the dirty local main checkout is not overwritten.
 - Push `master`, install the immutable release for the resulting mainline commit, and restart required services.
 - Run `learn release-closure` against the live release.
 - Run a separate read-only `learn l5-readiness` process after the orchestrator completes.
-- Completion requires `/health`, current release link, repository HEAD, deployment receipt, live acceptance, closure rehearsal, and independent readiness to identify the same `1.9.50` commit.
+- Completion requires `/health`, current release link, repository HEAD, deployment receipt, live acceptance, closure rehearsal, and independent readiness to identify the same `1.9.51` commit.
 
 ## Non-Goals
 

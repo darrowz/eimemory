@@ -27,6 +27,7 @@ def run_release_closure(
         "deployment": {},
         "record_ids": {},
         "deployment_receipt": dict(not_run),
+        "replay_bootstrap": dict(not_run),
         "live_acceptance": dict(not_run),
         "closure_rehearsal": dict(not_run),
         "readiness": dict(not_run),
@@ -46,12 +47,29 @@ def run_release_closure(
     report["deployment"] = _deployment_identity(receipt)
     report["record_ids"]["deployment_receipt"] = str(receipt.get("promotion_request_id") or "")
 
+    replay_bootstrap = runtime.run_weak_capability_replay_gate(
+        scope=scope_payload,
+        persist=True,
+        loop_id="release_closure_bootstrap",
+    )
+    report["replay_bootstrap"] = replay_bootstrap
+    if replay_bootstrap.get("ok") is not True:
+        return _blocked(
+            report,
+            "replay_bootstrap",
+            _failure_reason(replay_bootstrap, "weak_capability_replay_failed"),
+        )
+
     live_acceptance = runtime.run_live_task_acceptance(**identity_kwargs)
     report["live_acceptance"] = live_acceptance
     if not _live_acceptance_ok(live_acceptance, receipt=receipt):
         return _blocked(report, "live_acceptance", _failure_reason(live_acceptance, "live_acceptance_failed"))
 
-    rehearsal = runtime.run_l5_closure_rehearsal(scope=scope_payload, persist=True)
+    rehearsal = runtime.run_l5_closure_rehearsal(
+        scope=scope_payload,
+        persist=True,
+        replay_bootstrap=replay_bootstrap,
+    )
     report["closure_rehearsal"] = rehearsal
     if rehearsal.get("ok") is not True or rehearsal.get("closure_complete") is not True:
         return _blocked(report, "closure_rehearsal", _failure_reason(rehearsal, "closure_rehearsal_failed"))

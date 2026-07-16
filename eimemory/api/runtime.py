@@ -810,10 +810,32 @@ class Runtime:
         *,
         scope: dict | None = None,
         persist: bool = True,
+        replay_bootstrap: dict | None = None,
     ) -> dict:
         from eimemory.governance.closure_rehearsal import run_l5_closure_rehearsal
 
-        return run_l5_closure_rehearsal(self, scope=scope, persist=persist)
+        return run_l5_closure_rehearsal(
+            self,
+            scope=scope,
+            persist=persist,
+            replay_bootstrap=replay_bootstrap,
+        )
+
+    def run_weak_capability_replay_gate(
+        self,
+        *,
+        scope: dict | None = None,
+        persist: bool = True,
+        loop_id: str = "l5_closure_rehearsal",
+    ) -> dict:
+        from eimemory.governance.closure_rehearsal import run_weak_capability_replay_gate
+
+        return run_weak_capability_replay_gate(
+            self,
+            scope=scope,
+            persist=persist,
+            loop_id=loop_id,
+        )
 
     def run_live_task_acceptance(
         self,

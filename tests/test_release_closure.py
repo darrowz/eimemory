@@ -6,6 +6,7 @@ import pytest
 
 from eimemory.api.runtime import Runtime
 from eimemory.cli.main import main as cli_main
+from eimemory.governance import closure_rehearsal as closure_rehearsal_module
 from eimemory.governance import release_closure as release_closure_module
 from eimemory.governance.release_closure import run_release_closure
 
@@ -39,6 +40,25 @@ def test_runtime_exposes_release_closure(tmp_path, monkeypatch) -> None:
 
     assert report["ok"] is True
     assert calls == [(runtime, _identity_kwargs())]
+
+
+def test_runtime_exposes_weak_capability_replay_gate(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    calls: list[tuple[object, dict]] = []
+
+    def fake_run(runtime_arg, **kwargs):
+        calls.append((runtime_arg, kwargs))
+        return _successful_replay_bootstrap()
+
+    monkeypatch.setattr(closure_rehearsal_module, "run_weak_capability_replay_gate", fake_run)
+    kwargs = {"scope": SCOPE, "persist": True, "loop_id": "release_closure_bootstrap"}
+    try:
+        report = runtime.run_weak_capability_replay_gate(**kwargs)
+    finally:
+        runtime.close()
+
+    assert report["ok"] is True
+    assert calls == [(runtime, kwargs)]
 
 
 @pytest.mark.parametrize(("ok", "expected_exit"), [(True, 0), (False, 1)])
@@ -95,12 +115,14 @@ class FakeRuntime:
         self,
         *,
         receipt: dict | None = None,
+        replay_bootstrap: dict | None = None,
         live_acceptance: dict | None = None,
         rehearsal: dict | None = None,
         readiness: dict | None = None,
     ) -> None:
         self.calls: list[str] = []
         self.receipt = receipt or _successful_receipt()
+        self.replay_bootstrap = replay_bootstrap or _successful_replay_bootstrap()
         self.live_acceptance = live_acceptance or _successful_live_acceptance()
         self.rehearsal = rehearsal or _successful_rehearsal()
         self.readiness = readiness or _successful_readiness()
@@ -119,9 +141,22 @@ class FakeRuntime:
         assert kwargs == _identity_kwargs()
         return deepcopy(self.live_acceptance)
 
+    def run_weak_capability_replay_gate(self, **kwargs) -> dict:
+        self.calls.append("replay_bootstrap")
+        assert kwargs == {
+            "scope": SCOPE,
+            "persist": True,
+            "loop_id": "release_closure_bootstrap",
+        }
+        return deepcopy(self.replay_bootstrap)
+
     def run_l5_closure_rehearsal(self, **kwargs) -> dict:
         self.calls.append("closure_rehearsal")
-        assert kwargs == {"scope": SCOPE, "persist": True}
+        assert kwargs == {
+            "scope": SCOPE,
+            "persist": True,
+            "replay_bootstrap": self.replay_bootstrap,
+        }
         return deepcopy(self.rehearsal)
 
     def build_l5_readiness_report(self, **kwargs) -> dict:
@@ -140,14 +175,20 @@ def test_release_closure_runs_all_stages_in_order() -> None:
 
     report = _run(runtime)
 
-    assert runtime.calls == ["deployment_receipt", "live_acceptance", "closure_rehearsal", "readiness"]
+    assert runtime.calls == [
+        "deployment_receipt",
+        "replay_bootstrap",
+        "live_acceptance",
+        "closure_rehearsal",
+        "readiness",
+    ]
     assert report["ok"] is True
     assert report["closure_complete"] is True
     assert report["blocked_stage"] == ""
     assert report["blocked_reason"] == ""
     assert report["deployment"] == {
         "commit": CURRENT_COMMIT,
-        "version": "1.9.50",
+        "version": "1.9.51",
         "release_path": f"/opt/eimemory/releases/{CURRENT_COMMIT}",
         "promotion_request_id": "receipt-1",
     }
@@ -167,21 +208,27 @@ def test_release_closure_runs_all_stages_in_order() -> None:
             "health_commit_mismatch",
         ),
         (
+            "replay_bootstrap",
+            {"replay_bootstrap": {"ok": False, "blocked_reasons": ["weak_capability_replay_failed"]}},
+            ["deployment_receipt", "replay_bootstrap"],
+            "weak_capability_replay_failed",
+        ),
+        (
             "live_acceptance",
             {"live_acceptance": {"ok": False, "error": "acceptance_case_failed"}},
-            ["deployment_receipt", "live_acceptance"],
+            ["deployment_receipt", "replay_bootstrap", "live_acceptance"],
             "acceptance_case_failed",
         ),
         (
             "closure_rehearsal",
             {"rehearsal": {"ok": False, "closure_complete": False, "blocked_reasons": ["replay_failed"]}},
-            ["deployment_receipt", "live_acceptance", "closure_rehearsal"],
+            ["deployment_receipt", "replay_bootstrap", "live_acceptance", "closure_rehearsal"],
             "replay_failed",
         ),
         (
             "readiness",
             {"readiness_score": 0.9},
-            ["deployment_receipt", "live_acceptance", "closure_rehearsal", "readiness"],
+            ["deployment_receipt", "replay_bootstrap", "live_acceptance", "closure_rehearsal", "readiness"],
             "readiness_not_l5",
         ),
     ],
@@ -248,7 +295,7 @@ def _successful_receipt() -> dict:
         "ok": True,
         "report_type": "deployment_receipt",
         "commit": CURRENT_COMMIT,
-        "version": "1.9.50",
+        "version": "1.9.51",
         "release_path": f"/opt/eimemory/releases/{CURRENT_COMMIT}",
         "promotion_request_id": "receipt-1",
     }
@@ -264,10 +311,23 @@ def _successful_live_acceptance() -> dict:
         "reused_count": 0,
         "deployment": {
             "commit": CURRENT_COMMIT,
-            "version": "1.9.50",
+            "version": "1.9.51",
             "release_path": f"/opt/eimemory/releases/{CURRENT_COMMIT}",
             "promotion_request_id": "receipt-1",
         },
+    }
+
+
+def _successful_replay_bootstrap() -> dict:
+    return {
+        "ok": True,
+        "capability_acceptance": {"ok": True, "execution_id": "acceptance-1"},
+        "weak_capability_replay": {
+            "ok": True,
+            "manifest_record_id": "manifest-1",
+        },
+        "replay_gate": {"ok": True, "blocked_reasons": []},
+        "blocked_reasons": [],
     }
 
 

@@ -24,34 +24,36 @@ def run_l5_closure_rehearsal(
     *,
     scope: dict[str, Any] | ScopeRef | None = None,
     persist: bool = True,
+    replay_bootstrap: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
     report = _initial_closure_report(scope_ref)
 
-    acceptance = runtime.run_capability_acceptance(scope=asdict(scope_ref), persist=persist)
+    bootstrap = (
+        dict(replay_bootstrap)
+        if isinstance(replay_bootstrap, dict)
+        else run_weak_capability_replay_gate(runtime, scope=scope_ref, persist=persist, loop_id=LOOP_ID)
+    )
+    acceptance = bootstrap.get("capability_acceptance") if isinstance(bootstrap.get("capability_acceptance"), dict) else {}
     report["capability_acceptance"] = acceptance
     report["sequence"].append("acceptance")
     if not _acceptance_gate(acceptance):
-        return _blocked_closure(report, "capability_acceptance_failed")
+        return _blocked_closure(report, *(bootstrap.get("blocked_reasons") or ["capability_acceptance_failed"]))
 
-    weak_capability_replay = runtime.build_capability_replay_packs(
-        scope=asdict(scope_ref),
-        capabilities=WEAK_REPLAY_CAPABILITIES,
-        persist=persist,
-        loop_id=LOOP_ID,
-        acceptance_execution_id=str(acceptance.get("execution_id") or ""),
-        acceptance_probe_ids_by_case={
-            str(result.get("case_id") or ""): str(result.get("probe_record_id") or "")
-            for result in acceptance.get("results") or []
-            if isinstance(result, dict)
-        },
+    weak_capability_replay = (
+        bootstrap.get("weak_capability_replay")
+        if isinstance(bootstrap.get("weak_capability_replay"), dict)
+        else {}
     )
-    replay_gate = _weak_replay_gate(weak_capability_replay)
+    replay_gate = bootstrap.get("replay_gate") if isinstance(bootstrap.get("replay_gate"), dict) else {}
     report["weak_capability_replay"] = weak_capability_replay
     report["replay_gate"] = replay_gate
     report["sequence"].append("replay")
-    if not replay_gate["ok"]:
-        return _blocked_closure(report, *replay_gate["blocked_reasons"])
+    if bootstrap.get("ok") is not True or replay_gate.get("ok") is not True:
+        return _blocked_closure(
+            report,
+            *(bootstrap.get("blocked_reasons") or replay_gate.get("blocked_reasons") or ["weak_capability_replay_invalid"]),
+        )
 
     correction_replay = runtime.record_user_correction_replay(
         {
@@ -148,6 +150,48 @@ def run_l5_closure_rehearsal(
     report["ok"] = True
     report["closure_complete"] = True
     report["blocked_reasons"] = []
+    return report
+
+
+def run_weak_capability_replay_gate(
+    runtime: Any,
+    *,
+    scope: dict[str, Any] | ScopeRef | None = None,
+    persist: bool = True,
+    loop_id: str = LOOP_ID,
+) -> dict[str, Any]:
+    scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+    acceptance = runtime.run_capability_acceptance(scope=asdict(scope_ref), persist=persist)
+    report = {
+        "ok": False,
+        "report_type": "weak_capability_replay_gate",
+        "scope": asdict(scope_ref),
+        "capability_acceptance": acceptance,
+        "weak_capability_replay": {},
+        "replay_gate": {"ok": False, "blocked_reasons": []},
+        "blocked_reasons": [],
+    }
+    if not _acceptance_gate(acceptance):
+        report["blocked_reasons"] = ["capability_acceptance_failed"]
+        return report
+
+    weak_capability_replay = runtime.build_capability_replay_packs(
+        scope=asdict(scope_ref),
+        capabilities=WEAK_REPLAY_CAPABILITIES,
+        persist=persist,
+        loop_id=loop_id,
+        acceptance_execution_id=str(acceptance.get("execution_id") or ""),
+        acceptance_probe_ids_by_case={
+            str(result.get("case_id") or ""): str(result.get("probe_record_id") or "")
+            for result in acceptance.get("results") or []
+            if isinstance(result, dict)
+        },
+    )
+    replay_gate = _weak_replay_gate(weak_capability_replay)
+    report["weak_capability_replay"] = weak_capability_replay
+    report["replay_gate"] = replay_gate
+    report["blocked_reasons"] = list(replay_gate.get("blocked_reasons") or [])
+    report["ok"] = replay_gate.get("ok") is True
     return report
 
 

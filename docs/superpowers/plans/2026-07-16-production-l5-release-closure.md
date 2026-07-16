@@ -15,7 +15,7 @@
 - Historical replay manifests are immutable; digest mismatch remains a hard failure.
 - Live acceptance and deployment evidence never transfer across commits.
 - Autonomous code application remains disabled while producing closure evidence.
-- The release version is exactly `1.9.50`.
+- The final corrective release version is exactly `1.9.51`.
 - Final code must be fast-forwarded into `master`, pushed, deployed from `/dev-project/eimemory`, and verified against `http://127.0.0.1:8091/health`.
 - Run the full suite once before release; use focused and adjacent suites during implementation.
 
@@ -205,7 +205,7 @@ git commit -m "fix(l5): preserve autonomous activity evidence"
 
 **Interfaces:**
 - Produces: `run_release_closure(runtime, *, scope, repo_root, current_link, health_url, prior_commit) -> dict[str, Any]`.
-- Calls existing runtime APIs in exact order: `verify_and_record_deployment`, `run_live_task_acceptance`, `run_l5_closure_rehearsal`, `build_l5_readiness_report`.
+- Calls runtime APIs in exact order: `verify_and_record_deployment`, `run_weak_capability_replay_gate`, `run_live_task_acceptance`, `run_l5_closure_rehearsal`, `build_l5_readiness_report`.
 
 - [ ] **Step 1: Write orchestration tests with a deterministic fake runtime**
 
@@ -222,7 +222,7 @@ def test_release_closure_runs_all_stages_in_order() -> None:
         health_url="http://127.0.0.1:8091/health",
         prior_commit="a" * 40,
     )
-    assert runtime.calls == ["deployment_receipt", "live_acceptance", "closure_rehearsal", "readiness"]
+    assert runtime.calls == ["deployment_receipt", "replay_bootstrap", "live_acceptance", "closure_rehearsal", "readiness"]
     assert report["ok"] is True
     assert report["closure_complete"] is True
     assert report["blocked_stage"] == ""
@@ -349,7 +349,7 @@ git commit -m "feat(cli): add production L5 release closure"
 
 ---
 
-### Task 4: Release version 1.9.50 and verify the repository
+### Task 4: Release version 1.9.51 and verify the repository
 
 **Files:**
 - Modify: `pyproject.toml`
@@ -360,11 +360,11 @@ git commit -m "feat(cli): add production L5 release closure"
 - Create: `docs/superpowers/plans/2026-07-16-production-l5-release-closure.md`
 
 **Interfaces:**
-- Produces package and service-cache version `1.9.50` consistently.
+- Produces package and service-cache version `1.9.51` consistently.
 
 - [ ] **Step 1: Update the version contract test first**
 
-Change the expected version from `1.9.49` to `1.9.50`, then run the relevant deployment contract test and observe failure.
+Change the expected version to `1.9.51`, then run the relevant deployment contract test and observe failure.
 
 - [ ] **Step 2: Update all version sources mechanically**
 
@@ -407,7 +407,7 @@ Expected: zero failures in every command.
 
 ```powershell
 git add pyproject.toml eimemory/version.py deploy/systemd tests docs/superpowers
-git commit -m "chore: release 1.9.50"
+git commit -m "chore: release 1.9.51"
 ```
 
 ---
@@ -455,7 +455,7 @@ Verify `eimemory-rpc.service`, `openclaw-gateway.service`, and `openclaw-loopbac
 
 - [ ] **Step 5: Verify health identity**
 
-Require `/health` to report `ok=true`, version `1.9.50`, commit equal to mainline HEAD, current link equal to `/opt/eimemory/current`, and release/import roots under `/opt/eimemory/releases/$COMMIT`.
+Require `/health` to report `ok=true`, version `1.9.51`, commit equal to mainline HEAD, current link equal to `/opt/eimemory/current`, and release/import roots under `/opt/eimemory/releases/$COMMIT`.
 
 - [ ] **Step 6: Run production release closure**
 
