@@ -3,7 +3,78 @@ from __future__ import annotations
 import sys
 
 from eimemory.api.runtime import Runtime
-from eimemory.governance.autonomous_learning import run_autonomous_learning_cycle
+from eimemory.governance.autonomous_learning import (
+    classify_autonomous_learning_activity,
+    run_autonomous_learning_cycle,
+)
+
+
+def test_activity_classifier_marks_successful_no_change_idle() -> None:
+    result = classify_autonomous_learning_activity(
+        {
+            "ok": True,
+            "candidate_specs": [],
+            "eval_record_ids": [],
+            "candidate_ids": [],
+            "promotions": [],
+            "replay_gate_passed": True,
+            "safety_gate_passed": True,
+            "isolation_gate_passed": True,
+        }
+    )
+
+    assert result == {
+        "activity_status": "idle",
+        "activity_reason": "no_candidate_change",
+        "attempted_candidate_count": 0,
+    }
+
+
+def test_activity_classifier_keeps_failed_evaluation_active() -> None:
+    result = classify_autonomous_learning_activity(
+        {
+            "ok": True,
+            "candidate_specs": [{"promotion_target": "knowledge_patch"}],
+            "eval_record_ids": ["eval-1"],
+            "candidate_ids": [],
+            "promotions": [],
+            "eval_verdict": "fail",
+            "replay_gate_passed": True,
+            "safety_gate_passed": True,
+            "isolation_gate_passed": True,
+        }
+    )
+
+    assert result["activity_status"] == "active"
+    assert result["activity_reason"] == "candidate_evaluation_attempted"
+    assert result["attempted_candidate_count"] == 1
+
+
+def test_activity_classifier_keeps_explicit_gate_failure_active() -> None:
+    result = classify_autonomous_learning_activity(
+        {
+            "ok": True,
+            "candidate_specs": [],
+            "eval_record_ids": [],
+            "candidate_ids": [],
+            "promotions": [],
+            "replay_gate_passed": False,
+            "safety_gate_passed": True,
+            "isolation_gate_passed": True,
+        }
+    )
+
+    assert result["activity_status"] == "active"
+    assert result["activity_reason"] == "evidence_gate_failed"
+
+
+def test_activity_classifier_marks_timeout_failed() -> None:
+    result = classify_autonomous_learning_activity(
+        {"ok": True, "candidate_specs": []}, timeout_exceeded=True
+    )
+
+    assert result["activity_status"] == "failed"
+    assert result["activity_reason"] == "timeout_exceeded"
 
 
 def test_autonomous_learning_cycle_produces_goal_candidate_and_ledger(tmp_path, monkeypatch) -> None:
@@ -27,6 +98,9 @@ def test_autonomous_learning_cycle_produces_goal_candidate_and_ledger(tmp_path, 
     assert report["candidate_id"]
     assert report["promotion"]["applied"] is False
     assert report["capability_score_id"]
+    assert report["activity_status"] == "active"
+    assert report["activity_reason"] == "candidate_evaluation_attempted"
+    assert report["attempted_candidate_count"] >= 1
 
 
 def test_autonomous_learning_cycle_distills_diverse_capability_candidates(tmp_path, monkeypatch) -> None:
@@ -172,6 +246,8 @@ def test_autonomous_learning_cycle_dry_run_does_not_persist_learning_records(tmp
     assert report["ok"] is True
     assert report["dry_run"] is True
     assert report["candidate_preview"]
+    assert report["activity_status"] == "active"
+    assert report["activity_reason"] == "evaluation_gate_failed"
     assert runtime.store.list_records(kinds=["learning_loop"], scope=scope, limit=10) == []
     assert runtime.store.list_records(kinds=["capability_candidate"], scope=scope, limit=10) == []
 

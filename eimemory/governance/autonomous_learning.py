@@ -50,6 +50,46 @@ from eimemory.governance.world_watchers import collect_world_signals, default_wa
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
+def classify_autonomous_learning_activity(
+    report: dict[str, Any],
+    *,
+    timeout_exceeded: bool = False,
+    error_reason: str = "",
+) -> dict[str, Any]:
+    candidate_specs = [item for item in report.get("candidate_specs") or [] if isinstance(item, dict)]
+    eval_record_ids = [str(item) for item in report.get("eval_record_ids") or [] if str(item or "").strip()]
+    candidate_ids = [str(item) for item in report.get("candidate_ids") or [] if str(item or "").strip()]
+    promotions = [item for item in report.get("promotions") or [] if isinstance(item, dict)]
+    attempted_count = max(len(candidate_specs), len(eval_record_ids))
+    if timeout_exceeded:
+        status, reason = "failed", "timeout_exceeded"
+    elif report.get("ok") is not True:
+        status, reason = "failed", str(error_reason or report.get("error") or "cycle_failed")
+    elif attempted_count or candidate_ids or promotions:
+        status, reason = "active", "candidate_evaluation_attempted"
+    elif str(report.get("eval_verdict") or "").strip().lower() in {
+        "fail",
+        "failed",
+        "blocked",
+        "reject",
+        "rejected",
+    }:
+        status, reason = "active", "evaluation_gate_failed"
+    elif any(
+        key in report and report.get(key) is False
+        for key in ("replay_gate_passed", "safety_gate_passed", "isolation_gate_passed")
+    ):
+        status, reason = "active", "evidence_gate_failed"
+    else:
+        status, reason = "idle", "no_candidate_change"
+    result = {
+        "activity_status": status,
+        "activity_reason": reason,
+        "attempted_candidate_count": attempted_count,
+    }
+    return result
+
+
 def run_autonomous_learning_cycle(
     runtime: Any,
     *,
@@ -502,7 +542,7 @@ def run_autonomous_learning_cycle(
         )
         complete_learning_loop(runtime, loop, status="completed", summary=f"Autonomous learning cycle completed; candidate={candidate_id or 'none'}")
 
-        return {
+        result = {
             "ok": True,
             "loop_id": loop_id,
             "loop_record_id": loop.record_id,
@@ -565,6 +605,8 @@ def run_autonomous_learning_cycle(
             "ledger": ledger,
             "retention": retention_report,
         }
+        result.update(classify_autonomous_learning_activity(result))
+        return result
     except Exception as exc:
         mark_step(runtime, loop, step_name="failed", status="failed", error=str(exc))
         complete_learning_loop(runtime, loop, status="failed", summary=str(exc))
@@ -897,7 +939,7 @@ def _run_autonomous_learning_dry_run(
         persist=False,
     )
     eval_result["gate_bundle"] = _gate_bundle_for_candidate(candidate_kind, evidence=evidence, scope=scope)
-    return {
+    result = {
         "ok": True,
         "loop_id": "dry_run",
         "loop_record_id": "",
@@ -930,6 +972,8 @@ def _run_autonomous_learning_dry_run(
         "ledger": build_capability_ledger(runtime, scope=scope),
         "retention": compact_learning_records(runtime, scope=scope, loop_id="dry_run", dry_run=True),
     }
+    result.update(classify_autonomous_learning_activity(result))
+    return result
 
 
 def list_learning_goals(runtime: Any, *, scope: dict[str, Any] | ScopeRef | None = None, limit: int = 10) -> list[dict[str, Any]]:

@@ -119,6 +119,8 @@ def test_nightly_jobs_allows_network_research_by_default(tmp_path, monkeypatch) 
 
     assert calls["allow_network"] is True
     assert report["autonomous_learning"]["network_research_enabled"] is True
+    assert report["autonomous_learning"]["activity_status"] == "idle"
+    assert report["autonomous_learning"]["activity_reason"] == "no_candidate_change"
 
 
 def test_nightly_l5_reuses_same_autonomous_learning_report(tmp_path, monkeypatch) -> None:
@@ -138,8 +140,19 @@ def test_nightly_l5_reuses_same_autonomous_learning_report(tmp_path, monkeypatch
             "apply": False,
             "goal_count": 1,
             "candidate_ids": ["candidate-nightly"],
+            "candidate_specs": [{"promotion_target": "knowledge_patch"}],
+            "eval_record_ids": ["eval-nightly-1"],
             "promotions": [],
             "real_task_replay": {"ok": True, "sample_count": 1, "pass_count": 1},
+            "replay_gate": {"ok": True, "reason": "passed"},
+            "replay_gate_passed": True,
+            "safety_gate_passed": True,
+            "isolation_gate_passed": False,
+            "isolated_evaluator": {"blocked_reasons": ["insufficient_evidence"]},
+            "capability_replay": {
+                "execution_id": "replay-execution-1",
+                "manifest_record_id": "manifest-1",
+            },
             "replay_dataset": {"case_count": 1},
             "promotion": {"blocked_reason": "observation_mode_no_apply"},
         }
@@ -162,7 +175,18 @@ def test_nightly_l5_reuses_same_autonomous_learning_report(tmp_path, monkeypatch
     report = run_nightly_jobs(runtime, scope={"agent_id": "main"})
 
     assert calls["learning_count"] == 1
-    assert calls["l5_kwargs"]["autonomous_learning_report"]["loop_id"] == "auto-nightly-1"
+    summary = calls["l5_kwargs"]["autonomous_learning_report"]
+    assert summary["loop_id"] == "auto-nightly-1"
+    assert summary["activity_status"] == "active"
+    assert summary["activity_reason"] == "candidate_evaluation_attempted"
+    assert summary["attempted_candidate_count"] == 1
+    assert summary["eval_record_ids"] == ["eval-nightly-1"]
+    assert summary["replay_gate_reason"] == "passed"
+    assert summary["safety_gate_passed"] is True
+    assert summary["isolation_gate_passed"] is False
+    assert summary["isolation_blocked_reasons"] == ["insufficient_evidence"]
+    assert summary["capability_replay_execution_id"] == "replay-execution-1"
+    assert summary["capability_replay_manifest_id"] == "manifest-1"
     assert report["l5_loop"]["ok"] is True
 
 
@@ -191,6 +215,25 @@ def test_autonomous_learning_timeout_is_unhealthy(tmp_path, monkeypatch) -> None
     assert report["timeout_exceeded"] is True
     assert report["ok"] is False
     assert report["learning_skipped_reason"] == "autonomous_learning_timeout_exceeded"
+    assert report["activity_status"] == "failed"
+    assert report["activity_reason"] == "timeout_exceeded"
+
+
+def test_autonomous_learning_exception_marks_activity_failed(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    monkeypatch.setenv("EIMEMORY_AUTONOMOUS_LEARNING_ENABLED", "1")
+
+    def fail_learning(**_kwargs):
+        raise RuntimeError("learning failed")
+
+    monkeypatch.setattr(runtime, "run_autonomous_learning_cycle", fail_learning)
+
+    report = jobs._run_autonomous_learning(runtime, scope={"agent_id": "main"})
+
+    assert report["ok"] is False
+    assert report["learning_skipped_reason"] == "run_autonomous_learning_cycle_failed"
+    assert report["activity_status"] == "failed"
+    assert report["activity_reason"] == "run_autonomous_learning_cycle_failed"
 
 
 def test_l5_timeout_is_unhealthy(tmp_path, monkeypatch) -> None:

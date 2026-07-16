@@ -1194,6 +1194,9 @@ def _run_autonomous_learning(runtime: Runtime, *, scope: dict) -> dict[str, Any]
                 "requires_enable_env": "EIMEMORY_AUTONOMOUS_LEARNING_ENABLED=1",
                 "apply_env": "EIMEMORY_AUTONOMOUS_LEARNING_APPLY=1",
                 "learning_skipped_reason": "autonomous_learning_required_but_disabled",
+                "activity_status": "failed",
+                "activity_reason": "autonomous_learning_required_but_disabled",
+                "attempted_candidate_count": 0,
             }
         return {
             "ok": True,
@@ -1209,6 +1212,9 @@ def _run_autonomous_learning(runtime: Runtime, *, scope: dict) -> dict[str, Any]
             "candidate_count": 0,
             "applied_count": 0,
             "learning_skipped_reason": "autonomous_learning_disabled",
+            "activity_status": "idle",
+            "activity_reason": "autonomous_learning_disabled",
+            "attempted_candidate_count": 0,
         }
     apply_changes = _env_bool("EIMEMORY_AUTONOMOUS_LEARNING_APPLY", default=False)
     dry_run = _env_bool("EIMEMORY_AUTONOMOUS_LEARNING_DRY_RUN", default=not apply_changes)
@@ -1233,6 +1239,12 @@ def _run_autonomous_learning(runtime: Runtime, *, scope: dict) -> dict[str, Any]
         )
         elapsed_seconds = round(time.monotonic() - started, 3)
         if isinstance(report, dict):
+            from eimemory.governance.autonomous_learning import classify_autonomous_learning_activity
+
+            activity = classify_autonomous_learning_activity(
+                report,
+                timeout_exceeded=elapsed_seconds > timeout_seconds,
+            )
             status = {
                 "ok": bool(report.get("ok", False)) and elapsed_seconds <= timeout_seconds,
                 "report_type": "autonomous_learning",
@@ -1272,6 +1284,32 @@ def _run_autonomous_learning(runtime: Runtime, *, scope: dict) -> dict[str, Any]
                 "regressed": bool((report.get("regression_watch") or {}).get("regressed")),
                 "retention_disabled_count": int((report.get("retention") or {}).get("disabled_count") or 0),
                 "learning_skipped_reason": "autonomous_learning_timeout_exceeded" if elapsed_seconds > timeout_seconds else "",
+                "eval_record_ids": [
+                    str(item)
+                    for item in report.get("eval_record_ids") or []
+                    if str(item or "").strip()
+                ],
+                "replay_gate_reason": str((report.get("replay_gate") or {}).get("reason") or ""),
+                "safety_gate_passed": (
+                    report.get("safety_gate_passed")
+                    if isinstance(report.get("safety_gate_passed"), bool)
+                    else None
+                ),
+                "isolation_gate_passed": (
+                    report.get("isolation_gate_passed")
+                    if isinstance(report.get("isolation_gate_passed"), bool)
+                    else None
+                ),
+                "isolation_blocked_reasons": list(
+                    (report.get("isolated_evaluator") or {}).get("blocked_reasons") or []
+                ),
+                "capability_replay_execution_id": str(
+                    (report.get("capability_replay") or {}).get("execution_id") or ""
+                ),
+                "capability_replay_manifest_id": str(
+                    (report.get("capability_replay") or {}).get("manifest_record_id") or ""
+                ),
+                **activity,
             }
             return _with_query_first_evidence(status, report)
     except Exception as exc:
@@ -1283,6 +1321,9 @@ def _run_autonomous_learning(runtime: Runtime, *, scope: dict) -> dict[str, Any]
             "learning_skipped_reason": "run_autonomous_learning_cycle_failed",
             "error": type(exc).__name__,
             "detail": str(exc),
+            "activity_status": "failed",
+            "activity_reason": "run_autonomous_learning_cycle_failed",
+            "attempted_candidate_count": 0,
         }
     return {
         "ok": False,
@@ -1290,6 +1331,9 @@ def _run_autonomous_learning(runtime: Runtime, *, scope: dict) -> dict[str, Any]
         "configured": True,
         "enabled": True,
         "learning_skipped_reason": "invalid_autonomous_learning_report",
+        "activity_status": "failed",
+        "activity_reason": "invalid_autonomous_learning_report",
+        "attempted_candidate_count": 0,
     }
 
 
