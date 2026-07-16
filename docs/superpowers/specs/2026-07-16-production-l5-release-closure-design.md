@@ -25,8 +25,8 @@ The full autonomous-learning producer will return:
 
 Classification rules:
 
-- `idle` is allowed only when the cycle completed successfully and produced no candidate specifications, evaluation records, candidates, promotions, or explicit gate failure.
-- `active` is used when any candidate, evaluation, replay, isolation, safety, or promotion work was attempted, including a failed evaluation.
+- `idle` is allowed only when the cycle completed successfully, routine replay and safety checks did not fail, and it produced no candidate specifications, evaluation records, candidates, or promotions.
+- `active` is used when candidate, evaluation, or promotion work was attempted, or when replay, isolation, or safety reported an explicit negative gate result. A failed evaluation is therefore active, not idle.
 - `failed` is used for timeout, exception, or an explicitly unsuccessful cycle.
 - The scheduler summary must preserve the producer status and the minimum evidence needed to audit it: candidate attempt count, evaluation identifiers and verdict, replay gate result and reason, safety gate result, isolation gate result and blocked reasons, and capability replay manifest identity.
 - L5 readiness preserves earlier global readiness only for explicit `idle` or `no_change`. Both `active` and `failed` remain authoritative and fail closed.
