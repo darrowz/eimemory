@@ -533,7 +533,7 @@ def test_immutable_release_installer_deploys_python_runtime_protection_dropins()
 
     assert 'eimemory-python-runtime.conf' in script
     assert '90-eimemory-python-runtime.conf' in script
-    assert script.count('--render-commit "$COMMIT"') == 2
+    assert script.count('--render-commit "$COMMIT"') == 3
     assert 'bash -s -- "$USER_SYSTEMD_DIR"' in script
     assert "Unable to discover Python runtime systemd units" in script
     assert "Environment=EIMEMORY_RUNTIME_COMMIT=@EIMEMORY_COMMIT@" in runtime_dropin
@@ -936,6 +936,17 @@ def test_immutable_release_installer_does_not_rebuild_active_existing_release(tm
     assert current_link.resolve() == release_dir.resolve()
 
 
+def test_immutable_release_installer_refreshes_runtime_metadata_when_release_is_already_current() -> None:
+    script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
+
+    branch_start = script.index('if { [ -e "$CURRENT_LINK" ]')
+    branch_end = script.index("\nfi", branch_start)
+    already_current_branch = script[branch_start:branch_end]
+
+    assert "_refresh_current_runtime_metadata" in already_current_branch
+    assert already_current_branch.index("_refresh_current_runtime_metadata") < already_current_branch.index("exit 0")
+
+
 @pytest.mark.parametrize("current_is_target", [True, False], ids=["already-current", "rollback"])
 @pytest.mark.parametrize("source_drift", [False, True], ids=["bytecode-only", "source-drift"])
 def test_immutable_release_installer_cleans_existing_release_before_strict_validation(
@@ -1104,7 +1115,7 @@ def test_immutable_release_installer_restarts_runtimes_after_current_switch() ->
     script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
 
     current_switch = script.index('mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"')
-    rpc_restart = script.index("systemctl --user restart eimemory-rpc.service")
+    rpc_restart = script.rindex("systemctl --user restart eimemory-rpc.service")
     gateway_restart = script.index("systemctl --user try-restart openclaw-gateway.service")
 
     assert current_switch < rpc_restart < gateway_restart

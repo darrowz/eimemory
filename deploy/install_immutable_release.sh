@@ -133,6 +133,35 @@ _install_openclaw_loop_compat_script() {
     "$RELEASE_DIR/scripts/openclaw_loop.py" "$OPENCLAW_LOOP_COMPAT_SCRIPT"
 }
 
+_refresh_current_runtime_metadata() {
+  if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ] || ! command -v systemctl >/dev/null 2>&1; then
+    return
+  fi
+  _run_as_service_user mkdir -p "$USER_SYSTEMD_DIR"
+  SERVICE_UID="$(id -u "$SERVICE_USER" 2>/dev/null || id -u)"
+  if ! PYTHON_RUNTIME_UNIT_OUTPUT="$(_run_as_service_user bash -s -- "$USER_SYSTEMD_DIR" < "$RELEASE_DIR/deploy/discover_python_runtime_units.sh")"; then
+    echo "Unable to discover Python runtime systemd units" >&2
+    return 2
+  fi
+  mapfile -t PYTHON_RUNTIME_UNITS <<< "$PYTHON_RUNTIME_UNIT_OUTPUT"
+  for runtime_unit in "${PYTHON_RUNTIME_UNITS[@]}"; do
+    _run_as_service_user mkdir -p "$USER_SYSTEMD_DIR/$runtime_unit.d"
+    "$PYTHON_BIN" -I -B "$RELEASE_DIR/deploy/install_managed_systemd_dropin.py" \
+      --source "$RELEASE_DIR/deploy/systemd/eimemory-python-runtime.conf" \
+      --target "$USER_SYSTEMD_DIR/$runtime_unit.d/90-eimemory-python-runtime.conf" \
+      --root "$USER_SYSTEMD_DIR" --owner-uid "$SERVICE_UID" --render-commit "$COMMIT"
+  done
+  _install_as_service_user 0644 \
+    "$RELEASE_DIR/deploy/systemd/eimemory-rpc.service" "$USER_SYSTEMD_DIR/eimemory-rpc.service"
+  if [ "$(id -u)" -eq 0 ] && id "$SERVICE_USER" >/dev/null 2>&1; then
+    echo "user_systemd_restart_hint=run as $SERVICE_USER: systemctl --user restart eimemory-rpc.service"
+  else
+    systemctl --user daemon-reload
+    systemctl --user enable eimemory-rpc.service
+    systemctl --user restart eimemory-rpc.service
+  fi
+}
+
 if [[ ! "$COMMIT" =~ ^[0-9a-fA-F]{40}$ ]]; then
   echo "Commit must be a full 40-character SHA: $COMMIT" >&2
   exit 2
@@ -163,6 +192,7 @@ if { [ -e "$CURRENT_LINK" ] || [ -L "$CURRENT_LINK" ] || [ -d "$CURRENT_LINK" ];
    'from pathlib import Path; import sys; raise SystemExit(0 if Path(sys.argv[1]).resolve(strict=True) == Path(sys.argv[2]).resolve(strict=True) else 1)' \
    "$CURRENT_LINK" "$RELEASE_DIR"; then
   _clean_existing_release_and_validate_source
+  _refresh_current_runtime_metadata
   echo "release=$RELEASE_DIR"
   echo "current=$CURRENT_LINK"
   echo "commit=$COMMIT"
