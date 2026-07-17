@@ -113,6 +113,39 @@ def test_current_deployment_failures_cannot_be_masked_by_previous_successes(tmp_
     assert metrics["sample_counts"]["current_deployment_acceptance"] == 10
 
 
+def test_older_receipt_updated_later_does_not_hide_current_runtime_receipt(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    runtime._test_runtime_commit = "c" * 40
+    scope_ref = ScopeRef.from_dict(SCOPE)
+    try:
+        older_receipt_id = _append_deployment_receipt(
+            runtime,
+            scope_ref,
+            commit="a" * 40,
+            created_at="2026-07-13T00:00:00+00:00",
+        )
+        _append_deployment_receipt(
+            runtime,
+            scope_ref,
+            commit="c" * 40,
+            created_at="2026-07-17T00:00:00+00:00",
+        )
+        for index, case_id in enumerate(LIVE_ACCEPTANCE_CASE_IDS):
+            _append_acceptance(runtime, scope_ref, index=index, case_id=case_id, passed=True, commit="c" * 40)
+        runtime.store.sqlite.conn.execute(
+            "UPDATE records SET updated_at = ? WHERE record_id = ?",
+            ("2099-07-17T00:00:00+00:00", older_receipt_id),
+        )
+        runtime.store.sqlite.conn.commit()
+
+        metrics = runtime.build_capability_dashboard_metrics(scope=SCOPE, persist=False)
+    finally:
+        runtime.close()
+
+    assert metrics["metrics"]["current_deployment_live_task_success_rate"] == 1.0
+    assert metrics["sample_counts"]["current_deployment_acceptance"] == 10
+
+
 def test_runtime_commit_must_match_latest_deployment_receipt(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path)
     scope_ref = ScopeRef.from_dict(SCOPE)

@@ -346,7 +346,7 @@ def _latest_verified_deployment_commit(runtime: Any, *, scope: ScopeRef, limit: 
         if len(commit_sha) == 40:
             if actual_commit:
                 if commit_sha != actual_commit:
-                    return ""
+                    continue
                 if not test_override and not _runtime_import_matches_receipt(record, commit_sha=commit_sha):
                     return ""
                 return commit_sha

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from eimemory.api.runtime import Runtime
+from eimemory.governance import world_watchers
 from eimemory.governance.world_watchers import SourceWatch, collect_world_signals
 from eimemory.governance.world_watchers import default_watches
 from eimemory.models.records import RecordEnvelope, ScopeRef
@@ -25,6 +26,22 @@ def test_default_watches_do_not_run_heavy_goal_registry_gap_polling() -> None:
 
     assert goal_watch.enabled is False
     assert goal_watch.dry_run is True
+
+
+def test_world_watch_memory_peak_excludes_preexisting_process_rss(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    monkeypatch.setattr(world_watchers, "_memory_peak_bytes", lambda: 512 * 1024 * 1024)
+    try:
+        report = collect_world_signals(
+            runtime,
+            scope={"agent_id": "hongtu"},
+            watches=[SourceWatch(name="disabled", kind="local_state", enabled=False)],
+            dry_run=True,
+        )
+    finally:
+        runtime.close()
+
+    assert report["memory_peak"] < 250 * 1024 * 1024
 
 
 def test_dry_run_returns_signals_without_persisting(tmp_path) -> None:
