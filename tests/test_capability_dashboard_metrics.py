@@ -282,6 +282,130 @@ def test_dashboard_reads_real_outcome_trace_payload_and_excludes_nested_rehearsa
     assert metrics["metrics"]["task_success_rate"] == 1.0
 
 
+def test_dashboard_counts_verified_openclaw_tasks_and_failure_blame_separately(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope_ref = ScopeRef.from_dict(SCOPE)
+    try:
+        def bound_event(trace_id: str, task_type: str, *, success: bool) -> dict:
+            event = runtime.store.record_event(
+                {
+                    "source": "openclaw.agent_end",
+                    "hook": "agent_end",
+                    "session_id": f"session-{trace_id}",
+                    "event_type": task_type,
+                    "outcome_trace_id": trace_id,
+                    "outcome_trace_task_type": task_type,
+                    "summary": trace_id,
+                    "verification": "verified terminal result",
+                },
+                scope=scope_ref,
+            )
+            runtime.record_outcome(
+                event["id"],
+                {
+                    "outcome": "good" if success else "bad",
+                    "success": success,
+                    "verified": True,
+                    "source": "openclaw.agent_end",
+                    "source_trust": "system_verified",
+                },
+                scope=SCOPE,
+            )
+            return event
+
+        success_event = bound_event("real-success", "repo.deploy", success=True)
+        failure_event = bound_event("real-failure", "research", success=False)
+        for trace_id, task_type, success, evidence_id, extra in (
+            ("real-success", "repo.deploy", True, success_event["id"], {}),
+            ("real-failure", "research", False, failure_event["id"], {"stale_context": True}),
+        ):
+            result = runtime.record_outcome_trace(
+                {
+                    "source": "openclaw.agent_end",
+                    "trace_id": trace_id,
+                    "session_id": f"session-{trace_id}",
+                    "task_type": task_type,
+                    "input_summary": trace_id,
+                    "outcome": {"status": "success" if success else "bad", "success": success, "rehearsal": False},
+                    "verifier": {
+                        "passed": success,
+                        "method": "openclaw.agent_end",
+                        "evidence_refs": [evidence_id],
+                    },
+                    **extra,
+                },
+                scope=SCOPE,
+            )
+            assert result["ok"] is True
+
+        runtime.record_outcome_trace(
+            {
+                "source": "openclaw.agent_end",
+                "trace_id": "forged",
+                "task_type": "forged",
+                "outcome": {"status": "success", "success": True, "rehearsal": False},
+                "verifier": {"passed": True, "method": "openclaw.agent_end", "evidence_refs": ["missing"]},
+            },
+            scope=SCOPE,
+        )
+        runtime.record_outcome_trace(
+            {
+                "source": "openclaw.agent_end",
+                "trace_id": "forged-existing-event",
+                "session_id": "session-forged",
+                "task_type": "repo.deploy",
+                "outcome": {"status": "success", "success": True, "rehearsal": False},
+                "verifier": {
+                    "passed": True,
+                    "method": "openclaw.made_up",
+                    "evidence_refs": [success_event["id"]],
+                },
+            },
+            scope=SCOPE,
+        )
+        runtime.record_outcome_trace(
+            {
+                "source": "openclaw.agent_end",
+                "trace_id": "duplicate-event",
+                "session_id": "session-real-success",
+                "task_type": "repo.deploy",
+                "outcome": {"status": "success", "success": True, "rehearsal": False},
+                "verifier": {
+                    "passed": True,
+                    "method": "openclaw.agent_end",
+                    "evidence_refs": [success_event["id"]],
+                },
+            },
+            scope=SCOPE,
+        )
+        runtime.record_outcome_trace(
+            {
+                "source": "openclaw.agent_end",
+                "trace_id": "rehearsal",
+                "session_id": "session-real-success",
+                "task_type": "probe",
+                "outcome": {"status": "success", "success": True, "rehearsal": True},
+                "verifier": {
+                    "passed": True,
+                    "method": "openclaw.agent_end",
+                    "evidence_refs": [success_event["id"]],
+                },
+            },
+            scope=SCOPE,
+        )
+
+        report = runtime.build_capability_dashboard_metrics(scope=SCOPE, persist=False)
+    finally:
+        runtime.close()
+
+    assert report["metrics"]["verified_real_task_success_rate"] == 0.5
+    assert report["metric_quality"]["verified_real_task_success_rate"]["sample_count"] == 2
+    assert report["sample_counts"]["verified_real_tasks"] == 2
+    assert report["sample_counts"]["verified_real_task_types"] == 2
+    assert report["sample_counts"]["current_deployment_acceptance"] == 0
+    assert report["failure_blame_layers"] == {"memory": 1}
+
+
 def test_dashboard_explicit_failure_overrides_success_signal(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     try:

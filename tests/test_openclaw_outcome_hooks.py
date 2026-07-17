@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from eimemory.adapters.openclaw.hooks import OpenClawMemoryHooks
@@ -1012,6 +1014,15 @@ def test_openclaw_agent_end_persists_outcome_trace_through_runtime(tmp_path) -> 
     assert record.meta["report_type"] == "outcome_trace"
     assert record.meta["trace_id"] == "openclaw:sess-real-trace:browser_task:open dashboard"
     assert record.content["payload"]["trace_id"] == "openclaw:sess-real-trace:browser_task:open dashboard"
+    evidence_id = record.content["payload"]["verifier"]["evidence_refs"][0]
+    row = runtime.store.sqlite.conn.execute("SELECT payload_json FROM events WHERE id = ?", (evidence_id,)).fetchone()
+    assert row is not None
+    event_payload = json.loads(row["payload_json"])
+    assert event_payload["outcome_trace_id"] == record.meta["trace_id"]
+    assert event_payload["outcome_trace_task_type"] == "browser_task"
+    metrics = runtime.build_capability_dashboard_metrics(scope=scope, persist=False)
+    assert metrics["sample_counts"]["verified_real_tasks"] == 1
+    assert metrics["metrics"]["verified_real_task_success_rate"] == 1.0
 
 
 def test_openclaw_trace_context_distinguishes_repeated_attempts_with_started_at(tmp_path) -> None:

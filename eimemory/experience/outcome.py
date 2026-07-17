@@ -55,6 +55,7 @@ def record_outcome_trace(runtime: Any, payload: dict[str, Any], scope: dict | Sc
     trace_id = _trace_id(safe_payload)
     idempotency_key = _idempotency_key(safe_payload)
     primary_label = str(diagnosis.get("primary_label") or "unknown_failure")
+    blame_layer = str(diagnosis.get("blame_layer") or "unknown")
     signals = list(diagnosis.get("signals") or [])
     content = {
         "schema_version": SCHEMA_VERSION,
@@ -74,6 +75,7 @@ def record_outcome_trace(runtime: Any, payload: dict[str, Any], scope: dict | Sc
         "idempotency_key": idempotency_key,
         "task_type": task_type,
         "primary_label": primary_label,
+        "blame_layer": blame_layer,
         "diagnosis_signals": signals,
         "signals": signals,
         "risk_level": risk_level,

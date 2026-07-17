@@ -330,10 +330,50 @@ def test_diagnosis_uses_priority_and_keeps_signals_out_of_primary_label() -> Non
     )
 
     assert diagnosis["primary_label"] == "unsafe_or_high_risk"
-    assert set(diagnosis["signals"]) == {"missing_visual_evidence", "operator_gap", "verifier_missing"}
+    assert set(diagnosis["signals"]) == {"missing_visual_evidence", "operator_gap"}
     assert "missing_visual_evidence" not in diagnosis["primary_label"]
     assert "unsafe_or_high_risk" in diagnosis["labels"]
     assert diagnosis["confidence"] > 0.0
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected_layer"),
+    [
+        ({"outcome": {"status": "failure"}, "expected_tool": "web.run", "selected_tools": []}, "planner"),
+        ({"outcome": {"status": "failure"}, "argument_mismatch": True}, "tool"),
+        ({"outcome": {"status": "failure"}, "stale_context": True}, "memory"),
+        (
+            {
+                "outcome": {"status": "failure"},
+                "world_state": {"expected": "open", "observed": "closed"},
+            },
+            "device",
+        ),
+        ({"outcome": {"status": "failure"}, "verifier": {"passed": False}}, "unknown"),
+        ({"outcome": {"status": "failure"}, "verifier": {"status": "unavailable"}}, "verifier"),
+        ({"outcome": {"status": "failure"}, "operator_gap": {"detected": True}}, "operator"),
+        ({"outcome": {"status": "failure"}, "verifier": {"passed": True}}, "unknown"),
+    ],
+)
+def test_diagnosis_attributes_stable_blame_layer(overrides: dict, expected_layer: str) -> None:
+    assert diagnose_outcome(_payload(**overrides))["blame_layer"] == expected_layer
+
+
+def test_record_outcome_trace_hoists_blame_layer_metadata(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "eibrain", "workspace_id": "repo"}
+
+    result = record_outcome_trace(
+        runtime,
+        _payload(outcome={"status": "failure"}, stale_context=True, verifier={"passed": False}),
+        scope=scope,
+    )
+
+    assert result["ok"] is True
+    record = runtime.store.get_by_id(result["record_id"], scope=scope)
+    assert record is not None
+    assert record.content["diagnosis"]["blame_layer"] == "memory"
+    assert record.meta["blame_layer"] == "memory"
 
 
 def test_missing_tool_call_considers_expected_tool_absent_and_reply_only_actions() -> None:

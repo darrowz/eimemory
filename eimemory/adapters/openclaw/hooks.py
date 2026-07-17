@@ -1380,10 +1380,18 @@ class OpenClawMemoryHooks:
             correction=correction,
         )
         policy_attribution = self._resolve_policy_attribution(event=event, task_context=task_context)
+        trace_query = self._clean_prompt_query(str(event.get("query") or event.get("raw_query") or "").strip())
+        trace_context = self._trace_context_from_event(
+            terminal_event,
+            task_context=task_context,
+            query=trace_query,
+        )
         event_payload = {
             "source": f"openclaw.{end_kind}",
             "session_id": self._session_id_from_event(event),
             "hook": end_kind,
+            "outcome_trace_id": trace_context["trace_id"],
+            "outcome_trace_task_type": trace_context["task_type"],
             "policy_attribution": policy_attribution,
             "user_phrase": user_phrase,
             "event_type": event_type,

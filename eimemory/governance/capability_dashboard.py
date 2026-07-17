@@ -52,6 +52,12 @@ FAILURE_LABELS = {
     "verification_missing",
     "missing_verification",
 }
+VERIFIED_REAL_TASK_METHODS = {
+    "openclaw.agent_end",
+    "openclaw.task_end",
+    "openclaw.session_end",
+}
+VERIFIED_REAL_TASK_SOURCE_TRUST = {"system_verified", "system_diagnostic", "user_explicit"}
 
 
 def build_capability_dashboard_metrics(
@@ -90,6 +96,19 @@ def build_capability_dashboard_metrics(
     )
     verified_live_success = sum(1 for item in verified_live_tasks if item["success"] is True)
     verified_live_task_types = {str(item.get("task_type") or "") for item in verified_live_tasks}
+    verified_real_tasks = _verified_real_task_outcomes(
+        runtime,
+        scope=scope_ref,
+        records=_outcome_trace_records(runtime, scope_ref, limit),
+    )
+    verified_real_success = sum(1 for item in verified_real_tasks if item["success"] is True)
+    verified_real_task_types = {str(item.get("task_type") or "") for item in verified_real_tasks}
+    failure_blame_layers: dict[str, int] = {}
+    for item in verified_real_tasks:
+        if item["success"] is True:
+            continue
+        layer = str(item.get("blame_layer") or "unknown")
+        failure_blame_layers[layer] = failure_blame_layers.get(layer, 0) + 1
     current_deployment_commit = _latest_verified_deployment_commit(runtime, scope=scope_ref, limit=limit)
     current_deployment_tasks = [
         item
@@ -129,6 +148,7 @@ def build_capability_dashboard_metrics(
         "user_correction_rate": _rate(len(corrections), recall_total),
         "task_success_rate": _rate(task_success, len(task_outcomes)),
         "verified_live_task_success_rate": _rate(verified_live_success, len(verified_live_tasks)),
+        "verified_real_task_success_rate": _rate(verified_real_success, len(verified_real_tasks)),
         "current_deployment_live_task_success_rate": _rate(current_deployment_success, len(current_deployment_tasks)),
         "patch_candidate_validity_rate": patch_candidate_validity_rate,
         "patch_deployment_success_rate": patch_deployment_success_rate,
@@ -142,6 +162,7 @@ def build_capability_dashboard_metrics(
         "user_correction_rate": _quality(recall_total),
         "task_success_rate": _quality(len(task_outcomes)),
         "verified_live_task_success_rate": _quality(len(verified_live_tasks)),
+        "verified_real_task_success_rate": _quality(len(verified_real_tasks)),
         "current_deployment_live_task_success_rate": _quality(len(current_deployment_tasks)),
         "patch_candidate_validity_rate": _quality(len(latest_patch_candidates), minimum=1),
         "patch_deployment_success_rate": patch_metric_quality,
@@ -178,6 +199,7 @@ def build_capability_dashboard_metrics(
         "scope": asdict(scope_ref),
         "metrics": metrics,
         "metric_quality": metric_quality,
+        "failure_blame_layers": failure_blame_layers,
         "persisted_record_id": record_id,
         "sample_counts": {
             "recall": recall_total,
@@ -186,6 +208,8 @@ def build_capability_dashboard_metrics(
             "task_outcomes": len(task_outcomes),
             "verified_live_tasks": len(verified_live_tasks),
             "verified_live_task_types": len(verified_live_task_types),
+            "verified_real_tasks": len(verified_real_tasks),
+            "verified_real_task_types": len(verified_real_task_types),
             "current_deployment_acceptance": len(current_deployment_tasks),
             "current_deployment_live_task_types": len(current_deployment_task_types),
             "patch_candidates": len(latest_patch_candidates),
@@ -299,6 +323,142 @@ def _verified_live_task_outcomes(
             }
         )
     return outcomes
+
+
+def _verified_real_task_outcomes(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    records: list[Any],
+) -> list[dict[str, Any]]:
+    outcomes: list[dict[str, Any]] = []
+    seen_evidence_refs: set[str] = set()
+    for record in records:
+        if str(getattr(record, "source", "") or "") != "eimemory.experience.outcome_trace":
+            continue
+        if str(_field(record, "report_type") or "") != "outcome_trace":
+            continue
+        if str(_field(record, "schema_version") or "") != "outcome_trace.v1":
+            continue
+        task_type = str(_field(record, "task_type") or "").strip()
+        outcome = _field(record, "outcome")
+        verifier = _field(record, "verifier")
+        if (
+            not task_type
+            or not isinstance(outcome, dict)
+            or outcome.get("rehearsal") is not False
+            or not isinstance(outcome.get("success"), bool)
+            or not isinstance(verifier, dict)
+            or not isinstance(verifier.get("passed"), bool)
+        ):
+            continue
+        method = str(verifier.get("method") or "").strip()
+        if method not in VERIFIED_REAL_TASK_METHODS or str(_field(record, "source") or "") != method:
+            continue
+        evidence_refs = verifier.get("evidence_refs")
+        if (
+            not isinstance(evidence_refs, list)
+            or len(evidence_refs) != 1
+            or not str(evidence_refs[0] or "").strip()
+            or outcome.get("success") is not verifier.get("passed")
+        ):
+            continue
+        evidence_ref = str(evidence_refs[0]).strip()
+        if evidence_ref in seen_evidence_refs or not _valid_openclaw_task_evidence(
+            runtime,
+            scope=scope,
+            evidence_ref=evidence_ref,
+            method=method,
+            trace_id=str(_field(record, "trace_id") or ""),
+            session_id=str(_field(record, "session_id") or ""),
+            task_type=task_type,
+            success=outcome.get("success"),
+        ):
+            continue
+        seen_evidence_refs.add(evidence_ref)
+        outcomes.append(
+            {
+                "record_id": _record_id(record),
+                "task_type": task_type,
+                "evidence_class": "verified_real_task",
+                "success": outcome.get("success") is True and verifier.get("passed") is True,
+                "blame_layer": str(_field(record, "blame_layer") or "unknown"),
+            }
+        )
+    return outcomes
+
+
+def _valid_openclaw_task_evidence(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    evidence_ref: str,
+    method: str,
+    trace_id: str,
+    session_id: str,
+    task_type: str,
+    success: bool,
+) -> bool:
+    if not trace_id or not session_id:
+        return False
+    sqlite = getattr(getattr(runtime, "store", None), "sqlite", None)
+    conn = getattr(sqlite, "conn", None)
+    if conn is None:
+        return False
+    row = conn.execute(
+        """
+        SELECT payload_json
+        FROM events
+        WHERE id = ?
+          AND tenant_id = ?
+          AND agent_id = ?
+          AND workspace_id = ?
+          AND user_id = ?
+        LIMIT 1
+        """,
+        (evidence_ref, scope.tenant_id, scope.agent_id, scope.workspace_id, scope.user_id),
+    ).fetchone()
+    if row is None:
+        return False
+    try:
+        event = json.loads(str(row["payload_json"] or "{}"))
+    except (TypeError, json.JSONDecodeError):
+        return False
+    hook = method.removeprefix("openclaw.")
+    if (
+        str(event.get("source") or "") != method
+        or str(event.get("hook") or "") != hook
+        or str(event.get("outcome_trace_id") or "") != trace_id
+        or str(event.get("outcome_trace_task_type") or "") != task_type
+        or str(event.get("session_id") or "") != session_id
+    ):
+        return False
+    outcome_row = conn.execute(
+        """
+        SELECT payload_json
+        FROM event_outcomes
+        WHERE event_id = ?
+          AND tenant_id = ?
+          AND agent_id = ?
+          AND workspace_id = ?
+          AND user_id = ?
+        ORDER BY recorded_at DESC
+        LIMIT 1
+        """,
+        (evidence_ref, scope.tenant_id, scope.agent_id, scope.workspace_id, scope.user_id),
+    ).fetchone()
+    if outcome_row is None:
+        return False
+    try:
+        event_outcome = json.loads(str(outcome_row["payload_json"] or "{}"))
+    except (TypeError, json.JSONDecodeError):
+        return False
+    expected_label = "good" if success else "bad"
+    return (
+        str(event_outcome.get("outcome") or "").strip().lower() == expected_label
+        and str(event_outcome.get("source") or "").strip() == method
+        and str(event_outcome.get("source_trust") or "").strip() in VERIFIED_REAL_TASK_SOURCE_TRUST
+    )
 
 
 def _valid_live_acceptance_evidence(

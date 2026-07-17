@@ -72,11 +72,35 @@ def diagnose_outcome(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "schema_version": "outcome_diagnosis.v1",
         "primary_label": primary_label,
+        "blame_layer": _blame_layer(primary_label, signals),
         "labels": [label for label in _PRIORITY if label in labels],
         "signals": [signal for signal in SIGNALS if signal in signals],
         "confidence": _diagnosis_confidence(primary_label, labels, signals, payload),
         "evidence": evidence,
     }
+
+
+def _blame_layer(primary_label: str, signals: set[str]) -> str:
+    by_label = {
+        "unsafe_or_high_risk": "planner",
+        "missing_tool_call": "planner",
+        "argument_mismatch": "tool",
+        "recovery_failure": "tool",
+        "stale_context": "memory",
+        "state_tracking_error": "device",
+        "user_correction": "operator",
+    }
+    if primary_label in by_label:
+        return by_label[primary_label]
+    if primary_label == "success":
+        return "unknown"
+    if "world_state_mismatch" in signals or "missing_visual_evidence" in signals:
+        return "device"
+    if "operator_gap" in signals:
+        return "operator"
+    if "verifier_missing" in signals:
+        return "verifier"
+    return "unknown"
 
 
 def _signals(payload: dict[str, Any]) -> set[str]:
@@ -91,7 +115,7 @@ def _signals(payload: dict[str, Any]) -> set[str]:
         signals.add("operator_gap")
     if _world_state_mismatch(payload):
         signals.add("world_state_mismatch")
-    if payload.get("verifier") in (None, "") or _nested(payload, "verifier", "passed") is False:
+    if _verifier_missing(payload.get("verifier")):
         signals.add("verifier_missing")
     confidence = payload.get("confidence")
     if confidence is None:
@@ -99,6 +123,15 @@ def _signals(payload: dict[str, Any]) -> set[str]:
     if isinstance(confidence, (int, float)) and confidence < 0.5:
         signals.add("low_confidence")
     return signals
+
+
+def _verifier_missing(value: Any) -> bool:
+    if not isinstance(value, dict) or not value:
+        return True
+    if isinstance(value.get("passed"), bool):
+        return False
+    status = str(value.get("status") or value.get("state") or "").strip().lower().replace("-", "_")
+    return status in {"missing", "absent", "unavailable", "not_run", "not_executed", "error"} or "passed" not in value
 
 
 def _missing_tool_call(payload: dict[str, Any]) -> bool:
