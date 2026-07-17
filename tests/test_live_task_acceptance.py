@@ -208,6 +208,70 @@ def test_live_task_acceptance_fails_when_outcome_trace_is_not_persisted(tmp_path
     assert all(case["trace_persisted"] is False for case in report["cases"])
 
 
+def test_readiness_pure_read_ignores_concurrent_external_records(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    concurrent_runtime = Runtime.create(root=tmp_path)
+    scope_ref = ScopeRef.from_dict(SCOPE)
+
+    def readiness(*args, **kwargs):
+        concurrent_runtime.store.append(
+            RecordEnvelope.create(
+                kind="reflection",
+                title="Concurrent trace",
+                summary="written by another runtime",
+                scope=scope_ref,
+                source="test.concurrent",
+            )
+        )
+        return {"ok": True, "current_stage": "L5"}
+
+    monkeypatch.setattr(runtime, "build_l5_readiness_report", readiness)
+    try:
+        definitions = live_task_acceptance._case_definitions(
+            runtime,
+            scope=scope_ref,
+            identity={"commit": "a" * 40, "version": "1.9.52", "release_path": "/tmp/release"},
+        )
+        check = next(item["check"] for item in definitions if item["case_id"] == "governance.readiness_pure_read")
+        observation = check()
+    finally:
+        concurrent_runtime.close()
+        runtime.close()
+
+    assert observation["passed"] is True
+
+
+def test_readiness_pure_read_rejects_writes_from_current_runtime(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope_ref = ScopeRef.from_dict(SCOPE)
+
+    def readiness(*args, **kwargs):
+        runtime.store.append(
+            RecordEnvelope.create(
+                kind="reflection",
+                title="Unexpected readiness write",
+                summary="must fail the pure-read case",
+                scope=scope_ref,
+                source="test.current_runtime",
+            )
+        )
+        return {"ok": True, "current_stage": "L5"}
+
+    monkeypatch.setattr(runtime, "build_l5_readiness_report", readiness)
+    try:
+        definitions = live_task_acceptance._case_definitions(
+            runtime,
+            scope=scope_ref,
+            identity={"commit": "a" * 40, "version": "1.9.52", "release_path": "/tmp/release"},
+        )
+        check = next(item["check"] for item in definitions if item["case_id"] == "governance.readiness_pure_read")
+        observation = check()
+    finally:
+        runtime.close()
+
+    assert observation["passed"] is False
+
+
 def _seed_deployment_receipt(runtime: Runtime, *, commit: str) -> str:
     release_path = f"/opt/eimemory/releases/{commit}"
     version = "1.9.24"

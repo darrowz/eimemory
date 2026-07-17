@@ -315,13 +315,13 @@ def _case_definitions(runtime: Any, *, scope: ScopeRef, identity: dict[str, Any]
         return {"passed": report.get("ok") is True, "metric_count": len(report.get("metrics") or {})}
 
     def readiness_pure_read() -> dict[str, Any]:
-        before = _scoped_record_count(runtime, scope)
+        before = int(runtime.store.sqlite.conn.total_changes)
         report = runtime.build_l5_readiness_report(scope=scope_payload, persist=False, limit=500)
-        after = _scoped_record_count(runtime, scope)
+        after = int(runtime.store.sqlite.conn.total_changes)
         return {
             "passed": report.get("ok") is True and before == after,
-            "record_count_before": before,
-            "record_count_after": after,
+            "connection_changes_before": before,
+            "connection_changes_after": after,
             "stage": str(report.get("current_stage") or ""),
         }
 
@@ -496,14 +496,6 @@ def _record_payload(record: Any) -> dict[str, Any]:
     content = record.content if isinstance(getattr(record, "content", None), dict) else {}
     meta = record.meta if isinstance(getattr(record, "meta", None), dict) else {}
     return {**meta, **content}
-
-
-def _scoped_record_count(runtime: Any, scope: ScopeRef) -> int:
-    row = runtime.store.sqlite.conn.execute(
-        "SELECT COUNT(*) FROM records WHERE tenant_id = ? AND agent_id = ? AND workspace_id = ? AND user_id = ?",
-        (scope.tenant_id, scope.agent_id, scope.workspace_id, scope.user_id),
-    ).fetchone()
-    return int(row[0] if row else 0)
 
 
 def _observation_digest(observation: dict[str, Any]) -> str:
