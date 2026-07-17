@@ -1,0 +1,18 @@
+[Unit]
+Description=OpenClaw Feishu direct reply delivery watchdog
+After=openclaw-gateway.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/eimemory/current
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONPYCACHEPREFIX=/var/lib/eimemory/.pycache/1.9.56
+Environment=PATH=/home/darrow/n/bin:/home/darrow/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/opt/eimemory/current/.venv/bin/python -m eimemory.ops.openclaw_feishu_reply_watchdog
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

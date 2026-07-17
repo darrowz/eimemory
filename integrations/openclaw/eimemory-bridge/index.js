@@ -18,6 +18,8 @@ const DEFAULT_BRIDGE_TIMEOUT_MS = 8000;
 const DEFAULT_MAX_CONCURRENT_COMMANDS = 2;
 const DEFAULT_MAX_QUEUED_COMMANDS = 32;
 const DEFAULT_MAX_COMMAND_OUTPUT_BYTES = 4 * 1024 * 1024;
+const DEFAULT_REPLY_DELIVERY_STATE_PATH = '/var/lib/eimemory/openclaw_reply_delivery_state.json';
+const DEFAULT_REPLY_DELIVERY_ATTEMPTS_PATH = '/var/lib/eimemory/openclaw_reply_delivery_attempts.json';
 const LOOP_TASK_CORRELATION_TTL_MS = 2 * 60 * 60 * 1000;
 const COMPLETION_GATE_RETRY_KEY = 'eimemory-completion-gate-v1';
 const UNRESOLVED_COMPLETION_MARKERS = [
@@ -25,6 +27,11 @@ const UNRESOLVED_COMPLETION_MARKERS = [
   /(?:验证缺口|known_fixable_issues|verification_gaps).{0,24}(?:尚未|未清零|非零|待|后面|以后|later|pending)/i,
   /(?:尚未|还没|未能).{0,18}(?:应用|部署|修复|验证|完成)/i,
   /(?:后面|以后|稍后|下次|later).{0,12}(?:再|处理|修|验证|完成)/i,
+];
+const COMPLETION_CLAIM_MARKERS = [
+  /(?:已|已经)(?:完成|修复|解决|上线|部署|交付|处理完)/i,
+  /(?:修复|任务|工作|部署|上线|交付|处理|问题).{0,8}(?:完成|已完成|解决|已解决)/i,
+  /\b(?:done|fixed|resolved|completed|deployed)\b/i,
 ];
 const TRUE_BOUNDARY_MARKERS = [
   /需要(?:用户|鸿哥|曾总).{0,12}(?:确认|决定|授权|提供|操作)/i,
@@ -705,6 +712,255 @@ function normalizeContent(content) {
   return String(content);
 }
 
+function replyDeliveryStatePath() {
+  return String(
+    process.env.EIMEMORY_REPLY_DELIVERY_STATE_PATH || DEFAULT_REPLY_DELIVERY_STATE_PATH
+  ).trim();
+}
+
+function emptyReplyDeliveryState() {
+  return { schema_version: 'openclaw_reply_delivery.v1', entries: {} };
+}
+
+function replyDeliveryAttemptsPath() {
+  return String(
+    process.env.EIMEMORY_REPLY_DELIVERY_ATTEMPTS_PATH || DEFAULT_REPLY_DELIVERY_ATTEMPTS_PATH
+  ).trim();
+}
+
+function readReplyDeliveryState() {
+  const statePath = replyDeliveryStatePath();
+  try {
+    const parsed = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    if (parsed && typeof parsed === 'object' && parsed.entries && typeof parsed.entries === 'object') {
+      return parsed;
+    }
+  } catch (_error) {
+    // Missing or partial state is rebuilt atomically below.
+  }
+  return emptyReplyDeliveryState();
+}
+
+function writeReplyDeliveryState(state) {
+  const statePath = replyDeliveryStatePath();
+  const tempPath = `${statePath}.${process.pid}.tmp`;
+  try {
+    fs.mkdirSync(path.dirname(statePath), { recursive: true });
+    fs.writeFileSync(tempPath, `${JSON.stringify(state, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+    fs.renameSync(tempPath, statePath);
+    return true;
+  } catch (error) {
+    try {
+      fs.unlinkSync(tempPath);
+    } catch (_cleanupError) {
+      // Nothing to clean up.
+    }
+    console.warn(`eimemory reply delivery state write failed: ${String(error?.message || error)}`);
+    return false;
+  }
+}
+
+function updateReplyDeliveryState(update) {
+  try {
+    const state = readReplyDeliveryState();
+    update(state);
+    writeReplyDeliveryState(state);
+  } catch (error) {
+    console.warn(`eimemory reply delivery tracking failed open: ${String(error?.message || error)}`);
+  }
+}
+
+function isDirectFeishuReplyContext(context) {
+  const channelId = String(context?.channelId || '').toLowerCase();
+  const sessionKey = String(context?.sessionKey || '');
+  return channelId.includes('feishu') && sessionKey.includes(':feishu:direct:');
+}
+
+const MAX_REPLY_DELIVERY_ENTRIES = 2000;
+
+function reconcileWatchdogReceipts(state) {
+  let attempts;
+  try {
+    attempts = JSON.parse(fs.readFileSync(replyDeliveryAttemptsPath(), 'utf8'))?.entries;
+  } catch (_error) {
+    return;
+  }
+  if (!attempts || typeof attempts !== 'object') {
+    return;
+  }
+  for (const [inboundId, attempt] of Object.entries(attempts)) {
+    const messageId = String(attempt?.message_id || '').trim();
+    const entry = state.entries?.[inboundId];
+    if (!entry || attempt?.ok !== true || !messageId) {
+      continue;
+    }
+    entry.status = 'delivered';
+    entry.delivery_message_id = messageId;
+    entry.delivered_at_ms = Number(attempt?.attempted_at_ms || Date.now());
+  }
+}
+
+function compactReplyDeliveryState(state) {
+  const values = Object.entries(state.entries || {});
+  if (values.length <= MAX_REPLY_DELIVERY_ENTRIES) {
+    return;
+  }
+  const active = values.filter(([, entry]) => !['delivered', 'silent'].includes(entry?.status));
+  const delivered = values
+    .filter(([, entry]) => ['delivered', 'silent'].includes(entry?.status))
+    .sort(([, left], [, right]) => Number(right.delivered_at_ms || 0) - Number(left.delivered_at_ms || 0));
+  const terminalLimit = Math.max(0, MAX_REPLY_DELIVERY_ENTRIES - active.length);
+  state.entries = Object.fromEntries([...active, ...delivered.slice(0, terminalLimit)]);
+}
+
+function latestPendingReplyEntry(state, sessionKey, runId = '', content = '') {
+  const candidates = Object.values(state.entries || {})
+    .filter((entry) => entry?.session_key === sessionKey && entry?.status !== 'delivered');
+  if (runId) {
+    const exactRun = candidates.find((entry) => entry?.run_id === runId);
+    if (exactRun) {
+      return exactRun;
+    }
+  }
+  if (content) {
+    const exactContent = candidates.find((entry) => entry?.final_text === content);
+    if (exactContent) {
+      return exactContent;
+    }
+  }
+  return candidates
+    .sort((left, right) => Number(right.received_at_ms || 0) - Number(left.received_at_ms || 0))[0];
+}
+
+function assistantText(content) {
+  if (typeof content === 'string') {
+    return content.trim();
+  }
+  if (Array.isArray(content)) {
+    return content
+      .filter((item) => !item?.type || ['text', 'input_text', 'output_text'].includes(item.type))
+      .map((item) => assistantText(item?.text ?? item?.content ?? item))
+      .filter(Boolean)
+      .join('\n')
+      .trim();
+  }
+  if (content && typeof content === 'object') {
+    return assistantText(content.text ?? content.content ?? '');
+  }
+  return '';
+}
+
+function lastAssistantText(messages) {
+  const values = Array.isArray(messages) ? messages : [];
+  for (let index = values.length - 1; index >= 0; index -= 1) {
+    const item = values[index];
+    const message = item?.message && typeof item.message === 'object' ? item.message : item;
+    if (String(message?.role || '') !== 'assistant') {
+      continue;
+    }
+    const text = assistantText(message?.content);
+    if (text) {
+      return text;
+    }
+  }
+  return '';
+}
+
+function isInternalSilentReply(text) {
+  return /^(?:NO_REPLY|HEARTBEAT_OK)$/i.test(String(text || '').trim());
+}
+
+function trackReplyInbound(event, context) {
+  if (!isDirectFeishuReplyContext(context)) {
+    return;
+  }
+  const inboundMessageId = String(event?.messageId || context?.messageId || '').trim();
+  if (!inboundMessageId) {
+    return;
+  }
+  updateReplyDeliveryState((state) => {
+    reconcileWatchdogReceipts(state);
+    if (state.entries[inboundMessageId]) {
+      return;
+    }
+    state.entries[inboundMessageId] = {
+      inbound_message_id: inboundMessageId,
+      session_key: String(context?.sessionKey || event?.sessionKey || ''),
+      conversation_id: String(context?.conversationId || ''),
+      sender_id: String(event?.senderId || event?.from || context?.senderId || ''),
+      received_at_ms: Number(event?.timestamp || Date.now()),
+      status: 'pending',
+      final_text: '',
+      delivery_message_id: '',
+      run_id: String(event?.runId || event?.run_id || context?.runId || context?.run_id || ''),
+      suppress_stalled_notice: false,
+    };
+    compactReplyDeliveryState(state);
+  });
+}
+
+function trackReplyAgentEnd(event, context) {
+  if (!isDirectFeishuReplyContext(context)) {
+    return;
+  }
+  const sessionKey = String(context?.sessionKey || event?.sessionKey || '');
+  const finalText = lastAssistantText(event?.messages);
+  if (!sessionKey || !finalText || event?.success !== true) {
+    return;
+  }
+  updateReplyDeliveryState((state) => {
+    const runId = String(event?.runId || event?.run_id || context?.runId || context?.run_id || '');
+    const entry = latestPendingReplyEntry(state, sessionKey, runId);
+    if (!entry) {
+      return;
+    }
+    if (isInternalSilentReply(finalText)) {
+      entry.status = 'silent';
+      entry.suppress_stalled_notice = true;
+      entry.delivered_at_ms = Date.now();
+      compactReplyDeliveryState(state);
+      return;
+    }
+    entry.final_text = finalText;
+    entry.suppress_stalled_notice = false;
+    entry.agent_end_at_ms = Date.now();
+    entry.status = entry.last_sent_success === true && entry.last_sent_message_id && entry.last_sent_content === finalText
+      ? 'delivered'
+      : 'answered';
+    if (entry.status === 'delivered') {
+      entry.delivery_message_id = entry.last_sent_message_id || '';
+      entry.delivered_at_ms = entry.last_sent_at_ms || Date.now();
+    }
+  });
+}
+
+function trackReplyMessageSent(event, context) {
+  if (!isDirectFeishuReplyContext(context)) {
+    return;
+  }
+  const sessionKey = String(context?.sessionKey || event?.sessionKey || '');
+  if (!sessionKey) {
+    return;
+  }
+  updateReplyDeliveryState((state) => {
+    const sentContent = String(event?.content || '');
+    const messageId = String(event?.messageId || event?.message_id || '').trim();
+    const entry = latestPendingReplyEntry(state, sessionKey, '', sentContent);
+    if (!entry) {
+      return;
+    }
+    entry.last_sent_success = event?.success === true;
+    entry.last_sent_content = sentContent;
+    entry.last_sent_message_id = messageId;
+    entry.last_sent_at_ms = Date.now();
+    if (event?.success === true && messageId && entry.final_text && entry.final_text === entry.last_sent_content) {
+      entry.status = 'delivered';
+      entry.delivery_message_id = entry.last_sent_message_id;
+      entry.delivered_at_ms = entry.last_sent_at_ms;
+    }
+  });
+}
+
 function drainCommandQueue() {
   const maxConcurrent = positiveIntEnv(
     'EIMEMORY_MAX_CONCURRENT_COMMANDS',
@@ -998,7 +1254,8 @@ function hasUnresolvedCompletion(text) {
   if (!normalized || TRUE_BOUNDARY_MARKERS.some((pattern) => pattern.test(normalized))) {
     return false;
   }
-  return UNRESOLVED_COMPLETION_MARKERS.some((pattern) => pattern.test(normalized));
+  return COMPLETION_CLAIM_MARKERS.some((pattern) => pattern.test(normalized))
+    && UNRESOLVED_COMPLETION_MARKERS.some((pattern) => pattern.test(normalized));
 }
 
 function completionGateRevision(event) {
@@ -1021,6 +1278,27 @@ function completionGateBeforeToolCall(event) {
     return undefined;
   }
   const params = event?.params || {};
+  const sessionKey = String(event?.sessionKey || '');
+  const target = String(params.target || '').trim();
+  const currentUserId = sessionKey.split(':').pop() || '';
+  const conversationId = String(event?.conversationId || '').trim();
+  const targetsCurrentConversation = !target || [
+    currentUserId,
+    currentUserId ? `user:${currentUserId}` : '',
+    conversationId,
+    conversationId ? `chat:${conversationId}` : '',
+  ].filter(Boolean).includes(target);
+  if (
+    String(params.action || '') === 'send'
+    && sessionKey.includes(':feishu:direct:')
+    && targetsCurrentConversation
+    && String(params.kind || '') !== 'reply_delivery_reporter'
+  ) {
+    return {
+      block: true,
+      blockReason: '飞书私聊回复由可靠送达队列统一发送；请保留正常 final，不要调用 message send。',
+    };
+  }
   if (String(params.action || '') !== 'send' || !hasUnresolvedCompletion(params.message)) {
     return undefined;
   }
@@ -1247,9 +1525,11 @@ module.exports.default = {
     api?.logger?.info?.('eimemory-bridge: registering OpenClaw hooks');
     registerStatusTool(api);
     registerMemoryE2ETool(api);
-    registerTypedHookOnce(api, 'message_received', async (event, context) => (
-      (await safeInvokeHook(api, 'message_received', mergeHookEventContext(event, context))) || {}
-    ));
+    writeReplyDeliveryState(readReplyDeliveryState());
+    registerTypedHookOnce(api, 'message_received', async (event, context) => {
+      trackReplyInbound(event, context);
+      return (await safeInvokeHook(api, 'message_received', mergeHookEventContext(event, context))) || {};
+    });
     if (promptInjectionEnabled(api)) {
       registerTypedHookOnce(api, 'before_prompt_build', async (event, context) => {
         const contextualEvent = mergeHookEventContext(event, context);
@@ -1276,10 +1556,14 @@ module.exports.default = {
       api?.logger?.info?.('eimemory-bridge: before_prompt_build disabled; set EIMEMORY_ENABLE_PROMPT_INJECTION=true and allowPromptInjection=true to enable recall injection');
     }
     registerTypedHookOnce(api, 'agent_end', async (event, context) => {
+      trackReplyAgentEnd(event, context);
       const correlatedEvent = correlatePendingLoopTask(mergeHookEventContext(event, context));
       const result = (await safeInvokeHook(api, 'agent_end', correlatedEvent)) || {};
       forgetTerminalLoopTask(correlatedEvent, result);
       return result;
+    });
+    registerTypedHookOnce(api, 'message_sent', async (event, context) => {
+      trackReplyMessageSent(event, context);
     });
     registerTypedHookOnce(api, 'session_end', async (event, context) => {
       const correlatedEvent = correlatePendingLoopTask(mergeHookEventContext(event, context));

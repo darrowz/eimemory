@@ -292,6 +292,8 @@ if [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ] && command -v systemctl >/dev/null 2
     "$RELEASE_DIR/deploy/systemd/openclaw-stuck-watchdog.service" "$USER_SYSTEMD_DIR/openclaw-stuck-watchdog.service"
   _install_as_service_user 0644 \
     "$RELEASE_DIR/deploy/systemd/openclaw-stuck-watchdog.timer" "$USER_SYSTEMD_DIR/openclaw-stuck-watchdog.timer"
+  _install_as_service_user 0644 \
+    "$RELEASE_DIR/deploy/systemd/openclaw-feishu-reply-watchdog.service" "$USER_SYSTEMD_DIR/openclaw-feishu-reply-watchdog.service"
   SERVICE_UID="$(id -u "$SERVICE_USER" 2>/dev/null || id -u)"
   "$PYTHON_BIN" -I -B "$RELEASE_DIR/deploy/install_managed_systemd_dropin.py" \
     --source "$RELEASE_DIR/deploy/systemd/openclaw-gateway-eimemory.conf" \
@@ -318,6 +320,7 @@ if [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ] && command -v systemctl >/dev/null 2
     systemctl --user enable eimemory-rpc.service
     systemctl --user enable --now openclaw-loop-watch.timer
     systemctl --user enable --now openclaw-stuck-watchdog.timer
+    systemctl --user enable openclaw-feishu-reply-watchdog.service
   fi
 fi
 _install_openclaw_loop_compat_script
@@ -328,8 +331,10 @@ COMMITTED=1
 if [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ] && command -v systemctl >/dev/null 2>&1; then
   if [ "$(id -u)" -eq 0 ] && id "$SERVICE_USER" >/dev/null 2>&1; then
     echo "user_systemd_restart_hint=run as $SERVICE_USER: systemctl --user restart eimemory-rpc.service"
+    echo "user_systemd_reply_watchdog_restart_hint=run as $SERVICE_USER: systemctl --user restart openclaw-feishu-reply-watchdog.service"
   else
     systemctl --user restart eimemory-rpc.service
+    systemctl --user restart openclaw-feishu-reply-watchdog.service
     systemctl --user try-restart openclaw-gateway.service
   fi
 fi

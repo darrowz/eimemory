@@ -566,6 +566,18 @@ def test_immutable_release_installer_manages_stuck_watchdog_timer() -> None:
     assert "systemctl --user enable --now openclaw-stuck-watchdog.timer" in script
 
 
+def test_immutable_release_installer_manages_feishu_reply_watchdog() -> None:
+    script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
+    unit = Path("deploy/systemd/openclaw-feishu-reply-watchdog.service").read_text(encoding="utf-8")
+
+    assert '"$RELEASE_DIR/deploy/systemd/openclaw-feishu-reply-watchdog.service"' in script
+    assert '"$USER_SYSTEMD_DIR/openclaw-feishu-reply-watchdog.service"' in script
+    assert "systemctl --user enable openclaw-feishu-reply-watchdog.service" in script
+    assert "systemctl --user restart openclaw-feishu-reply-watchdog.service" in script
+    assert "/home/darrow/.local/bin" in unit
+    assert "/home/darrow/n/bin" in unit
+
+
 def test_managed_systemd_dropin_installer_uses_posix_directory_fds() -> None:
     helper = Path("deploy/install_managed_systemd_dropin.py").read_text(encoding="utf-8")
 
