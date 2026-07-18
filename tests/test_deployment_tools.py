@@ -425,6 +425,47 @@ def test_eimemory_rpc_systemd_unit_uses_honxin_tailscale_endpoint() -> None:
     assert "WantedBy=multi-user.target" not in unit_text
 
 
+def test_eibrain_rpc_service_requires_protected_auth_environment() -> None:
+    unit_text = Path("deploy/systemd/eimemory-rpc.service").read_text(encoding="utf-8")
+
+    assert "EnvironmentFile=/etc/eimemory/rpc.env" in unit_text
+    assert "EnvironmentFile=-" not in unit_text
+    assert "deploy/ensure_rpc_auth.py" in Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
+
+
+def test_rpc_auth_provisioner_creates_strong_private_token_and_rejects_weak_file(tmp_path) -> None:
+    from deploy.ensure_rpc_auth import RPCAuthError, ensure_rpc_auth_file
+
+    path = tmp_path / "rpc.env"
+    report = ensure_rpc_auth_file(path)
+    token = path.read_text(encoding="utf-8").strip().split("=", 1)[1]
+
+    assert report["created"] is True
+    assert len(token) >= 43
+    if os.name == "posix":
+        assert path.stat().st_mode & 0o777 == 0o640
+
+    path.write_text("EIMEMORY_RPC_AUTH_TOKEN=weak\n", encoding="utf-8")
+    with pytest.raises(RPCAuthError, match="weak"):
+        ensure_rpc_auth_file(path)
+
+
+def test_rpc_auth_provisioner_is_idempotent_and_rejects_extra_environment_entries(tmp_path) -> None:
+    from deploy.ensure_rpc_auth import RPCAuthError, ensure_rpc_auth_file
+
+    path = tmp_path / "rpc.env"
+    first = ensure_rpc_auth_file(path)
+    original = path.read_text(encoding="utf-8")
+    second = ensure_rpc_auth_file(path)
+
+    assert first["created"] is True
+    assert second["created"] is False
+    assert path.read_text(encoding="utf-8") == original
+    path.write_text(f"{original}PYTHONPATH=/tmp/untrusted\n", encoding="utf-8")
+    with pytest.raises(RPCAuthError, match="malformed"):
+        ensure_rpc_auth_file(path)
+
+
 def test_eimemory_rpc_cleanup_script_kills_only_matching_port_listeners() -> None:
     script = Path("deploy/systemd/eimemory-rpc-cleanup-port.sh").read_text(encoding="utf-8")
 

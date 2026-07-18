@@ -10,7 +10,7 @@ WorkingDirectory=/opt/eimemory/current
 Environment=HOME=/home/darrow
 Environment=EIMEMORY_ROOT=/var/lib/eimemory
 Environment=EIMEMORY_CONFIG_DIR=/etc/eimemory
-EnvironmentFile=-/home/darrow/.config/eimemory/rpc.env
+EnvironmentFile=/etc/eimemory/rpc.env
 Environment=PYTHONPATH=/opt/eimemory/current
 Environment=PYTHONDONTWRITEBYTECODE=1
 Environment=PYTHONPYCACHEPREFIX=/var/lib/eimemory/.pycache/runtime

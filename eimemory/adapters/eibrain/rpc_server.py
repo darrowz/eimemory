@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import errno
 import hmac
+import ipaddress
 import json
 import os
 from pathlib import Path
+import socket
 import subprocess
 import threading
 import urllib.request
@@ -21,6 +23,35 @@ from eimemory.runtime_identity import package_import_root, runtime_package_tree_
 
 _CLIENT_DISCONNECT_ERRNOS = {errno.EPIPE, errno.ECONNRESET, errno.ECONNABORTED}
 MAX_RPC_BODY_BYTES = 1_000_000
+MIN_RPC_AUTH_TOKEN_LENGTH = 32
+MIN_RPC_AUTH_TOKEN_DISTINCT_CHARS = 12
+
+
+def _is_loopback_bind(host: str) -> bool:
+    value = str(host or "").strip()
+    if not value:
+        return False
+    try:
+        return ipaddress.ip_address(value).is_loopback
+    except ValueError:
+        try:
+            addresses = {
+                ipaddress.ip_address(item[4][0])
+                for item in socket.getaddrinfo(value, None, type=socket.SOCK_STREAM)
+            }
+        except (OSError, ValueError):
+            return False
+        return bool(addresses) and all(address.is_loopback for address in addresses)
+
+
+def _is_strong_auth_token(token: str) -> bool:
+    value = str(token or "").strip()
+    return len(value) >= MIN_RPC_AUTH_TOKEN_LENGTH and len(set(value)) >= MIN_RPC_AUTH_TOKEN_DISTINCT_CHARS
+
+
+def validate_rpc_auth_configuration(*, host: str, token: str) -> None:
+    if not _is_loopback_bind(host) and not _is_strong_auth_token(token):
+        raise ValueError("non-loopback RPC bind requires a strong authentication token")
 
 
 def _is_client_disconnect(exc: OSError) -> bool:
@@ -123,7 +154,7 @@ class _RPCHandler(BaseHTTPRequestHandler):
         _send_json_response(self, status_code, payload)
 
     def _auth_required(self) -> bool:
-        return bool(str(self.auth_token or "").strip())
+        return True
 
     def _authorized(self) -> bool:
         token = str(self.auth_token or "").strip()
@@ -181,6 +212,7 @@ class EIBrainRPCServer:
         self.host = host
         self.port = port
         self.auth_token = str(auth_token if auth_token is not None else os.environ.get("EIMEMORY_RPC_AUTH_TOKEN", "")).strip()
+        validate_rpc_auth_configuration(host=host, token=self.auth_token)
         handler = type("EIMemoryRPCHandler", (_RPCHandler,), {})
         handler.bridge = EIBrainRPCBridge(runtime)
         handler.runtime = runtime

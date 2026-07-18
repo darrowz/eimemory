@@ -8,12 +8,23 @@ from eimemory.api.runtime import Runtime
 from eimemory.ei_bridge.protocol import EIMEMORY_RPC_CONTRACT_VERSION
 
 
+TEST_RPC_AUTH_TOKEN = "Abcdefghijklmnopqrstuvwxyz012345_-"
+
+
+def _authorized_get(server: EIBrainRPCServer, path: str):
+    request = urllib.request.Request(
+        f"http://{server.address[0]}:{server.address[1]}{path}",
+        headers={"Authorization": f"Bearer {TEST_RPC_AUTH_TOKEN}"},
+    )
+    return urllib.request.urlopen(request, timeout=5)
+
+
 def test_eibrain_rpc_root_payload_includes_contract_version(tmp_path: Path) -> None:
     runtime = Runtime.create(root=tmp_path)
-    server = EIBrainRPCServer(runtime, host="127.0.0.1", port=0)
+    server = EIBrainRPCServer(runtime, host="127.0.0.1", port=0, auth_token=TEST_RPC_AUTH_TOKEN)
     server.start()
     try:
-        with urllib.request.urlopen(f"http://{server.address[0]}:{server.address[1]}/", timeout=5) as response:
+        with _authorized_get(server, "/") as response:
             payload = json.loads(response.read().decode("utf-8"))
     finally:
         server.stop()
@@ -61,10 +72,10 @@ def test_eibrain_rpc_health_returns_compact_payload(tmp_path: Path) -> None:
 
 def test_eibrain_rpc_daily_brief_keeps_diagnostic_payload(tmp_path: Path) -> None:
     runtime = Runtime.create(root=tmp_path)
-    server = EIBrainRPCServer(runtime, host="127.0.0.1", port=0)
+    server = EIBrainRPCServer(runtime, host="127.0.0.1", port=0, auth_token=TEST_RPC_AUTH_TOKEN)
     server.start()
     try:
-        with urllib.request.urlopen(f"http://{server.address[0]}:{server.address[1]}/daily-brief", timeout=5) as response:
+        with _authorized_get(server, "/daily-brief") as response:
             payload = json.loads(response.read().decode("utf-8"))
     finally:
         server.stop()

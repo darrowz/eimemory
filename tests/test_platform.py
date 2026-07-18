@@ -19,6 +19,9 @@ from eimemory.governance.supervisor import build_supervisor_contract, persist_su
 from eimemory.scheduler.jobs import run_nightly_jobs
 
 
+TEST_RPC_AUTH_TOKEN = "Abcdefghijklmnopqrstuvwxyz012345_-"
+
+
 def test_settings_loader_prefers_env_and_file(tmp_path, monkeypatch) -> None:
     config_path = tmp_path / "settings.json"
     config_path.write_text(
@@ -251,7 +254,7 @@ def test_http_rpc_server_serves_recall_and_policy(tmp_path) -> None:
         scope={"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"},
         status="active",
     )
-    server = EIBrainRPCServer(runtime, host="127.0.0.1", port=0)
+    server = EIBrainRPCServer(runtime, host="127.0.0.1", port=0, auth_token=TEST_RPC_AUTH_TOKEN)
     server.start()
     try:
         recall = server.request(
@@ -284,7 +287,7 @@ def test_http_rpc_server_serves_recall_and_policy(tmp_path) -> None:
 def test_http_rpc_server_health_reports_release_and_store_readiness(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("EIMEMORY_COMMIT", "abc123health")
     runtime = Runtime.create(root=tmp_path)
-    server = EIBrainRPCServer(runtime, host="127.0.0.1", port=0)
+    server = EIBrainRPCServer(runtime, host="127.0.0.1", port=0, auth_token=TEST_RPC_AUTH_TOKEN)
     server.start()
     try:
         with urllib.request.urlopen(f"http://{server.address[0]}:{server.address[1]}/health", timeout=5) as response:
@@ -440,10 +443,14 @@ def test_http_rpc_server_get_root_returns_daily_brief_digest(tmp_path) -> None:
             source="eimemory.news.collect",
         )
     )
-    server = EIBrainRPCServer(runtime, host="127.0.0.1", port=0)
+    server = EIBrainRPCServer(runtime, host="127.0.0.1", port=0, auth_token=TEST_RPC_AUTH_TOKEN)
     server.start()
     try:
-        with urllib.request.urlopen(f"http://{server.address[0]}:{server.address[1]}/", timeout=5) as response:
+        request = urllib.request.Request(
+            f"http://{server.address[0]}:{server.address[1]}/",
+            headers={"Authorization": f"Bearer {TEST_RPC_AUTH_TOKEN}"},
+        )
+        with urllib.request.urlopen(request, timeout=5) as response:
             payload = json.loads(response.read().decode("utf-8"))
     finally:
         server.stop()
@@ -801,13 +808,16 @@ def test_cli_reflect_log_read_stats_and_check(tmp_path, monkeypatch, capsys) -> 
 
 def test_http_rpc_server_returns_400_on_invalid_json(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
-    server = EIBrainRPCServer(runtime, host="127.0.0.1", port=0)
+    server = EIBrainRPCServer(runtime, host="127.0.0.1", port=0, auth_token=TEST_RPC_AUTH_TOKEN)
     server.start()
     try:
         request = urllib.request.Request(
             f"http://{server.address[0]}:{server.address[1]}/",
             data=b"{bad json",
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {TEST_RPC_AUTH_TOKEN}",
+            },
             method="POST",
         )
         try:

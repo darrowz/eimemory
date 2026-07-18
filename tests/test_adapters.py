@@ -8,6 +8,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+import pytest
+
 from eimemory.adapters.eibrain.rpc import EIBrainRPCBridge
 from eimemory.adapters.eibrain.rpc_server import EIBrainRPCServer
 from eimemory.adapters.eibrain.sdk import EIBrainMemoryClient
@@ -18,6 +20,9 @@ from eimemory.api.runtime import Runtime
 from eimemory.cli.main import main as cli_main
 from eimemory.identity import FEISHU_DARROW_OPEN_ID
 from eimemory.models.records import RecallBundle, RecordEnvelope, ScopeRef
+
+
+TEST_RPC_AUTH_TOKEN = "Abcdefghijklmnopqrstuvwxyz012345_-"
 
 
 def _handle_eibrain_request(
@@ -449,7 +454,7 @@ def test_eibrain_rpc_rejects_invalid_param_types(tmp_path) -> None:
 
 def test_eibrain_rpc_server_returns_400_without_detail_for_invalid_request(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
-    server = EIBrainRPCServer(runtime, host="127.0.0.1", port=0)
+    server = EIBrainRPCServer(runtime, host="127.0.0.1", port=0, auth_token=TEST_RPC_AUTH_TOKEN)
     server.start()
     try:
         request = urllib.request.Request(
@@ -457,7 +462,7 @@ def test_eibrain_rpc_server_returns_400_without_detail_for_invalid_request(tmp_p
             data=json.dumps(
                 {"method": "memory.recall", "params": {"query": "x", "limit": "many"}}
             ).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {TEST_RPC_AUTH_TOKEN}"},
             method="POST",
         )
         try:
@@ -516,9 +521,42 @@ def test_eibrain_rpc_server_requires_bearer_token_when_configured(tmp_path, monk
     assert body["error"] == "unauthorized"
 
 
-def test_eibrain_rpc_server_rejects_oversized_post_body(tmp_path) -> None:
+@pytest.mark.parametrize("token", ["", "short-token", "a" * 32])
+def test_eibrain_rpc_server_rejects_non_loopback_bind_without_strong_token(tmp_path, token) -> None:
+    runtime = Runtime.create(root=tmp_path)
+
+    with pytest.raises(ValueError, match="strong authentication token"):
+        EIBrainRPCServer(runtime, host="0.0.0.0", port=0, auth_token=token)
+
+
+def test_eibrain_rpc_server_without_token_is_health_only(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("EIMEMORY_RPC_AUTH_TOKEN", raising=False)
     runtime = Runtime.create(root=tmp_path)
     server = EIBrainRPCServer(runtime, host="127.0.0.1", port=0)
+    server.start()
+    try:
+        with urllib.request.urlopen(
+            f"http://{server.address[0]}:{server.address[1]}/health", timeout=5
+        ) as response:
+            health = json.loads(response.read().decode("utf-8"))
+        request = urllib.request.Request(
+            f"http://{server.address[0]}:{server.address[1]}/",
+            data=b"{}",
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {TEST_RPC_AUTH_TOKEN}"},
+            method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            urllib.request.urlopen(request, timeout=5)
+    finally:
+        server.stop()
+
+    assert health["ok"] is True
+    assert exc_info.value.code == 401
+
+
+def test_eibrain_rpc_server_rejects_oversized_post_body(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    server = EIBrainRPCServer(runtime, host="127.0.0.1", port=0, auth_token=TEST_RPC_AUTH_TOKEN)
     server.start()
     try:
         with socket.create_connection((server.address[0], server.address[1]), timeout=5) as client:
@@ -526,6 +564,7 @@ def test_eibrain_rpc_server_rejects_oversized_post_body(tmp_path) -> None:
                 b"POST / HTTP/1.1\r\n"
                 + f"Host: {server.address[0]}:{server.address[1]}\r\n".encode("ascii")
                 + b"Content-Type: application/json\r\n"
+                + f"Authorization: Bearer {TEST_RPC_AUTH_TOKEN}\r\n".encode("ascii")
                 + b"Content-Length: 1100002\r\n"
                 + b"Connection: close\r\n\r\n"
             )
@@ -1832,13 +1871,13 @@ def test_evolution_observe_normalizes_unknown_signal_type_to_incident(tmp_path) 
 
 def test_eibrain_rpc_server_returns_400_for_unknown_method(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
-    server = EIBrainRPCServer(runtime, host="127.0.0.1", port=0)
+    server = EIBrainRPCServer(runtime, host="127.0.0.1", port=0, auth_token=TEST_RPC_AUTH_TOKEN)
     server.start()
     try:
         request = urllib.request.Request(
             f"http://{server.address[0]}:{server.address[1]}/",
             data=json.dumps({"method": "memory.unknown", "params": {}}).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {TEST_RPC_AUTH_TOKEN}"},
             method="POST",
         )
         try:

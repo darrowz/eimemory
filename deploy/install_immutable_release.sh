@@ -290,6 +290,10 @@ chmod 0755 "$INSTALL_ROOT" 2>/dev/null || true
 _ensure_runtime_dir "$EIMEMORY_ROOT" 0750
 _ensure_runtime_dir "$EIMEMORY_CONFIG_DIR" 0750
 _ensure_runtime_dir "$EIMEMORY_LOG_DIR" 0750
+"$PYTHON_BIN" -I -B "$RELEASE_DIR/deploy/ensure_rpc_auth.py" \
+  --path "$EIMEMORY_CONFIG_DIR/rpc.env" \
+  --user "$SERVICE_USER" \
+  --group "$SERVICE_GROUP"
 _retire_system_rpc_unit
 if [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ] && command -v systemctl >/dev/null 2>&1; then
   _run_as_service_user mkdir -p "$USER_SYSTEMD_DIR"
