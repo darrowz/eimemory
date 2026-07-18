@@ -706,7 +706,7 @@ Commit: `fix: allocate replay sequences transactionally`
 - Produces: `verify_release_health.py --url --commit --version --release-dir` exit status and installer rollback transaction.
 - Consumes: previous/current symlink targets, systemd commands, health JSON, and deployment receipt.
 
-- [ ] **Step 1: Add post-switch failure injection tests**
+- [x] **Step 1: Add post-switch failure injection tests**
 
 ```python
 @pytest.mark.parametrize("fail_stage", ["registry", "rpc_restart", "gateway_restart", "health", "receipt", "acceptance"])
@@ -718,21 +718,21 @@ def test_installer_restores_previous_release_after_post_switch_failure(tmp_path,
     assert "COMMITTED=1" not in result.log
 ```
 
-- [ ] **Step 2: Verify current installer commits before injected failures**
+- [x] **Step 2: Verify current installer commits before injected failures**
 
 Run: `python -m pytest tests/test_deployment_tools.py tests/test_deployment_receipt.py -q -k "post_switch or rollback or health_identity"`
 
 Expected: current symlink remains on the failed release for at least one injected stage.
 
-- [ ] **Step 3: Implement health identity verifier**
+- [x] **Step 3: Implement health identity verifier**
 
 Parse health JSON and require exact commit, version, resolved import root, and nonempty package digest. Exit nonzero on HTTP errors, malformed JSON, or mismatch. Never print headers or environment secrets.
 
-- [ ] **Step 4: Move commit marker behind every gate and restore on failure**
+- [x] **Step 4: Move commit marker behind every gate and restore on failure**
 
 Capture `PREVIOUS_CURRENT`, switch, refresh registry, restart services, verify health, create receipt, run operational acceptance, then set `COMMITTED=1`. The EXIT trap must restore the old symlink, reload/restart old services, and verify old identity if any post-switch command fails.
 
-- [ ] **Step 5: Verify shell and deployment suites and commit**
+- [x] **Step 5: Verify shell and deployment suites and commit**
 
 Run: `bash -n deploy/install_immutable_release.sh`
 

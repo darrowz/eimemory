@@ -521,7 +521,7 @@ def test_immutable_installer_enforces_and_inspects_openclaw_bridge_compatibility
     assert "deploy/ensure_openclaw_bridge_config.py" in script
     assert "plugins inspect eimemory-bridge --runtime --json" in script
     assert "deploy/verify_openclaw_plugin_runtime.py" in script
-    assert script.index("deploy/ensure_openclaw_bridge_config.py") < script.index("restart openclaw-gateway.service")
+    assert script.index("deploy/ensure_openclaw_bridge_config.py") < script.rindex("_user_systemctl restart openclaw-gateway.service")
 
 
 def test_openclaw_runtime_verifier_requires_loaded_hooks_tools_and_clean_diagnostics(tmp_path) -> None:
@@ -732,7 +732,8 @@ def test_immutable_release_installer_deploys_python_runtime_protection_dropins()
 
     assert 'eimemory-python-runtime.conf' in script
     assert '90-eimemory-python-runtime.conf' in script
-    assert script.count('--render-commit "$COMMIT"') == 3
+    assert script.count("--render-commit") == 3
+    assert '--render-commit "$target_commit"' in script
     assert 'bash -s -- "$USER_SYSTEMD_DIR"' in script
     assert "Unable to discover Python runtime systemd units" in script
     assert "Environment=EIMEMORY_RUNTIME_COMMIT=@EIMEMORY_COMMIT@" in runtime_dropin
@@ -749,7 +750,7 @@ def test_immutable_release_installer_manages_truthful_loop_watchdog_unit() -> No
 
     assert "openclaw-loop-watch.service" in script
     assert "openclaw-loop-watch.timer" in script
-    assert "systemctl --user enable --now openclaw-loop-watch.timer" in script
+    assert "_user_systemctl enable --now openclaw-loop-watch.timer" in script
     assert "openclaw_loop.py watch" in service
     assert "|| true" not in service
     assert "OnUnitActiveSec=5min" in timer
@@ -764,7 +765,7 @@ def test_immutable_release_installer_manages_user_level_loop_compaction_timer() 
     assert '"$USER_SYSTEMD_DIR/openclaw-loop-compact.service"' in script
     assert '"$RELEASE_DIR/deploy/systemd/openclaw-loop-compact.timer"' in script
     assert '"$USER_SYSTEMD_DIR/openclaw-loop-compact.timer"' in script
-    assert "systemctl --user enable --now openclaw-loop-compact.timer" in script
+    assert "_user_systemctl enable --now openclaw-loop-compact.timer" in script
     assert "openclaw_loop.py compact --terminal-retention-days 7" in service
     assert "OnCalendar=*-*-* 04:10:00" in timer
 
@@ -776,7 +777,7 @@ def test_immutable_release_installer_manages_stuck_watchdog_timer() -> None:
     assert '"$USER_SYSTEMD_DIR/openclaw-stuck-watchdog.service"' in script
     assert '"$RELEASE_DIR/deploy/systemd/openclaw-stuck-watchdog.timer"' in script
     assert '"$USER_SYSTEMD_DIR/openclaw-stuck-watchdog.timer"' in script
-    assert "systemctl --user enable --now openclaw-stuck-watchdog.timer" in script
+    assert "_user_systemctl enable --now openclaw-stuck-watchdog.timer" in script
 
 
 def test_immutable_release_installer_manages_feishu_reply_watchdog() -> None:
@@ -785,8 +786,8 @@ def test_immutable_release_installer_manages_feishu_reply_watchdog() -> None:
 
     assert '"$RELEASE_DIR/deploy/systemd/openclaw-feishu-reply-watchdog.service"' in script
     assert '"$USER_SYSTEMD_DIR/openclaw-feishu-reply-watchdog.service"' in script
-    assert "systemctl --user enable openclaw-feishu-reply-watchdog.service" in script
-    assert "systemctl --user restart openclaw-feishu-reply-watchdog.service" in script
+    assert "_user_systemctl enable openclaw-feishu-reply-watchdog.service" in script
+    assert "_user_systemctl restart openclaw-feishu-reply-watchdog.service" in script
     assert "/home/darrow/.local/bin" in unit
     assert "/home/darrow/n/bin" in unit
 
@@ -1300,6 +1301,14 @@ def _load_release_bytecode_cleaner():
     return module
 
 
+def _load_module_from_path(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _load_managed_systemd_dropin_installer():
     path = Path("deploy/install_managed_systemd_dropin.py")
     spec = importlib.util.spec_from_file_location("install_managed_systemd_dropin", path)
@@ -1328,9 +1337,9 @@ def test_immutable_release_installer_normalizes_service_ownership() -> None:
     assert 'chown -R "$SERVICE_USER:$SERVICE_GROUP"' in script
     assert '_install_as_service_user 0644' in script
     assert '"$RELEASE_DIR/deploy/systemd/eimemory-rpc.service" "$USER_SYSTEMD_DIR/eimemory-rpc.service"' in script
-    assert "systemctl --user daemon-reload" in script
-    assert "systemctl --user enable eimemory-rpc.service" in script
-    assert "systemctl enable eimemory-rpc.service" not in script
+    assert "_user_systemctl daemon-reload" in script
+    assert "_user_systemctl enable eimemory-rpc.service" in script
+    assert "\n  systemctl enable eimemory-rpc.service" not in script
     assert "_retire_system_rpc_unit" in script
     assert "systemctl disable --now eimemory-rpc.service" in script
     assert "retired-by-eimemory-user-systemd" in script
@@ -1340,10 +1349,109 @@ def test_immutable_release_installer_restarts_runtimes_after_current_switch() ->
     script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
 
     current_switch = script.index('mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"')
-    rpc_restart = script.rindex("systemctl --user restart eimemory-rpc.service")
-    gateway_restart = script.index("systemctl --user restart openclaw-gateway.service")
+    rpc_restart = script.rindex("_user_systemctl restart eimemory-rpc.service")
+    gateway_restart = script.rindex("_user_systemctl restart openclaw-gateway.service")
 
     assert current_switch < rpc_restart < gateway_restart
+
+
+def test_immutable_release_installer_commits_only_after_post_switch_gates() -> None:
+    script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
+
+    switch = script.index('mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"')
+    acceptance = script.index("_run_post_switch_acceptance", switch)
+    committed = script.index("COMMITTED=1", switch)
+
+    assert "PREVIOUS_CURRENT" in script
+    assert "_rollback_current_release" in script
+    assert "verify_release_health.py" in script
+    assert switch < acceptance < committed
+
+
+def test_release_health_verifier_requires_exact_runtime_identity(tmp_path) -> None:
+    from eimemory.runtime_identity import package_tree_digest
+
+    module = _load_module_from_path(
+        "verify_release_health",
+        Path("deploy/verify_release_health.py"),
+    )
+    release = tmp_path / "releases" / ("a" * 40)
+    package = release / "eimemory"
+    package.mkdir(parents=True)
+    (package / "version.py").write_text('__version__ = "1.9.70"\n', encoding="utf-8")
+    payload = {
+        "commit": "a" * 40,
+        "version": "1.9.70",
+        "import_root": str(package),
+        "package_tree_digest": package_tree_digest(package),
+        "paths": {"release": str(release)},
+    }
+
+    assert module.verify_health_payload(
+        payload,
+        commit="a" * 40,
+        version="1.9.70",
+        release_dir=release,
+    )["ok"] is True
+    forged = {**payload, "commit": "b" * 40}
+    report = module.verify_health_payload(
+        forged,
+        commit="a" * 40,
+        version="1.9.70",
+        release_dir=release,
+    )
+    assert report["ok"] is False
+    assert "commit" in report["failed_checks"]
+
+
+@pytest.mark.parametrize(
+    "fail_stage",
+    ["registry", "rpc_restart", "gateway_restart", "health", "receipt", "acceptance"],
+)
+def test_installer_restores_previous_release_after_post_switch_failure(tmp_path, fail_stage) -> None:
+    if os.name != "posix":
+        pytest.skip("installer rollback fault injection requires POSIX rename and dir_fd semantics")
+    commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+    install_root = tmp_path / "install"
+    releases_root = install_root / "releases"
+    old_release = releases_root / ("0" * 40)
+    old_release.mkdir(parents=True)
+    current_link = install_root / "current"
+    _create_directory_link(current_link, old_release)
+    trusted_python = tmp_path / "trusted-python"
+    _write_installer_test_python(trusted_python)
+    env = dict(os.environ)
+    env.update(
+        {
+            "REPO_DIR": Path.cwd().as_posix(),
+            "INSTALL_ROOT": install_root.as_posix(),
+            "PYTHON_BIN": _bash_path(trusted_python),
+            "EIMEMORY_ROOT": (tmp_path / "runtime").as_posix(),
+            "EIMEMORY_CONFIG_DIR": (tmp_path / "config").as_posix(),
+            "EIMEMORY_LOG_DIR": (tmp_path / "logs").as_posix(),
+            "USER_SYSTEMD_ENABLE_SERVICE": "0",
+            "EIMEMORY_POST_SWITCH_GATES": "0",
+            "EIMEMORY_DEPLOY_FAIL_STAGE": fail_stage,
+            "OPENCLAW_LOOP_DEPLOY_VERIFY": "0",
+            "OPENCLAW_LOOP_COMPAT_SCRIPT": "",
+        }
+    )
+
+    result = subprocess.run(
+        [_bash_binary(), "deploy/install_immutable_release.sh", commit],
+        cwd=Path.cwd(),
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert current_link.resolve() == old_release.resolve()
+    assert "rollback_current_release=restored" in result.stderr
+    assert "commit_complete=1" not in result.stdout
 
 
 def test_immutable_release_installer_refreshes_openclaw_registry_before_gateway_restart() -> None:
@@ -1351,7 +1459,7 @@ def test_immutable_release_installer_refreshes_openclaw_registry_before_gateway_
 
     current_switch = script.index('mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"')
     registry_refresh = script.rindex("\n_refresh_openclaw_plugin_registry\n")
-    gateway_restart = script.index("systemctl --user restart openclaw-gateway.service")
+    gateway_restart = script.rindex("_user_systemctl restart openclaw-gateway.service")
 
     assert 'OPENCLAW_BIN="${OPENCLAW_BIN:-$SERVICE_HOME/n/bin/openclaw}"' in script
     assert 'plugins registry --refresh --json' in script

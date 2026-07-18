@@ -19,6 +19,11 @@ OPENCLAW_LOOP_DEPLOY_LIVE_CHECKS="${OPENCLAW_LOOP_DEPLOY_LIVE_CHECKS:-0}"
 OPENCLAW_LOOP_CONFIG_PATH="${OPENCLAW_LOOP_CONFIG_PATH:-$SERVICE_HOME/.openclaw/openclaw.json}"
 OPENCLAW_LOOP_COMPAT_SCRIPT="${OPENCLAW_LOOP_COMPAT_SCRIPT:-$SERVICE_HOME/.openclaw/workspace/scripts/openclaw_loop.py}"
 OPENCLAW_BIN="${OPENCLAW_BIN:-$SERVICE_HOME/n/bin/openclaw}"
+EIMEMORY_POST_SWITCH_GATES="${EIMEMORY_POST_SWITCH_GATES:-1}"
+EIMEMORY_HEALTH_URL="${EIMEMORY_HEALTH_URL:-http://127.0.0.1:8091/health}"
+EIMEMORY_DEPLOY_SCOPE_AGENT="${EIMEMORY_DEPLOY_SCOPE_AGENT:-main}"
+EIMEMORY_DEPLOY_SCOPE_WORKSPACE="${EIMEMORY_DEPLOY_SCOPE_WORKSPACE:-release-deploy}"
+EIMEMORY_DEPLOY_FAIL_STAGE="${EIMEMORY_DEPLOY_FAIL_STAGE:-}"
 COMMIT="${1:-$(git -C "$REPO_DIR" rev-parse HEAD)}"
 RELEASE_DIR="$INSTALL_ROOT/releases/$COMMIT"
 CURRENT_LINK="$INSTALL_ROOT/current"
@@ -122,16 +127,17 @@ _run_openclaw_loop_deploy_verify() {
 }
 
 _install_openclaw_loop_compat_script() {
+  local target_release="${1:-$RELEASE_DIR}"
   if [ -z "$OPENCLAW_LOOP_COMPAT_SCRIPT" ]; then
     return
   fi
   local compat_dir
   compat_dir="$(dirname "$OPENCLAW_LOOP_COMPAT_SCRIPT")"
   _run_as_service_user mkdir -p "$compat_dir"
-  chmod +x "$RELEASE_DIR/scripts/openclaw_loop.py" 2>/dev/null || true
+  chmod +x "$target_release/scripts/openclaw_loop.py" 2>/dev/null || true
   _run_as_service_user rm -f "$OPENCLAW_LOOP_COMPAT_SCRIPT"
   _install_as_service_user 0755 \
-    "$RELEASE_DIR/scripts/openclaw_loop.py" "$OPENCLAW_LOOP_COMPAT_SCRIPT"
+    "$target_release/scripts/openclaw_loop.py" "$OPENCLAW_LOOP_COMPAT_SCRIPT"
 }
 
 _refresh_openclaw_plugin_registry() {
@@ -141,6 +147,34 @@ _refresh_openclaw_plugin_registry() {
   fi
   _run_as_service_user env HOME="$SERVICE_HOME" \
     "$OPENCLAW_BIN" plugins registry --refresh --json >/dev/null
+}
+
+_user_systemctl() {
+  if [ "$(id -u)" -eq 0 ] && id "$SERVICE_USER" >/dev/null 2>&1; then
+    local service_uid
+    service_uid="$(id -u "$SERVICE_USER")"
+    _run_as_service_user env \
+      XDG_RUNTIME_DIR="/run/user/$service_uid" \
+      DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$service_uid/bus" \
+      systemctl --user "$@"
+  else
+    systemctl --user "$@"
+  fi
+}
+
+_maybe_fail_stage() {
+  local stage="$1"
+  if [ -n "$EIMEMORY_DEPLOY_FAIL_STAGE" ] && [ "$EIMEMORY_DEPLOY_FAIL_STAGE" = "$stage" ]; then
+    echo "injected_post_switch_failure=$stage" >&2
+    return 97
+  fi
+}
+
+_release_version() {
+  local target_release="$1"
+  "$PYTHON_BIN" -I -B -c \
+    'import pathlib, sys, tomllib; print(tomllib.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))["project"]["version"])' \
+    "$target_release/pyproject.toml"
 }
 
 _inspect_openclaw_plugin_runtime() {
@@ -157,32 +191,108 @@ _inspect_openclaw_plugin_runtime() {
 }
 
 _refresh_current_runtime_metadata() {
+  local target_release="${1:-$RELEASE_DIR}"
+  local target_commit="${2:-$COMMIT}"
   if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ] || ! command -v systemctl >/dev/null 2>&1; then
     return
   fi
   _run_as_service_user mkdir -p "$USER_SYSTEMD_DIR"
   SERVICE_UID="$(id -u "$SERVICE_USER" 2>/dev/null || id -u)"
-  if ! PYTHON_RUNTIME_UNIT_OUTPUT="$(_run_as_service_user bash -s -- "$USER_SYSTEMD_DIR" < "$RELEASE_DIR/deploy/discover_python_runtime_units.sh")"; then
+  if ! PYTHON_RUNTIME_UNIT_OUTPUT="$(_run_as_service_user bash -s -- "$USER_SYSTEMD_DIR" < "$target_release/deploy/discover_python_runtime_units.sh")"; then
     echo "Unable to discover Python runtime systemd units" >&2
     return 2
   fi
   mapfile -t PYTHON_RUNTIME_UNITS <<< "$PYTHON_RUNTIME_UNIT_OUTPUT"
   for runtime_unit in "${PYTHON_RUNTIME_UNITS[@]}"; do
     _run_as_service_user mkdir -p "$USER_SYSTEMD_DIR/$runtime_unit.d"
-    "$PYTHON_BIN" -I -B "$RELEASE_DIR/deploy/install_managed_systemd_dropin.py" \
-      --source "$RELEASE_DIR/deploy/systemd/eimemory-python-runtime.conf" \
+    "$PYTHON_BIN" -I -B "$target_release/deploy/install_managed_systemd_dropin.py" \
+      --source "$target_release/deploy/systemd/eimemory-python-runtime.conf" \
       --target "$USER_SYSTEMD_DIR/$runtime_unit.d/90-eimemory-python-runtime.conf" \
-      --root "$USER_SYSTEMD_DIR" --owner-uid "$SERVICE_UID" --render-commit "$COMMIT"
+      --root "$USER_SYSTEMD_DIR" --owner-uid "$SERVICE_UID" --render-commit "$target_commit"
   done
   _install_as_service_user 0644 \
-    "$RELEASE_DIR/deploy/systemd/eimemory-rpc.service" "$USER_SYSTEMD_DIR/eimemory-rpc.service"
-  if [ "$(id -u)" -eq 0 ] && id "$SERVICE_USER" >/dev/null 2>&1; then
-    echo "user_systemd_restart_hint=run as $SERVICE_USER: systemctl --user restart eimemory-rpc.service"
-  else
-    systemctl --user daemon-reload
-    systemctl --user enable eimemory-rpc.service
-    systemctl --user restart eimemory-rpc.service
+    "$target_release/deploy/systemd/eimemory-rpc.service" "$USER_SYSTEMD_DIR/eimemory-rpc.service"
+  _user_systemctl daemon-reload
+  _user_systemctl enable eimemory-rpc.service
+  _user_systemctl restart eimemory-rpc.service
+}
+
+_restart_current_services() {
+  if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ] || ! command -v systemctl >/dev/null 2>&1; then
+    return
   fi
+  _user_systemctl daemon-reload
+  _user_systemctl restart eimemory-rpc.service
+  _user_systemctl restart openclaw-feishu-reply-watchdog.service
+  _user_systemctl restart openclaw-gateway.service
+}
+
+_verify_release_health() {
+  local target_release="$1"
+  local target_commit="$2"
+  if [ "$EIMEMORY_POST_SWITCH_GATES" != "1" ] || [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ]; then
+    return
+  fi
+  local target_version
+  target_version="$(_release_version "$target_release")"
+  local verifier="$target_release/deploy/verify_release_health.py"
+  if [ ! -f "$verifier" ]; then
+    verifier="$REPO_DIR/deploy/verify_release_health.py"
+  fi
+  local attempt
+  for attempt in 1 2 3 4 5 6 7 8 9 10; do
+    if "$target_release/.venv/bin/python" -I -B \
+      "$verifier" \
+      --url "$EIMEMORY_HEALTH_URL" --commit "$target_commit" \
+      --version "$target_version" --release-dir "$target_release"; then
+      return
+    fi
+    sleep 1
+  done
+  return 2
+}
+
+_record_deployment_receipt() {
+  if [ "$EIMEMORY_POST_SWITCH_GATES" != "1" ] || [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ]; then
+    return
+  fi
+  env EIMEMORY_ROOT="$EIMEMORY_ROOT" EIMEMORY_RUNTIME_COMMIT="$COMMIT" \
+    "$RELEASE_DIR/.venv/bin/eimemory" learn deployment-receipt \
+      --repo-root "$REPO_DIR" --current-link "$CURRENT_LINK" \
+      --health-url "$EIMEMORY_HEALTH_URL" --prior-commit "$PREVIOUS_COMMIT" \
+      --scope-agent "$EIMEMORY_DEPLOY_SCOPE_AGENT" \
+      --scope-workspace "$EIMEMORY_DEPLOY_SCOPE_WORKSPACE" --json >/dev/null
+}
+
+_run_post_switch_acceptance() {
+  if [ "$EIMEMORY_POST_SWITCH_GATES" != "1" ] || [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ]; then
+    return
+  fi
+  env EIMEMORY_ROOT="$EIMEMORY_ROOT" EIMEMORY_RUNTIME_COMMIT="$COMMIT" \
+    "$RELEASE_DIR/.venv/bin/eimemory" learn live-acceptance \
+      --repo-root "$REPO_DIR" --current-link "$CURRENT_LINK" \
+      --health-url "$EIMEMORY_HEALTH_URL" --prior-commit "$PREVIOUS_COMMIT" \
+      --scope-agent "$EIMEMORY_DEPLOY_SCOPE_AGENT" \
+      --scope-workspace "$EIMEMORY_DEPLOY_SCOPE_WORKSPACE" --json >/dev/null
+}
+
+_rollback_current_release() {
+  rm -f "$CURRENT_LINK.next" 2>/dev/null || true
+  if [ -z "${PREVIOUS_CURRENT:-}" ] || [ ! -d "$PREVIOUS_CURRENT" ]; then
+    rm -f "$CURRENT_LINK" 2>/dev/null || true
+    echo "rollback_current_release=removed_no_previous" >&2
+    return
+  fi
+  ln -sfn "$PREVIOUS_CURRENT" "$CURRENT_LINK.next" && mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"
+  _refresh_current_runtime_metadata "$PREVIOUS_CURRENT" "$PREVIOUS_COMMIT" || true
+  _install_openclaw_loop_compat_script "$PREVIOUS_CURRENT" || true
+  _refresh_openclaw_plugin_registry || true
+  _restart_current_services || true
+  if [ "$EIMEMORY_POST_SWITCH_GATES" = "1" ] && [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ]; then
+    _verify_release_health "$PREVIOUS_CURRENT" "$PREVIOUS_COMMIT" || \
+      echo "rollback_previous_health=unverified" >&2
+  fi
+  echo "rollback_current_release=restored target=$PREVIOUS_CURRENT" >&2
 }
 
 if [[ ! "$COMMIT" =~ ^[0-9a-fA-F]{40}$ ]]; then
@@ -227,12 +337,31 @@ if [ -e "$RELEASE_DIR" ]; then
   _clean_existing_release_and_validate_source
 fi
 
+PREVIOUS_CURRENT=""
+PREVIOUS_COMMIT=""
+if [ -e "$CURRENT_LINK" ] || [ -L "$CURRENT_LINK" ] || [ -d "$CURRENT_LINK" ]; then
+  PREVIOUS_CURRENT="$(realpath -e -- "$CURRENT_LINK")"
+  PREVIOUS_COMMIT="$(basename "$PREVIOUS_CURRENT")"
+fi
+if [ "$EIMEMORY_POST_SWITCH_GATES" = "1" ] && [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ] && \
+   [[ ! "$PREVIOUS_COMMIT" =~ ^[0-9a-fA-F]{40}$ ]]; then
+  echo "Post-switch gates require a prior immutable release commit" >&2
+  exit 2
+fi
+
 STAGE_DIR="$(mktemp -d "$INSTALL_ROOT/releases/.eimemory-stage-${COMMIT}-XXXXXXXX")"
 chmod 0700 "$STAGE_DIR"
 BACKUP_DIR=""
 FINAL_REPLACED=0
+CURRENT_SWITCHED=0
 COMMITTED=0
 cleanup_stage() {
+  local exit_code=$?
+  trap - EXIT
+  set +e
+  if [ "$COMMITTED" != "1" ] && [ "$CURRENT_SWITCHED" = "1" ]; then
+    _rollback_current_release
+  fi
   if [ "$COMMITTED" != "1" ] && [ "$FINAL_REPLACED" = "1" ]; then
     FAILED_DIR="$(mktemp -d "$INSTALL_ROOT/releases/.eimemory-stage-${COMMIT}-XXXXXXXX")"
     rmdir "$FAILED_DIR"
@@ -247,6 +376,7 @@ cleanup_stage() {
     "$PYTHON_BIN" -I -B "$REPO_DIR/deploy/clean_release_bytecode.py" \
       --remove-stage --release-dir "$STAGE_DIR" --releases-root "$INSTALL_ROOT/releases" || true
   fi
+  exit "$exit_code"
 }
 trap cleanup_stage EXIT
 
@@ -348,44 +478,48 @@ if [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ] && command -v systemctl >/dev/null 2
   done
   _install_as_service_user 0644 \
     "$RELEASE_DIR/deploy/systemd/eimemory-rpc.service" "$USER_SYSTEMD_DIR/eimemory-rpc.service"
-  if [ "$(id -u)" -eq 0 ] && id "$SERVICE_USER" >/dev/null 2>&1; then
-    echo "user_systemd_enable_hint=run as $SERVICE_USER: systemctl --user enable eimemory-rpc.service"
-  else
-    systemctl --user daemon-reload
-    systemctl --user enable eimemory-rpc.service
-    systemctl --user enable --now openclaw-loop-watch.timer
-    systemctl --user enable --now openclaw-loop-compact.timer
-    systemctl --user enable --now openclaw-stuck-watchdog.timer
-    systemctl --user enable openclaw-feishu-reply-watchdog.service
-  fi
+  _user_systemctl daemon-reload
+  _user_systemctl enable eimemory-rpc.service
+  _user_systemctl enable --now openclaw-loop-watch.timer
+  _user_systemctl enable --now openclaw-loop-compact.timer
+  _user_systemctl enable --now openclaw-stuck-watchdog.timer
+  _user_systemctl enable openclaw-feishu-reply-watchdog.service
 fi
 _install_openclaw_loop_compat_script
 
 ln -sfn "$RELEASE_DIR" "$CURRENT_LINK.next"
 mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"
-COMMITTED=1
+CURRENT_SWITCHED=1
 _refresh_openclaw_plugin_registry
+_maybe_fail_stage registry
 if [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ] && command -v systemctl >/dev/null 2>&1; then
-  if [ "$(id -u)" -eq 0 ] && id "$SERVICE_USER" >/dev/null 2>&1; then
-    echo "user_systemd_restart_hint=run as $SERVICE_USER: systemctl --user restart eimemory-rpc.service"
-    echo "user_systemd_reply_watchdog_restart_hint=run as $SERVICE_USER: systemctl --user restart openclaw-feishu-reply-watchdog.service"
-  else
-    systemctl --user restart eimemory-rpc.service
-    systemctl --user restart openclaw-feishu-reply-watchdog.service
-    systemctl --user restart openclaw-gateway.service
-    _inspect_openclaw_plugin_runtime
-  fi
+  _user_systemctl restart eimemory-rpc.service
 fi
+_maybe_fail_stage rpc_restart
+if [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ] && command -v systemctl >/dev/null 2>&1; then
+  _user_systemctl restart openclaw-feishu-reply-watchdog.service
+  _user_systemctl restart openclaw-gateway.service
+  _inspect_openclaw_plugin_runtime
+fi
+_maybe_fail_stage gateway_restart
+_verify_release_health "$RELEASE_DIR" "$COMMIT"
+_maybe_fail_stage health
+_record_deployment_receipt
+_maybe_fail_stage receipt
+_run_post_switch_acceptance
+_maybe_fail_stage acceptance
 if [ -n "$BACKUP_DIR" ] && [ -e "$BACKUP_DIR" ]; then
   "$PYTHON_BIN" -I -B "$REPO_DIR/deploy/clean_release_bytecode.py" \
     --remove-stage --release-dir "$BACKUP_DIR" --releases-root "$INSTALL_ROOT/releases" || \
     echo "warning: unable to remove prior release backup: $BACKUP_DIR" >&2
 fi
-trap - EXIT
 
 if [ "$(id -u)" -eq 0 ] && id "$SERVICE_USER" >/dev/null 2>&1; then
   chown -h "$SERVICE_USER:$SERVICE_GROUP" "$CURRENT_LINK" 2>/dev/null || true
 fi
+COMMITTED=1
+echo "commit_complete=1"
+trap - EXIT
 
 echo "release=$RELEASE_DIR"
 echo "current=$CURRENT_LINK"
