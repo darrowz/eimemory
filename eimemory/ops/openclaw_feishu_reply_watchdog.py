@@ -11,6 +11,7 @@ import re
 import subprocess
 import tempfile
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable
 
@@ -123,6 +124,44 @@ def _openclaw_command_env() -> dict[str, str]:
     return environment
 
 
+@contextmanager
+def _openclaw_command_environment():
+    environment = _openclaw_command_env()
+    config_path = Path(
+        environment.get("OPENCLAW_CONFIG_PATH")
+        or Path.home() / ".openclaw" / "openclaw.json"
+    )
+    temporary_path: Path | None = None
+    try:
+        try:
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            config = None
+        auth = config.get("gateway", {}).get("auth", {}) if isinstance(config, dict) else {}
+        stripped_ref = False
+        for config_key, environment_key in (
+            ("token", "OPENCLAW_GATEWAY_TOKEN"),
+            ("password", "OPENCLAW_GATEWAY_PASSWORD"),
+        ):
+            if isinstance(auth.get(config_key), dict) and environment.get(environment_key):
+                auth.pop(config_key, None)
+                stripped_ref = True
+        if stripped_ref:
+            fd, temp_name = tempfile.mkstemp(
+                prefix="openclaw-watchdog-config-", suffix=".json"
+            )
+            temporary_path = Path(temp_name)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(config, handle, ensure_ascii=False)
+                handle.write("\n")
+            os.chmod(temporary_path, 0o600)
+            environment["OPENCLAW_CONFIG_PATH"] = str(temporary_path)
+        yield environment
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+
+
 def _message_body_text(item: dict) -> str:
     body = item.get("body") if isinstance(item.get("body"), dict) else {}
     try:
@@ -218,15 +257,16 @@ def send_payload(payload: dict) -> dict:
         "--message", text,
         "--json",
     ]
-    result = subprocess.run(
-        command,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        env=_openclaw_command_env(),
-        timeout=30,
-        check=False,
-    )
+    with _openclaw_command_environment() as command_environment:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            env=command_environment,
+            timeout=30,
+            check=False,
+        )
     if result.returncode != 0:
         return {"ok": False, "error": (result.stderr or result.stdout).strip()}
     return _parse_command_result(result.stdout)

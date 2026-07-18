@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import nullcontext
 from pathlib import Path
 
 import eimemory.ops.openclaw_feishu_reply_watchdog as watchdog
@@ -145,7 +146,11 @@ def test_sender_replies_through_configured_openclaw_feishu_channel(monkeypatch) 
         return type("Result", (), {"returncode": 0, "stdout": '{"ok":true,"data":{"message_id":"om_sent"}}', "stderr": ""})()
 
     monkeypatch.setattr(watchdog.subprocess, "run", run)
-    monkeypatch.setattr(watchdog, "_openclaw_command_env", lambda: command_env)
+    monkeypatch.setattr(
+        watchdog,
+        "_openclaw_command_environment",
+        lambda: nullcontext(command_env),
+    )
     result = send_payload(
         {
             "inbound_message_id": "om_inbound",
@@ -186,6 +191,48 @@ def test_openclaw_command_env_inherits_auth_from_active_gateway(monkeypatch) -> 
 
     assert command_env["OPENCLAW_GATEWAY_TOKEN"] == "inherited-token"
     assert "UNRELATED" not in command_env
+
+
+def test_openclaw_command_environment_strips_gateway_token_ref(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config_path = tmp_path / "openclaw.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "gateway": {
+                    "auth": {
+                        "mode": "token",
+                        "token": {
+                            "source": "env",
+                            "provider": "openclaw",
+                            "id": "OPENCLAW_GATEWAY_TOKEN",
+                        },
+                    }
+                },
+                "messages": {"visibleReplies": "message_tool"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENCLAW_CONFIG_PATH", str(config_path))
+    monkeypatch.setattr(
+        watchdog,
+        "_openclaw_command_env",
+        lambda: {
+            "OPENCLAW_CONFIG_PATH": str(config_path),
+            "OPENCLAW_GATEWAY_TOKEN": "inherited-token",
+        },
+    )
+
+    with watchdog._openclaw_command_environment() as command_env:
+        temporary_path = Path(command_env["OPENCLAW_CONFIG_PATH"])
+        temporary_config = json.loads(temporary_path.read_text(encoding="utf-8"))
+        assert temporary_path != config_path
+        assert "token" not in temporary_config["gateway"]["auth"]
+        assert temporary_config["messages"]["visibleReplies"] == "message_tool"
+
+    assert not temporary_path.exists()
 
 
 def test_reply_query_error_defers_send(tmp_path: Path) -> None:
