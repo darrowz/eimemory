@@ -1581,6 +1581,7 @@ def test_installer_restores_previous_release_after_post_switch_failure(tmp_path,
             "EIMEMORY_DEPLOY_FAIL_STAGE": fail_stage,
             "OPENCLAW_LOOP_DEPLOY_VERIFY": "0",
             "OPENCLAW_LOOP_COMPAT_SCRIPT": "",
+            "OPENCLAW_BIN": (tmp_path / "missing-openclaw").as_posix(),
         }
     )
 
