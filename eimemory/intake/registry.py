@@ -1,16 +1,16 @@
 from __future__ import annotations
 
-import json
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime
 from hashlib import sha256
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from eimemory.core.clock import now_iso
 from eimemory.intake.title_normalization import strip_candidate_title_prefixes
 from eimemory.models.records import RecordEnvelope, ScopeRef, TimeRef
 from eimemory.storage.runtime_store import RuntimeStore
+from eimemory.storage.atomic_file import locked_json_update, read_json_strict
 
 VALID_SOURCE_KINDS: frozenset[str] = frozenset({"paper", "news", "rss", "url", "manual"})
 VALID_SOURCE_FREQUENCIES: frozenset[str] = frozenset({"daily", "weekly", "paused"})
@@ -153,7 +153,6 @@ class SourceRegistry:
         self._load()
 
     def add_source(self, payload: dict[str, Any]) -> SourceEntry:
-        self._load()
         entry = SourceEntry(
             source_id=str(payload.get("source_id") or ""),
             source_kind=str(payload.get("source_kind") or ""),
@@ -164,8 +163,11 @@ class SourceRegistry:
             last_scanned_at=str(payload.get("last_scanned_at") or ""),
             metadata=dict(payload.get("metadata") or {}),
         )
-        self._upsert(entry)
-        self._save()
+        def update(sources: list[SourceEntry]) -> list[SourceEntry]:
+            self._upsert(sources, entry)
+            return sources
+
+        self._locked_update(update)
         return entry
 
     def list_sources(
@@ -194,40 +196,41 @@ class SourceRegistry:
         skipped_existing_count: int = 0,
         error: str = "",
     ) -> SourceEntry | None:
-        self._load()
         target_id = str(source_id or "").strip()
         if not target_id:
             return None
         final_scanned_at = str(scanned_at or now_iso())
         updated_entry: SourceEntry | None = None
-        updated_sources: list[SourceEntry] = []
-        for entry in self._sources:
-            if entry.source_id != target_id:
-                updated_sources.append(entry)
-                continue
-            metadata = dict(entry.metadata or {})
-            metadata["last_scan"] = _json_safe(
-                {
-                    "scanned_at": final_scanned_at,
-                    "status": str(status or "ok"),
-                    "item_count": max(0, int(item_count)),
-                    "written_count": max(0, int(written_count)),
-                    "skipped_existing_count": max(0, int(skipped_existing_count)),
-                    "error": str(error or ""),
-                }
-            )
-            updated_entry = SourceEntry.from_dict(
-                {
-                    **entry.to_dict(),
-                    "last_scanned_at": final_scanned_at,
-                    "metadata": metadata,
-                }
-            )
-            updated_sources.append(updated_entry)
-        if updated_entry is None:
-            return None
-        self._sources = updated_sources
-        self._save()
+
+        def update(sources: list[SourceEntry]) -> list[SourceEntry]:
+            nonlocal updated_entry
+            updated_sources: list[SourceEntry] = []
+            for entry in sources:
+                if entry.source_id != target_id:
+                    updated_sources.append(entry)
+                    continue
+                metadata = dict(entry.metadata or {})
+                metadata["last_scan"] = _json_safe(
+                    {
+                        "scanned_at": final_scanned_at,
+                        "status": str(status or "ok"),
+                        "item_count": max(0, int(item_count)),
+                        "written_count": max(0, int(written_count)),
+                        "skipped_existing_count": max(0, int(skipped_existing_count)),
+                        "error": str(error or ""),
+                    }
+                )
+                updated_entry = SourceEntry.from_dict(
+                    {
+                        **entry.to_dict(),
+                        "last_scanned_at": final_scanned_at,
+                        "metadata": metadata,
+                    }
+                )
+                updated_sources.append(updated_entry)
+            return updated_sources
+
+        self._locked_update(update)
         return updated_entry
 
     def scan_sources(
@@ -237,25 +240,27 @@ class SourceRegistry:
         scope: dict[str, Any] | ScopeRef | None = None,
         persist: bool = False,
     ) -> dict[str, Any]:
-        self._load()
         scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
         scanned_at = now_iso()
         candidates: list[dict[str, Any]] = []
         written = 0
-        updated_sources: list[SourceEntry] = []
-        for entry in self._sources:
-            if not entry.enabled:
-                updated_sources.append(entry)
-                continue
-            updated = SourceEntry.from_dict({**entry.to_dict(), "last_scanned_at": scanned_at})
-            updated_sources.append(updated)
-            candidate = self._build_candidate(updated, scanned_at=scanned_at)
-            candidates.append(candidate)
+
+        def update(sources: list[SourceEntry]) -> list[SourceEntry]:
+            updated_sources: list[SourceEntry] = []
+            for entry in sources:
+                if not entry.enabled:
+                    updated_sources.append(entry)
+                    continue
+                updated = SourceEntry.from_dict({**entry.to_dict(), "last_scanned_at": scanned_at})
+                updated_sources.append(updated)
+                candidates.append(self._build_candidate(updated, scanned_at=scanned_at))
+            return updated_sources
+
+        self._locked_update(update)
+        for candidate in candidates:
             if persist and store is not None:
                 store.append(self._candidate_record(candidate, scope=scope_ref))
                 written += 1
-        self._sources = updated_sources
-        self._save()
         return {
             "ok": True,
             "scanned_at": scanned_at,
@@ -358,19 +363,43 @@ class SourceRegistry:
         if not self.path.exists():
             self._sources = []
             return
-        raw = json.loads(self.path.read_text(encoding="utf-8"))
-        if not isinstance(raw, list):
-            self._sources = []
-            return
-        self._sources = [SourceEntry.from_dict(item) for item in raw if isinstance(item, dict)]
+        try:
+            self._sources = self._decode_sources(read_json_strict(self.path, list))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"invalid source registry at {self.path}") from exc
 
-    def _save(self) -> None:
-        payload = [entry.to_dict() for entry in self._sources]
-        self.path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    def _locked_update(
+        self,
+        mutate: Callable[[list[SourceEntry]], list[SourceEntry]],
+    ) -> None:
+        def update(raw: list[Any]) -> list[dict[str, Any]]:
+            sources = self._decode_sources(raw)
+            updated = mutate(sources)
+            if not isinstance(updated, list) or any(not isinstance(item, SourceEntry) for item in updated):
+                raise TypeError("source registry mutation must return SourceEntry items")
+            return [entry.to_dict() for entry in updated]
 
-    def _upsert(self, entry: SourceEntry) -> None:
-        for index, existing in enumerate(self._sources):
+        try:
+            payload = locked_json_update(
+                self.path,
+                update,
+                default=[],
+                expected_type=list,
+            )
+            self._sources = self._decode_sources(payload)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"invalid source registry at {self.path}") from exc
+
+    @staticmethod
+    def _decode_sources(raw: list[Any]) -> list[SourceEntry]:
+        if any(not isinstance(item, dict) for item in raw):
+            raise ValueError("source registry entries must be objects")
+        return [SourceEntry.from_dict(item) for item in raw]
+
+    @staticmethod
+    def _upsert(sources: list[SourceEntry], entry: SourceEntry) -> None:
+        for index, existing in enumerate(sources):
             if existing.source_id == entry.source_id:
-                self._sources[index] = entry
+                sources[index] = entry
                 return
-        self._sources.append(entry)
+        sources.append(entry)

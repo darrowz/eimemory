@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import json
+from threading import Barrier
 
 from eimemory.api.runtime import Runtime
 from eimemory.cli.main import main as cli_main
@@ -9,6 +11,42 @@ from eimemory.models.records import RecordEnvelope, ScopeRef
 import pytest
 
 from eimemory.intake.registry import SourceRegistry, normalize_source_strategy_metadata
+
+
+def test_source_registry_rejects_malformed_or_wrong_shape_json(tmp_path) -> None:
+    path = tmp_path / "sources.json"
+    path.write_text("{broken", encoding="utf-8")
+    with pytest.raises(ValueError, match="invalid source registry"):
+        SourceRegistry(path)
+
+    path.write_text('{"sources": []}', encoding="utf-8")
+    with pytest.raises(ValueError, match="invalid source registry"):
+        SourceRegistry(path)
+
+
+def test_concurrent_registry_adds_preserve_every_source(tmp_path) -> None:
+    path = tmp_path / "sources.json"
+    workers = 12
+    barrier = Barrier(workers)
+
+    def add_one(index: int) -> str:
+        registry = SourceRegistry(path)
+        barrier.wait(timeout=10)
+        entry = registry.add_source(
+            {
+                "source_id": f"source-{index}",
+                "source_kind": "manual",
+                "title": f"Source {index}",
+                "uri": f"notes://source-{index}",
+            }
+        )
+        return entry.source_id
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        added = set(pool.map(add_one, range(workers)))
+
+    persisted = {item.source_id for item in SourceRegistry(path).list_sources()}
+    assert persisted == added == {f"source-{index}" for index in range(workers)}
 
 
 def test_source_strategy_metadata_normalizes_defaults_categories_and_limits() -> None:

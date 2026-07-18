@@ -213,7 +213,7 @@ Commit: `fix: align bridge with openclaw 2026.7.1`
 - Produces: `locked_json_update(path: Path, mutate: Callable[[Any], Any]) -> Any` and `read_json_strict(path: Path, expected_type: type) -> Any`.
 - Consumes: a same-directory lock file and temporary replacement file.
 
-- [ ] **Step 1: Add corruption and concurrent-writer regressions**
+- [x] **Step 1: Add corruption and concurrent-writer regressions**
 
 ```python
 def test_registry_rejects_malformed_json(tmp_path):
@@ -229,13 +229,13 @@ def test_concurrent_registry_adds_preserve_both_sources(tmp_path):
     assert {item.source_id for item in SourceRegistry(path).list_sources()} == {"one", "two"}
 ```
 
-- [ ] **Step 2: Run the focused test and observe loss/corruption behavior**
+- [x] **Step 2: Run the focused test and observe loss/corruption behavior**
 
 Run: `python -m pytest tests/test_source_registry.py -q -k "malformed or concurrent"`
 
 Expected: malformed data is not reported clearly and/or a concurrent update is lost.
 
-- [ ] **Step 3: Implement locked atomic replacement**
+- [x] **Step 3: Implement locked atomic replacement**
 
 Use `msvcrt.locking` on Windows and `fcntl.flock` on POSIX. Under the exclusive lock, reload the file, call the mutation, write canonical JSON to a sibling temporary file, flush, `os.fsync`, `os.replace`, and fsync the parent directory on POSIX. Registry mutation methods must perform their load-modify-save cycle inside one `locked_json_update` call.
 
@@ -247,7 +247,7 @@ with interprocess_lock(path.with_suffix(path.suffix + ".lock")):
     return updated
 ```
 
-- [ ] **Step 4: Verify and commit**
+- [x] **Step 4: Verify and commit**
 
 Run: `python -m pytest tests/test_source_registry.py tests/safety/test_atomic_state_closure.py -q`
 
