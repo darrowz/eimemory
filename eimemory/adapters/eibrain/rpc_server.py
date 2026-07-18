@@ -103,6 +103,22 @@ class _RPCHandler(BaseHTTPRequestHandler):
         if self._auth_required() and not self._authorized():
             self._send_json(401, {"ok": False, "error": "unauthorized"})
             return
+        if parsed.path in {"", "/"}:
+            # The RPC root is a compact contract/identity probe.  Building a
+            # daily brief here made a successful authentication probe sort and
+            # deserialize thousands of historical records even though the
+            # caller did not request diagnostic data.
+            self._send_json(
+                200,
+                _compact_health_payload(
+                    self.runtime,
+                    ready=True,
+                    listen_host=self.listen_host,
+                    listen_port=self.listen_port,
+                    loopback_health=self.loopback_health,
+                ),
+            )
+            return
         query = parse_qs(parsed.query)
         scope = {
             "tenant_id": _first_query_value(query, "tenant_id", "default"),

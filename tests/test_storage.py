@@ -1518,6 +1518,101 @@ def test_runtime_store_list_records_uses_stable_tiebreaker_for_same_timestamp(tm
     assert len(set(paged_ids)) == 3
 
 
+def test_runtime_store_list_records_limits_keys_before_loading_bounded_payloads(tmp_path) -> None:
+    store = RuntimeStore(root=tmp_path)
+    scope = ScopeRef(agent_id="main", workspace_id="bounded-list")
+    for index in range(4):
+        store.append(
+            RecordEnvelope.create(
+                kind="memory",
+                title=f"Bounded list {index}",
+                summary="large payload must not enter the ORDER BY temporary table",
+                detail="x" * 100_000,
+                scope=scope,
+            )
+        )
+
+    statements: list[str] = []
+    store.sqlite.conn.set_trace_callback(statements.append)
+    try:
+        records = store.list_records(scope=scope, limit=2)
+    finally:
+        store.sqlite.conn.set_trace_callback(None)
+
+    selects = [
+        statement
+        for statement in statements
+        if statement.lstrip().upper().startswith(("SELECT", "WITH"))
+    ]
+    assert len(records) == 2
+    assert len(selects) == 1
+    statement = selects[0]
+    assert "WITH selected_records AS" in statement
+    assert "SELECT storage_key, updated_at, record_id FROM records" in statement
+    assert "ORDER BY updated_at DESC, record_id DESC LIMIT 2 OFFSET 0" in statement
+    assert "SELECT selected_records.storage_key, records.payload_json" in statement
+    assert statement.index("LIMIT 2 OFFSET 0") < statement.index("payload_json")
+
+
+def test_runtime_store_list_records_has_no_two_snapshot_payload_race(tmp_path) -> None:
+    reader = RuntimeStore(root=tmp_path)
+    writer = RuntimeStore(root=tmp_path)
+    scope = ScopeRef(agent_id="main", workspace_id="snapshot-list")
+    original = reader.append(
+        RecordEnvelope.create(
+            kind="memory",
+            status="active",
+            title="Snapshot record",
+            summary="Concurrent rewrites must not change a selected page.",
+            scope=scope,
+        )
+    )
+    changed = RecordEnvelope.from_dict(original.to_dict())
+    changed.status = "rejected"
+    connection = reader.sqlite.conn
+
+    class InterleavingConnection:
+        rewritten = False
+
+        def execute(self, statement, parameters=()):
+            if (
+                not self.rewritten
+                and statement.lstrip().startswith(
+                    "SELECT storage_key, payload_json FROM records WHERE storage_key IN"
+                )
+            ):
+                self.rewritten = True
+                writer.rewrite(changed)
+            return connection.execute(statement, parameters)
+
+        def __getattr__(self, name):
+            return getattr(connection, name)
+
+    interleaving = InterleavingConnection()
+    reader.sqlite.conn = interleaving
+    try:
+        records = reader.list_records(scope=scope, status="active", limit=1)
+    finally:
+        reader.sqlite.conn = connection
+        reader.close()
+        writer.close()
+
+    assert interleaving.rewritten is False
+    assert [record.record_id for record in records] == [original.record_id]
+    assert records[0].status == "active"
+
+
+def test_sqlite_records_has_scope_updated_index(tmp_path) -> None:
+    store = RuntimeStore(root=tmp_path)
+
+    indexes = {
+        str(row[1])
+        for row in store.sqlite.conn.execute("PRAGMA index_list(records)").fetchall()
+    }
+
+    assert "idx_records_scope_updated" in indexes
+
+
 
 def test_runtime_store_prefers_user_scoped_policy_over_newer_global_rule(tmp_path) -> None:
     store = RuntimeStore(root=tmp_path)

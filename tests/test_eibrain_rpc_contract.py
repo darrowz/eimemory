@@ -19,8 +19,15 @@ def _authorized_get(server: EIBrainRPCServer, path: str):
     return urllib.request.urlopen(request, timeout=5)
 
 
-def test_eibrain_rpc_root_payload_includes_contract_version(tmp_path: Path) -> None:
+def test_eibrain_rpc_root_payload_includes_contract_version(tmp_path: Path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path)
+    monkeypatch.setattr(
+        runtime,
+        "build_daily_brief",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("the compact RPC root must not build a daily brief")
+        ),
+    )
     server = EIBrainRPCServer(runtime, host="127.0.0.1", port=0, auth_token=TEST_RPC_AUTH_TOKEN)
     server.start()
     try:
@@ -32,6 +39,8 @@ def test_eibrain_rpc_root_payload_includes_contract_version(tmp_path: Path) -> N
     assert payload["ok"] is True
     assert payload["service"] == "eimemory-rpc"
     assert payload["contract_version"] == EIMEMORY_RPC_CONTRACT_VERSION
+    assert "news_digest" not in payload
+    assert "research_digest" not in payload
 
 
 def test_eibrain_rpc_healthz_returns_compact_contract_payload(tmp_path: Path) -> None:

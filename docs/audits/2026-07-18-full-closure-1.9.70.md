@@ -200,3 +200,51 @@ and the refreshed code-review-graph therefore provide the independent evidence
 for this delta. The graph change analysis found no
 affected cross-module flow; its static test-gap labels do not resolve the
 function-local imports used by these explicit regressions.
+
+## Production RPC and SQLite bounded-sort closure
+
+The post-migration authenticated RPC acceptance exposed a separate performance
+failure that the compact health endpoint did not exercise.  `GET /` built a
+daily brief, and `list_records()` selected `payload_json` in the same statement
+that sorted every matching row.  The production Hongtu scope contained 35,414
+rows with 1,283,611,915 payload bytes and individual payloads up to 1,506,021
+bytes.  SQLite therefore placed large payloads in the temporary ORDER BY
+B-tree: the authenticated probe timed out after five seconds while the service
+grew to about 1.4 GiB RSS and continued at one full CPU core for minutes.
+
+The RPC root is now a compact authenticated contract and identity endpoint;
+only `/daily-brief` and `/diagnostics` build the diagnostic brief.  SQLite adds
+an ordered scope index and uses a single-statement CTE that sorts only
+`storage_key`, `updated_at`, and `record_id`, applies LIMIT/OFFSET, and joins the
+bounded keys back to `payload_json`.  Keeping this as one statement is required:
+an initial two-query implementation reduced memory but OpenCodeReview correctly
+identified that WAL writers could commit between the key and payload queries,
+causing a short page or a payload that no longer matched the original filters.
+
+OpenCodeReview MiniMax-M3 session `89c8bcca-fec8-42f7-97f8-83e9cbba96e5`
+reviewed all four initial delta files in 14 minutes 8 seconds and returned three
+comments: the two-snapshot race, a missing deterministic interleaving
+regression, and an untested 500-variable batching boundary.  The CTE and its
+interleaving regression close the first two; the CTE eliminates `IN` batching,
+so the third boundary no longer exists.  A read-only production-shaped CTE
+probe returned 500 records / 11,197,572 payload bytes in 1.437 seconds with
+68,876 KiB peak RSS and no swap.  Its query plan showed that the unbounded
+temporary sort contains only CTE key columns; the payload-side sort is bounded
+by the maximum query limit.
+
+The refreshed code-review-graph analysis reported four changed implementation
+and test files, eight changed functions/classes, zero affected cross-module
+flows, and risk 0.60.  Its five test-gap labels are static mapping misses: the
+delta contains explicit RPC-root, bounded-CTE, single-snapshot interleaving,
+scope-index, stable pagination, auth, and daily-brief regressions.  The final
+focused layers passed 68 storage/RPC-contract tests plus 22 adjacent RPC,
+daily-brief, and platform tests.  The full suite was intentionally not repeated
+because one fresh full run already existed for this release candidate and the
+operator explicitly requested no further full reruns.
+
+Final MiniMax-M3 re-review session
+`0a512824-d752-4cde-bd9e-a9e65ace69f1` inspected the repaired four-file delta
+in 2 minutes 13 seconds and returned zero comments.  One intermediate
+`file_read` tool call used an inverted line range and failed locally, but the
+review continued to a successful terminal result with 52 recorded tool calls;
+the tool error is not represented as a code pass or finding.

@@ -186,6 +186,10 @@ class SqliteRecordStore:
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_records_scope ON records(tenant_id, agent_id, workspace_id, user_id)"
         )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_records_scope_updated "
+            "ON records(tenant_id, agent_id, workspace_id, user_id, updated_at DESC, record_id DESC)"
+        )
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_records_kind_scope ON records(kind, tenant_id, agent_id, workspace_id, user_id)")
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_records_kind_scope_updated "
@@ -1750,11 +1754,18 @@ class SqliteRecordStore:
             where.append("updated_at <= ?")
             params.append(until_value)
         rows = self.conn.execute(
-            "SELECT payload_json FROM records WHERE "
+            "WITH selected_records AS ("
+            "SELECT storage_key, updated_at, record_id FROM records WHERE "
             + " AND ".join(where)
-            + " ORDER BY updated_at DESC, record_id DESC LIMIT ? OFFSET ?",
+            + " ORDER BY updated_at DESC, record_id DESC LIMIT ? OFFSET ?"
+            + ") SELECT selected_records.storage_key, records.payload_json "
+            + "FROM selected_records JOIN records USING (storage_key) "
+            + "ORDER BY selected_records.updated_at DESC, selected_records.record_id DESC",
             [*params, limit, offset],
         ).fetchall()
+        # The CTE keeps large payload_json values out of the unbounded scope
+        # sort while preserving SQLite's single-statement read snapshot.  The
+        # outer sort handles at most MAX_QUERY_LIMIT joined payloads.
         return [
             record
             for row in rows
