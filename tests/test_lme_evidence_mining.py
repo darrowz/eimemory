@@ -37,10 +37,16 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CONVERTER_PATH = REPO_ROOT / "scripts" / "convert_longmemeval_to_eimemory.py"
 DATA_PATH = REPO_ROOT / "data" / "longmemeval_s_cleaned.json"
+requires_longmemeval_data = pytest.mark.skipif(
+    not DATA_PATH.is_file(),
+    reason="optional 277 MB LongMemEval dataset is not present; run scripts/download_longmemeval.py",
+)
 
 
 def _load_converter():
@@ -109,6 +115,7 @@ def _iter_json_array(path: Path):
 # ---------------------------------------------------------------------------
 
 
+@requires_longmemeval_data
 def test_lme_converter_emits_real_evidence(tmp_path) -> None:
     """A cleaned-variant raw case must yield non-empty evidence_session_ids."""
     converter = _load_converter()
@@ -141,6 +148,7 @@ def test_lme_converter_emits_real_evidence(tmp_path) -> None:
         )
 
 
+@requires_longmemeval_data
 def test_lme_converter_evidence_matches_raw(tmp_path) -> None:
     """The eimemory evidence_session_ids must include all raw answer_session_ids."""
     converter = _load_converter()
@@ -242,6 +250,7 @@ def test_lme_converter_mines_multiple_has_answer_messages(tmp_path) -> None:
     assert case["evidence_turn_ids"] == ["sess-A:m1", "sess-A:m3"]
 
 
+@requires_longmemeval_data
 def test_lme_converter_real_cleaned_data_mines_turn_ids() -> None:
     """End-to-end: 500/500 cleaned cases, 95%+ must have turn evidence.
 
