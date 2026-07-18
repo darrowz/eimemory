@@ -8,7 +8,7 @@ TimeoutStartSec=10min
 WorkingDirectory=/opt/eimemory/current
 Environment=OPENCLAW_LOOP_HOME=%h/.openclaw/task-ledger
 Environment=PYTHONDONTWRITEBYTECODE=1
-Environment=PYTHONPYCACHEPREFIX=/var/lib/eimemory/.pycache/1.9.60
+Environment=PYTHONPYCACHEPREFIX=/var/lib/eimemory/.pycache/1.9.61
 Nice=10
 IOSchedulingClass=idle
 ExecStart=/opt/eimemory/current/.venv/bin/python /opt/eimemory/current/scripts/openclaw_loop.py compact --terminal-retention-days 7

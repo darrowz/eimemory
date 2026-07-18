@@ -1279,27 +1279,6 @@ function completionGateBeforeToolCall(event) {
     return undefined;
   }
   const params = event?.params || {};
-  const sessionKey = String(event?.sessionKey || '');
-  const target = String(params.target || '').trim();
-  const currentUserId = sessionKey.split(':').pop() || '';
-  const conversationId = String(event?.conversationId || '').trim();
-  const targetsCurrentConversation = !target || [
-    currentUserId,
-    currentUserId ? `user:${currentUserId}` : '',
-    conversationId,
-    conversationId ? `chat:${conversationId}` : '',
-  ].filter(Boolean).includes(target);
-  if (
-    String(params.action || '') === 'send'
-    && sessionKey.includes(':feishu:direct:')
-    && targetsCurrentConversation
-    && String(params.kind || '') !== 'reply_delivery_reporter'
-  ) {
-    return {
-      block: true,
-      blockReason: '飞书私聊回复由可靠送达队列统一发送；请保留正常 final，不要调用 message send。',
-    };
-  }
   if (String(params.action || '') !== 'send' || !hasUnresolvedCompletion(params.message)) {
     return undefined;
   }

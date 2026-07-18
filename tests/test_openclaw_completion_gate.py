@@ -124,7 +124,7 @@ Promise.resolve(handlers.before_tool_call({
     assert payload == {}
 
 
-def test_completion_gate_routes_direct_feishu_reply_through_delivery_queue() -> None:
+def test_completion_gate_allows_direct_feishu_message_tool_delivery() -> None:
     payload = _run_node(
         """
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
@@ -135,15 +135,14 @@ Promise.resolve(handlers.before_tool_call({
   params: { action: 'send', message: '最终答复' }
 }, {
   sessionKey: 'agent:main:feishu:direct:ou_test'
-})).then((result) => process.stdout.write(JSON.stringify(result)));
+})).then((result) => process.stdout.write(JSON.stringify(result || {})));
 """
     )
 
-    assert payload["block"] is True
-    assert "可靠送达队列" in payload["blockReason"]
+    assert payload == {}
 
 
-def test_completion_gate_blocks_explicit_current_direct_target() -> None:
+def test_completion_gate_allows_explicit_current_direct_target() -> None:
     payload = _run_node(
         """
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
@@ -152,11 +151,11 @@ plugin.register({ on(name, handler) { handlers[name] = handler; } });
 Promise.resolve(handlers.before_tool_call({
   toolName: 'message', params: { action: 'send', target: 'user:ou_test', message: '最终答复' }
 }, { sessionKey: 'agent:main:feishu:direct:ou_test', conversationId: 'oc_test' }))
-  .then((result) => process.stdout.write(JSON.stringify(result)));
+  .then((result) => process.stdout.write(JSON.stringify(result || {})));
 """
     )
 
-    assert payload["block"] is True
+    assert payload == {}
 
 
 def test_completion_gate_allows_delivery_reporter_bypass() -> None:

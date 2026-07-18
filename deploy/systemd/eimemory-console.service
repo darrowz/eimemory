@@ -10,7 +10,7 @@ Environment=EIMEMORY_CONSOLE_TOKEN=change-me
 Environment=EIMEMORY_CONSOLE_PATH=/var/lib/eimemory/governance/evolution-console.html
 Environment=EIMEMORY_CONSOLE_PORT=8765
 Environment=PYTHONDONTWRITEBYTECODE=1
-Environment=PYTHONPYCACHEPREFIX=/var/lib/eimemory/.pycache/1.9.60
+Environment=PYTHONPYCACHEPREFIX=/var/lib/eimemory/.pycache/1.9.61
 ExecStart=/opt/eimemory/current/.venv/bin/python -m eimemory.governance.serve_console
 Restart=on-failure
 RestartSec=3
