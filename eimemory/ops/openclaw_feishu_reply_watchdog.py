@@ -15,6 +15,14 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable
 
+from eimemory.ops.feishu_delivery_state import (
+    complete_delivery,
+    escalate_delivery,
+    prepare_delivery,
+    read_delivery_entries,
+    reconcile_delivery,
+)
+
 
 DEFAULT_STATE_PATH = Path("/var/lib/eimemory/openclaw_reply_delivery_state.json")
 DEFAULT_ATTEMPTS_PATH = Path("/var/lib/eimemory/openclaw_reply_delivery_attempts.json")
@@ -23,7 +31,7 @@ DEFAULT_STALLED_TIMEOUT_MS = 300_000
 DEFAULT_INTERVAL_SECONDS = 10
 DEFAULT_RAPID_ATTEMPTS = 3
 DEFAULT_BACKOFF_MS = 300_000
-MAX_ATTEMPT_ENTRIES = 2_000
+DEFAULT_ESCALATION_TIMEOUT_MS = 10_800_000
 STALLED_NOTICE = "这条消息处理链路异常，系统正在恢复。无需重复发送；恢复后会继续处理。"
 GATEWAY_AUTH_ENV_NAMES = ("OPENCLAW_GATEWAY_TOKEN", "OPENCLAW_GATEWAY_PASSWORD")
 
@@ -39,20 +47,6 @@ def _read_json(path: Path, default: dict) -> dict:
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return default
     return payload if isinstance(payload, dict) else default
-
-
-def _write_json_atomic(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, ensure_ascii=False, indent=2)
-            handle.write("\n")
-        os.chmod(temp_name, 0o600)
-        os.replace(temp_name, path)
-    finally:
-        if os.path.exists(temp_name):
-            os.unlink(temp_name)
 
 
 def _parse_command_result(stdout: str) -> dict:
@@ -283,27 +277,38 @@ def scan_once(
     stalled_timeout_ms: int = DEFAULT_STALLED_TIMEOUT_MS,
     rapid_attempts: int = DEFAULT_RAPID_ATTEMPTS,
     backoff_ms: int = DEFAULT_BACKOFF_MS,
+    escalation_timeout_ms: int = DEFAULT_ESCALATION_TIMEOUT_MS,
     send: Callable[[dict], dict] = send_payload,
     find_existing: Callable[[dict], dict] = find_existing_reply,
 ) -> dict:
     now_ms = int(time.time() * 1000) if now_ms is None else int(now_ms)
     state = _read_json(state_path, {"entries": {}})
-    attempts = _read_json(
-        attempts_path,
-        {"schema_version": "openclaw_reply_delivery_attempts.v1", "entries": {}},
-    )
     entries = state.get("entries") if isinstance(state.get("entries"), dict) else {}
-    attempt_entries = attempts.setdefault("entries", {})
+    try:
+        attempt_entries = read_delivery_entries(attempts_path)
+    except (OSError, ValueError):
+        return {
+            "checked": len(entries),
+            "retried": 0,
+            "failed": 1,
+            "persistence_failed": 1,
+        }
     retried = 0
     failed = 0
-    attempts_changed = False
+    persistence_failed = 0
+    escalated = 0
 
     for inbound_id, raw_entry in entries.items():
-        if not isinstance(raw_entry, dict) or raw_entry.get("status") == "delivered":
+        if not isinstance(raw_entry, dict) or raw_entry.get("status") in {
+            "delivered",
+            "platform_accepted",
+            "silent",
+            "escalated",
+        }:
             continue
         status = str(raw_entry.get("status") or "")
         final_text = str(raw_entry.get("final_text") or "").strip()
-        if status == "answered" and final_text:
+        if status in {"answered", "final_ready"} and final_text:
             due_at = int(raw_entry.get("agent_end_at_ms") or raw_entry.get("received_at_ms") or 0)
             if now_ms - due_at < delivery_timeout_ms:
                 continue
@@ -317,28 +322,10 @@ def scan_once(
             continue
 
         delivery_kind = "final" if status == "answered" else "status"
+        if status == "final_ready":
+            delivery_kind = "final"
         attempt_key = inbound_id if delivery_kind == "final" else f"status:{inbound_id}"
         previous_attempt = attempt_entries.get(attempt_key)
-        if isinstance(previous_attempt, dict):
-            previous_message_id = str(previous_attempt.get("message_id") or "").strip()
-            previous_error = str(previous_attempt.get("error") or "").strip()
-            if previous_message_id and not previous_error:
-                if (
-                    previous_attempt.get("ok") is not True
-                    or previous_attempt.get("retry_mode") != "complete"
-                ):
-                    previous_attempt["ok"] = True
-                    previous_attempt["retry_mode"] = "complete"
-                    attempts_changed = True
-                continue
-        if isinstance(previous_attempt, dict) and previous_attempt.get("ok") is True:
-            continue
-        if isinstance(previous_attempt, dict):
-            retry_count = int(previous_attempt.get("retry_count") or 0)
-            last_attempt_ms = int(previous_attempt.get("attempted_at_ms") or 0)
-            retry_delay_ms = delivery_timeout_ms if retry_count < rapid_attempts else backoff_ms
-            if now_ms - last_attempt_ms < retry_delay_ms:
-                continue
         payload = {
             "conversation_id": str(raw_entry.get("conversation_id") or ""),
             "sender_id": str(raw_entry.get("sender_id") or ""),
@@ -347,60 +334,168 @@ def scan_once(
             "inbound_message_id": inbound_id,
             "received_at_ms": int(raw_entry.get("received_at_ms") or 0),
         }
+        previous_state = (
+            str(previous_attempt.get("state") or "")
+            if isinstance(previous_attempt, dict)
+            else ""
+        )
+        if previous_state == "status_notified":
+            has_resume_reference = any(
+                str(raw_entry.get(name) or "").strip()
+                for name in (
+                    "resume_reference",
+                    "resume_ref",
+                    "resume_task_id",
+                    "continuation_reference",
+                )
+            )
+            if (
+                delivery_kind == "status"
+                and not has_resume_reference
+                and now_ms - int(raw_entry.get("received_at_ms") or 0)
+                >= escalation_timeout_ms
+            ):
+                try:
+                    escalate_delivery(
+                        attempts_path,
+                        key=attempt_key,
+                        now_ms=now_ms,
+                        reason="pending_without_resume_reference",
+                    )
+                    escalated += 1
+                    failed += 1
+                except (OSError, ValueError, KeyError):
+                    failed += 1
+                    persistence_failed += 1
+            continue
+        if previous_state in {"platform_accepted", "escalated"}:
+            continue
+        if previous_state in {"sending", "delivery_uncertain"}:
+            try:
+                existing = find_existing(payload)
+            except Exception as error:  # pragma: no cover - service boundary
+                existing = {"status": "error", "error": str(error)}
+            if existing.get("status") == "error":
+                failed += 1
+                continue
+            try:
+                reconciled = reconcile_delivery(
+                    attempts_path,
+                    key=attempt_key,
+                    found_message_id=(
+                        str(existing.get("messageId") or "")
+                        if existing.get("status") == "found"
+                        else ""
+                    ),
+                    now_ms=now_ms,
+                    uncertainty_after_ms=delivery_timeout_ms,
+                    escalation_after_ms=escalation_timeout_ms,
+                )
+                attempt_entries[attempt_key] = reconciled
+                is_escalated = reconciled.get("state") == "escalated"
+                is_unresolved = reconciled.get("state") in {
+                    "sending",
+                    "delivery_uncertain",
+                    "escalated",
+                }
+                escalated += int(is_escalated)
+                failed += int(is_unresolved)
+            except (OSError, ValueError, KeyError):
+                failed += 1
+                persistence_failed += 1
+            continue
         try:
             existing = find_existing(payload)
             if existing.get("status") == "found":
-                result = {"ok": True, "messageId": existing.get("messageId")}
+                try:
+                    decision = prepare_delivery(
+                        attempts_path,
+                        key=attempt_key,
+                        delivery_kind=delivery_kind,
+                        idempotency_key=payload["idempotency_key"],
+                        payload_digest=hashlib.sha256(
+                            json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+                        ).hexdigest(),
+                        now_ms=now_ms,
+                    )
+                    if decision.get("send") is True:
+                        recorded = complete_delivery(
+                            attempts_path,
+                            key=attempt_key,
+                            ok=True,
+                            message_id=str(existing.get("messageId") or ""),
+                            error="",
+                            now_ms=now_ms,
+                        )
+                        attempt_entries[attempt_key] = recorded
+                        retried += 1
+                    continue
+                except (OSError, ValueError):
+                    failed += 1
+                    persistence_failed += 1
+                    continue
             elif existing.get("status") == "not_found":
-                result = send(payload)
+                pass
             else:
-                result = {"ok": False, "error": existing.get("error") or "reply query failed", "deferred": True}
+                failed += 1
+                continue
+        except Exception as error:  # pragma: no cover - defensive service boundary
+            failed += 1
+            continue
+        try:
+            decision = prepare_delivery(
+                attempts_path,
+                key=attempt_key,
+                delivery_kind=delivery_kind,
+                idempotency_key=payload["idempotency_key"],
+                payload_digest=hashlib.sha256(
+                    json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+                ).hexdigest(),
+                now_ms=now_ms,
+            )
+        except (OSError, ValueError):
+            failed += 1
+            persistence_failed += 1
+            continue
+        if decision.get("send") is not True:
+            attempt_entries[attempt_key] = dict(decision.get("entry") or {})
+            continue
+        try:
+            result = send(payload)
         except Exception as error:  # pragma: no cover - defensive service boundary
             result = {"ok": False, "error": str(error)}
         message_id = str(result.get("messageId") or result.get("message_id") or "").strip()
         ok = result.get("ok") is True and bool(message_id)
-        retry_count = int((previous_attempt or {}).get("retry_count") or 0) + 1
-        attempt_entries[attempt_key] = {
-            "attempted_at_ms": now_ms,
-            "ok": ok,
-            "message_id": message_id,
-            "error": str(result.get("error") or ("sender returned success without messageId" if result.get("ok") is True else "")),
-            "idempotency_key": payload["idempotency_key"],
-            "retry_count": retry_count,
-            "retry_mode": "complete" if ok else ("rapid" if retry_count < rapid_attempts else "backoff"),
-        }
+        try:
+            recorded = complete_delivery(
+                attempts_path,
+                key=attempt_key,
+                ok=ok,
+                message_id=message_id,
+                error=str(
+                    result.get("error")
+                    or (
+                        "sender returned success without messageId"
+                        if result.get("ok") is True
+                        else ""
+                    )
+                ),
+                now_ms=now_ms,
+            )
+            attempt_entries[attempt_key] = recorded
+        except (OSError, ValueError):
+            failed += 1
+            persistence_failed += 1
+            continue
         retried += int(ok)
         failed += int(not ok)
 
-    prune_changed = False
-    if len(attempt_entries) > MAX_ATTEMPT_ENTRIES:
-        protected = {
-            key: value for key, value in attempt_entries.items()
-            if (
-                isinstance(value, dict)
-                and value.get("ok") is True
-                and not key.startswith("status:")
-                and isinstance(entries.get(key), dict)
-                and entries[key].get("status") != "delivered"
-            )
-        }
-        candidates = [
-            item for item in attempt_entries.items()
-            if item[0] not in protected
-        ]
-        newest = sorted(
-            candidates,
-            key=lambda item: int(item[1].get("attempted_at_ms") or 0) if isinstance(item[1], dict) else 0,
-            reverse=True,
-        )[:max(0, MAX_ATTEMPT_ENTRIES - len(protected))]
-        attempts["entries"] = {**protected, **dict(newest)}
-        prune_changed = len(attempts["entries"]) != len(attempt_entries)
-    if retried or failed or attempts_changed or prune_changed or not attempts_path.exists():
-        try:
-            _write_json_atomic(attempts_path, attempts)
-        except OSError:
-            pass
-    return {"checked": len(entries), "retried": retried, "failed": failed}
+    summary = {"checked": len(entries), "retried": retried, "failed": failed}
+    if persistence_failed:
+        summary["persistence_failed"] = persistence_failed
+    if escalated:
+        summary["escalated"] = escalated
+    return summary
 
 
 def main() -> int:

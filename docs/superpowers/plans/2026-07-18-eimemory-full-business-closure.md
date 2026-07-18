@@ -517,7 +517,7 @@ Commit: `fix: require resolved evidence for l5 closure`
 **Files:**
 - Create: `eimemory/ops/feishu_delivery_state.py`
 - Modify: `eimemory/ops/openclaw_feishu_reply_watchdog.py`
-- Modify: `eimemory/ops/openclaw_reply_delivery_tracker.py`
+- Modify: `integrations/openclaw/eimemory-bridge/index.js`
 - Test: `tests/test_openclaw_feishu_reply_watchdog.py`
 - Test: `tests/test_openclaw_reply_delivery_tracker.py`
 
@@ -525,7 +525,7 @@ Commit: `fix: require resolved evidence for l5 closure`
 - Produces: `DeliveryStateStore.prepare_send`, `complete_send`, `mark_uncertain`, `escalate`, and `list_overdue_nonterminal`.
 - Consumes: message ID, target, content hash, attempt number, external receipt, and SLA timestamps.
 
-- [ ] **Step 1: Add crash-window, write-failure, and SLA regressions**
+- [x] **Step 1: Add crash-window, write-failure, and SLA regressions**
 
 ```python
 def test_watchdog_does_not_send_when_intent_persistence_fails(tmp_path, monkeypatch):
@@ -550,13 +550,13 @@ def test_status_only_pending_becomes_escalated_at_sla(tmp_path):
     assert result["status"] == "escalated"
 ```
 
-- [ ] **Step 2: Verify duplicate-send reproduction is red**
+- [x] **Step 2: Verify duplicate-send reproduction is red**
 
 Run: `python -m pytest tests/test_openclaw_feishu_reply_watchdog.py tests/test_openclaw_reply_delivery_tracker.py -q -k "persistence or crash or overdue or duplicate"`
 
 Expected: the same message can be sent twice when the attempt write fails.
 
-- [ ] **Step 3: Implement validated atomic transitions**
+- [x] **Step 3: Implement validated atomic transitions**
 
 Persist transitions through Task 3 atomic JSON utilities. Permit only:
 
@@ -574,7 +574,7 @@ TRANSITIONS = {
 `platform_accepted` and `platform_accepted_at_ms` are the only successful
 terminal names; OpenClaw does not prove display or read receipt.
 
-- [ ] **Step 4: Verify all delivery tests and commit**
+- [x] **Step 4: Verify all delivery tests and commit**
 
 Run: `python -m pytest tests/test_openclaw_feishu_reply_watchdog.py tests/test_openclaw_reply_delivery_tracker.py -q`
 

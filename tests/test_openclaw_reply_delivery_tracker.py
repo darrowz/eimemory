@@ -64,7 +64,7 @@ Promise.resolve()
     )
 
     entry = state["entries"]["om_in_1"]
-    assert entry["status"] == "delivered"
+    assert entry["status"] == "platform_accepted"
     assert entry["final_text"] == "这是最终答复"
     assert entry["delivery_message_id"] == "om_out_1"
     assert entry["conversation_id"] == "oc_test"
@@ -102,7 +102,7 @@ Promise.resolve()
     )
 
     entry = state["entries"]["om_real_context"]
-    assert entry["status"] == "answered"
+    assert entry["status"] == "final_ready"
     assert entry["final_text"] == "生产上下文最终答复"
 
 
@@ -133,7 +133,7 @@ Promise.resolve()
     )
 
     entry = state["entries"]["om_session_only"]
-    assert entry["status"] == "answered"
+    assert entry["status"] == "final_ready"
     assert entry["final_text"] == "session-only final"
 
 
@@ -175,7 +175,7 @@ Promise.resolve()
     )
 
     entry = state["entries"]["om_tool_inbound"]
-    assert entry["status"] == "delivered"
+    assert entry["status"] == "platform_accepted"
     assert entry["final_text"] == "tool-delivered reply"
     assert entry["delivery_message_id"] == "om_tool_receipt"
 
@@ -227,7 +227,7 @@ Promise.resolve()
     )
 
     entry = state["entries"]["om_in_2"]
-    assert entry["status"] == "delivered"
+    assert entry["status"] == "platform_accepted"
     assert entry["delivery_message_id"] == "om_out_2"
 
 
@@ -277,7 +277,7 @@ Promise.resolve()
         tmp_path / "reply-state.json",
     )
 
-    assert state["entries"]["om_in_blank"]["status"] == "answered"
+    assert state["entries"]["om_in_blank"]["status"] == "final_ready"
     assert state["entries"]["om_in_blank"]["delivery_message_id"] == ""
 
 
@@ -318,7 +318,7 @@ Promise.resolve()
         tmp_path / "reply-state.json",
     )
 
-    assert state["entries"]["om_dupe"]["status"] == "delivered"
+    assert state["entries"]["om_dupe"]["status"] == "platform_accepted"
     assert state["entries"]["om_dupe"]["delivery_message_id"] == "om_receipt"
 
 
@@ -472,5 +472,5 @@ Promise.resolve(handlers.message_received({ from: 'ou_test', messageId: 'om_new'
     )
     assert result.returncode == 0, result.stderr
     state = json.loads(state_path.read_text(encoding="utf-8"))
-    assert state["entries"]["om_old"]["status"] == "delivered"
+    assert state["entries"]["om_old"]["status"] == "platform_accepted"
     assert state["entries"]["om_old"]["delivery_message_id"] == "om_receipt"

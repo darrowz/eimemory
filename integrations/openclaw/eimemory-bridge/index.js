@@ -719,7 +719,7 @@ function replyDeliveryStatePath() {
 }
 
 function emptyReplyDeliveryState() {
-  return { schema_version: 'openclaw_reply_delivery.v1', entries: {} };
+  return { schema_version: 'openclaw_reply_delivery.v2', entries: {} };
 }
 
 function replyDeliveryAttemptsPath() {
@@ -788,14 +788,18 @@ function reconcileWatchdogReceipts(state) {
     return;
   }
   for (const [inboundId, attempt] of Object.entries(attempts)) {
-    const messageId = String(attempt?.message_id || '').trim();
+    const messageId = String(attempt?.platform_message_id || attempt?.message_id || '').trim();
     const entry = state.entries?.[inboundId];
-    if (!entry || attempt?.ok !== true || !messageId) {
+    const accepted = attempt?.state === 'platform_accepted' || attempt?.ok === true;
+    if (!entry || !accepted || !messageId) {
       continue;
     }
-    entry.status = 'delivered';
+    entry.status = 'platform_accepted';
     entry.delivery_message_id = messageId;
-    entry.delivered_at_ms = Number(attempt?.attempted_at_ms || Date.now());
+    entry.platform_accepted_at_ms = Number(
+      attempt?.platform_accepted_at_ms || attempt?.attempted_at_ms || Date.now()
+    );
+    entry.delivered_at_ms = entry.platform_accepted_at_ms;
   }
 }
 
@@ -804,17 +808,23 @@ function compactReplyDeliveryState(state) {
   if (values.length <= MAX_REPLY_DELIVERY_ENTRIES) {
     return;
   }
-  const active = values.filter(([, entry]) => !['delivered', 'silent'].includes(entry?.status));
+  const active = values.filter(([, entry]) => !['platform_accepted', 'delivered', 'silent', 'escalated'].includes(entry?.status));
   const delivered = values
-    .filter(([, entry]) => ['delivered', 'silent'].includes(entry?.status))
-    .sort(([, left], [, right]) => Number(right.delivered_at_ms || 0) - Number(left.delivered_at_ms || 0));
+    .filter(([, entry]) => ['platform_accepted', 'delivered', 'silent', 'escalated'].includes(entry?.status))
+    .sort(([, left], [, right]) => Number(
+      right.platform_accepted_at_ms || right.delivered_at_ms || right.escalated_at_ms || 0
+    ) - Number(
+      left.platform_accepted_at_ms || left.delivered_at_ms || left.escalated_at_ms || 0
+    ));
   const terminalLimit = Math.max(0, MAX_REPLY_DELIVERY_ENTRIES - active.length);
   state.entries = Object.fromEntries([...active, ...delivered.slice(0, terminalLimit)]);
 }
 
 function latestPendingReplyEntry(state, sessionKey, runId = '', content = '') {
   const candidates = Object.values(state.entries || {})
-    .filter((entry) => entry?.session_key === sessionKey && entry?.status !== 'delivered');
+    .filter((entry) => entry?.session_key === sessionKey && ![
+      'platform_accepted', 'delivered', 'silent', 'escalated'
+    ].includes(entry?.status));
   if (runId) {
     const exactRun = candidates.find((entry) => entry?.run_id === runId);
     if (exactRun) {
@@ -924,11 +934,12 @@ function trackReplyAgentEnd(event, context) {
     entry.suppress_stalled_notice = false;
     entry.agent_end_at_ms = Date.now();
     entry.status = entry.last_sent_success === true && entry.last_sent_message_id && entry.last_sent_content === finalText
-      ? 'delivered'
-      : 'answered';
-    if (entry.status === 'delivered') {
+      ? 'platform_accepted'
+      : 'final_ready';
+    if (entry.status === 'platform_accepted') {
       entry.delivery_message_id = entry.last_sent_message_id || '';
-      entry.delivered_at_ms = entry.last_sent_at_ms || Date.now();
+      entry.platform_accepted_at_ms = entry.last_sent_at_ms || Date.now();
+      entry.delivered_at_ms = entry.platform_accepted_at_ms;
     }
   });
 }
@@ -953,9 +964,10 @@ function trackReplyMessageSent(event, context) {
     entry.last_sent_message_id = messageId;
     entry.last_sent_at_ms = Date.now();
     if (event?.success === true && messageId && entry.final_text && entry.final_text === entry.last_sent_content) {
-      entry.status = 'delivered';
+      entry.status = 'platform_accepted';
       entry.delivery_message_id = entry.last_sent_message_id;
-      entry.delivered_at_ms = entry.last_sent_at_ms;
+      entry.platform_accepted_at_ms = entry.last_sent_at_ms;
+      entry.delivered_at_ms = entry.platform_accepted_at_ms;
     }
   });
 }
@@ -1030,9 +1042,10 @@ function trackReplyMessageToolResult(event, context) {
     entry.last_sent_content = sentContent;
     entry.last_sent_message_id = receipt.messageId;
     entry.last_sent_at_ms = Date.now();
-    entry.status = 'delivered';
+    entry.status = 'platform_accepted';
     entry.delivery_message_id = receipt.messageId;
-    entry.delivered_at_ms = entry.last_sent_at_ms;
+    entry.platform_accepted_at_ms = entry.last_sent_at_ms;
+    entry.delivered_at_ms = entry.platform_accepted_at_ms;
     entry.suppress_stalled_notice = false;
     compactReplyDeliveryState(state);
   });

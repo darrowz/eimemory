@@ -311,7 +311,7 @@ def test_existing_parent_reply_closes_ambiguous_send_without_duplicate(tmp_path:
     assert attempts["om_ambiguous"]["message_id"] == "om_existing"
 
 
-def test_watchdog_attempt_state_write_failure_is_fail_open(tmp_path: Path, monkeypatch) -> None:
+def test_watchdog_attempt_state_write_failure_blocks_external_send(tmp_path: Path, monkeypatch) -> None:
     state_path = tmp_path / "state.json"
     _write_state(
         state_path,
@@ -324,17 +324,26 @@ def test_watchdog_attempt_state_write_failure_is_fail_open(tmp_path: Path, monke
             "final_text": "已发送",
         },
     )
-    monkeypatch.setattr(watchdog, "_write_json_atomic", lambda *_args: (_ for _ in ()).throw(OSError("full")))
+    monkeypatch.setattr(
+        watchdog,
+        "prepare_delivery",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("full")),
+    )
+    calls: list[dict] = []
 
     result = scan_once(
         state_path=state_path,
         attempts_path=tmp_path / "attempts.json",
         now_ms=70_000,
         delivery_timeout_ms=60_000,
-        send=lambda _payload: {"ok": True, "messageId": "om_sent"},
+        send=lambda payload: calls.append(payload)
+        or {"ok": True, "messageId": "om_sent"},
     )
 
-    assert result == {"checked": 1, "retried": 1, "failed": 0}
+    assert result["retried"] == 0
+    assert result["failed"] == 1
+    assert result["persistence_failed"] == 1
+    assert calls == []
 
 
 def test_watchdog_skips_delivered_reply(tmp_path: Path) -> None:
@@ -451,7 +460,7 @@ def test_stalled_notice_does_not_consume_final_delivery_slot(tmp_path: Path) -> 
     assert attempts["om_late_final"]["ok"] is True
 
 
-def test_watchdog_retries_failed_fallback_with_same_idempotency_key(tmp_path: Path) -> None:
+def test_watchdog_never_resends_after_ambiguous_external_failure(tmp_path: Path) -> None:
     state_path = tmp_path / "state.json"
     attempts_path = tmp_path / "attempts.json"
     _write_state(
@@ -491,7 +500,7 @@ def test_watchdog_retries_failed_fallback_with_same_idempotency_key(tmp_path: Pa
         stalled_timeout_ms=300_000,
         send=send,
     )
-    recovered = scan_once(
+    reconciled = scan_once(
         state_path=state_path,
         attempts_path=attempts_path,
         now_ms=131_000,
@@ -502,13 +511,110 @@ def test_watchdog_retries_failed_fallback_with_same_idempotency_key(tmp_path: Pa
 
     assert first["failed"] == 1
     assert too_soon["retried"] == 0
-    assert recovered["retried"] == 1
+    assert reconciled["retried"] == 0
     assert [item["idempotency_key"] for item in calls] == [
-        _delivery_idempotency_key("om_in_4", "final"),
         _delivery_idempotency_key("om_in_4", "final"),
     ]
     attempts = json.loads(attempts_path.read_text(encoding="utf-8"))
-    assert attempts["entries"]["om_in_4"]["retry_count"] == 2
+    assert attempts["entries"]["om_in_4"]["state"] == "delivery_uncertain"
+    assert attempts["entries"]["om_in_4"]["attempt_count"] == 1
+
+
+def test_watchdog_does_not_resend_persisted_sending_intent(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.json"
+    attempts_path = tmp_path / "attempts.json"
+    _write_state(
+        state_path,
+        {
+            "inbound_message_id": "om_crashed",
+            "conversation_id": "oc_test",
+            "received_at_ms": 1_000,
+            "agent_end_at_ms": 2_000,
+            "status": "final_ready",
+            "final_text": "final answer",
+        },
+    )
+    attempts_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "feishu_delivery_state.v2",
+                "entries": {
+                    "om_crashed": {
+                        "state": "sending",
+                        "delivery_kind": "final",
+                        "intent_at_ms": 3_000,
+                        "attempt_count": 1,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    calls: list[dict] = []
+
+    result = scan_once(
+        state_path=state_path,
+        attempts_path=attempts_path,
+        now_ms=70_000,
+        delivery_timeout_ms=5_000,
+        send=lambda payload: calls.append(payload)
+        or {"ok": True, "messageId": "om_duplicate"},
+    )
+
+    assert result["retried"] == 0
+    assert calls == []
+    attempt = json.loads(attempts_path.read_text(encoding="utf-8"))["entries"][
+        "om_crashed"
+    ]
+    assert attempt["state"] == "delivery_uncertain"
+
+
+def test_status_only_turn_escalates_after_sla_without_resume_reference(
+    tmp_path: Path,
+) -> None:
+    state_path = tmp_path / "state.json"
+    attempts_path = tmp_path / "attempts.json"
+    _write_state(
+        state_path,
+        {
+            "inbound_message_id": "om_abandoned",
+            "conversation_id": "oc_test",
+            "received_at_ms": 1_000,
+            "status": "pending",
+            "final_text": "",
+        },
+    )
+    attempts_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "feishu_delivery_state.v2",
+                "entries": {
+                    "status:om_abandoned": {
+                        "state": "status_notified",
+                        "delivery_kind": "status",
+                        "platform_message_id": "om_notice",
+                        "platform_accepted_at_ms": 302_000,
+                        "attempt_count": 1,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = scan_once(
+        state_path=state_path,
+        attempts_path=attempts_path,
+        now_ms=10_861_000,
+        send=lambda _payload: {"ok": True, "messageId": "om_duplicate"},
+    )
+
+    assert result["escalated"] == 1
+    attempt = json.loads(attempts_path.read_text(encoding="utf-8"))["entries"][
+        "status:om_abandoned"
+    ]
+    assert attempt["state"] == "escalated"
+    assert attempt["escalation_reason"] == "pending_without_resume_reference"
 
 
 def test_watchdog_normalizes_legacy_platform_receipt_without_resending(
@@ -565,7 +671,7 @@ def test_watchdog_normalizes_legacy_platform_receipt_without_resending(
     assert attempt["retry_mode"] == "complete"
 
 
-def test_watchdog_enters_persistent_backoff_after_rapid_failures(tmp_path: Path) -> None:
+def test_watchdog_reconciles_only_after_first_external_failure(tmp_path: Path) -> None:
     state_path = tmp_path / "state.json"
     attempts_path = tmp_path / "attempts.json"
     _write_state(
@@ -592,7 +698,8 @@ def test_watchdog_enters_persistent_backoff_after_rapid_failures(tmp_path: Path)
             send=send,
         )
 
-    assert len(calls) == 4
+    assert len(calls) == 1
     attempts = json.loads(attempts_path.read_text(encoding="utf-8"))
-    assert attempts["entries"]["om_bounded"]["retry_count"] == 4
-    assert attempts["entries"]["om_bounded"]["retry_mode"] == "backoff"
+    assert attempts["entries"]["om_bounded"]["attempt_count"] == 1
+    assert attempts["entries"]["om_bounded"]["state"] == "delivery_uncertain"
+    assert attempts["entries"]["om_bounded"]["retry_mode"] == "reconcile_only"
