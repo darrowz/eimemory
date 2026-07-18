@@ -22,6 +22,7 @@ def test_governance_env_loader_unquotes_allowlisted_values_without_expansion(tmp
         ),
         encoding="utf-8",
     )
+    env_file.chmod(0o600)
 
     loaded = load_governance_environment(env_file, base_environment={"PATH": "trusted"})
 
