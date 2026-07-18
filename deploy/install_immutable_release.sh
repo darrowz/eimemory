@@ -18,6 +18,7 @@ OPENCLAW_LOOP_DEPLOY_VERIFY="${OPENCLAW_LOOP_DEPLOY_VERIFY:-1}"
 OPENCLAW_LOOP_DEPLOY_LIVE_CHECKS="${OPENCLAW_LOOP_DEPLOY_LIVE_CHECKS:-0}"
 OPENCLAW_LOOP_CONFIG_PATH="${OPENCLAW_LOOP_CONFIG_PATH:-$SERVICE_HOME/.openclaw/openclaw.json}"
 OPENCLAW_LOOP_COMPAT_SCRIPT="${OPENCLAW_LOOP_COMPAT_SCRIPT:-$SERVICE_HOME/.openclaw/workspace/scripts/openclaw_loop.py}"
+OPENCLAW_BIN="${OPENCLAW_BIN:-$SERVICE_HOME/n/bin/openclaw}"
 COMMIT="${1:-$(git -C "$REPO_DIR" rev-parse HEAD)}"
 RELEASE_DIR="$INSTALL_ROOT/releases/$COMMIT"
 CURRENT_LINK="$INSTALL_ROOT/current"
@@ -131,6 +132,15 @@ _install_openclaw_loop_compat_script() {
   _run_as_service_user rm -f "$OPENCLAW_LOOP_COMPAT_SCRIPT"
   _install_as_service_user 0755 \
     "$RELEASE_DIR/scripts/openclaw_loop.py" "$OPENCLAW_LOOP_COMPAT_SCRIPT"
+}
+
+_refresh_openclaw_plugin_registry() {
+  if [ ! -x "$OPENCLAW_BIN" ]; then
+    echo "openclaw_plugin_registry_refresh=skipped binary_not_found" >&2
+    return
+  fi
+  _run_as_service_user env HOME="$SERVICE_HOME" \
+    "$OPENCLAW_BIN" plugins registry --refresh --json >/dev/null
 }
 
 _refresh_current_runtime_metadata() {
@@ -333,6 +343,7 @@ _install_openclaw_loop_compat_script
 ln -sfn "$RELEASE_DIR" "$CURRENT_LINK.next"
 mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"
 COMMITTED=1
+_refresh_openclaw_plugin_registry
 if [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ] && command -v systemctl >/dev/null 2>&1; then
   if [ "$(id -u)" -eq 0 ] && id "$SERVICE_USER" >/dev/null 2>&1; then
     echo "user_systemd_restart_hint=run as $SERVICE_USER: systemctl --user restart eimemory-rpc.service"

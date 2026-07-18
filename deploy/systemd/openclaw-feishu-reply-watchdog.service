@@ -6,7 +6,7 @@ After=openclaw-gateway.service
 Type=simple
 WorkingDirectory=/opt/eimemory/current
 Environment=PYTHONDONTWRITEBYTECODE=1
-Environment=PYTHONPYCACHEPREFIX=/var/lib/eimemory/.pycache/1.9.59
+Environment=PYTHONPYCACHEPREFIX=/var/lib/eimemory/.pycache/1.9.60
 Environment=PATH=/home/darrow/n/bin:/home/darrow/.local/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=/opt/eimemory/current/.venv/bin/python -m eimemory.ops.openclaw_feishu_reply_watchdog
 Restart=always

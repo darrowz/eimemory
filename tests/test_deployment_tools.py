@@ -1148,6 +1148,18 @@ def test_immutable_release_installer_restarts_runtimes_after_current_switch() ->
     assert current_switch < rpc_restart < gateway_restart
 
 
+def test_immutable_release_installer_refreshes_openclaw_registry_before_gateway_restart() -> None:
+    script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
+
+    current_switch = script.index('mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"')
+    registry_refresh = script.rindex("\n_refresh_openclaw_plugin_registry\n")
+    gateway_restart = script.index("systemctl --user try-restart openclaw-gateway.service")
+
+    assert 'OPENCLAW_BIN="${OPENCLAW_BIN:-$SERVICE_HOME/n/bin/openclaw}"' in script
+    assert 'plugins registry --refresh --json' in script
+    assert current_switch < registry_refresh < gateway_restart
+
+
 def test_python_runtime_unit_discovery_is_dynamic_deduplicated_and_regular_file_only(tmp_path) -> None:
     systemd_dir = tmp_path / "systemd"
     systemd_dir.mkdir()
