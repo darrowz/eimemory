@@ -135,7 +135,7 @@ def test_watchdog_sends_when_conversation_id_is_canonical_user_target(tmp_path: 
     assert calls[0]["inbound_message_id"] == "om_user_target"
 
 
-def test_sender_replies_to_inbound_with_provider_idempotency(monkeypatch) -> None:
+def test_sender_replies_through_configured_openclaw_feishu_channel(monkeypatch) -> None:
     captured: dict = {}
 
     def run(command, **_kwargs):
@@ -146,6 +146,8 @@ def test_sender_replies_to_inbound_with_provider_idempotency(monkeypatch) -> Non
     result = send_payload(
         {
             "inbound_message_id": "om_inbound",
+            "conversation_id": "user:ou_test",
+            "sender_id": "ou_test",
             "text": "可靠答复",
             "idempotency_key": _delivery_idempotency_key("om_inbound", "final"),
         }
@@ -153,10 +155,13 @@ def test_sender_replies_to_inbound_with_provider_idempotency(monkeypatch) -> Non
 
     assert result["messageId"] == "om_sent"
     assert captured["command"] == [
-        "lark-cli", "im", "+messages-reply",
-        "--message-id", "om_inbound",
-        "--markdown", "可靠答复",
-        "--idempotency-key", _delivery_idempotency_key("om_inbound", "final"),
+        "openclaw", "message", "send",
+        "--channel", "feishu",
+        "--account", "default",
+        "--target", "ou_test",
+        "--reply-to", "om_inbound",
+        "--message", "可靠答复",
+        "--json",
     ]
 
 

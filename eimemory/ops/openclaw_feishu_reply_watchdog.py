@@ -153,15 +153,22 @@ def find_existing_reply(payload: dict) -> dict:
 
 def send_payload(payload: dict) -> dict:
     text = str(payload.get("text") or "").strip()
-    idempotency_key = str(payload.get("idempotency_key") or "").strip()
     inbound_message_id = str(payload.get("inbound_message_id") or "").strip()
     if not inbound_message_id.startswith("om_"):
         return {"ok": False, "error": "missing Feishu inbound message target"}
+    target = str(payload.get("sender_id") or payload.get("conversation_id") or "").strip()
+    if target.startswith("user:"):
+        target = target.removeprefix("user:")
+    if not target:
+        return {"ok": False, "error": "missing Feishu reply recipient"}
     command = [
-        "lark-cli", "im", "+messages-reply",
-        "--message-id", inbound_message_id,
-        "--markdown", text,
-        "--idempotency-key", idempotency_key,
+        "openclaw", "message", "send",
+        "--channel", "feishu",
+        "--account", "default",
+        "--target", target,
+        "--reply-to", inbound_message_id,
+        "--message", text,
+        "--json",
     ]
     result = subprocess.run(
         command,
