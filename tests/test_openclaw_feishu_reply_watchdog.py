@@ -235,6 +235,15 @@ def test_openclaw_command_environment_strips_gateway_token_ref(
     assert not temporary_path.exists()
 
 
+def test_watchdog_unit_can_read_active_gateway_auth_environment() -> None:
+    unit_text = Path(
+        "deploy/systemd/openclaw-feishu-reply-watchdog.service"
+    ).read_text(encoding="utf-8")
+
+    assert "NoNewPrivileges=true" in unit_text
+    assert "PrivateTmp=true" not in unit_text
+
+
 def test_reply_query_error_defers_send(tmp_path: Path) -> None:
     state_path = tmp_path / "state.json"
     attempts_path = tmp_path / "attempts.json"
