@@ -24,6 +24,7 @@ DEFAULT_RAPID_ATTEMPTS = 3
 DEFAULT_BACKOFF_MS = 300_000
 MAX_ATTEMPT_ENTRIES = 2_000
 STALLED_NOTICE = "这条消息处理链路异常，系统正在恢复。无需重复发送；恢复后会继续处理。"
+GATEWAY_AUTH_ENV_NAMES = ("OPENCLAW_GATEWAY_TOKEN", "OPENCLAW_GATEWAY_PASSWORD")
 
 
 def _delivery_idempotency_key(inbound_id: str, delivery_kind: str) -> str:
@@ -73,6 +74,53 @@ def _parse_command_result(stdout: str) -> dict:
 
 def _canonical_text(value: object) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def _gateway_main_pid() -> int:
+    try:
+        result = subprocess.run(
+            [
+                "systemctl", "--user", "show", "openclaw-gateway.service",
+                "--property", "MainPID", "--value",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=5,
+            check=False,
+        )
+        return int(result.stdout.strip()) if result.returncode == 0 else 0
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return 0
+
+
+def _read_process_environment(pid: int) -> dict[str, str]:
+    if pid <= 0:
+        return {}
+    try:
+        values = Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
+    except OSError:
+        return {}
+    environment: dict[str, str] = {}
+    for value in values:
+        if b"=" not in value:
+            continue
+        name, raw = value.split(b"=", 1)
+        environment[name.decode("utf-8", errors="ignore")] = raw.decode(
+            "utf-8", errors="ignore"
+        )
+    return environment
+
+
+def _openclaw_command_env() -> dict[str, str]:
+    environment = os.environ.copy()
+    if any(environment.get(name) for name in GATEWAY_AUTH_ENV_NAMES):
+        return environment
+    gateway_environment = _read_process_environment(_gateway_main_pid())
+    for name in GATEWAY_AUTH_ENV_NAMES:
+        if gateway_environment.get(name):
+            environment[name] = gateway_environment[name]
+    return environment
 
 
 def _message_body_text(item: dict) -> str:
@@ -175,6 +223,7 @@ def send_payload(payload: dict) -> dict:
         capture_output=True,
         text=True,
         encoding="utf-8",
+        env=_openclaw_command_env(),
         timeout=30,
         check=False,
     )

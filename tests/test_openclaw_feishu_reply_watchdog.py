@@ -137,12 +137,15 @@ def test_watchdog_sends_when_conversation_id_is_canonical_user_target(tmp_path: 
 
 def test_sender_replies_through_configured_openclaw_feishu_channel(monkeypatch) -> None:
     captured: dict = {}
+    command_env = {"OPENCLAW_GATEWAY_TOKEN": "test-gateway-token"}
 
-    def run(command, **_kwargs):
+    def run(command, **kwargs):
         captured["command"] = command
+        captured["env"] = kwargs.get("env")
         return type("Result", (), {"returncode": 0, "stdout": '{"ok":true,"data":{"message_id":"om_sent"}}', "stderr": ""})()
 
     monkeypatch.setattr(watchdog.subprocess, "run", run)
+    monkeypatch.setattr(watchdog, "_openclaw_command_env", lambda: command_env)
     result = send_payload(
         {
             "inbound_message_id": "om_inbound",
@@ -163,6 +166,26 @@ def test_sender_replies_through_configured_openclaw_feishu_channel(monkeypatch) 
         "--message", "可靠答复",
         "--json",
     ]
+    assert captured["env"] is command_env
+
+
+def test_openclaw_command_env_inherits_auth_from_active_gateway(monkeypatch) -> None:
+    monkeypatch.delenv("OPENCLAW_GATEWAY_TOKEN", raising=False)
+    monkeypatch.delenv("OPENCLAW_GATEWAY_PASSWORD", raising=False)
+    monkeypatch.setattr(watchdog, "_gateway_main_pid", lambda: 4242)
+    monkeypatch.setattr(
+        watchdog,
+        "_read_process_environment",
+        lambda _pid: {
+            "OPENCLAW_GATEWAY_TOKEN": "inherited-token",
+            "UNRELATED": "ignored",
+        },
+    )
+
+    command_env = watchdog._openclaw_command_env()
+
+    assert command_env["OPENCLAW_GATEWAY_TOKEN"] == "inherited-token"
+    assert "UNRELATED" not in command_env
 
 
 def test_reply_query_error_defers_send(tmp_path: Path) -> None:
