@@ -1475,13 +1475,16 @@ def test_immutable_release_installer_commits_only_after_post_switch_gates() -> N
     script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
 
     switch = script.index('mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"')
-    acceptance = script.index("_run_post_switch_acceptance", switch)
+    receipt = script.index("_record_deployment_receipt", switch)
+    closure = script.index("_run_post_switch_closure", switch)
     committed = script.index("COMMITTED=1", switch)
 
     assert "PREVIOUS_CURRENT" in script
     assert "_rollback_current_release" in script
     assert "verify_release_health.py" in script
-    assert switch < acceptance < committed
+    assert switch < receipt < closure < committed
+    assert "learn release-closure" in script
+    assert "learn live-acceptance" not in script
     assert "rollback_current_release=failed" in script
     assert "rollback_preserved_failed_release=" in script
 

@@ -269,19 +269,19 @@ _record_deployment_receipt() {
       --repo-root "$REPO_DIR" --current-link "$CURRENT_LINK" \
       --health-url "$EIMEMORY_HEALTH_URL" --prior-commit "$PREVIOUS_COMMIT" \
       --scope-agent "$EIMEMORY_DEPLOY_SCOPE_AGENT" \
-      --scope-workspace "$EIMEMORY_DEPLOY_SCOPE_WORKSPACE" --json >/dev/null
+      --scope-workspace "$EIMEMORY_DEPLOY_SCOPE_WORKSPACE" --json
 }
 
-_run_post_switch_acceptance() {
+_run_post_switch_closure() {
   if [ "$EIMEMORY_POST_SWITCH_GATES" != "1" ] || [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ]; then
     return
   fi
   env EIMEMORY_ROOT="$EIMEMORY_ROOT" EIMEMORY_RUNTIME_COMMIT="$COMMIT" \
-    "$RELEASE_DIR/.venv/bin/eimemory" learn live-acceptance \
+    "$RELEASE_DIR/.venv/bin/eimemory" learn release-closure \
       --repo-root "$REPO_DIR" --current-link "$CURRENT_LINK" \
       --health-url "$EIMEMORY_HEALTH_URL" --prior-commit "$PREVIOUS_COMMIT" \
       --scope-agent "$EIMEMORY_DEPLOY_SCOPE_AGENT" \
-      --scope-workspace "$EIMEMORY_DEPLOY_SCOPE_WORKSPACE" --json >/dev/null
+      --scope-workspace "$EIMEMORY_DEPLOY_SCOPE_WORKSPACE" --json
 }
 
 _rollback_current_release() {
@@ -558,7 +558,7 @@ _verify_release_health "$RELEASE_DIR" "$COMMIT"
 _maybe_fail_stage health
 _record_deployment_receipt
 _maybe_fail_stage receipt
-_run_post_switch_acceptance
+_run_post_switch_closure
 _maybe_fail_stage acceptance
 if [ -n "$BACKUP_DIR" ] && [ -e "$BACKUP_DIR" ]; then
   "$PYTHON_BIN" -I -B "$REPO_DIR/deploy/clean_release_bytecode.py" \
