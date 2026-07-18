@@ -8,6 +8,11 @@ import re
 from typing import Any
 
 from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
+from eimemory.governance.evidence_contract import (
+    ReleaseIdentity,
+    current_release_identity,
+    release_identity_from_record,
+)
 from eimemory.governance.live_task_acceptance import validate_live_acceptance_case
 from eimemory.governance.rollout_lifecycle import is_executed_rollback_ledger_record
 from eimemory.models.records import ScopeRef
@@ -109,15 +114,25 @@ def build_capability_dashboard_metrics(
             continue
         layer = str(item.get("blame_layer") or "unknown")
         failure_blame_layers[layer] = failure_blame_layers.get(layer, 0) + 1
-    current_deployment_commit = _latest_verified_deployment_commit(runtime, scope=scope_ref, limit=limit)
+    current_release = current_release_identity(runtime, scope_ref, limit=limit)
     current_deployment_tasks = [
         item
         for item in verified_live_tasks
-        if item.get("evidence_class") == "live_acceptance"
-        and str(item.get("deployment_commit") or "") == current_deployment_commit
+        if item.get("evidence_class") == "operational_probe"
+        and current_release is not None
+        and item.get("release_identity") == current_release
     ]
     current_deployment_success = sum(1 for item in current_deployment_tasks if item["success"] is True)
     current_deployment_task_types = {str(item.get("task_type") or "") for item in current_deployment_tasks}
+    current_deployment_real_tasks = [
+        item
+        for item in verified_real_tasks
+        if current_release is not None and item.get("release_identity") == current_release
+    ]
+    current_deployment_real_success = sum(1 for item in current_deployment_real_tasks if item["success"] is True)
+    current_deployment_real_task_types = {
+        str(item.get("task_type") or "") for item in current_deployment_real_tasks
+    }
 
     promotions = _records(runtime, scope_ref, ["promotion_request"], limit)
     patch_promotions = [
@@ -150,6 +165,10 @@ def build_capability_dashboard_metrics(
         "verified_live_task_success_rate": _rate(verified_live_success, len(verified_live_tasks)),
         "verified_real_task_success_rate": _rate(verified_real_success, len(verified_real_tasks)),
         "current_deployment_live_task_success_rate": _rate(current_deployment_success, len(current_deployment_tasks)),
+        "current_deployment_verified_real_task_success_rate": _rate(
+            current_deployment_real_success,
+            len(current_deployment_real_tasks),
+        ),
         "patch_candidate_validity_rate": patch_candidate_validity_rate,
         "patch_deployment_success_rate": patch_deployment_success_rate,
         "patch_promotion_success_rate": patch_deployment_success_rate,
@@ -164,6 +183,7 @@ def build_capability_dashboard_metrics(
         "verified_live_task_success_rate": _quality(len(verified_live_tasks)),
         "verified_real_task_success_rate": _quality(len(verified_real_tasks)),
         "current_deployment_live_task_success_rate": _quality(len(current_deployment_tasks)),
+        "current_deployment_verified_real_task_success_rate": _quality(len(current_deployment_real_tasks)),
         "patch_candidate_validity_rate": _quality(len(latest_patch_candidates), minimum=1),
         "patch_deployment_success_rate": patch_metric_quality,
         "patch_promotion_success_rate": patch_metric_quality,
@@ -211,7 +231,10 @@ def build_capability_dashboard_metrics(
             "verified_real_tasks": len(verified_real_tasks),
             "verified_real_task_types": len(verified_real_task_types),
             "current_deployment_acceptance": len(current_deployment_tasks),
+            "current_deployment_operational_probes": len(current_deployment_tasks),
             "current_deployment_live_task_types": len(current_deployment_task_types),
+            "current_deployment_verified_real_tasks": len(current_deployment_real_tasks),
+            "current_deployment_verified_real_task_types": len(current_deployment_real_task_types),
             "patch_candidates": len(latest_patch_candidates),
             "patch_deployments": len(executed_patch_deployments),
             "patch_promotions": len(executed_patch_deployments),
@@ -317,8 +340,9 @@ def _verified_live_task_outcomes(
             {
                 "record_id": _record_id(record),
                 "task_type": task_type,
-                "evidence_class": "live_acceptance",
+                "evidence_class": "operational_probe",
                 "deployment_commit": str(_field(record, "deployment_commit") or ""),
+                "release_identity": release_identity_from_record(record),
                 "success": outcome.get("success") is True and verifier.get("passed") is True,
             }
         )
@@ -364,6 +388,7 @@ def _verified_real_task_outcomes(
         ):
             continue
         evidence_ref = str(evidence_refs[0]).strip()
+        release_identity = release_identity_from_record(record)
         if evidence_ref in seen_evidence_refs or not _valid_openclaw_task_evidence(
             runtime,
             scope=scope,
@@ -373,6 +398,7 @@ def _verified_real_task_outcomes(
             session_id=str(_field(record, "session_id") or ""),
             task_type=task_type,
             success=outcome.get("success"),
+            release=release_identity,
         ):
             continue
         seen_evidence_refs.add(evidence_ref)
@@ -381,6 +407,7 @@ def _verified_real_task_outcomes(
                 "record_id": _record_id(record),
                 "task_type": task_type,
                 "evidence_class": "verified_real_task",
+                "release_identity": release_identity,
                 "success": outcome.get("success") is True and verifier.get("passed") is True,
                 "blame_layer": str(_field(record, "blame_layer") or "unknown"),
             }
@@ -398,6 +425,7 @@ def _valid_openclaw_task_evidence(
     session_id: str,
     task_type: str,
     success: bool,
+    release: ReleaseIdentity,
 ) -> bool:
     if not trace_id or not session_id:
         return False
@@ -432,6 +460,8 @@ def _valid_openclaw_task_evidence(
         or str(event.get("outcome_trace_task_type") or "") != task_type
         or str(event.get("session_id") or "") != session_id
     ):
+        return False
+    if release.complete and release_identity_from_record(event) != release:
         return False
     outcome_row = conn.execute(
         """

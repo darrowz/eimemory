@@ -62,6 +62,7 @@ def test_live_task_acceptance_records_ten_current_deployment_tasks_idempotently(
             for kind in ("learning_eval", "reflection")
         }
         metrics = runtime.build_capability_dashboard_metrics(scope=SCOPE, persist=False)
+        acceptance_records = runtime.store.list_records(kinds=["learning_eval"], scope=SCOPE, limit=20)
     finally:
         runtime.close()
 
@@ -75,6 +76,10 @@ def test_live_task_acceptance_records_ten_current_deployment_tasks_idempotently(
     assert metrics["metrics"]["verified_live_task_success_rate"] == 1.0
     assert metrics["sample_counts"]["verified_live_tasks"] == 10
     assert metrics["sample_counts"]["current_deployment_acceptance"] == 10
+    assert metrics["sample_counts"]["current_deployment_operational_probes"] == 10
+    assert metrics["sample_counts"]["current_deployment_verified_real_tasks"] == 0
+    assert metrics["metrics"]["current_deployment_verified_real_task_success_rate"] == 0.0
+    assert all(record.content["evidence_class"] == "operational_probe" for record in acceptance_records)
 
 
 def test_live_task_acceptance_fails_closed_before_running_cases_when_identity_is_invalid(tmp_path, monkeypatch) -> None:

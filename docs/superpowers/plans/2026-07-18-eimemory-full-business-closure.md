@@ -388,7 +388,7 @@ Commit: `fix: pin validated intake connections`
 - Produces: `ReleaseIdentity`, `EvidenceRequirement`, and `resolve_evidence(runtime, reference, requirement, scope, release) -> EvidenceResolution`.
 - Consumes: persisted records, scope, expected kinds/sources/statuses, and current release identity.
 
-- [ ] **Step 1: Add evidence forgery and metric-separation tests**
+- [x] **Step 1: Add evidence forgery and metric-separation tests**
 
 ```python
 def test_evidence_resolver_rejects_missing_wrong_scope_and_stale_release(runtime):
@@ -405,13 +405,13 @@ def test_operational_probes_do_not_count_as_verified_real_tasks(runtime):
     assert metrics["sample_counts"]["current_deployment_verified_real_tasks"] == 0
 ```
 
-- [ ] **Step 2: Verify current dashboard incorrectly reuses probe records**
+- [x] **Step 2: Verify current dashboard incorrectly reuses probe records**
 
 Run: `python -m pytest tests/test_governance_evidence_contract.py tests/test_capability_dashboard_metrics.py tests/test_live_task_acceptance.py tests/test_live_task_evidence.py -q`
 
 Expected: missing resolver tests fail and operational acceptance populates the old L5 task metric.
 
-- [ ] **Step 3: Implement release-bound evidence resolution**
+- [x] **Step 3: Implement release-bound evidence resolution**
 
 ```python
 @dataclass(frozen=True, slots=True)
@@ -432,7 +432,7 @@ class EvidenceResolution:
 
 Require exact scope/kind/status/source and release metadata. Mark acceptance records `evidence_class="operational_probe"`. Build current-release verified-real metrics only from terminal event outcomes with external correlation and trusted attribution.
 
-- [ ] **Step 4: Verify and commit**
+- [x] **Step 4: Verify and commit**
 
 Run: `python -m pytest tests/test_governance_evidence_contract.py tests/test_capability_dashboard_metrics.py tests/test_live_task_acceptance.py tests/test_live_task_evidence.py tests/test_openclaw_outcome_hooks.py -q`
 

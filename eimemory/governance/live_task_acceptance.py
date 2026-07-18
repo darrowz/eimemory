@@ -23,6 +23,7 @@ REPORT_TYPE = "live_task_acceptance"
 CASE_REPORT_TYPE = "live_task_acceptance_case"
 SCHEMA_VERSION = "live_task_acceptance.v1"
 VERIFIER_METHOD = "eimemory.live_task_acceptance"
+EVIDENCE_CLASS = "operational_probe"
 REQUIRED_CASE_COUNT = 10
 LIVE_ACCEPTANCE_CASE_IDS = (
     "store.sqlite_query",
@@ -59,12 +60,15 @@ def validate_live_acceptance_case(
     deployment_version = str(payload.get("deployment_version") or "")
     release_path = str(payload.get("release_path") or "")
     promotion_request_id = str(payload.get("promotion_request_id") or "")
+    release_session_id = str(payload.get("release_session_id") or "")
     receipt = runtime.store.get_by_id(promotion_request_id, scope=scope) if promotion_request_id else None
     if identity is not None and (
         deployment_commit != str(identity.get("commit") or "")
         or deployment_version != str(identity.get("version") or "")
         or not _same_path(release_path, identity.get("release_path"))
         or promotion_request_id != str(identity.get("promotion_request_id") or "")
+        or release_session_id
+        != str(identity.get("release_session_id") or identity.get("promotion_request_id") or "")
     ):
         return False
     return bool(
@@ -74,9 +78,11 @@ def validate_live_acceptance_case(
         and str(evidence.source or "") == "eimemory.live_task_acceptance"
         and str(payload.get("report_type") or "") == CASE_REPORT_TYPE
         and str(payload.get("schema_version") or "") == SCHEMA_VERSION
+        and str(payload.get("evidence_class") or "") == EVIDENCE_CLASS
         and str(payload.get("case_id") or "") == case_id
         and str(payload.get("task_type") or "") == task_type
         and str(payload.get("deployment_commit") or "") == deployment_commit
+        and bool(release_session_id)
         and payload.get("passed") is passed
         and re.fullmatch(r"[0-9a-f]{64}", digest) is not None
         and str(payload.get("trace_id") or "") == trace_id
@@ -390,6 +396,7 @@ def _execute_and_record_case(
     payload = {
         "report_type": CASE_REPORT_TYPE,
         "schema_version": SCHEMA_VERSION,
+        "evidence_class": EVIDENCE_CLASS,
         "case_id": case_id,
         "task_type": task_type,
         "trace_id": trace_id,
@@ -399,6 +406,11 @@ def _execute_and_record_case(
         "deployment_version": str(identity.get("version") or ""),
         "release_path": str(identity.get("release_path") or ""),
         "promotion_request_id": str(identity.get("promotion_request_id") or ""),
+        "release_session_id": str(
+            identity.get("release_session_id")
+            or identity.get("promotion_request_id")
+            or ""
+        ),
     }
     record = append_learning_record_once(
         runtime,
@@ -438,6 +450,9 @@ def _record_case_outcome(runtime: Any, *, scope: ScopeRef, case_record: Any) -> 
             "deployment_commit": str(payload.get("deployment_commit") or ""),
             "deployment_version": str(payload.get("deployment_version") or ""),
             "release_path": str(payload.get("release_path") or ""),
+            "promotion_request_id": str(payload.get("promotion_request_id") or ""),
+            "release_session_id": str(payload.get("release_session_id") or ""),
+            "evidence_class": EVIDENCE_CLASS,
             "acceptance_case_id": str(payload.get("case_id") or ""),
         },
         scope=asdict(scope),

@@ -10,6 +10,7 @@ from eimemory.experience.capability_contract import (
 )
 from eimemory.experience.diagnosis import diagnose_outcome
 from eimemory.experience.sanitize import OutcomeSanitizationError, sanitize_outcome_payload
+from eimemory.governance.evidence_contract import current_release_identity, release_identity_payload
 from eimemory.metadata import business_metadata
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
@@ -23,6 +24,20 @@ def record_outcome_trace(runtime: Any, payload: dict[str, Any], scope: dict | Sc
     if error:
         return {"ok": False, "error": error}
     scope_ref = _scope_ref(scope)
+    payload = dict(payload)
+    if _server_bound_real_task(payload):
+        for key in (
+            "release_commit",
+            "release_version",
+            "deployment_receipt_id",
+            "release_session_id",
+            "evidence_class",
+        ):
+            payload.pop(key, None)
+        release = current_release_identity(runtime, scope_ref)
+        if release is not None:
+            payload.update(release_identity_payload(release))
+            payload["evidence_class"] = "verified_real_task"
     contract: dict[str, Any] | None = None
     if "capability_contract" in payload:
         contract = normalize_capability_contract(payload.get("capability_contract"))
@@ -127,6 +142,12 @@ def _validate_outcome_trace(payload: object) -> str:
     if "selected_tools" in payload and not isinstance(payload.get("selected_tools"), list):
         return "selected_tools must be a list"
     return ""
+
+
+def _server_bound_real_task(payload: dict[str, Any]) -> bool:
+    source = str(payload.get("source") or "").strip()
+    outcome = payload.get("outcome") if isinstance(payload.get("outcome"), dict) else {}
+    return source in {"openclaw.agent_end", "openclaw.task_end", "openclaw.session_end"} and outcome.get("rehearsal") is False
 
 
 def _existing_outcome_record(runtime: Any, payload: dict[str, Any], *, scope: ScopeRef) -> RecordEnvelope | None:

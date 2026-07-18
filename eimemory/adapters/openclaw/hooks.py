@@ -10,6 +10,7 @@ from typing import Any
 
 from eimemory.api.runtime import Runtime
 from eimemory.identity import hongtu_identity_meta, hongtu_scope
+from eimemory.governance.evidence_contract import current_release_identity, release_identity_payload
 from eimemory.metadata import business_metadata
 from eimemory.models.records import RecallBundle, RecordEnvelope, ScopeRef
 from eimemory.persona.correction import persona_feedback_from_user_text
@@ -1444,6 +1445,10 @@ class OpenClawMemoryHooks:
         }
         if not input_quality["learnable"]:
             event_payload["confidence"] = 0.2
+        release = current_release_identity(self.runtime, scope)
+        if release is not None:
+            event_payload.update(release_identity_payload(release))
+            event_payload["evidence_class"] = "verified_real_task"
         terminal_key = self._terminal_idempotency_key(event=event, end_kind=end_kind)
         if terminal_key:
             event_payload["id"] = "evt_openclaw_" + self._stable_hash(
