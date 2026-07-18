@@ -14,12 +14,15 @@ from deploy.rotate_console_token import main as rotate_main
 from deploy.rotate_console_token import rotate_token
 
 
-def test_openclaw_restart_recovery_scope_patch_is_managed_and_idempotent(tmp_path) -> None:
+@pytest.mark.parametrize("openclaw_version", ["2026.7.1-beta.2", "2026.7.1-2"])
+def test_openclaw_restart_recovery_scope_patch_is_managed_and_idempotent(
+    tmp_path, openclaw_version: str
+) -> None:
     openclaw_root = tmp_path / "openclaw"
     dist = openclaw_root / "dist"
     dist.mkdir(parents=True)
     (openclaw_root / "package.json").write_text(
-        json.dumps({"version": "2026.7.1-beta.2"}),
+        json.dumps({"version": openclaw_version}),
         encoding="utf-8",
     )
     runtime = dist / "main-session-restart-recovery-test.js"

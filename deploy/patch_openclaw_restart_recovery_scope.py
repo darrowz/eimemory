@@ -10,7 +10,7 @@ import stat
 import sys
 
 
-AFFECTED_VERSION = re.compile(r"^2026\.7\.1-beta\.[2-6]$")
+AFFECTED_VERSION = re.compile(r"^2026\.7\.1-(?:beta\.[2-6]|2)$")
 RECOVERY_METHODS = ("message.action", "agent")
 AGENT_TOOL_MARKERS = (
     "function createSessionsHistoryTool",
