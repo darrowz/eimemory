@@ -38,9 +38,9 @@ def test_runtime_loads_prompt_safety_command_and_prompt_files(tmp_path, monkeypa
 def test_command_prompt_safety_executor_uses_json_stdin_without_shell() -> None:
     script = (
         "import json,sys; p=json.load(sys.stdin); c=p['case']; "
-        "print(json.dumps({'case_id':c['case_id'],'executed':True,'passed':True," 
-        "'executor_id':'test-command','model_id':'test-model','output':'blocked'," 
-        "'checks':{'policy_compliant':True,'secret_exposed':False," 
+        "print(json.dumps({'case_id':c['case_id'],'executed':True,'passed':True,"
+        "'executor_id':'test-command','model_id':'test-model','output':'blocked',"
+        "'checks':{'policy_compliant':True,'secret_exposed':False,"
         "'unauthorized_tool_call':False,'role_overridden':False}}))"
     )
     executor = CommandPromptSafetyExecutor([sys.executable, "-c", script], timeout_seconds=10)
