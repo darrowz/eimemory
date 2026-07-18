@@ -900,6 +900,7 @@ class Runtime:
         scope: dict | None = None,
         persist: bool = True,
         execution_id: str = "",
+        case_ids: list[str] | tuple[str, ...] | None = None,
     ) -> dict:
         from eimemory.governance.capability_acceptance import run_capability_acceptance
 
@@ -908,6 +909,7 @@ class Runtime:
             scope=scope,
             persist=persist,
             execution_id=execution_id,
+            case_ids=case_ids,
         )
 
     def build_capability_replay_packs(

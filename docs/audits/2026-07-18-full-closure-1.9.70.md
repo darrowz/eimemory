@@ -248,3 +248,49 @@ in 2 minutes 13 seconds and returned zero comments.  One intermediate
 `file_read` tool call used an inverted line range and failed locally, but the
 review continued to a successful terminal result with 52 recorded tool calls;
 the tool error is not represented as a code pass or finding.
+
+## L5 capability and release-evidence closure
+
+An independent code review reproduced three release-critical false-positive
+paths in the L5 candidate: governance evidence could cross the Hongtu user
+alias boundary, replay manifests were not bound to the current deployment
+receipt/session, and the proposed core acceptance cases originally validated
+their own fixtures instead of invoking production subsystem interfaces.  It
+also found that deployment business scope inherited the Unix service account.
+
+The repaired evidence path now compares the complete tenant/agent/workspace/user
+scope exactly after every store read; binds replay manifests, members, probes,
+traces, scores, ledgers, and L5 assessments to the current immutable release;
+and rejects absent or malformed readiness fields.  The immutable installer uses
+the independent `hongtu/embodied/darrow` business scope and rejects empty or
+whitespace-only overrides before switching a release.
+
+Core acceptance now contains 15 cases across memory recall, tool routing,
+knowledge intake, proactive judgment, and safety boundaries.  Each capability
+probe calls a real project subsystem interface, and five fault-injection tests
+prove that breaking those interfaces fails acceptance.  Closure runs the 12
+weak cases and their replay first, then a separately anchored 15-case core
+acceptance/replay.  L5 requires all 27 current-release executions with no
+capability gaps or manifest rejection.  `data_accumulating` remains a permitted
+deployment state only while real user-task evidence accrues; its change policy
+explicitly says to finish closure before any version bump.
+
+OpenCodeReview MiniMax-M3 session
+`7f9da255-9535-4955-a6b7-ba3a8524aaa8` reviewed 18 of the 20 final-delta files
+in 13 minutes 9 seconds and returned 12 comments.  Two files were not counted as
+reviewed because one provider request failed and one task stopped early.  The
+valid findings were reproduced and closed with regression tests: whitespace
+deployment scopes, premature version-bump policy during data accumulation,
+misreported weak/core replay thresholds, and non-fail-closed inner stage fields.
+Schema duplication, a dead branch, stable report shape, and test magic values
+were also cleaned up.  The two incomplete OCR files are covered by the focused
+evidence-contract and closure-rehearsal layers and by the independent review.
+
+The final code-review-graph 2.3.6 index covered 21 files and 90 changed
+functions/classes, found no affected cross-module flow, and reported risk 0.60.
+Its static test-gap labels were reconciled against explicit acceptance, scope,
+release-binding, readiness, closure, and installer tests.  The combined focused
+run passed 191 tests with 18 documented platform skips; one timestamp-ordering
+fixture was then made deterministic and its failed case passed on focused
+rerun.  The full suite was not repeated because a fresh full candidate run was
+already available and the operator explicitly prohibited another full rerun.

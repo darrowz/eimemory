@@ -9,6 +9,7 @@ from eimemory.governance.capability_attribution import collect_capability_eviden
 from eimemory.governance.capability_ledger import build_capability_ledger
 from eimemory.governance.capability_replay_executor import validate_capability_replay_result
 from eimemory.governance.capability_replay_packs import (
+    CORE_REPLAY_CAPABILITIES,
     MANIFEST_REPORT_TYPE,
     MANIFEST_SCHEMA_VERSION,
     capability_replay_case_ids,
@@ -20,7 +21,9 @@ from eimemory.governance.evidence_contract import (
     EvidenceRequirement,
     ReleaseIdentity,
     current_release_identity,
+    release_identity_payload,
     resolve_evidence,
+    same_scope,
 )
 from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.governance.rollout_lifecycle import is_executed_rollback_ledger_record
@@ -53,14 +56,33 @@ def readiness_gate_status(readiness: dict[str, Any]) -> str:
     )
     live_gate = readiness.get("live_task_gate") if isinstance(readiness.get("live_task_gate"), dict) else {}
     replay = readiness.get("verified_replay") if isinstance(readiness.get("verified_replay"), dict) else {}
+    core_replay = (
+        readiness.get("verified_core_replay")
+        if isinstance(readiness.get("verified_core_replay"), dict)
+        else {}
+    )
+    capability_gaps = readiness.get("capability_gaps")
+    weak_missing = replay.get("weak_capabilities_missing")
+    weak_manifest_rejections = replay.get("manifest_rejection_reasons")
+    core_missing = core_replay.get("core_capabilities_missing")
+    core_manifest_rejections = core_replay.get("manifest_rejection_reasons")
     common_verified = bool(
         readiness.get("ok") is True
+        and isinstance(capability_gaps, list)
+        and not capability_gaps
         and assessment.get("trusted") is True
         and assessment.get("complete") is True
         and assessment.get("level") == "L5"
         and int(replay.get("executed_count") or 0) >= 10
-        and not list(replay.get("weak_capabilities_missing") or [])
-        and not dict(replay.get("manifest_rejection_reasons") or {})
+        and isinstance(weak_missing, list)
+        and not weak_missing
+        and isinstance(weak_manifest_rejections, dict)
+        and not weak_manifest_rejections
+        and int(core_replay.get("executed_count") or 0) >= len(CORE_REPLAY_CAPABILITIES) * 3
+        and isinstance(core_missing, list)
+        and not core_missing
+        and isinstance(core_manifest_rejections, dict)
+        and not core_manifest_rejections
     )
     if not common_verified:
         return ""
@@ -105,7 +127,22 @@ def build_l5_readiness_report(
     ledger = build_capability_ledger(runtime, scope=scope_ref, limit=limit, attribute_outcomes=False)
     hard_metrics = _safe_hard_metrics(runtime, scope=scope_ref, limit=limit)
     evidence_counts = _evidence_counts(runtime, scope=scope_ref, limit=limit)
-    verified_replay = _verified_replay_summary(runtime, scope=scope_ref, limit=limit)
+    verified_replay = _verified_replay_summary(
+        runtime,
+        scope=scope_ref,
+        limit=limit,
+        capabilities=WEAK_CAPABILITIES,
+        missing_field="weak_capabilities_missing",
+        release=release,
+    )
+    verified_core_replay = _verified_replay_summary(
+        runtime,
+        scope=scope_ref,
+        limit=limit,
+        capabilities=set(CORE_REPLAY_CAPABILITIES),
+        missing_field="core_capabilities_missing",
+        release=release,
+    )
     latest_l5_assessment = _latest_l5_assessment(runtime, scope=scope_ref, release=release)
     weak_outcome_evidence = _weak_outcome_evidence(runtime, scope=scope_ref, limit=limit)
     capability_gaps = _capability_gaps(ledger, weak_outcome_evidence=weak_outcome_evidence)
@@ -116,6 +153,7 @@ def build_l5_readiness_report(
         capability_gaps,
         weak_outcome_evidence,
         verified_replay,
+        verified_core_replay,
         latest_l5_assessment,
     )
     next_actions = _next_actions(
@@ -143,6 +181,7 @@ def build_l5_readiness_report(
         "hard_metric_samples": hard_metrics.get("sample_counts", {}),
         "live_task_gate": stage["live_task_gate"],
         "verified_replay": verified_replay,
+        "verified_core_replay": verified_core_replay,
         "latest_l5_assessment": latest_l5_assessment,
         "weak_outcome_evidence": weak_outcome_evidence,
         "capability_gaps": capability_gaps,
@@ -204,7 +243,11 @@ def _evidence_counts(runtime: Any, *, scope: ScopeRef, limit: int) -> dict[str, 
     counts: dict[str, int] = {}
     for kind in kinds:
         try:
-            counts[kind] = len(runtime.store.list_records(kinds=[kind], scope=scope, limit=limit))
+            counts[kind] = sum(
+                1
+                for record in runtime.store.list_records(kinds=[kind], scope=scope, limit=limit)
+                if _record_has_exact_scope(record, scope)
+            )
         except Exception:
             counts[kind] = 0
     counts["promotion_applied"] = _count_status(runtime, scope=scope, kind="promotion_request", statuses={"promoted", "active", "deployed"}, limit=limit)
@@ -214,7 +257,11 @@ def _evidence_counts(runtime: Any, *, scope: ScopeRef, limit: int) -> dict[str, 
 
 def _count_status(runtime: Any, *, scope: ScopeRef, kind: str, statuses: set[str], limit: int) -> int:
     try:
-        records = runtime.store.list_records(kinds=[kind], scope=scope, limit=limit)
+        records = [
+            record
+            for record in runtime.store.list_records(kinds=[kind], scope=scope, limit=limit)
+            if _record_has_exact_scope(record, scope)
+        ]
     except Exception:
         return 0
     return sum(1 for record in records if str(record.status or "").lower() in statuses)
@@ -231,12 +278,22 @@ def _policy_rollback_count(runtime: Any, *, scope: ScopeRef, limit: int) -> int:
     return sum(1 for record in records if isinstance(record, dict) and is_executed_rollback_ledger_record(record))
 
 
-def _verified_replay_summary(runtime: Any, *, scope: ScopeRef, limit: int) -> dict[str, Any]:
+def _verified_replay_summary(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    limit: int,
+    capabilities: set[str],
+    missing_field: str,
+    release: ReleaseIdentity | None,
+) -> dict[str, Any]:
     records = _capability_replay_records(runtime, scope=scope, limit=limit)
     selected_records, manifest_record_ids, manifest_rejection_reasons = _latest_manifest_case_records(
         runtime,
         scope=scope,
         limit=limit,
+        capabilities=capabilities,
+        release=release,
     )
     by_capability = {
         capability: {
@@ -247,9 +304,9 @@ def _verified_replay_summary(runtime: Any, *, scope: ScopeRef, limit: int) -> di
             "pass_rate": 0.0,
             "distinct_evidence_count": 0,
         }
-        for capability in sorted(WEAK_CAPABILITIES)
+        for capability in sorted(capabilities)
     }
-    evidence_sources = {capability: set() for capability in WEAK_CAPABILITIES}
+    evidence_sources = {capability: set() for capability in capabilities}
     pass_count = 0
     fail_count = 0
     not_run_count = 0
@@ -259,6 +316,7 @@ def _verified_replay_summary(runtime: Any, *, scope: ScopeRef, limit: int) -> di
         if str(record.get("source", "") if isinstance(record, dict) else getattr(record, "source", "") or "").strip()
         == "eimemory.capability_replay"
         and str(_record_field(record, "report_type") or "").strip() == "capability_replay_pack"
+        and str(_record_field(record, "capability") or "").strip() in capabilities
         and str(_record_field(record, "verdict") or "").strip().lower() in {"pass", "fail"}
     )
     rejection_reasons: dict[str, int] = {}
@@ -310,7 +368,7 @@ def _verified_replay_summary(runtime: Any, *, scope: ScopeRef, limit: int) -> di
     for capability, bucket in by_capability.items():
         bucket["distinct_evidence_count"] = len(evidence_sources[capability])
     executed_count = pass_count + fail_count
-    weak_capabilities_missing = [
+    capabilities_missing = [
         capability
         for capability, bucket in by_capability.items()
         if int(bucket["executed_count"]) < 3
@@ -324,11 +382,11 @@ def _verified_replay_summary(runtime: Any, *, scope: ScopeRef, limit: int) -> di
         "fail_count": fail_count,
         "not_run_count": not_run_count,
         "pass_rate": round(pass_count / executed_count, 3) if executed_count else 0.0,
-        "minimum_executed": 10,
+        "minimum_executed": len(capabilities) * 3,
         "minimum_pass_rate": 0.8,
-        "minimum_per_weak_capability": 3,
+        "minimum_per_capability": 3,
         "by_capability": by_capability,
-        "weak_capabilities_missing": weak_capabilities_missing,
+        missing_field: capabilities_missing,
         "rejection_reasons": dict(sorted(rejection_reasons.items())),
         "manifest_record_ids": manifest_record_ids,
         "manifest_rejection_reasons": manifest_rejection_reasons,
@@ -348,11 +406,15 @@ def _capability_replay_records(runtime: Any, *, scope: ScopeRef, limit: int) -> 
                 limit=budget,
             )
             if records is not None:
-                return list(records)
+                return [record for record in records if _record_has_exact_scope(record, scope)]
         except Exception:
             pass
     try:
-        return list(runtime.store.list_records(kinds=["replay_result"], scope=scope, limit=budget))
+        return [
+            record
+            for record in runtime.store.list_records(kinds=["replay_result"], scope=scope, limit=budget)
+            if _record_has_exact_scope(record, scope)
+        ]
     except Exception:
         return []
 
@@ -362,16 +424,23 @@ def _latest_manifest_case_records(
     *,
     scope: ScopeRef,
     limit: int,
+    capabilities: set[str],
+    release: ReleaseIdentity | None,
 ) -> tuple[list[Any], dict[str, str], dict[str, str]]:
-    high_water = _latest_manifest_high_water(runtime, scope=scope, limit=limit)
-    log_state = capability_replay_log_sequence_state(runtime, scope=scope, capabilities=WEAK_CAPABILITIES)
+    high_water = _latest_manifest_high_water(
+        runtime,
+        scope=scope,
+        limit=limit,
+        capabilities=capabilities,
+    )
+    log_state = capability_replay_log_sequence_state(runtime, scope=scope, capabilities=capabilities)
     latest: dict[str, tuple[int, Any]] = {}
     for manifest in _capability_replay_manifest_records(runtime, scope=scope, limit=limit):
         content = manifest.get("content") if isinstance(manifest, dict) else getattr(manifest, "content", None)
         content = content if isinstance(content, dict) else {}
-        capabilities = content.get("capabilities") if isinstance(content.get("capabilities"), list) else []
+        manifest_capabilities = content.get("capabilities") if isinstance(content.get("capabilities"), list) else []
         sequences = content.get("sequence_by_capability") if isinstance(content.get("sequence_by_capability"), dict) else {}
-        for capability in {str(value or "").strip() for value in capabilities} & WEAK_CAPABILITIES:
+        for capability in {str(value or "").strip() for value in manifest_capabilities} & capabilities:
             try:
                 sequence = int(sequences.get(capability) or 0)
             except (TypeError, ValueError):
@@ -383,7 +452,7 @@ def _latest_manifest_case_records(
     selected: list[Any] = []
     manifest_record_ids: dict[str, str] = {}
     rejection_reasons: dict[str, str] = {}
-    for capability in sorted(WEAK_CAPABILITIES):
+    for capability in sorted(capabilities):
         entry = latest.get(capability)
         if entry is None:
             rejection_reasons[capability] = "manifest_missing"
@@ -416,7 +485,13 @@ def _latest_manifest_case_records(
         if str(high_water_entry.get("execution_id") or "") != str(manifest_content.get("execution_id") or ""):
             rejection_reasons[capability] = "manifest_high_water_execution_mismatch"
             continue
-        records, reason = _validated_manifest_members(runtime, manifest, scope=scope, capability=capability)
+        records, reason = _validated_manifest_members(
+            runtime,
+            manifest,
+            scope=scope,
+            capability=capability,
+            release=release,
+        )
         if reason:
             rejection_reasons[capability] = reason
             continue
@@ -424,17 +499,25 @@ def _latest_manifest_case_records(
     return selected, manifest_record_ids, rejection_reasons
 
 
-def _latest_manifest_high_water(runtime: Any, *, scope: ScopeRef, limit: int) -> dict[str, dict[str, Any]]:
+def _latest_manifest_high_water(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    limit: int,
+    capabilities: set[str],
+) -> dict[str, dict[str, Any]]:
     try:
         records = runtime.store.list_records(kinds=["capability_score"], scope=scope, limit=max(1, int(limit)))
     except Exception:
         return {}
     latest: dict[str, tuple[int, dict[str, Any]]] = {}
     for record in records:
+        if not _record_has_exact_scope(record, scope):
+            continue
         if str(record.meta.get("kind") or "") != "capability_replay_pack":
             continue
         capability = str(record.meta.get("capability") or record.content.get("capability") or "").strip()
-        if capability not in WEAK_CAPABILITIES:
+        if capability not in capabilities:
             continue
         manifest_id = str(record.meta.get("manifest_record_id") or "").strip()
         try:
@@ -473,14 +556,15 @@ def _capability_replay_manifest_records(runtime: Any, *, scope: ScopeRef, limit:
                 limit=budget,
             )
             if records is not None:
-                return list(records)
+                return [record for record in records if _record_has_exact_scope(record, scope)]
         except Exception:
             pass
     try:
         return [
             record
             for record in runtime.store.list_records(kinds=["replay_result"], scope=scope, limit=budget)
-            if str(_record_field(record, "report_type") or "") == MANIFEST_REPORT_TYPE
+            if _record_has_exact_scope(record, scope)
+            and str(_record_field(record, "report_type") or "") == MANIFEST_REPORT_TYPE
         ]
     except Exception:
         return []
@@ -492,6 +576,7 @@ def _validated_manifest_members(
     *,
     scope: ScopeRef,
     capability: str,
+    release: ReleaseIdentity | None,
 ) -> tuple[list[Any], str]:
     content = manifest.get("content") if isinstance(manifest, dict) else getattr(manifest, "content", None)
     content = content if isinstance(content, dict) else {}
@@ -503,6 +588,8 @@ def _validated_manifest_members(
     status = str(manifest.get("status", "") if isinstance(manifest, dict) else getattr(manifest, "status", "") or "")
     execution_id = str(content.get("execution_id") or "").strip()
     digest = str(content.get("manifest_digest") or "").strip()
+    if not _record_has_exact_scope(manifest, scope):
+        return [], "manifest_scope_mismatch"
     if source != "eimemory.capability_replay":
         return [], "manifest_source_untrusted"
     if status != "active":
@@ -521,6 +608,15 @@ def _validated_manifest_members(
         return [], "manifest_digest_mismatch"
     if any(container.get("complete") is not True for container in (content, meta, provenance)):
         return [], "manifest_incomplete"
+    if release is None:
+        return [], "manifest_release_identity_mismatch"
+    expected_release = release_identity_payload(release)
+    if any(
+        str(container.get(key) or "").strip() != value
+        for container in (content, meta, provenance)
+        for key, value in expected_release.items()
+    ):
+        return [], "manifest_release_identity_mismatch"
 
     manifest_started = _record_created_at(manifest)
     manifest_finished = _record_updated_at(manifest)
@@ -562,6 +658,8 @@ def _validated_manifest_members(
         record = runtime.store.get_by_id(member_id, scope=scope)
         if record is None:
             return [], "manifest_member_missing"
+        if not _record_has_exact_scope(record, scope):
+            return [], "manifest_member_scope_mismatch"
         if str(member_digests.get(member_id) or "") != capability_replay_member_digest(record):
             return [], "manifest_member_digest_mismatch"
         record_content = record.content if isinstance(record.content, dict) else {}
@@ -601,12 +699,16 @@ def _validated_manifest_members(
             probe = runtime.store.get_by_id(probe_id, scope=scope)
             if probe is None:
                 return [], "manifest_probe_missing"
+            if not _record_has_exact_scope(probe, scope):
+                return [], "manifest_probe_scope_mismatch"
             if probe.kind != "replay_result" or probe.status != "active":
                 return [], "manifest_probe_status_invalid"
             trace_record_id = str(result.get("trace_record_id") or "").strip()
             trace = runtime.store.get_by_id(trace_record_id, scope=scope)
             if trace is None or trace.kind != "reflection" or trace.status != "active":
                 return [], "manifest_trace_status_invalid"
+            if not _record_has_exact_scope(trace, scope):
+                return [], "manifest_trace_scope_mismatch"
             probe_created = _record_created_at(probe)
             if probe_created is None:
                 return [], "manifest_probe_time_invalid"
@@ -622,6 +724,11 @@ def _validated_manifest_members(
 
 def _record_id(record: Any) -> str:
     return str(record.get("record_id", "") if isinstance(record, dict) else getattr(record, "record_id", "") or "")
+
+
+def _record_has_exact_scope(record: Any, scope: ScopeRef) -> bool:
+    record_scope = record.get("scope") if isinstance(record, dict) else getattr(record, "scope", None)
+    return same_scope(record_scope, scope)
 
 
 def _record_created_at(record: Any) -> datetime | None:
@@ -693,6 +800,7 @@ def _latest_l5_assessment(
                 offset += len(page)
         except Exception:
             records = []
+    records = [record for record in records if _record_has_exact_scope(record, scope)]
     if not records:
         return {"present": False, "trusted": False, "complete": False, "level": "", "missing_evidence": [], "record_id": ""}
     if current_release is None:
@@ -828,6 +936,7 @@ def _stage_for(
     capability_gaps: list[dict[str, Any]],
     weak_outcome_evidence: dict[str, Any],
     verified_replay: dict[str, Any],
+    verified_core_replay: dict[str, Any],
     latest_l5_assessment: dict[str, Any],
 ) -> dict[str, Any]:
     metrics = dict(hard_metrics.get("metrics") or {})
@@ -871,15 +980,30 @@ def _stage_for(
         "current_deployment_operational_probes": operational_probes,
     }
     weak_outcome_ok = not weak_outcome_evidence.get("missing")
+    weak_missing = verified_replay.get("weak_capabilities_missing")
+    weak_manifest_rejections = verified_replay.get("manifest_rejection_reasons")
+    core_missing = verified_core_replay.get("core_capabilities_missing")
+    core_manifest_rejections = verified_core_replay.get("manifest_rejection_reasons")
+    replay_gate_fields_valid = bool(
+        isinstance(weak_missing, list)
+        and isinstance(weak_manifest_rejections, dict)
+        and isinstance(core_missing, list)
+        and isinstance(core_manifest_rejections, dict)
+    )
 
     readiness_score = round(
         min(1.0, (core_ready_count / len(READINESS_CAPABILITIES) * 0.45) + (min(replay_count, 10) / 10 * 0.2) + (min(l5_artifacts, 4) / 4 * 0.2) + (min(promotion_count, 5) / 5 * 0.15)),
         3,
     )
     if (
-        not weak_outcome_ok
+        capability_gaps
+        or not weak_outcome_ok
         or not patch_quality_ok
-        or verified_replay.get("weak_capabilities_missing")
+        or not replay_gate_fields_valid
+        or weak_missing
+        or weak_manifest_rejections
+        or core_missing
+        or core_manifest_rejections
         or not latest_l5_assessment.get("complete")
         or not live_task_gate["ok"]
     ):
@@ -891,11 +1015,16 @@ def _stage_for(
     }
     structural_ready = bool(
         l5_artifacts >= 4
-        and weak_gap_count == 0
+        and not capability_gaps
         and weak_outcome_ok
+        and replay_gate_fields_valid
         and replay_count >= 10
         and replay_pass_rate >= 0.8
-        and not verified_replay.get("weak_capabilities_missing")
+        and not weak_missing
+        and not weak_manifest_rejections
+        and int(verified_core_replay.get("executed_count") or 0) >= len(CORE_REPLAY_CAPABILITIES) * 3
+        and not core_missing
+        and not core_manifest_rejections
         and latest_l5_assessment.get("complete") is True
         and promotion_count >= 1
         and rollback_count >= 1

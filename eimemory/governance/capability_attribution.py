@@ -5,11 +5,13 @@ from statistics import mean
 from typing import Any
 
 from eimemory.experience.capability_contract import (
+    CASE_CONTRACTS,
     contract_source_ids,
     normalize_capability_contract,
     validate_capability_contract,
 )
 from eimemory.governance.capability_ledger import SEEDED_LEDGER_CAPABILITIES, record_capability_score
+from eimemory.governance.evidence_contract import same_scope
 from eimemory.governance.learning_state import stable_semantic_key
 from eimemory.metadata import business_metadata
 from eimemory.models.records import RecordEnvelope, ScopeRef
@@ -22,6 +24,8 @@ BUSINESS_CAPABILITIES = {
     "office.daily_task",
     "device.control",
 }
+CONTRACT_CAPABILITIES = {capability for capability, _validator in CASE_CONTRACTS.values()}
+ATTRIBUTABLE_CAPABILITIES = BUSINESS_CAPABILITIES | CONTRACT_CAPABILITIES
 
 CAPABILITY_TERMS: dict[str, tuple[str, ...]] = {
     "operations.uumit": (
@@ -86,11 +90,11 @@ def collect_capability_evidence(
     limit: int = 500,
 ) -> dict[str, list[dict[str, Any]]]:
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
-    grouped: dict[str, list[dict[str, Any]]] = {capability: [] for capability in BUSINESS_CAPABILITIES}
+    grouped: dict[str, list[dict[str, Any]]] = {capability: [] for capability in ATTRIBUTABLE_CAPABILITIES}
     seen: set[tuple[str, str]] = set()
     for evidence in [*_evidence_from_outcome_traces(runtime, scope=scope_ref, limit=limit), *_evidence_from_event_outcomes(runtime, scope=scope_ref, limit=limit)]:
         for capability in evidence.get("capabilities") or []:
-            if capability not in BUSINESS_CAPABILITIES:
+            if capability not in ATTRIBUTABLE_CAPABILITIES:
                 continue
             key = (capability, str(evidence.get("source_id") or ""))
             if key in seen:
@@ -155,6 +159,8 @@ def _evidence_from_outcome_traces(runtime: Any, *, scope: ScopeRef, limit: int) 
         meta_value="outcome_trace",
         limit=limit,
     ):
+        if not same_scope(record.scope, scope):
+            continue
         meta = business_metadata(record.meta)
         if str(meta.get("report_type") or "") != "outcome_trace":
             continue
@@ -354,5 +360,9 @@ def _records_by_meta_value(
             limit=limit,
         )
         if records is not None:
-            return list(records)
-    return runtime.store.list_records(kinds=kinds, scope=scope, limit=limit)
+            return [record for record in records if same_scope(record.scope, scope)]
+    return [
+        record
+        for record in runtime.store.list_records(kinds=kinds, scope=scope, limit=limit)
+        if same_scope(record.scope, scope)
+    ]

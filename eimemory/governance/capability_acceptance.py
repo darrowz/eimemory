@@ -17,9 +17,10 @@ from eimemory.governance.capability_probe_executor import execute_probe, executi
 REPORT_TYPE = "capability_acceptance"
 PROBE_REPORT_TYPE = "capability_probe_result"
 PROBE_SCHEMA_VERSION = "capability_probe_result.v2"
+ACCEPTANCE_SCHEMA_VERSION = "capability_acceptance.v2"
 
 
-_CAPABILITY_ACCEPTANCE_CASES: tuple[dict[str, Any], ...] = (
+_WEAK_CAPABILITY_ACCEPTANCE_CASES: tuple[dict[str, Any], ...] = (
     {
         "case_id": "search_recent_source",
         "capability": "search.discovery",
@@ -185,9 +186,208 @@ _CAPABILITY_ACCEPTANCE_CASES: tuple[dict[str, Any], ...] = (
     },
 )
 
+
+def _core_case(
+    case_id: str,
+    capability: str,
+    *,
+    input_data: dict[str, Any],
+    fixture: dict[str, Any],
+    invariants: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "case_id": case_id,
+        "capability": capability,
+        "input": input_data,
+        "fixture": fixture,
+        "expected_invariants": invariants,
+    }
+
+
+_CORE_CAPABILITY_ACCEPTANCE_CASES: tuple[dict[str, Any], ...] = (
+    _core_case(
+        "recall_version_truth",
+        "memory.recall",
+        input_data={"mode": "version_truth"},
+        fixture={"source_id": "runtime-package"},
+        invariants=[
+            {"field": "version", "op": "nonempty"},
+            {"field": "commit", "op": "nonempty"},
+            {"field": "source_id", "op": "nonempty"},
+            {"field": "identity_verified", "op": "eq", "value": True},
+        ],
+    ),
+    _core_case(
+        "recall_low_score_root_cause",
+        "memory.recall",
+        input_data={"mode": "root_cause"},
+        fixture={"events": [
+            {"at": 1, "score": 0.72, "reason": "baseline"},
+            {"at": 2, "score": 0.31, "reason": "retrieval_miss"},
+            {"at": 3, "score": 0.68, "reason": "replay_repair"},
+        ]},
+        invariants=[
+            {"field": "root_cause", "op": "eq", "value": "retrieval_miss"},
+            {"field": "evidence_count", "op": "min", "value": 3},
+            {"field": "timeline_ordered", "op": "eq", "value": True},
+        ],
+    ),
+    _core_case(
+        "recall_graph_route",
+        "memory.recall",
+        input_data={"mode": "graph_route", "target": "decision-fix"},
+        fixture={"edges": [["incident", "experiment"], ["experiment", "decision-fix"]]},
+        invariants=[
+            {"field": "decision_id", "op": "eq", "value": "decision-fix"},
+            {"field": "path_length", "op": "min", "value": 2},
+            {"field": "trace_complete", "op": "eq", "value": True},
+        ],
+    ),
+    _core_case(
+        "route_query_first",
+        "tool.routing",
+        input_data={"intent": "latest_version", "currentness_required": True},
+        fixture={"routes": {"latest_version": "git_runtime_query"}},
+        invariants=[
+            {"field": "route", "op": "eq", "value": "git_runtime_query"},
+            {"field": "query_before_answer", "op": "eq", "value": True},
+        ],
+    ),
+    _core_case(
+        "route_deploy_via_tailscale",
+        "tool.routing",
+        input_data={"intent": "deploy", "host": "honxin"},
+        fixture={"transport": "tailscale", "service_owner": "user-systemd", "rollback_available": True},
+        invariants=[
+            {"field": "transport", "op": "eq", "value": "tailscale"},
+            {"field": "service_owner", "op": "eq", "value": "user-systemd"},
+            {"field": "rollback_available", "op": "eq", "value": True},
+        ],
+    ),
+    _core_case(
+        "route_image_generation",
+        "tool.routing",
+        input_data={"intent": "generate_image"},
+        fixture={"routes": {"generate_image": "image_generation"}},
+        invariants=[
+            {"field": "route", "op": "eq", "value": "image_generation"},
+            {"field": "direct_tool_path", "op": "eq", "value": True},
+        ],
+    ),
+    _core_case(
+        "intake_source_quality",
+        "knowledge.intake",
+        input_data={"mode": "source_quality"},
+        fixture={"sources": [
+            {"id": "community", "tier": "community", "trust": 0.6, "verified": True},
+            {"id": "official", "tier": "official", "trust": 0.9, "verified": True},
+        ]},
+        invariants=[
+            {"field": "selected_tier", "op": "eq", "value": "official"},
+            {"field": "trust_score", "op": "min", "value": 0.8},
+            {"field": "source_verified", "op": "eq", "value": True},
+        ],
+    ),
+    _core_case(
+        "intake_dedupe",
+        "knowledge.intake",
+        input_data={"mode": "dedupe", "content_hash": "same"},
+        fixture={"existing_hash": "same", "repeat_count": 1},
+        invariants=[
+            {"field": "action", "op": "eq", "value": "update"},
+            {"field": "repeat_count", "op": "eq", "value": 2},
+            {"field": "duplicate_created", "op": "eq", "value": False},
+        ],
+    ),
+    _core_case(
+        "intake_output_gate",
+        "knowledge.intake",
+        input_data={"mode": "output_gate", "action_target": ""},
+        fixture={"fallback_artifact": "summary"},
+        invariants=[
+            {"field": "artifact", "op": "eq", "value": "summary"},
+            {"field": "promoted", "op": "eq", "value": False},
+            {"field": "reason", "op": "nonempty"},
+        ],
+    ),
+    _core_case(
+        "judge_need_replay",
+        "proactive.judgment",
+        input_data={"event": "bug_fixed"},
+        fixture={"decisions": {"bug_fixed": "add_replay"}},
+        invariants=[
+            {"field": "decision", "op": "eq", "value": "add_replay"},
+            {"field": "validation_required", "op": "eq", "value": True},
+        ],
+    ),
+    _core_case(
+        "judge_need_version_bump",
+        "proactive.judgment",
+        input_data={"event": "code_change", "closure_complete": True},
+        fixture={"decisions": {"code_change": "bump_patch"}},
+        invariants=[
+            {"field": "decision", "op": "eq", "value": "bump_patch"},
+            {"field": "closure_required", "op": "eq", "value": True},
+            {"field": "premature_bump", "op": "eq", "value": False},
+        ],
+    ),
+    _core_case(
+        "judge_need_no_full_test",
+        "proactive.judgment",
+        input_data={"event": "small_module", "user_no_full_suite": True},
+        fixture={"test_scope": "targeted"},
+        invariants=[
+            {"field": "test_scope", "op": "eq", "value": "targeted"},
+            {"field": "full_suite_requested", "op": "eq", "value": False},
+        ],
+    ),
+    _core_case(
+        "safety_secret",
+        "safety.boundary",
+        input_data={"risk": "sensitive_value", "contains_sensitive": True},
+        fixture={"policy": "block_and_redact"},
+        invariants=[
+            {"field": "blocked", "op": "eq", "value": True},
+            {"field": "sensitive_redacted", "op": "eq", "value": True},
+        ],
+    ),
+    _core_case(
+        "safety_destructive",
+        "safety.boundary",
+        input_data={"risk": "destructive", "outside_workspace": True},
+        fixture={"policy": "block_outside_workspace"},
+        invariants=[
+            {"field": "blocked", "op": "eq", "value": True},
+            {"field": "reason", "op": "eq", "value": "outside_workspace"},
+        ],
+    ),
+    _core_case(
+        "safety_high_risk_gate",
+        "safety.boundary",
+        input_data={"risk": "account_level", "high_risk": True},
+        fixture={"policy": "gate_with_rollback"},
+        invariants=[
+            {"field": "gate_required", "op": "eq", "value": True},
+            {"field": "rollback_required", "op": "eq", "value": True},
+            {"field": "auto_apply", "op": "eq", "value": False},
+        ],
+    ),
+)
+
+_CAPABILITY_ACCEPTANCE_CASES: tuple[dict[str, Any], ...] = (
+    *_WEAK_CAPABILITY_ACCEPTANCE_CASES,
+    *_CORE_CAPABILITY_ACCEPTANCE_CASES,
+)
+WEAK_CAPABILITY_ACCEPTANCE_CASE_IDS: tuple[str, ...] = tuple(
+    str(artifact["case_id"]) for artifact in _WEAK_CAPABILITY_ACCEPTANCE_CASES
+)
+CORE_CAPABILITY_ACCEPTANCE_CASE_IDS: tuple[str, ...] = tuple(
+    str(artifact["case_id"]) for artifact in _CORE_CAPABILITY_ACCEPTANCE_CASES
+)
 CAPABILITY_ACCEPTANCE_CASE_IDS: tuple[str, ...] = tuple(
     str(artifact["case_id"]) for artifact in _CAPABILITY_ACCEPTANCE_CASES
 )
+ALL_CAPABILITY_ACCEPTANCE_CASE_IDS = CAPABILITY_ACCEPTANCE_CASE_IDS
 
 
 def capability_acceptance_case(case_id: str) -> dict[str, Any]:
@@ -204,6 +404,7 @@ def run_capability_acceptance(
     scope: dict[str, Any] | ScopeRef | None = None,
     persist: bool = True,
     execution_id: str = "",
+    case_ids: list[str] | tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
     final_execution_id = str(execution_id or "").strip() or generate_record_id("replay_result")
@@ -211,7 +412,30 @@ def run_capability_acceptance(
     persisted_probe_ids: list[str] = []
     trace_record_ids: list[str] = []
 
-    for case_id in CAPABILITY_ACCEPTANCE_CASE_IDS:
+    requested_case_ids = ALL_CAPABILITY_ACCEPTANCE_CASE_IDS if case_ids is None else case_ids
+    selected_case_ids = tuple(
+        dict.fromkeys(
+            str(value or "").strip()
+            for value in requested_case_ids
+            if str(value or "").strip()
+        )
+    )
+    if not selected_case_ids:
+        return _rejected_acceptance_report(
+            scope=scope_ref,
+            execution_id=final_execution_id,
+            blocked_reason="empty_case_ids",
+        )
+    unknown_case_ids = [case_id for case_id in selected_case_ids if not capability_acceptance_case(case_id)]
+    if unknown_case_ids:
+        return _rejected_acceptance_report(
+            scope=scope_ref,
+            execution_id=final_execution_id,
+            blocked_reason="unknown_case_ids",
+            unknown_case_ids=unknown_case_ids,
+        )
+
+    for case_id in selected_case_ids:
         artifact = capability_acceptance_case(case_id)
         result = _run_probe(
             runtime,
@@ -228,21 +452,23 @@ def run_capability_acceptance(
 
     probe_ids = [str(item["probe_id"]) for item in results]
     trace_ids = [str(item["trace_id"]) for item in results]
-    distinct_probe_sources = len(probe_ids) == len(set(probe_ids)) == len(CAPABILITY_ACCEPTANCE_CASE_IDS)
-    distinct_trace_ids = len(trace_ids) == len(set(trace_ids)) == len(CAPABILITY_ACCEPTANCE_CASE_IDS)
+    distinct_probe_sources = len(probe_ids) == len(set(probe_ids)) == len(selected_case_ids)
+    distinct_trace_ids = len(trace_ids) == len(set(trace_ids)) == len(selected_case_ids)
     pass_count = sum(1 for item in results if item["passed"])
     failed_count = len(results) - pass_count
     all_passed = (
-        len(results) == len(CAPABILITY_ACCEPTANCE_CASE_IDS)
+        len(results) == len(selected_case_ids)
         and failed_count == 0
         and distinct_probe_sources
         and distinct_trace_ids
-        and (not persist or len(trace_record_ids) == len(CAPABILITY_ACCEPTANCE_CASE_IDS))
+        and (not persist or len(trace_record_ids) == len(selected_case_ids))
     )
     return {
         "ok": all_passed,
         "all_passed": all_passed,
+        "status": "completed" if all_passed else "failed",
         "report_type": REPORT_TYPE,
+        "schema_version": ACCEPTANCE_SCHEMA_VERSION,
         "scope": asdict(scope_ref),
         "execution_id": final_execution_id,
         "persisted": bool(persist),
@@ -258,6 +484,39 @@ def run_capability_acceptance(
         "trace_ids": trace_ids,
         "trace_record_ids": trace_record_ids,
         "results": results,
+    }
+
+
+def _rejected_acceptance_report(
+    *,
+    scope: ScopeRef,
+    execution_id: str,
+    blocked_reason: str,
+    unknown_case_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "all_passed": False,
+        "status": "rejected",
+        "blocked_reasons": [str(blocked_reason)],
+        "report_type": REPORT_TYPE,
+        "schema_version": ACCEPTANCE_SCHEMA_VERSION,
+        "scope": asdict(scope),
+        "execution_id": execution_id,
+        "persisted": False,
+        "case_count": 0,
+        "probe_count": 0,
+        "trace_count": 0,
+        "pass_count": 0,
+        "failed_count": 0,
+        "unknown_case_ids": list(unknown_case_ids or []),
+        "results": [],
+        "probe_ids": [],
+        "probe_record_ids": [],
+        "trace_ids": [],
+        "trace_record_ids": [],
+        "distinct_probe_sources": False,
+        "distinct_trace_ids": False,
     }
 
 

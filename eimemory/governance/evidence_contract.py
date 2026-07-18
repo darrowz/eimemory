@@ -61,7 +61,7 @@ def resolve_evidence(
     if record is None:
         return _rejected(record_id, "record_not_found")
     expected_scope = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(dict(scope or {}))
-    if not _same_scope(record.scope, expected_scope):
+    if not same_scope(record.scope, expected_scope):
         return _rejected(record_id, "scope_mismatch")
     if requirement.kinds and str(record.kind or "") not in requirement.kinds:
         return _rejected(record_id, "kind_mismatch")
@@ -134,6 +134,8 @@ def current_release_identity(
         limit=max(1, int(limit)),
     )
     for record in records:
+        if not same_scope(getattr(record, "scope", None), scope_ref):
+            continue
         identity = _verified_receipt_identity(record)
         if identity is None or identity.commit != commit:
             continue
@@ -262,12 +264,18 @@ def _first_text(*values: Any) -> str:
     return ""
 
 
-def _same_scope(left: ScopeRef, right: ScopeRef) -> bool:
+def same_scope(left: ScopeRef | Mapping[str, Any] | None, right: ScopeRef | Mapping[str, Any] | None) -> bool:
+    """Compare every scope dimension exactly; storage aliasing is never evidence authority."""
+
+    if left is None or right is None:
+        return False
+    left_ref = left if isinstance(left, ScopeRef) else ScopeRef.from_dict(dict(left))
+    right_ref = right if isinstance(right, ScopeRef) else ScopeRef.from_dict(dict(right))
     return (
-        left.tenant_id == right.tenant_id
-        and left.agent_id == right.agent_id
-        and left.workspace_id == right.workspace_id
-        and left.user_id == right.user_id
+        left_ref.tenant_id == right_ref.tenant_id
+        and left_ref.agent_id == right_ref.agent_id
+        and left_ref.workspace_id == right_ref.workspace_id
+        and left_ref.user_id == right_ref.user_id
     )
 
 

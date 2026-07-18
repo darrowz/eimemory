@@ -1,18 +1,24 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 import json
 
 from eimemory.api.runtime import Runtime
 from eimemory.cli.main import main as cli_main
 from eimemory.experience import record_outcome_trace
 from eimemory.governance.capability_ledger import record_capability_score
+from eimemory.governance.capability_acceptance import (
+    CORE_CAPABILITY_ACCEPTANCE_CASE_IDS,
+    capability_acceptance_case,
+)
 from eimemory.governance.evidence_contract import current_release_identity, release_identity_payload
 from eimemory.governance.capability_replay_packs import (
+    CORE_REPLAY_CAPABILITIES,
     MANIFEST_REPORT_TYPE,
     MANIFEST_SCHEMA_VERSION,
     capability_replay_manifest_digest,
 )
-from eimemory.governance.l5_readiness import readiness_gate_status
+from eimemory.governance.l5_readiness import _stage_for, readiness_gate_status
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
@@ -22,10 +28,16 @@ SCOPE = {"agent_id": "agent-l5-readiness", "workspace_id": "l5-readiness", "user
 def test_readiness_gate_status_allows_only_l5_or_strict_data_accumulation() -> None:
     common = {
         "ok": True,
+        "capability_gaps": [],
         "latest_l5_assessment": {"trusted": True, "complete": True, "level": "L5"},
         "verified_replay": {
             "executed_count": 12,
             "weak_capabilities_missing": [],
+            "manifest_rejection_reasons": {},
+        },
+        "verified_core_replay": {
+            "executed_count": 15,
+            "core_capabilities_missing": [],
             "manifest_rejection_reasons": {},
         },
     }
@@ -65,6 +77,37 @@ def test_readiness_gate_status_allows_only_l5_or_strict_data_accumulation() -> N
             },
         }
     ) == ""
+    assert readiness_gate_status({**accumulating, "capability_gaps": [{"capability": "memory.recall"}]}) == ""
+    assert readiness_gate_status({key: value for key, value in accumulating.items() if key != "capability_gaps"}) == ""
+    assert readiness_gate_status({key: value for key, value in accumulating.items() if key != "verified_core_replay"}) == ""
+    assert readiness_gate_status(
+        {
+            **accumulating,
+            "verified_core_replay": {
+                "executed_count": 12,
+                "core_capabilities_missing": ["memory.recall"],
+                "manifest_rejection_reasons": {},
+            },
+        }
+    ) == ""
+    for field in ("core_capabilities_missing", "manifest_rejection_reasons"):
+        assert readiness_gate_status(
+            {
+                **accumulating,
+                "verified_core_replay": {
+                    key: value for key, value in common["verified_core_replay"].items() if key != field
+                },
+            }
+        ) == ""
+    for field in ("weak_capabilities_missing", "manifest_rejection_reasons"):
+        assert readiness_gate_status(
+            {
+                **accumulating,
+                "verified_replay": {
+                    key: value for key, value in common["verified_replay"].items() if key != field
+                },
+            }
+        ) == ""
     assert readiness_gate_status(
         {
             **accumulating,
@@ -87,6 +130,10 @@ def test_l5_readiness_report_is_read_only_by_default_and_surfaces_gaps(tmp_path)
 
     assert report["ok"] is True
     assert report["report_type"] == "l5_readiness_report"
+    assert report["verified_replay"]["minimum_executed"] == len(WEAK_CAPABILITIES) * 3
+    assert report["verified_core_replay"]["minimum_executed"] == len(CORE_REPLAY_CAPABILITIES) * 3
+    assert "minimum_per_weak_capability" not in report["verified_replay"]
+    assert "minimum_per_weak_capability" not in report["verified_core_replay"]
     assert report["current_stage"] == "L3.5"
     assert report["persisted_record_id"] == ""
     assert before == after
@@ -96,6 +143,72 @@ def test_l5_readiness_report_is_read_only_by_default_and_surfaces_gaps(tmp_path)
     assert report["next_actions"]
 
 
+def test_stage_for_rejects_missing_or_malformed_replay_gate_fields() -> None:
+    ledger = {
+        "capabilities": {
+            capability: {"score": 0.9, "evidence_count": 3}
+            for capability in READINESS_CAPABILITIES
+        }
+    }
+    hard_metrics = {
+        "metrics": {
+            "patch_promotion_success_rate": 1.0,
+            "current_deployment_verified_real_task_success_rate": 1.0,
+        },
+        "metric_quality": {
+            "patch_promotion_success_rate": {"sufficient": True},
+            "current_deployment_verified_real_task_success_rate": {"sufficient": True},
+        },
+        "sample_counts": {
+            "current_deployment_verified_real_tasks": 10,
+            "current_deployment_verified_real_task_types": 5,
+            "current_deployment_operational_probes": 10,
+        },
+    }
+    evidence_counts = {
+        "l5_world_model": 1,
+        "l5_strategic_roadmap": 1,
+        "l5_assessment": 1,
+        "l5_closed_loop": 1,
+        "promotion_applied": 1,
+        "rollback_or_quarantine": 1,
+    }
+    weak_replay = {
+        "executed_count": len(WEAK_CAPABILITIES) * 3,
+        "pass_rate": 1.0,
+        "weak_capabilities_missing": [],
+        "manifest_rejection_reasons": {},
+    }
+    core_replay = {
+        "executed_count": len(CORE_REPLAY_CAPABILITIES) * 3,
+        "pass_rate": 1.0,
+        "core_capabilities_missing": [],
+        "manifest_rejection_reasons": {},
+    }
+
+    def stage(weak: dict, core: dict) -> dict:
+        return _stage_for(
+            ledger,
+            hard_metrics,
+            evidence_counts,
+            [],
+            {"missing": []},
+            weak,
+            core,
+            {"complete": True},
+        )
+
+    assert stage(weak_replay, core_replay)["stage"] == "L5"
+    for field in ("weak_capabilities_missing", "manifest_rejection_reasons"):
+        missing = {key: value for key, value in weak_replay.items() if key != field}
+        malformed = {**weak_replay, field: None}
+        assert stage(missing, core_replay)["stage"] != "L5"
+        assert stage(malformed, core_replay)["stage"] != "L5"
+    for field in ("core_capabilities_missing", "manifest_rejection_reasons"):
+        missing = {key: value for key, value in core_replay.items() if key != field}
+        malformed = {**core_replay, field: None}
+        assert stage(weak_replay, missing)["stage"] != "L5"
+        assert stage(weak_replay, malformed)["stage"] != "L5"
 def test_l5_readiness_report_uses_existing_evidence_without_running_learning(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     scope_ref = ScopeRef.from_dict(SCOPE)
@@ -150,9 +263,9 @@ def test_l5_readiness_report_uses_existing_evidence_without_running_learning(tmp
     finally:
         runtime.close()
 
-    assert report["current_stage"] == "L4"
+    assert report["current_stage"] == "L3.5"
     assert report["evidence_counts"]["replay_result"] == 3
-    assert report["verified_replay"]["observed_executed_count"] == 3
+    assert report["verified_replay"]["observed_executed_count"] == 0
     assert report["verified_replay"]["executed_count"] == 0
     assert report["evidence_counts"]["promotion_applied"] == 1
     assert stored.kind == "reflection"
@@ -318,6 +431,30 @@ def test_l5_readiness_reports_data_accumulating_without_current_release_real_tas
     assert report["live_task_gate"]["sample_deficit"] == 10
     assert report["live_task_gate"]["task_type_deficit"] == 5
     assert any("real user tasks" in action for action in report["next_actions"])
+
+
+def test_l5_readiness_does_not_report_data_accumulating_with_a_core_capability_gap(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        _seed_l5_prerequisites(
+            runtime,
+            scope=SCOPE,
+            weak_outcomes=True,
+            patch_samples=10,
+            execute_weak_replays=True,
+            assessment_complete=True,
+            verified_patch_evidence=True,
+            verified_live_tasks=False,
+            missing_core_capability="memory.recall",
+        )
+        report = runtime.build_l5_readiness_report(scope=SCOPE)
+    finally:
+        runtime.close()
+
+    assert report["current_stage"] != "data_accumulating"
+    assert report["readiness_score"] < 0.9
+    assert any(gap["capability"] == "memory.recall" for gap in report["capability_gaps"])
+    assert readiness_gate_status(report) == ""
 
 
 def test_l5_readiness_uses_latest_execution_batch_instead_of_legacy_case_ids(tmp_path) -> None:
@@ -867,12 +1004,17 @@ def test_l5_readiness_rejects_legacy_ledger_outcomes_without_verified_contracts(
 def test_l5_readiness_reparses_contract_chain_and_rejects_forged_probe_digest(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     try:
+        _seed_current_release(runtime, scope=SCOPE)
         acceptance = runtime.run_capability_acceptance(scope=SCOPE, persist=True)
         runtime.build_capability_replay_packs(
             scope=SCOPE,
             capabilities=sorted(WEAK_CAPABILITIES),
             persist=True,
             loop_id="forged_probe_readiness",
+            acceptance_execution_id=acceptance["execution_id"],
+            acceptance_probe_ids_by_case={
+                item["case_id"]: item["probe_record_id"] for item in acceptance["results"]
+            },
         )
         probe = runtime.store.get_by_id(acceptance["results"][0]["probe_id"], scope=SCOPE)
         assert probe is not None
@@ -887,6 +1029,93 @@ def test_l5_readiness_reparses_contract_chain_and_rejects_forged_probe_digest(tm
     assert report["verified_replay"]["fail_count"] == 1
     assert report["verified_replay"]["rejection_reasons"] == {"probe_artifact_digest_mismatch": 1}
     assert "search.discovery" in report["verified_replay"]["weak_capabilities_missing"]
+
+
+def test_l5_readiness_rejects_replay_manifests_from_user_alias_scope(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    shared_scope = {**SCOPE, "user_id": ""}
+    try:
+        _seed_current_release(runtime, scope=shared_scope)
+        acceptance = runtime.run_capability_acceptance(
+            scope=shared_scope,
+            persist=True,
+            case_ids=list(CORE_CAPABILITY_ACCEPTANCE_CASE_IDS),
+        )
+        runtime.build_capability_replay_packs(
+            scope=shared_scope,
+            capabilities=sorted(READINESS_CAPABILITIES - WEAK_CAPABILITIES),
+            persist=True,
+            loop_id="shared_scope_core_replay",
+            acceptance_execution_id=acceptance["execution_id"],
+            acceptance_probe_ids_by_case={
+                item["case_id"]: item["probe_record_id"] for item in acceptance["results"]
+            },
+        )
+
+        report = runtime.build_l5_readiness_report(scope=SCOPE)
+        requested_release = current_release_identity(runtime, ScopeRef.from_dict(SCOPE))
+    finally:
+        runtime.close()
+
+    assert requested_release is None
+    assert report["verified_core_replay"]["executed_count"] == 0
+    assert report["verified_core_replay"]["core_capabilities_missing"] == sorted(
+        READINESS_CAPABILITIES - WEAK_CAPABILITIES
+    )
+    assert set(report["verified_core_replay"]["manifest_rejection_reasons"].values()) == {"manifest_missing"}
+
+
+def test_l5_readiness_rejects_replay_bound_to_superseded_release_receipt(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope_ref = ScopeRef.from_dict(SCOPE)
+    try:
+        original_release = _seed_current_release(runtime, scope=SCOPE)
+        acceptance = runtime.run_capability_acceptance(
+            scope=SCOPE,
+            persist=True,
+            case_ids=list(CORE_CAPABILITY_ACCEPTANCE_CASE_IDS),
+        )
+        runtime.build_capability_replay_packs(
+            scope=SCOPE,
+            capabilities=sorted(READINESS_CAPABILITIES - WEAK_CAPABILITIES),
+            persist=True,
+            loop_id="old_release_core_replay",
+            acceptance_execution_id=acceptance["execution_id"],
+            acceptance_probe_ids_by_case={
+                item["case_id"]: item["probe_record_id"] for item in acceptance["results"]
+            },
+        )
+        original_receipt = runtime.store.get_by_id(original_release.receipt_id, scope=SCOPE)
+        assert original_receipt is not None
+        replacement = RecordEnvelope.create(
+            kind="promotion_request",
+            title="Replacement deployment receipt",
+            summary="verified",
+            scope=scope_ref,
+            source="eimemory.deployment_receipt",
+            status="deployed",
+            content=dict(original_receipt.content),
+            meta=dict(original_receipt.meta),
+        )
+        replacement_time = (
+            datetime.fromisoformat(original_receipt.time.updated_at) + timedelta(seconds=1)
+        ).isoformat(timespec="microseconds")
+        replacement.time.created_at = replacement_time
+        replacement.time.updated_at = replacement_time
+        replacement.time.occurred_at = replacement_time
+        replacement_receipt = runtime.store.append(replacement)
+        current_release = current_release_identity(runtime, scope_ref)
+        assert current_release is not None
+        assert current_release.receipt_id == replacement_receipt.record_id
+
+        report = runtime.build_l5_readiness_report(scope=SCOPE)
+    finally:
+        runtime.close()
+
+    assert report["verified_core_replay"]["executed_count"] == 0
+    assert set(report["verified_core_replay"]["manifest_rejection_reasons"].values()) == {
+        "manifest_release_identity_mismatch"
+    }
 
 
 def test_cli_l5_readiness_returns_json(tmp_path, monkeypatch, capsys) -> None:
@@ -926,11 +1155,14 @@ def _seed_l5_prerequisites(
     verified_patch_evidence: bool = False,
     assessment_present: bool = True,
     verified_live_tasks: bool = True,
+    missing_core_capability: str = "",
 ) -> None:
     scope_ref = ScopeRef.from_dict(scope)
     release = _seed_current_release(runtime, scope=scope)
     release_payload = release_identity_payload(release)
     for capability in READINESS_CAPABILITIES - WEAK_CAPABILITIES:
+        if capability == missing_core_capability:
+            continue
         record_capability_score(
             runtime,
             scope=scope,
@@ -939,6 +1171,29 @@ def _seed_l5_prerequisites(
             score=0.84,
             evidence_record_ids=[f"{capability}-e1", f"{capability}-e2", f"{capability}-e3"],
         )
+    core_capabilities = sorted((READINESS_CAPABILITIES - WEAK_CAPABILITIES) - {missing_core_capability})
+    core_case_ids = [
+        case_id
+        for case_id in CORE_CAPABILITY_ACCEPTANCE_CASE_IDS
+        if capability_acceptance_case(case_id).get("capability") in core_capabilities
+    ]
+    core_acceptance = runtime.run_capability_acceptance(
+        scope=scope,
+        persist=True,
+        case_ids=core_case_ids,
+    )
+    runtime.build_capability_replay_packs(
+        scope=scope,
+        capabilities=core_capabilities,
+        persist=True,
+        loop_id="seed_core_replay",
+        acceptance_execution_id=str(core_acceptance.get("execution_id") or ""),
+        acceptance_probe_ids_by_case={
+            str(item.get("case_id") or ""): str(item.get("probe_record_id") or "")
+            for item in core_acceptance.get("results") or []
+            if isinstance(item, dict)
+        },
+    )
     if execute_weak_replays:
         runtime.run_capability_acceptance(scope=scope, persist=True)
     runtime.build_capability_replay_packs(scope=scope, capabilities=sorted(WEAK_CAPABILITIES), persist=True, loop_id="seed_weak_replay")

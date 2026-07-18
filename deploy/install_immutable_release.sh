@@ -22,8 +22,25 @@ OPENCLAW_LOOP_COMPAT_SCRIPT="${OPENCLAW_LOOP_COMPAT_SCRIPT-$SERVICE_HOME/.opencl
 OPENCLAW_BIN="${OPENCLAW_BIN:-$SERVICE_HOME/n/bin/openclaw}"
 EIMEMORY_POST_SWITCH_GATES="${EIMEMORY_POST_SWITCH_GATES:-1}"
 EIMEMORY_HEALTH_URL="${EIMEMORY_HEALTH_URL:-http://127.0.0.1:8091/health}"
-EIMEMORY_DEPLOY_SCOPE_AGENT="${EIMEMORY_DEPLOY_SCOPE_AGENT:-main}"
-EIMEMORY_DEPLOY_SCOPE_WORKSPACE="${EIMEMORY_DEPLOY_SCOPE_WORKSPACE:-release-deploy}"
+EIMEMORY_DEPLOY_SCOPE_AGENT="${EIMEMORY_DEPLOY_SCOPE_AGENT:-hongtu}"
+EIMEMORY_DEPLOY_SCOPE_WORKSPACE="${EIMEMORY_DEPLOY_SCOPE_WORKSPACE:-embodied}"
+EIMEMORY_DEPLOY_SCOPE_USER="${EIMEMORY_DEPLOY_SCOPE_USER:-darrow}"
+
+_require_nonblank_deploy_scope() {
+  case "$1" in
+    *[![:space:]]*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+if [ "$EIMEMORY_POST_SWITCH_GATES" = "1" ]; then
+  if ! _require_nonblank_deploy_scope "$EIMEMORY_DEPLOY_SCOPE_AGENT" || \
+     ! _require_nonblank_deploy_scope "$EIMEMORY_DEPLOY_SCOPE_WORKSPACE" || \
+     ! _require_nonblank_deploy_scope "$EIMEMORY_DEPLOY_SCOPE_USER"; then
+    echo "Deployment scope triple must be non-blank (agent/workspace/user)." >&2
+    exit 2
+  fi
+fi
 EIMEMORY_DEPLOY_FAIL_STAGE="${EIMEMORY_DEPLOY_FAIL_STAGE:-}"
 COMMIT="${1:-$(git -C "$REPO_DIR" rev-parse HEAD)}"
 RELEASE_DIR="$INSTALL_ROOT/releases/$COMMIT"
@@ -270,7 +287,8 @@ _record_deployment_receipt() {
       --repo-root "$REPO_DIR" --current-link "$CURRENT_LINK" \
       --health-url "$EIMEMORY_HEALTH_URL" --prior-commit "$PREVIOUS_COMMIT" \
       --scope-agent "$EIMEMORY_DEPLOY_SCOPE_AGENT" \
-      --scope-workspace "$EIMEMORY_DEPLOY_SCOPE_WORKSPACE" --json
+      --scope-workspace "$EIMEMORY_DEPLOY_SCOPE_WORKSPACE" \
+      --scope-user "$EIMEMORY_DEPLOY_SCOPE_USER" --json
 }
 
 _run_post_switch_closure() {
@@ -287,7 +305,8 @@ _run_post_switch_closure() {
         --repo-root "$REPO_DIR" --current-link "$CURRENT_LINK" \
         --health-url "$EIMEMORY_HEALTH_URL" --prior-commit "$PREVIOUS_COMMIT" \
         --scope-agent "$EIMEMORY_DEPLOY_SCOPE_AGENT" \
-        --scope-workspace "$EIMEMORY_DEPLOY_SCOPE_WORKSPACE" --json \
+        --scope-workspace "$EIMEMORY_DEPLOY_SCOPE_WORKSPACE" \
+        --scope-user "$EIMEMORY_DEPLOY_SCOPE_USER" --json \
         >"$closure_output"; then
     closure_status=0
   else

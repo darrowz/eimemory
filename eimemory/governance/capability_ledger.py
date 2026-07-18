@@ -5,6 +5,7 @@ from statistics import mean
 from typing import Any
 
 from eimemory.governance.harness_patch import HarnessSurface
+from eimemory.governance.evidence_contract import same_scope
 from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
@@ -146,7 +147,8 @@ def build_capability_ledger(
     records = [
         record
         for record in records
-        if not _is_legacy_unexecuted_replay_score(runtime, record=record, scope=scope_ref)
+        if same_scope(record.scope, scope_ref)
+        and not _is_legacy_unexecuted_replay_score(runtime, record=record, scope=scope_ref)
         and not _is_candidate_gate_failure_score(record)
     ]
     by_capability: dict[str, list[RecordEnvelope]] = {}

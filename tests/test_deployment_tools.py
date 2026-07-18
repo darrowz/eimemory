@@ -1489,8 +1489,44 @@ def test_immutable_release_installer_commits_only_after_post_switch_gates() -> N
     assert 'deploy/run_with_governance_env.py' in script
     assert 'deploy/summarize_release_closure.py' in script
     assert '--env-file "$GOVERNANCE_ENV_FILE" --optional --' in script
+    assert 'EIMEMORY_DEPLOY_SCOPE_AGENT="${EIMEMORY_DEPLOY_SCOPE_AGENT:-hongtu}"' in script
+    assert 'EIMEMORY_DEPLOY_SCOPE_WORKSPACE="${EIMEMORY_DEPLOY_SCOPE_WORKSPACE:-embodied}"' in script
+    assert 'EIMEMORY_DEPLOY_SCOPE_USER="${EIMEMORY_DEPLOY_SCOPE_USER:-darrow}"' in script
+    assert 'EIMEMORY_DEPLOY_SCOPE_USER="${EIMEMORY_DEPLOY_SCOPE_USER:-$SERVICE_USER}"' not in script
+    assert "_require_nonblank_deploy_scope" in script
+    assert script.count('--scope-user "$EIMEMORY_DEPLOY_SCOPE_USER"') == 2
     assert "rollback_current_release=failed" in script
     assert "rollback_preserved_failed_release=" in script
+
+
+@pytest.mark.parametrize(
+    "scope_name",
+    ["EIMEMORY_DEPLOY_SCOPE_AGENT", "EIMEMORY_DEPLOY_SCOPE_WORKSPACE", "EIMEMORY_DEPLOY_SCOPE_USER"],
+)
+def test_immutable_release_installer_rejects_whitespace_only_governance_scope(scope_name) -> None:
+    env = dict(os.environ)
+    env.update(
+        {
+            "EIMEMORY_POST_SWITCH_GATES": "1",
+            "EIMEMORY_DEPLOY_SCOPE_AGENT": "hongtu",
+            "EIMEMORY_DEPLOY_SCOPE_WORKSPACE": "embodied",
+            "EIMEMORY_DEPLOY_SCOPE_USER": "darrow",
+            scope_name: " \t ",
+        }
+    )
+    result = subprocess.run(
+        [_bash_binary(), "deploy/install_immutable_release.sh", "f" * 40],
+        cwd=Path.cwd(),
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "Deployment scope triple must be non-blank" in result.stderr
 
 
 def test_immutable_release_installer_rejects_dangling_current_link_with_clear_error(tmp_path) -> None:

@@ -19,7 +19,7 @@ from eimemory.governance.capability_replay_executor import execute_capability_re
 from eimemory.governance.capability_probe_executor import execute_probe
 from eimemory.governance.capability_ledger import record_capability_score
 from eimemory.governance.autonomous_learning import _evidence_bound_capabilities
-from eimemory.governance.evidence_contract import ReleaseIdentity
+from eimemory.governance.evidence_contract import ReleaseIdentity, current_release_identity
 from eimemory.governance import capability_replay_packs as replay_packs_module
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
@@ -544,7 +544,7 @@ def test_runtime_executor_replays_twelve_contract_backed_acceptance_traces(tmp_p
     assert all(record is not None and record.content["result"]["observation"] for record in persisted)
 
 
-def test_autonomous_selection_replays_only_fully_bound_acceptance_capabilities(tmp_path) -> None:
+def test_autonomous_selection_replays_all_fully_bound_acceptance_capabilities(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     try:
         acceptance = run_capability_acceptance(runtime, scope=SCOPE, persist=True)
@@ -561,10 +561,9 @@ def test_autonomous_selection_replays_only_fully_bound_acceptance_capabilities(t
     finally:
         runtime.close()
 
-    assert set(eligible) == WEAK_CAPABILITIES
-    assert not CORE_CAPABILITIES.intersection(eligible)
-    assert report["pack_count"] == len(WEAK_CAPABILITIES)
-    assert len(report["score_record_ids"]) == len(WEAK_CAPABILITIES)
+    assert set(eligible) == WEAK_CAPABILITIES | CORE_CAPABILITIES
+    assert report["pack_count"] == len(WEAK_CAPABILITIES | CORE_CAPABILITIES)
+    assert len(report["score_record_ids"]) == len(WEAK_CAPABILITIES | CORE_CAPABILITIES)
     assert all(pack["executed_case_count"] == len(pack["cases"]) for pack in report["packs"])
     assert all(pack["not_run_case_count"] == 0 for pack in report["packs"])
 
@@ -990,12 +989,16 @@ def _seed_contract_trace(
 def test_replay_rerun_persists_new_execution_and_readiness_uses_latest(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     try:
-        run_capability_acceptance(runtime, scope=SCOPE, persist=True)
+        _seed_current_release(runtime, scope=SCOPE)
+        acceptance = run_capability_acceptance(runtime, scope=SCOPE, persist=True)
+        acceptance_probe_ids = {item["case_id"]: item["probe_id"] for item in acceptance["results"]}
         first = runtime.build_capability_replay_packs(
             scope=SCOPE,
             persist=True,
             capabilities=["search.discovery"],
             loop_id="stable-replay-loop",
+            acceptance_execution_id=acceptance["execution_id"],
+            acceptance_probe_ids_by_case=acceptance_probe_ids,
         )
         runtime.run_capability_replay_case = lambda case: {  # type: ignore[attr-defined]
             "verdict": "fail",
@@ -1008,6 +1011,8 @@ def test_replay_rerun_persists_new_execution_and_readiness_uses_latest(tmp_path)
             persist=True,
             capabilities=["search.discovery"],
             loop_id="stable-replay-loop",
+            acceptance_execution_id=acceptance["execution_id"],
+            acceptance_probe_ids_by_case=acceptance_probe_ids,
         )
         readiness = runtime.build_l5_readiness_report(scope=SCOPE)
     finally:
@@ -1018,3 +1023,56 @@ def test_replay_rerun_persists_new_execution_and_readiness_uses_latest(tmp_path)
     assert readiness["verified_replay"]["executed_count"] == 3
     assert readiness["verified_replay"]["pass_count"] == 0
     assert readiness["verified_replay"]["fail_count"] == 3
+
+
+def _seed_current_release(runtime: Runtime, *, scope: dict) -> ReleaseIdentity:
+    scope_ref = ScopeRef.from_dict(scope)
+    commit = "f" * 40
+    runtime._test_runtime_commit = commit
+    release_path = f"/opt/eimemory/releases/{commit}"
+    receipt = runtime.store.append(
+        RecordEnvelope.create(
+            kind="promotion_request",
+            title="Current deployment receipt",
+            summary="verified",
+            scope=scope_ref,
+            source="eimemory.deployment_receipt",
+            status="deployed",
+            content={
+                "report_type": "deployment_receipt",
+                "promotion_target": "code_patch",
+                "action": "code_patch",
+                "gate": {"ok": True, "receipt_verified": True},
+                "side_effect": {
+                    "ok": True,
+                    "production_applied": True,
+                    "deployment_executed": True,
+                    "verification": {"ok": True, "skipped": False},
+                    "deployment": {"ok": True, "skipped": False, "release_path": release_path},
+                    "post_deploy_health": {
+                        "ok": True,
+                        "skipped": False,
+                        "commit": commit,
+                        "version": "1.9.70",
+                        "release_path": release_path,
+                    },
+                    "commit": {"commit_sha": commit},
+                    "release": {"version": "1.9.70", "release_path": release_path},
+                    "rollback_evidence": {
+                        "prior_commit_sha": "e" * 40,
+                        "rollback_command": "verified rollback",
+                    },
+                },
+            },
+            meta={
+                "report_type": "deployment_receipt",
+                "commit_sha": commit,
+                "version": "1.9.70",
+                "release_path": release_path,
+                "gate_ok": True,
+            },
+        )
+    )
+    release = current_release_identity(runtime, scope_ref)
+    assert release is not None and release.receipt_id == receipt.record_id
+    return release

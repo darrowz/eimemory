@@ -26,6 +26,7 @@ from eimemory.identity import canonical_hongtu_user_id, hongtu_scope
 from eimemory.identity_ops import identity_report, repair_hongtu_identity
 from eimemory.knowledge.compiler import compile_paper_knowledge
 from eimemory.governance.console import write_evolution_console
+from eimemory.governance.capability_acceptance import ALL_CAPABILITY_ACCEPTANCE_CASE_IDS
 from eimemory.governance.snapshot import build_governance_snapshot
 from eimemory.ei_bridge.openclaw_runtime import handle_openclaw_feishu_event
 from eimemory.persona.cli import add_persona_parser, handle_persona_command
@@ -921,21 +922,22 @@ def _living_posture_report(runtime, scope: dict, *, query: str, limit: int) -> d
 
 
 def _capability_acceptance_succeeded(report: dict[str, Any]) -> bool:
+    expected_count = len(ALL_CAPABILITY_ACCEPTANCE_CASE_IDS)
     results = report.get("results")
-    if not isinstance(results, list) or len(results) != 12:
+    if not isinstance(results, list) or len(results) != expected_count:
         return False
     probe_ids = [str(item.get("source_record_id") or item.get("probe_id") or "") for item in results if isinstance(item, dict)]
     trace_ids = [str(item.get("trace_id") or "") for item in results if isinstance(item, dict)]
     return (
         report.get("ok") is True
         and report.get("all_passed") is True
-        and report.get("case_count") == 12
-        and report.get("pass_count") == 12
+        and report.get("case_count") == expected_count
+        and report.get("pass_count") == expected_count
         and report.get("distinct_probe_sources") is True
         and report.get("distinct_trace_ids") is True
         and all(isinstance(item, dict) and item.get("passed") is True for item in results)
-        and len(probe_ids) == len(set(probe_ids)) == 12
-        and len(trace_ids) == len(set(trace_ids)) == 12
+        and len(probe_ids) == len(set(probe_ids)) == expected_count
+        and len(trace_ids) == len(set(trace_ids)) == expected_count
         and all(probe_ids)
         and all(trace_ids)
     )

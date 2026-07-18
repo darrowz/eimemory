@@ -4,6 +4,12 @@ from dataclasses import asdict
 from hashlib import sha256
 from typing import Any
 
+from eimemory.governance.capability_acceptance import (
+    CORE_CAPABILITY_ACCEPTANCE_CASE_IDS,
+    WEAK_CAPABILITY_ACCEPTANCE_CASE_IDS,
+)
+from eimemory.governance.capability_replay_packs import CORE_REPLAY_CAPABILITIES
+from eimemory.governance.change_policy import decide_change_policy
 from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.governance.l5_readiness import readiness_gate_status
 from eimemory.models.records import ScopeRef
@@ -38,7 +44,7 @@ def run_l5_closure_rehearsal(
     acceptance = bootstrap.get("capability_acceptance") if isinstance(bootstrap.get("capability_acceptance"), dict) else {}
     report["capability_acceptance"] = acceptance
     report["sequence"].append("acceptance")
-    if not _acceptance_gate(acceptance):
+    if not _acceptance_gate(acceptance, expected_count=len(WEAK_CAPABILITY_ACCEPTANCE_CASE_IDS)):
         return _blocked_closure(report, *(bootstrap.get("blocked_reasons") or ["capability_acceptance_failed"]))
 
     weak_capability_replay = (
@@ -54,6 +60,51 @@ def run_l5_closure_rehearsal(
         return _blocked_closure(
             report,
             *(bootstrap.get("blocked_reasons") or replay_gate.get("blocked_reasons") or ["weak_capability_replay_invalid"]),
+        )
+
+    core_acceptance = runtime.run_capability_acceptance(
+        scope=asdict(scope_ref),
+        persist=persist,
+        case_ids=list(CORE_CAPABILITY_ACCEPTANCE_CASE_IDS),
+    )
+    report["core_capability_acceptance"] = core_acceptance
+    report["sequence"].append("core_acceptance")
+    if not _acceptance_gate(core_acceptance, expected_count=len(CORE_CAPABILITY_ACCEPTANCE_CASE_IDS)):
+        return _blocked_closure(report, "core_capability_acceptance_failed")
+
+    core_execution_id = str(core_acceptance.get("execution_id") or "").strip()
+    core_probe_ids_by_case = {
+        str(result.get("case_id") or "").strip(): str(result.get("probe_record_id") or "").strip()
+        for result in core_acceptance.get("results") or []
+        if isinstance(result, dict)
+    }
+    if (
+        not core_execution_id
+        or set(core_probe_ids_by_case) != set(CORE_CAPABILITY_ACCEPTANCE_CASE_IDS)
+        or any(not value for value in core_probe_ids_by_case.values())
+    ):
+        return _blocked_closure(report, "core_acceptance_anchor_missing")
+
+    core_capability_replay = runtime.build_capability_replay_packs(
+        scope=asdict(scope_ref),
+        capabilities=list(CORE_REPLAY_CAPABILITIES),
+        persist=persist,
+        loop_id=f"{LOOP_ID}_core",
+        acceptance_execution_id=core_execution_id,
+        acceptance_probe_ids_by_case=core_probe_ids_by_case,
+    )
+    core_replay_gate = _capability_replay_gate(
+        core_capability_replay,
+        expected_capabilities=CORE_REPLAY_CAPABILITIES,
+        reason_prefix="core_capability_replay",
+    )
+    report["core_capability_replay"] = core_capability_replay
+    report["core_replay_gate"] = core_replay_gate
+    report["sequence"].append("core_replay")
+    if core_replay_gate.get("ok") is not True:
+        return _blocked_closure(
+            report,
+            *(core_replay_gate.get("blocked_reasons") or ["core_capability_replay_invalid"]),
         )
 
     correction_replay = runtime.record_user_correction_replay(
@@ -146,6 +197,10 @@ def run_l5_closure_rehearsal(
     report["ok"] = True
     report["closure_complete"] = readiness_status == "L5"
     report["data_accumulating"] = readiness_status == "data_accumulating"
+    report["change_policy"] = decide_change_policy(
+        event="code_change",
+        closure_complete=bool(report["closure_complete"]),
+    )
     report["blocked_reasons"] = []
     return report
 
@@ -158,7 +213,11 @@ def run_weak_capability_replay_gate(
     loop_id: str = LOOP_ID,
 ) -> dict[str, Any]:
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
-    acceptance = runtime.run_capability_acceptance(scope=asdict(scope_ref), persist=persist)
+    acceptance = runtime.run_capability_acceptance(
+        scope=asdict(scope_ref),
+        persist=persist,
+        case_ids=list(WEAK_CAPABILITY_ACCEPTANCE_CASE_IDS),
+    )
     report = {
         "ok": False,
         "report_type": "weak_capability_replay_gate",
@@ -168,7 +227,7 @@ def run_weak_capability_replay_gate(
         "replay_gate": {"ok": False, "blocked_reasons": []},
         "blocked_reasons": [],
     }
-    if not _acceptance_gate(acceptance):
+    if not _acceptance_gate(acceptance, expected_count=len(WEAK_CAPABILITY_ACCEPTANCE_CASE_IDS)):
         report["blocked_reasons"] = ["capability_acceptance_failed"]
         return report
 
@@ -209,6 +268,10 @@ def _initial_closure_report(scope: ScopeRef) -> dict[str, Any]:
         "playbook_record_ids": [],
         "weak_capability_replay": dict(not_run),
         "replay_gate": {**not_run, "blocked_reasons": []},
+        "core_capability_acceptance": dict(not_run),
+        "core_capability_replay": dict(not_run),
+        "core_replay_gate": {**not_run, "blocked_reasons": []},
+        "change_policy": decide_change_policy(event="code_change", closure_complete=False),
         "skill_promotion": {**not_run, "skills": []},
         "skill_call": dict(not_run),
         "rollback": dict(not_run),
@@ -225,12 +288,12 @@ def _blocked_closure(report: dict[str, Any], *reasons: str) -> dict[str, Any]:
     return report
 
 
-def _acceptance_gate(report: dict[str, Any]) -> bool:
+def _acceptance_gate(report: dict[str, Any], *, expected_count: int) -> bool:
     return bool(
         report.get("ok") is True
         and report.get("all_passed") is True
-        and int(report.get("case_count") or 0) == 12
-        and int(report.get("pass_count") or 0) == 12
+        and int(report.get("case_count") or 0) == expected_count
+        and int(report.get("pass_count") or 0) == expected_count
         and report.get("distinct_probe_sources") is True
         and report.get("distinct_trace_ids") is True
     )
@@ -279,15 +342,28 @@ def _observation_autonomous_report(
 
 
 def _weak_replay_gate(report: dict[str, Any]) -> dict[str, Any]:
+    return _capability_replay_gate(
+        report,
+        expected_capabilities=WEAK_REPLAY_CAPABILITIES,
+        reason_prefix="weak_capability_replay",
+    )
+
+
+def _capability_replay_gate(
+    report: dict[str, Any],
+    *,
+    expected_capabilities: list[str],
+    reason_prefix: str,
+) -> dict[str, Any]:
     packs = [pack for pack in report.get("packs") or [] if isinstance(pack, dict)]
     blocked_reasons: list[str] = []
     capabilities = [str(pack.get("capability") or "") for pack in packs]
     if (
         report.get("ok") is not True
-        or len(packs) != len(WEAK_REPLAY_CAPABILITIES)
-        or sorted(capabilities) != sorted(WEAK_REPLAY_CAPABILITIES)
+        or len(packs) != len(expected_capabilities)
+        or sorted(capabilities) != sorted(expected_capabilities)
     ):
-        blocked_reasons.append("weak_capability_replay_invalid")
+        blocked_reasons.append(f"{reason_prefix}_invalid")
     not_executed: list[str] = []
     failed: list[str] = []
     duplicate_evidence: list[str] = []
@@ -306,11 +382,11 @@ def _weak_replay_gate(report: dict[str, Any]) -> dict[str, Any]:
         if len(source_ids) != case_count:
             duplicate_evidence.append(capability)
     if not_executed:
-        blocked_reasons.append("weak_capability_replay_not_executed")
+        blocked_reasons.append(f"{reason_prefix}_not_executed")
     if failed:
-        blocked_reasons.append("weak_capability_replay_failed")
+        blocked_reasons.append(f"{reason_prefix}_failed")
     if duplicate_evidence:
-        blocked_reasons.append("weak_capability_replay_evidence_not_distinct")
+        blocked_reasons.append(f"{reason_prefix}_evidence_not_distinct")
     return {
         "ok": not blocked_reasons,
         "blocked_reasons": blocked_reasons,

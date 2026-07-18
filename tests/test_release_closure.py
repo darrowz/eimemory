@@ -413,6 +413,7 @@ def _successful_rehearsal() -> dict:
 def _successful_readiness() -> dict:
     return {
         "ok": True,
+        "capability_gaps": [],
         "current_stage": "L5",
         "readiness_score": 1.0,
         "latest_l5_assessment": {
@@ -432,6 +433,11 @@ def _successful_readiness() -> dict:
             "executed_count": 12,
             "pass_count": 12,
             "fail_count": 0,
+        },
+        "verified_core_replay": {
+            "executed_count": 15,
+            "core_capabilities_missing": [],
+            "manifest_rejection_reasons": {},
         },
         "persisted_record_id": "readiness-1",
     }

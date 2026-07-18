@@ -19,6 +19,7 @@ from eimemory.governance.capability_acceptance import (
 )
 from eimemory.governance.capability_probe_executor import validate_execution_evidence
 from eimemory.governance.capability_attribution import collect_capability_evidence
+from eimemory.governance.evidence_contract import same_scope
 from eimemory.metadata import business_metadata
 from eimemory.models.records import ScopeRef
 
@@ -74,9 +75,13 @@ def execute_capability_replay_case(runtime: Any, case: dict[str, Any]) -> dict[s
     for evidence in candidates:
         key, error = _trace_recency_key(runtime, scope=scope, evidence=evidence)
         if error:
+            if error == "candidate_scope_mismatch":
+                continue
             verdict = "not_run" if error in {"outcome_trace_not_retrievable", "probe_source_unavailable_in_scope"} else "fail"
             return _failure(verdict, error)
         ranked.append((key, evidence))
+    if not ranked:
+        return _failure("not_run", "candidate_scope_mismatch")
     ranked.sort(key=lambda item: item[0], reverse=True)
     return _validate_contract_chain(
         runtime,
@@ -102,6 +107,8 @@ def _trace_recency_key(
         return (0.0, 0.0, source_id), "outcome_trace_not_retrievable"
     if probe is None:
         return (0.0, 0.0, source_id), "probe_source_unavailable_in_scope"
+    if not same_scope(trace.scope, scope) or not same_scope(probe.scope, scope):
+        return (0.0, 0.0, source_id), "candidate_scope_mismatch"
     timestamps: list[float] = []
     normalized_times: list[datetime] = []
     now = datetime.now(timezone.utc)
@@ -183,6 +190,8 @@ def _validate_contract_chain(
     trace_record = runtime.store.get_by_id(trace_record_id, scope=scope)
     if trace_record is None:
         return _failure("not_run", "outcome_trace_not_retrievable", trace_record_id=trace_record_id)
+    if not same_scope(trace_record.scope, scope):
+        return _failure("not_run", "candidate_scope_mismatch", trace_record_id=trace_record_id)
     if trace_record.status != "active":
         return _failure("fail", "outcome_trace_status_invalid", trace_record_id=trace_record_id)
     if trace_record.kind != "reflection" or trace_record.source != "eimemory.experience.outcome_trace":
@@ -341,6 +350,14 @@ def _validate_contract_chain(
         return _failure(
             "fail",
             "probe_execution_id_mismatch",
+            trace_id=trace_id,
+            trace_record_id=trace_record_id,
+            probe_source_id=probe_source_id,
+        )
+    if not same_scope(probe_record.scope, scope):
+        return _failure(
+            "not_run",
+            "candidate_scope_mismatch",
             trace_id=trace_id,
             trace_record_id=trace_record_id,
             probe_source_id=probe_source_id,

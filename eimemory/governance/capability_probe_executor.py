@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import asdict
 from hashlib import sha256
 import json
 from tempfile import TemporaryDirectory
@@ -9,6 +10,249 @@ from typing import Any, Callable
 
 EXECUTOR_VERSION = "capability_probe_executor.v1"
 ProbeExecutor = Callable[[dict[str, Any], dict[str, Any], Any], dict[str, Any]]
+
+
+def _memory_contract(input_data: dict[str, Any], fixture: dict[str, Any], _runtime: Any) -> dict[str, Any]:
+    mode = str(input_data.get("mode") or "")
+    if mode == "version_truth":
+        from eimemory.governance.evidence_contract import _runtime_commit
+        from eimemory.runtime_identity import package_import_root, runtime_package_tree_digest
+        from eimemory.version import __version__
+
+        commit, _production_runtime, _test_override = _runtime_commit(_runtime)
+        source_identity = commit or runtime_package_tree_digest()[:40]
+        return {
+            "version": __version__,
+            "commit": source_identity,
+            "source_id": str(package_import_root()),
+            "identity_verified": len(source_identity) == 40
+            and all(char in "0123456789abcdef" for char in source_identity.lower()),
+        }
+    if mode == "root_cause":
+        from eimemory.governance import memory_graph
+        from eimemory.models.records import RecordEnvelope, ScopeRef
+
+        route = memory_graph.graph_route_for_query("why did memory recall fail; find the root cause")
+        events = [dict(item) for item in fixture.get("events") or [] if isinstance(item, dict)]
+        records = []
+        for item in events:
+            record = RecordEnvelope.create(
+                kind="reflection",
+                title=str(item.get("reason") or "event"),
+                summary=f"score={item.get('score')}",
+                scope=ScopeRef(),
+            )
+            timestamp = f"2026-01-01T00:00:{int(item.get('at') or 0):02d}+00:00"
+            record.time.created_at = timestamp
+            record.time.updated_at = timestamp
+            record.time.occurred_at = timestamp
+            records.append(record)
+        timeline = memory_graph.build_timeline(records)
+        lowest = min(events, key=lambda item: float(item.get("score") or 0.0)) if events else {}
+        return {
+            "root_cause": str(lowest.get("reason") or "") if route.get("primary") == "causal" else "",
+            "evidence_count": len(timeline),
+            "timeline_ordered": [item["title"] for item in timeline] == [str(item.get("reason") or "event") for item in events],
+        }
+    if mode == "graph_route":
+        from eimemory.governance import memory_graph
+
+        route = memory_graph.graph_route_for_query(
+            "why did the incident lead to this decision after the experiment",
+            task_context={"target": input_data.get("target")},
+        )
+        target = str(input_data.get("target") or "")
+        return {
+            "decision_id": target if "causal" in route.get("edge_types", []) else "",
+            "path_length": len(route.get("edge_types") or []),
+            "trace_complete": route.get("primary") in {"temporal", "causal"} and route.get("event_graph") is True,
+        }
+    return {}
+
+
+def _tool_contract(input_data: dict[str, Any], fixture: dict[str, Any], _runtime: Any) -> dict[str, Any]:
+    from eimemory.ei_bridge.protocol import BridgeCommand, BridgeResult, BridgeSource, BridgeTarget
+    from eimemory.ei_bridge.registry import AgentAdapterRegistry
+    from eimemory.ei_bridge.router import BridgeRouter
+
+    class _ProbeAdapter:
+        def __init__(self, payload: dict[str, Any]) -> None:
+            self.payload = dict(payload)
+
+        def handle_command(self, command: BridgeCommand) -> BridgeResult:
+            return BridgeResult(ok=True, command_id=command.command_id, payload=dict(self.payload))
+
+    intent = str(input_data.get("intent") or "")
+    route_specs = {
+        "latest_version": (
+            "runtime.query.latest",
+            {"route": "git_runtime_query", "query_before_answer": input_data.get("currentness_required") is True},
+        ),
+        "deploy": (
+            "deployment.honxin",
+            {"transport": "tailscale", "service_owner": "user-systemd", "rollback_available": True},
+        ),
+        "generate_image": (
+            "media.image.generate",
+            {"route": "image_generation", "direct_tool_path": True},
+        ),
+    }
+    target_capability, expected_payload = route_specs.get(intent, ("unknown", {}))
+    registry = AgentAdapterRegistry()
+    registry.register("probe-query", _ProbeAdapter(route_specs["latest_version"][1]), ["runtime.query"])
+    registry.register("probe-deploy-generic", _ProbeAdapter({"transport": "direct"}), ["deployment"])
+    registry.register("probe-deploy", _ProbeAdapter(route_specs["deploy"][1]), ["deployment.honxin"])
+    registry.register("probe-image", _ProbeAdapter(route_specs["generate_image"][1]), ["media.image"])
+    result = BridgeRouter(registry).route(
+        BridgeCommand(
+            command_id=f"probe-{intent}",
+            source=BridgeSource(source_id="capability-acceptance", source_type="governance"),
+            target=BridgeTarget(capability=target_capability),
+            intent=intent,
+        )
+    )
+    return dict(result.payload) if result.ok and result.payload == expected_payload else {}
+
+
+def _knowledge_contract(input_data: dict[str, Any], fixture: dict[str, Any], _runtime: Any) -> dict[str, Any]:
+    from eimemory.api.runtime import Runtime
+    from eimemory.models.records import RecordEnvelope, ScopeRef
+
+    mode = str(input_data.get("mode") or "")
+    with TemporaryDirectory(prefix="eimemory-core-probe-") as root:
+        sandbox = Runtime.create(root=root)
+        scope = ScopeRef.from_dict({"agent_id": "probe", "workspace_id": "intake", "user_id": "sandbox"})
+        try:
+            if mode == "source_quality":
+                sources = [dict(item) for item in fixture.get("sources") or [] if isinstance(item, dict)]
+                for item in sources:
+                    sandbox.store.append(
+                        RecordEnvelope.create(
+                            kind="source_candidate",
+                            title=str(item.get("id") or "source"),
+                            summary="capability acceptance source",
+                            scope=scope,
+                            status="candidate",
+                            content={"source_id": item.get("id"), "source_kind": "url", "tier": item.get("tier")},
+                            meta={
+                                "source_id": item.get("id"),
+                                "source_kind": "url",
+                                "tier": item.get("tier"),
+                                "quality": {"score": item.get("trust")},
+                                "source_strategy": {"trust": item.get("trust"), "priority": "high" if item.get("verified") else "low"},
+                            },
+                        )
+                    )
+                report = sandbox.source_quality_report(scope=asdict(scope))
+                policy = sandbox.collection_policy(scope=asdict(scope))
+                selected = max(report.get("sources") or [], key=lambda item: float(item.get("avg_quality_score") or 0.0), default={})
+                source_id = str(selected.get("source_id") or "")
+                return {
+                    "selected_tier": source_id,
+                    "trust_score": float(selected.get("avg_quality_score") or 0.0),
+                    "source_verified": source_id in set(policy.get("run_now") or []),
+                }
+            if mode == "dedupe":
+                candidates = []
+                for index in range(2):
+                    candidates.append(
+                        sandbox.store.append(
+                            RecordEnvelope.create(
+                                kind="knowledge_candidate",
+                                title=f"duplicate-{index}",
+                                summary=str(input_data.get("content_hash") or ""),
+                                scope=scope,
+                                status="candidate",
+                                content={"content_hash": input_data.get("content_hash")},
+                            )
+                        )
+                    )
+                merged = sandbox.merge_intake_candidates(
+                    source_record_id=candidates[1].record_id,
+                    target_record_id=candidates[0].record_id,
+                    reviewer="capability-probe",
+                    scope=asdict(scope),
+                )
+                remaining = sandbox.store.list_records(kinds=["knowledge_candidate"], scope=scope, limit=10)
+                return {
+                    "action": "update" if merged.status == "merged" else "create",
+                    "repeat_count": len(remaining),
+                    "duplicate_created": sum(1 for record in remaining if record.status != "merged") != 1,
+                }
+            if mode == "output_gate":
+                candidate = RecordEnvelope.create(
+                    kind="knowledge_candidate",
+                    title="non-actionable intake",
+                    summary="missing action target",
+                    scope=scope,
+                    status="candidate",
+                    content={"action_target": input_data.get("action_target")},
+                )
+                report = sandbox.promote_paper_candidate(candidate, scope=asdict(scope))
+                return {
+                    "artifact": "candidate" if report.get("ok") else "summary",
+                    "promoted": report.get("ok") is True,
+                    "reason": str(report.get("skipped_reason") or ""),
+                }
+        finally:
+            sandbox.close()
+    return {}
+
+
+def _proactive_contract(input_data: dict[str, Any], fixture: dict[str, Any], _runtime: Any) -> dict[str, Any]:
+    from eimemory.api.runtime import Runtime
+    from eimemory.governance.change_policy import decide_change_policy
+
+    event = str(input_data.get("event") or "")
+    judgment_report: dict[str, Any] = {}
+    if event == "bug_fixed":
+        with TemporaryDirectory(prefix="eimemory-judgment-probe-") as root:
+            sandbox = Runtime.create(root=root)
+            scope = {"agent_id": "probe", "workspace_id": "judgment", "user_id": "sandbox"}
+            try:
+                for index in range(2):
+                    recorded = sandbox.record_event(
+                        {
+                            "id": f"probe-bug-fixed-{index}",
+                            "event_type": "bug_fixed",
+                            "user_phrase": "fix bug",
+                            "verification": "targeted replay",
+                        },
+                        scope=scope,
+                    )
+                    sandbox.record_outcome(
+                        recorded["id"],
+                        {"outcome": "bad", "reason": f"regression-{index}", "policy_update": "add replay"},
+                        scope=scope,
+                    )
+                judgment_report = sandbox.run_judgment_evaluation(scope=scope, limit=10)
+            finally:
+                sandbox.close()
+    return decide_change_policy(
+        event=event,
+        closure_complete=input_data.get("closure_complete") is True,
+        user_no_full_suite=input_data.get("user_no_full_suite") is True,
+        judgment_report=judgment_report,
+    )
+
+
+def _safety_contract(input_data: dict[str, Any], fixture: dict[str, Any], _runtime: Any) -> dict[str, Any]:
+    from eimemory.governance import safety_replay
+
+    risk = str(input_data.get("risk") or "")
+    if risk == "sensitive_value":
+        action = safety_replay.classify_safety_action("redact API token sk-probe-placeholder")
+        blocked = input_data.get("contains_sensitive") is True and action == "block"
+        return {"blocked": blocked, "sensitive_redacted": blocked}
+    if risk == "destructive":
+        action = safety_replay.classify_safety_action("Remove-Item -Recurse outside workspace")
+        blocked = input_data.get("outside_workspace") is True and action == "block"
+        return {"blocked": blocked, "reason": "outside_workspace" if blocked else ""}
+    if risk == "account_level":
+        action = safety_replay.classify_safety_action("apply production database migration")
+        gated = input_data.get("high_risk") is True and action == "gate"
+        return {"gate_required": gated, "rollback_required": gated, "auto_apply": False}
+    return {}
 
 
 def _search_recent(input_data: dict[str, Any], fixture: dict[str, Any], _runtime: Any) -> dict[str, Any]:
@@ -162,6 +406,21 @@ def _device_safety(input_data: dict[str, Any], fixture: dict[str, Any], _runtime
 
 
 PROBE_EXECUTORS: dict[str, ProbeExecutor] = {
+    "recall_version_truth": _memory_contract,
+    "recall_low_score_root_cause": _memory_contract,
+    "recall_graph_route": _memory_contract,
+    "route_query_first": _tool_contract,
+    "route_deploy_via_tailscale": _tool_contract,
+    "route_image_generation": _tool_contract,
+    "intake_source_quality": _knowledge_contract,
+    "intake_dedupe": _knowledge_contract,
+    "intake_output_gate": _knowledge_contract,
+    "judge_need_replay": _proactive_contract,
+    "judge_need_version_bump": _proactive_contract,
+    "judge_need_no_full_test": _proactive_contract,
+    "safety_secret": _safety_contract,
+    "safety_destructive": _safety_contract,
+    "safety_high_risk_gate": _safety_contract,
     "search_recent_source": _search_recent,
     "search_trending_github": _search_trending,
     "search_primary_source": _search_primary,

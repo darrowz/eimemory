@@ -4,6 +4,8 @@ import json
 
 from eimemory.api.runtime import Runtime
 from eimemory.cli.main import main as cli_main
+from eimemory.governance.capability_acceptance import CORE_CAPABILITY_ACCEPTANCE_CASE_IDS
+from eimemory.governance.capability_replay_packs import CORE_REPLAY_CAPABILITIES
 from eimemory.governance.closure_rehearsal import _weak_replay_gate
 from eimemory.governance.evidence_contract import current_release_identity, release_identity_payload
 from eimemory.models.records import RecordEnvelope, ScopeRef
@@ -50,6 +52,8 @@ def test_l5_closure_rehearsal_opens_success_skill_and_rollback_metrics(tmp_path)
         assert report["sequence"] == [
             "acceptance",
             "replay",
+            "core_acceptance",
+            "core_replay",
             "skill_rollback",
             "l5_observation_assessment",
             "dashboard",
@@ -65,6 +69,9 @@ def test_l5_closure_rehearsal_opens_success_skill_and_rollback_metrics(tmp_path)
             "device.control",
         ]
         assert report["weak_capability_replay"]["persisted_replay_count"] == 12
+        assert report["core_capability_acceptance"]["pass_count"] == 15
+        assert report["core_capability_replay"]["persisted_replay_count"] == 15
+        assert report["core_replay_gate"]["ok"] is True
         acceptance_probe_ids = set(report["capability_acceptance"]["probe_record_ids"])
         replay_probe_ids = {
             result["probe_source_id"]
@@ -92,6 +99,7 @@ def test_l5_closure_rehearsal_opens_success_skill_and_rollback_metrics(tmp_path)
         }
         assert weak_gaps == set()
         assert report["l5_readiness"]["current_stage"] == "L5"
+        assert report["l5_readiness"]["verified_core_replay"]["core_capabilities_missing"] == []
     finally:
         runtime.close()
 
@@ -136,6 +144,11 @@ def test_l5_closure_rehearsal_allows_only_verified_real_task_data_to_accumulate(
     assert report["l5_readiness"]["live_task_gate"]["sample_deficit"] > 0
     assert report["l5_readiness"]["verified_replay"]["weak_capabilities_missing"] == []
     assert report["outcome_trace"]["outcome"]["rehearsal"] is True
+    assert report["change_policy"] == {
+        "decision": "finish_closure_first",
+        "closure_required": True,
+        "premature_bump": True,
+    }
 
 
 def test_l5_closure_rehearsal_fails_closed_without_executed_deployment(tmp_path) -> None:
@@ -233,6 +246,78 @@ def test_l5_closure_stops_after_failed_acceptance_without_downstream_success(tmp
     assert assessment_records == []
 
 
+def test_l5_closure_stops_after_failed_core_acceptance(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    real_acceptance = runtime.run_capability_acceptance
+
+    def fail_core_acceptance(**kwargs):
+        report = real_acceptance(**kwargs)
+        if set(kwargs.get("case_ids") or []) == set(CORE_CAPABILITY_ACCEPTANCE_CASE_IDS):
+            return {**report, "ok": False, "all_passed": False}
+        return report
+
+    monkeypatch.setattr(runtime, "run_capability_acceptance", fail_core_acceptance)
+    try:
+        report = runtime.run_l5_closure_rehearsal(scope=SCOPE, persist=True)
+    finally:
+        runtime.close()
+
+    assert report["sequence"] == ["acceptance", "replay", "core_acceptance"]
+    assert report["blocked_reasons"] == ["core_capability_acceptance_failed"]
+    assert report["core_capability_replay"]["status"] == "not_run"
+    assert report["change_policy"] == {
+        "decision": "finish_closure_first",
+        "closure_required": True,
+        "premature_bump": True,
+    }
+
+
+def test_l5_closure_rejects_missing_core_acceptance_anchor(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    real_acceptance = runtime.run_capability_acceptance
+
+    def strip_core_anchor(**kwargs):
+        report = real_acceptance(**kwargs)
+        if set(kwargs.get("case_ids") or []) == set(CORE_CAPABILITY_ACCEPTANCE_CASE_IDS):
+            return {
+                **report,
+                "execution_id": "",
+                "results": [{**item, "probe_record_id": ""} for item in report["results"]],
+            }
+        return report
+
+    monkeypatch.setattr(runtime, "run_capability_acceptance", strip_core_anchor)
+    try:
+        report = runtime.run_l5_closure_rehearsal(scope=SCOPE, persist=True)
+    finally:
+        runtime.close()
+
+    assert report["sequence"] == ["acceptance", "replay", "core_acceptance"]
+    assert report["blocked_reasons"] == ["core_acceptance_anchor_missing"]
+    assert report["core_capability_replay"]["status"] == "not_run"
+
+
+def test_l5_closure_stops_after_failed_core_replay_gate(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    real_replay = runtime.build_capability_replay_packs
+
+    def fail_core_replay(**kwargs):
+        report = real_replay(**kwargs)
+        if set(kwargs.get("capabilities") or []) == set(CORE_REPLAY_CAPABILITIES):
+            report = {**report, "packs": report["packs"][:-1]}
+        return report
+
+    monkeypatch.setattr(runtime, "build_capability_replay_packs", fail_core_replay)
+    try:
+        report = runtime.run_l5_closure_rehearsal(scope=SCOPE, persist=True)
+    finally:
+        runtime.close()
+
+    assert report["sequence"] == ["acceptance", "replay", "core_acceptance", "core_replay"]
+    assert "core_capability_replay_invalid" in report["blocked_reasons"]
+    assert report["skill_call"]["status"] == "not_run"
+
+
 def test_l5_closure_stops_inside_skill_stage_before_skill_and_rollback_success(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path)
     real_gate = runtime.build_ground_truth_pre_answer_gate
@@ -249,7 +334,13 @@ def test_l5_closure_stops_inside_skill_stage_before_skill_and_rollback_success(t
     finally:
         runtime.close()
 
-    assert report["sequence"] == ["acceptance", "replay", "skill_rollback"]
+    assert report["sequence"] == [
+        "acceptance",
+        "replay",
+        "core_acceptance",
+        "core_replay",
+        "skill_rollback",
+    ]
     assert report["blocked_reasons"] == ["ground_truth_rule_not_matched"]
     assert report["skill_call"]["status"] == "not_run"
     assert report["rollback"]["status"] == "not_run"

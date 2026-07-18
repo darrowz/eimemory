@@ -4,6 +4,7 @@ from eimemory.api.runtime import Runtime
 from eimemory.experience import record_outcome_trace
 from eimemory.experience.capability_contract import CASE_CONTRACTS
 from eimemory.governance.capability_acceptance import run_capability_acceptance
+from eimemory.governance.capability_acceptance import CAPABILITY_ACCEPTANCE_CASE_IDS
 from eimemory.governance.capability_attribution import attribute_capability_outcomes, collect_capability_evidence
 from eimemory.governance.capability_ledger import build_capability_ledger
 
@@ -34,7 +35,7 @@ def test_attribute_capability_outcomes_writes_contract_evidence_to_ledger(tmp_pa
     ledger = build_capability_ledger(runtime, scope=scope)
 
     assert report["ok"] is True
-    assert {"operations.uumit", "research.synthesis", "search.discovery", "device.control"} == set(report["capabilities"])
+    assert {capability for capability, _validator in CASE_CONTRACTS.values()} == set(report["capabilities"])
     assert ledger["capabilities"]["operations.uumit"]["evidence_count"] == 3
     assert ledger["capabilities"]["search.discovery"]["evidence_sources"] == ["outcome_trace"]
     assert ledger["capabilities"]["office.daily_task"]["evidence_count"] == 0
@@ -154,8 +155,8 @@ def test_explicit_contracts_attribute_exactly_one_capability_and_case(tmp_path) 
         for item in items
         if item["contract_verified"] is True
     ]
-    assert len(contract_items) == len(CASE_CONTRACTS) == 12
-    assert {item["case_id"] for item in contract_items} == set(CASE_CONTRACTS)
+    assert len(contract_items) == len(CAPABILITY_ACCEPTANCE_CASE_IDS) == 27
+    assert {item["case_id"] for item in contract_items} == set(CAPABILITY_ACCEPTANCE_CASE_IDS)
     for item in contract_items:
         expected_capability = CASE_CONTRACTS[item["case_id"]][0]
         assert item["capabilities"] == [expected_capability]
