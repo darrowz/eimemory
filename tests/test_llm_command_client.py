@@ -72,23 +72,24 @@ def test_invalid_prompt_safety_command_does_not_crash_runtime_but_stays_unavaila
 def test_openclaw_llm_adapter_uses_default_model_chain_when_model_is_blank(monkeypatch) -> None:
     observed = {}
 
-    def run(argv, **kwargs):
+    def run(argv, request, *, timeout_seconds):
         observed["argv"] = argv
-
-        class Completed:
-            returncode = 0
-            stdout = json.dumps(
+        observed["request"] = request
+        observed["timeout_seconds"] = timeout_seconds
+        return (
+            0,
+            json.dumps(
                 {
                     "ok": True,
                     "provider": "openai",
                     "model": "gpt-5.6-sol",
                     "outputs": [{"text": "{\"decision\":\"approve\"}"}],
                 }
-            )
+            ).encode("utf-8"),
+            b"",
+        )
 
-        return Completed()
-
-    monkeypatch.setattr(openclaw_adapter.subprocess, "run", run)
+    monkeypatch.setattr(openclaw_adapter, "run_bounded_command", run, raising=False)
     monkeypatch.delenv("EIMEMORY_LLM_MODEL", raising=False)
 
     result = openclaw_adapter.complete_request(
@@ -99,5 +100,17 @@ def test_openclaw_llm_adapter_uses_default_model_chain_when_model_is_blank(monke
     prompt = observed["argv"][observed["argv"].index("--prompt") + 1]
     assert "JSON_MODE=true" in prompt
     assert "strict JSON" in prompt
+    assert observed["request"] == b""
+    assert observed["timeout_seconds"] == 90
     assert result["provider_id"] == "openai"
     assert result["model_id"] == "openai/gpt-5.6-sol"
+
+
+def test_openclaw_llm_adapter_bounds_invalid_timeout_and_prompt(monkeypatch) -> None:
+    monkeypatch.setenv("EIMEMORY_LLM_TIMEOUT_SECONDS", "invalid")
+    monkeypatch.setattr(openclaw_adapter, "MAX_OPENCLAW_PROMPT_BYTES", 64, raising=False)
+
+    with pytest.raises(ValueError, match="prompt exceeds"):
+        openclaw_adapter.complete_request(
+            {"system_prompt": "policy", "user_prompt": "x" * 128, "json_mode": False}
+        )

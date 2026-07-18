@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 import sys
 from typing import Any
+
+from eimemory.llm.command_client import run_bounded_command
+
+
+MAX_OPENCLAW_PROMPT_BYTES = 128 * 1024
 
 
 def main() -> int:
@@ -28,7 +32,11 @@ def complete_request(payload: dict[str, Any]) -> dict[str, str]:
     binary = str(os.environ.get("EIMEMORY_OPENCLAW_BIN") or "openclaw").strip()
     model = str(os.environ.get("EIMEMORY_LLM_MODEL") or "").strip()
     json_mode = payload.get("json_mode") is True
-    timeout = max(1, min(600, int(os.environ.get("EIMEMORY_LLM_TIMEOUT_SECONDS") or 90)))
+    try:
+        configured_timeout = int(os.environ.get("EIMEMORY_LLM_TIMEOUT_SECONDS") or 90)
+    except ValueError:
+        configured_timeout = 90
+    timeout = max(1, min(600, configured_timeout if configured_timeout > 0 else 90))
     format_policy = (
         "JSON_MODE=true. Return only one strict JSON object or array with no markdown fences.\n\n"
         if json_mode
@@ -40,19 +48,23 @@ def complete_request(payload: dict[str, Any]) -> dict[str, str]:
         f"<SYSTEM_POLICY>\n{system_prompt}\n</SYSTEM_POLICY>\n\n"
         f"<USER_REQUEST>\n{user_prompt}\n</USER_REQUEST>"
     )
+    if len(combined.encode("utf-8")) > MAX_OPENCLAW_PROMPT_BYTES:
+        raise ValueError("OpenClaw LLM prompt exceeds size limit")
     argv = [binary, "infer", "model", "run", "--prompt", combined, "--json"]
     if model:
         argv[4:4] = ["--model", model]
-    completed = subprocess.run(argv, text=True, capture_output=True, timeout=timeout, check=False)
-    if completed.returncode != 0:
-        raise RuntimeError(f"OpenClaw inference failed with exit code {completed.returncode}")
-    response = json.loads(completed.stdout)
+    completed = run_bounded_command(argv, b"", timeout_seconds=timeout)
+    if completed[0] != 0:
+        raise RuntimeError(f"OpenClaw inference failed with exit code {completed[0]}")
+    response = json.loads(completed[1].decode("utf-8"))
+    if not isinstance(response, dict):
+        raise ValueError("OpenClaw inference response must be an object")
     outputs = response.get("outputs") if isinstance(response, dict) and isinstance(response.get("outputs"), list) else []
     text = "\n".join(
         str(item.get("text") or "").strip() for item in outputs if isinstance(item, dict) and str(item.get("text") or "").strip()
     )
-    provider = str(response.get("provider") or "").strip() if isinstance(response, dict) else ""
-    resolved_model = str(response.get("model") or model or "").strip() if isinstance(response, dict) else model
+    provider = str(response.get("provider") or "").strip()
+    resolved_model = str(response.get("model") or model or "").strip()
     if response.get("ok") is not True or not text or not provider or not resolved_model:
         raise ValueError("OpenClaw inference response is incomplete")
     return {"text": text, "provider_id": provider, "model_id": f"{provider}/{resolved_model}"}
