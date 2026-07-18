@@ -12,7 +12,6 @@ from eimemory.governance.capability_replay_executor import validate_capability_r
 from eimemory.governance.evidence_contract import current_release_identity, release_identity_payload
 from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.models.records import RecordEnvelope, ScopeRef
-from eimemory.storage.jsonl import iter_jsonl_payloads
 
 
 CORE_REPLAY_CAPABILITIES = [
@@ -422,37 +421,32 @@ def capability_replay_log_sequence_state(
         str(capability): {"sequence": 0, "manifest_record_ids": set()}
         for capability in capabilities
     }
-    log = getattr(runtime.store, "log", None)
-    path = getattr(log, "path", None)
-    if path is None:
+    lookup = getattr(runtime.store, "replay_manifest_sequence_state", None)
+    if not callable(lookup):
         return state
-    expected_scope = asdict(scope)
     try:
-        for payload in iter_jsonl_payloads(path):
-            if payload.get("scope") != expected_scope:
-                continue
-            if payload.get("kind") != "replay_result" or payload.get("source") != "eimemory.capability_replay":
-                continue
-            meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
-            content = payload.get("content") if isinstance(payload.get("content"), dict) else {}
-            if meta.get("report_type") != MANIFEST_REPORT_TYPE:
-                continue
-            sequences = content.get("sequence_by_capability") if isinstance(content.get("sequence_by_capability"), dict) else {}
-            manifest_record_id = str(payload.get("record_id") or "").strip()
-            for capability in state:
-                try:
-                    sequence = int(sequences.get(capability) or 0)
-                except (TypeError, ValueError):
-                    continue
-                if sequence > int(state[capability]["sequence"]):
-                    state[capability] = {
-                        "sequence": sequence,
-                        "manifest_record_ids": {manifest_record_id} if manifest_record_id else set(),
-                    }
-                elif sequence == int(state[capability]["sequence"]) and sequence > 0 and manifest_record_id:
-                    state[capability]["manifest_record_ids"].add(manifest_record_id)
-    except OSError:
+        resolved = lookup(scope=scope, capabilities=list(state))
+    except (OSError, ValueError):
         return state
+    if not isinstance(resolved, dict):
+        return state
+    for capability in state:
+        item = resolved.get(capability)
+        if not isinstance(item, dict):
+            continue
+        try:
+            sequence = max(0, int(item.get("sequence") or 0))
+        except (TypeError, ValueError):
+            continue
+        record_ids = item.get("manifest_record_ids")
+        state[capability] = {
+            "sequence": sequence,
+            "manifest_record_ids": {
+                str(record_id)
+                for record_id in (record_ids if isinstance(record_ids, (set, list, tuple)) else [])
+                if str(record_id).strip()
+            },
+        }
     return state
 
 

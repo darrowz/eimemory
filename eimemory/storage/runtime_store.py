@@ -21,6 +21,7 @@ AUXILIARY_JSONL_STREAMS = (
     "intent_patterns",
     "memory_edges",
     "policy_rollout_ledger",
+    "replay_manifests",
 )
 
 
@@ -41,16 +42,12 @@ class RuntimeStore:
                 return existing
             try:
                 self.sqlite.upsert(record, commit=False)
-                export = self.sqlite.enqueue_export(
-                    stream="records",
-                    payload=record.to_dict(),
-                    commit=False,
-                )
+                exports = self._enqueue_record_exports(record)
                 self.sqlite.conn.commit()
             except Exception:
                 self.sqlite.conn.rollback()
                 raise
-            self._flush_committed_exports(export["operation_id"])
+            self._flush_committed_exports(*(item["operation_id"] for item in exports))
             export_record_markdown(self.root, record)
             return record
 
@@ -67,16 +64,12 @@ class RuntimeStore:
                     previous_scope=previous_scope_ref,
                     commit=False,
                 )
-                export = self.sqlite.enqueue_export(
-                    stream="records",
-                    payload=record.to_dict(),
-                    commit=False,
-                )
+                exports = self._enqueue_record_exports(record)
                 self.sqlite.conn.commit()
             except Exception:
                 self.sqlite.conn.rollback()
                 raise
-            self._flush_committed_exports(export["operation_id"])
+            self._flush_committed_exports(*(item["operation_id"] for item in exports))
             export_record_markdown(self.root, record)
             return record
 
@@ -680,6 +673,44 @@ class RuntimeStore:
                 floor_by_capability=floor_by_capability,
             )
 
+    def replay_manifest_sequence_state(
+        self,
+        *,
+        scope: ScopeRef | dict,
+        capabilities: list[str] | set[str],
+    ) -> dict[str, dict[str, object]]:
+        """Read replay high-water evidence from the bounded indexed projection."""
+
+        with self._lock:
+            scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+            return self.sqlite.replay_manifest_sequence_state(
+                scope=scope_ref,
+                capabilities=capabilities,
+            )
+
+    def _enqueue_record_exports(self, record: RecordEnvelope) -> list[dict]:
+        exports = [
+            self.sqlite.enqueue_export(
+                stream="records",
+                payload=record.to_dict(),
+                commit=False,
+            )
+        ]
+        manifest_projection = _replay_manifest_projection(record)
+        if manifest_projection is not None:
+            exports.append(
+                self.sqlite.enqueue_export(
+                    stream="replay_manifests",
+                    payload=self._auxiliary_entry(
+                        "replay_manifests",
+                        manifest_projection,
+                        scope=record.scope,
+                    ),
+                    commit=False,
+                )
+            )
+        return exports
+
     def _flush_committed_exports(self, *operation_ids: str) -> dict:
         recent = self.sqlite.newest_pending_export_ids(limit=100)
         requested = list(dict.fromkeys([*operation_ids, *recent]))
@@ -791,6 +822,40 @@ def _record_release_identity(record: RecordEnvelope) -> tuple[str, str, str, str
         )
     )
     return identity if all(identity) else None
+
+
+def _replay_manifest_projection(record: RecordEnvelope) -> dict | None:
+    content = record.content if isinstance(record.content, dict) else {}
+    meta = record.meta if isinstance(record.meta, dict) else {}
+    if (
+        record.kind != "replay_result"
+        or record.source != "eimemory.capability_replay"
+        or str(meta.get("report_type") or content.get("report_type") or "")
+        != "capability_replay_manifest"
+    ):
+        return None
+    sequences = content.get("sequence_by_capability")
+    if not isinstance(sequences, dict):
+        sequences = {}
+    normalized_sequences: dict[str, int] = {}
+    for raw_capability, raw_sequence in sequences.items():
+        capability = str(raw_capability or "").strip()
+        try:
+            sequence = int(raw_sequence)
+        except (TypeError, ValueError):
+            continue
+        if capability and sequence > 0:
+            normalized_sequences[capability] = sequence
+    return {
+        "record_id": record.record_id,
+        "report_type": "capability_replay_manifest",
+        "schema_version": str(content.get("schema_version") or meta.get("schema_version") or ""),
+        "source": record.source,
+        "status": record.status,
+        "execution_id": str(content.get("execution_id") or ""),
+        "manifest_digest": str(content.get("manifest_digest") or ""),
+        "sequence_by_capability": normalized_sequences,
+    }
 
 
 def remove_sqlite_files(root: str | Path) -> list[str]:

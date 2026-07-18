@@ -100,6 +100,72 @@ def test_concurrent_replay_pack_builders_persist_unique_sequences(tmp_path) -> N
     assert len(sequences) == len(set(sequences))
 
 
+def test_replay_sequence_state_uses_compact_journal_without_scanning_primary_log(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        acceptance = run_capability_acceptance(runtime, scope=SCOPE, persist=True)
+        report = runtime.build_capability_replay_packs(
+            scope=SCOPE,
+            persist=True,
+            capabilities=["search.discovery"],
+            acceptance_execution_id=acceptance["execution_id"],
+            acceptance_probe_ids_by_case={
+                item["case_id"]: item["probe_record_id"] for item in acceptance["results"]
+            },
+        )
+        manifest = runtime.store.get_by_id(report["manifest_record_id"], scope=SCOPE)
+        assert manifest is not None
+        expected_sequence = manifest.content["sequence_by_capability"]["search.discovery"]
+        rebuild = runtime.store.rebuild_sqlite_from_jsonl(replace=True)
+        assert rebuild["ok"] is True
+    finally:
+        runtime.close()
+
+    def reject_primary_log_scan(*_args, **_kwargs):
+        raise AssertionError("primary records log must not be scanned for replay sequence state")
+
+    monkeypatch.setattr(replay_packs_module, "iter_jsonl_payloads", reject_primary_log_scan, raising=False)
+    reopened = Runtime.create(root=tmp_path)
+    try:
+        monkeypatch.setattr(reopened.store, "_auxiliary_log", reject_primary_log_scan)
+        state = replay_packs_module.capability_replay_log_sequence_state(
+            reopened,
+            scope=ScopeRef.from_dict(SCOPE),
+            capabilities=["search.discovery"],
+        )
+    finally:
+        reopened.close()
+
+    assert state["search.discovery"]["sequence"] == expected_sequence
+    assert state["search.discovery"]["manifest_record_ids"] == {report["manifest_record_id"]}
+
+
+def test_malformed_manifest_sequence_cannot_abort_canonical_record_persistence(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    malformed = RecordEnvelope.create(
+        kind="replay_result",
+        title="Malformed replay manifest",
+        scope=ScopeRef.from_dict(SCOPE),
+        source="eimemory.capability_replay",
+        content={
+            "report_type": "capability_replay_manifest",
+            "sequence_by_capability": {"search.discovery": "--5"},
+        },
+        meta={"report_type": "capability_replay_manifest"},
+    )
+    try:
+        persisted = runtime.store.append(malformed)
+        loaded = runtime.store.get_by_id(persisted.record_id, scope=SCOPE)
+    finally:
+        runtime.close()
+
+    assert loaded is not None
+    assert loaded.content["sequence_by_capability"] == {"search.discovery": "--5"}
+
+
 def test_capability_replay_packs_do_not_overwrite_scores_when_contracts_are_unavailable(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     try:

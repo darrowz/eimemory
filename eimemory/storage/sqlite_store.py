@@ -438,6 +438,24 @@ class SqliteRecordStore:
             )
             """
         )
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS replay_manifest_evidence (
+                scope_key TEXT NOT NULL,
+                capability TEXT NOT NULL,
+                manifest_sequence INTEGER NOT NULL,
+                manifest_record_id TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (
+                    scope_key, capability, manifest_sequence, manifest_record_id
+                )
+            )
+            """
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_replay_manifest_evidence_high_water "
+            "ON replay_manifest_evidence(scope_key, capability, manifest_sequence DESC)"
+        )
         try:
             self.conn.execute(
                 """
@@ -466,14 +484,7 @@ class SqliteRecordStore:
         selected = sorted({str(item).strip() for item in capabilities if str(item).strip()})
         if not selected:
             return {}
-        scope_key = canonical_payload_json(
-            {
-                "tenant_id": scope.tenant_id,
-                "agent_id": scope.agent_id,
-                "workspace_id": scope.workspace_id,
-                "user_id": scope.user_id,
-            }
-        )
+        scope_key = self._replay_scope_key(scope)
         floors = dict(floor_by_capability or {})
         allocated: dict[str, int] = {}
         self.conn.execute("BEGIN IMMEDIATE")
@@ -517,6 +528,55 @@ class SqliteRecordStore:
         except Exception:
             self.conn.rollback()
             raise
+
+    def replay_manifest_sequence_state(
+        self,
+        *,
+        scope: ScopeRef,
+        capabilities: list[str] | set[str],
+    ) -> dict[str, dict[str, object]]:
+        selected = sorted({str(value or "").strip() for value in capabilities if str(value or "").strip()})
+        state: dict[str, dict[str, object]] = {
+            capability: {"sequence": 0, "manifest_record_ids": set()}
+            for capability in selected
+        }
+        scope_key = self._replay_scope_key(scope)
+        for capability in selected:
+            rows = self.conn.execute(
+                """
+                SELECT manifest_sequence, manifest_record_id
+                FROM replay_manifest_evidence
+                WHERE scope_key = ? AND capability = ?
+                  AND manifest_sequence = (
+                      SELECT MAX(manifest_sequence)
+                      FROM replay_manifest_evidence
+                      WHERE scope_key = ? AND capability = ?
+                  )
+                ORDER BY manifest_record_id ASC
+                """,
+                (scope_key, capability, scope_key, capability),
+            ).fetchall()
+            if rows:
+                state[capability] = {
+                    "sequence": int(rows[0]["manifest_sequence"]),
+                    "manifest_record_ids": {
+                        str(row["manifest_record_id"])
+                        for row in rows
+                        if str(row["manifest_record_id"] or "").strip()
+                    },
+                }
+        return state
+
+    @staticmethod
+    def _replay_scope_key(scope: ScopeRef) -> str:
+        return canonical_payload_json(
+            {
+                "tenant_id": scope.tenant_id,
+                "agent_id": scope.agent_id,
+                "workspace_id": scope.workspace_id,
+                "user_id": scope.user_id,
+            }
+        )
 
     def enqueue_export(
         self,
@@ -911,8 +971,47 @@ class SqliteRecordStore:
             ),
         )
         self._upsert_recall_index(record=record, storage_key=storage_key, content_text=content_text)
+        self._upsert_replay_manifest_evidence(record)
         if commit:
             self.conn.commit()
+
+    def _upsert_replay_manifest_evidence(self, record: RecordEnvelope) -> None:
+        content = record.content if isinstance(record.content, dict) else {}
+        meta = record.meta if isinstance(record.meta, dict) else {}
+        if (
+            record.kind != "replay_result"
+            or record.source != "eimemory.capability_replay"
+            or str(meta.get("report_type") or content.get("report_type") or "")
+            != "capability_replay_manifest"
+        ):
+            return
+        sequences = content.get("sequence_by_capability")
+        if not isinstance(sequences, dict):
+            return
+        scope_key = self._replay_scope_key(record.scope)
+        for raw_capability, raw_sequence in sequences.items():
+            capability = str(raw_capability or "").strip()
+            try:
+                sequence = int(raw_sequence)
+            except (TypeError, ValueError):
+                continue
+            if not capability or sequence <= 0:
+                continue
+            self.conn.execute(
+                """
+                INSERT OR IGNORE INTO replay_manifest_evidence (
+                    scope_key, capability, manifest_sequence,
+                    manifest_record_id, updated_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    scope_key,
+                    capability,
+                    sequence,
+                    record.record_id,
+                    record.time.updated_at,
+                ),
+            )
 
     def _upsert_recall_index(self, *, record: RecordEnvelope, storage_key: str, content_text: str) -> None:
         lane, visibility, source_class, memory_type, projection_type, quality_score = self._recall_index_traits(record)

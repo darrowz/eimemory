@@ -294,3 +294,47 @@ run passed 191 tests with 18 documented platform skips; one timestamp-ordering
 fixture was then made deterministic and its failed case passed on focused
 rerun.  The full suite was not repeated because a fresh full candidate run was
 already available and the operator explicitly prohibited another full rerun.
+
+## Replay high-water I/O closure
+
+The first production deployment of the L5 delta was deliberately stopped and
+rolled back after its post-switch `release-closure` process exceeded the
+performance boundary. At about sixteen minutes it had read roughly 123 GB at
+the process layer (about 28 GB of physical reads) and written about 2.3 GB,
+while RSS stayed near 200 MB. The immutable installer restored commit
+`3554b0673a22120cf24ea6fc37e276dcf9d30861`; the current link, health identity,
+and all three user services were verified after rollback.
+
+The root cause was `capability_replay_log_sequence_state()`: each manifest
+allocation and each weak/core readiness summary streamed the complete 4.26 GB
+primary records JSONL to establish replay sequence high water. Adding the core
+gate multiplied an already unbounded integrity check until a single closure
+reread the archive many times.
+
+Replay manifests now write two bounded projections in the same committed
+operation as the canonical record: a compact segmented JSONL recovery journal
+and an indexed SQLite evidence table keyed by exact scope, capability,
+sequence, and manifest ID. Online allocation/readiness queries only the indexed
+maximum sequence and its collision IDs; it never scans the primary or auxiliary
+JSONL. Direct deletion of the latest canonical records still leaves the
+evidence projection and therefore fails closed on high-water mismatch;
+same-sequence manifest collisions still expose every conflicting ID. SQLite
+rebuild from canonical JSONL reconstructs the projection, while normal storage
+maintenance rotates the compact recovery journal.
+
+OpenCodeReview MiniMax-M3 identified malformed sequence coercion and the first
+compact-journal implementation's residual O(n) scan. Both were reproduced
+before repair: malformed strings could abort canonical persistence, and a
+monkeypatched log read proved that online state still touched the journal.
+After repair, invalid projection values are skipped without rejecting the
+canonical record, and the online query succeeds with both primary and auxiliary
+log access disabled. The focused replay/L5/storage layer passed 100 tests,
+including physical deletion, collision, rebuild, persistence, outbox,
+segmentation, and maintenance coverage. A full suite was not repeated.
+
+The intermediate MiniMax-M3 review was session
+`b35db59b-d9a6-4464-9e24-4be7afd43eab`. Final re-review session
+`2b6af6bb-277a-4160-aac4-ac4b6d87c2af` inspected all four changed code/test
+files in 4 minutes 27 seconds and returned zero comments with no failed files.
+The final code-review-graph index covered five changed files and 17 changed
+functions/classes, found no affected flow, and reported risk 0.60.
