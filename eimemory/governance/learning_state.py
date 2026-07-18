@@ -235,14 +235,23 @@ def append_learning_record_once(
     source: str = "eimemory.autonomous_learning",
 ) -> RecordEnvelope:
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
-    idem = learning_idempotency_key(loop_id, step_name, semantic_key)
-    existing = find_record_by_idempotency(runtime, kinds=[kind], scope=scope_ref, idempotency_key=idem)
-    if existing is not None:
-        return existing
     from eimemory.governance.evidence_contract import current_release_identity, release_identity_payload
 
     release = current_release_identity(runtime, scope_ref)
     release_payload = release_identity_payload(release) if release is not None else {}
+    idempotency_semantic_key = semantic_key
+    if release is not None:
+        idempotency_semantic_key = stable_semantic_key(
+            semantic_key,
+            release.commit,
+            release.version,
+            release.receipt_id,
+            release.session_id,
+        )
+    idem = learning_idempotency_key(loop_id, step_name, idempotency_semantic_key)
+    existing = find_record_by_idempotency(runtime, kinds=[kind], scope=scope_ref, idempotency_key=idem)
+    if existing is not None:
+        return existing
     supplied_meta = dict(meta or {})
     supplied_content = dict(content or {})
     for key in ("release_commit", "release_version", "deployment_receipt_id", "release_session_id"):

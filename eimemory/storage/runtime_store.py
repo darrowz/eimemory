@@ -681,6 +681,7 @@ class RuntimeStore:
         report_type = str(business_metadata(record.meta).get("report_type") or record.provenance.get("report_type") or "")
         if report_type == "outcome_trace":
             return None
+        release_identity = _record_release_identity(record)
         for existing in self.list_records(kinds=["reflection"], scope=record.scope, limit=200):
             if str(existing.source or "") != str(record.source or ""):
                 continue
@@ -688,6 +689,9 @@ class RuntimeStore:
                 business_metadata(existing.meta).get("report_type") or existing.provenance.get("report_type") or ""
             )
             if existing_report_type != report_type:
+                continue
+            existing_release_identity = _record_release_identity(existing)
+            if (release_identity or existing_release_identity) and existing_release_identity != release_identity:
                 continue
             if _reflection_fingerprint(existing) == fingerprint:
                 return existing
@@ -709,6 +713,21 @@ def _reflection_fingerprint(record: RecordEnvelope) -> str:
         if str(value or "").strip()
     ).lower()
     return sha256(text.encode("utf-8")).hexdigest()[:24] if text else ""
+
+
+def _record_release_identity(record: RecordEnvelope) -> tuple[str, str, str, str] | None:
+    meta = business_metadata(record.meta)
+    content = record.content if isinstance(record.content, dict) else {}
+    identity = tuple(
+        str(meta.get(key) or content.get(key) or "").strip()
+        for key in (
+            "release_commit",
+            "release_version",
+            "deployment_receipt_id",
+            "release_session_id",
+        )
+    )
+    return identity if all(identity) else None
 
 
 def remove_sqlite_files(root: str | Path) -> list[str]:

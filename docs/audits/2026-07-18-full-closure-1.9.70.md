@@ -75,3 +75,25 @@ only those three real-data cases as explicit optional-data skips, while all
 synthetic converter coverage remains mandatory. The three cases were also run
 against the locally available real dataset and passed 3/3. The failed set was
 then re-run as focused tests and closed without repeating the full suite.
+
+## Production-gate closure finding
+
+The immutable-release rehearsal rejected an otherwise healthy 1.9.70
+candidate because its roadmap, goal graph, and self-continuity references had
+been reused from an earlier release. The evidence validator correctly reported
+`release_mismatch`; the defect was in two lower-level deduplication contracts:
+
+- learning-record idempotency did not include the verified release commit,
+  version, deployment receipt, and release session;
+- reflection fingerprint deduplication ignored release identity and could
+  replace a new release-bound goal graph with an older record.
+
+Both deduplication layers now preserve retries within the same exact release
+while forcing new immutable evidence across releases. A two-release regression
+proves fresh roadmap, goal-graph, and self-continuity record IDs, exact binding
+to the second release, and stable IDs on a repeated second-release run. The
+focused storage and L5/release suites passed 121 tests after the repair. A
+code-review-graph incremental scan covered the changed functions and reported
+no affected cross-module flow; its remaining test-gap labels are static-link
+limitations because the release-level regression exercises both shared
+deduplication paths.

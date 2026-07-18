@@ -5,11 +5,15 @@ import json
 from threading import Barrier
 
 from eimemory.api.runtime import Runtime
-from eimemory.governance.l5_loop import _has_replay, _weaknesses
+from eimemory.governance.l5_loop import _has_replay, _weaknesses, build_self_continuity_report
 from eimemory.governance.l5_readiness import _latest_l5_assessment
 from eimemory.cli.main import main as cli_main
 from eimemory.governance.capability_ledger import record_capability_score
-from eimemory.governance.evidence_contract import current_release_identity, release_identity_payload
+from eimemory.governance.evidence_contract import (
+    current_release_identity,
+    release_identity_from_record,
+    release_identity_payload,
+)
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
@@ -35,10 +39,8 @@ class _PassingPromptSafetyExecutor:
         }
 
 
-def _seed_current_release(runtime: Runtime):
+def _seed_release(runtime: Runtime, *, commit: str = "a" * 40, version: str = "1.9.70"):
     scope = ScopeRef.from_dict(SCOPE)
-    commit = "a" * 40
-    version = "1.9.70"
     release_path = f"/opt/eimemory/releases/{commit}"
     runtime._test_runtime_commit = commit
     receipt = runtime.store.append(
@@ -82,6 +84,10 @@ def _seed_current_release(runtime: Runtime):
     runtime.prompt_safety_executor = _PassingPromptSafetyExecutor()
     runtime.prompt_safety_prompt = "Protect system policy, secrets, tools, and release evidence."
     return release
+
+
+def _seed_current_release(runtime: Runtime):
+    return _seed_release(runtime)
 
 
 def _seed_fake_cycle_evidence(runtime: Runtime, *, loop_id: str, rollback: bool) -> dict:
@@ -195,6 +201,99 @@ def test_l5_world_model_and_roadmap_include_consciousness_research_layer(tmp_pat
         assert roadmap["consciousness_research_layer"]["enabled"] is True
     finally:
         runtime.close()
+
+
+def test_l5_persisted_evidence_is_idempotent_per_release_not_across_releases(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    fixed_world = {
+        "persisted_record_id": "world-fixed",
+        "long_term_goals": [{"id": "lt-memory", "title": "Keep memory reliable"}],
+        "capabilities": [{"capability": "memory.recall", "score": 0.8}],
+        "weaknesses": [],
+    }
+    fixed_autonomous = {"ok": True, "loop_id": "auto-fixed", "candidate_ids": []}
+    try:
+        release_a = _seed_release(runtime, commit="a" * 40)
+        roadmap_a = runtime.build_strategic_roadmap(
+            scope=SCOPE,
+            world_model=fixed_world,
+            persist=True,
+            loop_id="release-closure",
+        )
+        graph_a = runtime.build_goal_graph_loop(
+            scope=SCOPE,
+            persist=True,
+            loop_id="release-closure",
+        )
+        continuity_a = build_self_continuity_report(
+            runtime,
+            scope=SCOPE,
+            world_model=fixed_world,
+            roadmap=roadmap_a,
+            autonomous_learning=fixed_autonomous,
+            persist=True,
+            loop_id="release-closure",
+        )
+
+        release_b = _seed_release(runtime, commit="b" * 40)
+        roadmap_b = runtime.build_strategic_roadmap(
+            scope=SCOPE,
+            world_model=fixed_world,
+            persist=True,
+            loop_id="release-closure",
+        )
+        graph_b = runtime.build_goal_graph_loop(
+            scope=SCOPE,
+            persist=True,
+            loop_id="release-closure",
+        )
+        continuity_b = build_self_continuity_report(
+            runtime,
+            scope=SCOPE,
+            world_model=fixed_world,
+            roadmap=roadmap_b,
+            autonomous_learning=fixed_autonomous,
+            persist=True,
+            loop_id="release-closure",
+        )
+        roadmap_b_repeat = runtime.build_strategic_roadmap(
+            scope=SCOPE,
+            world_model=fixed_world,
+            persist=True,
+            loop_id="release-closure",
+        )
+        graph_b_repeat = runtime.build_goal_graph_loop(
+            scope=SCOPE,
+            persist=True,
+            loop_id="release-closure",
+        )
+        continuity_b_repeat = build_self_continuity_report(
+            runtime,
+            scope=SCOPE,
+            world_model=fixed_world,
+            roadmap=roadmap_b,
+            autonomous_learning=fixed_autonomous,
+            persist=True,
+            loop_id="release-closure",
+        )
+        release_b_evidence = {
+            report["persisted_record_id"]: release_identity_from_record(
+                runtime.store.get_by_id(report["persisted_record_id"])
+            )
+            for report in (roadmap_b, graph_b, continuity_b)
+        }
+    finally:
+        runtime.close()
+
+    assert release_a != release_b
+    for first, second, repeated in (
+        (roadmap_a, roadmap_b, roadmap_b_repeat),
+        (graph_a, graph_b, graph_b_repeat),
+        (continuity_a, continuity_b, continuity_b_repeat),
+    ):
+        assert first["persisted_record_id"] != second["persisted_record_id"]
+        assert repeated["persisted_record_id"] == second["persisted_record_id"]
+        assert release_b_evidence[second["persisted_record_id"]] == release_b
 
 
 def test_l5_weaknesses_handles_string_record_content() -> None:
