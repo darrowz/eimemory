@@ -76,7 +76,8 @@ CALL_GATEWAY_MARKERS = (
     "return await callGatewayLeastPrivilege({",
 )
 CALL_GATEWAY_LEGACY_READ_SCOPE_MARKER = "const defaultReadScopes ="
-CALL_GATEWAY_STORED_AUTH_MARKER = "const defaultLocalContext ="
+CALL_GATEWAY_INTERMEDIATE_STORED_AUTH_MARKER = "const defaultLocalContext ="
+CALL_GATEWAY_STORED_AUTH_MARKER = "const localStoredAuthContext ="
 
 
 class PatchError(RuntimeError):
@@ -275,45 +276,94 @@ def _patch_call_gateway(path: Path) -> bool:
     if marker_count != 0:
         raise PatchError(f"expected one gateway stored auth marker in {path.name}")
 
-    anchor = re.compile(
+    fallback_anchor = re.compile(
         r"^(?P<indent>[ \t]+)return await callGatewayLeastPrivilege\(\{",
         re.MULTILINE,
     )
-    matches = list(anchor.finditer(text))
+    matches = list(fallback_anchor.finditer(text))
     if len(matches) != 1:
         raise PatchError(f"expected one default gateway call anchor in {path.name}")
     indent = matches[0].group("indent")
-    stored_auth_fallback = newline.join(
-        (
-            f"{indent}const defaultLocalContext =",
-            f"{indent}    opts.mode === void 0 &&",
-            f"{indent}    opts.clientName === void 0 &&",
-            f"{indent}    opts.url === void 0 &&",
-            f"{indent}    opts.token === void 0 &&",
-            f"{indent}    opts.password === void 0",
-            f"{indent}        ? await resolveGatewayCallContext(opts)",
-            f"{indent}        : null;",
-            f"{indent}if (defaultLocalContext && !defaultLocalContext.urlOverride && !defaultLocalContext.isRemoteMode) {{",
-            f"{indent}    return await callGatewayCli({{ ...opts, useStoredDeviceAuth: true }});",
-            f"{indent}}}",
-        )
-    )
-    legacy_count = text.count(CALL_GATEWAY_LEGACY_READ_SCOPE_MARKER)
-    if legacy_count == 1:
+
+    for legacy_marker in (
+        CALL_GATEWAY_INTERMEDIATE_STORED_AUTH_MARKER,
+        CALL_GATEWAY_LEGACY_READ_SCOPE_MARKER,
+    ):
+        legacy_count = text.count(legacy_marker)
+        if legacy_count == 0:
+            continue
+        if legacy_count != 1:
+            raise PatchError(
+                f"expected at most one legacy gateway auth marker in {path.name}"
+            )
         legacy = re.compile(
-            rf"^{re.escape(indent)}const defaultReadScopes =.*?"
+            rf"^{re.escape(indent)}{re.escape(legacy_marker)}.*?"
             rf"^{re.escape(indent)}\}}{re.escape(newline)}",
             re.MULTILINE | re.DOTALL,
         )
         legacy_matches = list(legacy.finditer(text))
         if len(legacy_matches) != 1:
-            raise PatchError(f"expected one legacy gateway read block in {path.name}")
-        text = legacy.sub(stored_auth_fallback + newline, text, count=1)
-    elif legacy_count == 0:
-        anchor_start = matches[0].start()
-        text = text[:anchor_start] + stored_auth_fallback + newline + text[anchor_start:]
-    else:
-        raise PatchError(f"expected at most one legacy gateway read marker in {path.name}")
+            raise PatchError(f"expected one legacy gateway auth block in {path.name}")
+        text = legacy.sub("", text, count=1)
+
+    cli_condition = (
+        r"callerMode === GATEWAY_CLIENT_MODES\.CLI \|\| "
+        r"callerName === GATEWAY_CLIENT_NAMES\.CLI"
+    )
+    cli_branch = re.compile(
+        rf"^{re.escape(indent)}if \({cli_condition}\) "
+        rf"(?:\{{{re.escape(newline)}"
+        rf"{re.escape(indent)}    return await callGatewayCli\(opts\);"
+        rf"{re.escape(newline)}{re.escape(indent)}\}}|"
+        rf"return await callGatewayCli\(opts\);){re.escape(newline)}",
+        re.MULTILINE,
+    )
+    cli_matches = list(cli_branch.finditer(text))
+    if len(cli_matches) != 1:
+        raise PatchError(f"expected one CLI gateway call branch in {path.name}")
+
+    stored_auth_context = newline.join(
+        (
+            f"{indent}const localStoredAuthContext =",
+            f"{indent}    opts.useStoredDeviceAuth === void 0 &&",
+            f"{indent}    opts.url === void 0 &&",
+            f"{indent}    opts.token === void 0 &&",
+            f"{indent}    opts.password === void 0 &&",
+            f"{indent}    (",
+            f"{indent}        callerMode === GATEWAY_CLIENT_MODES.CLI ||",
+            f"{indent}        callerName === GATEWAY_CLIENT_NAMES.CLI ||",
+            f"{indent}        (opts.mode === void 0 && opts.clientName === void 0)",
+            f"{indent}    )",
+            f"{indent}        ? await resolveGatewayCallContext(opts)",
+            f"{indent}        : null;",
+            f"{indent}const useLocalStoredDeviceAuth = Boolean(",
+            f"{indent}    localStoredAuthContext &&",
+            f"{indent}    !localStoredAuthContext.urlOverride &&",
+            f"{indent}    !localStoredAuthContext.isRemoteMode",
+            f"{indent});",
+            f"{indent}if (callerMode === GATEWAY_CLIENT_MODES.CLI || callerName === GATEWAY_CLIENT_NAMES.CLI) {{",
+            f"{indent}    return await callGatewayCli(",
+            f"{indent}        useLocalStoredDeviceAuth",
+            f"{indent}            ? {{ ...opts, useStoredDeviceAuth: true }}",
+            f"{indent}            : opts",
+            f"{indent}    );",
+            f"{indent}}}",
+        )
+    )
+    text = cli_branch.sub(stored_auth_context + newline, text, count=1)
+
+    matches = list(fallback_anchor.finditer(text))
+    if len(matches) != 1:
+        raise PatchError(f"expected one post-patch gateway call anchor in {path.name}")
+    stored_auth_fallback = newline.join(
+        (
+            f"{indent}if (useLocalStoredDeviceAuth) {{",
+            f"{indent}    return await callGatewayCli({{ ...opts, useStoredDeviceAuth: true }});",
+            f"{indent}}}",
+        )
+    )
+    anchor_start = matches[0].start()
+    text = text[:anchor_start] + stored_auth_fallback + newline + text[anchor_start:]
     _atomic_write(path, text)
     return True
 

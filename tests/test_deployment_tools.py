@@ -166,20 +166,29 @@ async function callGateway(opts) {
     )
     gateway_runtime.write_text(legacy_gateway, encoding="utf-8")
     legacy_call = re.sub(
-        r"    const defaultLocalContext =.*?^    }\n",
-        "    const defaultReadScopes =\n"
-        "        opts.mode === void 0 && opts.clientName === void 0\n"
-        "            ? resolveLeastPrivilegeOperatorScopesForMethod(opts.method, opts.params)\n"
-        "            : null;\n"
-        "    if (\n"
-        "        defaultReadScopes?.length &&\n"
-        '        defaultReadScopes.every((scope) => scope === "operator.read")\n'
-        "    ) {\n"
-        "        return await callGatewayCli({ ...opts, scopes: defaultReadScopes });\n"
+        r"    const localStoredAuthContext =.*?^    }\n",
+        "    if (callerMode === GATEWAY_CLIENT_MODES.CLI || callerName === GATEWAY_CLIENT_NAMES.CLI) {\n"
+        "        return await callGatewayCli(opts);\n"
         "    }\n",
         call_runtime.read_text(encoding="utf-8"),
         count=1,
         flags=re.MULTILINE | re.DOTALL,
+    )
+    legacy_call = legacy_call.replace(
+        "    return await callGatewayLeastPrivilege({",
+        "    const defaultLocalContext =\n"
+        "        opts.mode === void 0 &&\n"
+        "        opts.clientName === void 0 &&\n"
+        "        opts.url === void 0 &&\n"
+        "        opts.token === void 0 &&\n"
+        "        opts.password === void 0\n"
+        "            ? await resolveGatewayCallContext(opts)\n"
+        "            : null;\n"
+        "    if (defaultLocalContext && !defaultLocalContext.urlOverride && !defaultLocalContext.isRemoteMode) {\n"
+        "        return await callGatewayCli({ ...opts, useStoredDeviceAuth: true });\n"
+        "    }\n"
+        "    return await callGatewayLeastPrivilege({",
+        1,
     )
     call_runtime.write_text(legacy_call, encoding="utf-8")
     upgrade = subprocess.run(
@@ -222,11 +231,15 @@ async function callGateway(opts) {
     assert "token: useLocalOperatorReadIdentity ? void 0 : gateway.token" in patched_gateway
     assert "useStoredDeviceAuth: useLocalOperatorReadIdentity" in patched_gateway
     patched_call = call_runtime.read_text(encoding="utf-8")
-    assert "const defaultLocalContext =" in patched_call
+    assert "const localStoredAuthContext =" in patched_call
+    assert "const useLocalStoredDeviceAuth =" in patched_call
     assert "opts.mode === void 0" in patched_call
     assert "opts.clientName === void 0" in patched_call
     assert "await resolveGatewayCallContext(opts)" in patched_call
-    assert "!defaultLocalContext.urlOverride && !defaultLocalContext.isRemoteMode" in patched_call
+    assert "!localStoredAuthContext.urlOverride" in patched_call
+    assert "!localStoredAuthContext.isRemoteMode" in patched_call
+    assert "callerMode === GATEWAY_CLIENT_MODES.CLI" in patched_call
+    assert "callerName === GATEWAY_CLIENT_NAMES.CLI" in patched_call
     assert "return await callGatewayCli({ ...opts, useStoredDeviceAuth: true });" in patched_call
     dropin = Path("deploy/systemd/openclaw-gateway-eimemory.conf").read_text(encoding="utf-8")
     assert "ExecStartPre=" in dropin
