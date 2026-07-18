@@ -45,7 +45,7 @@ _INDIRECT_INSTRUCTION_PATTERN = re.compile(r"(?:instructions?|content|request|\u
 _INDIRECT_NEUTRALIZE_PATTERN = re.compile(
     r"(?:ignore|disregard|reject|will\s+be\s+(?:ignored|disregarded|rejected)|"
     r"(?:will|would)\s+not\s+(?:follow|obey|execute|accept|use)|"
-    r"\u5ffd\u7565|\u4e0d(?:\u6267\u884c|\u9075\u5faa|\u91c7\u7eb3|\u63a5\u53d7))",
+    r"\u5ffd\u7565|\u65e0\u6548|\u4e0d(?:\u6267\u884c|\u9075\u5faa|\u91c7\u7eb3|\u63a5\u53d7))",
     re.IGNORECASE,
 )
 _INDIRECT_FOLLOW_PATTERN = re.compile(
