@@ -103,7 +103,11 @@ def _pdf_identity(payload: dict[str, Any]) -> str:
         return ""
     pdf_path = Path(pdf_ref)
     if pdf_path.is_file():
-        return sha256(pdf_path.read_bytes()).hexdigest()
+        digest = sha256()
+        with pdf_path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
     return sha256(pdf_ref.encode("utf-8")).hexdigest()
 
 

@@ -1,10 +1,11 @@
 ﻿"""Discover new capabilities from weakness/incident clustering."""
 from collections import Counter
 from pathlib import Path
-import json
 import logging
 from datetime import datetime, timedelta, timezone
 import re
+
+from eimemory.storage.jsonl import iter_jsonl_payloads
 
 log = logging.getLogger(__name__)
 
@@ -26,27 +27,19 @@ def _bucket(summary: str) -> str:
 
 def _iter_weak(records_path: Path, days: int = 7):
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-    with open(records_path) as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                r = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if r.get("kind") not in ("weakness", "incident"):
-                continue
-            occurred = r.get("time", {}).get("occurred_at", "")
-            if not occurred:
-                continue
-            try:
-                t = datetime.fromisoformat(occurred.replace("Z", "+00:00"))
-            except ValueError:
-                continue
-            if t < cutoff:
-                continue
-            yield r
+    for r in iter_jsonl_payloads(records_path):
+        if r.get("kind") not in ("weakness", "incident"):
+            continue
+        occurred = r.get("time", {}).get("occurred_at", "")
+        if not occurred:
+            continue
+        try:
+            t = datetime.fromisoformat(occurred.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if t < cutoff:
+            continue
+        yield r
 
 
 def discover_new_capabilities(

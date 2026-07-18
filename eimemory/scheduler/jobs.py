@@ -34,11 +34,11 @@ def run_nightly_jobs(
     try:
         roi = runtime.evolution.build_roi_report(scope=scope)
         active_rules = runtime.store.list_records(kinds=["rule"], scope=scope, status="active", limit=500)
-        promotion_candidates = runtime.store.list_records(kinds=["rule"], scope=scope, status="accepted", limit=500)
-        memories = runtime.store.list_records(kinds=["memory", "multimodal_memory"], scope=scope, limit=500)
-        paper_sources = runtime.store.list_records(kinds=["paper_source"], scope=scope, limit=1000)
-        claim_cards = runtime.store.list_records(kinds=["claim_card"], scope=scope, limit=1000)
-        knowledge_pages = runtime.store.list_records(kinds=["knowledge_page"], scope=scope, limit=1000)
+        promotion_candidate_count = runtime.store.count_records(kinds=["rule"], scope=scope, status="accepted")
+        memory_count = runtime.store.count_records(kinds=["memory", "multimodal_memory"], scope=scope)
+        paper_source_count = runtime.store.count_records(kinds=["paper_source"], scope=scope)
+        claim_card_count = runtime.store.count_records(kinds=["claim_card"], scope=scope)
+        knowledge_page_count = runtime.store.count_records(kinds=["knowledge_page"], scope=scope)
         knowledge_report = runtime.evolution.reconcile_knowledge(scope=scope)
         quality_report = runtime.evolution.memory_quality_report(scope=scope)
         source_expansion_report = runtime.expand_sources_autonomously(scope=scope, apply=True, max_apply=3)
@@ -82,15 +82,18 @@ def run_nightly_jobs(
         autonomous_learning_dashboard = _run_autonomous_learning_dashboard(runtime, scope=scope)
         l5_loop_report = _run_l5_loop(runtime, scope=scope, autonomous_learning_report=autonomous_learning_report)
         outcome_evolution_report = _run_outcome_evolution_summary(runtime, scope=scope)
+        storage_maintenance_report = runtime.store.maintain_storage()
+        if not storage_maintenance_report.get("ok"):
+            raise RuntimeError("nightly storage maintenance left pending exports")
         report = {
             "ok": True,
             "active_rule_count": len(active_rules),
-            "promotion_candidate_count": len(promotion_candidates),
-            "memory_count": len(memories),
+            "promotion_candidate_count": promotion_candidate_count,
+            "memory_count": memory_count,
             "knowledge": {
-                "paper_source_count": len(paper_sources),
-                "claim_card_count": len(claim_cards),
-                "knowledge_page_count": len(knowledge_pages),
+                "paper_source_count": paper_source_count,
+                "claim_card_count": claim_card_count,
+                "knowledge_page_count": knowledge_page_count,
                 "contradiction_count": knowledge_report["contradiction_count"],
                 "refreshed_page_count": knowledge_report["page_refresh_count"],
             },
@@ -131,6 +134,7 @@ def run_nightly_jobs(
             "autonomous_learning_dashboard": autonomous_learning_dashboard,
             "l5_loop": l5_loop_report,
             "outcome_evolution": outcome_evolution_report,
+            "storage_maintenance": storage_maintenance_report,
             "memory_eval_ci": memory_eval_ci_report,
             "production_recall": production_recall_report,
             "recall_quality": production_recall_report,

@@ -77,3 +77,16 @@ def test_append_lock_uses_non_append_binary_lock_file_mode(tmp_path, monkeypatch
 
     assert "a+b" not in lock_modes
     assert "r+b" in lock_modes
+
+
+def test_large_ledger_is_not_retained_in_process_cache(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("OPENCLAW_LOOP_HOME", str(tmp_path))
+    monkeypatch.setattr(openclaw_loop, "MAX_JSONL_CACHE_ROWS", 2)
+    openclaw_loop.reset_jsonl_cache_for_tests()
+    _write_raw_jsonl(
+        tmp_path / "tasks.jsonl",
+        [{"task_id": f"task-{index}"} for index in range(3)],
+    )
+
+    assert len(openclaw_loop.read_jsonl("tasks.jsonl")) == 3
+    assert openclaw_loop._JSONL_CACHE == {}

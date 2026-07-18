@@ -20,35 +20,28 @@ must now short-circuit on ``no_data``.
 """
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from statistics import mean
+
+from eimemory.storage.jsonl import iter_jsonl_payloads
 
 BASELINE_HIT_AT_1 = 0.60  # from 2026-06-17 evidence
 
 
 def _iter(records_path: Path, kinds: list[str], days: int):
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-    with open(records_path) as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                r = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if r.get("kind") not in kinds:
-                continue
-            occurred = r.get("time", {}).get("occurred_at", "")
-            try:
-                t = datetime.fromisoformat(occurred.replace("Z", "+00:00"))
-            except ValueError:
-                continue
-            if t < cutoff:
-                continue
-            yield r
+    for r in iter_jsonl_payloads(records_path):
+        if r.get("kind") not in kinds:
+            continue
+        occurred = r.get("time", {}).get("occurred_at", "")
+        try:
+            t = datetime.fromisoformat(occurred.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if t < cutoff:
+            continue
+        yield r
 
 
 def compute_business_impact(

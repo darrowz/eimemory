@@ -28,11 +28,12 @@ should pass an explicit ``records_path`` rooted in ``tmp_path``.
 """
 from __future__ import annotations
 
-import json
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterator
+
+from eimemory.storage.jsonl import iter_jsonl_payloads
 
 # Windows-friendly substitute for the Linux /var/lib/eimemory/... path
 # called out in the Karpathy Loop plan.
@@ -76,34 +77,20 @@ def _iter_failure_records(
     ignored — a single corrupt line in a 480k-record file should not
     take down the loop.
     """
-    if not records_path.exists():
-        return
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-    with records_path.open(encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                row = json.loads(line)
-            except ValueError:
-                # ValueError catches json.JSONDecodeError on every
-                # supported CPython version.
-                continue
-            if not isinstance(row, dict):
-                continue
-            if row.get("kind") not in FAILURE_KINDS:
-                continue
-            occurred = (row.get("time") or {}).get("occurred_at", "")
-            if not occurred:
-                continue
-            try:
-                ts = datetime.fromisoformat(occurred.replace("Z", "+00:00"))
-            except ValueError:
-                continue
-            if ts < cutoff:
-                continue
-            yield row
+    for row in iter_jsonl_payloads(records_path):
+        if row.get("kind") not in FAILURE_KINDS:
+            continue
+        occurred = (row.get("time") or {}).get("occurred_at", "")
+        if not occurred:
+            continue
+        try:
+            ts = datetime.fromisoformat(occurred.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if ts < cutoff:
+            continue
+        yield row
 
 
 def _bucket_key(summary: str) -> str:

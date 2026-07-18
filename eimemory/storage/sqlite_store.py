@@ -8,6 +8,7 @@ import re
 import sqlite3
 from pathlib import Path
 from typing import Any
+from hashlib import sha256
 from eimemory.recall import analyze_lexical_signal, build_recall_index_document
 
 from eimemory.embeddings.local import cosine_similarity, embed_text
@@ -38,6 +39,7 @@ from eimemory.governance.policy_rollout import (
 )
 from eimemory.scoring import ScoreContext, evaluate_recall_score, extract_memory_score, score_from_legacy_quality
 from eimemory.metadata import business_metadata
+from eimemory.storage.jsonl import canonical_payload_json, payload_digest
 
 
 MAX_QUERY_LIMIT = 1000
@@ -81,6 +83,7 @@ class SqliteRecordStore:
         self.conn.execute("PRAGMA busy_timeout = 30000")
         self._configure_connection()
         self._init_db()
+        self.preload_report = self.preload_hot_pages()
 
     def _configure_connection(self) -> None:
         try:
@@ -88,21 +91,16 @@ class SqliteRecordStore:
         except sqlite3.OperationalError:
             pass
         self.conn.execute("PRAGMA synchronous=NORMAL")
-        self.conn.execute("PRAGMA temp_store=MEMORY")
-        self.conn.execute("PRAGMA cache_size=-65536")
-
-    def _append_auxiliary_log(self, log_name: str, payload: dict[str, Any]) -> None:
-        if self.suppress_auxiliary_logging or self.auxiliary_log_dir is None:
-            return
-        path = self.auxiliary_log_dir / f"{log_name}.jsonl"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        entry = {
-            "log_type": str(log_name),
-            "logged_at": datetime.now(timezone.utc).isoformat(),
-            "payload": payload,
-        }
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(entry, ensure_ascii=False, sort_keys=True) + "\n")
+        self.conn.execute("PRAGMA temp_store=FILE")
+        self.conn.execute("PRAGMA wal_autocheckpoint=1000")
+        self.conn.execute(f"PRAGMA journal_size_limit={64 * 1024 * 1024}")
+        self.conn.execute("PRAGMA auto_vacuum=INCREMENTAL")
+        try:
+            cache_kib = int(os.environ.get("EIMEMORY_SQLITE_CACHE_KIB") or 16_384)
+        except ValueError:
+            cache_kib = 16_384
+        cache_kib = max(4_096, min(65_536, cache_kib))
+        self.conn.execute(f"PRAGMA cache_size=-{cache_kib}")
 
     def _init_db(self) -> None:
         existing = self.conn.execute(
@@ -117,6 +115,7 @@ class SqliteRecordStore:
             self._create_memory_edge_tables()
             self._create_event_memory_tables()
             self._create_policy_rollout_tables()
+            self._create_export_outbox_table()
             self._seed_default_intent_patterns()
             self.conn.commit()
             return
@@ -145,6 +144,7 @@ class SqliteRecordStore:
         self._create_event_memory_tables()
         self._migrate_intent_patterns_schema()
         self._create_policy_rollout_tables()
+        self._create_export_outbox_table()
         self._seed_default_intent_patterns()
         if str(os.environ.get("EIMEMORY_RECALL_INDEX_BACKFILL_ON_START") or "").strip() == "1":
             self._backfill_recall_index_if_needed()
@@ -219,6 +219,15 @@ class SqliteRecordStore:
                 "CREATE INDEX IF NOT EXISTS idx_records_meta_report_type "
                 "ON records(kind, tenant_id, agent_id, workspace_id, user_id, "
                 "CAST(json_extract(meta_json, '$.report_type') AS TEXT), updated_at DESC, record_id DESC)"
+            )
+        except sqlite3.OperationalError:
+            pass
+        try:
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_records_policy_task "
+                "ON records(kind, status, tenant_id, agent_id, workspace_id, user_id, "
+                "CAST(COALESCE(json_extract(meta_json, '$.task_type'), "
+                "json_extract(meta_json, '$.business_meta.task_type')) AS TEXT), updated_at DESC)"
             )
         except sqlite3.OperationalError:
             pass
@@ -392,6 +401,184 @@ class SqliteRecordStore:
             "ON policy_rollout_ledger(tenant_id, agent_id, workspace_id, user_id, action_type, record_date, created_at)"
         )
 
+    def _create_export_outbox_table(self) -> None:
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS export_outbox (
+                operation_id TEXT PRIMARY KEY,
+                stream TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                payload_digest TEXT NOT NULL,
+                state TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT NOT NULL,
+                exported_at TEXT NOT NULL DEFAULT ''
+            )
+            """
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_export_outbox_pending "
+            "ON export_outbox(state, created_at, operation_id)"
+        )
+
+    def enqueue_export(
+        self,
+        *,
+        stream: str,
+        payload: dict[str, Any],
+        operation_id: str = "",
+        commit: bool = True,
+    ) -> dict[str, Any]:
+        clean_stream = str(stream or "").strip()
+        if not clean_stream or not re.fullmatch(r"[a-z0-9_.-]+", clean_stream):
+            raise ValueError("export stream must be a nonempty safe name")
+        raw_payload = canonical_payload_json(dict(payload or {}))
+        digest = payload_digest(dict(payload or {}))
+        resolved_operation_id = str(operation_id or "").strip() or sha256(
+            f"{clean_stream}\0{digest}".encode("utf-8")
+        ).hexdigest()
+        created_at = datetime.now(timezone.utc).isoformat()
+        self.conn.execute(
+            """
+            INSERT OR IGNORE INTO export_outbox (
+                operation_id, stream, payload_json, payload_digest, state,
+                created_at, exported_at
+            ) VALUES (?, ?, ?, ?, 'pending', ?, '')
+            """,
+            (resolved_operation_id, clean_stream, raw_payload, digest, created_at),
+        )
+        existing = self.conn.execute(
+            "SELECT stream, payload_digest, state, created_at, exported_at "
+            "FROM export_outbox WHERE operation_id = ?",
+            (resolved_operation_id,),
+        ).fetchone()
+        if existing is None:
+            raise RuntimeError("failed to persist export outbox row")
+        if str(existing["stream"]) != clean_stream or str(existing["payload_digest"]) != digest:
+            raise ValueError("export operation id collision")
+        if commit:
+            self.conn.commit()
+        return {
+            "operation_id": resolved_operation_id,
+            "stream": clean_stream,
+            "payload_digest": digest,
+            "state": str(existing["state"]),
+            "created_at": str(existing["created_at"]),
+            "exported_at": str(existing["exported_at"]),
+        }
+
+    def pending_exports(
+        self,
+        *,
+        limit: int = 100,
+        operation_ids: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        max_limit = max(1, min(1_000, int(limit)))
+        where = ["state = 'pending'"]
+        params: list[Any] = []
+        clean_ids = [str(item) for item in (operation_ids or []) if str(item)]
+        if clean_ids:
+            where.append(f"operation_id IN ({','.join('?' for _ in clean_ids)})")
+            params.extend(clean_ids)
+        rows = self.conn.execute(
+            "SELECT operation_id, stream, payload_json, payload_digest, created_at "
+            "FROM export_outbox WHERE "
+            + " AND ".join(where)
+            + " ORDER BY created_at, operation_id LIMIT ?",
+            [*params, max_limit],
+        ).fetchall()
+        return [
+            {
+                "operation_id": str(row["operation_id"]),
+                "stream": str(row["stream"]),
+                "payload": json.loads(str(row["payload_json"])),
+                "payload_digest": str(row["payload_digest"]),
+                "created_at": str(row["created_at"]),
+            }
+            for row in rows
+        ]
+
+    def mark_exported(
+        self,
+        operation_id: str,
+        *,
+        commit: bool = True,
+    ) -> bool:
+        result = self.conn.execute(
+            "UPDATE export_outbox SET state = 'exported', exported_at = ? "
+            "WHERE operation_id = ? AND state = 'pending'",
+            (datetime.now(timezone.utc).isoformat(), str(operation_id)),
+        )
+        if commit:
+            self.conn.commit()
+        return result.rowcount > 0
+
+    def newest_pending_export_ids(self, *, limit: int = 100) -> list[str]:
+        rows = self.conn.execute(
+            "SELECT operation_id FROM export_outbox WHERE state = 'pending' "
+            "ORDER BY rowid DESC LIMIT ?",
+            (max(1, min(1_000, int(limit))),),
+        ).fetchall()
+        return [str(row["operation_id"]) for row in rows]
+
+    def prune_exported(self, *, keep: int = 10_000, commit: bool = True) -> int:
+        keep_count = max(0, min(100_000, int(keep)))
+        result = self.conn.execute(
+            """
+            DELETE FROM export_outbox
+            WHERE state = 'exported'
+              AND operation_id NOT IN (
+                SELECT operation_id
+                FROM export_outbox
+                WHERE state = 'exported'
+                ORDER BY exported_at DESC, operation_id DESC
+                LIMIT ?
+              )
+            """,
+            (keep_count,),
+        )
+        if commit:
+            self.conn.commit()
+        return max(0, int(result.rowcount))
+
+    def preload_hot_pages(self, *, limit: int | None = None) -> dict[str, int]:
+        if limit is None:
+            try:
+                limit = int(os.environ.get("EIMEMORY_PRELOAD_HOT_ROWS") or 128)
+            except ValueError:
+                limit = 128
+        bounded = max(0, min(1_000, int(limit)))
+        if bounded == 0:
+            return {"limit": 0, "records": 0, "patterns": 0, "events": 0}
+        counts: dict[str, int] = {"limit": bounded}
+        for name, query in (
+            ("records", "SELECT substr(payload_json, 1, 256) FROM records ORDER BY rowid DESC LIMIT ?"),
+            ("patterns", "SELECT substr(payload_json, 1, 256) FROM intent_patterns ORDER BY rowid DESC LIMIT ?"),
+            ("events", "SELECT substr(payload_json, 1, 256) FROM events ORDER BY rowid DESC LIMIT ?"),
+        ):
+            rows = self.conn.execute(query, (bounded,)).fetchall()
+            counts[name] = len(rows)
+        return counts
+
+    def maintain(self, *, outbox_keep: int = 10_000) -> dict[str, Any]:
+        pruned = self.prune_exported(keep=outbox_keep, commit=False)
+        page_count = int(self.conn.execute("PRAGMA page_count").fetchone()[0])
+        freelist_count = int(self.conn.execute("PRAGMA freelist_count").fetchone()[0])
+        vacuumed_pages = 0
+        if freelist_count >= 1_000 and freelist_count * 5 >= max(1, page_count):
+            vacuumed_pages = min(freelist_count, 2_000)
+            self.conn.execute(f"PRAGMA incremental_vacuum({vacuumed_pages})")
+        self.conn.execute("PRAGMA optimize")
+        self.conn.commit()
+        checkpoint = tuple(self.conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone())
+        return {
+            "ok": True,
+            "outbox_pruned": pruned,
+            "page_count": page_count,
+            "freelist_count": freelist_count,
+            "incremental_vacuum_pages": vacuumed_pages,
+            "wal_checkpoint": [int(value) for value in checkpoint],
+        }
+
     def _migrate_intent_patterns_schema(self) -> None:
         columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(intent_patterns)").fetchall()}
         if "status" not in columns:
@@ -400,24 +587,26 @@ class SqliteRecordStore:
             self.conn.execute("ALTER TABLE intent_patterns ADD COLUMN last_rollback_reason TEXT NOT NULL DEFAULT ''")
         if "payload_json" not in columns:
             return
-        rows = self.conn.execute("SELECT id, payload_json FROM intent_patterns").fetchall()
-        if not rows:
-            return
-        for row in rows:
-            raw = str(row["payload_json"])
-            try:
-                payload = json.loads(raw)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(payload, dict):
-                continue
-            payload["status"] = str(payload.get("status") or "active")
-            if payload["status"] not in {"candidate", "shadow", "active", "rolled_back", "quarantined"}:
-                payload["status"] = "active"
-            self.conn.execute(
-                "UPDATE intent_patterns SET payload_json = ?, status = ? WHERE id = ?",
-                (json.dumps(payload, ensure_ascii=False, sort_keys=True), payload["status"], str(row["id"])),
-            )
+        cursor = self.conn.execute("SELECT id, payload_json FROM intent_patterns")
+        while True:
+            rows = cursor.fetchmany(200)
+            if not rows:
+                break
+            for row in rows:
+                raw = str(row["payload_json"])
+                try:
+                    payload = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                payload["status"] = str(payload.get("status") or "active")
+                if payload["status"] not in {"candidate", "shadow", "active", "rolled_back", "quarantined"}:
+                    payload["status"] = "active"
+                self.conn.execute(
+                    "UPDATE intent_patterns SET payload_json = ?, status = ? WHERE id = ?",
+                    (json.dumps(payload, ensure_ascii=False, sort_keys=True), payload["status"], str(row["id"])),
+                )
 
     def _seed_default_intent_patterns(self) -> None:
         scope = ScopeRef()
@@ -441,48 +630,52 @@ class SqliteRecordStore:
         ]
         if "embedding_json" in columns:
             select_columns.insert(12, "embedding_json")
-        rows = self.conn.execute(f"SELECT {', '.join(select_columns)} FROM records_legacy").fetchall()
-        for row in rows:
-            row_data = dict(row)
-            idempotency_key, semantic_key = _record_meta_keys_from_json(row_data["meta_json"])
-            storage_key = self._storage_key_from_values(
-                record_id=str(row_data["record_id"]),
-                tenant_id=str(row_data.get("tenant_id") or "default"),
-                agent_id=str(row_data.get("agent_id") or ""),
-                workspace_id=str(row_data.get("workspace_id") or ""),
-                user_id=str(row_data.get("user_id") or ""),
-            )
-            self.conn.execute(
-                """
-                INSERT OR REPLACE INTO records (
-                    storage_key, record_id, kind, status, title, summary, detail,
-                    content_text, source, agent_id, workspace_id, user_id, tenant_id,
-                    embedding_json, idempotency_key, semantic_key, meta_json, payload_json, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    storage_key,
-                    row_data["record_id"],
-                    row_data["kind"],
-                    row_data["status"],
-                    row_data["title"],
-                    row_data["summary"],
-                    row_data["detail"],
-                    row_data["content_text"],
-                    row_data["source"],
-                    row_data["agent_id"],
-                    row_data["workspace_id"],
-                    row_data["user_id"],
-                    row_data["tenant_id"],
-                    row_data.get("embedding_json", "[]"),
-                    idempotency_key,
-                    semantic_key,
-                    row_data["meta_json"],
-                    row_data["payload_json"],
-                    row_data["created_at"],
-                    row_data["updated_at"],
-                ),
-            )
+        cursor = self.conn.execute(f"SELECT {', '.join(select_columns)} FROM records_legacy")
+        while True:
+            rows = cursor.fetchmany(500)
+            if not rows:
+                break
+            for row in rows:
+                row_data = dict(row)
+                idempotency_key, semantic_key = _record_meta_keys_from_json(row_data["meta_json"])
+                storage_key = self._storage_key_from_values(
+                    record_id=str(row_data["record_id"]),
+                    tenant_id=str(row_data.get("tenant_id") or "default"),
+                    agent_id=str(row_data.get("agent_id") or ""),
+                    workspace_id=str(row_data.get("workspace_id") or ""),
+                    user_id=str(row_data.get("user_id") or ""),
+                )
+                self.conn.execute(
+                    """
+                    INSERT OR REPLACE INTO records (
+                        storage_key, record_id, kind, status, title, summary, detail,
+                        content_text, source, agent_id, workspace_id, user_id, tenant_id,
+                        embedding_json, idempotency_key, semantic_key, meta_json, payload_json, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        storage_key,
+                        row_data["record_id"],
+                        row_data["kind"],
+                        row_data["status"],
+                        row_data["title"],
+                        row_data["summary"],
+                        row_data["detail"],
+                        row_data["content_text"],
+                        row_data["source"],
+                        row_data["agent_id"],
+                        row_data["workspace_id"],
+                        row_data["user_id"],
+                        row_data["tenant_id"],
+                        row_data.get("embedding_json", "[]"),
+                        idempotency_key,
+                        semantic_key,
+                        row_data["meta_json"],
+                        row_data["payload_json"],
+                        row_data["created_at"],
+                        row_data["updated_at"],
+                    ),
+                )
         self.conn.execute("DROP TABLE records_legacy")
         self.conn.commit()
 
@@ -512,23 +705,32 @@ class SqliteRecordStore:
             if applied is not None:
                 self.conn.commit()
                 return
-            rows = self.conn.execute(
-                """
-                SELECT storage_key, meta_json
-                FROM records
-                WHERE (idempotency_key = '' OR semantic_key = '')
-                """
-            ).fetchall()
-            updates = []
-            for row in rows:
-                idempotency_key, semantic_key = _record_meta_keys_from_json(str(row["meta_json"] or "{}"))
-                if idempotency_key or semantic_key:
-                    updates.append((idempotency_key, semantic_key, str(row["storage_key"])))
-            if updates:
-                self.conn.executemany(
-                    "UPDATE records SET idempotency_key = ?, semantic_key = ? WHERE storage_key = ?",
-                    updates,
-                )
+            last_storage_key = ""
+            while True:
+                rows = self.conn.execute(
+                    """
+                    SELECT storage_key, meta_json
+                    FROM records
+                    WHERE storage_key > ?
+                      AND (idempotency_key = '' OR semantic_key = '')
+                    ORDER BY storage_key
+                    LIMIT 500
+                    """,
+                    (last_storage_key,),
+                ).fetchall()
+                if not rows:
+                    break
+                updates = []
+                for row in rows:
+                    idempotency_key, semantic_key = _record_meta_keys_from_json(str(row["meta_json"] or "{}"))
+                    if idempotency_key or semantic_key:
+                        updates.append((idempotency_key, semantic_key, str(row["storage_key"])))
+                if updates:
+                    self.conn.executemany(
+                        "UPDATE records SET idempotency_key = ?, semantic_key = ? WHERE storage_key = ?",
+                        updates,
+                    )
+                last_storage_key = str(rows[-1]["storage_key"])
             self._mark_schema_migration(_RECORD_META_KEYS_MIGRATION)
             self.conn.commit()
         except Exception:
@@ -706,22 +908,26 @@ class SqliteRecordStore:
                 fts_count = 0
         if record_count == index_count == fts_count:
             return
-        rows = self.conn.execute(
-            "SELECT storage_key, payload_json, content_text FROM records ORDER BY updated_at DESC"
-        ).fetchall()
         if index_count > record_count:
             self.conn.execute("DELETE FROM recall_index")
             if self._has_fts_table():
                 self.conn.execute("DELETE FROM recall_index_fts")
-        for row in rows:
-            record = self._record_from_payload_json(row["payload_json"])
-            if record is None:
-                continue
-            self._upsert_recall_index(
-                record=record,
-                storage_key=str(row["storage_key"]),
-                content_text=str(row["content_text"] or ""),
-            )
+        cursor = self.conn.execute(
+            "SELECT storage_key, payload_json, content_text FROM records ORDER BY storage_key"
+        )
+        while True:
+            rows = cursor.fetchmany(500)
+            if not rows:
+                break
+            for row in rows:
+                record = self._record_from_payload_json(row["payload_json"])
+                if record is None:
+                    continue
+                self._upsert_recall_index(
+                    record=record,
+                    storage_key=str(row["storage_key"]),
+                    content_text=str(row["content_text"] or ""),
+                )
 
     def _payload_dict_from_json(self, payload_json: Any) -> dict[str, Any] | None:
         try:
@@ -1336,21 +1542,24 @@ class SqliteRecordStore:
         ]
         params: list[object] = []
         self._apply_scope_filters(where, params, scope)
+        where.append(
+            "CAST(COALESCE(json_extract(meta_json, '$.task_type'), "
+            "json_extract(meta_json, '$.business_meta.task_type')) AS TEXT) = ?"
+        )
+        params.append(str(task_type))
         order_by = "updated_at DESC"
         if scope.user_id:
             order_by = "CASE WHEN user_id = ? THEN 1 ELSE 0 END DESC, updated_at DESC"
             params = [*params, scope.user_id]
-        rows = self.conn.execute(
+        row = self.conn.execute(
             "SELECT payload_json FROM records WHERE "
             + " AND ".join(where)
-            + f" ORDER BY {order_by}",
+            + f" ORDER BY {order_by} LIMIT 1",
             params,
-        ).fetchall()
-        for row in rows:
+        ).fetchone()
+        if row is not None:
             record = self._record_from_payload_json(row["payload_json"])
-            if record is None:
-                continue
-            if str(business_metadata(record.meta).get("task_type", "")) == task_type:
+            if record is not None:
                 return dict(business_metadata(record.meta))
         return {"retrieval_policy": {}, "response_policy": {}}
 
@@ -1458,6 +1667,30 @@ class SqliteRecordStore:
             if (record := self._record_from_payload_json(row["payload_json"])) is not None
         ]
 
+    def count_records(
+        self,
+        *,
+        kinds: list[str] | None = None,
+        scope: ScopeRef | None = None,
+        status: str | None = None,
+    ) -> int:
+        where = ["1=1"]
+        params: list[object] = []
+        if kinds:
+            where.append(f"kind IN ({','.join('?' for _ in kinds)})")
+            params.extend(kinds)
+        if status:
+            where.append("status = ?")
+            params.append(status)
+        if scope is not None:
+            self._apply_scope_filters(where, params, scope)
+        return int(
+            self.conn.execute(
+                "SELECT COUNT(*) FROM records WHERE " + " AND ".join(where),
+                params,
+            ).fetchone()[0]
+        )
+
     def count_records_by_meta_value(
         self,
         *,
@@ -1528,11 +1761,16 @@ class SqliteRecordStore:
             if (record := self._record_from_payload_json(row["payload_json"])) is not None
         ]
 
-    def upsert_memory_edge(self, edge: MemoryEdge) -> MemoryEdge:
-        self.upsert_memory_edges([edge])
+    def upsert_memory_edge(self, edge: MemoryEdge, *, commit: bool = True) -> MemoryEdge:
+        self.upsert_memory_edges([edge], commit=commit)
         return edge
 
-    def upsert_memory_edges(self, edges: list[MemoryEdge]) -> list[MemoryEdge]:
+    def upsert_memory_edges(
+        self,
+        edges: list[MemoryEdge],
+        *,
+        commit: bool = True,
+    ) -> list[MemoryEdge]:
         clean_edges = []
         for edge in edges:
             if edge.edge_type not in MEMORY_EDGE_TYPES:
@@ -1556,7 +1794,8 @@ class SqliteRecordStore:
             """,
             [self._memory_edge_params(edge) for edge in clean_edges],
         )
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
         return clean_edges
 
     def _memory_edge_params(self, edge: MemoryEdge) -> tuple[Any, ...]:
@@ -1653,7 +1892,13 @@ class SqliteRecordStore:
             clauses.append("(" + " AND ".join(clause) + ")")
         where.append("(" + " OR ".join(clauses) + ")")
 
-    def rewrite(self, record: RecordEnvelope, *, previous_scope: ScopeRef | None = None) -> None:
+    def rewrite(
+        self,
+        record: RecordEnvelope,
+        *,
+        previous_scope: ScopeRef | None = None,
+        commit: bool = True,
+    ) -> None:
         previous_key = None
         if previous_scope is not None:
             previous_key = self._storage_key_from_values(
@@ -1665,12 +1910,18 @@ class SqliteRecordStore:
             )
         new_key = self._storage_key(record)
         if previous_key and previous_key != new_key:
-            with self.conn:
+            try:
                 self.conn.execute("DELETE FROM records WHERE storage_key = ?", (previous_key,))
                 self._delete_recall_index(previous_key)
                 self.upsert(record, commit=False)
+                if commit:
+                    self.conn.commit()
+            except Exception:
+                if commit:
+                    self.conn.rollback()
+                raise
             return
-        self.upsert(record)
+        self.upsert(record, commit=commit)
 
     def _storage_key(self, record: RecordEnvelope) -> str:
         return self._storage_key_from_values(
@@ -2513,7 +2764,21 @@ class SqliteRecordStore:
         ledger["source_opportunity_id"] = str(source_opportunity_id or "")
         ledger["created_at"] = created_at
         ledger["record_date"] = created_at[:10]
-        self._append_auxiliary_log("policy_rollout_ledger", ledger)
+        if not self.suppress_auxiliary_logging:
+            self.enqueue_export(
+                stream="policy_rollout_ledger",
+                payload={
+                    "log_type": "policy_rollout_ledger",
+                    "scope": {
+                        "tenant_id": scope.tenant_id,
+                        "agent_id": scope.agent_id,
+                        "workspace_id": scope.workspace_id,
+                        "user_id": scope.user_id,
+                    },
+                    "payload": ledger,
+                },
+                commit=False,
+            )
         return ledger
 
     def _pattern_row_for_scope(self, pattern_id: str, scope_ref: ScopeRef) -> sqlite3.Row | None:
@@ -2898,7 +3163,7 @@ class SqliteRecordStore:
         if bool(context_payload.get("include_shadow")):
             status_values.append("shadow")
         status_placeholders = ",".join("?" for _ in status_values)
-        pattern_rows = self.conn.execute(
+        pattern_cursor = self.conn.execute(
             f"""
             SELECT payload_json, default_event_type, confidence, updated_at, status
             FROM intent_patterns
@@ -2924,31 +3189,37 @@ class SqliteRecordStore:
                 scope_ref.workspace_id,
                 scope_ref.user_id,
             ),
-        ).fetchall()
+        )
         suggestions: list[dict[str, Any]] = []
         matched_event_type = str(context_payload.get("event_type") or "")
-        for row in pattern_rows:
-            pattern = json.loads(str(row["payload_json"]))
-            matched = pattern_matches(str(pattern.get("pattern") or ""), user_phrase)
-            if not matched:
-                continue
-            if not matched_event_type:
-                matched_event_type = str(pattern.get("default_event_type") or "")
-            suggestions.append(
-                {
-                    "source": "intent_pattern",
-                    "id": pattern.get("id"),
-                    "pattern": pattern.get("pattern"),
-                    "event_type": pattern.get("default_event_type"),
-                    "interpreted_intent": pattern.get("interpreted_intent"),
-                    "first_questions": list(pattern.get("first_questions") or []),
-                    "execution_policy": list(pattern.get("execution_policy") or []),
-                    "ask_first_boundaries": list(pattern.get("ask_first_boundaries") or []),
-                    "success_criteria": str(pattern.get("success_criteria") or ""),
-                    "status": str(pattern.get("status") or "active"),
-                    "score": round(0.55 + float(pattern.get("confidence") or 0.0) * 0.25, 3),
-                }
-            )
+        while len(suggestions) < max_limit:
+            pattern_rows = pattern_cursor.fetchmany(200)
+            if not pattern_rows:
+                break
+            for row in pattern_rows:
+                pattern = json.loads(str(row["payload_json"]))
+                matched = pattern_matches(str(pattern.get("pattern") or ""), user_phrase)
+                if not matched:
+                    continue
+                if not matched_event_type:
+                    matched_event_type = str(pattern.get("default_event_type") or "")
+                suggestions.append(
+                    {
+                        "source": "intent_pattern",
+                        "id": pattern.get("id"),
+                        "pattern": pattern.get("pattern"),
+                        "event_type": pattern.get("default_event_type"),
+                        "interpreted_intent": pattern.get("interpreted_intent"),
+                        "first_questions": list(pattern.get("first_questions") or []),
+                        "execution_policy": list(pattern.get("execution_policy") or []),
+                        "ask_first_boundaries": list(pattern.get("ask_first_boundaries") or []),
+                        "success_criteria": str(pattern.get("success_criteria") or ""),
+                        "status": str(pattern.get("status") or "active"),
+                        "score": round(0.55 + float(pattern.get("confidence") or 0.0) * 0.25, 3),
+                    }
+                )
+                if len(suggestions) >= max_limit:
+                    break
         event_rows = self.conn.execute(
             """
             SELECT e.payload_json AS event_payload, e.timestamp, e.confidence,

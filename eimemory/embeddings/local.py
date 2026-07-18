@@ -8,14 +8,23 @@ import re
 
 TOKEN_RE = re.compile(r"[a-z0-9]{2,}", re.IGNORECASE)
 VECTOR_SIZE = 128
+MAX_CACHED_TEXT_CHARS = 4096
 
 
 def embed_text(text: str, *, size: int = VECTOR_SIZE) -> list[float]:
-    return list(_embed_text_cached(str(text or ""), int(size or VECTOR_SIZE)))
+    normalized = str(text or "")
+    vector_size = int(size or VECTOR_SIZE)
+    if len(normalized) > MAX_CACHED_TEXT_CHARS:
+        return list(_embed_text_uncached(normalized, vector_size))
+    return list(_embed_text_cached(normalized, vector_size))
 
 
-@lru_cache(maxsize=4096)
+@lru_cache(maxsize=1024)
 def _embed_text_cached(text: str, size: int = VECTOR_SIZE) -> tuple[float, ...]:
+    return _embed_text_uncached(text, size)
+
+
+def _embed_text_uncached(text: str, size: int = VECTOR_SIZE) -> tuple[float, ...]:
     vector = [0.0] * size
     tokens = _tokens(text)
     if not tokens:

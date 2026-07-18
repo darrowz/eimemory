@@ -229,6 +229,12 @@ def _build_parser() -> argparse.ArgumentParser:
     rebuild_sqlite.add_argument("--from-jsonl", action="store_true", dest="from_jsonl")
     rebuild_sqlite.add_argument("--replace", action="store_true")
 
+    storage = sub.add_parser("storage")
+    storage_sub = storage.add_subparsers(dest="storage_command")
+    storage_sub.add_parser("flush-exports")
+    storage_maintain = storage_sub.add_parser("maintain")
+    storage_maintain.add_argument("--outbox-keep", type=int, default=10_000)
+
     migrate = sub.add_parser("migrate")
     migrate_sub = migrate.add_subparsers(dest="migrate_command")
 
@@ -956,7 +962,7 @@ def main(argv: list[str] | None = None) -> int:
         print(
             json.dumps(
                 {
-                    "usage": "eimemory init|emergency-stop|ingest|recall|paper|source|intake|export|import|backup|rebuild-sqlite|migrate|brief|nightly|quality|identity|living|reflect|experience|learn|governance|evolve|eval|patch|ops|persona|serve-eibrain-rpc",
+                    "usage": "eimemory init|emergency-stop|ingest|recall|paper|source|intake|export|import|backup|rebuild-sqlite|storage|migrate|brief|nightly|quality|identity|living|reflect|experience|learn|governance|evolve|eval|patch|ops|persona|serve-eibrain-rpc",
                 }
             )
         )
@@ -1040,7 +1046,19 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         report = runtime.store.rebuild_sqlite_from_jsonl(replace=bool(parsed.replace))
         print(json.dumps(report, ensure_ascii=False, indent=2))
-        return 0
+        return 0 if report.get("ok") is True else 1
+    if parsed.command == "storage":
+        if parsed.storage_command == "flush-exports":
+            report = runtime.store.flush_exports()
+        elif parsed.storage_command == "maintain":
+            report = runtime.store.maintain_storage(
+                outbox_keep=int(parsed.outbox_keep)
+            )
+        else:
+            print(json.dumps({"ok": False, "error": "missing_storage_command"}))
+            return 2
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") is True else 1
     if parsed.command == "ingest":
         record = runtime.memory.ingest(
             text=parsed.text,

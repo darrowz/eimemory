@@ -622,6 +622,7 @@ def _latest_l5_assessment(
                   AND source = 'eimemory.l5_loop'
                   AND tenant_id = ? AND agent_id = ? AND workspace_id = ? AND user_id = ?
                 ORDER BY rowid DESC
+                LIMIT 500
                 """,
                 (scope.tenant_id, scope.agent_id, scope.workspace_id, scope.user_id),
             ).fetchall()

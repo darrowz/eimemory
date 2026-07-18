@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from itertools import islice
 import sys
 import time
 import tracemalloc
@@ -542,11 +543,12 @@ def _signals_from_repo(runtime: Any, *, watch: SourceWatch) -> list[dict[str, An
     if not root.exists() or not root.is_dir():
         root = Path.cwd()
     signals = []
-    for path in list(root.rglob("*.py"))[:200]:
+    for path in islice(root.rglob("*.py"), 200):
         if any(part in {".git", ".venv", "__pycache__"} for part in path.parts):
             continue
         try:
-            text = path.read_text(encoding="utf-8", errors="ignore")
+            with path.open("r", encoding="utf-8", errors="ignore") as handle:
+                text = handle.read(1_048_576)
         except OSError:
             continue
         if "TODO" in text or "FIXME" in text:

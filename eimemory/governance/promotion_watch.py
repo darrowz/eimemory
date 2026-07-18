@@ -316,6 +316,7 @@ def _write_pattern(runtime: Any, pattern: dict[str, Any], *, scope: dict[str, An
         ),
     )
     runtime.store.sqlite.conn.commit()
+    runtime.store.flush_exports()
 
 
 def _record_watch_ledger(

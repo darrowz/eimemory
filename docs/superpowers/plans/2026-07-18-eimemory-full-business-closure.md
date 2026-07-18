@@ -582,13 +582,16 @@ Expected: zero failures, no indefinite overdue status-only pending entries.
 
 Commit: `fix: make feishu delivery at most once and terminal`
 
-### Task 9: Add SQLite Export Outbox and Strict Recovery
+### Task 9: Add Durable Storage, Strict Recovery, and Bounded Performance
 
 **Files:**
 - Modify: `eimemory/storage/sqlite_store.py`
 - Modify: `eimemory/storage/runtime_store.py`
 - Modify: `eimemory/storage/jsonl.py`
 - Modify: `eimemory/cli/main.py`
+- Modify: `eimemory/adapters/openclaw/qmd_compat.py`
+- Modify: `eimemory/runtime_identity.py`
+- Modify: autonomous JSONL consumers and bounded scanners/caches
 - Test: `tests/test_storage.py`
 - Test: `tests/safety/test_atomic_state_closure.py`
 
@@ -596,7 +599,7 @@ Commit: `fix: make feishu delivery at most once and terminal`
 - Produces: `SqliteRecordStore.enqueue_export`, `pending_exports`, `mark_exported`, `RuntimeStore.flush_exports`, and `scan_jsonl_strict`.
 - Consumes: canonical payload, stable operation ID, stream, digest, and SQLite transaction.
 
-- [ ] **Step 1: Add outbox crash and corrupt-rebuild regressions**
+- [x] **Step 1: Add outbox crash and corrupt-rebuild regressions**
 
 ```python
 def test_sqlite_commit_survives_jsonl_export_failure_and_retries(tmp_path, monkeypatch):
@@ -619,25 +622,34 @@ def test_rebuild_fails_closed_on_malformed_jsonl(tmp_path):
     assert report["replaced"] is False
 ```
 
-- [ ] **Step 2: Verify the current rebuild silently reports success**
+- [x] **Step 2: Verify the current rebuild silently reports success**
 
 Run: `python -m pytest tests/test_storage.py -q -k "export_failure or malformed_jsonl or rebuild_fails_closed"`
 
 Expected: malformed input is skipped and `ok=True` before the fix.
 
-- [ ] **Step 3: Add transactional outbox schema and APIs**
+- [x] **Step 3: Add transactional outbox schema and APIs**
 
 Create `export_outbox(operation_id TEXT PRIMARY KEY, stream TEXT, payload_json TEXT, payload_digest TEXT, state TEXT, created_at TEXT, exported_at TEXT)`. Every business mutation and its export row must share the same SQLite transaction. JSONL entries carry `_operation_id` and `_payload_digest`; flush uses append+flush+fsync before `mark_exported`.
 
-- [ ] **Step 4: Implement strict scanner and atomic replacement rebuild**
+- [x] **Step 4: Implement strict scanner and atomic replacement rebuild**
 
 `scan_jsonl_strict` returns payloads plus line/offset/digest errors. Build replacement state in a sibling temporary SQLite file, validate stream high-water/counts, fsync, close the live connection, `os.replace`, and reopen. Any error returns `replaced=false` without touching the live database.
 
-- [ ] **Step 5: Verify storage layer and commit**
+JSONL is rotated into bounded segments and every autonomous/held-out consumer
+streams archived plus active segments. SQLite uses bounded cache/WAL settings,
+batched migrations, SQL counts, bounded preload, incremental maintenance, and a
+nightly outbox flush/checkpoint. QMD search uses FTS5 with bounded result sets;
+large source documents are skipped. Package/PDF hashing, repo evidence scans,
+skill ledgers, and OpenClaw loop ledgers no longer retain whole growing files.
 
-Run: `python -m pytest tests/test_storage.py tests/safety/test_atomic_state_closure.py -q`
+- [x] **Step 5: Verify storage and adjacent performance layers and commit**
 
-Expected: zero failures; export retries are idempotent and corrupted recovery fails closed.
+Run: `python -m pytest tests/test_storage.py tests/safety/test_atomic_state_closure.py tests/test_segmented_record_consumers.py tests/test_embeddings.py tests/test_openclaw_loop_io.py tests/test_paper_intake.py tests/test_platform.py -q`
+
+Expected: zero failures; export retries are idempotent, corrupted recovery fails
+closed, segmented history remains visible, and every growing hot path has a
+bounded memory/read contract.
 
 Commit: `fix: make storage export and recovery durable`
 

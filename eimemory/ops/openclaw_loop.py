@@ -32,6 +32,8 @@ ACTIVE_STATUSES = {"planned", "running", "waiting", "verifying"}
 WATCH_STALE_SAMPLE_LIMIT = 20
 MAX_LEDGER_TEXT_CHARS = 4096
 DEFAULT_TERMINAL_RETENTION_DAYS = 7
+MAX_JSONL_CACHE_BYTES = 8 * 1024 * 1024
+MAX_JSONL_CACHE_ROWS = 10_000
 LEDGER_NAMES = (
     "actions.jsonl",
     "lesson_candidates.jsonl",
@@ -154,6 +156,8 @@ def _append_cached_jsonl_row(path: Path, record: dict[str, Any]) -> None:
     entry.offset = stat.st_size
     entry.size = stat.st_size
     entry.mtime_ns = stat.st_mtime_ns
+    if entry.size > MAX_JSONL_CACHE_BYTES or len(entry.rows) > MAX_JSONL_CACHE_ROWS:
+        _JSONL_CACHE.pop(key, None)
 
 
 def _record_corrupt_line(name: str, *, line_number: int, raw: str, error: str) -> None:
@@ -219,19 +223,22 @@ def read_jsonl(name: str) -> list[dict[str, Any]]:
     except OSError:
         _JSONL_CACHE.pop(key, None)
         return [dict(row) for row in rows]
-    _JSONL_CACHE[key] = _JsonlCacheEntry(
-        rows=[dict(row) for row in rows],
-        offset=offset,
-        line_count=line_number,
-        mtime_ns=stat.st_mtime_ns,
-        size=stat.st_size,
-    )
+    if stat.st_size <= MAX_JSONL_CACHE_BYTES and len(rows) <= MAX_JSONL_CACHE_ROWS:
+        _JSONL_CACHE[key] = _JsonlCacheEntry(
+            rows=[dict(row) for row in rows],
+            offset=offset,
+            line_count=line_number,
+            mtime_ns=stat.st_mtime_ns,
+            size=stat.st_size,
+        )
+    else:
+        _JSONL_CACHE.pop(key, None)
     return [dict(row) for row in rows]
 
 
 def latest_by_id(name: str, id_field: str) -> dict[str, dict[str, Any]]:
     latest: dict[str, dict[str, Any]] = {}
-    for row in read_jsonl(name):
+    for row in iter_jsonl(name):
         value = row.get(id_field)
         if value:
             latest[str(value)] = row
@@ -545,7 +552,7 @@ def _post_feishu_webhook(url: str, payload: dict[str, Any]) -> bool:
 
 def _latest_verification(task_id: str) -> dict[str, Any] | None:
     latest: dict[str, Any] | None = None
-    for row in read_jsonl("verifications.jsonl"):
+    for row in iter_jsonl("verifications.jsonl"):
         if row.get("task_id") == task_id:
             latest = row
     return latest
@@ -674,6 +681,14 @@ def _iter_jsonl_for_compaction(name: str) -> Iterator[dict[str, Any]]:
                 continue
             if isinstance(row, dict):
                 yield row
+
+
+def iter_jsonl(name: str) -> Iterator[dict[str, Any]]:
+    """Stream a ledger for hot-path reductions without populating the row cache."""
+
+    if not path_for(name).exists():
+        return
+    yield from _iter_jsonl_for_compaction(name)
 
 
 def _write_jsonl_atomic(name: str, rows: Iterable[dict[str, Any]]) -> int:
@@ -893,9 +908,9 @@ def run_smoke(*, config_path: str | Path | None = None, run_live_checks: bool = 
     return {
         "ok": drift.get("ok") is True,
         "task_id": task_id,
-        "actions": len([row for row in read_jsonl("actions.jsonl") if row.get("task_id") == task_id]),
-        "verifications": len([row for row in read_jsonl("verifications.jsonl") if row.get("task_id") == task_id]),
-        "reports": len([row for row in read_jsonl("reports.jsonl") if row.get("task_id") == task_id]),
+        "actions": sum(1 for row in iter_jsonl("actions.jsonl") if row.get("task_id") == task_id),
+        "verifications": sum(1 for row in iter_jsonl("verifications.jsonl") if row.get("task_id") == task_id),
+        "reports": sum(1 for row in iter_jsonl("reports.jsonl") if row.get("task_id") == task_id),
         "verification_id": verification["verification_id"],
         "drift": drift,
     }

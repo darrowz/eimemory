@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from itertools import islice
 from typing import Any
 from urllib.parse import urlparse
 
@@ -68,11 +69,12 @@ def _collect_repo_files(runtime: Any, *, task: dict[str, Any]) -> list[Evidence]
     files: list[Evidence] = []
     if not root.exists():
         return files
-    for path in list(root.rglob("*.py"))[:80]:
+    for path in islice(root.rglob("*.py"), 80):
         if any(part in {".git", ".venv", "__pycache__", "state"} for part in path.parts):
             continue
         try:
-            text = path.read_text(encoding="utf-8", errors="ignore")
+            with path.open("r", encoding="utf-8", errors="ignore") as handle:
+                text = handle.read(1_048_576)
         except OSError:
             continue
         if "TODO" in text or "FIXME" in text or "autonomous" in path.name:

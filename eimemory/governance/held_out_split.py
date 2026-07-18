@@ -18,6 +18,8 @@ import random
 from pathlib import Path
 from typing import Iterator
 
+from eimemory.storage.jsonl import iter_jsonl_payloads
+
 # Default paths (Windows-friendly substitute for /var/lib/eimemory/...).
 DEFAULT_RECORDS_PATH = Path("E:/eimemory/records.jsonl")
 DEFAULT_HOLD_OUT_PATH = Path(
@@ -38,19 +40,9 @@ HOLDOUT_RATIO = 0.30
 
 def _iter_playbooks(records_path: Path) -> Iterator[str]:
     """Yield record_id for every `learning_playbook` row in records_path."""
-    if not records_path.exists():
-        return
-    with records_path.open(encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                row = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if row.get("kind") == "learning_playbook" and "record_id" in row:
-                yield str(row["record_id"])
+    for row in iter_jsonl_payloads(records_path):
+        if row.get("kind") == "learning_playbook" and "record_id" in row:
+            yield str(row["record_id"])
 
 
 def split_playbooks(

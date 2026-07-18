@@ -1,7 +1,103 @@
+import json
+
+import pytest
+
 from eimemory.models.memory_edges import MemoryEdge
 from eimemory.models.records import RecordEnvelope, ScopeRef, TimeRef
 from eimemory.storage import sqlite_store as sqlite_store_module
 from eimemory.storage.runtime_store import RuntimeStore
+
+
+def test_sqlite_commit_survives_jsonl_export_failure_and_retries(
+    tmp_path, monkeypatch
+) -> None:
+    store = RuntimeStore(root=tmp_path)
+    scope = ScopeRef(agent_id="main", workspace_id="outbox")
+    record = RecordEnvelope.create(
+        kind="memory",
+        title="Durable outbox",
+        summary="SQLite remains canonical while JSONL is unavailable.",
+        scope=scope,
+    )
+
+    def fail_append(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(store.log, "append_payload", fail_append, raising=False)
+    with pytest.raises(OSError, match="disk full"):
+        store.append(record)
+
+    assert store.sqlite.get_by_id(record.record_id, scope=scope) is not None
+    assert len(store.sqlite.pending_exports(limit=10)) == 1
+
+    monkeypatch.undo()
+    assert store.flush_exports()["exported"] == 1
+    assert store.sqlite.pending_exports(limit=10) == []
+
+
+def test_rebuild_fails_closed_on_malformed_jsonl(tmp_path) -> None:
+    store = RuntimeStore(root=tmp_path)
+    scope = ScopeRef(agent_id="main", workspace_id="strict-rebuild")
+    record = store.append(
+        RecordEnvelope.create(
+            kind="memory",
+            title="Live row",
+            summary="Must survive a corrupt recovery source.",
+            scope=scope,
+        )
+    )
+    with store.log.path.open("a", encoding="utf-8") as handle:
+        handle.write("{malformed\n")
+
+    report = store.rebuild_sqlite_from_jsonl(replace=True)
+
+    assert report["ok"] is False
+    assert report["replaced"] is False
+    assert report["errors"][0]["line"] == 2
+    assert store.get_by_id(record.record_id, scope=scope) is not None
+
+
+def test_jsonl_rotates_into_bounded_segments_and_rebuilds_streaming(tmp_path) -> None:
+    from eimemory.storage.jsonl import JsonlLog
+
+    log = JsonlLog(tmp_path / "records.jsonl", max_segment_bytes=480)
+    scope = ScopeRef(agent_id="main", workspace_id="segments")
+    records = [
+        RecordEnvelope.create(
+            kind="memory",
+            title=f"Segmented {index}",
+            summary="x" * 180,
+            scope=scope,
+        )
+        for index in range(6)
+    ]
+    for record in records:
+        log.append_payload(record.to_dict())
+
+    paths = log.segment_paths()
+    assert len(paths) > 1
+    assert all(
+        len(path.read_text(encoding="utf-8").splitlines()) == 1 for path in paths
+    )
+    assert [entry.payload["record_id"] for entry in log.scan_strict()] == [
+        record.record_id for record in records
+    ]
+
+
+def test_sqlite_runtime_uses_bounded_wal_and_disk_temp_pages(tmp_path) -> None:
+    store = RuntimeStore(root=tmp_path)
+
+    temp_store = int(store.sqlite.conn.execute("PRAGMA temp_store").fetchone()[0])
+    auto_checkpoint = int(
+        store.sqlite.conn.execute("PRAGMA wal_autocheckpoint").fetchone()[0]
+    )
+    journal_limit = int(
+        store.sqlite.conn.execute("PRAGMA journal_size_limit").fetchone()[0]
+    )
+
+    assert temp_store == 1
+    assert 1 <= auto_checkpoint <= 2_000
+    assert 0 < journal_limit <= 67_108_864
 
 
 def test_runtime_store_persists_and_searches_records(tmp_path) -> None:
@@ -377,7 +473,7 @@ def test_runtime_store_rebuilds_sqlite_business_tables_from_jsonl(tmp_path) -> N
 
     report = store.rebuild_sqlite_from_jsonl(replace=True)
 
-    assert report["ok"] is True
+    assert report["ok"] is True, report
     assert store.get_by_id(memory.record_id, scope=scope).record_id == memory.record_id
     assert store.sqlite.conn.execute("SELECT COUNT(*) FROM events WHERE id = ?", (event["id"],)).fetchone()[0] == 1
     assert store.sqlite.conn.execute("SELECT COUNT(*) FROM event_outcomes WHERE id = ?", (outcome["id"],)).fetchone()[0] == 1

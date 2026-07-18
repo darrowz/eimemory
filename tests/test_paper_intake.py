@@ -61,6 +61,19 @@ def test_normalize_pdf_input_distinguishes_different_pdf_content(tmp_path) -> No
     assert paper_source_from_payload(payload_one).paper_source_id != paper_source_from_payload(payload_two).paper_source_id
 
 
+def test_normalize_pdf_hashes_content_without_reading_whole_file(tmp_path, monkeypatch) -> None:
+    pdf_path = tmp_path / "large.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n" + b"x" * (2 * 1024 * 1024))
+
+    def reject_read_bytes(_path):
+        raise AssertionError("paper hashing must stream file content")
+
+    monkeypatch.setattr(Path, "read_bytes", reject_read_bytes)
+    payload = normalize_paper_input({"pdf_file": str(pdf_path)})
+
+    assert len(payload["source_hash"]) == 64
+
+
 def test_runtime_can_persist_paper_source(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
 

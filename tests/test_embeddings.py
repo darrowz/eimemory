@@ -24,3 +24,15 @@ def test_embed_text_cache_is_partitioned_by_vector_size() -> None:
     info = _embed_text_cached.cache_info()
 
     assert info.misses == 2
+
+
+def test_embed_text_does_not_retain_oversized_documents_in_process_cache() -> None:
+    _embed_text_cached.cache_clear()
+    document = "large-memory-document " * 500
+
+    embed_text(document)
+    embed_text(document)
+
+    info = _embed_text_cached.cache_info()
+    assert info.currsize == 0
+    assert info.misses == 0

@@ -372,6 +372,20 @@ def test_health_payload_reports_actual_import_root_and_package_tree_digest(tmp_p
     assert len(payload["package_tree_digest"]) == 64
 
 
+def test_package_tree_digest_streams_file_content(tmp_path, monkeypatch) -> None:
+    from eimemory.runtime_identity import package_tree_digest
+
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / "large.py").write_bytes(b"x" * (2 * 1024 * 1024))
+
+    def reject_read_bytes(_path):
+        raise AssertionError("package digest must not retain whole file bytes")
+
+    monkeypatch.setattr(Path, "read_bytes", reject_read_bytes)
+    assert len(package_tree_digest(package)) == 64
+
+
 def test_runtime_import_root_is_frozen_when_current_symlink_changes(tmp_path, monkeypatch) -> None:
     from eimemory import runtime_identity
 
@@ -495,6 +509,8 @@ def test_scheduler_and_openclaw_tools_surface_runtime_state(tmp_path) -> None:
     assert search["items"]
     assert explain["ok"] is True
     assert nightly["active_rule_count"] == 1
+    assert nightly["storage_maintenance"]["ok"] is True
+    assert nightly["storage_maintenance"]["flush"]["remaining"] == 0
     assert nightly["supervisor_summary"]["command"] == "nightly"
     supervisor = build_supervisor_contract(runtime, scope={"agent_id": "main", "workspace_id": "repo-x"})
     assert supervisor["runs"]["nightly"]["last_success_at"]
@@ -779,6 +795,27 @@ def test_qmd_update_skips_non_utf8_files_and_keeps_indexing(tmp_path, monkeypatc
     output = capsys.readouterr().out
     assert '"skipped": 1' in output
     assert "Index me" in output
+
+
+def test_qmd_uses_fts_and_rejects_oversized_documents(tmp_path, monkeypatch) -> None:
+    from eimemory.adapters.openclaw.qmd_compat import MAX_DOCUMENT_BYTES, QmdCompatRuntime
+
+    notes = tmp_path / "notes"
+    notes.mkdir()
+    (notes / "good.md").write_text("bounded full text search target", encoding="utf-8")
+    (notes / "oversized.md").write_bytes(b"x" * (MAX_DOCUMENT_BYTES + 1))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache"))
+    runtime = QmdCompatRuntime()
+    runtime.add_collection(str(notes), "notes", "*.md")
+
+    report = runtime.update_index()
+    with runtime._connect() as conn:
+        fts_count = int(conn.execute("SELECT COUNT(*) FROM documents_fts").fetchone()[0])
+
+    assert report == {"ok": True, "collections": 1, "documents": 1, "skipped": 1}
+    assert fts_count == 1
+    assert runtime.search(query="full text target", limit=2)[0]["file"] == "good.md"
 
 
 def test_cli_reflect_log_read_stats_and_check(tmp_path, monkeypatch, capsys) -> None:

@@ -22,7 +22,9 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
+
+from eimemory.storage.jsonl import JsonlLog
 
 
 def _now_iso() -> str:
@@ -38,33 +40,28 @@ def _ensure_parent(path: Path) -> None:
 def _append_row(path: Path, row: dict[str, Any]) -> None:
     """Append a single JSON row to the JSONL registry, creating parents first."""
     _ensure_parent(path)
-    # ``utf-8`` keeps the on-disk representation portable; ``append`` with the
-    # text mode opens the file lazily, which is what we want for the
-    # create-parent-then-append sequence.
-    with path.open("a", encoding="utf-8") as fp:
-        fp.write(json.dumps(row, ensure_ascii=False, sort_keys=True))
-        fp.write("\n")
+    JsonlLog(path, max_segment_bytes=16 * 1024 * 1024).append_payload(row)
 
 
-def _read_all_rows(path: Path) -> list[dict[str, Any]]:
-    """Return every JSONL row in ``path`` in write order.
+def _iter_rows(path: Path) -> Iterator[dict[str, Any]]:
+    """Stream every registry row without retaining the history in memory.
 
     A missing file is treated as an empty registry (no rows). Malformed lines
     are skipped silently — the JSONL is best-effort and we never want a single
     bad row to brick the skill pipeline.
     """
-    if not path.exists():
-        return []
-    rows: list[dict[str, Any]] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        try:
-            rows.append(json.loads(line))
-        except json.JSONDecodeError:
-            # Best-effort: skip malformed rows so the pipeline keeps working.
-            continue
-    return rows
+    log = JsonlLog(path, max_segment_bytes=16 * 1024 * 1024)
+    for segment in log.segment_paths():
+        with segment.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(row, dict):
+                    yield row
 
 
 def register_skill(
@@ -111,9 +108,8 @@ def deregister_skill(*, skill_name: str, registry_path: Path) -> None:
     """
     # We retain the most recent manifest / version for the deregister row so
     # ``get_skill`` callers can still inspect the skill's last known config.
-    rows = _read_all_rows(registry_path)
     last: dict[str, Any] | None = None
-    for row in rows:
+    for row in _iter_rows(registry_path):
         if row.get("skill_name") == skill_name:
             last = row
     version = last["version"] if last else ""
@@ -128,7 +124,7 @@ def deregister_skill(*, skill_name: str, registry_path: Path) -> None:
     _append_row(registry_path, row)
 
 
-def _latest_per_name(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+def _latest_per_name(rows: Iterator[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     """Reduce a row list to the latest row for each ``skill_name`` (by write order)."""
     latest: dict[str, dict[str, Any]] = {}
     for row in rows:
@@ -152,8 +148,7 @@ def list_active_skills(*, registry_path: Path) -> list[dict[str, Any]]:
         A list of skill rows, each containing ``skill_name``, ``version``,
         ``manifest``, ``status``, and ``ts``.
     """
-    rows = _read_all_rows(registry_path)
-    latest = _latest_per_name(rows)
+    latest = _latest_per_name(_iter_rows(registry_path))
     return [row for row in latest.values() if row.get("status") == "active"]
 
 
@@ -169,6 +164,8 @@ def get_skill(*, skill_name: str, registry_path: Path) -> dict[str, Any] | None:
         been written. If the skill has been deregistered, the returned row
         will have ``status="inactive"``.
     """
-    rows = _read_all_rows(registry_path)
-    latest = _latest_per_name(rows)
-    return latest.get(skill_name)
+    latest: dict[str, Any] | None = None
+    for row in _iter_rows(registry_path):
+        if row.get("skill_name") == skill_name:
+            latest = row
+    return latest

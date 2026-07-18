@@ -4,11 +4,16 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+
+
+MAX_DOCUMENT_BYTES = 2 * 1024 * 1024
+MAX_SEARCH_RESULTS = 100
 
 
 def _now_iso() -> str:
@@ -59,6 +64,7 @@ class QmdCompatRuntime:
         conn = self._connect()
         try:
             conn.execute("DELETE FROM documents WHERE collection = ?", (name,))
+            conn.execute("DELETE FROM documents_fts WHERE collection = ?", (name,))
             conn.commit()
         finally:
             conn.close()
@@ -78,10 +84,19 @@ class QmdCompatRuntime:
             for collection in collections:
                 files = self._list_files(collection)
                 conn.execute("DELETE FROM documents WHERE collection = ?", (collection.name,))
+                conn.execute("DELETE FROM documents_fts WHERE collection = ?", (collection.name,))
                 for file_path in files:
                     rel_path = file_path.relative_to(Path(collection.path)).as_posix()
                     try:
-                        content = file_path.read_text(encoding="utf-8")
+                        if file_path.stat().st_size > MAX_DOCUMENT_BYTES:
+                            skipped += 1
+                            continue
+                        with file_path.open("rb") as handle:
+                            raw = handle.read(MAX_DOCUMENT_BYTES + 1)
+                        if len(raw) > MAX_DOCUMENT_BYTES:
+                            skipped += 1
+                            continue
+                        content = raw.decode("utf-8")
                     except (OSError, UnicodeDecodeError):
                         skipped += 1
                         continue
@@ -92,6 +107,10 @@ class QmdCompatRuntime:
                         VALUES (?, ?, ?, ?, 1, ?)
                         """,
                         (doc_hash, collection.name, rel_path, content, _now_iso()),
+                    )
+                    conn.execute(
+                        "INSERT INTO documents_fts (hash, collection, path, content) VALUES (?, ?, ?, ?)",
+                        (doc_hash, collection.name, rel_path, content),
                     )
                     total += 1
             conn.commit()
@@ -122,18 +141,28 @@ class QmdCompatRuntime:
 
     def search(self, *, query: str, limit: int, collections: list[str] | None = None) -> list[dict[str, object]]:
         normalized_collections = [item for item in (collections or []) if item]
+        bounded_limit = max(1, min(MAX_SEARCH_RESULTS, int(limit)))
+        lowered_tokens = [token for token in re.findall(r"[\w-]+", query.lower()) if token]
         conn = self._connect()
         try:
-            sql = "SELECT hash, collection, path, content FROM documents WHERE active = 1"
-            params: list[object] = []
+            if lowered_tokens:
+                sql = (
+                    "SELECT hash, collection, path, content, bm25(documents_fts) AS rank "
+                    "FROM documents_fts WHERE documents_fts MATCH ?"
+                )
+                params: list[object] = [" OR ".join(f'"{token.replace(chr(34), chr(34) * 2)}"' for token in lowered_tokens)]
+            else:
+                sql = "SELECT hash, collection, path, content, 0.0 AS rank FROM documents WHERE active = 1"
+                params = []
             if normalized_collections:
                 sql += f" AND collection IN ({','.join('?' for _ in normalized_collections)})"
                 params.extend(normalized_collections)
+            sql += " ORDER BY rank, hash LIMIT ?"
+            params.append(bounded_limit)
             rows = conn.execute(sql, params).fetchall()
         finally:
             conn.close()
         scored: list[tuple[int, dict[str, object]]] = []
-        lowered_tokens = [token for token in query.lower().split() if token]
         for row in rows:
             content = str(row["content"] or "")
             haystack = content.lower()
@@ -157,7 +186,7 @@ class QmdCompatRuntime:
                 )
             )
         scored.sort(key=lambda item: item[0], reverse=True)
-        return [payload for _, payload in scored[:limit]]
+        return [payload for _, payload in scored[:bounded_limit]]
 
     def _load_collections(self) -> list[CollectionRecord]:
         if not self.collections_path.exists():
@@ -191,6 +220,16 @@ class QmdCompatRuntime:
                 content TEXT NOT NULL,
                 active INTEGER NOT NULL DEFAULT 1,
                 updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(
+                hash UNINDEXED,
+                collection UNINDEXED,
+                path UNINDEXED,
+                content
             )
             """
         )
