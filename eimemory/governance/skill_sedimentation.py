@@ -7,6 +7,7 @@ import re
 from typing import Any
 
 from eimemory.core.clock import now_iso
+from eimemory.governance.evidence_contract import current_release_identity, release_identity_payload
 from eimemory.models.records import LinkRef, RecordEnvelope, ScopeRef, TimeRef
 
 
@@ -202,6 +203,8 @@ def _skill_entry(key: str, records: list[RecordEnvelope], *, scope: ScopeRef) ->
 def _upsert_skill_candidate(runtime: Any, entry: dict[str, Any], records: list[RecordEnvelope], *, scope: ScopeRef) -> RecordEnvelope:
     candidate_id = f"skillcand_{_stable_hash(entry['skill_id'], 'candidate')[:16]}"
     existing = runtime.store.get_by_id(candidate_id, scope=scope)
+    release = current_release_identity(runtime, scope)
+    release_payload = release_identity_payload(release) if release is not None else {}
     record = RecordEnvelope(
         record_id=candidate_id,
         kind="skill_candidate",
@@ -210,6 +213,8 @@ def _upsert_skill_candidate(runtime: Any, entry: dict[str, Any], records: list[R
         summary=f"{entry['name']} repeated {entry['repeat_count']} time(s) and passed replay evidence.",
         detail="\n".join(str(step) for step in entry.get("steps") or []),
         content={
+            "evidence_class": "candidate",
+            **release_payload,
             "skill_id": entry["skill_id"],
             "sop_key": entry["sop_key"],
             "target_capability": entry["target_capability"],
@@ -228,9 +233,15 @@ def _upsert_skill_candidate(runtime: Any, entry: dict[str, Any], records: list[R
         source="eimemory.skill_sedimentation",
         scope=scope,
         time=TimeRef.now(),
-        provenance={"source": "eimemory.skill_sedimentation"},
+        provenance={
+            "source": "eimemory.skill_sedimentation",
+            "evidence_class": "candidate",
+            **release_payload,
+        },
         meta={
             "report_type": "eiskill_candidate",
+            "evidence_class": "candidate",
+            **release_payload,
             "status": "sandbox_ready",
             "skill_id": entry["skill_id"],
             "sop_key": entry["sop_key"],

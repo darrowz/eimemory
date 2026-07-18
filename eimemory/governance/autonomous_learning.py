@@ -15,6 +15,7 @@ from eimemory.governance.capability_replay_packs import (
 from eimemory.governance.capability_seeding import ensure_all_seeded
 from eimemory.governance.curiosity import generate_learning_goals, persist_learning_goals
 from eimemory.governance.evidence_collector import collect
+from eimemory.governance.evidence_contract import ReleaseIdentity, current_release_identity
 from eimemory.governance.goal_graph import build_goal_graph_loop
 from eimemory.governance.goal_registry import load_goal_registry
 from eimemory.governance.isolated_evaluator import (
@@ -33,9 +34,9 @@ from eimemory.governance.learning_state import (
 )
 from eimemory.governance.promotion_manager import promote_candidate
 from eimemory.governance.prompt_safety import (
-    PROMPT_SAFETY_STUB_NOTREADY,
     prompt_injection_check,
     prompt_shadow_eval,
+    run_prompt_safety_battery,
 )
 from eimemory.governance.replay_dataset import build_replay_dataset
 from eimemory.governance.regression_watch import run_regression_watch
@@ -376,6 +377,9 @@ def run_autonomous_learning_cycle(
                 candidate_kind,
                 evidence=evidence,
                 scope=scope_ref,
+                prompt_text=_candidate_prompt_text(candidate_patch),
+                prompt_safety_executor=getattr(runtime, "prompt_safety_executor", None),
+                release=current_release_identity(runtime, scope_ref),
                 real_task_replay=real_task_replay,
                 replay_gate=replay_gate,
             )
@@ -938,7 +942,14 @@ def _run_autonomous_learning_dry_run(
         ),
         persist=False,
     )
-    eval_result["gate_bundle"] = _gate_bundle_for_candidate(candidate_kind, evidence=evidence, scope=scope)
+    eval_result["gate_bundle"] = _gate_bundle_for_candidate(
+        candidate_kind,
+        evidence=evidence,
+        scope=scope,
+        prompt_text=_candidate_prompt_text(candidate_patch),
+        prompt_safety_executor=getattr(runtime, "prompt_safety_executor", None),
+        release=current_release_identity(runtime, scope),
+    )
     result = {
         "ok": True,
         "loop_id": "dry_run",
@@ -1681,12 +1692,27 @@ def _evidence_score(evidence: list[dict[str, Any]]) -> float:
     return round(min(1.0, sum(scores) / len(scores)), 3)
 
 
+def _candidate_prompt_text(candidate_patch: dict[str, Any] | None) -> str:
+    patch = dict(candidate_patch or {})
+    for key in ("system_prompt", "prompt", "prompt_text", "replacement", "content", "text"):
+        value = patch.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        if isinstance(value, dict):
+            nested = _candidate_prompt_text(value)
+            if nested:
+                return nested
+    return ""
+
+
 def _gate_bundle_for_candidate(
     candidate_kind: str,
     *,
     evidence: list[dict[str, Any]],
     scope: ScopeRef,
     prompt_text: str | None = None,
+    prompt_safety_executor: Any = None,
+    release: ReleaseIdentity | None = None,
     real_task_replay: dict[str, Any] | None = None,
     replay_gate: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -1706,20 +1732,29 @@ def _gate_bundle_for_candidate(
         # known injection markers — passing the candidate kind is good
         # enough for now and will be replaced once the gate-bundle builder
         # has access to the full candidate content.
-        body = str(prompt_text if prompt_text is not None else candidate_kind or "")
-        shadow_passed = bool(prompt_shadow_eval(body, cases=3))
-        injection_passed = bool(prompt_injection_check(body, cases=3))
+        body = str(prompt_text or "").strip()
+        final_release = release or ReleaseIdentity(commit="", version="", receipt_id="", session_id="")
+        assessment = run_prompt_safety_battery(prompt_safety_executor, body, final_release)
+        assessment_payload = assessment.to_dict()
+        static_shadow = bool(prompt_shadow_eval(body, cases=3))
+        static_injection = bool(prompt_injection_check(body, cases=3))
+        battery_passed = assessment.status == "passed" and assessment.complete
+        not_ready = assessment.status == "not_ready"
         prompt_shadow_field: dict[str, Any] = {
-            "passed": shadow_passed,
+            "passed": bool(battery_passed and static_shadow),
             "skipped": False,
-            "cases": 3,
-            "notready": PROMPT_SAFETY_STUB_NOTREADY,
+            "cases": assessment.expected_count,
+            "notready": not_ready,
+            "battery": assessment_payload,
+            "static_prefilter_passed": static_shadow,
         }
         prompt_injection_field: dict[str, Any] = {
-            "passed": injection_passed,
+            "passed": bool(battery_passed and static_injection),
             "skipped": False,
-            "cases": 3,
-            "notready": PROMPT_SAFETY_STUB_NOTREADY,
+            "cases": assessment.expected_count,
+            "notready": not_ready,
+            "battery": assessment_payload,
+            "static_prefilter_passed": static_injection,
         }
     else:
         prompt_shadow_field = {

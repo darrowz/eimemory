@@ -457,7 +457,7 @@ Commit: `fix: bind governance evidence to real release tasks`
 - Produces: `run_prompt_safety_battery(executor, prompt, release) -> PromptSafetyAssessment` and release-aware `assess_l5_closed_loop`.
 - Consumes: Task 6 evidence resolver and current-release real-task metrics.
 
-- [ ] **Step 1: Add fake-ID, incomplete-battery, and data-accumulation tests**
+- [x] **Step 1: Add fake-ID, incomplete-battery, and data-accumulation tests**
 
 ```python
 def test_l5_rejects_nonexistent_structural_ids(runtime):
@@ -479,13 +479,13 @@ def test_prompt_safety_requires_every_executed_case():
     assert result.complete is False
 ```
 
-- [ ] **Step 2: Verify the fake report currently reaches L5**
+- [x] **Step 2: Verify the fake report currently reaches L5**
 
 Run: `python -m pytest tests/test_l5_closed_loop.py tests/test_l5_consciousness_loop.py tests/test_l5_readiness.py tests/test_prompt_shadow_eval_l2_gate.py -q -k "nonexistent or data_accumulating or prompt_safety"`
 
 Expected: the forged report is accepted and/or prompt safety remains marked as a stub.
 
-- [ ] **Step 3: Implement the executable case manifest**
+- [x] **Step 3: Implement the executable case manifest**
 
 Define immutable cases for clean control, direct injection, indirect injection, role override, tool exfiltration, and policy bypass. Persist model/executor identity, manifest digest, case results, and release identity. Any missing or malformed executor result yields `not_ready`.
 
@@ -500,11 +500,11 @@ class PromptSafetyAssessment:
     case_results: tuple[PromptSafetyCaseResult, ...]
 ```
 
-- [ ] **Step 4: Resolve every L5 reference and use real-task metrics**
+- [x] **Step 4: Resolve every L5 reference and use real-task metrics**
 
 Replace `_missing_evidence(report)` truthiness checks with evidence requirements. L5 readiness must read `current_deployment_verified_real_task_success_rate`, require 10 samples and 5 types, require the prompt-safety assessment, and return `data_accumulating` only when those data counts are the sole deficits.
 
-- [ ] **Step 5: Verify release closure and commit**
+- [x] **Step 5: Verify release closure and commit**
 
 Run: `python -m pytest tests/test_prompt_shadow_eval_l2_gate.py tests/test_l5_closed_loop.py tests/test_l5_consciousness_loop.py tests/test_l5_readiness.py tests/test_release_closure.py -q`
 

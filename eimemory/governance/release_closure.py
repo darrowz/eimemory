@@ -20,6 +20,7 @@ def run_release_closure(
     report: dict[str, Any] = {
         "ok": False,
         "closure_complete": False,
+        "data_accumulating": False,
         "report_type": "l5_release_closure",
         "scope": scope_payload,
         "blocked_stage": "",
@@ -82,6 +83,11 @@ def run_release_closure(
     )
     report["readiness"] = readiness
     report["record_ids"]["readiness"] = str(readiness.get("persisted_record_id") or "")
+    if _readiness_data_accumulating(readiness):
+        report["ok"] = True
+        report["closure_complete"] = False
+        report["data_accumulating"] = True
+        return report
     if not _readiness_ok(readiness):
         return _blocked(report, "readiness", "readiness_not_l5")
 
@@ -140,6 +146,24 @@ def _readiness_ok(readiness: dict[str, Any]) -> bool:
         and float(score) == 1.0
         and assessment.get("complete") is True
         and live_gate.get("ok") is True
-        and int(live_gate.get("current_deployment_acceptance") or 0) >= 10
+        and int(live_gate.get("current_deployment_verified_real_tasks") or 0) >= 10
+        and not list(replay.get("weak_capabilities_missing") or [])
+    )
+
+
+def _readiness_data_accumulating(readiness: dict[str, Any]) -> bool:
+    score = readiness.get("readiness_score")
+    assessment = readiness.get("latest_l5_assessment") if isinstance(readiness.get("latest_l5_assessment"), dict) else {}
+    live_gate = readiness.get("live_task_gate") if isinstance(readiness.get("live_task_gate"), dict) else {}
+    replay = readiness.get("verified_replay") if isinstance(readiness.get("verified_replay"), dict) else {}
+    return bool(
+        readiness.get("ok") is True
+        and readiness.get("current_stage") == "data_accumulating"
+        and isinstance(score, (int, float))
+        and not isinstance(score, bool)
+        and float(score) == 0.9
+        and assessment.get("complete") is True
+        and live_gate.get("ok") is False
+        and int(live_gate.get("sample_deficit") or 0) > 0
         and not list(replay.get("weak_capabilities_missing") or [])
     )

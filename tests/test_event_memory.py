@@ -3,6 +3,22 @@ from __future__ import annotations
 from eimemory.api.runtime import Runtime
 from eimemory.adapters.openclaw.hooks import OpenClawMemoryHooks
 from eimemory.adapters.eibrain.rpc import EIBrainRPCBridge
+from eimemory.events import event_id
+from eimemory.models.records import ScopeRef
+
+
+def test_event_id_distinguishes_external_tasks_in_the_same_second() -> None:
+    scope = ScopeRef(agent_id="hongtu", workspace_id="embodied", user_id="darrow")
+    base = {
+        "source": "openclaw.agent_end",
+        "event_type": "memory.recall",
+        "timestamp": "2026-07-18T12:00:00+00:00",
+    }
+
+    first = event_id({**base, "external_correlation_id": "feishu-message-1", "outcome_trace_id": "trace-1"}, scope)
+    second = event_id({**base, "external_correlation_id": "feishu-message-2", "outcome_trace_id": "trace-2"}, scope)
+
+    assert first != second
 
 
 def test_default_intent_pattern_maps_song_request_to_playback_policy(tmp_path) -> None:

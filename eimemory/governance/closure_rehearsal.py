@@ -262,6 +262,7 @@ def _observation_autonomous_report(
         "candidate_ids": candidate_ids,
         "real_task_replay": {
             "ok": sample_count > 0 and pass_count == sample_count,
+            "persisted_record_id": str(replay_report.get("manifest_record_id") or ""),
             "verdict": "pass" if sample_count > 0 and pass_count == sample_count else "fail",
             "sample_count": sample_count,
             "pass_count": pass_count,

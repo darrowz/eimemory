@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from eimemory.governance.evidence_contract import ReleaseIdentity, release_identity_payload
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
@@ -20,10 +21,12 @@ class ReplayBuffer:
         next_state: dict[str, Any],
         scope: dict[str, Any] | ScopeRef | None,
         source_record_id: str = "",
+        release: ReleaseIdentity | None = None,
     ) -> RecordEnvelope:
         scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
         reward_score = _float(reward.get("reward") if isinstance(reward, dict) else reward)
         action_key = action_identity(action)
+        release_payload = release_identity_payload(release) if release is not None else {}
         record = RecordEnvelope.create(
             kind="rl_transition",
             title=f"RL transition: {action_key}",
@@ -34,6 +37,8 @@ class ReplayBuffer:
                 "reward": dict(reward or {}),
                 "next_state": dict(next_state or {}),
                 "source_record_id": str(source_record_id or ""),
+                "evidence_class": "structural" if release is not None else "",
+                **release_payload,
             },
             tags=["rl", "transition", str(action.get("type") or "")],
             source="eimemory.rl.replay_buffer",
@@ -41,6 +46,8 @@ class ReplayBuffer:
             provenance={
                 "report_type": "rl_transition",
                 "source_record_id": str(source_record_id or ""),
+                "evidence_class": "structural" if release is not None else "",
+                **release_payload,
             },
             meta={
                 "report_type": "rl_transition",

@@ -243,6 +243,8 @@ def _evaluate_proposal(
         "reason": str(llm_payload.get("reason") or fallback["reason"]),
         "labels": [str(item) for item in (llm_payload.get("labels") or [])],
         "evaluator": "llm",
+        "llm_provider": str(llm_payload.get("llm_provider") or ""),
+        "llm_model": str(llm_payload.get("llm_model") or ""),
         "fallback_score": fallback["score"],
     }
 
@@ -449,6 +451,24 @@ def _float_or_none(value: Any) -> float | None:
 
 
 def _env_llm_evaluator() -> SourceExpansionEvaluator | None:
+    from eimemory.llm import llm_client_from_env
+
+    command_client = llm_client_from_env("SOURCE_EXPANSION")
+    if command_client is not None:
+        def evaluate_with_command(proposal: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+            prompt = _source_expansion_prompt(proposal, context)
+            result = command_client.complete(
+                system_prompt="You are a conservative evaluator for a memory system source registry.",
+                user_prompt=json.dumps(prompt, ensure_ascii=False),
+                json_mode=True,
+            )
+            payload = json.loads(_extract_json_object(result.text))
+            if not isinstance(payload, dict):
+                raise ValueError("LLM source expansion result must be an object")
+            return {**payload, "llm_provider": result.provider_id, "llm_model": result.model_id}
+
+        return evaluate_with_command
+
     base_url = (
         os.environ.get("EIMEMORY_SOURCE_EXPANSION_LLM_BASE_URL")
         or os.environ.get("EIMEMORY_LLM_BASE_URL")
@@ -473,22 +493,7 @@ def _env_llm_evaluator() -> SourceExpansionEvaluator | None:
     endpoint = base_url if base_url.endswith("/chat/completions") else f"{base_url}/chat/completions"
 
     def evaluate(proposal: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
-        prompt = {
-            "task": "Evaluate whether EIMemory should autonomously expand a memory source.",
-            "rules": [
-                "Return strict JSON only.",
-                "Approve only trusted public research/source expansions.",
-                "Reject sources that look unsafe, spammy, off-topic, credential-bearing, or duplicate.",
-                "Use decision approve, reject, or needs_review.",
-                "Use score between 0 and 1.",
-            ],
-            "proposal": proposal,
-            "context": {
-                "gap_queries": list(context.get("gap_queries") or [])[:12],
-                "collection_policy": context.get("collection_policy") or {},
-            },
-            "output_schema": {"decision": "approve|reject|needs_review", "score": 0.0, "reason": "short reason", "labels": []},
-        }
+        prompt = _source_expansion_prompt(proposal, context)
         payload = {
             "model": model,
             "messages": [
@@ -513,6 +518,25 @@ def _env_llm_evaluator() -> SourceExpansionEvaluator | None:
         return json.loads(_extract_json_object(content))
 
     return evaluate
+
+
+def _source_expansion_prompt(proposal: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "task": "Evaluate whether EIMemory should autonomously expand a memory source.",
+        "rules": [
+            "Return strict JSON only.",
+            "Approve only trusted public research/source expansions.",
+            "Reject sources that look unsafe, spammy, off-topic, credential-bearing, or duplicate.",
+            "Use decision approve, reject, or needs_review.",
+            "Use score between 0 and 1.",
+        ],
+        "proposal": proposal,
+        "context": {
+            "gap_queries": list(context.get("gap_queries") or [])[:12],
+            "collection_policy": context.get("collection_policy") or {},
+        },
+        "output_schema": {"decision": "approve|reject|needs_review", "score": 0.0, "reason": "short reason", "labels": []},
+    }
 
 
 def _extract_json_object(text: str) -> str:

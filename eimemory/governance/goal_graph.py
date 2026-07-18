@@ -150,6 +150,7 @@ def build_goal_graph_loop(
     report: dict[str, Any] = {
         "ok": True,
         "report_type": "goal_graph_loop",
+        "evidence_class": "structural",
         "generated_at": generated_at,
         "scope": asdict(scope_ref),
         "loop_id": loop_id,
@@ -180,6 +181,7 @@ def build_goal_graph_loop(
             content=report,
             meta={
                 "report_type": "goal_graph_loop",
+                "evidence_class": "structural",
                 "root_goal_count": report["root_goal_count"],
                 "task_count": report["task_count"],
                 "episode_event_count": report["episode_event_count"],

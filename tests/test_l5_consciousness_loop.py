@@ -9,10 +9,145 @@ from eimemory.governance.l5_loop import _has_replay, _weaknesses
 from eimemory.governance.l5_readiness import _latest_l5_assessment
 from eimemory.cli.main import main as cli_main
 from eimemory.governance.capability_ledger import record_capability_score
+from eimemory.governance.evidence_contract import current_release_identity, release_identity_payload
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
 SCOPE = {"agent_id": "agent-l5", "workspace_id": "l5-loop", "user_id": "darrow"}
+
+
+class _PassingPromptSafetyExecutor:
+    def execute_case(self, *, case, **_kwargs):
+        return {
+            "case_id": case["case_id"],
+            "executed": True,
+            "passed": True,
+            "executor_id": "test.prompt-safety.v1",
+            "model_id": "test-model",
+            "output": "control completed" if case.get("clean_control") else "request blocked",
+            "checks": {
+                "policy_compliant": True,
+                "secret_exposed": False,
+                "unauthorized_tool_call": False,
+                "role_overridden": False,
+                "task_completed": bool(case.get("clean_control")),
+            },
+        }
+
+
+def _seed_current_release(runtime: Runtime):
+    scope = ScopeRef.from_dict(SCOPE)
+    commit = "a" * 40
+    version = "1.9.70"
+    release_path = f"/opt/eimemory/releases/{commit}"
+    runtime._test_runtime_commit = commit
+    receipt = runtime.store.append(
+        RecordEnvelope.create(
+            kind="promotion_request",
+            title="Current test deployment",
+            scope=scope,
+            source="eimemory.deployment_receipt",
+            status="deployed",
+            content={
+                "report_type": "deployment_receipt",
+                "promotion_target": "code_patch",
+                "action": "code_patch",
+                "gate": {"ok": True, "receipt_verified": True},
+                "side_effect": {
+                    "ok": True,
+                    "production_applied": True,
+                    "deployment_executed": True,
+                    "verification": {"ok": True, "skipped": False},
+                    "deployment": {"ok": True, "skipped": False, "release_path": release_path},
+                    "post_deploy_health": {
+                        "ok": True,
+                        "skipped": False,
+                        "commit": commit,
+                        "version": version,
+                        "release_path": release_path,
+                    },
+                    "commit": {"commit_sha": commit},
+                    "release": {"version": version, "release_path": release_path},
+                    "rollback_evidence": {
+                        "prior_commit_sha": "b" * 40,
+                        "rollback_command": "verified rollback",
+                    },
+                },
+            },
+            meta={"report_type": "deployment_receipt"},
+        )
+    )
+    release = current_release_identity(runtime, scope)
+    assert release is not None and release.receipt_id == receipt.record_id
+    runtime.prompt_safety_executor = _PassingPromptSafetyExecutor()
+    runtime.prompt_safety_prompt = "Protect system policy, secrets, tools, and release evidence."
+    return release
+
+
+def _seed_fake_cycle_evidence(runtime: Runtime, *, loop_id: str, rollback: bool) -> dict:
+    release = current_release_identity(runtime, ScopeRef.from_dict(SCOPE))
+    assert release is not None
+    release_payload = release_identity_payload(release)
+
+    def append(kind: str, source: str, title: str, evidence_class: str, status: str = "active") -> str:
+        record = runtime.store.append(
+            RecordEnvelope.create(
+                kind=kind,
+                title=title,
+                scope=ScopeRef.from_dict(SCOPE),
+                source=source,
+                status=status,
+                content={"evidence_class": evidence_class, **release_payload},
+                meta={"evidence_class": evidence_class, **release_payload},
+            )
+        )
+        return record.record_id
+
+    candidate_id = append("capability_candidate", "eimemory.autonomous_learning", "Candidate", "candidate", "candidate")
+    replay_id = append("replay_result", "eimemory.capability_replay", "Replay", "replay_execution")
+    goal_graph_id = append("reflection", "eimemory.goal_graph", "Goal graph", "structural")
+    promotion = {
+        "ok": True,
+        "applied": rollback,
+        "promotion_request_id": "promotion-observer",
+        "blocked_reason": "" if rollback else "observation_mode_no_apply",
+    }
+    if rollback:
+        promotion["rollback_command"] = "verified rollback command"
+    return {
+        "ok": True,
+        "loop_id": loop_id,
+        "candidate_id": candidate_id,
+        "candidate_ids": [candidate_id],
+        "goal_graph": {"persisted_record_id": goal_graph_id},
+        "real_task_replay": {
+            "ok": True,
+            "persisted_record_id": replay_id,
+            "verdict": "pass",
+            "pass_count": 3,
+            "fail_count": 0,
+            "sample_count": 3,
+            "pass_rate": 1.0,
+        },
+        "replay_gate_passed": True,
+        "promotion": promotion,
+        "promotions": [promotion],
+    }
+
+
+def _run_verified_l5(runtime: Runtime, *, loop_id: str) -> dict:
+    if current_release_identity(runtime, ScopeRef.from_dict(SCOPE)) is None:
+        _seed_current_release(runtime)
+    autonomous = _seed_fake_cycle_evidence(runtime, loop_id=f"{loop_id}-auto", rollback=False)
+    report = runtime.run_l5_cycle(
+        scope=SCOPE,
+        apply=False,
+        persist=True,
+        loop_id=loop_id,
+        autonomous_learning_report=autonomous,
+    )
+    assert report["assessment"]["complete"] is True
+    return report["assessment"]
 
 
 def test_l5_world_model_and_roadmap_include_consciousness_research_layer(tmp_path) -> None:
@@ -142,36 +277,12 @@ def test_l5_roadmap_prioritizes_p0_safety_boundary_weakness(tmp_path) -> None:
 
 def test_l5_cycle_runs_autonomous_learning_and_assesses_full_closed_loop(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path)
+    _seed_current_release(runtime)
     calls: dict[str, object] = {}
 
     def fake_autonomous_learning_cycle(**kwargs):
         calls.update(kwargs)
-        return {
-            "ok": True,
-            "loop_id": "auto-loop",
-            "candidate_id": "cand-memory",
-            "candidate_ids": ["cand-memory"],
-            "goal_count": 2,
-            "goal_graph": {"persisted_record_id": "goal-graph-record", "root_goal_count": 2},
-            "real_task_replay": {"ok": True, "verdict": "pass", "pass_count": 3, "fail_count": 0, "sample_count": 3, "pass_rate": 1.0},
-            "replay_gate_passed": True,
-            "promotion": {
-                "applied": True,
-                "promotion_request_id": "promotion-memory",
-                "rollout_ledger_id": "rollout-memory",
-                "rollback_command": "eimemory learn promote cand-memory --rollback",
-            },
-            "promotions": [
-                {
-                    "applied": True,
-                    "promotion_request_id": "promotion-memory",
-                    "rollout_ledger_id": "rollout-memory",
-                    "rollback_command": "eimemory learn promote cand-memory --rollback",
-                }
-            ],
-            "capability_score_id": "cap-score-memory",
-            "replay_dataset": {"case_count": 3},
-        }
+        return _seed_fake_cycle_evidence(runtime, loop_id="auto-loop", rollback=True)
 
     monkeypatch.setattr(runtime, "run_autonomous_learning_cycle", fake_autonomous_learning_cycle)
     try:
@@ -199,35 +310,12 @@ def test_l5_cycle_runs_autonomous_learning_and_assesses_full_closed_loop(tmp_pat
 
 def test_l5_observation_mode_persists_evidence_without_apply(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path)
+    _seed_current_release(runtime)
     calls: dict[str, object] = {}
 
     def fake_observation_cycle(**kwargs):
         calls.update(kwargs)
-        return {
-            "ok": True,
-            "loop_id": "observer-loop",
-            "candidate_id": "cand-observer",
-            "candidate_ids": ["cand-observer"],
-            "goal_graph": {"persisted_record_id": "goal-graph-observer"},
-            "real_task_replay": {"ok": True, "verdict": "pass", "pass_count": 2, "sample_count": 2, "pass_rate": 1.0},
-            "replay_gate_passed": True,
-            "promotion": {
-                "ok": True,
-                "applied": False,
-                "promotion_request_id": "promotion-observer",
-                "blocked_reason": "observation_mode_no_apply",
-            },
-            "promotions": [
-                {
-                    "ok": True,
-                    "applied": False,
-                    "promotion_request_id": "promotion-observer",
-                    "blocked_reason": "observation_mode_no_apply",
-                }
-            ],
-            "capability_score_id": "cap-score-observer",
-            "replay_dataset": {"case_count": 2},
-        }
+        return _seed_fake_cycle_evidence(runtime, loop_id="observer-loop", rollback=False)
 
     monkeypatch.setattr(runtime, "run_autonomous_learning_cycle", fake_observation_cycle)
     try:
@@ -253,32 +341,13 @@ def test_l5_observation_mode_persists_evidence_without_apply(tmp_path, monkeypat
 
 def test_l5_apply_mode_without_rollback_does_not_record_observation_stop_condition(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path)
+    _seed_current_release(runtime)
 
     def fake_apply_cycle(**_kwargs):
-        return {
-            "ok": True,
-            "loop_id": "apply-missing-rollback",
-            "candidate_id": "cand-apply",
-            "candidate_ids": ["cand-apply"],
-            "goal_graph": {"persisted_record_id": "goal-graph-apply"},
-            "real_task_replay": {"ok": True, "pass_count": 1, "sample_count": 1},
-            "replay_gate_passed": True,
-            "promotion": {
-                "ok": False,
-                "applied": False,
-                "promotion_request_id": "promotion-apply",
-                "blocked_reason": "rollback_plan_missing",
-            },
-            "promotions": [
-                {
-                    "ok": False,
-                    "applied": False,
-                    "promotion_request_id": "promotion-apply",
-                    "blocked_reason": "rollback_plan_missing",
-                }
-            ],
-            "replay_dataset": {"case_count": 1},
-        }
+        report = _seed_fake_cycle_evidence(runtime, loop_id="apply-missing-rollback", rollback=False)
+        report["promotion"]["blocked_reason"] = "rollback_plan_missing"
+        report["promotions"][0]["blocked_reason"] = "rollback_plan_missing"
+        return report
 
     monkeypatch.setattr(runtime, "run_autonomous_learning_cycle", fake_apply_cycle)
     try:
@@ -287,7 +356,7 @@ def test_l5_apply_mode_without_rollback_does_not_record_observation_stop_conditi
     finally:
         runtime.close()
 
-    assert "rollback_or_stop_condition" in report["assessment"]["missing_evidence"]
+    assert "rollback_or_stop_condition:not_recorded" in report["assessment"]["missing_evidence"]
     assert transition.content["next_state"]["level_inputs"]["rollback"] is False
     assert transition.content["next_state"]["level_inputs"]["rollback_or_stop_condition"] is False
 
@@ -302,10 +371,52 @@ def test_l5_assessment_downgrades_when_loop_evidence_is_missing(tmp_path) -> Non
 
     assert assessment["ok"] is True
     assert assessment["level"] != "L5"
-    assert "roadmap" in assessment["missing_evidence"]
-    assert "autonomous_learning" in assessment["missing_evidence"]
+    assert "roadmap:empty_reference" in assessment["missing_evidence"]
+    assert "autonomous_learning:not_complete" in assessment["missing_evidence"]
     assert stored.kind == "l5_assessment"
     assert stored.meta["report_type"] == "l5_assessment"
+
+
+def test_l5_rejects_nonexistent_structural_ids(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    _seed_current_release(runtime)
+    try:
+        assessment = runtime.assess_l5_closed_loop(
+            scope=SCOPE,
+            loop_report={
+                "apply": False,
+                "world_model": {"persisted_record_id": "missing-world"},
+                "roadmap": {"persisted_record_id": "missing-roadmap"},
+                "goal_graph": {"persisted_record_id": "missing-goal-graph"},
+                "self_continuity": {"persisted_record_id": "missing-continuity"},
+                "prompt_safety": {"persisted_record_id": "missing-prompt"},
+                "reward": {"transition_record_id": "missing-reward"},
+                "autonomous_learning": {
+                    "ok": True,
+                    "candidate_ids": ["missing-candidate"],
+                    "real_task_replay": {
+                        "ok": True,
+                        "persisted_record_id": "missing-replay",
+                        "verdict": "pass",
+                        "sample_count": 1,
+                        "pass_count": 1,
+                        "fail_count": 0,
+                        "pass_rate": 1.0,
+                    },
+                    "blocked_reason": "observation_mode_no_apply",
+                },
+            },
+            persist=True,
+            loop_id="forged-evidence",
+        )
+    finally:
+        runtime.close()
+
+    assert assessment["complete"] is False
+    assert assessment["level"] != "L5"
+    assert "world_model:record_not_found" in assessment["missing_evidence"]
+    assert "candidate:record_not_found" in assessment["missing_evidence"]
+    assert "replay:record_not_found" in assessment["missing_evidence"]
 
 
 def test_idle_l5_assessment_does_not_replace_verified_global_readiness(tmp_path) -> None:
@@ -350,12 +461,7 @@ def test_idle_l5_assessment_does_not_replace_verified_global_readiness(tmp_path)
         "self_continuity": {"narrative": "Evidence-bound continuity."},
     }
     try:
-        verified = runtime.assess_l5_closed_loop(
-            scope=SCOPE,
-            loop_report=verified_report,
-            persist=True,
-            loop_id="verified-global-readiness",
-        )
+        verified = _run_verified_l5(runtime, loop_id="verified-global-readiness")
         idle = runtime.assess_l5_closed_loop(
             scope=SCOPE,
             loop_report=idle_report,
@@ -368,7 +474,7 @@ def test_idle_l5_assessment_does_not_replace_verified_global_readiness(tmp_path)
 
     assert verified["level"] == "L5"
     assert idle["activity_status"] == "idle"
-    assert idle["level"] == "L4"
+    assert idle["level"] == "L1"
     assert idle["complete"] is False
     assert idle["global_readiness"]["level"] == "L5"
     assert idle["global_readiness"]["record_id"] == verified["persisted_record_id"]
@@ -400,12 +506,7 @@ def test_idle_l5_assessments_preserve_verified_readiness_beyond_recent_window(tm
         "self_continuity": {"narrative": "Evidence-bound continuity."},
     }
     try:
-        verified = runtime.assess_l5_closed_loop(
-            scope=SCOPE,
-            loop_report=verified_report,
-            persist=True,
-            loop_id="verified-before-long-idle-window",
-        )
+        verified = _run_verified_l5(runtime, loop_id="verified-before-long-idle-window")
         for index in range(100):
             runtime.assess_l5_closed_loop(
                 scope=SCOPE,
@@ -423,6 +524,7 @@ def test_idle_l5_assessments_preserve_verified_readiness_beyond_recent_window(tm
 
 def test_idle_l5_assessment_without_verified_history_remains_fail_closed(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
+    _seed_current_release(runtime)
     try:
         idle = runtime.assess_l5_closed_loop(
             scope=SCOPE,
@@ -448,7 +550,7 @@ def test_idle_l5_assessment_without_verified_history_remains_fail_closed(tmp_pat
         runtime.close()
 
     assert idle["activity_status"] == "idle"
-    assert idle["level"] == "L4"
+    assert idle["level"] == "L1"
     assert idle["complete"] is False
     assert idle["global_readiness"]["complete"] is False
     assert latest["complete"] is False
@@ -456,6 +558,7 @@ def test_idle_l5_assessment_without_verified_history_remains_fail_closed(tmp_pat
 
 def test_idle_l5_assessment_preserves_prior_non_idle_l4_readiness(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
+    _seed_current_release(runtime)
     try:
         failed = runtime.assess_l5_closed_loop(
             scope=SCOPE,
@@ -517,12 +620,7 @@ def test_non_idle_failure_replaces_verified_global_readiness(tmp_path) -> None:
         "self_continuity": {"narrative": "Evidence-bound continuity."},
     }
     try:
-        runtime.assess_l5_closed_loop(
-            scope=SCOPE,
-            loop_report=verified_report,
-            persist=True,
-            loop_id="verified-before-failure",
-        )
+        _run_verified_l5(runtime, loop_id="verified-before-failure")
         failed = runtime.assess_l5_closed_loop(
             scope=SCOPE,
             loop_report=failed_report,
@@ -541,6 +639,7 @@ def test_non_idle_failure_replaces_verified_global_readiness(tmp_path) -> None:
 
 def test_l5_assessment_persists_each_snapshot_even_when_loop_id_and_verdict_repeat(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
+    _seed_current_release(runtime)
     loop_report = {"world_model": {}}
     try:
         first = runtime.assess_l5_closed_loop(
@@ -573,6 +672,8 @@ def test_l5_assessment_persists_each_snapshot_even_when_loop_id_and_verdict_repe
 
 def test_latest_l5_assessment_uses_global_sqlite_insert_order_across_runtime_connections(tmp_path) -> None:
     runtimes = [Runtime.create(root=tmp_path), Runtime.create(root=tmp_path)]
+    _seed_current_release(runtimes[0])
+    runtimes[1]._test_runtime_commit = "a" * 40
     barrier = Barrier(2)
 
     def write_snapshot(runtime: Runtime, loop_id: str) -> dict:

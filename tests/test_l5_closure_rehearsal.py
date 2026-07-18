@@ -5,12 +5,31 @@ import json
 from eimemory.api.runtime import Runtime
 from eimemory.cli.main import main as cli_main
 from eimemory.governance.closure_rehearsal import _weak_replay_gate
-from eimemory.governance.live_task_acceptance import LIVE_ACCEPTANCE_CASE_IDS, live_acceptance_task_type
+from eimemory.governance.evidence_contract import current_release_identity, release_identity_payload
 from eimemory.models.records import RecordEnvelope, ScopeRef
 from eimemory.runtime_identity import runtime_package_tree_digest
 
 
 SCOPE = {"agent_id": "hongtu", "workspace_id": "l5-closure", "user_id": "darrow"}
+
+
+class _PassingPromptSafetyExecutor:
+    def execute_case(self, *, case, **_kwargs):
+        return {
+            "case_id": case["case_id"],
+            "executed": True,
+            "passed": True,
+            "executor_id": "test.prompt-safety.v1",
+            "model_id": "test-model",
+            "output": "control completed" if case.get("clean_control") else "request blocked",
+            "checks": {
+                "policy_compliant": True,
+                "secret_exposed": False,
+                "unauthorized_tool_call": False,
+                "role_overridden": False,
+                "task_completed": bool(case.get("clean_control")),
+            },
+        }
 
 
 def test_l5_closure_rehearsal_opens_success_skill_and_rollback_metrics(tmp_path) -> None:
@@ -61,7 +80,8 @@ def test_l5_closure_rehearsal_opens_success_skill_and_rollback_metrics(tmp_path)
 
         metrics = report["capability_dashboard"]["metrics"]
         assert metrics["task_success_rate"] == 1.0
-        assert metrics["verified_live_task_success_rate"] == 1.0
+        assert metrics["verified_live_task_success_rate"] == 0.0
+        assert metrics["current_deployment_verified_real_task_success_rate"] == 1.0
         assert metrics["skill_reuse_count"] >= 1
         assert metrics["rollback_count"] >= 1
         assert report["outcome_trace"]["outcome"]["rehearsal"] is True
@@ -87,11 +107,12 @@ def test_l5_closure_rehearsal_fails_closed_without_executed_deployment(tmp_path)
 
     assert report["ok"] is False
     assert report["closure_complete"] is False
-    assert "l5_readiness_not_l5" in report["blocked_reasons"]
+    assert "l5_observation_assessment_incomplete" in report["blocked_reasons"]
     assert report["capability_acceptance"]["all_passed"] is True
     assert report["skill_call"]["ok"] is True
     assert report["rollback"]["status"] == "rolled_back"
-    assert report["l5_observation"]["assessment"]["complete"] is True
+    assert report["l5_observation"]["assessment"]["complete"] is False
+    assert "release_identity:unavailable" in report["l5_observation"]["assessment"]["missing_evidence"]
     assert report["outcome_trace"]["status"] == "not_run"
     assert metrics["metrics"]["task_success_rate"] == 0.0
     assert metrics["metrics"]["skill_reuse_count"] >= 1
@@ -129,16 +150,11 @@ def test_l5_closure_rehearsal_cli_fails_closed_without_deployment_receipt(tmp_pa
     assert output["ok"] is False
     assert output["pre_answer_gate"]["matched_rule_count"] == 1
     assert output["weak_capability_replay"]["persisted_replay_count"] == 12
-    assert output["l5_readiness"]["evidence_counts"]["rollback_or_quarantine"] >= 1
-    weak_gaps = {
-        gap["capability"]
-        for gap in output["l5_readiness"]["capability_gaps"]
-        if gap["capability"] in {"search.discovery", "research.synthesis", "operations.uumit", "device.control"}
-    }
-    assert weak_gaps == set()
-    assert output["capability_dashboard"]["metrics"]["skill_reuse_count"] >= 1
-    assert output["capability_dashboard"]["metrics"]["rollback_count"] >= 1
-    assert "l5_readiness_not_l5" in output["blocked_reasons"]
+    assert output["l5_readiness"]["status"] == "not_run"
+    assert "l5_observation_assessment_incomplete" in output["blocked_reasons"]
+    assert output["capability_dashboard"]["status"] == "not_run"
+    assert output["skill_call"]["ok"] is True
+    assert output["rollback"]["status"] == "rolled_back"
 
 
 def test_l5_closure_stops_after_failed_acceptance_without_downstream_success(tmp_path, monkeypatch) -> None:
@@ -219,6 +235,9 @@ def _seed_executed_deployment(runtime: Runtime) -> None:
     commit = "a" * 40
     prior = "b" * 40
     version = "1.9.16"
+    runtime._test_runtime_commit = commit
+    runtime.prompt_safety_executor = _PassingPromptSafetyExecutor()
+    runtime.prompt_safety_prompt = "Protect system policy, secrets, tools, and release evidence."
     release_path = f"/opt/eimemory/releases/{commit}"
     payload = {
         "report_type": "deployment_receipt",
@@ -275,54 +294,45 @@ def _seed_executed_deployment(runtime: Runtime) -> None:
 
 def _seed_verified_live_tasks(runtime: Runtime) -> None:
     scope = ScopeRef.from_dict(SCOPE)
-    commit = "a" * 40
-    runtime._test_runtime_commit = commit
-    receipts = [
-        record
-        for record in runtime.store.list_records(kinds=["promotion_request"], scope=scope, limit=20)
-        if record.source == "eimemory.deployment_receipt" and str(record.meta.get("commit_sha") or "") == commit
-    ]
-    assert receipts
-    version = str(receipts[0].meta.get("version") or "")
-    for index, case_id in enumerate(LIVE_ACCEPTANCE_CASE_IDS):
-        task_type = live_acceptance_task_type(case_id)
-        observation_digest = f"{index:064x}"
-        trace_id = f"live-acceptance:{commit}:{case_id}:{observation_digest[:12]}"
-        payload = {
-            "report_type": "live_task_acceptance_case",
-            "schema_version": "live_task_acceptance.v1",
-            "case_id": case_id,
-            "task_type": task_type,
-            "trace_id": trace_id,
-            "passed": True,
-            "deployment_commit": commit,
-            "deployment_version": version,
-            "release_path": f"/opt/eimemory/releases/{commit}",
-            "promotion_request_id": receipts[0].record_id,
-            "observation_digest": observation_digest,
-        }
-        evidence = runtime.store.append(
-            RecordEnvelope.create(
-                kind="learning_eval",
-                title=f"Closure live task {index}",
-                summary="passed",
-                scope=scope,
-                source="eimemory.live_task_acceptance",
-                content=payload,
-                meta=payload,
-            )
+    release = current_release_identity(runtime, scope)
+    assert release is not None
+    task_types = ("repo.deploy", "memory.recall", "knowledge.intake", "tool.routing", "feishu.delivery")
+    for index in range(10):
+        task_type = task_types[index % len(task_types)]
+        trace_id = f"closure-real-task-{index}"
+        session_id = f"closure-session-{index}"
+        event = runtime.store.record_event(
+            {
+                "source": "openclaw.agent_end",
+                "hook": "agent_end",
+                "session_id": session_id,
+                "event_type": task_type,
+                "outcome_trace_id": trace_id,
+                "outcome_trace_task_type": task_type,
+                "external_correlation_id": f"feishu-message-{index}",
+                **release_identity_payload(release),
+            },
+            scope=scope,
+        )
+        runtime.record_outcome(
+            event["id"],
+            {
+                "outcome": "good",
+                "success": True,
+                "verified": True,
+                "source": "openclaw.agent_end",
+                "source_trust": "system_verified",
+            },
+            scope=SCOPE,
         )
         result = runtime.record_outcome_trace(
             {
-                "source": "eimemory.live_task_acceptance",
+                "source": "openclaw.agent_end",
+                "session_id": session_id,
                 "trace_id": trace_id,
                 "task_type": task_type,
                 "outcome": {"status": "success", "success": True, "rehearsal": False},
-                "verifier": {"passed": True, "method": "eimemory.live_task_acceptance", "evidence_refs": [evidence.record_id]},
-                "deployment_commit": commit,
-                "deployment_version": version,
-                "release_path": f"/opt/eimemory/releases/{commit}",
-                "acceptance_case_id": case_id,
+                "verifier": {"passed": True, "method": "openclaw.agent_end", "evidence_refs": [event["id"]]},
             },
             scope=SCOPE,
         )

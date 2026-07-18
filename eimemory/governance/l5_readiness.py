@@ -16,6 +16,12 @@ from eimemory.governance.capability_replay_packs import (
     capability_replay_manifest_digest,
     capability_replay_member_digest,
 )
+from eimemory.governance.evidence_contract import (
+    EvidenceRequirement,
+    ReleaseIdentity,
+    current_release_identity,
+    resolve_evidence,
+)
 from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.governance.rollout_lifecycle import is_executed_rollback_ledger_record
 from eimemory.models.records import ScopeRef
@@ -48,11 +54,12 @@ def build_l5_readiness_report(
     """Build a read-only L5 readiness report from existing governance evidence."""
 
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+    release = current_release_identity(runtime, scope_ref, limit=limit)
     ledger = build_capability_ledger(runtime, scope=scope_ref, limit=limit, attribute_outcomes=False)
     hard_metrics = _safe_hard_metrics(runtime, scope=scope_ref, limit=limit)
     evidence_counts = _evidence_counts(runtime, scope=scope_ref, limit=limit)
     verified_replay = _verified_replay_summary(runtime, scope=scope_ref, limit=limit)
-    latest_l5_assessment = _latest_l5_assessment(runtime, scope=scope_ref)
+    latest_l5_assessment = _latest_l5_assessment(runtime, scope=scope_ref, release=release)
     weak_outcome_evidence = _weak_outcome_evidence(runtime, scope=scope_ref, limit=limit)
     capability_gaps = _capability_gaps(ledger, weak_outcome_evidence=weak_outcome_evidence)
     stage = _stage_for(
@@ -595,7 +602,13 @@ def _parse_timestamp(value: Any) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
-def _latest_l5_assessment(runtime: Any, *, scope: ScopeRef) -> dict[str, Any]:
+def _latest_l5_assessment(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    release: ReleaseIdentity | None = None,
+) -> dict[str, Any]:
+    current_release = release or current_release_identity(runtime, scope)
     records: list[Any] = []
     sqlite = getattr(getattr(runtime, "store", None), "sqlite", None)
     conn = getattr(sqlite, "conn", None)
@@ -634,7 +647,40 @@ def _latest_l5_assessment(runtime: Any, *, scope: ScopeRef) -> dict[str, Any]:
             records = []
     if not records:
         return {"present": False, "trusted": False, "complete": False, "level": "", "missing_evidence": [], "record_id": ""}
-    record = _global_l5_readiness_record(records)
+    if current_release is None:
+        record = _global_l5_readiness_record(records)
+        return {
+            "present": True,
+            "trusted": False,
+            "complete": False,
+            "assessment_id": str(_record_field(record, "assessment_id") or ""),
+            "level": str(_record_field(record, "level") or ""),
+            "missing_evidence": ["release_identity:unavailable"],
+            "record_id": str(getattr(record, "record_id", "") or ""),
+        }
+    requirement = EvidenceRequirement(
+        kinds=frozenset({"l5_assessment"}),
+        sources=frozenset({"eimemory.l5_loop"}),
+        statuses=frozenset({"active", "candidate"}),
+        evidence_classes=frozenset({"structural"}),
+    )
+    release_records = [
+        record
+        for record in records
+        if resolve_evidence(runtime, str(record.record_id or ""), requirement, scope, current_release).ok
+    ]
+    if not release_records:
+        record = _global_l5_readiness_record(records)
+        return {
+            "present": True,
+            "trusted": False,
+            "complete": False,
+            "assessment_id": str(_record_field(record, "assessment_id") or ""),
+            "level": str(_record_field(record, "level") or ""),
+            "missing_evidence": ["assessment:release_mismatch"],
+            "record_id": str(getattr(record, "record_id", "") or ""),
+        }
+    record = _global_l5_readiness_record(release_records)
     missing = _record_field(record, "missing_evidence")
     missing_evidence = [str(item) for item in missing] if isinstance(missing, list) else []
     level = str(_record_field(record, "level") or "")
@@ -753,26 +799,28 @@ def _stage_for(
     patch_quality_ok = bool(
         (metric_quality.get("patch_promotion_success_rate") or metric_quality.get("auto_patch_success_rate") or {}).get("sufficient")
     )
-    verified_live_success = float(metrics.get("current_deployment_live_task_success_rate") or 0.0)
-    verified_live_quality = metric_quality.get("current_deployment_live_task_success_rate") or {}
+    verified_live_success = float(metrics.get("current_deployment_verified_real_task_success_rate") or 0.0)
+    verified_live_quality = metric_quality.get("current_deployment_verified_real_task_success_rate") or {}
     sample_counts = hard_metrics.get("sample_counts") if isinstance(hard_metrics.get("sample_counts"), dict) else {}
-    verified_live_samples = int(sample_counts.get("current_deployment_acceptance") or 0)
-    verified_live_task_types = int(sample_counts.get("current_deployment_live_task_types") or 0)
-    current_deployment_acceptance = int(sample_counts.get("current_deployment_acceptance") or 0)
+    verified_live_samples = int(sample_counts.get("current_deployment_verified_real_tasks") or 0)
+    verified_live_task_types = int(sample_counts.get("current_deployment_verified_real_task_types") or 0)
+    operational_probes = int(sample_counts.get("current_deployment_operational_probes") or 0)
     live_task_gate = {
         "ok": bool(
             verified_live_quality.get("sufficient")
             and verified_live_success >= 0.8
             and verified_live_task_types >= 5
-            and current_deployment_acceptance >= 10
+            and verified_live_samples >= 10
         ),
         "success_rate": verified_live_success,
         "sample_count": verified_live_samples,
         "minimum_samples": 10,
+        "sample_deficit": max(0, 10 - verified_live_samples),
         "distinct_task_types": verified_live_task_types,
         "minimum_task_types": 5,
-        "current_deployment_acceptance": current_deployment_acceptance,
-        "minimum_current_deployment_acceptance": 10,
+        "task_type_deficit": max(0, 5 - verified_live_task_types),
+        "current_deployment_verified_real_tasks": verified_live_samples,
+        "current_deployment_operational_probes": operational_probes,
     }
     weak_outcome_ok = not weak_outcome_evidence.get("missing")
 
@@ -793,7 +841,7 @@ def _stage_for(
         "live_task_gate": live_task_gate,
         "risk_boundary": "read-only reporting; no autonomous apply, deployment, external send, spend, deletion, or credential use.",
     }
-    if (
+    structural_ready = bool(
         l5_artifacts >= 4
         and weak_gap_count == 0
         and weak_outcome_ok
@@ -805,8 +853,8 @@ def _stage_for(
         and rollback_count >= 1
         and patch_quality_ok
         and patch_success >= 0.8
-        and live_task_gate["ok"]
-    ):
+    )
+    if structural_ready and live_task_gate["ok"]:
         return {
             **common,
             "readiness_score": 1.0,
@@ -814,6 +862,15 @@ def _stage_for(
             "label": "evidence-bound co-growth loop",
             "reason": "world model, roadmap, assessment, replay, promotion, rollback, and verified live task evidence are all present.",
             "done_when": "Maintain zero missing L5 assessment evidence and keep verified live task success at or above 0.8.",
+        }
+    if structural_ready:
+        return {
+            **common,
+            "readiness_score": 0.9,
+            "stage": "data_accumulating",
+            "label": "release structure complete; real-task evidence accumulating",
+            "reason": "All structural and safety gates pass, but the current release has not accumulated ten verified real tasks across five task types.",
+            "done_when": "Accumulate the remaining current-release verified real tasks; operational probes do not count as user-task evidence.",
         }
     if l5_artifacts >= 2 and replay_count >= 5 and weak_gap_count <= 2:
         return {
@@ -886,7 +943,7 @@ def _next_actions(
     live_task_gate = stage.get("live_task_gate") if isinstance(stage.get("live_task_gate"), dict) else {}
     if not live_task_gate.get("ok"):
         actions.append(
-            "Run the current deployment live acceptance suite; L5 requires at least ten verified non-rehearsal tasks, five task types, and success rate >=0.8."
+            "Accumulate current-release real user tasks; L5 requires ten verified non-rehearsal outcomes across five task types with success rate >=0.8, and operational probes do not count."
         )
     if int(verified_replay.get("executed_count") or 0) < 5:
         actions.append("Execute replay packs from existing outcome traces before promoting new behavior; not_run records do not count.")

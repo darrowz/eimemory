@@ -255,8 +255,8 @@ def test_release_closure_stops_at_first_failed_stage(
     "readiness_patch",
     [
         {"latest_l5_assessment": {"complete": False}},
-        {"live_task_gate": {"ok": False, "current_deployment_acceptance": 10}},
-        {"live_task_gate": {"ok": True, "current_deployment_acceptance": 9}},
+        {"live_task_gate": {"ok": False, "current_deployment_verified_real_tasks": 10}},
+        {"live_task_gate": {"ok": True, "current_deployment_verified_real_tasks": 9}},
         {"verified_replay": {"weak_capabilities_missing": ["device.control"]}},
     ],
 )
@@ -267,6 +267,26 @@ def test_release_closure_requires_every_final_readiness_gate(readiness_patch: di
     assert report["ok"] is False
     assert report["blocked_stage"] == "readiness"
     assert report["blocked_reason"] == "readiness_not_l5"
+
+
+def test_release_closure_reports_data_accumulation_without_claiming_l5_complete() -> None:
+    readiness = {
+        **_successful_readiness(),
+        "current_stage": "data_accumulating",
+        "readiness_score": 0.9,
+        "live_task_gate": {
+            "ok": False,
+            "sample_deficit": 10,
+            "current_deployment_verified_real_tasks": 0,
+        },
+    }
+
+    report = _run(FakeRuntime(readiness=readiness))
+
+    assert report["ok"] is True
+    assert report["closure_complete"] is False
+    assert report["data_accumulating"] is True
+    assert report["blocked_stage"] == ""
 
 
 def _run(runtime: FakeRuntime) -> dict:
@@ -346,7 +366,7 @@ def _successful_readiness() -> dict:
         "current_stage": "L5",
         "readiness_score": 1.0,
         "latest_l5_assessment": {"complete": True, "record_id": "assessment-1"},
-        "live_task_gate": {"ok": True, "current_deployment_acceptance": 10},
+        "live_task_gate": {"ok": True, "current_deployment_verified_real_tasks": 10},
         "verified_replay": {"weak_capabilities_missing": [], "executed_count": 12, "pass_count": 12, "fail_count": 0},
         "persisted_record_id": "readiness-1",
     }

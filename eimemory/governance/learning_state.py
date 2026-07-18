@@ -239,18 +239,29 @@ def append_learning_record_once(
     existing = find_record_by_idempotency(runtime, kinds=[kind], scope=scope_ref, idempotency_key=idem)
     if existing is not None:
         return existing
+    from eimemory.governance.evidence_contract import current_release_identity, release_identity_payload
+
+    release = current_release_identity(runtime, scope_ref)
+    release_payload = release_identity_payload(release) if release is not None else {}
+    supplied_meta = dict(meta or {})
+    supplied_content = dict(content or {})
+    for key in ("release_commit", "release_version", "deployment_receipt_id", "release_session_id"):
+        supplied_meta.pop(key, None)
+        supplied_content.pop(key, None)
     meta_payload = {
         "schema_version": AUTONOMOUS_LEARNING_SCHEMA_VERSION,
         "loop_id": loop_id,
         "authority_tier": authority_tier,
         "semantic_key": semantic_key,
         "idempotency_key": idem,
-        **dict(meta or {}),
+        **supplied_meta,
+        **release_payload,
     }
     content_payload = {
         "schema_version": AUTONOMOUS_LEARNING_SCHEMA_VERSION,
         "loop_id": loop_id,
-        **dict(content or {}),
+        **supplied_content,
+        **release_payload,
     }
     record = RecordEnvelope.create(
         kind=kind,

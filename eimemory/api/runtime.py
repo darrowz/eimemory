@@ -67,6 +67,13 @@ class Runtime:
         self.memory = MemoryAPI(store, source_registry=self.sources)
         self.evolution = EvolutionAPI(store)
         self.raw = RawEvidenceAPI(store)
+        from eimemory.governance.prompt_safety_executor import (
+            prompt_safety_executor_from_env,
+            prompt_safety_prompt_from_env,
+        )
+
+        self.prompt_safety_executor = prompt_safety_executor_from_env()
+        self.prompt_safety_prompt = prompt_safety_prompt_from_env()
 
     @classmethod
     def create(cls, *, root: str | Path | None = None) -> "Runtime":
@@ -762,6 +769,8 @@ class Runtime:
         loop_id: str = "",
         persist: bool = True,
         autonomous_learning_report: dict | None = None,
+        prompt_safety_executor: Any = None,
+        prompt_safety_prompt: str = "",
     ) -> dict:
         from eimemory.governance.l5_loop import run_l5_cycle
 
@@ -776,6 +785,8 @@ class Runtime:
             loop_id=loop_id,
             persist=persist,
             autonomous_learning_report=autonomous_learning_report,
+            prompt_safety_executor=prompt_safety_executor,
+            prompt_safety_prompt=prompt_safety_prompt,
         )
 
     def assess_l5_closed_loop(

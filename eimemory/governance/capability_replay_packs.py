@@ -9,6 +9,7 @@ from typing import Any
 from eimemory.core.ids import generate_record_id
 from eimemory.governance.capability_ledger import record_capability_score
 from eimemory.governance.capability_replay_executor import validate_capability_replay_result
+from eimemory.governance.evidence_contract import current_release_identity, release_identity_payload
 from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
@@ -35,6 +36,8 @@ def build_capability_replay_packs(
     acceptance_probe_ids_by_case: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+    release = current_release_identity(runtime, scope_ref)
+    release_payload = release_identity_payload(release) if release is not None else {}
     selected = _dedupe(CORE_REPLAY_CAPABILITIES if capabilities is None else capabilities)
     execution_id = generate_record_id("replay_result")
     executed_at = datetime.now(timezone.utc).astimezone().isoformat(timespec="microseconds")
@@ -64,6 +67,7 @@ def build_capability_replay_packs(
             member_record_ids={capability: [] for capability in selected},
             member_digests={capability: {} for capability in selected},
             complete=False,
+            release_payload=release_payload,
         )
         manifest_record = RecordEnvelope.create(
             kind="replay_result",
@@ -115,6 +119,7 @@ def build_capability_replay_packs(
                     status="active",
                     content={
                         "report_type": "capability_replay_pack",
+                        "evidence_class": "replay_execution",
                         "capability": capability,
                         "execution_id": execution_id,
                         "executed_at": executed_at,
@@ -131,6 +136,7 @@ def build_capability_replay_packs(
                     },
                     meta={
                         "report_type": "capability_replay_pack",
+                        "evidence_class": "replay_execution",
                         "capability": capability,
                         "case_id": case["case_id"],
                         "execution_id": execution_id,
@@ -221,6 +227,7 @@ def build_capability_replay_packs(
                 len(member_record_ids.get(capability) or []) == len(expected_case_ids.get(capability) or [])
                 for capability in selected
             ),
+            release_payload=release_payload,
         )
         manifest.content = manifest_payload
         manifest.meta = _manifest_metadata(manifest_payload)
@@ -233,6 +240,8 @@ def build_capability_replay_packs(
     return {
         "ok": True,
         "report_type": "capability_replay_packs",
+        "evidence_class": "replay_execution",
+        **release_payload,
         "scope": asdict(scope_ref),
         "execution_id": execution_id,
         "executed_at": executed_at,
@@ -261,6 +270,11 @@ def capability_replay_manifest_digest(payload: dict[str, Any]) -> str:
             "member_record_ids",
             "member_digests",
             "complete",
+            "evidence_class",
+            "release_commit",
+            "release_version",
+            "deployment_receipt_id",
+            "release_session_id",
         )
     }
     encoded = json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -297,10 +311,13 @@ def _manifest_payload(
     member_record_ids: dict[str, list[str]],
     member_digests: dict[str, dict[str, str]],
     complete: bool,
+    release_payload: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     payload = {
         "schema_version": MANIFEST_SCHEMA_VERSION,
         "report_type": MANIFEST_REPORT_TYPE,
+        "evidence_class": "replay_execution",
+        **dict(release_payload or {}),
         "execution_id": execution_id,
         "executed_at": executed_at,
         "capabilities": list(capabilities),
@@ -318,6 +335,12 @@ def _manifest_metadata(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "schema_version": MANIFEST_SCHEMA_VERSION,
         "report_type": MANIFEST_REPORT_TYPE,
+        "evidence_class": "replay_execution",
+        **{
+            key: str(payload.get(key) or "")
+            for key in ("release_commit", "release_version", "deployment_receipt_id", "release_session_id")
+            if str(payload.get(key) or "")
+        },
         "execution_id": str(payload.get("execution_id") or ""),
         "manifest_digest": str(payload.get("manifest_digest") or ""),
         "complete": payload.get("complete") is True,

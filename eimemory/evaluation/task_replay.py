@@ -10,6 +10,7 @@ from typing import Any
 
 from eimemory.core.clock import now_iso
 from eimemory.evaluation.metrics import binary_pass_rate, percentile
+from eimemory.governance.evidence_contract import current_release_identity, release_identity_payload
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
@@ -48,7 +49,9 @@ def run_real_task_replay(
     else:
         report = _run_on_runtime(runtime, normalized=normalized if seed else {**normalized, "seed": []})
     if persist_report:
-        record = runtime.store.append(_report_record(report, scope=ScopeRef.from_dict(normalized["scope"])))
+        report_scope = ScopeRef.from_dict(normalized["scope"])
+        release = current_release_identity(runtime, report_scope)
+        record = runtime.store.append(_report_record(report, scope=report_scope, release=release))
         report = {**report, "persisted_record_id": record.record_id}
     return report
 
@@ -88,14 +91,19 @@ def _run_on_runtime(runtime, *, normalized: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _report_record(report: dict[str, Any], *, scope: ScopeRef) -> RecordEnvelope:
+def _report_record(report: dict[str, Any], *, scope: ScopeRef, release: Any = None) -> RecordEnvelope:
+    release_payload = release_identity_payload(release) if release is not None else {}
     return RecordEnvelope.create(
         kind="replay_result",
         title=f"Real task replay report: {report['name']}",
         summary=f"Real task replay {report['verdict']} pass_rate={report['pass_rate']}",
         scope=scope,
         source="eimemory.real_task_replay",
-        content={"report": dict(report)},
+        content={
+            "report": dict(report),
+            "evidence_class": "replay_execution",
+            **release_payload,
+        },
         meta={
             "report_type": "real_task_replay",
             "replay_source": "real_task_replay",
@@ -108,6 +116,8 @@ def _report_record(report: dict[str, Any], *, scope: ScopeRef) -> RecordEnvelope
             "pass_count": report["pass_count"],
             "fail_count": report["fail_count"],
             "scope": asdict(scope),
+            "evidence_class": "replay_execution",
+            **release_payload,
         },
     )
 

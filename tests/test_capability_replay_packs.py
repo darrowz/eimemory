@@ -15,6 +15,8 @@ from eimemory.governance.capability_replay_executor import execute_capability_re
 from eimemory.governance.capability_probe_executor import execute_probe
 from eimemory.governance.capability_ledger import record_capability_score
 from eimemory.governance.autonomous_learning import _evidence_bound_capabilities
+from eimemory.governance.evidence_contract import ReleaseIdentity
+from eimemory.governance import capability_replay_packs as replay_packs_module
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
@@ -114,6 +116,36 @@ def test_capability_replay_packs_are_queryable_as_replay_results(tmp_path) -> No
         assert manifest.provenance["manifest_digest"] == manifest.content["manifest_digest"]
     finally:
         runtime.close()
+
+
+def test_capability_replay_manifest_is_bound_to_current_release(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    release = ReleaseIdentity(
+        commit="a" * 40,
+        version="1.9.70",
+        receipt_id="promotion_request_release",
+        session_id="closure_session_release",
+    )
+    monkeypatch.setattr(replay_packs_module, "current_release_identity", lambda *_args, **_kwargs: release)
+    try:
+        report = runtime.build_capability_replay_packs(
+            scope=SCOPE,
+            persist=True,
+            capabilities=["memory.recall"],
+        )
+        manifest = runtime.store.get_by_id(report["manifest_record_id"])
+    finally:
+        runtime.close()
+
+    assert manifest is not None
+    assert manifest.status == "active"
+    assert manifest.content["evidence_class"] == "replay_execution"
+    assert manifest.content["release_commit"] == release.commit
+    assert manifest.content["release_version"] == release.version
+    assert manifest.content["deployment_receipt_id"] == release.receipt_id
+    assert manifest.content["release_session_id"] == release.session_id
+    assert manifest.meta["evidence_class"] == "replay_execution"
+    assert manifest.meta["release_commit"] == release.commit
 
 
 def test_capability_replay_packs_include_named_weak_capability_cases(tmp_path) -> None:
