@@ -14,6 +14,7 @@ BASE_UNITS=(
   eimemory-rpc.service
   eimemory-timer-monitor.service
   openclaw-loop-watch.service
+  openclaw-loop-compact.service
   openclaw-stuck-watchdog.service
 )
 

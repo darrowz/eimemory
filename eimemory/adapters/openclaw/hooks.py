@@ -22,6 +22,7 @@ from eimemory.ops import openclaw_loop
 DEFAULT_RECALL_MODE = "fast"
 DEFAULT_RECALL_BUDGET_MS = 800
 DEFAULT_FAST_CANDIDATE_LIMIT = 24
+DEFAULT_FAST_QUERY_SCOPE_LIMIT = 8
 DEFAULT_INJECTION_TOKEN_BUDGET = 1800
 
 
@@ -373,6 +374,9 @@ class OpenClawMemoryHooks:
         task_context["recall_budget_ms"] = self._coerce_recall_budget_ms(task_context.get("recall_budget_ms"))
         if recall_mode == "fast":
             task_context["candidate_limit"] = self._coerce_fast_candidate_limit(task_context.get("candidate_limit"))
+            task_context["query_scope_limit"] = self._coerce_fast_query_scope_limit(
+                task_context.get("query_scope_limit")
+            )
         return task_context
 
     def _trace_context_from_event(self, event: dict, *, task_context: dict, query: str) -> dict:
@@ -481,6 +485,13 @@ class OpenClawMemoryHooks:
         except (TypeError, ValueError):
             return DEFAULT_FAST_CANDIDATE_LIMIT
         return max(24, min(360, candidate_limit))
+
+    def _coerce_fast_query_scope_limit(self, value: object) -> int:
+        try:
+            scope_limit = int(value)
+        except (TypeError, ValueError):
+            return DEFAULT_FAST_QUERY_SCOPE_LIMIT
+        return max(3, min(32, scope_limit))
 
     def _run_recall_safely(self, *, query: str, scope: dict, task_context: dict, limit: int) -> RecallBundle:
         try:

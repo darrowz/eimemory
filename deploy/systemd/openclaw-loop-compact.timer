@@ -1,0 +1,11 @@
+[Unit]
+Description=Compact the OpenClaw loop ledger daily
+
+[Timer]
+OnCalendar=*-*-* 04:10:00
+RandomizedDelaySec=5min
+Persistent=true
+Unit=openclaw-loop-compact.service
+
+[Install]
+WantedBy=timers.target

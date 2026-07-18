@@ -31,6 +31,7 @@ TERMINAL_STATUSES = {"done", "failed", "rolled_back"}
 ACTIVE_STATUSES = {"planned", "running", "waiting", "verifying"}
 WATCH_STALE_SAMPLE_LIMIT = 20
 MAX_LEDGER_TEXT_CHARS = 4096
+DEFAULT_TERMINAL_RETENTION_DAYS = 7
 LEDGER_NAMES = (
     "actions.jsonl",
     "lesson_candidates.jsonl",
@@ -694,7 +695,24 @@ def _write_jsonl_atomic(name: str, rows: Iterable[dict[str, Any]]) -> int:
     return count
 
 
-def compact_ledgers(*, archive_dir: str | Path | None = None) -> dict[str, Any]:
+def _terminal_task_expired(row: dict[str, Any], *, cutoff_epoch: float) -> bool:
+    if str(row.get("status") or "") not in TERMINAL_STATUSES:
+        return False
+    timestamp = str(row.get("updated_at") or row.get("started_at") or "").strip()
+    if not timestamp:
+        return False
+    try:
+        updated_epoch = float(calendar.timegm(time.strptime(timestamp, "%Y-%m-%dT%H:%M:%SZ")))
+    except (OverflowError, ValueError):
+        return False
+    return updated_epoch < cutoff_epoch
+
+
+def compact_ledgers(
+    *,
+    archive_dir: str | Path | None = None,
+    terminal_retention_days: int = DEFAULT_TERMINAL_RETENTION_DAYS,
+) -> dict[str, Any]:
     root = data_dir()
     archive_root = Path(archive_dir) if archive_dir is not None else root / "archives"
     if archive_root.exists() and archive_root.is_symlink():
@@ -707,6 +725,9 @@ def compact_ledgers(*, archive_dir: str | Path | None = None) -> dict[str, Any]:
     original_bytes = sum(path_for(name).stat().st_size for name in existing_names)
     rows_before: dict[str, int] = {}
     rows_after: dict[str, int] = {}
+    terminal_tasks_archived = 0
+    retention_days = max(0, int(terminal_retention_days))
+    terminal_cutoff = now_epoch() - retention_days * 86400
 
     with ExitStack() as stack:
         for name in existing_names:
@@ -731,9 +752,15 @@ def compact_ledgers(*, archive_dir: str | Path | None = None) -> dict[str, Any]:
                         if task_id:
                             latest[task_id] = row
                     rows_before[name] = before_count
+                    retained_tasks = []
+                    for row in latest.values():
+                        if _terminal_task_expired(row, cutoff_epoch=terminal_cutoff):
+                            terminal_tasks_archived += 1
+                            continue
+                        retained_tasks.append(row)
                     rows_after[name] = _write_jsonl_atomic(
                         name,
-                        (_compact_record(name, row) for row in latest.values()),
+                        (_compact_record(name, row) for row in retained_tasks),
                     )
                     continue
 
@@ -760,6 +787,8 @@ def compact_ledgers(*, archive_dir: str | Path | None = None) -> dict[str, Any]:
         "reclaimed_bytes": max(0, original_bytes - compacted_bytes),
         "rows_before": rows_before,
         "rows_after": rows_after,
+        "terminal_retention_days": retention_days,
+        "terminal_tasks_archived": terminal_tasks_archived,
     }
 
 
@@ -1146,6 +1175,7 @@ def main(argv: list[str] | None = None) -> int:
     p_reconcile.add_argument("--limit", type=int)
     p_compact = sub.add_parser("compact")
     p_compact.add_argument("--archive-dir")
+    p_compact.add_argument("--terminal-retention-days", type=int, default=DEFAULT_TERMINAL_RETENTION_DAYS)
     p_doctor = sub.add_parser("doctor")
     p_doctor.add_argument("--no-live", action="store_true")
     p_doctor.add_argument("--config")
@@ -1184,7 +1214,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "reconcile-stale":
         return emit(reconcile_stale_tasks(apply=args.apply, limit=args.limit))
     if args.cmd == "compact":
-        return emit(compact_ledgers(archive_dir=args.archive_dir))
+        return emit(
+            compact_ledgers(
+                archive_dir=args.archive_dir,
+                terminal_retention_days=args.terminal_retention_days,
+            )
+        )
     if args.cmd == "doctor":
         result = check_config_drift(config_path=args.config, run_live_checks=not args.no_live)
         emit(result)

@@ -528,6 +528,7 @@ def test_immutable_release_installer_deploys_python_runtime_protection_dropins()
         "eimemory-rpc.service",
         "eimemory-timer-monitor.service",
         "openclaw-loop-watch.service",
+        "openclaw-loop-compact.service",
         "openclaw-stuck-watchdog.service",
     }
 
@@ -554,6 +555,20 @@ def test_immutable_release_installer_manages_truthful_loop_watchdog_unit() -> No
     assert "openclaw_loop.py watch" in service
     assert "|| true" not in service
     assert "OnUnitActiveSec=5min" in timer
+
+
+def test_immutable_release_installer_manages_user_level_loop_compaction_timer() -> None:
+    script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
+    service = Path("deploy/systemd/openclaw-loop-compact.service").read_text(encoding="utf-8")
+    timer = Path("deploy/systemd/openclaw-loop-compact.timer").read_text(encoding="utf-8")
+
+    assert '"$RELEASE_DIR/deploy/systemd/openclaw-loop-compact.service"' in script
+    assert '"$USER_SYSTEMD_DIR/openclaw-loop-compact.service"' in script
+    assert '"$RELEASE_DIR/deploy/systemd/openclaw-loop-compact.timer"' in script
+    assert '"$USER_SYSTEMD_DIR/openclaw-loop-compact.timer"' in script
+    assert "systemctl --user enable --now openclaw-loop-compact.timer" in script
+    assert "openclaw_loop.py compact --terminal-retention-days 7" in service
+    assert "OnCalendar=*-*-* 04:10:00" in timer
 
 
 def test_immutable_release_installer_manages_stuck_watchdog_timer() -> None:

@@ -284,6 +284,30 @@ def test_eibrain_rpc_recall_expands_hongtu_user_aliases_without_source_leak(tmp_
     assert any(scope["user_id"] == FEISHU_DARROW_OPEN_ID for scope in explanation["query_scopes"])
 
 
+def test_fast_recall_bounds_alias_scope_fanout_without_losing_canonical_aliases(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+
+    bundle = runtime.memory.recall(
+        query="Feishu operator prefers concise health reports",
+        scope={"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"},
+        task_context={
+            "task_type": "chat.reply",
+            "recall_mode": "fast",
+            "query_scope_limit": 8,
+            "user_aliases": ["Darrow", FEISHU_DARROW_OPEN_ID],
+        },
+    )
+
+    query_scopes = bundle.explanation["query_scopes"]
+    canonical_users = {
+        scope["user_id"]
+        for scope in query_scopes
+        if scope["agent_id"] == "hongtu" and scope["workspace_id"] == "embodied"
+    }
+    assert len(query_scopes) == 8
+    assert {"darrow", "Darrow", FEISHU_DARROW_OPEN_ID} <= canonical_users
+
+
 def test_eibrain_rpc_ingest_persists_outcome_metadata(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     bridge = EIBrainRPCBridge(runtime)
@@ -919,6 +943,7 @@ def test_openclaw_before_prompt_build_defaults_to_fast_recall_context(tmp_path, 
     assert captured["task_context"]["recall_mode"] == "fast"
     assert captured["task_context"]["recall_budget_ms"] == 800
     assert captured["task_context"]["candidate_limit"] == 24
+    assert captured["task_context"]["query_scope_limit"] == 8
     assert captured["task_context"]["trace_context"]["trace_id"] == (
         "openclaw:sess-fast:chat.reply:prefers concise replies"
     )

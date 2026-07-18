@@ -9,7 +9,12 @@ import re
 from eimemory.governance.memory_graph import build_evidence_refs, build_timeline, graph_route_for_query
 from eimemory.knowledge.safety import evaluate_knowledge_safety
 from eimemory.knowledge.views import build_recall_view, choose_view_type, records_from_view
-from eimemory.identity import extract_user_aliases, hongtu_query_scopes_with_aliases
+from eimemory.identity import (
+    HONGTU_AGENT_ID,
+    HONGTU_WORKSPACE_ID,
+    extract_user_aliases,
+    hongtu_query_scopes_with_aliases,
+)
 from eimemory.living import LIVING_MEMORY_META_KEY, enrich_living_memory, refresh_living_quality_snapshot
 from eimemory.metadata import business_metadata
 from eimemory.models.records import LinkRef, RecallBundle, RecordEnvelope, ScopeRef
@@ -289,6 +294,12 @@ class MemoryAPI:
         scope_ref = ScopeRef.from_dict(scope)
         recall_scope_aliases = extract_user_aliases(task_context)
         query_scope_refs = hongtu_query_scopes_with_aliases(scope_ref, aliases=recall_scope_aliases)
+        query_scope_limit = self._positive_int(task_context.get("query_scope_limit"))
+        if recall_mode == "fast" and query_scope_limit:
+            query_scope_refs = self._prioritize_fast_query_scopes(
+                query_scope_refs,
+                primary_scope=scope_ref,
+            )[:query_scope_limit]
         policy_scope_ref = query_scope_refs[0] if query_scope_refs else scope_ref
         task_type = str(task_context.get("task_type") or "")
         if not normalized_query:
@@ -1773,6 +1784,39 @@ class MemoryAPI:
             "workspace_id": scope.workspace_id,
             "user_id": scope.user_id,
         }
+
+    @staticmethod
+    def _prioritize_fast_query_scopes(
+        scopes: list[ScopeRef],
+        *,
+        primary_scope: ScopeRef,
+    ) -> list[ScopeRef]:
+        primary_key = (
+            primary_scope.tenant_id,
+            primary_scope.agent_id,
+            primary_scope.workspace_id,
+            primary_scope.user_id,
+        )
+        primary = [
+            scope
+            for scope in scopes
+            if (scope.tenant_id, scope.agent_id, scope.workspace_id, scope.user_id) == primary_key
+        ]
+        canonical = [
+            scope
+            for scope in scopes
+            if scope.agent_id == HONGTU_AGENT_ID and scope.workspace_id == HONGTU_WORKSPACE_ID
+        ]
+        same_user = [scope for scope in scopes if scope.user_id == primary_scope.user_id]
+        ordered: list[ScopeRef] = []
+        seen: set[tuple[str, str, str, str]] = set()
+        for scope in [*primary, *canonical, *same_user, *scopes]:
+            key = (scope.tenant_id, scope.agent_id, scope.workspace_id, scope.user_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            ordered.append(scope)
+        return ordered
 
     def _merge_search_reports(self, reports: list[dict]) -> dict:
         merged: dict = {

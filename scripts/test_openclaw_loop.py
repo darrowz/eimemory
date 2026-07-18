@@ -273,6 +273,41 @@ class OpenClawLoopTests(unittest.TestCase):
         self.assertNotIn("stale_tasks", compacted["checks"])
         self.assertLess(len(json.dumps(compacted)), 16_384)
 
+    def test_compact_ledgers_cold_archives_expired_terminal_tasks(self):
+        now = 1_800_000_000.0
+        loop_impl._TEST_NOW = now
+        old_terminal = {
+            "task_id": "task-old-done",
+            "status": "done",
+            "started_at": loop.iso_ts(now - 20 * 86400),
+            "updated_at": loop.iso_ts(now - 8 * 86400),
+        }
+        recent_terminal = {
+            "task_id": "task-recent-done",
+            "status": "done",
+            "started_at": loop.iso_ts(now - 2 * 86400),
+            "updated_at": loop.iso_ts(now - 86400),
+        }
+        old_active = {
+            "task_id": "task-old-running",
+            "status": "running",
+            "started_at": loop.iso_ts(now - 20 * 86400),
+            "updated_at": loop.iso_ts(now - 8 * 86400),
+        }
+        for task in (old_terminal, recent_terminal, old_active):
+            loop.append_jsonl("tasks.jsonl", task)
+
+        result = loop.compact_ledgers(
+            archive_dir=self.root / "archives",
+            terminal_retention_days=7,
+        )
+
+        retained_ids = {task["task_id"] for task in loop.load_tasks()}
+        self.assertEqual(retained_ids, {"task-recent-done", "task-old-running"})
+        self.assertEqual(result["terminal_tasks_archived"], 1)
+        with gzip.open(result["archive_path"], "rt", encoding="utf-8") as handle:
+            self.assertIn("task-old-done", handle.read())
+
     def test_compact_ledgers_streams_non_task_files_without_read_jsonl(self):
         loop.append_jsonl(
             "verifications.jsonl",
