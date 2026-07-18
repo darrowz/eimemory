@@ -602,19 +602,68 @@ def test_status_only_turn_escalates_after_sla_without_resume_reference(
         encoding="utf-8",
     )
 
+    calls: list[dict] = []
     result = scan_once(
         state_path=state_path,
         attempts_path=attempts_path,
         now_ms=10_861_000,
-        send=lambda _payload: {"ok": True, "messageId": "om_duplicate"},
+        send=lambda payload: calls.append(payload) or {"ok": True, "messageId": "om_duplicate"},
     )
 
     assert result["escalated"] == 1
+    assert calls == []
     attempt = json.loads(attempts_path.read_text(encoding="utf-8"))["entries"][
         "status:om_abandoned"
     ]
     assert attempt["state"] == "escalated"
     assert attempt["escalation_reason"] == "pending_without_resume_reference"
+
+
+def test_status_only_turn_with_stale_resume_reference_eventually_escalates(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.json"
+    attempts_path = tmp_path / "attempts.json"
+    _write_state(
+        state_path,
+        {
+            "inbound_message_id": "om_stale_resume",
+            "conversation_id": "oc_test",
+            "received_at_ms": 1_000,
+            "status": "pending",
+            "resume_reference": "task-that-never-finished",
+            "final_text": "",
+        },
+    )
+    attempts_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "feishu_delivery_state.v2",
+                "entries": {
+                    "status:om_stale_resume": {
+                        "state": "status_notified",
+                        "delivery_kind": "status",
+                        "message_id": "om_notice",
+                        "attempted_at_ms": 302_000,
+                        "attempt_count": 1,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    calls: list[dict] = []
+
+    result = scan_once(
+        state_path=state_path,
+        attempts_path=attempts_path,
+        now_ms=10_861_000,
+        send=lambda payload: calls.append(payload) or {"ok": True, "messageId": "om_duplicate"},
+    )
+
+    assert result["escalated"] == 1
+    assert calls == []
+    attempt = json.loads(attempts_path.read_text(encoding="utf-8"))["entries"]["status:om_stale_resume"]
+    assert attempt["state"] == "escalated"
+    assert attempt["escalation_reason"] == "pending_after_resume_reference"
 
 
 def test_watchdog_normalizes_legacy_platform_receipt_without_resending(
@@ -703,3 +752,55 @@ def test_watchdog_reconciles_only_after_first_external_failure(tmp_path: Path) -
     assert attempts["entries"]["om_bounded"]["attempt_count"] == 1
     assert attempts["entries"]["om_bounded"]["state"] == "delivery_uncertain"
     assert attempts["entries"]["om_bounded"]["retry_mode"] == "reconcile_only"
+
+
+def test_watchdog_prunes_terminal_attempt_history_but_protects_active_keys(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    state_path = tmp_path / "state.json"
+    attempts_path = tmp_path / "attempts.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "entries": {
+                    "om_active": {
+                        "inbound_message_id": "om_active",
+                        "status": "pending",
+                        "received_at_ms": 999_000,
+                        "suppress_stalled_notice": True,
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    attempts = {
+        f"om_old_{index}": {
+            "state": "platform_accepted",
+            "message_id": f"receipt_{index}",
+            "attempted_at_ms": index,
+        }
+        for index in range(8)
+    }
+    attempts["om_active"] = {
+        "state": "platform_accepted",
+        "message_id": "receipt_active",
+        "attempted_at_ms": 0,
+    }
+    attempts_path.write_text(
+        json.dumps({"schema_version": "feishu_delivery_state.v2", "entries": attempts}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(watchdog, "MAX_ATTEMPT_ENTRIES", 3)
+
+    result = scan_once(state_path=state_path, attempts_path=attempts_path, now_ms=1_000_000)
+    remaining = json.loads(attempts_path.read_text(encoding="utf-8"))["entries"]
+
+    assert result["pruned_attempt_entries"] == 5
+    assert "om_active" in remaining
+    assert {key for key in remaining if key.startswith("om_old_")} == {
+        "om_old_5",
+        "om_old_6",
+        "om_old_7",
+    }

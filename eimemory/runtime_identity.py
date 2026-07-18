@@ -5,6 +5,9 @@ import os
 from pathlib import Path
 
 
+MAX_PACKAGE_ENTRY_COUNT = 20_000
+MAX_PACKAGE_TREE_BYTES = 512 * 1024 * 1024
+
 def package_import_root() -> Path:
     """Return the actual imported eimemory package root for this process."""
 
@@ -17,12 +20,24 @@ def runtime_package_tree_digest() -> str:
     return _PACKAGE_TREE_DIGEST
 
 
-def package_tree_digest(root: str | Path) -> str:
+def package_tree_digest(
+    root: str | Path,
+    *,
+    max_entries: int = MAX_PACKAGE_ENTRY_COUNT,
+    max_total_bytes: int = MAX_PACKAGE_TREE_BYTES,
+) -> str:
     """Hash package-relative files and symlink targets without following links."""
 
     package_root = Path(root).expanduser().resolve(strict=True)
     digest = sha256()
-    for entry_type, relative_path, path, link_payload in _package_entry_descriptors(package_root):
+    descriptors = _package_entry_descriptors(package_root, max_entries=max_entries)
+    total_bytes = sum(
+        len(link_payload) if link_payload is not None else path.stat().st_size
+        for _entry_type, _relative_path, path, link_payload in descriptors
+    )
+    if total_bytes > max(0, int(max_total_bytes)):
+        raise ValueError("package tree exceeds byte limit")
+    for entry_type, relative_path, path, link_payload in descriptors:
         _update_length_prefixed(digest, entry_type.encode("ascii"))
         _update_length_prefixed(digest, relative_path.encode("utf-8"))
         if link_payload is not None:
@@ -55,6 +70,8 @@ def _update_length_prefixed(digest, value: bytes) -> None:
 
 def _package_entry_descriptors(
     root: Path,
+    *,
+    max_entries: int = MAX_PACKAGE_ENTRY_COUNT,
 ) -> list[tuple[str, str, Path, bytes | None]]:
     entries: list[tuple[str, str, Path, bytes | None]] = []
 
@@ -71,27 +88,8 @@ def _package_entry_descriptors(
                     visit(path)
                 elif child.is_file(follow_symlinks=False):
                     entries.append(("file", relative, path, None))
-
-    visit(root)
-    return sorted(entries, key=lambda item: (item[1], item[0]))
-
-
-def _package_entries(root: Path) -> list[tuple[str, str, bytes]]:
-    entries: list[tuple[str, str, bytes]] = []
-
-    def visit(directory: Path) -> None:
-        with os.scandir(directory) as children:
-            for child in sorted(children, key=lambda item: item.name):
-                path = Path(child.path)
-                relative = path.relative_to(root).as_posix()
-                if child.name == "__pycache__" or child.name.endswith((".pyc", ".pyo")):
-                    continue
-                if child.is_symlink():
-                    entries.append(("link", relative, os.fsencode(os.readlink(path))))
-                elif child.is_dir(follow_symlinks=False):
-                    visit(path)
-                elif child.is_file(follow_symlinks=False):
-                    entries.append(("file", relative, path.read_bytes()))
+                if len(entries) > max(0, int(max_entries)):
+                    raise ValueError("package tree exceeds entry limit")
 
     visit(root)
     return sorted(entries, key=lambda item: (item[1], item[0]))

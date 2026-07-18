@@ -378,7 +378,7 @@ class RuntimeStore:
         with self._lock:
             try:
                 flush_report = self.flush_exports()
-            except (OSError, ValueError) as exc:
+            except Exception as exc:
                 return {
                     "ok": False,
                     "replace": bool(replace),
@@ -433,7 +433,6 @@ class RuntimeStore:
             )
 
             os.close(descriptor)
-            Path(temp_name).unlink(missing_ok=True)
             temporary_path = Path(temp_name)
             replacement: SqliteRecordStore | None = None
             try:
@@ -633,12 +632,14 @@ class RuntimeStore:
     def allocate_manifest_sequences(
         self,
         *,
-        scope: ScopeRef | dict | None,
+        scope: ScopeRef | dict,
         capabilities: list[str],
         floor_by_capability: dict[str, int] | None = None,
     ) -> dict[str, int]:
-        scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
         with self._lock:
+            if scope is None:
+                raise ValueError("manifest sequence allocation requires an explicit scope")
+            scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
             return self.sqlite.allocate_replay_manifest_sequences(
                 scope=scope_ref,
                 capabilities=capabilities,
@@ -730,6 +731,8 @@ def _scope_to_dict(scope: ScopeRef) -> dict[str, str]:
 
 
 def _auxiliary_entry_from_payload(entry: dict) -> dict:
+    if not isinstance(entry, dict):
+        raise ValueError("auxiliary JSONL row payload must be an object")
     payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else entry
     scope = entry.get("scope") if isinstance(entry.get("scope"), dict) else payload.get("scope", {})
     if not isinstance(payload, dict):
@@ -762,31 +765,31 @@ def _accept_rebuild_operation(
 
 
 def _validate_rebuild_counts(target: SqliteRecordStore) -> None:
-    projections = {
-        "records": ("records", "storage_key"),
-        "events": ("events", "id"),
-        "event_outcomes": ("event_outcomes", "id"),
-        "intent_patterns": ("intent_patterns", "id"),
-        "policy_rollout_ledger": ("policy_rollout_ledger", "id"),
-        "memory_edges": ("memory_edges", "edge_id"),
-    }
-    for stream, (table, column) in projections.items():
-        missing = int(
-            target.conn.execute(
-                f"""
-                SELECT COUNT(*)
-                FROM temp.rebuild_expected expected
-                WHERE expected.table_name = ?
-                  AND NOT EXISTS (
-                    SELECT 1 FROM {table} actual
-                    WHERE actual.{column} = expected.item_key
-                  )
-                """,
-                (stream,),
-            ).fetchone()[0]
+    missing_rows = target.conn.execute(
+        """
+        SELECT expected.table_name, COUNT(*) AS missing_count
+        FROM temp.rebuild_expected expected
+        WHERE NOT EXISTS (
+          SELECT 1
+          FROM (
+            SELECT 'records' AS table_name, storage_key AS item_key FROM records
+            UNION ALL SELECT 'events', CAST(id AS TEXT) FROM events
+            UNION ALL SELECT 'event_outcomes', CAST(id AS TEXT) FROM event_outcomes
+            UNION ALL SELECT 'intent_patterns', CAST(id AS TEXT) FROM intent_patterns
+            UNION ALL SELECT 'policy_rollout_ledger', CAST(id AS TEXT) FROM policy_rollout_ledger
+            UNION ALL SELECT 'memory_edges', edge_id FROM memory_edges
+          ) actual
+          WHERE actual.table_name = expected.table_name
+            AND actual.item_key = expected.item_key
         )
-        if missing:
-            raise ValueError(f"rebuild validation failed for {stream}: {missing} rows missing")
+        GROUP BY expected.table_name
+        ORDER BY expected.table_name
+        """
+    ).fetchall()
+    if missing_rows:
+        stream = str(missing_rows[0]["table_name"])
+        missing = int(missing_rows[0]["missing_count"])
+        raise ValueError(f"rebuild validation failed for {stream}: {missing} rows missing")
 
 
 def _remove_sqlite_path(path: Path) -> None:

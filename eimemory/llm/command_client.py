@@ -4,6 +4,8 @@ from dataclasses import dataclass
 import json
 import os
 import subprocess
+import threading
+import time
 from typing import Any
 
 
@@ -18,8 +20,8 @@ class CommandLLMClient:
     """Provider-neutral JSON-stdin/JSON-stdout LLM command client."""
 
     def __init__(self, argv: list[str] | tuple[str, ...], *, timeout_seconds: int = 90) -> None:
-        normalized = tuple(str(item).strip() for item in argv if str(item).strip())
-        if not normalized:
+        normalized = tuple(str(item) for item in argv)
+        if not normalized or any(not item.strip() for item in normalized):
             raise ValueError("LLM command argv is empty")
         self.argv = normalized
         self.timeout_seconds = max(1, min(600, int(timeout_seconds)))
@@ -34,19 +36,17 @@ class CommandLLMClient:
             ensure_ascii=False,
             sort_keys=True,
         )
-        completed = subprocess.run(
+        completed = run_bounded_command(
             list(self.argv),
-            input=request,
-            text=True,
-            capture_output=True,
-            timeout=self.timeout_seconds,
-            check=False,
+            request.encode("utf-8"),
+            timeout_seconds=self.timeout_seconds,
         )
-        if completed.returncode != 0:
-            raise RuntimeError(f"LLM command failed with exit code {completed.returncode}")
-        if not completed.stdout or len(completed.stdout.encode("utf-8")) > 2_000_000:
+        if completed[0] != 0:
+            raise RuntimeError(f"LLM command failed with exit code {completed[0]}")
+        stdout = completed[1].decode("utf-8")
+        if not stdout:
             raise ValueError("LLM command returned an empty or oversized response")
-        payload = json.loads(completed.stdout)
+        payload = json.loads(stdout)
         if not isinstance(payload, dict):
             raise ValueError("LLM command response must be an object")
         text = str(payload.get("text") or "").strip()
@@ -55,6 +55,83 @@ class CommandLLMClient:
         if not text or not provider_id or not model_id:
             raise ValueError("LLM command response requires text, provider_id, and model_id")
         return LLMResult(text=text, provider_id=provider_id, model_id=model_id)
+
+
+_MAX_COMMAND_STREAM_BYTES = 2_000_000
+
+
+def run_bounded_command(
+    argv: list[str],
+    request: bytes,
+    *,
+    timeout_seconds: int,
+) -> tuple[int, bytes, bytes]:
+    if len(request) > _MAX_COMMAND_STREAM_BYTES:
+        raise ValueError("LLM command request is oversized")
+    process = subprocess.Popen(
+        argv,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    stdout = bytearray()
+    stderr = bytearray()
+    overflow = threading.Event()
+    writer_error: list[BaseException] = []
+
+    def read_stream(stream: Any, target: bytearray) -> None:
+        try:
+            while True:
+                chunk = stream.read(64 * 1024)
+                if not chunk:
+                    return
+                if len(target) + len(chunk) > _MAX_COMMAND_STREAM_BYTES:
+                    overflow.set()
+                    return
+                target.extend(chunk)
+        finally:
+            stream.close()
+
+    def write_request() -> None:
+        try:
+            if process.stdin is not None:
+                process.stdin.write(request)
+                process.stdin.flush()
+        except (BrokenPipeError, OSError) as exc:
+            writer_error.append(exc)
+        finally:
+            if process.stdin is not None:
+                process.stdin.close()
+
+    assert process.stdout is not None and process.stderr is not None
+    threads = [
+        threading.Thread(target=read_stream, args=(process.stdout, stdout), daemon=True),
+        threading.Thread(target=read_stream, args=(process.stderr, stderr), daemon=True),
+        threading.Thread(target=write_request, daemon=True),
+    ]
+    for thread in threads:
+        thread.start()
+
+    deadline = time.monotonic() + timeout_seconds
+    timed_out = False
+    while process.poll() is None:
+        if overflow.wait(timeout=0.02):
+            process.kill()
+            break
+        if time.monotonic() >= deadline:
+            timed_out = True
+            process.kill()
+            break
+    process.wait()
+    for thread in threads:
+        thread.join(timeout=1)
+    if timed_out:
+        raise subprocess.TimeoutExpired(argv, timeout_seconds)
+    if overflow.is_set():
+        raise ValueError("LLM command returned an oversized response")
+    if writer_error and process.returncode == 0:
+        raise RuntimeError("LLM command closed stdin before reading the request")
+    return int(process.returncode), bytes(stdout), bytes(stderr)
 
 
 def llm_client_from_env(feature: str = "") -> CommandLLMClient | None:

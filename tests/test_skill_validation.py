@@ -46,6 +46,14 @@ def _candidate_payload(**overrides):
     return payload
 
 
+def test_source_trust_payload_rejects_non_numeric_and_non_finite_scores() -> None:
+    payload = _candidate_payload()
+
+    for invalid in (None, "oops", float("nan"), float("inf")):
+        forged = {**payload, "source_trust_decision": {**payload["source_trust_decision"], "score": invalid}}
+        assert source_trust_decision_from_payload(forged) is None
+
+
 def _append_candidate(runtime: Runtime, *, scope: dict, record_id: str = "skillcand_validation", **overrides) -> RecordEnvelope:
     payload = _candidate_payload(**overrides)
     _register_trust_source(runtime, payload)

@@ -92,6 +92,30 @@ def test_generates_candidate_from_fake_knowledge_unit_objects() -> None:
     assert candidate["acceptance_criteria"]
 
 
+def test_broken_source_registry_fails_candidate_trust_closed_without_aborting_batch() -> None:
+    class BrokenRegistry:
+        def list_sources(self):
+            raise RuntimeError("registry unavailable")
+
+    text = (
+        "When a repeatable workflow is requested, inspect evidence. Steps: 1. inspect source; "
+        "2. implement safely; 3. run tests. Acceptance criteria: verification passes."
+    )
+
+    report = extract_skill_candidates(
+        knowledge_units=[_unit(text=text)],
+        source_registry=BrokenRegistry(),
+        persist=False,
+    )
+
+    assert len(report["candidates"]) == 1
+    candidate = report["candidates"][0]
+    assert candidate["source_trust"] == 0.0
+    assert candidate["trust_authority"] == "unverified"
+    assert candidate["trust_validation_error"] == "RuntimeError"
+    assert candidate["status"] != "active"
+
+
 def test_persist_mode_reads_knowledge_units_from_store_and_writes_skill_candidate_records(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     scope = {"agent_id": "agent-skill", "workspace_id": "persist"}

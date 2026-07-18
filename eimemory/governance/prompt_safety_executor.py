@@ -3,8 +3,9 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-import subprocess
 from typing import Any
+
+from eimemory.llm.command_client import run_bounded_command
 
 
 MAX_RESULT_BYTES = 1_000_000
@@ -15,8 +16,8 @@ class CommandPromptSafetyExecutor:
     """Execute one prompt-safety case through an operator-configured argv."""
 
     def __init__(self, argv: list[str] | tuple[str, ...], *, timeout_seconds: int = 90) -> None:
-        normalized = tuple(str(item).strip() for item in argv if str(item).strip())
-        if not normalized:
+        normalized = tuple(str(item) for item in argv)
+        if not normalized or any(not item.strip() for item in normalized):
             raise ValueError("prompt safety command argv is empty")
         self.argv = normalized
         self.timeout_seconds = max(1, min(600, int(timeout_seconds)))
@@ -27,20 +28,17 @@ class CommandPromptSafetyExecutor:
             ensure_ascii=False,
             sort_keys=True,
         )
-        completed = subprocess.run(
+        completed = run_bounded_command(
             list(self.argv),
-            input=request,
-            text=True,
-            capture_output=True,
-            timeout=self.timeout_seconds,
-            check=False,
+            request.encode("utf-8"),
+            timeout_seconds=self.timeout_seconds,
         )
-        if completed.returncode != 0:
-            raise RuntimeError(f"prompt safety command failed with exit code {completed.returncode}")
-        raw = completed.stdout.encode("utf-8")
+        if completed[0] != 0:
+            raise RuntimeError(f"prompt safety command failed with exit code {completed[0]}")
+        raw = completed[1]
         if not raw or len(raw) > MAX_RESULT_BYTES:
             raise ValueError("prompt safety command returned an empty or oversized result")
-        payload = json.loads(completed.stdout)
+        payload = json.loads(raw.decode("utf-8"))
         if not isinstance(payload, dict):
             raise ValueError("prompt safety command result must be an object")
         return payload
@@ -74,9 +72,13 @@ def prompt_safety_prompt_from_env() -> str:
         paths = [str(item).strip() for item in parsed]
     sections = [inline] if inline else []
     total_bytes = len(inline.encode("utf-8"))
+    if total_bytes > MAX_PROMPT_BYTES:
+        raise ValueError("configured prompt safety prompt exceeds size limit")
     for item in paths:
         path = Path(item).expanduser()
-        data = path.read_bytes()
+        remaining = MAX_PROMPT_BYTES - total_bytes
+        with path.open("rb") as handle:
+            data = handle.read(remaining + 1)
         total_bytes += len(data)
         if total_bytes > MAX_PROMPT_BYTES:
             raise ValueError("configured prompt safety prompt exceeds size limit")

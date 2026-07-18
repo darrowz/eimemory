@@ -4,6 +4,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 import threading
 
+import pytest
+
 from eimemory.api.runtime import Runtime
 from eimemory.experience import record_outcome_trace
 from eimemory.experience.capability_contract import SCHEMA_VERSION as CONTRACT_SCHEMA_VERSION
@@ -36,6 +38,15 @@ WEAK_CAPABILITIES = {
     "operations.uumit",
     "device.control",
 }
+
+
+def test_manifest_sequence_allocation_requires_explicit_scope(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        with pytest.raises(ValueError, match="explicit scope"):
+            runtime.store.allocate_manifest_sequences(scope=None, capabilities=["memory.recall"])
+    finally:
+        runtime.close()
 
 
 def test_concurrent_replay_sequence_allocations_are_unique(tmp_path) -> None:
@@ -159,7 +170,7 @@ def test_capability_replay_packs_are_queryable_as_replay_results(tmp_path) -> No
         assert {record.meta["capability"] for record in case_records} == {"memory.recall"}
         assert {record.meta["verdict"] for record in case_records} == {"not_run"}
         assert report["manifest_record_id"] == manifest.record_id
-        assert manifest.content["schema_version"] == "capability_replay_manifest.v1"
+        assert manifest.content["schema_version"] == "capability_replay_manifest.v2"
         assert manifest.content["execution_id"] == report["execution_id"]
         assert manifest.content["complete"] is True
         assert manifest.content["member_record_ids"] == {"memory.recall": report["persisted_replay_ids"]}

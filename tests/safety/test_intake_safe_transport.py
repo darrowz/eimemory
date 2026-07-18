@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from io import BytesIO
 import socket
+from urllib.error import HTTPError
 
 import pytest
 
@@ -98,6 +99,26 @@ def test_redirect_to_private_address_is_rejected(monkeypatch: pytest.MonkeyPatch
     assert connected == [("93.184.216.34", 80)]
 
 
+def test_http_error_status_is_rejected_before_body_can_be_ingested(monkeypatch: pytest.MonkeyPatch) -> None:
+    sock = _FakeSocket(
+        peer_ip="93.184.216.34",
+        response=(
+            b"HTTP/1.1 503 Service Unavailable\r\n"
+            b"Content-Type: text/html\r\n"
+            b"Content-Length: 18\r\n\r\n"
+            b"<html>error</html>"
+        ),
+    )
+    monkeypatch.setattr(socket, "getaddrinfo", _public_answer)
+    monkeypatch.setattr(socket, "create_connection", lambda *_args, **_kwargs: sock)
+
+    with pytest.raises(HTTPError) as exc_info:
+        safe_urlopen("http://public.example/error", timeout=2)
+
+    assert exc_info.value.code == 503
+    assert sock.closed is True
+
+
 def test_mixed_public_and_private_dns_answers_fail_closed(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         socket,
@@ -149,6 +170,10 @@ def test_request_target_control_characters_are_rejected_before_connect(monkeypat
         "http://user:password@example.com/data",
         "http://localhost/data",
         "http://[::1]/data",
+        "http://[::ffff:127.0.0.1]/data",
+        "http://[::ffff:7f00:1]/data",
+        "http://[::127.0.0.1]/data",
+        "http://[2002:7f00:1::]/data",
     ],
 )
 def test_unsafe_url_forms_are_rejected_before_connect(url: str, monkeypatch: pytest.MonkeyPatch) -> None:

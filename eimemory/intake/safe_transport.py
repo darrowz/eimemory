@@ -6,6 +6,7 @@ import ipaddress
 import socket
 import ssl
 from typing import Any, Mapping
+from urllib.error import HTTPError
 from urllib.parse import urljoin, urlsplit
 
 
@@ -111,6 +112,12 @@ def safe_urlopen(
             final_url=current_url,
             peer_ip=peer_ip,
         )
+        if response.status >= 400:
+            status = response.status
+            reason = response.reason
+            response_headers = response.headers
+            response.close()
+            raise HTTPError(current_url, status, reason, response_headers, None)
         location = str(response.headers.get("Location") or "").strip()
         if response.status not in REDIRECT_STATUSES or not location:
             return response
@@ -268,6 +275,18 @@ def _coerce_ip_address(value: str):
 
 
 def _is_disallowed_address(address: Any) -> bool:
+    if isinstance(address, ipaddress.IPv6Address):
+        embedded = [address.ipv4_mapped, address.sixtofour]
+        if address.teredo is not None:
+            embedded.extend(address.teredo)
+        if any(candidate is not None and _is_disallowed_address(candidate) for candidate in embedded):
+            return True
+        # IPv4-compatible IPv6 addresses have platform-dependent routing
+        # semantics.  They are obsolete and never required at this public
+        # intake boundary, so reject the whole ::/96 range except ::/::1,
+        # which are already rejected by the standard flags below.
+        if int(address) < (1 << 32):
+            return True
     return bool(
         address.is_private
         or address.is_loopback

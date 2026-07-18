@@ -46,6 +46,9 @@ def ingest_knowledge_source(
     title = _clean_text(payload.get("title", ""))
     source_uri = _clean_text(payload.get("uri", ""))
     source_text = _clean_text(payload.get("text", ""))
+    normalized_connector_id = str(connector_id or "").strip()
+    if normalized_connector_id and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", normalized_connector_id):
+        raise ValueError("connector_id has an invalid server provenance format")
 
     if not source_kind:
         raise ValueError("source_kind is required and must be supported")
@@ -62,7 +65,7 @@ def ingest_knowledge_source(
             "text": source_text,
         },
         registry=getattr(runtime, "sources", None),
-        connector_id=connector_id,
+        connector_id=normalized_connector_id,
     )
     source_uri = trust_decision.normalized_uri or source_uri
     safety_report = evaluate_knowledge_safety(

@@ -386,6 +386,17 @@ def test_package_tree_digest_streams_file_content(tmp_path, monkeypatch) -> None
     assert len(package_tree_digest(package)) == 64
 
 
+def test_package_tree_digest_rejects_oversized_package_tree(tmp_path) -> None:
+    from eimemory.runtime_identity import package_tree_digest
+
+    package = tmp_path / "eimemory"
+    package.mkdir()
+    (package / "large.py").write_bytes(b"x" * 33)
+
+    with pytest.raises(ValueError, match="byte limit"):
+        package_tree_digest(package, max_total_bytes=32)
+
+
 def test_runtime_import_root_is_frozen_when_current_symlink_changes(tmp_path, monkeypatch) -> None:
     from eimemory import runtime_identity
 
@@ -1511,6 +1522,100 @@ process.stdout.write(JSON.stringify(names));
     ]
 
 
+def test_openclaw_js_bridge_migrates_v1_delivery_state_without_losing_receipts(tmp_path) -> None:
+    state_path = tmp_path / "reply-state.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "openclaw_reply_delivery.v1",
+                "entries": {
+                    "om_legacy": {
+                        "status": "delivered",
+                        "delivery_message_id": "om_receipt",
+                        "delivered_at_ms": 1234,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    script = """
+const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
+plugin.register({ on() {} });
+""".strip()
+    env = os.environ.copy()
+    env["EIMEMORY_REPLY_DELIVERY_STATE_PATH"] = str(state_path)
+
+    subprocess.run(["node", "-e", script], cwd=Path.cwd(), env=env, capture_output=True, text=True, check=True)
+    migrated = json.loads(state_path.read_text(encoding="utf-8"))
+
+    assert migrated["schema_version"] == "openclaw_reply_delivery.v2"
+    assert migrated["entries"]["om_legacy"]["status"] == "platform_accepted"
+    assert migrated["entries"]["om_legacy"]["platform_accepted_at_ms"] == 1234
+    assert migrated["entries"]["om_legacy"]["delivery_message_id"] == "om_receipt"
+
+
+def test_openclaw_js_bridge_does_not_accept_inconsistent_v2_watchdog_receipt(tmp_path) -> None:
+    state_path = tmp_path / "reply-state.json"
+    attempts_path = tmp_path / "attempts.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "openclaw_reply_delivery.v2",
+                "entries": {"om_pending": {"status": "answered", "final_text": "pending"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    attempts_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "feishu_delivery_state.v2",
+                "entries": {
+                    "om_pending": {
+                        "state": "platform_accepted",
+                        "ok": False,
+                        "message_id": "om_untrusted_receipt",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    script = """
+const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
+plugin.register({ on() {} });
+""".strip()
+    env = os.environ.copy()
+    env["EIMEMORY_REPLY_DELIVERY_STATE_PATH"] = str(state_path)
+    env["EIMEMORY_REPLY_DELIVERY_ATTEMPTS_PATH"] = str(attempts_path)
+
+    subprocess.run(["node", "-e", script], cwd=Path.cwd(), env=env, capture_output=True, text=True, check=True)
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+
+    assert state["entries"]["om_pending"]["status"] == "answered"
+    assert "delivery_message_id" not in state["entries"]["om_pending"]
+
+
+def test_openclaw_js_bridge_e2e_tool_is_registered_but_disabled_by_default() -> None:
+    script = """
+const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
+let tool;
+plugin.register({
+  registerTool(factory) {
+    const candidate = factory();
+    if (candidate.name === 'memory_e2e_check') tool = candidate;
+  },
+  on() {}
+});
+tool.execute({ query: 'must not execute' }).then((result) => process.stdout.write(JSON.stringify(result)));
+""".strip()
+
+    result = subprocess.run(["node", "-e", script], cwd=Path.cwd(), capture_output=True, text=True, check=True)
+
+    assert json.loads(result.stdout)["details"] == {"ok": False, "error": "e2e_tool_disabled"}
+
+
 def test_openclaw_js_bridge_status_tool_returns_json() -> None:
     script = """
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
@@ -1555,6 +1660,7 @@ toolFactory().execute({ query: 'memory smoke' })
     ledger = tmp_path / "tool-transport.jsonl"
     env = os.environ.copy()
     env["EIMEMORY_CLI_COMMAND"] = "does-not-exist"
+    env["EIMEMORY_ENABLE_E2E_TOOL"] = "true"
     env["EIMEMORY_BRIDGE_TRANSPORT_LEDGER"] = str(ledger)
     result = subprocess.run(
         ["node", "-e", script],

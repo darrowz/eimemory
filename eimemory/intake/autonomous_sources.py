@@ -453,7 +453,17 @@ def _float_or_none(value: Any) -> float | None:
 def _env_llm_evaluator() -> SourceExpansionEvaluator | None:
     from eimemory.llm import llm_client_from_env
 
-    command_client = llm_client_from_env("SOURCE_EXPANSION")
+    try:
+        command_client = llm_client_from_env("SOURCE_EXPANSION")
+    except (OSError, ValueError) as configuration_error:
+        def fail_configured_evaluator(
+            _proposal: dict[str, Any],
+            _context: dict[str, Any],
+            error: BaseException = configuration_error,
+        ) -> dict[str, Any]:
+            raise error
+
+        return fail_configured_evaluator
     if command_client is not None:
         def evaluate_with_command(proposal: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
             prompt = _source_expansion_prompt(proposal, context)
@@ -512,10 +522,20 @@ def _env_llm_evaluator() -> SourceExpansionEvaluator | None:
             method="POST",
         )
         with urlopen(request, timeout=20) as response:
-            raw = response.read(200_000).decode("utf-8", errors="replace")
+            raw_bytes = response.read(200_001)
+        if len(raw_bytes) > 200_000:
+            raise ValueError("LLM source expansion response exceeds size limit")
+        raw = raw_bytes.decode("utf-8", errors="replace")
         data = json.loads(raw)
         content = str(data["choices"][0]["message"]["content"])
-        return json.loads(_extract_json_object(content))
+        result = json.loads(_extract_json_object(content))
+        if not isinstance(result, dict):
+            raise ValueError("LLM source expansion result must be an object")
+        return {
+            **result,
+            "llm_provider": "openai-compatible",
+            "llm_model": str(data.get("model") or model),
+        }
 
     return evaluate
 

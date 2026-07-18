@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import secrets
 import shutil
+import stat
 import tempfile
 
 
@@ -25,20 +26,49 @@ def _strong_token(token: str) -> bool:
     return len(value) >= MIN_TOKEN_LENGTH and len(set(value)) >= MIN_DISTINCT_CHARACTERS
 
 
-def _read_token(path: Path) -> str:
+def _read_token_bytes(payload: bytes) -> str:
     try:
         lines = [
             line.strip()
-            for line in path.read_text(encoding="utf-8").splitlines()
+            for line in payload.decode("utf-8").splitlines()
             if line.strip() and not line.lstrip().startswith("#")
         ]
-    except (OSError, UnicodeError) as exc:
+    except UnicodeError as exc:
         raise RPCAuthError("RPC auth file is unreadable") from exc
     prefix = f"{TOKEN_ENV_NAME}="
     matches = [line[len(prefix) :].strip() for line in lines if line.startswith(prefix)]
     if len(lines) != 1 or len(matches) != 1 or not _strong_token(matches[0]):
         raise RPCAuthError("RPC auth file contains a weak or malformed token")
     return matches[0]
+
+
+def _validate_existing_token(path: Path) -> str:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags)
+    except (OSError, ValueError) as exc:
+        raise RPCAuthError("RPC auth file is unreadable or unsafe") from exc
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+            raise RPCAuthError("RPC auth file must be a single-link regular file")
+        if os.name == "posix" and metadata.st_mode & 0o137:
+            raise RPCAuthError("RPC auth file permissions are too broad")
+        chunks: list[bytes] = []
+        observed = 0
+        while True:
+            chunk = os.read(descriptor, 4096)
+            if not chunk:
+                break
+            observed += len(chunk)
+            if observed > 64 * 1024:
+                raise RPCAuthError("RPC auth file is oversized")
+            chunks.append(chunk)
+        return _read_token_bytes(b"".join(chunks))
+    finally:
+        os.close(descriptor)
 
 
 def _fsync_directory(path: Path) -> None:
@@ -67,9 +97,7 @@ def ensure_rpc_auth_file(
         raise RPCAuthError("RPC auth file must not be a symlink")
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists():
-        _read_token(target)
-        if os.name == "posix" and target.stat(follow_symlinks=False).st_mode & 0o027:
-            raise RPCAuthError("RPC auth file permissions are too broad")
+        _validate_existing_token(target)
         return {"ok": True, "created": False, "path": str(target)}
 
     token = secrets.token_urlsafe(32)
@@ -84,7 +112,12 @@ def ensure_rpc_auth_file(
             os.fsync(handle.fileno())
         os.chmod(temporary, 0o640)
         _apply_ownership(temporary, user=user, group=group)
-        os.replace(temporary, target)
+        try:
+            os.link(temporary, target, follow_symlinks=False)
+        except FileExistsError:
+            _validate_existing_token(target)
+            return {"ok": True, "created": False, "path": str(target)}
+        temporary.unlink()
         _fsync_directory(target.parent)
     finally:
         temporary.unlink(missing_ok=True)

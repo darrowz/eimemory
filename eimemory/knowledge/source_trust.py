@@ -213,7 +213,10 @@ def source_trust_decision_from_payload(value: Any) -> SourceTrustDecision | None
     if raw is None:
         return None
     try:
-        score = _clamp(raw.get("score"), default=-1.0)
+        score = _finite_float(raw.get("score"))
+        if not 0.0 <= score <= 1.0:
+            return None
+        score = round(score, 3)
         tier = str(raw.get("tier") or "")
         authority = str(raw.get("authority") or "")
         source_id = str(raw.get("source_id") or "").strip()
@@ -222,7 +225,10 @@ def source_trust_decision_from_payload(value: Any) -> SourceTrustDecision | None
         policy_digest = str(raw.get("policy_digest") or "")
         reasons = tuple(str(item) for item in (raw.get("reasons") or []) if str(item))
         claimed = raw.get("diagnostic_claimed_trust")
-        diagnostic_claimed_trust = None if claimed is None else _clamp(claimed, default=0.0)
+        try:
+            diagnostic_claimed_trust = None if claimed is None else round(max(0.0, min(1.0, _finite_float(claimed))), 3)
+        except (TypeError, ValueError):
+            diagnostic_claimed_trust = None
     except (TypeError, ValueError):
         return None
     if (
@@ -335,10 +341,19 @@ def _claimed_trust(payload: Mapping[str, Any]) -> float | None:
         if value is None:
             continue
         try:
-            return _clamp(value, default=0.0)
+            return round(max(0.0, min(1.0, _finite_float(value))), 3)
         except (TypeError, ValueError):
             continue
     return None
+
+
+def _finite_float(value: Any) -> float:
+    if isinstance(value, bool):
+        raise TypeError("boolean is not a trust score")
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError("trust score must be finite")
+    return number
 
 
 def _clamp(value: Any, *, default: float) -> float:

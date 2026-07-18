@@ -179,3 +179,38 @@ def test_autonomous_source_expansion_bypasses_failed_optional_llm_with_determini
     assert records
     assert records[0].meta["evaluation"]["evaluator"] == "deterministic_after_llm_error"
     assert records[0].meta["evaluation"]["llm_error"] == "RuntimeError"
+
+
+def test_autonomous_source_expansion_bypasses_malformed_optional_llm_config(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = hongtu_scope({})
+    runtime.sources.add_source(
+        {
+            "source_kind": "url",
+            "title": "ChatPaper arXiv cs.AI",
+            "uri": "https://www.chatpaper.ai/zh/dashboard/arxiv/cs/AI",
+            "enabled": True,
+            "tags": ["chatpaper", "arxiv", "paper"],
+            "metadata": {"categories": ["cs.AI"], "max_items": 10},
+        }
+    )
+    runtime.store.append(
+        RecordEnvelope.create(
+            kind="unknown",
+            title="Need robotics source expansion",
+            summary="Recall missed robotics source expansion.",
+            scope=ScopeRef.from_dict(scope),
+        )
+    )
+    monkeypatch.setenv("EIMEMORY_SOURCE_EXPANSION_LLM_COMMAND", "not-json")
+
+    report = run_autonomous_source_expansion(runtime, scope=scope, apply=False, max_apply=1)
+    records = runtime.store.list_records(kinds=["source_candidate"], scope=scope, limit=10)
+    runtime.close()
+
+    assert report["proposal_count"] >= 1
+    assert records[0].meta["evaluation"]["evaluator"] == "deterministic_after_llm_error"
+    assert records[0].meta["evaluation"]["llm_error"] == "ValueError"

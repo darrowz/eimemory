@@ -19,6 +19,7 @@ from eimemory.ops.feishu_delivery_state import (
     complete_delivery,
     escalate_delivery,
     prepare_delivery,
+    prune_delivery_entries,
     read_delivery_entries,
     reconcile_delivery,
 )
@@ -32,6 +33,7 @@ DEFAULT_INTERVAL_SECONDS = 10
 DEFAULT_RAPID_ATTEMPTS = 3
 DEFAULT_BACKOFF_MS = 300_000
 DEFAULT_ESCALATION_TIMEOUT_MS = 10_800_000
+MAX_ATTEMPT_ENTRIES = 2_000
 STALLED_NOTICE = "这条消息处理链路异常，系统正在恢复。无需重复发送；恢复后会继续处理。"
 GATEWAY_AUTH_ENV_NAMES = ("OPENCLAW_GATEWAY_TOKEN", "OPENCLAW_GATEWAY_PASSWORD")
 
@@ -349,18 +351,17 @@ def scan_once(
                     "continuation_reference",
                 )
             )
-            if (
-                delivery_kind == "status"
-                and not has_resume_reference
-                and now_ms - int(raw_entry.get("received_at_ms") or 0)
-                >= escalation_timeout_ms
-            ):
+            if delivery_kind == "status" and now_ms - int(raw_entry.get("received_at_ms") or 0) >= escalation_timeout_ms:
                 try:
                     escalate_delivery(
                         attempts_path,
                         key=attempt_key,
                         now_ms=now_ms,
-                        reason="pending_without_resume_reference",
+                        reason=(
+                            "pending_after_resume_reference"
+                            if has_resume_reference
+                            else "pending_without_resume_reference"
+                        ),
                     )
                     escalated += 1
                     failed += 1
@@ -490,11 +491,35 @@ def scan_once(
         retried += int(ok)
         failed += int(not ok)
 
+    protected_attempt_keys: set[str] = set()
+    for inbound_id, raw_entry in entries.items():
+        if not isinstance(raw_entry, dict) or raw_entry.get("status") in {
+            "delivered",
+            "platform_accepted",
+            "silent",
+            "escalated",
+        }:
+            continue
+        protected_attempt_keys.add(str(inbound_id))
+        protected_attempt_keys.add(f"status:{inbound_id}")
+    try:
+        prune_report = prune_delivery_entries(
+            attempts_path,
+            protected_keys=protected_attempt_keys,
+            max_terminal_entries=MAX_ATTEMPT_ENTRIES,
+        )
+    except (OSError, ValueError):
+        failed += 1
+        persistence_failed += 1
+        prune_report = {"pruned": 0}
+
     summary = {"checked": len(entries), "retried": retried, "failed": failed}
     if persistence_failed:
         summary["persistence_failed"] = persistence_failed
     if escalated:
         summary["escalated"] = escalated
+    if int(prune_report.get("pruned") or 0):
+        summary["pruned_attempt_entries"] = int(prune_report["pruned"])
     return summary
 
 

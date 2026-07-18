@@ -16,6 +16,7 @@ from eimemory.storage.atomic_file import locked_json_update, read_json_strict
 
 
 SCHEMA_VERSION = "feishu_delivery_state.v2"
+LEGACY_SCHEMA_VERSIONS = frozenset({"", "openclaw_reply_delivery_attempts.v1"})
 FINAL_SUCCESS_STATE = "platform_accepted"
 STATUS_SUCCESS_STATE = "status_notified"
 AMBIGUOUS_STATES = frozenset({"sending", "delivery_uncertain"})
@@ -35,9 +36,29 @@ def _empty_state() -> dict[str, Any]:
 
 
 def _normalize_document(document: dict[str, Any]) -> dict[str, Any]:
+    version = str(document.get("schema_version") or "")
+    if version not in LEGACY_SCHEMA_VERSIONS and version != SCHEMA_VERSION:
+        raise ValueError(f"unsupported Feishu delivery state schema: {version}")
     entries = document.get("entries")
     if not isinstance(entries, dict):
         raise ValueError("Feishu delivery state entries must be an object")
+    for entry in entries.values():
+        if isinstance(entry, dict) and not str(entry.get("state") or ""):
+            kind = str(entry.get("delivery_kind") or "final")
+            state = _legacy_state(entry, kind)
+            if state:
+                entry["state"] = state
+            if state in {FINAL_SUCCESS_STATE, STATUS_SUCCESS_STATE}:
+                receipt = str(entry.get("platform_message_id") or entry.get("message_id") or "").strip()
+                entry["message_id"] = receipt
+                entry["ok"] = True
+                entry["retry_mode"] = "complete"
+                if kind == "status":
+                    entry["notification_message_id"] = receipt
+                    entry.pop("platform_message_id", None)
+                    entry.pop("platform_accepted_at_ms", None)
+                else:
+                    entry["platform_message_id"] = receipt
     document["schema_version"] = SCHEMA_VERSION
     return document
 
@@ -58,7 +79,9 @@ def _update(path: Path, mutate):
 
 def _legacy_state(entry: dict[str, Any], delivery_kind: str) -> str:
     message_id = str(entry.get("platform_message_id") or entry.get("message_id") or "").strip()
-    if message_id and not entry.get("error"):
+    if message_id:
+        if entry.get("error"):
+            return "delivery_uncertain"
         return STATUS_SUCCESS_STATE if delivery_kind == "status" else FINAL_SUCCESS_STATE
     # A legacy retry row means an external call may already have happened.  It
     # must not be made sendable merely because the old row lacked a v2 state.
@@ -253,14 +276,70 @@ def escalate_delivery(
 
 def read_delivery_entries(path: str | Path) -> dict[str, dict[str, Any]]:
     target = Path(path)
-    if not target.exists():
+    try:
+        payload = read_json_strict(target, dict)
+    except FileNotFoundError:
         return {}
-    document = _normalize_document(read_json_strict(target, dict))
+    except ValueError as exc:
+        if isinstance(exc.__cause__, FileNotFoundError):
+            return {}
+        raise
+    document = _normalize_document(payload)
     return {
         str(key): value
         for key, value in document["entries"].items()
         if isinstance(value, dict)
     }
+
+
+def prune_delivery_entries(
+    path: str | Path,
+    *,
+    protected_keys: set[str] | frozenset[str] | None = None,
+    max_terminal_entries: int = 2_000,
+) -> dict[str, int]:
+    """Bound terminal history without discarding ambiguous send intents."""
+
+    protected = {str(key) for key in (protected_keys or set())}
+    limit = max(0, int(max_terminal_entries))
+    result: dict[str, int] = {}
+
+    def timestamp(entry: dict[str, Any]) -> int:
+        for field in (
+            "platform_accepted_at_ms",
+            "status_notified_at_ms",
+            "escalated_at_ms",
+            "attempted_at_ms",
+            "intent_at_ms",
+        ):
+            try:
+                value = int(entry.get(field) or 0)
+            except (TypeError, ValueError):
+                continue
+            if value:
+                return value
+        return 0
+
+    def mutate(document: dict[str, Any]) -> None:
+        entries = document["entries"]
+        candidates = sorted(
+            (
+                (timestamp(entry), str(key))
+                for key, entry in entries.items()
+                if isinstance(entry, dict)
+                and str(key) not in protected
+                and str(entry.get("state") or _legacy_state(entry, str(entry.get("delivery_kind") or "final")))
+                in {FINAL_SUCCESS_STATE, STATUS_SUCCESS_STATE, "escalated"}
+            ),
+            key=lambda item: (item[0], item[1]),
+        )
+        remove_count = max(0, len(candidates) - limit)
+        for _timestamp, key in candidates[:remove_count]:
+            entries.pop(key, None)
+        result.update(pruned=remove_count, remaining=len(entries))
+
+    _update(Path(path), mutate)
+    return result
 
 
 class DeliveryStateStore:

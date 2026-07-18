@@ -100,15 +100,19 @@ def _candidate_from_unit(
 ) -> tuple[dict[str, Any] | None, str]:
     text = _unit_text(unit)
     quality = _quality_score(text)
-    trust_decision = (
-        revalidate_source_trust_decision(unit, registry=source_registry)
-        if source_registry is not None
-        else source_trust_decision_from_payload(unit)
-    )
-    source_trust = float(trust_decision.score) if trust_decision is not None else 0.0
     if quality < 0.28:
         return None, "low_quality_or_noisy"
-
+    trust_validation_error = ""
+    try:
+        trust_decision = (
+            revalidate_source_trust_decision(unit, registry=source_registry)
+            if source_registry is not None
+            else source_trust_decision_from_payload(unit)
+        )
+    except Exception as exc:
+        trust_decision = None
+        trust_validation_error = type(exc).__name__
+    source_trust = float(trust_decision.score) if trust_decision is not None else 0.0
     steps = _extract_steps(text)
     acceptance = _extract_acceptance_criteria(text)
     triggers = _extract_trigger_conditions(text, unit)
@@ -129,6 +133,7 @@ def _candidate_from_unit(
         "risk_level": risk_level,
         "source_trust": source_trust,
         "trust_authority": trust_decision.authority if trust_decision is not None else "unverified",
+        "trust_validation_error": trust_validation_error,
         "source_trust_decision": trust_decision.to_dict() if trust_decision is not None else {},
         "source_id": trust_decision.source_id if trust_decision is not None else "",
         "source_kind": _unit_source_kind(unit),

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from eimemory.api.runtime import Runtime
 from eimemory.models.records import ScopeRef
 
@@ -40,6 +42,23 @@ def test_runtime_ingest_knowledge_source_extracts_multiple_unit_types(tmp_path) 
     unit_types = {unit["unit_type"] for unit in report["knowledge_units"]}
     assert unit_types.issuperset({"concept", "procedure", "verification"})
     assert {"concept", "procedure", "constraint", "use_case", "anti_pattern", "verification"} >= unit_types
+
+
+def test_knowledge_ingest_rejects_invalid_server_connector_identifier(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        with pytest.raises(ValueError, match="connector_id"):
+            runtime.ingest_knowledge_source(
+                {
+                    "source_kind": "docs",
+                    "title": "Unsafe connector",
+                    "uri": "https://example.test/docs",
+                    "text": "A valid document body with a procedure and verification.",
+                },
+                connector_id="../../untrusted\nheader",
+            )
+    finally:
+        runtime.close()
 
 
 def test_registered_api_docs_are_higher_trust_than_unregistered_web_content(tmp_path) -> None:

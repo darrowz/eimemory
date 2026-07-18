@@ -27,9 +27,16 @@ def complete_request(payload: dict[str, Any]) -> dict[str, str]:
         raise ValueError("user_prompt is required")
     binary = str(os.environ.get("EIMEMORY_OPENCLAW_BIN") or "openclaw").strip()
     model = str(os.environ.get("EIMEMORY_LLM_MODEL") or "").strip()
+    json_mode = payload.get("json_mode") is True
     timeout = max(1, min(600, int(os.environ.get("EIMEMORY_LLM_TIMEOUT_SECONDS") or 90)))
+    format_policy = (
+        "JSON_MODE=true. Return only one strict JSON object or array with no markdown fences.\n\n"
+        if json_mode
+        else "JSON_MODE=false.\n\n"
+    )
     combined = (
         "Follow the SYSTEM_POLICY below, then answer USER_REQUEST. Return strict JSON only when the request asks for it.\n\n"
+        f"{format_policy}"
         f"<SYSTEM_POLICY>\n{system_prompt}\n</SYSTEM_POLICY>\n\n"
         f"<USER_REQUEST>\n{user_prompt}\n</USER_REQUEST>"
     )

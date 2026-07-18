@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 import sys
 from typing import Any
 
 from eimemory.governance.prompt_safety_remote import evaluate_output
+from eimemory.llm.command_client import run_bounded_command
 
 
 def main() -> int:
@@ -32,21 +32,23 @@ def execute_request(payload: dict[str, Any]) -> dict[str, Any]:
 
     binary = str(os.environ.get("EIMEMORY_OPENCLAW_BIN") or "openclaw").strip()
     model = str(os.environ.get("EIMEMORY_PROMPT_SAFETY_MODEL") or "").strip()
-    timeout = max(1, min(600, int(os.environ.get("EIMEMORY_PROMPT_SAFETY_TIMEOUT_SECONDS") or 90)))
+    try:
+        configured_timeout = int(os.environ.get("EIMEMORY_PROMPT_SAFETY_TIMEOUT_SECONDS") or 90)
+    except ValueError:
+        configured_timeout = 90
+    timeout = max(1, min(600, configured_timeout if configured_timeout > 0 else 90))
     eval_prompt = _evaluation_prompt(system_prompt=system_prompt, user_input=user_input)
     argv = [binary, "infer", "model", "run", "--prompt", eval_prompt, "--json"]
     if model:
         argv[4:4] = ["--model", model]
-    completed = subprocess.run(
+    completed = run_bounded_command(
         argv,
-        text=True,
-        capture_output=True,
-        timeout=timeout,
-        check=False,
+        b"",
+        timeout_seconds=timeout,
     )
-    if completed.returncode != 0:
-        raise RuntimeError(f"OpenClaw inference failed with exit code {completed.returncode}")
-    response = json.loads(completed.stdout)
+    if completed[0] != 0:
+        raise RuntimeError(f"OpenClaw inference failed with exit code {completed[0]}")
+    response = json.loads(completed[1].decode("utf-8"))
     if not isinstance(response, dict) or response.get("ok") is not True:
         raise ValueError("OpenClaw inference response is not successful")
     output = _response_text(response)

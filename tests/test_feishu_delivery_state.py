@@ -5,10 +5,13 @@ from pathlib import Path
 
 import pytest
 
+from eimemory.ops import feishu_delivery_state as delivery_state_module
 from eimemory.ops.feishu_delivery_state import (
     complete_delivery,
     escalate_delivery,
     prepare_delivery,
+    prune_delivery_entries,
+    read_delivery_entries,
     reconcile_delivery,
 )
 
@@ -55,6 +58,84 @@ def test_prepare_delivery_never_reopens_ambiguous_intent(tmp_path: Path) -> None
 
     assert decision["send"] is False
     assert decision["state"] == "sending"
+
+
+def test_legacy_receipt_with_error_is_never_made_sendable_again(tmp_path: Path) -> None:
+    state_path = tmp_path / "attempts.json"
+    state_path.write_text(
+        json.dumps({"entries": {"om_legacy": {"message_id": "om_receipt", "error": "sender timeout"}}}),
+        encoding="utf-8",
+    )
+
+    decision = prepare_delivery(
+        state_path,
+        key="om_legacy",
+        delivery_kind="final",
+        idempotency_key="stable-key",
+        payload_digest="digest",
+        now_ms=2_000,
+    )
+
+    assert decision["send"] is False
+    assert decision["state"] == "delivery_uncertain"
+
+
+def test_delivery_state_prunes_only_old_unprotected_terminal_entries(tmp_path: Path) -> None:
+    state_path = tmp_path / "attempts.json"
+    entries = {
+        f"om_{index}": {
+            "state": "platform_accepted",
+            "message_id": f"receipt_{index}",
+            "attempted_at_ms": index,
+        }
+        for index in range(8)
+    }
+    entries["om_active"] = {"state": "delivery_uncertain", "attempted_at_ms": 1}
+    entries["status:om_protected"] = {"state": "status_notified", "attempted_at_ms": 1}
+    state_path.write_text(
+        json.dumps({"schema_version": "feishu_delivery_state.v2", "entries": entries}),
+        encoding="utf-8",
+    )
+
+    report = prune_delivery_entries(
+        state_path,
+        protected_keys={"status:om_protected"},
+        max_terminal_entries=3,
+    )
+    remaining = json.loads(state_path.read_text(encoding="utf-8"))["entries"]
+
+    assert report == {"pruned": 5, "remaining": 5}
+    assert "om_active" in remaining
+    assert "status:om_protected" in remaining
+    assert {key for key in remaining if key.startswith("om_")} == {"om_5", "om_6", "om_7", "om_active"}
+
+
+def test_delivery_state_rejects_unknown_schema_without_rewriting_it(tmp_path: Path) -> None:
+    state_path = tmp_path / "attempts.json"
+    original = json.dumps({"schema_version": "feishu_delivery_state.v99", "entries": {}})
+    state_path.write_text(original, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="unsupported"):
+        prepare_delivery(
+            state_path,
+            key="om_1",
+            delivery_kind="final",
+            idempotency_key="stable-key",
+            payload_digest="digest",
+            now_ms=1_000,
+        )
+
+    assert state_path.read_text(encoding="utf-8") == original
+
+
+def test_delivery_state_missing_file_race_reads_as_empty(tmp_path: Path, monkeypatch) -> None:
+    state_path = tmp_path / "attempts.json"
+
+    def disappeared(*_args, **_kwargs):
+        raise FileNotFoundError(state_path)
+
+    monkeypatch.setattr(delivery_state_module, "read_json_strict", disappeared)
+    assert read_delivery_entries(state_path) == {}
 
 
 def test_complete_delivery_requires_platform_receipt_for_success(

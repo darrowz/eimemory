@@ -14,6 +14,7 @@ REQUIRED_HOOKS = {
     "after_tool_call",
     "agent_end",
     "before_agent_finalize",
+    "before_prompt_build",
     "before_tool_call",
     "message_received",
     "message_sent",

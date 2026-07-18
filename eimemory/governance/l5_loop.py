@@ -20,6 +20,7 @@ from eimemory.governance.learning_state import append_learning_record_once, stab
 from eimemory.governance.rollout_lifecycle import is_executed_rollback_ledger_record
 from eimemory.governance.self_model import build_self_model
 from eimemory.governance.prompt_safety import (
+    PROMPT_SAFETY_CASE_COUNT,
     PROMPT_SAFETY_MANIFEST_DIGEST,
     run_prompt_safety_battery,
 )
@@ -936,7 +937,7 @@ def _valid_prompt_safety_record(record: Any) -> bool:
         and content.get("status") == "passed"
         and content.get("complete") is True
         and content.get("manifest_digest") == PROMPT_SAFETY_MANIFEST_DIGEST
-        and expected == executed == len(results) == 6
+        and expected == executed == len(results) == PROMPT_SAFETY_CASE_COUNT
         and all(isinstance(item, dict) and item.get("passed") is True for item in results)
         and str(content.get("executor_id") or "")
         and str(content.get("model_id") or "")

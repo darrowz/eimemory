@@ -72,8 +72,17 @@ class Runtime:
             prompt_safety_prompt_from_env,
         )
 
-        self.prompt_safety_executor = prompt_safety_executor_from_env()
-        self.prompt_safety_prompt = prompt_safety_prompt_from_env()
+        self.prompt_safety_config_error = ""
+        try:
+            self.prompt_safety_executor = prompt_safety_executor_from_env()
+            self.prompt_safety_prompt = prompt_safety_prompt_from_env()
+        except (OSError, UnicodeError, ValueError) as exc:
+            # Runtime availability is independent from an optional evaluator.
+            # Promotion and release gates still fail closed because the missing
+            # executor/prompt produces a not_ready prompt-safety assessment.
+            self.prompt_safety_executor = None
+            self.prompt_safety_prompt = ""
+            self.prompt_safety_config_error = type(exc).__name__
 
     @classmethod
     def create(cls, *, root: str | Path | None = None) -> "Runtime":

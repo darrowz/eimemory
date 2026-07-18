@@ -23,7 +23,7 @@ CORE_REPLAY_CAPABILITIES = [
     "safety.boundary",
 ]
 MANIFEST_REPORT_TYPE = "capability_replay_manifest"
-MANIFEST_SCHEMA_VERSION = "capability_replay_manifest.v1"
+MANIFEST_SCHEMA_VERSION = "capability_replay_manifest.v2"
 
 
 def build_capability_replay_packs(
@@ -321,11 +321,15 @@ def _manifest_payload(
     complete: bool,
     release_payload: dict[str, str] | None = None,
 ) -> dict[str, Any]:
+    release_fields = {
+        key: str((release_payload or {}).get(key) or "")
+        for key in ("release_commit", "release_version", "deployment_receipt_id", "release_session_id")
+    }
     payload = {
         "schema_version": MANIFEST_SCHEMA_VERSION,
         "report_type": MANIFEST_REPORT_TYPE,
         "evidence_class": "replay_execution",
-        **dict(release_payload or {}),
+        **release_fields,
         "execution_id": execution_id,
         "executed_at": executed_at,
         "capabilities": list(capabilities),
@@ -347,7 +351,6 @@ def _manifest_metadata(payload: dict[str, Any]) -> dict[str, Any]:
         **{
             key: str(payload.get(key) or "")
             for key in ("release_commit", "release_version", "deployment_receipt_id", "release_session_id")
-            if str(payload.get(key) or "")
         },
         "execution_id": str(payload.get("execution_id") or ""),
         "manifest_digest": str(payload.get("manifest_digest") or ""),

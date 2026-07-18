@@ -722,6 +722,38 @@ function emptyReplyDeliveryState() {
   return { schema_version: 'openclaw_reply_delivery.v2', entries: {} };
 }
 
+function migrateReplyDeliveryState(parsed) {
+  if (!parsed || typeof parsed !== 'object' || !parsed.entries || typeof parsed.entries !== 'object' || Array.isArray(parsed.entries)) {
+    throw new Error('reply delivery state is malformed');
+  }
+  const version = String(parsed.schema_version || 'openclaw_reply_delivery.v1');
+  if (!['openclaw_reply_delivery.v1', 'openclaw_reply_delivery.v2'].includes(version)) {
+    throw new Error(`unsupported reply delivery state schema: ${version}`);
+  }
+  const migrated = { schema_version: 'openclaw_reply_delivery.v2', entries: {} };
+  for (const [key, rawEntry] of Object.entries(parsed.entries)) {
+    if (!rawEntry || typeof rawEntry !== 'object' || Array.isArray(rawEntry)) {
+      continue;
+    }
+    const entry = { ...rawEntry };
+    if (entry.status === 'delivered') {
+      entry.status = 'platform_accepted';
+    }
+    if (entry.status === 'platform_accepted') {
+      entry.platform_accepted_at_ms = Number(
+        entry.platform_accepted_at_ms
+        || entry.delivered_at_ms
+        || entry.agent_end_at_ms
+        || entry.received_at_ms
+        || 0
+      );
+      entry.delivered_at_ms = Number(entry.delivered_at_ms || entry.platform_accepted_at_ms || 0);
+    }
+    migrated.entries[String(key)] = entry;
+  }
+  return migrated;
+}
+
 function replyDeliveryAttemptsPath() {
   return String(
     process.env.EIMEMORY_REPLY_DELIVERY_ATTEMPTS_PATH || DEFAULT_REPLY_DELIVERY_ATTEMPTS_PATH
@@ -730,15 +762,14 @@ function replyDeliveryAttemptsPath() {
 
 function readReplyDeliveryState() {
   const statePath = replyDeliveryStatePath();
+  let parsed;
   try {
-    const parsed = JSON.parse(fs.readFileSync(statePath, 'utf8'));
-    if (parsed && typeof parsed === 'object' && parsed.entries && typeof parsed.entries === 'object') {
-      return parsed;
-    }
+    parsed = JSON.parse(fs.readFileSync(statePath, 'utf8'));
   } catch (_error) {
     // Missing or partial state is rebuilt atomically below.
+    return emptyReplyDeliveryState();
   }
-  return emptyReplyDeliveryState();
+  return migrateReplyDeliveryState(parsed);
 }
 
 function writeReplyDeliveryState(state) {
@@ -776,21 +807,30 @@ function isDirectFeishuReplyContext(context) {
 }
 
 const MAX_REPLY_DELIVERY_ENTRIES = 2000;
+const TERMINAL_REPLY_DELIVERY_STATUSES = new Set([
+  'platform_accepted',
+  'delivered',
+  'silent',
+  'escalated',
+]);
 
 function reconcileWatchdogReceipts(state) {
-  let attempts;
+  let attemptsDocument;
   try {
-    attempts = JSON.parse(fs.readFileSync(replyDeliveryAttemptsPath(), 'utf8'))?.entries;
+    attemptsDocument = JSON.parse(fs.readFileSync(replyDeliveryAttemptsPath(), 'utf8'));
   } catch (_error) {
     return;
   }
+  const attempts = attemptsDocument?.entries;
   if (!attempts || typeof attempts !== 'object') {
     return;
   }
   for (const [inboundId, attempt] of Object.entries(attempts)) {
     const messageId = String(attempt?.platform_message_id || attempt?.message_id || '').trim();
     const entry = state.entries?.[inboundId];
-    const accepted = attempt?.state === 'platform_accepted' || attempt?.ok === true;
+    const accepted = attemptsDocument?.schema_version === 'feishu_delivery_state.v2'
+      ? attempt?.state === 'platform_accepted' && attempt?.ok === true
+      : attempt?.ok === true;
     if (!entry || !accepted || !messageId) {
       continue;
     }
@@ -808,9 +848,9 @@ function compactReplyDeliveryState(state) {
   if (values.length <= MAX_REPLY_DELIVERY_ENTRIES) {
     return;
   }
-  const active = values.filter(([, entry]) => !['platform_accepted', 'delivered', 'silent', 'escalated'].includes(entry?.status));
+  const active = values.filter(([, entry]) => !TERMINAL_REPLY_DELIVERY_STATUSES.has(entry?.status));
   const delivered = values
-    .filter(([, entry]) => ['platform_accepted', 'delivered', 'silent', 'escalated'].includes(entry?.status))
+    .filter(([, entry]) => TERMINAL_REPLY_DELIVERY_STATUSES.has(entry?.status))
     .sort(([, left], [, right]) => Number(
       right.platform_accepted_at_ms || right.delivered_at_ms || right.escalated_at_ms || 0
     ) - Number(
@@ -822,9 +862,7 @@ function compactReplyDeliveryState(state) {
 
 function latestPendingReplyEntry(state, sessionKey, runId = '', content = '') {
   const candidates = Object.values(state.entries || {})
-    .filter((entry) => entry?.session_key === sessionKey && ![
-      'platform_accepted', 'delivered', 'silent', 'escalated'
-    ].includes(entry?.status));
+    .filter((entry) => entry?.session_key === sessionKey && !TERMINAL_REPLY_DELIVERY_STATUSES.has(entry?.status));
   if (runId) {
     const exactRun = candidates.find((entry) => entry?.run_id === runId);
     if (exactRun) {
@@ -1533,6 +1571,13 @@ function registerMemoryE2ETool(api) {
       required: [],
     },
     async execute(input = {}) {
+      if (!truthy(process.env.EIMEMORY_ENABLE_E2E_TOOL)) {
+        const result = { ok: false, error: 'e2e_tool_disabled' };
+        return {
+          content: [{ type: 'text', text: JSON.stringify(result) }],
+          details: result,
+        };
+      }
       const args = ['eval', 'openclaw-e2e'];
       if (input.query) {
         args.push('--query', String(input.query));

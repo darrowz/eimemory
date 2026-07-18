@@ -36,6 +36,8 @@ def verify_health_payload(
         return {"ok": False, "error": "health_payload_not_object"}
     observed_digest = str(payload.get("package_tree_digest") or "").strip().lower()
     checks = {
+        "service_ok": payload.get("ok") is True,
+        "service_identity": str(payload.get("service") or "") == "eimemory-rpc",
         "commit": str(payload.get("commit") or "").strip().lower() == expected_commit,
         "version": str(payload.get("version") or "").strip() == expected_version,
         "import_root": _resolved_equals(payload.get("import_root"), import_root),
@@ -100,7 +102,7 @@ def main(argv: list[str] | None = None) -> int:
                 version=args.version,
                 release_dir=args.release_dir,
             )
-        except OSError:
+        except (OSError, RuntimeError, ValueError):
             report = {"ok": False, "error": "release_path_unavailable"}
     print(json.dumps(report, ensure_ascii=False, sort_keys=True))
     return 0 if report.get("ok") is True else 1

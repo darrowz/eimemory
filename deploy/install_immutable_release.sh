@@ -178,6 +178,7 @@ _release_version() {
 }
 
 _inspect_openclaw_plugin_runtime() {
+  local target_release="${1:-$RELEASE_DIR}"
   if [ ! -x "$OPENCLAW_BIN" ]; then
     echo "openclaw_plugin_runtime_inspect=skipped binary_not_found" >&2
     return
@@ -186,8 +187,8 @@ _inspect_openclaw_plugin_runtime() {
   inspect_json="$(_run_as_service_user env HOME="$SERVICE_HOME" \
     "$OPENCLAW_BIN" plugins inspect eimemory-bridge --runtime --json)"
   printf '%s' "$inspect_json" | \
-    "$PYTHON_BIN" -I -B "$RELEASE_DIR/deploy/verify_openclaw_plugin_runtime.py" \
-      --expected-root "$RELEASE_DIR/integrations/openclaw/eimemory-bridge"
+    "$PYTHON_BIN" -I -B "$target_release/deploy/verify_openclaw_plugin_runtime.py" \
+      --expected-root "$target_release/integrations/openclaw/eimemory-bridge"
 }
 
 _refresh_current_runtime_metadata() {
@@ -277,20 +278,55 @@ _run_post_switch_acceptance() {
 }
 
 _rollback_current_release() {
-  rm -f "$CURRENT_LINK.next" 2>/dev/null || true
-  if [ -z "${PREVIOUS_CURRENT:-}" ] || [ ! -d "$PREVIOUS_CURRENT" ]; then
-    rm -f "$CURRENT_LINK" 2>/dev/null || true
-    echo "rollback_current_release=removed_no_previous" >&2
-    return
+  local rollback_failed=0
+  if ! rm -f "$CURRENT_LINK.next" 2>/dev/null; then
+    echo "rollback_step=cleanup_next status=failed" >&2
+    rollback_failed=1
   fi
-  ln -sfn "$PREVIOUS_CURRENT" "$CURRENT_LINK.next" && mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"
-  _refresh_current_runtime_metadata "$PREVIOUS_CURRENT" "$PREVIOUS_COMMIT" || true
-  _install_openclaw_loop_compat_script "$PREVIOUS_CURRENT" || true
-  _refresh_openclaw_plugin_registry || true
-  _restart_current_services || true
+  if [ -z "${PREVIOUS_CURRENT:-}" ] || [ ! -d "$PREVIOUS_CURRENT" ]; then
+    if ! rm -f "$CURRENT_LINK" 2>/dev/null; then
+      echo "rollback_step=remove_current status=failed" >&2
+      echo "rollback_current_release=failed" >&2
+      return 1
+    fi
+    echo "rollback_current_release=removed_no_previous" >&2
+    return "$rollback_failed"
+  fi
+  if [ "${EIMEMORY_DEPLOY_FAIL_ROLLBACK_STAGE:-}" = "link" ] || \
+     ! { ln -sfn "$PREVIOUS_CURRENT" "$CURRENT_LINK.next" && mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"; }; then
+    echo "rollback_step=restore_link status=failed" >&2
+    echo "rollback_current_release=failed" >&2
+    return 1
+  fi
+  if ! _refresh_current_runtime_metadata "$PREVIOUS_CURRENT" "$PREVIOUS_COMMIT"; then
+    echo "rollback_step=runtime_metadata status=failed" >&2
+    rollback_failed=1
+  fi
+  if ! _install_openclaw_loop_compat_script "$PREVIOUS_CURRENT"; then
+    echo "rollback_step=compat_script status=failed" >&2
+    rollback_failed=1
+  fi
+  if ! _refresh_openclaw_plugin_registry; then
+    echo "rollback_step=plugin_registry status=failed" >&2
+    rollback_failed=1
+  fi
+  if ! _restart_current_services; then
+    echo "rollback_step=services status=failed" >&2
+    rollback_failed=1
+  fi
+  if ! _inspect_openclaw_plugin_runtime "$PREVIOUS_CURRENT"; then
+    echo "rollback_step=plugin_runtime status=failed" >&2
+    rollback_failed=1
+  fi
   if [ "$EIMEMORY_POST_SWITCH_GATES" = "1" ] && [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ]; then
-    _verify_release_health "$PREVIOUS_CURRENT" "$PREVIOUS_COMMIT" || \
-      echo "rollback_previous_health=unverified" >&2
+    if ! _verify_release_health "$PREVIOUS_CURRENT" "$PREVIOUS_COMMIT"; then
+      echo "rollback_step=previous_health status=failed" >&2
+      rollback_failed=1
+    fi
+  fi
+  if [ "$rollback_failed" != "0" ]; then
+    echo "rollback_current_release=failed" >&2
+    return 1
   fi
   echo "rollback_current_release=restored target=$PREVIOUS_CURRENT" >&2
 }
@@ -340,7 +376,10 @@ fi
 PREVIOUS_CURRENT=""
 PREVIOUS_COMMIT=""
 if [ -e "$CURRENT_LINK" ] || [ -L "$CURRENT_LINK" ] || [ -d "$CURRENT_LINK" ]; then
-  PREVIOUS_CURRENT="$(realpath -e -- "$CURRENT_LINK")"
+  if ! PREVIOUS_CURRENT="$(realpath -e -- "$CURRENT_LINK" 2>/dev/null)"; then
+    echo "Current release link is dangling or unresolvable: $CURRENT_LINK" >&2
+    exit 2
+  fi
   PREVIOUS_COMMIT="$(basename "$PREVIOUS_CURRENT")"
 fi
 if [ "$EIMEMORY_POST_SWITCH_GATES" = "1" ] && [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ] && \
@@ -355,14 +394,20 @@ BACKUP_DIR=""
 FINAL_REPLACED=0
 CURRENT_SWITCHED=0
 COMMITTED=0
+ROLLBACK_RESTORED=0
 cleanup_stage() {
   local exit_code=$?
   trap - EXIT
   set +e
   if [ "$COMMITTED" != "1" ] && [ "$CURRENT_SWITCHED" = "1" ]; then
-    _rollback_current_release
+    if _rollback_current_release; then
+      ROLLBACK_RESTORED=1
+    else
+      echo "rollback_preserved_failed_release=$RELEASE_DIR" >&2
+    fi
   fi
-  if [ "$COMMITTED" != "1" ] && [ "$FINAL_REPLACED" = "1" ]; then
+  if [ "$COMMITTED" != "1" ] && [ "$FINAL_REPLACED" = "1" ] && \
+     { [ "$CURRENT_SWITCHED" != "1" ] || [ "$ROLLBACK_RESTORED" = "1" ]; }; then
     FAILED_DIR="$(mktemp -d "$INSTALL_ROOT/releases/.eimemory-stage-${COMMIT}-XXXXXXXX")"
     rmdir "$FAILED_DIR"
     mv -T "$RELEASE_DIR" "$FAILED_DIR" 2>/dev/null || true

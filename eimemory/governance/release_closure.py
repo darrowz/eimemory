@@ -164,6 +164,9 @@ def _readiness_data_accumulating(readiness: dict[str, Any]) -> bool:
         and float(score) == 0.9
         and assessment.get("complete") is True
         and live_gate.get("ok") is False
-        and int(live_gate.get("sample_deficit") or 0) > 0
+        and (
+            int(live_gate.get("sample_deficit") or 0) > 0
+            or int(live_gate.get("task_type_deficit") or 0) > 0
+        )
         and not list(replay.get("weak_capabilities_missing") or [])
     )

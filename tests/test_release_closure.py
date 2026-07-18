@@ -289,6 +289,26 @@ def test_release_closure_reports_data_accumulation_without_claiming_l5_complete(
     assert report["blocked_stage"] == ""
 
 
+def test_release_closure_treats_task_type_only_deficit_as_data_accumulation() -> None:
+    readiness = {
+        **_successful_readiness(),
+        "current_stage": "data_accumulating",
+        "readiness_score": 0.9,
+        "live_task_gate": {
+            "ok": False,
+            "sample_deficit": 0,
+            "task_type_deficit": 2,
+            "current_deployment_verified_real_tasks": 10,
+        },
+    }
+
+    report = _run(FakeRuntime(readiness=readiness))
+
+    assert report["ok"] is True
+    assert report["closure_complete"] is False
+    assert report["data_accumulating"] is True
+
+
 def _run(runtime: FakeRuntime) -> dict:
     return run_release_closure(
         runtime,

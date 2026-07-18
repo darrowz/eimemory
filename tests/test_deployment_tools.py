@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 from pathlib import Path
@@ -466,6 +467,52 @@ def test_rpc_auth_provisioner_is_idempotent_and_rejects_extra_environment_entrie
         ensure_rpc_auth_file(path)
 
 
+def test_rpc_auth_provisioner_rejects_group_executable_secret_file(tmp_path) -> None:
+    if os.name != "posix":
+        pytest.skip("POSIX permission bits required")
+    from deploy.ensure_rpc_auth import RPCAuthError, ensure_rpc_auth_file
+
+    path = tmp_path / "rpc.env"
+    ensure_rpc_auth_file(path)
+    path.chmod(0o650)
+
+    with pytest.raises(RPCAuthError, match="permissions"):
+        ensure_rpc_auth_file(path)
+
+
+def test_rpc_auth_provisioner_rejects_hardlinked_secret_file(tmp_path) -> None:
+    from deploy.ensure_rpc_auth import RPCAuthError, ensure_rpc_auth_file
+
+    path = tmp_path / "rpc.env"
+    ensure_rpc_auth_file(path)
+    alias = tmp_path / "rpc-copy.env"
+    try:
+        os.link(path, alias)
+    except OSError:
+        pytest.skip("hard links are unavailable")
+
+    with pytest.raises(RPCAuthError, match="single-link"):
+        ensure_rpc_auth_file(path)
+
+
+def test_rpc_auth_provisioner_does_not_replace_a_racing_existing_file(tmp_path, monkeypatch) -> None:
+    from deploy import ensure_rpc_auth as helper
+
+    path = tmp_path / "rpc.env"
+    original_link = helper.os.link
+
+    def racing_link(source, target, **kwargs):
+        target_path = Path(target)
+        target_path.write_text("EIMEMORY_RPC_AUTH_TOKEN=weak\n", encoding="utf-8")
+        return original_link(source, target, **kwargs)
+
+    monkeypatch.setattr(helper.os, "link", racing_link)
+    with pytest.raises(helper.RPCAuthError, match="weak"):
+        helper.ensure_rpc_auth_file(path)
+
+    assert path.read_text(encoding="utf-8") == "EIMEMORY_RPC_AUTH_TOKEN=weak\n"
+
+
 def test_openclaw_bridge_config_enables_required_conversation_access_atomically(tmp_path) -> None:
     from deploy.ensure_openclaw_bridge_config import ensure_openclaw_bridge_config
 
@@ -500,6 +547,33 @@ def test_openclaw_bridge_config_enables_required_conversation_access_atomically(
         "allowConversationAccess": True,
     }
     assert payload["unrelated"] == {"preserved": True}
+
+
+def test_openclaw_bridge_config_creates_missing_allow_policy(tmp_path) -> None:
+    from deploy.ensure_openclaw_bridge_config import ensure_openclaw_bridge_config
+
+    path = tmp_path / "openclaw.json"
+    path.write_text(json.dumps({"plugins": {"entries": {}}}), encoding="utf-8")
+
+    ensure_openclaw_bridge_config(path)
+
+    assert json.loads(path.read_text(encoding="utf-8"))["plugins"]["allow"] == ["eimemory-bridge"]
+
+
+def test_openclaw_bridge_config_serializes_concurrent_updates(tmp_path) -> None:
+    from deploy.ensure_openclaw_bridge_config import ensure_openclaw_bridge_config
+
+    path = tmp_path / "openclaw.json"
+    path.write_text(json.dumps({"plugins": {"entries": {}}, "preserved": {"value": 1}}), encoding="utf-8")
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        reports = list(pool.map(lambda _index: ensure_openclaw_bridge_config(path), range(24)))
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert all(report["ok"] is True for report in reports)
+    assert payload["plugins"]["allow"] == ["eimemory-bridge"]
+    assert payload["plugins"]["entries"]["eimemory-bridge"]["enabled"] is True
+    assert payload["preserved"] == {"value": 1}
 
 
 def test_openclaw_bridge_config_rejects_invalid_or_unsafe_configuration(tmp_path) -> None:
@@ -545,6 +619,7 @@ def test_openclaw_runtime_verifier_requires_loaded_hooks_tools_and_clean_diagnos
                 "after_tool_call",
                 "agent_end",
                 "before_agent_finalize",
+                "before_prompt_build",
                 "before_tool_call",
                 "message_received",
                 "message_sent",
@@ -557,7 +632,7 @@ def test_openclaw_runtime_verifier_requires_loaded_hooks_tools_and_clean_diagnos
 
     report = verify_openclaw_plugin_runtime(payload, expected_root=root)
 
-    assert report == {"ok": True, "plugin_id": "eimemory-bridge", "hook_count": 7, "tool_count": 2}
+    assert report == {"ok": True, "plugin_id": "eimemory-bridge", "hook_count": 8, "tool_count": 2}
     payload["plugin"]["toolNames"] = ["eimemory_bridge_status"]
     with pytest.raises(OpenClawRuntimeError, match="runtime tools"):
         verify_openclaw_plugin_runtime(payload, expected_root=root)
@@ -1339,7 +1414,7 @@ def test_immutable_release_installer_normalizes_service_ownership() -> None:
     assert '"$RELEASE_DIR/deploy/systemd/eimemory-rpc.service" "$USER_SYSTEMD_DIR/eimemory-rpc.service"' in script
     assert "_user_systemctl daemon-reload" in script
     assert "_user_systemctl enable eimemory-rpc.service" in script
-    assert "\n  systemctl enable eimemory-rpc.service" not in script
+    assert re.search(r"^\s*systemctl enable eimemory-rpc\.service", script, re.MULTILINE) is None
     assert "_retire_system_rpc_unit" in script
     assert "systemctl disable --now eimemory-rpc.service" in script
     assert "retired-by-eimemory-user-systemd" in script
@@ -1366,6 +1441,41 @@ def test_immutable_release_installer_commits_only_after_post_switch_gates() -> N
     assert "_rollback_current_release" in script
     assert "verify_release_health.py" in script
     assert switch < acceptance < committed
+    assert "rollback_current_release=failed" in script
+    assert "rollback_preserved_failed_release=" in script
+
+
+def test_immutable_release_installer_rejects_dangling_current_link_with_clear_error(tmp_path) -> None:
+    if os.name != "posix":
+        pytest.skip("installer dangling-link behavior requires POSIX symlinks")
+    commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+    install_root = tmp_path / "install"
+    (install_root / "releases").mkdir(parents=True)
+    (install_root / "current").symlink_to(tmp_path / "missing-release", target_is_directory=True)
+    env = dict(os.environ)
+    env.update(
+        {
+            "REPO_DIR": Path.cwd().as_posix(),
+            "INSTALL_ROOT": install_root.as_posix(),
+            "PYTHON_BIN": _bash_path(Path(sys.executable)),
+            "USER_SYSTEMD_ENABLE_SERVICE": "0",
+            "EIMEMORY_POST_SWITCH_GATES": "0",
+        }
+    )
+
+    result = subprocess.run(
+        [_bash_binary(), "deploy/install_immutable_release.sh", commit],
+        cwd=Path.cwd(),
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "Current release link is dangling or unresolvable" in result.stderr
 
 
 def test_release_health_verifier_requires_exact_runtime_identity(tmp_path) -> None:
@@ -1380,6 +1490,8 @@ def test_release_health_verifier_requires_exact_runtime_identity(tmp_path) -> No
     package.mkdir(parents=True)
     (package / "version.py").write_text('__version__ = "1.9.70"\n', encoding="utf-8")
     payload = {
+        "ok": True,
+        "service": "eimemory-rpc",
         "commit": "a" * 40,
         "version": "1.9.70",
         "import_root": str(package),
@@ -1402,6 +1514,26 @@ def test_release_health_verifier_requires_exact_runtime_identity(tmp_path) -> No
     )
     assert report["ok"] is False
     assert "commit" in report["failed_checks"]
+
+    unhealthy = {**payload, "ok": False}
+    report = module.verify_health_payload(
+        unhealthy,
+        commit="a" * 40,
+        version="1.9.70",
+        release_dir=release,
+    )
+    assert report["ok"] is False
+    assert "service_ok" in report["failed_checks"]
+
+    wrong_service = {**payload, "service": "unrelated-service"}
+    report = module.verify_health_payload(
+        wrong_service,
+        commit="a" * 40,
+        version="1.9.70",
+        release_dir=release,
+    )
+    assert report["ok"] is False
+    assert "service_identity" in report["failed_checks"]
 
 
 @pytest.mark.parametrize(
@@ -1452,6 +1584,54 @@ def test_installer_restores_previous_release_after_post_switch_failure(tmp_path,
     assert current_link.resolve() == old_release.resolve()
     assert "rollback_current_release=restored" in result.stderr
     assert "commit_complete=1" not in result.stdout
+
+
+def test_installer_does_not_claim_success_or_delete_candidate_when_rollback_fails(tmp_path) -> None:
+    if os.name != "posix":
+        pytest.skip("installer rollback fault injection requires POSIX rename semantics")
+    commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+    install_root = tmp_path / "install"
+    releases_root = install_root / "releases"
+    old_release = releases_root / ("0" * 40)
+    old_release.mkdir(parents=True)
+    current_link = install_root / "current"
+    _create_directory_link(current_link, old_release)
+    trusted_python = tmp_path / "trusted-python"
+    _write_installer_test_python(trusted_python)
+    env = dict(os.environ)
+    env.update(
+        {
+            "REPO_DIR": Path.cwd().as_posix(),
+            "INSTALL_ROOT": install_root.as_posix(),
+            "PYTHON_BIN": _bash_path(trusted_python),
+            "EIMEMORY_ROOT": (tmp_path / "runtime").as_posix(),
+            "EIMEMORY_CONFIG_DIR": (tmp_path / "config").as_posix(),
+            "EIMEMORY_LOG_DIR": (tmp_path / "logs").as_posix(),
+            "USER_SYSTEMD_ENABLE_SERVICE": "0",
+            "EIMEMORY_POST_SWITCH_GATES": "0",
+            "EIMEMORY_DEPLOY_FAIL_STAGE": "registry",
+            "EIMEMORY_DEPLOY_FAIL_ROLLBACK_STAGE": "link",
+            "OPENCLAW_LOOP_DEPLOY_VERIFY": "0",
+            "OPENCLAW_LOOP_COMPAT_SCRIPT": "",
+        }
+    )
+
+    result = subprocess.run(
+        [_bash_binary(), "deploy/install_immutable_release.sh", commit],
+        cwd=Path.cwd(),
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "rollback_current_release=failed" in result.stderr
+    assert "rollback_preserved_failed_release=" in result.stderr
+    assert "rollback_current_release=restored" not in result.stderr
+    assert (releases_root / commit).is_dir()
 
 
 def test_immutable_release_installer_refreshes_openclaw_registry_before_gateway_restart() -> None:
