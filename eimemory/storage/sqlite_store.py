@@ -116,6 +116,7 @@ class SqliteRecordStore:
             self._create_event_memory_tables()
             self._create_policy_rollout_tables()
             self._create_export_outbox_table()
+            self._create_replay_manifest_sequence_table()
             self._seed_default_intent_patterns()
             self.conn.commit()
             return
@@ -145,6 +146,7 @@ class SqliteRecordStore:
         self._migrate_intent_patterns_schema()
         self._create_policy_rollout_tables()
         self._create_export_outbox_table()
+        self._create_replay_manifest_sequence_table()
         self._seed_default_intent_patterns()
         if str(os.environ.get("EIMEMORY_RECALL_INDEX_BACKFILL_ON_START") or "").strip() == "1":
             self._backfill_recall_index_if_needed()
@@ -419,6 +421,98 @@ class SqliteRecordStore:
             "CREATE INDEX IF NOT EXISTS idx_export_outbox_pending "
             "ON export_outbox(state, created_at, operation_id)"
         )
+
+    def _create_replay_manifest_sequence_table(self) -> None:
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS replay_manifest_sequences (
+                scope_key TEXT NOT NULL,
+                capability TEXT NOT NULL,
+                high_water INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (scope_key, capability)
+            )
+            """
+        )
+        try:
+            self.conn.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_replay_pack_scope_sequence_case
+                ON records(
+                    tenant_id, agent_id, workspace_id, user_id,
+                    CAST(json_extract(meta_json, '$.capability') AS TEXT),
+                    CAST(json_extract(meta_json, '$.manifest_sequence') AS INTEGER),
+                    CAST(json_extract(meta_json, '$.case_id') AS TEXT)
+                )
+                WHERE kind = 'replay_result'
+                  AND CAST(json_extract(meta_json, '$.report_type') AS TEXT) = 'capability_replay_pack'
+                  AND json_extract(meta_json, '$.manifest_sequence') IS NOT NULL
+                """
+            )
+        except sqlite3.OperationalError:
+            pass
+
+    def allocate_replay_manifest_sequences(
+        self,
+        *,
+        scope: ScopeRef,
+        capabilities: list[str],
+        floor_by_capability: dict[str, int] | None = None,
+    ) -> dict[str, int]:
+        selected = sorted({str(item).strip() for item in capabilities if str(item).strip()})
+        if not selected:
+            return {}
+        scope_key = canonical_payload_json(
+            {
+                "tenant_id": scope.tenant_id,
+                "agent_id": scope.agent_id,
+                "workspace_id": scope.workspace_id,
+                "user_id": scope.user_id,
+            }
+        )
+        floors = dict(floor_by_capability or {})
+        allocated: dict[str, int] = {}
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            for capability in selected:
+                try:
+                    floor = max(0, int(floors.get(capability) or 0))
+                except (TypeError, ValueError):
+                    floor = 0
+                updated_at = datetime.now(timezone.utc).isoformat()
+                self.conn.execute(
+                    """
+                    INSERT OR IGNORE INTO replay_manifest_sequences (
+                        scope_key, capability, high_water, updated_at
+                    ) VALUES (?, ?, ?, ?)
+                    """,
+                    (scope_key, capability, floor, updated_at),
+                )
+                self.conn.execute(
+                    """
+                    UPDATE replay_manifest_sequences
+                    SET high_water = CASE
+                            WHEN high_water < ? THEN ? + 1
+                            ELSE high_water + 1
+                        END,
+                        updated_at = ?
+                    WHERE scope_key = ? AND capability = ?
+                    """,
+                    (floor, floor, updated_at, scope_key, capability),
+                )
+                row = self.conn.execute(
+                    "SELECT high_water FROM replay_manifest_sequences "
+                    "WHERE scope_key = ? AND capability = ?",
+                    (scope_key, capability),
+                ).fetchone()
+                if row is None:
+                    raise RuntimeError("replay manifest sequence allocation was not persisted")
+                allocated[capability] = int(row["high_water"])
+            self.conn.commit()
+            return allocated
+        except Exception:
+            self.conn.rollback()
+            raise
 
     def enqueue_export(
         self,

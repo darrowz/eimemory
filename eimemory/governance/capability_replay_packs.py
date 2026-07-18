@@ -12,6 +12,7 @@ from eimemory.governance.capability_replay_executor import validate_capability_r
 from eimemory.governance.evidence_contract import current_release_identity, release_identity_payload
 from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.models.records import RecordEnvelope, ScopeRef
+from eimemory.storage.jsonl import iter_jsonl_payloads
 
 
 CORE_REPLAY_CAPABILITIES = [
@@ -42,7 +43,12 @@ def build_capability_replay_packs(
     execution_id = generate_record_id("replay_result")
     executed_at = datetime.now(timezone.utc).astimezone().isoformat(timespec="microseconds")
     cases_by_capability = {capability: _cases_for_capability(capability) for capability in selected}
-    sequence_by_capability = _next_manifest_sequences(runtime, scope=scope_ref, capabilities=selected)
+    sequence_by_capability = _next_manifest_sequences(
+        runtime,
+        scope=scope_ref,
+        capabilities=selected,
+        reserve=persist,
+    )
     packs: list[dict[str, Any]] = []
     persisted_replay_ids: list[str] = []
     member_record_ids: dict[str, list[str]] = {}
@@ -121,6 +127,7 @@ def build_capability_replay_packs(
                         "report_type": "capability_replay_pack",
                         "evidence_class": "replay_execution",
                         "capability": capability,
+                        "manifest_sequence": sequence_by_capability[capability],
                         "execution_id": execution_id,
                         "executed_at": executed_at,
                         "case": case,
@@ -138,6 +145,7 @@ def build_capability_replay_packs(
                         "report_type": "capability_replay_pack",
                         "evidence_class": "replay_execution",
                         "capability": capability,
+                        "manifest_sequence": sequence_by_capability[capability],
                         "case_id": case["case_id"],
                         "execution_id": execution_id,
                         "executed_at": executed_at,
@@ -352,6 +360,7 @@ def _next_manifest_sequences(
     *,
     scope: ScopeRef,
     capabilities: list[str],
+    reserve: bool = True,
 ) -> dict[str, int]:
     maxima = capability_replay_log_high_water(runtime, scope=scope, capabilities=capabilities)
     lookup = getattr(runtime.store, "list_records_by_meta_value", None)
@@ -378,7 +387,16 @@ def _next_manifest_sequences(
                 maxima[capability] = max(maxima[capability], int(sequences.get(capability) or 0))
             except (TypeError, ValueError):
                 continue
-    return {capability: value + 1 for capability, value in maxima.items()}
+    if not reserve:
+        return {capability: value + 1 for capability, value in maxima.items()}
+    allocator = getattr(runtime.store, "allocate_manifest_sequences", None)
+    if not callable(allocator):
+        raise RuntimeError("transactional replay manifest sequence allocator is unavailable")
+    return allocator(
+        scope=scope,
+        capabilities=list(maxima),
+        floor_by_capability=maxima,
+    )
 
 
 def capability_replay_log_high_water(
@@ -407,34 +425,29 @@ def capability_replay_log_sequence_state(
         return state
     expected_scope = asdict(scope)
     try:
-        with path.open("r", encoding="utf-8") as handle:
-            for line in handle:
+        for payload in iter_jsonl_payloads(path):
+            if payload.get("scope") != expected_scope:
+                continue
+            if payload.get("kind") != "replay_result" or payload.get("source") != "eimemory.capability_replay":
+                continue
+            meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
+            content = payload.get("content") if isinstance(payload.get("content"), dict) else {}
+            if meta.get("report_type") != MANIFEST_REPORT_TYPE:
+                continue
+            sequences = content.get("sequence_by_capability") if isinstance(content.get("sequence_by_capability"), dict) else {}
+            manifest_record_id = str(payload.get("record_id") or "").strip()
+            for capability in state:
                 try:
-                    payload = json.loads(line)
-                except (TypeError, json.JSONDecodeError):
+                    sequence = int(sequences.get(capability) or 0)
+                except (TypeError, ValueError):
                     continue
-                if not isinstance(payload, dict) or payload.get("scope") != expected_scope:
-                    continue
-                if payload.get("kind") != "replay_result" or payload.get("source") != "eimemory.capability_replay":
-                    continue
-                meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
-                content = payload.get("content") if isinstance(payload.get("content"), dict) else {}
-                if meta.get("report_type") != MANIFEST_REPORT_TYPE:
-                    continue
-                sequences = content.get("sequence_by_capability") if isinstance(content.get("sequence_by_capability"), dict) else {}
-                manifest_record_id = str(payload.get("record_id") or "").strip()
-                for capability in state:
-                    try:
-                        sequence = int(sequences.get(capability) or 0)
-                    except (TypeError, ValueError):
-                        continue
-                    if sequence > int(state[capability]["sequence"]):
-                        state[capability] = {
-                            "sequence": sequence,
-                            "manifest_record_ids": {manifest_record_id} if manifest_record_id else set(),
-                        }
-                    elif sequence == int(state[capability]["sequence"]) and sequence > 0 and manifest_record_id:
-                        state[capability]["manifest_record_ids"].add(manifest_record_id)
+                if sequence > int(state[capability]["sequence"]):
+                    state[capability] = {
+                        "sequence": sequence,
+                        "manifest_record_ids": {manifest_record_id} if manifest_record_id else set(),
+                    }
+                elif sequence == int(state[capability]["sequence"]) and sequence > 0 and manifest_record_id:
+                    state[capability]["manifest_record_ids"].add(manifest_record_id)
     except OSError:
         return state
     return state

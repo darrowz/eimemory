@@ -666,7 +666,7 @@ Commit: `fix: make storage export and recovery durable`
 - Produces: `RuntimeStore.allocate_manifest_sequences(scope, capabilities) -> dict[str, int]`.
 - Consumes: scope key plus a normalized capability list.
 
-- [ ] **Step 1: Add concurrent allocation regression**
+- [x] **Step 1: Add concurrent allocation regression**
 
 ```python
 def test_concurrent_replay_pack_builders_get_unique_sequences(tmp_path):
@@ -675,17 +675,17 @@ def test_concurrent_replay_pack_builders_get_unique_sequences(tmp_path):
     assert len(pairs) == len(set(pairs))
 ```
 
-- [ ] **Step 2: Run the race repeatedly and confirm the old max-plus-one path collides**
+- [x] **Step 2: Run the race repeatedly and confirm the old max-plus-one path collides**
 
 Run: `python -m pytest tests/test_capability_replay_packs.py -q -k "concurrent or sequence" --count=10`
 
 Expected: at least one collision or missing allocator interface before implementation.
 
-- [ ] **Step 3: Implement BEGIN IMMEDIATE allocator**
+- [x] **Step 3: Implement BEGIN IMMEDIATE allocator**
 
 Create `replay_manifest_sequences(scope_key TEXT, capability TEXT, high_water INTEGER, PRIMARY KEY(scope_key, capability))`. In one `BEGIN IMMEDIATE` transaction, increment each requested capability and return the committed values. Add a unique index for persisted replay records' scope/capability/sequence projection and bounded retry on `IntegrityError`.
 
-- [ ] **Step 4: Verify and commit**
+- [x] **Step 4: Verify and commit**
 
 Run: `python -m pytest tests/test_capability_replay_packs.py tests/test_l5_readiness.py -q`
 

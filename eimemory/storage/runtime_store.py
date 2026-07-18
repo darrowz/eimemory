@@ -630,6 +630,21 @@ class RuntimeStore:
                 "flush": flush,
             }
 
+    def allocate_manifest_sequences(
+        self,
+        *,
+        scope: ScopeRef | dict | None,
+        capabilities: list[str],
+        floor_by_capability: dict[str, int] | None = None,
+    ) -> dict[str, int]:
+        scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+        with self._lock:
+            return self.sqlite.allocate_replay_manifest_sequences(
+                scope=scope_ref,
+                capabilities=capabilities,
+                floor_by_capability=floor_by_capability,
+            )
+
     def _flush_committed_exports(self, *operation_ids: str) -> dict:
         recent = self.sqlite.newest_pending_export_ids(limit=100)
         requested = list(dict.fromkeys([*operation_ids, *recent]))

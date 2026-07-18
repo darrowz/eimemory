@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+import threading
 
 from eimemory.api.runtime import Runtime
 from eimemory.experience import record_outcome_trace
@@ -34,6 +36,57 @@ WEAK_CAPABILITIES = {
     "operations.uumit",
     "device.control",
 }
+
+
+def test_concurrent_replay_sequence_allocations_are_unique(tmp_path) -> None:
+    seed = Runtime.create(root=tmp_path)
+    seed.close()
+    worker_count = 8
+    barrier = threading.Barrier(worker_count)
+
+    def allocate() -> int:
+        runtime = Runtime.create(root=tmp_path)
+        try:
+            barrier.wait(timeout=10)
+            allocated = runtime.store.allocate_manifest_sequences(
+                scope=ScopeRef.from_dict(SCOPE),
+                capabilities=["search.discovery"],
+            )
+            return allocated["search.discovery"]
+        finally:
+            runtime.close()
+
+    with ThreadPoolExecutor(max_workers=worker_count) as pool:
+        sequences = list(pool.map(lambda _index: allocate(), range(worker_count)))
+
+    assert sorted(sequences) == list(range(1, worker_count + 1))
+
+
+def test_concurrent_replay_pack_builders_persist_unique_sequences(tmp_path) -> None:
+    seed = Runtime.create(root=tmp_path)
+    seed.close()
+    worker_count = 4
+    barrier = threading.Barrier(worker_count)
+
+    def build() -> int:
+        runtime = Runtime.create(root=tmp_path)
+        try:
+            barrier.wait(timeout=10)
+            report = runtime.build_capability_replay_packs(
+                scope=SCOPE,
+                capabilities=["search.discovery"],
+                persist=True,
+            )
+            manifest = runtime.store.get_by_id(report["manifest_record_id"], scope=SCOPE)
+            assert manifest is not None
+            return int(manifest.content["sequence_by_capability"]["search.discovery"])
+        finally:
+            runtime.close()
+
+    with ThreadPoolExecutor(max_workers=worker_count) as pool:
+        sequences = list(pool.map(lambda _index: build(), range(worker_count)))
+
+    assert len(sequences) == len(set(sequences))
 
 
 def test_capability_replay_packs_do_not_overwrite_scores_when_contracts_are_unavailable(tmp_path) -> None:
