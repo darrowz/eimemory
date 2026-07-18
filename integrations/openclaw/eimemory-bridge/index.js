@@ -771,9 +771,10 @@ function updateReplyDeliveryState(update) {
 }
 
 function isDirectFeishuReplyContext(context) {
-  const channelId = String(context?.channelId || '').toLowerCase();
+  const isFeishu = [context?.messageProvider, context?.channelId]
+    .some((value) => String(value || '').toLowerCase().includes('feishu'));
   const sessionKey = String(context?.sessionKey || '');
-  return channelId.includes('feishu') && sessionKey.includes(':feishu:direct:');
+  return isFeishu && sessionKey.includes(':feishu:direct:');
 }
 
 const MAX_REPLY_DELIVERY_ENTRIES = 2000;

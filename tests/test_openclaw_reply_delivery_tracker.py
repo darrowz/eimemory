@@ -70,6 +70,42 @@ Promise.resolve()
     assert entry["conversation_id"] == "oc_test"
 
 
+def test_tracker_accepts_real_agent_hook_feishu_context(tmp_path: Path) -> None:
+    state = _run_node(
+        """
+const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
+const handlers = {};
+plugin.register({ on(name, handler) { handlers[name] = handler; } });
+const sessionKey = 'agent:main:feishu:direct:ou_test';
+Promise.resolve()
+  .then(() => handlers.message_received({
+    from: 'ou_test', messageId: 'om_real_context', runId: 'run-real'
+  }, {
+    channelId: 'feishu',
+    conversationId: 'user:ou_test',
+    sessionKey,
+    runId: 'run-real'
+  }))
+  .then(() => handlers.agent_end({
+    success: true,
+    runId: 'run-real',
+    messages: [{ role: 'assistant', content: '生产上下文最终答复' }]
+  }, {
+    messageProvider: 'feishu',
+    channel: 'ou_test',
+    channelId: 'ou_test',
+    sessionKey,
+    runId: 'run-real'
+  }));
+""",
+        tmp_path / "reply-state.json",
+    )
+
+    entry = state["entries"]["om_real_context"]
+    assert entry["status"] == "answered"
+    assert entry["final_text"] == "生产上下文最终答复"
+
+
 def test_tracker_ignores_group_messages(tmp_path: Path) -> None:
     state_path = tmp_path / "reply-state.json"
     state = _run_node(

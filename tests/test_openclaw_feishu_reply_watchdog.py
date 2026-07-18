@@ -105,6 +105,36 @@ def test_watchdog_retries_overdue_answer_once(tmp_path: Path) -> None:
     assert attempts["entries"]["om_in_1"]["message_id"] == "om_retry_1"
 
 
+def test_watchdog_sends_when_conversation_id_is_canonical_user_target(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.json"
+    attempts_path = tmp_path / "attempts.json"
+    _write_state(
+        state_path,
+        {
+            "inbound_message_id": "om_user_target",
+            "session_key": "agent:main:feishu:direct:ou_test",
+            "conversation_id": "user:ou_test",
+            "sender_id": "ou_test",
+            "received_at_ms": 1_000,
+            "agent_end_at_ms": 2_000,
+            "status": "answered",
+            "final_text": "可靠补发",
+        },
+    )
+    calls: list[dict] = []
+
+    result = _scan_once(
+        state_path=state_path,
+        attempts_path=attempts_path,
+        now_ms=10_000,
+        find_existing=watchdog.find_existing_reply,
+        send=lambda payload: calls.append(payload) or {"ok": True, "messageId": "om_sent"},
+    )
+
+    assert result == {"checked": 1, "retried": 1, "failed": 0}
+    assert calls[0]["inbound_message_id"] == "om_user_target"
+
+
 def test_sender_replies_to_inbound_with_provider_idempotency(monkeypatch) -> None:
     captured: dict = {}
 

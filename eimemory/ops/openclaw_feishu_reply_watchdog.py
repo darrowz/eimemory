@@ -97,8 +97,10 @@ def find_existing_reply(payload: dict) -> dict:
     inbound_id = str(payload.get("inbound_message_id") or "").strip()
     expected_text = _canonical_text(payload.get("text"))
     received_at_ms = int(payload.get("received_at_ms") or 0)
-    if not conversation_id.startswith("oc_") or not inbound_id.startswith("om_") or not expected_text:
+    if not inbound_id.startswith("om_") or not expected_text:
         return {"status": "error", "error": "missing reply correlation fields"}
+    if not conversation_id.startswith("oc_"):
+        return {"status": "not_found"}
     params = {
         "container_id_type": "chat",
         "container_id": conversation_id,
