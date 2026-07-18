@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-18
 **Target:** one release candidate after `1.9.69`; the version is advanced only after every gate in this document passes
-**Scope:** RPC security, external-knowledge trust, real-task/L5 evidence, prompt safety, Feishu delivery, storage recovery, source-registry concurrency, replay sequencing, intake transport, and immutable deployment
+**Scope:** RPC security, OpenClaw compatibility, external-knowledge trust, real-task/L5 evidence, prompt safety, Feishu delivery, storage recovery, source-registry concurrency, replay sequencing, intake transport, and immutable deployment
 
 ## Context
 
@@ -80,6 +80,19 @@ cryptographically random URL-safe token, mode `0640`, and the configured service
 user/group. An existing weak or unreadable file aborts deployment. The systemd
 unit requires the environment file rather than silently ignoring it. Health
 checks remain loopback-local and do not need the secret.
+
+## 1A. OpenClaw 2026.7.1 Compatibility Boundary
+
+The bridge declares `openclaw.compat.pluginApi >=2026.7.1`, uses one canonical
+native plugin root, and keeps the manifest hook list synchronized with every
+runtime registration. Raw conversation hooks require host-side
+`allowConversationAccess=true`; prompt injection remains independently gated
+until L5 readiness authorizes it.
+
+Deployment refreshes the plugin registry, restarts the Gateway, and requires
+`openclaw plugins inspect eimemory-bridge --runtime --json` to succeed. A
+`message_sent` event or message-tool receipt proves platform acceptance only,
+not recipient display or read.
 
 ## 2. Server-Derived External-Knowledge Trust
 
@@ -198,14 +211,16 @@ closure uses the configured OpenClaw model path and stores the assessment.
 Use a durable state machine keyed by incoming message ID and response content
 hash:
 
-`pending -> status_notified -> final_ready -> sending -> delivered`
+`pending -> status_notified -> final_ready -> sending -> platform_accepted`
 
 Terminal alternatives are `failed`, `escalated`, and `delivery_uncertain`.
 
 Before invoking the external send command, the watchdog atomically persists a
 `sending` intent with delivery key, target, content hash, attempt number, and
 timestamp. If that persistence fails, it does not send. After the command
-returns, it atomically stores the tool receipt and terminal state.
+returns, it atomically stores the tool receipt and terminal state. The receipt
+proves platform acceptance only; state and field names must not imply recipient
+display or read.
 
 If the process crashes after the external send but before receipt persistence,
 the next scan sees `sending` and does not resend. It attempts receipt

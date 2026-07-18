@@ -1030,6 +1030,7 @@ def test_openclaw_bridge_assets_exist() -> None:
         "message_received",
         "before_prompt_build",
         "agent_end",
+        "message_sent",
         "session_end",
         "before_agent_finalize",
         "before_tool_call",
@@ -1037,7 +1038,9 @@ def test_openclaw_bridge_assets_exist() -> None:
     ]
     assert manifest["contracts"]["tools"] == ["eimemory_bridge_status", "memory_e2e_check"]
     assert manifest["configSchema"]["type"] == "object"
-    assert Path("integrations/openclaw/eimemory-bridge/package.json").exists()
+    assert manifest["configSchema"]["additionalProperties"] is False
+    package = json.loads(Path("integrations/openclaw/eimemory-bridge/package.json").read_text(encoding="utf-8"))
+    assert package["openclaw"]["compat"]["pluginApi"] == ">=2026.7.1"
 
 
 def test_openclaw_js_bridge_registers_modern_typed_hooks_without_prompt_injection_by_default() -> None:
@@ -1444,7 +1447,7 @@ process.stdout.write(JSON.stringify(names));
     ]
 
 
-def test_openclaw_js_bridge_registers_status_tool() -> None:
+def test_openclaw_js_bridge_registers_every_manifest_tool_by_default() -> None:
     script = """
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const names = [];
@@ -1461,7 +1464,14 @@ process.stdout.write(JSON.stringify(names));
 """.strip()
     result = subprocess.run(["node", "-e", script], cwd=Path.cwd(), capture_output=True, text=True, check=True)
 
-    assert json.loads(result.stdout) == ["eimemory_bridge_status", "eimemory_bridge_status", "required-array"]
+    assert json.loads(result.stdout) == [
+        "eimemory_bridge_status",
+        "eimemory_bridge_status",
+        "required-array",
+        "memory_e2e_check",
+        "memory_e2e_check",
+        "required-array",
+    ]
 
 
 def test_openclaw_js_bridge_status_tool_returns_json() -> None:
@@ -1472,7 +1482,8 @@ process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
 plugin.register({
   config: { allowPromptInjection: true },
   registerTool(factory) {
-    statusTool = factory();
+    const tool = factory();
+    if (tool.name === 'eimemory_bridge_status') statusTool = tool;
   },
   on() {}
 });
@@ -1494,8 +1505,10 @@ def test_openclaw_js_bridge_memory_e2e_tool_records_transport_failure(tmp_path) 
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 let toolFactory;
 plugin.register({
-  config: { enableMemoryE2ECheck: true },
-  registerTool(factory) { toolFactory = factory; },
+  registerTool(factory) {
+    const tool = factory();
+    if (tool.name === 'memory_e2e_check') toolFactory = () => tool;
+  },
   on() {}
 });
 toolFactory().execute({ query: 'memory smoke' })

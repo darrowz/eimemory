@@ -171,6 +171,36 @@ Expected: zero failures.
 
 Commit: `fix: require strong rpc authentication`
 
+### Task 2A: Align the Bridge with OpenClaw 2026.7.1
+
+**Files:**
+- Modify: `integrations/openclaw/eimemory-bridge/openclaw.plugin.json`
+- Modify: `integrations/openclaw/eimemory-bridge/package.json`
+- Delete: `integrations/openclaw/openclaw.plugin.json`
+- Create: `deploy/ensure_openclaw_bridge_config.py`
+- Modify: `deploy/install_immutable_release.sh`
+- Test: `tests/test_evolution_layer.py`
+- Test: `tests/test_platform.py`
+- Test: `tests/test_deployment_tools.py`
+
+- [ ] **Step 1: Regress manifest, package, and host-policy mismatches**
+
+Require one canonical plugin root, `pluginApi >=2026.7.1`, the complete typed
+hook surface including `message_sent`, a closed config schema, and a preserved
+atomic host-config update that enables `allowConversationAccess` without
+enabling prompt injection.
+
+- [ ] **Step 2: Enforce deploy-time runtime inspection**
+
+Refresh the registry, restart the Gateway, then require
+`openclaw plugins inspect eimemory-bridge --runtime --json` to exit zero.
+
+- [ ] **Step 3: Verify and commit**
+
+Run: `python -m pytest tests/test_evolution_layer.py tests/test_platform.py tests/test_deployment_tools.py -q -k "openclaw or immutable_installer"`
+
+Commit: `fix: align bridge with openclaw 2026.7.1`
+
 ### Task 3: Make Source Registry Writes Atomic
 
 **Files:**
@@ -535,12 +565,14 @@ TRANSITIONS = {
     "pending": {"status_notified", "final_ready", "failed", "escalated"},
     "status_notified": {"final_ready", "failed", "escalated"},
     "final_ready": {"sending", "failed", "escalated"},
-    "sending": {"delivered", "delivery_uncertain"},
-    "delivery_uncertain": {"delivered", "escalated"},
+    "sending": {"platform_accepted", "delivery_uncertain"},
+    "delivery_uncertain": {"platform_accepted", "escalated"},
 }
 ```
 
 `prepare_send` must durably write `sending` before calling the external sender. A persisted `sending` state is reconciled or escalated, never resent. Attempt-write failures return `ok=false` and make the process exit nonzero.
+`platform_accepted` and `platform_accepted_at_ms` are the only successful
+terminal names; OpenClaw does not prove display or read receipt.
 
 - [ ] **Step 4: Verify all delivery tests and commit**
 
@@ -817,7 +849,7 @@ Run deployment proof, replay bootstrap, weak-capability replay gate, operational
 
 - [ ] **Step 7: Verify Feishu state and send completion notice**
 
-Scan all tracked Feishu entries. Require no overdue nonterminal item without a resume reference. Send one completion notification containing version, full commit, health identity, deployment receipt, L5/data-accumulation state, and zero secrets. Persist and verify its delivery receipt.
+Scan all tracked Feishu entries. Require no overdue nonterminal item without a resume reference. Send one completion notification containing version, full commit, health identity, deployment receipt, L5/data-accumulation state, and zero secrets. Persist and verify its platform-acceptance receipt without claiming recipient display or read.
 
 - [ ] **Step 8: Perform the requirement-by-requirement completion audit**
 

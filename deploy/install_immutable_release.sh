@@ -143,6 +143,19 @@ _refresh_openclaw_plugin_registry() {
     "$OPENCLAW_BIN" plugins registry --refresh --json >/dev/null
 }
 
+_inspect_openclaw_plugin_runtime() {
+  if [ ! -x "$OPENCLAW_BIN" ]; then
+    echo "openclaw_plugin_runtime_inspect=skipped binary_not_found" >&2
+    return
+  fi
+  local inspect_json
+  inspect_json="$(_run_as_service_user env HOME="$SERVICE_HOME" \
+    "$OPENCLAW_BIN" plugins inspect eimemory-bridge --runtime --json)"
+  printf '%s' "$inspect_json" | \
+    "$PYTHON_BIN" -I -B "$RELEASE_DIR/deploy/verify_openclaw_plugin_runtime.py" \
+      --expected-root "$RELEASE_DIR/integrations/openclaw/eimemory-bridge"
+}
+
 _refresh_current_runtime_metadata() {
   if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ] || ! command -v systemctl >/dev/null 2>&1; then
     return
@@ -294,6 +307,10 @@ _ensure_runtime_dir "$EIMEMORY_LOG_DIR" 0750
   --path "$EIMEMORY_CONFIG_DIR/rpc.env" \
   --user "$SERVICE_USER" \
   --group "$SERVICE_GROUP"
+if [ -x "$OPENCLAW_BIN" ]; then
+  "$PYTHON_BIN" -I -B "$RELEASE_DIR/deploy/ensure_openclaw_bridge_config.py" \
+    --path "$OPENCLAW_LOOP_CONFIG_PATH"
+fi
 _retire_system_rpc_unit
 if [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ] && command -v systemctl >/dev/null 2>&1; then
   _run_as_service_user mkdir -p "$USER_SYSTEMD_DIR"
@@ -355,7 +372,8 @@ if [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ] && command -v systemctl >/dev/null 2
   else
     systemctl --user restart eimemory-rpc.service
     systemctl --user restart openclaw-feishu-reply-watchdog.service
-    systemctl --user try-restart openclaw-gateway.service
+    systemctl --user restart openclaw-gateway.service
+    _inspect_openclaw_plugin_runtime
   fi
 fi
 if [ -n "$BACKUP_DIR" ] && [ -e "$BACKUP_DIR" ]; then

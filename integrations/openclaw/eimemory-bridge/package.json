@@ -4,9 +4,15 @@
   "private": true,
   "main": "index.js",
   "type": "commonjs",
+  "peerDependencies": {
+    "openclaw": ">=2026.7.1"
+  },
   "openclaw": {
     "extensions": [
       "./index.js"
-    ]
+    ],
+    "compat": {
+      "pluginApi": ">=2026.7.1"
+    }
   }
 }

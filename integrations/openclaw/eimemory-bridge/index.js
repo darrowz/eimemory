@@ -1461,13 +1461,6 @@ function shouldInvokeBridgeBeforePrompt(api, event) {
   return VISION_BRIDGE_QUERY_MARKERS.some((marker) => query.includes(marker));
 }
 
-function memoryE2EToolEnabled(api) {
-  const config = api?.config || {};
-  return config.enableMemoryE2ECheck === true
-    || config.enable_memory_e2e_check === true
-    || truthy(process.env.EIMEMORY_ENABLE_MEMORY_E2E_TOOL);
-}
-
 function usesLegacyHookApi(api) {
   return Boolean(api?.on && !api?.hooks?.on);
 }
@@ -1508,7 +1501,7 @@ function registerStatusTool(api) {
 }
 
 function registerMemoryE2ETool(api) {
-  if (!api?.registerTool || !memoryE2EToolEnabled(api)) {
+  if (!api?.registerTool) {
     return;
   }
   api.registerTool(() => ({
@@ -1575,6 +1568,7 @@ module.exports.default = {
   description: 'Forwards OpenClaw lifecycle hooks into eimemory.',
   configSchema: {
     type: 'object',
+    additionalProperties: false,
     properties: {},
   },
   register(api) {

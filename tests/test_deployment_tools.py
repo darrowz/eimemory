@@ -466,6 +466,107 @@ def test_rpc_auth_provisioner_is_idempotent_and_rejects_extra_environment_entrie
         ensure_rpc_auth_file(path)
 
 
+def test_openclaw_bridge_config_enables_required_conversation_access_atomically(tmp_path) -> None:
+    from deploy.ensure_openclaw_bridge_config import ensure_openclaw_bridge_config
+
+    path = tmp_path / "openclaw.json"
+    path.write_text(
+        json.dumps(
+            {
+                "plugins": {
+                    "allow": ["existing-plugin"],
+                    "entries": {
+                        "eimemory-bridge": {
+                            "hooks": {"allowPromptInjection": False},
+                        }
+                    },
+                },
+                "unrelated": {"preserved": True},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    first = ensure_openclaw_bridge_config(path)
+    second = ensure_openclaw_bridge_config(path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+
+    assert first["changed"] is True
+    assert second["changed"] is False
+    assert payload["plugins"]["allow"] == ["existing-plugin", "eimemory-bridge"]
+    assert payload["plugins"]["entries"]["eimemory-bridge"]["enabled"] is True
+    assert payload["plugins"]["entries"]["eimemory-bridge"]["hooks"] == {
+        "allowPromptInjection": False,
+        "allowConversationAccess": True,
+    }
+    assert payload["unrelated"] == {"preserved": True}
+
+
+def test_openclaw_bridge_config_rejects_invalid_or_unsafe_configuration(tmp_path) -> None:
+    from deploy.ensure_openclaw_bridge_config import OpenClawBridgeConfigError, ensure_openclaw_bridge_config
+
+    path = tmp_path / "openclaw.json"
+    path.write_text("[]\n", encoding="utf-8")
+    with pytest.raises(OpenClawBridgeConfigError, match="object"):
+        ensure_openclaw_bridge_config(path)
+
+    path.write_text(json.dumps({"plugins": {"allow": "eimemory-bridge"}}), encoding="utf-8")
+    with pytest.raises(OpenClawBridgeConfigError, match="plugins.allow"):
+        ensure_openclaw_bridge_config(path)
+
+
+def test_immutable_installer_enforces_and_inspects_openclaw_bridge_compatibility() -> None:
+    script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
+
+    assert "deploy/ensure_openclaw_bridge_config.py" in script
+    assert "plugins inspect eimemory-bridge --runtime --json" in script
+    assert "deploy/verify_openclaw_plugin_runtime.py" in script
+    assert script.index("deploy/ensure_openclaw_bridge_config.py") < script.index("restart openclaw-gateway.service")
+
+
+def test_openclaw_runtime_verifier_requires_loaded_hooks_tools_and_clean_diagnostics(tmp_path) -> None:
+    from deploy.verify_openclaw_plugin_runtime import OpenClawRuntimeError, verify_openclaw_plugin_runtime
+
+    root = tmp_path / "eimemory-bridge"
+    root.mkdir()
+    payload = {
+        "plugin": {
+            "id": "eimemory-bridge",
+            "rootDir": str(root),
+            "enabled": True,
+            "activated": True,
+            "status": "loaded",
+            "toolNames": ["eimemory_bridge_status", "memory_e2e_check"],
+            "contracts": {"tools": ["eimemory_bridge_status", "memory_e2e_check"]},
+        },
+        "typedHooks": [
+            {"name": name}
+            for name in (
+                "after_tool_call",
+                "agent_end",
+                "before_agent_finalize",
+                "before_tool_call",
+                "message_received",
+                "message_sent",
+                "session_end",
+            )
+        ],
+        "diagnostics": [],
+        "compatibility": [],
+    }
+
+    report = verify_openclaw_plugin_runtime(payload, expected_root=root)
+
+    assert report == {"ok": True, "plugin_id": "eimemory-bridge", "hook_count": 7, "tool_count": 2}
+    payload["plugin"]["toolNames"] = ["eimemory_bridge_status"]
+    with pytest.raises(OpenClawRuntimeError, match="runtime tools"):
+        verify_openclaw_plugin_runtime(payload, expected_root=root)
+    payload["plugin"]["toolNames"] = ["eimemory_bridge_status", "memory_e2e_check"]
+    payload["diagnostics"] = [{"level": "error", "message": "stale manifest"}]
+    with pytest.raises(OpenClawRuntimeError, match="diagnostics"):
+        verify_openclaw_plugin_runtime(payload, expected_root=root)
+
+
 def test_eimemory_rpc_cleanup_script_kills_only_matching_port_listeners() -> None:
     script = Path("deploy/systemd/eimemory-rpc-cleanup-port.sh").read_text(encoding="utf-8")
 
@@ -1240,7 +1341,7 @@ def test_immutable_release_installer_restarts_runtimes_after_current_switch() ->
 
     current_switch = script.index('mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"')
     rpc_restart = script.rindex("systemctl --user restart eimemory-rpc.service")
-    gateway_restart = script.index("systemctl --user try-restart openclaw-gateway.service")
+    gateway_restart = script.index("systemctl --user restart openclaw-gateway.service")
 
     assert current_switch < rpc_restart < gateway_restart
 
@@ -1250,7 +1351,7 @@ def test_immutable_release_installer_refreshes_openclaw_registry_before_gateway_
 
     current_switch = script.index('mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"')
     registry_refresh = script.rindex("\n_refresh_openclaw_plugin_registry\n")
-    gateway_restart = script.index("systemctl --user try-restart openclaw-gateway.service")
+    gateway_restart = script.index("systemctl --user restart openclaw-gateway.service")
 
     assert 'OPENCLAW_BIN="${OPENCLAW_BIN:-$SERVICE_HOME/n/bin/openclaw}"' in script
     assert 'plugins registry --refresh --json' in script

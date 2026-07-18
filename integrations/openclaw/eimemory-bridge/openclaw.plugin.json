@@ -12,6 +12,7 @@
     "message_received",
     "before_prompt_build",
     "agent_end",
+    "message_sent",
     "session_end",
     "before_agent_finalize",
     "before_tool_call",
@@ -23,11 +24,10 @@
       "memory_e2e_check"
     ]
   },
-  "main": "index.js",
-  "displayName": "eimemory Bridge",
   "description": "Bridges OpenClaw lifecycle hooks into the local eimemory runtime.",
   "configSchema": {
     "type": "object",
-    "properties": {}
+    "properties": {},
+    "additionalProperties": false
   }
 }
