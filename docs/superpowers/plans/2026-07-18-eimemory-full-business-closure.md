@@ -59,7 +59,7 @@
 Add assertions that every Python unit uses a stable cache root without a literal release number and that every exact bridge hook list includes `after_tool_call`:
 
 ```python
-assert "PYTHONPYCACHEPREFIX=/var/cache/eimemory/python" in unit_text
+assert "PYTHONPYCACHEPREFIX=/var/lib/eimemory/.pycache/runtime" in unit_text
 assert "1.9.66" not in unit_text
 assert hooks == [
     "before_agent_start",
@@ -81,7 +81,7 @@ Expected: the previously observed cache assertion and seven hook-list assertions
 Use the stable value below in every managed Python unit and retain the registered bridge hook:
 
 ```ini
-Environment=PYTHONPYCACHEPREFIX=/var/cache/eimemory/python
+Environment=PYTHONPYCACHEPREFIX=/var/lib/eimemory/.pycache/runtime
 ```
 
 ```javascript

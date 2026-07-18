@@ -14,7 +14,8 @@
     "agent_end",
     "session_end",
     "before_agent_finalize",
-    "before_tool_call"
+    "before_tool_call",
+    "after_tool_call"
   ],
   "contracts": {
     "tools": [

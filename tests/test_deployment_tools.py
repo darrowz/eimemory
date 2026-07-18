@@ -479,7 +479,6 @@ def test_openclaw_gateway_override_uses_production_eimemory_runtime() -> None:
 
 
 def test_python_systemd_units_never_write_bytecode_into_immutable_release() -> None:
-    version = Path("eimemory/version.py").read_text(encoding="utf-8").split('"')[1]
     for unit_path in Path("deploy/systemd").glob("*.service"):
         unit_text = unit_path.read_text(encoding="utf-8")
         launches_release_python = "/opt/eimemory/current/.venv/bin/" in unit_text
@@ -490,7 +489,8 @@ def test_python_systemd_units_never_write_bytecode_into_immutable_release() -> N
                 launches_release_python = True
         if launches_release_python:
             assert "Environment=PYTHONDONTWRITEBYTECODE=1" in unit_text, unit_path.name
-            assert f"Environment=PYTHONPYCACHEPREFIX=/var/lib/eimemory/.pycache/{version}" in unit_text, unit_path.name
+            assert "Environment=PYTHONPYCACHEPREFIX=/var/lib/eimemory/.pycache/runtime" in unit_text, unit_path.name
+            assert not re.search(r"PYTHONPYCACHEPREFIX=.*?/\d+\.\d+\.\d+", unit_text), unit_path.name
 
     gate_script = Path("deploy/systemd/eimemory-l5-observation-gate.sh").read_text(encoding="utf-8")
     assert "export PYTHONDONTWRITEBYTECODE=1" in gate_script

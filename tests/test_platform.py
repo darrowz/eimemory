@@ -1023,6 +1023,7 @@ def test_openclaw_bridge_assets_exist() -> None:
         "session_end",
         "before_agent_finalize",
         "before_tool_call",
+        "after_tool_call",
     ]
     assert manifest["contracts"]["tools"] == ["eimemory_bridge_status", "memory_e2e_check"]
     assert manifest["configSchema"]["type"] == "object"
@@ -1047,6 +1048,7 @@ process.stdout.write(JSON.stringify(names));
         "session_end",
         "before_agent_finalize",
         "before_tool_call",
+        "after_tool_call",
     ]
 
 
@@ -1301,6 +1303,7 @@ process.stdout.write(JSON.stringify(names));
         "session_end",
         "before_agent_finalize",
         "before_tool_call",
+        "after_tool_call",
     ]
 
 
@@ -1321,6 +1324,7 @@ process.stdout.write(JSON.stringify(names));
         "session_end",
         "before_agent_finalize",
         "before_tool_call",
+        "after_tool_call",
     ]
 
 
@@ -1345,6 +1349,7 @@ process.stdout.write(JSON.stringify(names));
         "session_end",
         "before_agent_finalize",
         "before_tool_call",
+        "after_tool_call",
     ]
 
 
@@ -1371,6 +1376,7 @@ process.stdout.write(JSON.stringify(names));
         "session_end",
         "before_agent_finalize",
         "before_tool_call",
+        "after_tool_call",
     ]
 
 
@@ -1394,6 +1400,7 @@ process.stdout.write(JSON.stringify(names));
         "session_end",
         "before_agent_finalize",
         "before_tool_call",
+        "after_tool_call",
         "before_prompt_build",
     ]
 
@@ -1423,6 +1430,7 @@ process.stdout.write(JSON.stringify(names));
         "session_end",
         "before_agent_finalize",
         "before_tool_call",
+        "after_tool_call",
     ]
 
 
