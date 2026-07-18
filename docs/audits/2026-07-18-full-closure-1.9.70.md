@@ -97,3 +97,16 @@ code-review-graph incremental scan covered the changed functions and reported
 no affected cross-module flow; its remaining test-gap labels are static-link
 limitations because the release-level regression exercises both shared
 deduplication paths.
+
+The first production retry then exposed a bootstrap exception to that rule:
+the deployment receipt is itself the anchor used to derive the release
+identity. Scoping receipt idempotency by the receipt-derived identity caused a
+new receipt on every verification call, so live acceptance passed all 10 cases
+but correctly failed its exact receipt comparison. Deployment receipts now use
+their existing deployment tuple (scope, commit, version, release path, rollback
+commit, current link, and health endpoint) as the non-circular idempotency
+domain; all downstream learning evidence remains release-bound. A regression
+first reproduced the receipt churn after it became the current release, then
+proved repeated verification returns one stable receipt. The expanded focused
+deployment, live-acceptance, storage, L5, release, and version suites passed 158
+tests.

@@ -207,6 +207,7 @@ def verify_and_record_deployment(
         },
         evidence=[head, rollback_commit],
         source="eimemory.deployment_receipt",
+        release_bound_idempotency=False,
     )
     return _deployment_receipt_response(record)
 

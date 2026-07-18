@@ -66,6 +66,44 @@ def test_deployment_receipt_reads_and_cross_checks_live_release_evidence(tmp_pat
     ]
 
 
+def test_deployment_receipt_remains_idempotent_after_it_becomes_current_release(tmp_path) -> None:
+    repo, prior_commit, head_commit = _git_release_repo(tmp_path, version="9.8.7")
+    release_dir, current_link = _release_link(tmp_path, head_commit, repo=repo)
+    health = _health_payload(
+        commit=head_commit,
+        version="9.8.7",
+        current_link=current_link,
+        release_dir=release_dir,
+    )
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    runtime._test_runtime_commit = head_commit
+    try:
+        with _health_server(health) as health_url:
+            first = verify_and_record_deployment(
+                runtime,
+                scope=SCOPE,
+                repo_root=repo,
+                current_link=current_link,
+                health_url=health_url,
+                prior_commit=prior_commit,
+            )
+            second = verify_and_record_deployment(
+                runtime,
+                scope=SCOPE,
+                repo_root=repo,
+                current_link=current_link,
+                health_url=health_url,
+                prior_commit=prior_commit,
+            )
+        records = runtime.store.list_records(kinds=["promotion_request"], scope=SCOPE, limit=10)
+    finally:
+        runtime.close()
+
+    assert first["ok"] is second["ok"] is True
+    assert first["promotion_request_id"] == second["promotion_request_id"]
+    assert len(records) == 1
+
+
 @pytest.mark.parametrize("mismatch", ["status_only", "commit", "version", "release"])
 def test_deployment_receipt_rejects_status_only_or_mismatched_identity(tmp_path, mismatch) -> None:
     repo, prior_commit, head_commit = _git_release_repo(tmp_path, version="9.8.7")

@@ -240,3 +240,22 @@ def test_append_learning_record_once_does_not_scan_on_indexed_idempotency_miss(t
     )
 
     assert record.kind == "replay_result"
+
+
+def test_append_learning_record_once_rejects_release_unbound_learning_evidence(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        with pytest.raises(ValueError, match="reserved for deployment receipts"):
+            append_learning_record_once(
+                runtime,
+                kind="l5_assessment",
+                title="Unsafe release-unbound evidence",
+                summary="Must not bypass the release identity domain.",
+                scope={"agent_id": "hongtu"},
+                loop_id="release-closure",
+                step_name="assessment",
+                semantic_key="unsafe",
+                release_bound_idempotency=False,
+            )
+    finally:
+        runtime.close()

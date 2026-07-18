@@ -233,14 +233,19 @@ def append_learning_record_once(
     meta: dict[str, Any] | None = None,
     evidence: list[str] | None = None,
     source: str = "eimemory.autonomous_learning",
+    release_bound_idempotency: bool = True,
 ) -> RecordEnvelope:
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+    if not release_bound_idempotency and not (
+        kind == "promotion_request" and source == "eimemory.deployment_receipt"
+    ):
+        raise ValueError("release-unbound idempotency is reserved for deployment receipts")
     from eimemory.governance.evidence_contract import current_release_identity, release_identity_payload
 
     release = current_release_identity(runtime, scope_ref)
     release_payload = release_identity_payload(release) if release is not None else {}
     idempotency_semantic_key = semantic_key
-    if release is not None:
+    if release is not None and release_bound_idempotency:
         idempotency_semantic_key = stable_semantic_key(
             semantic_key,
             release.commit,
