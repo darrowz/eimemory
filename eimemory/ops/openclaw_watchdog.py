@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import time
@@ -95,6 +96,9 @@ def collect_hook_pressure(
     *,
     cgroup_root: Path = Path("/sys/fs/cgroup"),
     proc_root: Path = Path("/proc"),
+    min_age_s: float = 0,
+    uptime_s: float | None = None,
+    clock_ticks: int | None = None,
 ) -> tuple[int, int]:
     if not control_group:
         return 0, 0
@@ -104,6 +108,18 @@ def collect_hook_pressure(
         ).splitlines()
     except OSError:
         return 0, 0
+
+    if min_age_s > 0 and uptime_s is None:
+        try:
+            uptime_s = float((proc_root / "uptime").read_text(encoding="utf-8").split()[0])
+        except (OSError, IndexError, ValueError):
+            uptime_s = None
+    if min_age_s > 0 and clock_ticks is None:
+        sysconf = getattr(os, "sysconf", None)
+        try:
+            clock_ticks = int(sysconf("SC_CLK_TCK")) if callable(sysconf) else None
+        except (OSError, TypeError, ValueError):
+            clock_ticks = None
 
     hook_count = 0
     hook_rss_kib = 0
@@ -118,6 +134,15 @@ def collect_hook_pressure(
             status_text = (process_path / "status").read_text(encoding="utf-8")
         except OSError:
             continue
+        if min_age_s > 0 and uptime_s is not None and clock_ticks:
+            try:
+                stat_text = (process_path / "stat").read_text(encoding="utf-8")
+                start_ticks = int(stat_text[stat_text.rfind(")") + 2 :].split()[19])
+                process_age_s = uptime_s - (start_ticks / clock_ticks)
+            except (OSError, IndexError, ValueError):
+                process_age_s = min_age_s
+            if process_age_s < min_age_s:
+                continue
         hook_count += 1
         match = PROC_RSS_PATTERN.search(status_text)
         if match:
@@ -173,6 +198,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--health-timeout-s", type=float, default=2.0)
     parser.add_argument("--max-hook-processes", type=int, default=8)
     parser.add_argument("--max-hook-rss-mib", type=int, default=1536)
+    parser.add_argument("--min-hook-age-s", type=float, default=10.0)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
 
@@ -188,7 +214,10 @@ def main(argv: list[str] | None = None) -> int:
     ]
     health_checks = [probe_health_url(url, timeout_s=float(args.health_timeout_s)) for url in health_urls]
     control_group = resolve_unit_control_group(args.unit)
-    hook_count, hook_rss_kib = collect_hook_pressure(control_group)
+    hook_count, hook_rss_kib = collect_hook_pressure(
+        control_group,
+        min_age_s=max(0.0, float(args.min_hook_age_s)),
+    )
     max_hook_rss_kib = int(args.max_hook_rss_mib) * 1024
     if not should_restart_gateway(
         stuck_ages=stuck_ages,

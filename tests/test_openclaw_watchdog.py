@@ -108,6 +108,32 @@ def test_collect_hook_pressure_reads_only_openclaw_hook_processes(tmp_path: Path
     ) == (2, 550_000)
 
 
+def test_collect_hook_pressure_ignores_fresh_hook_processes(tmp_path: Path) -> None:
+    cgroup_root = tmp_path / "cgroup"
+    proc_root = tmp_path / "proc"
+    control_group = "/user.slice/openclaw-gateway.service"
+    cgroup_path = cgroup_root / control_group.lstrip("/")
+    cgroup_path.mkdir(parents=True)
+    (cgroup_path / "cgroup.procs").write_text("101\n102\n", encoding="utf-8")
+
+    for pid, start_ticks in ((101, 9_500), (102, 8_000)):
+        process_path = proc_root / str(pid)
+        process_path.mkdir(parents=True)
+        (process_path / "comm").write_text("openclaw-hooks\n", encoding="utf-8")
+        (process_path / "status").write_text("VmRSS:\t500000 kB\n", encoding="utf-8")
+        stat_fields = [str(pid), "(openclaw-hooks)", "S", *(["0"] * 18), str(start_ticks)]
+        (process_path / "stat").write_text(" ".join(stat_fields) + "\n", encoding="utf-8")
+
+    assert collect_hook_pressure(
+        control_group,
+        cgroup_root=cgroup_root,
+        proc_root=proc_root,
+        min_age_s=10,
+        uptime_s=100.0,
+        clock_ticks=100,
+    ) == (1, 500_000)
+
+
 def test_watchdog_external_reads_fail_open_on_timeout() -> None:
     def timeout_run(*args: object, **kwargs: object) -> object:
         raise subprocess.TimeoutExpired(cmd="systemctl", timeout=3)

@@ -660,6 +660,7 @@ def test_openclaw_watchdog_systemd_limits_stuck_and_hook_pressure() -> None:
     assert "--min-restart-interval-s 300" in unit_text
     assert "--max-hook-processes 8" in unit_text
     assert "--max-hook-rss-mib 1536" in unit_text
+    assert "--min-hook-age-s 10" in unit_text
     assert "--health-url" not in unit_text
     assert "--loopback-health-url" not in unit_text
     assert "TimeoutStartSec=30" in unit_text
