@@ -1638,31 +1638,30 @@ module.exports.default = {
       trackReplyInbound(event, context);
       return (await safeInvokeHook(api, 'message_received', mergeHookEventContext(event, context))) || {};
     });
-    if (promptInjectionEnabled(api)) {
-      registerTypedHookOnce(api, 'before_prompt_build', async (event, context) => {
-        const contextualEvent = mergeHookEventContext(event, context);
-        const correlatedEvent = correlatePendingLoopTask(contextualEvent);
-        const bridgePayload = shouldInvokeBridgeBeforePrompt(api, correlatedEvent)
-          ? await safeInvokeBridge(api, normalizeEventPayload('before_prompt_build', correlatedEvent))
-          : null;
-        const payload = await safeInvokeHook(api, 'before_prompt_build', correlatedEvent);
-        rememberLoopTask(correlatedEvent, payload);
-        const bridgeContext = buildBridgePrependContext(bridgePayload);
-        if (!payload) {
-          return bridgeContext ? { prependContext: bridgeContext } : {};
-        }
-        const bundle = payload.memory_bundle || {};
-        const personaContext = buildPersonaGuidanceContext(payload.persona_guidance || bundle?.explanation?.persona_guidance);
-        const memoryContext = buildMemoryPrependContext(bundle, payload.injection_plan);
-        const prependContext = [bridgeContext, personaContext, memoryContext].filter(Boolean).join('\n\n');
-        if (!prependContext) {
-          return {};
-        }
-        return { prependContext };
-      });
-    } else {
-      api?.logger?.info?.('eimemory-bridge: before_prompt_build disabled; set EIMEMORY_ENABLE_PROMPT_INJECTION=true and allowPromptInjection=true to enable recall injection');
-    }
+    registerTypedHookOnce(api, 'before_prompt_build', async (event, context) => {
+      if (!promptInjectionEnabled(api)) {
+        return {};
+      }
+      const contextualEvent = mergeHookEventContext(event, context);
+      const correlatedEvent = correlatePendingLoopTask(contextualEvent);
+      const bridgePayload = shouldInvokeBridgeBeforePrompt(api, correlatedEvent)
+        ? await safeInvokeBridge(api, normalizeEventPayload('before_prompt_build', correlatedEvent))
+        : null;
+      const payload = await safeInvokeHook(api, 'before_prompt_build', correlatedEvent);
+      rememberLoopTask(correlatedEvent, payload);
+      const bridgeContext = buildBridgePrependContext(bridgePayload);
+      if (!payload) {
+        return bridgeContext ? { prependContext: bridgeContext } : {};
+      }
+      const bundle = payload.memory_bundle || {};
+      const personaContext = buildPersonaGuidanceContext(payload.persona_guidance || bundle?.explanation?.persona_guidance);
+      const memoryContext = buildMemoryPrependContext(bundle, payload.injection_plan);
+      const prependContext = [bridgeContext, personaContext, memoryContext].filter(Boolean).join('\n\n');
+      if (!prependContext) {
+        return {};
+      }
+      return { prependContext };
+    });
     registerTypedHookOnce(api, 'agent_end', async (event, context) => {
       trackReplyAgentEnd(event, context);
       const correlatedEvent = correlatePendingLoopTask(mergeHookEventContext(event, context));

@@ -38,6 +38,7 @@ def verify_openclaw_plugin_runtime(
     payload: object,
     *,
     expected_root: str | Path,
+    allow_legacy_runtime: bool = False,
 ) -> dict[str, object]:
     if not isinstance(payload, dict) or not isinstance(payload.get("plugin"), dict):
         raise OpenClawRuntimeError("runtime inspection payload is malformed")
@@ -63,7 +64,10 @@ def verify_openclaw_plugin_runtime(
     if not isinstance(contracts, dict):
         raise OpenClawRuntimeError("runtime contracts are missing")
     contract_tools = _string_set(contracts.get("tools"), "contract tools")
-    if tool_names != REQUIRED_TOOLS or contract_tools != REQUIRED_TOOLS or tool_names != contract_tools:
+    if allow_legacy_runtime:
+        if "eimemory_bridge_status" not in tool_names or not tool_names.issubset(contract_tools):
+            raise OpenClawRuntimeError("legacy runtime tools contradict contracts.tools")
+    elif tool_names != REQUIRED_TOOLS or contract_tools != REQUIRED_TOOLS or tool_names != contract_tools:
         raise OpenClawRuntimeError("runtime tools do not match contracts.tools")
 
     typed_hooks = payload.get("typedHooks")
@@ -71,7 +75,7 @@ def verify_openclaw_plugin_runtime(
         raise OpenClawRuntimeError("runtime typed hooks are malformed")
     hook_names = {str(item.get("name") or "") for item in typed_hooks}
     missing_hooks = REQUIRED_HOOKS - hook_names
-    if missing_hooks:
+    if missing_hooks and not allow_legacy_runtime:
         raise OpenClawRuntimeError(f"runtime typed hooks are missing: {','.join(sorted(missing_hooks))}")
     if payload.get("diagnostics") not in (None, []):
         raise OpenClawRuntimeError("runtime inspection contains diagnostics")
@@ -88,13 +92,18 @@ def verify_openclaw_plugin_runtime(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--expected-root", required=True, type=Path)
+    parser.add_argument("--allow-legacy-runtime", action="store_true")
     args = parser.parse_args(argv)
     raw = sys.stdin.read(MAX_INSPECT_BYTES + 1)
     try:
         if len(raw.encode("utf-8")) > MAX_INSPECT_BYTES:
             raise OpenClawRuntimeError("runtime inspection payload is unexpectedly large")
         payload = json.loads(raw)
-        report = verify_openclaw_plugin_runtime(payload, expected_root=args.expected_root)
+        report = verify_openclaw_plugin_runtime(
+            payload,
+            expected_root=args.expected_root,
+            allow_legacy_runtime=args.allow_legacy_runtime,
+        )
     except (UnicodeError, json.JSONDecodeError, OpenClawRuntimeError) as exc:
         parser.exit(2, f"OpenClaw runtime verification failed: {exc}\n")
     print(

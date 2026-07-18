@@ -1091,7 +1091,7 @@ def test_openclaw_bridge_assets_exist() -> None:
     assert package["openclaw"]["compat"]["pluginApi"] == ">=2026.7.1"
 
 
-def test_openclaw_js_bridge_registers_modern_typed_hooks_without_prompt_injection_by_default() -> None:
+def test_openclaw_js_bridge_registers_modern_typed_hooks_with_prompt_bypass_by_default() -> None:
     script = """
 delete process.env.EIMEMORY_ENABLE_PROMPT_INJECTION;
 process.env.OPENCLAW_CONFIG_PATH = '/nonexistent/eimemory-openclaw-test.json';
@@ -1104,6 +1104,7 @@ process.stdout.write(JSON.stringify(names));
 
     assert json.loads(result.stdout) == [
         "message_received",
+        "before_prompt_build",
         "agent_end",
         "message_sent",
         "session_end",
@@ -1368,18 +1369,23 @@ process.stdout.write(JSON.stringify(names));
     ]
 
 
-def test_openclaw_js_bridge_legacy_api_respects_prompt_injection_switch() -> None:
+def test_openclaw_js_bridge_registers_prompt_hook_but_bypasses_when_disabled() -> None:
     script = """
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const names = [];
+const handlers = {};
 delete process.env.EIMEMORY_ENABLE_PROMPT_INJECTION;
-plugin.register({ config: { allowPromptInjection: false }, on(name, handler) { names.push(name); } });
-process.stdout.write(JSON.stringify(names));
+plugin.register({ config: { allowPromptInjection: false }, on(name, handler) { names.push(name); handlers[name] = handler; } });
+handlers.before_prompt_build({ prompt: 'must not invoke memory' })
+  .then((result) => process.stdout.write(JSON.stringify({ names, result })))
+  .catch((error) => { console.error(error && error.stack ? error.stack : String(error)); process.exit(1); });
 """.strip()
     result = subprocess.run(["node", "-e", script], cwd=Path.cwd(), capture_output=True, text=True, check=True)
 
-    assert json.loads(result.stdout) == [
+    payload = json.loads(result.stdout)
+    assert payload["names"] == [
         "message_received",
+        "before_prompt_build",
         "agent_end",
         "message_sent",
         "session_end",
@@ -1387,6 +1393,7 @@ process.stdout.write(JSON.stringify(names));
         "before_tool_call",
         "after_tool_call",
     ]
+    assert payload["result"] == {}
 
 
 def test_openclaw_js_bridge_register_is_idempotent_for_same_api() -> None:
@@ -1441,7 +1448,7 @@ process.stdout.write(JSON.stringify(names));
     ]
 
 
-def test_openclaw_js_bridge_can_register_before_prompt_after_policy_becomes_enabled() -> None:
+def test_openclaw_js_bridge_registers_prompt_hook_independently_of_policy_timing() -> None:
     script = """
 delete process.env.EIMEMORY_ENABLE_PROMPT_INJECTION;
 process.env.OPENCLAW_CONFIG_PATH = '/nonexistent/eimemory-openclaw-test.json';
@@ -1456,13 +1463,13 @@ process.stdout.write(JSON.stringify(names));
 
     assert json.loads(result.stdout) == [
         "message_received",
+        "before_prompt_build",
         "agent_end",
         "message_sent",
         "session_end",
         "before_agent_finalize",
         "before_tool_call",
         "after_tool_call",
-        "before_prompt_build",
     ]
 
 

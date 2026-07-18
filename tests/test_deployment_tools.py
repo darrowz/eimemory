@@ -608,7 +608,7 @@ def test_immutable_installer_enforces_and_inspects_openclaw_bridge_compatibility
     assert "deploy/verify_openclaw_plugin_runtime.py" in script
     assert 'local verifier_release="${2:-$target_release}"' in script
     assert '"$verifier_release/deploy/verify_openclaw_plugin_runtime.py"' in script
-    assert '_inspect_openclaw_plugin_runtime "$PREVIOUS_CURRENT" "$RELEASE_DIR"' in script
+    assert '_inspect_openclaw_plugin_runtime "$PREVIOUS_CURRENT" "$RELEASE_DIR" "1"' in script
     assert script.index("deploy/ensure_openclaw_bridge_config.py") < script.rindex("_user_systemctl restart openclaw-gateway.service")
 
 
@@ -654,6 +654,32 @@ def test_openclaw_runtime_verifier_requires_loaded_hooks_tools_and_clean_diagnos
     payload["diagnostics"] = [{"level": "error", "message": "stale manifest"}]
     with pytest.raises(OpenClawRuntimeError, match="diagnostics"):
         verify_openclaw_plugin_runtime(payload, expected_root=root)
+
+
+def test_openclaw_runtime_verifier_allows_known_legacy_shape_only_for_rollback(tmp_path) -> None:
+    from deploy.verify_openclaw_plugin_runtime import OpenClawRuntimeError, verify_openclaw_plugin_runtime
+
+    root = tmp_path / "eimemory-bridge"
+    root.mkdir()
+    payload = {
+        "plugin": {
+            "id": "eimemory-bridge",
+            "rootDir": str(root),
+            "enabled": True,
+            "activated": True,
+            "status": "loaded",
+            "toolNames": ["eimemory_bridge_status"],
+            "contracts": {"tools": ["eimemory_bridge_status", "memory_e2e_check"]},
+        },
+        "typedHooks": [{"name": "message_received"}],
+        "diagnostics": [],
+        "compatibility": [],
+    }
+
+    with pytest.raises(OpenClawRuntimeError, match="runtime tools"):
+        verify_openclaw_plugin_runtime(payload, expected_root=root)
+    report = verify_openclaw_plugin_runtime(payload, expected_root=root, allow_legacy_runtime=True)
+    assert report == {"ok": True, "plugin_id": "eimemory-bridge", "hook_count": 1, "tool_count": 1}
 
 
 def test_eimemory_rpc_cleanup_script_kills_only_matching_port_listeners() -> None:
