@@ -19,12 +19,11 @@ Public API:
 """
 from __future__ import annotations
 
-import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
-from eimemory.storage.jsonl import JsonlLog
+from eimemory.storage.jsonl import JsonlLog, iter_jsonl_payloads
 
 
 def _now_iso() -> str:
@@ -50,18 +49,10 @@ def _iter_rows(path: Path) -> Iterator[dict[str, Any]]:
     are skipped silently — the JSONL is best-effort and we never want a single
     bad row to brick the skill pipeline.
     """
-    log = JsonlLog(path, max_segment_bytes=16 * 1024 * 1024)
-    for segment in log.segment_paths():
-        with segment.open("r", encoding="utf-8") as handle:
-            for line in handle:
-                if not line.strip():
-                    continue
-                try:
-                    row = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(row, dict):
-                    yield row
+    yield from iter_jsonl_payloads(
+        path,
+        max_row_bytes=16 * 1024 * 1024,
+    )
 
 
 def register_skill(

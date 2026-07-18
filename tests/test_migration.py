@@ -223,6 +223,30 @@ def test_backup_create_and_verify_round_trip_for_directory_target(tmp_path) -> N
     assert verified["manifest"]["data_file"] == "backup.jsonl"
 
 
+def test_backup_includes_records_from_rotated_jsonl_segments(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("EIMEMORY_JSONL_SEGMENT_MAX_BYTES", "8192")
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = ScopeRef(agent_id="main", workspace_id="segmented-backup")
+    records = [
+        RecordEnvelope.create(
+            kind="memory",
+            title=f"Segmented backup {index}",
+            summary="s" * 2_000,
+            scope=scope,
+        )
+        for index in range(6)
+    ]
+    for record in records:
+        runtime.store.append(record)
+    assert len(runtime.store.log.segment_paths()) > 1
+
+    report = backup_create(runtime, tmp_path / "segmented-backup")
+
+    assert report["manifest"]["record_count"] == len(records)
+
+
 def test_backup_create_and_verify_round_trip_for_base_path(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path / "runtime")
     runtime.memory.ingest(

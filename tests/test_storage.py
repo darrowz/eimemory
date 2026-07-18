@@ -1,10 +1,16 @@
 import json
+from pathlib import Path
 
 import pytest
 
 from eimemory.models.memory_edges import MemoryEdge
 from eimemory.models.records import RecordEnvelope, ScopeRef, TimeRef
 from eimemory.storage import sqlite_store as sqlite_store_module
+from eimemory.storage.jsonl import (
+    JsonlScanError,
+    iter_jsonl_payloads,
+    scan_jsonl_strict,
+)
 from eimemory.storage.runtime_store import RuntimeStore
 
 
@@ -61,18 +67,12 @@ def test_jsonl_rotates_into_bounded_segments_and_rebuilds_streaming(tmp_path) ->
     from eimemory.storage.jsonl import JsonlLog
 
     log = JsonlLog(tmp_path / "records.jsonl", max_segment_bytes=480)
-    scope = ScopeRef(agent_id="main", workspace_id="segments")
     records = [
-        RecordEnvelope.create(
-            kind="memory",
-            title=f"Segmented {index}",
-            summary="x" * 180,
-            scope=scope,
-        )
+        {"record_id": f"rec_segmented_{index}", "summary": "x" * 360}
         for index in range(6)
     ]
     for record in records:
-        log.append_payload(record.to_dict())
+        log.append_payload(record)
 
     paths = log.segment_paths()
     assert len(paths) > 1
@@ -80,8 +80,431 @@ def test_jsonl_rotates_into_bounded_segments_and_rebuilds_streaming(tmp_path) ->
         len(path.read_text(encoding="utf-8").splitlines()) == 1 for path in paths
     )
     assert [entry.payload["record_id"] for entry in log.scan_strict()] == [
-        record.record_id for record in records
+        record["record_id"] for record in records
     ]
+
+
+def test_jsonl_resegments_oversized_legacy_archive_and_preserves_append_order(tmp_path) -> None:
+    from eimemory.storage.jsonl import JsonlLog
+
+    log = JsonlLog(
+        tmp_path / "records.jsonl",
+        max_segment_bytes=8_192,
+        cleanup_grace_seconds=0,
+    )
+    scope = ScopeRef(agent_id="main", workspace_id="legacy-segments")
+    records = [
+        RecordEnvelope.create(
+            kind="memory",
+            title=f"Legacy {index}",
+            summary="x" * 220,
+            scope=scope,
+        )
+        for index in range(8)
+    ]
+    legacy = tmp_path / "records.00000001.jsonl"
+    legacy.write_bytes(
+        b"".join(
+            (json.dumps(record.to_dict(), ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
+            for record in records[:-1]
+        )
+    )
+    log.path.write_bytes(
+        (json.dumps(records[-1].to_dict(), ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
+    )
+    before = [entry.payload["record_id"] for entry in log.scan_strict()]
+
+    first = log.resegment_oversized()
+    second = log.resegment_oversized()
+    appended = [
+        RecordEnvelope.create(
+            kind="memory",
+            title=f"After migration {index}",
+            summary="y" * 220,
+            scope=scope,
+        )
+        for index in range(5)
+    ]
+    for record in appended:
+        log.append_payload(record.to_dict())
+
+    paths = log.segment_paths()
+    assert first["changed"] is True
+    assert first["oversized_segment_count"] == 1
+    assert first["source_bytes"] == first["replacement_bytes"]
+    assert first["source_sha256"] == first["replacement_sha256"]
+    assert second["changed"] is False
+    assert log.manifest_path.is_file()
+    assert not legacy.exists()
+    assert all(path.stat().st_size <= log.max_segment_bytes for path in paths)
+    assert [entry.payload["record_id"] for entry in log.scan_strict()] == [
+        *before,
+        *(record.record_id for record in appended),
+    ]
+    assert json.loads(log.manifest_path.read_text(encoding="utf-8"))["pending_segment"] is None
+
+
+def test_jsonl_recovers_rotation_after_active_file_was_moved(tmp_path) -> None:
+    from eimemory.storage.jsonl import JsonlLog
+
+    log = JsonlLog(tmp_path / "records.jsonl", max_segment_bytes=8_192)
+    scope = ScopeRef(agent_id="main", workspace_id="pending-segment")
+    moved = RecordEnvelope.create(
+        kind="memory",
+        title="Moved before manifest finalize",
+        summary="recover the pending segment",
+        scope=scope,
+    )
+    pending_name = f"records.segment-{'b' * 32}.jsonl"
+    (tmp_path / pending_name).write_bytes(
+        (json.dumps(moved.to_dict(), separators=(",", ":")) + "\n").encode("utf-8")
+    )
+    log.manifest_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "segments": [],
+                "pending_segment": pending_name,
+                "cleanup_pending": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    appended = RecordEnvelope.create(
+        kind="memory",
+        title="Append after recovery",
+        summary="new active segment",
+        scope=scope,
+    )
+
+    log.append_payload(appended.to_dict())
+
+    assert [entry.payload["record_id"] for entry in log.scan_strict()] == [
+        moved.record_id,
+        appended.record_id,
+    ]
+    manifest = json.loads(log.manifest_path.read_text(encoding="utf-8"))
+    assert manifest["segments"] == [pending_name]
+    assert manifest["pending_segment"] is None
+
+
+def test_jsonl_cleanup_failure_is_retryable_without_duplicate_visibility(
+    tmp_path, monkeypatch
+) -> None:
+    from eimemory.storage.jsonl import JsonlLog
+
+    log = JsonlLog(
+        tmp_path / "records.jsonl",
+        max_segment_bytes=2_048,
+        cleanup_grace_seconds=0,
+    )
+    legacy = tmp_path / "records.00000001.jsonl"
+    rows = [
+        json.dumps({"record_id": f"rec_{index}", "summary": "z" * 700}) + "\n"
+        for index in range(5)
+    ]
+    legacy.write_text("".join(rows), encoding="utf-8")
+    original_unlink = Path.unlink
+
+    def fail_legacy_cleanup(path, *args, **kwargs):
+        if path == legacy:
+            raise PermissionError("simulated cleanup denial")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_legacy_cleanup)
+    first = log.resegment_oversized()
+    visible_ids = [entry.payload["record_id"] for entry in log.scan_strict()]
+
+    assert first["changed"] is True
+    assert first["ok"] is False
+    assert legacy.exists()
+    assert visible_ids == [f"rec_{index}" for index in range(5)]
+    assert json.loads(log.manifest_path.read_text(encoding="utf-8"))[
+        "cleanup_pending"
+    ] == [legacy.name]
+
+    monkeypatch.setattr(Path, "unlink", original_unlink)
+    second = log.resegment_oversized()
+
+    assert second["changed"] is False
+    assert second["ok"] is True
+    assert not legacy.exists()
+    assert json.loads(log.manifest_path.read_text(encoding="utf-8"))[
+        "cleanup_pending"
+    ] == []
+
+
+def test_jsonl_new_migration_preserves_previous_cleanup_retry(
+    tmp_path, monkeypatch
+) -> None:
+    from eimemory.storage.jsonl import JsonlLog
+
+    log = JsonlLog(
+        tmp_path / "records.jsonl",
+        max_segment_bytes=2_048,
+        cleanup_grace_seconds=0,
+    )
+    legacy = tmp_path / "records.00000001.jsonl"
+    legacy.write_text(
+        "".join(
+            json.dumps({"record_id": f"old_{index}", "summary": "o" * 700}) + "\n"
+            for index in range(5)
+        ),
+        encoding="utf-8",
+    )
+    original_unlink = Path.unlink
+
+    def deny_old_source(path, *args, **kwargs):
+        if path == legacy:
+            raise PermissionError("old source remains busy")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", deny_old_source)
+    assert log.resegment_oversized()["ok"] is False
+    log.path.write_text(
+        "".join(
+            json.dumps({"record_id": f"new_{index}", "summary": "n" * 700}) + "\n"
+            for index in range(5)
+        ),
+        encoding="utf-8",
+    )
+
+    report = log.resegment_oversized()
+
+    assert report["ok"] is False
+    assert legacy.exists()
+    assert json.loads(log.manifest_path.read_text(encoding="utf-8"))[
+        "cleanup_pending"
+    ] == [legacy.name]
+
+
+def test_jsonl_rejects_a_single_row_over_the_hard_segment_limit(tmp_path) -> None:
+    from eimemory.storage.jsonl import JsonlLog
+
+    log = JsonlLog(tmp_path / "records.jsonl", max_segment_bytes=256)
+
+    with pytest.raises(ValueError, match="single JSONL row exceeds segment limit"):
+        log.append_payload({"record_id": "too_large", "summary": "x" * 300})
+
+    assert not log.path.exists()
+
+
+def test_jsonl_read_iterator_does_not_create_a_missing_parent(tmp_path) -> None:
+    path = tmp_path / "read-only-probe" / "records.jsonl"
+
+    assert list(iter_jsonl_payloads(path)) == []
+    assert not path.parent.exists()
+
+
+def test_jsonl_maintenance_removes_unreferenced_generation(tmp_path) -> None:
+    from eimemory.storage.jsonl import JsonlLog
+
+    log = JsonlLog(tmp_path / "records.jsonl", max_segment_bytes=2_048)
+    orphan = tmp_path / f".records.segments-{'a' * 32}"
+    orphan.mkdir()
+    (orphan / "transaction.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "state": "staging",
+                "log_name": "records.jsonl",
+                "generation": orphan.name,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (orphan / "records.00000001.jsonl").write_text(
+        json.dumps({"record_id": "orphan"}) + "\n",
+        encoding="utf-8",
+    )
+
+    report = log.resegment_oversized()
+
+    assert report["ok"] is True
+    assert report["orphan_generation_count"] == 1
+    assert not orphan.exists()
+
+
+def test_jsonl_restores_a_missing_primary_manifest_from_backup(tmp_path) -> None:
+    from eimemory.storage.jsonl import JsonlLog
+
+    log = JsonlLog(
+        tmp_path / "records.jsonl",
+        max_segment_bytes=2_048,
+        cleanup_grace_seconds=0,
+    )
+    legacy = tmp_path / "records.00000001.jsonl"
+    legacy.write_text(
+        "".join(
+            json.dumps({"record_id": f"rec_{index}", "summary": "b" * 700}) + "\n"
+            for index in range(5)
+        ),
+        encoding="utf-8",
+    )
+    expected = [f"rec_{index}" for index in range(5)]
+    assert log.resegment_oversized()["ok"] is True
+    assert log.manifest_backup_path.is_file()
+    log.manifest_path.unlink()
+
+    actual = [entry.payload["record_id"] for entry in log.scan_strict()]
+
+    assert actual == expected
+    assert log.manifest_path.is_file()
+
+
+def test_jsonl_fails_closed_if_all_manifests_are_missing_for_active_generation(
+    tmp_path,
+) -> None:
+    from eimemory.storage.jsonl import JsonlLog
+
+    log = JsonlLog(
+        tmp_path / "records.jsonl",
+        max_segment_bytes=2_048,
+        cleanup_grace_seconds=0,
+    )
+    legacy = tmp_path / "records.00000001.jsonl"
+    legacy.write_text(
+        "".join(
+            json.dumps({"record_id": f"rec_{index}", "summary": "g" * 700}) + "\n"
+            for index in range(5)
+        ),
+        encoding="utf-8",
+    )
+    assert log.resegment_oversized()["ok"] is True
+    generation = next(tmp_path.glob(".records.segments-*"))
+    log.manifest_path.unlink()
+    log.manifest_backup_path.unlink()
+
+    with pytest.raises(ValueError, match="manifest missing for activated generation"):
+        log.resegment_oversized()
+
+    assert generation.is_dir()
+    assert list(generation.glob("*.jsonl"))
+
+
+def test_jsonl_readers_bound_oversized_unterminated_rows(tmp_path) -> None:
+    path = tmp_path / "records.jsonl"
+    path.write_bytes(b'{"record_id":"' + (b"x" * 1_024))
+
+    with pytest.raises(JsonlScanError, match="row exceeds size limit"):
+        list(scan_jsonl_strict(path, max_row_bytes=256))
+    assert list(iter_jsonl_payloads(path, max_row_bytes=256)) == []
+
+
+def test_jsonl_rejects_cleanup_paths_not_owned_by_the_log(tmp_path) -> None:
+    from eimemory.storage.jsonl import JsonlLog
+
+    log = JsonlLog(tmp_path / "records.jsonl")
+    sentinel = tmp_path / "sentinel.db"
+    sentinel.write_bytes(b"must survive")
+    log.manifest_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "segments": [],
+                "pending_segment": None,
+                "cleanup_pending": [sentinel.name],
+                "cleanup_not_before": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="cleanup path is not owned by this log"):
+        log.resegment_oversized(force_cleanup=True)
+
+    assert sentinel.read_bytes() == b"must survive"
+
+
+def test_jsonl_default_cleanup_grace_preserves_concurrent_reader_snapshot(
+    tmp_path,
+) -> None:
+    from eimemory.storage.jsonl import JsonlLog
+
+    log = JsonlLog(
+        tmp_path / "records.jsonl",
+        max_segment_bytes=2_048,
+        cleanup_grace_seconds=3_600,
+    )
+    legacy = tmp_path / "records.00000001.jsonl"
+    legacy.write_text(
+        "".join(
+            json.dumps({"record_id": f"rec_{index}", "summary": "r" * 700}) + "\n"
+            for index in range(5)
+        ),
+        encoding="utf-8",
+    )
+    snapshot = log.segment_paths()
+
+    migrated = log.resegment_oversized()
+
+    assert migrated["ok"] is True
+    assert migrated["cleanup_deferred_count"] == 1
+    assert legacy.exists()
+    assert [entry.payload["record_id"] for entry in scan_jsonl_strict(snapshot)] == [
+        f"rec_{index}" for index in range(5)
+    ]
+
+    cleaned = log.resegment_oversized(force_cleanup=True)
+    assert cleaned["ok"] is True
+    assert not legacy.exists()
+
+
+def test_strict_snapshot_fails_if_a_listed_segment_disappears(tmp_path) -> None:
+    path = tmp_path / "records.00000001.jsonl"
+    path.write_text(json.dumps({"record_id": "visible"}) + "\n", encoding="utf-8")
+    snapshot = [path]
+    path.unlink()
+
+    with pytest.raises(FileNotFoundError, match="JSONL segment disappeared"):
+        list(scan_jsonl_strict(snapshot))
+
+
+def test_runtime_maintenance_reports_jsonl_resegmentation(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("EIMEMORY_JSONL_SEGMENT_MAX_BYTES", "2048")
+    store = RuntimeStore(root=tmp_path)
+    legacy = tmp_path / "records.00000001.jsonl"
+    legacy.write_text(
+        "".join(
+            json.dumps({"record_id": f"rec_{index}", "summary": "m" * 700}) + "\n"
+            for index in range(5)
+        ),
+        encoding="utf-8",
+    )
+
+    report = store.maintain_storage()
+
+    assert report["ok"] is True
+    assert report["jsonl_segments"]["changed"] is True
+    assert report["jsonl_segments"]["largest_segment_bytes"] <= 2_048
+
+
+def test_runtime_maintenance_resegments_auxiliary_jsonl_archives(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("EIMEMORY_JSONL_SEGMENT_MAX_BYTES", "2048")
+    monkeypatch.setenv("EIMEMORY_JSONL_CLEANUP_GRACE_SECONDS", "0")
+    store = RuntimeStore(root=tmp_path)
+    legacy = tmp_path / "state" / "events.00000001.jsonl"
+    legacy.write_text(
+        "".join(
+            json.dumps({"event_id": f"evt_{index}", "summary": "a" * 700}) + "\n"
+            for index in range(5)
+        ),
+        encoding="utf-8",
+    )
+
+    report = store.maintain_storage()
+
+    assert report["ok"] is True
+    assert report["auxiliary_jsonl_segments"]["events"]["changed"] is True
+    assert not legacy.exists()
+    assert all(
+        path.stat().st_size <= 2_048
+        for path in store._auxiliary_log("events").segment_paths()
+    )
 
 
 def test_sqlite_runtime_uses_bounded_wal_and_disk_temp_pages(tmp_path) -> None:

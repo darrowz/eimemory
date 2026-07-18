@@ -12,6 +12,7 @@ from eimemory.core.clock import now_iso
 from eimemory.api.runtime import Runtime
 from eimemory.intake.loop import _looks_like_prompt_injection, _looks_like_secret
 from eimemory.models.records import RecordEnvelope, ScopeRef, evaluate_memory_quality
+from eimemory.storage.jsonl import JsonlLog, scan_jsonl_strict
 
 
 SUPPORTED_IMPORT_KINDS = {"memory", "multimodal_memory"}
@@ -31,14 +32,12 @@ def export_records(runtime: Runtime, path: str | Path) -> int:
 
 def import_records(runtime: Runtime, path: str | Path) -> int:
     source = Path(path)
+    if not source.exists():
+        raise FileNotFoundError(source)
     count = 0
-    with source.open("r", encoding="utf-8") as handle:
-        for line in handle:
-            line = line.strip()
-            if not line:
-                continue
-            runtime.store.append(RecordEnvelope.from_dict(json.loads(line)))
-            count += 1
+    for entry in scan_jsonl_strict(source):
+        runtime.store.append(RecordEnvelope.from_dict(entry.payload))
+        count += 1
     return count
 
 
@@ -480,19 +479,16 @@ def _records_from_sqlite(runtime: Runtime) -> list[RecordEnvelope]:
 
 
 def _records_from_jsonl_log(path: Path | None) -> list[RecordEnvelope]:
-    if path is None or not path.exists():
+    if path is None:
         return []
     latest_by_key: "OrderedDict[str, RecordEnvelope]" = OrderedDict()
-    with path.open("r", encoding="utf-8") as handle:
-        for line in handle:
-            line = line.strip()
-            if not line:
-                continue
-            record = RecordEnvelope.from_dict(json.loads(line))
-            key = _record_storage_key(record)
-            if key in latest_by_key:
-                del latest_by_key[key]
-            latest_by_key[key] = record
+    log = JsonlLog(path, create_parent=False)
+    for entry in log.scan_strict():
+        record = RecordEnvelope.from_dict(entry.payload)
+        key = _record_storage_key(record)
+        if key in latest_by_key:
+            del latest_by_key[key]
+        latest_by_key[key] = record
     return list(latest_by_key.values())
 
 

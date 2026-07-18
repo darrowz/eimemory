@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from hashlib import sha256
+import re
 from threading import RLock
 import tempfile
 
@@ -12,6 +13,15 @@ from eimemory.models.memory_edges import MemoryEdge
 from eimemory.storage.jsonl import JsonlLog, JsonlScanEntry, JsonlScanError
 from eimemory.storage.sqlite_store import SqliteRecordStore
 from eimemory.models.records import RecordEnvelope, ScopeRef
+
+
+AUXILIARY_JSONL_STREAMS = (
+    "events",
+    "event_outcomes",
+    "intent_patterns",
+    "memory_edges",
+    "policy_rollout_ledger",
+)
 
 
 class RuntimeStore:
@@ -619,14 +629,38 @@ class RuntimeStore:
                 "remaining": remaining,
             }
 
-    def maintain_storage(self, *, outbox_keep: int = 10_000) -> dict:
+    def maintain_storage(
+        self,
+        *,
+        outbox_keep: int = 10_000,
+        force_jsonl_cleanup: bool = False,
+    ) -> dict:
         with self._lock:
             flush = self.flush_exports()
+            jsonl_segments = self.log.resegment_oversized(
+                force_cleanup=force_jsonl_cleanup
+            )
+            auxiliary_jsonl_segments = {
+                name: self._auxiliary_log(name).resegment_oversized(
+                    force_cleanup=force_jsonl_cleanup
+                )
+                for name in self._auxiliary_log_names_for_maintenance()
+            }
             maintenance = self.sqlite.maintain(outbox_keep=outbox_keep)
             return {
                 **maintenance,
-                "ok": flush["remaining"] == 0 and bool(maintenance.get("ok")),
+                "ok": (
+                    flush["remaining"] == 0
+                    and bool(jsonl_segments.get("ok"))
+                    and all(
+                        bool(report.get("ok"))
+                        for report in auxiliary_jsonl_segments.values()
+                    )
+                    and bool(maintenance.get("ok"))
+                ),
                 "flush": flush,
+                "jsonl_segments": jsonl_segments,
+                "auxiliary_jsonl_segments": auxiliary_jsonl_segments,
             }
 
     def allocate_manifest_sequences(
@@ -653,11 +687,40 @@ class RuntimeStore:
 
     def _auxiliary_log(self, log_name: str) -> JsonlLog:
         clean_name = str(log_name or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", clean_name):
+            raise ValueError("invalid auxiliary JSONL stream name")
         if clean_name not in self._auxiliary_logs:
             self._auxiliary_logs[clean_name] = JsonlLog(
                 self.auxiliary_log_dir / f"{clean_name}.jsonl"
             )
         return self._auxiliary_logs[clean_name]
+
+    def _auxiliary_log_names_for_maintenance(self) -> list[str]:
+        names = set(self._auxiliary_logs)
+        names.update(AUXILIARY_JSONL_STREAMS)
+        return sorted(
+            name
+            for name in names
+            if self._has_auxiliary_log_artifacts(name)
+        )
+
+    def _has_auxiliary_log_artifacts(self, name: str) -> bool:
+        path = self.auxiliary_log_dir / f"{name}.jsonl"
+        if path.exists():
+            return True
+        if path.with_name(f"{name}.segments.json").exists():
+            return True
+        if path.with_name(f"{name}.segments.backup.json").exists():
+            return True
+        patterns = (
+            f"{name}.[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9].jsonl",
+            f"{name}.segment-*.jsonl",
+            f".{name}.segments-*",
+        )
+        return any(
+            next(self.auxiliary_log_dir.glob(pattern), None) is not None
+            for pattern in patterns
+        )
 
     def _auxiliary_entry(
         self,
