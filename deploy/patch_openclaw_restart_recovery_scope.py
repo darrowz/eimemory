@@ -18,13 +18,22 @@ AGENT_TOOL_MARKERS = (
     "function createSessionsSendTool",
 )
 AGENT_TOOL_GATEWAY_DEFAULT = "const gatewayCall = opts?.callGateway ?? callGateway;"
-AGENT_TOOL_GATEWAY_CLI = (
+AGENT_TOOL_GATEWAY_LEGACY = (
     'const gatewayCall = opts?.callGateway ?? ((request) => callGateway({ '
     '...request, clientName: "cli", mode: "cli" }));'
 )
+AGENT_TOOL_GATEWAY_STORED_AUTH = (
+    'const gatewayCall = opts?.callGateway ?? ((request) => callGateway({ '
+    '...request, clientName: "cli", mode: "cli", useStoredDeviceAuth: true }));'
+)
 AGENT_TOOLS_DEPS_DEFAULT = "let openClawToolsDeps = { callGateway };"
-AGENT_TOOLS_DEPS_CLI = (
+AGENT_TOOLS_DEPS_LEGACY = (
     'const callGatewayAsCli = (request) => callGateway({ ...request, clientName: "cli", mode: "cli" });\n'
+    "let openClawToolsDeps = { callGateway: callGatewayAsCli };"
+)
+AGENT_TOOLS_DEPS_STORED_AUTH = (
+    'const callGatewayAsCli = (request) => callGateway({ ...request, clientName: "cli", '
+    'mode: "cli", useStoredDeviceAuth: true });\n'
     "let openClawToolsDeps = { callGateway: callGatewayAsCli };"
 )
 GATEWAY_TOOL_MARKERS = (
@@ -32,6 +41,17 @@ GATEWAY_TOOL_MARKERS = (
     "async function callGatewayTool(method, opts, params, extra)",
 )
 GATEWAY_TOOL_READ_IDENTITY_MARKER = "const useLocalOperatorReadIdentity ="
+GATEWAY_TOOL_URL_DEFAULT = "url: gateway.url,"
+GATEWAY_TOOL_URL_STORED_AUTH = (
+    "url: useLocalOperatorReadIdentity ? void 0 : gateway.url,"
+)
+GATEWAY_TOOL_TOKEN_DEFAULT = "token: gateway.token,"
+GATEWAY_TOOL_TOKEN_STORED_AUTH = (
+    "token: useLocalOperatorReadIdentity ? void 0 : gateway.token,"
+)
+GATEWAY_TOOL_STORED_AUTH_MARKER = (
+    "useStoredDeviceAuth: useLocalOperatorReadIdentity,"
+)
 GATEWAY_TOOL_CLIENT_DEFAULT = (
     "clientName: GATEWAY_CLIENT_NAMES.GATEWAY_CLIENT,"
 )
@@ -55,7 +75,8 @@ CALL_GATEWAY_MARKERS = (
     "async function callGateway(opts)",
     "return await callGatewayLeastPrivilege({",
 )
-CALL_GATEWAY_READ_SCOPE_MARKER = "const defaultReadScopes ="
+CALL_GATEWAY_LEGACY_READ_SCOPE_MARKER = "const defaultReadScopes ="
+CALL_GATEWAY_STORED_AUTH_MARKER = "const defaultLocalContext ="
 
 
 class PatchError(RuntimeError):
@@ -80,9 +101,25 @@ def _patch_runtime(path: Path) -> bool:
     for method in RECOVERY_METHODS:
         escaped = re.escape(method)
         patched = re.compile(
-            rf'await callGateway\(\{{\s*clientName: "cli",\s*mode: "cli",\s*method: "{escaped}",'
+            rf'await callGateway\(\{{\s*clientName: "cli",\s*mode: "cli",\s*'
+            rf'useStoredDeviceAuth: true,\s*method: "{escaped}",'
         )
         if len(patched.findall(text)) == 1:
+            continue
+        legacy = re.compile(
+            rf'(?P<prefix>await callGateway\(\{{\s*clientName: "cli",\s*mode: "cli",\s*)'
+            rf'(?P<indent>[ \t]+)method: "{escaped}",'
+        )
+        legacy_matches = list(legacy.finditer(text))
+        if len(legacy_matches) == 1:
+            match = legacy_matches[0]
+            text = legacy.sub(
+                f'{match.group("prefix")}{match.group("indent")}useStoredDeviceAuth: true,'
+                f'{newline}{match.group("indent")}method: "{method}",',
+                text,
+                count=1,
+            )
+            changed = True
             continue
         original = re.compile(
             rf'(?P<prefix>await callGateway\(\{{\r?\n)(?P<indent>[ \t]+)method: "{escaped}",'
@@ -96,6 +133,7 @@ def _patch_runtime(path: Path) -> bool:
             return (
                 f'{match.group("prefix")}{indent}clientName: "cli",{newline}'
                 f'{indent}mode: "cli",{newline}'
+                f"{indent}useStoredDeviceAuth: true,{newline}"
                 f'{indent}method: "{method}",'
             )
 
@@ -109,26 +147,30 @@ def _patch_runtime(path: Path) -> bool:
 def _patch_agent_tools(path: Path) -> bool:
     text = path.read_text(encoding="utf-8")
     newline = "\r\n" if "\r\n" in text else "\n"
-    original_count = text.count(AGENT_TOOL_GATEWAY_DEFAULT)
-    patched_count = text.count(AGENT_TOOL_GATEWAY_CLI)
     expected_count = len(AGENT_TOOL_MARKERS)
-    changed = False
-    if original_count == expected_count and patched_count == 0:
-        text = text.replace(AGENT_TOOL_GATEWAY_DEFAULT, AGENT_TOOL_GATEWAY_CLI)
-        changed = True
-    elif original_count != 0 or patched_count != expected_count:
+    original = text
+    text = text.replace(
+        AGENT_TOOL_GATEWAY_DEFAULT,
+        AGENT_TOOL_GATEWAY_STORED_AUTH,
+    ).replace(
+        AGENT_TOOL_GATEWAY_LEGACY,
+        AGENT_TOOL_GATEWAY_STORED_AUTH,
+    )
+    if text.count(AGENT_TOOL_GATEWAY_STORED_AUTH) != expected_count:
         raise PatchError(
             f"expected {expected_count} consistent agent tool gateway defaults in {path.name}"
         )
 
-    deps_default_count = text.count(AGENT_TOOLS_DEPS_DEFAULT)
-    deps_patched_count = text.count(AGENT_TOOLS_DEPS_CLI.replace("\n", newline))
-    if deps_default_count == 1 and deps_patched_count == 0:
-        text = text.replace(AGENT_TOOLS_DEPS_DEFAULT, AGENT_TOOLS_DEPS_CLI.replace("\n", newline))
-        changed = True
-    elif deps_default_count != 0 or deps_patched_count != 1:
+    legacy_deps = AGENT_TOOLS_DEPS_LEGACY.replace("\n", newline)
+    stored_auth_deps = AGENT_TOOLS_DEPS_STORED_AUTH.replace("\n", newline)
+    text = text.replace(AGENT_TOOLS_DEPS_DEFAULT, stored_auth_deps).replace(
+        legacy_deps,
+        stored_auth_deps,
+    )
+    if text.count(stored_auth_deps) != 1:
         raise PatchError(f"expected one consistent agent tools dependency boundary in {path.name}")
 
+    changed = text != original
     if changed:
         _atomic_write(path, text)
     return changed
@@ -184,6 +226,8 @@ def _patch_gateway_tool(path: Path) -> bool:
         raise PatchError(f"expected one gateway read identity marker in {path.name}")
 
     for original, patched in (
+        (GATEWAY_TOOL_URL_DEFAULT, GATEWAY_TOOL_URL_STORED_AUTH),
+        (GATEWAY_TOOL_TOKEN_DEFAULT, GATEWAY_TOOL_TOKEN_STORED_AUTH),
         (GATEWAY_TOOL_CLIENT_DEFAULT, GATEWAY_TOOL_CLIENT_READ_ONLY),
         (GATEWAY_TOOL_MODE_DEFAULT, GATEWAY_TOOL_MODE_READ_ONLY),
         (GATEWAY_TOOL_AGENT_TOKEN_DEFAULT, GATEWAY_TOOL_AGENT_TOKEN_READ_ONLY),
@@ -196,6 +240,27 @@ def _patch_gateway_tool(path: Path) -> bool:
         )
         changed = changed or fragment_changed
 
+    stored_auth_count = text.count(GATEWAY_TOOL_STORED_AUTH_MARKER)
+    if stored_auth_count == 0:
+        anchor = re.compile(
+            rf"^(?P<indent>[ \t]+){re.escape(GATEWAY_TOOL_CLIENT_READ_ONLY)}",
+            re.MULTILINE,
+        )
+        matches = list(anchor.finditer(text))
+        if len(matches) != 1:
+            raise PatchError(
+                f"expected one local stored auth insertion point in {path.name}"
+            )
+        indent = matches[0].group("indent")
+        replacement = (
+            f"{indent}{GATEWAY_TOOL_STORED_AUTH_MARKER}{newline}"
+            f"{indent}{GATEWAY_TOOL_CLIENT_READ_ONLY}"
+        )
+        text = anchor.sub(replacement, text, count=1)
+        changed = True
+    elif stored_auth_count != 1:
+        raise PatchError(f"expected one local stored auth marker in {path.name}")
+
     if changed:
         _atomic_write(path, text)
     return changed
@@ -204,11 +269,11 @@ def _patch_gateway_tool(path: Path) -> bool:
 def _patch_call_gateway(path: Path) -> bool:
     text = path.read_text(encoding="utf-8")
     newline = "\r\n" if "\r\n" in text else "\n"
-    marker_count = text.count(CALL_GATEWAY_READ_SCOPE_MARKER)
+    marker_count = text.count(CALL_GATEWAY_STORED_AUTH_MARKER)
     if marker_count == 1:
         return False
     if marker_count != 0:
-        raise PatchError(f"expected one gateway read scope marker in {path.name}")
+        raise PatchError(f"expected one gateway stored auth marker in {path.name}")
 
     anchor = re.compile(
         r"^(?P<indent>[ \t]+)return await callGatewayLeastPrivilege\(\{",
@@ -218,22 +283,37 @@ def _patch_call_gateway(path: Path) -> bool:
     if len(matches) != 1:
         raise PatchError(f"expected one default gateway call anchor in {path.name}")
     indent = matches[0].group("indent")
-    read_fallback = newline.join(
+    stored_auth_fallback = newline.join(
         (
-            f"{indent}const defaultReadScopes =",
-            f"{indent}    opts.mode === void 0 && opts.clientName === void 0",
-            f"{indent}        ? resolveLeastPrivilegeOperatorScopesForMethod(opts.method, opts.params)",
+            f"{indent}const defaultLocalContext =",
+            f"{indent}    opts.mode === void 0 &&",
+            f"{indent}    opts.clientName === void 0 &&",
+            f"{indent}    opts.url === void 0 &&",
+            f"{indent}    opts.token === void 0 &&",
+            f"{indent}    opts.password === void 0",
+            f"{indent}        ? await resolveGatewayCallContext(opts)",
             f"{indent}        : null;",
-            f"{indent}if (",
-            f"{indent}    defaultReadScopes?.length &&",
-            f'{indent}    defaultReadScopes.every((scope) => scope === "operator.read")',
-            f"{indent}) {{",
-            f"{indent}    return await callGatewayCli({{ ...opts, scopes: defaultReadScopes }});",
+            f"{indent}if (defaultLocalContext && !defaultLocalContext.urlOverride && !defaultLocalContext.isRemoteMode) {{",
+            f"{indent}    return await callGatewayCli({{ ...opts, useStoredDeviceAuth: true }});",
             f"{indent}}}",
         )
     )
-    anchor_start = matches[0].start()
-    text = text[:anchor_start] + read_fallback + newline + text[anchor_start:]
+    legacy_count = text.count(CALL_GATEWAY_LEGACY_READ_SCOPE_MARKER)
+    if legacy_count == 1:
+        legacy = re.compile(
+            rf"^{re.escape(indent)}const defaultReadScopes =.*?"
+            rf"^{re.escape(indent)}\}}{re.escape(newline)}",
+            re.MULTILINE | re.DOTALL,
+        )
+        legacy_matches = list(legacy.finditer(text))
+        if len(legacy_matches) != 1:
+            raise PatchError(f"expected one legacy gateway read block in {path.name}")
+        text = legacy.sub(stored_auth_fallback + newline, text, count=1)
+    elif legacy_count == 0:
+        anchor_start = matches[0].start()
+        text = text[:anchor_start] + stored_auth_fallback + newline + text[anchor_start:]
+    else:
+        raise PatchError(f"expected at most one legacy gateway read marker in {path.name}")
     _atomic_write(path, text)
     return True
 

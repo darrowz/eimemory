@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -143,12 +144,44 @@ async function callGateway(opts) {
     assert json.loads(first.stdout)["status"] == "patched"
     assert second.returncode == 0, second.stderr
     assert json.loads(second.stdout)["status"] == "already_patched"
-    partially_patched = tools_runtime.read_text(encoding="utf-8").replace(
-        'const callGatewayAsCli = (request) => callGateway({ ...request, clientName: "cli", mode: "cli" });\n'
-        "let openClawToolsDeps = { callGateway: callGatewayAsCli };",
-        "let openClawToolsDeps = { callGateway };",
+    legacy_runtime = runtime.read_text(encoding="utf-8").replace(
+        "        useStoredDeviceAuth: true,\n",
+        "",
     )
-    tools_runtime.write_text(partially_patched, encoding="utf-8")
+    runtime.write_text(legacy_runtime, encoding="utf-8")
+    legacy_tools = tools_runtime.read_text(encoding="utf-8").replace(
+        ", useStoredDeviceAuth: true",
+        "",
+    )
+    tools_runtime.write_text(legacy_tools, encoding="utf-8")
+    legacy_gateway = gateway_runtime.read_text(encoding="utf-8").replace(
+        "url: useLocalOperatorReadIdentity ? void 0 : gateway.url,",
+        "url: gateway.url,",
+    ).replace(
+        "token: useLocalOperatorReadIdentity ? void 0 : gateway.token,",
+        "token: gateway.token,",
+    ).replace(
+        "useStoredDeviceAuth: useLocalOperatorReadIdentity,\n",
+        "",
+    )
+    gateway_runtime.write_text(legacy_gateway, encoding="utf-8")
+    legacy_call = re.sub(
+        r"    const defaultLocalContext =.*?^    }\n",
+        "    const defaultReadScopes =\n"
+        "        opts.mode === void 0 && opts.clientName === void 0\n"
+        "            ? resolveLeastPrivilegeOperatorScopesForMethod(opts.method, opts.params)\n"
+        "            : null;\n"
+        "    if (\n"
+        "        defaultReadScopes?.length &&\n"
+        '        defaultReadScopes.every((scope) => scope === "operator.read")\n'
+        "    ) {\n"
+        "        return await callGatewayCli({ ...opts, scopes: defaultReadScopes });\n"
+        "    }\n",
+        call_runtime.read_text(encoding="utf-8"),
+        count=1,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    call_runtime.write_text(legacy_call, encoding="utf-8")
     upgrade = subprocess.run(
         [sys.executable, str(script), "--openclaw-root", str(openclaw_root)],
         cwd=Path.cwd(),
@@ -162,9 +195,11 @@ async function callGateway(opts) {
     patched = runtime.read_text(encoding="utf-8")
     assert patched.count('clientName: "cli"') == 2
     assert patched.count('mode: "cli"') == 2
+    assert patched.count("useStoredDeviceAuth: true") == 2
     patched_tools = tools_runtime.read_text(encoding="utf-8")
     assert patched_tools.count('clientName: "cli"') == 4
     assert patched_tools.count('mode: "cli"') == 4
+    assert patched_tools.count("useStoredDeviceAuth: true") == 4
     assert "opts?.callGateway ?? callGateway" not in patched_tools
     assert "let openClawToolsDeps = { callGateway };" not in patched_tools
     assert "let openClawToolsDeps = { callGateway: callGatewayAsCli };" in patched_tools
@@ -183,11 +218,16 @@ async function callGateway(opts) {
         "agentRuntimeIdentityToken && !useLocalOperatorReadIdentity"
         in patched_gateway
     )
+    assert "url: useLocalOperatorReadIdentity ? void 0 : gateway.url" in patched_gateway
+    assert "token: useLocalOperatorReadIdentity ? void 0 : gateway.token" in patched_gateway
+    assert "useStoredDeviceAuth: useLocalOperatorReadIdentity" in patched_gateway
     patched_call = call_runtime.read_text(encoding="utf-8")
-    assert "const defaultReadScopes =" in patched_call
-    assert "opts.mode === void 0 && opts.clientName === void 0" in patched_call
-    assert "defaultReadScopes.every((scope) => scope === \"operator.read\")" in patched_call
-    assert "return await callGatewayCli({ ...opts, scopes: defaultReadScopes });" in patched_call
+    assert "const defaultLocalContext =" in patched_call
+    assert "opts.mode === void 0" in patched_call
+    assert "opts.clientName === void 0" in patched_call
+    assert "await resolveGatewayCallContext(opts)" in patched_call
+    assert "!defaultLocalContext.urlOverride && !defaultLocalContext.isRemoteMode" in patched_call
+    assert "return await callGatewayCli({ ...opts, useStoredDeviceAuth: true });" in patched_call
     dropin = Path("deploy/systemd/openclaw-gateway-eimemory.conf").read_text(encoding="utf-8")
     assert "ExecStartPre=" in dropin
     assert "patch_openclaw_restart_recovery_scope.py" in dropin
