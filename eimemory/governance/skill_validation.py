@@ -7,6 +7,7 @@ from typing import Any
 
 from eimemory.core.clock import now_iso
 from eimemory.knowledge.safety import evaluate_knowledge_safety
+from eimemory.knowledge.source_trust import revalidate_source_trust_decision, source_trust_decision_from_payload
 from eimemory.models.records import LinkRef, RecordEnvelope, ScopeRef, TimeRef
 from eimemory.storage.runtime_store import RuntimeStore
 
@@ -27,6 +28,7 @@ def validate_skill_candidate(
     scope: ScopeRef | dict[str, Any] | None = None,
     candidate: dict[str, Any] | None = None,
     persist: bool = True,
+    source_registry: Any = None,
 ) -> dict[str, Any]:
     """Replay a skill_candidate draft through deterministic local sandbox gates."""
     scope_ref = _scope(scope)
@@ -35,7 +37,7 @@ def validate_skill_candidate(
     resolved_candidate_id = str(candidate_id or (record.record_id if record else "") or _dry_candidate_id(candidate_payload, scope_ref))
     current_status = _candidate_status(record, candidate_payload)
 
-    checks = _sandbox_checks(candidate_payload)
+    checks = _sandbox_checks(candidate_payload, source_registry=source_registry)
     passed = all(item["pass"] for item in checks)
     reasons = [str(item["reason"]) for item in checks if not item["pass"]]
     next_status = "canary" if passed else "quarantined"
@@ -182,13 +184,22 @@ def record_skill_candidate_observation(
     return report
 
 
-def _sandbox_checks(candidate: dict[str, Any]) -> list[dict[str, Any]]:
+def _sandbox_checks(candidate: dict[str, Any], *, source_registry: Any = None) -> list[dict[str, Any]]:
     trigger_conditions = _as_list(candidate.get("trigger_conditions"))
     steps = _as_list(candidate.get("steps"))
     acceptance = _as_list(candidate.get("acceptance_criteria"))
-    source_trust = _float(candidate.get("source_trust"), default=0.0)
+    trust_decision = (
+        revalidate_source_trust_decision(candidate, registry=source_registry)
+        if source_registry is not None
+        else source_trust_decision_from_payload(candidate)
+    )
+    source_trust = float(trust_decision.score) if trust_decision is not None else 0.0
     risk_level = str(candidate.get("risk_level") or "").strip().lower()
-    knowledge_safety = evaluate_knowledge_safety(candidate, task="capability")
+    knowledge_safety = evaluate_knowledge_safety(
+        candidate,
+        task="capability",
+        registry=source_registry,
+    )
     return [
         {"name": "trigger_conditions", "pass": bool(trigger_conditions), "reason": "missing_trigger_conditions"},
         {"name": "steps", "pass": len(steps) >= 2, "reason": "insufficient_steps"},

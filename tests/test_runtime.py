@@ -4,6 +4,7 @@ import re
 from eimemory.api.runtime import Runtime
 from eimemory.api import memory as memory_module
 from eimemory.cli.main import main as cli_main
+from eimemory.knowledge.source_trust import resolve_source_trust
 from eimemory.models.records import LinkRef, RecordEnvelope, ScopeRef
 
 
@@ -138,16 +139,40 @@ def test_runtime_recall_pollution_guard_blocks_operational_lanes_by_default(tmp_
         "quality_tier": "core",
         "capture_decision": "accept",
     }
+    runtime.sources.add_source(
+        {
+            "source_id": "openclaw-official-docs",
+            "source_kind": "url",
+            "title": "OpenClaw Docs",
+            "uri": "https://example.test/openclaw/docs",
+            "metadata": {
+                "connector_id": "test.fixture",
+                "knowledge_source_kind": "official_docs",
+                "trust": 1.0,
+            },
+        }
+    )
 
     def add_memory(memory_type: str, title: str) -> RecordEnvelope:
         meta = {"memory_type": memory_type, "quality": quality}
         if memory_type == "external_knowledge":
+            decision = resolve_source_trust(
+                {
+                    "source_id": "openclaw-official-docs",
+                    "source_kind": "official_docs",
+                    "source_uri": "https://example.test/openclaw/docs",
+                },
+                registry=runtime.sources,
+                connector_id="test.fixture",
+            )
             meta.update(
                 {
+                    "source_id": "openclaw-official-docs",
                     "source_kind": "official_docs",
                     "source_uri": "https://example.test/openclaw/docs",
                     "source_trust": 1.0,
                     "trust_tier": "high",
+                    "source_trust_decision": decision.to_dict(),
                 }
             )
         return runtime.store.append(
@@ -204,6 +229,28 @@ def test_runtime_recall_blocks_low_trust_external_knowledge_by_default(tmp_path)
     scope = {"agent_id": "hongtu", "workspace_id": "embodied"}
     marker = "OpenClaw low trust external knowledge marker"
     try:
+        runtime.sources.add_source(
+            {
+                "source_id": "trusted-docs",
+                "source_kind": "url",
+                "title": "Trusted Docs",
+                "uri": "https://example.test/docs",
+                "metadata": {
+                    "connector_id": "test.fixture",
+                    "knowledge_source_kind": "official_docs",
+                    "trust": 1.0,
+                },
+            }
+        )
+        trusted_decision = resolve_source_trust(
+            {
+                "source_id": "trusted-docs",
+                "source_kind": "official_docs",
+                "source_uri": "https://example.test/docs",
+            },
+            registry=runtime.sources,
+            connector_id="test.fixture",
+        )
         low_trust = runtime.memory.ingest(
             text=f"{marker} from an unreviewed blog should not be default recalled.",
             memory_type="external_knowledge",
@@ -226,10 +273,12 @@ def test_runtime_recall_blocks_low_trust_external_knowledge_by_default(tmp_path)
             source="eimemory.knowledge_ingest",
             force_capture=True,
             meta={
+                "source_id": "trusted-docs",
                 "source_kind": "official_docs",
                 "source_uri": "https://example.test/docs",
                 "source_trust": 1.0,
                 "trust_tier": "high",
+                "source_trust_decision": trusted_decision.to_dict(),
             },
         )
 

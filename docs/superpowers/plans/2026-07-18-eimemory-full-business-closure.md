@@ -274,7 +274,7 @@ Commit: `fix: serialize source registry updates`
 - Produces: `resolve_source_trust(payload, *, registry, connector_id) -> SourceTrustDecision`.
 - Consumes: a matching enabled registry entry and server connector identity; caller trust fields are diagnostics only.
 
-- [ ] **Step 1: Add the attacker-payload regression**
+- [x] **Step 1: Add the attacker-payload regression**
 
 ```python
 def test_unregistered_blog_cannot_self_assert_capability_trust(tmp_path):
@@ -291,13 +291,13 @@ def test_unregistered_blog_cannot_self_assert_capability_trust(tmp_path):
 
 Add registered official-document tests that require matching source ID and normalized URI; a copied source ID with a different URI must remain capped at `0.50`.
 
-- [ ] **Step 2: Verify trust tests fail before the resolver exists**
+- [x] **Step 2: Verify trust tests fail before the resolver exists**
 
 Run: `python -m pytest tests/test_knowledge_ingest.py tests/test_research_evidence_gate.py tests/test_skill_candidate.py tests/test_skill_validation.py -q -k "trust or attacker or capability"`
 
 Expected: the attacker payload can elevate trust before the fix.
 
-- [ ] **Step 3: Implement one immutable trust decision**
+- [x] **Step 3: Implement one immutable trust decision**
 
 ```python
 @dataclass(frozen=True, slots=True)
@@ -314,7 +314,7 @@ class SourceTrustDecision:
 
 Resolve trust only from connector identity, matching registry data, and server verification. Persist `trust_authority="eimemory.source_trust.v1"` and the decision digest. Remove direct numeric trust reads from safety and skill-candidate paths.
 
-- [ ] **Step 4: Verify all trust consumers and commit**
+- [x] **Step 4: Verify all trust consumers and commit**
 
 Run: `python -m pytest tests/test_knowledge_ingest.py tests/test_runtime.py tests/test_research_evidence_gate.py tests/test_skill_candidate.py tests/test_skill_validation.py -q`
 

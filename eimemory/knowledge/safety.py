@@ -3,22 +3,17 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from eimemory.intake.loop import _looks_like_prompt_injection, _looks_like_secret
+from eimemory.knowledge.source_trust import (
+    DEFAULT_SOURCE_TRUST,
+    SourceTrustDecision,
+    revalidate_source_trust_decision,
+    source_trust_decision_from_payload,
+    source_trust_for_kind,
+    trust_tier_for_score,
+)
 
 
-SOURCE_TRUST = {
-    "official_docs": 1.0,
-    "docs": 1.0,
-    "api_docs": 0.95,
-    "github_repo": 0.9,
-    "paper": 0.85,
-    "feishu_doc": 0.8,
-    "webpage": 0.65,
-    "manual": 0.6,
-    "blog": 0.5,
-    "summary": 0.5,
-    "news": 0.5,
-    "rss": 0.5,
-}
+SOURCE_TRUST = DEFAULT_SOURCE_TRUST
 
 EXTERNAL_KINDS = {
     "claim_card",
@@ -34,7 +29,13 @@ EXTERNAL_MEMORY_TYPES = {"external_knowledge", "knowledge"}
 QUARANTINED_STATUSES = {"quarantined", "rejected", "rolled_back"}
 
 
-def evaluate_knowledge_safety(payload_or_record: Any, *, task: str = "ingest") -> dict[str, Any]:
+def evaluate_knowledge_safety(
+    payload_or_record: Any,
+    *,
+    task: str = "ingest",
+    trust_decision: SourceTrustDecision | None = None,
+    registry: Any = None,
+) -> dict[str, Any]:
     """Return a deterministic safety report for external knowledge records.
 
     The report is intentionally a JSON-safe dict so it can be copied into
@@ -45,8 +46,13 @@ def evaluate_knowledge_safety(payload_or_record: Any, *, task: str = "ingest") -
     task_name = str(task or "ingest").strip().lower()
     source_kind = _source_kind(payload)
     source_uri = _source_uri(payload)
-    source_trust = _source_trust(payload, source_kind=source_kind)
-    trust_tier = trust_tier_for_score(source_trust)
+    decision = trust_decision or (
+        revalidate_source_trust_decision(payload, registry=registry)
+        if registry is not None
+        else source_trust_decision_from_payload(payload)
+    )
+    source_trust = float(decision.score) if decision is not None else min(source_trust_for_kind(source_kind), 0.5)
+    trust_tier = decision.tier if decision is not None else trust_tier_for_score(source_trust)
     external = _is_external(payload, source_kind=source_kind)
     strict_provenance = _requires_strict_provenance(payload, source_kind=source_kind)
     status = _status(payload)
@@ -91,21 +97,15 @@ def evaluate_knowledge_safety(payload_or_record: Any, *, task: str = "ingest") -
         "source_uri": source_uri,
         "source_trust": source_trust,
         "trust_tier": trust_tier,
+        "trust_authority": decision.authority if decision is not None else "unverified",
+        "trust_policy_digest": decision.policy_digest if decision is not None else "",
+        "source_id": decision.source_id if decision is not None else "",
+        "connector_id": decision.connector_id if decision is not None else "",
+        "diagnostic_claimed_trust": decision.diagnostic_claimed_trust if decision is not None else _claimed_trust(payload),
+        "trust_reasons": list(decision.reasons) if decision is not None else ["missing_server_trust_decision"],
         "reasons": _dedupe(reasons),
         "redaction_reason": _redaction_reason(reasons),
     }
-
-
-def source_trust_for_kind(source_kind: str) -> float:
-    return float(SOURCE_TRUST.get(str(source_kind or "").strip().lower().replace("-", "_"), 0.5))
-
-
-def trust_tier_for_score(value: float) -> str:
-    if value >= 0.9:
-        return "high"
-    if value >= 0.6:
-        return "medium"
-    return "low"
 
 
 def _payload(value: Any) -> dict[str, Any]:
@@ -166,7 +166,7 @@ def _source_uri(payload: dict[str, Any]) -> str:
     )
 
 
-def _source_trust(payload: dict[str, Any], *, source_kind: str) -> float:
+def _claimed_trust(payload: dict[str, Any]) -> float | None:
     for value in (
         _nested(payload, "meta", "source_trust"),
         _nested(payload, "meta", "trust"),
@@ -182,7 +182,7 @@ def _source_trust(payload: dict[str, Any], *, source_kind: str) -> float:
             return round(max(0.0, min(1.0, float(value))), 3)
         except (TypeError, ValueError):
             continue
-    return source_trust_for_kind(source_kind)
+    return None
 
 
 def _is_external(payload: dict[str, Any], *, source_kind: str) -> bool:

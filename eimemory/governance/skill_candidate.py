@@ -6,6 +6,7 @@ import re
 from typing import Any
 
 from eimemory.core.clock import now_iso
+from eimemory.knowledge.source_trust import revalidate_source_trust_decision, source_trust_decision_from_payload
 from eimemory.models.records import LinkRef, RecordEnvelope, ScopeRef, TimeRef
 from eimemory.storage.runtime_store import RuntimeStore
 
@@ -48,6 +49,7 @@ def extract_skill_candidates(
     scope: ScopeRef | dict[str, Any] | None = None,
     persist: bool = False,
     limit: int = 100,
+    source_registry: Any = None,
 ) -> dict[str, Any]:
     """Derive deterministic, inactive skill drafts from structured knowledge units."""
     scope_ref = _scope_from_inputs(scope=scope, knowledge_units=knowledge_units)
@@ -57,7 +59,11 @@ def extract_skill_candidates(
     persisted_count = 0
 
     for unit in source_units[: max(0, int(limit))]:
-        candidate, reason = _candidate_from_unit(unit, scope=scope_ref)
+        candidate, reason = _candidate_from_unit(
+            unit,
+            scope=scope_ref,
+            source_registry=source_registry,
+        )
         if candidate is None:
             skipped.append({"source_unit_id": _unit_id(unit), "reason": reason})
             continue
@@ -86,10 +92,20 @@ def _read_knowledge_units(store: RuntimeStore | None, scope: ScopeRef, *, limit:
     return store.list_records(kinds=["knowledge_unit"], scope=scope, limit=min(MAX_STORE_SCAN, max(0, int(limit))))
 
 
-def _candidate_from_unit(unit: Any, *, scope: ScopeRef) -> tuple[dict[str, Any] | None, str]:
+def _candidate_from_unit(
+    unit: Any,
+    *,
+    scope: ScopeRef,
+    source_registry: Any = None,
+) -> tuple[dict[str, Any] | None, str]:
     text = _unit_text(unit)
     quality = _quality_score(text)
-    source_trust = _source_trust(unit)
+    trust_decision = (
+        revalidate_source_trust_decision(unit, registry=source_registry)
+        if source_registry is not None
+        else source_trust_decision_from_payload(unit)
+    )
+    source_trust = float(trust_decision.score) if trust_decision is not None else 0.0
     if quality < 0.28:
         return None, "low_quality_or_noisy"
 
@@ -112,6 +128,12 @@ def _candidate_from_unit(unit: Any, *, scope: ScopeRef) -> tuple[dict[str, Any] 
         "dependencies": dependencies,
         "risk_level": risk_level,
         "source_trust": source_trust,
+        "trust_authority": trust_decision.authority if trust_decision is not None else "unverified",
+        "source_trust_decision": trust_decision.to_dict() if trust_decision is not None else {},
+        "source_id": trust_decision.source_id if trust_decision is not None else "",
+        "source_kind": _unit_source_kind(unit),
+        "source_uri": trust_decision.normalized_uri if trust_decision is not None else "",
+        "connector_id": trust_decision.connector_id if trust_decision is not None else "",
         "source_unit_ids": [_unit_id(unit)],
         "target_capability": target_capability,
         "status": status,
@@ -156,6 +178,8 @@ def _candidate_record(candidate: dict[str, Any], unit: Any, *, scope: ScopeRef) 
             "risk_level": risk_level,
             "source_unit_ids": source_unit_ids,
             "source_trust": float(candidate.get("source_trust") or 0.0),
+            "trust_authority": str(candidate.get("trust_authority") or "unverified"),
+            "source_trust_decision": dict(candidate.get("source_trust_decision") or {}),
             "target_capability": target_capability,
         },
     )
@@ -188,6 +212,16 @@ def _unit_text(unit: Any) -> str:
         content.get("body"),
     ]
     return _clean(" ".join(str(part or "") for part in parts))
+
+
+def _unit_source_kind(unit: Any) -> str:
+    content = getattr(unit, "content", None) or _dict_get(unit, "content") or {}
+    meta = getattr(unit, "meta", None) or _dict_get(unit, "meta") or {}
+    provenance = getattr(unit, "provenance", None) or _dict_get(unit, "provenance") or {}
+    for payload in (meta, content, provenance):
+        if isinstance(payload, dict) and str(payload.get("source_kind") or "").strip():
+            return str(payload["source_kind"]).strip().lower().replace("-", "_")
+    return ""
 
 
 def _extract_steps(text: str) -> list[str]:
@@ -275,16 +309,6 @@ def _target_capability(unit: Any, text: str) -> str:
     if "knowledge" in lowered:
         return "knowledge.workflow"
     return "workflow.skill_candidate"
-
-
-def _source_trust(unit: Any) -> float:
-    content = getattr(unit, "content", None) or _dict_get(unit, "content") or {}
-    meta = getattr(unit, "meta", None) or _dict_get(unit, "meta") or {}
-    for key in ("source_trust", "trust", "confidence", "reliability"):
-        for payload in (meta, content):
-            if isinstance(payload, dict) and payload.get(key) is not None:
-                return _clamp_float(payload.get(key), default=0.5)
-    return 0.55
 
 
 def _risk_level(*, text: str, source_trust: float, quality: float) -> str:

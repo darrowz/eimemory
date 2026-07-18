@@ -66,10 +66,10 @@ def _non_negative_int(value: Any) -> int:
 class Runtime:
     def __init__(self, store: RuntimeStore) -> None:
         self.store = store
-        self.memory = MemoryAPI(store)
+        self.sources = SourceRegistry(self.store.root / "state" / "source_registry.json")
+        self.memory = MemoryAPI(store, source_registry=self.sources)
         self.evolution = EvolutionAPI(store)
         self.raw = RawEvidenceAPI(store)
-        self.sources = SourceRegistry(self.store.root / "state" / "source_registry.json")
 
     @classmethod
     def create(cls, *, root: str | Path | None = None) -> "Runtime":
@@ -1414,10 +1414,17 @@ class Runtime:
         *,
         scope: dict[str, Any] | None = None,
         persist: bool = False,
+        connector_id: str = "",
     ) -> dict[str, Any]:
         from eimemory.knowledge.ingest import ingest_knowledge_source
 
-        return ingest_knowledge_source(self, payload, scope=scope, persist=persist)
+        return ingest_knowledge_source(
+            self,
+            payload,
+            scope=scope,
+            persist=persist,
+            connector_id=connector_id,
+        )
 
     def extract_paper_memory(self, paper_input: dict, *, scope: dict | None = None) -> PaperMemoryExtraction:
         result = extract_paper_memory(
@@ -1462,6 +1469,7 @@ class Runtime:
             scope=scope,
             persist=persist,
             limit=limit,
+            source_registry=self.sources,
         )
 
     def validate_skill_candidate(
@@ -1480,6 +1488,7 @@ class Runtime:
             scope=scope,
             candidate=candidate,
             persist=persist,
+            source_registry=self.sources,
         )
 
     def record_skill_candidate_observation(
@@ -1540,7 +1549,11 @@ class Runtime:
     ) -> dict:
         from eimemory.knowledge.evidence_gate import filter_answer_evidence
 
-        return filter_answer_evidence(records, task_type=task_type)
+        return filter_answer_evidence(
+            records,
+            task_type=task_type,
+            registry=self.sources,
+        )
 
 
 def _list_all_runtime_records(

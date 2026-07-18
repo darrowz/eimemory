@@ -1,6 +1,13 @@
 from __future__ import annotations
 
 from eimemory.api.runtime import Runtime
+from eimemory.knowledge.source_trust import (
+    POLICY_DIGEST,
+    TRUST_AUTHORITY,
+    SourceTrustDecision,
+    source_trust_decision_from_payload,
+    trust_tier_for_score,
+)
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
@@ -10,6 +17,7 @@ def _candidate_payload(**overrides):
         "steps": ["Inspect the request and scope.", "Apply the documented workflow."],
         "acceptance_criteria": ["The workflow outcome is verified locally."],
         "source_trust": 0.82,
+        "source_kind": "docs",
         "risk_level": "low",
         "target_capability": "memory.workflow",
         "status": "sandbox_ready",
@@ -17,11 +25,30 @@ def _candidate_payload(**overrides):
         "summary": "A conservative reusable workflow candidate.",
     }
     payload.update(overrides)
+    if "source_trust_decision" not in overrides:
+        score = float(payload.get("source_trust") or 0.0)
+        source_id = str(payload.get("source_id") or "test-skill-source")
+        source_uri = str(payload.get("source_uri") or "https://docs.example.test/test-skill-source")
+        payload["source_id"] = source_id
+        payload["source_uri"] = source_uri
+        payload["source_trust_decision"] = SourceTrustDecision(
+            score=score,
+            tier=trust_tier_for_score(score),
+            authority=TRUST_AUTHORITY,
+            source_id=source_id,
+            normalized_uri=source_uri,
+            connector_id="test.fixture",
+            policy_digest=POLICY_DIGEST,
+            diagnostic_claimed_trust=score,
+            reasons=("test_server_verified",),
+        ).to_dict()
+        payload["trust_authority"] = TRUST_AUTHORITY
     return payload
 
 
 def _append_candidate(runtime: Runtime, *, scope: dict, record_id: str = "skillcand_validation", **overrides) -> RecordEnvelope:
     payload = _candidate_payload(**overrides)
+    _register_trust_source(runtime, payload)
     record = RecordEnvelope.create(
         kind="skill_candidate",
         status=str(payload.get("status") or "candidate"),
@@ -40,6 +67,24 @@ def _append_candidate(runtime: Runtime, *, scope: dict, record_id: str = "skillc
     )
     record.record_id = record_id
     return runtime.store.append(record)
+
+
+def _register_trust_source(runtime: Runtime, payload: dict) -> None:
+    decision = source_trust_decision_from_payload(payload)
+    if decision is not None:
+        runtime.sources.add_source(
+            {
+                "source_id": decision.source_id,
+                "source_kind": "url",
+                "title": "Skill validation source",
+                "uri": decision.normalized_uri,
+                "metadata": {
+                    "connector_id": decision.connector_id,
+                    "knowledge_source_kind": str(payload.get("source_kind") or "docs"),
+                    "trust": decision.score,
+                },
+            }
+        )
 
 
 def test_high_quality_candidate_validates_to_canary_not_active(tmp_path) -> None:
@@ -120,6 +165,32 @@ def test_external_knowledge_candidate_requires_high_trust_for_canary(tmp_path) -
         assert any(check["name"] == "knowledge_safety" and check["pass"] is False for check in report["checks"])
         assert stored is not None
         assert stored.status == "quarantined"
+    finally:
+        runtime.close()
+
+
+def test_external_candidate_cannot_self_assert_high_trust_for_canary(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "agent-skill", "workspace_id": "validation"}
+    try:
+        candidate = _append_candidate(
+            runtime,
+            scope=scope,
+            record_id="skillcand_forged_trust",
+            source_trust=1.0,
+            risk_level="low",
+            source_kind="api_docs",
+            source_uri="https://attacker.invalid/api",
+            trust_authority="eimemory.source_trust.v1",
+            source_trust_decision={},
+        )
+
+        report = runtime.validate_skill_candidate(candidate_id=candidate.record_id, scope=scope)
+
+        assert report["pass"] is False
+        assert report["proposal_status"] == "quarantined"
+        assert any(check["name"] == "source_trust" and check["pass"] is False for check in report["checks"])
+        assert any(check["name"] == "knowledge_safety" and check["pass"] is False for check in report["checks"])
     finally:
         runtime.close()
 
@@ -378,7 +449,9 @@ def test_active_unsafe_real_observation_rolls_back_immediately(tmp_path) -> None
 def test_dry_candidate_dict_validation_does_not_persist(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     try:
-        report = runtime.validate_skill_candidate(candidate=_candidate_payload(), scope={"workspace_id": "dry"}, persist=False)
+        candidate = _candidate_payload()
+        _register_trust_source(runtime, candidate)
+        report = runtime.validate_skill_candidate(candidate=candidate, scope={"workspace_id": "dry"}, persist=False)
 
         assert report["pass"] is True
         assert report["proposal_status"] == "canary"

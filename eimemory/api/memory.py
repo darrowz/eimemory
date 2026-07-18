@@ -7,6 +7,7 @@ from hashlib import sha256
 import re
 
 from eimemory.governance.memory_graph import build_evidence_refs, build_timeline, graph_route_for_query
+from eimemory.intake.registry import SourceRegistry
 from eimemory.knowledge.safety import evaluate_knowledge_safety
 from eimemory.knowledge.views import build_recall_view, choose_view_type, records_from_view
 from eimemory.identity import (
@@ -118,8 +119,9 @@ def _capture_warnings(score) -> list[dict[str, object]]:
 
 
 class MemoryAPI:
-    def __init__(self, store: RuntimeStore) -> None:
+    def __init__(self, store: RuntimeStore, *, source_registry: SourceRegistry | None = None) -> None:
         self.store = store
+        self.source_registry = source_registry
 
     def ingest(
         self,
@@ -976,7 +978,11 @@ class MemoryAPI:
         if lane in _DEFAULT_BLOCKED_RECALL_LANES:
             return lane
         if lane == "external_knowledge":
-            safety = evaluate_knowledge_safety(item, task="recall")
+            safety = evaluate_knowledge_safety(
+                item,
+                task="recall",
+                registry=self.source_registry,
+            )
             if safety["recall_allowed"]:
                 return ""
             reasons = set(safety.get("reasons") or [])

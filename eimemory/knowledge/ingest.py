@@ -4,7 +4,8 @@ from hashlib import sha256
 import re
 from typing import Any
 
-from eimemory.knowledge.safety import evaluate_knowledge_safety, source_trust_for_kind, trust_tier_for_score
+from eimemory.knowledge.safety import evaluate_knowledge_safety
+from eimemory.knowledge.source_trust import resolve_source_trust
 from eimemory.models.records import RecordEnvelope, ScopeRef, TimeRef
 
 
@@ -36,10 +37,12 @@ def ingest_knowledge_source(
     *,
     scope: dict[str, Any] | None = None,
     persist: bool = False,
+    connector_id: str = "",
 ) -> dict[str, Any]:
     """Create compact knowledge units from input source text."""
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
     source_kind = _normalize_source_kind(payload.get("source_kind", ""))
+    source_id = _clean_text(payload.get("source_id", ""))
     title = _clean_text(payload.get("title", ""))
     source_uri = _clean_text(payload.get("uri", ""))
     source_text = _clean_text(payload.get("text", ""))
@@ -49,7 +52,7 @@ def ingest_knowledge_source(
     if not source_text:
         raise ValueError("text is required")
 
-    safety_report = evaluate_knowledge_safety(
+    trust_decision = resolve_source_trust(
         {
             **dict(payload or {}),
             "source_kind": source_kind,
@@ -58,7 +61,22 @@ def ingest_knowledge_source(
             "title": title,
             "text": source_text,
         },
+        registry=getattr(runtime, "sources", None),
+        connector_id=connector_id,
+    )
+    source_uri = trust_decision.normalized_uri or source_uri
+    safety_report = evaluate_knowledge_safety(
+        {
+            **dict(payload or {}),
+            "source_id": source_id,
+            "source_kind": source_kind,
+            "source_uri": source_uri,
+            "uri": source_uri,
+            "title": title,
+            "text": source_text,
+        },
         task="ingest",
+        trust_decision=trust_decision,
     )
     source_trust = float(safety_report["source_trust"])
     trust_tier = str(safety_report["trust_tier"])
@@ -74,6 +92,8 @@ def ingest_knowledge_source(
         unit["source_trust"] = source_trust
         unit["trust_tier"] = trust_tier
         unit["knowledge_safety"] = dict(safety_report)
+        unit["source_trust_decision"] = trust_decision.to_dict()
+        unit["source_id"] = source_id
         unit["status"] = unit_status
 
     persisted_record_ids: list[str] = []
@@ -85,6 +105,7 @@ def ingest_knowledge_source(
                 scope=scope_ref,
                 source_uri=source_uri,
                 source_kind=source_kind,
+                source_id=source_id,
                 status=unit_status,
                 safety_report=safety_report,
             )
@@ -99,9 +120,12 @@ def ingest_knowledge_source(
         "persist": bool(persist),
         "source_kind": source_kind,
         "source_uri": source_uri,
+        "source_id": source_id,
         "source_trust": source_trust,
         "trust_tier": trust_tier,
         "safety_report": safety_report,
+        "safety": safety_report,
+        "trust_decision": trust_decision.to_dict(),
         "knowledge_units": units,
         "persisted_count": len(persisted_record_ids),
         "quarantined_count": quarantined_count,
@@ -118,14 +142,6 @@ def _normalize_source_kind(value: Any) -> str:
     if lowered not in SUPPORTED_SOURCE_KINDS:
         return ""
     return lowered
-
-
-def _source_trust(source_kind: str) -> float:
-    return source_trust_for_kind(source_kind)
-
-
-def _trust_tier(value: float) -> str:
-    return trust_tier_for_score(value)
 
 
 def _extract_units(*, title: str, text: str, source_kind: str) -> list[dict[str, Any]]:
@@ -275,6 +291,7 @@ def _unit_record(
     scope: ScopeRef,
     source_uri: str,
     source_kind: str,
+    source_id: str,
     status: str = "active",
     safety_report: dict[str, Any] | None = None,
 ) -> RecordEnvelope:
@@ -302,6 +319,8 @@ def _unit_record(
             "unit_type": unit_type,
             "source_kind": source_kind,
             "source_uri": source_uri,
+            "source_id": source_id,
+            "source_trust_decision": dict(unit.get("source_trust_decision") or {}),
         },
         tags=[unit_type],
         links=[],
@@ -309,12 +328,22 @@ def _unit_record(
         source=KNOWLEDGE_INGEST_SOURCE,
         scope=scope,
         time=TimeRef.now(),
-        provenance={"source_kind": source_kind, "source_uri": source_uri, "unit_type": unit_type},
+        provenance={
+            "source_id": source_id,
+            "source_kind": source_kind,
+            "source_uri": source_uri,
+            "connector_id": str((unit.get("source_trust_decision") or {}).get("connector_id") or ""),
+            "unit_type": unit_type,
+        },
         meta={
+            "source_id": source_id,
             "source_kind": source_kind,
             "source_uri": source_uri,
             "source_trust": float(unit.get("source_trust") or 0.0),
             "trust_tier": str(unit.get("trust_tier") or "low"),
+            "trust_authority": str((unit.get("source_trust_decision") or {}).get("authority") or ""),
+            "trust_policy_digest": str((unit.get("source_trust_decision") or {}).get("policy_digest") or ""),
+            "source_trust_decision": dict(unit.get("source_trust_decision") or {}),
             "unit_type": unit_type,
             "knowledge_safety": dict(safety_report or unit.get("knowledge_safety") or {}),
         },

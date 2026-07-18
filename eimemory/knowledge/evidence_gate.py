@@ -48,7 +48,12 @@ def grade_research_evidence(record: Any) -> dict[str, Any]:
     }
 
 
-def filter_answer_evidence(records: list[Any], *, task_type: str = "") -> dict[str, Any]:
+def filter_answer_evidence(
+    records: list[Any],
+    *,
+    task_type: str = "",
+    registry: Any = None,
+) -> dict[str, Any]:
     kept: list[Any] = []
     excluded: list[dict[str, Any]] = []
     for record in records:
@@ -56,7 +61,7 @@ def filter_answer_evidence(records: list[Any], *, task_type: str = "") -> dict[s
             kept.append(record)
             continue
         if _record_kind(record).lower() == "knowledge_unit":
-            safety = evaluate_knowledge_safety(record, task="answer")
+            safety = evaluate_knowledge_safety(record, task="answer", registry=registry)
             if safety["recall_allowed"]:
                 kept.append(record)
                 continue
