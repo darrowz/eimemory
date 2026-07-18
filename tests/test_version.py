@@ -12,5 +12,5 @@ def test_package_version_matches_pyproject() -> None:
     assert __version__ == pyproject["project"]["version"]
 
 
-def test_release_version_is_1_9_66() -> None:
-    assert __version__ == "1.9.66"
+def test_release_version_is_1_9_68() -> None:
+    assert __version__ == "1.9.68"
