@@ -2236,10 +2236,10 @@ const hook = process.argv[2] || '';
 let input = '';
 process.stdin.on('data', (chunk) => { input += chunk; });
 process.stdin.on('end', () => {
-  const payload = JSON.parse(input || '{}');
-  fs.appendFileSync(process.env.HOOK_CALLS, `${JSON.stringify({ hook, payload })}\n`);
-  if (hook === 'before_prompt_build') {
-    setTimeout(() => process.stdout.write('{}'), 250);
+      const payload = JSON.parse(input || '{}');
+      fs.appendFileSync(process.env.HOOK_CALLS, `${JSON.stringify({ hook, payload })}\n`);
+      if (hook === 'before_prompt_build') {
+        setTimeout(() => process.stdout.write('{}'), 1500);
     return;
   }
   process.stdout.write(JSON.stringify({ loop_task: { task_id: 'task-run-timeout', status: 'done' } }));
@@ -2264,7 +2264,9 @@ plugin.register({
 """.strip()
     env = os.environ.copy()
     env["EIMEMORY_HOOK_COMMAND"] = f'node "{hook_script}"'
-    env["EIMEMORY_HOOK_TIMEOUT_MS"] = "75"
+    # Leave enough time for a cold Node child to record the request on loaded CI hosts,
+    # while keeping the prompt hook deterministically beyond its response deadline.
+    env["EIMEMORY_HOOK_TIMEOUT_MS"] = "500"
     env["HOOK_CALLS"] = str(calls_path)
     env["OPENCLAW_CONFIG_PATH"] = str(tmp_path / "missing-openclaw.json")
     result = subprocess.run(
