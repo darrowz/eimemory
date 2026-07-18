@@ -1485,6 +1485,10 @@ def test_immutable_release_installer_commits_only_after_post_switch_gates() -> N
     assert switch < receipt < closure < committed
     assert "learn release-closure" in script
     assert "learn live-acceptance" not in script
+    assert 'GOVERNANCE_ENV_FILE="${EIMEMORY_GOVERNANCE_ENV_FILE:-$EIMEMORY_CONFIG_DIR/governance.env}"' in script
+    assert 'deploy/run_with_governance_env.py' in script
+    assert 'deploy/summarize_release_closure.py' in script
+    assert '--env-file "$GOVERNANCE_ENV_FILE" --optional --' in script
     assert "rollback_current_release=failed" in script
     assert "rollback_preserved_failed_release=" in script
 

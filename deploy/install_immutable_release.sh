@@ -11,6 +11,7 @@ SERVICE_HOME="${SERVICE_HOME:-/home/$SERVICE_USER}"
 EIMEMORY_ROOT="${EIMEMORY_ROOT:-/var/lib/eimemory}"
 EIMEMORY_CONFIG_DIR="${EIMEMORY_CONFIG_DIR:-/etc/eimemory}"
 EIMEMORY_LOG_DIR="${EIMEMORY_LOG_DIR:-$SERVICE_HOME/.openclaw/logs}"
+GOVERNANCE_ENV_FILE="${EIMEMORY_GOVERNANCE_ENV_FILE:-$EIMEMORY_CONFIG_DIR/governance.env}"
 USER_SYSTEMD_ENABLE_SERVICE="${USER_SYSTEMD_ENABLE_SERVICE:-1}"
 USER_SYSTEMD_DIR="${USER_SYSTEMD_DIR:-$SERVICE_HOME/.config/systemd/user}"
 SYSTEM_RPC_UNIT_PATH="${SYSTEM_RPC_UNIT_PATH:-/etc/systemd/system/eimemory-rpc.service}"
@@ -276,12 +277,33 @@ _run_post_switch_closure() {
   if [ "$EIMEMORY_POST_SWITCH_GATES" != "1" ] || [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ]; then
     return
   fi
-  env EIMEMORY_ROOT="$EIMEMORY_ROOT" EIMEMORY_RUNTIME_COMMIT="$COMMIT" \
-    "$RELEASE_DIR/.venv/bin/eimemory" learn release-closure \
-      --repo-root "$REPO_DIR" --current-link "$CURRENT_LINK" \
-      --health-url "$EIMEMORY_HEALTH_URL" --prior-commit "$PREVIOUS_COMMIT" \
-      --scope-agent "$EIMEMORY_DEPLOY_SCOPE_AGENT" \
-      --scope-workspace "$EIMEMORY_DEPLOY_SCOPE_WORKSPACE" --json
+  local closure_output closure_status summary_status
+  closure_output="$(mktemp "$INSTALL_ROOT/.release-closure-${COMMIT}-XXXXXXXX.json")"
+  chmod 0600 "$closure_output"
+  if env EIMEMORY_ROOT="$EIMEMORY_ROOT" EIMEMORY_RUNTIME_COMMIT="$COMMIT" \
+    "$PYTHON_BIN" -I -B "$RELEASE_DIR/deploy/run_with_governance_env.py" \
+      --env-file "$GOVERNANCE_ENV_FILE" --optional -- \
+      "$RELEASE_DIR/.venv/bin/eimemory" learn release-closure \
+        --repo-root "$REPO_DIR" --current-link "$CURRENT_LINK" \
+        --health-url "$EIMEMORY_HEALTH_URL" --prior-commit "$PREVIOUS_COMMIT" \
+        --scope-agent "$EIMEMORY_DEPLOY_SCOPE_AGENT" \
+        --scope-workspace "$EIMEMORY_DEPLOY_SCOPE_WORKSPACE" --json \
+        >"$closure_output"; then
+    closure_status=0
+  else
+    closure_status=$?
+  fi
+  if "$PYTHON_BIN" -I -B "$RELEASE_DIR/deploy/summarize_release_closure.py" \
+    --path "$closure_output"; then
+    summary_status=0
+  else
+    summary_status=$?
+  fi
+  rm -f "$closure_output"
+  if [ "$summary_status" != "0" ]; then
+    return "$summary_status"
+  fi
+  return "$closure_status"
 }
 
 _rollback_current_release() {
