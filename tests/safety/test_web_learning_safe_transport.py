@@ -9,7 +9,7 @@ from eimemory.api.runtime import Runtime
 from eimemory.governance.web_learning import scout_web_learning
 
 
-def test_web_learning_revalidates_connected_address_against_dns_rebinding(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_web_learning_pins_the_validated_address_without_second_dns_lookup(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     runtime = Runtime.create(root=tmp_path)
     scope = {"agent_id": "web-safe"}
     calls = {"count": 0}
@@ -22,16 +22,21 @@ def test_web_learning_revalidates_connected_address_against_dns_rebinding(tmp_pa
 
     monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
 
-    def forbidden_connect(*_args, **_kwargs):
-        raise AssertionError("unsafe private rebound address reached socket connect")
+    connected: list[tuple[str, int]] = []
 
-    monkeypatch.setattr(socket, "create_connection", forbidden_connect)
+    def offline_connect(address, *_args, **_kwargs):
+        connected.append(address)
+        raise URLError("offline after pinned connect")
+
+    monkeypatch.setattr(socket, "create_connection", offline_connect)
 
     report = scout_web_learning(runtime, scope=scope, urls=["http://example.com/rebind"])
 
     assert report["hypothesis_count"] == 0
     assert report["errors"]
-    assert "unsafe fetch URL host" in report["errors"][0]["detail"]
+    assert calls["count"] == 1
+    assert connected == [("93.184.216.34", 80)]
+    assert "offline after pinned connect" in report["errors"][0]["detail"]
 
 
 def test_web_learning_still_reports_network_errors_after_safe_resolution(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:

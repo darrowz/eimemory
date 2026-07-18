@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import urllib.request
+from urllib.error import URLError
 
 import pytest
 
@@ -64,12 +64,10 @@ def test_web_learning_scout_records_fetch_errors_without_crashing(tmp_path, monk
     runtime = Runtime.create(root=tmp_path)
     scope = {"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"}
 
-    class FailingOpener:
-        def open(self, _request: urllib.request.Request, *, timeout: int = 8) -> None:
-            raise urllib.error.URLError("simulated fetch failure")
+    def failing_open(*_args, **_kwargs):
+        raise URLError("simulated fetch failure")
 
-    monkeypatch.setattr(urllib.request, "build_opener", lambda *_handlers: FailingOpener())
-    monkeypatch.setattr("socket.getaddrinfo", lambda *_args, **_kwargs: [(None, None, None, "", ("93.184.216.34", 443))])
+    monkeypatch.setattr("eimemory.governance.web_learning.safe_urlopen", failing_open)
 
     report = scout_web_learning(
         runtime,
@@ -112,20 +110,18 @@ def test_web_learning_scout_uses_urlopen_timeout_keyword(tmp_path, monkeypatch: 
         def read(self, _size: int) -> bytes:
             return b"Hybrid retrieval reduces noisy memory recall."
 
-    class FakeOpener:
-        def open(self, request: urllib.request.Request, data=None, timeout=None):
-            captured["data"] = data
-            captured["timeout"] = timeout
-            return FakeResponse()
+    def fake_open(_url: str, *, timeout: int, headers: dict):
+        captured["headers"] = headers
+        captured["timeout"] = timeout
+        return FakeResponse()
 
-    monkeypatch.setattr(urllib.request, "build_opener", lambda *_handlers: FakeOpener())
-    monkeypatch.setattr("socket.getaddrinfo", lambda *_args, **_kwargs: [(None, None, None, "", ("93.184.216.34", 443))])
+    monkeypatch.setattr("eimemory.governance.web_learning.safe_urlopen", fake_open)
 
     report = scout_web_learning(runtime, scope=scope, urls=["https://example.com/retrieval"], timeout_seconds=7)
 
     assert report["ok"] is True
     assert report["hypothesis_count"] == 1
-    assert captured["data"] is None
+    assert captured["headers"]["User-Agent"] == "eimemory.web-learning/1.0"
     assert captured["timeout"] == 7
 
 
@@ -140,7 +136,7 @@ def test_web_learning_scout_blocks_private_network_urls(tmp_path) -> None:
     )
 
     assert report["errors"]
-    assert report["errors"][0]["error"] == "ValueError"
+    assert report["errors"][0]["error"] == "UnsafeURL"
     assert "unsafe fetch URL host" in report["errors"][0]["detail"]
     assert report["hypothesis_count"] == 0
 

@@ -1,15 +1,11 @@
 from __future__ import annotations
 
-import ipaddress
-import http.client
-import socket
 from dataclasses import asdict
 from hashlib import sha256
 from typing import Any
-from urllib.parse import urlparse
-import urllib.request
 
 from eimemory.core.clock import now_iso
+from eimemory.intake.safe_transport import safe_urlopen
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 MAX_FETCH_BYTES = 2_000_000
@@ -100,12 +96,11 @@ def _coerce_evidence(raw_evidence: list[dict[str, Any]]) -> list[dict[str, str]]
 
 
 def _fetch_evidence_item(url: str, *, timeout_seconds: int) -> dict[str, str]:
-    _validate_url(url)
-    request = urllib.request.Request(
+    with safe_urlopen(
         url,
+        timeout=timeout_seconds,
         headers={"Accept": "text/plain, text/html, application/json, application/xml, */*;q=0.8", "User-Agent": "eimemory.web-learning/1.0"},
-    )
-    with _open_validated_request(request, timeout_seconds=timeout_seconds) as response:  # pragma: no branch
+    ) as response:  # pragma: no branch
         content_type = str(response.headers.get_content_type() or "").strip().lower()
         if content_type and not (
             content_type.startswith("text/")
@@ -177,129 +172,6 @@ def _stable_key(url: str, title: str) -> str:
 
 def _normalize_whitespace(value: str) -> str:
     return " ".join(str(value or "").split())
-
-
-def _validate_url(url: str) -> None:
-    parsed = urlparse(str(url or "").strip())
-    if parsed.scheme not in {"http", "https"}:
-        raise ValueError("unsupported fetch URL scheme")
-    if not parsed.netloc:
-        raise ValueError("missing fetch URL host")
-    hostname = str(parsed.hostname or "").strip().lower()
-    if _is_private_fetch_host(hostname):
-        raise ValueError("unsafe fetch URL host")
-    port = parsed.port or (443 if parsed.scheme == "https" else 80)
-    if _host_resolves_to_private(hostname, port):
-        raise ValueError("unsafe fetch URL host")
-
-
-class _ValidatedRedirectHandler(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D401, ANN001
-        _validate_url(newurl)
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
-
-
-def _open_validated_request(request: urllib.request.Request, *, timeout_seconds: int):
-    opener = urllib.request.build_opener(_ValidatedRedirectHandler, _ValidatedHTTPHandler, _ValidatedHTTPSHandler)
-    return opener.open(request, timeout=timeout_seconds)
-
-
-class _ValidatedHTTPConnection(http.client.HTTPConnection):
-    def connect(self) -> None:
-        self.sock = _create_validated_socket(self.host, self.port, timeout=self.timeout, source_address=self.source_address)
-
-
-class _ValidatedHTTPSConnection(http.client.HTTPSConnection):
-    def connect(self) -> None:
-        sock = _create_validated_socket(self.host, self.port, timeout=self.timeout, source_address=self.source_address)
-        self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
-
-
-class _ValidatedHTTPHandler(urllib.request.HTTPHandler):
-    def http_open(self, req):  # noqa: D401, ANN001
-        return self.do_open(_ValidatedHTTPConnection, req)
-
-
-class _ValidatedHTTPSHandler(urllib.request.HTTPSHandler):
-    def https_open(self, req):  # noqa: D401, ANN001
-        return self.do_open(_ValidatedHTTPSConnection, req)
-
-
-def _create_validated_socket(host: str, port: int, *, timeout: float | object, source_address=None):
-    addresses = _validated_resolved_addresses(str(host or ""), int(port))
-    last_error: Exception | None = None
-    for address in addresses:
-        try:
-            return socket.create_connection((address, int(port)), timeout, source_address)
-        except OSError as exc:
-            last_error = exc
-    if last_error is not None:
-        raise last_error
-    raise ValueError("unable to resolve fetch URL host")
-
-
-def _is_private_fetch_host(hostname: str) -> bool:
-    if not hostname:
-        return True
-    if hostname == "localhost" or hostname.endswith(".localhost") or hostname.endswith(".local"):
-        return True
-    direct_address = _coerce_ip_address(hostname)
-    if direct_address is not None:
-        return _is_disallowed_address(direct_address)
-    return False
-
-
-def _host_resolves_to_private(hostname: str, port: int) -> bool:
-    return any(_is_disallowed_address(_coerce_ip_address(address) or address) for address in _validated_resolved_addresses(hostname, port))
-
-
-def _validated_resolved_addresses(hostname: str, port: int) -> list[str]:
-    try:
-        infos = socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
-    except socket.gaierror as exc:
-        raise ValueError("unable to resolve fetch URL host") from exc
-    addresses: list[str] = []
-    for info in infos:
-        sockaddr = info[-1]
-        if not sockaddr:
-            continue
-        address = _coerce_ip_address(str(sockaddr[0]))
-        if address is not None and _is_disallowed_address(address):
-            raise ValueError("unsafe fetch URL host")
-        if address is not None:
-            text = str(address)
-            if text not in addresses:
-                addresses.append(text)
-    if not addresses:
-        raise ValueError("unable to resolve fetch URL host")
-    return addresses
-
-
-def _coerce_ip_address(hostname: str):
-    host = str(hostname or "").strip().strip("[]")
-    try:
-        return ipaddress.ip_address(host)
-    except ValueError:
-        pass
-    if host.isdigit():
-        try:
-            numeric = int(host, 10)
-        except ValueError:
-            return None
-        if 0 <= numeric <= 0xFFFFFFFF:
-            return ipaddress.ip_address(numeric)
-    return None
-
-
-def _is_disallowed_address(address) -> bool:
-    return (
-        address.is_private
-        or address.is_loopback
-        or address.is_link_local
-        or address.is_multicast
-        or address.is_reserved
-        or address.is_unspecified
-    )
 
 
 def _report_record(report: dict[str, Any], *, scope: ScopeRef) -> RecordEnvelope:

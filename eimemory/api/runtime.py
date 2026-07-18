@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import json
-import ipaddress
-import socket
 import time
 import tracemalloc
 from dataclasses import asdict, is_dataclass, replace
@@ -11,13 +9,12 @@ from datetime import datetime
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
-from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 
 from eimemory.api.evolution import EvolutionAPI
 from eimemory.api.memory import MemoryAPI
 from eimemory.core.clock import now_iso
 from eimemory.intake.registry import SourceRegistry
+from eimemory.intake.safe_transport import safe_urlopen
 from eimemory.intake.papers.sources import ingest_paper_source
 from eimemory.intake.title_normalization import strip_candidate_title_prefixes
 from eimemory.knowledge.compiler import KnowledgeCompilation, compile_paper_knowledge
@@ -1712,18 +1709,14 @@ def _json_safe(value: Any) -> Any:
 
 
 def _default_fetch_text(url: str) -> str:
-    _validate_fetch_url(url)
-    request = Request(
+    with safe_urlopen(
         url,
+        timeout=30,
         headers={
             "Accept": "application/json, application/atom+xml, application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.8",
             "User-Agent": "eimemory/1.0 (+https://github.com/darrowz/eimemory)",
         },
-    )
-    opener = build_opener(_SafeRedirectHandler)
-    with opener.open(request, timeout=30) as response:
-        final_url = response.geturl()
-        _validate_fetch_url(final_url)
+    ) as response:
         content_type = str(response.headers.get_content_type() or "").lower()
         if content_type and not any(content_type.startswith(prefix) for prefix in ALLOWED_FETCH_CONTENT_TYPES):
             raise ValueError("unsupported content type")
@@ -1751,7 +1744,6 @@ def _enrich_rss_result_with_fulltext(result: Any, *, fetch_text) -> Any:
         if item_url:
             attempted_count += 1
             try:
-                _validate_fetch_url(item_url)
                 document = parse_fulltext_document(fetch_text(item_url), url=item_url, source_kind="web")
                 original_content = str(getattr(item, "content", "") or "")
                 if document.ok and len(document.text) > len(original_content):
@@ -1791,41 +1783,6 @@ def _enrich_rss_result_with_fulltext(result: Any, *, fetch_text) -> Any:
             },
         },
     )
-
-
-class _SafeRedirectHandler(HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[override]
-        _validate_fetch_url(str(newurl))
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
-
-
-def _validate_fetch_url(url: str) -> None:
-    parsed = urlparse(str(url or "").strip())
-    if parsed.scheme not in {"http", "https"}:
-        raise ValueError("unsupported fetch URL scheme")
-    if parsed.username or parsed.password:
-        raise ValueError("credentials in fetch URL are not allowed")
-    hostname = (parsed.hostname or "").strip()
-    if not hostname:
-        raise ValueError("missing fetch URL host")
-    if hostname.lower() in {"localhost", "localhost.localdomain"}:
-        raise ValueError("unsafe fetch URL host")
-    addresses: set[str] = set()
-    try:
-        addresses = {item[4][0] for item in socket.getaddrinfo(hostname, parsed.port or (443 if parsed.scheme == "https" else 80))}
-    except socket.gaierror as exc:
-        raise ValueError("fetch URL host could not be resolved") from exc
-    for value in addresses:
-        address = ipaddress.ip_address(value)
-        if (
-            address.is_private
-            or address.is_loopback
-            or address.is_link_local
-            or address.is_multicast
-            or address.is_reserved
-            or address.is_unspecified
-        ):
-            raise ValueError("unsafe fetch URL host")
 
 
 def _source_max_items(source: Any) -> int:

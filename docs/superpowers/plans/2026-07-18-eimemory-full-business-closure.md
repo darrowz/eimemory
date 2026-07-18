@@ -334,7 +334,7 @@ Commit: `fix: derive knowledge trust from server provenance`
 - Produces: `safe_urlopen(url: str, *, timeout: float, max_redirects: int = 5) -> SafeHTTPResponse`.
 - Consumes: one validated DNS resolution per hop; returns body, headers, status, final URL, and peer IP.
 
-- [ ] **Step 1: Add DNS-rebinding and redirect regressions**
+- [x] **Step 1: Add DNS-rebinding and redirect regressions**
 
 ```python
 def test_safe_transport_connects_to_validated_ip_without_second_lookup(monkeypatch):
@@ -351,13 +351,13 @@ def test_redirect_to_private_address_is_rejected(monkeypatch):
         safe_urlopen("https://public.example/redirect-to-private", timeout=2)
 ```
 
-- [ ] **Step 2: Verify the current hostname reconnect behavior is red**
+- [x] **Step 2: Verify the current hostname reconnect behavior is red**
 
 Run: `python -m pytest tests/safety/test_intake_safe_transport.py -q`
 
 Expected: the safe transport module is absent or the second lookup reaches a private address.
 
-- [ ] **Step 3: Implement pinned HTTP/HTTPS transport**
+- [x] **Step 3: Implement pinned HTTP/HTTPS transport**
 
 Resolve and validate addresses, connect to one validated IP, wrap HTTPS with
 `ssl.create_default_context().wrap_socket(sock, server_hostname=original_host)`,
@@ -365,7 +365,7 @@ send the original Host header, verify the socket peer, and repeat the whole
 process for redirects. Replace the intake fetcher's `urlopen` call with
 `safe_urlopen`.
 
-- [ ] **Step 4: Verify and commit**
+- [x] **Step 4: Verify and commit**
 
 Run: `python -m pytest tests/safety/test_intake_safe_transport.py tests/test_runtime.py -q -k "intake or fetch or url or rebind"`
 
