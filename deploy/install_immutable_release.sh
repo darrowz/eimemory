@@ -179,6 +179,7 @@ _release_version() {
 
 _inspect_openclaw_plugin_runtime() {
   local target_release="${1:-$RELEASE_DIR}"
+  local verifier_release="${2:-$target_release}"
   if [ ! -x "$OPENCLAW_BIN" ]; then
     echo "openclaw_plugin_runtime_inspect=skipped binary_not_found" >&2
     return
@@ -187,7 +188,7 @@ _inspect_openclaw_plugin_runtime() {
   inspect_json="$(_run_as_service_user env HOME="$SERVICE_HOME" \
     "$OPENCLAW_BIN" plugins inspect eimemory-bridge --runtime --json)"
   printf '%s' "$inspect_json" | \
-    "$PYTHON_BIN" -I -B "$target_release/deploy/verify_openclaw_plugin_runtime.py" \
+    "$PYTHON_BIN" -I -B "$verifier_release/deploy/verify_openclaw_plugin_runtime.py" \
       --expected-root "$target_release/integrations/openclaw/eimemory-bridge"
 }
 
@@ -314,7 +315,7 @@ _rollback_current_release() {
     echo "rollback_step=services status=failed" >&2
     rollback_failed=1
   fi
-  if ! _inspect_openclaw_plugin_runtime "$PREVIOUS_CURRENT"; then
+  if ! _inspect_openclaw_plugin_runtime "$PREVIOUS_CURRENT" "$RELEASE_DIR"; then
     echo "rollback_step=plugin_runtime status=failed" >&2
     rollback_failed=1
   fi

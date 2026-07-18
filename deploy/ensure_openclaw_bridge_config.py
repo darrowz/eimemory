@@ -133,6 +133,7 @@ def _ensure_openclaw_bridge_config_locked(target: Path) -> dict[str, object]:
     if not target.is_file():
         raise OpenClawBridgeConfigError("OpenClaw configuration file is missing")
     config, metadata = _read_config(target)
+    before = json.dumps(config, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
     plugins_value = config.setdefault("plugins", {})
     plugins = _object(plugins_value, "plugins")
@@ -141,8 +142,16 @@ def _ensure_openclaw_bridge_config_locked(target: Path) -> dict[str, object]:
         raise OpenClawBridgeConfigError("plugins.allow must be an array of plugin IDs")
     entries = _object(plugins.setdefault("entries", {}), "plugins.entries")
     bridge = _object(entries.setdefault(PLUGIN_ID, {}), f"plugins.entries.{PLUGIN_ID}")
+    legacy_config = bridge.get("config")
+    if legacy_config is not None:
+        plugin_config = _object(legacy_config, f"plugins.entries.{PLUGIN_ID}.config")
+        plugin_config.pop("enabled", None)
+        if plugin_config:
+            unsupported = ",".join(sorted(str(key) for key in plugin_config))
+            raise OpenClawBridgeConfigError(
+                f"plugins.entries.{PLUGIN_ID}.config contains unsupported properties: {unsupported}"
+            )
     hooks = _object(bridge.setdefault("hooks", {}), f"plugins.entries.{PLUGIN_ID}.hooks")
-    before = json.dumps(config, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     if PLUGIN_ID not in allow:
         allow.append(PLUGIN_ID)
     bridge["enabled"] = True

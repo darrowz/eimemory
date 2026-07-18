@@ -525,6 +525,7 @@ def test_openclaw_bridge_config_enables_required_conversation_access_atomically(
                     "allow": ["existing-plugin"],
                     "entries": {
                         "eimemory-bridge": {
+                            "config": {"enabled": True},
                             "hooks": {"allowPromptInjection": False},
                         }
                     },
@@ -543,6 +544,7 @@ def test_openclaw_bridge_config_enables_required_conversation_access_atomically(
     assert second["changed"] is False
     assert payload["plugins"]["allow"] == ["existing-plugin", "eimemory-bridge"]
     assert payload["plugins"]["entries"]["eimemory-bridge"]["enabled"] is True
+    assert payload["plugins"]["entries"]["eimemory-bridge"]["config"] == {}
     assert payload["plugins"]["entries"]["eimemory-bridge"]["hooks"] == {
         "allowPromptInjection": False,
         "allowConversationAccess": True,
@@ -589,6 +591,14 @@ def test_openclaw_bridge_config_rejects_invalid_or_unsafe_configuration(tmp_path
     with pytest.raises(OpenClawBridgeConfigError, match="plugins.allow"):
         ensure_openclaw_bridge_config(path)
 
+    unsupported = json.dumps(
+        {"plugins": {"entries": {"eimemory-bridge": {"config": {"custom": True}}}}}
+    )
+    path.write_text(unsupported, encoding="utf-8")
+    with pytest.raises(OpenClawBridgeConfigError, match="unsupported properties"):
+        ensure_openclaw_bridge_config(path)
+    assert path.read_text(encoding="utf-8") == unsupported
+
 
 def test_immutable_installer_enforces_and_inspects_openclaw_bridge_compatibility() -> None:
     script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
@@ -596,6 +606,9 @@ def test_immutable_installer_enforces_and_inspects_openclaw_bridge_compatibility
     assert "deploy/ensure_openclaw_bridge_config.py" in script
     assert "plugins inspect eimemory-bridge --runtime --json" in script
     assert "deploy/verify_openclaw_plugin_runtime.py" in script
+    assert 'local verifier_release="${2:-$target_release}"' in script
+    assert '"$verifier_release/deploy/verify_openclaw_plugin_runtime.py"' in script
+    assert '_inspect_openclaw_plugin_runtime "$PREVIOUS_CURRENT" "$RELEASE_DIR"' in script
     assert script.index("deploy/ensure_openclaw_bridge_config.py") < script.rindex("_user_systemctl restart openclaw-gateway.service")
 
 
