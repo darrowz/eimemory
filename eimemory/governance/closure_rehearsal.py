@@ -5,6 +5,7 @@ from hashlib import sha256
 from typing import Any
 
 from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
+from eimemory.governance.l5_readiness import readiness_gate_status
 from eimemory.models.records import ScopeRef
 
 
@@ -138,17 +139,13 @@ def run_l5_closure_rehearsal(
     )
     report["l5_readiness"] = l5_readiness
     report["sequence"].append("readiness")
-    readiness_score = l5_readiness.get("readiness_score")
-    full_readiness = (
-        isinstance(readiness_score, (int, float))
-        and not isinstance(readiness_score, bool)
-        and float(readiness_score) == 1.0
-    )
-    if l5_readiness.get("ok") is not True or l5_readiness.get("current_stage") != "L5" or not full_readiness:
+    readiness_status = readiness_gate_status(l5_readiness)
+    if not readiness_status:
         return _blocked_closure(report, "l5_readiness_not_l5")
     report["outcome_trace"] = _record_successful_task_outcome(runtime, scope=scope_ref, persist=persist)
     report["ok"] = True
-    report["closure_complete"] = True
+    report["closure_complete"] = readiness_status == "L5"
+    report["data_accumulating"] = readiness_status == "data_accumulating"
     report["blocked_reasons"] = []
     return report
 
@@ -200,6 +197,7 @@ def _initial_closure_report(scope: ScopeRef) -> dict[str, Any]:
     return {
         "ok": False,
         "closure_complete": False,
+        "data_accumulating": False,
         "blocked_reasons": [],
         "report_type": "l5_closure_rehearsal",
         "scope": asdict(scope),

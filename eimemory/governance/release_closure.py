@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import Any
 
+from eimemory.governance.l5_readiness import readiness_gate_status
 from eimemory.models.records import ScopeRef
 
 
@@ -72,7 +73,7 @@ def run_release_closure(
         replay_bootstrap=replay_bootstrap,
     )
     report["closure_rehearsal"] = rehearsal
-    if rehearsal.get("ok") is not True or rehearsal.get("closure_complete") is not True:
+    if not _rehearsal_gate_ok(rehearsal):
         return _blocked(report, "closure_rehearsal", _failure_reason(rehearsal, "closure_rehearsal_failed"))
 
     readiness = runtime.build_l5_readiness_report(
@@ -83,12 +84,13 @@ def run_release_closure(
     )
     report["readiness"] = readiness
     report["record_ids"]["readiness"] = str(readiness.get("persisted_record_id") or "")
-    if _readiness_data_accumulating(readiness):
+    readiness_status = readiness_gate_status(readiness)
+    if readiness_status == "data_accumulating":
         report["ok"] = True
         report["closure_complete"] = False
         report["data_accumulating"] = True
         return report
-    if not _readiness_ok(readiness):
+    if readiness_status != "L5":
         return _blocked(report, "readiness", "readiness_not_l5")
 
     report["ok"] = True
@@ -133,40 +135,7 @@ def _live_acceptance_ok(report: dict[str, Any], *, receipt: dict[str, Any]) -> b
     )
 
 
-def _readiness_ok(readiness: dict[str, Any]) -> bool:
-    score = readiness.get("readiness_score")
-    assessment = readiness.get("latest_l5_assessment") if isinstance(readiness.get("latest_l5_assessment"), dict) else {}
-    live_gate = readiness.get("live_task_gate") if isinstance(readiness.get("live_task_gate"), dict) else {}
-    replay = readiness.get("verified_replay") if isinstance(readiness.get("verified_replay"), dict) else {}
-    return bool(
-        readiness.get("ok") is True
-        and readiness.get("current_stage") == "L5"
-        and isinstance(score, (int, float))
-        and not isinstance(score, bool)
-        and float(score) == 1.0
-        and assessment.get("complete") is True
-        and live_gate.get("ok") is True
-        and int(live_gate.get("current_deployment_verified_real_tasks") or 0) >= 10
-        and not list(replay.get("weak_capabilities_missing") or [])
-    )
-
-
-def _readiness_data_accumulating(readiness: dict[str, Any]) -> bool:
-    score = readiness.get("readiness_score")
-    assessment = readiness.get("latest_l5_assessment") if isinstance(readiness.get("latest_l5_assessment"), dict) else {}
-    live_gate = readiness.get("live_task_gate") if isinstance(readiness.get("live_task_gate"), dict) else {}
-    replay = readiness.get("verified_replay") if isinstance(readiness.get("verified_replay"), dict) else {}
-    return bool(
-        readiness.get("ok") is True
-        and readiness.get("current_stage") == "data_accumulating"
-        and isinstance(score, (int, float))
-        and not isinstance(score, bool)
-        and float(score) == 0.9
-        and assessment.get("complete") is True
-        and live_gate.get("ok") is False
-        and (
-            int(live_gate.get("sample_deficit") or 0) > 0
-            or int(live_gate.get("task_type_deficit") or 0) > 0
-        )
-        and not list(replay.get("weak_capabilities_missing") or [])
-    )
+def _rehearsal_gate_ok(rehearsal: dict[str, Any]) -> bool:
+    complete = rehearsal.get("closure_complete") is True
+    accumulating = rehearsal.get("data_accumulating") is True
+    return bool(rehearsal.get("ok") is True and complete != accumulating)

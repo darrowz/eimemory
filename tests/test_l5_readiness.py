@@ -12,10 +12,68 @@ from eimemory.governance.capability_replay_packs import (
     MANIFEST_SCHEMA_VERSION,
     capability_replay_manifest_digest,
 )
+from eimemory.governance.l5_readiness import readiness_gate_status
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
 SCOPE = {"agent_id": "agent-l5-readiness", "workspace_id": "l5-readiness", "user_id": "darrow"}
+
+
+def test_readiness_gate_status_allows_only_l5_or_strict_data_accumulation() -> None:
+    common = {
+        "ok": True,
+        "latest_l5_assessment": {"trusted": True, "complete": True, "level": "L5"},
+        "verified_replay": {
+            "executed_count": 12,
+            "weak_capabilities_missing": [],
+            "manifest_rejection_reasons": {},
+        },
+    }
+    full = {
+        **common,
+        "current_stage": "L5",
+        "readiness_score": 1.0,
+        "live_task_gate": {"ok": True, "current_deployment_verified_real_tasks": 10},
+    }
+    accumulating = {
+        **common,
+        "current_stage": "data_accumulating",
+        "readiness_score": 0.9,
+        "live_task_gate": {
+            "ok": False,
+            "current_deployment_verified_real_tasks": 0,
+            "current_deployment_operational_probes": 10,
+            "sample_deficit": 10,
+            "task_type_deficit": 5,
+        },
+    }
+
+    assert readiness_gate_status(full) == "L5"
+    assert readiness_gate_status(accumulating) == "data_accumulating"
+    assert (
+        readiness_gate_status(
+            {**accumulating, "latest_l5_assessment": {"complete": True, "level": "L5"}}
+        )
+        == ""
+    )
+    assert readiness_gate_status(
+        {
+            **accumulating,
+            "live_task_gate": {
+                **accumulating["live_task_gate"],
+                "current_deployment_operational_probes": 9,
+            },
+        }
+    ) == ""
+    assert readiness_gate_status(
+        {
+            **accumulating,
+            "verified_replay": {
+                **common["verified_replay"],
+                "manifest_rejection_reasons": {"x": 1},
+            },
+        }
+    ) == ""
 
 
 def test_l5_readiness_report_is_read_only_by_default_and_surfaces_gaps(tmp_path) -> None:

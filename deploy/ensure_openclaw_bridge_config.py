@@ -10,10 +10,12 @@ import os
 from pathlib import Path
 import stat
 import tempfile
+from threading import RLock
 
 
 PLUGIN_ID = "eimemory-bridge"
 MAX_CONFIG_BYTES = 4 * 1024 * 1024
+_LOCAL_CONFIG_LOCK = RLock()
 
 
 class OpenClawBridgeConfigError(RuntimeError):
@@ -38,34 +40,38 @@ def _fsync_directory(path: Path) -> None:
 
 @contextmanager
 def _interprocess_lock(path: Path):
-    flags = os.O_CREAT | os.O_RDWR
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    descriptor = os.open(path, flags, 0o600)
-    try:
-        if os.name == "posix":
-            import fcntl
+    with _LOCAL_CONFIG_LOCK:
+        flags = os.O_CREAT | os.O_RDWR
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(path, flags, 0o600)
+        locked = False
+        try:
+            if os.name == "posix":
+                import fcntl
 
-            fcntl.flock(descriptor, fcntl.LOCK_EX)
-        elif os.name == "nt":
-            import msvcrt
+                fcntl.flock(descriptor, fcntl.LOCK_EX)
+                locked = True
+            elif os.name == "nt":
+                import msvcrt
 
-            if os.fstat(descriptor).st_size == 0:
-                os.write(descriptor, b"0")
-            os.lseek(descriptor, 0, os.SEEK_SET)
-            msvcrt.locking(descriptor, msvcrt.LK_LOCK, 1)
-        yield
-    finally:
-        if os.name == "posix":
-            import fcntl
+                if os.fstat(descriptor).st_size == 0:
+                    os.write(descriptor, b"0")
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                msvcrt.locking(descriptor, msvcrt.LK_LOCK, 1)
+                locked = True
+            yield
+        finally:
+            if locked and os.name == "posix":
+                import fcntl
 
-            fcntl.flock(descriptor, fcntl.LOCK_UN)
-        elif os.name == "nt":
-            import msvcrt
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+            elif locked and os.name == "nt":
+                import msvcrt
 
-            os.lseek(descriptor, 0, os.SEEK_SET)
-            msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
-        os.close(descriptor)
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+            os.close(descriptor)
 
 
 def _read_config(path: Path) -> tuple[dict[str, object], os.stat_result]:

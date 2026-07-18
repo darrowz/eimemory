@@ -43,6 +43,53 @@ STRONG_CAPABILITIES = {"memory.recall", "tool.routing", "knowledge.intake", "saf
 WEAK_CAPABILITIES = {"search.discovery", "research.synthesis", "operations.uumit", "device.control"}
 
 
+def readiness_gate_status(readiness: dict[str, Any]) -> str:
+    """Return the only release-gate states backed by complete L5 evidence."""
+
+    assessment = (
+        readiness.get("latest_l5_assessment")
+        if isinstance(readiness.get("latest_l5_assessment"), dict)
+        else {}
+    )
+    live_gate = readiness.get("live_task_gate") if isinstance(readiness.get("live_task_gate"), dict) else {}
+    replay = readiness.get("verified_replay") if isinstance(readiness.get("verified_replay"), dict) else {}
+    common_verified = bool(
+        readiness.get("ok") is True
+        and assessment.get("trusted") is True
+        and assessment.get("complete") is True
+        and assessment.get("level") == "L5"
+        and int(replay.get("executed_count") or 0) >= 10
+        and not list(replay.get("weak_capabilities_missing") or [])
+        and not dict(replay.get("manifest_rejection_reasons") or {})
+    )
+    if not common_verified:
+        return ""
+    score = readiness.get("readiness_score")
+    if (
+        readiness.get("current_stage") == "L5"
+        and isinstance(score, (int, float))
+        and not isinstance(score, bool)
+        and float(score) == 1.0
+        and live_gate.get("ok") is True
+        and int(live_gate.get("current_deployment_verified_real_tasks") or 0) >= 10
+    ):
+        return "L5"
+    if (
+        readiness.get("current_stage") == "data_accumulating"
+        and isinstance(score, (int, float))
+        and not isinstance(score, bool)
+        and float(score) == 0.9
+        and live_gate.get("ok") is False
+        and int(live_gate.get("current_deployment_operational_probes") or 0) >= 10
+        and (
+            int(live_gate.get("sample_deficit") or 0) > 0
+            or int(live_gate.get("task_type_deficit") or 0) > 0
+        )
+    ):
+        return "data_accumulating"
+    return ""
+
+
 def build_l5_readiness_report(
     runtime: Any,
     *,

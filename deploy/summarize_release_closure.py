@@ -22,6 +22,8 @@ def summarize_release_closure(report: object) -> dict[str, Any]:
     live = report.get("live_acceptance") if isinstance(report.get("live_acceptance"), dict) else {}
     rehearsal = report.get("closure_rehearsal") if isinstance(report.get("closure_rehearsal"), dict) else {}
     readiness = report.get("readiness") if isinstance(report.get("readiness"), dict) else {}
+    rehearsal_complete = rehearsal.get("closure_complete") is True
+    rehearsal_accumulating = rehearsal.get("data_accumulating") is True
     return {
         "ok": report.get("ok") is True,
         "closure_complete": report.get("closure_complete") is True,
@@ -35,7 +37,7 @@ def summarize_release_closure(report: object) -> dict[str, Any]:
         "live_acceptance_ok": live.get("ok") is True,
         "live_pass_count": int(live.get("pass_count") or 0),
         "live_case_count": int(live.get("case_count") or 0),
-        "rehearsal_ok": rehearsal.get("ok") is True and rehearsal.get("closure_complete") is True,
+        "rehearsal_ok": rehearsal.get("ok") is True and rehearsal_complete != rehearsal_accumulating,
         "readiness_stage": str(readiness.get("current_stage") or readiness.get("status") or ""),
         "readiness_score": readiness.get("readiness_score"),
     }

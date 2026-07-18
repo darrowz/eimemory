@@ -110,3 +110,23 @@ first reproduced the receipt churn after it became the current release, then
 proved repeated verification returns one stable receipt. The expanded focused
 deployment, live-acceptance, storage, L5, release, and version suites passed 158
 tests.
+
+The next production rehearsal reached a release-bound L5 assessment with no
+missing evidence and replay 12/12, then stopped because readiness was exactly
+`data_accumulating`: ten current-release operational probes passed, while ten
+verified real tasks across five task types had not yet accumulated. The outer
+release gate already allowed this sole exception, but the inner rehearsal had
+duplicated an older `readiness_score == 1.0` rule. Both layers now use one
+strict readiness predicate: a trusted complete L5 assessment and clean replay
+are mandatory; full L5 additionally requires the real-task threshold, while
+`data_accumulating` additionally requires ten current-release operational
+probes and a positive real-task or task-type deficit. No other partial state is
+accepted, and the release summary reports this rehearsal gate truthfully.
+
+The expanded deployment test layer also exposed a Windows-only thread race in
+OpenClaw configuration lock-file initialization. A process-local reentrant lock
+now serializes threads before the existing cross-process file lock, and unlock
+is attempted only after successful acquisition. The 24-worker concurrency test
+passed ten consecutive runs; the combined readiness, rehearsal, release,
+governance environment, deployment, and version layers passed 117 tests with
+19 documented platform skips.

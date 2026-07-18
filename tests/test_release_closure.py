@@ -277,11 +277,40 @@ def test_release_closure_reports_data_accumulation_without_claiming_l5_complete(
         "live_task_gate": {
             "ok": False,
             "sample_deficit": 10,
+            "task_type_deficit": 5,
             "current_deployment_verified_real_tasks": 0,
+            "current_deployment_operational_probes": 10,
         },
     }
 
     report = _run(FakeRuntime(readiness=readiness))
+
+    assert report["ok"] is True
+    assert report["closure_complete"] is False
+    assert report["data_accumulating"] is True
+    assert report["blocked_stage"] == ""
+
+
+def test_release_closure_accepts_data_accumulating_rehearsal_before_final_readiness() -> None:
+    readiness = {
+        **_successful_readiness(),
+        "current_stage": "data_accumulating",
+        "readiness_score": 0.9,
+        "live_task_gate": {
+            "ok": False,
+            "sample_deficit": 10,
+            "task_type_deficit": 5,
+            "current_deployment_verified_real_tasks": 0,
+            "current_deployment_operational_probes": 10,
+        },
+    }
+    rehearsal = {
+        **_successful_rehearsal(),
+        "closure_complete": False,
+        "data_accumulating": True,
+    }
+
+    report = _run(FakeRuntime(rehearsal=rehearsal, readiness=readiness))
 
     assert report["ok"] is True
     assert report["closure_complete"] is False
@@ -299,6 +328,7 @@ def test_release_closure_treats_task_type_only_deficit_as_data_accumulation() ->
             "sample_deficit": 0,
             "task_type_deficit": 2,
             "current_deployment_verified_real_tasks": 10,
+            "current_deployment_operational_probes": 10,
         },
     }
 
@@ -385,8 +415,23 @@ def _successful_readiness() -> dict:
         "ok": True,
         "current_stage": "L5",
         "readiness_score": 1.0,
-        "latest_l5_assessment": {"complete": True, "record_id": "assessment-1"},
-        "live_task_gate": {"ok": True, "current_deployment_verified_real_tasks": 10},
-        "verified_replay": {"weak_capabilities_missing": [], "executed_count": 12, "pass_count": 12, "fail_count": 0},
+        "latest_l5_assessment": {
+            "trusted": True,
+            "complete": True,
+            "level": "L5",
+            "record_id": "assessment-1",
+        },
+        "live_task_gate": {
+            "ok": True,
+            "current_deployment_verified_real_tasks": 10,
+            "current_deployment_operational_probes": 10,
+        },
+        "verified_replay": {
+            "weak_capabilities_missing": [],
+            "manifest_rejection_reasons": {},
+            "executed_count": 12,
+            "pass_count": 12,
+            "fail_count": 0,
+        },
         "persisted_record_id": "readiness-1",
     }

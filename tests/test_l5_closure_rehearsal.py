@@ -96,6 +96,48 @@ def test_l5_closure_rehearsal_opens_success_skill_and_rollback_metrics(tmp_path)
         runtime.close()
 
 
+def test_l5_closure_rehearsal_allows_only_verified_real_task_data_to_accumulate(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    real_readiness = runtime.build_l5_readiness_report
+
+    def current_release_data_accumulating(**kwargs):
+        readiness = real_readiness(**kwargs)
+        return {
+            **readiness,
+            "current_stage": "data_accumulating",
+            "readiness_score": 0.9,
+            "live_task_gate": {
+                "ok": False,
+                "sample_count": 0,
+                "sample_deficit": 10,
+                "distinct_task_types": 0,
+                "task_type_deficit": 5,
+                "current_deployment_verified_real_tasks": 0,
+                "current_deployment_operational_probes": 10,
+            },
+        }
+
+    monkeypatch.setattr(runtime, "build_l5_readiness_report", current_release_data_accumulating)
+    try:
+        _seed_executed_deployment(runtime)
+
+        report = runtime.run_l5_closure_rehearsal(scope=SCOPE, persist=True)
+    finally:
+        runtime.close()
+
+    assert report["ok"] is True
+    assert report["closure_complete"] is False
+    assert report["data_accumulating"] is True
+    assert report["blocked_reasons"] == []
+    assert report["l5_observation"]["assessment"]["complete"] is True
+    assert report["l5_observation"]["assessment"]["level"] == "L5"
+    assert report["l5_readiness"]["current_stage"] == "data_accumulating"
+    assert report["l5_readiness"]["readiness_score"] == 0.9
+    assert report["l5_readiness"]["live_task_gate"]["sample_deficit"] > 0
+    assert report["l5_readiness"]["verified_replay"]["weak_capabilities_missing"] == []
+    assert report["outcome_trace"]["outcome"]["rehearsal"] is True
+
+
 def test_l5_closure_rehearsal_fails_closed_without_executed_deployment(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     try:
