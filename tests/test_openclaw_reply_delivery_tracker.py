@@ -106,6 +106,80 @@ Promise.resolve()
     assert entry["final_text"] == "生产上下文最终答复"
 
 
+def test_tracker_accepts_agent_end_with_session_only_context(tmp_path: Path) -> None:
+    state = _run_node(
+        """
+const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
+const handlers = {};
+plugin.register({ on(name, handler) { handlers[name] = handler; } });
+const sessionKey = 'agent:main:feishu:direct:ou_test';
+Promise.resolve()
+  .then(() => handlers.message_received({
+    from: 'ou_test', messageId: 'om_session_only', runId: 'run-session-only'
+  }, {
+    channelId: 'feishu', conversationId: 'user:ou_test', sessionKey,
+    runId: 'run-session-only'
+  }))
+  .then(() => handlers.agent_end({
+    success: true,
+    runId: 'run-session-only',
+    messages: [{ role: 'assistant', content: 'session-only final' }]
+  }, {
+    sessionKey,
+    runId: 'run-session-only'
+  }));
+""",
+        tmp_path / "reply-state.json",
+    )
+
+    entry = state["entries"]["om_session_only"]
+    assert entry["status"] == "answered"
+    assert entry["final_text"] == "session-only final"
+
+
+def test_tracker_closes_message_tool_receipt_without_message_sent_hook(
+    tmp_path: Path,
+) -> None:
+    state = _run_node(
+        """
+const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
+const handlers = {};
+plugin.register({ on(name, handler) { handlers[name] = handler; } });
+const sessionKey = 'agent:main:feishu:direct:ou_test';
+const receipt = {
+  ok: true,
+  channel: 'feishu',
+  action: 'send',
+  messageId: 'om_tool_receipt',
+  receipt: { primaryPlatformMessageId: 'om_tool_receipt' }
+};
+Promise.resolve()
+  .then(() => handlers.message_received({
+    from: 'ou_test', messageId: 'om_tool_inbound', runId: 'run-tool'
+  }, {
+    channelId: 'feishu', conversationId: 'user:ou_test', sessionKey,
+    runId: 'run-tool'
+  }))
+  .then(() => handlers.after_tool_call({
+    toolName: 'message',
+    params: { action: 'send', message: 'tool-delivered reply' },
+    runId: 'run-tool',
+    result: { content: [{ type: 'text', text: JSON.stringify(receipt) }] }
+  }, {
+    sessionKey,
+    runId: 'run-tool',
+    toolName: 'message'
+  }));
+""",
+        tmp_path / "reply-state.json",
+    )
+
+    entry = state["entries"]["om_tool_inbound"]
+    assert entry["status"] == "delivered"
+    assert entry["final_text"] == "tool-delivered reply"
+    assert entry["delivery_message_id"] == "om_tool_receipt"
+
+
 def test_tracker_ignores_group_messages(tmp_path: Path) -> None:
     state_path = tmp_path / "reply-state.json"
     state = _run_node(

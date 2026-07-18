@@ -771,10 +771,8 @@ function updateReplyDeliveryState(update) {
 }
 
 function isDirectFeishuReplyContext(context) {
-  const isFeishu = [context?.messageProvider, context?.channelId]
-    .some((value) => String(value || '').toLowerCase().includes('feishu'));
   const sessionKey = String(context?.sessionKey || '');
-  return isFeishu && sessionKey.includes(':feishu:direct:');
+  return sessionKey.includes(':feishu:direct:');
 }
 
 const MAX_REPLY_DELIVERY_ENTRIES = 2000;
@@ -959,6 +957,84 @@ function trackReplyMessageSent(event, context) {
       entry.delivery_message_id = entry.last_sent_message_id;
       entry.delivered_at_ms = entry.last_sent_at_ms;
     }
+  });
+}
+
+function messageToolDeliveryReceipt(value, depth = 0) {
+  if (depth > 4 || value == null) {
+    return null;
+  }
+  if (typeof value === 'string') {
+    try {
+      return messageToolDeliveryReceipt(JSON.parse(value), depth + 1);
+    } catch (_error) {
+      return null;
+    }
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const receipt = messageToolDeliveryReceipt(item, depth + 1);
+      if (receipt) {
+        return receipt;
+      }
+    }
+    return null;
+  }
+  if (typeof value !== 'object') {
+    return null;
+  }
+  const messageId = String(
+    value.messageId
+    || value.message_id
+    || value.receipt?.primaryPlatformMessageId
+    || ''
+  ).trim();
+  const channel = String(value.channel || value.receipt?.channel || '').toLowerCase();
+  if (value.ok === true && messageId && channel.includes('feishu')) {
+    return { messageId };
+  }
+  for (const nested of [value.details, value.result, value.data, value.content, value.text]) {
+    const receipt = messageToolDeliveryReceipt(nested, depth + 1);
+    if (receipt) {
+      return receipt;
+    }
+  }
+  return null;
+}
+
+function trackReplyMessageToolResult(event, context) {
+  if (
+    !isDirectFeishuReplyContext(context)
+    || String(event?.toolName || context?.toolName || '') !== 'message'
+    || String(event?.params?.action || '') !== 'send'
+    || event?.error
+  ) {
+    return;
+  }
+  const sentContent = String(event?.params?.message || '').trim();
+  const receipt = messageToolDeliveryReceipt(event?.result);
+  const sessionKey = String(context?.sessionKey || event?.sessionKey || '');
+  if (!sentContent || !receipt?.messageId || !sessionKey) {
+    return;
+  }
+  updateReplyDeliveryState((state) => {
+    reconcileWatchdogReceipts(state);
+    const runId = String(event?.runId || context?.runId || '');
+    const entry = latestPendingReplyEntry(state, sessionKey, runId, sentContent);
+    if (!entry) {
+      return;
+    }
+    entry.final_text = sentContent;
+    entry.agent_end_at_ms = entry.agent_end_at_ms || Date.now();
+    entry.last_sent_success = true;
+    entry.last_sent_content = sentContent;
+    entry.last_sent_message_id = receipt.messageId;
+    entry.last_sent_at_ms = Date.now();
+    entry.status = 'delivered';
+    entry.delivery_message_id = receipt.messageId;
+    entry.delivered_at_ms = entry.last_sent_at_ms;
+    entry.suppress_stalled_notice = false;
+    compactReplyDeliveryState(state);
   });
 }
 
@@ -1557,6 +1633,9 @@ module.exports.default = {
     registerTypedHookOnce(api, 'before_tool_call', async (event, context) => (
       completionGateBeforeToolCall(mergeHookEventContext(event, context))
     ));
+    registerTypedHookOnce(api, 'after_tool_call', async (event, context) => {
+      trackReplyMessageToolResult(event, context);
+    });
   },
 };
 
