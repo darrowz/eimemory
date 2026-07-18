@@ -504,6 +504,7 @@ def test_rpc_auth_provisioner_does_not_replace_a_racing_existing_file(tmp_path, 
     def racing_link(source, target, **kwargs):
         target_path = Path(target)
         target_path.write_text("EIMEMORY_RPC_AUTH_TOKEN=weak\n", encoding="utf-8")
+        target_path.chmod(0o640)
         return original_link(source, target, **kwargs)
 
     monkeypatch.setattr(helper.os, "link", racing_link)
