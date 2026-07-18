@@ -33,6 +33,15 @@ def test_parse_command_result_accepts_nested_feishu_fast_receipt() -> None:
     assert result["messageId"] == "om_nested"
 
 
+def test_parse_command_result_accepts_platform_receipt_without_ok_flag() -> None:
+    result = _parse_command_result(
+        '{"channel":"feishu","messageId":"om_platform_receipt"}'
+    )
+
+    assert result["ok"] is True
+    assert result["messageId"] == "om_platform_receipt"
+
+
 def test_parse_command_result_rejects_success_without_receipt() -> None:
     result = _parse_command_result('{"ok":true,"data":{}}')
 
@@ -500,6 +509,60 @@ def test_watchdog_retries_failed_fallback_with_same_idempotency_key(tmp_path: Pa
     ]
     attempts = json.loads(attempts_path.read_text(encoding="utf-8"))
     assert attempts["entries"]["om_in_4"]["retry_count"] == 2
+
+
+def test_watchdog_normalizes_legacy_platform_receipt_without_resending(
+    tmp_path: Path,
+) -> None:
+    state_path = tmp_path / "state.json"
+    attempts_path = tmp_path / "attempts.json"
+    _write_state(
+        state_path,
+        {
+            "inbound_message_id": "om_legacy_receipt",
+            "conversation_id": "user:ou_test",
+            "sender_id": "ou_test",
+            "received_at_ms": 1_000,
+            "agent_end_at_ms": 2_000,
+            "status": "answered",
+            "final_text": "already delivered",
+        },
+    )
+    attempts_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "openclaw_reply_delivery_attempts.v1",
+                "entries": {
+                    "om_legacy_receipt": {
+                        "attempted_at_ms": 3_000,
+                        "ok": False,
+                        "message_id": "om_platform_receipt",
+                        "error": "",
+                        "retry_count": 4,
+                        "retry_mode": "backoff",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    calls: list[dict] = []
+
+    result = scan_once(
+        state_path=state_path,
+        attempts_path=attempts_path,
+        now_ms=500_000,
+        send=lambda payload: calls.append(payload)
+        or {"ok": True, "messageId": "om_duplicate"},
+    )
+
+    assert result == {"checked": 1, "retried": 0, "failed": 0}
+    assert calls == []
+    attempt = json.loads(attempts_path.read_text(encoding="utf-8"))["entries"][
+        "om_legacy_receipt"
+    ]
+    assert attempt["ok"] is True
+    assert attempt["retry_mode"] == "complete"
 
 
 def test_watchdog_enters_persistent_backoff_after_rapid_failures(tmp_path: Path) -> None:

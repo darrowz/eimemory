@@ -70,6 +70,8 @@ def _parse_command_result(stdout: str) -> dict:
     message_id = str(message_id or "").strip()
     if payload.get("ok") is True and not message_id:
         return {**payload, "ok": False, "messageId": "", "error": "sender returned success without messageId"}
+    if message_id and payload.get("ok") is not False:
+        return {**payload, "ok": True, "messageId": message_id}
     return {**payload, "messageId": message_id}
 
 
@@ -294,6 +296,7 @@ def scan_once(
     attempt_entries = attempts.setdefault("entries", {})
     retried = 0
     failed = 0
+    attempts_changed = False
 
     for inbound_id, raw_entry in entries.items():
         if not isinstance(raw_entry, dict) or raw_entry.get("status") == "delivered":
@@ -316,6 +319,18 @@ def scan_once(
         delivery_kind = "final" if status == "answered" else "status"
         attempt_key = inbound_id if delivery_kind == "final" else f"status:{inbound_id}"
         previous_attempt = attempt_entries.get(attempt_key)
+        if isinstance(previous_attempt, dict):
+            previous_message_id = str(previous_attempt.get("message_id") or "").strip()
+            previous_error = str(previous_attempt.get("error") or "").strip()
+            if previous_message_id and not previous_error:
+                if (
+                    previous_attempt.get("ok") is not True
+                    or previous_attempt.get("retry_mode") != "complete"
+                ):
+                    previous_attempt["ok"] = True
+                    previous_attempt["retry_mode"] = "complete"
+                    attempts_changed = True
+                continue
         if isinstance(previous_attempt, dict) and previous_attempt.get("ok") is True:
             continue
         if isinstance(previous_attempt, dict):
@@ -380,7 +395,7 @@ def scan_once(
         )[:max(0, MAX_ATTEMPT_ENTRIES - len(protected))]
         attempts["entries"] = {**protected, **dict(newest)}
         prune_changed = len(attempts["entries"]) != len(attempt_entries)
-    if retried or failed or prune_changed or not attempts_path.exists():
+    if retried or failed or attempts_changed or prune_changed or not attempts_path.exists():
         try:
             _write_json_atomic(attempts_path, attempts)
         except OSError:
