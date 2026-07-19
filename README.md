@@ -2,67 +2,134 @@
 
 ![eimemory memory infrastructure hero](docs/assets/eimemory-github-hero.png)
 
-`eimemory` is a local-first memory and learning runtime for long-running AI
-agents.
+**Long-term memory and autonomous evolution platform for OpenClaw agents, with governed recall, eval gates, rollback, and safe self-deploy loops.**
 
-It gives an agent a durable way to remember what happened, recall the right
-context, evaluate whether memory helped, and turn repeated failures into gated
-improvements. The project is built for OpenClaw and the EI stack, but the core
-runtime is a standalone Python package with CLI, Python APIs, HTTP/RPC surfaces,
-and local storage.
+`eimemory` is a local-first memory and learning runtime for long-running AI agents. It gives an agent a durable way to remember what happened, recall the right context, evaluate whether memory helped, and turn repeated failures into gated improvements.
 
-## Why It Exists
+The project is built for OpenClaw and the EI stack, but the core runtime is a standalone Python package with CLI, Python APIs, HTTP/RPC surfaces, and local storage.
+
+## Why eimemory?
+
+### The Problem
 
 Most agent systems keep conversation history, but lose operational experience:
 
-- what the operator corrected
-- which task failed and why
-- which rule helped in a real run
-- which memory should be recalled for a specific scope
-- whether a proposed improvement passed replay, health, and rollback checks
+- What the operator corrected
+- Which task failed and why
+- Which rule helped in a real run
+- Which memory should be recalled for a specific scope
+- Whether a proposed improvement passed replay, health, and rollback checks
 
-`eimemory` treats those signals as records instead of chat residue. It stores
-them locally, indexes them for retrieval, evaluates their usefulness, and feeds
-bounded learning loops without giving memory itself unlimited execution
-authority.
+Chat history disappears. Lessons aren't learned. Agents repeat mistakes.
+
+### The Solution
+
+`eimemory` treats operational signals as **records**, not residue. It stores them locally, indexes them for retrieval, evaluates their usefulness, and feeds bounded learning loops without giving memory itself unlimited execution authority.
+
+## Core Features
+
+### 🧠 Intelligent Recall
+- **Hybrid indexing**: Lexical, semantic, graph, quality, and recency signals combined
+- **Scoped memory**: Separate contexts for users, workspaces, projects, and agents
+- **Smart ranking**: Returns the right memory for the right moment
+
+### 📝 Complete Event Capture
+- **Task intents**: What was the agent trying to do?
+- **Execution paths**: How did it get there?
+- **Outcomes**: What actually happened?
+- **Corrections**: What did humans fix?
+- **Incidents**: What went wrong?
+
+### 🎯 Knowledge Management
+- **Papers & URLs**: Ingest external knowledge
+- **Claims & entities**: Extract structured information
+- **Relationships**: Understand connections between ideas
+- **Compiled views**: Optimized recall for specific tasks
+
+### 🛡️ Safety-First Governance
+```
+L0: Records, reports, dashboards (read-only)
+L1: Local safe changes (memory rules, playbooks)
+L2: Gated rollout (evidence + health + canary + rollback)
+L3: Dangerous actions (blocked by default)
+```
+
+### 📊 Learning & Evaluation
+- **Replay testing**: Run past scenarios with new rules
+- **Regression detection**: Catch when "improvements" break things
+- **Quality metrics**: Measure if memory actually helps
+- **Learning ledger**: Complete audit trail of what was learned
+
+### 🚀 Production Ready
+- **Immutable releases**: Reproducible deployments
+- **systemd integration**: Easy service management
+- **Health monitoring**: Built-in diagnostics
+- **Rollback support**: Revert to prior state if issues occur
 
 ## What It Provides
 
-- Local record store backed by JSONL and SQLite.
-- Hybrid recall over lexical, semantic, graph, quality, and recency signals.
-- Scoped memory for users, workspaces, projects, channels, and agents.
-- Knowledge intake for papers, URLs, claims, entities, relations, and compiled
-  recall views.
-- Event memory for task intent, execution paths, outcomes, corrections, and
-  incidents.
-- Replay and evaluation tools for recall quality, living memory, regression
-  cases, and task outcomes.
-- Governance loops for learning goals, candidate improvements, capability
-  scores, rollout gates, canaries, and rollback evidence.
-- OpenClaw hooks and eibrain RPC integration for production agent runtimes.
+- Local record store backed by JSONL and SQLite
+- Hybrid recall over lexical, semantic, graph, quality, and recency signals
+- Scoped memory for users, workspaces, projects, channels, and agents
+- Knowledge intake for papers, URLs, claims, entities, relations, and compiled recall views
+- Event memory for task intent, execution paths, outcomes, corrections, and incidents
+- Replay and evaluation tools for recall quality, living memory, regression cases, and task outcomes
+- Governance loops for learning goals, candidate improvements, capability scores, rollout gates, canaries, and rollback evidence
+- OpenClaw hooks and eibrain RPC integration for production agent runtimes
+- CLI, Python APIs, and HTTP/RPC interfaces
+- Zero external dependencies
+
+## Quick Start
+
+### Installation
+
+```bash
+pip install eimemory
+```
+
+### 5-Minute Demo
+
+```bash
+# Initialize
+eimemory init
+
+# Add your first memory
+eimemory ingest "Be concise and direct" --title "Communication style"
+
+# Recall information
+eimemory recall "how should I write?"
+
+# Log experience
+eimemory reflect log communication "too wordy" "Use 1-2 sentences"
+
+# See what could be learned
+eimemory learn cycle --dry-run
+
+# Apply learning with safety gates
+eimemory learn cycle
+
+# Check what was learned
+eimemory learn ledger
+```
+
+For more details, see [Quick Start Guide](docs/QUICKSTART.md).
 
 ## Core Model
 
 `eimemory` separates memory from authority.
 
-```text
+```
 events -> records -> indexes -> recall -> evaluation -> learning goals
-                                      -> candidates -> gates -> ledger
+                                       -> candidates -> gates -> ledger
 ```
 
-The runtime can observe, store, retrieve, score, propose, and audit. High-risk
-actions such as external sends, spending, credential changes, irreversible
-deletion, private data export, or production mutation stay outside automatic
-memory authority unless a deployment adapter and policy gate explicitly allow
-them.
+The runtime can observe, store, retrieve, score, propose, and audit. High-risk actions such as external sends, spending, credential changes, irreversible deletion, private data export, or production mutation stay outside automatic memory authority unless a deployment adapter and policy gate explicitly allow them.
 
 ## Main Surfaces
 
-### Memory
+### Memory Layer
 
-The memory layer stores structured records and returns task-relevant context
-with metadata. It is designed to avoid dumping the whole memory file into an
-agent prompt.
+The memory layer stores structured records and returns task-relevant context with metadata.
 
 ```bash
 eimemory ingest "Remember concise replies" --title "Concise reply style"
@@ -70,11 +137,9 @@ eimemory recall "how should this agent reply?"
 eimemory quality stats
 ```
 
-### Knowledge
+### Knowledge Layer
 
-The knowledge layer turns external sources into claims, entities, relations,
-pages, and recall views. This is useful for research agents that need evidence
-instead of loose summaries.
+The knowledge layer turns external sources into claims, entities, relations, pages, and recall views.
 
 ```bash
 eimemory paper ingest --url https://example.com/paper --title "Example paper"
@@ -82,22 +147,18 @@ eimemory intake run --source-kind paper --limit 10
 eimemory source scan
 ```
 
-### Experience
+### Experience Layer
 
-The experience layer records outcomes, corrections, and incidents so repeated
-operator feedback can become regression data instead of disappearing into chat
-history.
+The experience layer records outcomes, corrections, and incidents.
 
 ```bash
 eimemory reflect log reply-style "Missed concise style" "Use one direct sentence"
 eimemory reflect check
 ```
 
-### Governance
+### Governance Layer
 
-The governance layer runs bounded self-improvement loops. It can identify weak
-capabilities, build replay datasets, create candidate improvements, score them,
-and record rollout state in a capability ledger.
+The governance layer runs bounded self-improvement loops.
 
 ```bash
 eimemory learn cycle --dry-run
@@ -105,93 +166,172 @@ eimemory learn ledger --limit 50
 eimemory learn dashboard --persist
 ```
 
-### Production Health
-
-The service exposes compact health output for repeatable deployment checks.
+### Health & Diagnostics
 
 ```bash
 curl http://127.0.0.1:8091/health
 eimemory doctor --json
 ```
 
-## Safety Posture
+## Deployment
 
-`eimemory` uses tiered authority:
-
-| Tier | Scope |
-| --- | --- |
-| `L0` | Records, reports, replay cases, scores, dashboards. |
-| `L1` | Local low-risk assets such as memory rules, route drafts, playbooks, and eval fixtures. |
-| `L2` | Gated rollout through explicit adapters after evidence, eval, health, canary, timeout, audit, and rollback checks. |
-| `L3` | External sends, spending, auth changes, private data export, device actions, irreversible deletion, or privilege expansion. Blocked by default. |
-
-This lets the system learn from real work while keeping dangerous authority in
-the surrounding runtime or release process.
-
-## Quick Start
-
-```bash
-python -m pip install -e .
-eimemory init
-eimemory ingest "Remember concise replies" --title "Concise"
-eimemory recall "concise replies"
-eimemory learn cycle --dry-run
-```
-
-For a local RPC service:
+### Local Development
 
 ```bash
 eimemory serve-eibrain-rpc --host 127.0.0.1 --port 8091
 curl http://127.0.0.1:8091/health
 ```
 
-## Deployment Shape
+### Production Deployment
 
-The production deployment uses immutable releases and a user systemd service:
+```bash
+# Install and enable services
+deploy/install_immutable_release.sh
 
-```text
-/opt/eimemory/releases/<commit>
-/opt/eimemory/current -> /opt/eimemory/releases/<commit>
-eimemory-rpc.service
-eimemory-nightly.timer
+# Start RPC service
+systemctl --user enable --now eimemory-rpc.service
+
+# Enable nightly governance
+systemctl --user enable --now eimemory-nightly.timer
 ```
 
-`eimemory-nightly.timer` is the single default production scheduler. Legacy
-learning timers remain available for manual diagnostics, but are not part of
-the default production schedule.
+See [Deployment Guide](docs/deployment.md) for production setup.
+
+## Documentation
+
+| Document | Purpose |
+|----------|---------|
+| [Quick Start](docs/QUICKSTART.md) | Get running in 5 minutes |
+| [Architecture](docs/architecture.md) | System design and components |
+| [Deployment](docs/deployment.md) | Production setup and operations |
+| [Evaluation](docs/evaluation.md) | How memory quality is measured |
+| [Comparison](docs/COMPARISON.md) | vs other memory systems |
+| [Changelog](CHANGELOG.md) | Version history and features |
+| [FAQ](FAQ.md) | Common questions and troubleshooting |
+
+## Project Status
+
+The project is under active development. Current focus:
+
+- Production-grade memory governance
+- Scoped recall with zero boundary crossing
+- Evidence-first learning with conservative gates
+- Replay testing and regression detection
+- Capability ledgers for tracking improvement
+- Safe rollout paths for agent self-improvement
 
 ## EI Stack
 
 `eimemory` is one layer of the EI series:
 
-- `eimemory`: memory, knowledge, recall, evaluation, and learning ledger
-- `eibrain`: cognition and runtime decision layer
-- `eiskills`: skill registry and capability packaging
-- `eitraining`: replay, evaluation, and training feedback loop
-- `eiprotocol`: shared contracts
-- `eihead`: embodied/audio/vision runtime integration
+- **eimemory**: Memory, knowledge, recall, evaluation, and learning ledger
+- **eibrain**: Cognition and runtime decision layer
+- **eiskills**: Skill registry and capability packaging
+- **eitraining**: Replay, evaluation, and training feedback loop
+- **eiprotocol**: Shared contracts
+- **eihead**: Embodied/audio/vision runtime integration
 
-## Documentation
+## Use Cases
 
-- [Architecture](docs/architecture.md)
-- [Deployment](docs/deployment.md)
-- [Evaluation](docs/evaluation.md)
-- [L5 roadmap](docs/l5-roadmap-spec.md)
-- [Memory scoring contract](docs/scoring/memory-scoring-contract-v1.md)
+### Long-Running Assistants
 
-## Project Status
+Remember user preferences, past interactions, and effective approaches. Improve response quality over time.
 
-The project is under active development. The current focus is production-grade
-memory governance: scoped recall, evidence-first learning, replay gates,
-capability ledgers, and conservative rollout paths for agent self-improvement.
+### Autonomous Agents
+
+Learn from execution outcomes and operator corrections. Self-improve safely with governance gates.
+
+### Multi-Agent Systems
+
+Shared memory across agents. Agent-specific scoped views. Coordinated learning.
+
+### Research Agents
+
+Persistent knowledge from papers and URLs. Evidence-based reasoning. Audit trails for reproducibility.
+
+## Integration
+
+### Python API
+
+```python
+from eimemory.memory import MemoryRuntime
+
+runtime = MemoryRuntime()
+runtime.ingest("Be helpful", title="Behavior")
+context = runtime.recall("How should I behave?", k=5)
+runtime.log_outcome(task_id="task-1", outcome="success")
+```
+
+### HTTP/RPC
+
+```bash
+eimemory serve-eibrain-rpc --port 8091
+
+# Ingest
+curl -X POST http://127.0.0.1:8091/api/ingest \
+  -d '{"content": "Memory", "title": "Label"}'
+
+# Recall
+curl http://127.0.0.1:8091/api/recall?query=test
+```
+
+### OpenClaw Integration
+
+eimemory provides hooks for OpenClaw agent runtimes. See `docs/architecture.md` for integration details.
+
+## Comparison with Alternatives
+
+| Feature | eimemory | Chat History | Vector DBs | LangChain | LlamaIndex |
+|---------|----------|--------------|------------|-----------|-----------|
+| Persistent storage | ✅ | ❌ | ✅ | ⚠️ | ✅ |
+| Hybrid recall | ✅ | ❌ | ⚠️ | ⚠️ | ⚠️ |
+| Safety governance | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Learning loops | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Zero dependencies | ✅ | ✅ | ❌ | ❌ | ❌ |
+| Local-first | ✅ | ✅ | ⚠️ | ✅ | ✅ |
+
+[Full comparison →](docs/COMPARISON.md)
 
 ## Contributors
 
-`eimemory` is built in the open. Special thanks to external contributors who
-help push the project from a private memory runtime toward a practical,
-reusable foundation for long-running agents:
+`eimemory` is built in the open. Special thanks to external contributors:
 
 - [Garry Tan](https://github.com/garrytan)
 
-External contributions, review, and real-world use are part of the project's
-signal that local-first agent memory is worth building carefully.
+External contributions, review, and real-world use are part of the project's signal that local-first agent memory is worth building carefully.
+
+## Getting Involved
+
+### Report Issues
+
+Found a bug? [Open an issue](https://github.com/darrowz/eimemory/issues) with:
+- Steps to reproduce
+- Expected vs actual behavior
+- Python version and OS
+
+### Request Features
+
+Have an idea? [Open a discussion](https://github.com/darrowz/eimemory/discussions) to share use cases and feedback.
+
+### Contribute Code
+
+See [Contributing Guide](CONTRIBUTING.md) for development setup and guidelines.
+
+### Share Your Use Case
+
+Using eimemory? Let us know! Open an issue or discussion to share your experience.
+
+## License
+
+[License details TBD]
+
+## Support
+
+- 📖 [Documentation](docs/)
+- 🐛 [Report Issues](https://github.com/darrowz/eimemory/issues)
+- 💬 [GitHub Discussions](https://github.com/darrowz/eimemory/discussions)
+- ❓ [FAQ](FAQ.md)
+
+---
+
+**Building intelligent agents that learn and remember. Safely.** 🚀
