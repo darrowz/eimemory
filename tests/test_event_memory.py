@@ -285,15 +285,29 @@ def test_openclaw_session_end_is_lifecycle_only_and_does_not_create_task_outcome
         ("Synthesize the findings from three research papers.", ["web.search", "pdf.read"], "research.synthesis"),
         ("Patch the Python module and run pytest.", ["apply_patch", "exec"], "code.implementation"),
         ("Check the gateway service health and deployment status.", ["systemctl", "exec"], "ops.health"),
+        (
+            "Ops health task: use an execution tool to GET http://127.0.0.1:8091/health and verify ok=true.",
+            ["exec"],
+            "ops.health",
+        ),
+        ("OpenClaw gateway status --json and report readiness.", ["exec"], "ops.health"),
+        ("Check the eimemory service status and report readiness.", ["exec"], "ops.health"),
+        ("检查网关服务健康状态并报告。", ["exec"], "ops.health"),
         ("Update the spreadsheet and calendar action list.", ["spreadsheet", "calendar"], "office.daily_task"),
+        ("Update the spreadsheet with the patient health status.", ["spreadsheet"], "office.daily_task"),
+        ("把患者健康状态更新到电子表格。", ["spreadsheet"], "office.daily_task"),
     ],
 )
+@pytest.mark.parametrize("upstream_task_type", ["communication", "general.execution"])
+@pytest.mark.parametrize("task_type_location", ["task_context", "event"])
 def test_openclaw_verified_agent_end_derives_specific_task_type(
     tmp_path,
     monkeypatch,
     query: str,
     tools: list[str],
     expected_task_type: str,
+    upstream_task_type: str,
+    task_type_location: str,
 ) -> None:
     from eimemory.governance.tool_receipts import sign_tool_receipt
 
@@ -304,33 +318,36 @@ def test_openclaw_verified_agent_end_derives_specific_task_type(
     runtime = Runtime.create(root=tmp_path)
     hooks = OpenClawMemoryHooks(runtime)
 
-    result = hooks.on_agent_end(
-        {
-            "session_id": f"sess-{expected_task_type}",
-            "run_id": f"run-{expected_task_type}",
-            "query": query,
-            "task_context": {"task_type": "communication"},
-            "user_messages": [{"content": query}],
-            "assistant_messages": [{"content": "The requested work completed successfully."}],
-            "tools": tools,
-            "verification": f"openclaw.after_tool_call:1:{tools[-1]}",
-            "verification_receipts": [
-                sign_tool_receipt({
-                    "receipt_version": 1,
-                    "attestation": "hmac-sha256",
-                    "source": "openclaw.after_tool_call",
-                    "tool_name": tools[-1],
-                    "tool_call_id": f"call-{expected_task_type}",
-                    "duration_ms": 12,
-                    "passed": True,
-                    "result_digest": "a" * 64,
-                    "session_id": f"sess-{expected_task_type}",
-                    "run_id": f"run-{expected_task_type}",
-                })
-            ],
-            "outcome": {"success": True, "verified": True},
-        }
-    )
+    terminal_payload = {
+        "session_id": f"sess-{expected_task_type}",
+        "run_id": f"run-{expected_task_type}",
+        "query": query,
+        "user_messages": [{"content": query}],
+        "assistant_messages": [{"content": "The requested work completed successfully."}],
+        "tools": tools,
+        "verification": f"openclaw.after_tool_call:1:{tools[-1]}",
+        "verification_receipts": [
+            sign_tool_receipt({
+                "receipt_version": 1,
+                "attestation": "hmac-sha256",
+                "source": "openclaw.after_tool_call",
+                "tool_name": tools[-1],
+                "tool_call_id": f"call-{expected_task_type}",
+                "duration_ms": 12,
+                "passed": True,
+                "result_digest": "a" * 64,
+                "session_id": f"sess-{expected_task_type}",
+                "run_id": f"run-{expected_task_type}",
+            })
+        ],
+        "outcome": {"success": True, "verified": True},
+    }
+    if task_type_location == "event":
+        terminal_payload["task_type"] = upstream_task_type
+    else:
+        terminal_payload["task_context"] = {"task_type": upstream_task_type}
+
+    result = hooks.on_agent_end(terminal_payload)
 
     assert result["event"]["outcome_trace_task_type"] == expected_task_type
     assert result["event"]["verification_receipts"][0]["passed"] is True

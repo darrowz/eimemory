@@ -64,6 +64,7 @@ VERIFIED_REAL_TASK_METHODS = {
     "openclaw.task_end",
 }
 VERIFIED_REAL_TASK_SOURCE_TRUST = {"system_verified", "system_diagnostic", "user_explicit"}
+NON_SPECIFIC_REAL_TASK_TYPES = {"communication", "general.execution", "unknown", "unspecified"}
 
 
 def build_capability_dashboard_metrics(
@@ -384,7 +385,7 @@ def _verified_real_task_outcomes(
         outcome = _field(record, "outcome")
         verifier = _field(record, "verifier")
         if (
-            not task_type
+            not _specific_real_task_type(task_type)
             or not isinstance(outcome, dict)
             or outcome.get("rehearsal") is not False
             or not isinstance(outcome.get("success"), bool)
@@ -429,6 +430,11 @@ def _verified_real_task_outcomes(
             }
         )
     return outcomes
+
+
+def _specific_real_task_type(task_type: str) -> bool:
+    normalized = ".".join(str(task_type or "").strip().lower().replace("_", " ").split())
+    return bool(normalized and normalized not in NON_SPECIFIC_REAL_TASK_TYPES)
 
 
 def _valid_openclaw_task_evidence(

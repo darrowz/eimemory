@@ -3,6 +3,14 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 
+_GENERIC_DECLARED_TASK_TYPES = {
+    "communication",
+    "general.execution",
+    "unknown",
+    "unspecified",
+}
+
+
 def classify_openclaw_task_type(
     *,
     explicit: str = "",
@@ -12,7 +20,7 @@ def classify_openclaw_task_type(
 ) -> str:
     """Classify a terminal OpenClaw task from bounded, execution-side evidence."""
     declared = str(explicit or "").strip()
-    if declared and _normalized(declared) not in {"communication", "unknown", "unspecified"}:
+    if declared and _normalized(declared).replace(" ", ".") not in _GENERIC_DECLARED_TASK_TYPES:
         return declared[:160]
 
     tool_names = {_normalized(item) for item in [*tools, *action_path] if str(item or "").strip()}
@@ -60,14 +68,25 @@ def classify_openclaw_task_type(
     if _has_tool(tool_names, ("systemctl", "kubectl", "docker", "journalctl", "ssh", "health")) or _contains_any(
         text,
         (
+            "ops health",
             "service health",
             "gateway health",
+            "gateway status",
+            "service status",
+            "runtime status",
+            "health check",
+            "health endpoint",
+            "/health",
             "deployment status",
             "deploy ",
             "rollout status",
             "production status",
             "健康检查",
             "部署状态",
+            "网关健康状态",
+            "服务健康状态",
+            "运行健康状态",
+            "网关状态",
             "服务状态",
             "运行状态",
             "线上状态",

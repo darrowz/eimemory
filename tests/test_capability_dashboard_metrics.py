@@ -341,9 +341,11 @@ def test_dashboard_counts_verified_openclaw_tasks_and_failure_blame_separately(t
 
         success_event = bound_event("real-success", "repo.deploy", success=True)
         failure_event = bound_event("real-failure", "research", success=False)
+        generic_event = bound_event("generic-success", "general.execution", success=True)
         for trace_id, task_type, success, evidence_id, extra in (
             ("real-success", "repo.deploy", True, success_event["id"], {}),
             ("real-failure", "research", False, failure_event["id"], {"stale_context": True}),
+            ("generic-success", "general.execution", True, generic_event["id"], {}),
         ):
             result = runtime.record_outcome_trace(
                 {

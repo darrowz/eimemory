@@ -13,6 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Advanced rollback strategies
 - Performance optimizations for large memory stores
 
+## [1.9.75] - 2026-07-19
+
+### Fixed
+- Reclassify generic OpenClaw terminal labels from bounded prompt and tool evidence, preserve the derived type over generic top-level labels, and recognize real health/status wording.
+- Exclude generic task labels from verified-real-task and L5 sample counts so only specific business task evidence advances readiness.
+
 ## [1.9.74] - 2026-07-19
 
 ### Fixed

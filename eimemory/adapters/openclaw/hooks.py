@@ -1536,7 +1536,7 @@ class OpenClawMemoryHooks:
         if task_type:
             task_context = {**task_context, "task_type": task_type}
         input_quality = self._terminal_input_quality(event, user_messages=user_messages)
-        terminal_event = {**event, "input_quality": input_quality}
+        terminal_event = {**event, "input_quality": input_quality, "task_type": task_type}
         correction = self._correction_from_event(
             terminal_event,
             outcome=outcome,
