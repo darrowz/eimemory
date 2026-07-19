@@ -13,6 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Advanced rollback strategies
 - Performance optimizations for large memory stores
 
+## [1.9.73] - 2026-07-19
+
+### Fixed
+- Require consecutive eimemory hook-pressure samples before restarting the OpenClaw gateway.
+- Treat Feishu tool activity as reply progress so active long-running turns are not reported as broken delivery chains.
+
 ## [1.9.72] - 2026-07-19
 
 ### Fixed

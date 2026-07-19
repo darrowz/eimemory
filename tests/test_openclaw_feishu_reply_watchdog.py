@@ -445,6 +445,36 @@ def test_watchdog_reports_stalled_turn_once(tmp_path: Path) -> None:
     assert calls[0]["idempotency_key"] == _delivery_idempotency_key("om_in_3", "status")
 
 
+def test_watchdog_does_not_report_active_turn_with_recent_progress(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.json"
+    attempts_path = tmp_path / "attempts.json"
+    _write_state(
+        state_path,
+        {
+            "inbound_message_id": "om_active",
+            "conversation_id": "oc_test",
+            "sender_id": "ou_test",
+            "received_at_ms": 1_000,
+            "last_progress_at_ms": 250_000,
+            "status": "pending",
+            "final_text": "",
+        },
+    )
+    calls: list[dict] = []
+
+    result = scan_once(
+        state_path=state_path,
+        attempts_path=attempts_path,
+        now_ms=500_000,
+        stalled_timeout_ms=300_000,
+        send=lambda payload: calls.append(payload)
+        or {"ok": True, "messageId": "unexpected"},
+    )
+
+    assert result == {"checked": 1, "retried": 0, "failed": 0}
+    assert calls == []
+
+
 def test_watchdog_skips_intentionally_silent_pending_turn(tmp_path: Path) -> None:
     state_path = tmp_path / "state.json"
     attempts_path = tmp_path / "attempts.json"

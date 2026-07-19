@@ -942,6 +942,7 @@ function trackReplyInbound(event, context) {
       conversation_id: conversationId,
       sender_id: senderId,
       received_at_ms: Number(event?.timestamp || Date.now()),
+      last_progress_at_ms: Number(event?.timestamp || Date.now()),
       status: 'pending',
       final_text: '',
       delivery_message_id: '',
@@ -949,6 +950,28 @@ function trackReplyInbound(event, context) {
       suppress_stalled_notice: false,
     };
     compactReplyDeliveryState(state);
+  });
+}
+
+function trackReplyProgress(event, context) {
+  if (!isDirectFeishuReplyContext(context)) {
+    return;
+  }
+  const sessionKey = String(context?.sessionKey || event?.sessionKey || '');
+  if (!sessionKey) {
+    return;
+  }
+  updateReplyDeliveryState((state) => {
+    reconcileWatchdogReceipts(state);
+    const runId = String(event?.runId || event?.run_id || context?.runId || context?.run_id || '');
+    const entry = latestPendingReplyEntry(state, sessionKey, runId);
+    if (!entry) {
+      return;
+    }
+    entry.last_progress_at_ms = Math.max(
+      Number(entry.last_progress_at_ms || entry.received_at_ms || 0),
+      Date.now()
+    );
   });
 }
 
@@ -1645,6 +1668,7 @@ module.exports.default = {
       return (await safeInvokeHook(api, 'message_received', mergeHookEventContext(event, context))) || {};
     });
     registerTypedHookOnce(api, 'before_prompt_build', async (event, context) => {
+      trackReplyProgress(event, context);
       if (!promptInjectionEnabled(api)) {
         return {};
       }
@@ -1687,10 +1711,12 @@ module.exports.default = {
     registerTypedHookOnce(api, 'before_agent_finalize', async (event, context) => (
       completionGateRevision(mergeHookEventContext(event, context))
     ));
-    registerTypedHookOnce(api, 'before_tool_call', async (event, context) => (
-      completionGateBeforeToolCall(mergeHookEventContext(event, context))
-    ));
+    registerTypedHookOnce(api, 'before_tool_call', async (event, context) => {
+      trackReplyProgress(event, context);
+      return completionGateBeforeToolCall(mergeHookEventContext(event, context));
+    });
     registerTypedHookOnce(api, 'after_tool_call', async (event, context) => {
+      trackReplyProgress(event, context);
       trackReplyMessageToolResult(event, context);
     });
   },

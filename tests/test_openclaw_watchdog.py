@@ -6,6 +6,7 @@ from pathlib import Path
 from eimemory.ops import openclaw_watchdog as watchdog_module
 from eimemory.ops.openclaw_watchdog import (
     collect_hook_pressure,
+    next_hook_pressure_streak,
     parse_stuck_session_ages,
     resolve_unit_control_group,
     should_restart_gateway,
@@ -78,6 +79,56 @@ def test_watchdog_restarts_on_hook_pressure_even_when_health_probe_passes() -> N
         max_hook_processes=8,
         max_hook_rss_kib=1_572_864,
     )
+
+
+def test_watchdog_requires_consecutive_hook_pressure_samples() -> None:
+    base = {
+        "stuck_ages": [],
+        "threshold_s": 120,
+        "last_restart_ts": 1000.0,
+        "now_ts": 1401.0,
+        "min_restart_interval_s": 300,
+        "health_checks": [True],
+        "hook_count": 8,
+        "hook_rss_kib": 3_697_364,
+        "max_hook_processes": 8,
+        "max_hook_rss_kib": 3_145_728,
+        "min_hook_pressure_samples": 2,
+    }
+
+    assert not should_restart_gateway(**base, hook_pressure_streak=1)
+    assert should_restart_gateway(**base, hook_pressure_streak=2)
+
+
+def test_hook_pressure_streak_only_counts_recent_consecutive_samples() -> None:
+    assert next_hook_pressure_streak(
+        pressure=True,
+        previous_streak=0,
+        previous_sample_ts=0.0,
+        now_ts=100.0,
+        sample_window_s=180,
+    ) == 1
+    assert next_hook_pressure_streak(
+        pressure=True,
+        previous_streak=1,
+        previous_sample_ts=100.0,
+        now_ts=220.0,
+        sample_window_s=180,
+    ) == 2
+    assert next_hook_pressure_streak(
+        pressure=True,
+        previous_streak=2,
+        previous_sample_ts=100.0,
+        now_ts=400.0,
+        sample_window_s=180,
+    ) == 1
+    assert next_hook_pressure_streak(
+        pressure=False,
+        previous_streak=2,
+        previous_sample_ts=220.0,
+        now_ts=280.0,
+        sample_window_s=180,
+    ) == 0
 
 
 def test_collect_hook_pressure_reads_only_openclaw_hook_processes(tmp_path: Path) -> None:

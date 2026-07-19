@@ -322,7 +322,10 @@ def scan_once(
                 continue
             text = final_text
         elif status == "pending" and raw_entry.get("suppress_stalled_notice") is not True:
-            due_at = int(raw_entry.get("received_at_ms") or 0)
+            due_at = max(
+                int(raw_entry.get("received_at_ms") or 0),
+                int(raw_entry.get("last_progress_at_ms") or 0),
+            )
             if now_ms - due_at < stalled_timeout_ms:
                 continue
             text = STALLED_NOTICE
@@ -357,7 +360,11 @@ def scan_once(
                     "continuation_reference",
                 )
             )
-            if delivery_kind == "status" and now_ms - int(raw_entry.get("received_at_ms") or 0) >= escalation_timeout_ms:
+            pending_since_ms = max(
+                int(raw_entry.get("received_at_ms") or 0),
+                int(raw_entry.get("last_progress_at_ms") or 0),
+            )
+            if delivery_kind == "status" and now_ms - pending_since_ms >= escalation_timeout_ms:
                 try:
                     escalate_delivery(
                         attempts_path,

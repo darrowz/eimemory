@@ -201,6 +201,33 @@ Promise.resolve()
     assert entry["delivery_message_id"] == "om_tool_receipt"
 
 
+def test_tracker_records_progress_for_active_tool_calls(tmp_path: Path) -> None:
+    state = _run_node(
+        """
+const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
+const handlers = {};
+plugin.register({ on(name, handler) { handlers[name] = handler; } });
+const sessionKey = 'agent:main:feishu:direct:ou_test';
+const ctx = {
+  channelId: 'feishu', conversationId: 'user:ou_test', sessionKey,
+  runId: 'run-progress'
+};
+Promise.resolve()
+  .then(() => handlers.message_received({
+    from: 'ou_test', messageId: 'om_progress', runId: 'run-progress', timestamp: 1
+  }, ctx))
+  .then(() => handlers.before_tool_call({
+    toolName: 'bash', runId: 'run-progress'
+  }, ctx));
+""",
+        tmp_path / "reply-state.json",
+    )
+
+    entry = state["entries"]["om_progress"]
+    assert entry["status"] == "pending"
+    assert entry["last_progress_at_ms"] > entry["received_at_ms"]
+
+
 def test_tracker_ignores_group_messages(tmp_path: Path) -> None:
     state_path = tmp_path / "reply-state.json"
     state = _run_node(

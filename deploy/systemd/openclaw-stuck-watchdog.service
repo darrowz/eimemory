@@ -7,4 +7,4 @@ TimeoutStartSec=30
 WorkingDirectory=/opt/eimemory/current
 Environment=PYTHONDONTWRITEBYTECODE=1
 Environment=PYTHONPYCACHEPREFIX=/var/lib/eimemory/.pycache/runtime
-ExecStart=/opt/eimemory/current/.venv/bin/python -m eimemory.ops.openclaw_watchdog --unit openclaw-gateway.service --threshold-s 120 --min-restart-interval-s 900 --max-hook-processes 8 --max-hook-rss-mib 3072 --min-hook-age-s 10
+ExecStart=/opt/eimemory/current/.venv/bin/python -m eimemory.ops.openclaw_watchdog --unit openclaw-gateway.service --threshold-s 120 --min-restart-interval-s 900 --max-hook-processes 8 --max-hook-rss-mib 3072 --min-hook-age-s 10 --min-hook-pressure-samples 2 --hook-pressure-sample-window-s 180
