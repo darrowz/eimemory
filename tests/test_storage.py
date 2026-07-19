@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 import re
+import sqlite3
 
 import pytest
 
@@ -795,6 +796,147 @@ def test_runtime_store_does_not_repeat_meta_key_backfill_after_migration(tmp_pat
     reopened.close()
 
     assert calls == 0
+
+
+def test_applied_meta_key_migration_does_not_open_a_write_transaction_on_startup(tmp_path) -> None:
+    store = RuntimeStore(root=tmp_path)
+
+    def deny_transactions(action, _arg1, _arg2, _database, _trigger):
+        if action == sqlite3.SQLITE_TRANSACTION:
+            return sqlite3.SQLITE_DENY
+        return sqlite3.SQLITE_OK
+
+    store.sqlite.conn.set_authorizer(deny_transactions)
+    try:
+        store.sqlite._backfill_record_meta_keys_if_needed()
+    finally:
+        store.sqlite.conn.set_authorizer(None)
+        store.close()
+
+
+def test_intent_pattern_payload_migration_is_marked_and_read_only_after_first_run(tmp_path) -> None:
+    store = RuntimeStore(root=tmp_path)
+    marker = store.sqlite.conn.execute(
+        "SELECT 1 FROM schema_migrations WHERE migration_id = ?",
+        (sqlite_store_module._INTENT_PATTERN_STATUS_MIGRATION,),
+    ).fetchone()
+    assert marker is not None
+
+    def deny_pattern_updates(action, table, _column, _database, _trigger):
+        if action == sqlite3.SQLITE_UPDATE and table == "intent_patterns":
+            return sqlite3.SQLITE_DENY
+        return sqlite3.SQLITE_OK
+
+    store.sqlite.conn.set_authorizer(deny_pattern_updates)
+    try:
+        store.sqlite._migrate_intent_patterns_schema()
+    finally:
+        store.sqlite.conn.set_authorizer(None)
+        store.close()
+
+
+def test_completed_storage_schema_initialization_is_read_only_on_restart(tmp_path) -> None:
+    store = RuntimeStore(root=tmp_path)
+
+    def deny_writes(action, _arg1, _arg2, _database, _trigger):
+        if action in {
+            sqlite3.SQLITE_INSERT,
+            sqlite3.SQLITE_UPDATE,
+            sqlite3.SQLITE_DELETE,
+            sqlite3.SQLITE_TRANSACTION,
+        }:
+            return sqlite3.SQLITE_DENY
+        return sqlite3.SQLITE_OK
+
+    store.sqlite.conn.set_authorizer(deny_writes)
+    try:
+        store.sqlite._init_db()
+    finally:
+        store.sqlite.conn.set_authorizer(None)
+        store.close()
+
+
+def test_completed_storage_schema_restart_restores_missing_default_pattern(tmp_path) -> None:
+    store = RuntimeStore(root=tmp_path)
+    row = store.sqlite.conn.execute(
+        "SELECT id FROM intent_patterns ORDER BY id LIMIT 1"
+    ).fetchone()
+    assert row is not None
+    pattern_id = str(row["id"])
+    store.sqlite.conn.execute("DELETE FROM intent_patterns WHERE id = ?", (pattern_id,))
+    store.sqlite.conn.commit()
+    store.close()
+
+    restarted = RuntimeStore(root=tmp_path)
+    restored = restarted.sqlite.conn.execute(
+        "SELECT 1 FROM intent_patterns WHERE id = ?",
+        (pattern_id,),
+    ).fetchone()
+    restarted.close()
+
+    assert restored is not None
+
+
+def test_intent_pattern_payload_migration_normalizes_legacy_status_once(tmp_path) -> None:
+    store = RuntimeStore(root=tmp_path)
+    pattern_id = "legacy-pattern-status"
+    payload = {
+        "id": pattern_id,
+        "pattern": "legacy status",
+        "default_event_type": "legacy.status",
+        "interpreted_intent": "normalize legacy status",
+        "confidence": 0.5,
+        "status": "unsupported",
+    }
+    now = "2026-07-20T00:00:00+00:00"
+    store.sqlite.conn.execute(
+        """
+        INSERT INTO intent_patterns (
+            id, pattern, default_event_type, interpreted_intent, confidence, status,
+            tenant_id, agent_id, workspace_id, user_id, payload_json,
+            last_rollback_reason, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            pattern_id,
+            payload["pattern"],
+            payload["default_event_type"],
+            payload["interpreted_intent"],
+            payload["confidence"],
+            "unsupported",
+            "default",
+            "",
+            "",
+            "",
+            json.dumps(payload),
+            "",
+            now,
+            now,
+        ),
+    )
+    store.sqlite.conn.execute(
+        "DELETE FROM schema_migrations WHERE migration_id = ?",
+        (sqlite_store_module._INTENT_PATTERN_STATUS_MIGRATION,),
+    )
+    store.sqlite.conn.commit()
+    store.close()
+
+    migrated = RuntimeStore(root=tmp_path)
+
+    row = migrated.sqlite.conn.execute(
+        "SELECT status, payload_json FROM intent_patterns WHERE id = ?",
+        (pattern_id,),
+    ).fetchone()
+    marker = migrated.sqlite.conn.execute(
+        "SELECT 1 FROM schema_migrations WHERE migration_id = ?",
+        (sqlite_store_module._INTENT_PATTERN_STATUS_MIGRATION,),
+    ).fetchone()
+    migrated.close()
+
+    assert row is not None
+    assert row["status"] == "active"
+    assert json.loads(row["payload_json"])["status"] == "active"
+    assert marker is not None
 
 
 def test_runtime_store_meta_key_migration_backfills_legacy_rows_once(tmp_path) -> None:

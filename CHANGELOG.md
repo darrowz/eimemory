@@ -13,6 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Advanced rollback strategies
 - Performance optimizations for large memory stores
 
+## [1.9.76] - 2026-07-20
+
+### Fixed
+- Make completed SQLite schema and record-key migrations read-only on repeated process startup instead of reacquiring an immediate write lock.
+- Run legacy intent-pattern normalization once under a transaction-bound migration receipt, update only changed rows, and roll back partial migrations.
+- Skip repeated table/index bootstrap after all component migration receipts are present while preserving explicit recall-index backfill behavior.
+
 ## [1.9.75] - 2026-07-19
 
 ### Fixed

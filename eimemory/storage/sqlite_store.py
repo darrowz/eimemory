@@ -47,6 +47,8 @@ _MAX_LEXICAL_ADJUSTMENT = 0.18
 _DEFAULT_CANDIDATE_LIMIT = 360
 _MAX_CANDIDATE_LIMIT = 1200
 _RECORD_META_KEYS_MIGRATION = "records.meta_keys.v1"
+_INTENT_PATTERN_STATUS_MIGRATION = "intent_patterns.payload_status.v1"
+_STORAGE_SCHEMA_MIGRATION = "storage.schema.v1"
 _RECALL_LANE_MEMORY_TYPE_ALIASES = {
     "audit": "audit_record",
     "audit_record": "audit_record",
@@ -118,6 +120,23 @@ class SqliteRecordStore:
             self._create_export_outbox_table()
             self._create_replay_manifest_sequence_table()
             self._seed_default_intent_patterns()
+            self._mark_schema_migration(_INTENT_PATTERN_STATUS_MIGRATION)
+            self._mark_schema_migration(_STORAGE_SCHEMA_MIGRATION)
+            self.conn.commit()
+            return
+        migrations_ready = self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations'"
+        ).fetchone()
+        schema_ready = bool(
+            migrations_ready
+            and self._schema_migration_applied(_STORAGE_SCHEMA_MIGRATION)
+            and self._schema_migration_applied(_RECORD_META_KEYS_MIGRATION)
+            and self._schema_migration_applied(_INTENT_PATTERN_STATUS_MIGRATION)
+        )
+        if schema_ready:
+            self._seed_default_intent_patterns()
+            if str(os.environ.get("EIMEMORY_RECALL_INDEX_BACKFILL_ON_START") or "").strip() == "1":
+                self._backfill_recall_index_if_needed()
             self.conn.commit()
             return
         columns = {
@@ -143,11 +162,13 @@ class SqliteRecordStore:
         self._create_recall_index_tables()
         self._create_memory_edge_tables()
         self._create_event_memory_tables()
+        self.conn.commit()
         self._migrate_intent_patterns_schema()
         self._create_policy_rollout_tables()
         self._create_export_outbox_table()
         self._create_replay_manifest_sequence_table()
         self._seed_default_intent_patterns()
+        self._mark_schema_migration(_STORAGE_SCHEMA_MIGRATION)
         if str(os.environ.get("EIMEMORY_RECALL_INDEX_BACKFILL_ON_START") or "").strip() == "1":
             self._backfill_recall_index_if_needed()
         self.conn.commit()
@@ -746,33 +767,54 @@ class SqliteRecordStore:
         }
 
     def _migrate_intent_patterns_schema(self) -> None:
-        columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(intent_patterns)").fetchall()}
-        if "status" not in columns:
-            self.conn.execute("ALTER TABLE intent_patterns ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
-        if "last_rollback_reason" not in columns:
-            self.conn.execute("ALTER TABLE intent_patterns ADD COLUMN last_rollback_reason TEXT NOT NULL DEFAULT ''")
-        if "payload_json" not in columns:
+        if self._schema_migration_applied(_INTENT_PATTERN_STATUS_MIGRATION):
             return
-        cursor = self.conn.execute("SELECT id, payload_json FROM intent_patterns")
-        while True:
-            rows = cursor.fetchmany(200)
-            if not rows:
-                break
-            for row in rows:
-                raw = str(row["payload_json"])
-                try:
-                    payload = json.loads(raw)
-                except json.JSONDecodeError:
-                    continue
-                if not isinstance(payload, dict):
-                    continue
-                payload["status"] = str(payload.get("status") or "active")
-                if payload["status"] not in {"candidate", "shadow", "active", "rolled_back", "quarantined"}:
-                    payload["status"] = "active"
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            if self._schema_migration_applied(_INTENT_PATTERN_STATUS_MIGRATION):
+                self.conn.commit()
+                return
+            columns = {
+                row["name"] for row in self.conn.execute("PRAGMA table_info(intent_patterns)").fetchall()
+            }
+            if "status" not in columns:
+                self.conn.execute("ALTER TABLE intent_patterns ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
+            if "last_rollback_reason" not in columns:
                 self.conn.execute(
-                    "UPDATE intent_patterns SET payload_json = ?, status = ? WHERE id = ?",
-                    (json.dumps(payload, ensure_ascii=False, sort_keys=True), payload["status"], str(row["id"])),
+                    "ALTER TABLE intent_patterns ADD COLUMN last_rollback_reason TEXT NOT NULL DEFAULT ''"
                 )
+            if "payload_json" in columns:
+                cursor = self.conn.execute("SELECT id, status, payload_json FROM intent_patterns")
+                while True:
+                    rows = cursor.fetchmany(200)
+                    if not rows:
+                        break
+                    updates: list[tuple[str, str, str]] = []
+                    for row in rows:
+                        raw = str(row["payload_json"])
+                        try:
+                            payload = json.loads(raw)
+                        except json.JSONDecodeError:
+                            continue
+                        if not isinstance(payload, dict):
+                            continue
+                        status = str(payload.get("status") or "active")
+                        if status not in {"candidate", "shadow", "active", "rolled_back", "quarantined"}:
+                            status = "active"
+                        payload["status"] = status
+                        normalized = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+                        if normalized != raw or str(row["status"] or "") != status:
+                            updates.append((normalized, status, str(row["id"])))
+                    if updates:
+                        self.conn.executemany(
+                            "UPDATE intent_patterns SET payload_json = ?, status = ? WHERE id = ?",
+                            updates,
+                        )
+            self._mark_schema_migration(_INTENT_PATTERN_STATUS_MIGRATION)
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
 
     def _seed_default_intent_patterns(self) -> None:
         scope = ScopeRef()
@@ -861,14 +903,18 @@ class SqliteRecordStore:
             (migration_id, datetime.now(timezone.utc).isoformat()),
         )
 
+    def _schema_migration_applied(self, migration_id: str) -> bool:
+        return self.conn.execute(
+            "SELECT 1 FROM schema_migrations WHERE migration_id = ?",
+            (migration_id,),
+        ).fetchone() is not None
+
     def _backfill_record_meta_keys_if_needed(self) -> None:
+        if self._schema_migration_applied(_RECORD_META_KEYS_MIGRATION):
+            return
         self.conn.execute("BEGIN IMMEDIATE")
         try:
-            applied = self.conn.execute(
-                "SELECT 1 FROM schema_migrations WHERE migration_id = ?",
-                (_RECORD_META_KEYS_MIGRATION,),
-            ).fetchone()
-            if applied is not None:
+            if self._schema_migration_applied(_RECORD_META_KEYS_MIGRATION):
                 self.conn.commit()
                 return
             last_storage_key = ""
