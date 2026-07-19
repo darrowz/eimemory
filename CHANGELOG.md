@@ -13,6 +13,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Advanced rollback strategies
 - Performance optimizations for large memory stores
 
+## [1.9.74] - 2026-07-19
+
+### Fixed
+- Derive five concrete OpenClaw task classes from prompt and tool evidence when upstream emits a generic communication label.
+- Count only agent/task completion evidence with signed, run-bound, successful post-tool verification; keep session completion lifecycle-only.
+- Reject pending, failed, zero-result, mutation-only, cross-run, or tampered tool receipts while preserving valid zero-failure test output.
+- Record deployment receipts after every healthy immutable switch, including gate-disabled repair deployments and initial bootstrap.
+- Repair already-current releases from persisted trusted receipts, verify the complete immutable tree and runnable prior environment, and preserve a usable current link on rollback failure.
+- Provision a private rotatable receipt key for OpenClaw and Python services with normalized ownership, permissions, and systemd-safe paths.
+
 ## [1.9.73] - 2026-07-19
 
 ### Fixed

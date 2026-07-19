@@ -6,6 +6,7 @@ from pathlib import Path
 import re
 from typing import Any, Mapping
 
+from eimemory.governance.deployment_receipt import valid_deployment_rollback_evidence
 from eimemory.models.records import RecordEnvelope, ScopeRef
 from eimemory.runtime_identity import package_import_root
 from eimemory.version import __version__
@@ -236,8 +237,7 @@ def _verified_receipt_identity(record: Any) -> ReleaseIdentity | None:
         and str(health.get("version") or "").strip() == version
         and str(health.get("release_path") or "").replace("\\", "/").rstrip("/") == release_path
         and str(deployment.get("release_path") or "").replace("\\", "/").rstrip("/") == release_path
-        and str(rollback.get("prior_commit_sha") or "").strip()
-        and str(rollback.get("rollback_command") or "").strip()
+        and valid_deployment_rollback_evidence(dict(rollback))
     ):
         return None
     record_id = str(getattr(record, "record_id", "") or "")
@@ -254,6 +254,12 @@ def _verified_receipt_identity(record: Any) -> ReleaseIdentity | None:
         session_id=session_id,
     )
     return identity if identity.complete else None
+
+
+def verified_deployment_receipt_identity(record: Any) -> ReleaseIdentity | None:
+    """Validate one persisted deployment receipt without assuming it is current."""
+
+    return _verified_receipt_identity(record)
 
 
 def _first_text(*values: Any) -> str:

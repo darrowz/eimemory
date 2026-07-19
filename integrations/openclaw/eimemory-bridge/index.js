@@ -1,6 +1,7 @@
 'use strict';
 
 const { spawn } = require('node:child_process');
+const { createHash, createHmac, timingSafeEqual } = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -21,6 +22,27 @@ const DEFAULT_MAX_COMMAND_OUTPUT_BYTES = 4 * 1024 * 1024;
 const DEFAULT_REPLY_DELIVERY_STATE_PATH = '/var/lib/eimemory/openclaw_reply_delivery_state.json';
 const DEFAULT_REPLY_DELIVERY_ATTEMPTS_PATH = '/var/lib/eimemory/openclaw_reply_delivery_attempts.json';
 const LOOP_TASK_CORRELATION_TTL_MS = 2 * 60 * 60 * 1000;
+const MAX_PENDING_LOOP_TASK_KEYS = 1024;
+const MAX_CORRELATED_QUERY_CHARS = 8192;
+const MAX_CORRELATED_TOOL_RECEIPTS = 32;
+const MAX_CORRELATED_CONTEXT_CHARS = 8192;
+const MAX_CORRELATED_CONTEXT_KEYS = 48;
+const MAX_CORRELATED_CONTEXT_ARRAY_ITEMS = 32;
+const DEFAULT_EVIDENCE_TOOL_MARKERS = [
+  'search', 'read', 'fetch', 'get', 'list', 'query', 'inspect', 'browser',
+  'test', 'pytest', 'check', 'verify', 'health', 'status', 'systemctl',
+];
+const MUTATION_TOOL_MARKERS = [
+  'write', 'edit', 'patch', 'create', 'update', 'delete', 'remove', 'rename',
+  'move', 'copy', 'insert', 'set', 'send', 'post', 'publish', 'upload',
+  'deploy', 'install', 'restart', 'start', 'stop', 'enable', 'disable',
+];
+const COMMAND_TOOL_MARKERS = ['exec', 'shell', 'command', 'terminal', 'powershell', 'bash'];
+const POSITIVE_TOOL_STATUSES = new Set([
+  'active', 'complete', 'completed', 'done', 'healthy', 'ok', 'passed', 'ready',
+  'success', 'succeeded', 'verified',
+]);
+const RECEIPT_KEY_ENV = 'EIMEMORY_EVIDENCE_RECEIPT_HMAC_KEY';
 const COMPLETION_GATE_RETRY_KEY = 'eimemory-completion-gate-v1';
 const UNRESOLVED_COMPLETION_MARKERS = [
   /(?:当前|仍有|剩余|存在|还有).{0,12}(?:验证缺口|系统性缺口|已知问题|待修复|未完成)/i,
@@ -117,59 +139,638 @@ function loopCorrelationKeys(event) {
   return [...new Set(keys)];
 }
 
+function strongLoopCorrelationKeys(event) {
+  const candidates = [
+    ['run', event?.runId || event?.run_id],
+    ['job', event?.jobId || event?.job_id],
+    ['turn', event?.turnId || event?.turn_id],
+    ['request', event?.requestId || event?.request_id],
+    ['trace', event?.traceId || event?.trace_id || event?.trace?.id],
+    ['task', event?.taskId || event?.task_id],
+    ['event', event?.eventId || event?.event_id || event?.id],
+    ['message', event?.messageId || event?.message_id || event?.message?.id],
+  ];
+  return [...new Set(candidates.flatMap(([kind, raw]) => {
+    const value = String(raw || '').trim();
+    return value ? [kind + ':' + value] : [];
+  }))];
+}
+
+function weakLoopCorrelationKeys(event) {
+  return loopCorrelationKeys(event).filter(
+    (key) => key.startsWith('session-key:') || key.startsWith('session:'),
+  );
+}
+
+function strongCorrelationCompatible(leftKeys, rightKeys) {
+  const byKind = (keys) => {
+    const result = new Map();
+    for (const key of Array.isArray(keys) ? keys : []) {
+      const separator = String(key || '').indexOf(':');
+      if (separator <= 0) {
+        continue;
+      }
+      const kind = key.slice(0, separator);
+      const values = result.get(kind) || new Set();
+      values.add(key.slice(separator + 1));
+      result.set(kind, values);
+    }
+    return result;
+  };
+  const left = byKind(leftKeys);
+  const right = byKind(rightKeys);
+  let sharedIdentity = false;
+  for (const [kind, leftValues] of left.entries()) {
+    const rightValues = right.get(kind);
+    if (!rightValues) {
+      continue;
+    }
+    sharedIdentity = true;
+    if (![...leftValues].some((value) => rightValues.has(value))) {
+      return false;
+    }
+  }
+  return sharedIdentity;
+}
+
 function prunePendingLoopTasks() {
   const cutoff = nowMs() - LOOP_TASK_CORRELATION_TTL_MS;
   for (const [key, entry] of pendingLoopTasks.entries()) {
-    if (!entry || entry.createdAt < cutoff) {
+    if (!entry || Number(entry.updatedAt || entry.createdAt || 0) < cutoff) {
       pendingLoopTasks.delete(key);
+    }
+  }
+  while (pendingLoopTasks.size > MAX_PENDING_LOOP_TASK_KEYS) {
+    const oldest = pendingLoopTasks.entries().next().value;
+    if (!oldest) {
+      break;
+    }
+    const entry = oldest[1];
+    for (const [key, candidate] of pendingLoopTasks.entries()) {
+      if (candidate === entry) {
+        pendingLoopTasks.delete(key);
+      }
     }
   }
 }
 
-function rememberLoopTask(event, payload) {
-  const taskId = String(payload?.task_context?.openclaw_loop_task_id || '').trim();
-  if (!taskId) {
-    return;
-  }
+function pendingLoopEntry(event, { create = false } = {}) {
   prunePendingLoopTasks();
-  const keys = loopCorrelationKeys(event);
-  const entry = { taskId, createdAt: nowMs(), keys };
-  for (const key of keys) {
-    pendingLoopTasks.set(key, entry);
-  }
-}
-
-function correlatePendingLoopTask(event) {
-  const rawContext = normalizeObject(event?.task_context || event?.taskContext);
-  if (String(rawContext.openclaw_loop_task_id || '').trim()) {
-    return event;
-  }
-  prunePendingLoopTasks();
+  const strongKeys = strongLoopCorrelationKeys(event);
+  const weakKeys = weakLoopCorrelationKeys(event);
+  const lookupKeys = strongKeys.length > 0 ? strongKeys : [];
   let entry = null;
-  for (const key of loopCorrelationKeys(event)) {
+  for (const key of lookupKeys) {
     entry = pendingLoopTasks.get(key) || null;
     if (entry) {
       break;
     }
   }
+  const weakCandidates = [...new Set(pendingLoopTasks.values())].filter((candidate) => (
+    candidate
+    && weakKeys.some((key) => (candidate.weakKeys || []).includes(key))
+  ));
+  if (!entry && strongKeys.length === 0) {
+    if (weakCandidates.length > 1) {
+      return null;
+    }
+    entry = weakCandidates[0] || null;
+  }
+  if (!entry && strongKeys.length > 0) {
+    const promotable = weakCandidates.filter(
+      (candidate) => !candidate.strongKeys || candidate.strongKeys.length === 0,
+    );
+    if (promotable.length === 1) {
+      entry = promotable[0];
+    }
+  }
+  if (!entry && create && (strongKeys.length > 0 || weakKeys.length > 0)) {
+    entry = {
+      taskId: '',
+      query: '',
+      taskContext: {},
+      traceContext: {},
+      toolReceipts: [],
+      strongKeys: [],
+      weakKeys: [],
+      keys: [],
+      createdAt: nowMs(),
+      updatedAt: nowMs(),
+    };
+  }
+  if (!entry) {
+    return null;
+  }
+  entry.strongKeys = [...new Set([...(entry.strongKeys || []), ...strongKeys])];
+  entry.weakKeys = [...new Set([...(entry.weakKeys || []), ...weakKeys])];
+  entry.keys = [...new Set([...entry.strongKeys, ...entry.weakKeys])];
+  entry.updatedAt = nowMs();
+  for (const key of entry.strongKeys) {
+    pendingLoopTasks.delete(key);
+    pendingLoopTasks.set(key, entry);
+  }
+  for (const key of entry.weakKeys) {
+    pendingLoopTasks.delete(key);
+    pendingLoopTasks.set(key, entry);
+  }
+  prunePendingLoopTasks();
+  return entry;
+}
+
+function rememberLoopTask(event, payload) {
+  const entry = pendingLoopEntry(event, { create: true });
+  if (!entry) {
+    return;
+  }
+  const payloadTaskContext = normalizeObject(payload?.task_context || payload?.taskContext);
+  const eventTaskContext = normalizeObject(event?.task_context || event?.taskContext);
+  const payloadTraceContext = normalizeObject(payload?.trace_context || payload?.traceContext);
+  const eventTraceContext = normalizeObject(event?.trace_context || event?.traceContext);
+  const query = String(event?.query || event?.prompt || '').trim();
+  if (query) {
+    entry.query = query.slice(0, MAX_CORRELATED_QUERY_CHARS);
+  }
+  entry.taskContext = boundedCorrelationObject(
+    { ...entry.taskContext, ...eventTaskContext, ...payloadTaskContext },
+  );
+  entry.traceContext = boundedCorrelationObject(
+    { ...entry.traceContext, ...eventTraceContext, ...payloadTraceContext },
+  );
+  entry.taskId = String(
+    entry.taskContext.openclaw_loop_task_id
+    || entry.taskContext.openclawLoopTaskId
+    || entry.taskId
+    || ''
+  ).trim();
+}
+
+function successfulToolReceipt(event) {
+  if (String(event?.error || '').trim()) {
+    return false;
+  }
+  if (!Object.prototype.hasOwnProperty.call(normalizeObject(event), 'result') || event.result == null) {
+    return false;
+  }
+  const result = event.result;
+  if (typeof result === 'object' && !Array.isArray(result)) {
+    const resultObject = normalizeObject(result);
+    const details = normalizeObject(resultObject.details);
+    const hasResultCount = Object.prototype.hasOwnProperty.call(resultObject, 'resultCount');
+    const resultCount = Number(resultObject.resultCount);
+    if (
+      String(resultObject.error || '').trim()
+      || resultObject.ok === false
+      || resultObject.success === false
+      || resultObject.isError === true
+      || resultObject.is_error === true
+      || Number(resultObject.exitCode ?? resultObject.exit_code ?? 0) !== 0
+      || details.ok === false
+      || details.success === false
+      || Number(details.exitCode ?? details.exit_code ?? 0) !== 0
+      || (hasResultCount && (!Number.isFinite(resultCount) || resultCount <= 0))
+    ) {
+      return false;
+    }
+    const status = String(resultObject.status || details.status || event?.status || '').trim().toLowerCase();
+    if (
+      (status && !POSITIVE_TOOL_STATUSES.has(status))
+      || toolResultContainsFailure(resultObject)
+    ) {
+      return false;
+    }
+    return (
+      resultObject.ok === true
+      || resultObject.success === true
+      || POSITIVE_TOOL_STATUSES.has(status)
+      || (Array.isArray(resultObject.content) && resultObject.content.length > 0)
+      || (hasResultCount && resultCount > 0)
+    );
+  }
+  if (Array.isArray(result)) {
+    return result.length > 0 && !result.some((item) => toolResultContainsFailure(item));
+  }
+  if (typeof result === 'boolean') {
+    return result;
+  }
+  const resultText = String(result || '').trim();
+  return (
+    Boolean(resultText)
+    && !toolTextContainsFailure(resultText)
+  );
+}
+
+function toolTextContainsFailure(value) {
+  const text = String(value || '').trim();
+  if (
+    /^(?:pending|queued|running|unknown|skipped|not[ _-]?(?:run|executed)|unavailable)\b/i.test(text)
+    || /\b(?:status|state)\s*[:=]\s*(?:pending|queued|running|unknown|skipped|not[ _-]?(?:run|executed)|unavailable)\b/i.test(text)
+  ) {
+    return true;
+  }
+  const withoutZeroFailures = text.replace(
+    /\b(?:0|zero)\s+(?:failed|failures|errors?)\b/gi,
+    '',
+  );
+  return /\b(?:error|failed|failure|timeout|timed out)\b/i.test(withoutZeroFailures);
+}
+
+function toolResultContainsFailure(value, depth = 0) {
+  if (depth > 8 || value == null) {
+    return depth > 8;
+  }
+  if (typeof value === 'string') {
+    return toolTextContainsFailure(value);
+  }
+  if (Array.isArray(value)) {
+    return value.some((item) => toolResultContainsFailure(item, depth + 1));
+  }
+  if (typeof value !== 'object') {
+    return false;
+  }
+  const item = normalizeObject(value);
+  const status = String(item.status || '').trim().toLowerCase();
+  if (
+    String(item.error || '').trim()
+    || item.ok === false
+    || item.success === false
+    || item.isError === true
+    || item.is_error === true
+    || Number(item.exitCode ?? item.exit_code ?? 0) !== 0
+    || (status && !POSITIVE_TOOL_STATUSES.has(status))
+  ) {
+    return true;
+  }
+  return Object.values(item).some((child) => toolResultContainsFailure(child, depth + 1));
+}
+
+function configuredEvidenceToolMarkers() {
+  const configured = String(process.env.EIMEMORY_VERIFICATION_TOOL_MARKERS || '')
+    .split(',')
+    .map((item) => item.trim().toLowerCase())
+    .filter(Boolean);
+  return configured.length > 0 ? configured : DEFAULT_EVIDENCE_TOOL_MARKERS;
+}
+
+function toolCommandText(event) {
+  const params = normalizeObject(event?.params || event?.arguments || event?.input);
+  return String(
+    params.command || params.cmd || params.script || params.query || params.action || '',
+  ).trim().slice(0, 8192);
+}
+
+function curlCommandMutates(command) {
+  if (!/\bcurl(?:\.exe)?\b/i.test(command)) {
+    return false;
+  }
+  return (
+    /(?:^|\s)-X(?:\s*|=)(?:POST|PUT|PATCH|DELETE)\b/i.test(command)
+    || /(?:^|\s)--request(?:\s+|=)(?:POST|PUT|PATCH|DELETE)\b/i.test(command)
+    || /(?:^|\s)-(?:d|F|T)(?:\s+|=)?\S/.test(command)
+    || /(?:^|\s)--(?:data(?:-ascii|-binary|-raw|-urlencode)?|form(?:-string)?|json|upload-file|config)(?:\s+|=)\S/i.test(command)
+    || /(?:^|\s)-K(?:\s+|=)?\S/.test(command)
+  );
+}
+
+function toolReceiptClassification(event, toolName) {
+  const normalized = String(toolName || '').trim().toLowerCase();
+  const commandTool = COMMAND_TOOL_MARKERS.some((marker) => normalized.includes(marker));
+  const command = toolCommandText(event);
+  if (commandTool || normalized.includes('systemctl')) {
+    if (
+      /\b(?:rm|del|remove-item|mv|move-item|cp|copy-item|sed\s+-i|git\s+(?:commit|push|merge|rebase|reset)|pip\s+install|npm\s+install|deploy|restart|start|stop|enable|disable)\b/i.test(command)
+      || curlCommandMutates(command)
+    ) {
+      return 'mutation';
+    }
+    if (/\b(?:pytest|unittest|test|check|verify|status|health|show|list|query|inspect|read|cat|type|get-content|rg|grep|git\s+(?:diff|status)|node\s+--check|curl\b)\b/i.test(command)) {
+      return 'evidence';
+    }
+    if (commandTool) {
+      return 'neutral';
+    }
+  }
+  if (MUTATION_TOOL_MARKERS.some((marker) => normalized.includes(marker))) {
+    return 'mutation';
+  }
+  return configuredEvidenceToolMarkers().some((marker) => normalized.includes(marker))
+    ? 'evidence'
+    : 'neutral';
+}
+
+function toolResultDigest(event) {
+  const hash = createHash('sha256');
+  const seen = new WeakSet();
+  const update = (value, depth) => {
+    if (depth > 32) {
+      throw new Error('tool result nesting exceeds attestation limit');
+    }
+    if (value == null) {
+      hash.update('null');
+      return;
+    }
+    if (typeof value === 'string' || typeof value === 'boolean') {
+      hash.update(JSON.stringify(value));
+      return;
+    }
+    if (typeof value === 'number') {
+      hash.update(Number.isFinite(value) ? JSON.stringify(value) : 'null');
+      return;
+    }
+    if (typeof value !== 'object' || seen.has(value)) {
+      throw new Error('tool result is not canonically attestable');
+    }
+    seen.add(value);
+    if (Array.isArray(value)) {
+      hash.update('[');
+      value.forEach((item, index) => {
+        if (index > 0) hash.update(',');
+        update(item, depth + 1);
+      });
+      hash.update(']');
+    } else {
+      hash.update('{');
+      Object.keys(value).sort().forEach((key, index) => {
+        if (index > 0) hash.update(',');
+        hash.update(JSON.stringify(key));
+        hash.update(':');
+        update(value[key], depth + 1);
+      });
+      hash.update('}');
+    }
+    seen.delete(value);
+  };
+  try {
+    update(event?.result, 0);
+  } catch (_error) {
+    return '';
+  }
+  return hash.digest('hex');
+}
+
+function receiptKey() {
+  const key = String(process.env[RECEIPT_KEY_ENV] || '').trim();
+  return key.length >= 32 && new Set(key).size >= 12 ? key : '';
+}
+
+function canonicalVerificationReceipt(receipt) {
+  return {
+    attestation: 'hmac-sha256',
+    duration_ms: Math.max(0, Math.trunc(Number(receipt.duration_ms) || 0)),
+    passed: receipt.passed === true,
+    receipt_version: 1,
+    result_digest: String(receipt.result_digest || '').toLowerCase(),
+    run_id: String(receipt.run_id || ''),
+    session_id: String(receipt.session_id || ''),
+    source: 'openclaw.after_tool_call',
+    tool_call_id: String(receipt.tool_call_id || ''),
+    tool_name: String(receipt.tool_name || ''),
+  };
+}
+
+function signVerificationReceipt(receipt) {
+  const key = receiptKey();
+  const canonical = canonicalVerificationReceipt(receipt);
+  if (
+    !key
+    || !canonical.session_id
+    || !canonical.run_id
+    || !canonical.tool_name
+    || !canonical.tool_call_id
+    || !/^[0-9a-f]{64}$/.test(canonical.result_digest)
+  ) {
+    return null;
+  }
+  return {
+    ...canonical,
+    signature: createHmac('sha256', key).update(stableJson(canonical), 'utf8').digest('hex'),
+  };
+}
+
+function validVerificationReceiptSignature(receipt) {
+  const key = receiptKey();
+  const signature = String(receipt?.signature || '').toLowerCase();
+  if (!key || !/^[0-9a-f]{64}$/.test(signature)) {
+    return false;
+  }
+  const expected = createHmac('sha256', key)
+    .update(stableJson(canonicalVerificationReceipt(receipt)), 'utf8')
+    .digest('hex');
+  return timingSafeEqual(Buffer.from(signature, 'hex'), Buffer.from(expected, 'hex'));
+}
+
+function rememberToolReceipt(event) {
+  const toolName = String(event?.toolName || event?.tool_name || event?.name || '').trim().slice(0, 160);
+  if (!toolName) {
+    return;
+  }
+  const entry = pendingLoopEntry(event, { create: true });
+  if (!entry) {
+    return;
+  }
+  const toolCallId = String(event?.toolCallId || event?.tool_call_id || '').trim().slice(0, 256);
+  const receipt = {
+    toolName,
+    toolCallId,
+    success: Boolean(toolCallId) && successfulToolReceipt(event),
+    classification: toolReceiptClassification(event, toolName),
+    resultDigest: toolResultDigest(event),
+    strongKeys: strongLoopCorrelationKeys(event),
+    durationMs: Number.isFinite(Number(event?.durationMs)) ? Number(event.durationMs) : 0,
+  };
+  const receipts = Array.isArray(entry.toolReceipts) ? entry.toolReceipts : [];
+  const duplicateIndex = toolCallId
+    ? receipts.findIndex((item) => item?.toolCallId === toolCallId)
+    : -1;
+  if (duplicateIndex >= 0) {
+    receipts[duplicateIndex] = receipt;
+  } else {
+    receipts.push(receipt);
+  }
+  entry.toolReceipts = receipts.slice(-MAX_CORRELATED_TOOL_RECEIPTS);
+}
+
+function correlatePendingLoopTask(event, { terminalKind = '' } = {}) {
+  const rawContext = normalizeObject(event?.task_context || event?.taskContext);
+  const entry = pendingLoopEntry(event);
   if (!entry) {
     return event;
   }
-  const taskContext = { ...rawContext, openclaw_loop_task_id: entry.taskId };
-  return { ...event, task_context: taskContext, taskContext };
+  const taskContext = boundedCorrelationObject({ ...normalizeObject(entry.taskContext), ...rawContext });
+  if (entry.taskId) {
+    taskContext.openclaw_loop_task_id = entry.taskId;
+  }
+  const traceContext = boundedCorrelationObject({
+    ...normalizeObject(entry.traceContext),
+    ...normalizeObject(event?.trace_context || event?.traceContext),
+  });
+  const terminalStrongKeys = strongLoopCorrelationKeys(event);
+  const attributedReceipts = (entry.toolReceipts || []).filter((item) => (
+    Array.isArray(item?.strongKeys)
+    && strongCorrelationCompatible(item.strongKeys, terminalStrongKeys)
+  ));
+  const correlatedTools = normalizeStringList([
+    ...(Array.isArray(event?.tools) ? event.tools : []),
+    ...attributedReceipts.map((item) => item?.toolName),
+  ]);
+  const actionPath = normalizeStringList([
+    ...(Array.isArray(event?.action_path) ? event.action_path : []),
+    ...attributedReceipts.map((item) => item?.toolName ? 'tool:' + item.toolName : ''),
+  ]);
+  const correlated = {
+    ...event,
+    query: String(event?.query || event?.prompt || entry.query || '').slice(0, MAX_CORRELATED_QUERY_CHARS),
+    task_context: taskContext,
+    taskContext,
+    trace_context: traceContext,
+    traceContext,
+    tools: correlatedTools,
+    action_path: actionPath,
+  };
+  const receipts = attributedReceipts;
+  let lastMutationIndex = -1;
+  receipts.forEach((item, index) => {
+    if (item?.classification === 'mutation') {
+      lastMutationIndex = index;
+    }
+  });
+  const mutationClosed = lastMutationIndex < 0 || receipts[lastMutationIndex]?.success === true;
+  const successfulReceipts = mutationClosed ? receipts.filter(
+    (item, index) => (
+      item?.success === true
+      && item?.classification === 'evidence'
+      && index > lastMutationIndex
+      && Array.isArray(item?.strongKeys)
+      && strongCorrelationCompatible(item.strongKeys, terminalStrongKeys)
+      && Boolean(item?.resultDigest)
+    ),
+  ) : [];
+  const explicitSuccess = event?.success === true || normalizeObject(event?.outcome).success === true;
+  const signedReceipts = successfulReceipts.flatMap((item) => {
+    const signed = signVerificationReceipt({
+      source: 'openclaw.after_tool_call',
+      tool_name: item.toolName,
+      tool_call_id: item.toolCallId,
+      duration_ms: item.durationMs,
+      passed: true,
+      result_digest: item.resultDigest,
+      session_id: normalizeSessionId(event),
+      run_id: String(event?.runId || event?.run_id || '').trim(),
+    });
+    return signed ? [signed] : [];
+  });
+  if (terminalKind === 'agent_end' && explicitSuccess && signedReceipts.length > 0) {
+    const toolNames = normalizeStringList(signedReceipts.map((item) => item.tool_name));
+    const verification = (
+      'openclaw.after_tool_call:' + signedReceipts.length + ':' + toolNames.join(',')
+    ).slice(0, 512);
+    correlated.outcome = {
+      ...normalizeObject(event?.outcome),
+      success: true,
+      verified: true,
+      verification,
+    };
+    correlated.verification_receipts = signedReceipts;
+  }
+  return correlated;
 }
 
 function forgetTerminalLoopTask(event, result) {
-  const status = String(result?.loop_task?.status || '').trim().toLowerCase();
-  if (!['done', 'failed', 'rolled_back'].includes(status)) {
-    return;
-  }
   const taskId = String(result?.loop_task?.task_id || result?.loop_task?.id || '').trim();
+  const eventKeys = new Set(loopCorrelationKeys(event));
+  const matchedEntries = new Set();
   for (const [key, entry] of pendingLoopTasks.entries()) {
     if ((taskId && entry?.taskId === taskId) || loopCorrelationKeys(event).includes(key)) {
+      matchedEntries.add(entry);
+    }
+  }
+  for (const [key, entry] of pendingLoopTasks.entries()) {
+    if (matchedEntries.has(entry) || eventKeys.has(key)) {
       pendingLoopTasks.delete(key);
     }
   }
+}
+
+function boundedCorrelationObject(value) {
+  const budget = { remaining: MAX_CORRELATED_CONTEXT_CHARS };
+  const seen = new WeakSet();
+  const bounded = (item, depth) => {
+    if (budget.remaining <= 0 || depth > 3 || item == null) {
+      return undefined;
+    }
+    if (typeof item === 'string') {
+      const text = item.slice(0, Math.min(2048, budget.remaining));
+      budget.remaining -= text.length;
+      return text;
+    }
+    if (typeof item === 'number') {
+      return Number.isFinite(item) ? item : undefined;
+    }
+    if (typeof item === 'boolean') {
+      return item;
+    }
+    if (Array.isArray(item)) {
+      const output = [];
+      for (const child of item.slice(0, MAX_CORRELATED_CONTEXT_ARRAY_ITEMS)) {
+        const value = bounded(child, depth + 1);
+        if (value !== undefined) {
+          output.push(value);
+        }
+      }
+      return output;
+    }
+    if (typeof item !== 'object' || seen.has(item)) {
+      return undefined;
+    }
+    seen.add(item);
+    const output = {};
+    for (const [rawKey, child] of Object.entries(item).slice(0, MAX_CORRELATED_CONTEXT_KEYS)) {
+      const key = String(rawKey || '').slice(0, 160);
+      if (!key || budget.remaining <= key.length) {
+        break;
+      }
+      budget.remaining -= key.length;
+      const childValue = bounded(child, depth + 1);
+      if (childValue !== undefined) {
+        output[key] = childValue;
+      }
+    }
+    return output;
+  };
+  const result = normalizeObject(bounded(normalizeObject(value), 0));
+  const scalarContractKeys = [
+    'task_type', 'taskType', 'openclaw_loop_task_id', 'openclawLoopTaskId',
+    'event_type', 'eventType', 'interpreted_intent', 'interpretedIntent',
+    'goal', 'intent', 'trace_id', 'traceId', 'request_id', 'requestId',
+    'turn_id', 'turnId', 'task_id', 'taskId',
+  ];
+  for (const key of scalarContractKeys) {
+    if (Object.prototype.hasOwnProperty.call(result, key)
+        && !['string', 'number', 'boolean'].includes(typeof result[key])) {
+      delete result[key];
+    }
+  }
+  if (JSON.stringify(result).length <= MAX_CORRELATED_CONTEXT_CHARS) {
+    return result;
+  }
+  const fallback = {};
+  const source = result;
+  for (const key of scalarContractKeys) {
+    if (!Object.prototype.hasOwnProperty.call(source, key)) {
+      continue;
+    }
+    const rawValue = source[key];
+    if (!['string', 'number', 'boolean'].includes(typeof rawValue)) {
+      continue;
+    }
+    const candidate = {
+      [key]: typeof rawValue === 'string' ? rawValue.slice(0, 2048) : rawValue,
+    };
+    const next = { ...fallback, ...candidate };
+    if (JSON.stringify(next).length <= MAX_CORRELATED_CONTEXT_CHARS) {
+      Object.assign(fallback, candidate);
+    }
+  }
+  return fallback;
 }
 
 function stableJson(value) {
@@ -358,6 +959,9 @@ function normalizeEventPayload(hook, event) {
     environment: normalizeObject(event?.environment),
     tools: normalizeStringList(event?.tools || event?.used_tools || event?.usedTools),
     action_path: normalizeStringList(event?.action_path || event?.actionPath || event?.execution_path || event?.executionPath),
+    verification_receipts: normalizeVerificationReceipts(
+      event?.verification_receipts || event?.verificationReceipts,
+    ),
     outcome: {
       success: Object.prototype.hasOwnProperty.call(outcome, 'success') ? outcome.success !== false : event?.success !== false,
       notes: String(outcome.notes || outcome.reason || event?.error || ''),
@@ -427,6 +1031,49 @@ function normalizeStringList(value) {
     items.push(text);
   }
   return items;
+}
+
+function normalizeVerificationReceipts(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.slice(0, MAX_CORRELATED_TOOL_RECEIPTS).flatMap((item) => {
+    const receipt = normalizeObject(item);
+    const toolName = String(receipt.tool_name || receipt.toolName || '').trim().slice(0, 160);
+    const toolCallId = String(receipt.tool_call_id || receipt.toolCallId || '').trim().slice(0, 256);
+    const sessionId = String(receipt.session_id || receipt.sessionId || '').trim().slice(0, 512);
+    const runId = String(receipt.run_id || receipt.runId || '').trim().slice(0, 256);
+    const resultDigest = String(receipt.result_digest || receipt.resultDigest || '').trim().toLowerCase();
+    const signature = String(receipt.signature || '').trim().toLowerCase();
+    if (
+      receipt.source !== 'openclaw.after_tool_call'
+      || !toolName
+      || !toolCallId
+      || !sessionId
+      || !runId
+      || receipt.passed !== true
+      || Number(receipt.receipt_version) !== 1
+      || receipt.attestation !== 'hmac-sha256'
+      || !/^[0-9a-f]{64}$/.test(resultDigest)
+      || !/^[0-9a-f]{64}$/.test(signature)
+      || !validVerificationReceiptSignature(receipt)
+    ) {
+      return [];
+    }
+    return [{
+      receipt_version: 1,
+      attestation: 'hmac-sha256',
+      source: 'openclaw.after_tool_call',
+      tool_name: toolName,
+      tool_call_id: toolCallId,
+      duration_ms: Number.isFinite(Number(receipt.duration_ms)) ? Number(receipt.duration_ms) : 0,
+      passed: true,
+      result_digest: resultDigest,
+      session_id: sessionId,
+      run_id: runId,
+      signature,
+    }];
+  });
 }
 
 function normalizeObject(value) {
@@ -1669,11 +2316,12 @@ module.exports.default = {
     });
     registerTypedHookOnce(api, 'before_prompt_build', async (event, context) => {
       trackReplyProgress(event, context);
+      const contextualEvent = mergeHookEventContext(event, context);
+      const correlatedEvent = correlatePendingLoopTask(contextualEvent);
+      rememberLoopTask(correlatedEvent, null);
       if (!promptInjectionEnabled(api)) {
         return {};
       }
-      const contextualEvent = mergeHookEventContext(event, context);
-      const correlatedEvent = correlatePendingLoopTask(contextualEvent);
       const bridgePayload = shouldInvokeBridgeBeforePrompt(api, correlatedEvent)
         ? await safeInvokeBridge(api, normalizeEventPayload('before_prompt_build', correlatedEvent))
         : null;
@@ -1694,7 +2342,10 @@ module.exports.default = {
     });
     registerTypedHookOnce(api, 'agent_end', async (event, context) => {
       trackReplyAgentEnd(event, context);
-      const correlatedEvent = correlatePendingLoopTask(mergeHookEventContext(event, context));
+      const correlatedEvent = correlatePendingLoopTask(
+        mergeHookEventContext(event, context),
+        { terminalKind: 'agent_end' },
+      );
       const result = (await safeInvokeHook(api, 'agent_end', correlatedEvent)) || {};
       forgetTerminalLoopTask(correlatedEvent, result);
       return result;
@@ -1718,6 +2369,7 @@ module.exports.default = {
     registerTypedHookOnce(api, 'after_tool_call', async (event, context) => {
       trackReplyProgress(event, context);
       trackReplyMessageToolResult(event, context);
+      rememberToolReceipt(mergeHookEventContext(event, context));
     });
   },
 };

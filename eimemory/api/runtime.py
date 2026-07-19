@@ -1005,6 +1005,7 @@ class Runtime:
         current_link: str,
         health_url: str,
         prior_commit: str = "",
+        deployed_commit: str = "",
     ) -> dict:
         from eimemory.governance.deployment_receipt import verify_and_record_deployment
 
@@ -1015,6 +1016,7 @@ class Runtime:
             current_link=current_link,
             health_url=health_url,
             prior_commit=prior_commit,
+            deployed_commit=deployed_commit,
         )
 
     def ensure_capability_seeded(self, *, scope: dict | None = None) -> dict:

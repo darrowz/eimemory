@@ -12,6 +12,7 @@ from eimemory.governance.deployment_receipt import (
     DEFAULT_DEPLOYMENT_CURRENT_LINK,
     DEFAULT_DEPLOYMENT_HEALTH_URL,
     DEFAULT_DEPLOYMENT_REPO_ROOT,
+    valid_deployment_rollback_evidence,
 )
 from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.models.records import ScopeRef
@@ -139,8 +140,7 @@ def _valid_deployment_receipt(receipt: Any, *, commit: str, version: str, releas
         and _same_path(health.get("release_path"), release_path)
         and _same_path(health.get("import_root"), expected_import_root)
         and str(health.get("package_tree_digest") or "") == runtime_package_tree_digest()
-        and str(rollback.get("prior_commit_sha") or "")
-        and str(rollback.get("rollback_command") or "")
+        and valid_deployment_rollback_evidence(rollback)
     )
 
 

@@ -34,6 +34,7 @@ def verify_and_record_deployment(
     current_link: str | Path,
     health_url: str,
     prior_commit: str = "",
+    deployed_commit: str = "",
 ) -> dict[str, Any]:
     """Cross-check a live immutable release and persist its executed receipt."""
 
@@ -57,15 +58,15 @@ def verify_and_record_deployment(
     normalized_health_url = trusted_health_url
     if not (repo / ".git").exists():
         return {"ok": False, "error": "repo_not_git_checkout"}
-    head = _git(repo, "rev-parse", "HEAD")
-    if not head:
+    repo_head = _git(repo, "rev-parse", "HEAD")
+    requested_commit = str(deployed_commit or "").strip().lower()
+    head = requested_commit or repo_head
+    if not head or _git(repo, "rev-parse", f"{head}^{{commit}}") != head:
         return {"ok": False, "error": "repo_head_unavailable"}
-    version = _project_version(repo)
+    version = _project_version(repo, commit=head)
     if not version:
         return {"ok": False, "error": "repo_version_unavailable"}
     rollback_commit = str(prior_commit or "").strip()
-    if not _is_rollback_ancestor(repo, rollback_commit, head):
-        return {"ok": False, "error": "prior_commit_not_rollback_ancestor"}
     try:
         is_link = link.is_symlink() or bool(getattr(link, "is_junction", lambda: False)())
         if not is_link:
@@ -94,6 +95,12 @@ def verify_and_record_deployment(
         or expected_release.parent != trusted_releases_root
     ):
         return {"ok": False, "error": "current_release_untrusted"}
+    bootstrap = not rollback_commit and _is_initial_immutable_bootstrap(link=link, head=head)
+    if rollback_commit:
+        if not _is_related_rollback_commit(repo, rollback_commit, head):
+            return {"ok": False, "error": "prior_commit_not_rollback_ancestor"}
+    elif not bootstrap:
+        return {"ok": False, "error": "prior_commit_not_rollback_ancestor"}
     release_identity_error = _release_identity_error(repo, release, head=head)
     if release_identity_error:
         return release_identity_error
@@ -118,12 +125,16 @@ def verify_and_record_deployment(
     if identity_error:
         return {"ok": False, "error": identity_error}
 
-    rollback_commands = [
+    rollback_commands = [] if bootstrap else [
         ["bash", str(repo / "deploy" / "install_immutable_release.sh"), rollback_commit],
         ["systemctl", "--user", "restart", "eimemory-rpc.service"],
         ["curl", "-fsS", normalized_health_url],
     ]
-    rollback_command = json.dumps(rollback_commands, ensure_ascii=False, separators=(",", ":"))
+    rollback_command = (
+        ""
+        if bootstrap
+        else json.dumps(rollback_commands, ensure_ascii=False, separators=(",", ":"))
+    )
     candidate_id = f"deployment:{head}"
     side_effect = {
         "ok": True,
@@ -160,15 +171,24 @@ def verify_and_record_deployment(
             "prior_commit_sha": rollback_commit,
             "rollback_command": rollback_command,
             "commands": rollback_commands,
-            "strategy": "install_prior_immutable_release_restart_and_health_check",
-            "verified_ancestor": True,
+            "strategy": (
+                "initial_immutable_deployment"
+                if bootstrap
+                else "install_prior_immutable_release_restart_and_health_check"
+            ),
+            "verified_ancestor": bool(
+                rollback_commit and _is_rollback_ancestor(repo, rollback_commit, head)
+            ),
+            "verified_related_commit": bool(rollback_commit),
+            "rollback_not_required": bootstrap,
+            "reason": "initial_immutable_deployment" if bootstrap else "",
         },
     }
     record = append_learning_record_once(
         runtime,
         kind="promotion_request",
         title=f"Verified deployment receipt {head[:12]}",
-        summary=f"Executed deployment {version} at {release} matched repo HEAD and live health.",
+        summary=f"Executed deployment {version} at {release} matched the immutable commit and live health.",
         scope=scope_ref,
         loop_id=f"deployment_receipt_{head[:12]}",
         step_name="deployment_receipt",
@@ -205,7 +225,7 @@ def verify_and_record_deployment(
             "current_link": str(link),
             "health_url": normalized_health_url,
         },
-        evidence=[head, rollback_commit],
+        evidence=[item for item in (head, rollback_commit) if item],
         source="eimemory.deployment_receipt",
         release_bound_idempotency=False,
     )
@@ -247,13 +267,13 @@ def _git(repo: Path, *args: str) -> str:
     return result.stdout.strip() if result.returncode == 0 else ""
 
 
-def _project_version(repo: Path) -> str:
+def _project_version(repo: Path, *, commit: str = "HEAD") -> str:
     try:
-        payload = tomllib.loads(_git(repo, "show", "HEAD:pyproject.toml"))
+        payload = tomllib.loads(_git(repo, "show", f"{commit}:pyproject.toml"))
     except tomllib.TOMLDecodeError:
         return ""
     version = str((payload.get("project") or {}).get("version") or "").strip()
-    version_module = _git(repo, "show", "HEAD:eimemory/version.py")
+    version_module = _git(repo, "show", f"{commit}:eimemory/version.py")
     if version_module:
         match = re.search(r'^__version__\s*=\s*["\']([^"\']+)["\']', version_module, re.MULTILINE)
         if match is None or match.group(1).strip() != version:
@@ -279,6 +299,57 @@ def _is_rollback_ancestor(repo: Path, prior_commit: str, head: str) -> bool:
     except (OSError, subprocess.SubprocessError):
         return False
     return result.returncode == 0
+
+
+def _is_related_rollback_commit(repo: Path, prior_commit: str, head: str) -> bool:
+    return _is_rollback_ancestor(repo, prior_commit, head) or _is_rollback_ancestor(
+        repo,
+        head,
+        prior_commit,
+    )
+
+
+def _is_initial_immutable_bootstrap(*, link: Path, head: str) -> bool:
+    releases_root = link.parent / "releases"
+    try:
+        commit_releases = {
+            item.name.lower()
+            for item in releases_root.iterdir()
+            if re.fullmatch(r"[0-9a-fA-F]{40}", item.name)
+            and item.is_dir()
+            and not _is_link_like(item)
+        }
+    except OSError:
+        return False
+    return commit_releases == {head.lower()}
+
+
+def valid_deployment_rollback_evidence(value: Any) -> bool:
+    rollback = value if isinstance(value, dict) else {}
+    prior_commit = str(rollback.get("prior_commit_sha") or "").strip()
+    rollback_command = str(rollback.get("rollback_command") or "").strip()
+    if prior_commit and rollback_command:
+        return True
+    return bool(
+        not prior_commit
+        and not rollback_command
+        and rollback.get("rollback_not_required") is True
+        and rollback.get("reason") == "initial_immutable_deployment"
+        and rollback.get("strategy") == "initial_immutable_deployment"
+        and rollback.get("commands") == []
+    )
+
+
+def valid_immutable_release_tree(*, repo: str | Path, release: str | Path, commit: str) -> bool:
+    repo_path = Path(repo).resolve()
+    release_path = Path(release).resolve()
+    normalized_commit = str(commit or "").strip().lower()
+    return bool(
+        re.fullmatch(r"[0-9a-f]{40}", normalized_commit)
+        and release_path.name == normalized_commit
+        and not _release_identity_error(repo_path, release_path, head=normalized_commit)
+        and not _release_tree_error(repo_path, release_path, head=normalized_commit)
+    )
 
 
 def _fetch_health(url: str) -> dict[str, Any]:

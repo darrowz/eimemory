@@ -411,6 +411,7 @@ def _build_parser() -> argparse.ArgumentParser:
     learn_deployment_receipt.add_argument("--current-link", required=True)
     learn_deployment_receipt.add_argument("--health-url", required=True)
     learn_deployment_receipt.add_argument("--prior-commit", default="")
+    learn_deployment_receipt.add_argument("--deployed-commit", default="")
     learn_deployment_receipt.add_argument("--scope-agent", default="")
     learn_deployment_receipt.add_argument("--scope-workspace", default="")
     learn_deployment_receipt.add_argument("--scope-user", default="")
@@ -1288,6 +1289,7 @@ def main(argv: list[str] | None = None) -> int:
                 current_link=str(parsed.current_link),
                 health_url=str(parsed.health_url),
                 prior_commit=str(parsed.prior_commit or ""),
+                deployed_commit=str(parsed.deployed_commit or ""),
             )
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0 if report.get("ok") else 1

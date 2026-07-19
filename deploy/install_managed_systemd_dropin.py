@@ -35,6 +35,7 @@ def install_managed_dropin(
     root: Path,
     owner_uid: int | None = None,
     render_commit: str = "",
+    render_evidence_receipt_env_file: str = "",
 ) -> None:
     source = Path(source)
     target = Path(target)
@@ -51,6 +52,21 @@ def install_managed_dropin(
         if token not in payload:
             raise ManagedDropinError("managed source is missing the commit token")
         payload = payload.replace(token, render_commit.encode("ascii"))
+    if render_evidence_receipt_env_file:
+        rendered_path = Path(render_evidence_receipt_env_file)
+        if (
+            not rendered_path.is_absolute()
+            or ".." in rendered_path.parts
+            or any(character in render_evidence_receipt_env_file for character in "\r\n\0")
+        ):
+            raise ManagedDropinError("evidence receipt env file must be an absolute normalized path")
+        safe_path_pattern = r"[A-Za-z0-9_./:-]+" if os.name == "posix" else r"[A-Za-z0-9_./:\\-]+"
+        if not re.fullmatch(safe_path_pattern, str(rendered_path)):
+            raise ManagedDropinError("evidence receipt env file path must be systemd-safe")
+        token = b"@EIMEMORY_EVIDENCE_RECEIPT_ENV_FILE@"
+        if token not in payload:
+            raise ManagedDropinError("managed source is missing the evidence receipt env file token")
+        payload = payload.replace(token, os.fsencode(rendered_path))
 
     if target.parent.parent != root or not target.parent.name.endswith(".service.d"):
         raise ManagedDropinError("target must be a direct service drop-in under systemd root")
@@ -204,6 +220,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--root", required=True, type=Path)
     parser.add_argument("--owner-uid", type=int)
     parser.add_argument("--render-commit", default="")
+    parser.add_argument("--render-evidence-receipt-env-file", default="")
     args = parser.parse_args(argv)
     try:
         install_managed_dropin(
@@ -212,6 +229,7 @@ def main(argv: list[str] | None = None) -> int:
             root=args.root,
             owner_uid=args.owner_uid,
             render_commit=args.render_commit,
+            render_evidence_receipt_env_file=args.render_evidence_receipt_env_file,
         )
     except (ManagedDropinError, OSError) as exc:
         parser.exit(2, f"managed drop-in install failed: {exc}\n")

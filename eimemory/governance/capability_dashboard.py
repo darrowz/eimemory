@@ -8,12 +8,14 @@ import re
 from typing import Any
 
 from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
+from eimemory.governance.deployment_receipt import valid_deployment_rollback_evidence
 from eimemory.governance.evidence_contract import (
     ReleaseIdentity,
     current_release_identity,
     release_identity_from_record,
 )
 from eimemory.governance.live_task_acceptance import validate_live_acceptance_case
+from eimemory.governance.tool_receipts import verify_tool_receipt
 from eimemory.governance.rollout_lifecycle import is_executed_rollback_ledger_record
 from eimemory.models.records import ScopeRef
 from eimemory.runtime_identity import package_import_root
@@ -60,7 +62,6 @@ FAILURE_LABELS = {
 VERIFIED_REAL_TASK_METHODS = {
     "openclaw.agent_end",
     "openclaw.task_end",
-    "openclaw.session_end",
 }
 VERIFIED_REAL_TASK_SOURCE_TRUST = {"system_verified", "system_diagnostic", "user_explicit"}
 
@@ -476,6 +477,27 @@ def _valid_openclaw_task_evidence(
         or str(event.get("session_id") or "") != session_id
     ):
         return False
+    verification = str(event.get("verification") or "").strip()
+    if verification.startswith("openclaw.after_tool_call:"):
+        receipts = event.get("verification_receipts")
+        if not (
+            isinstance(receipts, list)
+            and receipts
+            and all(
+                isinstance(receipt, dict)
+                and receipt.get("source") == "openclaw.after_tool_call"
+                and str(receipt.get("tool_name") or "").strip()
+                and str(receipt.get("tool_call_id") or "").strip()
+                and receipt.get("passed") is True
+                and verify_tool_receipt(
+                    receipt,
+                    session_id=str(event.get("session_id") or ""),
+                    run_id=str(event.get("run_id") or ""),
+                )
+                for receipt in receipts
+            )
+        ):
+            return False
     if release.complete and release_identity_from_record(event) != release:
         return False
     outcome_row = conn.execute(
@@ -668,8 +690,7 @@ def _verified_code_patch_promotion(record: Any) -> bool:
         and str(health.get("version") or "") == version
         and _same_path(health.get("release_path"), release_path)
         and _same_path(deployment.get("release_path"), release_path)
-        and str(rollback.get("prior_commit_sha") or "").strip()
-        and str(rollback.get("rollback_command") or "").strip()
+        and valid_deployment_rollback_evidence(rollback)
     )
 
 

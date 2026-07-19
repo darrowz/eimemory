@@ -147,7 +147,7 @@ def _validate_outcome_trace(payload: object) -> str:
 def _server_bound_real_task(payload: dict[str, Any]) -> bool:
     source = str(payload.get("source") or "").strip()
     outcome = payload.get("outcome") if isinstance(payload.get("outcome"), dict) else {}
-    return source in {"openclaw.agent_end", "openclaw.task_end", "openclaw.session_end"} and outcome.get("rehearsal") is False
+    return source in {"openclaw.agent_end", "openclaw.task_end"} and outcome.get("rehearsal") is False
 
 
 def _existing_outcome_record(runtime: Any, payload: dict[str, Any], *, scope: ScopeRef) -> RecordEnvelope | None:

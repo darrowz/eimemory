@@ -14,10 +14,47 @@ from eimemory.api.runtime import Runtime
 from eimemory.cli.main import main as cli_main
 from eimemory.governance import deployment_receipt as deployment_receipt_module
 from eimemory.governance.deployment_receipt import verify_and_record_deployment as _verify_deployment_receipt
+from eimemory.governance.evidence_contract import current_release_identity
 from eimemory.runtime_identity import package_tree_digest
+from deploy.find_prior_immutable_release import trusted_receipt_commits
 
 
 SCOPE = {"agent_id": "agent-deployment", "workspace_id": "deployment-receipt", "user_id": "darrow"}
+
+
+def test_prior_selector_reads_only_valid_persisted_deployment_receipts(tmp_path) -> None:
+    repo, prior_commit, head_commit = _git_release_repo(tmp_path, version="9.8.7")
+    release_dir, current_link = _release_link(tmp_path, head_commit, repo=repo)
+    runtime_root = tmp_path / "runtime"
+    runtime = Runtime.create(root=runtime_root)
+    try:
+        with _health_server(
+            _health_payload(
+                commit=head_commit,
+                version="9.8.7",
+                current_link=current_link,
+                release_dir=release_dir,
+            )
+        ) as health_url:
+            report = verify_and_record_deployment(
+                runtime,
+                scope=SCOPE,
+                repo_root=repo,
+                current_link=current_link,
+                health_url=health_url,
+                prior_commit=prior_commit,
+            )
+        assert report["ok"] is True
+    finally:
+        runtime.close()
+
+    assert trusted_receipt_commits(
+        runtime_root=runtime_root,
+        repo_root=repo,
+        scope_agent=SCOPE["agent_id"],
+        scope_workspace=SCOPE["workspace_id"],
+        scope_user=SCOPE["user_id"],
+    ) == [head_commit]
 
 
 def test_deployment_receipt_reads_and_cross_checks_live_release_evidence(tmp_path) -> None:
@@ -168,6 +205,72 @@ def test_deployment_receipt_requires_prior_commit_to_be_rollback_ancestor(tmp_pa
         runtime.close()
 
     assert report == {"ok": False, "error": "prior_commit_not_rollback_ancestor"}
+
+
+def test_deployment_receipt_supports_true_initial_immutable_bootstrap(tmp_path) -> None:
+    repo, _prior_commit, head_commit = _git_release_repo(tmp_path, version="9.8.7")
+    release_dir, current_link = _release_link(tmp_path, head_commit, repo=repo)
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    runtime._test_runtime_commit = head_commit
+    try:
+        with _health_server(
+            _health_payload(commit=head_commit, version="9.8.7", current_link=current_link, release_dir=release_dir)
+        ) as health_url:
+            report = verify_and_record_deployment(
+                runtime,
+                scope=SCOPE,
+                repo_root=repo,
+                current_link=current_link,
+                health_url=health_url,
+                prior_commit="",
+            )
+        identity = current_release_identity(runtime, SCOPE)
+        receipt = runtime.store.get_by_id(report.get("promotion_request_id", ""), scope=SCOPE)
+    finally:
+        runtime.close()
+
+    assert report["ok"] is True
+    assert report["prior_commit"] == ""
+    assert receipt is not None
+    rollback = receipt.content["side_effect"]["rollback_evidence"]
+    assert rollback["rollback_not_required"] is True
+    assert rollback["reason"] == "initial_immutable_deployment"
+    assert identity is not None
+    assert identity.commit == head_commit
+
+
+def test_deployment_receipt_can_bind_an_explicit_immutable_commit_when_repo_head_advanced(tmp_path) -> None:
+    repo, _older_commit, deployed_commit = _git_release_repo(tmp_path, version="9.8.7")
+    (repo / "README.md").write_text("newer repo head\n", encoding="utf-8")
+    _git(repo, "add", "README.md")
+    _git(repo, "commit", "-m", "newer head")
+    newer_commit = _git(repo, "rev-parse", "HEAD")
+    assert newer_commit != deployed_commit
+    release_dir, current_link = _release_link(tmp_path, deployed_commit, repo=repo)
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    try:
+        with _health_server(
+            _health_payload(
+                commit=deployed_commit,
+                version="9.8.7",
+                current_link=current_link,
+                release_dir=release_dir,
+            )
+        ) as health_url:
+            report = verify_and_record_deployment(
+                runtime,
+                scope=SCOPE,
+                repo_root=repo,
+                current_link=current_link,
+                health_url=health_url,
+                prior_commit=newer_commit,
+                deployed_commit=deployed_commit,
+            )
+    finally:
+        runtime.close()
+
+    assert report["ok"] is True
+    assert report["commit"] == deployed_commit
 
 
 def test_deployment_receipt_reads_version_from_head_not_dirty_worktree(tmp_path) -> None:

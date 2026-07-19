@@ -612,6 +612,52 @@ def test_immutable_installer_enforces_and_inspects_openclaw_bridge_compatibility
     assert script.index("deploy/ensure_openclaw_bridge_config.py") < script.rindex("_user_systemctl restart openclaw-gateway.service")
 
 
+def test_immutable_installer_always_records_release_identity_when_services_are_enabled() -> None:
+    script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
+    receipt_body = script.split("_record_deployment_receipt() {", 1)[1].split("\n}", 1)[0]
+
+    assert 'USER_SYSTEMD_ENABLE_SERVICE" != "1"' in receipt_body
+    assert "EIMEMORY_POST_SWITCH_GATES" not in receipt_body
+    assert '--deployed-commit "$COMMIT"' in receipt_body
+    health_body = script.split("_verify_release_health() {", 1)[1].split("\n}", 1)[0]
+    assert "EIMEMORY_POST_SWITCH_GATES" not in health_body
+    assert script.rindex('_verify_release_health "$RELEASE_DIR" "$COMMIT"') < script.rindex("_record_deployment_receipt")
+    assert script.index("_record_deployment_receipt") < script.index("_run_post_switch_closure")
+
+
+def test_deployment_receipt_uses_current_trusted_code_and_already_current_repairs_receipt() -> None:
+    script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
+    receipt_body = script.split("_record_deployment_receipt() {", 1)[1].split("\n}", 1)[0]
+    branch_start = script.index("already_current=1")
+    branch = script[script.rfind("if ", 0, branch_start):script.index("exit 0", branch_start) + len("exit 0")]
+
+    assert '"$REPO_DIR/deploy/record_deployment_receipt.py"' in receipt_body
+    assert '"$RELEASE_DIR/.venv/bin/eimemory" learn deployment-receipt' not in receipt_body
+    assert "_record_deployment_receipt" in branch
+    assert branch.index("_record_deployment_receipt") < branch.index("already_current=1")
+    assert 'git -C "$REPO_DIR" status --porcelain --untracked-files=all' in script
+
+
+def test_installer_provisions_private_tool_receipt_key_for_gateway() -> None:
+    script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
+    dropin = Path("deploy/systemd/openclaw-gateway-eimemory.conf").read_text(encoding="utf-8")
+
+    assert "deploy/ensure_evidence_receipt_key.py" in script
+    assert 'EVIDENCE_RECEIPT_ENV_FILE="${EIMEMORY_EVIDENCE_RECEIPT_ENV_FILE:-$EIMEMORY_CONFIG_DIR/evidence-receipt.env}"' in script
+    assert "EnvironmentFile=-@EIMEMORY_EVIDENCE_RECEIPT_ENV_FILE@" in dropin
+    assert '--render-evidence-receipt-env-file "$EVIDENCE_RECEIPT_ENV_FILE"' in script
+
+
+def test_rollback_renders_runtime_metadata_with_current_trusted_deploy_code() -> None:
+    script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
+    rollback = script.split("_rollback_current_release() {", 1)[1].split("\n}", 1)[0]
+
+    assert '_refresh_openclaw_gateway_metadata "$REPO_DIR" "$PREVIOUS_COMMIT"' in rollback
+    assert '_refresh_current_runtime_metadata "$PREVIOUS_CURRENT" "$PREVIOUS_COMMIT" "$REPO_DIR"' in rollback
+    assert "rollback_current_release=unavailable_no_previous" in rollback
+    assert 'rm -f "$CURRENT_LINK"' not in rollback
+
+
 def test_openclaw_runtime_verifier_requires_loaded_hooks_tools_and_clean_diagnostics(tmp_path) -> None:
     from deploy.verify_openclaw_plugin_runtime import OpenClawRuntimeError, verify_openclaw_plugin_runtime
 
@@ -822,7 +868,8 @@ def test_immutable_release_installer_deploys_gateway_runtime_override() -> None:
 
     assert 'install_managed_systemd_dropin.py' in script
     assert '_run_as_service_user mkdir -p "$USER_SYSTEMD_DIR/openclaw-gateway.service.d"' in script
-    assert '"$RELEASE_DIR/deploy/systemd/openclaw-gateway-eimemory.conf"' in script
+    assert '_refresh_openclaw_gateway_metadata "$RELEASE_DIR" "$COMMIT"' in script
+    assert '"$metadata_release/deploy/systemd/openclaw-gateway-eimemory.conf"' in script
     assert '"$USER_SYSTEMD_DIR/openclaw-gateway.service.d/90-eimemory-runtime.conf"' in script
     assert script.index("install_managed_systemd_dropin.py") < script.index(
         '"$RELEASE_DIR/deploy/systemd/eimemory-rpc.service"'
@@ -958,6 +1005,48 @@ def test_managed_systemd_dropin_installer_renders_release_commit(tmp_path) -> No
     rendered = target.read_text(encoding="utf-8")
     assert f"Environment=PYTHONPYCACHEPREFIX=/cache/{commit}" in rendered
     assert "@EIMEMORY_COMMIT@" not in rendered
+
+
+def test_managed_systemd_dropin_installer_renders_private_receipt_env_path(tmp_path) -> None:
+    helper = _load_managed_systemd_dropin_installer()
+    source = tmp_path / "source.conf"
+    source.write_text(
+        f"{helper.MANAGED_MARKER}\n[Service]\nEnvironmentFile=-@EIMEMORY_EVIDENCE_RECEIPT_ENV_FILE@\n",
+        encoding="utf-8",
+    )
+    root = tmp_path / "systemd"
+    target = root / "example.service.d" / "90-runtime.conf"
+    target.parent.mkdir(parents=True)
+    receipt_path = (tmp_path / "config" / "evidence-receipt.env").resolve()
+
+    helper.install_managed_dropin(
+        source=source,
+        target=target,
+        root=root,
+        render_evidence_receipt_env_file=str(receipt_path),
+    )
+
+    rendered = target.read_text(encoding="utf-8")
+    assert f"EnvironmentFile=-{receipt_path}" in rendered
+    assert "@EIMEMORY_EVIDENCE_RECEIPT_ENV_FILE@" not in rendered
+    with pytest.raises(helper.ManagedDropinError, match="absolute normalized"):
+        helper.install_managed_dropin(
+            source=source,
+            target=target,
+            root=root,
+            render_evidence_receipt_env_file="../unsafe.env",
+        )
+    for unsafe_path in (
+        str((tmp_path / "config with space" / "receipt.env").resolve()),
+        str((tmp_path / "%n-receipt.env").resolve()),
+    ):
+        with pytest.raises(helper.ManagedDropinError, match="systemd-safe"):
+            helper.install_managed_dropin(
+                source=source,
+                target=target,
+                root=root,
+                render_evidence_receipt_env_file=unsafe_path,
+            )
 
 
 def test_managed_systemd_dropin_installer_rejects_unmanaged_target(tmp_path) -> None:
@@ -1496,7 +1585,7 @@ def test_immutable_release_installer_commits_only_after_post_switch_gates() -> N
     assert 'EIMEMORY_DEPLOY_SCOPE_USER="${EIMEMORY_DEPLOY_SCOPE_USER:-darrow}"' in script
     assert 'EIMEMORY_DEPLOY_SCOPE_USER="${EIMEMORY_DEPLOY_SCOPE_USER:-$SERVICE_USER}"' not in script
     assert "_require_nonblank_deploy_scope" in script
-    assert script.count('--scope-user "$EIMEMORY_DEPLOY_SCOPE_USER"') == 2
+    assert script.count('--scope-user "$EIMEMORY_DEPLOY_SCOPE_USER"') == 3
     assert "rollback_current_release=failed" in script
     assert "rollback_preserved_failed_release=" in script
 

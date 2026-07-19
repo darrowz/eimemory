@@ -455,7 +455,7 @@ def test_http_rpc_server_can_expose_loopback_health_proxy(tmp_path) -> None:
     assert payload["loopback_health"]["port"] == port
 
 
-def test_http_rpc_server_get_root_returns_daily_brief_digest(tmp_path) -> None:
+def test_http_rpc_server_daily_brief_endpoint_returns_digest(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     runtime.store.append(
         RecordEnvelope.create(
@@ -472,7 +472,7 @@ def test_http_rpc_server_get_root_returns_daily_brief_digest(tmp_path) -> None:
     server.start()
     try:
         request = urllib.request.Request(
-            f"http://{server.address[0]}:{server.address[1]}/",
+            f"http://{server.address[0]}:{server.address[1]}/daily-brief",
             headers={"Authorization": f"Bearer {TEST_RPC_AUTH_TOKEN}"},
         )
         with urllib.request.urlopen(request, timeout=5) as response:

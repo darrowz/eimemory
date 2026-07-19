@@ -12,6 +12,7 @@ EIMEMORY_ROOT="${EIMEMORY_ROOT:-/var/lib/eimemory}"
 EIMEMORY_CONFIG_DIR="${EIMEMORY_CONFIG_DIR:-/etc/eimemory}"
 EIMEMORY_LOG_DIR="${EIMEMORY_LOG_DIR:-$SERVICE_HOME/.openclaw/logs}"
 GOVERNANCE_ENV_FILE="${EIMEMORY_GOVERNANCE_ENV_FILE:-$EIMEMORY_CONFIG_DIR/governance.env}"
+EVIDENCE_RECEIPT_ENV_FILE="${EIMEMORY_EVIDENCE_RECEIPT_ENV_FILE:-$EIMEMORY_CONFIG_DIR/evidence-receipt.env}"
 USER_SYSTEMD_ENABLE_SERVICE="${USER_SYSTEMD_ENABLE_SERVICE:-1}"
 USER_SYSTEMD_DIR="${USER_SYSTEMD_DIR:-$SERVICE_HOME/.config/systemd/user}"
 SYSTEM_RPC_UNIT_PATH="${SYSTEM_RPC_UNIT_PATH:-/etc/systemd/system/eimemory-rpc.service}"
@@ -219,6 +220,7 @@ _inspect_openclaw_plugin_runtime() {
 _refresh_current_runtime_metadata() {
   local target_release="${1:-$RELEASE_DIR}"
   local target_commit="${2:-$COMMIT}"
+  local metadata_release="${3:-$target_release}"
   if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ] || ! command -v systemctl >/dev/null 2>&1; then
     return
   fi
@@ -231,16 +233,51 @@ _refresh_current_runtime_metadata() {
   mapfile -t PYTHON_RUNTIME_UNITS <<< "$PYTHON_RUNTIME_UNIT_OUTPUT"
   for runtime_unit in "${PYTHON_RUNTIME_UNITS[@]}"; do
     _run_as_service_user mkdir -p "$USER_SYSTEMD_DIR/$runtime_unit.d"
-    "$PYTHON_BIN" -I -B "$target_release/deploy/install_managed_systemd_dropin.py" \
-      --source "$target_release/deploy/systemd/eimemory-python-runtime.conf" \
+    "$PYTHON_BIN" -I -B "$metadata_release/deploy/install_managed_systemd_dropin.py" \
+      --source "$metadata_release/deploy/systemd/eimemory-python-runtime.conf" \
       --target "$USER_SYSTEMD_DIR/$runtime_unit.d/90-eimemory-python-runtime.conf" \
-      --root "$USER_SYSTEMD_DIR" --owner-uid "$SERVICE_UID" --render-commit "$target_commit"
+      --root "$USER_SYSTEMD_DIR" --owner-uid "$SERVICE_UID" --render-commit "$target_commit" \
+      --render-evidence-receipt-env-file "$EVIDENCE_RECEIPT_ENV_FILE"
   done
   _install_as_service_user 0644 \
     "$target_release/deploy/systemd/eimemory-rpc.service" "$USER_SYSTEMD_DIR/eimemory-rpc.service"
   _user_systemctl daemon-reload
   _user_systemctl enable eimemory-rpc.service
   _user_systemctl restart eimemory-rpc.service
+}
+
+_refresh_openclaw_gateway_metadata() {
+  local metadata_release="${1:-$RELEASE_DIR}"
+  local target_commit="${2:-$COMMIT}"
+  if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ] || ! command -v systemctl >/dev/null 2>&1; then
+    return
+  fi
+  _run_as_service_user mkdir -p "$USER_SYSTEMD_DIR/openclaw-gateway.service.d"
+  local service_uid
+  service_uid="$(id -u "$SERVICE_USER" 2>/dev/null || id -u)"
+  "$PYTHON_BIN" -I -B "$metadata_release/deploy/install_managed_systemd_dropin.py" \
+    --source "$metadata_release/deploy/systemd/openclaw-gateway-eimemory.conf" \
+    --target "$USER_SYSTEMD_DIR/openclaw-gateway.service.d/90-eimemory-runtime.conf" \
+    --root "$USER_SYSTEMD_DIR" --owner-uid "$service_uid" --render-commit "$target_commit" \
+    --render-evidence-receipt-env-file "$EVIDENCE_RECEIPT_ENV_FILE"
+}
+
+_provision_evidence_receipt_key() {
+  "$PYTHON_BIN" -I -B "$REPO_DIR/deploy/ensure_evidence_receipt_key.py" \
+    --path "$EVIDENCE_RECEIPT_ENV_FILE" \
+    --user "$SERVICE_USER" \
+    --group "$SERVICE_GROUP"
+}
+
+_find_prior_release_commit() {
+  "$PYTHON_BIN" -I -B "$REPO_DIR/deploy/find_prior_immutable_release.py" \
+    --releases-root "$INSTALL_ROOT/releases" \
+    --repo-root "$REPO_DIR" \
+    --deployed-commit "$COMMIT" \
+    --runtime-root "$EIMEMORY_ROOT" \
+    --scope-agent "$EIMEMORY_DEPLOY_SCOPE_AGENT" \
+    --scope-workspace "$EIMEMORY_DEPLOY_SCOPE_WORKSPACE" \
+    --scope-user "$EIMEMORY_DEPLOY_SCOPE_USER"
 }
 
 _restart_current_services() {
@@ -256,7 +293,7 @@ _restart_current_services() {
 _verify_release_health() {
   local target_release="$1"
   local target_commit="$2"
-  if [ "$EIMEMORY_POST_SWITCH_GATES" != "1" ] || [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ]; then
+  if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ]; then
     return
   fi
   local target_version
@@ -279,13 +316,16 @@ _verify_release_health() {
 }
 
 _record_deployment_receipt() {
-  if [ "$EIMEMORY_POST_SWITCH_GATES" != "1" ] || [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ]; then
+  if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ]; then
     return
   fi
-  env EIMEMORY_ROOT="$EIMEMORY_ROOT" EIMEMORY_RUNTIME_COMMIT="$COMMIT" \
-    "$RELEASE_DIR/.venv/bin/eimemory" learn deployment-receipt \
+  env EIMEMORY_ROOT="$EIMEMORY_ROOT" EIMEMORY_CONFIG_DIR="$EIMEMORY_CONFIG_DIR" \
+    EIMEMORY_EVIDENCE_RECEIPT_ENV_FILE="$EVIDENCE_RECEIPT_ENV_FILE" \
+    EIMEMORY_RUNTIME_COMMIT="$COMMIT" \
+    "$RELEASE_DIR/.venv/bin/python" -I -B "$REPO_DIR/deploy/record_deployment_receipt.py" \
       --repo-root "$REPO_DIR" --current-link "$CURRENT_LINK" \
       --health-url "$EIMEMORY_HEALTH_URL" --prior-commit "$PREVIOUS_COMMIT" \
+      --deployed-commit "$COMMIT" \
       --scope-agent "$EIMEMORY_DEPLOY_SCOPE_AGENT" \
       --scope-workspace "$EIMEMORY_DEPLOY_SCOPE_WORKSPACE" \
       --scope-user "$EIMEMORY_DEPLOY_SCOPE_USER" --json
@@ -298,7 +338,9 @@ _run_post_switch_closure() {
   local closure_output closure_status summary_status
   closure_output="$(mktemp "$INSTALL_ROOT/.release-closure-${COMMIT}-XXXXXXXX.json")"
   chmod 0600 "$closure_output"
-  if env EIMEMORY_ROOT="$EIMEMORY_ROOT" EIMEMORY_RUNTIME_COMMIT="$COMMIT" \
+  if env EIMEMORY_ROOT="$EIMEMORY_ROOT" EIMEMORY_CONFIG_DIR="$EIMEMORY_CONFIG_DIR" \
+    EIMEMORY_EVIDENCE_RECEIPT_ENV_FILE="$EVIDENCE_RECEIPT_ENV_FILE" \
+    EIMEMORY_RUNTIME_COMMIT="$COMMIT" \
     "$PYTHON_BIN" -I -B "$RELEASE_DIR/deploy/run_with_governance_env.py" \
       --env-file "$GOVERNANCE_ENV_FILE" --optional -- \
       "$RELEASE_DIR/.venv/bin/eimemory" learn release-closure \
@@ -332,13 +374,9 @@ _rollback_current_release() {
     rollback_failed=1
   fi
   if [ -z "${PREVIOUS_CURRENT:-}" ] || [ ! -d "$PREVIOUS_CURRENT" ]; then
-    if ! rm -f "$CURRENT_LINK" 2>/dev/null; then
-      echo "rollback_step=remove_current status=failed" >&2
-      echo "rollback_current_release=failed" >&2
-      return 1
-    fi
-    echo "rollback_current_release=removed_no_previous" >&2
-    return "$rollback_failed"
+    echo "rollback_current_release=unavailable_no_previous" >&2
+    echo "rollback_preserved_failed_release=$RELEASE_DIR" >&2
+    return 1
   fi
   if [ "${EIMEMORY_DEPLOY_FAIL_ROLLBACK_STAGE:-}" = "link" ] || \
      ! { ln -sfn "$PREVIOUS_CURRENT" "$CURRENT_LINK.next" && mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"; }; then
@@ -346,7 +384,11 @@ _rollback_current_release() {
     echo "rollback_current_release=failed" >&2
     return 1
   fi
-  if ! _refresh_current_runtime_metadata "$PREVIOUS_CURRENT" "$PREVIOUS_COMMIT"; then
+  if ! _refresh_openclaw_gateway_metadata "$REPO_DIR" "$PREVIOUS_COMMIT"; then
+    echo "rollback_step=gateway_metadata status=failed" >&2
+    rollback_failed=1
+  fi
+  if ! _refresh_current_runtime_metadata "$PREVIOUS_CURRENT" "$PREVIOUS_COMMIT" "$REPO_DIR"; then
     echo "rollback_step=runtime_metadata status=failed" >&2
     rollback_failed=1
   fi
@@ -366,7 +408,7 @@ _rollback_current_release() {
     echo "rollback_step=plugin_runtime status=failed" >&2
     rollback_failed=1
   fi
-  if [ "$EIMEMORY_POST_SWITCH_GATES" = "1" ] && [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ]; then
+  if [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ]; then
     if ! _verify_release_health "$PREVIOUS_CURRENT" "$PREVIOUS_COMMIT"; then
       echo "rollback_step=previous_health status=failed" >&2
       rollback_failed=1
@@ -388,6 +430,11 @@ if ! git -C "$REPO_DIR" rev-parse --verify "$COMMIT^{commit}" >/dev/null 2>&1; t
   echo "Unknown commit: $COMMIT" >&2
   exit 2
 fi
+if [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ] && \
+   [ -n "$(git -C "$REPO_DIR" status --porcelain --untracked-files=all)" ]; then
+  echo "Authoritative deployment repository must be clean" >&2
+  exit 2
+fi
 
 mkdir -p "$INSTALL_ROOT/releases"
 if [ -L "$INSTALL_ROOT/releases" ] || [ -L "$RELEASE_DIR" ]; then
@@ -400,6 +447,16 @@ if [ "$(stat -c %u "$INSTALL_ROOT/releases")" != "$(id -u)" ]; then
 fi
 chmod 0700 "$INSTALL_ROOT/releases"
 
+PREVIOUS_CURRENT=""
+PREVIOUS_COMMIT=""
+if [ -e "$CURRENT_LINK" ] || [ -L "$CURRENT_LINK" ] || [ -d "$CURRENT_LINK" ]; then
+  if ! PREVIOUS_CURRENT="$(realpath -e -- "$CURRENT_LINK" 2>/dev/null)"; then
+    echo "Current release link is dangling or unresolvable: $CURRENT_LINK" >&2
+    exit 2
+  fi
+  PREVIOUS_COMMIT="$(basename "$PREVIOUS_CURRENT")"
+fi
+
 # Threat boundary: the deployment UID and its same-UID processes are trusted.
 # This transaction rejects pre-existing links, other-UID writes, and partial
 # failures. A hostile same-UID process requires a separate deployment account.
@@ -407,9 +464,22 @@ if { [ -e "$CURRENT_LINK" ] || [ -L "$CURRENT_LINK" ] || [ -d "$CURRENT_LINK" ];
    [[ -d "$RELEASE_DIR" && ! -L "$RELEASE_DIR" ]] && \
    "$PYTHON_BIN" -I -B -c \
    'from pathlib import Path; import sys; raise SystemExit(0 if Path(sys.argv[1]).resolve(strict=True) == Path(sys.argv[2]).resolve(strict=True) else 1)' \
-   "$CURRENT_LINK" "$RELEASE_DIR"; then
+  "$CURRENT_LINK" "$RELEASE_DIR"; then
   _clean_existing_release_and_validate_source
-  _refresh_current_runtime_metadata
+  if [ "$PREVIOUS_COMMIT" = "$COMMIT" ]; then
+    PREVIOUS_COMMIT="$(_find_prior_release_commit)"
+  fi
+  _ensure_runtime_dir "$EIMEMORY_CONFIG_DIR" 0750
+  _provision_evidence_receipt_key
+  if [ -x "$OPENCLAW_BIN" ]; then
+    "$PYTHON_BIN" -I -B "$REPO_DIR/deploy/ensure_openclaw_bridge_config.py" \
+      --path "$OPENCLAW_LOOP_CONFIG_PATH"
+  fi
+  _refresh_openclaw_gateway_metadata "$REPO_DIR" "$COMMIT"
+  _refresh_current_runtime_metadata "$RELEASE_DIR" "$COMMIT" "$REPO_DIR"
+  _restart_current_services
+  _verify_release_health "$RELEASE_DIR" "$COMMIT"
+  _record_deployment_receipt
   echo "release=$RELEASE_DIR"
   echo "current=$CURRENT_LINK"
   echo "commit=$COMMIT"
@@ -421,15 +491,6 @@ if [ -e "$RELEASE_DIR" ]; then
   _clean_existing_release_and_validate_source
 fi
 
-PREVIOUS_CURRENT=""
-PREVIOUS_COMMIT=""
-if [ -e "$CURRENT_LINK" ] || [ -L "$CURRENT_LINK" ] || [ -d "$CURRENT_LINK" ]; then
-  if ! PREVIOUS_CURRENT="$(realpath -e -- "$CURRENT_LINK" 2>/dev/null)"; then
-    echo "Current release link is dangling or unresolvable: $CURRENT_LINK" >&2
-    exit 2
-  fi
-  PREVIOUS_COMMIT="$(basename "$PREVIOUS_CURRENT")"
-fi
 if [ "$EIMEMORY_POST_SWITCH_GATES" = "1" ] && [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ] && \
    [[ ! "$PREVIOUS_COMMIT" =~ ^[0-9a-fA-F]{40}$ ]]; then
   echo "Post-switch gates require a prior immutable release commit" >&2
@@ -530,6 +591,7 @@ _ensure_runtime_dir "$EIMEMORY_LOG_DIR" 0750
   --path "$EIMEMORY_CONFIG_DIR/rpc.env" \
   --user "$SERVICE_USER" \
   --group "$SERVICE_GROUP"
+_provision_evidence_receipt_key
 if [ -x "$OPENCLAW_BIN" ]; then
   "$PYTHON_BIN" -I -B "$RELEASE_DIR/deploy/ensure_openclaw_bridge_config.py" \
     --path "$OPENCLAW_LOOP_CONFIG_PATH"
@@ -553,10 +615,7 @@ if [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ] && command -v systemctl >/dev/null 2
   _install_as_service_user 0644 \
     "$RELEASE_DIR/deploy/systemd/openclaw-feishu-reply-watchdog.service" "$USER_SYSTEMD_DIR/openclaw-feishu-reply-watchdog.service"
   SERVICE_UID="$(id -u "$SERVICE_USER" 2>/dev/null || id -u)"
-  "$PYTHON_BIN" -I -B "$RELEASE_DIR/deploy/install_managed_systemd_dropin.py" \
-    --source "$RELEASE_DIR/deploy/systemd/openclaw-gateway-eimemory.conf" \
-    --target "$USER_SYSTEMD_DIR/openclaw-gateway.service.d/90-eimemory-runtime.conf" \
-    --root "$USER_SYSTEMD_DIR" --owner-uid "$SERVICE_UID" --render-commit "$COMMIT"
+  _refresh_openclaw_gateway_metadata "$RELEASE_DIR" "$COMMIT"
   if ! PYTHON_RUNTIME_UNIT_OUTPUT="$(_run_as_service_user bash -s -- "$USER_SYSTEMD_DIR" < "$RELEASE_DIR/deploy/discover_python_runtime_units.sh")"; then
     echo "Unable to discover Python runtime systemd units" >&2
     exit 2
@@ -567,7 +626,8 @@ if [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ] && command -v systemctl >/dev/null 2
     "$PYTHON_BIN" -I -B "$RELEASE_DIR/deploy/install_managed_systemd_dropin.py" \
       --source "$RELEASE_DIR/deploy/systemd/eimemory-python-runtime.conf" \
       --target "$USER_SYSTEMD_DIR/$runtime_unit.d/90-eimemory-python-runtime.conf" \
-      --root "$USER_SYSTEMD_DIR" --owner-uid "$SERVICE_UID" --render-commit "$COMMIT"
+      --root "$USER_SYSTEMD_DIR" --owner-uid "$SERVICE_UID" --render-commit "$COMMIT" \
+      --render-evidence-receipt-env-file "$EVIDENCE_RECEIPT_ENV_FILE"
   done
   _install_as_service_user 0644 \
     "$RELEASE_DIR/deploy/systemd/eimemory-rpc.service" "$USER_SYSTEMD_DIR/eimemory-rpc.service"

@@ -618,7 +618,7 @@ def test_openclaw_agent_end_records_success_outcome_trace(tmp_path, monkeypatch)
         "passed": True,
         "method": "openclaw.agent_end",
         "evidence_refs": [result["event"]["id"]],
-        "checks": {"verification": "verified", "result": ""},
+        "checks": {"verification": "verified", "result": "", "tool_receipts": []},
     }
     assert payload["feedback"] == "looks good"
     assert payload["risk"] == ""

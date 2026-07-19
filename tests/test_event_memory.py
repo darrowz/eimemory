@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from eimemory.api.runtime import Runtime
 from eimemory.adapters.openclaw.hooks import OpenClawMemoryHooks
 from eimemory.adapters.eibrain.rpc import EIBrainRPCBridge
@@ -243,10 +245,9 @@ def test_openclaw_task_end_user_correction_records_bad_outcome_and_intent_patter
     )
 
 
-def test_openclaw_session_end_marks_success_without_verification_as_missing(tmp_path) -> None:
+def test_openclaw_session_end_is_lifecycle_only_and_does_not_create_task_outcome(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     hooks = OpenClawMemoryHooks(runtime)
-    scope = {"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"}
 
     result = hooks.on_session_end(
         {
@@ -265,12 +266,77 @@ def test_openclaw_session_end_marks_success_without_verification_as_missing(tmp_
     )
 
     assert result["event"]["user_phrase"] == "整理今天的会议纪要"
-    assert result["outcome"]["outcome"] == "verification_missing"
-    assert "verification" in result["outcome"]["reason"]
+    assert result["outcome"]["outcome"] == "not_recorded"
+    assert result["outcome"]["reason"] == "session_end_lifecycle_only"
+    assert result["outcome"]["recorded"] is False
+    assert "outcome_trace" not in result
+    assert result["loop_task"] == {}
 
-    policy = runtime.search_policy("整理今天的会议纪要", scope=scope)
-    assert policy["policy_suggestions"][0]["source"] == "event_outcome"
-    assert policy["policy_suggestions"][0]["outcome"] == "verification_missing"
+    rows = runtime.store.sqlite.conn.execute(
+        "SELECT id FROM event_outcomes WHERE event_id = ?",
+        (result["event"]["id"],),
+    ).fetchall()
+    assert rows == []
+
+@pytest.mark.parametrize(
+    ("query", "tools", "expected_task_type"),
+    [
+        ("Search GitHub releases and compare primary sources.", ["web.search"], "search.discovery"),
+        ("Synthesize the findings from three research papers.", ["web.search", "pdf.read"], "research.synthesis"),
+        ("Patch the Python module and run pytest.", ["apply_patch", "exec"], "code.implementation"),
+        ("Check the gateway service health and deployment status.", ["systemctl", "exec"], "ops.health"),
+        ("Update the spreadsheet and calendar action list.", ["spreadsheet", "calendar"], "office.daily_task"),
+    ],
+)
+def test_openclaw_verified_agent_end_derives_specific_task_type(
+    tmp_path,
+    monkeypatch,
+    query: str,
+    tools: list[str],
+    expected_task_type: str,
+) -> None:
+    from eimemory.governance.tool_receipts import sign_tool_receipt
+
+    monkeypatch.setenv(
+        "EIMEMORY_EVIDENCE_RECEIPT_HMAC_KEY",
+        "test-openclaw-receipt-key-with-at-least-32-characters",
+    )
+    runtime = Runtime.create(root=tmp_path)
+    hooks = OpenClawMemoryHooks(runtime)
+
+    result = hooks.on_agent_end(
+        {
+            "session_id": f"sess-{expected_task_type}",
+            "run_id": f"run-{expected_task_type}",
+            "query": query,
+            "task_context": {"task_type": "communication"},
+            "user_messages": [{"content": query}],
+            "assistant_messages": [{"content": "The requested work completed successfully."}],
+            "tools": tools,
+            "verification": f"openclaw.after_tool_call:1:{tools[-1]}",
+            "verification_receipts": [
+                sign_tool_receipt({
+                    "receipt_version": 1,
+                    "attestation": "hmac-sha256",
+                    "source": "openclaw.after_tool_call",
+                    "tool_name": tools[-1],
+                    "tool_call_id": f"call-{expected_task_type}",
+                    "duration_ms": 12,
+                    "passed": True,
+                    "result_digest": "a" * 64,
+                    "session_id": f"sess-{expected_task_type}",
+                    "run_id": f"run-{expected_task_type}",
+                })
+            ],
+            "outcome": {"success": True, "verified": True},
+        }
+    )
+
+    assert result["event"]["outcome_trace_task_type"] == expected_task_type
+    assert result["event"]["verification_receipts"][0]["passed"] is True
+    trace = runtime.store.get_by_id(result["outcome_trace"]["record_id"])
+    assert trace is not None
+    assert trace.content["payload"]["task_type"] == expected_task_type
 
 
 def test_openclaw_agent_end_success_without_verification_does_not_feed_replay_samples(tmp_path) -> None:
@@ -296,6 +362,7 @@ def test_openclaw_agent_end_success_without_verification_does_not_feed_replay_sa
     assert result["outcome"]["outcome"] == "not_recorded"
     assert result["outcome"]["reason"] == "agent_end_success_without_explicit_verification"
     assert result["outcome"]["recorded"] is False
+    assert result["loop_task"]["status"] == "failed"
     assert result["outcome"]["verification"] == ""
     assert "outcome_trace" not in result
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from eimemory.api.runtime import Runtime
-from eimemory.governance.capability_dashboard import _verified_code_patch_promotion
+from eimemory.governance.capability_dashboard import VERIFIED_REAL_TASK_METHODS, _verified_code_patch_promotion
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
@@ -419,6 +419,59 @@ def test_dashboard_counts_verified_openclaw_tasks_and_failure_blame_separately(t
             },
             scope=SCOPE,
         )
+        missing_receipt_event = runtime.store.record_event(
+            {
+                "source": "openclaw.agent_end",
+                "hook": "agent_end",
+                "session_id": "session-missing-receipt",
+                "event_type": "ops.health",
+                "outcome_trace_id": "missing-receipt",
+                "outcome_trace_task_type": "ops.health",
+                "verification": "openclaw.after_tool_call:1:systemctl",
+                "verification_receipts": [
+                    {
+                        "receipt_version": 1,
+                        "attestation": "hmac-sha256",
+                        "source": "openclaw.after_tool_call",
+                        "tool_name": "systemctl",
+                        "tool_call_id": "forged-call",
+                        "duration_ms": 1,
+                        "passed": True,
+                        "result_digest": "a" * 64,
+                        "session_id": "session-missing-receipt",
+                        "run_id": "forged-run",
+                        "signature": "b" * 64,
+                    }
+                ],
+            },
+            scope=scope_ref,
+        )
+        runtime.record_outcome(
+            missing_receipt_event["id"],
+            {
+                "outcome": "good",
+                "success": True,
+                "verified": True,
+                "source": "openclaw.agent_end",
+                "source_trust": "system_verified",
+            },
+            scope=SCOPE,
+        )
+        runtime.record_outcome_trace(
+            {
+                "source": "openclaw.agent_end",
+                "trace_id": "missing-receipt",
+                "session_id": "session-missing-receipt",
+                "task_type": "ops.health",
+                "outcome": {"status": "success", "success": True, "rehearsal": False},
+                "verifier": {
+                    "passed": True,
+                    "method": "openclaw.agent_end",
+                    "evidence_refs": [missing_receipt_event["id"]],
+                },
+            },
+            scope=SCOPE,
+        )
 
         report = runtime.build_capability_dashboard_metrics(scope=SCOPE, persist=False)
     finally:
@@ -627,3 +680,7 @@ def _executed_patch_evidence(*, candidate_id: str, commit: str, success: bool) -
             },
         },
     }
+
+
+def test_l5_real_task_sources_exclude_session_lifecycle_events() -> None:
+    assert VERIFIED_REAL_TASK_METHODS == {"openclaw.agent_end", "openclaw.task_end"}

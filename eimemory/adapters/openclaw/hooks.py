@@ -8,16 +8,18 @@ from hashlib import sha256
 from time import perf_counter
 from typing import Any
 
+from eimemory.adapters.openclaw.task_contract import classify_openclaw_task_type
 from eimemory.api.runtime import Runtime
-from eimemory.identity import hongtu_identity_meta, hongtu_scope
 from eimemory.governance.evidence_contract import current_release_identity, release_identity_payload
+from eimemory.governance.tool_receipts import verified_tool_receipts
+from eimemory.identity import hongtu_identity_meta, hongtu_scope
 from eimemory.metadata import business_metadata
 from eimemory.models.records import RecallBundle, RecordEnvelope, ScopeRef
+from eimemory.ops import openclaw_loop
 from eimemory.persona.correction import persona_feedback_from_user_text
 from eimemory.persona.prompt import build_persona_guidance, disabled_persona_guidance, persona_enabled
 from eimemory.persona.schema import PersonaTraceEvent
 from eimemory.persona.store import PersonaStore
-from eimemory.ops import openclaw_loop
 
 
 DEFAULT_RECALL_MODE = "fast"
@@ -1449,18 +1451,25 @@ class OpenClawMemoryHooks:
                 not terminal_failure
                 and success is not False
                 and verified is not False
+                and bool(str(verification or "").strip())
+                and not _is_unexecuted_verification_state(verification)
                 and str(result or "").lower() not in {"bad", "failed", "failure"}
             )
-            failure_reason = "" if passed else self._first_text(
-                outcome.get("notes"),
-                outcome.get("reason"),
-                outcome.get("error"),
-                event.get("error"),
-                outcome.get("feedback"),
-                result,
-                verification,
-                terminal_failure["failure_class"] if terminal_failure else "",
-            )
+            if passed:
+                failure_reason = ""
+            elif success is not False and not str(verification or "").strip():
+                failure_reason = "explicit_verification_required"
+            else:
+                failure_reason = self._first_text(
+                    outcome.get("notes"),
+                    outcome.get("reason"),
+                    outcome.get("error"),
+                    event.get("error"),
+                    outcome.get("feedback"),
+                    result,
+                    verification,
+                    terminal_failure["failure_class"] if terminal_failure else "",
+                )
             openclaw_loop.record_verification(
                 task_id,
                 verifier=f"openclaw.{end_kind}",
@@ -1516,6 +1525,16 @@ class OpenClawMemoryHooks:
         task_context = self._task_context_from_event(event)
         outcome = self._outcome_from_event(event)
         user_messages = self._user_messages_from_event(event)
+        trace_query = self._clean_prompt_query(str(event.get("query") or event.get("raw_query") or "").strip())
+        tools = self._terminal_tools(event, task_context=task_context)
+        task_type = self._terminal_task_type(
+            event,
+            task_context=task_context,
+            query=trace_query or self._first_text(*user_messages),
+            tools=tools,
+        )
+        if task_type:
+            task_context = {**task_context, "task_type": task_type}
         input_quality = self._terminal_input_quality(event, user_messages=user_messages)
         terminal_event = {**event, "input_quality": input_quality}
         correction = self._correction_from_event(
@@ -1537,7 +1556,10 @@ class OpenClawMemoryHooks:
             user_phrase=user_phrase,
             correction=correction,
         )
+        verification_receipts = self._terminal_verification_receipts(event)
         verification = self._terminal_verification(event, task_context=task_context, outcome=outcome)
+        if verification.startswith("openclaw.after_tool_call:") and not verification_receipts:
+            verification = ""
         result = self._terminal_result(event, outcome=outcome, assistant_text=assistant_text)
         policy_update = self._terminal_policy_update(
             user_phrase=user_phrase,
@@ -1547,7 +1569,6 @@ class OpenClawMemoryHooks:
             task_context=task_context,
         )
         action_path = self._terminal_action_path(event, task_context=task_context)
-        tools = self._terminal_tools(event, task_context=task_context)
         evidence = self._terminal_evidence(
             event,
             outcome=outcome,
@@ -1556,7 +1577,6 @@ class OpenClawMemoryHooks:
             correction=correction,
         )
         policy_attribution = self._resolve_policy_attribution(event=event, task_context=task_context)
-        trace_query = self._clean_prompt_query(str(event.get("query") or event.get("raw_query") or "").strip())
         trace_context = self._trace_context_from_event(
             terminal_event,
             task_context=task_context,
@@ -1565,6 +1585,7 @@ class OpenClawMemoryHooks:
         event_payload = {
             "source": f"openclaw.{end_kind}",
             "session_id": self._session_id_from_event(event),
+            "run_id": self._first_text(event.get("run_id"), event.get("runId")),
             "hook": end_kind,
             "outcome_trace_id": trace_context["trace_id"],
             "outcome_trace_task_type": trace_context["task_type"],
@@ -1595,6 +1616,7 @@ class OpenClawMemoryHooks:
             "result": result,
             "evidence": evidence,
             "verification": verification,
+            "verification_receipts": verification_receipts,
             "lesson": self._first_text(event.get("lesson"), task_context.get("lesson")),
             "next_policy": self._first_text(
                 event.get("next_policy"),
@@ -1612,7 +1634,9 @@ class OpenClawMemoryHooks:
         release = current_release_identity(self.runtime, scope)
         if release is not None:
             event_payload.update(release_identity_payload(release))
-            event_payload["evidence_class"] = "verified_real_task"
+            event_payload["evidence_class"] = (
+                "verified_real_task" if end_kind in {"agent_end", "task_end"} else "lifecycle_event"
+            )
         terminal_key = self._terminal_idempotency_key(event=event, end_kind=end_kind)
         if terminal_key:
             event_payload["id"] = "evt_openclaw_" + self._stable_hash(
@@ -1672,7 +1696,7 @@ class OpenClawMemoryHooks:
             )
             if pattern_payload:
                 pattern = self.runtime.upsert_intent_pattern(pattern_payload, scope=scope)
-        loop_task = self._openclaw_loop_close(
+        loop_task = {} if end_kind == "session_end" else self._openclaw_loop_close(
             event=event,
             task_context=task_context,
             outcome=outcome,
@@ -1689,6 +1713,8 @@ class OpenClawMemoryHooks:
         }
 
     def _should_record_terminal_outcome(self, outcome_payload: dict, *, end_kind: str) -> bool:
+        if end_kind == "session_end":
+            return False
         return not (
             end_kind == "agent_end"
             and str(outcome_payload.get("outcome") or "") == "uncertain"
@@ -1723,6 +1749,35 @@ class OpenClawMemoryHooks:
     def _task_context_from_event(self, event: dict) -> dict:
         task_context = event.get("task_context") or event.get("taskContext") or {}
         return dict(task_context) if isinstance(task_context, dict) else {}
+
+    def _terminal_task_type(
+        self,
+        event: dict,
+        *,
+        task_context: dict,
+        query: str,
+        tools: list[str],
+    ) -> str:
+        trace_context = self._merged_dict(
+            event.get("trace_context"),
+            event.get("traceContext"),
+            task_context.get("trace_context"),
+            task_context.get("traceContext"),
+        )
+        explicit = self._first_text(
+            event.get("task_type"),
+            event.get("taskType"),
+            task_context.get("task_type"),
+            task_context.get("taskType"),
+            trace_context.get("task_type"),
+            trace_context.get("taskType"),
+        )
+        return classify_openclaw_task_type(
+            explicit=explicit,
+            query=query,
+            tools=tools,
+            action_path=self._terminal_action_path(event, task_context=task_context),
+        )
 
     def _outcome_from_event(self, event: dict) -> dict:
         outcome = event.get("outcome") or {}
@@ -2082,6 +2137,14 @@ class OpenClawMemoryHooks:
                 evidence.append(value)
         return self._dedupe_strings(evidence)
 
+    def _terminal_verification_receipts(self, event: dict) -> list[dict[str, Any]]:
+        raw = event.get("verification_receipts") or event.get("verificationReceipts") or []
+        return verified_tool_receipts(
+            raw,
+            session_id=self._session_id_from_event(event),
+            run_id=self._first_text(event.get("run_id"), event.get("runId")),
+        )
+
     def _terminal_confidence(self, *, correction: str, verification: str, outcome: dict) -> float:
         if correction:
             return 0.92
@@ -2109,7 +2172,10 @@ class OpenClawMemoryHooks:
         success = self._bool_or_none(outcome.get("success"))
         if success is None:
             success = self._bool_or_none(event.get("success"))
-        if diagnostic_only:
+        if end_kind == "session_end":
+            outcome_name = "uncertain"
+            reason = "session_end_lifecycle_only"
+        elif diagnostic_only:
             outcome_name = "uncertain"
             reason = "terminal_input_quality_gate"
         elif correction:
@@ -2292,7 +2358,11 @@ class OpenClawMemoryHooks:
                 "passed": passed,
                 "method": f"openclaw.{end_kind}",
                 "evidence_refs": [recorded_event_id],
-                "checks": {"verification": verification, "result": result},
+                "checks": {
+                    "verification": verification,
+                    "result": result,
+                    "tool_receipts": self._terminal_verification_receipts(event),
+                },
             },
             "feedback": self._outcome_trace_feedback(event=event, outcome=outcome, correction=correction),
             "risk": self._first_present(
