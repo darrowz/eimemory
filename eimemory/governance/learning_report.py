@@ -15,7 +15,6 @@ REPORT_KINDS = [
     "learning_goal",
     "capability_candidate",
     "promotion_request",
-    "capability_score",
     "regression_watch",
     "learning_playbook",
 ]

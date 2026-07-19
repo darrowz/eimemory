@@ -7,6 +7,32 @@ from eimemory.governance.capability_dashboard import _verified_code_patch_promot
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
+def test_capability_dashboard_reuses_one_outcome_trace_page(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    calls: list[tuple[tuple, dict]] = []
+
+    def outcome_traces(*args, **kwargs):
+        calls.append((args, kwargs))
+        return []
+
+    monkeypatch.setattr(
+        "eimemory.governance.capability_dashboard._outcome_trace_records",
+        outcome_traces,
+    )
+
+    try:
+        report = runtime.build_capability_dashboard_metrics(
+            scope={"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"},
+            persist=False,
+            limit=500,
+        )
+    finally:
+        runtime.close()
+
+    assert report["ok"] is True
+    assert len(calls) == 1
+
+
 SCOPE = {"agent_id": "agent-dashboard", "workspace_id": "capability-dashboard"}
 
 

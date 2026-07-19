@@ -53,6 +53,96 @@ def test_openclaw_memory_learn_status_reports_learning_state(tmp_path) -> None:
     assert status["code_sandbox"]["code_patch_proposal"] is True
 
 
+def test_openclaw_tools_latest_audit_uses_indexed_session_lookup(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    tools = OpenClawMemoryTools(runtime)
+    scope = ScopeRef(agent_id="hongtu", workspace_id="embodied", user_id="darrow")
+    runtime.store.append(
+        RecordEnvelope.create(
+            kind="recall_view",
+            title="Session audit",
+            source="openclaw.before_prompt_build",
+            scope=scope,
+            content={"session_id": "sess-indexed-tool"},
+            meta={"session_id": "sess-indexed-tool"},
+        )
+    )
+    def reject_audit_scan(*_args, **_kwargs):
+        raise AssertionError("OpenClaw tool scanned record pages instead of using the indexed audit lookup")
+
+    monkeypatch.setattr(runtime.store, "list_records", reject_audit_scan)
+    try:
+        audit = tools._latest_recall_audit(
+            session_id="sess-indexed-tool",
+            scope={
+                "tenant_id": scope.tenant_id,
+                "agent_id": scope.agent_id,
+                "workspace_id": scope.workspace_id,
+                "user_id": scope.user_id,
+            },
+        )
+    finally:
+        runtime.close()
+
+    assert audit is not None
+    assert audit.content["session_id"] == "sess-indexed-tool"
+
+
+def test_openclaw_tools_latest_audit_rejects_alias_scope_policy_evidence(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    tools = OpenClawMemoryTools(runtime)
+    runtime.store.append(
+        RecordEnvelope.create(
+            kind="recall_view",
+            title="Legacy alias audit",
+            source="openclaw.before_prompt_build",
+            scope=ScopeRef(agent_id="main", workspace_id="repo-x", user_id=""),
+            content={"session_id": "sess-alias-tool"},
+            meta={"session_id": "sess-alias-tool"},
+        )
+    )
+    try:
+        audit = tools._latest_recall_audit(
+            session_id="sess-alias-tool",
+            scope={"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"},
+        )
+    finally:
+        runtime.close()
+
+    assert audit is None
+
+
+def test_promotion_watch_summary_excludes_capability_score_history(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    tools = OpenClawMemoryTools(runtime)
+    scope = ScopeRef(agent_id="hongtu", workspace_id="embodied", user_id="darrow")
+    try:
+        runtime.store.append(
+            RecordEnvelope.create(
+                kind="capability_score",
+                title="Not a promotion watch",
+                scope=scope,
+                content={"evidence_items": [{"blob": "x" * 500_000}]},
+            )
+        )
+        original = runtime.store.list_records
+
+        def reject_capability_score_load(*args, **kwargs):
+            kinds = kwargs.get("kinds")
+            if kinds is None and args:
+                kinds = args[0]
+            if "capability_score" in list(kinds or []):
+                raise AssertionError("promotion watch loaded capability_score payloads")
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(runtime.store, "list_records", reject_capability_score_load)
+        summary = tools._summarize_promotion_watch(scope)
+    finally:
+        runtime.close()
+
+    assert summary["request_count"] == 0
+
+
 def test_openclaw_memory_run_autonomy_dry_run_defaults_to_safe_mode(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path)
     tools = OpenClawMemoryTools(runtime)

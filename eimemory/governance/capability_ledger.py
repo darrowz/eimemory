@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
 import os
+from collections import Counter
+from hashlib import sha256
 from statistics import mean
 from typing import Any
 
@@ -23,6 +26,20 @@ SEEDED_LEDGER_CAPABILITIES = [
     "safety.boundary",
 ]
 
+MAX_EVIDENCE_ITEMS = 500
+MAX_EVIDENCE_ITEMS_BYTES = 262_144
+MAX_EVIDENCE_SUMMARY_CHARS = 500
+MAX_EVIDENCE_SOURCE_IDS = 50
+JSON_ARRAY_OVERHEAD_BYTES = len(b"[]")
+MAX_EVIDENCE_RECORD_IDS = 500
+MAX_EVIDENCE_ID_CHARS = 512
+MAX_EVIDENCE_LABELS = 100
+MAX_EVIDENCE_LABEL_CHARS = 128
+MAX_EVIDENCE_SOURCE_KINDS = 100
+MAX_CALLER_META_BYTES = 131_072
+MAX_CAPABILITY_CHARS = 256
+MAX_LOOP_ID_CHARS = 512
+
 
 def record_capability_score(
     runtime: Any,
@@ -39,35 +56,120 @@ def record_capability_score(
     meta: dict[str, Any] | None = None,
 ) -> str:
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+    capability = str(capability or "").strip()
+    loop_id = str(loop_id or "").strip()
+    if not capability or len(capability) > MAX_CAPABILITY_CHARS:
+        raise ValueError(f"capability must contain 1..{MAX_CAPABILITY_CHARS} characters")
+    if not loop_id or len(loop_id) > MAX_LOOP_ID_CHARS:
+        raise ValueError(f"loop_id must contain 1..{MAX_LOOP_ID_CHARS} characters")
+    caller_meta = dict(meta or {})
+    caller_meta_bytes = len(
+        json.dumps(caller_meta, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+    )
+    if caller_meta_bytes > MAX_CALLER_META_BYTES:
+        raise ValueError(f"caller meta exceeds {MAX_CALLER_META_BYTES} bytes")
+    raw_evidence_record_ids = [str(value) for value in list(evidence_record_ids or []) if str(value or "").strip()]
+    raw_evidence_tiers = [str(value) for value in list(evidence_tiers or []) if str(value or "").strip()]
+    raw_evidence_sources = [str(value) for value in list(evidence_sources or []) if str(value or "").strip()]
+    stored_evidence_record_ids = _bounded_text_list(
+        raw_evidence_record_ids,
+        item_limit=MAX_EVIDENCE_RECORD_IDS,
+        char_limit=MAX_EVIDENCE_ID_CHARS,
+    )
+    stored_evidence_tiers = _bounded_text_list(
+        raw_evidence_tiers,
+        item_limit=MAX_EVIDENCE_LABELS,
+        char_limit=MAX_EVIDENCE_LABEL_CHARS,
+    )
+    stored_evidence_sources = _bounded_text_list(
+        raw_evidence_sources,
+        item_limit=MAX_EVIDENCE_LABELS,
+        char_limit=MAX_EVIDENCE_LABEL_CHARS,
+    )
+    evidence_record_ids_digest = _stable_json_digest(raw_evidence_record_ids)
+    evidence_tiers_digest = _stable_json_digest(raw_evidence_tiers)
+    evidence_sources_digest = _stable_json_digest(raw_evidence_sources)
     sequence = _next_capability_score_sequence(runtime, scope=scope_ref, capability=capability)
-    semantic_key = stable_semantic_key("capability_score", capability, loop_id, score, evidence_record_ids or [])
+    semantic_key = stable_semantic_key("capability_score", capability, loop_id, score, evidence_record_ids_digest)
+    raw_evidence_items = [dict(item) for item in list(evidence_items or []) if isinstance(item, dict)]
+    raw_source_kinds = [
+        str(item.get("source_kind") or "").strip()
+        for item in raw_evidence_items
+        if str(item.get("source_kind") or "").strip()
+    ]
+    if any(len(source_kind) > MAX_EVIDENCE_LABEL_CHARS for source_kind in raw_source_kinds):
+        raise ValueError(f"evidence source_kind exceeds {MAX_EVIDENCE_LABEL_CHARS} characters")
+    if len(set(raw_source_kinds)) > MAX_EVIDENCE_SOURCE_KINDS:
+        raise ValueError(f"evidence source_kind count exceeds {MAX_EVIDENCE_SOURCE_KINDS}")
+    compact_evidence_items, dropped_field_count = _compact_evidence_items(raw_evidence_items)
+    evidence_items_digest = sha256(
+        json.dumps(raw_evidence_items, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
+    evidence_source_counts = dict(
+        sorted(
+            Counter(raw_source_kinds).items()
+        )
+    )
+    single_source = stored_evidence_sources[0].strip() if len(raw_evidence_sources) == 1 else ""
+    if not evidence_source_counts and single_source:
+        evidence_source_counts = {
+            single_source: len(raw_evidence_items) if raw_evidence_items else len(raw_evidence_record_ids)
+        }
+    evidence_projection_meta = {
+        "evidence_items_input_count": len(raw_evidence_items),
+        "evidence_items_stored_count": len(compact_evidence_items),
+        "evidence_items_truncated": len(compact_evidence_items) < len(raw_evidence_items),
+        "evidence_items_fields_filtered": dropped_field_count > 0,
+        "evidence_items_dropped_field_count": dropped_field_count,
+        "evidence_items_rejected_count": len(raw_evidence_items) - len(compact_evidence_items),
+        "evidence_items_digest": evidence_items_digest,
+        "evidence_source_counts": evidence_source_counts,
+        "evidence_record_ids_input_count": len(raw_evidence_record_ids),
+        "evidence_record_ids_stored_count": len(stored_evidence_record_ids),
+        "evidence_record_ids_truncated": stored_evidence_record_ids != raw_evidence_record_ids,
+        "evidence_record_ids_digest": evidence_record_ids_digest,
+        "evidence_tiers_input_count": len(raw_evidence_tiers),
+        "evidence_tiers_stored_count": len(stored_evidence_tiers),
+        "evidence_tiers_truncated": stored_evidence_tiers != raw_evidence_tiers,
+        "evidence_tiers_digest": evidence_tiers_digest,
+        "evidence_sources_input_count": len(raw_evidence_sources),
+        "evidence_sources_stored_count": len(stored_evidence_sources),
+        "evidence_sources_truncated": stored_evidence_sources != raw_evidence_sources,
+        "evidence_sources_digest": evidence_sources_digest,
+    }
     content = {
         "capability": capability,
         "score": round(float(score), 3),
-        "evidence_record_ids": list(evidence_record_ids or []),
-        "evidence_items": list(evidence_items or []),
-        "evidence_tiers": list(evidence_tiers or []),
-        "evidence_sources": list(evidence_sources or []),
+        "evidence_record_ids": stored_evidence_record_ids,
+        "evidence_items": compact_evidence_items,
+        **evidence_projection_meta,
+        "evidence_tiers": stored_evidence_tiers,
+        "evidence_sources": stored_evidence_sources,
         "regression_count": regression_count,
         "score_sequence": sequence,
     }
-    merged_meta: dict[str, Any] = {
+    canonical_meta: dict[str, Any] = {
         "capability": capability,
         "score": round(float(score), 3),
         "score_sequence": sequence,
-        "evidence_count": len(evidence_record_ids or []),
-        "evidence_tiers": list(evidence_tiers or []),
-        "evidence_sources": list(evidence_sources or []),
+        "evidence_count": len(raw_evidence_record_ids),
+        "evidence_tiers": stored_evidence_tiers,
+        "evidence_sources": stored_evidence_sources,
         "regression_count": regression_count,
     }
-    if meta:
-        merged_meta.update(meta)
-        if isinstance(meta.get("proposal_card"), dict):
-            content["proposal_card"] = dict(meta["proposal_card"])
+    merged_meta = dict(canonical_meta)
+    if caller_meta:
+        merged_meta.update(caller_meta)
+        if isinstance(caller_meta.get("proposal_card"), dict):
+            content["proposal_card"] = dict(caller_meta["proposal_card"])
+    # Canonical score and integrity fields are derived from the input and must
+    # win over caller-provided metadata.
+    merged_meta.update(canonical_meta)
+    merged_meta.update(evidence_projection_meta)
     tier = str(merged_meta.get("authority_tier") or "L0")
     # Re-read HARNESS_PATCH_V2 at call time so monkeypatch.setenv in tests takes
     # effect (the module-level constant in harness_patch is captured at import).
-    if os.environ.get("HARNESS_PATCH_V2") == "1" and meta and str(meta.get("kind") or "") == "candidate_promotion":
+    if os.environ.get("HARNESS_PATCH_V2") == "1" and caller_meta and str(caller_meta.get("kind") or "") == "candidate_promotion":
         card = content.get("proposal_card") if isinstance(content, dict) else None
         if not card or not isinstance(card, dict):
             raise ValueError(
@@ -137,13 +239,22 @@ def build_capability_ledger(
             pass
     normalized_since = _normalize_date_bound(since, end_of_day=False)
     normalized_until = _normalize_date_bound(until, end_of_day=True)
-    records = runtime.store.list_records(
-        kinds=["capability_score"],
-        scope=scope_ref,
-        limit=limit,
-        since=normalized_since,
-        until=normalized_until,
-    )
+    compact_loader = getattr(runtime.store, "list_capability_scores_compact", None)
+    if callable(compact_loader):
+        records = compact_loader(
+            scope=scope_ref,
+            limit=limit,
+            since=normalized_since,
+            until=normalized_until,
+        )
+    else:
+        records = runtime.store.list_records(
+            kinds=["capability_score"],
+            scope=scope_ref,
+            limit=limit,
+            since=normalized_since,
+            until=normalized_until,
+        )
     records = [
         record
         for record in records
@@ -296,6 +407,16 @@ def _is_candidate_gate_failure_score(record: RecordEnvelope) -> bool:
 def _evidence_source_counts(records: list[RecordEnvelope]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for record in records:
+        projected = record.meta.get("evidence_source_counts") if isinstance(record.meta, dict) else None
+        if isinstance(projected, dict):
+            for source, raw_count in projected.items():
+                try:
+                    count = max(0, int(raw_count))
+                except (TypeError, ValueError):
+                    count = 0
+                if str(source).strip() and count:
+                    counts[str(source)] = counts.get(str(source), 0) + count
+            continue
         items = record.content.get("evidence_items") if isinstance(record.content, dict) else None
         if isinstance(items, list) and items:
             for item in items:
@@ -309,6 +430,64 @@ def _evidence_source_counts(records: list[RecordEnvelope]) -> dict[str, int]:
         for source in _record_list(record, "evidence_sources"):
             counts[source] = counts.get(source, 0) + max(1, evidence_count)
     return dict(sorted(counts.items()))
+
+
+def _compact_evidence_items(items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
+    compact: list[dict[str, Any]] = []
+    used_bytes = JSON_ARRAY_OVERHEAD_BYTES
+    dropped_field_count = 0
+    scalar_keys = (
+        "source_id",
+        "source_kind",
+        "evidence_tier",
+        "score",
+        "capability",
+        "contract_verified",
+        "case_id",
+        "contract_schema",
+        "regression",
+        "semantic_key",
+    )
+    for item in items[:MAX_EVIDENCE_ITEMS]:
+        item_dropped_field_count = 0
+        summary: dict[str, Any] = {
+            key: item[key]
+            for key in scalar_keys
+            if key in item and isinstance(item[key], (str, int, float, bool))
+        }
+        if str(item.get("summary") or "").strip():
+            raw_summary = str(item.get("summary") or "")
+            summary["summary"] = raw_summary[:MAX_EVIDENCE_SUMMARY_CHARS]
+            if len(raw_summary) > MAX_EVIDENCE_SUMMARY_CHARS:
+                item_dropped_field_count += 1
+        source_ids = item.get("source_record_ids")
+        if isinstance(source_ids, list):
+            summary["source_record_ids"] = [
+                str(value) for value in source_ids[:MAX_EVIDENCE_SOURCE_IDS] if str(value or "").strip()
+            ]
+            if len(summary["source_record_ids"]) < len(source_ids):
+                item_dropped_field_count += 1
+        represented_keys = set(summary)
+        item_dropped_field_count += len(set(item) - represented_keys)
+        encoded = json.dumps(summary, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+        if compact and used_bytes + len(encoded) + 1 > MAX_EVIDENCE_ITEMS_BYTES:
+            break
+        if len(encoded) + 2 > MAX_EVIDENCE_ITEMS_BYTES:
+            continue
+        compact.append(summary)
+        dropped_field_count += item_dropped_field_count
+        used_bytes += len(encoded) + 1
+    return compact, dropped_field_count
+
+
+def _bounded_text_list(values: list[str], *, item_limit: int, char_limit: int) -> list[str]:
+    return [str(value)[: max(0, int(char_limit))] for value in values[: max(0, int(item_limit))]]
+
+
+def _stable_json_digest(value: Any) -> str:
+    return sha256(
+        json.dumps(value, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
 
 
 def _normalize_date_bound(value: str | None, *, end_of_day: bool) -> str:

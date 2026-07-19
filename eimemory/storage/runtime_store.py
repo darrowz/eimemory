@@ -277,6 +277,44 @@ class RuntimeStore:
                 status=status,
             )
 
+    def count_records_exact_scope(
+        self,
+        *,
+        kinds: list[str] | None = None,
+        scope: ScopeRef | dict,
+        status: str | None = None,
+        statuses: list[str] | set[str] | tuple[str, ...] | None = None,
+        since: str | None = None,
+        until: str | None = None,
+    ) -> int:
+        with self._lock:
+            scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+            return self.sqlite.count_records_exact_scope(
+                kinds=kinds,
+                scope=scope_ref,
+                status=status,
+                statuses=statuses,
+                since=since,
+                until=until,
+            )
+
+    def list_capability_scores_compact(
+        self,
+        *,
+        scope: ScopeRef | dict,
+        limit: int = 500,
+        since: str | None = None,
+        until: str | None = None,
+    ) -> list[RecordEnvelope]:
+        with self._lock:
+            scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+            return self.sqlite.list_capability_scores_compact(
+                scope=scope_ref,
+                limit=limit,
+                since=since,
+                until=until,
+            )
+
     def count_records_by_meta_value(
         self,
         *,

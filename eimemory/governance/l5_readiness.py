@@ -241,13 +241,17 @@ def _evidence_counts(runtime: Any, *, scope: ScopeRef, limit: int) -> dict[str, 
         "l5_closed_loop",
     ]
     counts: dict[str, int] = {}
+    exact_counter = getattr(runtime.store, "count_records_exact_scope", None)
     for kind in kinds:
         try:
-            counts[kind] = sum(
-                1
-                for record in runtime.store.list_records(kinds=[kind], scope=scope, limit=limit)
-                if _record_has_exact_scope(record, scope)
-            )
+            if callable(exact_counter):
+                counts[kind] = int(exact_counter(kinds=[kind], scope=scope))
+            else:
+                counts[kind] = sum(
+                    1
+                    for record in runtime.store.list_records(kinds=[kind], scope=scope, limit=limit)
+                    if _record_has_exact_scope(record, scope)
+                )
         except Exception:
             counts[kind] = 0
     counts["promotion_applied"] = _count_status(runtime, scope=scope, kind="promotion_request", statuses={"promoted", "active", "deployed"}, limit=limit)
@@ -256,6 +260,12 @@ def _evidence_counts(runtime: Any, *, scope: ScopeRef, limit: int) -> dict[str, 
 
 
 def _count_status(runtime: Any, *, scope: ScopeRef, kind: str, statuses: set[str], limit: int) -> int:
+    exact_counter = getattr(runtime.store, "count_records_exact_scope", None)
+    if callable(exact_counter):
+        try:
+            return int(exact_counter(kinds=[kind], scope=scope, statuses=sorted(statuses)))
+        except Exception:
+            return 0
     try:
         records = [
             record
@@ -507,7 +517,15 @@ def _latest_manifest_high_water(
     capabilities: set[str],
 ) -> dict[str, dict[str, Any]]:
     try:
-        records = runtime.store.list_records(kinds=["capability_score"], scope=scope, limit=max(1, int(limit)))
+        compact_loader = getattr(runtime.store, "list_capability_scores_compact", None)
+        if callable(compact_loader):
+            records = compact_loader(scope=scope, limit=max(1, int(limit)))
+        else:
+            records = runtime.store.list_records(
+                kinds=["capability_score"],
+                scope=scope,
+                limit=max(1, int(limit)),
+            )
     except Exception:
         return {}
     latest: dict[str, tuple[int, dict[str, Any]]] = {}

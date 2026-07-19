@@ -20,10 +20,12 @@ LEARNING_KINDS = [
     "learning_eval",
     "capability_candidate",
     "promotion_request",
-    "capability_score",
     "regression_watch",
     "learning_playbook",
 ]
+
+# Capability scores are immutable evidence-ledger entries.  Retention must not
+# materialize or rewrite their potentially large canonical payloads.
 
 
 def compact_learning_records(

@@ -47,6 +47,25 @@ def test_capability_seed_is_idempotent_and_dashboard_lists_all_capabilities(tmp_
     assert report["output_error"] == ""
 
 
+def test_capability_seeding_uses_compact_score_projection(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        ensure_all_seeded(runtime, scope={"agent_id": "hongtu"})
+        original = runtime.store.list_records
+
+        def reject_full_score_load(*args, **kwargs):
+            if kwargs.get("kinds") == ["capability_score"]:
+                raise AssertionError("capability seeding loaded full score payloads")
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(runtime.store, "list_records", reject_full_score_load)
+        report = ensure_all_seeded(runtime, scope={"agent_id": "hongtu"})
+    finally:
+        runtime.close()
+
+    assert report["created_count"] == 0
+
+
 def test_build_weekly_dashboard_writes_output_on_success(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     report = build_weekly_dashboard(

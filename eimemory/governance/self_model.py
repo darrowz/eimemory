@@ -37,7 +37,11 @@ def build_self_model(
     incidents = _list_all(runtime, kinds=["incident", "unknown"], scope=scope_ref, limit=limit)
     rules = _list_all(runtime, kinds=["rule"], scope=scope_ref, limit=limit)
     replays = _list_all(runtime, kinds=["replay_result"], scope=scope_ref, limit=limit)
-    capability_scores = _list_all(runtime, kinds=["capability_score"], scope=scope_ref, limit=limit)
+    compact_loader = getattr(runtime.store, "list_capability_scores_compact", None)
+    if callable(compact_loader):
+        capability_scores = compact_loader(scope=scope_ref, limit=limit)
+    else:
+        capability_scores = _list_all(runtime, kinds=["capability_score"], scope=scope_ref, limit=limit)
 
     weaknesses = _weaknesses_from_records(reflections + incidents)
     capabilities = _capabilities_from_rules_and_replays(rules, replays, capability_scores)

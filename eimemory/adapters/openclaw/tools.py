@@ -284,8 +284,25 @@ class OpenClawMemoryTools:
 
     def _latest_recall_audit(self, *, session_id: str, scope: dict) -> RecordEnvelope | None:
         scope_ref = ScopeRef.from_dict(scope)
-        records = self.runtime.store.list_records(kinds=["recall_view", "reflection"], scope=scope_ref, limit=100)
+        records = None
+        lookup = getattr(self.runtime.store, "list_records_by_meta_value", None)
+        if callable(lookup):
+            records = lookup(
+                kinds=["recall_view", "reflection"],
+                scope=scope_ref,
+                meta_key="session_id",
+                meta_value=str(session_id).strip(),
+                limit=10,
+            )
+        if records is None:
+            records = self.runtime.store.list_records(
+                kinds=["recall_view", "reflection"],
+                scope=scope_ref,
+                limit=100,
+            )
         for record in records:
+            if record.scope != scope_ref:
+                continue
             if str(record.source or "") != "openclaw.before_prompt_build":
                 continue
             content = record.content if isinstance(record.content, dict) else {}
@@ -365,7 +382,7 @@ class OpenClawMemoryTools:
         status_counter = Counter()
         watch_records = self._list_records_by_kind(
             scope=scope,
-            candidate_kinds=["promotion_request", "learning_loop", "capability_score", "regression_watch"],
+            candidate_kinds=["promotion_request", "learning_loop", "regression_watch"],
             limit=200,
         )
         for record in watch_records:

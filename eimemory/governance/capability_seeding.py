@@ -28,9 +28,14 @@ def ensure_all_seeded(
     loop_id: str = "seed",
 ) -> dict[str, Any]:
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+    compact_loader = getattr(runtime.store, "list_capability_scores_compact", None)
+    if callable(compact_loader):
+        records = compact_loader(scope=scope_ref, limit=1000)
+    else:
+        records = runtime.store.list_records(kinds=["capability_score"], scope=scope_ref, limit=1000)
     existing = {
         str(record.meta.get("capability") or record.content.get("capability") or "")
-        for record in runtime.store.list_records(kinds=["capability_score"], scope=scope_ref, limit=1000)
+        for record in records
     }
     created: list[str] = []
     for capability in SEEDED_CAPABILITIES:

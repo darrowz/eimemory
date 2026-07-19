@@ -23,7 +23,7 @@ from eimemory.events import (
 )
 from eimemory.identity import hongtu_query_scopes
 from eimemory.models.memory_edges import MEMORY_EDGE_TYPES, MemoryEdge
-from eimemory.models.records import RecordEnvelope, ScopeRef
+from eimemory.models.records import RecordEnvelope, ScopeRef, TimeRef
 from eimemory.governance.policy_rollout import (
     AUTO_PROMOTION_BUDGET_PER_DAY,
     AUTO_ROLLBACK_BUDGET_PER_DAY,
@@ -225,6 +225,14 @@ class SqliteRecordStore:
                 "CREATE INDEX IF NOT EXISTS idx_records_meta_report_type "
                 "ON records(kind, tenant_id, agent_id, workspace_id, user_id, "
                 "CAST(json_extract(meta_json, '$.report_type') AS TEXT), updated_at DESC, record_id DESC)"
+            )
+        except sqlite3.OperationalError:
+            pass
+        try:
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_records_meta_session_id "
+                "ON records(kind, tenant_id, agent_id, workspace_id, user_id, "
+                "CAST(json_extract(meta_json, '$.session_id') AS TEXT), updated_at DESC, record_id DESC)"
             )
         except sqlite3.OperationalError:
             pass
@@ -1895,6 +1903,164 @@ class SqliteRecordStore:
             ).fetchone()[0]
         )
 
+    def count_records_exact_scope(
+        self,
+        *,
+        kinds: list[str] | None = None,
+        scope: ScopeRef,
+        status: str | None = None,
+        statuses: list[str] | set[str] | tuple[str, ...] | None = None,
+        since: str | None = None,
+        until: str | None = None,
+    ) -> int:
+        """Count one canonical scope without decoding or alias-expanding payloads.
+
+        SQLite errors intentionally propagate; L5 readiness catches them and
+        treats the unavailable evidence count as zero (fail closed).
+        """
+
+        where = [
+            "tenant_id = ?",
+            "agent_id = ?",
+            "workspace_id = ?",
+            "user_id = ?",
+        ]
+        params: list[object] = [
+            scope.tenant_id or "default",
+            scope.agent_id,
+            scope.workspace_id,
+            scope.user_id,
+        ]
+        if kinds:
+            clean_kinds = [str(kind).strip() for kind in kinds if str(kind).strip()]
+            if not clean_kinds:
+                return 0
+            where.append(f"kind IN ({','.join('?' for _ in clean_kinds)})")
+            params.extend(clean_kinds)
+        clean_statuses = [str(value).strip() for value in (statuses or []) if str(value).strip()]
+        if str(status or "").strip():
+            clean_statuses.append(str(status).strip())
+        clean_statuses = list(dict.fromkeys(clean_statuses))
+        if clean_statuses:
+            where.append(f"status IN ({','.join('?' for _ in clean_statuses)})")
+            params.extend(clean_statuses)
+        since_value = _normalize_datetime_bound(since, end_of_day=False)
+        until_value = _normalize_datetime_bound(until, end_of_day=True)
+        if since_value:
+            where.append("updated_at >= ?")
+            params.append(since_value)
+        if until_value:
+            where.append("updated_at <= ?")
+            params.append(until_value)
+        row = self.conn.execute(
+            "SELECT COUNT(*) FROM records WHERE " + " AND ".join(where),
+            params,
+        ).fetchone()
+        return int(row[0]) if row is not None else 0
+
+    def list_capability_scores_compact(
+        self,
+        *,
+        scope: ScopeRef,
+        limit: int = 500,
+        since: str | None = None,
+        until: str | None = None,
+    ) -> list[RecordEnvelope]:
+        """Return the ledger fields without materializing stored evidence_items."""
+
+        bounded = self._normalize_limit(limit)
+        where = [
+            "kind = 'capability_score'",
+            "tenant_id = ?",
+            "agent_id = ?",
+            "workspace_id = ?",
+            "user_id = ?",
+        ]
+        params: list[object] = [
+            scope.tenant_id or "default",
+            scope.agent_id,
+            scope.workspace_id,
+            scope.user_id,
+        ]
+        since_value = _normalize_datetime_bound(since, end_of_day=False)
+        until_value = _normalize_datetime_bound(until, end_of_day=True)
+        if since_value:
+            where.append("updated_at >= ?")
+            params.append(since_value)
+        if until_value:
+            where.append("updated_at <= ?")
+            params.append(until_value)
+        # The key-first CTE relies on records.storage_key remaining the table's
+        # primary key, so the outer join cannot multiply the bounded key page.
+        rows = self.conn.execute(
+            "WITH selected_records AS ("
+            "SELECT storage_key, updated_at, record_id FROM records WHERE "
+            + " AND ".join(where)
+            + " ORDER BY updated_at DESC, record_id DESC LIMIT ?"
+            + ") SELECT r.record_id, r.status, r.title, r.summary, r.source, "
+            + "r.tenant_id, r.agent_id, r.workspace_id, r.user_id, "
+            + "r.meta_json, r.created_at, r.updated_at, "
+            + "json_extract(r.payload_json, '$.content.capability') AS content_capability, "
+            + "json_extract(r.payload_json, '$.content.score') AS content_score, "
+            + "json_extract(r.payload_json, '$.content.score_sequence') AS content_score_sequence, "
+            + "json_extract(r.payload_json, '$.content.regression_count') AS content_regression_count, "
+            + "json_extract(r.payload_json, '$.content.evidence_record_ids') AS evidence_record_ids_json, "
+            + "json_extract(r.payload_json, '$.content.evidence_tiers') AS evidence_tiers_json, "
+            + "json_extract(r.payload_json, '$.content.evidence_sources') AS evidence_sources_json "
+            + "FROM selected_records JOIN records AS r USING (storage_key) "
+            + "ORDER BY selected_records.updated_at DESC, selected_records.record_id DESC",
+            [*params, bounded],
+        ).fetchall()
+        records: list[RecordEnvelope] = []
+        for row in rows:
+            meta = self._payload_dict_from_json(row["meta_json"]) or {}
+            content = {
+                "capability": meta.get("capability") or row["content_capability"] or "",
+                "score": meta.get("score") if meta.get("score") is not None else row["content_score"],
+                "score_sequence": (
+                    meta.get("score_sequence")
+                    if meta.get("score_sequence") is not None
+                    else row["content_score_sequence"]
+                ),
+                "regression_count": (
+                    meta.get("regression_count")
+                    if meta.get("regression_count") is not None
+                    else row["content_regression_count"]
+                ),
+                "evidence_record_ids": _json_text_list(row["evidence_record_ids_json"]),
+                "evidence_tiers": _json_text_list(row["evidence_tiers_json"]),
+                "evidence_sources": _json_text_list(row["evidence_sources_json"]),
+            }
+            records.append(
+                RecordEnvelope(
+                    record_id=str(row["record_id"]),
+                    kind="capability_score",
+                    status=str(row["status"]),
+                    title=str(row["title"]),
+                    summary=str(row["summary"]),
+                    detail="",
+                    content=content,
+                    tags=[],
+                    links=[],
+                    evidence=[],
+                    source=str(row["source"]),
+                    scope=ScopeRef(
+                        tenant_id=str(row["tenant_id"] or "default"),
+                        agent_id=str(row["agent_id"] or ""),
+                        workspace_id=str(row["workspace_id"] or ""),
+                        user_id=str(row["user_id"] or ""),
+                    ),
+                    time=TimeRef(
+                        created_at=str(row["created_at"]),
+                        updated_at=str(row["updated_at"]),
+                        occurred_at=str(row["created_at"]),
+                    ),
+                    provenance={},
+                    meta=meta,
+                )
+            )
+        return records
+
     def count_records_by_meta_value(
         self,
         *,
@@ -1951,10 +2117,16 @@ class SqliteRecordStore:
         if scope:
             self._apply_scope_filters(where, params, scope)
         try:
+            # The key-first CTE relies on records.storage_key remaining the
+            # primary key, so the payload join preserves the bounded row count.
             rows = self.conn.execute(
-                "SELECT payload_json FROM records WHERE "
+                "WITH selected_records AS ("
+                "SELECT storage_key, updated_at, record_id FROM records WHERE "
                 + " AND ".join(where)
-                + " ORDER BY updated_at DESC, record_id DESC LIMIT ?",
+                + " ORDER BY updated_at DESC, record_id DESC LIMIT ?"
+                + ") SELECT selected_records.storage_key, records.payload_json "
+                + "FROM selected_records JOIN records USING (storage_key) "
+                + "ORDER BY selected_records.updated_at DESC, selected_records.record_id DESC",
                 [*params, limit],
             ).fetchall()
         except sqlite3.OperationalError:
@@ -3520,6 +3692,17 @@ def _record_meta_keys_from_json(meta_json: str) -> tuple[str, str]:
     if not isinstance(meta, dict):
         meta = {}
     return str(meta.get("idempotency_key") or ""), str(meta.get("semantic_key") or "")
+
+
+def _json_text_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return []
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if str(item or "").strip()]
 
 
 def _meta_json_text_expression(meta_key: str) -> str:

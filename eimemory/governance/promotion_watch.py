@@ -546,11 +546,29 @@ def _latest_recall_audit_for_session(
     session_id: str,
     scope: dict[str, Any] | ScopeRef | None,
 ) -> RecordEnvelope | None:
+    scope_ref = _scope(scope)
     try:
-        records = runtime.store.list_records(kinds=["recall_view", "reflection"], scope=_scope(scope), limit=100)
+        records = None
+        lookup = getattr(runtime.store, "list_records_by_meta_value", None)
+        if callable(lookup):
+            records = lookup(
+                kinds=["recall_view", "reflection"],
+                scope=scope_ref,
+                meta_key="session_id",
+                meta_value=session_id,
+                limit=10,
+            )
+        if records is None:
+            records = runtime.store.list_records(
+                kinds=["recall_view", "reflection"],
+                scope=scope_ref,
+                limit=100,
+            )
     except Exception:
         return None
     for record in records:
+        if record.scope != scope_ref:
+            continue
         if str(record.source or "") != "openclaw.before_prompt_build":
             continue
         content = record.content if isinstance(record.content, dict) else {}

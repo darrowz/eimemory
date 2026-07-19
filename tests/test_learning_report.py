@@ -90,3 +90,22 @@ def test_learning_daily_report_skips_tool_message_noise(tmp_path) -> None:
     assert report["learned"] == ["ops.health: RPC health endpoint timed out because it returned a large daily digest payload."]
     assert "toolCall" not in report["summary"]
     assert "assistant:" not in report["summary"]
+
+
+def test_learning_daily_report_excludes_unused_capability_score_payloads(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    seen_kinds: list[list[str]] = []
+    original = runtime.store.list_records
+
+    def track_kinds(*args, **kwargs):
+        seen_kinds.append(list(kwargs.get("kinds") or []))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(runtime.store, "list_records", track_kinds)
+    try:
+        report = build_learning_daily_report(runtime, scope={"agent_id": "hongtu"}, persist=False)
+    finally:
+        runtime.close()
+
+    assert report["ok"] is True
+    assert all("capability_score" not in kinds for kinds in seen_kinds)

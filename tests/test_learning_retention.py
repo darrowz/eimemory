@@ -47,3 +47,28 @@ def test_retention_paginates_learning_records(tmp_path) -> None:
 
     assert report["expired_count"] == 505
     assert report["disabled_count"] == 505
+
+
+def test_retention_does_not_materialize_immutable_capability_scores(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    original = runtime.store.list_records
+
+    def reject_score_load(*args, **kwargs):
+        assert kwargs.get("kinds") is not None
+        assert "capability_score" not in list(kwargs["kinds"])
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(runtime.store, "list_records", reject_score_load)
+    monkeypatch.setattr(
+        runtime.store,
+        "list_capability_scores_compact",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("retention loaded compact capability scores")
+        ),
+    )
+    try:
+        report = compact_learning_records(runtime, scope={"agent_id": "hongtu"}, dry_run=True)
+    finally:
+        runtime.close()
+
+    assert report["ok"] is True

@@ -88,23 +88,24 @@ def build_capability_dashboard_metrics(
 
     evals = _records(runtime, scope_ref, ["learning_eval"], limit)
     task_evals = [record for record in evals if _field(record, "task_success") is not None]
+    outcome_traces = _outcome_trace_records(runtime, scope_ref, limit)
     task_outcomes = [
         record
-        for record in task_evals + _outcome_trace_records(runtime, scope_ref, limit) + _event_outcome_records(runtime, scope_ref, limit)
+        for record in task_evals + outcome_traces + _event_outcome_records(runtime, scope_ref, limit)
         if not _truthy(_field(record, "rehearsal"))
     ]
     task_success = sum(1 for record in task_outcomes if _outcome_success(record))
     verified_live_tasks = _verified_live_task_outcomes(
         runtime,
         scope=scope_ref,
-        records=_outcome_trace_records(runtime, scope_ref, limit),
+        records=outcome_traces,
     )
     verified_live_success = sum(1 for item in verified_live_tasks if item["success"] is True)
     verified_live_task_types = {str(item.get("task_type") or "") for item in verified_live_tasks}
     verified_real_tasks = _verified_real_task_outcomes(
         runtime,
         scope=scope_ref,
-        records=_outcome_trace_records(runtime, scope_ref, limit),
+        records=outcome_traces,
     )
     verified_real_success = sum(1 for item in verified_real_tasks if item["success"] is True)
     verified_real_task_types = {str(item.get("task_type") or "") for item in verified_real_tasks}
@@ -248,7 +249,21 @@ def _records(runtime: Any, scope: ScopeRef, kinds: list[str], limit: int) -> lis
 
 
 def _outcome_trace_records(runtime: Any, scope: ScopeRef, limit: int) -> list[Any]:
-    records = _records(runtime, scope, ["reflection"], limit)
+    lookup = getattr(runtime.store, "list_records_by_meta_value", None)
+    records = None
+    if callable(lookup):
+        try:
+            records = lookup(
+                kinds=["reflection"],
+                scope=scope,
+                meta_key="report_type",
+                meta_value="outcome_trace",
+                limit=max(0, int(limit)),
+            )
+        except Exception:
+            records = None
+    if records is None:
+        records = _records(runtime, scope, ["reflection"], limit)
     return [
         record
         for record in records

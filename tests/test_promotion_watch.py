@@ -6,10 +6,10 @@ from eimemory.api.runtime import Runtime
 from eimemory.governance.autonomy_controller import _post_promotion_watch_summary
 from eimemory.governance.capability_distiller import distill_capability_candidate
 from eimemory.governance.promotion_manager import promote_candidate
-from eimemory.governance.promotion_watch import record_promotion_observation
+from eimemory.governance.promotion_watch import _latest_recall_audit_for_session, record_promotion_observation
 from eimemory.governance.rollout_lifecycle import is_executed_rollback_ledger_record
 from eimemory.governance.sandbox_lab import create_sandbox_experiment
-from eimemory.models.records import ScopeRef
+from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
 PASSING_EVAL = {"verdict": "pass", "scores": {"capability": 0.9, "safety": 1.0, "regression": 1.0, "cost": 0.8, "evidence": 1.0}}
@@ -81,6 +81,40 @@ def test_shadow_observe_activates_after_three_hit_improvement_observations(tmp_p
     ledger = runtime.get_policy_rollout_ledger(scope=scope, action="shadow_observe", limit=10)
     assert ledger[0]["details"]["decision"] == "active"
     assert ledger[0]["details"]["observed_count"] == 3
+
+
+def test_promotion_watch_uses_indexed_session_audit_lookup(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = ScopeRef(agent_id="hongtu", workspace_id="embodied", user_id="darrow")
+    runtime.store.append(
+        RecordEnvelope.create(
+            kind="recall_view",
+            title="Promotion audit",
+            source="openclaw.before_prompt_build",
+            scope=scope,
+            content={"session_id": "sess-indexed-watch", "policy_suggestion_ids": ["policy-1"]},
+            meta={"session_id": "sess-indexed-watch", "policy_suggestion_ids": ["policy-1"]},
+        )
+    )
+    original = runtime.store.list_records
+
+    def reject_audit_scan(*args, **kwargs):
+        if "recall_view" in list(kwargs.get("kinds") or []):
+            raise AssertionError("promotion watch scanned full recall-view pages")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(runtime.store, "list_records", reject_audit_scan)
+    try:
+        audit = _latest_recall_audit_for_session(
+            runtime,
+            session_id="sess-indexed-watch",
+            scope=scope,
+        )
+    finally:
+        runtime.close()
+
+    assert audit is not None
+    assert audit.content["policy_suggestion_ids"] == ["policy-1"]
 
 
 def test_shadow_observe_decision_updates_autonomy_watch_summary(tmp_path) -> None:

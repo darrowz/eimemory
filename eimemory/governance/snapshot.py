@@ -432,7 +432,14 @@ def _build_autonomous_learning_summary(runtime, *, scope: ScopeRef) -> dict[str,
     goals = _list_all_records(runtime, kinds=["learning_goal"], scope=scope, page_size=200)
     candidates = _list_all_records(runtime, kinds=["capability_candidate"], scope=scope, page_size=200)
     promotions = _list_all_records(runtime, kinds=["promotion_request"], scope=scope, page_size=200)
-    scores = _list_all_records(runtime, kinds=["capability_score"], scope=scope, page_size=200)
+    score_counter = getattr(runtime.store, "count_records_exact_scope", None)
+    compact_score_loader = getattr(runtime.store, "list_capability_scores_compact", None)
+    if callable(score_counter) and callable(compact_score_loader):
+        capability_score_count = int(score_counter(kinds=["capability_score"], scope=scope))
+        scores = compact_score_loader(scope=scope, limit=1)
+    else:
+        scores = _list_all_records(runtime, kinds=["capability_score"], scope=scope, page_size=200)
+        capability_score_count = len(scores)
     regressions = _list_all_records(runtime, kinds=["regression_watch"], scope=scope, page_size=200)
     playbooks = _list_all_records(runtime, kinds=["learning_playbook"], scope=scope, page_size=200)
     return {
@@ -454,7 +461,7 @@ def _build_autonomous_learning_summary(runtime, *, scope: ScopeRef) -> dict[str,
         "latest_regression": _record_to_dict(regressions[0]) if regressions else None,
         "playbook_count": len(playbooks),
         "latest_playbook": _record_to_dict(playbooks[0]) if playbooks else None,
-        "capability_score_count": len(scores),
+        "capability_score_count": capability_score_count,
         "latest_capability_score": _record_to_dict(scores[0]) if scores else None,
     }
 

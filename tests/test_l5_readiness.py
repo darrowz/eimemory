@@ -18,7 +18,12 @@ from eimemory.governance.capability_replay_packs import (
     MANIFEST_SCHEMA_VERSION,
     capability_replay_manifest_digest,
 )
-from eimemory.governance.l5_readiness import _stage_for, readiness_gate_status
+from eimemory.governance.l5_readiness import (
+    _evidence_counts,
+    _latest_manifest_high_water,
+    _stage_for,
+    readiness_gate_status,
+)
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
@@ -141,6 +146,103 @@ def test_l5_readiness_report_is_read_only_by_default_and_surfaces_gaps(tmp_path)
     assert any(gap["capability"] == "search.discovery" for gap in report["capability_gaps"])
     assert "deployment" in report["risk_boundary"]
     assert report["next_actions"]
+
+
+def test_l5_evidence_counts_use_exact_sql_counts_without_loading_payloads(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        scope_ref = ScopeRef.from_dict(SCOPE)
+        runtime.store.append(
+            RecordEnvelope.create(
+                kind="memory",
+                title="Large readiness evidence",
+                detail="x" * 500_000,
+                scope=scope_ref,
+            )
+        )
+
+        monkeypatch.setattr(
+            runtime.store,
+            "list_records",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("evidence count loaded payloads")),
+        )
+
+        counts = _evidence_counts(runtime, scope=scope_ref, limit=1000)
+    finally:
+        runtime.close()
+
+    assert counts["memory"] == 1
+
+
+def test_l5_evidence_counts_fail_closed_when_exact_counter_is_unavailable(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        scope_ref = ScopeRef.from_dict(SCOPE)
+        runtime.store.append(
+            RecordEnvelope.create(
+                kind="memory",
+                title="Fail-closed memory seed",
+                scope=scope_ref,
+            )
+        )
+        runtime.store.append(
+            RecordEnvelope.create(
+                kind="promotion_request",
+                title="Fail-closed promotion seed",
+                status="promoted",
+                scope=scope_ref,
+            )
+        )
+        monkeypatch.setattr(
+            runtime.store,
+            "count_records_exact_scope",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("sqlite unavailable")),
+        )
+
+        counts = _evidence_counts(runtime, scope=scope_ref, limit=1000)
+    finally:
+        runtime.close()
+
+    assert counts["memory"] == 0
+    assert counts["promotion_applied"] == 0
+
+
+def test_l5_manifest_high_water_uses_compact_capability_score_projection(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        scope_ref = ScopeRef.from_dict(SCOPE)
+        record_capability_score(
+            runtime,
+            scope=scope_ref,
+            loop_id="manifest-high-water",
+            capability="search.discovery",
+            score=1.0,
+            meta={
+                "kind": "capability_replay_pack",
+                "manifest_record_id": "manifest-1",
+                "manifest_sequence": 3,
+                "replay_execution_id": "execution-1",
+            },
+        )
+        original_list_records = runtime.store.list_records
+
+        def reject_full_score_load(*args, **kwargs):
+            if kwargs.get("kinds") == ["capability_score"]:
+                raise AssertionError("L5 high-water loaded full capability-score payloads")
+            return original_list_records(*args, **kwargs)
+
+        monkeypatch.setattr(runtime.store, "list_records", reject_full_score_load)
+        high_water = _latest_manifest_high_water(
+            runtime,
+            scope=scope_ref,
+            limit=1000,
+            capabilities={"search.discovery"},
+        )
+    finally:
+        runtime.close()
+
+    assert high_water["search.discovery"]["manifest_record_id"] == "manifest-1"
+    assert high_water["search.discovery"]["manifest_sequence"] == 3
 
 
 def test_stage_for_rejects_missing_or_malformed_replay_gate_fields() -> None:

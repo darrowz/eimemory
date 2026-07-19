@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from eimemory.api.runtime import Runtime
 from eimemory.governance.autonomous_learning import _replay_gate_report
-from eimemory.governance.snapshot import build_governance_snapshot
+from eimemory.governance.snapshot import _build_autonomous_learning_summary, build_governance_snapshot
 from eimemory.scheduler import jobs
 from eimemory.scheduler.jobs import run_nightly_jobs
 from eimemory.models.records import RecordEnvelope, ScopeRef
@@ -61,6 +61,35 @@ def test_nightly_jobs_include_autonomous_learning_summary(tmp_path, monkeypatch)
     assert report["autonomous_learning_daily_report"]["summary"]
     assert report["autonomous_learning_dashboard"]["report_type"] == "autonomous_learning_daily_dashboard"
     assert report["autonomous_learning_dashboard"]["period_type"] == "daily"
+
+
+def test_snapshot_counts_scores_without_materializing_full_score_history(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = ScopeRef(agent_id="main")
+    try:
+        runtime.store.append(
+            RecordEnvelope.create(
+                kind="capability_score",
+                title="Large score",
+                scope=scope,
+                meta={"capability": "memory.recall", "score": 0.8},
+                content={"capability": "memory.recall", "score": 0.8, "evidence_items": [{"blob": "x" * 500_000}]},
+            )
+        )
+        original = runtime.store.list_records
+
+        def reject_full_score_load(*args, **kwargs):
+            if kwargs.get("kinds") == ["capability_score"]:
+                raise AssertionError("snapshot loaded full score history")
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(runtime.store, "list_records", reject_full_score_load)
+        summary = _build_autonomous_learning_summary(runtime, scope=scope)
+    finally:
+        runtime.close()
+
+    assert summary["capability_score_count"] == 1
+    assert summary["latest_capability_score"]["meta"]["capability"] == "memory.recall"
 
 
 def test_nightly_jobs_forward_max_promotion_budget(tmp_path, monkeypatch) -> None:

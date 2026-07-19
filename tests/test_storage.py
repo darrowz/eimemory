@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+import re
 
 import pytest
 
@@ -646,6 +647,124 @@ def test_runtime_store_creates_hot_path_records_indexes(tmp_path) -> None:
 
     assert "idx_records_kind_scope_status_updated" in index_names
     assert "idx_records_kind_scope_created" in index_names
+    assert "idx_records_meta_session_id" in index_names
+
+
+def test_runtime_store_counts_exact_scope_without_loading_record_payloads(tmp_path, monkeypatch) -> None:
+    store = RuntimeStore(root=tmp_path)
+    exact = ScopeRef(tenant_id="tenant-a", agent_id="hongtu", workspace_id="embodied", user_id="darrow")
+    global_scope = ScopeRef(tenant_id="tenant-a", agent_id="hongtu", workspace_id="embodied", user_id="")
+    other_user = ScopeRef(tenant_id="tenant-a", agent_id="hongtu", workspace_id="embodied", user_id="alice")
+    for index, scope in enumerate((exact, exact, global_scope, other_user)):
+        store.append(
+            RecordEnvelope.create(
+                kind="reflection",
+                title=f"Exact-scope count {index}",
+                summary="payload must not be decoded for a count",
+                detail="x" * 100_000,
+                scope=scope,
+            )
+        )
+
+    monkeypatch.setattr(
+        store.sqlite,
+        "_record_from_payload_json",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("payload decoded")),
+    )
+
+    # Empty-user global records must never alias a user-specific exact scope.
+    assert store.count_records_exact_scope(kinds=["reflection"], scope=exact) == 2
+    assert store.count_records_exact_scope(kinds=["reflection"], scope=exact, status=" active ") == 2
+    assert store.count_records_exact_scope(kinds=["reflection"], scope=exact, statuses=[" active "]) == 2
+
+
+def test_runtime_store_lists_compact_capability_scores_without_returning_large_evidence_items(tmp_path) -> None:
+    store = RuntimeStore(root=tmp_path)
+    scope = ScopeRef(agent_id="hongtu", workspace_id="embodied", user_id="darrow")
+    record = RecordEnvelope.create(
+        kind="capability_score",
+        title="Compact capability score",
+        summary="large evidence remains canonical but not in readiness projections",
+        scope=scope,
+        source="eimemory.capability_ledger",
+        meta={
+            "capability": "",
+            "score": 0.0,
+            "score_sequence": 0,
+            "regression_count": 0,
+            "evidence_count": 3,
+            "evidence_sources": ["outcome_trace"],
+        },
+        content={
+            "capability": "memory.recall",
+            "score": 0.9,
+            "score_sequence": 7,
+            "regression_count": 9,
+            "evidence_record_ids": ["trace-1", "trace-2", "trace-3"],
+            "evidence_sources": ["outcome_trace"],
+            "evidence_items": [{"source_id": f"trace-{index}", "blob": "x" * 200_000} for index in range(3)],
+        },
+    )
+    store.append(record)
+    statements: list[str] = []
+    store.sqlite.conn.set_trace_callback(statements.append)
+    try:
+        records = store.list_capability_scores_compact(scope=scope, limit=10)
+    finally:
+        store.sqlite.conn.set_trace_callback(None)
+
+    assert [item.record_id for item in records] == [record.record_id]
+    assert records[0].content["capability"] == "memory.recall"
+    assert records[0].content["score"] == 0.0
+    assert records[0].content["score_sequence"] == 0
+    assert records[0].content["regression_count"] == 0
+    assert records[0].content["evidence_record_ids"] == ["trace-1", "trace-2", "trace-3"]
+    assert "evidence_items" not in records[0].content
+    assert len(json.dumps(records[0].to_dict(), ensure_ascii=False)) < 20_000
+    selects = [statement for statement in statements if statement.lstrip().upper().startswith(("SELECT", "WITH"))]
+    assert len(selects) == 1
+    assert "WITH selected_records AS" in selects[0]
+    cte_body, marker, _outer_select = selects[0].partition(") SELECT")
+    assert marker
+    assert "payload_json" not in cte_body
+
+
+def test_runtime_store_meta_value_query_limits_keys_before_loading_payloads(tmp_path) -> None:
+    store = RuntimeStore(root=tmp_path)
+    scope = ScopeRef(agent_id="hongtu", workspace_id="embodied", user_id="darrow")
+    for index in range(4):
+        store.append(
+            RecordEnvelope.create(
+                kind="reflection",
+                title=f"Outcome trace {index}",
+                detail="x" * 200_000,
+                scope=scope,
+                meta={"report_type": "outcome_trace"},
+            )
+        )
+    statements: list[str] = []
+    store.sqlite.conn.set_trace_callback(statements.append)
+    try:
+        records = store.list_records_by_meta_value(
+            kinds=["reflection"],
+            scope=scope,
+            meta_key="report_type",
+            meta_value="outcome_trace",
+            limit=2,
+        )
+    finally:
+        store.sqlite.conn.set_trace_callback(None)
+
+    assert records is not None and len(records) == 2
+    selects = [statement for statement in statements if statement.lstrip().upper().startswith(("SELECT", "WITH"))]
+    assert len(selects) == 1
+    statement = selects[0]
+    assert "WITH selected_records AS" in statement
+    cte_body, marker, outer_select = statement.partition(") SELECT")
+    assert marker
+    assert re.search(r"\bLIMIT\s+2\b", cte_body)
+    assert "payload_json" not in cte_body
+    assert "payload_json" in outer_select
 
 
 def test_runtime_store_does_not_repeat_meta_key_backfill_after_migration(tmp_path, monkeypatch) -> None:

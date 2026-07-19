@@ -755,50 +755,80 @@ class OpenClawMemoryHooks:
     def _audit_prompt_recall(self, *, event: dict, bundle: RecallBundle, injected: bool) -> RecordEnvelope:
         scope = ScopeRef.from_dict(self._scope_from_event(event))
         view = dict(bundle.explanation.get("recall_view") or {})
-        injected_ids = [item.record_id for item in bundle.items]
-        selected_records = self._selected_records(bundle)
-        policy_suggestion_ids = self._coerce_string_list(bundle.explanation.get("policy_suggestion_ids"))
-        policy_sources = self._coerce_string_list(bundle.explanation.get("policy_sources"))
-        matched_event_type = str(bundle.explanation.get("matched_event_type") or "")
+        all_injected_ids = [item.record_id for item in bundle.items]
+        all_selected_records = self._selected_records(bundle)
+        all_policy_suggestion_ids = self._coerce_string_list(bundle.explanation.get("policy_suggestion_ids"))
+        all_policy_sources = self._coerce_string_list(bundle.explanation.get("policy_sources"))
+        injected_ids = self._bounded_audit_string_list(all_injected_ids)
+        selected_records = self._compact_selected_records_for_audit(all_selected_records)
+        policy_suggestion_ids = self._bounded_audit_string_list(all_policy_suggestion_ids)
+        policy_sources = self._bounded_audit_string_list(all_policy_sources)
+        matched_event_type = self._bounded_audit_text(bundle.explanation.get("matched_event_type"), limit=256)
         injection_plan = self._coerce_injection_plan(bundle.explanation.get("injection_plan"))
         latency_ms = self._float_or_zero(bundle.explanation.get("latency_ms"))
+        raw_query = str(event.get("raw_query") or event.get("rawQuery") or event.get("query") or "")
+        task_context = dict(event.get("task_context") or event.get("taskContext") or {})
+        persona_guidance = bundle.explanation.get("persona_guidance") or {}
+        compact_injection_plan = self._compact_injection_plan_for_audit(injection_plan)
+        compact_persona_guidance = self._compact_persona_guidance_for_audit(persona_guidance)
+        source_composition = self._compact_count_mapping_for_audit(bundle.explanation.get("source_composition"))
+        session_id = self._bounded_audit_text(self._session_id_from_event(event), limit=512)
+        view_type = self._bounded_audit_text(view.get("view_type"), limit=256)
+        raw_identity_meta = self._identity_meta(event, organ="cognition", modality="text")
+        identity_meta = self._compact_identity_meta_for_audit(raw_identity_meta)
         content = {
-            "session_id": self._session_id_from_event(event),
-            "query": self._clean_prompt_query(str(event.get("query") or event.get("raw_query") or "").strip()),
-            "raw_query": str(event.get("raw_query") or event.get("rawQuery") or event.get("query") or "").strip(),
-            "task_context": dict(event.get("task_context") or event.get("taskContext") or {}),
-            "selected_count": len(injected_ids),
+            "session_id": session_id,
+            "query": self._bounded_audit_text(
+                self._clean_prompt_query(str(event.get("query") or event.get("raw_query") or "").strip())
+            ),
+            "raw_query": self._bounded_audit_text(raw_query),
+            "raw_query_length": len(raw_query),
+            "raw_query_sha256": self._stable_hash(raw_query),
+            "task_context": self._compact_task_context_for_audit(task_context),
+            "task_context_sha256": self._stable_hash(task_context),
+            "selected_count": len(all_injected_ids),
             "injected": injected,
             "injected_record_ids": injected_ids,
+            "injected_record_ids_sha256": self._stable_hash(all_injected_ids),
             "policy_suggestion_ids": policy_suggestion_ids,
+            "policy_suggestion_ids_sha256": self._stable_hash(all_policy_suggestion_ids),
             "policy_sources": policy_sources,
+            "policy_sources_sha256": self._stable_hash(all_policy_sources),
             "matched_event_type": matched_event_type,
             "selected_records": selected_records,
-            "source_composition": dict(bundle.explanation.get("source_composition") or {}),
-            "injection_plan": injection_plan,
-            "persona_guidance": bundle.explanation.get("persona_guidance") or {},
+            "selected_records_sha256": self._stable_hash(all_selected_records),
+            "source_composition": source_composition,
+            "source_composition_sha256": self._stable_hash(bundle.explanation.get("source_composition") or {}),
+            "injection_plan": compact_injection_plan,
+            "injection_plan_sha256": self._stable_hash(injection_plan),
+            "persona_guidance": compact_persona_guidance,
+            "persona_guidance_sha256": self._stable_hash(persona_guidance),
             "injection_token_estimate": injection_plan["token_estimate"],
             "injection_lane_composition": dict(injection_plan["lane_composition"]),
-            "injection_withheld_reasons": dict(injection_plan["withheld_reasons"]),
+            "injection_withheld_reasons": dict(compact_injection_plan["withheld_reasons"]),
             "latency_ms": latency_ms,
-            "view_type": str(view.get("view_type") or ""),
+            "view_type": view_type,
             "confidence": bundle.confidence,
         }
         meta = {
-            **self._identity_meta(event, organ="cognition", modality="text"),
-            "session_id": self._session_id_from_event(event),
-            "selected_count": len(injected_ids),
+            **identity_meta,
+            "identity_meta_sha256": self._stable_hash(raw_identity_meta),
+            "session_id": session_id,
+            "selected_count": len(all_injected_ids),
+            "selected_stored_count": len(injected_ids),
             "injected": injected,
             "policy_suggestion_ids": policy_suggestion_ids,
             "policy_sources": policy_sources,
             "matched_event_type": matched_event_type,
-            "view_type": str(view.get("view_type") or ""),
-            "source_composition": dict(bundle.explanation.get("source_composition") or {}),
+            "view_type": view_type,
+            "source_composition": source_composition,
+            "source_composition_sha256": content["source_composition_sha256"],
             "injection_token_estimate": injection_plan["token_estimate"],
             "injection_lane_composition": dict(injection_plan["lane_composition"]),
-            "injection_withheld_reasons": dict(injection_plan["withheld_reasons"]),
+            "injection_withheld_reasons": dict(compact_injection_plan["withheld_reasons"]),
             "latency_ms": latency_ms,
-            "persona_scene": str((bundle.explanation.get("persona_guidance") or {}).get("scene") or ""),
+            "persona_scene": str(compact_persona_guidance.get("scene") or ""),
+            "persona_guidance_sha256": content["persona_guidance_sha256"],
         }
         record = RecordEnvelope.create(
             kind="recall_view",
@@ -852,22 +882,155 @@ class OpenClawMemoryHooks:
                 "session_id": str(content.get("session_id") or ""),
                 "query": str(content.get("query") or ""),
                 "raw_query": str(content.get("raw_query") or ""),
+                "raw_query_sha256": str(content.get("raw_query_sha256") or ""),
+                "task_context_sha256": str(content.get("task_context_sha256") or ""),
+                "injection_plan_sha256": str(content.get("injection_plan_sha256") or ""),
                 "injected": bool(content.get("injected")),
                 "injected_record_ids": self._coerce_string_list(content.get("injected_record_ids")),
                 "policy_suggestion_ids": self._coerce_string_list(content.get("policy_suggestion_ids")),
                 "policy_sources": self._coerce_string_list(content.get("policy_sources")),
                 "matched_event_type": str(content.get("matched_event_type") or ""),
                 "selected_record_ids": selected_record_ids,
+                "selected_records_sha256": str(content.get("selected_records_sha256") or ""),
                 "view_type": str(content.get("view_type") or ""),
                 "persona_enabled": bool(persona_guidance.get("enabled")),
                 "persona_scene": str(persona_guidance.get("scene") or ""),
                 "persona_guidance_length": len(str(persona_guidance.get("text") or "")),
+                "persona_guidance_sha256": str(persona_guidance.get("text_sha256") or ""),
+                "persona_guidance_full_sha256": str(content.get("persona_guidance_sha256") or ""),
             }
         )[:24]
 
     def _stable_hash(self, value: Any) -> str:
         raw = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
         return sha256(raw.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _bounded_audit_text(value: Any, *, limit: int = 4_096) -> str:
+        return str(value or "")[: max(0, int(limit))]
+
+    def _compact_task_context_for_audit(self, value: Any) -> dict[str, Any]:
+        payload = value if isinstance(value, dict) else {}
+        compact: dict[str, Any] = {}
+        allowed_keys = (
+            "task_type",
+            "goal",
+            "intent",
+            "channel",
+            "recall_view",
+            "memory_view",
+            "injection_mode",
+            "injection_token_budget",
+            "matched_event_type",
+        )
+        represented_keys: set[str] = set()
+        for key in allowed_keys:
+            item = payload.get(key)
+            if isinstance(item, (str, int, float, bool)):
+                compact[key] = self._bounded_audit_text(item)
+                represented_keys.add(key)
+        policy = self._normalize_policy_attribution(payload)
+        if self._policy_attribution_has_values(policy):
+            compact["policy_attribution"] = {
+                "policy_suggestion_ids": self._coerce_string_list(policy.get("policy_suggestion_ids"))[:100],
+                "policy_sources": self._coerce_string_list(policy.get("policy_sources"))[:100],
+                "matched_event_type": self._bounded_audit_text(policy.get("matched_event_type"), limit=256),
+                "selected_records": self._compact_selected_records_for_audit(policy.get("selected_records")),
+            }
+            represented_keys.add("policy_attribution")
+        dropped_key_count = len(set(payload) - represented_keys)
+        compact["input_key_count"] = len(payload)
+        compact["dropped_key_count"] = dropped_key_count
+        compact["fields_filtered"] = dropped_key_count > 0
+        return compact
+
+    def _compact_injection_plan_for_audit(self, value: dict[str, Any]) -> dict[str, Any]:
+        if "entries" in value:
+            entries = value.get("entries")
+        else:
+            entries = value.get("items")
+        entries = entries if isinstance(entries, list) else []
+        compact = {
+            key: dict(item) if isinstance(item, dict) else item
+            for key, item in value.items()
+            if key not in {"entries", "items"}
+        }
+        compact["mode"] = self._bounded_audit_text(compact.get("mode"), limit=256)
+        withheld = compact.get("withheld_reasons")
+        if isinstance(withheld, dict):
+            compact["withheld_reasons"] = {
+                self._bounded_audit_text(key, limit=256): int(count)
+                for key, count in list(withheld.items())[:100]
+                if str(key).strip() and isinstance(count, (int, float))
+            }
+        return compact | {
+            "entry_count": len(entries),
+            "entries_sha256": self._stable_hash(entries),
+        }
+
+    def _compact_persona_guidance_for_audit(self, value: Any) -> dict[str, Any]:
+        payload = value if isinstance(value, dict) else {}
+        text = str(payload.get("text") or "")
+        represented_keys = {key for key in ("enabled", "scene", "text") if key in payload}
+        dropped_key_count = len(set(payload) - represented_keys)
+        return {
+            "enabled": bool(payload.get("enabled")),
+            "scene": self._bounded_audit_text(payload.get("scene"), limit=256),
+            "text": self._bounded_audit_text(text),
+            "text_length": len(text),
+            "text_sha256": self._stable_hash(text),
+            "full_sha256": self._stable_hash(payload),
+            "input_key_count": len(payload),
+            "dropped_key_count": dropped_key_count,
+            "fields_filtered": dropped_key_count > 0,
+        }
+
+    def _compact_selected_records_for_audit(self, value: Any) -> list[dict[str, str]]:
+        if not isinstance(value, list):
+            return []
+        keys = ("record_id", "kind", "title", "source", "recall_lane", "projection_type", "source_record_id")
+        return [
+            {
+                key: self._bounded_audit_text(item.get(key), limit=512)
+                for key in keys
+                if str(item.get(key) or "").strip()
+            }
+            for item in value[:100]
+            if isinstance(item, dict)
+        ]
+
+    def _bounded_audit_string_list(self, value: Any, *, limit: int = 100) -> list[str]:
+        return [
+            self._bounded_audit_text(item, limit=512)
+            for item in self._coerce_string_list(value)[: max(0, int(limit))]
+        ]
+
+    def _compact_count_mapping_for_audit(self, value: Any) -> dict[str, Any]:
+        if not isinstance(value, dict):
+            return {}
+        compact: dict[str, Any] = {}
+        for raw_key, raw_value in list(value.items())[:100]:
+            key = self._bounded_audit_text(raw_key, limit=256)
+            if isinstance(raw_value, dict):
+                compact[key] = {
+                    self._bounded_audit_text(nested_key, limit=256): nested_value
+                    for nested_key, nested_value in list(raw_value.items())[:100]
+                    if isinstance(nested_value, (int, float, bool))
+                }
+            elif isinstance(raw_value, (int, float, bool)):
+                compact[key] = raw_value
+        return compact
+
+    def _compact_identity_meta_for_audit(self, value: Any) -> dict[str, Any]:
+        if not isinstance(value, dict):
+            return {}
+        return {
+            self._bounded_audit_text(key, limit=128): (
+                self._bounded_audit_text(item, limit=512) if isinstance(item, str) else item
+            )
+            for key, item in list(value.items())[:50]
+            if isinstance(item, (str, int, float, bool))
+        }
 
     def _scope_payload(self, scope: ScopeRef) -> dict[str, str]:
         return {
@@ -1118,7 +1281,8 @@ class OpenClawMemoryHooks:
         if isinstance(value, dict):
             lane_raw = value.get("lane_composition") or {}
             lane_composition = lane_raw if isinstance(lane_raw, dict) else {}
-            entries_raw = value.get("entries") or value.get("items") or []
+            entries_raw = value.get("entries") if "entries" in value else value.get("items", [])
+            entries_raw = entries_raw if isinstance(entries_raw, list) else []
             entries = [dict(entry) for entry in entries_raw if isinstance(entry, dict)]
             token_budget = self._int_or_default(value.get("token_budget"), default=DEFAULT_INJECTION_TOKEN_BUDGET)
             if token_budget <= 0:
@@ -2205,9 +2369,24 @@ class OpenClawMemoryHooks:
         if not session_id:
             return {}
         scope = self._scope_from_event(event)
-        audits = self.runtime.store.list_records(kinds=["recall_view"], scope=scope, limit=500)
+        scope_ref = ScopeRef.from_dict(scope)
+        audits = None
+        lookup = getattr(self.runtime.store, "list_records_by_meta_value", None)
+        if callable(lookup):
+            try:
+                audits = lookup(
+                    kinds=["recall_view"],
+                    scope=scope_ref,
+                    meta_key="session_id",
+                    meta_value=session_id,
+                    limit=10,
+                )
+            except Exception:
+                audits = None
+        if audits is None:
+            audits = self.runtime.store.list_records(kinds=["recall_view"], scope=scope_ref, limit=500)
         for audit in audits:
-            if str(audit.content.get("session_id") or "") == session_id:
+            if audit.scope == scope_ref and str(audit.content.get("session_id") or "") == session_id:
                 return self._normalize_policy_attribution(audit.content)
         return {}
 

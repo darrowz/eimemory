@@ -558,7 +558,13 @@ def test_openclaw_before_prompt_build_strict_injection_plan_classifies_and_audit
         scope={"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"},
         limit=1,
     )
-    assert audits[0].content["injection_plan"] == plan
+    audit_plan = audits[0].content["injection_plan"]
+    assert "entries" not in audit_plan
+    assert "items" not in audit_plan
+    assert audit_plan["entry_count"] == len(plan["entries"])
+    assert audit_plan["entries_sha256"] == hooks._stable_hash(plan["entries"])
+    assert audit_plan["mode"] == plan["mode"]
+    assert audit_plan["lane_composition"] == plan["lane_composition"]
     assert audits[0].content["injection_token_estimate"] == plan["token_estimate"]
     assert audits[0].content["injection_lane_composition"] == plan["lane_composition"]
     assert audits[0].content["injection_withheld_reasons"] == plan["withheld_reasons"]

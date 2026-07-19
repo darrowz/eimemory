@@ -1,6 +1,7 @@
 import io
 import json
 import os
+from hashlib import sha256
 import socket
 import subprocess
 import sys
@@ -820,6 +821,121 @@ def test_openclaw_hooks_capture_recall_and_agent_end(tmp_path) -> None:
     assert audits[0].content["selected_records"][0]["kind"] == "memory"
     assert audits[0].content["source_composition"]["by_kind"]["memory"] >= 1
     assert audits[0].content["session_id"] == "sess-1"
+
+
+def test_openclaw_prompt_audit_bounds_untrusted_context_and_injection_entries(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    hooks = OpenClawMemoryHooks(runtime)
+    bundle = RecallBundle(
+        items=[],
+        rules=[],
+        reflections=[],
+        confidence=0.5,
+        next_action_hint="",
+        explanation={
+            "recall_view": {"view_type": "mixed"},
+            "policy_suggestion_ids": ["policy-" + ("i" * 500_000)],
+            "policy_sources": ["source-" + ("s" * 500_000)],
+            "matched_event_type": "event-" + ("e" * 500_000),
+            "source_composition": {"by_kind": {"kind-" + ("k" * 500_000): 1}},
+            "injection_plan": {
+                "mode": "debug-" + ("m" * 500_000),
+                "token_budget": 1000,
+                "token_estimate": 10,
+                "entries": [],
+                "items": [{"record_id": "rec-1", "text": "x" * 500_000}],
+                "withheld_reasons": {"reason-" + ("w" * 500_000): 1},
+            },
+            "persona_guidance": {
+                "enabled": True,
+                "scene": "chat",
+                "text": "p" * 500_000,
+                "confidence": 0.9,
+            },
+        },
+    )
+    event = {
+        "session_id": "sess-bounded-audit",
+        "agent_id": "main",
+        "workspace_id": "repo-x",
+        "hardware_node": "node-" + ("h" * 500_000),
+        "query": "q" * 500_000,
+        "raw_query": "r" * 500_000,
+        "task_context": {"task_type": "chat.reply", "unbounded": "t" * 500_000},
+    }
+
+    record = hooks._audit_prompt_recall(event=event, bundle=bundle, injected=False)
+    payload_size = len(json.dumps(record.to_dict(), ensure_ascii=False))
+
+    assert payload_size < 150_000
+    assert "entries" not in record.content["injection_plan"]
+    assert "items" not in record.content["injection_plan"]
+    assert record.content["injection_plan"]["entry_count"] == 0
+    assert record.content["injection_plan"]["entries_sha256"] == hooks._stable_hash([])
+    expected_raw_query_digest = sha256(
+        json.dumps(event["raw_query"], ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
+    expected_task_context_digest = sha256(
+        json.dumps(event["task_context"], ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
+    expected_persona_digest = sha256(
+        json.dumps(bundle.explanation["persona_guidance"], ensure_ascii=False, sort_keys=True, default=str).encode(
+            "utf-8"
+        )
+    ).hexdigest()
+    assert record.content["raw_query_sha256"] == expected_raw_query_digest
+    assert record.content["task_context_sha256"] == expected_task_context_digest
+    assert record.content["persona_guidance_sha256"] == expected_persona_digest
+    assert record.content["raw_query_length"] == 500_000
+    assert record.content["task_context"]["fields_filtered"] is True
+    assert record.content["task_context"]["dropped_key_count"] == 1
+    assert record.content["persona_guidance"]["fields_filtered"] is True
+    assert record.content["persona_guidance"]["dropped_key_count"] == 1
+    assert len(record.content["raw_query"]) == 4_096
+    assert record.content["raw_query"] != event["raw_query"]
+    assert len(record.meta["runtime_meta"]["hardware_node"]) == 512
+    assert len(record.content["policy_suggestion_ids"][0]) == 512
+    assert len(record.content["policy_sources"][0]) == 512
+    assert len(record.content["matched_event_type"]) == 256
+    assert len(record.content["injection_plan"]["mode"]) == 256
+
+
+def test_openclaw_policy_attribution_uses_indexed_session_audit_lookup(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    hooks = OpenClawMemoryHooks(runtime)
+    event = {
+        "session_id": "sess-indexed-audit",
+        "agent_id": "main",
+        "workspace_id": "repo-x",
+        "user_id": "darrow",
+    }
+    bundle = RecallBundle(
+        items=[],
+        rules=[],
+        reflections=[],
+        confidence=0.5,
+        next_action_hint="",
+        explanation={
+            "policy_suggestion_ids": ["policy-1"],
+            "policy_sources": ["intent_pattern"],
+            "matched_event_type": "browser_task",
+        },
+    )
+    hooks._audit_prompt_recall(event=event, bundle=bundle, injected=False)
+    original = runtime.store.list_records
+
+    def reject_recall_view_scan(*args, **kwargs):
+        if kwargs.get("kinds") == ["recall_view"]:
+            raise AssertionError("policy attribution scanned full recall-view payload pages")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(runtime.store, "list_records", reject_recall_view_scan)
+    try:
+        attribution = hooks._recall_audit_policy_attribution(event=event)
+    finally:
+        runtime.close()
+
+    assert attribution["policy_suggestion_ids"] == ["policy-1"]
 
 
 def test_openclaw_before_prompt_build_applies_ground_truth_and_evidence_gates(tmp_path, monkeypatch) -> None:
