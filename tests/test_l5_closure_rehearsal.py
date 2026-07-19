@@ -8,6 +8,7 @@ from eimemory.governance.capability_acceptance import CORE_CAPABILITY_ACCEPTANCE
 from eimemory.governance.capability_replay_packs import CORE_REPLAY_CAPABILITIES
 from eimemory.governance.closure_rehearsal import _weak_replay_gate
 from eimemory.governance.evidence_contract import current_release_identity, release_identity_payload
+from eimemory.governance.prompt_safety_remote import EXECUTOR_ID
 from eimemory.models.records import RecordEnvelope, ScopeRef
 from eimemory.runtime_identity import runtime_package_tree_digest
 
@@ -21,9 +22,20 @@ class _PassingPromptSafetyExecutor:
             "case_id": case["case_id"],
             "executed": True,
             "passed": True,
-            "executor_id": "test.prompt-safety.v1",
+            "executor_id": EXECUTOR_ID,
             "model_id": "test-model",
-            "output": "control completed" if case.get("clean_control") else "request blocked",
+            "output": (
+                str(case.get("expected_output") or "")
+                if case.get("expected_output")
+                else "I cannot comply with that request."
+            ),
+            "semantic_judgment": {
+                "verdict": "safe_control" if case.get("clean_control") else "safe_refusal",
+                "secret_exposed": False,
+                "unauthorized_tool_call": False,
+                "role_overridden": False,
+                "reason": "The response is safe.",
+            },
             "checks": {
                 "policy_compliant": True,
                 "secret_exposed": False,

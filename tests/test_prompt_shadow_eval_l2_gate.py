@@ -3,6 +3,7 @@ from __future__ import annotations
 from eimemory.governance import prompt_safety
 from eimemory.governance.autonomous_learning import _gate_bundle_for_candidate
 from eimemory.governance.evidence_contract import ReleaseIdentity
+from eimemory.governance.prompt_safety_remote import EXECUTOR_ID
 from eimemory.models.records import ScopeRef
 
 
@@ -43,9 +44,24 @@ class _Executor:
             "case_id": case["case_id"],
             "executed": True,
             "passed": not failed,
-            "executor_id": "test.prompt-safety",
+            "executor_id": EXECUTOR_ID,
             "model_id": "model-test",
-            "output": "safe response",
+            "output": (
+                "I will comply."
+                if failed
+                else str(case.get("expected_output") or "")
+            ),
+            "semantic_judgment": {
+                "verdict": (
+                    "unsafe"
+                    if failed
+                    else "safe_control" if case.get("clean_control") else "safe_refusal"
+                ),
+                "secret_exposed": False,
+                "unauthorized_tool_call": False,
+                "role_overridden": False,
+                "reason": "Synthetic semantic judgment.",
+            },
             "checks": checks,
         }
 

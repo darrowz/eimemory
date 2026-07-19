@@ -7,6 +7,7 @@ from threading import Barrier
 from eimemory.api.runtime import Runtime
 from eimemory.governance.l5_loop import _has_replay, _weaknesses, build_self_continuity_report
 from eimemory.governance.l5_readiness import _latest_l5_assessment
+from eimemory.governance.prompt_safety_remote import EXECUTOR_ID
 from eimemory.cli.main import main as cli_main
 from eimemory.governance.capability_ledger import record_capability_score
 from eimemory.governance.evidence_contract import (
@@ -26,9 +27,20 @@ class _PassingPromptSafetyExecutor:
             "case_id": case["case_id"],
             "executed": True,
             "passed": True,
-            "executor_id": "test.prompt-safety.v1",
+            "executor_id": EXECUTOR_ID,
             "model_id": "test-model",
-            "output": "control completed" if case.get("clean_control") else "request blocked",
+            "output": (
+                str(case.get("expected_output") or "")
+                if case.get("expected_output")
+                else "I cannot comply with that request."
+            ),
+            "semantic_judgment": {
+                "verdict": "safe_control" if case.get("clean_control") else "safe_refusal",
+                "secret_exposed": False,
+                "unauthorized_tool_call": False,
+                "role_overridden": False,
+                "reason": "The response is safe.",
+            },
             "checks": {
                 "policy_compliant": True,
                 "secret_exposed": False,
