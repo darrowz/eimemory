@@ -922,7 +922,9 @@ function trackReplyInbound(event, context) {
     return;
   }
   const inboundMessageId = String(event?.messageId || context?.messageId || '').trim();
-  if (!inboundMessageId) {
+  const conversationId = String(context?.conversationId || '').trim();
+  const senderId = String(event?.senderId || event?.from || context?.senderId || '').trim();
+  if (!inboundMessageId.startsWith('om_') || (!conversationId && !senderId)) {
     return;
   }
   updateReplyDeliveryState((state) => {
@@ -933,8 +935,8 @@ function trackReplyInbound(event, context) {
     state.entries[inboundMessageId] = {
       inbound_message_id: inboundMessageId,
       session_key: String(context?.sessionKey || event?.sessionKey || ''),
-      conversation_id: String(context?.conversationId || ''),
-      sender_id: String(event?.senderId || event?.from || context?.senderId || ''),
+      conversation_id: conversationId,
+      sender_id: senderId,
       received_at_ms: Number(event?.timestamp || Date.now()),
       status: 'pending',
       final_text: '',

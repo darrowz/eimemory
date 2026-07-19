@@ -308,6 +308,12 @@ def scan_once(
             "escalated",
         }:
             continue
+        conversation_id = str(raw_entry.get("conversation_id") or "").strip()
+        sender_id = str(raw_entry.get("sender_id") or "").strip()
+        if not str(inbound_id).startswith("om_") or not (
+            conversation_id or sender_id
+        ):
+            continue
         status = str(raw_entry.get("status") or "")
         final_text = str(raw_entry.get("final_text") or "").strip()
         if status in {"answered", "final_ready"} and final_text:
@@ -329,8 +335,8 @@ def scan_once(
         attempt_key = inbound_id if delivery_kind == "final" else f"status:{inbound_id}"
         previous_attempt = attempt_entries.get(attempt_key)
         payload = {
-            "conversation_id": str(raw_entry.get("conversation_id") or ""),
-            "sender_id": str(raw_entry.get("sender_id") or ""),
+            "conversation_id": conversation_id,
+            "sender_id": sender_id,
             "text": text,
             "idempotency_key": _delivery_idempotency_key(inbound_id, delivery_kind),
             "inbound_message_id": inbound_id,

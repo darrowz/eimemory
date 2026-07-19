@@ -59,6 +59,45 @@ def _write_state(path: Path, entry: dict) -> None:
     )
 
 
+def test_watchdog_skips_pending_without_feishu_reply_correlation(
+    tmp_path: Path,
+) -> None:
+    state_path = tmp_path / "state.json"
+    attempts_path = tmp_path / "attempts.json"
+    _write_state(
+        state_path,
+        {
+            "inbound_message_id": "internal-event",
+            "session_key": "agent:main:feishu:direct:unknown",
+            "conversation_id": "",
+            "sender_id": "",
+            "received_at_ms": 1_000,
+            "status": "pending",
+            "final_text": "",
+        },
+    )
+    find_calls: list[dict] = []
+    send_calls: list[dict] = []
+
+    result = _scan_once(
+        state_path=state_path,
+        attempts_path=attempts_path,
+        now_ms=500_000,
+        find_existing=lambda payload: (
+            find_calls.append(payload)
+            or {"status": "error", "error": "missing reply correlation fields"}
+        ),
+        send=lambda payload: (
+            send_calls.append(payload)
+            or {"ok": True, "messageId": "unexpected"}
+        ),
+    )
+
+    assert result == {"checked": 1, "retried": 0, "failed": 0}
+    assert find_calls == []
+    assert send_calls == []
+
+
 def test_watchdog_retries_overdue_answer_once(tmp_path: Path) -> None:
     state_path = tmp_path / "state.json"
     attempts_path = tmp_path / "attempts.json"

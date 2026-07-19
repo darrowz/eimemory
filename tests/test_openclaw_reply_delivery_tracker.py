@@ -27,6 +27,27 @@ def _run_node(script: str, state_path: Path) -> dict:
     return json.loads(state_path.read_text(encoding="utf-8"))
 
 
+def test_tracker_ignores_inbound_without_feishu_reply_correlation(
+    tmp_path: Path,
+) -> None:
+    state = _run_node(
+        """
+const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
+const handlers = {};
+plugin.register({ on(name, handler) { handlers[name] = handler; } });
+Promise.resolve(handlers.message_received({
+  content: 'internal event', messageId: 'internal-event'
+}, {
+  channelId: 'feishu',
+  sessionKey: 'agent:main:feishu:direct:unknown'
+}));
+""",
+        tmp_path / "reply-state.json",
+    )
+
+    assert state["entries"] == {}
+
+
 def test_tracker_correlates_inbound_final_and_platform_receipt(tmp_path: Path) -> None:
     state = _run_node(
         """

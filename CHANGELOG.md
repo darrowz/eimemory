@@ -13,6 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Advanced rollback strategies
 - Performance optimizations for large memory stores
 
+## [1.9.71] - 2026-07-19
+
+### Fixed
+- Ignore non-Feishu events that lack a valid message ID or reply target.
+- Prevent reply recovery from retrying malformed pending entries indefinitely.
+
 ## [1.9.70] - 2026-07-19
 
 ### Added
@@ -74,7 +80,7 @@ eimemory uses semantic versioning:
 - **MINOR**: New features, backward compatible
 - **PATCH**: Bug fixes, maintenance
 
-The current version (1.9.70) reflects the project's evolution from internal tool to production-ready public system. Future releases will follow standard semver conventions.
+The current version (1.9.71) reflects the project's evolution from internal tool to production-ready public system. Future releases will follow standard semver conventions.
 
 ## Support
 
