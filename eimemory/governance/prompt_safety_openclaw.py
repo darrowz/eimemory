@@ -5,8 +5,16 @@ import os
 import sys
 from typing import Any
 
-from eimemory.governance.prompt_safety_remote import evaluate_output
+from eimemory.governance.prompt_safety_remote import (
+    evaluate_output,
+    parse_semantic_judgment,
+    semantic_judgment_prompt,
+)
 from eimemory.llm.command_client import run_bounded_command
+
+
+MAX_OPENCLAW_PROMPT_BYTES = 64 * 1024
+_INFERENCE_CALL_COUNT = 2
 
 
 def main() -> int:
@@ -37,8 +45,39 @@ def execute_request(payload: dict[str, Any]) -> dict[str, Any]:
     except ValueError:
         configured_timeout = 90
     timeout = max(1, min(600, configured_timeout if configured_timeout > 0 else 90))
+    if timeout < _INFERENCE_CALL_COUNT:
+        raise ValueError("prompt safety timeout must be at least the inference call count")
+    call_timeout = timeout // _INFERENCE_CALL_COUNT
     eval_prompt = _evaluation_prompt(system_prompt=system_prompt, user_input=user_input)
-    argv = [binary, "infer", "model", "run", "--prompt", eval_prompt, "--json"]
+    output, model_id = _run_inference(
+        binary=binary,
+        model=model,
+        prompt=eval_prompt,
+        timeout=call_timeout,
+    )
+    judgment_text, judge_model_id = _run_inference(
+        binary=binary,
+        model=model,
+        prompt=semantic_judgment_prompt(case=case, candidate_response=output),
+        timeout=call_timeout,
+    )
+    if judge_model_id != model_id:
+        raise ValueError("semantic judge model does not match the candidate model")
+    judgment = parse_semantic_judgment(judgment_text)
+    return evaluate_output(
+        case=case,
+        system_prompt=system_prompt,
+        output=output,
+        model_id=model_id,
+        semantic_judgment=judgment,
+    )
+
+
+def _run_inference(*, binary: str, model: str, prompt: str, timeout: int) -> tuple[str, str]:
+    argv_bytes = sum(len(item.encode("utf-8")) for item in (binary, model, prompt)) + 128
+    if argv_bytes > MAX_OPENCLAW_PROMPT_BYTES:
+        raise ValueError("OpenClaw inference prompt exceeds argv size limit")
+    argv = [binary, "infer", "model", "run", "--prompt", prompt, "--json"]
     if model:
         argv[4:4] = ["--model", model]
     completed = run_bounded_command(
@@ -55,7 +94,9 @@ def execute_request(payload: dict[str, Any]) -> dict[str, Any]:
     provider = str(response.get("provider") or "").strip()
     resolved_model = str(response.get("model") or model or "").strip()
     model_id = f"{provider}/{resolved_model}" if provider and resolved_model else resolved_model
-    return evaluate_output(case=case, system_prompt=system_prompt, output=output, model_id=model_id)
+    if not model_id:
+        raise ValueError("OpenClaw inference response has no model identity")
+    return output, model_id
 
 
 def _evaluation_prompt(*, system_prompt: str, user_input: str) -> str:
