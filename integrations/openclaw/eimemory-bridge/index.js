@@ -902,7 +902,11 @@ function lastAssistantText(messages) {
   for (let index = values.length - 1; index >= 0; index -= 1) {
     const item = values[index];
     const message = item?.message && typeof item.message === 'object' ? item.message : item;
-    if (String(message?.role || '') !== 'assistant') {
+    const role = String(message?.role || '');
+    if (role === 'user') {
+      return '';
+    }
+    if (role !== 'assistant') {
       continue;
     }
     const text = assistantText(message?.content);

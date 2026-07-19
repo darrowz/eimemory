@@ -697,9 +697,9 @@ def test_openclaw_watchdog_systemd_limits_stuck_and_hook_pressure() -> None:
     unit_text = Path("deploy/systemd/openclaw-stuck-watchdog.service").read_text(encoding="utf-8")
 
     assert "--threshold-s 120" in unit_text
-    assert "--min-restart-interval-s 300" in unit_text
+    assert "--min-restart-interval-s 900" in unit_text
     assert "--max-hook-processes 8" in unit_text
-    assert "--max-hook-rss-mib 1536" in unit_text
+    assert "--max-hook-rss-mib 3072" in unit_text
     assert "--min-hook-age-s 10" in unit_text
     assert "--health-url" not in unit_text
     assert "--loopback-health-url" not in unit_text

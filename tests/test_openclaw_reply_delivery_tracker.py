@@ -361,6 +361,40 @@ Promise.resolve()
     assert state["entries"]["om_failed"]["final_text"] == ""
 
 
+def test_tracker_does_not_reuse_prior_turn_when_current_reply_is_empty(
+    tmp_path: Path,
+) -> None:
+    state = _run_node(
+        """
+const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
+const handlers = {};
+plugin.register({ on(name, handler) { handlers[name] = handler; } });
+const ctx = {
+  channelId: 'feishu', conversationId: 'oc_test',
+  sessionKey: 'agent:main:feishu:direct:ou_test'
+};
+Promise.resolve()
+  .then(() => handlers.message_received({
+    from: 'ou_test', messageId: 'om_current_turn'
+  }, ctx))
+  .then(() => handlers.agent_end({
+    success: true,
+    messages: [
+      { role: 'user', content: '上一轮问题' },
+      { role: 'assistant', content: '上一轮答复' },
+      { role: 'user', content: '本轮问题' },
+      { role: 'assistant', content: '' }
+    ]
+  }, ctx));
+""",
+        tmp_path / "reply-state.json",
+    )
+
+    entry = state["entries"]["om_current_turn"]
+    assert entry["status"] == "pending"
+    assert entry["final_text"] == ""
+
+
 def test_tracker_state_io_failure_does_not_break_message_hook() -> None:
     env = os.environ.copy()
     env["EIMEMORY_REPLY_DELIVERY_STATE_PATH"] = "/root/eimemory-invalid/reply-state.json"
