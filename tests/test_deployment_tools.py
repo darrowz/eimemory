@@ -768,6 +768,9 @@ def test_openclaw_gateway_override_uses_production_eimemory_runtime() -> None:
 
     assert "Environment=EIMEMORY_ROOT=/var/lib/eimemory" in override_text
     assert "Environment=EIMEMORY_CONFIG_DIR=/etc/eimemory" in override_text
+    assert "UnsetEnvironment=PYTHONPATH PYTHONHOME VIRTUAL_ENV" in override_text
+    assert re.search(r'''^\s*Environment\s*=\s*["']?PYTHONPATH=''', override_text, re.MULTILINE) is None
+    assert re.search(r"python\d+\.\d+", override_text) is None
     assert "Environment=PYTHONDONTWRITEBYTECODE=1" in override_text
     assert "Environment=PYTHONPYCACHEPREFIX=/var/lib/eimemory/.pycache/@EIMEMORY_COMMIT@" in override_text
     assert "Environment=EIMEMORY_RUNTIME_COMMIT=@EIMEMORY_COMMIT@" in override_text
