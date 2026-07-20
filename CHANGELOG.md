@@ -13,6 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Advanced rollback strategies
 - Performance optimizations for large memory stores
 
+## [1.9.77] - 2026-07-20
+
+### Fixed
+- Remove inherited `PYTHONPATH`, `PYTHONHOME`, and `VIRTUAL_ENV` from the OpenClaw gateway so release-bound eimemory probes execute from the immutable virtual environment.
+- Prevent Python minor-version drift from causing `memory.recall` replay evidence mismatches and false L4.5/L5 discrepancies.
+
 ## [1.9.76] - 2026-07-20
 
 ### Fixed
