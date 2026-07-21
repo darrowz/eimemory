@@ -13,6 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Advanced rollback strategies
 - Performance optimizations for large memory stores
 
+## [1.9.80] - 2026-07-21
+
+### Fixed
+- Retry prompt-safety command transport failures once with a bounded delay while keeping semantic failures and malformed successful responses strictly fail-closed and non-retryable.
+- Allow operators to bound prompt-safety command attempts with `EIMEMORY_PROMPT_SAFETY_MAX_ATTEMPTS` (default 2, hard maximum 3).
+
 ## [1.9.79] - 2026-07-21
 
 ### Fixed
