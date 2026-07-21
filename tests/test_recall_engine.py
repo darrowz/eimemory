@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError, asdict
+from typing import Any, get_type_hints
 
 import pytest
 
@@ -54,6 +55,26 @@ class RecordingRecallEngine:
     def recall(self, request: CandidateRequest):
         self.requests.append(request)
         return self.bundle
+
+
+class HostileDiagnosticsSource:
+    name = "hostile"
+
+    def search(self, request: CandidateRequest) -> CandidateBatch:
+        secret = "HOSTILE-DIAGNOSTIC-BODY-8675309"
+        return CandidateBatch(
+            hits=(),
+            diagnostics={
+                "source_name": secret,
+                "candidate_count": "not-an-int",
+                "candidate_limit": object(),
+                "vector_hits": "also-not-an-int",
+                "drops": {"forged": "many"},
+                "fallback": True,
+                "fallback_reason": secret,
+                "nested": {"body": secret * 1000},
+            },
+        )
 
 
 def _record(*, text: str, source_id: str = "alpha", status: str = "active", scope: ScopeRef = SCOPE) -> RecordEnvelope:
@@ -114,6 +135,23 @@ def test_candidate_request_round_trips_empty_nested_container_types() -> None:
     assert request.recall_filter_dict() == {"blocked_recall_lanes": [], "source_weights": {}}
 
 
+def test_candidate_batch_hard_caps_hits_and_nested_diagnostics() -> None:
+    ref = CandidateRef(record_id="r1", scope=ExactScope.from_scope(SCOPE), source_id="alpha")
+    hit = CandidateHit(ref=ref, source_rank=1, source_score=1.0)
+    batch = CandidateBatch(
+        hits=(hit,) * 6000,
+        diagnostics={
+            "nested": {
+                f"key-{index}": {"payload": "x" * 5000}
+                for index in range(100)
+            }
+        },
+    )
+
+    assert len(batch.hits) == 5000
+    assert len(repr(batch.diagnostic_dict())) < 20_000
+
+
 def test_memory_api_is_thin_facade_over_explicit_engine_injection(tmp_path) -> None:
     store = RuntimeStore(tmp_path)
     record = store.append(_record(text="engine injection marker"))
@@ -132,6 +170,31 @@ def test_memory_api_is_thin_facade_over_explicit_engine_injection(tmp_path) -> N
     assert source.requests
     assert source.requests[0].source_ids == ("alpha",)
     assert bundle.explanation["engine_diagnostics"]["engine_name"] == "governed"
+    store.close()
+
+
+def test_governed_engine_uses_an_explicit_typed_callback_contract() -> None:
+    init_hints = get_type_hints(GovernedRecallEngine.__init__)
+    bind_hints = get_type_hints(GovernedRecallEngine.bind)
+
+    assert init_hints["callbacks"] is not Any
+    assert bind_hints["callbacks"] is not Any
+
+
+def test_engine_sanitizes_hostile_provider_diagnostics(tmp_path) -> None:
+    store = RuntimeStore(tmp_path)
+    memory = MemoryAPI(
+        store,
+        recall_engine=GovernedRecallEngine(store=store, candidate_source=HostileDiagnosticsSource()),
+    )
+
+    bundle = memory.recall(query="hostile diagnostics", scope=asdict(SCOPE), limit=2)
+
+    diagnostics = bundle.explanation["engine_diagnostics"]
+    assert diagnostics["source_names"] == ["hostile"]
+    assert diagnostics["candidate_count"] == 0
+    assert diagnostics["fallback_reason"] == "candidate_source_fallback"
+    assert "HOSTILE-DIAGNOSTIC-BODY" not in repr(diagnostics)
     store.close()
 
 
@@ -159,6 +222,18 @@ def test_memory_api_facade_calls_injected_recall_engine_once_without_reordering(
     assert len(engine.requests) == 1
     assert engine.requests[0].query == "facade query"
     store.close()
+
+
+def test_memory_api_rejects_injected_governed_engine_from_another_store(tmp_path) -> None:
+    left_store = RuntimeStore(tmp_path / "left")
+    right_store = RuntimeStore(tmp_path / "right")
+    engine = GovernedRecallEngine(store=left_store, candidate_source=FakeCandidateSource(()))
+    try:
+        with pytest.raises(ValueError, match="same store"):
+            MemoryAPI(right_store, recall_engine=engine)
+    finally:
+        left_store.close()
+        right_store.close()
 
 
 def test_engine_drops_cross_scope_cross_source_inactive_missing_and_corrupt_refs(tmp_path) -> None:
@@ -217,6 +292,67 @@ def test_engine_drops_cross_scope_cross_source_inactive_missing_and_corrupt_refs
     store.close()
 
 
+def test_engine_rejects_self_consistent_ref_outside_authorized_query_scopes(tmp_path) -> None:
+    store = RuntimeStore(tmp_path)
+    foreign = store.append(
+        _record(
+            text="CROSS-SCOPE-SECRET",
+            source_id="alpha",
+            scope=ScopeRef(tenant_id="foreign", agent_id="agent-x", workspace_id="other", user_id="user-x"),
+        )
+    )
+    source = FakeCandidateSource((_hit(foreign),))
+    memory = MemoryAPI(store, recall_engine=GovernedRecallEngine(store=store, candidate_source=source))
+
+    bundle = memory.recall(
+        query="cross scope",
+        scope=asdict(SCOPE),
+        task_context={"source_ids": ["alpha"]},
+        limit=5,
+    )
+
+    assert bundle.items == []
+    assert bundle.explanation["engine_diagnostics"]["drops"]["scope_not_allowed"] == 1
+    store.close()
+
+
+def test_engine_enforces_kind_and_source_rank_and_caps_provider_hits(tmp_path) -> None:
+    store = RuntimeStore(tmp_path)
+    rank_one = store.append(_record(text="RANK-ONE", source_id="alpha"))
+    rank_two = store.append(_record(text="RANK-TWO", source_id="alpha"))
+    injected_rule = RecordEnvelope.create(
+        kind="rule",
+        title="INJECTED-RULE",
+        summary="INJECTED-RULE",
+        scope=SCOPE,
+        source_id="alpha",
+        status="active",
+    )
+    store.append(injected_rule)
+    overflow = tuple(_hit(rank_two, rank=100 + index) for index in range(400))
+    source = FakeCandidateSource(
+        (
+            _hit(rank_two, rank=2),
+            _hit(rank_one, rank=1),
+            _hit(injected_rule, rank=1),
+            *overflow,
+        )
+    )
+    memory = MemoryAPI(store, recall_engine=GovernedRecallEngine(store=store, candidate_source=source))
+
+    bundle = memory.recall(
+        query="rank",
+        scope=asdict(SCOPE),
+        task_context={"source_ids": ["alpha"]},
+        limit=2,
+    )
+
+    assert [item.title for item in bundle.items] == ["RANK-ONE", "RANK-TWO"]
+    assert bundle.explanation["engine_diagnostics"]["drops"]["kind_not_allowed"] == 1
+    assert bundle.explanation["engine_diagnostics"]["drops"]["provider_over_limit"] > 0
+    store.close()
+
+
 def test_empty_source_allowlist_is_not_all_sources(tmp_path) -> None:
     store = RuntimeStore(tmp_path)
     store.append(_record(text="empty allowlist marker", source_id="alpha"))
@@ -265,6 +401,70 @@ def test_empty_source_allowlist_cannot_trigger_policy_gap_side_effect(tmp_path) 
     assert bundle.reflections == []
     assert store.list_records(kinds=["unknown"], scope=SCOPE) == []
     assert bundle.explanation["engine_diagnostics"]["fallback_reason"] == "empty_source_allowlist"
+    store.close()
+
+
+def test_explicit_nondefault_source_cannot_emit_default_source_gap(tmp_path) -> None:
+    store = RuntimeStore(tmp_path)
+    rule = RecordEnvelope.create(
+        kind="rule",
+        title="open source gap",
+        summary="open source gap",
+        scope=SCOPE,
+        source_id="alpha",
+        status="active",
+        meta={
+            "task_type": "recall.source.test",
+            "retrieval_policy": {"open_unknown_on_low_confidence": True},
+        },
+    )
+    store.append(rule)
+    memory = MemoryAPI(store)
+
+    bundle = memory.recall(
+        query="missing alpha knowledge",
+        scope=asdict(SCOPE),
+        task_context={"task_type": "recall.source.test", "source_ids": ["alpha"]},
+        limit=5,
+    )
+
+    assert bundle.items == []
+    assert bundle.reflections == []
+    assert store.list_records(kinds=["unknown"], scope=SCOPE) == []
+    store.close()
+
+
+def test_excluded_source_policy_cannot_control_alpha_recall(tmp_path) -> None:
+    store = RuntimeStore(tmp_path)
+    beta_rule = RecordEnvelope.create(
+        kind="rule",
+        title="beta policy",
+        summary="beta policy",
+        scope=SCOPE,
+        source_id="beta",
+        status="active",
+        meta={
+            "task_type": "policy.source.test",
+            "retrieval_policy": {"route_hint": "task_context_first"},
+            "response_policy": {"next_action_hint": "BETA-POLICY-SECRET"},
+        },
+    )
+    store.append(beta_rule)
+    alpha = store.append(_record(text="alpha policy-safe answer", source_id="alpha"))
+    source = FakeCandidateSource((_hit(alpha),))
+    memory = MemoryAPI(store, recall_engine=GovernedRecallEngine(store=store, candidate_source=source))
+
+    bundle = memory.recall(
+        query="alpha policy-safe answer",
+        scope=asdict(SCOPE),
+        task_context={"task_type": "policy.source.test", "source_ids": ["alpha"]},
+        limit=1,
+    )
+
+    assert bundle.next_action_hint == alpha.title.lower()
+    assert bundle.confidence == 0.81
+    assert bundle.explanation["active_policy"] == {}
+    assert bundle.explanation["policy_suggestions"] == []
     store.close()
 
 
@@ -353,6 +553,33 @@ def test_exact_candidate_ref_wins_over_newer_hongtu_alias_and_global_user(tmp_pa
     )
 
     assert [item.summary for item in bundle.items] == ["canonical exact marker"]
+    store.close()
+
+
+def test_sqlite_candidate_request_queries_only_its_exact_physical_scope(tmp_path) -> None:
+    store = RuntimeStore(tmp_path)
+    canonical_scope = ScopeRef(tenant_id="default", agent_id="hongtu", workspace_id="embodied", user_id="darrow")
+    canonical = store.append(_record(text="exact physical marker canonical", scope=canonical_scope))
+    store.append(
+        _record(
+            text="exact physical marker legacy",
+            scope=ScopeRef(tenant_id="default", agent_id="main", workspace_id="repo-x", user_id="darrow"),
+        )
+    )
+
+    batch = SQLiteCandidateSource(store).search(
+        CandidateRequest(
+            query="exact physical marker",
+            scope=ExactScope.from_scope(canonical_scope),
+            kinds=("memory",),
+            source_ids=("alpha",),
+            limit=10,
+            budget=360,
+        )
+    )
+
+    assert [hit.ref.record_id for hit in batch.hits] == [canonical.record_id]
+    assert all(hit.ref.scope == ExactScope.from_scope(canonical_scope) for hit in batch.hits)
     store.close()
 
 
@@ -521,6 +748,126 @@ def test_raw_evidence_cannot_reuse_allowed_id_with_cross_source_body(tmp_path, m
     store.close()
 
 
+def test_raw_evidence_rebuilds_same_ref_body_from_authoritative_record(tmp_path, monkeypatch) -> None:
+    store = RuntimeStore(tmp_path)
+    alpha = _record(text="AUTHORITATIVE-RAW-BODY", source_id="alpha")
+    alpha.record_id = "same_ref_raw"
+    store.append(alpha)
+
+    def forged_raw(*args, **kwargs):
+        return [
+            {
+                "record": {
+                    "record_id": alpha.record_id,
+                    "source_id": "alpha",
+                    "scope": asdict(SCOPE),
+                    "text": "FORGED-SAME-REF-BODY",
+                },
+                "final_score": 1.0,
+                "boosts": {"forged": 1.0},
+            }
+        ]
+
+    monkeypatch.setattr("eimemory.retrieval.engine.search_raw_chunks", forged_raw)
+    memory = MemoryAPI(store)
+    bundle = memory.recall(
+        query="authoritative raw body",
+        scope=asdict(SCOPE),
+        task_context={"source_ids": ["alpha"], "recall_mode": "raw_hybrid"},
+        limit=5,
+    )
+
+    raw_payload = bundle.explanation["raw_evidence"][0]["record"]
+    assert "AUTHORITATIVE-RAW-BODY" in raw_payload["text"]
+    assert "FORGED-SAME-REF-BODY" not in repr(bundle.explanation["raw_evidence"])
+    assert "forged" not in bundle.explanation["raw_evidence"][0].get("boosts", {})
+    store.close()
+
+
+def test_raw_source_gate_runs_before_llm_reranker(tmp_path) -> None:
+    from eimemory.raw.retrieval import search_raw_chunks
+
+    store = RuntimeStore(tmp_path)
+    for source_id in ("alpha", "beta"):
+        raw = RecordEnvelope.create(
+            kind="raw_chunk",
+            title=f"pre-llm gate {source_id}",
+            summary=f"pre-llm gate {source_id} body",
+            content={"raw_text": f"pre-llm gate {source_id} body"},
+            scope=SCOPE,
+            source="raw",
+            source_id=source_id,
+        )
+        store.append(raw)
+    seen_documents: list[str] = []
+
+    def capture_reranker(ranked, **kwargs):
+        seen_documents.extend(str(item.get("record", {}).get("text") or "") for item in ranked)
+        return [str(item.get("record", {}).get("record_id") or "") for item in ranked]
+
+    results = search_raw_chunks(
+        store,
+        query="pre-llm gate",
+        scope=SCOPE,
+        task_context={"llm_reranker": capture_reranker},
+        source_ids=["alpha"],
+        limit=5,
+    )
+
+    assert results
+    assert all("beta body" not in document for document in seen_documents)
+    assert all(item["record"]["source_id"] == "alpha" for item in results)
+    store.close()
+
+
+def test_raw_api_is_authoritatively_rehydrated_before_llm_without_source_filter(tmp_path, monkeypatch) -> None:
+    from eimemory.raw.retrieval import search_raw_chunks
+
+    store = RuntimeStore(tmp_path)
+    authoritative = RecordEnvelope.create(
+        kind="raw_chunk",
+        title="authoritative raw api",
+        summary="authoritative raw api",
+        content={"raw_text": "AUTHORITATIVE-RAW-API-BODY"},
+        scope=SCOPE,
+        source="raw",
+        source_id="alpha",
+    )
+    store.append(authoritative)
+    monkeypatch.setattr(
+        "eimemory.raw.retrieval._raw_api_search",
+        lambda *args, **kwargs: [
+            {
+                "record": {
+                    "record_id": authoritative.record_id,
+                    "source_id": authoritative.source_id,
+                    "scope": asdict(SCOPE),
+                    "text": "FORGED-RAW-API-BODY",
+                },
+                "base_score": 1.0,
+            }
+        ],
+    )
+    seen_documents: list[str] = []
+
+    def capture_reranker(ranked, **kwargs):
+        seen_documents.extend(str(item.get("record", {}).get("text") or "") for item in ranked)
+        return [str(item.get("record", {}).get("record_id") or "") for item in ranked]
+
+    results = search_raw_chunks(
+        store,
+        query="authoritative raw api",
+        scope=SCOPE,
+        task_context={"llm_reranker": capture_reranker},
+        limit=5,
+    )
+
+    assert results
+    assert all("FORGED-RAW-API-BODY" not in document for document in seen_documents)
+    assert any("AUTHORITATIVE-RAW-API-BODY" in document for document in seen_documents)
+    store.close()
+
+
 def test_projection_payload_scope_or_source_mismatch_fails_closed(tmp_path) -> None:
     store = RuntimeStore(tmp_path)
     record = store.append(_record(text="projection mismatch marker", source_id="alpha"))
@@ -544,7 +891,52 @@ def test_projection_payload_scope_or_source_mismatch_fails_closed(tmp_path) -> N
     )
 
     assert bundle.items == []
-    assert bundle.explanation["engine_diagnostics"]["drops"]["ref_mismatch"] == 1
+    assert bundle.explanation["engine_diagnostics"]["drops"].get("missing_or_corrupt_record", 0) == 1
+    store.close()
+
+
+def test_exact_list_rejects_projection_payload_swap_for_direct_report(tmp_path) -> None:
+    import json
+
+    store = RuntimeStore(tmp_path)
+    current = RecordEnvelope.create(
+        kind="reflection",
+        title="CURRENT-REPORT",
+        summary="CURRENT-REPORT",
+        content={"report_type": "rule_evolution"},
+        scope=SCOPE,
+        source="eimemory.rule_evolution_loop",
+        source_id="alpha",
+        meta={"report_type": "rule_evolution"},
+    )
+    current.record_id = "rule_evolution_projection_swap"
+    foreign = RecordEnvelope.create(
+        kind="reflection",
+        title="FOREIGN-REPORT",
+        summary="FOREIGN-REPORT",
+        content={"report_type": "rule_evolution"},
+        scope=ScopeRef(tenant_id="foreign", agent_id="agent-x", workspace_id="other", user_id="user-x"),
+        source="eimemory.rule_evolution_loop",
+        source_id="alpha",
+        meta={"report_type": "rule_evolution"},
+    )
+    foreign.record_id = current.record_id
+    store.append(current)
+    store.append(foreign)
+    store.sqlite.conn.execute(
+        "UPDATE records SET payload_json = ? WHERE record_id = ? AND tenant_id = ?",
+        (json.dumps(foreign.to_dict()), current.record_id, SCOPE.tenant_id),
+    )
+    store.sqlite.conn.commit()
+
+    assert store.list_by_record_id_exact_scope(current.record_id, scope=SCOPE, source_ids=["alpha"]) == []
+    bundle = MemoryAPI(store).recall(
+        query=current.record_id,
+        scope=asdict(SCOPE),
+        task_context={"source_ids": ["alpha"], "include_report_records": True},
+        limit=5,
+    )
+    assert all(item.title != "FOREIGN-REPORT" for item in [*bundle.items, *bundle.reflections])
     store.close()
 
 
@@ -573,4 +965,18 @@ def test_default_engine_golden_bundle_preserves_local_rank_and_explanation_shape
         "package",
     ]
     assert [item["record_id"] for item in bundle.explanation["scoring"]] == [older.record_id, newer.record_id]
+    store.close()
+
+
+def test_governed_sqlite_default_preserves_legacy_minimum_candidate_budget(tmp_path) -> None:
+    store = RuntimeStore(tmp_path)
+    store.append(_record(text="candidate budget marker", source_id="alpha"))
+    bundle = MemoryAPI(store).recall(
+        query="candidate budget marker",
+        scope=asdict(SCOPE),
+        task_context={"source_ids": ["alpha"]},
+        limit=1,
+    )
+
+    assert bundle.explanation["engine_diagnostics"]["candidate_limit"] == 360
     store.close()

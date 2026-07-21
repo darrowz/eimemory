@@ -132,6 +132,9 @@ class MemoryAPI:
         self.source_registry = source_registry
         if candidate_source is not None and recall_engine is not None:
             raise ValueError("candidate_source and recall_engine cannot both be supplied")
+        engine_store = getattr(recall_engine, "store", store)
+        if recall_engine is not None and engine_store is not store:
+            raise ValueError("recall engine and MemoryAPI must use the same store")
         source = candidate_source or SQLiteCandidateSource(store)
         self.recall_engine = recall_engine or GovernedRecallEngine(
             store=store,

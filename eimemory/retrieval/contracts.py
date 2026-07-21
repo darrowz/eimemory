@@ -148,11 +148,11 @@ class CandidateHit:
     def __post_init__(self) -> None:
         object.__setattr__(self, "source_rank", max(1, int(self.source_rank)))
         object.__setattr__(self, "source_score", float(self.source_score))
-        object.__setattr__(self, "component_hints", _freeze_pairs(self.component_hints))
+        object.__setattr__(self, "component_hints", _freeze_bounded_pairs(self.component_hints, max_items=32))
         object.__setattr__(
             self,
             "evidence_hints",
-            tuple(str(item).strip() for item in self.evidence_hints if str(item).strip()),
+            tuple(str(item).strip()[:128] for item in self.evidence_hints if str(item).strip())[:32],
         )
 
     def component_dict(self) -> dict[str, Any]:
@@ -165,8 +165,8 @@ class CandidateBatch:
     diagnostics: tuple[tuple[str, Any], ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "hits", tuple(self.hits))
-        object.__setattr__(self, "diagnostics", _freeze_pairs(self.diagnostics, max_items=12))
+        object.__setattr__(self, "hits", tuple(self.hits)[:5000])
+        object.__setattr__(self, "diagnostics", _freeze_bounded_pairs(self.diagnostics, max_items=12))
 
     def diagnostic_dict(self) -> dict[str, Any]:
         return dict(thaw_value(self.diagnostics))
@@ -194,3 +194,39 @@ def _freeze_pairs(value: Any, *, max_items: int | None = None) -> tuple[tuple[st
     if max_items is not None:
         pairs = pairs[:max_items]
     return tuple((str(key), freeze_value(item)) for key, item in pairs)
+
+
+def _freeze_bounded_pairs(value: Any, *, max_items: int) -> tuple[tuple[str, Any], ...]:
+    if isinstance(value, _FrozenMapping):
+        pairs = list(value.items)
+    elif isinstance(value, Mapping):
+        pairs = list(value.items())
+    else:
+        pairs = list(value or ())
+    return tuple((str(key)[:80], _freeze_bounded(item, depth=0)) for key, item in pairs[:max_items])
+
+
+def _freeze_bounded(value: Any, *, depth: int) -> Any:
+    if depth >= 4:
+        return "<truncated>"
+    if isinstance(value, _FrozenMapping):
+        value = dict(value.items)
+    elif isinstance(value, (_FrozenSequence, _FrozenSet)):
+        value = list(value.items)
+    if isinstance(value, Mapping):
+        return _FrozenMapping(
+            tuple(
+                (str(key)[:80], _freeze_bounded(item, depth=depth + 1))
+                for key, item in list(value.items())[:16]
+            )
+        )
+    if isinstance(value, (list, tuple)):
+        return _FrozenSequence(tuple(_freeze_bounded(item, depth=depth + 1) for item in value[:32]))
+    if isinstance(value, set):
+        bounded = sorted(value, key=lambda item: (type(item).__name__, str(item)[:80]))[:32]
+        return _FrozenSet(tuple(_freeze_bounded(item, depth=depth + 1) for item in bounded))
+    if isinstance(value, str):
+        return value[:512]
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return f"<{type(value).__name__}>"

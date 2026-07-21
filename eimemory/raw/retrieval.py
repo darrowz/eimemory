@@ -9,7 +9,9 @@ import urllib.request
 from datetime import datetime, timezone
 from typing import Any
 
+from eimemory.identity import hongtu_query_scopes
 from eimemory.models.records import RecordEnvelope, ScopeRef
+from eimemory.models.source_partitions import normalize_source_ids
 from eimemory.raw.synthetic import synthetic_preference_texts
 
 
@@ -19,6 +21,7 @@ def search_raw_chunks(
     query: str,
     scope: ScopeRef | dict | None = None,
     task_context: dict | None = None,
+    source_ids: list[str] | tuple[str, ...] | None = None,
     limit: int = 8,
 ) -> list[dict[str, Any]]:
     """Retrieve raw-ish chunks through Agent A APIs when present, otherwise store search."""
@@ -27,22 +30,49 @@ def search_raw_chunks(
         return []
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
     task_context = dict(task_context or {})
+    allowed_source_ids = normalize_source_ids(source_ids)
+    if allowed_source_ids == ():
+        return []
     candidates = _raw_api_search(store, query=normalized_query, scope=scope_ref, limit=max(limit * 4, limit))
+    candidates = _authoritative_raw_candidates(
+        store,
+        candidates=candidates,
+        scope=scope_ref,
+        source_ids=allowed_source_ids,
+    )
     if not candidates:
-        candidates = _store_raw_candidates(store, query=normalized_query, scope=scope_ref, limit=max(limit * 6, limit))
+        candidates = _store_raw_candidates(
+            store,
+            query=normalized_query,
+            scope=scope_ref,
+            source_ids=allowed_source_ids,
+            limit=max(limit * 6, limit),
+        )
     ranked = rerank_raw_results(
         query=normalized_query,
         results=candidates,
         task_context=task_context,
     )
     if _should_expand_turn_context(task_context):
-        ranked = _expand_ranked_turn_context(store, ranked=ranked, scope=scope_ref, limit=limit)
+        ranked = _expand_ranked_turn_context(
+            store,
+            ranked=ranked,
+            scope=scope_ref,
+            source_ids=allowed_source_ids,
+            limit=limit,
+        )
     if len(ranked) < limit:
         ranked = _merge_candidates(
             ranked,
             rerank_raw_results(
                 query=normalized_query,
-                results=_direct_raw_scan_candidates(store, query=normalized_query, scope=scope_ref, limit=max(limit * 2, limit)),
+                results=_direct_raw_scan_candidates(
+                    store,
+                    query=normalized_query,
+                    scope=scope_ref,
+                    source_ids=allowed_source_ids,
+                    limit=max(limit * 2, limit),
+                ),
                 task_context=task_context,
             ),
             limit=limit,
@@ -121,23 +151,51 @@ def _raw_api_search(store: Any, *, query: str, scope: ScopeRef, limit: int) -> l
     return []
 
 
-def _store_raw_candidates(store: Any, *, query: str, scope: ScopeRef, limit: int) -> list[dict[str, Any]]:
+def _store_raw_candidates(
+    store: Any,
+    *,
+    query: str,
+    scope: ScopeRef,
+    source_ids: tuple[str, ...] | None,
+    limit: int,
+) -> list[dict[str, Any]]:
     if hasattr(store, "search_raw_chunks") and callable(store.search_raw_chunks):
         try:
-            return _normalize_results(store.search_raw_chunks(query=query, scope=scope, limit=limit))
+            results = _normalize_results(store.search_raw_chunks(query=query, scope=scope, limit=limit))
+            return _authoritative_raw_candidates(
+                store,
+                candidates=results,
+                scope=scope,
+                source_ids=source_ids,
+            )
         except Exception:
             pass
     records: list[RecordEnvelope] = []
     try:
-        records.extend(store.search(query=query, kinds=["memory"], scope=scope, limit=limit))
+        records.extend(
+            store.search(
+                query=query,
+                kinds=["memory"],
+                scope=scope,
+                limit=limit,
+                source_ids=source_ids,
+            )
+        )
     except Exception:
         pass
     try:
-        for record in store.list_records(kinds=["memory"], scope=scope, status="active", limit=limit * 2):
+        for record in store.list_records(
+            kinds=["memory"],
+            scope=scope,
+            status="active",
+            limit=limit * 2,
+            source_ids=source_ids,
+        ):
             if record.record_id not in {item.record_id for item in records}:
                 records.append(record)
     except Exception:
         pass
+    records = _authoritative_raw_records(store, records=records, scope=scope, source_ids=source_ids)
     query_terms = set(_terms(query))
     results: list[dict[str, Any]] = []
     for record in records:
@@ -151,11 +209,24 @@ def _store_raw_candidates(store: Any, *, query: str, scope: ScopeRef, limit: int
     return results
 
 
-def _direct_raw_scan_candidates(store: Any, *, query: str, scope: ScopeRef, limit: int) -> list[dict[str, Any]]:
+def _direct_raw_scan_candidates(
+    store: Any,
+    *,
+    query: str,
+    scope: ScopeRef,
+    source_ids: tuple[str, ...] | None,
+    limit: int,
+) -> list[dict[str, Any]]:
     """Low-cost raw scan used as a recall backstop when indexed search is too sparse."""
     scan_limit = max(200, min(5000, max(1, int(limit)) * 32))
     try:
-        records = store.list_records(kinds=["raw_chunk"], scope=scope, status="active", limit=scan_limit)
+        records = store.list_records(
+            kinds=["raw_chunk"],
+            scope=scope,
+            status="active",
+            limit=scan_limit,
+            source_ids=source_ids,
+        )
     except TypeError:
         try:
             records = store.list_records(kinds=["raw_chunk"], scope=scope, limit=scan_limit)
@@ -163,6 +234,8 @@ def _direct_raw_scan_candidates(store: Any, *, query: str, scope: ScopeRef, limi
             return []
     except Exception:
         return []
+
+    records = _authoritative_raw_records(store, records=records, scope=scope, source_ids=source_ids)
 
     query_terms = set(_terms(query))
     query_ngrams = _char_ngrams(query)
@@ -426,6 +499,92 @@ def _normalize_results(results: Any) -> list[dict[str, Any]]:
     return normalized
 
 
+def _authoritative_raw_candidates(
+    store: Any,
+    *,
+    candidates: list[dict[str, Any]],
+    scope: ScopeRef,
+    source_ids: tuple[str, ...] | None,
+) -> list[dict[str, Any]]:
+    """Rehydrate allowed refs before any text scoring or external reranking."""
+
+    authorized_scopes: set[tuple[str, str, str, str]] = set()
+    for candidate_scope in hongtu_query_scopes(scope):
+        authorized_scopes.add(_scope_key(candidate_scope))
+        if candidate_scope.user_id:
+            authorized_scopes.add(
+                _scope_key(
+                    ScopeRef(
+                        tenant_id=candidate_scope.tenant_id,
+                        agent_id=candidate_scope.agent_id,
+                        workspace_id=candidate_scope.workspace_id,
+                        user_id="",
+                    )
+                )
+            )
+    authoritative: list[dict[str, Any]] = []
+    for item in candidates:
+        record = _result_record(item)
+        record_id, record_scope, source_id = _raw_ref(record)
+        if not record_id or record_scope is None or not source_id:
+            continue
+        if source_ids is not None and source_id not in source_ids:
+            continue
+        if _scope_key(record_scope) not in authorized_scopes:
+            continue
+        try:
+            hydrated = store.get_by_exact_ref(record_id, scope=record_scope, source_id=source_id)
+        except (AttributeError, TypeError, ValueError):
+            continue
+        if hydrated is None or hydrated.status != "active":
+            continue
+        authoritative.append({"record": hydrated, "base_score": _result_base_score(item)})
+    return authoritative
+
+
+def _authoritative_raw_records(
+    store: Any,
+    *,
+    records: list[Any],
+    scope: ScopeRef,
+    source_ids: tuple[str, ...] | None,
+) -> list[Any]:
+    return [
+        _result_record(item)
+        for item in _authoritative_raw_candidates(
+            store,
+            candidates=[{"record": record, "base_score": 0.0} for record in records],
+            scope=scope,
+            source_ids=source_ids,
+        )
+    ]
+
+
+def _raw_ref(record: Any) -> tuple[str, ScopeRef | None, str]:
+    if isinstance(record, RecordEnvelope):
+        return record.record_id, record.scope, record.source_id
+    if isinstance(record, dict):
+        scope_payload = record.get("scope")
+        if not isinstance(scope_payload, dict):
+            return _record_id(record), None, str(record.get("source_id") or "")
+        return (
+            _record_id(record),
+            ScopeRef.from_dict(scope_payload),
+            str(record.get("source_id") or ""),
+        )
+    return "", None, ""
+
+
+def _scope_key(scope: ScopeRef) -> tuple[str, str, str, str]:
+    return (scope.tenant_id or "default", scope.agent_id, scope.workspace_id, scope.user_id)
+
+
+def authoritative_raw_payload(record: RecordEnvelope) -> dict[str, Any]:
+    """Build a raw evidence payload only from an authoritative hydrated record."""
+
+    return _record_payload(record, text=_record_text(record))
+
+
 def _boosts(*, query: str, text: str, record: Any, task_context: dict, max_time: float | None) -> dict[str, float]:
     boosts: dict[str, float] = {}
     query_terms = set(_metadata_terms(task_context, query=query))
@@ -479,12 +638,19 @@ def _expand_ranked_turn_context(
     *,
     ranked: list[dict[str, Any]],
     scope: ScopeRef,
+    source_ids: tuple[str, ...] | None,
     limit: int,
 ) -> list[dict[str, Any]]:
     if len(ranked) <= 0 or limit <= 0:
         return ranked
     try:
-        records = store.list_records(kinds=["raw_chunk"], scope=scope, status="active", limit=1200)
+        records = store.list_records(
+            kinds=["raw_chunk"],
+            scope=scope,
+            status="active",
+            limit=1200,
+            source_ids=source_ids,
+        )
     except TypeError:
         try:
             records = store.list_records(kinds=["raw_chunk"], scope=scope, limit=1200)
@@ -492,6 +658,7 @@ def _expand_ranked_turn_context(
             return ranked
     except Exception:
         return ranked
+    records = _authoritative_raw_records(store, records=records, scope=scope, source_ids=source_ids)
     by_session: dict[str, list[Any]] = {}
     for record in records:
         session_id = _session_id(record)

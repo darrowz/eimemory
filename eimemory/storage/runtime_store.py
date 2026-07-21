@@ -167,10 +167,20 @@ class RuntimeStore:
                 source_ids=source_ids,
             )
 
-    def get_active_policy(self, *, task_type: str, scope: ScopeRef | dict | None = None) -> dict:
+    def get_active_policy(
+        self,
+        *,
+        task_type: str,
+        scope: ScopeRef | dict | None = None,
+        source_ids: list[str] | tuple[str, ...] | None = None,
+    ) -> dict:
         with self._lock:
             scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
-            return self.sqlite.get_active_policy(task_type=task_type, scope=scope_ref)
+            return self.sqlite.get_active_policy(
+                task_type=task_type,
+                scope=scope_ref,
+                source_ids=source_ids,
+            )
 
     def record_event(self, payload: dict, *, scope: ScopeRef | dict | None = None) -> dict:
         with self._lock:

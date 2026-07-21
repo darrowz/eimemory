@@ -1957,7 +1957,10 @@ class SqliteRecordStore:
         if kinds:
             where.append(f"kind IN ({','.join('?' for _ in kinds)})")
             params.extend(kinds)
-        self._apply_scope_filters(where, params, scope)
+        if bool(recall_filters.get("_exact_scope")):
+            self._apply_exact_scope_filters(where, params, scope)
+        else:
+            self._apply_scope_filters(where, params, scope)
         source_ids = recall_filters.get("_source_ids")
         if source_ids is not None:
             where.append(f"source_id IN ({','.join('?' for _ in source_ids)})")
@@ -2125,7 +2128,10 @@ class SqliteRecordStore:
         if kinds:
             where.append(f"{prefix}kind IN ({','.join('?' for _ in kinds)})")
             params.extend(kinds)
-        self._apply_recall_index_scope_filters(where, params, scope, alias=alias)
+        if bool(recall_filters.get("_exact_scope")):
+            self._apply_exact_scope_filters(where, params, scope, alias=alias)
+        else:
+            self._apply_recall_index_scope_filters(where, params, scope, alias=alias)
         source_ids = recall_filters.get("_source_ids")
         if source_ids is not None:
             where.append(f"{prefix}source_id IN ({','.join('?' for _ in source_ids)})")
@@ -2158,6 +2164,32 @@ class SqliteRecordStore:
                 clause.append(f"{prefix}user_id = ''")
             clauses.append("(" + " AND ".join(clause) + ")")
         where.append("(" + " OR ".join(clauses) + ")")
+
+    @staticmethod
+    def _apply_exact_scope_filters(
+        where: list[str],
+        params: list[object],
+        scope: ScopeRef,
+        *,
+        alias: str = "",
+    ) -> None:
+        prefix = f"{alias}." if alias else ""
+        where.extend(
+            [
+                f"{prefix}tenant_id = ?",
+                f"{prefix}agent_id = ?",
+                f"{prefix}workspace_id = ?",
+                f"{prefix}user_id = ?",
+            ]
+        )
+        params.extend(
+            [
+                scope.tenant_id or "default",
+                scope.agent_id,
+                scope.workspace_id,
+                scope.user_id,
+            ]
+        )
 
     def _allowed_recall_lanes(self, *, kinds: list[str] | None, recall_filters: dict) -> tuple[str, ...]:
         if kinds and set(kinds) <= {"raw_chunk"}:
@@ -2255,13 +2287,25 @@ class SqliteRecordStore:
             return ""
         return " OR ".join(f'"{term}"' for term in terms[:12])
 
-    def get_active_policy(self, *, task_type: str, scope: ScopeRef) -> dict:
+    def get_active_policy(
+        self,
+        *,
+        task_type: str,
+        scope: ScopeRef,
+        source_ids: list[str] | tuple[str, ...] | None = None,
+    ) -> dict:
         where = [
             "kind = 'rule'",
             "status = 'active'",
         ]
         params: list[object] = []
         self._apply_scope_filters(where, params, scope)
+        allowed_source_ids = normalize_source_ids(source_ids)
+        if allowed_source_ids == ():
+            return {"retrieval_policy": {}, "response_policy": {}}
+        if allowed_source_ids is not None:
+            where.append(f"source_id IN ({','.join('?' for _ in allowed_source_ids)})")
+            params.extend(allowed_source_ids)
         where.append(
             "CAST(COALESCE(json_extract(meta_json, '$.task_type'), "
             "json_extract(meta_json, '$.business_meta.task_type')) AS TEXT) = ?"
@@ -2272,14 +2316,14 @@ class SqliteRecordStore:
             order_by = "CASE WHEN user_id = ? THEN 1 ELSE 0 END DESC, updated_at DESC"
             params = [*params, scope.user_id]
         row = self.conn.execute(
-            "SELECT payload_json FROM records WHERE "
+            "SELECT record_id, tenant_id, agent_id, workspace_id, user_id, source_id, payload_json FROM records WHERE "
             + " AND ".join(where)
             + f" ORDER BY {order_by} LIMIT 1",
             params,
         ).fetchone()
         if row is not None:
             record = self._record_from_payload_json(row["payload_json"])
-            if record is not None:
+            if record is not None and self._record_matches_projection_row(record, row):
                 return dict(business_metadata(record.meta))
         return {"retrieval_policy": {}, "response_policy": {}}
 
@@ -2331,7 +2375,15 @@ class SqliteRecordStore:
         ).fetchone()
         if row is None:
             return None
-        return self._record_from_payload_json(row["payload_json"])
+        record = self._record_from_payload_json(row["payload_json"])
+        if record is None or not self._record_matches_exact_ref(
+            record,
+            record_id=str(record_id or "").strip(),
+            scope=scope,
+            source_id=normalized_source_id,
+        ):
+            return None
+        return record
 
     def list_by_record_id_exact_scope(
         self,
@@ -2363,14 +2415,48 @@ class SqliteRecordStore:
             where.append(f"source_id IN ({','.join('?' for _ in allowed_source_ids)})")
             params.extend(allowed_source_ids)
         rows = self.conn.execute(
-            "SELECT payload_json FROM records WHERE " + " AND ".join(where) + " ORDER BY updated_at DESC",
+            "SELECT record_id, tenant_id, agent_id, workspace_id, user_id, source_id, payload_json "
+            "FROM records WHERE " + " AND ".join(where) + " ORDER BY updated_at DESC",
             params,
         ).fetchall()
-        return [
-            record
-            for row in rows
-            if (record := self._record_from_payload_json(row["payload_json"])) is not None
-        ]
+        records: list[RecordEnvelope] = []
+        for row in rows:
+            record = self._record_from_payload_json(row["payload_json"])
+            if record is None or not self._record_matches_projection_row(record, row):
+                continue
+            records.append(record)
+        return records
+
+    @staticmethod
+    def _record_matches_exact_ref(
+        record: RecordEnvelope,
+        *,
+        record_id: str,
+        scope: ScopeRef,
+        source_id: str,
+    ) -> bool:
+        return (
+            record.record_id == record_id
+            and record.scope.tenant_id == (scope.tenant_id or "default")
+            and record.scope.agent_id == scope.agent_id
+            and record.scope.workspace_id == scope.workspace_id
+            and record.scope.user_id == scope.user_id
+            and record.source_id == source_id
+        )
+
+    @classmethod
+    def _record_matches_projection_row(cls, record: RecordEnvelope, row: sqlite3.Row) -> bool:
+        return cls._record_matches_exact_ref(
+            record,
+            record_id=str(row["record_id"] or ""),
+            scope=ScopeRef(
+                tenant_id=str(row["tenant_id"] or "default"),
+                agent_id=str(row["agent_id"] or ""),
+                workspace_id=str(row["workspace_id"] or ""),
+                user_id=str(row["user_id"] or ""),
+            ),
+            source_id=str(row["source_id"] or "default"),
+        )
 
     def get_by_idempotency_key(
         self,

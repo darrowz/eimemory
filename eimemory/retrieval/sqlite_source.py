@@ -22,6 +22,10 @@ class SQLiteCandidateSource:
         if not request.query or request.limit <= 0 or request.budget <= 0 or request.source_ids == ():
             return self._batch(request=request, hits=(), elapsed_ms=(perf_counter() - started) * 1000.0)
         recall_filters = request.recall_filter_dict()
+        # CandidateRequest.scope is an exact physical partition contract.  The
+        # governed engine performs any legacy/Hongtu alias fan-out explicitly;
+        # the SQLite adapter must not silently broaden an individual request.
+        recall_filters["_exact_scope"] = True
         configured_budget = _positive_int(recall_filters.get("candidate_limit"))
         recall_filters["candidate_limit"] = min(
             request.budget,

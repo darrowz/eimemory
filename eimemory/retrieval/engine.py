@@ -2,19 +2,62 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import replace
+import re
 from time import perf_counter
-from typing import Any
+from typing import Any, Protocol
 
 from eimemory.governance.memory_graph import build_evidence_refs, build_timeline, graph_route_for_query
 from eimemory.identity import extract_user_aliases, hongtu_query_scopes_with_aliases
 from eimemory.knowledge.views import build_recall_view, choose_view_type, records_from_view
 from eimemory.metadata import business_metadata
 from eimemory.models.records import RecallBundle, RecordEnvelope, ScopeRef
-from eimemory.raw.retrieval import search_raw_chunks
+from eimemory.models.source_partitions import DEFAULT_SOURCE_ID
+from eimemory.raw.retrieval import authoritative_raw_payload, search_raw_chunks
 from eimemory.recall import classify_recall_intent
 from eimemory.storage.runtime_store import RuntimeStore
 
 from .contracts import CandidateRequest, CandidateSource, ExactScope, freeze_value
+from .sqlite_source import SQLiteCandidateSource
+
+
+class RecallCallbacks(Protocol):
+    """Frozen callback surface required by the governed recall orchestrator."""
+
+    def _positive_int(self, *args: Any, **kwargs: Any) -> int: ...
+    def _prioritize_fast_query_scopes(self, *args: Any, **kwargs: Any) -> list[ScopeRef]: ...
+    def _resolve_recall_profile(self, *args: Any, **kwargs: Any) -> tuple[str, str]: ...
+    def _recall_profile_config(self, *args: Any, **kwargs: Any) -> dict[str, Any]: ...
+    def _source_weights(self, *args: Any, **kwargs: Any) -> dict[str, float]: ...
+    def _recall_filters_from_task_context(self, *args: Any, **kwargs: Any) -> dict[str, Any]: ...
+    def _merge_recall_intent_filters(self, *args: Any, **kwargs: Any) -> None: ...
+    def _is_report_query(self, *args: Any, **kwargs: Any) -> bool: ...
+    def _allows_operational_recall(self, *args: Any, **kwargs: Any) -> bool: ...
+    def _string_list(self, *args: Any, **kwargs: Any) -> list[str]: ...
+    def _default_blocked_recall_lanes(self, *args: Any, **kwargs: Any) -> tuple[str, ...]: ...
+    def _pipeline_snapshot(self, *args: Any, **kwargs: Any) -> Any: ...
+    def _search_kinds_for_recall_intent(self, *args: Any, **kwargs: Any) -> list[str]: ...
+    def _diagnostic_blocked_operational_counts(self, *args: Any, **kwargs: Any) -> Any: ...
+    def _filter_default_suppressed_items(self, *args: Any, **kwargs: Any) -> Any: ...
+    def _is_recallable_report_record(self, *args: Any, **kwargs: Any) -> bool: ...
+    def _is_preference_query(self, *args: Any, **kwargs: Any) -> bool: ...
+    def _is_preference_recall_candidate(self, *args: Any, **kwargs: Any) -> bool: ...
+    def _expand_graph_items(self, *args: Any, **kwargs: Any) -> list[RecordEnvelope]: ...
+    def _expand_memory_edge_items(self, *args: Any, **kwargs: Any) -> Any: ...
+    def _apply_hard_recall_filters_with_counts(self, *args: Any, **kwargs: Any) -> Any: ...
+    def _apply_online_recall_pollution_gate(self, *args: Any, **kwargs: Any) -> Any: ...
+    def _memory_usage_adjustments(self, *args: Any, **kwargs: Any) -> dict[str, Any]: ...
+    def _apply_memory_usage_feedback(self, *args: Any, **kwargs: Any) -> Any: ...
+    def _dedupe_records(self, *args: Any, **kwargs: Any) -> list[RecordEnvelope]: ...
+    def _matching_active_rule_recall_items(self, *args: Any, **kwargs: Any) -> list[RecordEnvelope]: ...
+    def _quality_summary(self, *args: Any, **kwargs: Any) -> dict[str, Any]: ...
+    def _recall_pipeline_summary(self, *args: Any, **kwargs: Any) -> dict[str, Any]: ...
+    def _recall_intent_summary(self, *args: Any, **kwargs: Any) -> dict[str, Any]: ...
+    def _scope_dict(self, *args: Any, **kwargs: Any) -> dict[str, str]: ...
+    def _scoring_for_items(self, *args: Any, **kwargs: Any) -> list[dict[str, Any]]: ...
+    def _selected_record_summaries(self, *args: Any, **kwargs: Any) -> list[dict[str, Any]]: ...
+    def _source_composition(self, *args: Any, **kwargs: Any) -> dict[str, int]: ...
+    def _memory_usage_summary(self, *args: Any, **kwargs: Any) -> dict[str, Any]: ...
+    def _event_graph_summary(self, *args: Any, **kwargs: Any) -> dict[str, Any]: ...
 
 
 class GovernedRecallEngine:
@@ -22,13 +65,37 @@ class GovernedRecallEngine:
 
     name = "governed"
     policy_version = "governed-recall.v1"
+    _minimum_candidate_budget = 360
+    _safe_raw_boosts = frozenset(
+        {
+            "keyword_overlap",
+            "quoted_phrase",
+            "proper_noun",
+            "benchmark_session_match",
+            "benchmark_turn_match",
+            "entity_overlap",
+            "temporal_hint",
+            "speaker_role",
+            "preference_pattern",
+            "current_fact",
+            "conflict_marker",
+            "temporal_currentness",
+            "turn_context_neighbor",
+        }
+    )
 
-    def __init__(self, *, store: RuntimeStore, candidate_source: CandidateSource, callbacks: Any | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        store: RuntimeStore,
+        candidate_source: CandidateSource,
+        callbacks: RecallCallbacks | None = None,
+    ) -> None:
         self.store = store
         self.candidate_source = candidate_source
         self._callbacks = callbacks
 
-    def bind(self, callbacks: Any) -> None:
+    def bind(self, callbacks: RecallCallbacks) -> None:
         if self._callbacks is not None and self._callbacks is not callbacks:
             raise ValueError("recall engine is already bound to another MemoryAPI instance")
         self._callbacks = callbacks
@@ -54,6 +121,8 @@ class GovernedRecallEngine:
                 primary_scope=scope_ref,
             )[:query_scope_limit]
         policy_scope_ref = query_scope_refs[0] if query_scope_refs else scope_ref
+        candidate_scope_refs = self._visible_exact_scopes(query_scope_refs)
+        authorized_exact_scopes = {ExactScope.from_scope(item) for item in candidate_scope_refs}
         task_type = str(task_context.get("task_type") or "")
         if not normalized_query:
             return RecallBundle(
@@ -108,13 +177,19 @@ class GovernedRecallEngine:
             )
         active_policy = {"retrieval_policy": {}, "response_policy": {}}
         if task_type:
-            active_policy = self.store.get_active_policy(task_type=task_type, scope=policy_scope_ref)
-        policy_search = self.store.search_policy(
-            normalized_query,
-            scope=policy_scope_ref,
-            context=task_context,
-            limit=5,
-        )
+            active_policy = self.store.get_active_policy(
+                task_type=task_type,
+                scope=policy_scope_ref,
+                source_ids=source_ids,
+            )
+        policy_search = {"policy_suggestions": [], "matched_event_type": ""}
+        if source_ids is None:
+            policy_search = self.store.search_policy(
+                normalized_query,
+                scope=policy_scope_ref,
+                context=task_context,
+                limit=5,
+            )
         retrieval_policy = dict(active_policy.get("retrieval_policy") or {})
         recall_profile, recall_profile_source = memory._resolve_recall_profile(
             task_context=task_context,
@@ -172,6 +247,7 @@ class GovernedRecallEngine:
                     query=normalized_query,
                     scope=query_scope_ref,
                     task_context=task_context,
+                    source_ids=source_ids,
                     limit=max(limit, 1),
                 ):
                     record_payload = evidence.get("record") if isinstance(evidence, dict) else {}
@@ -205,11 +281,24 @@ class GovernedRecallEngine:
                     if record_id in seen_raw_ids:
                         continue
                     seen_raw_ids.add(record_id)
-                    raw_evidence.append(evidence)
+                    safe_evidence = {
+                        "record": authoritative_raw_payload(raw_record),
+                        "base_score": self._safe_float(evidence.get("base_score")),
+                        "final_score": self._safe_float(evidence.get("final_score")),
+                    }
+                    boosts = evidence.get("boosts") if isinstance(evidence, dict) else {}
+                    if isinstance(boosts, dict):
+                        safe_evidence["boosts"] = {
+                            str(key): self._safe_float(value)
+                            for key, value in boosts.items()
+                            if str(key) in self._safe_raw_boosts
+                        }
+                    raw_evidence.append(safe_evidence)
             raw_evidence = raw_evidence[:limit]
         report_query = report_query or operational_recall_allowed
         items: list[RecordEnvelope] = []
         seen_item_refs: set[tuple[str, ExactScope, str]] = set()
+        seen_candidate_refs: set[tuple[str, ExactScope, str]] = set()
         report_items_direct = self._report_records_from_query(
             normalized_query,
             query_scope_refs,
@@ -225,18 +314,34 @@ class GovernedRecallEngine:
         )
         source_reports: list[dict[str, Any]] = []
         scored_items: list[dict[str, Any]] = []
-        for query_scope_ref in query_scope_refs:
+        for query_scope_ref in candidate_scope_refs:
             source_request = replace(
                 request,
                 scope=ExactScope.from_scope(query_scope_ref),
                 kinds=tuple(search_kinds),
                 limit=search_limit,
-                budget=max(search_limit, memory._positive_int(recall_filters.get("candidate_limit")) or search_limit * 36),
+                budget=max(
+                    search_limit,
+                    memory._positive_int(recall_filters.get("candidate_limit"))
+                    or max(self._minimum_candidate_budget, search_limit * 36),
+                ),
                 recall_filters=freeze_value(recall_filters),
             )
             batch = self.candidate_source.search(source_request)
             source_reports.append(batch.diagnostic_dict())
-            for hit in batch.hits:
+            indexed_hits = list(enumerate(batch.hits))
+            indexed_hits.sort(key=lambda pair: (pair[1].source_rank, -pair[1].source_score, pair[0]))
+            bounded_hits = indexed_hits[: source_request.limit]
+            if len(indexed_hits) > len(bounded_hits):
+                engine_drops["provider_over_limit"] += len(indexed_hits) - len(bounded_hits)
+            for _provider_index, hit in bounded_hits:
+                candidate_key = (hit.ref.record_id, hit.ref.scope, hit.ref.source_id)
+                if candidate_key in seen_candidate_refs:
+                    continue
+                seen_candidate_refs.add(candidate_key)
+                if hit.ref.scope not in authorized_exact_scopes:
+                    engine_drops["scope_not_allowed"] += 1
+                    continue
                 if source_ids is not None and hit.ref.source_id not in source_ids:
                     engine_drops["source_not_allowed"] += 1
                     continue
@@ -253,6 +358,9 @@ class GovernedRecallEngine:
                     continue
                 if record.status != "active":
                     engine_drops["inactive_record"] += 1
+                    continue
+                if source_request.kinds and record.kind not in source_request.kinds:
+                    engine_drops["kind_not_allowed"] += 1
                     continue
                 record_key = self._record_key(record)
                 if record_key in seen_item_refs:
@@ -358,6 +466,9 @@ class GovernedRecallEngine:
             source_ids=source_ids,
         )
         active_rules = [item for item in active_rules if self._record_is_exact_and_active(item)]
+        active_rules = [
+            item for item in active_rules if ExactScope.from_scope(item.scope) in authorized_exact_scopes
+        ]
         rules = [
             rule
             for rule in active_rules
@@ -393,7 +504,12 @@ class GovernedRecallEngine:
             limit=3,
             source_ids=source_ids,
         )
-        reflections = [item for item in reflection_items if self._record_is_exact_and_active(item)][:3]
+        reflections = [
+            item
+            for item in reflection_items
+            if self._record_is_exact_and_active(item)
+            and ExactScope.from_scope(item.scope) in authorized_exact_scopes
+        ][:3]
         confidence = 0.0
         if items:
             confidence = 0.92 if active_policy.get("retrieval_policy", {}).get("route_hint") == "task_context_first" else 0.81
@@ -405,7 +521,8 @@ class GovernedRecallEngine:
             next_hint = items[0].title.lower()
         gap = None
         retrieval_policy = dict(active_policy.get("retrieval_policy") or {})
-        if not items and retrieval_policy.get("open_unknown_on_low_confidence"):
+        gap_source_allowed = source_ids is None or DEFAULT_SOURCE_ID in source_ids
+        if not items and gap_source_allowed and retrieval_policy.get("open_unknown_on_low_confidence"):
             from eimemory.api.evolution import EvolutionAPI
 
             gap = EvolutionAPI(self.store).capture_recall_gap(
@@ -566,19 +683,28 @@ class GovernedRecallEngine:
             records.append(record)
         return records
 
-    @staticmethod
-    def _merge_source_reports(source_reports: list[dict[str, Any]], *, scored_items: list[dict[str, Any]]) -> dict[str, Any]:
+    def _merge_source_reports(self, source_reports: list[dict[str, Any]], *, scored_items: list[dict[str, Any]]) -> dict[str, Any]:
         merged: dict[str, Any] = {
             "retrieval_mode": "recall_index_hybrid",
             "vector_hits": 0,
             "blocked_counts": {},
             "scored_items": scored_items,
         }
+        trusted_diagnostics = isinstance(self.candidate_source, SQLiteCandidateSource)
         for report in source_reports:
-            merged["retrieval_mode"] = str(report.get("retrieval_mode") or merged["retrieval_mode"])
-            merged["vector_hits"] += int(report.get("vector_hits") or 0)
+            if not trusted_diagnostics:
+                continue
+            retrieval_mode = str(report.get("retrieval_mode") or "")
+            if retrieval_mode in {"recall_index_hybrid", "hybrid", "hybrid_vector", "structured"}:
+                merged["retrieval_mode"] = retrieval_mode
+            merged["vector_hits"] += self._safe_nonnegative_int(report.get("vector_hits"))
             for key, value in dict(report.get("drops") or {}).items():
-                merged["blocked_counts"][str(key)] = int(merged["blocked_counts"].get(str(key), 0)) + int(value or 0)
+                safe_key = self._safe_diagnostic_label(key)
+                if not safe_key:
+                    continue
+                merged["blocked_counts"][safe_key] = self._safe_nonnegative_int(
+                    merged["blocked_counts"].get(safe_key)
+                ) + self._safe_nonnegative_int(value)
         return merged
 
     def _engine_diagnostics(
@@ -590,15 +716,45 @@ class GovernedRecallEngine:
         elapsed_ms: float,
     ) -> dict[str, Any]:
         fallback_reports = [item for item in source_reports if bool(item.get("fallback"))]
-        source_names = list(dict.fromkeys(str(item.get("source_name") or self.candidate_source.name) for item in source_reports))
+        source_name = self._safe_diagnostic_label(getattr(self.candidate_source, "name", ""))
+        if not source_name:
+            source_name = type(self.candidate_source).__name__[:64]
+        trusted_diagnostics = isinstance(self.candidate_source, SQLiteCandidateSource)
+        fallback_reason = ""
+        if fallback_reports:
+            reported_reason = str(fallback_reports[0].get("fallback_reason") or "")
+            fallback_reason = reported_reason if trusted_diagnostics and reported_reason == "legacy_scan" else "candidate_source_fallback"
         return {
             "engine_name": self.name,
-            "source_names": source_names[:4],
-            "candidate_count": sum(int(item.get("candidate_count") or 0) for item in source_reports),
-            "candidate_limit": max([int(item.get("candidate_limit") or 0) for item in source_reports] or [limit]),
+            "source_names": [source_name] if source_reports else [],
+            "candidate_count": sum(self._safe_nonnegative_int(item.get("candidate_count")) for item in source_reports),
+            "candidate_limit": max(
+                [self._safe_nonnegative_int(item.get("candidate_limit")) for item in source_reports] or [limit]
+            ),
             "elapsed_ms": round(max(0.0, elapsed_ms), 3),
             "drops": {str(key): int(value) for key, value in list(sorted(drops.items()))[:8]},
             "fallback": bool(fallback_reports),
-            "fallback_reason": str(fallback_reports[0].get("fallback_reason") or "") if fallback_reports else "",
+            "fallback_reason": fallback_reason,
             "policy_version": self.policy_version,
         }
+
+    @staticmethod
+    def _safe_float(value: Any) -> float:
+        try:
+            return float(value or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    @staticmethod
+    def _safe_nonnegative_int(value: Any) -> int:
+        try:
+            return max(0, min(1_000_000, int(value or 0)))
+        except (TypeError, ValueError, OverflowError):
+            return 0
+
+    @staticmethod
+    def _safe_diagnostic_label(value: Any) -> str:
+        label = str(value or "")
+        if re.fullmatch(r"[A-Za-z0-9_.:-]{1,64}", label):
+            return label
+        return ""
