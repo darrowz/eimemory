@@ -25,6 +25,15 @@ class FakeClient:
 
     def call_or_bypass(self, method: str, params: dict) -> dict:
         self.calls.append((method, params))
+        if method == "adapter.proactive_prefetch":
+            return {
+                "ok": True,
+                "bypassed": False,
+                "result": {
+                    "decision_id": "pd:codex-turn-1",
+                    "context": "Untrusted eimemory context:\n[{\"citation\":\"pm:0123456789abcdefabcd\"}]",
+                },
+            }
         if method == "adapter.prefetch":
             return {
                 "ok": True,
@@ -58,7 +67,7 @@ def test_codex_environment_builds_distributable_scope_and_bounded_client(tmp_pat
     assert client.failure_ledger_path == tmp_path / "failures.jsonl"
 
 
-def test_user_prompt_submit_prefetches_bounded_context_without_reading_transcript(monkeypatch) -> None:
+def test_user_prompt_submit_uses_proactive_contract_and_acks_actual_injection_without_reading_transcript(monkeypatch) -> None:
     client = FakeClient()
     adapter = CodexHookAdapter(client=client, scope=BASE_SCOPE)
     original_read_text = Path.read_text
@@ -82,13 +91,52 @@ def test_user_prompt_submit_prefetches_bounded_context_without_reading_transcrip
         },
     )
 
-    assert client.calls[0][0] == "adapter.prefetch"
+    assert client.calls[0][0] == "adapter.proactive_prefetch"
     assert client.calls[0][1]["channel"] == "codex"
     assert client.calls[0][1]["query"] == "Fix the memory recall regression and run tests."
+    assert client.calls[0][1]["session_id"] == "codex-session"
+    assert client.calls[0][1]["turn_id"] == "turn-1"
+    assert client.calls[1] == (
+        "adapter.proactive_ack",
+        {
+            "channel": "codex",
+            "scope": BASE_SCOPE,
+            "source_ids": ["default"],
+            "session_id": "codex-session",
+            "turn_id": "turn-1",
+            "decision_id": "pd:codex-turn-1",
+        },
+    )
     assert result["continue"] is True
     assert result["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
-    assert "durable rule" in result["hookSpecificOutput"]["additionalContext"]
+    assert "pm:0123456789abcdefabcd" in result["hookSpecificOutput"]["additionalContext"]
     assert len(result["hookSpecificOutput"]["additionalContext"]) <= 7_200
+
+
+def test_codex_stop_closes_proactive_feedback_only_from_opaque_citations_and_summarizes_one_turn() -> None:
+    client = FakeClient()
+    adapter = CodexHookAdapter(client=client, scope=BASE_SCOPE)
+
+    adapter.handle(
+        "Stop",
+        {
+            "session_id": "codex-session",
+            "turn_id": "turn-1",
+            "prompt": "Fix the regression.",
+            "last_assistant_message": "Applied it using [pm:0123456789abcdefabcd]; raw record rec-secret is not evidence.",
+        },
+    )
+
+    methods = [method for method, _params in client.calls]
+    assert methods[:2] == ["adapter.proactive_terminal", "adapter.proactive_complete_turn"]
+    terminal = client.calls[0][1]
+    assert terminal["used_citations"] == ["pm:0123456789abcdefabcd"]
+    assert "rec-secret" not in terminal["used_citations"]
+    assert terminal["session_id"] == "codex-session"
+    assert terminal["turn_id"] == "turn-1"
+    summary = client.calls[1][1]
+    assert summary["user_summary"] == "Fix the regression."
+    assert "pm:0123456789abcdefabcd" in summary["assistant_summary"]
 
 
 def test_post_tool_use_hashes_redacts_and_truncates_before_sync() -> None:
@@ -234,8 +282,10 @@ def test_stop_never_blocks_and_does_not_invent_verification() -> None:
         },
     )
 
-    assert len(client.calls) == 1
-    method, params = client.calls[0]
+    assert [method for method, _params in client.calls] == [
+        "adapter.proactive_terminal", "adapter.proactive_complete_turn", "adapter.record_terminal"
+    ]
+    method, params = client.calls[2]
     assert method == "adapter.record_terminal"
     assert params["end_kind"] == "stop"
     assert params["verification"] == ""
@@ -275,7 +325,10 @@ def test_hook_unexpected_failure_is_fail_open_and_emits_sanitized_diagnostic(cap
 
     adapter = CodexHookAdapter(client=RaisingClient(), scope=BASE_SCOPE)
 
-    result = adapter.handle("UserPromptSubmit", {"prompt": "recall", "cwd": "E:/repo"})
+    result = adapter.handle(
+        "UserPromptSubmit",
+        {"session_id": "s", "turn_id": "t", "prompt": "recall", "cwd": "E:/repo"},
+    )
 
     captured = capsys.readouterr()
     assert result == {"continue": True}
@@ -289,7 +342,10 @@ def test_hook_without_explicit_scope_uses_event_workspace(monkeypatch) -> None:
     client = FakeClient()
     adapter = CodexHookAdapter(client=client, scope=None)
 
-    adapter.handle("UserPromptSubmit", {"prompt": "recall", "cwd": "E:/repo-alpha"})
+    adapter.handle(
+        "UserPromptSubmit",
+        {"session_id": "s", "turn_id": "t", "prompt": "recall", "cwd": "E:/repo-alpha"},
+    )
 
     assert client.calls[0][1]["scope"]["workspace_id"] == "repo-alpha"
 

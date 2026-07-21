@@ -9,6 +9,7 @@ from time import perf_counter
 from typing import Any
 
 from eimemory.adapters.openclaw.task_contract import classify_openclaw_task_type
+from eimemory.adapters.runtime.service import AgentRuntimeMemoryService
 from eimemory.api.runtime import Runtime
 from eimemory.governance.evidence_contract import current_release_identity, release_identity_payload
 from eimemory.governance.tool_receipts import verified_tool_receipts
@@ -27,6 +28,7 @@ DEFAULT_RECALL_BUDGET_MS = 800
 DEFAULT_FAST_CANDIDATE_LIMIT = 24
 DEFAULT_FAST_QUERY_SCOPE_LIMIT = 8
 DEFAULT_INJECTION_TOKEN_BUDGET = 1800
+_PROACTIVE_CITATION = re.compile(r"(?<![A-Za-z0-9])pm:[0-9a-f]{20}(?![A-Za-z0-9])")
 
 
 def _is_unexecuted_verification_state(value: Any) -> bool:
@@ -163,6 +165,9 @@ class OpenClawMemoryHooks:
         )
         self._merge_policy_search(bundle=bundle, policy_search=policy_search)
         self._apply_pre_answer_gates(bundle=bundle, query=query, scope=scope, task_context=recall_context)
+        proactive_recall = self._apply_proactive_recall(
+            event=event, query=query, scope=scope, task_context=recall_context, bundle=bundle
+        )
         recall_context["policy_suggestion_ids"] = self._coerce_string_list(
             bundle.explanation.get("policy_suggestion_ids")
         )
@@ -193,7 +198,75 @@ class OpenClawMemoryHooks:
             "policy_attribution": policy_attribution,
             "persona_guidance": persona_guidance,
             "persona_trace": persona_trace,
+            "proactive_recall": proactive_recall,
         }
+
+    def proactive_injected(self, event: dict) -> dict:
+        """Internal bridge acknowledgement after OpenClaw built non-empty context."""
+
+        return AgentRuntimeMemoryService(self.runtime).proactive_ack(
+            channel="openclaw",
+            scope=self._scope_from_event(event),
+            source_ids=self._proactive_source_ids(
+                event, task_context=dict(event.get("task_context") or {})
+            ),
+            session_id=self._session_id_from_event(event),
+            turn_id=self._first_text(event.get("turn_id"), event.get("turnId")),
+            decision_id=str(event.get("decision_id") or ""),
+        )
+
+    def _apply_proactive_recall(
+        self,
+        *,
+        event: dict,
+        query: str,
+        scope: dict,
+        task_context: dict,
+        bundle: RecallBundle,
+    ) -> dict[str, Any]:
+        session_id = self._session_id_from_event(event)
+        turn_id = self._first_text(
+            event.get("turn_id"), event.get("turnId"), event.get("run_id"), event.get("runId"),
+            task_context.get("turn_id"), task_context.get("trace_id"),
+            (task_context.get("trace_context") or {}).get("trace_id")
+            if isinstance(task_context.get("trace_context"), dict) else "",
+        )
+        if not session_id or not turn_id:
+            bundle.items = []
+            return {"ok": False, "bypassed": True, "reason": "missing_turn_identity"}
+        source_ids = self._proactive_source_ids(event, task_context=task_context)
+        try:
+            decision = self.runtime.proactive.decide(
+                channel="openclaw", scope=scope, source_ids=source_ids,
+                session_id=session_id, query_id=turn_id, query=query,
+                task_type=str(task_context.get("task_type") or "openclaw.task"),
+                recall_bundle=bundle,
+            )
+        except Exception as exc:  # noqa: BLE001 - host turn must remain fail-open
+            bundle.items = []
+            return {"ok": False, "bypassed": True, "reason": type(exc).__name__}
+        selected = {
+            (str(item.get("record_id") or ""), str(item.get("source_id") or "default"))
+            for item in decision.get("items", [])
+            if isinstance(item, dict)
+        }
+        bundle.items = [
+            record for record in bundle.items
+            if (record.record_id, record.source_id) in selected
+        ]
+        task_context["proactive_decision_id"] = str(decision.get("decision_id") or "")
+        task_context["proactive_source_ids"] = list(source_ids)
+        task_context["proactive_turn_id"] = turn_id
+        return dict(decision)
+
+    @staticmethod
+    def _proactive_source_ids(event: dict, *, task_context: dict) -> list[str]:
+        raw = event.get("source_ids", task_context.get("source_ids"))
+        if isinstance(raw, list):
+            values = [str(item).strip() for item in raw if str(item).strip()]
+            if values:
+                return values
+        return ["default"]
 
     def on_agent_end(self, event: dict) -> dict:
         assistant_messages = event.get("assistant_messages") or self._assistant_messages_from_event(event)
@@ -1704,13 +1777,53 @@ class OpenClawMemoryHooks:
             verification=verification,
             end_kind=end_kind,
         )
+        proactive_feedback = self._close_proactive_turn(
+            event=event, end_kind=end_kind, task_context=task_context,
+            user_summary=trace_query or user_phrase, assistant_summary=result,
+        )
         return {
             "event": recorded_event,
             "outcome": recorded_outcome,
             "pattern": pattern,
             "loop_task": loop_task,
+            "proactive_feedback": proactive_feedback,
             **outcome_trace,
         }
+
+    def _close_proactive_turn(
+        self,
+        *,
+        event: dict,
+        end_kind: str,
+        task_context: dict,
+        user_summary: str,
+        assistant_summary: str,
+    ) -> dict[str, Any]:
+        if end_kind not in {"agent_end", "task_end"}:
+            return {"ok": True, "reason": "lifecycle_only"}
+        session_id = self._session_id_from_event(event)
+        turn_id = self._first_text(
+            event.get("turn_id"), event.get("turnId"), event.get("run_id"), event.get("runId"),
+            task_context.get("proactive_turn_id"), task_context.get("turn_id"),
+        )
+        if not session_id or not turn_id:
+            return {"ok": True, "reason": "missing_turn_identity"}
+        service = AgentRuntimeMemoryService(self.runtime)
+        source_ids = self._proactive_source_ids(event, task_context=task_context)
+        try:
+            terminal = service.proactive_terminal(
+                channel="openclaw", scope=self._scope_from_event(event), source_ids=source_ids,
+                session_id=session_id, turn_id=turn_id,
+                used_citations=sorted(set(_PROACTIVE_CITATION.findall(assistant_summary))),
+            )
+            completed = service.proactive_complete_turn(
+                channel="openclaw", scope=self._scope_from_event(event), source_ids=source_ids,
+                session_id=session_id, turn_id=turn_id,
+                user_summary=user_summary, assistant_summary=assistant_summary,
+            )
+            return {"ok": bool(terminal.get("ok")) and bool(completed.get("ok")), "terminal": terminal}
+        except Exception as exc:  # noqa: BLE001 - terminal governance remains fail-open
+            return {"ok": False, "bypassed": True, "reason": type(exc).__name__}
 
     def _should_record_terminal_outcome(self, outcome_payload: dict, *, end_kind: str) -> bool:
         if end_kind == "session_end":

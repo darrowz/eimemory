@@ -222,7 +222,12 @@ class GovernedRecallEngine:
         raw_hybrid = recall_mode == "raw_hybrid"
         scope_ref = request.scope.to_scope_ref()
         recall_scope_aliases = extract_user_aliases(task_context)
-        query_scope_refs = hongtu_query_scopes_with_aliases(scope_ref, aliases=recall_scope_aliases)
+        exact_scope_only = task_context.get("exact_scope_only") is True
+        query_scope_refs = (
+            [scope_ref]
+            if exact_scope_only
+            else hongtu_query_scopes_with_aliases(scope_ref, aliases=recall_scope_aliases)
+        )
         query_scope_limit = memory._positive_int(task_context.get("query_scope_limit"))
         if recall_mode == "fast" and query_scope_limit:
             query_scope_refs = memory._prioritize_fast_query_scopes(
@@ -235,8 +240,10 @@ class GovernedRecallEngine:
         scope_group_by_exact: dict[ExactScope, int] = {}
         for logical_scope in query_scope_refs:
             group: list[ScopeRef] = []
-            for physical_scope in hongtu_query_scopes(logical_scope):
-                for exact_scope_ref in self._visible_exact_scopes([physical_scope]):
+            physical_scopes = [logical_scope] if exact_scope_only else hongtu_query_scopes(logical_scope)
+            for physical_scope in physical_scopes:
+                visible_scopes = [physical_scope] if exact_scope_only else self._visible_exact_scopes([physical_scope])
+                for exact_scope_ref in visible_scopes:
                     exact_scope = ExactScope.from_scope(exact_scope_ref)
                     if exact_scope in authorized_exact_scopes:
                         continue

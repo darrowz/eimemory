@@ -13,6 +13,15 @@ class FakeClient:
 
     def call_or_bypass(self, method: str, params: dict) -> dict:
         self.calls.append((method, params))
+        if method == "adapter.proactive_prefetch":
+            return {
+                "ok": True,
+                "bypassed": False,
+                "result": {
+                    "decision_id": "pd:hermes-turn",
+                    "context": "Untrusted eimemory context:\n[{\"citation\":\"pm:abcdef0123456789abcd\"}]",
+                },
+            }
         if method == "adapter.prefetch":
             return {
                 "ok": True,
@@ -55,12 +64,64 @@ def test_hermes_provider_lifecycle_is_channel_local_and_flushes_bounded_writes(t
     provider.shutdown()
 
     assert provider.name == "eimemory"
-    assert "cite primary sources" in context
+    assert "pm:abcdef0123456789abcd" in context
     assert provider.background_worker_count == 0
     write_calls = [(method, params) for method, params in client.calls if method in {"adapter.sync_turn", "adapter.mutate_memory"}]
     assert {method for method, _ in write_calls} == {"adapter.sync_turn", "adapter.mutate_memory"}
     assert all(params["channel"] == "hermes" for _, params in client.calls)
     assert all(params["scope"]["workspace_id"] == "embodied" for _, params in client.calls)
+
+
+def test_hermes_proactive_prefetch_is_acked_and_closed_by_official_llm_hooks_without_history() -> None:
+    class ForbiddenHistory(list):
+        def __iter__(self):
+            raise AssertionError("full Hermes history must not be read")
+
+    client = FakeClient()
+    provider = HermesMemoryProviderCore(client=client)
+    provider.initialize("hermes-session", agent_workspace="embodied", agent_context="primary")
+
+    query = "Compare the retrieval contract."
+    context = provider.prefetch(query, session_id="hermes-session")
+    provider.on_pre_llm_call(
+        user_message=query,
+        session_id="hermes-session",
+        turn_id="turn-7",
+        conversation_history=ForbiddenHistory(),
+    )
+    provider.on_post_llm_call(
+        user_message=query,
+        assistant_message="Used [pm:abcdef0123456789abcd] for the comparison.",
+        session_id="hermes-session",
+        turn_id="turn-7",
+        conversation_history=ForbiddenHistory(),
+    )
+
+    assert "pm:abcdef0123456789abcd" in context
+    methods = [method for method, _params in client.calls]
+    assert methods[:4] == [
+        "adapter.proactive_prefetch",
+        "adapter.proactive_ack",
+        "adapter.proactive_terminal",
+        "adapter.proactive_complete_turn",
+    ]
+    assert client.calls[2][1]["used_citations"] == ["pm:abcdef0123456789abcd"]
+    assert client.calls[3][1]["turn_id"] == "turn-7"
+
+
+def test_hermes_session_switch_clears_pending_proactive_context_and_full_namespace_cache() -> None:
+    client = FakeClient()
+    provider = HermesMemoryProviderCore(client=client)
+    provider.initialize("session-a", agent_workspace="embodied", agent_context="primary")
+    provider.prefetch("same query", session_id="session-a")
+
+    provider.on_session_switch("session-b")
+    provider.on_pre_llm_call(
+        user_message="same query", session_id="session-a", turn_id="old-turn"
+    )
+
+    assert provider.prefetch_cache_size == 0
+    assert not [method for method, _params in client.calls if method == "adapter.proactive_ack"]
 
 
 def test_hermes_provider_exposes_only_closed_loop_tools_and_rejects_unbound_terminal() -> None:
@@ -231,7 +292,7 @@ def test_hermes_provider_is_fail_open_when_primary_rpc_is_unavailable() -> None:
     provider.on_memory_write("add", "memory", "bounded write")
     provider.shutdown()
 
-    assert "adapter.prefetch" in client.calls
+    assert "adapter.proactive_prefetch" in client.calls
     assert "adapter.sync_turn" in client.calls
     assert "adapter.mutate_memory" in client.calls
 
@@ -247,7 +308,7 @@ def test_hermes_prefetch_queue_is_single_worker_and_cache_bounded() -> None:
 
     assert provider.prefetch_cache_size <= 3
     assert provider.background_worker_count == 0
-    prefetch_queries = [params["query"] for method, params in client.calls if method == "adapter.prefetch"]
+    prefetch_queries = [params["query"] for method, params in client.calls if method == "adapter.proactive_prefetch"]
     assert "query-7" in prefetch_queries
 
 
@@ -259,14 +320,14 @@ def test_hermes_prefetch_single_flight_deduplicates_same_hot_key() -> None:
             self.call_count = 0
 
         def call_or_bypass(self, method: str, params: dict) -> dict:
-            assert method == "adapter.prefetch"
+            assert method == "adapter.proactive_prefetch"
             self.call_count += 1
             self.started.set()
             self.release.wait(timeout=2.0)
             return {
                 "ok": True,
                 "bypassed": False,
-                "result": {"context": "single-flight context"},
+                "result": {"context": "single-flight context", "decision_id": "pd:single-flight"},
             }
 
     client = BlockingPrefetchClient()

@@ -485,7 +485,10 @@ def _build_parser() -> argparse.ArgumentParser:
     openclaw_hook = sub.add_parser("openclaw-hook")
     openclaw_hook.add_argument(
         "hook",
-        choices=["message_received", "before_prompt_build", "agent_end", "task_end", "session_end"],
+        choices=[
+            "message_received", "before_prompt_build", "proactive_injected",
+            "agent_end", "task_end", "session_end",
+        ],
     )
 
     add_persona_parser(sub)
@@ -1844,6 +1847,8 @@ def main(argv: list[str] | None = None) -> int:
             payload = hooks.on_message_received(event)
         elif parsed.hook == "before_prompt_build":
             payload = hooks.before_prompt_build(event)
+        elif parsed.hook == "proactive_injected":
+            payload = hooks.proactive_injected(event)
         elif parsed.hook == "agent_end":
             payload = hooks.on_agent_end(event)
         elif parsed.hook == "task_end":

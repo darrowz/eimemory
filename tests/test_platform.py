@@ -1040,6 +1040,59 @@ handlers.before_prompt_build({
     assert "Relevant eimemory context" in json.loads(result.stdout or "{}")["prependContext"]
 
 
+def test_openclaw_js_bridge_acknowledges_proactive_only_after_nonempty_prepend_context(tmp_path) -> None:
+    hook_script = tmp_path / "capture-proactive-ack.js"
+    capture_path = tmp_path / "proactive-calls.jsonl"
+    hook_script.write_text(
+        """
+const fs = require('node:fs');
+const hook = process.argv[2] || '';
+const payload = JSON.parse(fs.readFileSync(0, 'utf8') || '{}');
+fs.appendFileSync(process.env.CAPTURE_PATH, JSON.stringify({ hook, payload }) + '\\n');
+if (hook === 'before_prompt_build') {
+  process.stdout.write(JSON.stringify({
+    proactive_recall: { decision_id: 'pd:openclaw-turn' },
+    task_context: {
+      proactive_turn_id: 'turn-1',
+      proactive_source_ids: ['default'],
+    },
+    memory_bundle: {
+      items: [{ record_id: 'r1', source_id: 'default', title: 'Keep', summary: 'Use receipt.' }],
+      rules: [], reflections: [], confidence: 0.9, next_action_hint: '', explanation: {}
+    },
+    injection_plan: { entries: [{ record_id: 'r1', lane: 'context' }] },
+  }));
+} else {
+  process.stdout.write(JSON.stringify({ ok: true }));
+}
+""".strip(),
+        encoding="utf-8",
+    )
+    script = """
+const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
+const handlers = {};
+process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
+plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = handler; } });
+handlers.before_prompt_build({
+  query: 'deploy safely', session_id: 'sess-1', turn_id: 'turn-1',
+  tenant_id: 'default', agent_id: 'main', workspace_id: 'repo-x', user_id: 'darrow',
+}).then((result) => process.stdout.write(JSON.stringify(result)));
+""".strip()
+    env = os.environ.copy()
+    env["EIMEMORY_HOOK_COMMAND"] = f'node "{hook_script}"'
+    env["CAPTURE_PATH"] = str(capture_path)
+    result = subprocess.run(
+        ["node", "-e", script], cwd=Path.cwd(), env=env,
+        capture_output=True, text=True, encoding="utf-8", timeout=10, check=False,
+    )
+
+    assert result.returncode == 0
+    calls = [json.loads(line) for line in capture_path.read_text(encoding="utf-8").splitlines()]
+    assert [call["hook"] for call in calls] == ["before_prompt_build", "proactive_injected"]
+    assert calls[1]["payload"]["decision_id"] == "pd:openclaw-turn"
+    assert "Relevant eimemory context" in json.loads(result.stdout)["prependContext"]
+
+
 def test_cli_openclaw_hook_reports_rejected_message_without_persisting(tmp_path, monkeypatch, capsys) -> None:
     monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path / "runtime"))
     stdin = io.StringIO(

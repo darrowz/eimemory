@@ -21,9 +21,79 @@ from eimemory.api.runtime import Runtime
 from eimemory.cli.main import main as cli_main
 from eimemory.identity import FEISHU_DARROW_OPEN_ID
 from eimemory.models.records import RecallBundle, RecordEnvelope, ScopeRef
+from eimemory.retrieval.proactive import ProactiveRecallService
 
 
 TEST_RPC_AUTH_TOKEN = "Abcdefghijklmnopqrstuvwxyz012345_-"
+TEST_RELEASE = {
+    "release_commit": "a" * 40,
+    "release_version": "test",
+    "deployment_receipt_id": "test-receipt",
+    "release_session_id": "test-release-session",
+}
+
+
+def _bind_test_proactive_release(runtime: Runtime) -> None:
+    runtime.proactive = ProactiveRecallService(
+        runtime, release_identity=TEST_RELEASE, control_percent=0
+    )
+
+
+def test_openclaw_authoritative_prefetch_filters_through_shared_proactive_service(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    hooks = OpenClawMemoryHooks(runtime)
+    event = {
+        "session_id": "openclaw-session",
+        "turn_id": "turn-1",
+        "agent_id": "main",
+        "workspace_id": "repo-x",
+        "query": "Recall the exact deployment rule.",
+        "source_ids": ["default"],
+        "task_context": {"task_type": "operations.deploy"},
+    }
+    scope = hooks._scope_from_event(event)
+    keep = RecordEnvelope.create(
+        kind="memory", title="Keep", summary="Use the deployment receipt.",
+        scope=ScopeRef.from_dict(scope), source="test.openclaw", source_id="default",
+    )
+    drop = RecordEnvelope.create(
+        kind="memory", title="Drop", summary="Unrelated memory.",
+        scope=ScopeRef.from_dict(scope), source="test.openclaw", source_id="default",
+    )
+    bundle = RecallBundle(
+        items=[keep, drop], rules=[], reflections=[], confidence=0.9,
+        next_action_hint="", explanation={"selected_count": 2},
+    )
+    monkeypatch.setattr(runtime.memory, "recall", lambda **_kwargs: bundle)
+    calls: list[dict] = []
+
+    class FakeProactive:
+        def close(self):
+            return None
+
+        def decide(self, **kwargs):
+            calls.append(kwargs)
+            assert kwargs["recall_bundle"] is bundle
+            return {
+                "ok": True,
+                "decision_id": "pd:openclaw-turn",
+                "items": [{"record_id": keep.record_id, "source_id": keep.source_id}],
+                "context": "opaque-host-context",
+                "control_cohort": False,
+            }
+
+    monkeypatch.setattr(runtime, "proactive", FakeProactive())
+    try:
+        result = hooks.before_prompt_build(event)
+    finally:
+        runtime.close()
+
+    assert len(calls) == 1
+    assert calls[0]["channel"] == "openclaw"
+    assert calls[0]["session_id"] == "openclaw-session"
+    assert calls[0]["query_id"] == "turn-1"
+    assert [item["record_id"] for item in result["memory_bundle"]["items"]] == [keep.record_id]
+    assert result["proactive_recall"]["decision_id"] == "pd:openclaw-turn"
 
 
 def _handle_eibrain_request(
@@ -771,6 +841,7 @@ process.stdout.write(JSON.stringify({
 
 def test_openclaw_hooks_capture_recall_and_agent_end(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
+    _bind_test_proactive_release(runtime)
     hooks = OpenClawMemoryHooks(runtime)
 
     hooks.on_message_received(
@@ -940,6 +1011,7 @@ def test_openclaw_policy_attribution_uses_indexed_session_audit_lookup(tmp_path,
 
 def test_openclaw_before_prompt_build_applies_ground_truth_and_evidence_gates(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path)
+    _bind_test_proactive_release(runtime)
     hooks = OpenClawMemoryHooks(runtime)
     event = {
         "session_id": "sess-gate",
@@ -1109,8 +1181,11 @@ def test_openclaw_before_prompt_build_defaults_to_fast_recall_context(tmp_path, 
 
 def test_openclaw_before_prompt_build_returns_strict_injection_plan(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path)
+    _bind_test_proactive_release(runtime)
     hooks = OpenClawMemoryHooks(runtime)
-    scope_ref = ScopeRef.from_dict({"agent_id": "main", "workspace_id": "repo-x"})
+    scope_ref = ScopeRef.from_dict(
+        hooks._scope_from_event({"agentId": "main", "workspaceId": "repo-x"})
+    )
     preference = RecordEnvelope.create(
         kind="memory",
         title="Concise reply preference",
@@ -1160,9 +1235,10 @@ def test_openclaw_before_prompt_build_returns_strict_injection_plan(tmp_path, mo
 
     result = hooks.before_prompt_build(
         {
+            "sessionId": "strict-plan-session",
             "agentId": "main",
             "workspaceId": "repo-x",
-            "query": "health check reply",
+                "query": "Recall health check reply",
             "task_context": {"task_type": "chat.reply"},
         }
     )
@@ -1188,8 +1264,11 @@ def test_openclaw_before_prompt_build_returns_strict_injection_plan(tmp_path, mo
 
 def test_openclaw_injection_plan_prechecks_context_token_budget(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path)
+    _bind_test_proactive_release(runtime)
     hooks = OpenClawMemoryHooks(runtime)
-    scope_ref = ScopeRef.from_dict({"agent_id": "main", "workspace_id": "repo-x"})
+    scope_ref = ScopeRef.from_dict(
+        hooks._scope_from_event({"agentId": "main", "workspaceId": "repo-x"})
+    )
     first = RecordEnvelope.create(
         kind="memory",
         title="Compact preference",
@@ -1223,9 +1302,10 @@ def test_openclaw_injection_plan_prechecks_context_token_budget(tmp_path, monkey
 
     result = hooks.before_prompt_build(
         {
+            "sessionId": "budget-plan-session",
             "agentId": "main",
             "workspaceId": "repo-x",
-            "query": "budgeted prompt",
+                "query": "Recall budgeted prompt",
             "task_context": {"task_type": "chat.reply", "injection_token_budget": 16},
         }
     )
@@ -1718,6 +1798,7 @@ Sender:
 
 def test_openclaw_hooks_preserve_tenant_and_user_scope(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
+    _bind_test_proactive_release(runtime)
     hooks = OpenClawMemoryHooks(runtime)
 
     hooks.on_message_received(

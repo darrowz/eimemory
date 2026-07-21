@@ -95,6 +95,7 @@ class SqliteRecordStore:
         self._configure_connection()
         self._init_db()
         self._create_adapter_receipt_tables()
+        self._create_proactive_recall_tables()
         self.conn.commit()
         self.preload_report = self.preload_hot_pages()
 
@@ -258,6 +259,384 @@ class SqliteRecordStore:
                 "CREATE INDEX idx_adapter_receipts_consumed_trace "
                 "ON adapter_tool_receipts(consumed_trace_id) WHERE consumed_trace_id != ''"
             )
+
+    def _create_proactive_recall_tables(self) -> None:
+        self.conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS proactive_turns (
+                entry_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                channel TEXT NOT NULL,
+                tenant_id TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                source_key TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                turn_id TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                entities_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(channel, tenant_id, agent_id, workspace_id, user_id, source_key, session_id, turn_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_proactive_turns_session
+              ON proactive_turns(channel, tenant_id, agent_id, workspace_id, user_id, source_key, session_id, entry_id DESC);
+
+            CREATE TABLE IF NOT EXISTS proactive_decisions (
+                decision_id TEXT PRIMARY KEY,
+                channel TEXT NOT NULL,
+                tenant_id TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                source_key TEXT NOT NULL,
+                source_ids_json TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                turn_id TEXT NOT NULL,
+                query_id TEXT NOT NULL,
+                query_digest TEXT NOT NULL,
+                query_text TEXT NOT NULL,
+                policy_version TEXT NOT NULL,
+                release_commit TEXT NOT NULL,
+                release_version TEXT NOT NULL,
+                deployment_receipt_id TEXT NOT NULL,
+                release_session_id TEXT NOT NULL,
+                release_bound INTEGER NOT NULL,
+                control_cohort INTEGER NOT NULL,
+                pair_id TEXT NOT NULL,
+                terminal INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_proactive_decisions_exact_turn
+              ON proactive_decisions(channel, tenant_id, agent_id, workspace_id, user_id, source_key,
+                                     session_id, turn_id, release_commit, decision_id DESC);
+            CREATE INDEX IF NOT EXISTS idx_proactive_decisions_pair
+              ON proactive_decisions(pair_id, control_cohort, decision_id);
+
+            CREATE TABLE IF NOT EXISTS proactive_decision_items (
+                decision_id TEXT NOT NULL,
+                citation TEXT NOT NULL,
+                record_id TEXT NOT NULL,
+                source_id TEXT NOT NULL,
+                confidence REAL NOT NULL,
+                state TEXT NOT NULL,
+                mandatory INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(decision_id, citation),
+                FOREIGN KEY(decision_id) REFERENCES proactive_decisions(decision_id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_proactive_items_record
+              ON proactive_decision_items(record_id, source_id, state, decision_id);
+
+            CREATE TABLE IF NOT EXISTS proactive_bypass_diagnostics (
+                entry_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                channel TEXT NOT NULL,
+                session_digest TEXT NOT NULL,
+                query_digest TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            """
+        )
+
+    def append_proactive_turn(
+        self,
+        payload: dict[str, Any],
+        *,
+        max_session_turns: int = 4,
+        max_global_turns: int = 512,
+        commit: bool = True,
+    ) -> list[dict[str, Any]]:
+        scope = normalize_scope(payload.get("scope"))
+        identity = (
+            str(payload.get("channel") or ""), scope.tenant_id, scope.agent_id,
+            scope.workspace_id, scope.user_id, str(payload.get("source_key") or ""),
+            str(payload.get("session_id") or ""),
+        )
+        turn_id = str(payload.get("turn_id") or "")
+        self.conn.execute(
+            "DELETE FROM proactive_turns WHERE channel=? AND tenant_id=? AND agent_id=? AND workspace_id=? "
+            "AND user_id=? AND source_key=? AND session_id=? AND turn_id=?",
+            (*identity, turn_id),
+        )
+        self.conn.execute(
+            "INSERT INTO proactive_turns(channel,tenant_id,agent_id,workspace_id,user_id,source_key,session_id,"
+            "turn_id,summary,entities_json,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                *identity, turn_id, str(payload.get("summary") or ""),
+                json.dumps(list(payload.get("entities") or []), ensure_ascii=False, sort_keys=True),
+                str(payload.get("created_at") or datetime.now(timezone.utc).isoformat()),
+            ),
+        )
+        session_rows = self.conn.execute(
+            "SELECT entry_id FROM proactive_turns WHERE channel=? AND tenant_id=? AND agent_id=? AND workspace_id=? "
+            "AND user_id=? AND source_key=? AND session_id=? ORDER BY entry_id DESC LIMIT ?",
+            (*identity, max(1, int(max_session_turns)) + 1),
+        ).fetchall()
+        if len(session_rows) > max_session_turns:
+            boundary = int(session_rows[max_session_turns - 1]["entry_id"])
+            self.conn.execute(
+                "DELETE FROM proactive_turns WHERE channel=? AND tenant_id=? AND agent_id=? AND workspace_id=? "
+                "AND user_id=? AND source_key=? AND session_id=? AND entry_id < ?",
+                (*identity, boundary),
+            )
+        global_rows = self.conn.execute(
+            "SELECT entry_id FROM proactive_turns ORDER BY entry_id DESC LIMIT ?",
+            (max(1, int(max_global_turns)) + 1,),
+        ).fetchall()
+        if len(global_rows) > max_global_turns:
+            boundary = int(global_rows[max_global_turns - 1]["entry_id"])
+            self.conn.execute("DELETE FROM proactive_turns WHERE entry_id < ?", (boundary,))
+        if commit:
+            self.conn.commit()
+        return self.load_proactive_turns(payload)
+
+    def load_proactive_turns(self, payload: dict[str, Any], *, limit: int = 4) -> list[dict[str, Any]]:
+        scope = normalize_scope(payload.get("scope"))
+        rows = self.conn.execute(
+            "SELECT turn_id,summary,entities_json,created_at FROM proactive_turns WHERE channel=? AND tenant_id=? "
+            "AND agent_id=? AND workspace_id=? AND user_id=? AND source_key=? AND session_id=? "
+            "ORDER BY entry_id DESC LIMIT ?",
+            (
+                str(payload.get("channel") or ""), scope.tenant_id, scope.agent_id, scope.workspace_id,
+                scope.user_id, str(payload.get("source_key") or ""), str(payload.get("session_id") or ""),
+                max(1, min(4, int(limit))),
+            ),
+        ).fetchall()
+        return [
+            {
+                "turn_id": str(row["turn_id"]), "summary": str(row["summary"]),
+                "entities": [str(item) for item in json.loads(str(row["entities_json"] or "[]"))],
+                "created_at": str(row["created_at"]),
+            }
+            for row in reversed(rows)
+        ]
+
+    def insert_proactive_decision(
+        self,
+        payload: dict[str, Any],
+        items: list[dict[str, Any]],
+        *,
+        max_global_decisions: int = 512,
+        commit: bool = True,
+    ) -> tuple[dict[str, Any], bool]:
+        existing = self.load_proactive_decision(str(payload.get("decision_id") or ""))
+        if existing is not None:
+            stable = ("channel", "scope", "source_key", "session_id", "turn_id", "query_id", "query_digest", "policy_version", "release_identity", "control_cohort", "pair_id")
+            if any(existing.get(key) != payload.get(key) for key in stable):
+                raise ValueError("proactive decision identity conflict")
+            return existing, True
+        scope = normalize_scope(payload.get("scope"))
+        release = dict(payload.get("release_identity") or {})
+        created_at = str(payload.get("created_at") or datetime.now(timezone.utc).isoformat())
+        self.conn.execute(
+            "INSERT INTO proactive_decisions(decision_id,channel,tenant_id,agent_id,workspace_id,user_id,source_key,"
+            "source_ids_json,session_id,turn_id,query_id,query_digest,query_text,policy_version,release_commit,"
+            "release_version,deployment_receipt_id,release_session_id,release_bound,control_cohort,pair_id,created_at,updated_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                str(payload["decision_id"]), str(payload["channel"]), scope.tenant_id, scope.agent_id,
+                scope.workspace_id, scope.user_id, str(payload["source_key"]),
+                json.dumps(list(payload.get("source_ids") or []), ensure_ascii=False), str(payload["session_id"]),
+                str(payload.get("turn_id") or payload["query_id"]), str(payload["query_id"]),
+                str(payload["query_digest"]), str(payload.get("query") or ""), str(payload["policy_version"]),
+                str(release.get("release_commit") or ""), str(release.get("release_version") or ""),
+                str(release.get("deployment_receipt_id") or ""), str(release.get("release_session_id") or ""),
+                int(bool(payload.get("release_bound"))), int(bool(payload.get("control_cohort"))),
+                str(payload.get("pair_id") or ""), created_at, created_at,
+            ),
+        )
+        for item in items:
+            self.conn.execute(
+                "INSERT INTO proactive_decision_items(decision_id,citation,record_id,source_id,confidence,state,mandatory,updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                (
+                    str(payload["decision_id"]), str(item["citation"]), str(item["record_id"]),
+                    normalize_source_id(item["source_id"]), float(item.get("confidence") or 0.0),
+                    str(item.get("state") or "volunteered"), int(bool(item.get("mandatory"))), created_at,
+                ),
+            )
+        cap = max(1, int(max_global_decisions))
+        boundary = self.conn.execute(
+            "SELECT created_at,decision_id FROM proactive_decisions "
+            "ORDER BY created_at DESC,decision_id DESC LIMIT 1 OFFSET ?",
+            (cap - 1,),
+        ).fetchone()
+        if boundary is not None:
+            stale_rows = self.conn.execute(
+                "SELECT decision_id FROM proactive_decisions WHERE created_at < ? "
+                "OR (created_at=? AND decision_id < ?)",
+                (str(boundary["created_at"]), str(boundary["created_at"]), str(boundary["decision_id"])),
+            ).fetchall()
+            stale_ids = [str(row["decision_id"]) for row in stale_rows]
+            for stale_id in stale_ids:
+                # Delete children explicitly; deployments may have inherited a
+                # connection where SQLite foreign_keys was not enabled.
+                self.conn.execute(
+                    "DELETE FROM proactive_decision_items WHERE decision_id=?", (stale_id,)
+                )
+                self.conn.execute("DELETE FROM proactive_decisions WHERE decision_id=?", (stale_id,))
+        if commit:
+            self.conn.commit()
+        loaded = self.load_proactive_decision(str(payload["decision_id"]))
+        if loaded is None:
+            raise RuntimeError("proactive decision insert was not visible")
+        return loaded, False
+
+    def load_proactive_decision(self, decision_id: str) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            "SELECT * FROM proactive_decisions WHERE decision_id=?", (str(decision_id or ""),)
+        ).fetchone()
+        if row is None:
+            return None
+        item_rows = self.conn.execute(
+            "SELECT citation,record_id,source_id,confidence,state,mandatory,updated_at "
+            "FROM proactive_decision_items WHERE decision_id=? ORDER BY citation",
+            (str(decision_id),),
+        ).fetchall()
+        return {
+            "decision_id": str(row["decision_id"]), "channel": str(row["channel"]),
+            "scope": {"tenant_id": str(row["tenant_id"]), "agent_id": str(row["agent_id"]),
+                      "workspace_id": str(row["workspace_id"]), "user_id": str(row["user_id"])},
+            "source_key": str(row["source_key"]),
+            "source_ids": [str(item) for item in json.loads(str(row["source_ids_json"] or "[]"))],
+            "session_id": str(row["session_id"]), "turn_id": str(row["turn_id"]),
+            "query_id": str(row["query_id"]), "query_digest": str(row["query_digest"]),
+            "query": str(row["query_text"]), "policy_version": str(row["policy_version"]),
+            "release_identity": {"release_commit": str(row["release_commit"]),
+                                 "release_version": str(row["release_version"]),
+                                 "deployment_receipt_id": str(row["deployment_receipt_id"]),
+                                 "release_session_id": str(row["release_session_id"])},
+            "release_bound": bool(row["release_bound"]), "control_cohort": bool(row["control_cohort"]),
+            "pair_id": str(row["pair_id"]), "terminal": bool(row["terminal"]),
+            "created_at": str(row["created_at"]), "updated_at": str(row["updated_at"]),
+            "items": [dict(item) for item in item_rows],
+        }
+
+    def find_proactive_decision(self, payload: dict[str, Any]) -> dict[str, Any] | None:
+        """Find only the newest decision in one exact host turn namespace."""
+
+        scope = normalize_scope(payload.get("scope"))
+        params: list[Any] = [
+            str(payload.get("channel") or ""), scope.tenant_id, scope.agent_id,
+            scope.workspace_id, scope.user_id, str(payload.get("source_key") or ""),
+            str(payload.get("session_id") or ""), str(payload.get("turn_id") or ""),
+        ]
+        release = dict(payload.get("release_identity") or {})
+        release_commit = str(release.get("release_commit") or payload.get("release_commit") or "")
+        release_clause = ""
+        if release_commit:
+            release_clause = (
+                " AND release_commit=? AND release_version=? AND deployment_receipt_id=? "
+                "AND release_session_id=?"
+            )
+            params.extend(
+                [
+                    release_commit,
+                    str(release.get("release_version") or ""),
+                    str(release.get("deployment_receipt_id") or ""),
+                    str(release.get("release_session_id") or ""),
+                ]
+            )
+        row = self.conn.execute(
+            "SELECT decision_id FROM proactive_decisions WHERE channel=? AND tenant_id=? AND agent_id=? "
+            "AND workspace_id=? AND user_id=? AND source_key=? AND session_id=? AND turn_id=?"
+            + release_clause
+            + " ORDER BY created_at DESC,decision_id DESC LIMIT 1",
+            tuple(params),
+        ).fetchone()
+        return None if row is None else self.load_proactive_decision(str(row["decision_id"]))
+
+    def proactive_session_refs(self, payload: dict[str, Any], *, limit: int = 512) -> set[tuple[str, str]]:
+        scope = normalize_scope(payload.get("scope"))
+        rows = self.conn.execute(
+            "SELECT i.record_id,i.source_id FROM proactive_decision_items i JOIN proactive_decisions d "
+            "ON d.decision_id=i.decision_id WHERE d.channel=? AND d.tenant_id=? AND d.agent_id=? "
+            "AND d.workspace_id=? AND d.user_id=? AND d.source_key=? AND d.session_id=? "
+            "ORDER BY d.created_at DESC,d.decision_id DESC LIMIT ?",
+            (
+                str(payload.get("channel") or ""), scope.tenant_id, scope.agent_id, scope.workspace_id,
+                scope.user_id, str(payload.get("source_key") or ""), str(payload.get("session_id") or ""),
+                max(1, min(4096, int(limit))),
+            ),
+        ).fetchall()
+        return {(str(row["record_id"]), str(row["source_id"])) for row in rows}
+
+    def transition_proactive_items(
+        self,
+        decision_id: str,
+        targets: dict[str, str],
+        *,
+        expected: dict[str, Any] | None = None,
+        commit: bool = True,
+    ) -> list[dict[str, Any]]:
+        decision = self.load_proactive_decision(decision_id)
+        if decision is None:
+            raise ValueError("exact proactive decision is required")
+        for key, value in dict(expected or {}).items():
+            if decision.get(key) != value:
+                raise ValueError("proactive decision namespace mismatch")
+        allowed = {
+            "volunteered": {"injected", "not_used", "rejected"},
+            "injected": {"used", "not_used", "rejected"},
+            "used": {"rejected"}, "not_used": {"rejected"}, "rejected": set(),
+        }
+        changed: list[dict[str, Any]] = []
+        now = datetime.now(timezone.utc).isoformat()
+        by_citation = {str(item["citation"]): dict(item) for item in decision["items"]}
+        for citation, target in targets.items():
+            item = by_citation.get(str(citation))
+            if item is None:
+                raise ValueError("proactive citation does not belong to decision")
+            current = str(item["state"])
+            target = str(target)
+            if current == target:
+                continue
+            if target not in allowed.get(current, set()):
+                continue
+            self.conn.execute(
+                "UPDATE proactive_decision_items SET state=?,updated_at=? WHERE decision_id=? AND citation=? AND state=?",
+                (target, now, str(decision_id), str(citation), current),
+            )
+            if self.conn.execute("SELECT changes()").fetchone()[0] != 1:
+                raise RuntimeError("proactive transition lost an atomic compare-and-swap")
+            changed.append({**item, "previous_state": current, "state": target})
+        remaining = self.conn.execute(
+            "SELECT 1 FROM proactive_decision_items WHERE decision_id=? AND state NOT IN ('used','not_used','rejected') LIMIT 1",
+            (str(decision_id),),
+        ).fetchone()
+        self.conn.execute(
+            "UPDATE proactive_decisions SET terminal=?,updated_at=? WHERE decision_id=?",
+            (int(remaining is None), now, str(decision_id)),
+        )
+        if commit:
+            self.conn.commit()
+        return changed
+
+    def append_proactive_bypass(self, payload: dict[str, Any], *, max_entries: int = 64, commit: bool = True) -> None:
+        self.conn.execute(
+            "INSERT INTO proactive_bypass_diagnostics(channel,session_digest,query_digest,reason,created_at) VALUES(?,?,?,?,?)",
+            (str(payload.get("channel") or ""), str(payload.get("session_digest") or ""),
+             str(payload.get("query_digest") or ""), str(payload.get("reason") or ""),
+             datetime.now(timezone.utc).isoformat()),
+        )
+        rows = self.conn.execute(
+            "SELECT entry_id FROM proactive_bypass_diagnostics ORDER BY entry_id DESC LIMIT ?",
+            (max(1, int(max_entries)) + 1,),
+        ).fetchall()
+        if len(rows) > max_entries:
+            self.conn.execute(
+                "DELETE FROM proactive_bypass_diagnostics WHERE entry_id < ?", (int(rows[max_entries - 1]["entry_id"]),)
+            )
+        if commit:
+            self.conn.commit()
+
+    def list_proactive_bypasses(self, *, limit: int = 64) -> list[dict[str, str]]:
+        rows = self.conn.execute(
+            "SELECT channel,session_digest,query_digest,reason,created_at FROM proactive_bypass_diagnostics "
+            "ORDER BY entry_id DESC LIMIT ?", (max(1, min(512, int(limit))),)
+        ).fetchall()
+        return [dict(row) for row in rows]
 
     def register_adapter_tool_receipt(
         self,

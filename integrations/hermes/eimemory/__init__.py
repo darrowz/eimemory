@@ -75,6 +75,32 @@ def register(ctx) -> None:
         except Exception:
             return
 
+    def pre_llm_call(user_message: str = "", **kwargs: Any) -> None:
+        provider.on_pre_llm_call(
+            user_message=str(user_message or kwargs.get("prompt") or ""),
+            session_id=str(kwargs.get("session_id") or provider._session_id or ""),
+            turn_id=str(kwargs.get("turn_id") or kwargs.get("api_request_id") or ""),
+        )
+
+    def post_llm_call(
+        assistant_message: str = "",
+        user_message: str = "",
+        **kwargs: Any,
+    ) -> None:
+        provider.on_post_llm_call(
+            user_message=str(user_message or kwargs.get("prompt") or ""),
+            assistant_message=str(
+                assistant_message
+                or kwargs.get("response")
+                or kwargs.get("assistant_response")
+                or ""
+            ),
+            session_id=str(kwargs.get("session_id") or provider._session_id or ""),
+            turn_id=str(kwargs.get("turn_id") or kwargs.get("api_request_id") or ""),
+        )
+
     register_hook = getattr(ctx, "register_hook", None)
     if callable(register_hook):
+        register_hook("pre_llm_call", pre_llm_call)
+        register_hook("post_llm_call", post_llm_call)
         register_hook("post_tool_call", post_tool_call)

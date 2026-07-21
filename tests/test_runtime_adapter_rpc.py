@@ -16,6 +16,7 @@ from eimemory.adapters.runtime.channel import RUNTIME_ADAPTER_CONTRACT_VERSION
 from eimemory.adapters.runtime.http_client import AgentRuntimeRPCClient
 from eimemory.api.runtime import Runtime
 from eimemory.ei_bridge.protocol import EIMEMORY_RPC_CONTRACT_VERSION
+from eimemory.retrieval.proactive import ProactiveRecallService
 
 
 AUTH_TOKEN = "AgentRuntimeAdapterToken_0123456789-Strong"
@@ -26,6 +27,12 @@ BASE_SCOPE = {
     "agent_id": "hongtu",
     "workspace_id": "embodied",
     "user_id": "darrow",
+}
+TEST_RELEASE = {
+    "release_commit": "a" * 40,
+    "release_version": "test",
+    "deployment_receipt_id": "test-receipt",
+    "release_session_id": "test-release-session",
 }
 
 
@@ -511,6 +518,115 @@ def test_runtime_adapter_rpc_remember_and_prefetch_stay_in_channel(tmp_path: Pat
     assert remember["ok"] is True
     assert prefetch["result"]["bundle"]["items"][0]["record_id"] == remember["result"]["record"]["record_id"]
     assert codex["result"]["bundle"]["items"] == []
+
+
+def test_runtime_adapter_rpc_dispatches_exact_proactive_lifecycle(tmp_path: Path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    bridge = EIBrainRPCBridge(runtime)
+    calls: list[tuple[str, dict]] = []
+
+    class FakeProactive:
+        def decide(self, **kwargs):
+            calls.append(("decide", kwargs))
+            return {"ok": True, "decision_id": "pd:rpc", "context": "[pm:0123456789abcdefabcd]"}
+
+        def mark_injected(self, **kwargs):
+            calls.append(("mark_injected", kwargs))
+            return {"ok": True, "decision_id": "pd:rpc", "changed": 1}
+
+        def record_feedback(self, **kwargs):
+            calls.append(("record_feedback", kwargs))
+            return {"ok": True, "decision_id": "pd:rpc", "changed": 1}
+
+        def mark_terminal(self, **kwargs):
+            calls.append(("mark_terminal", kwargs))
+            return {"ok": True, "decision_id": "pd:rpc", "changed": 0}
+
+        def complete_turn(self, **kwargs):
+            calls.append(("complete_turn", kwargs))
+
+    monkeypatch.setattr(runtime, "proactive", FakeProactive())
+    common = {
+        "channel": "codex",
+        "scope": BASE_SCOPE,
+        "source_ids": ["codex"],
+        "session_id": "session-1",
+        "turn_id": "turn-1",
+    }
+    prefetch = bridge.handle({
+        "method": "adapter.proactive_prefetch",
+        "params": {**common, "query": "Fix recall.", "task_type": "code.fix"},
+    })
+    ack = bridge.handle({
+        "method": "adapter.proactive_ack",
+        "params": {**common, "decision_id": "pd:rpc"},
+    })
+    terminal = bridge.handle({
+        "method": "adapter.proactive_terminal",
+        "params": {**common, "decision_id": "pd:rpc", "used_citations": ["pm:0123456789abcdefabcd"]},
+    })
+    completed = bridge.handle({
+        "method": "adapter.proactive_complete_turn",
+        "params": {**common, "user_summary": "Fix recall.", "assistant_summary": "Done."},
+    })
+
+    assert all(result["ok"] is True for result in (prefetch, ack, terminal, completed))
+    assert [name for name, _kwargs in calls] == [
+        "decide", "mark_injected", "record_feedback", "mark_terminal", "complete_turn"
+    ]
+    assert calls[0][1]["scope"]["workspace_id"] == "embodied::channel::codex"
+    assert calls[2][1]["used_citations"] == ["pm:0123456789abcdefabcd"]
+
+
+def test_codex_proactive_decision_closes_from_new_runtime_process_by_exact_turn(tmp_path: Path) -> None:
+    first_runtime = Runtime.create(root=tmp_path)
+    first_runtime.proactive = ProactiveRecallService(
+        first_runtime, release_identity=TEST_RELEASE, control_percent=0
+    )
+    first_bridge = EIBrainRPCBridge(first_runtime)
+    remembered = first_bridge.handle({
+        "method": "adapter.remember",
+        "params": {
+            "channel": "codex", "scope": BASE_SCOPE, "event_id": "memory-1",
+            "text": "Always verify the deployment receipt before reporting success.",
+            "memory_type": "preference", "force_capture": True,
+        },
+    })
+    assert remembered["ok"] is True
+    common = {
+        "channel": "codex", "scope": BASE_SCOPE, "source_ids": ["default"],
+        "session_id": "codex-session", "turn_id": "codex-turn",
+    }
+    prefetched = first_bridge.handle({
+        "method": "adapter.proactive_prefetch",
+        "params": {**common, "query": "Recall deployment receipt verification", "task_type": "code.deploy"},
+    })
+    decision = prefetched["result"]
+    assert decision["context"]
+    ack = first_bridge.handle({
+        "method": "adapter.proactive_ack",
+        "params": {**common, "decision_id": decision["decision_id"]},
+    })
+    assert ack["result"]["changed"] == 1
+    first_runtime.close()
+
+    second_runtime = Runtime.create(root=tmp_path)
+    second_runtime.proactive = ProactiveRecallService(
+        second_runtime, release_identity=TEST_RELEASE, control_percent=0
+    )
+    second_bridge = EIBrainRPCBridge(second_runtime)
+    citation = decision["items"][0]["citation"]
+    terminal = second_bridge.handle({
+        "method": "adapter.proactive_terminal",
+        "params": {**common, "used_citations": [citation]},
+    })
+
+    assert terminal["ok"] is True
+    assert terminal["result"]["decision_id"] == decision["decision_id"]
+    assert terminal["result"]["feedback_changed"] == 1
+    persisted = second_runtime.store.load_proactive_decision(decision["decision_id"])
+    assert persisted["items"][0]["state"] == "used"
+    second_runtime.close()
 
 
 def test_runtime_adapter_rpc_rejects_invalid_channel_and_terminal_types(tmp_path: Path) -> None:

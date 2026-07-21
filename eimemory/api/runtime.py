@@ -77,6 +77,9 @@ class Runtime:
             candidate_source=candidate_source,
             recall_engine=recall_engine,
         )
+        from eimemory.retrieval.proactive import ProactiveRecallService
+
+        self.proactive = ProactiveRecallService(self)
         self.evolution = EvolutionAPI(store)
         self.raw = RawEvidenceAPI(store)
         from eimemory.governance.prompt_safety_executor import (
@@ -112,6 +115,7 @@ class Runtime:
         )
 
     def close(self) -> None:
+        self.proactive.close()
         self.store.close()
 
     def record_memory_usage(
@@ -123,6 +127,18 @@ class Runtime:
         rejected_record_ids: list[str] | None = None,
         query: str = "",
         source: str = "openclaw.gateway",
+        source_id: str = "default",
+        proactive_state: str = "",
+        session_id: str = "",
+        transition_id: str = "",
+        policy_version: str = "",
+        release_identity: dict | None = None,
+        control_cohort: bool = False,
+        control_suppressed: bool = False,
+        citation: str = "",
+        decision_id: str = "",
+        record_id: str = "",
+        pair_id: str = "",
         meta: dict | None = None,
         persist: bool = True,
     ) -> RecordEnvelope:
@@ -133,6 +149,18 @@ class Runtime:
             rejected_record_ids=rejected_record_ids,
             query=query,
             source=source,
+            source_id=source_id,
+            proactive_state=proactive_state,
+            session_id=session_id,
+            transition_id=transition_id,
+            policy_version=policy_version,
+            release_identity=release_identity,
+            control_cohort=control_cohort,
+            control_suppressed=control_suppressed,
+            citation=citation,
+            decision_id=decision_id,
+            record_id=record_id,
+            pair_id=pair_id,
             meta=meta,
             persist=persist,
         )

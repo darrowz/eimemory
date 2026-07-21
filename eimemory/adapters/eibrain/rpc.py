@@ -332,6 +332,74 @@ class EIBrainRPCBridge:
                 )
             elif method == "adapter.status":
                 result = self.runtime_adapter.status(channel=channel, scope=scope)
+            elif method == "adapter.proactive_prefetch":
+                source_ids = params.get("source_ids", [])
+                session_id = params.get("session_id", "")
+                turn_id = params.get("turn_id", "")
+                query = params.get("query", "")
+                task_type = params.get("task_type", "")
+                if (
+                    not self._valid_nonempty_strings(source_ids)
+                    or not all(isinstance(value, str) and value.strip() for value in (session_id, turn_id, query))
+                    or not isinstance(task_type, str)
+                ):
+                    return self._with_contract(self._invalid_request())
+                result = self.runtime_adapter.proactive_prefetch(
+                    channel=channel, scope=scope, source_ids=source_ids,
+                    session_id=session_id, turn_id=turn_id, query=query, task_type=task_type,
+                )
+            elif method == "adapter.proactive_ack":
+                source_ids = params.get("source_ids", [])
+                session_id = params.get("session_id", "")
+                turn_id = params.get("turn_id", "")
+                decision_id = params.get("decision_id", "")
+                if (
+                    not self._valid_nonempty_strings(source_ids)
+                    or not all(isinstance(value, str) and value.strip() for value in (session_id, turn_id, decision_id))
+                ):
+                    return self._with_contract(self._invalid_request())
+                result = self.runtime_adapter.proactive_ack(
+                    channel=channel, scope=scope, source_ids=source_ids,
+                    session_id=session_id, turn_id=turn_id, decision_id=decision_id,
+                )
+            elif method == "adapter.proactive_terminal":
+                source_ids = params.get("source_ids", [])
+                session_id = params.get("session_id", "")
+                turn_id = params.get("turn_id", "")
+                decision_id = params.get("decision_id", "")
+                used_citations = params.get("used_citations", [])
+                rejected_citations = params.get("rejected_citations", [])
+                if (
+                    not self._valid_nonempty_strings(source_ids)
+                    or not all(isinstance(value, str) and value.strip() for value in (session_id, turn_id))
+                    or not isinstance(decision_id, str)
+                    or not self._valid_string_list(used_citations)
+                    or not self._valid_string_list(rejected_citations)
+                ):
+                    return self._with_contract(self._invalid_request())
+                result = self.runtime_adapter.proactive_terminal(
+                    channel=channel, scope=scope, source_ids=source_ids,
+                    session_id=session_id, turn_id=turn_id, decision_id=decision_id,
+                    used_citations=used_citations, rejected_citations=rejected_citations,
+                )
+            elif method == "adapter.proactive_complete_turn":
+                source_ids = params.get("source_ids", [])
+                session_id = params.get("session_id", "")
+                turn_id = params.get("turn_id", "")
+                user_summary = params.get("user_summary", "")
+                assistant_summary = params.get("assistant_summary", "")
+                if (
+                    not self._valid_nonempty_strings(source_ids)
+                    or not all(isinstance(value, str) and value.strip() for value in (session_id, turn_id))
+                    or not isinstance(user_summary, str)
+                    or not isinstance(assistant_summary, str)
+                ):
+                    return self._with_contract(self._invalid_request())
+                result = self.runtime_adapter.proactive_complete_turn(
+                    channel=channel, scope=scope, source_ids=source_ids,
+                    session_id=session_id, turn_id=turn_id,
+                    user_summary=user_summary, assistant_summary=assistant_summary,
+                )
             elif method == "adapter.prefetch":
                 query = params.get("query", "")
                 task_type = params.get("task_type", "")
@@ -547,6 +615,18 @@ class EIBrainRPCBridge:
     @staticmethod
     def _valid_list(value: object) -> bool:
         return isinstance(value, list)
+
+    @staticmethod
+    def _valid_nonempty_strings(value: object) -> bool:
+        return (
+            isinstance(value, list)
+            and bool(value)
+            and all(isinstance(item, str) and bool(item.strip()) for item in value)
+        )
+
+    @staticmethod
+    def _valid_string_list(value: object) -> bool:
+        return isinstance(value, list) and all(isinstance(item, str) for item in value)
 
     @staticmethod
     def _normalize_evidence(evidence: list[object]) -> list[str]:

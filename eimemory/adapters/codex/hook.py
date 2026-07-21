@@ -21,6 +21,7 @@ MAX_TOOL_RESULT_PREVIEW_CHARS = 4_000
 SUMMARY_REDACTION_SLACK_CHARS = 512
 MAX_SUMMARY_REDACTION_NODES = 256
 _TRUNCATED = "[TRUNCATED]"
+_PROACTIVE_CITATION = re.compile(r"(?<![A-Za-z0-9])pm:[0-9a-f]{20}(?![A-Za-z0-9])")
 _SECRET_PATTERNS = (
     re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+"),
     re.compile(r"\bsk-[A-Za-z0-9_-]{8,}\b"),
@@ -106,7 +107,9 @@ class CodexHookAdapter:
                 return self._prefetch(name, payload, self._session_query(payload), "code.session")
             if name == "UserPromptSubmit":
                 query = _bounded_text(payload.get("prompt") or payload.get("user_prompt"), MAX_PROMPT_CHARS)
-                return self._prefetch(name, payload, query, _task_type(payload, default="code.task"))
+                return self._proactive_prefetch(
+                    name, payload, query, _task_type(payload, default="code.task")
+                )
             if name == "PostToolUse":
                 self._sync_tool_use(payload)
                 return {"continue": True}
@@ -148,6 +151,59 @@ class CodexHookAdapter:
         context = _bounded_text(result["result"].get("context"), MAX_HOOK_CONTEXT_CHARS)
         if not context:
             return {"continue": True}
+        return {
+            "continue": True,
+            "hookSpecificOutput": {
+                "hookEventName": event_name,
+                "additionalContext": context,
+            },
+        }
+
+    def _proactive_prefetch(
+        self,
+        event_name: str,
+        event: Mapping[str, Any],
+        query: str,
+        task_type: str,
+    ) -> dict[str, Any]:
+        session_id = _event_id(event, "session_id", default="")
+        turn_id = _event_id(event, "turn_id", default="")
+        if not query or not session_id or not turn_id:
+            return {"continue": True}
+        scope = self._scope_for_event(event)
+        source_ids = _source_ids_from_env("default")
+        result = self.client.call_or_bypass(
+            "adapter.proactive_prefetch",
+            {
+                "channel": "codex",
+                "scope": scope,
+                "source_ids": source_ids,
+                "session_id": session_id,
+                "turn_id": turn_id,
+                "query": query,
+                "task_type": task_type,
+            },
+        )
+        if result.get("ok") is not True or not isinstance(result.get("result"), dict):
+            return {"continue": True}
+        proactive = result["result"]
+        context = _bounded_text(proactive.get("context"), MAX_HOOK_CONTEXT_CHARS)
+        decision_id = _bounded_text(proactive.get("decision_id"), 200)
+        if not context or not decision_id:
+            return {"continue": True}
+        # The host will inject this exact non-empty block, so the acknowledgement
+        # is emitted only after construction succeeds. RPC remains fail-open.
+        self.client.call_or_bypass(
+            "adapter.proactive_ack",
+            {
+                "channel": "codex",
+                "scope": scope,
+                "source_ids": source_ids,
+                "session_id": session_id,
+                "turn_id": turn_id,
+                "decision_id": decision_id,
+            },
+        )
         return {
             "continue": True,
             "hookSpecificOutput": {
@@ -217,6 +273,33 @@ class CodexHookAdapter:
             2_000,
         )
         scope = self._scope_for_event(event)
+        source_ids = _source_ids_from_env("default")
+        used_citations = sorted(set(_PROACTIVE_CITATION.findall(result)))
+        self.client.call_or_bypass(
+            "adapter.proactive_terminal",
+            {
+                "channel": "codex",
+                "scope": scope,
+                "source_ids": source_ids,
+                "session_id": session_id,
+                "turn_id": event_id,
+                "used_citations": used_citations,
+            },
+        )
+        self.client.call_or_bypass(
+            "adapter.proactive_complete_turn",
+            {
+                "channel": "codex",
+                "scope": scope,
+                "source_ids": source_ids,
+                "session_id": session_id,
+                "turn_id": event_id,
+                "user_summary": _bounded_text(
+                    event.get("prompt") or event.get("user_prompt"), MAX_PROMPT_CHARS
+                ),
+                "assistant_summary": result,
+            },
+        )
         receipt_ids = (
             self.receipt_handoff.list_ids(
                 channel="codex",
@@ -275,6 +358,15 @@ class CodexHookAdapter:
 
 def _task_type(event: Mapping[str, Any], *, default: str) -> str:
     return _bounded_text(event.get("task_type") or event.get("eimemory_task_type"), 200) or default
+
+
+def _source_ids_from_env(default_source: str) -> list[str]:
+    configured = [
+        value.strip()
+        for value in os.getenv("EIMEMORY_SOURCE_IDS", "").split(",")
+        if value.strip()
+    ]
+    return configured or [default_source]
 
 
 def _event_id(event: Mapping[str, Any], *names: str, default: str) -> str:

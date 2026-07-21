@@ -109,6 +109,140 @@ class RuntimeStore:
                 export_record_markdown(self.root, record)
             return result
 
+    def append_proactive_turn(
+        self,
+        payload: dict,
+        *,
+        max_session_turns: int = 4,
+        max_global_turns: int = 512,
+    ) -> list[dict]:
+        with self._lock:
+            try:
+                self.sqlite.conn.execute("BEGIN IMMEDIATE")
+                result = self.sqlite.append_proactive_turn(
+                    payload,
+                    max_session_turns=max_session_turns,
+                    max_global_turns=max_global_turns,
+                    commit=False,
+                )
+                self.sqlite.conn.commit()
+                return result
+            except Exception:
+                self.sqlite.conn.rollback()
+                raise
+
+    def load_proactive_turns(self, payload: dict, *, limit: int = 4) -> list[dict]:
+        with self._lock:
+            return self.sqlite.load_proactive_turns(payload, limit=limit)
+
+    def record_proactive_decision(
+        self,
+        payload: dict,
+        items: list[dict],
+        feedback_records: list[RecordEnvelope],
+        *,
+        max_global_decisions: int = 512,
+    ) -> tuple[dict, bool]:
+        """Persist a decision, its items, and volunteered audit records atomically."""
+
+        with self._lock:
+            operation_ids: list[str] = []
+            written_records: list[RecordEnvelope] = []
+            try:
+                self.sqlite.conn.execute("BEGIN IMMEDIATE")
+                decision, idempotent = self.sqlite.insert_proactive_decision(
+                    payload, items, max_global_decisions=max_global_decisions, commit=False
+                )
+                if not idempotent:
+                    for record in feedback_records:
+                        existing = self.sqlite.get_by_idempotency_key(
+                            kinds=[record.kind], scope=record.scope,
+                            idempotency_key=str(record.meta.get("idempotency_key") or ""),
+                        )
+                        if existing is not None:
+                            continue
+                        self.sqlite.upsert(record, commit=False)
+                        operation_ids.extend(
+                            export["operation_id"] for export in self._enqueue_record_exports(record)
+                        )
+                        written_records.append(record)
+                self.sqlite.conn.commit()
+            except Exception:
+                self.sqlite.conn.rollback()
+                raise
+            self._flush_committed_exports(*operation_ids)
+            for record in written_records:
+                export_record_markdown(self.root, record)
+            return decision, idempotent
+
+    def load_proactive_decision(self, decision_id: str) -> dict | None:
+        with self._lock:
+            return self.sqlite.load_proactive_decision(decision_id)
+
+    def find_proactive_decision(self, payload: dict) -> dict | None:
+        with self._lock:
+            return self.sqlite.find_proactive_decision(payload)
+
+    def proactive_session_refs(self, payload: dict, *, limit: int = 512) -> set[tuple[str, str]]:
+        with self._lock:
+            return self.sqlite.proactive_session_refs(payload, limit=limit)
+
+    def transition_proactive_decision(
+        self,
+        decision_id: str,
+        targets: dict[str, str],
+        feedback_records: dict[tuple[str, str], RecordEnvelope],
+        *,
+        expected: dict | None = None,
+    ) -> list[dict]:
+        """CAS decision items and append their usage feedback in one transaction."""
+
+        with self._lock:
+            operation_ids: list[str] = []
+            written_records: list[RecordEnvelope] = []
+            try:
+                self.sqlite.conn.execute("BEGIN IMMEDIATE")
+                changed = self.sqlite.transition_proactive_items(
+                    decision_id, targets, expected=expected, commit=False
+                )
+                for item in changed:
+                    key = (str(item["citation"]), str(item["state"]))
+                    record = feedback_records.get(key)
+                    if record is None:
+                        raise ValueError("missing proactive feedback for an accepted transition")
+                    existing = self.sqlite.get_by_idempotency_key(
+                        kinds=[record.kind], scope=record.scope,
+                        idempotency_key=str(record.meta.get("idempotency_key") or ""),
+                    )
+                    if existing is None:
+                        self.sqlite.upsert(record, commit=False)
+                        operation_ids.extend(
+                            export["operation_id"] for export in self._enqueue_record_exports(record)
+                        )
+                        written_records.append(record)
+                self.sqlite.conn.commit()
+            except Exception:
+                self.sqlite.conn.rollback()
+                raise
+            self._flush_committed_exports(*operation_ids)
+            for record in written_records:
+                export_record_markdown(self.root, record)
+            return changed
+
+    def append_proactive_bypass(self, payload: dict, *, max_entries: int = 64) -> None:
+        with self._lock:
+            try:
+                self.sqlite.conn.execute("BEGIN IMMEDIATE")
+                self.sqlite.append_proactive_bypass(payload, max_entries=max_entries, commit=False)
+                self.sqlite.conn.commit()
+            except Exception:
+                self.sqlite.conn.rollback()
+                raise
+
+    def list_proactive_bypasses(self, *, limit: int = 64) -> list[dict[str, str]]:
+        with self._lock:
+            return self.sqlite.list_proactive_bypasses(limit=limit)
+
     def rewrite(self, record: RecordEnvelope, *, previous_scope: ScopeRef | dict | None = None) -> RecordEnvelope:
         with self._lock:
             previous_scope_ref = (

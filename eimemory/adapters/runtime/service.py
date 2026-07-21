@@ -33,7 +33,7 @@ from eimemory.governance.tool_receipts import (
 )
 from eimemory.models.memory_edges import MemoryEdge
 from eimemory.models.records import LinkRef, RecallBundle, RecordEnvelope, ScopeRef
-from eimemory.models.source_partitions import normalize_source_id
+from eimemory.models.source_partitions import normalize_source_id, normalize_source_ids
 
 
 DEFAULT_MAX_CONTEXT_CHARS = 7_200
@@ -104,6 +104,132 @@ class AgentRuntimeMemoryService:
             "bundle": bundle.to_dict(),
             "context": self._render_context(bundle),
         }
+
+    def proactive_prefetch(
+        self,
+        *,
+        channel: str,
+        scope: dict,
+        source_ids: list[str],
+        session_id: str,
+        turn_id: str,
+        query: str,
+        task_type: str = "",
+    ) -> dict[str, Any]:
+        channel_id, channel_scope, sources, session, turn = self._proactive_namespace(
+            channel=channel, scope=scope, source_ids=source_ids,
+            session_id=session_id, turn_id=turn_id,
+        )
+        normalized_query = self._bounded_text(query, self.max_turn_chars)
+        if not normalized_query:
+            raise ValueError("query is required")
+        return self.runtime.proactive.decide(
+            channel=channel_id,
+            scope=channel_scope,
+            source_ids=sources,
+            session_id=session,
+            query_id=turn,
+            query=normalized_query,
+            task_type=str(task_type or "").strip(),
+        )
+
+    def proactive_ack(
+        self,
+        *,
+        channel: str,
+        scope: dict,
+        source_ids: list[str],
+        session_id: str,
+        turn_id: str,
+        decision_id: str,
+    ) -> dict[str, Any]:
+        channel_id, channel_scope, sources, session, turn = self._proactive_namespace(
+            channel=channel, scope=scope, source_ids=source_ids,
+            session_id=session_id, turn_id=turn_id,
+        )
+        decision = str(decision_id or "").strip()
+        if not decision:
+            raise ValueError("decision_id is required")
+        return self.runtime.proactive.mark_injected(
+            decision_id=decision, channel=channel_id, scope=channel_scope,
+            source_ids=sources, session_id=session, turn_id=turn,
+            release_identity=self._proactive_release(channel_id, channel_scope),
+        )
+
+    def proactive_terminal(
+        self,
+        *,
+        channel: str,
+        scope: dict,
+        source_ids: list[str],
+        session_id: str,
+        turn_id: str,
+        used_citations: list[str],
+        rejected_citations: list[str] | None = None,
+        decision_id: str = "",
+    ) -> dict[str, Any]:
+        channel_id, channel_scope, sources, session, turn = self._proactive_namespace(
+            channel=channel, scope=scope, source_ids=source_ids,
+            session_id=session_id, turn_id=turn_id,
+        )
+        release = self._proactive_release(channel_id, channel_scope)
+        decision = str(decision_id or "").strip()
+        if not decision:
+            found = self.runtime.store.find_proactive_decision(
+                {
+                    "channel": channel_id,
+                    "scope": channel_scope,
+                    "source_key": self._proactive_source_key(sources),
+                    "session_id": session,
+                    "turn_id": turn,
+                    "release_identity": dict(release),
+                }
+            )
+            decision = str((found or {}).get("decision_id") or "")
+        if not decision:
+            return {"ok": True, "decision_id": "", "changed": 0, "reason": "decision_not_found"}
+        used = [str(item) for item in used_citations]
+        rejected = [str(item) for item in (rejected_citations or [])]
+        feedback = {"ok": True, "changed": 0}
+        if used or rejected:
+            feedback = self.runtime.proactive.record_feedback(
+                decision_id=decision, used_citations=used, rejected_citations=rejected,
+                channel=channel_id, scope=channel_scope, source_ids=sources,
+                session_id=session, turn_id=turn, release_identity=release,
+            )
+        terminal = self.runtime.proactive.mark_terminal(
+            decision_id=decision, channel=channel_id, scope=channel_scope,
+            source_ids=sources, session_id=session, turn_id=turn, release_identity=release,
+        )
+        return {
+            "ok": bool(feedback.get("ok")) and bool(terminal.get("ok")),
+            "decision_id": decision,
+            "feedback_changed": int(feedback.get("changed") or 0),
+            "terminal_changed": int(terminal.get("changed") or 0),
+        }
+
+    def proactive_complete_turn(
+        self,
+        *,
+        channel: str,
+        scope: dict,
+        source_ids: list[str],
+        session_id: str,
+        turn_id: str,
+        user_summary: str,
+        assistant_summary: str,
+    ) -> dict[str, Any]:
+        channel_id, channel_scope, sources, session, turn = self._proactive_namespace(
+            channel=channel, scope=scope, source_ids=source_ids,
+            session_id=session_id, turn_id=turn_id,
+        )
+        self.runtime.proactive.complete_turn(
+            channel=channel_id, scope=channel_scope, source_ids=sources,
+            session_id=session, turn_id=turn,
+            user_summary=self._bounded_text(user_summary, self.max_turn_chars),
+            assistant_summary=self._bounded_text(assistant_summary, self.max_turn_chars),
+        )
+        return {"ok": True, "session_id": session, "turn_id": turn}
 
     def remember(
         self,
@@ -1124,6 +1250,48 @@ class AgentRuntimeMemoryService:
         if not entries:
             return ""
         return self._bounded_text("Relevant eimemory context:\n" + "\n".join(entries), self.max_context_chars)
+
+    @staticmethod
+    def _proactive_source_key(source_ids: list[str]) -> str:
+        payload = json.dumps(list(source_ids), ensure_ascii=False, separators=(",", ":"))
+        return sha256(payload.encode("utf-8")).hexdigest()
+
+    def _proactive_namespace(
+        self,
+        *,
+        channel: str,
+        scope: dict,
+        source_ids: list[str],
+        session_id: str,
+        turn_id: str,
+    ) -> tuple[str, dict[str, str], list[str], str, str]:
+        channel_id = normalize_runtime_channel(channel)
+        channel_scope = resolve_channel_scope(channel_id, scope)
+        sources = normalize_source_ids(source_ids)
+        if not sources or sources == ("*",):
+            raise ValueError("an exact non-wildcard source_ids boundary is required")
+        session = str(session_id or "").strip()
+        turn = str(turn_id or "").strip()
+        if not session or not turn:
+            raise ValueError("session_id and turn_id are required")
+        return channel_id, channel_scope, list(sources), session, turn
+
+    def _proactive_release(self, channel: str, scope: dict[str, str]) -> dict[str, str]:
+        release_provider = getattr(self.runtime.proactive, "current_release", None)
+        if callable(release_provider):
+            return dict(release_provider(channel=channel, scope=scope))
+        identity = current_release_identity(self.runtime, ScopeRef.from_dict(scope))
+        if identity is None and channel in {"codex", "hermes"}:
+            identity = current_release_identity(
+                self.runtime,
+                ScopeRef.from_dict(base_scope_from_channel(channel, scope)),
+            )
+        return release_identity_payload(identity) if identity is not None else {
+            "release_commit": "",
+            "release_version": "",
+            "deployment_receipt_id": "",
+            "release_session_id": "",
+        }
 
     @staticmethod
     def _record_text(record: RecordEnvelope) -> str:

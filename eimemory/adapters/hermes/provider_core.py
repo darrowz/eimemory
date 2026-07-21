@@ -6,6 +6,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import re
 import threading
 import unicodedata
 from typing import Any, Dict, List, Mapping, Optional
@@ -22,6 +23,7 @@ DEFAULT_MAX_WRITE_QUEUE = 16
 DEFAULT_MAX_PREFETCH_CACHE_ENTRIES = 16
 PREFETCH_SINGLE_FLIGHT_WAIT_SECONDS = 3.0
 logger = logging.getLogger(__name__)
+_PROACTIVE_CITATION = re.compile(r"(?<![A-Za-z0-9])pm:[0-9a-f]{20}(?![A-Za-z0-9])")
 
 
 def hermes_client_from_env(*, hermes_home: str = "") -> AgentRuntimeRPCClient:
@@ -57,12 +59,13 @@ class HermesMemoryProviderCore:
         self._max_write_queue = max(1, min(128, int(max_write_queue)))
         self._max_prefetch_cache_entries = max(1, min(128, int(max_prefetch_cache_entries)))
         self._write_queue: deque[tuple[str, dict[str, Any]]] = deque()
-        self._prefetch_cache: OrderedDict[tuple[str, str], str] = OrderedDict()
+        self._prefetch_cache: OrderedDict[tuple[str, ...], str] = OrderedDict()
+        self._pending_proactive: OrderedDict[tuple[str, ...], dict[str, str]] = OrderedDict()
         self._lock = threading.RLock()
         self._write_thread: threading.Thread | None = None
         self._prefetch_thread: threading.Thread | None = None
-        self._pending_prefetch: tuple[tuple[str, str], str] | None = None
-        self._inflight_prefetch: dict[tuple[str, str], threading.Event] = {}
+        self._pending_prefetch: tuple[tuple[str, ...], str, str] | None = None
+        self._inflight_prefetch: dict[tuple[str, ...], threading.Event] = {}
         self._last_turn_summary = ""
         self._dropped_write_count = 0
         self._receipt_handoff = ReceiptIdHandoff.from_env()
@@ -107,6 +110,8 @@ class HermesMemoryProviderCore:
         with self._lock:
             self._verified_host_turns.clear()
             self._verified_host_turn_overflow = False
+            self._pending_proactive.clear()
+            self._prefetch_cache.clear()
         if self._client is None:
             self._client = hermes_client_from_env(hermes_home=hermes_home)
         self._active = self._client_injected or self.is_available()
@@ -124,7 +129,8 @@ class HermesMemoryProviderCore:
         normalized_query = _bounded_text(query, 8_000)
         if not self._active or not normalized_query:
             return ""
-        key = (str(session_id or self._session_id), normalized_query)
+        effective_session = str(session_id or self._session_id)
+        key = self._prefetch_key(effective_session, normalized_query)
         with self._lock:
             cached = self._prefetch_cache.get(key)
             if cached is not None:
@@ -145,7 +151,7 @@ class HermesMemoryProviderCore:
                     return cached
             return ""
         try:
-            context = self._fetch_context(normalized_query)
+            context = self._fetch_context(normalized_query, session_id=effective_session)
             if context:
                 self._cache_context(key, context)
             return context
@@ -156,7 +162,8 @@ class HermesMemoryProviderCore:
         normalized_query = _bounded_text(query, 8_000)
         if not self._active or not normalized_query:
             return
-        key = (str(session_id or self._session_id), normalized_query)
+        effective_session = str(session_id or self._session_id)
+        key = self._prefetch_key(effective_session, normalized_query)
         with self._lock:
             if key in self._prefetch_cache:
                 return
@@ -169,11 +176,11 @@ class HermesMemoryProviderCore:
                     previous_waiter = self._inflight_prefetch.pop(previous[0], None)
                     if previous_waiter is not None:
                         previous_waiter.set()
-                self._pending_prefetch = (key, normalized_query)
+                self._pending_prefetch = (key, normalized_query, effective_session)
                 return
             worker = threading.Thread(
                 target=self._prefetch_worker,
-                args=(key, normalized_query),
+                args=(key, normalized_query, effective_session),
                 daemon=True,
                 name="eimemory-hermes-prefetch",
             )
@@ -214,6 +221,84 @@ class HermesMemoryProviderCore:
                 "assistant_text": assistant_text,
             },
         )
+
+    def on_pre_llm_call(
+        self,
+        *,
+        user_message: str,
+        session_id: str = "",
+        turn_id: str = "",
+        **kwargs: Any,
+    ) -> None:
+        """Acknowledge only the exact proactive block already returned to Hermes."""
+
+        del kwargs  # In particular, never iterate conversation_history.
+        query = _bounded_text(user_message, 8_000)
+        session = str(session_id or self._session_id).strip() or "hermes-session"
+        host_turn = str(turn_id or "").strip()
+        key = self._prefetch_key(session, query)
+        with self._lock:
+            pending = dict(self._pending_proactive.get(key) or {})
+            if pending and host_turn:
+                pending["host_turn_id"] = host_turn
+                self._pending_proactive[key] = pending
+        if not pending:
+            return
+        self._safe_call(
+            "adapter.proactive_ack",
+            {
+                **self._common_params(),
+                "source_ids": _source_ids_from_env("default"),
+                "session_id": session,
+                "turn_id": pending["decision_turn_id"],
+                "decision_id": pending["decision_id"],
+            },
+        )
+
+    def on_post_llm_call(
+        self,
+        *,
+        user_message: str,
+        assistant_message: str,
+        session_id: str = "",
+        turn_id: str = "",
+        **kwargs: Any,
+    ) -> None:
+        """Close explicit-citation feedback and append one bounded completed turn."""
+
+        del kwargs  # In particular, never iterate conversation_history.
+        query = _bounded_text(user_message, MAX_TURN_CHARS)
+        assistant = _bounded_text(assistant_message, MAX_TURN_CHARS)
+        session = str(session_id or self._session_id).strip() or "hermes-session"
+        host_turn = str(turn_id or "").strip()
+        key = self._prefetch_key(session, _bounded_text(user_message, 8_000))
+        with self._lock:
+            pending = self._pending_proactive.pop(key, None)
+            self._prefetch_cache.pop(key, None)
+        if pending:
+            self._safe_call(
+                "adapter.proactive_terminal",
+                {
+                    **self._common_params(),
+                    "source_ids": _source_ids_from_env("default"),
+                    "session_id": session,
+                    "turn_id": pending["decision_turn_id"],
+                    "decision_id": pending["decision_id"],
+                    "used_citations": sorted(set(_PROACTIVE_CITATION.findall(assistant))),
+                },
+            )
+        if host_turn and (query or assistant):
+            self._safe_call(
+                "adapter.proactive_complete_turn",
+                {
+                    **self._common_params(),
+                    "source_ids": _source_ids_from_env("default"),
+                    "session_id": session,
+                    "turn_id": host_turn,
+                    "user_summary": query,
+                    "assistant_summary": assistant,
+                },
+            )
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         return [
@@ -356,9 +441,16 @@ class HermesMemoryProviderCore:
             if next_session_id != self._session_id:
                 self._verified_host_turns.clear()
                 self._verified_host_turn_overflow = False
+                self._pending_proactive.clear()
+                self._prefetch_cache.clear()
+                for waiter in self._inflight_prefetch.values():
+                    waiter.set()
+                self._inflight_prefetch.clear()
             self._session_id = next_session_id
             if reset or rewound:
                 self._last_turn_summary = ""
+                self._pending_proactive.clear()
+                self._prefetch_cache.clear()
 
     def bind_verified_host_turn(self, *, session_id: str, turn_id: str) -> bool:
         """Bind one host-attested turn for a later model-requested terminal close."""
@@ -526,24 +618,44 @@ class HermesMemoryProviderCore:
             "result": None,
         }
 
-    def _fetch_context(self, query: str) -> str:
+    def _fetch_context(self, query: str, *, session_id: str = "") -> str:
+        session = str(session_id or self._session_id).strip() or "hermes-session"
+        decision_turn_id = "hermes-query-" + sha256(
+            f"{session}\0{query}".encode("utf-8", errors="replace")
+        ).hexdigest()[:24]
         result = self._safe_call(
-            "adapter.prefetch",
+            "adapter.proactive_prefetch",
             {
                 **self._common_params(),
+                "source_ids": _source_ids_from_env("default"),
+                "session_id": session,
+                "turn_id": decision_turn_id,
                 "query": query,
                 "task_type": "research.task",
-                "limit": 8,
             },
         )
         if result.get("ok") is not True or not isinstance(result.get("result"), dict):
             return ""
-        return _bounded_text(result["result"].get("context"), MAX_PREFETCH_CONTEXT_CHARS)
+        payload = result["result"]
+        context = _bounded_text(payload.get("context"), MAX_PREFETCH_CONTEXT_CHARS)
+        decision_id = _bounded_text(payload.get("decision_id"), 200)
+        if context and decision_id:
+            key = self._prefetch_key(session, query)
+            with self._lock:
+                self._pending_proactive[key] = {
+                    "decision_id": decision_id,
+                    "decision_turn_id": decision_turn_id,
+                }
+                self._pending_proactive.move_to_end(key)
+                while len(self._pending_proactive) > self._max_prefetch_cache_entries:
+                    evicted, _value = self._pending_proactive.popitem(last=False)
+                    self._prefetch_cache.pop(evicted, None)
+        return context
 
-    def _prefetch_worker(self, key: tuple[str, str], query: str) -> None:
+    def _prefetch_worker(self, key: tuple[str, ...], query: str, session_id: str) -> None:
         while True:
             try:
-                context = self._fetch_context(query)
+                context = self._fetch_context(query, session_id=session_id)
                 if context:
                     self._cache_context(key, context)
             except Exception as exc:  # noqa: BLE001 - keep the bounded worker alive
@@ -557,18 +669,18 @@ class HermesMemoryProviderCore:
                 pending = self._pending_prefetch
                 self._pending_prefetch = None
                 if pending is not None:
-                    key, query = pending
+                    key, query, session_id = pending
                     continue
                 self._prefetch_thread = None
                 return
 
-    def _complete_prefetch(self, key: tuple[str, str]) -> None:
+    def _complete_prefetch(self, key: tuple[str, ...]) -> None:
         with self._lock:
             waiter = self._inflight_prefetch.pop(key, None)
             if waiter is not None:
                 waiter.set()
 
-    def _cache_context(self, key: tuple[str, str], context: str) -> None:
+    def _cache_context(self, key: tuple[str, ...], context: str) -> None:
         if not context:
             return
         with self._lock:
@@ -576,6 +688,18 @@ class HermesMemoryProviderCore:
             self._prefetch_cache.move_to_end(key)
             while len(self._prefetch_cache) > self._max_prefetch_cache_entries:
                 self._prefetch_cache.popitem(last=False)
+
+    def _prefetch_key(self, session_id: str, query: str) -> tuple[str, ...]:
+        return (
+            "hermes",
+            str(self._scope.get("tenant_id") or ""),
+            str(self._scope.get("agent_id") or ""),
+            str(self._scope.get("workspace_id") or ""),
+            str(self._scope.get("user_id") or ""),
+            *tuple(_source_ids_from_env("default")),
+            str(session_id or ""),
+            str(query or ""),
+        )
 
     def _enqueue_write(self, method: str, params: dict[str, Any]) -> None:
         with self._lock:
@@ -632,6 +756,15 @@ class HermesMemoryProviderCore:
 def _bounded_text(value: Any, limit: int) -> str:
     text = str(value or "").strip()
     return text if len(text) <= limit else text[:limit]
+
+
+def _source_ids_from_env(default_source: str) -> list[str]:
+    configured = [
+        value.strip()
+        for value in os.getenv("EIMEMORY_SOURCE_IDS", "").split(",")
+        if value.strip()
+    ]
+    return configured or [default_source]
 
 
 def _memory_write_fallback_event_id(

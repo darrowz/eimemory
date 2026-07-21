@@ -13,6 +13,10 @@ type BridgeResultDict = dict[str, BridgeJSONValue]
 type BridgeEventDict = dict[str, BridgeJSONValue]
 type EIMemoryRPCMethod = Literal[
     "adapter.prefetch",
+    "adapter.proactive_prefetch",
+    "adapter.proactive_ack",
+    "adapter.proactive_terminal",
+    "adapter.proactive_complete_turn",
     "adapter.sync_turn",
     "adapter.remember",
     "adapter.mutate_memory",

@@ -913,6 +913,15 @@ function resolveCliCommand() {
 }
 
 function normalizeEventPayload(hook, event) {
+  if (hook === 'proactive_injected') {
+    return {
+      session_id: normalizeSessionId(event),
+      ...normalizeScope(event),
+      ...normalizeTraceFields(event),
+      decision_id: String(event?.decision_id || ''),
+      source_ids: normalizeStringList(event?.source_ids || event?.sourceIds),
+    };
+  }
   if (hook === 'message_received') {
     const scope = normalizeScope(event);
     const content = normalizeContent(event?.content ?? event?.message?.content);
@@ -2337,6 +2346,18 @@ module.exports.default = {
       const prependContext = [bridgeContext, personaContext, memoryContext].filter(Boolean).join('\n\n');
       if (!prependContext) {
         return {};
+      }
+      const proactive = payload.proactive_recall || {};
+      const proactiveTaskContext = payload.task_context || {};
+      if (typeof proactive.decision_id === 'string' && proactive.decision_id) {
+        await safeInvokeHook(api, 'proactive_injected', {
+          ...correlatedEvent,
+          decision_id: proactive.decision_id,
+          turn_id: proactiveTaskContext.proactive_turn_id || correlatedEvent.turn_id || correlatedEvent.turnId || '',
+          source_ids: Array.isArray(proactiveTaskContext.proactive_source_ids)
+            ? proactiveTaskContext.proactive_source_ids
+            : [],
+        });
       }
       return { prependContext };
     });

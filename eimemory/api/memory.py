@@ -30,6 +30,8 @@ _MAX_RECORDS_PER_KNOWLEDGE_SOURCE = 2
 _DEFAULT_BLOCKED_RECALL_LANES = ("run_log", "audit_record", "incident_report", "evolution_artifact")
 _MEMORY_USAGE_TELEMETRY_REPORT_TYPE = "memory_usage_telemetry"
 _MEMORY_USAGE_TELEMETRY_SCHEMA = "memory_usage_telemetry.v1"
+_PROACTIVE_USAGE_STATES = frozenset({"volunteered", "injected", "used", "not_used", "rejected"})
+_PROACTIVE_CITATION = re.compile(r"pm:[0-9a-f]{20}")
 _MEMORY_USAGE_PROMOTION_WEIGHT = 0.08
 _MEMORY_USAGE_REJECTION_WEIGHT = -0.12
 _MEMORY_USAGE_MAX_ADJUSTMENT = 0.30
@@ -210,6 +212,18 @@ class MemoryAPI:
         rejected_record_ids: list[str] | None = None,
         query: str = "",
         source: str = "openclaw.gateway",
+        source_id: str = "default",
+        proactive_state: str = "",
+        session_id: str = "",
+        transition_id: str = "",
+        policy_version: str = "",
+        release_identity: dict | None = None,
+        control_cohort: bool = False,
+        control_suppressed: bool = False,
+        citation: str = "",
+        decision_id: str = "",
+        record_id: str = "",
+        pair_id: str = "",
         meta: dict | None = None,
         persist: bool = True,
     ) -> RecordEnvelope:
@@ -220,15 +234,51 @@ class MemoryAPI:
         scope_ref = ScopeRef.from_dict(scope)
         used_ids = self._unique_record_ids(used_record_ids)
         rejected_ids = self._unique_record_ids(rejected_record_ids)
+        normalized_state = str(proactive_state or "").strip().lower()
+        normalized_transition_id = str(transition_id or "").strip()
+        normalized_decision_id = str(decision_id or "").strip()
+        normalized_record_id = str(record_id or "").strip()
+        normalized_citation = str(citation or "").strip()
+        normalized_policy = str(policy_version or "").strip()
+        release_payload = {
+            key: str((release_identity or {}).get(key) or "")
+            for key in (
+                "release_commit",
+                "release_version",
+                "deployment_receipt_id",
+                "release_session_id",
+            )
+        }
+        if normalized_state and normalized_state not in _PROACTIVE_USAGE_STATES:
+            raise ValueError("unsupported proactive usage transition state")
+        if normalized_state and not all(
+            (normalized_transition_id, normalized_decision_id, normalized_record_id, normalized_citation, normalized_policy)
+        ):
+            raise ValueError("proactive usage transitions require server-bound decision, record, citation, policy, and transition IDs")
+        if normalized_state and (
+            _PROACTIVE_CITATION.fullmatch(normalized_citation) is None
+            or not all(release_payload.values())
+        ):
+            raise ValueError("proactive usage transitions require an opaque citation and complete release identity")
+        schema_version = "memory_usage_telemetry.v2" if normalized_state else _MEMORY_USAGE_TELEMETRY_SCHEMA
         idempotency_key = sha256(
             "|".join(
                 [
-                    _MEMORY_USAGE_TELEMETRY_SCHEMA,
+                    schema_version,
                     scope_ref.tenant_id,
                     scope_ref.agent_id,
                     scope_ref.workspace_id,
                     scope_ref.user_id,
                     normalized_query_id,
+                    normalized_state,
+                    normalized_transition_id,
+                    normalized_decision_id,
+                    normalized_record_id,
+                    normalized_citation,
+                    str(source_id or "default"),
+                    normalized_policy,
+                    release_payload["release_commit"],
+                    release_payload["deployment_receipt_id"],
                 ]
             ).encode("utf-8")
         ).hexdigest()
@@ -249,16 +299,51 @@ class MemoryAPI:
             "used_count": len(used_ids),
             "rejected_count": len(rejected_ids),
         }
-        if meta:
-            meta_payload.update(dict(meta))
+        if normalized_state:
             meta_payload.update(
                 {
-                    "report_type": _MEMORY_USAGE_TELEMETRY_REPORT_TYPE,
-                    "schema_version": _MEMORY_USAGE_TELEMETRY_SCHEMA,
-                    "query_id": normalized_query_id,
-                    "idempotency_key": idempotency_key,
-                    "used_count": len(used_ids),
-                    "rejected_count": len(rejected_ids),
+                    "schema_version": "memory_usage_telemetry.v2",
+                    "proactive_query_id": normalized_query_id,
+                    "proactive_state": normalized_state,
+                    "session_id": str(session_id or ""),
+                    "transition_id": normalized_transition_id,
+                    "policy_version": normalized_policy,
+                    "control_cohort": bool(control_cohort),
+                    "control_suppressed": bool(control_suppressed),
+                    "citation": normalized_citation,
+                    "decision_id": normalized_decision_id,
+                    "record_id": normalized_record_id,
+                    "pair_id": str(pair_id or ""),
+                    **release_payload,
+                }
+            )
+        if meta:
+            meta_payload.update(dict(meta))
+        meta_payload.update(
+            {
+                "report_type": _MEMORY_USAGE_TELEMETRY_REPORT_TYPE,
+                "schema_version": schema_version,
+                "query_id": normalized_query_id,
+                "idempotency_key": idempotency_key,
+                "used_count": len(used_ids),
+                "rejected_count": len(rejected_ids),
+            }
+        )
+        if normalized_state:
+            meta_payload.update(
+                {
+                    "proactive_query_id": normalized_query_id,
+                    "proactive_state": normalized_state,
+                    "session_id": str(session_id or ""),
+                    "transition_id": normalized_transition_id,
+                    "policy_version": normalized_policy,
+                    "control_cohort": bool(control_cohort),
+                    "control_suppressed": bool(control_suppressed),
+                    "citation": normalized_citation,
+                    "decision_id": normalized_decision_id,
+                    "record_id": normalized_record_id,
+                    "pair_id": str(pair_id or ""),
+                    **release_payload,
                 }
             )
         content = {
@@ -271,6 +356,24 @@ class MemoryAPI:
             "used_count": len(used_ids),
             "rejected_count": len(rejected_ids),
         }
+        if normalized_state:
+            content.update(
+                {
+                    "schema_version": "memory_usage_telemetry.v2",
+                    "proactive_query_id": normalized_query_id,
+                    "proactive_state": normalized_state,
+                    "session_id": str(session_id or ""),
+                    "transition_id": normalized_transition_id,
+                    "policy_version": normalized_policy,
+                    "control_cohort": bool(control_cohort),
+                    "control_suppressed": bool(control_suppressed),
+                    "citation": normalized_citation,
+                    "decision_id": normalized_decision_id,
+                    "record_id": normalized_record_id,
+                    "pair_id": str(pair_id or ""),
+                    **release_payload,
+                }
+            )
         links = [
             *(LinkRef(relation="used_memory", target_kind="record", target_id=record_id) for record_id in used_ids),
             *(
@@ -285,6 +388,7 @@ class MemoryAPI:
             content=content,
             scope=scope_ref,
             source=source,
+            source_id=source_id,
             tags=["memory_usage_telemetry"],
             links=links,
             meta=meta_payload,
