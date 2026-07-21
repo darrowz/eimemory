@@ -625,6 +625,7 @@ class SqliteRecordStore:
 
     def _create_recall_identity_tables(self, *, rebuild_indexes: bool = False) -> None:
         if rebuild_indexes:
+            self.conn.execute("DROP INDEX IF EXISTS idx_recall_index_storage_key")
             self.conn.execute("DROP INDEX IF EXISTS idx_recall_alias_exact")
             self.conn.execute("DROP INDEX IF EXISTS idx_recall_alias_exact_kind")
             self.conn.execute("DROP INDEX IF EXISTS idx_recall_title_exact")
@@ -651,6 +652,9 @@ class SqliteRecordStore:
                 PRIMARY KEY (storage_key, normalized_alias)
             )
             """
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_recall_index_storage_key ON recall_index(storage_key)"
         )
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_recall_alias_exact "
@@ -1369,6 +1373,9 @@ class SqliteRecordStore:
                 self.conn.execute(
                     "ALTER TABLE recall_index ADD COLUMN title_normalized TEXT NOT NULL DEFAULT ''"
                 )
+            if not self._recall_index_table_ready():
+                self.conn.execute("DROP TABLE recall_index")
+                self._create_recall_index_tables(create_indexes=False)
             self._create_recall_index_tables()
             self._create_recall_identity_tables()
             self._create_indexes()
@@ -1430,7 +1437,7 @@ class SqliteRecordStore:
                 self.conn.execute(
                     "ALTER TABLE recall_index ADD COLUMN title_normalized TEXT NOT NULL DEFAULT ''"
                 )
-            elif not self._recall_title_column_ready():
+            if not self._recall_index_table_ready():
                 # recall_index is a derived projection. Rebuilding it inside
                 # this migration transaction is safer than repeatedly trying
                 # to write through an incompatible affinity/nullability.
@@ -1476,11 +1483,12 @@ class SqliteRecordStore:
             ).fetchone()
             if "title_normalized" not in columns or not alias_table:
                 return False
-            if not self._recall_title_column_ready():
+            if not self._recall_index_table_ready():
                 return False
             if not self._recall_alias_table_ready():
                 return False
             expected = {
+                "idx_recall_index_storage_key": ["storage_key"],
                 "idx_recall_title_exact": [
                     "tenant_id", "agent_id", "workspace_id", "user_id", "title_normalized",
                     "status", "source_id", "kind", "storage_key",
@@ -1517,6 +1525,37 @@ class SqliteRecordStore:
             and str(title_column["type"]).upper() == "TEXT"
             and int(title_column["notnull"]) == 1
         )
+
+    def _recall_index_table_ready(self) -> bool:
+        expected = [
+            ("storage_key", "TEXT", 0, 1),
+            ("record_id", "TEXT", 1, 0),
+            ("kind", "TEXT", 1, 0),
+            ("status", "TEXT", 1, 0),
+            ("source", "TEXT", 1, 0),
+            ("source_id", "TEXT", 1, 0),
+            ("tenant_id", "TEXT", 1, 0),
+            ("agent_id", "TEXT", 1, 0),
+            ("workspace_id", "TEXT", 1, 0),
+            ("user_id", "TEXT", 1, 0),
+            ("lane", "TEXT", 1, 0),
+            ("visibility", "TEXT", 1, 0),
+            ("source_class", "TEXT", 1, 0),
+            ("memory_type", "TEXT", 1, 0),
+            ("projection_type", "TEXT", 1, 0),
+            ("quality_score", "REAL", 1, 0),
+            ("title_text", "TEXT", 1, 0),
+            ("title_normalized", "TEXT", 1, 0),
+            ("body_text", "TEXT", 1, 0),
+            ("anchor_terms", "TEXT", 1, 0),
+            ("updated_at", "TEXT", 1, 0),
+        ]
+        rows = self.conn.execute("PRAGMA table_info(recall_index)").fetchall()
+        actual = [
+            (str(row["name"]), str(row["type"]).upper(), int(row["notnull"]), int(row["pk"]))
+            for row in rows
+        ]
+        return actual == expected
 
     @staticmethod
     def _legacy_source_partition(payload: dict[str, Any], kind: str) -> tuple[str, str]:
@@ -2000,7 +2039,7 @@ class SqliteRecordStore:
             alias_key_placeholders = ",".join("?" for _ in alias_storage_keys)
             authoritative_rows = self.conn.execute(
                 "SELECT " + projection
-                + " FROM recall_index i INDEXED BY sqlite_autoindex_recall_index_1 WHERE "
+                + " FROM recall_index i INDEXED BY idx_recall_index_storage_key WHERE "
                 + " AND ".join(where)
                 + f" AND i.storage_key IN ({alias_key_placeholders})",
                 [*params, *alias_storage_keys],

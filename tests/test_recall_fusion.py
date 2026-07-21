@@ -284,7 +284,7 @@ def test_rrf_order_change_from_legacy_weight_is_explicit_and_replay_stable(tmp_p
     [
         "missing_marker", "wrong_title_index", "wrong_alias_index", "title_column", "alias_column",
         "alias_table", "partial_title_index", "partial_alias_index", "alias_collation", "alias_primary_key",
-        "title_wrong_type_nullable",
+        "title_wrong_type_nullable", "storage_key_not_primary",
     ],
 )
 def test_markered_identity_migration_repairs_physical_schema_and_backfills(tmp_path, damage: str) -> None:
@@ -335,16 +335,26 @@ def test_markered_identity_migration_repairs_physical_schema_and_backfills(tmp_p
             "tenant_id TEXT NOT NULL, agent_id TEXT NOT NULL, workspace_id TEXT NOT NULL, "
             "user_id TEXT NOT NULL)"
         )
-    elif damage == "title_wrong_type_nullable":
+    elif damage in {"title_wrong_type_nullable", "storage_key_not_primary"}:
         connection.execute("ALTER TABLE recall_index RENAME TO recall_index_legacy")
+        storage_key_declaration = (
+            "storage_key TEXT NOT NULL" if damage == "storage_key_not_primary" else "storage_key TEXT PRIMARY KEY"
+        )
+        title_declaration = (
+            "title_normalized BLOB"
+            if damage == "title_wrong_type_nullable"
+            else "title_normalized TEXT NOT NULL DEFAULT ''"
+        )
         connection.execute(
             "CREATE TABLE recall_index ("
-            "storage_key TEXT PRIMARY KEY, record_id TEXT NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL, "
+            + storage_key_declaration
+            + ", record_id TEXT NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL, "
             "source TEXT NOT NULL, source_id TEXT NOT NULL DEFAULT 'default', tenant_id TEXT NOT NULL, "
             "agent_id TEXT NOT NULL, workspace_id TEXT NOT NULL, user_id TEXT NOT NULL, lane TEXT NOT NULL, "
             "visibility TEXT NOT NULL, source_class TEXT NOT NULL, memory_type TEXT NOT NULL, "
             "projection_type TEXT NOT NULL, quality_score REAL NOT NULL DEFAULT 0.0, title_text TEXT NOT NULL, "
-            "title_normalized BLOB, body_text TEXT NOT NULL, anchor_terms TEXT NOT NULL, updated_at TEXT NOT NULL)"
+            + title_declaration
+            + ", body_text TEXT NOT NULL, anchor_terms TEXT NOT NULL, updated_at TEXT NOT NULL)"
         )
         columns = (
             "storage_key, record_id, kind, status, source, source_id, tenant_id, agent_id, workspace_id, "
@@ -353,6 +363,21 @@ def test_markered_identity_migration_repairs_physical_schema_and_backfills(tmp_p
         )
         connection.execute(f"INSERT INTO recall_index ({columns}) SELECT {columns} FROM recall_index_legacy")
         connection.execute("DROP TABLE recall_index_legacy")
+        if damage == "storage_key_not_primary":
+            connection.execute(
+                "CREATE INDEX idx_recall_index_scope_source_updated ON recall_index("
+                "tenant_id, agent_id, workspace_id, user_id, source_id, updated_at DESC, quality_score, "
+                "status, lane, visibility, storage_key)"
+            )
+            connection.execute("CREATE INDEX idx_recall_index_storage_key ON recall_index(storage_key)")
+            connection.execute(
+                "CREATE INDEX idx_recall_title_exact ON recall_index("
+                "tenant_id, agent_id, workspace_id, user_id, title_normalized, status, source_id, kind, storage_key)"
+            )
+            connection.execute(
+                "CREATE INDEX idx_recall_title_exact_kind ON recall_index("
+                "tenant_id, agent_id, workspace_id, user_id, title_normalized, status, kind, source_id, storage_key)"
+            )
     else:
         connection.execute("DROP TABLE recall_alias_index")
     connection.commit()
@@ -360,6 +385,10 @@ def test_markered_identity_migration_repairs_physical_schema_and_backfills(tmp_p
 
     repaired = RuntimeStore(root)
     assert repaired.sqlite._recall_identity_physical_ready() is True
+    storage_key_column = next(
+        row for row in repaired.sqlite.conn.execute("PRAGMA table_info(recall_index)") if row["name"] == "storage_key"
+    )
+    assert int(storage_key_column["pk"]) == 1
     hits = repaired.sqlite.search_identity_candidates(
         query="migration alias",
         kinds=["memory"],
