@@ -5,6 +5,7 @@ from eimemory.adapters.runtime.channel import (
     base_scope_from_channel,
     normalize_runtime_channel,
     resolve_channel_scope,
+    runtime_channel_from_scope,
 )
 from eimemory.adapters.runtime.service import AgentRuntimeMemoryService
 from eimemory.adapters.runtime.http_client import AgentRuntimeRPCClient, AgentRuntimeTransportError
@@ -19,4 +20,5 @@ __all__ = [
     "base_scope_from_channel",
     "normalize_runtime_channel",
     "resolve_channel_scope",
+    "runtime_channel_from_scope",
 ]

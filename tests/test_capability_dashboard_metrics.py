@@ -685,4 +685,10 @@ def _executed_patch_evidence(*, candidate_id: str, commit: str, success: bool) -
 
 
 def test_l5_real_task_sources_exclude_session_lifecycle_events() -> None:
-    assert VERIFIED_REAL_TASK_METHODS == {"openclaw.agent_end", "openclaw.task_end"}
+    assert VERIFIED_REAL_TASK_METHODS == {
+        "openclaw.agent_end",
+        "openclaw.task_end",
+        "codex.stop",
+        "hermes.task_end",
+    }
+    assert not any(method.endswith("session_end") for method in VERIFIED_REAL_TASK_METHODS)

@@ -13,6 +13,7 @@ from eimemory.experience.sanitize import OutcomeSanitizationError, sanitize_outc
 from eimemory.governance.evidence_contract import current_release_identity, release_identity_payload
 from eimemory.metadata import business_metadata
 from eimemory.models.records import RecordEnvelope, ScopeRef
+from eimemory.adapters.runtime.channel import base_scope_from_channel
 
 
 REPORT_TYPE = "outcome_trace"
@@ -34,7 +35,8 @@ def record_outcome_trace(runtime: Any, payload: dict[str, Any], scope: dict | Sc
             "evidence_class",
         ):
             payload.pop(key, None)
-        release = current_release_identity(runtime, scope_ref)
+        release_scope = _release_scope_for_real_task(payload, scope_ref)
+        release = current_release_identity(runtime, release_scope)
         if release is not None:
             payload.update(release_identity_payload(release))
             payload["evidence_class"] = "verified_real_task"
@@ -147,7 +149,20 @@ def _validate_outcome_trace(payload: object) -> str:
 def _server_bound_real_task(payload: dict[str, Any]) -> bool:
     source = str(payload.get("source") or "").strip()
     outcome = payload.get("outcome") if isinstance(payload.get("outcome"), dict) else {}
-    return source in {"openclaw.agent_end", "openclaw.task_end"} and outcome.get("rehearsal") is False
+    return source in {
+        "openclaw.agent_end",
+        "openclaw.task_end",
+        "codex.stop",
+        "hermes.task_end",
+    } and outcome.get("rehearsal") is False
+
+
+def _release_scope_for_real_task(payload: dict[str, Any], scope: ScopeRef) -> ScopeRef:
+    source = str(payload.get("source") or "").strip()
+    channel = source.split(".", 1)[0] if "." in source else ""
+    if channel in {"codex", "hermes"}:
+        return ScopeRef.from_dict(base_scope_from_channel(channel, scope))
+    return scope
 
 
 def _existing_outcome_record(runtime: Any, payload: dict[str, Any], *, scope: ScopeRef) -> RecordEnvelope | None:

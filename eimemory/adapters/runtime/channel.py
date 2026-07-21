@@ -53,3 +53,11 @@ def base_scope_from_channel(channel: str, scope: dict | ScopeRef | None) -> dict
         workspace_id = workspace_id[: -len(suffix)]
     payload["workspace_id"] = workspace_id
     return payload
+
+
+def runtime_channel_from_scope(scope: dict | ScopeRef | None) -> str:
+    resolved = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+    if _CHANNEL_SCOPE_SEPARATOR not in resolved.workspace_id:
+        return ""
+    channel = resolved.workspace_id.rsplit(_CHANNEL_SCOPE_SEPARATOR, 1)[-1].strip().lower()
+    return channel if channel in SUPPORTED_RUNTIME_CHANNELS else ""

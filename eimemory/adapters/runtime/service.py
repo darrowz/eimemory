@@ -7,6 +7,7 @@ from typing import Any
 from eimemory.adapters.runtime.channel import (
     AUTHORITY_MODE,
     RUNTIME_ADAPTER_CONTRACT_VERSION,
+    base_scope_from_channel,
     normalize_runtime_channel,
     resolve_channel_scope,
 )
@@ -218,6 +219,11 @@ class AgentRuntimeMemoryService:
             "authority_mode": AUTHORITY_MODE,
         }
         release = current_release_identity(self.runtime, ScopeRef.from_dict(channel_scope))
+        if release is None and channel_id != "openclaw":
+            release = current_release_identity(
+                self.runtime,
+                ScopeRef.from_dict(base_scope_from_channel(channel_id, channel_scope)),
+            )
         if release is not None:
             event_payload.update(release_identity_payload(release))
         recorded_event = self.runtime.record_event(event_payload, scope=channel_scope)
@@ -287,6 +293,11 @@ class AgentRuntimeMemoryService:
         channel_id = normalize_runtime_channel(channel)
         channel_scope = resolve_channel_scope(channel_id, scope)
         release = current_release_identity(self.runtime, ScopeRef.from_dict(channel_scope))
+        if release is None and channel_id != "openclaw":
+            release = current_release_identity(
+                self.runtime,
+                ScopeRef.from_dict(base_scope_from_channel(channel_id, channel_scope)),
+            )
         return {
             "ok": True,
             "adapter_contract_version": RUNTIME_ADAPTER_CONTRACT_VERSION,

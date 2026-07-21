@@ -14,6 +14,13 @@ from typing import Any, Mapping
 RECEIPT_KEY_ENV = "EIMEMORY_EVIDENCE_RECEIPT_HMAC_KEY"
 RECEIPT_KEY_FILE_ENV = "EIMEMORY_EVIDENCE_RECEIPT_ENV_FILE"
 MIN_KEY_LENGTH = 32
+SUPPORTED_TOOL_RECEIPT_SOURCES = frozenset(
+    {
+        "openclaw.after_tool_call",
+        "codex.post_tool_use",
+        "hermes.post_tool_call",
+    }
+)
 
 
 def _receipt_key() -> str:
@@ -100,7 +107,7 @@ def canonical_tool_receipt(receipt: Mapping[str, Any]) -> dict[str, Any]:
         "result_digest": str(receipt.get("result_digest") or "").strip().lower(),
         "run_id": str(receipt.get("run_id") or "").strip(),
         "session_id": str(receipt.get("session_id") or "").strip(),
-        "source": "openclaw.after_tool_call",
+        "source": str(receipt.get("source") or "openclaw.after_tool_call").strip(),
         "tool_call_id": str(receipt.get("tool_call_id") or "").strip(),
         "tool_name": str(receipt.get("tool_name") or "").strip(),
     }
@@ -120,6 +127,8 @@ def sign_tool_receipt(receipt: Mapping[str, Any], *, key: str = "") -> dict[str,
     if len(secret) < MIN_KEY_LENGTH or len(set(secret)) < 12:
         raise ValueError("tool receipt attestation key is unavailable")
     canonical = canonical_tool_receipt(receipt)
+    if canonical["source"] not in SUPPORTED_TOOL_RECEIPT_SOURCES:
+        raise ValueError("unsupported tool receipt source")
     signature = hmac.new(secret.encode("utf-8"), _canonical_bytes(canonical), sha256).hexdigest()
     return {**canonical, "signature": signature}
 
@@ -139,7 +148,7 @@ def verify_tool_receipt(
         and len(set(secret)) >= 12
         and receipt.get("receipt_version") == 1
         and receipt.get("attestation") == "hmac-sha256"
-        and receipt.get("source") == "openclaw.after_tool_call"
+        and receipt.get("source") in SUPPORTED_TOOL_RECEIPT_SOURCES
         and canonical["passed"] is True
         and canonical["session_id"] == str(session_id or "").strip()
         and canonical["run_id"] == str(run_id or "").strip()

@@ -19,6 +19,10 @@ from eimemory.governance.tool_receipts import verify_tool_receipt
 from eimemory.governance.rollout_lifecycle import is_executed_rollback_ledger_record
 from eimemory.models.records import ScopeRef
 from eimemory.runtime_identity import package_import_root
+from eimemory.adapters.runtime.channel import (
+    base_scope_from_channel,
+    runtime_channel_from_scope,
+)
 
 
 SUCCESS_LABELS = {
@@ -62,6 +66,14 @@ FAILURE_LABELS = {
 VERIFIED_REAL_TASK_METHODS = {
     "openclaw.agent_end",
     "openclaw.task_end",
+    "codex.stop",
+    "hermes.task_end",
+}
+TERMINAL_TOOL_RECEIPT_SOURCES = {
+    "openclaw.agent_end": "openclaw.after_tool_call",
+    "openclaw.task_end": "openclaw.after_tool_call",
+    "codex.stop": "codex.post_tool_use",
+    "hermes.task_end": "hermes.post_tool_call",
 }
 VERIFIED_REAL_TASK_SOURCE_TRUST = {"system_verified", "system_diagnostic", "user_explicit"}
 NON_SPECIFIC_REAL_TASK_TYPES = {"communication", "general.execution", "unknown", "unspecified"}
@@ -117,7 +129,7 @@ def build_capability_dashboard_metrics(
             continue
         layer = str(item.get("blame_layer") or "unknown")
         failure_blame_layers[layer] = failure_blame_layers.get(layer, 0) + 1
-    current_release = current_release_identity(runtime, scope_ref, limit=limit)
+    current_release = _current_release_identity_for_scope(runtime, scope_ref, limit=limit)
     current_deployment_tasks = [
         item
         for item in verified_live_tasks
@@ -406,7 +418,7 @@ def _verified_real_task_outcomes(
             continue
         evidence_ref = str(evidence_refs[0]).strip()
         release_identity = release_identity_from_record(record)
-        if evidence_ref in seen_evidence_refs or not _valid_openclaw_task_evidence(
+        if evidence_ref in seen_evidence_refs or not _valid_runtime_task_evidence(
             runtime,
             scope=scope,
             evidence_ref=evidence_ref,
@@ -437,7 +449,7 @@ def _specific_real_task_type(task_type: str) -> bool:
     return bool(normalized and normalized not in NON_SPECIFIC_REAL_TASK_TYPES)
 
 
-def _valid_openclaw_task_evidence(
+def _valid_runtime_task_evidence(
     runtime: Any,
     *,
     scope: ScopeRef,
@@ -474,7 +486,7 @@ def _valid_openclaw_task_evidence(
         event = json.loads(str(row["payload_json"] or "{}"))
     except (TypeError, json.JSONDecodeError):
         return False
-    hook = method.removeprefix("openclaw.")
+    hook = method.split(".", 1)[1] if "." in method else ""
     if (
         str(event.get("source") or "") != method
         or str(event.get("hook") or "") != hook
@@ -484,14 +496,15 @@ def _valid_openclaw_task_evidence(
     ):
         return False
     verification = str(event.get("verification") or "").strip()
-    if verification.startswith("openclaw.after_tool_call:"):
+    receipt_source = TERMINAL_TOOL_RECEIPT_SOURCES.get(method, "")
+    if receipt_source and verification.startswith(receipt_source + ":"):
         receipts = event.get("verification_receipts")
         if not (
             isinstance(receipts, list)
             and receipts
             and all(
                 isinstance(receipt, dict)
-                and receipt.get("source") == "openclaw.after_tool_call"
+                and receipt.get("source") == receipt_source
                 and str(receipt.get("tool_name") or "").strip()
                 and str(receipt.get("tool_call_id") or "").strip()
                 and receipt.get("passed") is True
@@ -531,6 +544,25 @@ def _valid_openclaw_task_evidence(
         str(event_outcome.get("outcome") or "").strip().lower() == expected_label
         and str(event_outcome.get("source") or "").strip() == method
         and str(event_outcome.get("source_trust") or "").strip() in VERIFIED_REAL_TASK_SOURCE_TRUST
+    )
+
+
+def _current_release_identity_for_scope(
+    runtime: Any,
+    scope: ScopeRef,
+    *,
+    limit: int,
+) -> ReleaseIdentity | None:
+    release = current_release_identity(runtime, scope, limit=limit)
+    if release is not None:
+        return release
+    channel = runtime_channel_from_scope(scope)
+    if channel not in {"codex", "hermes"}:
+        return None
+    return current_release_identity(
+        runtime,
+        ScopeRef.from_dict(base_scope_from_channel(channel, scope)),
+        limit=limit,
     )
 
 
