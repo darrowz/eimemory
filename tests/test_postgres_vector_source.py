@@ -840,7 +840,10 @@ def test_repository_uses_validated_identifiers_prepared_exact_predicates_and_bou
     assert "left(workspace_id, 512)" in select_sql
 
 
-@pytest.mark.parametrize("field,value", [("schema", "safe;DROP TABLE x"), ("table", "x--")])
+@pytest.mark.parametrize(
+    "field,value",
+    [("schema", "safe;DROP TABLE x"), ("table", "x--"), ("schema", "SafeSchema")],
+)
 def test_repository_rejects_identifier_injection(field: str, value: str) -> None:
     kwargs = {field: value}
     with pytest.raises(ValueError, match="identifier"):
@@ -1068,14 +1071,15 @@ def test_static_authority_cursor_is_fresh_but_non_monotonic_cursor_fails_closed(
     json.dumps(stale, allow_nan=False)
 
 
-def test_hostile_provider_health_is_allowlisted_and_cannot_claim_availability() -> None:
+@pytest.mark.parametrize("secret", ["Bearer secret", "TOPSECRET", "api_key_123"])
+def test_hostile_provider_health_is_allowlisted_and_cannot_claim_availability(secret: str) -> None:
     class HostileHealthProvider(StaticProvider):
         def health(self) -> dict[str, object]:
             return {
                 "available": True,
                 "configured": True,
                 "circuit": "postgresql://user:secret@host/db",
-                "last_error": "Bearer secret",
+                "last_error": secret,
                 "url": "https://secret.example",
             }
 
@@ -1095,4 +1099,6 @@ def test_hostile_provider_health_is_allowlisted_and_cannot_claim_availability() 
         "dimension": 0,
         "last_error": "embedding_unavailable",
     }
-    assert "secret" not in json.dumps(health)
+    serialized = json.dumps(health)
+    assert secret not in serialized
+    assert "https://secret.example" not in serialized

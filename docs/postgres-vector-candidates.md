@@ -18,6 +18,10 @@ pip install 'eimemory[postgres]'
 Configuration is explicit and secret-bearing values are never included in
 health or CLI output:
 
+Schema and table identifiers are deliberately restricted to lowercase ASCII
+letters, digits, and underscores so quoted DDL and PostgreSQL regclass
+validation have one unambiguous identity.
+
 ```text
 EIMEMORY_POSTGRES_VECTOR_ENABLED=1
 EIMEMORY_POSTGRES_VECTOR_DSN=postgresql://...

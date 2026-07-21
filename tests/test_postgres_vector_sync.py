@@ -529,7 +529,7 @@ def test_sync_embedding_deadline_is_bounded_by_lease_not_database_connect_timeou
 
     assert syncer.sync(batch_size=10, max_pages=1)["ok"] is True
     assert provider.timeouts == [4.0]
-    assert len(syncer.repository.renew_calls) == 1
+    assert len(syncer.repository.renew_calls) == 3
 
 
 def test_sync_preserves_shorter_provider_timeout_inside_long_lease() -> None:
@@ -556,6 +556,39 @@ def test_sync_preserves_shorter_provider_timeout_inside_long_lease() -> None:
 
     assert report["ok"] is True
     assert provider.timeouts == [5.0]
+
+
+def test_sync_renews_lease_before_and_after_embedding_and_again_before_apply() -> None:
+    events: list[str] = []
+
+    class EventRepository(FakeSyncRepository):
+        def renew_sync_lease(self, *, run_id: str, lease_owner: str) -> None:
+            events.append("renew")
+            super().renew_sync_lease(run_id=run_id, lease_owner=lease_owner)
+
+        def apply_sync_page(self, **kwargs: Any) -> None:
+            events.append("apply")
+            super().apply_sync_page(**kwargs)
+
+    class SlowWindowProvider(BatchProvider):
+        timeout_seconds = 120.0
+
+        def embed(self, texts: list[str], *, timeout_seconds: float | None = None) -> list[tuple[float, ...]]:
+            assert timeout_seconds == 4.0  # 80% of the minimum five-second lease.
+            events.append("embed")
+            return super().embed(texts, timeout_seconds=timeout_seconds)
+
+    report = PostgresVectorIndexSynchronizer(
+        reader=FakeReader({("", ""): [_projection("a", "2026-07-22T00:00:01Z")]}),
+        repository=EventRepository(),
+        embedding_provider=SlowWindowProvider(),
+        config=PostgresVectorConfig(
+            enabled=True, dsn="postgresql://host/db", vector_dimension=3, sync_lease_seconds=5,
+        ),
+    ).sync(batch_size=10, max_pages=1)
+
+    assert report["ok"] is True
+    assert events == ["renew", "embed", "renew", "renew", "apply"]
 
 
 def test_wrong_provider_dimension_does_not_apply_page() -> None:

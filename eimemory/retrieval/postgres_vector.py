@@ -23,6 +23,21 @@ _IDENTIFIER = re.compile(r"[a-z_][a-z0-9_]{0,47}\Z")
 _MAX_VECTOR_DIMENSION = 2_000
 _MAX_TOP_K = 1_000
 PROJECTION_DIGEST_SCHEMA = "candidate-projection.v1"
+_EMBEDDING_HEALTH_ERROR_CODES = frozenset({
+    "",
+    "circuit_open",
+    "embedding_batch_invalid",
+    "embedding_dimension_mismatch",
+    "embedding_http_error",
+    "embedding_not_configured",
+    "embedding_response_invalid",
+    "embedding_timeout",
+    "embedding_transport_error",
+    "embedding_unavailable",
+    "redirect_rejected",
+    "request_too_large",
+    "response_too_large",
+})
 
 
 @runtime_checkable
@@ -1479,7 +1494,7 @@ def sanitized_embedding_health(provider: EmbeddingProvider | None) -> dict[str, 
     if circuit not in {"closed", "open", "half_open"}:
         circuit = "open"
     last_error = str(raw.get("last_error") or "")
-    if not re.fullmatch(r"[A-Za-z0-9_.:-]{0,80}", last_error):
+    if last_error not in _EMBEDDING_HEALTH_ERROR_CODES:
         last_error = "embedding_unavailable"
     dimension = _bounded_int(raw.get("dimension"), 0, _MAX_VECTOR_DIMENSION)
     return {

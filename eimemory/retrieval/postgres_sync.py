@@ -293,6 +293,12 @@ class PostgresVectorIndexSynchronizer:
                     for vector in vectors
                 ):
                     raise RuntimeError("embedding_dimension_mismatch")
+                if not self._authority_unchanged(authority_revision):
+                    raise RuntimeError("authority_changed_during_sync")
+                self.repository.renew_sync_lease(
+                    run_id=progress.run_id,
+                    lease_owner=self._lease_owner,
+                )
             except Exception as exc:
                 self._release_lease(progress)
                 return self._failure(_sync_error_code(exc, "embedding"))
@@ -309,6 +315,10 @@ class PostgresVectorIndexSynchronizer:
                 self._release_lease(progress)
                 return self._failure("authority_changed_during_sync")
             try:
+                self.repository.renew_sync_lease(
+                    run_id=progress.run_id,
+                    lease_owner=self._lease_owner,
+                )
                 self.repository.apply_sync_page(
                     run_id=progress.run_id,
                     projections=projections,

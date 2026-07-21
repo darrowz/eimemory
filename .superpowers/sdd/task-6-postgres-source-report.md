@@ -39,9 +39,9 @@ The feature remains disabled and dependency-free by default.
 - Sync uses bounded keyset pages, a persistent SQLite mutation revision, a
   PostgreSQL worker lease, cursor CAS, separate staging/committed fingerprints,
   abandoned-watermark garbage collection, and a two-phase staging/finalize
-  watermark switch. The lease is renewed immediately before embedding and the
-  provider deadline is the smaller of its configured timeout and 80% of the
-  lease. Provider/DB/mutation failures before finalize do not advance or delete
+  watermark switch. The lease is renewed immediately before and after embedding,
+  and again before page apply; the provider deadline is the smaller of its
+  configured timeout and 80% of the lease. Provider/DB/mutation failures before finalize do not advance or delete
   the prior committed watermark.
 - Health and CLI status are allowlisted, secret-safe, strict-JSON-safe, and bind
   availability to provider circuit, committed fingerprints, authority revision,
@@ -53,10 +53,10 @@ Fresh results from this worktree:
 
 ```text
 python -m pytest tests/test_postgres_vector_source.py tests/test_postgres_vector_sync.py tests/test_postgres_vector_cli.py -q
-71 passed
+75 passed
 
 python -m pytest tests/test_postgres_vector_source.py tests/test_postgres_vector_sync.py tests/test_postgres_vector_cli.py tests/test_recall_fusion.py tests/test_recall_engine.py tests/test_candidate_search_v2.py tests/test_source_partition.py tests/test_eibrain_rpc_contract.py -q
-212 passed
+216 passed
 
 python -m compileall -q eimemory/retrieval eimemory/adapters/eibrain
 passed
