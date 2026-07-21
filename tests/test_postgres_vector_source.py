@@ -35,9 +35,11 @@ class SQLiteSource:
     def __init__(self, hits: tuple[CandidateHit, ...] = ()) -> None:
         self.hits = hits
         self.calls = 0
+        self.request_limits: list[int] = []
 
     def search(self, request: CandidateRequest) -> CandidateBatch:
         self.calls += 1
+        self.request_limits.append(request.limit)
         return CandidateBatch(
             hits=self.hits,
             diagnostics={"source_name": "sqlite", "candidate_count": len(self.hits)},
@@ -180,6 +182,36 @@ def test_public_factory_always_installs_sqlite_as_the_authoritative_participant(
         )
         assert isinstance(source.sqlite_source, SQLiteCandidateSource)
         assert source.sqlite_source.store is store
+    finally:
+        store.close()
+
+
+def test_governed_engine_preserves_sqlite_candidate_budget_for_augmented_source(tmp_path: Path) -> None:
+    from eimemory.api.memory import MemoryAPI
+    from eimemory.retrieval.engine import GovernedRecallEngine
+    from eimemory.storage.runtime_store import RuntimeStore
+
+    sqlite = SQLiteSource(())
+    source = PostgresVectorCandidateSource(
+        sqlite_source=sqlite,
+        config=PostgresVectorConfig(enabled=False),
+    )
+    store = RuntimeStore(tmp_path)
+    memory = MemoryAPI(store, recall_engine=GovernedRecallEngine(store=store, candidate_source=source))
+    try:
+        memory.recall(
+            query="candidate budget",
+            scope={
+                "tenant_id": SCOPE.tenant_id,
+                "agent_id": SCOPE.agent_id,
+                "workspace_id": SCOPE.workspace_id,
+                "user_id": SCOPE.user_id,
+            },
+            limit=5,
+            task_context={"task_type": "chat.reply", "source_ids": ["alpha"]},
+        )
+        assert sqlite.calls >= 1
+        assert max(sqlite.request_limits) >= GovernedRecallEngine._minimum_candidate_budget
     finally:
         store.close()
 

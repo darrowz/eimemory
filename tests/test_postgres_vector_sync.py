@@ -49,6 +49,7 @@ class FakeSyncRepository:
         *,
         run_id: str,
         projections: list[dict[str, Any]],
+        expected_cursor: ProjectionCursor,
         next_cursor: ProjectionCursor,
         complete: bool,
     ) -> None:
@@ -58,6 +59,7 @@ class FakeSyncRepository:
             {
                 "run_id": run_id,
                 "projections": projections,
+                "expected_cursor": expected_cursor,
                 "next_cursor": next_cursor,
                 "complete": complete,
             }
@@ -356,6 +358,7 @@ def test_repository_final_page_upsert_state_and_stale_cleanup_are_one_transactio
     repository.apply_sync_page(
         run_id="run-1",
         projections=[projection],
+        expected_cursor=ProjectionCursor(),
         next_cursor=ProjectionCursor(projection["updated_at"], projection["storage_key"]),
         complete=True,
     )
@@ -382,9 +385,37 @@ def test_repository_apply_failure_rolls_back_without_commit() -> None:
         repository.apply_sync_page(
             run_id="run-1",
             projections=[],
+            expected_cursor=ProjectionCursor(),
             next_cursor=ProjectionCursor(),
             complete=True,
         )
 
+    assert connection.rollbacks == 1
+    assert connection.commits == 0
+
+
+def test_repository_rejects_out_of_order_concurrent_cursor_without_regression() -> None:
+    connection = RecordingConnection()
+    connection.cursor_value.fetchone = lambda: {
+        "run_id": "run-1",
+        "in_progress": True,
+        "cursor_updated_at": "2026-07-22T00:00:09Z",
+        "cursor_storage_key": "later",
+    }
+    repository = PostgresCandidateRepository(
+        PostgresVectorConfig(enabled=True, connection_factory=lambda **kwargs: connection, vector_dimension=3)
+    )
+
+    with pytest.raises(RuntimeError, match="postgres_sync_apply_failed"):
+        repository.apply_sync_page(
+            run_id="run-1",
+            projections=[],
+            expected_cursor=ProjectionCursor("2026-07-22T00:00:01Z", "earlier"),
+            next_cursor=ProjectionCursor("2026-07-22T00:00:02Z", "next"),
+            complete=False,
+        )
+
+    sql = "\n".join(statement for statement, _ in connection.cursor_value.calls)
+    assert "cursor_updated_at" in sql
     assert connection.rollbacks == 1
     assert connection.commits == 0

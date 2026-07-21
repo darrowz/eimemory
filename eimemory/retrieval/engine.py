@@ -446,7 +446,9 @@ class GovernedRecallEngine:
                     or max(self._minimum_candidate_budget, search_limit * 36),
                 )
                 provider_limit = search_limit
-                if isinstance(self.candidate_source, SQLiteCandidateSource):
+                if isinstance(self.candidate_source, SQLiteCandidateSource) or (
+                    getattr(self.candidate_source, "sqlite_authority", False) is True
+                ):
                     provider_limit = min(candidate_budget, max(search_limit, self._minimum_candidate_budget))
                 source_request = replace(
                     request,

@@ -416,6 +416,7 @@ class PostgresCandidateRepository:
         *,
         run_id: str,
         projections: list[dict[str, Any]],
+        expected_cursor: Any,
         next_cursor: Any,
         complete: bool,
     ) -> None:
@@ -427,13 +428,19 @@ class PostgresCandidateRepository:
             with connection.cursor() as cursor:
                 self._set_timeout(cursor)
                 cursor.execute(
-                    f"SELECT run_id, in_progress FROM {self.qualified_state_table} "
+                    f"SELECT run_id, in_progress, cursor_updated_at, cursor_storage_key "
+                    f"FROM {self.qualified_state_table} "
                     "WHERE singleton = %s FOR UPDATE",
                     (True,),
                 )
                 raw_state = cursor.fetchone()
                 state = _row_mapping(raw_state, getattr(cursor, "description", None)) if raw_state is not None else {}
                 if str(state.get("run_id") or "") != normalized_run_id or not bool(state.get("in_progress")):
+                    raise RuntimeError("postgres_sync_conflict")
+                if (
+                    str(state.get("cursor_updated_at") or "") != str(expected_cursor.updated_at or "")
+                    or str(state.get("cursor_storage_key") or "") != str(expected_cursor.storage_key or "")
+                ):
                     raise RuntimeError("postgres_sync_conflict")
                 upsert_sql = (
                     f"INSERT INTO {self.qualified_table} ("
@@ -607,6 +614,7 @@ class PostgresVectorCandidateSource:
 
     name = "sqlite+postgres_vector"
     policy_version = "postgres-vector-candidates.v1"
+    sqlite_authority = True
 
     def __init__(
         self,

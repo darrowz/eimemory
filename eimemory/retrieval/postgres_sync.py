@@ -36,6 +36,7 @@ class SyncRepository(Protocol):
         *,
         run_id: str,
         projections: list[dict[str, Any]],
+        expected_cursor: ProjectionCursor,
         next_cursor: ProjectionCursor,
         complete: bool,
     ) -> None: ...
@@ -162,6 +163,7 @@ class PostgresVectorIndexSynchronizer:
                     self.repository.apply_sync_page(
                         run_id=progress.run_id,
                         projections=[],
+                        expected_cursor=cursor,
                         next_cursor=cursor,
                         complete=True,
                     )
@@ -201,6 +203,7 @@ class PostgresVectorIndexSynchronizer:
                 self.repository.apply_sync_page(
                     run_id=progress.run_id,
                     projections=projections,
+                    expected_cursor=cursor,
                     next_cursor=next_cursor,
                     complete=complete,
                 )
