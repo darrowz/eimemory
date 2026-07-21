@@ -353,14 +353,17 @@ class EIBrainRPCBridge:
                 session_id = params.get("session_id", "")
                 turn_id = params.get("turn_id", "")
                 decision_id = params.get("decision_id", "")
+                injected_citations = params.get("injected_citations", [])
                 if (
                     not self._valid_nonempty_strings(source_ids)
                     or not all(isinstance(value, str) and value.strip() for value in (session_id, turn_id, decision_id))
+                    or not self._valid_nonempty_strings(injected_citations)
                 ):
                     return self._with_contract(self._invalid_request())
                 result = self.runtime_adapter.proactive_ack(
                     channel=channel, scope=scope, source_ids=source_ids,
                     session_id=session_id, turn_id=turn_id, decision_id=decision_id,
+                    injected_citations=injected_citations,
                 )
             elif method == "adapter.proactive_terminal":
                 source_ids = params.get("source_ids", [])
@@ -369,18 +372,21 @@ class EIBrainRPCBridge:
                 decision_id = params.get("decision_id", "")
                 used_citations = params.get("used_citations", [])
                 rejected_citations = params.get("rejected_citations", [])
+                terminal_outcome = params.get("terminal_outcome", {})
                 if (
                     not self._valid_nonempty_strings(source_ids)
                     or not all(isinstance(value, str) and value.strip() for value in (session_id, turn_id))
                     or not isinstance(decision_id, str)
                     or not self._valid_string_list(used_citations)
                     or not self._valid_string_list(rejected_citations)
+                    or not isinstance(terminal_outcome, dict)
                 ):
                     return self._with_contract(self._invalid_request())
                 result = self.runtime_adapter.proactive_terminal(
                     channel=channel, scope=scope, source_ids=source_ids,
                     session_id=session_id, turn_id=turn_id, decision_id=decision_id,
                     used_citations=used_citations, rejected_citations=rejected_citations,
+                    terminal_outcome=terminal_outcome,
                 )
             elif method == "adapter.proactive_complete_turn":
                 source_ids = params.get("source_ids", [])

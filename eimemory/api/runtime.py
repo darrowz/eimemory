@@ -115,8 +115,7 @@ class Runtime:
         )
 
     def close(self) -> None:
-        self.proactive.close()
-        self.store.close()
+        self.proactive.close(on_drained=self.store.close)
 
     def record_memory_usage(
         self,

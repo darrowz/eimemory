@@ -142,6 +142,7 @@ class AgentRuntimeMemoryService:
         session_id: str,
         turn_id: str,
         decision_id: str,
+        injected_citations: list[str],
     ) -> dict[str, Any]:
         channel_id, channel_scope, sources, session, turn = self._proactive_namespace(
             channel=channel, scope=scope, source_ids=source_ids,
@@ -154,6 +155,7 @@ class AgentRuntimeMemoryService:
             decision_id=decision, channel=channel_id, scope=channel_scope,
             source_ids=sources, session_id=session, turn_id=turn,
             release_identity=self._proactive_release(channel_id, channel_scope),
+            injected_citations=injected_citations,
         )
 
     def proactive_terminal(
@@ -167,6 +169,7 @@ class AgentRuntimeMemoryService:
         used_citations: list[str],
         rejected_citations: list[str] | None = None,
         decision_id: str = "",
+        terminal_outcome: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         channel_id, channel_scope, sources, session, turn = self._proactive_namespace(
             channel=channel, scope=scope, source_ids=source_ids,
@@ -200,6 +203,7 @@ class AgentRuntimeMemoryService:
         terminal = self.runtime.proactive.mark_terminal(
             decision_id=decision, channel=channel_id, scope=channel_scope,
             source_ids=sources, session_id=session, turn_id=turn, release_identity=release,
+            terminal_outcome=terminal_outcome,
         )
         return {
             "ok": bool(feedback.get("ok")) and bool(terminal.get("ok")),

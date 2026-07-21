@@ -213,6 +213,9 @@ class OpenClawMemoryHooks:
             session_id=self._session_id_from_event(event),
             turn_id=self._first_text(event.get("turn_id"), event.get("turnId")),
             decision_id=str(event.get("decision_id") or ""),
+            injected_citations=[
+                str(item) for item in (event.get("injected_citations") or []) if str(item)
+            ],
         )
 
     def _apply_proactive_recall(
@@ -232,28 +235,41 @@ class OpenClawMemoryHooks:
             if isinstance(task_context.get("trace_context"), dict) else "",
         )
         if not session_id or not turn_id:
-            bundle.items = []
-            return {"ok": False, "bypassed": True, "reason": "missing_turn_identity"}
+            return self.runtime.proactive.mandatory_fallback(
+                channel="openclaw", scope=scope,
+                source_ids=self._proactive_source_ids(event, task_context=task_context),
+                records=[*bundle.items, *bundle.rules], query_id=turn_id or "missing-turn",
+            )
         source_ids = self._proactive_source_ids(event, task_context=task_context)
+        preliminary_plan = self._build_injection_plan(bundle=bundle, task_context=task_context)
+        plan_items = preliminary_plan.get("items") if isinstance(preliminary_plan, dict) else []
+        allowed_ids = {
+            str(item.get("record_id") or "")
+            for item in (plan_items or [])
+            if isinstance(item, dict) and str(item.get("action") or "") != "withheld"
+        }
+        proactive_bundle = RecallBundle(
+            items=[record for record in bundle.items if record.record_id in allowed_ids],
+            rules=[record for record in bundle.rules if record.record_id in allowed_ids],
+            reflections=[],
+            confidence=bundle.confidence,
+            next_action_hint=bundle.next_action_hint,
+            explanation=dict(bundle.explanation),
+        )
         try:
             decision = self.runtime.proactive.decide(
                 channel="openclaw", scope=scope, source_ids=source_ids,
                 session_id=session_id, query_id=turn_id, query=query,
                 task_type=str(task_context.get("task_type") or "openclaw.task"),
-                recall_bundle=bundle,
+                recall_bundle=proactive_bundle,
             )
         except Exception as exc:  # noqa: BLE001 - host turn must remain fail-open
-            bundle.items = []
-            return {"ok": False, "bypassed": True, "reason": type(exc).__name__}
-        selected = {
-            (str(item.get("record_id") or ""), str(item.get("source_id") or "default"))
-            for item in decision.get("items", [])
-            if isinstance(item, dict)
-        }
-        bundle.items = [
-            record for record in bundle.items
-            if (record.record_id, record.source_id) in selected
-        ]
+            fallback = self.runtime.proactive.mandatory_fallback(
+                channel="openclaw", scope=scope, source_ids=source_ids,
+                records=[*proactive_bundle.items, *proactive_bundle.rules], query_id=turn_id,
+            )
+            fallback["reason"] = type(exc).__name__
+            return fallback
         task_context["proactive_decision_id"] = str(decision.get("decision_id") or "")
         task_context["proactive_source_ids"] = list(source_ids)
         task_context["proactive_turn_id"] = turn_id
@@ -1780,6 +1796,12 @@ class OpenClawMemoryHooks:
         proactive_feedback = self._close_proactive_turn(
             event=event, end_kind=end_kind, task_context=task_context,
             user_summary=trace_query or user_phrase, assistant_summary=result,
+            terminal_outcome=self._proactive_terminal_outcome(
+                event=terminal_event,
+                outcome=outcome,
+                verification=verification,
+                end_kind=end_kind,
+            ),
         )
         return {
             "event": recorded_event,
@@ -1798,6 +1820,7 @@ class OpenClawMemoryHooks:
         task_context: dict,
         user_summary: str,
         assistant_summary: str,
+        terminal_outcome: dict[str, Any],
     ) -> dict[str, Any]:
         if end_kind not in {"agent_end", "task_end"}:
             return {"ok": True, "reason": "lifecycle_only"}
@@ -1815,6 +1838,7 @@ class OpenClawMemoryHooks:
                 channel="openclaw", scope=self._scope_from_event(event), source_ids=source_ids,
                 session_id=session_id, turn_id=turn_id,
                 used_citations=sorted(set(_PROACTIVE_CITATION.findall(assistant_summary))),
+                terminal_outcome=terminal_outcome,
             )
             completed = service.proactive_complete_turn(
                 channel="openclaw", scope=self._scope_from_event(event), source_ids=source_ids,
@@ -1824,6 +1848,32 @@ class OpenClawMemoryHooks:
             return {"ok": bool(terminal.get("ok")) and bool(completed.get("ok")), "terminal": terminal}
         except Exception as exc:  # noqa: BLE001 - terminal governance remains fail-open
             return {"ok": False, "bypassed": True, "reason": type(exc).__name__}
+
+    def _proactive_terminal_outcome(
+        self,
+        *,
+        event: dict,
+        outcome: dict,
+        verification: str,
+        end_kind: str,
+    ) -> dict[str, Any]:
+        if end_kind not in {"agent_end", "task_end"} or not str(verification or "").strip():
+            return {}
+        success = self._bool_or_none(outcome.get("success"))
+        if success is None:
+            success = self._bool_or_none(event.get("success"))
+        if success is None:
+            return {}
+        result: dict[str, Any] = {"verified": True, "success": success}
+        quality = outcome.get("quality")
+        if isinstance(quality, (int, float)) and not isinstance(quality, bool) and 0 <= float(quality) <= 1:
+            result["quality"] = float(quality)
+        latency = self._first_present(
+            event.get("duration_ms"), event.get("durationMs"), outcome.get("latency_ms")
+        )
+        if isinstance(latency, (int, float)) and not isinstance(latency, bool) and float(latency) >= 0:
+            result["latency_ms"] = float(latency)
+        return result
 
     def _should_record_terminal_outcome(self, outcome_payload: dict, *, end_kind: str) -> bool:
         if end_kind == "session_end":

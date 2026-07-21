@@ -30,7 +30,9 @@ _MAX_RECORDS_PER_KNOWLEDGE_SOURCE = 2
 _DEFAULT_BLOCKED_RECALL_LANES = ("run_log", "audit_record", "incident_report", "evolution_artifact")
 _MEMORY_USAGE_TELEMETRY_REPORT_TYPE = "memory_usage_telemetry"
 _MEMORY_USAGE_TELEMETRY_SCHEMA = "memory_usage_telemetry.v1"
-_PROACTIVE_USAGE_STATES = frozenset({"volunteered", "injected", "used", "not_used", "rejected"})
+_PROACTIVE_USAGE_STATES = frozenset(
+    {"volunteered", "injected", "used", "not_used", "suppressed", "rejected"}
+)
 _PROACTIVE_CITATION = re.compile(r"pm:[0-9a-f]{20}")
 _MEMORY_USAGE_PROMOTION_WEIGHT = 0.08
 _MEMORY_USAGE_REJECTION_WEIGHT = -0.12

@@ -920,6 +920,7 @@ function normalizeEventPayload(hook, event) {
       ...normalizeTraceFields(event),
       decision_id: String(event?.decision_id || ''),
       source_ids: normalizeStringList(event?.source_ids || event?.sourceIds),
+      injected_citations: normalizeStringList(event?.injected_citations || event?.injectedCitations),
     };
   }
   if (hook === 'message_received') {
@@ -1889,11 +1890,6 @@ async function invokeHook(api, hook, event) {
   const key = cacheKeyFor('hook', hook, payload);
   const cacheable = hook === 'before_prompt_build';
   if (cacheable) {
-    pruneHookCache();
-    const cached = hookResultCache.get(key);
-    if (cached) {
-      return cached.value;
-    }
     const inflight = hookResultInflight.get(key);
     if (inflight) {
       return await inflight;
@@ -1906,9 +1902,6 @@ async function invokeHook(api, hook, event) {
       timeout: configuredHookTimeout(api, hook, defaultHookTimeoutMs(hook)),
     });
     const parsed = JSON.parse(result.stdout || '{}');
-    if (cacheable) {
-      hookResultCache.set(key, { createdAt: nowMs(), value: parsed });
-    }
     return parsed;
   })();
   if (cacheable) {
@@ -2342,7 +2335,13 @@ module.exports.default = {
       }
       const bundle = payload.memory_bundle || {};
       const personaContext = buildPersonaGuidanceContext(payload.persona_guidance || bundle?.explanation?.persona_guidance);
-      const memoryContext = buildMemoryPrependContext(bundle, payload.injection_plan);
+      const proactiveContext = typeof payload?.proactive_recall?.context === 'string'
+        ? payload.proactive_recall.context.trim()
+        : '';
+      const hasProactiveDecision = payload.proactive_recall && typeof payload.proactive_recall === 'object';
+      const memoryContext = hasProactiveDecision
+        ? proactiveContext
+        : buildMemoryPrependContext(bundle, payload.injection_plan);
       const prependContext = [bridgeContext, personaContext, memoryContext].filter(Boolean).join('\n\n');
       if (!prependContext) {
         return {};
@@ -2357,6 +2356,9 @@ module.exports.default = {
           source_ids: Array.isArray(proactiveTaskContext.proactive_source_ids)
             ? proactiveTaskContext.proactive_source_ids
             : [],
+          injected_citations: Array.from(
+            new Set((proactiveContext.match(/pm:[0-9a-f]{20}/g) || []))
+          ),
         });
       }
       return { prependContext };

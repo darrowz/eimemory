@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import re
 import threading
 import time
 
@@ -110,6 +111,111 @@ def _service(tmp_path, records, **kwargs):
     return runtime, engine, service
 
 
+def _exact_transition(decision: dict, *, session_id: str, turn_id: str) -> dict:
+    return {
+        "decision_id": decision["decision_id"],
+        "channel": "codex",
+        "scope": BASE_SCOPE,
+        "source_ids": ["alpha"],
+        "session_id": session_id,
+        "turn_id": turn_id,
+        "release_identity": RELEASE,
+    }
+
+
+def test_review_counterexample_01_idempotent_decision_never_returns_unpersisted_items(tmp_path) -> None:
+    first_record = _record("first immutable record")
+    second_record = _record("second conflicting record")
+    runtime, engine, service = _service(tmp_path, [first_record])
+    request = {
+        "channel": "codex", "scope": BASE_SCOPE, "source_ids": ["alpha"],
+        "session_id": "idem-session", "query_id": "idem-turn",
+        "query": "Recall the immutable record",
+    }
+
+    first = service.decide(**request)
+    engine.records = [second_record]
+    service._candidate_cache.clear()
+    second = service.decide(**request)
+    stored = runtime.store.load_proactive_decision(first["decision_id"])
+
+    assert [item["record_id"] for item in first["items"]] == [first_record.record_id]
+    assert second["bypassed"] is True
+    assert second["items"] == []
+    assert [item["record_id"] for item in stored["items"]] == [first_record.record_id]
+    runtime.close()
+
+
+def test_review_counterexample_02_context_cap_persists_and_acks_only_rendered_citations(tmp_path) -> None:
+    records = [_record(f"long record {index} " + ("x" * 900)) for index in range(3)]
+    runtime, _engine, service = _service(tmp_path, records, max_context_chars=420)
+    decision = service.decide(
+        channel="codex", scope=BASE_SCOPE, source_ids=["alpha"],
+        session_id="cap-session", query_id="cap-turn", query="Recall long records",
+    )
+    rendered = set(re.findall(r"pm:[0-9a-f]{20}", decision["context"]))
+    public = {item["citation"] for item in decision["items"]}
+    assert rendered == public
+    assert 0 < len(public) < 3
+
+    ack = service.mark_injected(
+        **_exact_transition(decision, session_id="cap-session", turn_id="cap-turn"),
+        injected_citations=sorted(rendered),
+    )
+    persisted = runtime.store.load_proactive_decision(decision["decision_id"])
+    assert ack["changed"] == len(rendered)
+    assert {item["citation"] for item in persisted["items"]} == rendered
+    assert {item["state"] for item in persisted["items"]} == {"injected"}
+    runtime.close()
+
+
+def test_review_counterexample_08_mandatory_and_voluntary_items_share_one_total_max_three(tmp_path) -> None:
+    mandatory = [_record(f"mandatory {index}") for index in range(3)]
+    for record in mandatory:
+        record.tags.extend(["mandatory", "safety"])
+    voluntary = [_record(f"voluntary {index}") for index in range(3)]
+    runtime, _engine, service = _service(tmp_path, [*mandatory, *voluntary])
+    decision = service.decide(
+        channel="codex", scope=BASE_SCOPE, source_ids=["alpha"],
+        session_id="max-session", query_id="max-turn", query="Recall all safety context",
+    )
+    persisted = runtime.store.load_proactive_decision(decision["decision_id"])
+    assert len(decision["items"]) <= 3
+    assert len(persisted["items"]) <= 3
+    assert all(item["mandatory"] for item in decision["items"])
+    runtime.close()
+
+
+def test_review_counterexample_09_bundle_rules_are_mandatory_candidates(tmp_path) -> None:
+    rule = _record("Never deploy without a receipt")
+    rule.kind = "rule"
+    runtime, _engine, service = _service(tmp_path, [])
+    bundle = RecallBundle(
+        items=[], rules=[rule], reflections=[], confidence=0.9,
+        next_action_hint="", explanation={},
+    )
+    decision = service.decide(
+        channel="codex", scope=BASE_SCOPE, source_ids=["alpha"],
+        session_id="rule-session", query_id="rule-turn", query="Deploy safely",
+        recall_bundle=bundle,
+    )
+    assert [item["record_id"] for item in decision["items"]] == [rule.record_id]
+    assert decision["items"][0]["mandatory"] is True
+    assert "Never deploy without a receipt" in decision["context"]
+    runtime.close()
+
+    fallback_runtime = Runtime(RuntimeStore(tmp_path / "fallback"), recall_engine=FixedRecallEngine([]))
+    fallback = ProactiveRecallService(fallback_runtime, control_percent=0)
+    unbound = fallback.decide(
+        channel="codex", scope=BASE_SCOPE, source_ids=["alpha"],
+        session_id="rule-fallback", query_id="rule-fallback-turn", query="Deploy safely",
+        recall_bundle=bundle,
+    )
+    assert unbound["bypassed"] is True
+    assert "Never deploy without a receipt" in unbound["context"]
+    fallback_runtime.close()
+
+
 def test_turn_ledger_passes_only_latest_four_bounded_completed_summaries(tmp_path) -> None:
     runtime, engine, service = _service(tmp_path, [_record("durable recall rule")])
     for index in range(1, 6):
@@ -164,7 +270,10 @@ def test_decision_is_max_three_bounded_escaped_and_session_deduped(tmp_path) -> 
         channel="codex", scope=BASE_SCOPE, source_ids=["alpha"], session_id="session-a",
         query_id="query-a", query="Recall the important durable records",
     )
-    service.mark_injected(query_id="query-a")
+    service.mark_injected(
+        **_exact_transition(first, session_id="session-a", turn_id="query-a"),
+        injected_citations=[item["citation"] for item in first["items"]],
+    )
     second = service.decide(
         channel="codex", scope=BASE_SCOPE, source_ids=["alpha"], session_id="session-a",
         query_id="query-b", query="Recall the important durable records again",
@@ -228,7 +337,9 @@ def test_control_and_usage_state_machine_are_auditable_and_paired(tmp_path) -> N
     assert decision["control_cohort"] is True
     assert decision["context"] == ""
     assert decision["suppressed_items"]
-    service.mark_terminal(query_id="control-query")
+    service.mark_terminal(
+        **_exact_transition(decision, session_id="control-session", turn_id="control-query")
+    )
 
     treatment_runtime, _engine, treatment = _service(
         tmp_path / "treatment", [_record("treatment durable record")]
@@ -238,11 +349,14 @@ def test_control_and_usage_state_machine_are_auditable_and_paired(tmp_path) -> N
         query_id="treatment-query", query="Recall the treatment durable record",
     )
     citation = injected["items"][0]["citation"]
-    treatment.mark_injected(query_id="treatment-query")
-    treatment.record_feedback(query_id="treatment-query", used_citations=[citation])
-    treatment.mark_terminal(query_id="treatment-query", assistant_text="similar text is not evidence")
+    exact = _exact_transition(
+        injected, session_id="treatment-session", turn_id="treatment-query"
+    )
+    treatment.mark_injected(**exact, injected_citations=[citation])
+    treatment.record_feedback(**exact, used_citations=[citation])
+    treatment.mark_terminal(**exact, assistant_text="similar text is not evidence")
 
-    metrics = treatment.paired_metrics(scope=BASE_SCOPE)
+    metrics = treatment.paired_metrics(scope=BASE_SCOPE, source_ids=["alpha"])
     assert metrics["treatment"]["used"] == 1
     assert metrics["treatment"]["not_used"] == 0
     usage = treatment_runtime.store.list_records_by_meta_value(
@@ -290,9 +404,12 @@ def test_turn_ledger_and_decision_state_survive_runtime_restart(tmp_path) -> Non
     second_engine = FixedRecallEngine([_record("Zephyr durable preference")])
     second_runtime = Runtime(RuntimeStore(tmp_path), recall_engine=second_engine)
     second = ProactiveRecallService(second_runtime, release_identity=RELEASE, control_percent=0)
-    second.mark_injected(decision_id=decision["decision_id"])
+    exact = _exact_transition(decision, session_id="session-a", turn_id="turn-2")
+    second.mark_injected(
+        **exact, injected_citations=[decision["items"][0]["citation"]]
+    )
     second.record_feedback(
-        decision_id=decision["decision_id"], used_citations=[decision["items"][0]["citation"]]
+        **exact, used_citations=[decision["items"][0]["citation"]]
     )
     second.decide(
         channel="codex", scope=BASE_SCOPE, source_ids=["alpha"], session_id="session-a",
@@ -419,12 +536,16 @@ def test_transition_feedback_failure_rolls_back_state_and_is_retryable(tmp_path,
         raise OSError("injected transition outbox failure")
 
     monkeypatch.setattr(runtime.store, "_enqueue_record_exports", fail)
-    failed = service.mark_injected(decision_id=decision["decision_id"])
+    exact = _exact_transition(
+        decision, session_id="session-a", turn_id="transition-query"
+    )
+    citations = [item["citation"] for item in decision["items"]]
+    failed = service.mark_injected(**exact, injected_citations=citations)
     assert failed["ok"] is False
     assert runtime.store.load_proactive_decision(decision["decision_id"])["items"][0]["state"] == "volunteered"
 
     monkeypatch.setattr(runtime.store, "_enqueue_record_exports", original)
-    retried = service.mark_injected(decision_id=decision["decision_id"])
+    retried = service.mark_injected(**exact, injected_citations=citations)
     assert retried["ok"] is True
     assert retried["changed"] == 1
     assert runtime.store.load_proactive_decision(decision["decision_id"])["items"][0]["state"] == "injected"
@@ -447,8 +568,31 @@ def test_transition_requires_exact_channel_scope_source_session_and_release_name
         decision_id=decision["decision_id"], channel="codex", scope=BASE_SCOPE,
         source_ids=["alpha"], session_id="session-a", turn_id="namespace-query",
         release_identity=RELEASE,
+        injected_citations=[item["citation"] for item in decision["items"]],
     )
     assert accepted["ok"] is True
+    runtime.close()
+
+
+def test_review_counterexample_06_transition_rejects_missing_exact_namespace(tmp_path) -> None:
+    runtime, _engine, service = _service(tmp_path, [_record("strict namespace record")])
+    decision = service.decide(
+        channel="codex", scope=BASE_SCOPE, source_ids=["alpha"],
+        session_id="strict-session", query_id="strict-turn", query="Recall strict record",
+    )
+    citation = decision["items"][0]["citation"]
+
+    missing = service.mark_injected(
+        decision_id=decision["decision_id"], injected_citations=[citation]
+    )
+    exact = service.mark_injected(
+        **_exact_transition(decision, session_id="strict-session", turn_id="strict-turn"),
+        injected_citations=[citation],
+    )
+
+    assert missing["ok"] is False
+    assert missing["error"] == "proactive_namespace_mismatch"
+    assert exact["ok"] is True
     runtime.close()
 
 
@@ -507,22 +651,98 @@ def test_paired_metrics_require_both_control_and_treatment_for_same_pair(tmp_pat
         channel="codex", scope=BASE_SCOPE, source_ids=["alpha"], session_id="control-session",
         query_id="paired-control", query="Recall the paired durable record",
     )
-    control.mark_terminal(decision_id=control_decision["decision_id"])
+    control.mark_terminal(
+        **_exact_transition(
+            control_decision, session_id="control-session", turn_id="paired-control"
+        ),
+        terminal_outcome={"verified": True, "success": False},
+    )
     treatment = ProactiveRecallService(runtime, release_identity=RELEASE, control_percent=0)
     treatment_decision = treatment.decide(
         channel="codex", scope=BASE_SCOPE, source_ids=["alpha"], session_id="treatment-session",
         query_id="paired-treatment", query="Recall the paired durable record",
     )
     citation = treatment_decision["items"][0]["citation"]
-    treatment.mark_injected(decision_id=treatment_decision["decision_id"])
-    treatment.record_feedback(decision_id=treatment_decision["decision_id"], used_citations=[citation])
+    exact = _exact_transition(
+        treatment_decision, session_id="treatment-session", turn_id="paired-treatment"
+    )
+    treatment.mark_injected(**exact, injected_citations=[citation])
+    treatment.record_feedback(**exact, used_citations=[citation])
+    treatment.mark_terminal(
+        **exact, terminal_outcome={"verified": True, "success": True}
+    )
 
-    metrics = treatment.paired_metrics(scope=BASE_SCOPE)
+    metrics = treatment.paired_metrics(scope=BASE_SCOPE, source_ids=["alpha"])
     assert control_decision["pair_id"] == treatment_decision["pair_id"]
     assert metrics["pair_count"] == 1
-    assert metrics["pairs"][0]["control_outcome"] == "not_used"
-    assert metrics["pairs"][0]["treatment_outcome"] == "used"
-    assert metrics["used_rate_delta"] == 1.0
+    assert metrics["pairs"][0]["control_success"] is False
+    assert metrics["pairs"][0]["treatment_success"] is True
+    assert metrics["success_rate_delta"] == 1.0
+    assert metrics["used_rate_delta"] is None
+    runtime.close()
+
+
+def test_review_counterexample_04_paired_effect_requires_verified_task_outcomes(tmp_path) -> None:
+    runtime, _engine, control = _service(
+        tmp_path, [_record("outcome paired record")], control_percent=100,
+    )
+    control_decision = control.decide(
+        channel="codex", scope=BASE_SCOPE, source_ids=["alpha"],
+        session_id="outcome-control", query_id="outcome-control-turn",
+        query="Recall outcome paired record",
+    )
+    control.mark_terminal(
+        **_exact_transition(
+            control_decision, session_id="outcome-control", turn_id="outcome-control-turn"
+        )
+    )
+    treatment = ProactiveRecallService(runtime, release_identity=RELEASE, control_percent=0)
+    treatment_decision = treatment.decide(
+        channel="codex", scope=BASE_SCOPE, source_ids=["alpha"],
+        session_id="outcome-treatment", query_id="outcome-treatment-turn",
+        query="Recall outcome paired record",
+    )
+    citation = treatment_decision["items"][0]["citation"]
+    treatment.mark_injected(
+        **_exact_transition(
+            treatment_decision, session_id="outcome-treatment", turn_id="outcome-treatment-turn"
+        ),
+        injected_citations=[citation],
+    )
+    treatment.mark_terminal(
+        **_exact_transition(
+            treatment_decision, session_id="outcome-treatment", turn_id="outcome-treatment-turn"
+        )
+    )
+
+    unavailable = treatment.paired_metrics(
+        scope=BASE_SCOPE, channel="codex", source_ids=["alpha"]
+    )
+    assert unavailable["effect_available"] is False
+    assert unavailable["pair_count"] == 0
+    assert unavailable["used_rate_delta"] is None
+
+    control.mark_terminal(
+        **_exact_transition(
+            control_decision, session_id="outcome-control", turn_id="outcome-control-turn"
+        ),
+        terminal_outcome={"verified": True, "success": False, "quality": 0.4, "latency_ms": 30},
+    )
+    treatment.mark_terminal(
+        **_exact_transition(
+            treatment_decision, session_id="outcome-treatment", turn_id="outcome-treatment-turn"
+        ),
+        terminal_outcome={"verified": True, "success": True, "quality": 0.9, "latency_ms": 20},
+    )
+    available = treatment.paired_metrics(
+        scope=BASE_SCOPE, channel="codex", source_ids=["alpha"]
+    )
+    assert available["effect_available"] is True
+    assert available["pair_count"] == 1
+    assert available["success_rate_delta"] == 1.0
+    assert available["quality_delta"] == 0.5
+    assert available["latency_ms_delta"] == -10.0
+    assert available["used_rate_delta"] is None
     runtime.close()
 
 
@@ -549,6 +769,71 @@ def test_real_timeout_is_fast_bounded_and_leaves_no_worker_after_completion(tmp_
     time.sleep(0.10)
     assert not [thread for thread in threading.enumerate() if thread.name == "eimemory-proactive-recall"]
     assert len(service.bypass_diagnostics()) == 3
+    runtime.close()
+
+
+def test_review_counterexample_07_close_defers_store_shutdown_until_timed_out_worker_drains(tmp_path) -> None:
+    runtime, _engine, service = _service(
+        tmp_path, [_record("very slow record")], recall_timeout_seconds=0.01,
+    )
+    runtime.proactive = service
+    worker_finished = threading.Event()
+
+    def very_slow_recall(*_args, **_kwargs):
+        time.sleep(1.2)
+        runtime.store.list_proactive_bypasses(limit=1)
+        worker_finished.set()
+        return RecallBundle([], [], [], 0.0, "")
+
+    runtime.memory.recall = very_slow_recall
+    result = service.decide(
+        channel="codex", scope=BASE_SCOPE, source_ids=["alpha"],
+        session_id="close-session", query_id="close-turn", query="Recall very slow record",
+    )
+    assert result["bypassed"] is True
+    started = time.perf_counter()
+    runtime.close()
+    assert time.perf_counter() - started >= 1.0
+    assert worker_finished.is_set()
+    with pytest.raises(Exception):
+        runtime.store.sqlite.conn.execute("SELECT 1")
+
+
+def test_review_counterexample_12_session_dedupe_scans_more_than_512_item_rows(tmp_path) -> None:
+    runtime, _engine, service = _service(tmp_path, [], max_decisions=300)
+    exact_scope = resolve_channel_scope("codex", BASE_SCOPE)
+    source_key = service._source_digest(("alpha",))
+    for decision_index in range(200):
+        payload = {
+            "decision_id": f"pd:bulk-{decision_index:04d}",
+            "channel": "codex", "scope": exact_scope, "source_key": source_key,
+            "source_ids": ["alpha"], "session_id": "bulk-session",
+            "turn_id": f"turn-{decision_index:04d}", "query_id": f"turn-{decision_index:04d}",
+            "query_digest": f"digest-{decision_index:04d}", "query": "bulk",
+            "policy_version": service._policy_version(), "release_identity": RELEASE,
+            "release_bound": True, "control_cohort": False, "pair_id": f"pair-{decision_index:04d}",
+        }
+        items = [
+            {
+                "citation": f"pm:{decision_index:04x}{item_index:04x}".ljust(23, "0"),
+                "record_id": f"record-{decision_index:04d}-{item_index}", "source_id": "alpha",
+                "confidence": 0.9, "state": "volunteered", "mandatory": False,
+            }
+            for item_index in range(3)
+        ]
+        runtime.store.record_proactive_decision(
+            payload, items, [], max_global_decisions=300
+        )
+    refs = runtime.store.proactive_session_refs(
+        {
+            "channel": "codex", "scope": exact_scope, "source_key": source_key,
+            "session_id": "bulk-session",
+        },
+        limit=900,
+    )
+    assert len(refs) == 600
+    assert ("record-0000-0", "alpha") in refs
+    assert ("record-0199-2", "alpha") in refs
     runtime.close()
 
 

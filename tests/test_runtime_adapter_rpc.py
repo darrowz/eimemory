@@ -559,7 +559,10 @@ def test_runtime_adapter_rpc_dispatches_exact_proactive_lifecycle(tmp_path: Path
     })
     ack = bridge.handle({
         "method": "adapter.proactive_ack",
-        "params": {**common, "decision_id": "pd:rpc"},
+        "params": {
+            **common, "decision_id": "pd:rpc",
+            "injected_citations": ["pm:0123456789abcdefabcd"],
+        },
     })
     terminal = bridge.handle({
         "method": "adapter.proactive_terminal",
@@ -605,7 +608,10 @@ def test_codex_proactive_decision_closes_from_new_runtime_process_by_exact_turn(
     assert decision["context"]
     ack = first_bridge.handle({
         "method": "adapter.proactive_ack",
-        "params": {**common, "decision_id": decision["decision_id"]},
+        "params": {
+            **common, "decision_id": decision["decision_id"],
+            "injected_citations": [item["citation"] for item in decision["items"]],
+        },
     })
     assert ack["result"]["changed"] == 1
     first_runtime.close()

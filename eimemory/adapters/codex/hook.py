@@ -202,6 +202,7 @@ class CodexHookAdapter:
                 "session_id": session_id,
                 "turn_id": turn_id,
                 "decision_id": decision_id,
+                "injected_citations": sorted(set(_PROACTIVE_CITATION.findall(context))),
             },
         )
         return {
@@ -284,6 +285,7 @@ class CodexHookAdapter:
                 "session_id": session_id,
                 "turn_id": event_id,
                 "used_citations": used_citations,
+                "terminal_outcome": _verified_terminal_outcome(event),
             },
         )
         self.client.call_or_bypass(
@@ -473,6 +475,28 @@ def _bounded_redacted_text(
 def _bounded_text(value: Any, limit: int) -> str:
     text = str(value or "").strip()
     return text if len(text) <= limit else text[:limit]
+
+
+def _verified_terminal_outcome(event: Mapping[str, Any]) -> dict[str, Any]:
+    outcome = event.get("outcome") if isinstance(event.get("outcome"), Mapping) else {}
+    success = outcome.get("success") if isinstance(outcome, Mapping) else None
+    if not isinstance(success, bool):
+        success = event.get("success")
+    verification = _bounded_text(
+        (outcome.get("verification") if isinstance(outcome, Mapping) else "")
+        or event.get("verification"),
+        1_000,
+    )
+    if not isinstance(success, bool) or not verification:
+        return {}
+    result: dict[str, Any] = {"verified": True, "success": success}
+    quality = outcome.get("quality") if isinstance(outcome, Mapping) else None
+    if isinstance(quality, (int, float)) and not isinstance(quality, bool) and 0 <= float(quality) <= 1:
+        result["quality"] = float(quality)
+    latency = event.get("duration_ms", outcome.get("latency_ms") if isinstance(outcome, Mapping) else None)
+    if isinstance(latency, (int, float)) and not isinstance(latency, bool) and float(latency) >= 0:
+        result["latency_ms"] = float(latency)
+    return result
 
 
 def run_hook_from_stdio(event_name: str, *, stdin: Any = None, stdout: Any = None) -> int:

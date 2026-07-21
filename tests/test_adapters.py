@@ -68,12 +68,12 @@ def test_openclaw_authoritative_prefetch_filters_through_shared_proactive_servic
     calls: list[dict] = []
 
     class FakeProactive:
-        def close(self):
+        def close(self, **_kwargs):
             return None
 
         def decide(self, **kwargs):
             calls.append(kwargs)
-            assert kwargs["recall_bundle"] is bundle
+            assert [item.record_id for item in kwargs["recall_bundle"].items] == [keep.record_id, drop.record_id]
             return {
                 "ok": True,
                 "decision_id": "pd:openclaw-turn",
@@ -92,7 +92,7 @@ def test_openclaw_authoritative_prefetch_filters_through_shared_proactive_servic
     assert calls[0]["channel"] == "openclaw"
     assert calls[0]["session_id"] == "openclaw-session"
     assert calls[0]["query_id"] == "turn-1"
-    assert [item["record_id"] for item in result["memory_bundle"]["items"]] == [keep.record_id]
+    assert [item["record_id"] for item in result["proactive_recall"]["items"]] == [keep.record_id]
     assert result["proactive_recall"]["decision_id"] == "pd:openclaw-turn"
 
 

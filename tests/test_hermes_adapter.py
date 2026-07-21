@@ -109,6 +109,41 @@ def test_hermes_proactive_prefetch_is_acked_and_closed_by_official_llm_hooks_wit
     assert client.calls[3][1]["turn_id"] == "turn-7"
 
 
+def test_review_counterexample_10_hermes_post_hook_without_ids_closes_unique_pending_turn() -> None:
+    client = FakeClient()
+    provider = HermesMemoryProviderCore(client=client)
+    provider.initialize("hermes-session", agent_workspace="embodied", agent_context="primary")
+    provider.prefetch("Unique pending query", session_id="hermes-session")
+
+    provider.on_post_llm_call(
+        user_message="",
+        assistant_message="Used pm:abcdef0123456789abcd.",
+        session_id="hermes-session",
+        turn_id="",
+    )
+
+    terminal = next(params for method, params in client.calls if method == "adapter.proactive_terminal")
+    completed = next(params for method, params in client.calls if method == "adapter.proactive_complete_turn")
+    assert terminal["decision_id"] == "pd:hermes-turn"
+    assert terminal["used_citations"] == ["pm:abcdef0123456789abcd"]
+    assert completed["user_summary"] == "Unique pending query"
+    assert completed["turn_id"].startswith("hermes-query-")
+
+
+def test_review_counterexample_11_hermes_does_not_reuse_completed_prefetch_result() -> None:
+    client = FakeClient()
+    provider = HermesMemoryProviderCore(client=client)
+    provider.initialize("hermes-session", agent_workspace="embodied", agent_context="primary")
+
+    first = provider.prefetch("same successful query", session_id="hermes-session")
+    second = provider.prefetch("same successful query", session_id="hermes-session")
+
+    calls = [params for method, params in client.calls if method == "adapter.proactive_prefetch"]
+    assert first == second
+    assert len(calls) == 2
+    assert provider.prefetch_cache_size == 0
+
+
 def test_hermes_session_switch_clears_pending_proactive_context_and_full_namespace_cache() -> None:
     client = FakeClient()
     provider = HermesMemoryProviderCore(client=client)

@@ -1051,7 +1051,10 @@ const payload = JSON.parse(fs.readFileSync(0, 'utf8') || '{}');
 fs.appendFileSync(process.env.CAPTURE_PATH, JSON.stringify({ hook, payload }) + '\\n');
 if (hook === 'before_prompt_build') {
   process.stdout.write(JSON.stringify({
-    proactive_recall: { decision_id: 'pd:openclaw-turn' },
+    proactive_recall: {
+      decision_id: 'pd:openclaw-turn',
+      context: '<eimemory_proactive_context trust="untrusted-data">\\n{"citation":"pm:0123456789abcdefabcd","text":"Use receipt."}\\n</eimemory_proactive_context>',
+    },
     task_context: {
       proactive_turn_id: 'turn-1',
       proactive_source_ids: ['default'],
@@ -1090,7 +1093,68 @@ handlers.before_prompt_build({
     calls = [json.loads(line) for line in capture_path.read_text(encoding="utf-8").splitlines()]
     assert [call["hook"] for call in calls] == ["before_prompt_build", "proactive_injected"]
     assert calls[1]["payload"]["decision_id"] == "pd:openclaw-turn"
-    assert "Relevant eimemory context" in json.loads(result.stdout)["prependContext"]
+    assert calls[1]["payload"]["injected_citations"] == ["pm:0123456789abcdefabcd"]
+    assert "pm:0123456789abcdefabcd" in json.loads(result.stdout)["prependContext"]
+
+
+def test_review_counterexample_03_openclaw_injects_and_acks_only_shared_proactive_context(tmp_path) -> None:
+    hook_script = tmp_path / "capture-proactive-authority.js"
+    capture_path = tmp_path / "proactive-authority-calls.jsonl"
+    hook_script.write_text(
+        """
+const fs = require('node:fs');
+const hook = process.argv[2] || '';
+const payload = JSON.parse(fs.readFileSync(0, 'utf8') || '{}');
+fs.appendFileSync(process.env.CAPTURE_PATH, JSON.stringify({ hook, payload }) + '\\n');
+if (hook === 'before_prompt_build') {
+  process.stdout.write(JSON.stringify({
+    proactive_recall: {
+      decision_id: 'pd:authoritative',
+      context: '<eimemory_proactive_context trust="untrusted-data">\\n{"citation":"pm:11111111111111111111","text":"authoritative only"}\\n</eimemory_proactive_context>',
+    },
+    task_context: { proactive_turn_id: 'turn-authoritative', proactive_source_ids: ['default'] },
+    memory_bundle: {
+      items: [
+        { record_id: 'keep', source_id: 'default', title: 'Keep', summary: 'authoritative only' },
+        { record_id: 'drop', source_id: 'default', title: 'DROP-ME', summary: 'withheld secret' },
+      ], rules: [], reflections: [], confidence: 0.9, next_action_hint: '', explanation: {}
+    },
+    injection_plan: { entries: [
+      { record_id: 'keep', lane: 'context', action: 'inject' },
+      { record_id: 'drop', lane: 'context', action: 'withheld' },
+    ] },
+  }));
+} else {
+  process.stdout.write(JSON.stringify({ ok: true }));
+}
+""".strip(),
+        encoding="utf-8",
+    )
+    script = """
+const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
+const handlers = {};
+process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
+plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = handler; } });
+handlers.before_prompt_build({
+  query: 'authoritative prompt', session_id: 'sess-authoritative', turn_id: 'turn-authoritative',
+  tenant_id: 'default', agent_id: 'main', workspace_id: 'repo-x', user_id: 'darrow',
+}).then((result) => process.stdout.write(JSON.stringify(result)));
+""".strip()
+    env = os.environ.copy()
+    env["EIMEMORY_HOOK_COMMAND"] = f'node "{hook_script}"'
+    env["CAPTURE_PATH"] = str(capture_path)
+    result = subprocess.run(
+        ["node", "-e", script], cwd=Path.cwd(), env=env,
+        capture_output=True, text=True, encoding="utf-8", timeout=10, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    response = json.loads(result.stdout)
+    calls = [json.loads(line) for line in capture_path.read_text(encoding="utf-8").splitlines()]
+    assert "authoritative only" in response["prependContext"]
+    assert "DROP-ME" not in response["prependContext"]
+    assert "withheld secret" not in response["prependContext"]
+    assert calls[-1]["hook"] == "proactive_injected"
+    assert calls[-1]["payload"]["injected_citations"] == ["pm:11111111111111111111"]
 
 
 def test_cli_openclaw_hook_reports_rejected_message_without_persisting(tmp_path, monkeypatch, capsys) -> None:
@@ -1306,6 +1370,44 @@ Promise.all([handlers.before_prompt_build(event), handlers.before_prompt_build(e
     assert results[0] == results[1]
     assert "coalesced memory" in results[0]["prependContext"]
     assert calls_path.read_text(encoding="utf-8") == "1"
+
+
+def test_review_counterexample_05_openclaw_does_not_reuse_completed_prompt_decision(tmp_path) -> None:
+    hook_script = tmp_path / "no-completed-cache-hook.js"
+    calls_path = tmp_path / "no-completed-cache-count.txt"
+    hook_script.write_text(
+        """
+const fs = require('node:fs');
+fs.appendFileSync(process.env.HOOK_CALLS, '1');
+process.stdin.resume();
+process.stdin.on('end', () => process.stdout.write(JSON.stringify({
+  proactive_recall: { decision_id: '', context: '' }, memory_bundle: { items: [], rules: [], explanation: {} }
+})));
+""".strip(),
+        encoding="utf-8",
+    )
+    script = """
+process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
+const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
+const handlers = {};
+plugin.register({ config: { allowPromptInjection: true }, hooks: { on(name, handler) { handlers[name] = handler; } } });
+const event = { sessionId: 'same-session', turnId: 'same-turn', prompt: 'same prompt' };
+(async () => {
+  await handlers.before_prompt_build(event);
+  await handlers.before_prompt_build(event);
+  process.stdout.write('ok');
+})().catch((error) => { console.error(error && error.stack ? error.stack : String(error)); process.exit(1); });
+""".strip()
+    env = os.environ.copy()
+    env["EIMEMORY_HOOK_COMMAND"] = f'node "{hook_script}"'
+    env["HOOK_CALLS"] = str(calls_path)
+    result = subprocess.run(
+        ["node", "-e", script], cwd=Path.cwd(), env=env,
+        capture_output=True, text=True, timeout=10, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "ok"
+    assert calls_path.read_text(encoding="utf-8") == "11"
 
 
 def test_openclaw_js_bridge_gives_terminal_hooks_a_longer_default_timeout(tmp_path) -> None:

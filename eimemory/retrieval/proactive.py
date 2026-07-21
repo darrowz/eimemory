@@ -28,12 +28,13 @@ _MAX_TURN_SUMMARY_CHARS = 1_000
 _MAX_QUERY_CHARS = 8_000
 _MAX_VOLUNTEERED_ITEMS = 3
 _MAX_RECALL_WORKERS = 2
-_TERMINAL_STATES = frozenset({"used", "not_used", "rejected"})
+_TERMINAL_STATES = frozenset({"used", "not_used", "suppressed", "rejected"})
 _TRANSITIONS = {
-    "volunteered": frozenset({"injected", "not_used", "rejected"}),
+    "volunteered": frozenset({"injected", "not_used", "suppressed", "rejected"}),
     "injected": frozenset({"used", "not_used", "rejected"}),
     "used": frozenset({"rejected"}),
     "not_used": frozenset({"rejected"}),
+    "suppressed": frozenset(),
     "rejected": frozenset(),
 }
 _TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9_.:/-]{2,63}|[\u3400-\u9fff]{2,16}")
@@ -139,6 +140,7 @@ class ProactiveRecallService:
         self._bypasses: deque[dict[str, str]] = deque(maxlen=max(1, min(512, int(max_bypass_diagnostics))))
         self._recall_slots = BoundedSemaphore(_MAX_RECALL_WORKERS)
         self._workers: set[Thread] = set()
+        self._closing = False
         self._lock = RLock()
 
     @staticmethod
@@ -236,6 +238,13 @@ class ProactiveRecallService:
                 query_digest=query_digest,
                 reason="release_identity_unavailable",
             )
+            if recall_bundle is not None:
+                return self.mandatory_fallback(
+                    channel=channel_id, scope=exact_scope, source_ids=sources,
+                    records=[*recall_bundle.items, *recall_bundle.rules],
+                    query_id=normalized_query_id,
+                    cache_key=cache_key, release=release,
+                )
             return self._empty_decision(
                 query_id=normalized_query_id,
                 cache_key=cache_key,
@@ -287,7 +296,12 @@ class ProactiveRecallService:
                     release=release,
                     bypassed=True,
                 )
-            cached = _CachedRecall(tuple(bundle.items), dict(bundle.explanation), float(bundle.confidence))
+            unique_records: dict[tuple[str, str], RecordEnvelope] = {}
+            for record in [*bundle.items, *bundle.rules]:
+                unique_records.setdefault((record.record_id, record.source_id), record)
+            cached = _CachedRecall(
+                tuple(unique_records.values()), dict(bundle.explanation), float(bundle.confidence)
+            )
             with self._lock:
                 self._candidate_cache[cache_key] = cached
                 self._candidate_cache.move_to_end(cache_key)
@@ -312,17 +326,20 @@ class ProactiveRecallService:
                 "source_key": self._source_digest(sources),
                 "session_id": normalized_session,
             },
-            limit=self.max_decisions,
+            limit=self.max_decisions * _MAX_VOLUNTEERED_ITEMS,
         )
         with self._lock:
             session = self._session(session_key)
             dedupe_refs = persisted_refs | session.volunteered_refs
-            voluntary_details = [
+            voluntary_candidates = [
                 detail for detail in details
                 if (detail[0].record_id, detail[0].source_id) not in dedupe_refs
                 and (detail[0].record_id, detail[0].source_id) not in mandatory_refs
-            ][:_MAX_VOLUNTEERED_ITEMS]
+            ]
         mandatory_details = [(record, 1.0) for record in mandatory_records[:_MAX_VOLUNTEERED_ITEMS]]
+        voluntary_details = voluntary_candidates[
+            : max(0, _MAX_VOLUNTEERED_ITEMS - len(mandatory_details))
+        ]
         control = self._is_control(
             channel=channel_id, scope=exact_scope, session_id=normalized_session,
             query_digest=query_digest, policy_version=policy_version,
@@ -361,6 +378,16 @@ class ProactiveRecallService:
                     "mandatory": mandatory,
                 }
             )
+        mandatory_items = [item for item in public_items if item["mandatory"]]
+        voluntary_items = [item for item in public_items if not item["mandatory"]]
+        proposed_delivery = mandatory_items if control else public_items
+        context, delivered_items = self._render_context_with_items(proposed_delivery)
+        persisted_items = [*delivered_items, *(voluntary_items if control else [])]
+        persisted_citations = {str(item["citation"]) for item in persisted_items}
+        decision_items = {
+            citation: item for citation, item in decision_items.items()
+            if citation in persisted_citations
+        }
         release_bound = all(str(release.get(key) or "") for key in release)
         state = _DecisionState(
             decision_id=decision_id,
@@ -425,10 +452,6 @@ class ProactiveRecallService:
             session.volunteered_refs.update(
                 (item.record_id, item.source_id) for item in state.items.values() if not item.mandatory
             )
-        mandatory_items = [item for item in public_items if item["mandatory"]]
-        voluntary_items = [item for item in public_items if not item["mandatory"]]
-        delivered_items = mandatory_items if control else public_items
-        context = self._render_context(delivered_items)
         return {
             "ok": True,
             "bypassed": False,
@@ -449,6 +472,7 @@ class ProactiveRecallService:
         self, *, query_id: str = "", decision_id: str = "", channel: str = "",
         scope: Mapping[str, Any] | None = None, source_ids: Iterable[str] | None = None,
         session_id: str = "", turn_id: str = "", release_identity: Mapping[str, Any] | None = None,
+        injected_citations: Iterable[str] | None = None,
     ) -> dict[str, Any]:
         state = self._decision(query_id=query_id, decision_id=decision_id)
         if not self._transition_namespace_matches(
@@ -456,11 +480,17 @@ class ProactiveRecallService:
             turn_id=turn_id, release_identity=release_identity,
         ):
             return {"ok": False, "error": "proactive_namespace_mismatch", "decision_id": state.decision_id, "changed": 0}
-        targets = {
-            citation: "injected"
-            for citation, item in state.items.items()
+        requested = {str(value) for value in (injected_citations or ())}
+        injectable = {
+            citation for citation, item in state.items.items()
             if not state.control_cohort or item.mandatory
         }
+        if not requested or not requested.issubset(injectable):
+            return {
+                "ok": False, "error": "proactive_injection_set_mismatch",
+                "decision_id": state.decision_id, "changed": 0,
+            }
+        targets = {citation: "injected" for citation in requested}
         changed = self._transition_targets(state, targets)
         return {"ok": changed >= 0, "bypassed": changed < 0, "decision_id": state.decision_id, "changed": max(0, changed)}
 
@@ -508,6 +538,7 @@ class ProactiveRecallService:
         session_id: str = "",
         turn_id: str = "",
         release_identity: Mapping[str, Any] | None = None,
+        terminal_outcome: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         del assistant_text  # Similarity is never evidence of use.
         state = self._decision(query_id=query_id, decision_id=decision_id)
@@ -516,15 +547,60 @@ class ProactiveRecallService:
             turn_id=turn_id, release_identity=release_identity,
         ):
             return {"ok": False, "error": "proactive_namespace_mismatch", "decision_id": state.decision_id, "changed": 0}
+        outcome = (
+            self._validated_terminal_outcome(terminal_outcome)
+            if terminal_outcome
+            else None
+        )
         changed = self._transition_targets(
             state,
             {
-                citation: "not_used"
+                citation: (
+                    "suppressed"
+                    if state.control_cohort and not item.mandatory
+                    else "not_used"
+                )
                 for citation, item in state.items.items()
                 if item.state not in _TERMINAL_STATES
             },
         )
-        return {"ok": changed >= 0, "bypassed": changed < 0, "decision_id": state.decision_id, "changed": max(0, changed)}
+        if changed < 0:
+            return {
+                "ok": False, "bypassed": True, "decision_id": state.decision_id,
+                "changed": 0, "outcome_recorded": False,
+            }
+        outcome_recorded = False
+        if outcome is not None:
+            try:
+                self.runtime.store.record_proactive_outcome(
+                    state.decision_id,
+                    outcome,
+                    expected={
+                        "channel": state.channel,
+                        "scope": state.scope,
+                        "source_key": self._source_digest(state.source_ids),
+                        "session_id": state.session_id,
+                        "policy_version": state.policy_version,
+                        "release_identity": state.release_identity,
+                    },
+                )
+                outcome_recorded = True
+            except Exception as exc:  # noqa: BLE001 - telemetry remains fail-open
+                self._record_bypass(
+                    channel=state.channel,
+                    session_id=state.session_id,
+                    query_digest=sha256(state.query.encode("utf-8")).hexdigest(),
+                    reason=f"outcome_{type(exc).__name__}",
+                )
+                return {
+                    "ok": False, "bypassed": True, "decision_id": state.decision_id,
+                    "changed": max(0, changed), "outcome_recorded": False,
+                }
+        return {
+            "ok": changed >= 0, "bypassed": changed < 0,
+            "decision_id": state.decision_id, "changed": max(0, changed),
+            "outcome_recorded": outcome_recorded,
+        }
 
     def switch_session(
         self,
@@ -565,59 +641,113 @@ class ProactiveRecallService:
             ],
         }
 
-    def paired_metrics(self, *, scope: Mapping[str, Any], channel: str = "codex") -> dict[str, Any]:
-        exact_scope = resolve_channel_scope(channel, dict(scope))
-        records = self.runtime.store.list_records_by_meta_value(
-            kinds=["feedback"], scope=ScopeRef.from_dict(exact_scope),
-            meta_key="schema_version", meta_value="memory_usage_telemetry.v2", limit=500,
-        ) or []
-        latest: dict[tuple[str, str, str], tuple[str, bool]] = {}
-        state_order = {"volunteered": 1, "injected": 2, "used": 3, "not_used": 3, "rejected": 4}
-        for record in records:
-            pair_id = str(record.meta.get("pair_id") or "")
-            decision_id = str(record.meta.get("decision_id") or "")
-            citation = str(record.meta.get("citation") or "")
-            if pair_id and decision_id and citation:
-                candidate = str(record.meta.get("proactive_state") or "")
-                key = (pair_id, decision_id, citation)
-                prior = latest.get(key)
-                if prior is None or state_order.get(candidate, 0) > state_order.get(prior[0], 0):
-                    latest[key] = (
-                        candidate,
-                        bool(record.meta.get("control_cohort")),
-                    )
-        result: dict[str, Any] = {
-            "control": {"used": 0, "not_used": 0, "rejected": 0},
-            "treatment": {"used": 0, "not_used": 0, "rejected": 0},
-        }
-        decision_outcomes: dict[tuple[str, str, bool], list[str]] = {}
-        for (pair_id, decision_id, _citation), (state_name, control) in latest.items():
-            if state_name in _TERMINAL_STATES:
-                arm = "control" if control else "treatment"
-                result[arm][state_name] += 1
-                decision_outcomes.setdefault((pair_id, decision_id, control), []).append(state_name)
-        paired: dict[str, dict[str, str]] = {}
-        for (pair_id, _decision_id, control), outcomes in decision_outcomes.items():
-            outcome = "rejected" if "rejected" in outcomes else ("used" if "used" in outcomes else "not_used")
-            paired.setdefault(pair_id, {})["control_outcome" if control else "treatment_outcome"] = outcome
-        pairs = [
-            {"pair_id": pair_id, **arms}
-            for pair_id, arms in sorted(paired.items())
-            if {"control_outcome", "treatment_outcome"}.issubset(arms)
-        ]
-        control_used = sum(item["control_outcome"] == "used" for item in pairs)
-        treatment_used = sum(item["treatment_outcome"] == "used" for item in pairs)
-        pair_count = len(pairs)
-        result.update(
+    def paired_metrics(
+        self,
+        *,
+        scope: Mapping[str, Any],
+        channel: str = "codex",
+        source_ids: Iterable[str] | None = None,
+    ) -> dict[str, Any]:
+        """Report paired task effects only from explicit verified outcomes.
+
+        Item-use telemetry remains diagnostic.  It is never used as a proxy for
+        task success because control suppression would make that delta tautological.
+        """
+
+        if source_ids is None:
+            return self._unavailable_paired_metrics("source_ids_required")
+        channel_id = normalize_runtime_channel(channel)
+        exact_scope = resolve_channel_scope(channel_id, dict(scope))
+        sources = _source_key(source_ids)
+        release = self._current_release(exact_scope, channel=channel_id)
+        if not all(str(release.get(key) or "") for key in release):
+            return self._unavailable_paired_metrics("release_identity_unavailable")
+        decisions = self.runtime.store.list_proactive_outcomes(
             {
-                "pair_count": pair_count,
-                "pairs": pairs[:100],
-                "used_rate_delta": round(
-                    ((treatment_used - control_used) / pair_count) if pair_count else 0.0,
-                    4,
-                ),
-            }
+                "channel": channel_id,
+                "scope": exact_scope,
+                "source_key": self._source_digest(sources),
+                "policy_version": self._policy_version(),
+                **release,
+            },
+            limit=min(5_000, self.max_decisions),
         )
+        usage = {
+            "control": {state: 0 for state in ("used", "not_used", "suppressed", "rejected")},
+            "treatment": {state: 0 for state in ("used", "not_used", "suppressed", "rejected")},
+        }
+        arms: dict[str, dict[str, dict[str, Any]]] = {}
+        for decision in decisions:
+            arm = "control" if bool(decision.get("control_cohort")) else "treatment"
+            for item in decision.get("items") or []:
+                state_name = str(item.get("state") or "")
+                if state_name in usage[arm]:
+                    usage[arm][state_name] += 1
+            if (
+                decision.get("outcome_verified") is True
+                and isinstance(decision.get("outcome_success"), bool)
+                and str(decision.get("pair_id") or "")
+            ):
+                arms.setdefault(str(decision["pair_id"]), {})[arm] = decision
+        pairs: list[dict[str, Any]] = []
+        for pair_id, pair_arms in sorted(arms.items()):
+            if not {"control", "treatment"}.issubset(pair_arms):
+                continue
+            control = pair_arms["control"]
+            treatment = pair_arms["treatment"]
+            pairs.append(
+                {
+                    "pair_id": pair_id,
+                    "control_success": bool(control["outcome_success"]),
+                    "treatment_success": bool(treatment["outcome_success"]),
+                    "control_quality": control.get("outcome_quality"),
+                    "treatment_quality": treatment.get("outcome_quality"),
+                    "control_latency_ms": control.get("outcome_latency_ms"),
+                    "treatment_latency_ms": treatment.get("outcome_latency_ms"),
+                }
+            )
+        pair_count = len(pairs)
+        result: dict[str, Any] = {
+            **usage,
+            "effect_available": bool(pair_count),
+            "reason": "" if pair_count else "verified_paired_outcomes_unavailable",
+            "pair_count": pair_count,
+            "pairs": pairs[:100],
+            "used_rate_delta": None,
+            "success_rate_delta": None,
+            "quality_delta": None,
+            "latency_ms_delta": None,
+        }
+        if pair_count:
+            result["success_rate_delta"] = round(
+                (
+                    sum(item["treatment_success"] for item in pairs)
+                    - sum(item["control_success"] for item in pairs)
+                ) / pair_count,
+                4,
+            )
+            quality_pairs = [
+                item for item in pairs
+                if isinstance(item["control_quality"], (int, float))
+                and isinstance(item["treatment_quality"], (int, float))
+            ]
+            latency_pairs = [
+                item for item in pairs
+                if isinstance(item["control_latency_ms"], (int, float))
+                and isinstance(item["treatment_latency_ms"], (int, float))
+            ]
+            if quality_pairs:
+                result["quality_delta"] = round(
+                    sum(item["treatment_quality"] - item["control_quality"] for item in quality_pairs)
+                    / len(quality_pairs),
+                    4,
+                )
+            if latency_pairs:
+                result["latency_ms_delta"] = round(
+                    sum(item["treatment_latency_ms"] - item["control_latency_ms"] for item in latency_pairs)
+                    / len(latency_pairs),
+                    4,
+                )
         return result
 
     def bypass_diagnostics(self) -> list[dict[str, str]]:
@@ -627,13 +757,109 @@ class ProactiveRecallService:
             with self._lock:
                 return [dict(item) for item in self._bypasses]
 
-    def close(self) -> None:
-        """Bound shutdown so no timed-out recall keeps using a closed store."""
+    @staticmethod
+    def _unavailable_paired_metrics(reason: str) -> dict[str, Any]:
+        empty = {state: 0 for state in ("used", "not_used", "suppressed", "rejected")}
+        return {
+            "control": dict(empty), "treatment": dict(empty),
+            "effect_available": False, "reason": str(reason), "pair_count": 0,
+            "pairs": [], "used_rate_delta": None, "success_rate_delta": None,
+            "quality_delta": None, "latency_ms_delta": None,
+        }
+
+    @staticmethod
+    def _validated_terminal_outcome(value: Mapping[str, Any]) -> dict[str, Any]:
+        if value.get("verified") is not True:
+            raise ValueError("proactive task outcome must be explicitly verified")
+        if not isinstance(value.get("success"), bool):
+            raise ValueError("verified proactive task outcome success must be boolean")
+        normalized: dict[str, Any] = {
+            "verified": True,
+            "success": bool(value["success"]),
+        }
+        quality = value.get("quality")
+        if quality is not None:
+            if isinstance(quality, bool) or not isinstance(quality, (int, float)):
+                raise ValueError("proactive task outcome quality must be numeric")
+            quality_value = float(quality)
+            if not 0.0 <= quality_value <= 1.0:
+                raise ValueError("proactive task outcome quality must be within 0..1")
+            normalized["quality"] = quality_value
+        latency = value.get("latency_ms")
+        if latency is not None:
+            if isinstance(latency, bool) or not isinstance(latency, (int, float)):
+                raise ValueError("proactive task outcome latency_ms must be numeric")
+            latency_value = float(latency)
+            if latency_value < 0.0:
+                raise ValueError("proactive task outcome latency_ms must be non-negative")
+            normalized["latency_ms"] = latency_value
+        return normalized
+
+    def close(self, *, on_drained: Any | None = None) -> None:
+        """Stop admission, drain timed-out readers, then close on this thread."""
 
         with self._lock:
+            self._closing = True
             workers = tuple(self._workers)
         for worker in workers:
-            worker.join(timeout=max(1.0, self.recall_timeout_seconds))
+            worker.join()
+        if on_drained is not None:
+            on_drained()
+
+    def mandatory_fallback(
+        self,
+        *,
+        channel: str,
+        scope: Mapping[str, Any],
+        source_ids: Iterable[str] | None,
+        records: Iterable[RecordEnvelope],
+        query_id: str,
+        cache_key: str = "",
+        release: Mapping[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Render only hard policy on advisory failure, without telemetry."""
+
+        channel_id = normalize_runtime_channel(channel)
+        exact_scope = resolve_channel_scope(channel_id, dict(scope))
+        sources = _source_key(source_ids)
+        transient_id = "pf:" + sha256(
+            "\x1f".join([channel_id, *_scope_tuple(exact_scope), *sources, str(query_id)]).encode("utf-8")
+        ).hexdigest()[:32]
+        items: list[dict[str, Any]] = []
+        for rank, record in enumerate(records, start=1):
+            if len(items) >= _MAX_VOLUNTEERED_ITEMS:
+                break
+            if not self._authorized(record, exact_scope=exact_scope, source_ids=sources):
+                continue
+            if not self._is_hard_policy(record):
+                continue
+            items.append(
+                {
+                    "record_id": record.record_id,
+                    "source_id": record.source_id,
+                    "citation": self._citation(transient_id, record, rank),
+                    "confidence": 1.0,
+                    "title": _bounded_text(record.title, 240),
+                    "text": self._record_text(record),
+                    "mandatory": True,
+                }
+            )
+        context, rendered_items = self._render_context_with_items(items)
+        return {
+            "ok": True,
+            "bypassed": True,
+            "decision_id": "",
+            "query_id": str(query_id),
+            "cache_key": str(cache_key),
+            "control_cohort": False,
+            "release_identity": dict(release or {}),
+            "release_bound": False,
+            "policy_version": self._policy_version(),
+            "items": rendered_items,
+            "suppressed_items": [],
+            "context": context,
+            "reason": "mandatory_policy_fallback",
+        }
 
     def current_release(self, *, channel: str, scope: Mapping[str, Any]) -> dict[str, str]:
         channel_id = normalize_runtime_channel(channel)
@@ -662,9 +888,6 @@ class ProactiveRecallService:
         turn_id: str,
         release_identity: Mapping[str, Any] | None,
     ) -> bool:
-        supplied = bool(channel or scope is not None or session_id or turn_id or release_identity is not None)
-        if not supplied:
-            return True
         if not channel or scope is None or not session_id or not turn_id or release_identity is None:
             return False
         try:
@@ -738,6 +961,9 @@ class ProactiveRecallService:
     def _recall_with_timeout(
         self, *, query: str, scope: Mapping[str, Any], source_ids: tuple[str, ...], task_type: str
     ) -> RecallBundle:
+        with self._lock:
+            if self._closing:
+                raise RuntimeError("proactive recall is closing")
         if not self._recall_slots.acquire(blocking=False):
             raise TimeoutError("proactive recall worker capacity exhausted")
         result: list[RecallBundle] = []
@@ -767,6 +993,9 @@ class ProactiveRecallService:
 
         worker = Thread(target=run, name="eimemory-proactive-recall", daemon=True)
         with self._lock:
+            if self._closing:
+                self._recall_slots.release()
+                raise RuntimeError("proactive recall is closing")
             self._workers.add(worker)
         worker.start()
         worker.join(timeout=self.recall_timeout_seconds)
@@ -932,29 +1161,54 @@ class ProactiveRecallService:
         )
 
     def _render_context(self, items: list[dict[str, Any]]) -> str:
+        context, _rendered = self._render_context_with_items(items)
+        return context
+
+    def _render_context_with_items(
+        self, items: list[dict[str, Any]]
+    ) -> tuple[str, list[dict[str, Any]]]:
         if not items:
-            return ""
+            return "", []
         header = '<eimemory_proactive_context trust="untrusted-data">\n'
         footer = "</eimemory_proactive_context>"
         lines = [header]
+        rendered: list[dict[str, Any]] = []
         remaining = self.max_context_chars - len(header) - len(footer)
         for item in items:
             payload = {
                 "citation": item["citation"], "source_id": item["source_id"],
-                "title": item["title"], "text": item["text"],
+                "title": _bounded_text(item["title"], 80), "text": item["text"],
             }
             line = self._safe_json(payload) + "\n"
             if len(line) > remaining:
-                payload["text"] = _bounded_text(payload["text"], max(0, remaining - 180))
+                original_text = str(payload["text"])
+                payload["text"] = ""
                 line = self._safe_json(payload) + "\n"
+                if len(line) > remaining:
+                    payload["title"] = ""
+                    line = self._safe_json(payload) + "\n"
+                if len(line) <= remaining:
+                    low, high = 0, len(original_text)
+                    best = line
+                    while low <= high:
+                        middle = (low + high) // 2
+                        payload["text"] = original_text[:middle]
+                        candidate = self._safe_json(payload) + "\n"
+                        if len(candidate) <= remaining:
+                            best = candidate
+                            low = middle + 1
+                        else:
+                            high = middle - 1
+                    line = best
             if len(line) > remaining:
                 break
             lines.append(line)
+            rendered.append(item)
             remaining -= len(line)
         if len(lines) == 1:
-            return ""
+            return "", []
         lines.append(footer)
-        return "".join(lines)[: self.max_context_chars]
+        return "".join(lines)[: self.max_context_chars], rendered
 
     @staticmethod
     def _safe_json(value: Mapping[str, Any]) -> str:
@@ -967,12 +1221,10 @@ class ProactiveRecallService:
 
     def _decision(self, *, query_id: str, decision_id: str) -> _DecisionState:
         normalized_decision = str(decision_id or "").strip()
+        if not normalized_decision:
+            raise ValueError("decision_id is required for proactive state transitions")
         with self._lock:
-            if normalized_decision:
-                state = self._decisions.get(normalized_decision)
-            else:
-                matches = [state for state in self._decisions.values() if state.query_id == str(query_id or "").strip()]
-                state = matches[0] if len(matches) == 1 else None
+            state = self._decisions.get(normalized_decision)
         if state is None and normalized_decision:
             payload = self.runtime.store.load_proactive_decision(normalized_decision)
             if payload is not None:

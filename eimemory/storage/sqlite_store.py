@@ -304,6 +304,10 @@ class SqliteRecordStore:
                 control_cohort INTEGER NOT NULL,
                 pair_id TEXT NOT NULL,
                 terminal INTEGER NOT NULL DEFAULT 0,
+                outcome_success INTEGER,
+                outcome_verified INTEGER NOT NULL DEFAULT 0,
+                outcome_quality REAL,
+                outcome_latency_ms REAL,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -338,6 +342,17 @@ class SqliteRecordStore:
             );
             """
         )
+        decision_columns = {
+            str(row["name"]) for row in self.conn.execute("PRAGMA table_info(proactive_decisions)")
+        }
+        for name, definition in (
+            ("outcome_success", "INTEGER"),
+            ("outcome_verified", "INTEGER NOT NULL DEFAULT 0"),
+            ("outcome_quality", "REAL"),
+            ("outcome_latency_ms", "REAL"),
+        ):
+            if name not in decision_columns:
+                self.conn.execute(f"ALTER TABLE proactive_decisions ADD COLUMN {name} {definition}")
 
     def append_proactive_turn(
         self,
@@ -425,6 +440,24 @@ class SqliteRecordStore:
             stable = ("channel", "scope", "source_key", "session_id", "turn_id", "query_id", "query_digest", "policy_version", "release_identity", "control_cohort", "pair_id")
             if any(existing.get(key) != payload.get(key) for key in stable):
                 raise ValueError("proactive decision identity conflict")
+            requested_items = sorted(
+                (
+                    str(item.get("citation") or ""), str(item.get("record_id") or ""),
+                    normalize_source_id(item.get("source_id")), round(float(item.get("confidence") or 0.0), 6),
+                    bool(item.get("mandatory")),
+                )
+                for item in items
+            )
+            stored_items = sorted(
+                (
+                    str(item.get("citation") or ""), str(item.get("record_id") or ""),
+                    normalize_source_id(item.get("source_id")), round(float(item.get("confidence") or 0.0), 6),
+                    bool(item.get("mandatory")),
+                )
+                for item in existing.get("items", [])
+            )
+            if requested_items != stored_items:
+                raise ValueError("proactive decision item conflict")
             return existing, True
         scope = normalize_scope(payload.get("scope"))
         release = dict(payload.get("release_identity") or {})
@@ -509,6 +542,10 @@ class SqliteRecordStore:
                                  "release_session_id": str(row["release_session_id"])},
             "release_bound": bool(row["release_bound"]), "control_cohort": bool(row["control_cohort"]),
             "pair_id": str(row["pair_id"]), "terminal": bool(row["terminal"]),
+            "outcome_success": None if row["outcome_success"] is None else bool(row["outcome_success"]),
+            "outcome_verified": bool(row["outcome_verified"]),
+            "outcome_quality": None if row["outcome_quality"] is None else float(row["outcome_quality"]),
+            "outcome_latency_ms": None if row["outcome_latency_ms"] is None else float(row["outcome_latency_ms"]),
             "created_at": str(row["created_at"]), "updated_at": str(row["updated_at"]),
             "items": [dict(item) for item in item_rows],
         }
@@ -550,14 +587,14 @@ class SqliteRecordStore:
     def proactive_session_refs(self, payload: dict[str, Any], *, limit: int = 512) -> set[tuple[str, str]]:
         scope = normalize_scope(payload.get("scope"))
         rows = self.conn.execute(
-            "SELECT i.record_id,i.source_id FROM proactive_decision_items i JOIN proactive_decisions d "
+            "SELECT DISTINCT i.record_id,i.source_id FROM proactive_decision_items i JOIN proactive_decisions d "
             "ON d.decision_id=i.decision_id WHERE d.channel=? AND d.tenant_id=? AND d.agent_id=? "
             "AND d.workspace_id=? AND d.user_id=? AND d.source_key=? AND d.session_id=? "
             "ORDER BY d.created_at DESC,d.decision_id DESC LIMIT ?",
             (
                 str(payload.get("channel") or ""), scope.tenant_id, scope.agent_id, scope.workspace_id,
                 scope.user_id, str(payload.get("source_key") or ""), str(payload.get("session_id") or ""),
-                max(1, min(4096, int(limit))),
+                max(1, min(24_576, int(limit))),
             ),
         ).fetchall()
         return {(str(row["record_id"]), str(row["source_id"])) for row in rows}
@@ -577,9 +614,9 @@ class SqliteRecordStore:
             if decision.get(key) != value:
                 raise ValueError("proactive decision namespace mismatch")
         allowed = {
-            "volunteered": {"injected", "not_used", "rejected"},
+            "volunteered": {"injected", "not_used", "rejected", "suppressed"},
             "injected": {"used", "not_used", "rejected"},
-            "used": {"rejected"}, "not_used": {"rejected"}, "rejected": set(),
+            "used": {"rejected"}, "not_used": {"rejected"}, "suppressed": set(), "rejected": set(),
         }
         changed: list[dict[str, Any]] = []
         now = datetime.now(timezone.utc).isoformat()
@@ -602,7 +639,7 @@ class SqliteRecordStore:
                 raise RuntimeError("proactive transition lost an atomic compare-and-swap")
             changed.append({**item, "previous_state": current, "state": target})
         remaining = self.conn.execute(
-            "SELECT 1 FROM proactive_decision_items WHERE decision_id=? AND state NOT IN ('used','not_used','rejected') LIMIT 1",
+            "SELECT 1 FROM proactive_decision_items WHERE decision_id=? AND state NOT IN ('used','not_used','suppressed','rejected') LIMIT 1",
             (str(decision_id),),
         ).fetchone()
         self.conn.execute(
@@ -612,6 +649,59 @@ class SqliteRecordStore:
         if commit:
             self.conn.commit()
         return changed
+
+    def update_proactive_outcome(
+        self,
+        decision_id: str,
+        outcome: dict[str, Any],
+        *,
+        expected: dict[str, Any] | None = None,
+        commit: bool = True,
+    ) -> None:
+        decision = self.load_proactive_decision(decision_id)
+        if decision is None:
+            raise ValueError("exact proactive decision is required")
+        for key, value in dict(expected or {}).items():
+            if decision.get(key) != value:
+                raise ValueError("proactive decision namespace mismatch")
+        verified = bool(outcome.get("verified"))
+        success = outcome.get("success") if verified else None
+        if success is not None and not isinstance(success, bool):
+            raise ValueError("verified proactive outcome success must be boolean")
+        quality = outcome.get("quality")
+        latency = outcome.get("latency_ms")
+        self.conn.execute(
+            "UPDATE proactive_decisions SET outcome_success=?,outcome_verified=?,outcome_quality=?,"
+            "outcome_latency_ms=?,terminal=1,updated_at=? WHERE decision_id=?",
+            (
+                None if success is None else int(success), int(verified),
+                None if quality is None else float(quality),
+                None if latency is None else float(latency),
+                datetime.now(timezone.utc).isoformat(), str(decision_id),
+            ),
+        )
+        if commit:
+            self.conn.commit()
+
+    def list_proactive_outcomes(self, payload: dict[str, Any], *, limit: int = 500) -> list[dict[str, Any]]:
+        scope = normalize_scope(payload.get("scope"))
+        rows = self.conn.execute(
+            "SELECT decision_id FROM proactive_decisions WHERE channel=? AND tenant_id=? AND agent_id=? "
+            "AND workspace_id=? AND user_id=? AND source_key=? AND policy_version=? "
+            "AND release_commit=? AND release_version=? AND deployment_receipt_id=? AND release_session_id=? "
+            "ORDER BY created_at DESC,decision_id DESC LIMIT ?",
+            (
+                str(payload.get("channel") or ""), scope.tenant_id, scope.agent_id,
+                scope.workspace_id, scope.user_id, str(payload.get("source_key") or ""),
+                str(payload.get("policy_version") or ""), str(payload.get("release_commit") or ""),
+                str(payload.get("release_version") or ""), str(payload.get("deployment_receipt_id") or ""),
+                str(payload.get("release_session_id") or ""), max(1, min(5000, int(limit))),
+            ),
+        ).fetchall()
+        return [
+            decision for row in rows
+            if (decision := self.load_proactive_decision(str(row["decision_id"]))) is not None
+        ]
 
     def append_proactive_bypass(self, payload: dict[str, Any], *, max_entries: int = 64, commit: bool = True) -> None:
         self.conn.execute(
