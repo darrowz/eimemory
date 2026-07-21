@@ -15,7 +15,7 @@ from eimemory.models.records import RecallBundle, RecordEnvelope, ScopeRef
 from eimemory.models.source_partitions import DEFAULT_SOURCE_ID
 from eimemory.models.identity_aliases import normalize_identity_text
 from eimemory.raw.retrieval import authoritative_raw_payload, search_raw_chunks
-from eimemory.recall import RecallIntent, classify_recall_intent
+from eimemory.recall import RecallIntent, analyze_lexical_signal, classify_recall_intent
 from eimemory.storage.runtime_store import RuntimeStore
 
 from .contracts import (
@@ -1027,8 +1027,7 @@ class GovernedRecallEngine:
 
     @staticmethod
     def _keyword_exact_match(query: str, record: RecordEnvelope) -> bool:
-        normalized_query = normalize_identity_text(query)
-        if not normalized_query:
+        if not normalize_identity_text(query):
             return False
         bounded_text = " ".join(
             str(value or "")[:2048]
@@ -1040,7 +1039,18 @@ class GovernedRecallEngine:
                 record.content.get("excerpt") if isinstance(record.content, dict) else "",
             )
         )
-        return normalized_query in normalize_identity_text(bounded_text)
+        signal = analyze_lexical_signal(
+            query,
+            bounded_text,
+            record_kind=record.kind,
+            record_source=record.source,
+        )
+        return bool(
+            signal.exact_phrase_hits
+            or signal.token_hits
+            or signal.entity_hits
+            or signal.version_hits
+        )
 
     def _rank_component(self, items, *, score, eligible) -> list[str]:
         ranked = [item for item in items if eligible(item)]

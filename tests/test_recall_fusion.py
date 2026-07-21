@@ -481,3 +481,10 @@ def test_alias_identity_round_trips_jsonl_rebuild_and_recall_serialization(tmp_p
         after.explanation["fusion"], sort_keys=True
     )
     store.close()
+
+
+def test_keyword_exact_evidence_uses_token_boundaries_not_substrings() -> None:
+    engine = object.__new__(__import__("eimemory.retrieval.engine", fromlist=["GovernedRecallEngine"]).GovernedRecallEngine)
+    record = _record("educate retrieval")
+    assert engine._keyword_exact_match("cat", record) is False
+    assert engine._keyword_exact_match("retrieval", record) is True
