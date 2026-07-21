@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import FrozenInstanceError, asdict
+import inspect
 from typing import Any, get_type_hints
 
 import pytest
@@ -15,7 +17,7 @@ from eimemory.retrieval.contracts import (
     CandidateRequest,
     ExactScope,
 )
-from eimemory.retrieval.engine import GovernedRecallEngine
+from eimemory.retrieval.engine import GovernedRecallEngine, RecallCallbacks
 from eimemory.retrieval.sqlite_source import SQLiteCandidateSource
 from eimemory.storage.runtime_store import RuntimeStore
 
@@ -75,6 +77,33 @@ class HostileDiagnosticsSource:
                 "nested": {"body": secret * 1000},
             },
         )
+
+
+class BombHits:
+    def __init__(self, hit: CandidateHit) -> None:
+        self.hit = hit
+
+    def __iter__(self):
+        for _ in range(5000):
+            yield self.hit
+        raise RuntimeError("hits-read-past-cap")
+
+
+class BombMap(Mapping):
+    def __init__(self, cap: int, message: str) -> None:
+        self.cap = cap
+        self.message = message
+
+    def __iter__(self):
+        for index in range(self.cap):
+            yield f"key-{index}"
+        raise RuntimeError(self.message)
+
+    def __len__(self) -> int:
+        return 10**9
+
+    def __getitem__(self, key: str):
+        return {"ok": True}
 
 
 def _record(*, text: str, source_id: str = "alpha", status: str = "active", scope: ScopeRef = SCOPE) -> RecordEnvelope:
@@ -152,6 +181,22 @@ def test_candidate_batch_hard_caps_hits_and_nested_diagnostics() -> None:
     assert len(repr(batch.diagnostic_dict())) < 20_000
 
 
+def test_candidate_batch_stops_consuming_at_every_hard_boundary() -> None:
+    ref = CandidateRef(record_id="r1", scope=ExactScope.from_scope(SCOPE), source_id="alpha")
+    hit = CandidateHit(ref=ref, source_rank=1, source_score=1.0)
+
+    hits_batch = CandidateBatch(hits=BombHits(hit))  # type: ignore[arg-type]
+    top_batch = CandidateBatch(diagnostics=BombMap(12, "diagnostics-read-past-cap"))  # type: ignore[arg-type]
+    nested_batch = CandidateBatch(
+        diagnostics={"nested": BombMap(16, "nested-read-past-cap")},
+    )
+
+    assert len(hits_batch.hits) == 5000
+    assert len(top_batch.diagnostics) == 12
+    assert len(top_batch.diagnostic_dict()) == 12
+    assert len(nested_batch.diagnostic_dict()["nested"]) == 16
+
+
 def test_memory_api_is_thin_facade_over_explicit_engine_injection(tmp_path) -> None:
     store = RuntimeStore(tmp_path)
     record = store.append(_record(text="engine injection marker"))
@@ -179,6 +224,19 @@ def test_governed_engine_uses_an_explicit_typed_callback_contract() -> None:
 
     assert init_hints["callbacks"] is not Any
     assert bind_hints["callbacks"] is not Any
+    callback_methods = [
+        value
+        for name, value in RecallCallbacks.__dict__.items()
+        if name.startswith("_") and not name.startswith("__") and callable(value)
+    ]
+    assert callback_methods
+    for method in callback_methods:
+        signature = inspect.signature(method)
+        assert all(
+            parameter.kind not in {inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD}
+            for parameter in signature.parameters.values()
+        )
+        assert signature.return_annotation not in {Any, inspect.Signature.empty}
 
 
 def test_engine_sanitizes_hostile_provider_diagnostics(tmp_path) -> None:
@@ -868,6 +926,63 @@ def test_raw_api_is_authoritatively_rehydrated_before_llm_without_source_filter(
     store.close()
 
 
+def test_raw_recall_deduplicates_by_complete_exact_ref(tmp_path, monkeypatch) -> None:
+    user_scope = SCOPE
+    global_scope = ScopeRef(
+        tenant_id=SCOPE.tenant_id,
+        agent_id=SCOPE.agent_id,
+        workspace_id=SCOPE.workspace_id,
+        user_id="",
+    )
+    store = RuntimeStore(tmp_path)
+    user_record = RecordEnvelope.create(
+        kind="raw_chunk",
+        title="same id user raw",
+        summary="same id user raw",
+        content={"raw_text": "same id user raw"},
+        scope=user_scope,
+        source="raw",
+        source_id="alpha",
+    )
+    global_record = RecordEnvelope.create(
+        kind="raw_chunk",
+        title="same id global raw",
+        summary="same id global raw",
+        content={"raw_text": "same id global raw"},
+        scope=global_scope,
+        source="raw",
+        source_id="beta",
+    )
+    global_record.record_id = user_record.record_id
+    store.append(user_record)
+    store.append(global_record)
+    monkeypatch.setattr(
+        "eimemory.raw.retrieval._raw_api_search",
+        lambda *args, **kwargs: [{"record": user_record, "base_score": 1.0}],
+    )
+
+    bundle = MemoryAPI(store).recall(
+        query="same id raw",
+        scope=asdict(user_scope),
+        task_context={"recall_mode": "raw_hybrid", "source_ids": ["alpha", "beta"]},
+        limit=2,
+    )
+
+    exact_refs = {
+        (
+            item["record"]["record_id"],
+            item["record"]["source_id"],
+            item["record"]["scope"]["user_id"],
+        )
+        for item in bundle.explanation["raw_evidence"]
+    }
+    assert exact_refs == {
+        (user_record.record_id, "alpha", SCOPE.user_id),
+        (global_record.record_id, "beta", ""),
+    }
+    store.close()
+
+
 def test_projection_payload_scope_or_source_mismatch_fails_closed(tmp_path) -> None:
     store = RuntimeStore(tmp_path)
     record = store.append(_record(text="projection mismatch marker", source_id="alpha"))
@@ -979,4 +1094,124 @@ def test_governed_sqlite_default_preserves_legacy_minimum_candidate_budget(tmp_p
     )
 
     assert bundle.explanation["engine_diagnostics"]["candidate_limit"] == 360
+    store.close()
+
+
+def test_sqlite_candidate_search_rejects_projection_payload_swap(tmp_path) -> None:
+    import json
+
+    store = RuntimeStore(tmp_path)
+    canonical_scope = ScopeRef(
+        tenant_id="default",
+        agent_id="hongtu",
+        workspace_id="embodied",
+        user_id="darrow",
+    )
+    foreign_scope = ScopeRef(
+        tenant_id="default",
+        agent_id="main",
+        workspace_id="repo-x",
+        user_id="darrow",
+    )
+    canonical = _record(text="physical swap marker canonical", scope=canonical_scope, source_id="alpha")
+    foreign = _record(text="physical swap marker foreign", scope=foreign_scope, source_id="alpha")
+    foreign.record_id = canonical.record_id
+    store.append(canonical)
+    store.append(foreign)
+    store.sqlite.conn.execute(
+        "UPDATE records SET payload_json = ? "
+        "WHERE record_id = ? AND tenant_id = ? AND agent_id = ? AND workspace_id = ? AND user_id = ? AND source_id = ?",
+        (
+            json.dumps(foreign.to_dict()),
+            canonical.record_id,
+            "default",
+            "hongtu",
+            "embodied",
+            "darrow",
+            "alpha",
+        ),
+    )
+    store.sqlite.conn.commit()
+
+    batch = SQLiteCandidateSource(store).search(
+        CandidateRequest(
+            query="physical swap marker canonical",
+            scope=ExactScope.from_scope(canonical_scope),
+            kinds=("memory",),
+            source_ids=("alpha",),
+            limit=10,
+            budget=360,
+        )
+    )
+
+    assert batch.hits == ()
+    store.close()
+
+
+def test_exact_scope_fanout_preserves_joint_sqlite_top_one_ranking(tmp_path) -> None:
+    store = RuntimeStore(tmp_path)
+    user_scope = ScopeRef(tenant_id="tenant-z", agent_id="agent-z", workspace_id="workspace-z", user_id="user-z")
+    global_scope = ScopeRef(tenant_id="tenant-z", agent_id="agent-z", workspace_id="workspace-z", user_id="")
+    user = _record(text="marker peripheral detail", scope=user_scope, source_id="alpha")
+    user.meta["quality"]["salience_score"] = 0.1
+    global_exact = _record(text="marker exact target", scope=global_scope, source_id="alpha")
+    global_exact.meta["quality"]["salience_score"] = 0.99
+    store.append(user)
+    store.append(global_exact)
+    legacy, _report = store.search_with_diagnostics(
+        query="marker exact target",
+        kinds=["memory", "claim_card", "knowledge_page"],
+        scope=user_scope,
+        limit=3,
+        recall_filters={
+            "scoring_profile": "balanced",
+            "blocked_recall_lanes": ["run_log", "audit_record", "incident_report", "evolution_artifact"],
+        },
+        source_ids=["alpha"],
+    )
+
+    bundle = MemoryAPI(store).recall(
+        query="marker exact target",
+        scope=asdict(user_scope),
+        task_context={"source_ids": ["alpha"], "recall_profile": "balanced"},
+        limit=1,
+    )
+
+    assert legacy[0].record_id == global_exact.record_id
+    assert [item.record_id for item in bundle.items] == [legacy[0].record_id]
+    store.close()
+
+
+def test_default_source_allowlist_preserves_default_policy_search(tmp_path) -> None:
+    store = RuntimeStore(tmp_path)
+    store.upsert_intent_pattern(
+        {
+            "pattern": "policy default marker",
+            "default_event_type": "policy_default_event",
+            "interpreted_intent": "default policy",
+            "execution_policy": ["default action"],
+            "success_criteria": "default success",
+        },
+        scope=SCOPE,
+    )
+    memory = MemoryAPI(store)
+
+    unrestricted = memory.recall(query="policy default marker", scope=asdict(SCOPE), limit=1)
+    explicit_default = memory.recall(
+        query="policy default marker",
+        scope=asdict(SCOPE),
+        task_context={"source_ids": ["default"]},
+        limit=1,
+    )
+    explicit_alpha = memory.recall(
+        query="policy default marker",
+        scope=asdict(SCOPE),
+        task_context={"source_ids": ["alpha"]},
+        limit=1,
+    )
+
+    assert unrestricted.explanation["policy_suggestions"]
+    assert explicit_default.explanation["policy_suggestions"] == unrestricted.explanation["policy_suggestions"]
+    assert explicit_default.explanation["matched_event_type"] == "policy_default_event"
+    assert explicit_alpha.explanation["policy_suggestions"] == []
     store.close()

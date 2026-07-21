@@ -1720,6 +1720,9 @@ class SqliteRecordStore:
             if record is None:
                 blocked_counts["corrupt_record"] += 1
                 continue
+            if not self._record_matches_projection_row(record, row):
+                blocked_counts["projection_payload_mismatch"] += 1
+                continue
             if record.status != "active":
                 blocked_counts["inactive_record"] += 1
                 continue
@@ -1928,7 +1931,8 @@ class SqliteRecordStore:
             }
         placeholders = ",".join("?" for _ in ordered_keys)
         rows = self.conn.execute(
-            "SELECT storage_key, payload_json, content_text, embedding_json FROM records WHERE storage_key IN ("
+            "SELECT storage_key, record_id, tenant_id, agent_id, workspace_id, user_id, source_id, "
+            "payload_json, content_text, embedding_json FROM records WHERE storage_key IN ("
             + placeholders
             + ")",
             ordered_keys,
@@ -1967,7 +1971,8 @@ class SqliteRecordStore:
             params.extend(source_ids)
         where.append("status != 'rejected'")
         sql = (
-            "SELECT storage_key, payload_json, content_text, embedding_json FROM records WHERE "
+            "SELECT storage_key, record_id, tenant_id, agent_id, workspace_id, user_id, source_id, "
+            "payload_json, content_text, embedding_json FROM records WHERE "
             + " AND ".join(where)
             + " ORDER BY updated_at DESC LIMIT ?"
         )
@@ -4231,8 +4236,25 @@ class SqliteRecordStore:
         scope: ScopeRef | dict | None = None,
         context: dict[str, Any] | None = None,
         limit: int = 5,
+        source_ids: list[str] | tuple[str, ...] | None = None,
     ) -> dict[str, Any]:
         scope_ref = normalize_scope(scope)
+        allowed_source_ids = normalize_source_ids(source_ids)
+        if allowed_source_ids == () or (
+            allowed_source_ids is not None and DEFAULT_SOURCE_ID not in allowed_source_ids
+        ):
+            return {
+                "ok": True,
+                "query": str(user_phrase or ""),
+                "scope": {
+                    "tenant_id": scope_ref.tenant_id,
+                    "agent_id": scope_ref.agent_id,
+                    "workspace_id": scope_ref.workspace_id,
+                    "user_id": scope_ref.user_id,
+                },
+                "matched_event_type": "",
+                "policy_suggestions": [],
+            }
         max_limit = max(1, min(20, int(limit or 5)))
         context_payload = dict(context or {})
         status_values = ["active"]

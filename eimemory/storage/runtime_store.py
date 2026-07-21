@@ -402,10 +402,17 @@ class RuntimeStore:
         scope: ScopeRef | dict | None = None,
         context: dict | None = None,
         limit: int = 5,
+        source_ids: list[str] | tuple[str, ...] | None = None,
     ) -> dict:
         with self._lock:
             scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
-            return self.sqlite.search_policy(user_phrase, scope=scope_ref, context=context, limit=limit)
+            return self.sqlite.search_policy(
+                user_phrase,
+                scope=scope_ref,
+                context=context,
+                limit=limit,
+                source_ids=source_ids,
+            )
 
     def get_policy_rollout_ledger(
         self,

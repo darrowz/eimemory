@@ -8,8 +8,9 @@ from .contracts import (
     CandidateSource,
     ExactScope,
     RecallEngine,
+    RecallPipelineSnapshot,
 )
-from .engine import GovernedRecallEngine
+from .engine import GovernedRecallEngine, RecallCallbacks
 from .sqlite_source import SQLiteCandidateSource
 
 __all__ = [
@@ -20,6 +21,8 @@ __all__ = [
     "CandidateSource",
     "ExactScope",
     "GovernedRecallEngine",
+    "RecallCallbacks",
     "RecallEngine",
+    "RecallPipelineSnapshot",
     "SQLiteCandidateSource",
 ]

@@ -264,13 +264,13 @@ def _merge_candidates(
     limit: int,
 ) -> list[dict[str, Any]]:
     merged: list[dict[str, Any]] = []
-    seen: set[str] = set()
+    seen: set[tuple[str, str, str, str, str, str]] = set()
     for item in [*primary, *secondary]:
         record = _result_record(item)
-        record_id = _record_id(record)
-        if not record_id or record_id in seen:
+        record_key = _raw_key(record)
+        if not record_key[0] or record_key in seen:
             continue
-        seen.add(record_id)
+        seen.add(record_key)
         merged.append(item)
         if len(merged) >= limit:
             break
@@ -319,13 +319,13 @@ def _maybe_rerank_with_llm(
                 candidate_count=original_count,
             )
         return ranked
-    item_map: dict[str, dict[str, Any]] = {}
+    item_map: dict[str, list[dict[str, Any]]] = {}
     for item in ranked:
         item_id = _record_id(_result_record(item))
         if item_id:
-            item_map.setdefault(item_id, item)
+            item_map.setdefault(item_id, []).append(item)
     ordered: list[dict[str, Any]] = []
-    seen: set[str] = set()
+    seen: set[tuple[str, str, str, str, str, str]] = set()
 
     def _as_record_id(item: Any) -> str:
         if isinstance(item, str):
@@ -347,17 +347,19 @@ def _maybe_rerank_with_llm(
         record_id = _as_record_id(item)
         if not record_id:
             continue
-        if record_id in seen:
-            continue
         if record_id not in item_map:
             continue
-        seen.add(record_id)
-        ordered.append(item_map[record_id])
+        for candidate in item_map[record_id]:
+            record_key = _raw_key(_result_record(candidate))
+            if not record_key[0] or record_key in seen:
+                continue
+            seen.add(record_key)
+            ordered.append(candidate)
     for item in ranked:
-        record_id = _record_id(_result_record(item))
-        if not record_id or record_id in seen:
+        record_key = _raw_key(_result_record(item))
+        if not record_key[0] or record_key in seen:
             continue
-        seen.add(record_id)
+        seen.add(record_key)
         ordered.append(item)
     ordered = ordered[: min(limit, len(ordered)) if limit > 0 else len(ordered)]
     if diagnostics:
@@ -451,21 +453,22 @@ def _external_reranker(
     if not isinstance(data, list):
         return ranked
     ordered: list[dict[str, Any]] = []
-    seen: set[str] = set()
+    seen: set[tuple[str, str, str, str, str, str]] = set()
     for item in data[: max(limit, len(ranked))]:
         if not isinstance(item, dict):
             continue
         index = item.get("index")
         if isinstance(index, int) and 0 <= index < len(ranked):
-            candidate_id = _record_id(_result_record(ranked[index]))
-            if candidate_id in seen:
+            candidate_key = _raw_key(_result_record(ranked[index]))
+            if not candidate_key[0] or candidate_key in seen:
                 continue
-            seen.add(candidate_id)
+            seen.add(candidate_key)
             ordered.append(ranked[index])
     for item in ranked:
-        candidate_id = _record_id(_result_record(item))
-        if not candidate_id or candidate_id in seen:
+        candidate_key = _raw_key(_result_record(item))
+        if not candidate_key[0] or candidate_key in seen:
             continue
+        seen.add(candidate_key)
         ordered.append(item)
     return ordered[: max(1, max(1, min(len(ranked), limit)))]
 
@@ -670,7 +673,7 @@ def _expand_ranked_turn_context(
 
     ranked_records: list[dict[str, Any]] = []
     seed = ranked[: max(1, min(len(ranked), limit * 2))]
-    seen: set[str] = set()
+    seen: set[tuple[str, str, str, str, str, str]] = set()
     candidate_items: list[dict[str, Any]] = []
     for item in seed:
         _append_ranked(ranked_records, seen, item)
@@ -701,7 +704,7 @@ def _expand_ranked_turn_context(
         combined.append((score, is_neighbor, order, item))
     combined.sort(key=lambda entry: (-entry[0], entry[1], entry[2]))
     deduped: list[dict[str, Any]] = []
-    seen_items: set[str] = set()
+    seen_items: set[tuple[str, str, str, str, str, str]] = set()
     for _score, _is_neighbor, _order, item in combined:
         _append_ranked(deduped, seen_items, item)
         if len(deduped) >= max(1, limit):
@@ -736,12 +739,16 @@ def _neighbor_ranked_item(record: Any, *, parent: dict[str, Any]) -> dict[str, A
     }
 
 
-def _append_ranked(items: list[dict[str, Any]], seen: set[str], item: dict[str, Any]) -> None:
+def _append_ranked(
+    items: list[dict[str, Any]],
+    seen: set[tuple[str, str, str, str, str, str]],
+    item: dict[str, Any],
+) -> None:
     record = _result_record(item)
-    record_id = _record_id(record)
-    if not record_id or record_id in seen:
+    record_key = _raw_key(record)
+    if not record_key[0] or record_key in seen:
         return
-    seen.add(record_id)
+    seen.add(record_key)
     items.append(item)
 
 
@@ -757,6 +764,13 @@ def _record_id(record: Any) -> str:
     if isinstance(record, dict):
         return str(record.get("record_id") or record.get("id") or record.get("chunk_id") or "")
     return str(getattr(record, "record_id", getattr(record, "id", "")) or "")
+
+
+def _raw_key(record: Any) -> tuple[str, str, str, str, str, str]:
+    record_id, scope, source_id = _raw_ref(record)
+    if scope is None:
+        return (record_id, "", "", "", "", source_id)
+    return (record_id, scope.tenant_id or "default", scope.agent_id, scope.workspace_id, scope.user_id, source_id)
 
 
 def _result_base_score(result: Any) -> float:

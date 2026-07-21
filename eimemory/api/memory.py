@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
 import re
@@ -21,7 +20,7 @@ from eimemory.models.records import LinkRef, RecallBundle, RecordEnvelope, Scope
 from eimemory.recall import RecallIntent
 from eimemory.scoring import ScoreContext, evaluate_memory_score, extract_memory_score, with_score_metadata
 from eimemory.storage.runtime_store import RuntimeStore
-from eimemory.retrieval.contracts import CandidateRequest, CandidateSource, RecallEngine
+from eimemory.retrieval.contracts import CandidateRequest, CandidateSource, RecallEngine, RecallPipelineSnapshot
 from eimemory.retrieval.engine import GovernedRecallEngine
 from eimemory.retrieval.sqlite_source import SQLiteCandidateSource
 
@@ -78,19 +77,6 @@ _RECALL_LANE_MEMORY_TYPE_ALIASES = {
     "context": "task_context",
     "task_context": "task_context",
 }
-
-
-@dataclass(slots=True)
-class RecallPipelineSnapshot:
-    search_limit: int
-    raw_hybrid: bool
-    recall_profile: str
-    recall_profile_source: str
-    recall_intent_name: str
-    graph_depth: int
-    query_scope_count: int
-    report_query: bool
-    operational_recall_allowed: bool
 
 
 def _capture_warnings(score) -> list[dict[str, object]]:
@@ -331,8 +317,29 @@ class MemoryAPI:
         return self.recall_engine.recall(request)
 
     @staticmethod
-    def _pipeline_snapshot(**values: object) -> RecallPipelineSnapshot:
-        return RecallPipelineSnapshot(**values)
+    def _pipeline_snapshot(
+        *,
+        search_limit: int,
+        raw_hybrid: bool,
+        recall_profile: str,
+        recall_profile_source: str,
+        recall_intent_name: str,
+        graph_depth: int,
+        query_scope_count: int,
+        report_query: bool,
+        operational_recall_allowed: bool,
+    ) -> RecallPipelineSnapshot:
+        return RecallPipelineSnapshot(
+            search_limit=search_limit,
+            raw_hybrid=raw_hybrid,
+            recall_profile=recall_profile,
+            recall_profile_source=recall_profile_source,
+            recall_intent_name=recall_intent_name,
+            graph_depth=graph_depth,
+            query_scope_count=query_scope_count,
+            report_query=report_query,
+            operational_recall_allowed=operational_recall_allowed,
+        )
 
     @staticmethod
     def _default_blocked_recall_lanes() -> tuple[str, ...]:

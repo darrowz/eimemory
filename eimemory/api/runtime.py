@@ -1410,8 +1410,15 @@ class Runtime:
         scope: dict | None = None,
         context: dict | None = None,
         limit: int = 5,
+        source_ids: list[str] | tuple[str, ...] | None = None,
     ) -> dict:
-        return self.store.search_policy(user_phrase, scope=scope, context=context, limit=limit)
+        return self.store.search_policy(
+            user_phrase,
+            scope=scope,
+            context=context,
+            limit=limit,
+            source_ids=source_ids,
+        )
 
     def get_policy_rollout_ledger(
         self,

@@ -1,10 +1,24 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from itertools import islice
 from typing import Any, Mapping, Protocol, runtime_checkable
 
 from eimemory.models.records import RecallBundle, ScopeRef
 from eimemory.models.source_partitions import normalize_source_id, normalize_source_ids
+
+
+@dataclass(frozen=True, slots=True)
+class RecallPipelineSnapshot:
+    search_limit: int
+    raw_hybrid: bool
+    recall_profile: str
+    recall_profile_source: str
+    recall_intent_name: str
+    graph_depth: int
+    query_scope_count: int
+    report_query: bool
+    operational_recall_allowed: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,7 +166,11 @@ class CandidateHit:
         object.__setattr__(
             self,
             "evidence_hints",
-            tuple(str(item).strip()[:128] for item in self.evidence_hints if str(item).strip())[:32],
+            tuple(
+                normalized
+                for item in islice(iter(self.evidence_hints), 32)
+                if (normalized := str(item).strip()[:128])
+            ),
         )
 
     def component_dict(self) -> dict[str, Any]:
@@ -165,7 +183,7 @@ class CandidateBatch:
     diagnostics: tuple[tuple[str, Any], ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "hits", tuple(self.hits)[:5000])
+        object.__setattr__(self, "hits", tuple(islice(iter(self.hits), 5000)))
         object.__setattr__(self, "diagnostics", _freeze_bounded_pairs(self.diagnostics, max_items=12))
 
     def diagnostic_dict(self) -> dict[str, Any]:
@@ -198,32 +216,33 @@ def _freeze_pairs(value: Any, *, max_items: int | None = None) -> tuple[tuple[st
 
 def _freeze_bounded_pairs(value: Any, *, max_items: int) -> tuple[tuple[str, Any], ...]:
     if isinstance(value, _FrozenMapping):
-        pairs = list(value.items)
+        pairs = islice(value.items, max_items)
     elif isinstance(value, Mapping):
-        pairs = list(value.items())
+        pairs = islice(value.items(), max_items)
     else:
-        pairs = list(value or ())
-    return tuple((str(key)[:80], _freeze_bounded(item, depth=0)) for key, item in pairs[:max_items])
+        pairs = islice(iter(value or ()), max_items)
+    return tuple((str(key)[:80], _freeze_bounded(item, depth=0)) for key, item in pairs)
 
 
 def _freeze_bounded(value: Any, *, depth: int) -> Any:
     if depth >= 4:
         return "<truncated>"
     if isinstance(value, _FrozenMapping):
-        value = dict(value.items)
+        value = dict(islice(value.items, 16))
     elif isinstance(value, (_FrozenSequence, _FrozenSet)):
-        value = list(value.items)
+        value = list(islice(value.items, 32))
     if isinstance(value, Mapping):
         return _FrozenMapping(
             tuple(
                 (str(key)[:80], _freeze_bounded(item, depth=depth + 1))
-                for key, item in list(value.items())[:16]
+                for key, item in islice(value.items(), 16)
             )
         )
     if isinstance(value, (list, tuple)):
         return _FrozenSequence(tuple(_freeze_bounded(item, depth=depth + 1) for item in value[:32]))
     if isinstance(value, set):
-        bounded = sorted(value, key=lambda item: (type(item).__name__, str(item)[:80]))[:32]
+        bounded = list(islice(iter(value), 32))
+        bounded.sort(key=lambda item: (type(item).__name__, str(item)[:80]))
         return _FrozenSet(tuple(_freeze_bounded(item, depth=depth + 1) for item in bounded))
     if isinstance(value, str):
         return value[:512]

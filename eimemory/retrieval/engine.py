@@ -13,51 +13,150 @@ from eimemory.metadata import business_metadata
 from eimemory.models.records import RecallBundle, RecordEnvelope, ScopeRef
 from eimemory.models.source_partitions import DEFAULT_SOURCE_ID
 from eimemory.raw.retrieval import authoritative_raw_payload, search_raw_chunks
-from eimemory.recall import classify_recall_intent
+from eimemory.recall import RecallIntent, classify_recall_intent
 from eimemory.storage.runtime_store import RuntimeStore
 
-from .contracts import CandidateRequest, CandidateSource, ExactScope, freeze_value
+from .contracts import (
+    CandidateHit,
+    CandidateRequest,
+    CandidateSource,
+    ExactScope,
+    RecallPipelineSnapshot,
+    freeze_value,
+)
 from .sqlite_source import SQLiteCandidateSource
 
 
 class RecallCallbacks(Protocol):
     """Frozen callback surface required by the governed recall orchestrator."""
 
-    def _positive_int(self, *args: Any, **kwargs: Any) -> int: ...
-    def _prioritize_fast_query_scopes(self, *args: Any, **kwargs: Any) -> list[ScopeRef]: ...
-    def _resolve_recall_profile(self, *args: Any, **kwargs: Any) -> tuple[str, str]: ...
-    def _recall_profile_config(self, *args: Any, **kwargs: Any) -> dict[str, Any]: ...
-    def _source_weights(self, *args: Any, **kwargs: Any) -> dict[str, float]: ...
-    def _recall_filters_from_task_context(self, *args: Any, **kwargs: Any) -> dict[str, Any]: ...
-    def _merge_recall_intent_filters(self, *args: Any, **kwargs: Any) -> None: ...
-    def _is_report_query(self, *args: Any, **kwargs: Any) -> bool: ...
-    def _allows_operational_recall(self, *args: Any, **kwargs: Any) -> bool: ...
-    def _string_list(self, *args: Any, **kwargs: Any) -> list[str]: ...
-    def _default_blocked_recall_lanes(self, *args: Any, **kwargs: Any) -> tuple[str, ...]: ...
-    def _pipeline_snapshot(self, *args: Any, **kwargs: Any) -> Any: ...
-    def _search_kinds_for_recall_intent(self, *args: Any, **kwargs: Any) -> list[str]: ...
-    def _diagnostic_blocked_operational_counts(self, *args: Any, **kwargs: Any) -> Any: ...
-    def _filter_default_suppressed_items(self, *args: Any, **kwargs: Any) -> Any: ...
-    def _is_recallable_report_record(self, *args: Any, **kwargs: Any) -> bool: ...
-    def _is_preference_query(self, *args: Any, **kwargs: Any) -> bool: ...
-    def _is_preference_recall_candidate(self, *args: Any, **kwargs: Any) -> bool: ...
-    def _expand_graph_items(self, *args: Any, **kwargs: Any) -> list[RecordEnvelope]: ...
-    def _expand_memory_edge_items(self, *args: Any, **kwargs: Any) -> Any: ...
-    def _apply_hard_recall_filters_with_counts(self, *args: Any, **kwargs: Any) -> Any: ...
-    def _apply_online_recall_pollution_gate(self, *args: Any, **kwargs: Any) -> Any: ...
-    def _memory_usage_adjustments(self, *args: Any, **kwargs: Any) -> dict[str, Any]: ...
-    def _apply_memory_usage_feedback(self, *args: Any, **kwargs: Any) -> Any: ...
-    def _dedupe_records(self, *args: Any, **kwargs: Any) -> list[RecordEnvelope]: ...
-    def _matching_active_rule_recall_items(self, *args: Any, **kwargs: Any) -> list[RecordEnvelope]: ...
-    def _quality_summary(self, *args: Any, **kwargs: Any) -> dict[str, Any]: ...
-    def _recall_pipeline_summary(self, *args: Any, **kwargs: Any) -> dict[str, Any]: ...
-    def _recall_intent_summary(self, *args: Any, **kwargs: Any) -> dict[str, Any]: ...
-    def _scope_dict(self, *args: Any, **kwargs: Any) -> dict[str, str]: ...
-    def _scoring_for_items(self, *args: Any, **kwargs: Any) -> list[dict[str, Any]]: ...
-    def _selected_record_summaries(self, *args: Any, **kwargs: Any) -> list[dict[str, Any]]: ...
-    def _source_composition(self, *args: Any, **kwargs: Any) -> dict[str, int]: ...
-    def _memory_usage_summary(self, *args: Any, **kwargs: Any) -> dict[str, Any]: ...
-    def _event_graph_summary(self, *args: Any, **kwargs: Any) -> dict[str, Any]: ...
+    def _positive_int(self, value: object) -> int: ...
+    def _prioritize_fast_query_scopes(
+        self, scopes: list[ScopeRef], *, primary_scope: ScopeRef
+    ) -> list[ScopeRef]: ...
+    def _resolve_recall_profile(
+        self, *, task_context: dict, retrieval_policy: dict
+    ) -> tuple[str, str]: ...
+    def _recall_profile_config(self, recall_profile: str) -> dict[str, object]: ...
+    def _source_weights(self, value: object) -> dict[str, float]: ...
+    def _recall_filters_from_task_context(self, task_context: dict) -> dict[str, object]: ...
+    def _merge_recall_intent_filters(
+        self, recall_filters: dict, recall_intent: RecallIntent
+    ) -> None: ...
+    def _is_report_query(self, query: str, task_context: dict) -> bool: ...
+    def _allows_operational_recall(self, query: str, task_context: dict) -> bool: ...
+    def _string_list(self, value: object) -> list[str]: ...
+    def _default_blocked_recall_lanes(self) -> tuple[str, ...]: ...
+    def _pipeline_snapshot(
+        self,
+        *,
+        search_limit: int,
+        raw_hybrid: bool,
+        recall_profile: str,
+        recall_profile_source: str,
+        recall_intent_name: str,
+        graph_depth: int,
+        query_scope_count: int,
+        report_query: bool,
+        operational_recall_allowed: bool,
+    ) -> RecallPipelineSnapshot: ...
+    def _search_kinds_for_recall_intent(
+        self,
+        *,
+        recall_intent: RecallIntent,
+        report_query: bool,
+        operational_recall_allowed: bool = False,
+    ) -> list[str]: ...
+    def _diagnostic_blocked_operational_counts(
+        self,
+        *,
+        query: str,
+        query_scope_refs: list[ScopeRef],
+        recall_filters: dict,
+        operational_recall_allowed: bool,
+        source_ids: tuple[str, ...] | None = None,
+    ) -> Counter[str]: ...
+    def _filter_default_suppressed_items(
+        self,
+        items: list[RecordEnvelope],
+        task_context: dict,
+        *,
+        allow_operational_recall: bool,
+    ) -> tuple[list[RecordEnvelope], Counter[str]]: ...
+    def _is_recallable_report_record(self, item: RecordEnvelope) -> bool: ...
+    def _is_preference_query(
+        self,
+        query: str,
+        task_context: dict,
+        *,
+        recall_intent: RecallIntent | None = None,
+    ) -> bool: ...
+    def _is_preference_recall_candidate(self, item: RecordEnvelope, query: str) -> bool: ...
+    def _expand_graph_items(
+        self,
+        *,
+        base_items: list[RecordEnvelope],
+        scopes: list[ScopeRef],
+        graph_depth: int,
+        source_ids: tuple[str, ...] | None = None,
+    ) -> list[RecordEnvelope]: ...
+    def _expand_memory_edge_items(
+        self,
+        *,
+        base_items: list[RecordEnvelope],
+        scopes: list[ScopeRef],
+        edge_types: list[str],
+        limit: int,
+        source_ids: tuple[str, ...] | None = None,
+    ) -> tuple[list[RecordEnvelope], list[object]]: ...
+    def _apply_hard_recall_filters_with_counts(
+        self, items: list[RecordEnvelope], recall_filters: dict
+    ) -> tuple[list[RecordEnvelope], Counter[str]]: ...
+    def _apply_online_recall_pollution_gate(
+        self, items: list[RecordEnvelope], *, allow_operational_recall: bool
+    ) -> tuple[list[RecordEnvelope], Counter[str]]: ...
+    def _memory_usage_adjustments(
+        self, scope: ScopeRef, *, source_ids: tuple[str, ...] | None = None
+    ) -> dict[str, dict[str, object]]: ...
+    def _apply_memory_usage_feedback(
+        self, items: list[RecordEnvelope], adjustments: dict[str, dict[str, object]]
+    ) -> list[RecordEnvelope]: ...
+    def _dedupe_records(self, items: list[RecordEnvelope]) -> list[RecordEnvelope]: ...
+    def _matching_active_rule_recall_items(
+        self,
+        *,
+        active_rules: list[RecordEnvelope],
+        query: str,
+        recall_intent: RecallIntent,
+        limit: int,
+    ) -> list[RecordEnvelope]: ...
+    def _quality_summary(self, items: list[RecordEnvelope]) -> dict[str, object]: ...
+    def _recall_pipeline_summary(
+        self,
+        snapshot: RecallPipelineSnapshot,
+        *,
+        retrieved_count: int,
+        candidate_count: int,
+        selected_count: int,
+        blocked_counts: Counter[str],
+    ) -> dict[str, object]: ...
+    def _recall_intent_summary(self, recall_intent: RecallIntent) -> dict[str, object]: ...
+    def _scope_dict(self, scope: ScopeRef) -> dict[str, str]: ...
+    def _scoring_for_items(
+        self,
+        items: list[RecordEnvelope],
+        search_report: dict,
+        *,
+        memory_usage_adjustments: dict[str, dict[str, object]] | None = None,
+    ) -> list[dict[str, object]]: ...
+    def _selected_record_summaries(self, items: list[RecordEnvelope]) -> list[dict[str, object]]: ...
+    def _source_composition(self, items: list[RecordEnvelope]) -> dict[str, object]: ...
+    def _memory_usage_summary(
+        self, items: list[RecordEnvelope], adjustments: dict[str, dict[str, object]]
+    ) -> dict[str, object]: ...
+    def _event_graph_summary(
+        self, items: list[RecordEnvelope], edges: list[object]
+    ) -> dict[str, object]: ...
 
 
 class GovernedRecallEngine:
@@ -182,14 +281,13 @@ class GovernedRecallEngine:
                 scope=policy_scope_ref,
                 source_ids=source_ids,
             )
-        policy_search = {"policy_suggestions": [], "matched_event_type": ""}
-        if source_ids is None:
-            policy_search = self.store.search_policy(
-                normalized_query,
-                scope=policy_scope_ref,
-                context=task_context,
-                limit=5,
-            )
+        policy_search = self.store.search_policy(
+            normalized_query,
+            scope=policy_scope_ref,
+            context=task_context,
+            limit=5,
+            source_ids=source_ids,
+        )
         retrieval_policy = dict(active_policy.get("retrieval_policy") or {})
         recall_profile, recall_profile_source = memory._resolve_recall_profile(
             task_context=task_context,
@@ -240,7 +338,7 @@ class GovernedRecallEngine:
         engine_drops: Counter[str] = Counter()
         raw_evidence: list[dict] = []
         if raw_hybrid and source_ids != ():
-            seen_raw_ids: set[str] = set()
+            seen_raw_refs: set[tuple[str, ExactScope, str]] = set()
             for query_scope_ref in query_scope_refs:
                 for evidence in search_raw_chunks(
                     self.store,
@@ -278,9 +376,10 @@ class GovernedRecallEngine:
                     ):
                         engine_drops["raw_not_authoritative"] += 1
                         continue
-                    if record_id in seen_raw_ids:
+                    raw_ref_key = (record_id, raw_scope, raw_source_id)
+                    if raw_ref_key in seen_raw_refs:
                         continue
-                    seen_raw_ids.add(record_id)
+                    seen_raw_refs.add(raw_ref_key)
                     safe_evidence = {
                         "record": authoritative_raw_payload(raw_record),
                         "base_score": self._safe_float(evidence.get("base_score")),
@@ -314,7 +413,8 @@ class GovernedRecallEngine:
         )
         source_reports: list[dict[str, Any]] = []
         scored_items: list[dict[str, Any]] = []
-        for query_scope_ref in candidate_scope_refs:
+        pending_hits: list[tuple[CandidateRequest, int, int, CandidateHit]] = []
+        for scope_index, query_scope_ref in enumerate(candidate_scope_refs):
             source_request = replace(
                 request,
                 scope=ExactScope.from_scope(query_scope_ref),
@@ -334,40 +434,52 @@ class GovernedRecallEngine:
             bounded_hits = indexed_hits[: source_request.limit]
             if len(indexed_hits) > len(bounded_hits):
                 engine_drops["provider_over_limit"] += len(indexed_hits) - len(bounded_hits)
-            for _provider_index, hit in bounded_hits:
-                candidate_key = (hit.ref.record_id, hit.ref.scope, hit.ref.source_id)
-                if candidate_key in seen_candidate_refs:
-                    continue
-                seen_candidate_refs.add(candidate_key)
-                if hit.ref.scope not in authorized_exact_scopes:
-                    engine_drops["scope_not_allowed"] += 1
-                    continue
-                if source_ids is not None and hit.ref.source_id not in source_ids:
-                    engine_drops["source_not_allowed"] += 1
-                    continue
-                record = self.store.get_by_exact_ref(
-                    hit.ref.record_id,
-                    scope=hit.ref.scope.to_scope_ref(),
-                    source_id=hit.ref.source_id,
-                )
-                if record is None:
-                    engine_drops["missing_or_corrupt_record"] += 1
-                    continue
-                if not self._record_matches_ref(record, hit.ref):
-                    engine_drops["ref_mismatch"] += 1
-                    continue
-                if record.status != "active":
-                    engine_drops["inactive_record"] += 1
-                    continue
-                if source_request.kinds and record.kind not in source_request.kinds:
-                    engine_drops["kind_not_allowed"] += 1
-                    continue
-                record_key = self._record_key(record)
-                if record_key in seen_item_refs:
-                    continue
-                seen_item_refs.add(record_key)
-                items.append(record)
-                scored_items.append({"record_id": record.record_id, **hit.component_dict()})
+            pending_hits.extend(
+                (source_request, scope_index, provider_index, hit)
+                for provider_index, hit in bounded_hits
+            )
+        pending_hits.sort(
+            key=lambda entry: (
+                -self._safe_float(entry[3].source_score),
+                entry[3].source_rank,
+                entry[1],
+                entry[2],
+            )
+        )
+        for source_request, _scope_index, _provider_index, hit in pending_hits:
+            candidate_key = (hit.ref.record_id, hit.ref.scope, hit.ref.source_id)
+            if candidate_key in seen_candidate_refs:
+                continue
+            seen_candidate_refs.add(candidate_key)
+            if hit.ref.scope not in authorized_exact_scopes:
+                engine_drops["scope_not_allowed"] += 1
+                continue
+            if source_ids is not None and hit.ref.source_id not in source_ids:
+                engine_drops["source_not_allowed"] += 1
+                continue
+            record = self.store.get_by_exact_ref(
+                hit.ref.record_id,
+                scope=hit.ref.scope.to_scope_ref(),
+                source_id=hit.ref.source_id,
+            )
+            if record is None:
+                engine_drops["missing_or_corrupt_record"] += 1
+                continue
+            if not self._record_matches_ref(record, hit.ref):
+                engine_drops["ref_mismatch"] += 1
+                continue
+            if record.status != "active":
+                engine_drops["inactive_record"] += 1
+                continue
+            if source_request.kinds and record.kind not in source_request.kinds:
+                engine_drops["kind_not_allowed"] += 1
+                continue
+            record_key = self._record_key(record)
+            if record_key in seen_item_refs:
+                continue
+            seen_item_refs.add(record_key)
+            items.append(record)
+            scored_items.append({"record_id": record.record_id, **hit.component_dict()})
         search_report = self._merge_source_reports(source_reports, scored_items=scored_items)
         blocked_counts: Counter[str] = Counter(dict(search_report.get("blocked_counts") or {}))
         diagnostic_blocked_counts = memory._diagnostic_blocked_operational_counts(
