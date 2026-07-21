@@ -646,20 +646,40 @@ def test_page_pool_key_is_collision_safe_for_long_and_raw_identifiers() -> None:
     assert page_pool_key(raw_left) != page_pool_key(raw_right)
 
 
-def test_actual_alias_query_uses_covering_alias_index_without_temp_sort(tmp_path) -> None:
+@pytest.mark.parametrize(
+    ("kinds", "source_ids"),
+    [
+        (["memory"], ["alpha"]),
+        (["memory"], ["alpha", "beta"]),
+        (None, ["alpha"]),
+        (None, ["alpha", "beta"]),
+        (["memory"], None),
+        (None, None),
+    ],
+)
+def test_actual_alias_query_uses_covering_alias_index_without_temp_sort(
+    tmp_path,
+    kinds: list[str] | None,
+    source_ids: list[str] | None,
+) -> None:
     store = RuntimeStore(tmp_path)
     store.append(_record("plan title", aliases=["plan alias"]))
     traced: list[str] = []
     store.sqlite.conn.set_trace_callback(traced.append)
     store.sqlite.search_identity_candidates(
-        query="plan alias", kinds=["memory"], scope=SCOPE, limit=5, source_ids=["alpha"]
+        query="plan alias", kinds=kinds, scope=SCOPE, limit=5, source_ids=source_ids
     )
     store.sqlite.conn.set_trace_callback(None)
     alias_sql = next(sql for sql in traced if "FROM recall_alias_index a" in sql)
-    plan = store.sqlite.conn.execute("EXPLAIN QUERY PLAN " + alias_sql).fetchall()
-    details = [str(row[3]) for row in plan]
-    assert any("idx_recall_alias_exact" in detail for detail in details)
-    assert not any("SCAN i" in detail or "TEMP B-TREE" in detail for detail in details)
+    title_sql = next(sql for sql in traced if "FROM recall_index i INDEXED BY idx_recall_title_exact" in sql)
+    for sql, expected_index in (
+        (alias_sql, "idx_recall_alias_exact"),
+        (title_sql, "idx_recall_title_exact"),
+    ):
+        plan = store.sqlite.conn.execute("EXPLAIN QUERY PLAN " + sql).fetchall()
+        details = [str(row[3]) for row in plan]
+        assert any(expected_index in detail for detail in details)
+        assert not any("SCAN i" in detail or "TEMP B-TREE" in detail for detail in details)
     store.close()
 
 
@@ -679,10 +699,14 @@ def test_alias_query_uses_explicit_stable_order_before_bounded_limit(tmp_path) -
     )
     store.sqlite.conn.set_trace_callback(None)
     alias_sql = next(sql for sql in traced if "FROM recall_alias_index a" in sql)
-    assert "ORDER BY a.source_id, a.status, a.kind, a.storage_key" in alias_sql
+    assert (
+        "ORDER BY a.tenant_id, a.agent_id, a.workspace_id, a.user_id, a.normalized_alias, "
+        "a.status, a.kind, a.source_id, a.storage_key"
+    ) in alias_sql
     assert [(row["source_id"], row["storage_key"]) for row in first] == [
         (row["source_id"], row["storage_key"]) for row in second
     ]
+    assert [row["source_id"] for row in first] == ["alpha", "alpha"]
     store.close()
 
 
