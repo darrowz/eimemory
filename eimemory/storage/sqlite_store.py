@@ -620,6 +620,32 @@ class SqliteRecordStore:
         ).fetchone()
         return None if row is None else self.load_proactive_decision(str(row["decision_id"]))
 
+    def list_stale_proactive_decisions(
+        self,
+        payload: dict[str, Any],
+        *,
+        before_created_at: str,
+        limit: int = 64,
+    ) -> list[dict[str, Any]]:
+        """List expired nonterminal decisions in one authoritative namespace."""
+
+        scope = normalize_scope(payload.get("scope"))
+        rows = self.conn.execute(
+            "SELECT decision_id FROM proactive_decisions WHERE channel=? AND tenant_id=? "
+            "AND agent_id=? AND workspace_id=? AND user_id=? AND source_key=? "
+            "AND terminal=0 AND created_at<? ORDER BY created_at,decision_id LIMIT ?",
+            (
+                str(payload.get("channel") or ""), scope.tenant_id, scope.agent_id,
+                scope.workspace_id, scope.user_id, str(payload.get("source_key") or ""),
+                str(before_created_at or ""), max(1, min(512, int(limit))),
+            ),
+        ).fetchall()
+        return [
+            decision
+            for row in rows
+            if (decision := self.load_proactive_decision(str(row["decision_id"]))) is not None
+        ]
+
     def proactive_session_refs(self, payload: dict[str, Any], *, limit: int = 512) -> set[tuple[str, str]]:
         scope = normalize_scope(payload.get("scope"))
         rows = self.conn.execute(

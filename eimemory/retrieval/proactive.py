@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import OrderedDict, deque
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import json
 import re
@@ -23,6 +24,7 @@ DEFAULT_MAX_DECISIONS = 512
 DEFAULT_MAX_CACHE_ENTRIES = 128
 DEFAULT_MAX_BYPASS_DIAGNOSTICS = 64
 DEFAULT_RECALL_TIMEOUT_SECONDS = 0.8
+DEFAULT_STALE_DECISION_SECONDS = 86_400
 _MAX_TURNS_PER_SESSION = 4
 _MAX_TURN_SUMMARY_CHARS = 1_000
 _MAX_QUERY_CHARS = 8_000
@@ -124,6 +126,7 @@ class ProactiveRecallService:
         max_cache_entries: int = DEFAULT_MAX_CACHE_ENTRIES,
         max_bypass_diagnostics: int = DEFAULT_MAX_BYPASS_DIAGNOSTICS,
         recall_timeout_seconds: float = DEFAULT_RECALL_TIMEOUT_SECONDS,
+        stale_decision_seconds: float = DEFAULT_STALE_DECISION_SECONDS,
     ) -> None:
         self.runtime = runtime
         self._release_override = self._normalize_release(release_identity or {})
@@ -134,6 +137,7 @@ class ProactiveRecallService:
         self.max_decisions = max(1, min(8_192, int(max_decisions)))
         self.max_cache_entries = max(1, min(2_048, int(max_cache_entries)))
         self.recall_timeout_seconds = max(0.01, min(10.0, float(recall_timeout_seconds)))
+        self.stale_decision_seconds = max(1.0, min(604_800.0, float(stale_decision_seconds)))
         self._sessions: OrderedDict[tuple[Any, ...], _SessionState] = OrderedDict()
         self._decisions: OrderedDict[str, _DecisionState] = OrderedDict()
         self._candidate_cache: OrderedDict[str, _CachedRecall | tuple[RecordEnvelope, ...]] = OrderedDict()
@@ -287,6 +291,11 @@ class ProactiveRecallService:
                     "release_identity": release,
                 },
             )
+        self.reconcile_stale(
+            channel=channel_id,
+            scope=exact_scope,
+            source_ids=sources,
+        )
         session_key = self._session_key(channel_id, exact_scope, sources, normalized_session)
         persisted_turns = self.runtime.store.load_proactive_turns(
             {
@@ -686,6 +695,67 @@ class ProactiveRecallService:
             "decision_id": state.decision_id, "changed": max(0, changed),
             "outcome_recorded": outcome_recorded,
         }
+
+    def reconcile_stale(
+        self,
+        *,
+        channel: str,
+        scope: Mapping[str, Any],
+        source_ids: Iterable[str] | None,
+        limit: int = 64,
+    ) -> dict[str, Any]:
+        """Close expired authoritative decisions after a client-side crash.
+
+        The SQLite decision ledger remains the only authority.  Client retry
+        queues merely accelerate delivery; after the lease, a later service
+        call deterministically converts every unfinished item to not-used (or
+        control-suppressed) through the normal transition/feedback contract.
+        """
+
+        channel_id = normalize_runtime_channel(channel)
+        exact_scope = resolve_channel_scope(channel_id, dict(scope))
+        raw_sources = None if source_ids is None else tuple(source_ids)
+        sources = ("*",) if raw_sources == ("*",) else _source_key(raw_sources)
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(seconds=self.stale_decision_seconds)
+        ).isoformat()
+        stale = self.runtime.store.list_stale_proactive_decisions(
+            {
+                "channel": channel_id,
+                "scope": exact_scope,
+                "source_key": self._source_digest(sources),
+            },
+            before_created_at=cutoff,
+            limit=max(1, min(512, int(limit))),
+        )
+        closed = 0
+        failed = 0
+        for decision in stale:
+            try:
+                decision_sources = tuple(decision.get("source_ids") or sources)
+                result = self.mark_terminal(
+                    decision_id=str(decision.get("decision_id") or ""),
+                    channel=str(decision.get("channel") or channel_id),
+                    scope=dict(decision.get("scope") or exact_scope),
+                    source_ids=None if decision_sources == ("*",) else list(decision_sources),
+                    session_id=str(decision.get("session_id") or ""),
+                    turn_id=str(decision.get("turn_id") or ""),
+                    release_identity=dict(decision.get("release_identity") or {}),
+                    terminal_outcome=None,
+                )
+                if result.get("ok") is True:
+                    closed += 1
+                else:
+                    failed += 1
+            except Exception as exc:  # noqa: BLE001 - reconciliation is fail-open
+                failed += 1
+                self._record_bypass(
+                    channel=channel_id,
+                    session_id=str(decision.get("session_id") or "reconcile"),
+                    query_digest=str(decision.get("query_digest") or ""),
+                    reason=f"reconcile_{type(exc).__name__}",
+                )
+        return {"ok": failed == 0, "examined": len(stale), "closed": closed, "failed": failed}
 
     def switch_session(
         self,

@@ -37,6 +37,37 @@ class FakeClient:
         return {"ok": True, "bypassed": False, "result": {"stored": True}}
 
 
+class FlakyTerminalClient(FakeClient):
+    def __init__(self, *, terminal_available: bool = False, failures_remaining: int = 0) -> None:
+        super().__init__()
+        self.terminal_available = terminal_available
+        self.failures_remaining = failures_remaining
+        self.prefetch_count = 0
+
+    def call_or_bypass(self, method: str, params: dict) -> dict:
+        if method == "adapter.proactive_prefetch":
+            self.calls.append((method, params))
+            self.prefetch_count += 1
+            return {
+                "ok": True,
+                "bypassed": False,
+                "result": {
+                    "decision_id": f"pd:hermes-turn-{self.prefetch_count}",
+                    "context": "Untrusted eimemory context:\n"
+                    "[{\"citation\":\"pm:abcdef0123456789abcd\"}]",
+                },
+            }
+        if method == "adapter.proactive_terminal":
+            self.calls.append((method, params))
+            if self.failures_remaining > 0:
+                self.failures_remaining -= 1
+                return {"ok": False, "bypassed": True, "error": "adapter_unavailable"}
+            if not self.terminal_available:
+                return {"ok": False, "bypassed": True, "error": "adapter_unavailable"}
+            return {"ok": True, "bypassed": False, "result": {"ok": True, "changed": 1}}
+        return super().call_or_bypass(method, params)
+
+
 def test_hermes_provider_lifecycle_is_channel_local_and_flushes_bounded_writes(tmp_path: Path) -> None:
     client = FakeClient()
     provider = HermesMemoryProviderCore(client=client)
@@ -255,6 +286,93 @@ def test_hermes_reset_reinitialize_and_shutdown_terminalize_foreground_pending()
         assert len(terminals) == 1
         assert terminals[0]["session_id"] == "session-a"
         assert terminals[0]["used_citations"] == []
+
+
+def test_hermes_abandoned_terminal_retry_is_retained_until_the_next_hook_succeeds(
+    tmp_path: Path,
+) -> None:
+    client = FlakyTerminalClient(terminal_available=True, failures_remaining=1)
+    provider = HermesMemoryProviderCore(client=client, max_prefetch_cache_entries=1)
+    provider.initialize(
+        "session-a", hermes_home=str(tmp_path), agent_workspace="embodied", agent_context="primary"
+    )
+    provider.prefetch("first pending query", session_id="session-a")
+    provider.prefetch("second pending query", session_id="session-a")
+
+    assert provider.pending_terminal_retry_count == 1
+
+    provider.on_pre_llm_call(
+        user_message="second pending query", session_id="session-a", turn_id="turn-2"
+    )
+
+    terminal_calls = [params for method, params in client.calls if method == "adapter.proactive_terminal"]
+    assert len(terminal_calls) == 2
+    assert {params["decision_id"] for params in terminal_calls} == {"pd:hermes-turn-1"}
+    assert provider.pending_terminal_retry_count == 0
+
+
+def test_hermes_post_hook_retains_used_feedback_terminal_until_transport_recovers(
+    tmp_path: Path,
+) -> None:
+    client = FlakyTerminalClient(terminal_available=False)
+    provider = HermesMemoryProviderCore(client=client)
+    provider.initialize(
+        "session-a", hermes_home=str(tmp_path), agent_workspace="embodied", agent_context="primary"
+    )
+    provider.prefetch("query with cited memory", session_id="session-a")
+
+    provider.on_post_llm_call(
+        user_message="query with cited memory",
+        assistant_message="Used [pm:abcdef0123456789abcd].",
+        session_id="session-a",
+        turn_id="host-turn",
+    )
+    assert provider.pending_terminal_retry_count == 1
+
+    client.terminal_available = True
+    provider.on_pre_llm_call(
+        user_message="next ordinary hook", session_id="session-a", turn_id="next-turn"
+    )
+
+    retried = [
+        params for method, params in client.calls
+        if method == "adapter.proactive_terminal" and params["decision_id"] == "pd:hermes-turn-1"
+    ]
+    assert len(retried) == 2
+    assert retried[-1]["used_citations"] == ["pm:abcdef0123456789abcd"]
+    assert provider.pending_terminal_retry_count == 0
+
+
+def test_hermes_continuous_terminal_failure_is_retained_and_blocks_new_prefetch(
+    tmp_path: Path,
+) -> None:
+    failing = FlakyTerminalClient(terminal_available=False)
+    provider = HermesMemoryProviderCore(client=failing, max_prefetch_cache_entries=1)
+    provider.initialize(
+        "session-a", hermes_home=str(tmp_path), agent_workspace="embodied", agent_context="primary"
+    )
+    provider.prefetch("first pending query", session_id="session-a")
+    provider.prefetch("second pending query", session_id="session-a")
+    assert provider.pending_terminal_retry_count == 1
+
+    assert provider.prefetch("must be blocked", session_id="session-a") == ""
+    assert failing.prefetch_count == 2
+    provider.shutdown()
+    assert provider.pending_terminal_retry_count == 2
+
+    failing.terminal_available = True
+    provider.initialize(
+        "session-b", hermes_home=str(tmp_path), agent_workspace="embodied", agent_context="primary"
+    )
+
+    terminal_calls = [
+        params for method, params in failing.calls if method == "adapter.proactive_terminal"
+    ]
+    assert {params["decision_id"] for params in terminal_calls[-2:]} == {
+        "pd:hermes-turn-1",
+        "pd:hermes-turn-2",
+    }
+    assert provider.pending_terminal_retry_count == 0
 
 
 def test_hermes_provider_exposes_only_closed_loop_tools_and_rejects_unbound_terminal() -> None:

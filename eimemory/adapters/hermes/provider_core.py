@@ -60,6 +60,8 @@ class HermesMemoryProviderCore:
         self._max_prefetch_cache_entries = max(1, min(128, int(max_prefetch_cache_entries)))
         self._write_queue: deque[tuple[str, dict[str, Any]]] = deque()
         self._pending_proactive: OrderedDict[tuple[str, ...], dict[str, Any]] = OrderedDict()
+        self._pending_terminal_retries: OrderedDict[str, dict[str, Any]] = OrderedDict()
+        self._max_terminal_retries = self._max_prefetch_cache_entries * 2
         self._lock = threading.RLock()
         self._write_thread: threading.Thread | None = None
         self._prefetch_thread: threading.Thread | None = None
@@ -96,6 +98,11 @@ class HermesMemoryProviderCore:
         with self._lock:
             return self._dropped_write_count
 
+    @property
+    def pending_terminal_retry_count(self) -> int:
+        with self._lock:
+            return len(self._pending_terminal_retries)
+
     def is_available(self) -> bool:
         if self._client_injected:
             return True
@@ -114,6 +121,7 @@ class HermesMemoryProviderCore:
             abandoned = self._take_all_pending_proactive_locked()
         if self._client is None:
             self._client = hermes_client_from_env(hermes_home=hermes_home)
+        self._flush_terminal_retries()
         self._close_abandoned_pending(abandoned)
         self._active = self._client_injected or self.is_available()
 
@@ -129,6 +137,8 @@ class HermesMemoryProviderCore:
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         normalized_query = _bounded_text(query, 8_000)
         if not self._active or not normalized_query:
+            return ""
+        if not self._flush_terminal_retries():
             return ""
         effective_session = str(session_id or self._session_id)
         key = self._prefetch_key(effective_session, normalized_query)
@@ -159,6 +169,8 @@ class HermesMemoryProviderCore:
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
         normalized_query = _bounded_text(query, 8_000)
         if not self._active or not normalized_query:
+            return
+        if not self._flush_terminal_retries():
             return
         effective_session = str(session_id or self._session_id)
         key = self._prefetch_key(effective_session, normalized_query)
@@ -231,6 +243,7 @@ class HermesMemoryProviderCore:
     ) -> None:
         """Acknowledge only the exact proactive block already returned to Hermes."""
 
+        self._flush_terminal_retries()
         del kwargs  # In particular, never iterate conversation_history.
         query = _bounded_text(user_message, 8_000)
         session = str(session_id or self._session_id).strip() or "hermes-session"
@@ -266,6 +279,7 @@ class HermesMemoryProviderCore:
     ) -> None:
         """Close explicit-citation feedback and append one bounded completed turn."""
 
+        self._flush_terminal_retries()
         del kwargs  # In particular, never iterate conversation_history.
         query = _bounded_text(user_message, MAX_TURN_CHARS)
         assistant = _bounded_text(assistant_message, MAX_TURN_CHARS)
@@ -286,19 +300,23 @@ class HermesMemoryProviderCore:
         if pending and not query:
             query = _bounded_text(pending.get("query"), MAX_TURN_CHARS)
         if pending:
-            self._safe_call(
+            terminal_params = {
+                "channel": "hermes",
+                "scope": dict(pending.get("scope") or self._scope),
+                "source_ids": list(pending.get("source_ids") or _source_ids_from_env("default")),
+                "session_id": str(pending.get("session_id") or session),
+                "turn_id": pending["decision_turn_id"],
+                "decision_id": pending["decision_id"],
+                "used_citations": sorted(set(_PROACTIVE_CITATION.findall(assistant))),
+                # post_llm_call is not a host-attested task outcome.
+                "terminal_outcome": {},
+            }
+            terminal = self._safe_call(
                 "adapter.proactive_terminal",
-                {
-                    **self._common_params(),
-                    "source_ids": _source_ids_from_env("default"),
-                    "session_id": session,
-                    "turn_id": pending["decision_turn_id"],
-                    "decision_id": pending["decision_id"],
-                    "used_citations": sorted(set(_PROACTIVE_CITATION.findall(assistant))),
-                    # post_llm_call is not a host-attested task outcome.
-                    "terminal_outcome": {},
-                },
+                terminal_params,
             )
+            if not self._terminal_call_succeeded(terminal):
+                self._retain_terminal_retries([terminal_params])
         completed_turn = host_turn or str((pending or {}).get("host_turn_id") or "")
         completed_turn = completed_turn or str((pending or {}).get("decision_turn_id") or "")
         if not completed_turn and (query or assistant):
@@ -454,6 +472,7 @@ class HermesMemoryProviderCore:
         **kwargs: Any,
     ) -> None:
         del parent_session_id, kwargs
+        self._flush_terminal_retries()
         next_session_id = str(new_session_id or "").strip() or self._session_id
         abandoned: list[dict[str, Any]] = []
         with self._lock:
@@ -505,6 +524,7 @@ class HermesMemoryProviderCore:
         )
 
     def shutdown(self) -> None:
+        self._flush_terminal_retries()
         with self._lock:
             workers = [self._prefetch_thread, self._write_thread]
         for worker in workers:
@@ -517,6 +537,7 @@ class HermesMemoryProviderCore:
                 self._write_thread = None
             abandoned = self._take_all_pending_proactive_locked()
         self._close_abandoned_pending(abandoned)
+        self._flush_terminal_retries()
 
     def get_config_schema(self) -> List[Dict[str, Any]]:
         return [
@@ -620,6 +641,7 @@ class HermesMemoryProviderCore:
                 "adapter_local": {
                     "dropped_writes": self.dropped_write_count,
                     "prefetch_cache_entries": self.prefetch_cache_size,
+                    "pending_terminal_retries": self.pending_terminal_retry_count,
                     "background_workers": self.background_worker_count,
                 },
             }
@@ -729,24 +751,89 @@ class HermesMemoryProviderCore:
     def _close_abandoned_pending(self, abandoned: List[Mapping[str, Any]]) -> None:
         """Terminalize every decision removed before a host can acknowledge it."""
 
+        failed: list[dict[str, Any]] = []
         for pending in abandoned[: self._max_prefetch_cache_entries]:
             decision_id = str(pending.get("decision_id") or "")
             turn_id = str(pending.get("decision_turn_id") or "")
             if not decision_id or not turn_id:
                 continue
-            self._safe_call(
+            params = {
+                "channel": "hermes",
+                "scope": dict(pending.get("scope") or self._scope),
+                "source_ids": list(pending.get("source_ids") or ["default"]),
+                "session_id": str(pending.get("session_id") or self._session_id),
+                "turn_id": turn_id,
+                "decision_id": decision_id,
+                "used_citations": [],
+                "terminal_outcome": {},
+            }
+            result = self._safe_call(
                 "adapter.proactive_terminal",
-                {
-                    "channel": "hermes",
-                    "scope": dict(pending.get("scope") or self._scope),
-                    "source_ids": list(pending.get("source_ids") or ["default"]),
-                    "session_id": str(pending.get("session_id") or self._session_id),
-                    "turn_id": turn_id,
-                    "decision_id": decision_id,
-                    "used_citations": [],
-                    "terminal_outcome": {},
-                },
+                params,
             )
+            if not self._terminal_call_succeeded(result):
+                failed.append(params)
+        if failed:
+            self._retain_terminal_retries(failed)
+
+    def _retain_terminal_retries(self, entries: List[Mapping[str, Any]]) -> None:
+        with self._lock:
+            for raw in entries:
+                if not self._valid_terminal_retry(raw):
+                    continue
+                params = dict(raw)
+                key = self._terminal_retry_key(params)
+                if key in self._pending_terminal_retries:
+                    continue
+                if len(self._pending_terminal_retries) >= self._max_terminal_retries:
+                    raise RuntimeError("Hermes proactive terminal retry capacity exhausted")
+                self._pending_terminal_retries[key] = params
+
+    def _flush_terminal_retries(self) -> bool:
+        with self._lock:
+            pending = [(key, dict(params)) for key, params in self._pending_terminal_retries.items()]
+        for key, params in pending:
+            result = self._safe_call("adapter.proactive_terminal", params)
+            if not self._terminal_call_succeeded(result):
+                continue
+            with self._lock:
+                if self._pending_terminal_retries.get(key) == params:
+                    self._pending_terminal_retries.pop(key, None)
+        with self._lock:
+            return not self._pending_terminal_retries
+
+    @staticmethod
+    def _terminal_retry_key(params: Mapping[str, Any]) -> str:
+        canonical = json.dumps(dict(params), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return sha256(canonical.encode("utf-8", errors="replace")).hexdigest()
+
+    @staticmethod
+    def _valid_terminal_retry(raw: Any) -> bool:
+        if not isinstance(raw, Mapping):
+            return False
+        return (
+            raw.get("channel") == "hermes"
+            and isinstance(raw.get("scope"), Mapping)
+            and isinstance(raw.get("source_ids"), list)
+            and all(isinstance(item, str) and item for item in raw.get("source_ids", []))
+            and all(
+                isinstance(raw.get(key), str) and bool(str(raw.get(key)).strip())
+                for key in ("session_id", "turn_id", "decision_id")
+            )
+            and isinstance(raw.get("used_citations"), list)
+            and all(
+                isinstance(item, str) and bool(_PROACTIVE_CITATION.fullmatch(item))
+                for item in raw.get("used_citations", [])
+            )
+            and raw.get("terminal_outcome") == {}
+        )
+
+    @staticmethod
+    def _terminal_call_succeeded(result: Mapping[str, Any]) -> bool:
+        if result.get("ok") is not True:
+            return False
+        nested = result.get("result")
+        return not isinstance(nested, Mapping) or nested.get("ok") is not False
 
     def _consume_prefetch_result(self, key: tuple[str, ...]) -> str:
         with self._lock:

@@ -186,6 +186,49 @@ def test_exact_turn_replay_after_completed_turn_still_returns_original_decision(
     runtime.close()
 
 
+@pytest.mark.parametrize("source_ids", [["alpha"], None])
+def test_next_service_call_reconciles_stale_sqlite_decision_after_provider_process_loss(
+    tmp_path, source_ids,
+) -> None:
+    record = _record("server ledger survives a lost provider retry queue")
+    runtime, _engine, service = _service(
+        tmp_path, [record], stale_decision_seconds=1
+    )
+    abandoned = service.decide(
+        channel="codex", scope=BASE_SCOPE, source_ids=source_ids,
+        session_id="lost-provider-session", query_id="lost-provider-turn",
+        query="Recall the server ledger",
+    )
+    runtime.store.sqlite.conn.execute(
+        "UPDATE proactive_decisions SET created_at=?,updated_at=? WHERE decision_id=?",
+        ("2000-01-01T00:00:00+00:00", "2000-01-01T00:00:00+00:00", abandoned["decision_id"]),
+    )
+    runtime.store.sqlite.conn.commit()
+    runtime.close()
+
+    restarted_engine = FixedRecallEngine([record])
+    restarted_runtime = Runtime(RuntimeStore(tmp_path), recall_engine=restarted_engine)
+    restarted = ProactiveRecallService(
+        restarted_runtime,
+        release_identity=RELEASE,
+        control_percent=0,
+        stale_decision_seconds=1,
+    )
+    restarted.decide(
+        channel="codex", scope=BASE_SCOPE, source_ids=source_ids,
+        session_id="new-provider-session", query_id="new-provider-turn",
+        query="Recall the server ledger in a new provider process",
+    )
+
+    persisted = restarted_runtime.store.load_proactive_decision(abandoned["decision_id"])
+    assert persisted is not None
+    assert persisted["terminal"] is True
+    assert {item["state"] for item in persisted["items"]}.issubset(
+        {"not_used", "suppressed", "rejected"}
+    )
+    restarted_runtime.close()
+
+
 def test_review_counterexample_02_context_cap_persists_and_acks_only_rendered_citations(tmp_path) -> None:
     records = [_record(f"long record {index} " + ("x" * 900)) for index in range(3)]
     runtime, _engine, service = _service(tmp_path, records, max_context_chars=420)
