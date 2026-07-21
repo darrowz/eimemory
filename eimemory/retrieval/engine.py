@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import replace
+from datetime import datetime
 import re
 from time import perf_counter
 from typing import Any, Protocol
@@ -12,6 +13,7 @@ from eimemory.knowledge.views import build_recall_view, choose_view_type, record
 from eimemory.metadata import business_metadata
 from eimemory.models.records import RecallBundle, RecordEnvelope, ScopeRef
 from eimemory.models.source_partitions import DEFAULT_SOURCE_ID
+from eimemory.models.identity_aliases import normalize_identity_text
 from eimemory.raw.retrieval import authoritative_raw_payload, search_raw_chunks
 from eimemory.recall import RecallIntent, classify_recall_intent
 from eimemory.storage.runtime_store import RuntimeStore
@@ -25,6 +27,7 @@ from .contracts import (
     freeze_value,
 )
 from .sqlite_source import SQLiteCandidateSource
+from .fusion import FUSION_POLICY_VERSION, fuse_ranked_components, page_pool_key
 
 
 class RecallCallbacks(Protocol):
@@ -222,6 +225,7 @@ class GovernedRecallEngine:
         policy_scope_ref = query_scope_refs[0] if query_scope_refs else scope_ref
         candidate_scope_groups: list[list[ScopeRef]] = []
         authorized_exact_scopes: set[ExactScope] = set()
+        scope_group_by_exact: dict[ExactScope, int] = {}
         for logical_scope in query_scope_refs:
             group: list[ScopeRef] = []
             for physical_scope in hongtu_query_scopes(logical_scope):
@@ -230,6 +234,7 @@ class GovernedRecallEngine:
                     if exact_scope in authorized_exact_scopes:
                         continue
                     authorized_exact_scopes.add(exact_scope)
+                    scope_group_by_exact[exact_scope] = len(candidate_scope_groups)
                     group.append(exact_scope_ref)
             if group:
                 candidate_scope_groups.append(group)
@@ -424,6 +429,8 @@ class GovernedRecallEngine:
         )
         source_reports: list[dict[str, Any]] = []
         scored_items: list[dict[str, Any]] = []
+        component_hints_by_ref: dict[tuple[str, ExactScope, str], dict[str, Any]] = {}
+        identity_evidence_by_ref: dict[tuple[str, ExactScope, str], set[str]] = {}
         pending_hits: list[tuple[CandidateRequest, int, int, int, CandidateHit]] = []
         for group_index, scope_group in enumerate(candidate_scope_groups):
             for scope_index, query_scope_ref in enumerate(scope_group):
@@ -461,6 +468,15 @@ class GovernedRecallEngine:
         )
         for source_request, _group_index, _scope_index, _provider_index, hit in pending_hits:
             candidate_key = (hit.ref.record_id, hit.ref.scope, hit.ref.source_id)
+            component_hints = component_hints_by_ref.setdefault(candidate_key, {})
+            component_hints.update(hit.component_dict())
+            prior_provider_rank = self._safe_int(component_hints.get("_provider_rank"), default=hit.source_rank)
+            component_hints["_provider_rank"] = min(prior_provider_rank, hit.source_rank)
+            identity_evidence_by_ref.setdefault(candidate_key, set()).update(
+                evidence
+                for evidence in hit.evidence_hints
+                if evidence in {"alias_hit", "exact_title"}
+            )
             if candidate_key in seen_candidate_refs:
                 continue
             seen_candidate_refs.add(candidate_key)
@@ -521,7 +537,7 @@ class GovernedRecallEngine:
         graph_edge_refs = []
         related_ids: list[str] = []
         base_items = list(items)
-        base_ids = {item.record_id for item in base_items}
+        base_ids = {self._record_key(item) for item in base_items}
         for item in base_items:
             for link in item.links:
                 if link.target_kind in {"memory", "multimodal_memory"}:
@@ -579,10 +595,21 @@ class GovernedRecallEngine:
         blocked_counts.update(hard_filter_counts)
         memory_usage_adjustments = memory._memory_usage_adjustments(scope_ref, source_ids=source_ids)
         items = memory._apply_memory_usage_feedback(items, memory_usage_adjustments)
+        items, fusion_state = self._fuse_and_pool_items(
+            items=items,
+            query=normalized_query,
+            request=request,
+            task_context=task_context,
+            scope_group_by_exact=scope_group_by_exact,
+            component_hints_by_ref=component_hints_by_ref,
+            identity_evidence_by_ref=identity_evidence_by_ref,
+            base_ids=base_ids,
+            memory_usage_adjustments=memory_usage_adjustments,
+        )
         items = items[:limit]
         if report_items:
             items = memory._dedupe_records([*report_items, *items])[:limit]
-        graph_expanded = sum(1 for item in items if item.record_id not in base_ids)
+        graph_expanded = sum(1 for item in items if self._record_key(item) not in base_ids)
         active_rules = self.store.list_records(
             kinds=["rule"],
             scope=scope_ref,
@@ -712,6 +739,7 @@ class GovernedRecallEngine:
                     search_report,
                     memory_usage_adjustments=memory_usage_adjustments,
                 ),
+                "fusion": self._fusion_explanation(items, fusion_state),
                 "recall_intent": memory._recall_intent_summary(recall_intent),
                 "query_scopes": [memory._scope_dict(item) for item in query_scope_refs],
                 "recall_scope_aliases": recall_scope_aliases,
@@ -724,6 +752,347 @@ class GovernedRecallEngine:
                 "engine_diagnostics": engine_diagnostics,
             },
         )
+
+    def _fuse_and_pool_items(
+        self,
+        *,
+        items: list[RecordEnvelope],
+        query: str,
+        request: CandidateRequest,
+        task_context: dict[str, Any],
+        scope_group_by_exact: dict[ExactScope, int],
+        component_hints_by_ref: dict[tuple[str, ExactScope, str], dict[str, Any]],
+        identity_evidence_by_ref: dict[tuple[str, ExactScope, str], set[str]],
+        base_ids: set[tuple[str, ExactScope, str]],
+        memory_usage_adjustments: dict[str, dict[str, object]],
+    ) -> tuple[list[RecordEnvelope], dict[str, Any]]:
+        pre_pool_items = list(items)[:5000]
+        by_token = {self._fusion_record_token(item): item for item in pre_pool_items}
+        evidence_by_ref: dict[tuple[str, ExactScope, str], set[str]] = {}
+        group_items: dict[int, list[RecordEnvelope]] = {}
+        for item in pre_pool_items:
+            exact_scope = ExactScope.from_scope(item.scope)
+            group = scope_group_by_exact.get(exact_scope, 10_000)
+            group_items.setdefault(group, []).append(item)
+            ref = self._record_key(item)
+            identity_evidence = set(identity_evidence_by_ref.get(ref) or ())
+            normalized_query = normalize_identity_text(query)
+            evidence: set[str] = set()
+            if "exact_title" in identity_evidence and normalize_identity_text(item.title) == normalized_query:
+                evidence.add("exact_title")
+            if "alias_hit" in identity_evidence and normalized_query in item.aliases:
+                evidence.add("alias_hit")
+            hints = component_hints_by_ref.get(ref) or {}
+            if self._keyword_exact_match(query, item):
+                evidence.add("keyword_exact")
+            if self._safe_float(hints.get("vector_score")) >= 0.12:
+                evidence.add("vector_match")
+            if ref not in base_ids:
+                evidence.add("graph_path")
+            evidence_by_ref[ref] = evidence
+
+        fused: list[RecordEnvelope] = []
+        detail_by_ref: dict[tuple[str, ExactScope, str], dict[str, Any]] = {}
+        configured_weights = task_context.get("recall_rrf_weights")
+        if not isinstance(configured_weights, dict):
+            configured_weights = None
+        fusion_k = task_context.get("recall_rrf_k", 60)
+        empty_components = [
+            (name, [])
+            for name in ("exact_title", "exact_alias", "keyword", "vector", "graph", "living", "usage")
+        ]
+        policy = fuse_ranked_components(
+            empty_components,
+            weights=configured_weights,
+            rrf_k=fusion_k,
+            limit=0,
+        )
+        effective_weights: dict[str, float] = dict(policy.weights)
+        effective_rrf_k = policy.rrf_k
+        for group in sorted(group_items):
+            group_records = group_items[group]
+            alias_counts = Counter(
+                item.source_id
+                for item in group_records
+                if "alias_hit" in evidence_by_ref.get(self._record_key(item), set())
+            )
+            exact_title = [
+                self._fusion_record_token(item)
+                for item in group_records
+                if "exact_title" in evidence_by_ref.get(self._record_key(item), set())
+            ]
+            exact_alias = [
+                self._fusion_record_token(item)
+                for item in group_records
+                if "alias_hit" in evidence_by_ref.get(self._record_key(item), set())
+                and alias_counts[item.source_id] == 1
+            ]
+            keyword = self._rank_component(
+                group_records,
+                score=lambda item: self._keyword_component_score(
+                    component_hints_by_ref.get(self._record_key(item)) or {}
+                ),
+                eligible=lambda item: self._keyword_component_eligible(
+                    component_hints_by_ref.get(self._record_key(item)) or {}
+                ),
+            )
+            vector = self._rank_component(
+                group_records,
+                score=lambda item: self._safe_float(
+                    (component_hints_by_ref.get(self._record_key(item)) or {}).get("vector_score")
+                ),
+                eligible=lambda item: self._safe_float(
+                    (component_hints_by_ref.get(self._record_key(item)) or {}).get("vector_score")
+                ) > 0,
+            )
+            graph = [
+                self._fusion_record_token(item)
+                for item in group_records
+                if self._record_key(item) not in base_ids
+            ]
+            living = sorted(
+                (self._fusion_record_token(item) for item in group_records),
+                key=lambda token: self._living_component_key(
+                    by_token[token], component_hints_by_ref.get(self._record_key(by_token[token])) or {}
+                ),
+            )
+            usage = self._rank_component(
+                group_records,
+                score=lambda item: self._safe_float(
+                    (memory_usage_adjustments.get(item.record_id) or {}).get("adjustment")
+                ),
+                eligible=lambda item: bool(memory_usage_adjustments.get(item.record_id)),
+            )
+            result = fuse_ranked_components(
+                [
+                    ("exact_title", exact_title),
+                    ("exact_alias", exact_alias),
+                    ("keyword", keyword),
+                    ("vector", vector),
+                    ("graph", graph),
+                    ("living", living),
+                    ("usage", usage),
+                ],
+                weights=configured_weights,
+                rrf_k=fusion_k,
+                limit=len(group_records),
+            )
+            effective_weights.update(result.weights)
+            effective_rrf_k = result.rrf_k
+            for fused_item in result.items:
+                record = by_token.get(fused_item.record_id)
+                if record is None:
+                    continue
+                fused.append(record)
+                detail_by_ref[self._record_key(record)] = {
+                    "score": round(fused_item.score, 12),
+                    "ranks": dict(fused_item.ranks),
+                    "contributions": {
+                        name: round(value, 12)
+                        for name, value in fused_item.contributions.items()
+                    },
+                }
+
+        pooled: list[RecordEnvelope] = []
+        pool_members: dict[tuple[str, ExactScope, str], list[RecordEnvelope]] = {}
+        representative_by_page: dict[str, tuple[str, ExactScope, str]] = {}
+        for item in fused:
+            page_key = page_pool_key(item)
+            representative_ref = representative_by_page.get(page_key)
+            if representative_ref is None:
+                representative_ref = self._record_key(item)
+                representative_by_page[page_key] = representative_ref
+                pooled.append(item)
+                pool_members[representative_ref] = []
+            pool_members[representative_ref].append(item)
+
+        target_source_id = request.target_source_id
+        ambiguity_reasons: list[str] = []
+        target_records = [item for item in pre_pool_items if item.source_id == target_source_id]
+        target_identity = [
+            item
+            for item in target_records
+            if evidence_by_ref.get(self._record_key(item), set()) & {"exact_title", "alias_hit"}
+        ]
+        target_identity_pages = {page_pool_key(item) for item in target_identity}
+        if target_source_id is None:
+            create_safety = "unknown"
+            ambiguity_reasons.append("target_source_omitted")
+        elif request.source_ids is not None and target_source_id not in request.source_ids:
+            create_safety = "unknown"
+            ambiguity_reasons.append("target_source_not_searched")
+        elif len(target_identity_pages) == 1:
+            create_safety = "exists"
+        elif len(target_identity_pages) > 1:
+            create_safety = "probable"
+            ambiguity_reasons.append("ambiguous_identity")
+        elif any(
+            evidence_by_ref.get(self._record_key(item), set())
+            & {"keyword_exact", "vector_match", "graph_path"}
+            for item in target_records
+        ):
+            create_safety = "probable"
+            ambiguity_reasons.append("strong_non_identity_evidence")
+        else:
+            create_safety = "unknown"
+            ambiguity_reasons.append("no_identity_evidence")
+
+        return pooled, {
+            "policy_version": FUSION_POLICY_VERSION,
+            "rrf_k": effective_rrf_k,
+            "weights": effective_weights,
+            "pre_pool_count": len(pre_pool_items),
+            "post_pool_count": len(pooled),
+            "detail_by_ref": detail_by_ref,
+            "evidence_by_ref": evidence_by_ref,
+            "pool_members": pool_members,
+            "create_safety": create_safety,
+            "target_source_id": target_source_id,
+            "target_identity_refs": {self._record_key(item) for item in target_identity},
+            "ambiguity_reasons": ambiguity_reasons,
+        }
+
+    def _fusion_explanation(self, items: list[RecordEnvelope], state: dict[str, Any]) -> dict[str, Any]:
+        evidence_order = ("alias_hit", "exact_title", "keyword_exact", "vector_match", "graph_path")
+        detail_by_ref = state.get("detail_by_ref") or {}
+        evidence_by_ref = state.get("evidence_by_ref") or {}
+        pool_members = state.get("pool_members") or {}
+        target_identity_refs = state.get("target_identity_refs") or set()
+        target_source_id = state.get("target_source_id")
+        selected: list[dict[str, Any]] = []
+        for item in items:
+            ref = self._record_key(item)
+            members = list(pool_members.get(ref) or [item])
+            member_refs = [self._record_key(member) for member in members]
+            evidence = {
+                value
+                for member_ref in member_refs
+                for value in evidence_by_ref.get(member_ref, set())
+                if value in evidence_order
+            }
+            aggregate_contributions: Counter[str] = Counter()
+            aggregate_score = 0.0
+            for member_ref in member_refs:
+                member_detail = detail_by_ref.get(member_ref) or {}
+                aggregate_score += self._safe_float(member_detail.get("score"))
+                aggregate_contributions.update(
+                    {
+                        str(name): self._safe_float(value)
+                        for name, value in dict(member_detail.get("contributions") or {}).items()
+                    }
+                )
+            if target_source_id is None or item.source_id != target_source_id:
+                item_safety = "unknown"
+            elif state.get("create_safety") == "exists" and any(
+                member_ref in target_identity_refs for member_ref in member_refs
+            ):
+                item_safety = "exists"
+            elif state.get("create_safety") == "probable" and evidence:
+                item_safety = "probable"
+            else:
+                item_safety = "unknown"
+            detail = detail_by_ref.get(ref) or {}
+            selected.append(
+                {
+                    "record_id": item.record_id,
+                    "source_id": item.source_id,
+                    "page_key": page_pool_key(item),
+                    "evidence": [value for value in evidence_order if value in evidence],
+                    "create_safety": item_safety,
+                    "score": self._safe_float(detail.get("score")),
+                    "ranks": dict(detail.get("ranks") or {}),
+                    "contributions": dict(detail.get("contributions") or {}),
+                    "chunk_count": len(members),
+                    "member_record_ids": sorted(member.record_id for member in members)[:64],
+                    "member_record_ids_truncated": max(0, len(members) - 64),
+                    "aggregate_score": round(aggregate_score, 12),
+                    "aggregate_contributions": {
+                        name: round(aggregate_contributions[name], 12)
+                        for name in sorted(aggregate_contributions)
+                    },
+                }
+            )
+        return {
+            "policy_version": str(state.get("policy_version") or FUSION_POLICY_VERSION),
+            "rrf_k": int(state.get("rrf_k") or 60),
+            "weights": dict(sorted(dict(state.get("weights") or {}).items())),
+            "ranking_change": "intentional_rrf_replaces_hand_weight_order",
+            "pre_pool_count": int(state.get("pre_pool_count") or 0),
+            "post_pool_count": int(state.get("post_pool_count") or 0),
+            "create_safety": str(state.get("create_safety") or "unknown"),
+            "target_source_id": str(target_source_id or ""),
+            "ambiguity_reasons": list(state.get("ambiguity_reasons") or ()),
+            "selected": selected,
+        }
+
+    @staticmethod
+    def _keyword_exact_match(query: str, record: RecordEnvelope) -> bool:
+        normalized_query = normalize_identity_text(query)
+        if not normalized_query:
+            return False
+        bounded_text = " ".join(
+            str(value or "")[:2048]
+            for value in (
+                record.title,
+                record.summary,
+                record.detail,
+                record.content.get("text") if isinstance(record.content, dict) else "",
+                record.content.get("excerpt") if isinstance(record.content, dict) else "",
+            )
+        )
+        return normalized_query in normalize_identity_text(bounded_text)
+
+    def _rank_component(self, items, *, score, eligible) -> list[str]:
+        ranked = [item for item in items if eligible(item)]
+        ranked.sort(key=lambda item: (-self._safe_float(score(item)), self._fusion_record_token(item)))
+        return [self._fusion_record_token(item) for item in ranked]
+
+    def _living_component_key(self, item: RecordEnvelope, hints: dict[str, Any]) -> tuple[float, float, float, str]:
+        living = hints.get("living_score_adjustments")
+        living_score = self._safe_float(living.get("total_adjustment")) if isinstance(living, dict) else 0.0
+        quality_score = self._safe_float(hints.get("quality_score"))
+        try:
+            timestamp = datetime.fromisoformat(str(item.time.updated_at or "").replace("Z", "+00:00")).timestamp()
+        except (TypeError, ValueError, OverflowError):
+            timestamp = 0.0
+        return (-living_score, -quality_score, -timestamp, self._fusion_record_token(item))
+
+    def _keyword_component_score(self, hints: dict[str, Any]) -> float:
+        lexical_score = self._safe_float(hints.get("lexical_score"))
+        if lexical_score > 0:
+            return lexical_score
+        provider_rank = self._safe_int(hints.get("_provider_rank"), default=0)
+        return (1.0 / provider_rank) if self._keyword_component_eligible(hints) and provider_rank else 0.0
+
+    def _keyword_component_eligible(self, hints: dict[str, Any]) -> bool:
+        if self._safe_float(hints.get("lexical_score")) > 0:
+            return True
+        return (
+            self._safe_int(hints.get("_provider_rank"), default=0) > 0
+            and "vector_score" not in hints
+            and not bool(hints.get("identity_indexed"))
+        )
+
+    @staticmethod
+    def _fusion_record_token(record: RecordEnvelope) -> str:
+        scope = record.scope
+        return "\x1e".join(
+            (
+                str(record.record_id or ""),
+                str(scope.tenant_id or "default"),
+                str(scope.agent_id or ""),
+                str(scope.workspace_id or ""),
+                str(scope.user_id or ""),
+                str(record.source_id or "default"),
+            )
+        )
+
+    @staticmethod
+    def _safe_int(value: Any, *, default: int) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError, OverflowError):
+            return default
 
     @staticmethod
     def _record_key(record: RecordEnvelope) -> tuple[str, ExactScope, str]:

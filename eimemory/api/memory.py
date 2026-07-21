@@ -311,6 +311,7 @@ class MemoryAPI:
             query=str(query or "").strip(),
             scope=ScopeRef.from_dict(scope),
             source_ids=raw_source_ids,
+            target_source_id=context.get("target_source_id"),
             limit=max(0, min(1000, int(limit))),
             task_context=context,
         )

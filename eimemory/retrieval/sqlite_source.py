@@ -4,6 +4,7 @@ from time import perf_counter
 from typing import Any
 
 from eimemory.storage.runtime_store import RuntimeStore
+from eimemory.models.identity_aliases import normalize_identity_text
 
 from .contracts import CandidateBatch, CandidateHit, CandidateRef, CandidateRequest, ExactScope, freeze_value
 
@@ -39,6 +40,50 @@ class SQLiteCandidateSource:
             recall_filters=recall_filters,
             source_ids=request.source_ids,
         )
+        identity_rows = self.store.sqlite.search_identity_candidates(
+            query=request.query,
+            kinds=list(request.kinds) or None,
+            scope=request.scope.to_scope_ref(),
+            limit=min(request.budget, max(request.limit, 1)),
+            recall_filters=recall_filters,
+            source_ids=request.source_ids,
+        )
+        verified_identity_rows: list[dict[str, object]] = []
+        for row in identity_rows:
+            row_scope = ExactScope.from_scope(row.get("scope") if isinstance(row.get("scope"), dict) else {})
+            row_source_id = str(row.get("source_id") or "")
+            authoritative = self.store.get_by_exact_ref(
+                str(row.get("record_id") or ""),
+                scope=row_scope.to_scope_ref(),
+                source_id=row_source_id,
+            )
+            if (
+                authoritative is None
+                or authoritative.status != "active"
+                or ExactScope.from_scope(authoritative.scope) != row_scope
+                or authoritative.source_id != row_source_id
+                or (request.kinds and authoritative.kind not in request.kinds)
+            ):
+                continue
+            normalized_query = normalize_identity_text(request.query)
+            evidence = set(str(item) for item in (row.get("evidence") or ()))
+            verified_evidence: list[str] = []
+            if "exact_title" in evidence and normalize_identity_text(authoritative.title) == normalized_query:
+                verified_evidence.append("exact_title")
+            if "alias_hit" in evidence and normalized_query in authoritative.aliases:
+                verified_evidence.append("alias_hit")
+            if not verified_evidence:
+                continue
+            verified_identity_rows.append({**row, "evidence": verified_evidence})
+        identity_rows = verified_identity_rows
+        identity_by_ref = {
+            (
+                str(row.get("record_id") or ""),
+                ExactScope.from_scope(row.get("scope") if isinstance(row.get("scope"), dict) else {}),
+                str(row.get("source_id") or ""),
+            ): tuple(str(item) for item in (row.get("evidence") or ()))
+            for row in identity_rows
+        }
         scores = {
             str(entry.get("record_id") or ""): entry
             for entry in list(report.get("scored_items") or [])
@@ -60,12 +105,36 @@ class SQLiteCandidateSource:
                     source_rank=rank,
                     source_score=_float_score(score_entry.get("final_score")),
                     component_hints=freeze_value(score_entry),
-                    evidence_hints=("sqlite_hybrid",),
+                    evidence_hints=identity_by_ref.get(
+                        (record.record_id, ExactScope.from_scope(record.scope), record.source_id),
+                        (),
+                    ),
                 )
             )
+        seen_refs = {(hit.ref.record_id, hit.ref.scope, hit.ref.source_id) for hit in hits}
+        for row in identity_rows:
+            ref = CandidateRef(
+                record_id=str(row.get("record_id") or ""),
+                scope=ExactScope.from_scope(row.get("scope") if isinstance(row.get("scope"), dict) else {}),
+                source_id=str(row.get("source_id") or ""),
+            )
+            ref_key = (ref.record_id, ref.scope, ref.source_id)
+            if ref_key in seen_refs:
+                continue
+            seen_refs.add(ref_key)
+            hits.append(
+                CandidateHit(
+                    ref=ref,
+                    source_rank=len(hits) + 1,
+                    source_score=1.0,
+                    component_hints={"final_score": 1.0, "identity_indexed": True},
+                    evidence_hints=tuple(str(item) for item in (row.get("evidence") or ())),
+                )
+            )
+        hits.sort(key=lambda hit: (0 if hit.evidence_hints else 1, hit.source_rank, hit.ref.record_id))
         return self._batch(
             request=request,
-            hits=tuple(hits),
+            hits=tuple(hits[: request.limit]),
             elapsed_ms=(perf_counter() - started) * 1000.0,
             report=report,
         )

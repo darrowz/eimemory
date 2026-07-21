@@ -23,6 +23,11 @@ from eimemory.events import (
 )
 from eimemory.identity import hongtu_query_scopes
 from eimemory.models.memory_edges import MEMORY_EDGE_TYPES, MemoryEdge
+from eimemory.models.identity_aliases import (
+    IDENTITY_ALIASES_VERSION,
+    normalize_identity_text,
+    normalize_record_aliases,
+)
 from eimemory.models.records import RecordEnvelope, ScopeRef, TimeRef
 from eimemory.models.source_partitions import DEFAULT_SOURCE_ID, normalize_source_id, normalize_source_ids
 from eimemory.governance.tool_receipts import MAX_ELIGIBLE_RECEIPTS_PER_RUN
@@ -52,6 +57,7 @@ _RECORD_META_KEYS_MIGRATION = "records.meta_keys.v1"
 _INTENT_PATTERN_STATUS_MIGRATION = "intent_patterns.payload_status.v1"
 _STORAGE_SCHEMA_MIGRATION = "storage.schema.v1"
 _SOURCE_PARTITION_MIGRATION = "records.source_partition.v1"
+_RECALL_IDENTITY_MIGRATION = "recall.identity_index.v1"
 _RECALL_LANE_MEMORY_TYPE_ALIASES = {
     "audit": "audit_record",
     "audit_record": "audit_record",
@@ -119,6 +125,7 @@ class SqliteRecordStore:
             self._mark_schema_migration(_RECORD_META_KEYS_MIGRATION)
             self._create_indexes()
             self._create_recall_index_tables()
+            self._create_recall_identity_tables()
             self._create_memory_edge_tables()
             self._create_event_memory_tables()
             self._create_policy_rollout_tables()
@@ -128,6 +135,7 @@ class SqliteRecordStore:
             self._mark_schema_migration(_INTENT_PATTERN_STATUS_MIGRATION)
             self._mark_schema_migration(_STORAGE_SCHEMA_MIGRATION)
             self._mark_schema_migration(_SOURCE_PARTITION_MIGRATION)
+            self._mark_schema_migration(_RECALL_IDENTITY_MIGRATION)
             self.conn.commit()
             return
         migrations_ready = self.conn.execute(
@@ -140,6 +148,8 @@ class SqliteRecordStore:
             and self._schema_migration_applied(_INTENT_PATTERN_STATUS_MIGRATION)
             and self._schema_migration_applied(_SOURCE_PARTITION_MIGRATION)
             and self._source_partition_physical_ready()
+            and self._schema_migration_applied(_RECALL_IDENTITY_MIGRATION)
+            and self._recall_identity_physical_ready()
         )
         if schema_ready:
             self._seed_default_intent_patterns()
@@ -165,6 +175,7 @@ class SqliteRecordStore:
             self.conn.execute("ALTER TABLE records ADD COLUMN semantic_key TEXT NOT NULL DEFAULT ''")
         self._create_schema_migrations_table()
         self._migrate_source_partition_schema()
+        self._migrate_recall_identity_schema()
         self._create_indexes()
         self.conn.commit()
         self._backfill_record_meta_keys_if_needed()
@@ -587,6 +598,7 @@ class SqliteRecordStore:
                 projection_type TEXT NOT NULL,
                 quality_score REAL NOT NULL DEFAULT 0.0,
                 title_text TEXT NOT NULL,
+                title_normalized TEXT NOT NULL DEFAULT '',
                 body_text TEXT NOT NULL,
                 anchor_terms TEXT NOT NULL,
                 updated_at TEXT NOT NULL
@@ -610,6 +622,50 @@ class SqliteRecordStore:
         except sqlite3.OperationalError:
             # Some embedded SQLite builds omit FTS5. Anchor candidates still keep recall functional.
             pass
+
+    def _create_recall_identity_tables(self, *, rebuild_indexes: bool = False) -> None:
+        if rebuild_indexes:
+            self.conn.execute("DROP INDEX IF EXISTS idx_recall_alias_exact")
+            self.conn.execute("DROP INDEX IF EXISTS idx_recall_title_exact")
+        alias_table = self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='recall_alias_index'"
+        ).fetchone()
+        if alias_table:
+            alias_columns = {
+                str(row["name"]) for row in self.conn.execute("PRAGMA table_info(recall_alias_index)")
+            }
+            required_alias_columns = {
+                "storage_key", "normalized_alias", "alias_ordinal", "record_id", "kind", "status",
+                "source_id", "tenant_id", "agent_id", "workspace_id", "user_id",
+            }
+            if not required_alias_columns.issubset(alias_columns):
+                self.conn.execute("DROP TABLE recall_alias_index")
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS recall_alias_index (
+                storage_key TEXT NOT NULL,
+                normalized_alias TEXT NOT NULL,
+                alias_ordinal INTEGER NOT NULL,
+                record_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                status TEXT NOT NULL,
+                source_id TEXT NOT NULL,
+                tenant_id TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                PRIMARY KEY (storage_key, normalized_alias)
+            )
+            """
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_recall_alias_exact "
+            "ON recall_alias_index(tenant_id, agent_id, workspace_id, user_id, source_id, normalized_alias, status, kind, storage_key)"
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_recall_title_exact "
+            "ON recall_index(tenant_id, agent_id, workspace_id, user_id, source_id, title_normalized, status, kind, storage_key)"
+        )
 
     def _create_memory_edge_tables(self) -> None:
         self.conn.execute(
@@ -1271,7 +1327,12 @@ class SqliteRecordStore:
                 self.conn.execute(
                     "ALTER TABLE recall_index ADD COLUMN source_id TEXT NOT NULL DEFAULT 'default'"
                 )
+            if "title_normalized" not in recall_columns:
+                self.conn.execute(
+                    "ALTER TABLE recall_index ADD COLUMN title_normalized TEXT NOT NULL DEFAULT ''"
+                )
             self._create_recall_index_tables()
+            self._create_recall_identity_tables()
             self._create_indexes()
             self._create_source_partition_indexes(rebuild=True)
 
@@ -1304,6 +1365,7 @@ class SqliteRecordStore:
                     last_storage_key = str(rows[-1]["storage_key"])
             # Rebuild the projection in this migration transaction so the two tables cannot disagree.
             self.conn.execute("DELETE FROM recall_index")
+            self.conn.execute("DELETE FROM recall_alias_index")
             if self._has_fts_table():
                 self.conn.execute("DELETE FROM recall_index_fts")
             self._backfill_recall_index_if_needed()
@@ -1315,6 +1377,76 @@ class SqliteRecordStore:
         except Exception:
             self.conn.rollback()
             raise
+
+    def _migrate_recall_identity_schema(self) -> None:
+        if self._schema_migration_applied(_RECALL_IDENTITY_MIGRATION) and self._recall_identity_physical_ready():
+            return
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            self._create_recall_index_tables(create_indexes=False)
+            columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(recall_index)")}
+            if "title_normalized" not in columns:
+                self.conn.execute(
+                    "ALTER TABLE recall_index ADD COLUMN title_normalized TEXT NOT NULL DEFAULT ''"
+                )
+            self._create_recall_identity_tables(rebuild_indexes=True)
+            last_storage_key = ""
+            while True:
+                rows = self.conn.execute(
+                    "SELECT storage_key, payload_json, content_text FROM records "
+                    "WHERE storage_key > ? ORDER BY storage_key LIMIT 200",
+                    (last_storage_key,),
+                ).fetchall()
+                if not rows:
+                    break
+                for row in rows:
+                    payload = self._payload_dict_from_json(row["payload_json"])
+                    record = self._record_from_payload_dict(payload)
+                    if record is not None:
+                        self._upsert_recall_index(
+                            record=record,
+                            storage_key=str(row["storage_key"]),
+                            content_text=str(row["content_text"] or ""),
+                        )
+                last_storage_key = str(rows[-1]["storage_key"])
+            self._mark_schema_migration(_RECALL_IDENTITY_MIGRATION)
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    def _recall_identity_physical_ready(self) -> bool:
+        try:
+            columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(recall_index)")}
+            alias_table = self.conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='recall_alias_index'"
+            ).fetchone()
+            if "title_normalized" not in columns or not alias_table:
+                return False
+            alias_columns = {
+                str(row["name"]) for row in self.conn.execute("PRAGMA table_info(recall_alias_index)")
+            }
+            if not {
+                "storage_key", "normalized_alias", "alias_ordinal", "record_id", "kind", "status",
+                "source_id", "tenant_id", "agent_id", "workspace_id", "user_id",
+            }.issubset(alias_columns):
+                return False
+            expected = {
+                "idx_recall_title_exact": [
+                    "tenant_id", "agent_id", "workspace_id", "user_id", "source_id",
+                    "title_normalized", "status", "kind", "storage_key",
+                ],
+                "idx_recall_alias_exact": [
+                    "tenant_id", "agent_id", "workspace_id", "user_id", "source_id",
+                    "normalized_alias", "status", "kind", "storage_key",
+                ],
+            }
+            return all(
+                [row[2] for row in self.conn.execute(f"PRAGMA index_info({name})")] == expected_columns
+                for name, expected_columns in expected.items()
+            )
+        except sqlite3.OperationalError:
+            return False
 
     @staticmethod
     def _legacy_source_partition(payload: dict[str, Any], kind: str) -> tuple[str, str]:
@@ -1382,6 +1514,13 @@ class SqliteRecordStore:
             return False
 
     def upsert(self, record: RecordEnvelope, *, commit: bool = True) -> None:
+        if str(record.aliases_version or "") != IDENTITY_ALIASES_VERSION:
+            raise ValueError(f"unsupported aliases_version: {record.aliases_version}")
+        record.aliases = normalize_record_aliases(
+            record.aliases,
+            kind=record.kind,
+            content=record.content,
+        )
         payload = record.to_dict()
         raw_index_parts = []
         if record.kind == "raw_chunk":
@@ -1509,6 +1648,7 @@ class SqliteRecordStore:
     def _upsert_recall_index(self, *, record: RecordEnvelope, storage_key: str, content_text: str) -> None:
         lane, visibility, source_class, memory_type, projection_type, quality_score = self._recall_index_traits(record)
         title_text = str(record.title or "")
+        title_normalized = normalize_identity_text(title_text)
         body_text = "\n".join(
             part
             for part in [
@@ -1528,8 +1668,8 @@ class SqliteRecordStore:
                 storage_key, record_id, kind, status, source, source_id,
                 tenant_id, agent_id, workspace_id, user_id,
                 lane, visibility, source_class, memory_type, projection_type,
-                quality_score, title_text, body_text, anchor_terms, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                quality_score, title_text, title_normalized, body_text, anchor_terms, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(storage_key) DO UPDATE SET
                 record_id=excluded.record_id,
                 kind=excluded.kind,
@@ -1547,6 +1687,7 @@ class SqliteRecordStore:
                 projection_type=excluded.projection_type,
                 quality_score=excluded.quality_score,
                 title_text=excluded.title_text,
+                title_normalized=excluded.title_normalized,
                 body_text=excluded.body_text,
                 anchor_terms=excluded.anchor_terms,
                 updated_at=excluded.updated_at
@@ -1569,11 +1710,36 @@ class SqliteRecordStore:
                 projection_type,
                 quality_score,
                 title_text,
+                title_normalized,
                 body_text,
                 anchor_terms,
                 record.time.updated_at,
             ),
         )
+        self.conn.execute("DELETE FROM recall_alias_index WHERE storage_key = ?", (storage_key,))
+        if record.aliases:
+            self.conn.executemany(
+                "INSERT INTO recall_alias_index ("
+                "storage_key, normalized_alias, alias_ordinal, record_id, kind, status, source_id, "
+                "tenant_id, agent_id, workspace_id, user_id"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        storage_key,
+                        alias,
+                        ordinal,
+                        record.record_id,
+                        record.kind,
+                        record.status,
+                        record.source_id,
+                        record.scope.tenant_id,
+                        record.scope.agent_id,
+                        record.scope.workspace_id,
+                        record.scope.user_id,
+                    )
+                    for ordinal, alias in enumerate(record.aliases)
+                ],
+            )
         if self._has_fts_table():
             self.conn.execute("DELETE FROM recall_index_fts WHERE storage_key = ?", (storage_key,))
             self.conn.execute(
@@ -1583,6 +1749,7 @@ class SqliteRecordStore:
 
     def _delete_recall_index(self, storage_key: str) -> None:
         self.conn.execute("DELETE FROM recall_index WHERE storage_key = ?", (storage_key,))
+        self.conn.execute("DELETE FROM recall_alias_index WHERE storage_key = ?", (storage_key,))
         if self._has_fts_table():
             self.conn.execute("DELETE FROM recall_index_fts WHERE storage_key = ?", (storage_key,))
 
@@ -1602,6 +1769,7 @@ class SqliteRecordStore:
             return
         if index_count > record_count:
             self.conn.execute("DELETE FROM recall_index")
+            self.conn.execute("DELETE FROM recall_alias_index")
             if self._has_fts_table():
                 self.conn.execute("DELETE FROM recall_index_fts")
         cursor = self.conn.execute(
@@ -1673,6 +1841,75 @@ class SqliteRecordStore:
             query=query, kinds=kinds, scope=scope, limit=limit, source_ids=source_ids
         )
         return records
+
+    def search_identity_candidates(
+        self,
+        *,
+        query: str,
+        kinds: list[str] | None,
+        scope: ScopeRef,
+        limit: int,
+        recall_filters: dict | None = None,
+        source_ids: list[str] | tuple[str, ...] | None = None,
+    ) -> list[dict[str, object]]:
+        """Return bounded exact title/alias refs from indexed projections only."""
+
+        normalized_query = normalize_identity_text(query)
+        bounded_limit = max(0, min(MAX_QUERY_LIMIT, int(limit)))
+        allowed_source_ids = normalize_source_ids(source_ids)
+        if not normalized_query or bounded_limit <= 0 or allowed_source_ids == ():
+            return []
+        filters = self._normalized_recall_filters(recall_filters)
+        filters["_exact_scope"] = True
+        if allowed_source_ids is not None:
+            filters["_source_ids"] = allowed_source_ids
+        where, params = self._recall_index_where(
+            kinds=kinds,
+            scope=scope,
+            recall_filters=filters,
+            alias="i",
+        )
+        where.append("i.status = 'active'")
+        projection = (
+            "i.storage_key, i.record_id, i.kind, i.source_id, i.tenant_id, i.agent_id, "
+            "i.workspace_id, i.user_id"
+        )
+        title_rows = self.conn.execute(
+            "SELECT " + projection + " FROM recall_index i WHERE "
+            + " AND ".join(where)
+            + " AND i.title_normalized = ? ORDER BY i.storage_key LIMIT ?",
+            [*params, normalized_query, bounded_limit],
+        ).fetchall()
+        alias_rows = self.conn.execute(
+            "SELECT " + projection + " FROM recall_alias_index a "
+            "JOIN recall_index i ON i.storage_key = a.storage_key WHERE "
+            + " AND ".join(where)
+            + " AND a.normalized_alias = ? ORDER BY i.storage_key LIMIT ?",
+            [*params, normalized_query, bounded_limit],
+        ).fetchall()
+        evidence_by_key: dict[str, set[str]] = {}
+        rows_by_key: dict[str, sqlite3.Row] = {}
+        for evidence, rows in (("exact_title", title_rows), ("alias_hit", alias_rows)):
+            for row in rows:
+                storage_key = str(row["storage_key"])
+                rows_by_key[storage_key] = row
+                evidence_by_key.setdefault(storage_key, set()).add(evidence)
+        return [
+            {
+                "storage_key": storage_key,
+                "record_id": str(rows_by_key[storage_key]["record_id"]),
+                "kind": str(rows_by_key[storage_key]["kind"]),
+                "source_id": str(rows_by_key[storage_key]["source_id"]),
+                "scope": {
+                    "tenant_id": str(rows_by_key[storage_key]["tenant_id"]),
+                    "agent_id": str(rows_by_key[storage_key]["agent_id"]),
+                    "workspace_id": str(rows_by_key[storage_key]["workspace_id"]),
+                    "user_id": str(rows_by_key[storage_key]["user_id"]),
+                },
+                "evidence": sorted(evidence_by_key[storage_key]),
+            }
+            for storage_key in sorted(rows_by_key)[:bounded_limit]
+        ]
 
     def search_with_diagnostics(
         self,

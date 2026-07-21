@@ -8,6 +8,7 @@ from eimemory.core.clock import now_iso
 from eimemory.core.ids import generate_record_id
 from eimemory.metadata import normalize_metadata
 from eimemory.models.source_partitions import DEFAULT_SOURCE_ID, normalize_source_id
+from eimemory.models.identity_aliases import IDENTITY_ALIASES_VERSION, normalize_record_aliases
 from eimemory.scoring import ScoreContext, evaluate_memory_score, memory_score_to_legacy_quality, with_score_metadata
 
 VALID_KINDS: frozenset[str] = frozenset(
@@ -157,10 +158,16 @@ class RecordEnvelope:
     provenance: dict[str, Any]
     meta: dict[str, Any]
     source_id: str = DEFAULT_SOURCE_ID
+    aliases: list[str] = field(default_factory=list)
+    aliases_version: str = IDENTITY_ALIASES_VERSION
 
     def __post_init__(self) -> None:
         self._validate_kind(self.kind)
         self.source_id = normalize_source_id(self.source_id)
+        self.aliases_version = str(self.aliases_version or IDENTITY_ALIASES_VERSION)
+        if self.aliases_version != IDENTITY_ALIASES_VERSION:
+            raise ValueError(f"unsupported aliases_version: {self.aliases_version}")
+        self.aliases = normalize_record_aliases(self.aliases, kind=self.kind, content=self.content)
 
     @staticmethod
     def _validate_kind(kind: str) -> None:
@@ -182,6 +189,8 @@ class RecordEnvelope:
         evidence: list[str] | None = None,
         source: str = "eimemory",
         source_id: str = DEFAULT_SOURCE_ID,
+        aliases: list[str] | tuple[str, ...] | None = None,
+        aliases_version: str = IDENTITY_ALIASES_VERSION,
         status: str = "active",
         provenance: dict[str, Any] | None = None,
         meta: dict[str, Any] | None = None,
@@ -221,6 +230,8 @@ class RecordEnvelope:
             provenance=dict(provenance or {}),
             meta=meta_payload,
             source_id=source_id,
+            aliases=normalize_record_aliases(aliases, kind=kind, content=content_payload),
+            aliases_version=aliases_version,
         )
 
     @classmethod
@@ -259,6 +270,8 @@ class RecordEnvelope:
             provenance=dict(data.get("provenance") or {}),
             meta=dict(data.get("meta") or {}),
             source_id=data.get("source_id", DEFAULT_SOURCE_ID),
+            aliases=normalize_record_aliases(data.get("aliases"), kind=kind, content=data.get("content") or {}),
+            aliases_version=str(data.get("aliases_version") or IDENTITY_ALIASES_VERSION),
         )
 
     def touch(self) -> None:

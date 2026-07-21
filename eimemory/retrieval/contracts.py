@@ -92,6 +92,7 @@ class CandidateRequest:
     scope: ExactScope
     kinds: tuple[str, ...] = ()
     source_ids: tuple[str, ...] | None = None
+    target_source_id: str | None = None
     limit: int = 8
     budget: int = 24
     recall_filters: tuple[tuple[str, Any], ...] = ()
@@ -102,6 +103,8 @@ class CandidateRequest:
         object.__setattr__(self, "kinds", tuple(str(kind).strip() for kind in self.kinds if str(kind).strip()))
         normalized_sources = normalize_source_ids(self.source_ids)
         object.__setattr__(self, "source_ids", normalized_sources)
+        raw_target = str(self.target_source_id or "").strip()
+        object.__setattr__(self, "target_source_id", normalize_source_id(raw_target) if raw_target else None)
         bounded_limit = max(0, min(1000, int(self.limit)))
         object.__setattr__(self, "limit", bounded_limit)
         object.__setattr__(self, "budget", max(bounded_limit, min(5000, int(self.budget))))
@@ -116,6 +119,7 @@ class CandidateRequest:
         scope: ScopeRef | Mapping[str, Any] | None,
         kinds: tuple[str, ...] | list[str] = (),
         source_ids: tuple[str, ...] | list[str] | None = None,
+        target_source_id: str | None = None,
         limit: int = 8,
         budget: int | None = None,
         recall_filters: Mapping[str, Any] | None = None,
@@ -127,6 +131,7 @@ class CandidateRequest:
             scope=ExactScope.from_scope(scope),
             kinds=tuple(kinds or ()),
             source_ids=None if source_ids is None else tuple(source_ids),
+            target_source_id=target_source_id,
             limit=bounded_limit,
             budget=max(bounded_limit, bounded_limit * 3) if budget is None else budget,
             recall_filters=freeze_value(dict(recall_filters or {})),
