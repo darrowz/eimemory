@@ -24,7 +24,7 @@ DEFAULT_MAX_DECISIONS = 512
 DEFAULT_MAX_CACHE_ENTRIES = 128
 DEFAULT_MAX_BYPASS_DIAGNOSTICS = 64
 DEFAULT_RECALL_TIMEOUT_SECONDS = 0.8
-DEFAULT_STALE_DECISION_SECONDS = 86_400
+DEFAULT_STALE_DECISION_SECONDS = 900
 _MAX_TURNS_PER_SESSION = 4
 _MAX_TURN_SUMMARY_CHARS = 1_000
 _MAX_QUERY_CHARS = 8_000
@@ -137,7 +137,7 @@ class ProactiveRecallService:
         self.max_decisions = max(1, min(8_192, int(max_decisions)))
         self.max_cache_entries = max(1, min(2_048, int(max_cache_entries)))
         self.recall_timeout_seconds = max(0.01, min(10.0, float(recall_timeout_seconds)))
-        self.stale_decision_seconds = max(1.0, min(604_800.0, float(stale_decision_seconds)))
+        self.stale_decision_seconds = max(60.0, min(86_400.0, float(stale_decision_seconds)))
         self._sessions: OrderedDict[tuple[Any, ...], _SessionState] = OrderedDict()
         self._decisions: OrderedDict[str, _DecisionState] = OrderedDict()
         self._candidate_cache: OrderedDict[str, _CachedRecall | tuple[RecordEnvelope, ...]] = OrderedDict()

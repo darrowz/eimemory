@@ -105,7 +105,7 @@ second local authority. Hermes retains failed exact terminal calls in a
 bounded in-memory retry queue, drains it before later hooks, and fails closed
 for new proactive prefetch while responsibility remains. A lost provider
 process is recovered from the existing authoritative SQLite decision ledger:
-the next service call reconciles decisions older than the bounded 24-hour
+the next service call reconciles decisions older than the bounded 15-minute
 lease through the same not-used/control-suppressed transition and feedback
 contract. Tests cover first-fail/next-hook success, used-citation retry,
 continuous failure/capacity gating, and process-loss recovery for explicit and
@@ -118,7 +118,7 @@ Fresh verification after counterexample closure:
 - OpenClaw full adapter regression: `64 passed`
 - Full Codex + Hermes + runtime RPC channel regression: `63 passed`
 - Final Hermes + runtime RPC boundary regression: `45 passed`
-- Final proactive + Hermes + runtime RPC focused regression: `84 passed`
+- Final proactive + Hermes + runtime RPC focused regression: `85 passed`
 - Task 4-6 recall engine/fusion/Postgres focused regression: `179 passed`
 - `python -m compileall -q eimemory integrations/hermes/eimemory`
 - `git diff --check`

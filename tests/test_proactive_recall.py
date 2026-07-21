@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from datetime import datetime, timedelta, timezone
 import re
 import threading
 import time
@@ -227,6 +228,38 @@ def test_next_service_call_reconciles_stale_sqlite_decision_after_provider_proce
         {"not_used", "suppressed", "rejected"}
     )
     restarted_runtime.close()
+
+
+def test_stale_reconcile_uses_fifteen_minute_lease_and_never_closes_a_fresh_decision(
+    tmp_path,
+) -> None:
+    record = _record("fresh proactive decision must remain live")
+    runtime, _engine, service = _service(tmp_path, [record])
+    assert service.stale_decision_seconds == 900
+    fresh = service.decide(
+        channel="codex", scope=BASE_SCOPE, source_ids=["alpha"],
+        session_id="fresh-session", query_id="fresh-turn",
+        query="Recall a fresh decision",
+    )
+    fresh_created_at = (
+        datetime.now(timezone.utc) - timedelta(seconds=899)
+    ).isoformat()
+    runtime.store.sqlite.conn.execute(
+        "UPDATE proactive_decisions SET created_at=?,updated_at=? WHERE decision_id=?",
+        (fresh_created_at, fresh_created_at, fresh["decision_id"]),
+    )
+    runtime.store.sqlite.conn.commit()
+
+    service.decide(
+        channel="codex", scope=BASE_SCOPE, source_ids=["alpha"],
+        session_id="next-session", query_id="next-turn",
+        query="Recall another fresh decision",
+    )
+
+    persisted = runtime.store.load_proactive_decision(fresh["decision_id"])
+    assert persisted is not None
+    assert persisted["terminal"] is False
+    runtime.close()
 
 
 def test_review_counterexample_02_context_cap_persists_and_acks_only_rendered_citations(tmp_path) -> None:
