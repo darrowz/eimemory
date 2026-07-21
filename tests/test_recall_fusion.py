@@ -8,7 +8,7 @@ import pytest
 
 from eimemory.api.memory import MemoryAPI
 from eimemory.models.records import LinkRef, RecordEnvelope, ScopeRef
-from eimemory.models.identity_aliases import IDENTITY_ALIASES_VERSION
+from eimemory.models.identity_aliases import IDENTITY_ALIASES_VERSION, normalize_identity_text
 from eimemory.retrieval.fusion import (
     FUSION_POLICY_VERSION,
     fuse_ranked_components,
@@ -488,3 +488,9 @@ def test_keyword_exact_evidence_uses_token_boundaries_not_substrings() -> None:
     record = _record("educate retrieval")
     assert engine._keyword_exact_match("cat", record) is False
     assert engine._keyword_exact_match("retrieval", record) is True
+
+
+def test_overlong_identity_text_fails_closed_instead_of_prefix_colliding() -> None:
+    assert normalize_identity_text("x" * 257) == ""
+    record = _record("bounded identity", aliases=["x" * 256 + "a", "safe alias"])
+    assert record.aliases == ["safe alias"]

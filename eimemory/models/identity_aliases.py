@@ -22,7 +22,8 @@ _LEGACY_CONTENT_ALIAS_KINDS = frozenset(
 
 def normalize_identity_text(value: object) -> str:
     text = unicodedata.normalize("NFKC", str(value or ""))
-    return " ".join(text.casefold().split())[:MAX_IDENTITY_TEXT_CHARS]
+    normalized = " ".join(text.casefold().split())
+    return normalized if len(normalized) <= MAX_IDENTITY_TEXT_CHARS else ""
 
 
 def normalize_record_aliases(
