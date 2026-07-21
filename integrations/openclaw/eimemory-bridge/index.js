@@ -2339,8 +2339,14 @@ module.exports.default = {
         ? payload.proactive_recall.context.trim()
         : '';
       const hasProactiveDecision = payload.proactive_recall && typeof payload.proactive_recall === 'object';
+      const policySuggestions = buildPolicySuggestionsContext(
+        bundle?.explanation?.policy_suggestions || bundle?.policy_suggestions,
+      );
+      const authoritativePolicyContext = policySuggestions
+        ? `Relevant eimemory policy context:\n${policySuggestions}`
+        : '';
       const memoryContext = hasProactiveDecision
-        ? proactiveContext
+        ? [authoritativePolicyContext, proactiveContext].filter(Boolean).join('\n\n')
         : buildMemoryPrependContext(bundle, payload.injection_plan);
       const prependContext = [bridgeContext, personaContext, memoryContext].filter(Boolean).join('\n\n');
       if (!prependContext) {

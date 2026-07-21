@@ -2231,6 +2231,53 @@ process.stdout.write(JSON.stringify({
     assert "execution_policy: 先判断播放出口和物理条件; 再确认歌曲和播放方式" in context
 
 
+def test_openclaw_js_bridge_keeps_policy_suggestions_when_proactive_context_is_present(tmp_path) -> None:
+    script = """
+const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
+const handlers = {};
+process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
+plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = handler; } });
+handlers.before_prompt_build({ prompt: 'deploy safely', sessionId: 's', turnId: 't' })
+  .then((result) => process.stdout.write(JSON.stringify(result)))
+  .catch((error) => { console.error(error && error.stack ? error.stack : String(error)); process.exit(1); });
+""".strip()
+    hook_script = tmp_path / "policy-plus-proactive.js"
+    hook_script.write_text(
+        """
+const hook = process.argv[2] || '';
+if (hook === 'before_prompt_build') {
+  process.stdout.write(JSON.stringify({
+    proactive_recall: {
+      decision_id: 'pd:policy-proactive',
+      context: '<eimemory_proactive_context trust="untrusted-data">\\n{"citation":"pm:22222222222222222222","text":"shared memory"}\\n</eimemory_proactive_context>'
+    },
+    task_context: { proactive_turn_id: 't', proactive_source_ids: ['default'] },
+    memory_bundle: {
+      items: [{ record_id: 'ordinary', title: 'ordinary duplicate', summary: 'must not use legacy item path' }],
+      explanation: { policy_suggestions: [{ event_type: 'deploy', success_criteria: 'receipt verified' }] }
+    }
+  }));
+} else {
+  process.stdout.write(JSON.stringify({ ok: true }));
+}
+""".strip(),
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env["EIMEMORY_HOOK_COMMAND"] = f'node "{hook_script}"'
+    result = subprocess.run(
+        ["node", "-e", script], cwd=Path.cwd(), env=env,
+        capture_output=True, text=True, encoding="utf-8", timeout=10, check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    context = json.loads(result.stdout)["prependContext"]
+    assert context.index("policy_suggestions") < context.index("pm:22222222222222222222")
+    assert "event_type: deploy" in context
+    assert "receipt verified" in context
+    assert "ordinary duplicate" not in context
+
+
 def test_openclaw_js_bridge_enforces_injection_plan_lanes(tmp_path) -> None:
     script = """
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;

@@ -892,6 +892,7 @@ def test_openclaw_hooks_capture_recall_and_agent_end(tmp_path) -> None:
     assert audits[0].content["selected_records"][0]["kind"] == "memory"
     assert audits[0].content["source_composition"]["by_kind"]["memory"] >= 1
     assert audits[0].content["session_id"] == "sess-1"
+    assert audits[0].content["injected"] is False
 
 
 def test_openclaw_prompt_audit_bounds_untrusted_context_and_injection_entries(tmp_path) -> None:

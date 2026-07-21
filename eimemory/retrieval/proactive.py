@@ -223,13 +223,16 @@ class ProactiveRecallService:
         )
         normalized_query = _bounded_text(query, _MAX_QUERY_CHARS)
         normalized_query_id = _bounded_text(query_id, 500)
+        normalized_task_type = _bounded_text(task_type or "proactive.recall", 200)
         if not normalized_query or not normalized_query_id:
             raise ValueError("query and query_id are required")
         release = self._current_release(exact_scope, channel=channel_id)
         policy_version = self._policy_version()
         query_digest = sha256(normalized_query.encode("utf-8", errors="replace")).hexdigest()
         cache_key = self._cache_key(
-            channel_id, exact_scope, sources, query_digest, policy_version, release
+            channel_id, exact_scope, sources,
+            sha256(f"{query_digest}\x1f{normalized_task_type}".encode("utf-8")).hexdigest(),
+            policy_version, release,
         )
         if not all(str(release.get(key) or "") for key in release):
             self._record_bypass(
@@ -251,6 +254,39 @@ class ProactiveRecallService:
                 release=release,
                 bypassed=True,
             )
+        exact_existing = self.runtime.store.find_proactive_decision(
+            {
+                "channel": channel_id,
+                "scope": exact_scope,
+                "source_key": self._source_digest(sources),
+                "session_id": normalized_session,
+                "turn_id": normalized_query_id,
+                "release_identity": release,
+            }
+        )
+        if exact_existing is not None:
+            stored_effective_digest = str(
+                exact_existing.get("effective_query_digest") or query_digest
+            )
+            return self._persisted_decision_response(
+                exact_existing,
+                cache_key=self._cache_key(
+                    channel_id, exact_scope, sources, stored_effective_digest,
+                    policy_version, release,
+                ),
+                expected={
+                    "channel": channel_id,
+                    "scope": exact_scope,
+                    "source_key": self._source_digest(sources),
+                    "session_id": normalized_session,
+                    "turn_id": normalized_query_id,
+                    "query_id": normalized_query_id,
+                    "query_digest": query_digest,
+                    "task_type": normalized_task_type,
+                    "policy_version": policy_version,
+                    "release_identity": release,
+                },
+            )
         session_key = self._session_key(channel_id, exact_scope, sources, normalized_session)
         persisted_turns = self.runtime.store.load_proactive_turns(
             {
@@ -269,6 +305,49 @@ class ProactiveRecallService:
                 for item in persisted_turns
             )
             turn_summaries = [summary for _turn_id, summary in session.turns]
+        recall_query = self._recall_query(normalized_query, turn_summaries)
+        effective_query_digest = sha256(
+            f"{normalized_task_type}\x1f{recall_query}".encode("utf-8", errors="replace")
+        ).hexdigest()
+        cache_key = self._cache_key(
+            channel_id, exact_scope, sources, effective_query_digest, policy_version, release
+        )
+        decision_id = "pd:" + sha256(
+            "\x1f".join(
+                [channel_id, *_scope_tuple(exact_scope), *sources, normalized_session,
+                 normalized_query_id, query_digest, effective_query_digest,
+                 normalized_task_type, policy_version,
+                 *(str(release.get(key) or "") for key in sorted(release))]
+            ).encode("utf-8")
+        ).hexdigest()[:32]
+        pair_id = "pp:" + sha256(
+            "\x1f".join(
+                [channel_id, *_scope_tuple(exact_scope), *sources,
+                 effective_query_digest, normalized_task_type, policy_version,
+                 *(str(release.get(key) or "") for key in sorted(release))]
+            ).encode("utf-8")
+        ).hexdigest()[:32]
+        existing = self.runtime.store.load_proactive_decision(decision_id)
+        if existing is not None:
+            return self._persisted_decision_response(
+                existing,
+                cache_key=cache_key,
+                expected={
+                    "channel": channel_id,
+                    "scope": exact_scope,
+                    "source_key": self._source_digest(sources),
+                    "session_id": normalized_session,
+                    "turn_id": normalized_query_id,
+                    "query_id": normalized_query_id,
+                    "query_digest": query_digest,
+                    "task_type": normalized_task_type,
+                    "effective_query_digest": effective_query_digest,
+                    "policy_version": policy_version,
+                    "release_identity": release,
+                    "pair_id": pair_id,
+                },
+            )
+        with self._lock:
             cached = self._candidate_cache.get(cache_key)
             if cached is not None:
                 self._candidate_cache.move_to_end(cache_key)
@@ -277,11 +356,10 @@ class ProactiveRecallService:
             # gates to this exact turn. Never replace that bundle with a cache.
             cached = None
         if cached is None:
-            recall_query = self._recall_query(normalized_query, turn_summaries)
             try:
                 bundle = recall_bundle or self._recall_with_timeout(
                     query=recall_query, scope=exact_scope,
-                    source_ids=sources, task_type=task_type,
+                    source_ids=sources, task_type=normalized_task_type,
                 )
             except Exception as exc:  # noqa: BLE001 - proactive recall is advisory
                 self._record_bypass(
@@ -344,19 +422,6 @@ class ProactiveRecallService:
             channel=channel_id, scope=exact_scope, session_id=normalized_session,
             query_digest=query_digest, policy_version=policy_version,
         )
-        decision_id = "pd:" + sha256(
-            "\x1f".join(
-                [channel_id, *(_scope_tuple(exact_scope)), *sources, normalized_session,
-                 normalized_query_id, query_digest, policy_version,
-                 *(str(release.get(key) or "") for key in sorted(release))]
-            ).encode("utf-8")
-        ).hexdigest()[:32]
-        pair_id = "pp:" + sha256(
-            "\x1f".join(
-                [channel_id, *_scope_tuple(exact_scope), *sources, query_digest, policy_version,
-                 *(str(release.get(key) or "") for key in sorted(release))]
-            ).encode("utf-8")
-        ).hexdigest()[:32]
         decision_items: dict[str, _DecisionItem] = {}
         public_items: list[dict[str, Any]] = []
         combined_details = [
@@ -405,7 +470,14 @@ class ProactiveRecallService:
             release_bound=release_bound,
             items=decision_items,
         )
-        decision_payload = self._decision_payload(state, query_digest=query_digest)
+        decision_payload = self._decision_payload(
+            state, query_digest=query_digest, context=context,
+            task_type=normalized_task_type,
+            effective_query_digest=effective_query_digest,
+        )
+        public_by_citation = {
+            str(item["citation"]): item for item in persisted_items
+        }
         item_payloads = [
             {
                 "citation": item.citation,
@@ -414,8 +486,11 @@ class ProactiveRecallService:
                 "confidence": item.confidence,
                 "state": item.state,
                 "mandatory": item.mandatory,
+                "order": index,
+                "title": str(public_by_citation[item.citation].get("title") or ""),
+                "text": str(public_by_citation[item.citation].get("text") or ""),
             }
-            for item in decision_items.values()
+            for index, item in enumerate(decision_items.values(), start=1)
         ]
         volunteered_feedback = [
             self._feedback_record(
@@ -436,6 +511,16 @@ class ProactiveRecallService:
                 query_digest=query_digest,
                 reason=f"decision_{type(exc).__name__}",
             )
+            if recall_bundle is not None:
+                return self.mandatory_fallback(
+                    channel=channel_id,
+                    scope=exact_scope,
+                    source_ids=sources,
+                    records=[*recall_bundle.items, *recall_bundle.rules],
+                    query_id=normalized_query_id,
+                    cache_key=cache_key,
+                    release=release,
+                )
             return self._empty_decision(
                 query_id=normalized_query_id,
                 cache_key=cache_key,
@@ -641,6 +726,49 @@ class ProactiveRecallService:
             ],
         }
 
+    def _persisted_decision_response(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        cache_key: str,
+        expected: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        for key, value in expected.items():
+            if payload.get(key) != value:
+                raise ValueError("persisted proactive decision identity conflict")
+        public_items = [
+            {
+                "record_id": str(raw.get("record_id") or ""),
+                "source_id": str(raw.get("source_id") or "default"),
+                "citation": str(raw.get("citation") or ""),
+                "confidence": float(raw.get("confidence") or 0.0),
+                "title": str(raw.get("title") or ""),
+                "text": str(raw.get("text") or ""),
+                "mandatory": bool(raw.get("mandatory")),
+            }
+            for raw in (payload.get("items") or [])
+            if isinstance(raw, Mapping)
+        ]
+        control = bool(payload.get("control_cohort"))
+        delivered = [item for item in public_items if item["mandatory"]] if control else public_items
+        suppressed = [item for item in public_items if not item["mandatory"]] if control else []
+        return {
+            "ok": True,
+            "bypassed": False,
+            "decision_id": str(payload.get("decision_id") or ""),
+            "query_id": str(payload.get("query_id") or ""),
+            "cache_key": str(cache_key),
+            "control_cohort": control,
+            "release_identity": dict(payload.get("release_identity") or {}),
+            "release_bound": bool(payload.get("release_bound")),
+            "policy_version": str(payload.get("policy_version") or ""),
+            "pair_id": str(payload.get("pair_id") or ""),
+            "items": delivered,
+            "suppressed_items": suppressed,
+            "context": str(payload.get("context") or ""),
+            "idempotent": True,
+        }
+
     def paired_metrics(
         self,
         *,
@@ -676,7 +804,7 @@ class ProactiveRecallService:
             "control": {state: 0 for state in ("used", "not_used", "suppressed", "rejected")},
             "treatment": {state: 0 for state in ("used", "not_used", "suppressed", "rejected")},
         }
-        arms: dict[str, dict[str, dict[str, Any]]] = {}
+        arms: dict[str, dict[str, list[dict[str, Any]]]] = {}
         for decision in decisions:
             arm = "control" if bool(decision.get("control_cohort")) else "treatment"
             for item in decision.get("items") or []:
@@ -688,24 +816,36 @@ class ProactiveRecallService:
                 and isinstance(decision.get("outcome_success"), bool)
                 and str(decision.get("pair_id") or "")
             ):
-                arms.setdefault(str(decision["pair_id"]), {})[arm] = decision
+                arms.setdefault(str(decision["pair_id"]), {}).setdefault(arm, []).append(decision)
         pairs: list[dict[str, Any]] = []
         for pair_id, pair_arms in sorted(arms.items()):
             if not {"control", "treatment"}.issubset(pair_arms):
                 continue
-            control = pair_arms["control"]
-            treatment = pair_arms["treatment"]
-            pairs.append(
-                {
-                    "pair_id": pair_id,
-                    "control_success": bool(control["outcome_success"]),
-                    "treatment_success": bool(treatment["outcome_success"]),
-                    "control_quality": control.get("outcome_quality"),
-                    "treatment_quality": treatment.get("outcome_quality"),
-                    "control_latency_ms": control.get("outcome_latency_ms"),
-                    "treatment_latency_ms": treatment.get("outcome_latency_ms"),
-                }
+            control_samples = sorted(
+                pair_arms["control"],
+                key=lambda item: (str(item.get("created_at") or ""), str(item.get("decision_id") or "")),
             )
+            treatment_samples = sorted(
+                pair_arms["treatment"],
+                key=lambda item: (str(item.get("created_at") or ""), str(item.get("decision_id") or "")),
+            )
+            for sample_index, (control, treatment) in enumerate(
+                zip(control_samples, treatment_samples), start=1
+            ):
+                pairs.append(
+                    {
+                        "pair_id": pair_id,
+                        "sample_index": sample_index,
+                        "control_decision_id": str(control.get("decision_id") or ""),
+                        "treatment_decision_id": str(treatment.get("decision_id") or ""),
+                        "control_success": bool(control["outcome_success"]),
+                        "treatment_success": bool(treatment["outcome_success"]),
+                        "control_quality": control.get("outcome_quality"),
+                        "treatment_quality": treatment.get("outcome_quality"),
+                        "control_latency_ms": control.get("outcome_latency_ms"),
+                        "treatment_latency_ms": treatment.get("outcome_latency_ms"),
+                    }
+                )
         pair_count = len(pairs)
         result: dict[str, Any] = {
             **usage,
@@ -1325,7 +1465,14 @@ class ProactiveRecallService:
         return record
 
     @staticmethod
-    def _decision_payload(state: _DecisionState, *, query_digest: str) -> dict[str, Any]:
+    def _decision_payload(
+        state: _DecisionState,
+        *,
+        query_digest: str,
+        context: str,
+        task_type: str,
+        effective_query_digest: str,
+    ) -> dict[str, Any]:
         return {
             "decision_id": state.decision_id,
             "channel": state.channel,
@@ -1337,11 +1484,14 @@ class ProactiveRecallService:
             "query_id": state.query_id,
             "query_digest": query_digest,
             "query": state.query,
+            "task_type": str(task_type),
+            "effective_query_digest": str(effective_query_digest),
             "policy_version": state.policy_version,
             "release_identity": dict(state.release_identity),
             "release_bound": state.release_bound,
             "control_cohort": state.control_cohort,
             "pair_id": state.pair_id,
+            "context": str(context),
         }
 
     @staticmethod

@@ -183,7 +183,10 @@ class OpenClawMemoryHooks:
         latency_ms = round((perf_counter() - start) * 1000.0, 3)
         recall_context["latency_ms"] = latency_ms
         bundle.explanation["latency_ms"] = latency_ms
-        self._audit_prompt_recall(event=event, bundle=bundle, injected=bool(bundle.items))
+        # Actual injection happens in the JS host after this hook returns and
+        # is recorded only by proactive_injected. This legacy selection audit
+        # must never claim delivery before that acknowledgement.
+        self._audit_prompt_recall(event=event, bundle=bundle, injected=False)
         persona_trace = self._record_persona_trace(
             event=event,
             persona_guidance=persona_guidance,
@@ -923,11 +926,14 @@ class OpenClawMemoryHooks:
         }
         record = RecordEnvelope.create(
             kind="recall_view",
-            title="OpenClaw memory injection audit",
-            summary=f"Injected {len(injected_ids)} memory records before prompt build",
-            detail="Audit record for OpenClaw before_prompt_build memory recall.",
+            title="OpenClaw memory selection audit",
+            summary=(
+                f"Selected {len(injected_ids)} memory records; actual host injection "
+                "requires proactive acknowledgement"
+            ),
+            detail="Selection audit for OpenClaw before_prompt_build memory recall.",
             content=content,
-            tags=["openclaw", "before_prompt_build", "injection_audit"],
+            tags=["openclaw", "before_prompt_build", "injection_audit", "selection_audit"],
             source="openclaw.before_prompt_build",
             scope=scope,
             meta=meta,
@@ -944,9 +950,12 @@ class OpenClawMemoryHooks:
         if raw_scope != scope:
             raw_record = RecordEnvelope.create(
                 kind="recall_view",
-                title="OpenClaw memory injection audit",
-                summary=f"Injected {len(injected_ids)} memory records before prompt build",
-                detail="Audit record for OpenClaw before_prompt_build memory recall.",
+                title="OpenClaw memory selection audit",
+                summary=(
+                    f"Selected {len(injected_ids)} memory records; actual host injection "
+                    "requires proactive acknowledgement"
+                ),
+                detail="Selection audit for OpenClaw before_prompt_build memory recall.",
                 content=dict(content),
                 tags=["openclaw", "before_prompt_build", "injection_audit"],
                 source="openclaw.before_prompt_build",

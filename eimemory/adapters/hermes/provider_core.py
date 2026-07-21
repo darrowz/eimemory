@@ -265,7 +265,6 @@ class HermesMemoryProviderCore:
     ) -> None:
         """Close explicit-citation feedback and append one bounded completed turn."""
 
-        terminal_outcome = _verified_terminal_outcome(kwargs)
         del kwargs  # In particular, never iterate conversation_history.
         query = _bounded_text(user_message, MAX_TURN_CHARS)
         assistant = _bounded_text(assistant_message, MAX_TURN_CHARS)
@@ -274,7 +273,7 @@ class HermesMemoryProviderCore:
         key = self._prefetch_key(session, _bounded_text(user_message, 8_000))
         with self._lock:
             pending = self._pending_proactive.pop(key, None)
-            if pending is None:
+            if pending is None and not query:
                 matches = [
                     (pending_key, value)
                     for pending_key, value in self._pending_proactive.items()
@@ -295,7 +294,8 @@ class HermesMemoryProviderCore:
                     "turn_id": pending["decision_turn_id"],
                     "decision_id": pending["decision_id"],
                     "used_citations": sorted(set(_PROACTIVE_CITATION.findall(assistant))),
-                    "terminal_outcome": terminal_outcome,
+                    # post_llm_call is not a host-attested task outcome.
+                    "terminal_outcome": {},
                 },
             )
         completed_turn = host_turn or str((pending or {}).get("host_turn_id") or "")
@@ -637,6 +637,7 @@ class HermesMemoryProviderCore:
 
     def _fetch_context(self, query: str, *, session_id: str = "") -> str:
         session = str(session_id or self._session_id).strip() or "hermes-session"
+        source_ids = _source_ids_from_env("default")
         decision_turn_id = "hermes-query-" + sha256(
             f"{session}\0{query}".encode("utf-8", errors="replace")
         ).hexdigest()[:24]
@@ -644,7 +645,7 @@ class HermesMemoryProviderCore:
             "adapter.proactive_prefetch",
             {
                 **self._common_params(),
-                "source_ids": _source_ids_from_env("default"),
+                "source_ids": source_ids,
                 "session_id": session,
                 "turn_id": decision_turn_id,
                 "query": query,
@@ -665,6 +666,8 @@ class HermesMemoryProviderCore:
                     "citations": sorted(set(_PROACTIVE_CITATION.findall(context))),
                     "query": query,
                     "session_id": session,
+                    "scope": dict(self._scope),
+                    "source_ids": list(source_ids),
                 }
                 self._pending_proactive.move_to_end(key)
                 while len(self._pending_proactive) > self._max_prefetch_cache_entries:
@@ -683,7 +686,7 @@ class HermesMemoryProviderCore:
                     type(exc).__name__,
                 )
             finally:
-                self._complete_prefetch(key)
+                self._complete_prefetch(key, background=True)
             with self._lock:
                 pending = self._pending_prefetch
                 self._pending_prefetch = None
@@ -693,15 +696,32 @@ class HermesMemoryProviderCore:
                 self._prefetch_thread = None
                 return
 
-    def _complete_prefetch(self, key: tuple[str, ...]) -> None:
+    def _complete_prefetch(self, key: tuple[str, ...], *, background: bool = False) -> None:
+        abandoned: dict[str, Any] = {}
         with self._lock:
             waiter = self._inflight_prefetch.get(key)
             if self._inflight_prefetch_waiters.get(key, 0) <= 0:
                 self._inflight_prefetch.pop(key, None)
                 self._inflight_prefetch_results.pop(key, None)
                 self._inflight_prefetch_waiters.pop(key, None)
+                if background:
+                    abandoned = dict(self._pending_proactive.pop(key, None) or {})
             if waiter is not None:
                 waiter.set()
+        if abandoned:
+            self._safe_call(
+                "adapter.proactive_terminal",
+                {
+                    "channel": "hermes",
+                    "scope": dict(abandoned.get("scope") or self._scope),
+                    "source_ids": list(abandoned.get("source_ids") or ["default"]),
+                    "session_id": str(abandoned.get("session_id") or self._session_id),
+                    "turn_id": str(abandoned.get("decision_turn_id") or ""),
+                    "decision_id": str(abandoned.get("decision_id") or ""),
+                    "used_citations": [],
+                    "terminal_outcome": {},
+                },
+            )
 
     def _consume_prefetch_result(self, key: tuple[str, ...]) -> str:
         with self._lock:
@@ -787,29 +807,6 @@ class HermesMemoryProviderCore:
 def _bounded_text(value: Any, limit: int) -> str:
     text = str(value or "").strip()
     return text if len(text) <= limit else text[:limit]
-
-
-def _verified_terminal_outcome(value: Mapping[str, Any]) -> dict[str, Any]:
-    outcome = value.get("outcome") if isinstance(value.get("outcome"), Mapping) else {}
-    success = outcome.get("success") if isinstance(outcome, Mapping) else None
-    if not isinstance(success, bool):
-        success = value.get("success")
-    verification = _bounded_text(
-        (outcome.get("verification") if isinstance(outcome, Mapping) else "")
-        or value.get("verification"),
-        1_000,
-    )
-    verified_flag = value.get("verified") is True or bool(verification)
-    if not verified_flag or not isinstance(success, bool):
-        return {}
-    result: dict[str, Any] = {"verified": True, "success": success}
-    quality = outcome.get("quality") if isinstance(outcome, Mapping) else value.get("quality")
-    if isinstance(quality, (int, float)) and not isinstance(quality, bool) and 0 <= float(quality) <= 1:
-        result["quality"] = float(quality)
-    latency = value.get("duration_ms", outcome.get("latency_ms") if isinstance(outcome, Mapping) else None)
-    if isinstance(latency, (int, float)) and not isinstance(latency, bool) and float(latency) >= 0:
-        result["latency_ms"] = float(latency)
-    return result
 
 
 def _source_ids_from_env(default_source: str) -> list[str]:

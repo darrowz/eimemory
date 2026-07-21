@@ -72,12 +72,30 @@ formal run was `9 passed, 3 failed`; after correction the same named matrix is
 `12 passed`. The shutdown case also exposed and eliminated a Windows SQLite
 cross-thread close access violation.
 
+Post-commit review found one additional Hermes counterexample: a completed
+background prefetch with no consumer could leave a ghost pending decision and
+be mistaken for the next different query. A dedicated RED test now proves that
+unconsumed background decisions close as `not_used`, while the no-ID unique
+pending fallback is permitted only for an empty query and never crosses query
+identity.
+
+The same review cycle then closed further evidence-integrity cases: exact-turn
+replay now returns a persisted immutable context/item snapshot even after the
+turn ledger changes; verified task outcomes are first-write CAS values with
+identical retry and conflict rejection; candidate caches bind the effective
+four-turn recall query and task type; repeated paired samples are matched
+deterministically instead of overwritten; Codex Stop and Hermes post-LLM
+payloads cannot forge verified task evidence; and OpenClaw preserves policy
+suggestions plus mandatory fallback context when optional proactive persistence
+fails. Legacy OpenClaw recall-view rows are selection audits (`injected=false`);
+actual delivery remains the citation-bound proactive acknowledgement.
+
 Fresh verification after counterexample closure:
 
 - Named independent-review counterexamples: `12 passed`
-- Task 7 service + Codex + Hermes + RPC + OpenClaw JS selection: `75 passed`
+- Task 7 service + Codex + Hermes + RPC + OpenClaw JS selection: `84 passed`
 - OpenClaw full adapter regression: `64 passed`
-- Full Codex + Hermes + runtime RPC channel regression: `60 passed`
+- Full Codex + Hermes + runtime RPC channel regression: `63 passed`
 - Task 4-6 recall engine/fusion/Postgres focused regression: `179 passed`
 - `python -m compileall -q eimemory integrations/hermes/eimemory`
 - `git diff --check`

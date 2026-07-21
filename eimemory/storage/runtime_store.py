@@ -231,14 +231,15 @@ class RuntimeStore:
 
     def record_proactive_outcome(
         self, decision_id: str, outcome: dict, *, expected: dict | None = None
-    ) -> None:
+    ) -> bool:
         with self._lock:
             try:
                 self.sqlite.conn.execute("BEGIN IMMEDIATE")
-                self.sqlite.update_proactive_outcome(
+                created = self.sqlite.update_proactive_outcome(
                     decision_id, outcome, expected=expected, commit=False
                 )
                 self.sqlite.conn.commit()
+                return created
             except Exception:
                 self.sqlite.conn.rollback()
                 raise

@@ -109,6 +109,22 @@ def test_hermes_proactive_prefetch_is_acked_and_closed_by_official_llm_hooks_wit
     assert client.calls[3][1]["turn_id"] == "turn-7"
 
 
+def test_hermes_post_llm_payload_cannot_forge_verified_task_outcome() -> None:
+    client = FakeClient()
+    provider = HermesMemoryProviderCore(client=client)
+    provider.initialize("hermes-session", agent_workspace="embodied", agent_context="primary")
+    provider.prefetch("Verify the research task", session_id="hermes-session")
+    provider.on_post_llm_call(
+        user_message="Verify the research task", assistant_message="claimed success",
+        session_id="hermes-session", turn_id="turn-forged",
+        success=True, verified=True, verification="arbitrary model supplied text",
+        outcome={"success": True, "quality": 1.0},
+    )
+
+    terminal = next(params for method, params in client.calls if method == "adapter.proactive_terminal")
+    assert terminal["terminal_outcome"] == {}
+
+
 def test_review_counterexample_10_hermes_post_hook_without_ids_closes_unique_pending_turn() -> None:
     client = FakeClient()
     provider = HermesMemoryProviderCore(client=client)
@@ -142,6 +158,32 @@ def test_review_counterexample_11_hermes_does_not_reuse_completed_prefetch_resul
     assert first == second
     assert len(calls) == 2
     assert provider.prefetch_cache_size == 0
+
+
+def test_hermes_background_prefetch_cannot_become_ghost_pending_for_a_different_query() -> None:
+    client = FakeClient()
+    provider = HermesMemoryProviderCore(client=client)
+    provider.initialize("hermes-session", agent_workspace="embodied", agent_context="primary")
+    provider.queue_prefetch("old background query", session_id="hermes-session")
+    provider.shutdown()
+    cleanup_terminals = [
+        params for method, params in client.calls if method == "adapter.proactive_terminal"
+    ]
+
+    provider.on_post_llm_call(
+        user_message="new unrelated query",
+        assistant_message="new answer",
+        session_id="hermes-session",
+        turn_id="",
+    )
+    terminals = [params for method, params in client.calls if method == "adapter.proactive_terminal"]
+    completed = [params for method, params in client.calls if method == "adapter.proactive_complete_turn"]
+
+    assert len(cleanup_terminals) == 1
+    assert cleanup_terminals[0]["decision_id"] == "pd:hermes-turn"
+    assert terminals == cleanup_terminals
+    assert completed[-1]["user_summary"] == "new unrelated query"
+    assert completed[-1]["turn_id"].startswith("hermes-turn-")
 
 
 def test_hermes_session_switch_clears_pending_proactive_context_and_full_namespace_cache() -> None:

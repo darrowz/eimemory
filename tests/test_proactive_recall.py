@@ -140,9 +140,49 @@ def test_review_counterexample_01_idempotent_decision_never_returns_unpersisted_
     stored = runtime.store.load_proactive_decision(first["decision_id"])
 
     assert [item["record_id"] for item in first["items"]] == [first_record.record_id]
-    assert second["bypassed"] is True
-    assert second["items"] == []
+    assert second["bypassed"] is False
+    assert [item["record_id"] for item in second["items"]] == [first_record.record_id]
     assert [item["record_id"] for item in stored["items"]] == [first_record.record_id]
+    runtime.close()
+
+
+def test_identical_decision_replay_returns_the_persisted_render_snapshot(tmp_path) -> None:
+    runtime, engine, service = _service(tmp_path, [_record("stable replay record")])
+    request = {
+        "channel": "codex", "scope": BASE_SCOPE, "source_ids": ["alpha"],
+        "session_id": "replay-session", "query_id": "replay-turn",
+        "query": "Recall stable replay record",
+    }
+    first = service.decide(**request)
+    second = service.decide(**request)
+
+    assert second["bypassed"] is False
+    assert second["decision_id"] == first["decision_id"]
+    assert second["items"] == first["items"]
+    assert second["context"] == first["context"]
+    assert len(engine.requests) == 1
+    runtime.close()
+
+
+def test_exact_turn_replay_after_completed_turn_still_returns_original_decision(tmp_path) -> None:
+    runtime, engine, service = _service(tmp_path, [_record("post-terminal replay record")])
+    request = {
+        "channel": "codex", "scope": BASE_SCOPE, "source_ids": ["alpha"],
+        "session_id": "post-terminal-session", "query_id": "post-terminal-turn",
+        "query": "Recall post-terminal replay record", "task_type": "code.task",
+    }
+    first = service.decide(**request)
+    service.complete_turn(
+        channel="codex", scope=BASE_SCOPE, source_ids=["alpha"],
+        session_id="post-terminal-session", turn_id="post-terminal-turn",
+        user_summary=request["query"], assistant_summary="Completed with evidence",
+    )
+    replay = service.decide(**request)
+
+    assert replay["decision_id"] == first["decision_id"]
+    assert replay["context"] == first["context"]
+    assert replay["items"] == first["items"]
+    assert len(engine.requests) == 1
     runtime.close()
 
 
@@ -524,6 +564,32 @@ def test_decision_and_feedback_atomic_failure_rolls_back_then_retry_succeeds(tmp
     runtime.close()
 
 
+def test_openclaw_bundle_persistence_failure_preserves_mandatory_policy_fallback(tmp_path, monkeypatch) -> None:
+    rule = _record("Never weaken the verified deployment gate", channel="openclaw")
+    rule.kind = "rule"
+    runtime, _engine, service = _service(tmp_path, [])
+    bundle = RecallBundle(
+        items=[], rules=[rule], reflections=[], confidence=0.9,
+        next_action_hint="", explanation={},
+    )
+    monkeypatch.setattr(
+        runtime.store,
+        "record_proactive_decision",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("ledger unavailable")),
+    )
+
+    result = service.decide(
+        channel="openclaw", scope=BASE_SCOPE, source_ids=["alpha"],
+        session_id="fallback-session", query_id="fallback-turn",
+        query="Deploy safely", recall_bundle=bundle,
+    )
+
+    assert result["bypassed"] is True
+    assert result["reason"] == "mandatory_policy_fallback"
+    assert "Never weaken the verified deployment gate" in result["context"]
+    runtime.close()
+
+
 def test_transition_feedback_failure_rolls_back_state_and_is_retryable(tmp_path, monkeypatch) -> None:
     runtime, _engine, service = _service(tmp_path, [_record("transition durable record")])
     decision = service.decide(
@@ -616,6 +682,32 @@ def test_release_provider_change_automatically_invalidates_candidate_cache(tmp_p
     assert first["cache_key"] != second["cache_key"]
     assert len(engine.requests) == 2
     assert second["release_identity"]["release_commit"] == "b" * 40
+    runtime.close()
+
+
+def test_candidate_cache_binds_the_effective_four_turn_window_across_sessions(tmp_path) -> None:
+    runtime, engine, service = _service(tmp_path, [_record("window-sensitive record")])
+    service.complete_turn(
+        channel="codex", scope=BASE_SCOPE, source_ids=["alpha"], session_id="window-a",
+        turn_id="history-a", user_summary="Project Zephyr", assistant_summary="Use PostgreSQL",
+    )
+    service.complete_turn(
+        channel="codex", scope=BASE_SCOPE, source_ids=["alpha"], session_id="window-b",
+        turn_id="history-b", user_summary="Project Orion", assistant_summary="Use SQLite",
+    )
+    first = service.decide(
+        channel="codex", scope=BASE_SCOPE, source_ids=["alpha"], session_id="window-a",
+        query_id="window-turn-a", query="Recall the storage decision", task_type="code.task",
+    )
+    second = service.decide(
+        channel="codex", scope=BASE_SCOPE, source_ids=["alpha"], session_id="window-b",
+        query_id="window-turn-b", query="Recall the storage decision", task_type="code.task",
+    )
+
+    assert len(engine.requests) == 2
+    assert "zephyr" in engine.requests[0].query.casefold()
+    assert "orion" in engine.requests[1].query.casefold()
+    assert first["cache_key"] != second["cache_key"]
     runtime.close()
 
 
@@ -743,6 +835,79 @@ def test_review_counterexample_04_paired_effect_requires_verified_task_outcomes(
     assert available["quality_delta"] == 0.5
     assert available["latency_ms_delta"] == -10.0
     assert available["used_rate_delta"] is None
+    runtime.close()
+
+
+def test_verified_task_outcome_is_immutable_and_identical_retry_is_idempotent(tmp_path) -> None:
+    runtime, _engine, service = _service(tmp_path, [_record("immutable task outcome")])
+    decision = service.decide(
+        channel="codex", scope=BASE_SCOPE, source_ids=["alpha"],
+        session_id="immutable-session", query_id="immutable-turn",
+        query="Recall immutable task outcome",
+    )
+    exact = _exact_transition(
+        decision, session_id="immutable-session", turn_id="immutable-turn"
+    )
+    first = service.mark_terminal(
+        **exact,
+        terminal_outcome={"verified": True, "success": False, "quality": 0.1},
+    )
+    same = service.mark_terminal(
+        **exact,
+        terminal_outcome={"verified": True, "success": False, "quality": 0.1},
+    )
+    conflict = service.mark_terminal(
+        **exact,
+        terminal_outcome={"verified": True, "success": True, "quality": 0.9},
+    )
+    stored = runtime.store.load_proactive_decision(decision["decision_id"])
+
+    assert first["ok"] is True and first["outcome_recorded"] is True
+    assert same["ok"] is True and same["outcome_recorded"] is True
+    assert conflict["ok"] is False and conflict["outcome_recorded"] is False
+    assert stored["outcome_success"] is False
+    assert stored["outcome_quality"] == 0.1
+    runtime.close()
+
+
+def test_paired_metrics_count_repeated_verified_samples_without_overwriting(tmp_path) -> None:
+    runtime, _engine, control = _service(
+        tmp_path, [_record("repeated pair record")], control_percent=100,
+    )
+    treatment = ProactiveRecallService(runtime, release_identity=RELEASE, control_percent=0)
+    for index in range(2):
+        control_decision = control.decide(
+            channel="codex", scope=BASE_SCOPE, source_ids=["alpha"],
+            session_id=f"repeat-control-{index}", query_id=f"repeat-control-turn-{index}",
+            query="Recall repeated pair record", task_type="code.task",
+        )
+        control.mark_terminal(
+            **_exact_transition(
+                control_decision,
+                session_id=f"repeat-control-{index}",
+                turn_id=f"repeat-control-turn-{index}",
+            ),
+            terminal_outcome={"verified": True, "success": False},
+        )
+        treatment_decision = treatment.decide(
+            channel="codex", scope=BASE_SCOPE, source_ids=["alpha"],
+            session_id=f"repeat-treatment-{index}", query_id=f"repeat-treatment-turn-{index}",
+            query="Recall repeated pair record", task_type="code.task",
+        )
+        treatment.mark_terminal(
+            **_exact_transition(
+                treatment_decision,
+                session_id=f"repeat-treatment-{index}",
+                turn_id=f"repeat-treatment-turn-{index}",
+            ),
+            terminal_outcome={"verified": True, "success": True},
+        )
+
+    metrics = treatment.paired_metrics(
+        scope=BASE_SCOPE, channel="codex", source_ids=["alpha"]
+    )
+    assert metrics["pair_count"] == 2
+    assert metrics["success_rate_delta"] == 1.0
     runtime.close()
 
 

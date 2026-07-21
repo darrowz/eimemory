@@ -295,6 +295,8 @@ class SqliteRecordStore:
                 query_id TEXT NOT NULL,
                 query_digest TEXT NOT NULL,
                 query_text TEXT NOT NULL,
+                task_type TEXT NOT NULL DEFAULT '',
+                effective_query_digest TEXT NOT NULL DEFAULT '',
                 policy_version TEXT NOT NULL,
                 release_commit TEXT NOT NULL,
                 release_version TEXT NOT NULL,
@@ -303,6 +305,7 @@ class SqliteRecordStore:
                 release_bound INTEGER NOT NULL,
                 control_cohort INTEGER NOT NULL,
                 pair_id TEXT NOT NULL,
+                context_text TEXT NOT NULL DEFAULT '',
                 terminal INTEGER NOT NULL DEFAULT 0,
                 outcome_success INTEGER,
                 outcome_verified INTEGER NOT NULL DEFAULT 0,
@@ -325,6 +328,9 @@ class SqliteRecordStore:
                 confidence REAL NOT NULL,
                 state TEXT NOT NULL,
                 mandatory INTEGER NOT NULL DEFAULT 0,
+                item_order INTEGER NOT NULL DEFAULT 0,
+                title_text TEXT NOT NULL DEFAULT '',
+                content_text TEXT NOT NULL DEFAULT '',
                 updated_at TEXT NOT NULL,
                 PRIMARY KEY(decision_id, citation),
                 FOREIGN KEY(decision_id) REFERENCES proactive_decisions(decision_id) ON DELETE CASCADE
@@ -346,6 +352,9 @@ class SqliteRecordStore:
             str(row["name"]) for row in self.conn.execute("PRAGMA table_info(proactive_decisions)")
         }
         for name, definition in (
+            ("context_text", "TEXT NOT NULL DEFAULT ''"),
+            ("task_type", "TEXT NOT NULL DEFAULT ''"),
+            ("effective_query_digest", "TEXT NOT NULL DEFAULT ''"),
             ("outcome_success", "INTEGER"),
             ("outcome_verified", "INTEGER NOT NULL DEFAULT 0"),
             ("outcome_quality", "REAL"),
@@ -353,6 +362,18 @@ class SqliteRecordStore:
         ):
             if name not in decision_columns:
                 self.conn.execute(f"ALTER TABLE proactive_decisions ADD COLUMN {name} {definition}")
+        item_columns = {
+            str(row["name"]) for row in self.conn.execute("PRAGMA table_info(proactive_decision_items)")
+        }
+        for name, definition in (
+            ("item_order", "INTEGER NOT NULL DEFAULT 0"),
+            ("title_text", "TEXT NOT NULL DEFAULT ''"),
+            ("content_text", "TEXT NOT NULL DEFAULT ''"),
+        ):
+            if name not in item_columns:
+                self.conn.execute(
+                    f"ALTER TABLE proactive_decision_items ADD COLUMN {name} {definition}"
+                )
 
     def append_proactive_turn(
         self,
@@ -437,14 +458,19 @@ class SqliteRecordStore:
     ) -> tuple[dict[str, Any], bool]:
         existing = self.load_proactive_decision(str(payload.get("decision_id") or ""))
         if existing is not None:
-            stable = ("channel", "scope", "source_key", "session_id", "turn_id", "query_id", "query_digest", "policy_version", "release_identity", "control_cohort", "pair_id")
+            stable = (
+                "channel", "scope", "source_key", "session_id", "turn_id", "query_id",
+                "query_digest", "policy_version", "release_identity", "control_cohort",
+                "pair_id", "context", "task_type", "effective_query_digest",
+            )
             if any(existing.get(key) != payload.get(key) for key in stable):
                 raise ValueError("proactive decision identity conflict")
             requested_items = sorted(
                 (
                     str(item.get("citation") or ""), str(item.get("record_id") or ""),
                     normalize_source_id(item.get("source_id")), round(float(item.get("confidence") or 0.0), 6),
-                    bool(item.get("mandatory")),
+                    bool(item.get("mandatory")), str(item.get("title") or ""),
+                    str(item.get("text") or ""), int(item.get("order") or 0),
                 )
                 for item in items
             )
@@ -452,7 +478,8 @@ class SqliteRecordStore:
                 (
                     str(item.get("citation") or ""), str(item.get("record_id") or ""),
                     normalize_source_id(item.get("source_id")), round(float(item.get("confidence") or 0.0), 6),
-                    bool(item.get("mandatory")),
+                    bool(item.get("mandatory")), str(item.get("title") or ""),
+                    str(item.get("text") or ""), int(item.get("order") or 0),
                 )
                 for item in existing.get("items", [])
             )
@@ -464,29 +491,34 @@ class SqliteRecordStore:
         created_at = str(payload.get("created_at") or datetime.now(timezone.utc).isoformat())
         self.conn.execute(
             "INSERT INTO proactive_decisions(decision_id,channel,tenant_id,agent_id,workspace_id,user_id,source_key,"
-            "source_ids_json,session_id,turn_id,query_id,query_digest,query_text,policy_version,release_commit,"
-            "release_version,deployment_receipt_id,release_session_id,release_bound,control_cohort,pair_id,created_at,updated_at) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "source_ids_json,session_id,turn_id,query_id,query_digest,query_text,task_type,effective_query_digest,policy_version,release_commit,"
+            "release_version,deployment_receipt_id,release_session_id,release_bound,control_cohort,pair_id,context_text,created_at,updated_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 str(payload["decision_id"]), str(payload["channel"]), scope.tenant_id, scope.agent_id,
                 scope.workspace_id, scope.user_id, str(payload["source_key"]),
                 json.dumps(list(payload.get("source_ids") or []), ensure_ascii=False), str(payload["session_id"]),
                 str(payload.get("turn_id") or payload["query_id"]), str(payload["query_id"]),
-                str(payload["query_digest"]), str(payload.get("query") or ""), str(payload["policy_version"]),
+                str(payload["query_digest"]), str(payload.get("query") or ""),
+                str(payload.get("task_type") or ""), str(payload.get("effective_query_digest") or ""),
+                str(payload["policy_version"]),
                 str(release.get("release_commit") or ""), str(release.get("release_version") or ""),
                 str(release.get("deployment_receipt_id") or ""), str(release.get("release_session_id") or ""),
                 int(bool(payload.get("release_bound"))), int(bool(payload.get("control_cohort"))),
-                str(payload.get("pair_id") or ""), created_at, created_at,
+                str(payload.get("pair_id") or ""), str(payload.get("context") or ""),
+                created_at, created_at,
             ),
         )
         for item in items:
             self.conn.execute(
-                "INSERT INTO proactive_decision_items(decision_id,citation,record_id,source_id,confidence,state,mandatory,updated_at) "
-                "VALUES(?,?,?,?,?,?,?,?)",
+                "INSERT INTO proactive_decision_items(decision_id,citation,record_id,source_id,confidence,state,mandatory,item_order,title_text,content_text,updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     str(payload["decision_id"]), str(item["citation"]), str(item["record_id"]),
                     normalize_source_id(item["source_id"]), float(item.get("confidence") or 0.0),
-                    str(item.get("state") or "volunteered"), int(bool(item.get("mandatory"))), created_at,
+                    str(item.get("state") or "volunteered"), int(bool(item.get("mandatory"))),
+                    int(item.get("order") or 0), str(item.get("title") or ""),
+                    str(item.get("text") or ""), created_at,
                 ),
             )
         cap = max(1, int(max_global_decisions))
@@ -523,8 +555,9 @@ class SqliteRecordStore:
         if row is None:
             return None
         item_rows = self.conn.execute(
-            "SELECT citation,record_id,source_id,confidence,state,mandatory,updated_at "
-            "FROM proactive_decision_items WHERE decision_id=? ORDER BY citation",
+            "SELECT citation,record_id,source_id,confidence,state,mandatory,item_order AS 'order',title_text AS title,"
+            "content_text AS text,updated_at "
+            "FROM proactive_decision_items WHERE decision_id=? ORDER BY item_order,citation",
             (str(decision_id),),
         ).fetchall()
         return {
@@ -535,13 +568,16 @@ class SqliteRecordStore:
             "source_ids": [str(item) for item in json.loads(str(row["source_ids_json"] or "[]"))],
             "session_id": str(row["session_id"]), "turn_id": str(row["turn_id"]),
             "query_id": str(row["query_id"]), "query_digest": str(row["query_digest"]),
-            "query": str(row["query_text"]), "policy_version": str(row["policy_version"]),
+            "query": str(row["query_text"]), "task_type": str(row["task_type"]),
+            "effective_query_digest": str(row["effective_query_digest"]),
+            "policy_version": str(row["policy_version"]),
             "release_identity": {"release_commit": str(row["release_commit"]),
                                  "release_version": str(row["release_version"]),
                                  "deployment_receipt_id": str(row["deployment_receipt_id"]),
                                  "release_session_id": str(row["release_session_id"])},
             "release_bound": bool(row["release_bound"]), "control_cohort": bool(row["control_cohort"]),
             "pair_id": str(row["pair_id"]), "terminal": bool(row["terminal"]),
+            "context": str(row["context_text"] or ""),
             "outcome_success": None if row["outcome_success"] is None else bool(row["outcome_success"]),
             "outcome_verified": bool(row["outcome_verified"]),
             "outcome_quality": None if row["outcome_quality"] is None else float(row["outcome_quality"]),
@@ -657,31 +693,42 @@ class SqliteRecordStore:
         *,
         expected: dict[str, Any] | None = None,
         commit: bool = True,
-    ) -> None:
+    ) -> bool:
         decision = self.load_proactive_decision(decision_id)
         if decision is None:
             raise ValueError("exact proactive decision is required")
         for key, value in dict(expected or {}).items():
             if decision.get(key) != value:
                 raise ValueError("proactive decision namespace mismatch")
-        verified = bool(outcome.get("verified"))
-        success = outcome.get("success") if verified else None
-        if success is not None and not isinstance(success, bool):
+        if outcome.get("verified") is not True:
+            raise ValueError("proactive outcome must be explicitly verified")
+        success = outcome.get("success")
+        if not isinstance(success, bool):
             raise ValueError("verified proactive outcome success must be boolean")
-        quality = outcome.get("quality")
-        latency = outcome.get("latency_ms")
+        quality = None if outcome.get("quality") is None else float(outcome["quality"])
+        latency = None if outcome.get("latency_ms") is None else float(outcome["latency_ms"])
+        requested = (success, quality, latency)
+        if decision.get("outcome_verified") is True:
+            existing = (
+                decision.get("outcome_success"), decision.get("outcome_quality"),
+                decision.get("outcome_latency_ms"),
+            )
+            if existing == requested:
+                return False
+            raise ValueError("verified proactive outcome conflict")
         self.conn.execute(
             "UPDATE proactive_decisions SET outcome_success=?,outcome_verified=?,outcome_quality=?,"
-            "outcome_latency_ms=?,terminal=1,updated_at=? WHERE decision_id=?",
+            "outcome_latency_ms=?,terminal=1,updated_at=? WHERE decision_id=? AND outcome_verified=0",
             (
-                None if success is None else int(success), int(verified),
-                None if quality is None else float(quality),
-                None if latency is None else float(latency),
+                int(success), 1, quality, latency,
                 datetime.now(timezone.utc).isoformat(), str(decision_id),
             ),
         )
+        if self.conn.execute("SELECT changes()").fetchone()[0] != 1:
+            raise RuntimeError("verified proactive outcome lost an atomic compare-and-swap")
         if commit:
             self.conn.commit()
+        return True
 
     def list_proactive_outcomes(self, payload: dict[str, Any], *, limit: int = 500) -> list[dict[str, Any]]:
         scope = normalize_scope(payload.get("scope"))

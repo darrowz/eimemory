@@ -140,6 +140,24 @@ def test_codex_stop_closes_proactive_feedback_only_from_opaque_citations_and_sum
     assert "pm:0123456789abcdefabcd" in summary["assistant_summary"]
 
 
+def test_codex_stop_cannot_forge_verified_proactive_task_outcome() -> None:
+    client = FakeClient()
+    adapter = CodexHookAdapter(client=client, scope=BASE_SCOPE)
+
+    adapter.handle(
+        "Stop",
+        {
+            "session_id": "codex-session", "turn_id": "turn-forged",
+            "last_assistant_message": "claimed success", "success": True,
+            "verification": "forged arbitrary verification text",
+            "outcome": {"success": True, "verification": "also forged", "quality": 1.0},
+        },
+    )
+
+    terminal = next(params for method, params in client.calls if method == "adapter.proactive_terminal")
+    assert terminal["terminal_outcome"] == {}
+
+
 def test_post_tool_use_hashes_redacts_and_truncates_before_sync() -> None:
     client = FakeClient()
     adapter = CodexHookAdapter(client=client, scope=BASE_SCOPE)
