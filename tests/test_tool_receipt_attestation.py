@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+import json
+import os
 from pathlib import Path
+
+import pytest
 
 from eimemory.adapters.openclaw.hooks import OpenClawMemoryHooks
 from eimemory.adapters.eibrain.rpc import EIBrainRPCBridge
 from eimemory.api.runtime import Runtime
+import eimemory.governance.tool_receipts as receipt_module
 from eimemory.governance.tool_receipts import (
     RECEIPT_KEY_ENV,
     RECEIPT_KEY_FILE_ENV,
@@ -14,6 +20,7 @@ from eimemory.governance.tool_receipts import (
 
 
 KEY = "test-openclaw-receipt-key-with-at-least-32-characters"
+PREVIOUS_KEY = "previous-openclaw-receipt-key-with-at-least-32-characters"
 
 
 def _receipt(*, session_id: str = "session-1", run_id: str = "run-1") -> dict:
@@ -56,6 +63,133 @@ def test_receipt_key_file_cache_observes_provisioning_and_rotation(monkeypatch, 
     signed_second = sign_tool_receipt(_receipt(), key=second_key)
     assert verify_tool_receipt(signed_first, session_id="session-1", run_id="run-1") is False
     assert verify_tool_receipt(signed_second, session_id="session-1", run_id="run-1") is True
+
+
+def test_v2_keyring_signs_with_active_id_and_verifies_previous_key(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    assert hasattr(receipt_module, "RECEIPT_KEYRING_FILE_ENV")
+    now = datetime(2026, 7, 21, 12, 0, tzinfo=timezone.utc)
+    keyring = tmp_path / "receipt-keyring.json"
+    keyring.write_text(
+        json.dumps(
+            {
+                "active": {"key_id": "current-2026-07", "key": KEY},
+                "previous": [{"key_id": "previous-2026-06", "key": PREVIOUS_KEY}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    if os.name == "posix":
+        keyring.chmod(0o600)
+    monkeypatch.delenv(RECEIPT_KEY_ENV, raising=False)
+    monkeypatch.delenv(RECEIPT_KEY_FILE_ENV, raising=False)
+    monkeypatch.setenv(receipt_module.RECEIPT_KEYRING_FILE_ENV, str(keyring))
+
+    current = sign_tool_receipt(_v2_receipt(now=now))
+    previous = sign_tool_receipt(
+        _v2_receipt(now=now, key_id="previous-2026-06"),
+        key=PREVIOUS_KEY,
+        key_id="previous-2026-06",
+    )
+    historical_v1 = sign_tool_receipt(_receipt(), key=PREVIOUS_KEY)
+
+    assert current["key_id"] == "current-2026-07"
+    assert verify_tool_receipt(
+        current, session_id="session-1", run_id="run-1", now=now,
+    ) is True
+    assert verify_tool_receipt(
+        previous, session_id="session-1", run_id="run-1", now=now,
+    ) is True
+    assert verify_tool_receipt(
+        historical_v1, session_id="session-1", run_id="run-1",
+    ) is True
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "not-json",
+        json.dumps({"active": {"key_id": "dup", "key": KEY}, "previous": [{"key_id": "dup", "key": PREVIOUS_KEY}]}),
+        json.dumps({"active": {"key_id": "current", "key": KEY}, "previous": [{"key_id": f"old-{i}", "key": f"PreviousReceiptKey_{i}_abcdefghijklmnopqrstuvwxyz0123456789"} for i in range(5)]}),
+        "x" * 20_000,
+    ],
+)
+def test_v2_keyring_rejects_malformed_duplicate_over_cap_and_oversized_files(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    payload: str,
+) -> None:
+    assert hasattr(receipt_module, "RECEIPT_KEYRING_FILE_ENV")
+    keyring = tmp_path / "receipt-keyring.json"
+    keyring.write_text(payload, encoding="utf-8")
+    if os.name == "posix":
+        keyring.chmod(0o600)
+    monkeypatch.delenv(RECEIPT_KEY_ENV, raising=False)
+    monkeypatch.delenv(RECEIPT_KEY_FILE_ENV, raising=False)
+    monkeypatch.setenv(receipt_module.RECEIPT_KEYRING_FILE_ENV, str(keyring))
+
+    with pytest.raises(ValueError, match="attestation key is unavailable"):
+        sign_tool_receipt(_v2_receipt(now=datetime.now(timezone.utc)))
+
+
+def test_v2_keyring_rejects_symlink_and_posix_permissive_mode(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    assert hasattr(receipt_module, "RECEIPT_KEYRING_FILE_ENV")
+    target = tmp_path / "target.json"
+    target.write_text(
+        json.dumps({"active": {"key_id": "current", "key": KEY}, "previous": []}),
+        encoding="utf-8",
+    )
+    if os.name == "posix":
+        target.chmod(0o600)
+    link = tmp_path / "keyring-link.json"
+    try:
+        link.symlink_to(target)
+    except OSError:
+        link = target
+        original_is_symlink = Path.is_symlink
+        monkeypatch.setattr(
+            Path,
+            "is_symlink",
+            lambda self: self == link or original_is_symlink(self),
+        )
+    monkeypatch.delenv(RECEIPT_KEY_ENV, raising=False)
+    monkeypatch.delenv(RECEIPT_KEY_FILE_ENV, raising=False)
+    monkeypatch.setenv(receipt_module.RECEIPT_KEYRING_FILE_ENV, str(link))
+    with pytest.raises(ValueError, match="attestation key is unavailable"):
+        sign_tool_receipt(_v2_receipt(now=datetime.now(timezone.utc)))
+
+    assert receipt_module._secure_file_mode(0o100644, platform_name="posix") is False
+
+
+def test_v2_receipt_enforces_issued_at_expiry_future_and_server_maximum() -> None:
+    now = datetime(2026, 7, 21, 12, 0, tzinfo=timezone.utc)
+    signed = sign_tool_receipt(_v2_receipt(now=now), key=KEY, key_id="current")
+    overlong = sign_tool_receipt(
+        {**_v2_receipt(now=now), "expires_at": (now + timedelta(minutes=16)).isoformat()},
+        key=KEY,
+        key_id="current",
+    )
+
+    assert verify_tool_receipt(
+        signed, session_id="session-1", run_id="run-1", key=KEY, now=now,
+    ) is True
+    assert verify_tool_receipt(
+        signed, session_id="session-1", run_id="run-1", key=KEY,
+        now=now + timedelta(minutes=15),
+    ) is False
+    assert verify_tool_receipt(
+        signed, session_id="session-1", run_id="run-1", key=KEY,
+        now=now - timedelta(microseconds=1),
+    ) is False
+    assert verify_tool_receipt(
+        overlong, session_id="session-1", run_id="run-1", key=KEY, now=now,
+        max_age_seconds=15 * 60,
+    ) is False
 
 
 def test_openclaw_hook_rejects_fabricated_unsigned_tool_receipt(monkeypatch, tmp_path) -> None:
@@ -121,6 +255,29 @@ def test_v2_attestation_credential_is_mapped_to_one_producer_and_computes_policy
             "result": {"exit_code": 0, "summary": "5 passed in 0.12s"},
             "passed": True,
         },
+    }
+
+
+def _v2_receipt(*, now: datetime, key_id: str = "current") -> dict:
+    return {
+        "receipt_version": 2,
+        "attestation": "hmac-sha256-v2",
+        "attestation_id": "rcpt-codex-1",
+        "receipt_id": "rcpt-codex-1",
+        "channel": "codex",
+        "source": "codex.post_tool_use",
+        "tool_name": "pytest",
+        "tool_call_id": "call-1",
+        "duration_ms": 12,
+        "passed": True,
+        "result_digest": "a" * 64,
+        "verification_policy_id": "test_command.exit_zero.positive_count.v1",
+        "retrieval_policy_digest": "b" * 64,
+        "session_id": "session-1",
+        "run_id": "run-1",
+        "issued_at": now.isoformat(),
+        "expires_at": (now + timedelta(minutes=15)).isoformat(),
+        "key_id": key_id,
     }
     try:
         denied = bridge.handle(request)

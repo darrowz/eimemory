@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from hashlib import sha256
@@ -41,6 +42,12 @@ class RuntimeStore:
             if existing is not None:
                 return existing
             try:
+                if _deterministic_insert_once(record):
+                    self.sqlite.conn.execute("BEGIN IMMEDIATE")
+                    existing = self.sqlite.get_by_id(record.record_id, scope=record.scope)
+                    if existing is not None:
+                        self.sqlite.conn.commit()
+                        return existing
                 self.sqlite.upsert(record, commit=False)
                 exports = self._enqueue_record_exports(record)
                 self.sqlite.conn.commit()
@@ -149,6 +156,110 @@ class RuntimeStore:
                 raise
             self._flush_committed_exports(export["operation_id"])
             return result
+
+    def record_terminal_bundle(
+        self,
+        *,
+        verified_receipts: list[dict],
+        channel: str,
+        session_id: str,
+        run_id: str,
+        trace_id: str,
+        event_payload: dict,
+        outcome_payload: dict,
+        trace_record: RecordEnvelope,
+        scope: ScopeRef | dict | None = None,
+    ) -> dict:
+        """Commit receipt consumption and all terminal persistence in one transaction."""
+        from eimemory.events import ensure_outcome_payload
+
+        with self._lock:
+            scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+            expected_receipts = list(verified_receipts)
+            clean_receipt_ids = list(
+                dict.fromkeys(
+                    str(item.get("receipt_id") or "").strip()
+                    for item in expected_receipts
+                    if str(item.get("receipt_id") or "").strip()
+                )
+            )
+            operation_ids: list[str] = []
+            try:
+                self.sqlite.conn.execute("BEGIN IMMEDIATE")
+                consumed = self.sqlite.consume_adapter_tool_receipts(
+                    clean_receipt_ids,
+                    channel=channel,
+                    session_id=session_id,
+                    run_id=run_id,
+                    trace_id=trace_id,
+                    scope=scope_ref,
+                    commit=False,
+                )
+                consumed_ids = [str(item.get("receipt_id") or "") for item in consumed]
+                if consumed_ids != clean_receipt_ids:
+                    raise ValueError("terminal receipt set changed before atomic consumption")
+                if consumed != expected_receipts:
+                    raise ValueError("terminal receipt payload changed before atomic consumption")
+
+                recorded_event = self._existing_terminal_event(
+                    str(event_payload.get("id") or ""), scope=scope_ref
+                )
+                if recorded_event is None:
+                    recorded_event = self.sqlite.record_event(
+                        event_payload,
+                        scope=scope_ref,
+                        commit=False,
+                    )
+                event_export = self.sqlite.enqueue_export(
+                    stream="events",
+                    payload=self._auxiliary_entry("events", recorded_event, scope=scope_ref),
+                    commit=False,
+                )
+                operation_ids.append(event_export["operation_id"])
+
+                canonical_outcome = ensure_outcome_payload(recorded_event["id"], outcome_payload)
+                recorded_outcome = self._existing_terminal_outcome(
+                    str(canonical_outcome["id"]), scope=scope_ref
+                )
+                if recorded_outcome is None:
+                    recorded_outcome = self.sqlite.record_outcome(
+                        recorded_event["id"],
+                        canonical_outcome,
+                        scope=scope_ref,
+                        commit=False,
+                        apply_rollbacks=False,
+                    )
+                outcome_export = self.sqlite.enqueue_export(
+                    stream="event_outcomes",
+                    payload=self._auxiliary_entry(
+                        "event_outcomes", recorded_outcome, scope=scope_ref
+                    ),
+                    commit=False,
+                )
+                operation_ids.append(outcome_export["operation_id"])
+
+                stored_trace = self.sqlite.get_by_id(trace_record.record_id, scope=scope_ref)
+                if stored_trace is None:
+                    self.sqlite.upsert(trace_record, commit=False)
+                    stored_trace = trace_record
+                trace_exports = self._enqueue_record_exports(stored_trace)
+                operation_ids.extend(item["operation_id"] for item in trace_exports)
+                self.sqlite.conn.commit()
+            except Exception:
+                self.sqlite.conn.rollback()
+                raise
+            self._flush_committed_exports(*operation_ids)
+            export_record_markdown(self.root, stored_trace)
+            return {
+                "event": recorded_event,
+                "outcome": recorded_outcome,
+                "outcome_trace": {
+                    "ok": True,
+                    "record_id": stored_trace.record_id,
+                    "kind": stored_trace.kind,
+                    "idempotent": stored_trace is not trace_record,
+                },
+            }
 
     def upsert_intent_pattern(self, payload: dict, *, scope: ScopeRef | dict | None = None) -> dict:
         with self._lock:
@@ -804,6 +915,34 @@ class RuntimeStore:
             "payload": dict(payload or {}),
         }
 
+    def _existing_terminal_event(self, event_id: str, *, scope: ScopeRef) -> dict | None:
+        row = self.sqlite.conn.execute(
+            """SELECT payload_json FROM events
+               WHERE id = ? AND tenant_id = ? AND agent_id = ? AND workspace_id = ? AND user_id = ?""",
+            (
+                event_id,
+                scope.tenant_id,
+                scope.agent_id,
+                scope.workspace_id,
+                scope.user_id,
+            ),
+        ).fetchone()
+        return json.loads(str(row["payload_json"])) if row is not None else None
+
+    def _existing_terminal_outcome(self, outcome_id: str, *, scope: ScopeRef) -> dict | None:
+        row = self.sqlite.conn.execute(
+            """SELECT payload_json FROM event_outcomes
+               WHERE id = ? AND tenant_id = ? AND agent_id = ? AND workspace_id = ? AND user_id = ?""",
+            (
+                outcome_id,
+                scope.tenant_id,
+                scope.agent_id,
+                scope.workspace_id,
+                scope.user_id,
+            ),
+        ).fetchone()
+        return json.loads(str(row["payload_json"])) if row is not None else None
+
     def _existing_reflection_duplicate(self, record: RecordEnvelope) -> RecordEnvelope | None:
         if record.kind != "reflection":
             return None
@@ -845,6 +984,17 @@ def _reflection_fingerprint(record: RecordEnvelope) -> str:
         if str(value or "").strip()
     ).lower()
     return sha256(text.encode("utf-8")).hexdigest()[:24] if text else ""
+
+
+def _deterministic_insert_once(record: RecordEnvelope) -> bool:
+    if record.source == "eimemory.experience.outcome_trace":
+        return True
+    return (
+        record.kind == "memory"
+        and str(record.source or "").endswith(".memory")
+        and record.meta.get("authoritative") is True
+        and str(record.meta.get("idempotency_key") or "").startswith("adapter.")
+    )
 
 
 def _record_release_identity(record: RecordEnvelope) -> tuple[str, str, str, str] | None:

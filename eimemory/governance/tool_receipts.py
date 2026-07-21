@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from functools import lru_cache
 from hashlib import sha256
 import hmac
@@ -14,7 +15,11 @@ from datetime import datetime, timezone
 
 RECEIPT_KEY_ENV = "EIMEMORY_EVIDENCE_RECEIPT_HMAC_KEY"
 RECEIPT_KEY_FILE_ENV = "EIMEMORY_EVIDENCE_RECEIPT_ENV_FILE"
+RECEIPT_KEYRING_FILE_ENV = "EIMEMORY_EVIDENCE_RECEIPT_KEYRING_FILE"
+RECEIPT_MAX_AGE_ENV = "EIMEMORY_EVIDENCE_RECEIPT_MAX_AGE_SECONDS"
 MIN_KEY_LENGTH = 32
+MAX_KEYRING_BYTES = 16_384
+MAX_PREVIOUS_KEYS = 4
 SUPPORTED_TOOL_RECEIPT_SOURCES = frozenset(
     {
         "openclaw.after_tool_call",
@@ -29,6 +34,105 @@ ATTESTATION_PRODUCERS = {
     "codex": ("codex", "codex.post_tool_use"),
     "hermes": ("hermes", "hermes.post_tool_call"),
 }
+
+
+@dataclass(frozen=True, slots=True)
+class ReceiptKeySet:
+    active_id: str
+    active_key: str
+    verification_keys: dict[str, str]
+
+
+def _key_id(secret: str) -> str:
+    return "key_" + sha256(secret.encode("utf-8")).hexdigest()[:16]
+
+
+def _strong_key(value: object) -> str:
+    key = str(value or "").strip()
+    return key if len(key) >= MIN_KEY_LENGTH and len(set(key)) >= 12 else ""
+
+
+def _safe_key_id(value: object) -> str:
+    key_id = str(value or "").strip()
+    return (
+        key_id
+        if key_id.lower() != "active" and re.fullmatch(r"[A-Za-z0-9._-]{1,64}", key_id)
+        else ""
+    )
+
+
+def _secure_file_mode(mode: int, *, platform_name: str | None = None) -> bool:
+    platform = os.name if platform_name is None else str(platform_name)
+    return stat.S_ISREG(mode) and (platform != "posix" or mode & 0o077 == 0)
+
+
+def _read_secure_file(path: Path, *, max_bytes: int) -> bytes:
+    try:
+        if path.is_symlink():
+            return b""
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(path, flags)
+    except (OSError, ValueError):
+        return b""
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            not _secure_file_mode(metadata.st_mode)
+            or metadata.st_nlink != 1
+            or metadata.st_size > max_bytes
+        ):
+            return b""
+        payload = os.read(descriptor, max_bytes + 1)
+        return payload if len(payload) <= max_bytes else b""
+    finally:
+        os.close(descriptor)
+
+
+def _receipt_key_set() -> ReceiptKeySet | None:
+    configured = _strong_key(os.environ.get(RECEIPT_KEY_ENV))
+    if configured:
+        active_id = _key_id(configured)
+        return ReceiptKeySet(active_id, configured, {active_id: configured})
+    keyring_path = str(os.environ.get(RECEIPT_KEYRING_FILE_ENV) or "").strip()
+    if keyring_path:
+        return _load_receipt_keyring(Path(keyring_path))
+    configured = _receipt_key()
+    if configured:
+        active_id = _key_id(configured)
+        return ReceiptKeySet(active_id, configured, {active_id: configured})
+    return None
+
+
+def _load_receipt_keyring(path: Path) -> ReceiptKeySet | None:
+    payload = _read_secure_file(path, max_bytes=MAX_KEYRING_BYTES)
+    if not payload:
+        return None
+    try:
+        parsed = json.loads(payload.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(parsed, dict) or set(parsed) != {"active", "previous"}:
+        return None
+    active = parsed.get("active")
+    previous = parsed.get("previous")
+    if not isinstance(active, dict) or set(active) != {"key_id", "key"}:
+        return None
+    if not isinstance(previous, list) or len(previous) > MAX_PREVIOUS_KEYS:
+        return None
+    entries = [active, *previous]
+    keys: dict[str, str] = {}
+    for entry in entries:
+        if not isinstance(entry, dict) or set(entry) != {"key_id", "key"}:
+            return None
+        entry_id = _safe_key_id(entry.get("key_id"))
+        entry_key = _strong_key(entry.get("key"))
+        if not entry_id or not entry_key or entry_id in keys:
+            return None
+        keys[entry_id] = entry_key
+    active_id = _safe_key_id(active.get("key_id"))
+    return ReceiptKeySet(active_id, keys[active_id], keys)
 
 
 def _receipt_key() -> str:
@@ -138,7 +242,7 @@ def _canonical_v2_tool_receipt(receipt: Mapping[str, Any]) -> dict[str, Any]:
         "duration_ms": duration_ms,
         "expires_at": str(receipt.get("expires_at") or "").strip(),
         "issued_at": str(receipt.get("issued_at") or "").strip(),
-        "key_id": str(receipt.get("key_id") or "active").strip(),
+        "key_id": str(receipt.get("key_id") or "").strip(),
         "passed": receipt.get("passed") is True,
         "receipt_id": str(receipt.get("receipt_id") or "").strip(),
         "receipt_version": V2_RECEIPT_VERSION,
@@ -164,11 +268,28 @@ def _canonical_bytes(receipt: Mapping[str, Any]) -> bytes:
     ).encode("utf-8")
 
 
-def sign_tool_receipt(receipt: Mapping[str, Any], *, key: str = "") -> dict[str, Any]:
-    secret = str(key or _receipt_key()).strip()
-    if len(secret) < MIN_KEY_LENGTH or len(set(secret)) < 12:
+def sign_tool_receipt(
+    receipt: Mapping[str, Any],
+    *,
+    key: str = "",
+    key_id: str = "",
+) -> dict[str, Any]:
+    is_v2 = receipt.get("receipt_version") == V2_RECEIPT_VERSION
+    if key:
+        secret = _strong_key(key)
+        signing_key_id = _safe_key_id(key_id) or _key_id(secret)
+    elif is_v2:
+        key_set = _receipt_key_set()
+        secret = key_set.active_key if key_set is not None else ""
+        signing_key_id = key_set.active_id if key_set is not None else ""
+    else:
+        secret = _strong_key(_receipt_key())
+        signing_key_id = ""
+    if not secret or (is_v2 and not signing_key_id):
         raise ValueError("tool receipt attestation key is unavailable")
-    canonical = canonical_tool_receipt(receipt)
+    canonical = canonical_tool_receipt(
+        {**dict(receipt), **({"key_id": signing_key_id} if is_v2 else {})}
+    )
     if canonical["source"] not in SUPPORTED_TOOL_RECEIPT_SOURCES:
         raise ValueError("unsupported tool receipt source")
     signature = hmac.new(secret.encode("utf-8"), _canonical_bytes(canonical), sha256).hexdigest()
@@ -181,16 +302,32 @@ def verify_tool_receipt(
     session_id: str,
     run_id: str,
     key: str = "",
+    now: datetime | None = None,
+    max_age_seconds: int | None = None,
 ) -> bool:
-    secret = str(key or _receipt_key()).strip()
     signature = str(receipt.get("signature") or "").strip().lower()
     canonical = canonical_tool_receipt(receipt)
     if canonical.get("receipt_version") == V2_RECEIPT_VERSION:
-        return _verify_v2_tool_receipt(receipt, canonical, secret, session_id=session_id, run_id=run_id)
+        if key:
+            secret = _strong_key(key)
+        else:
+            key_set = _receipt_key_set()
+            secret = (
+                key_set.verification_keys.get(str(canonical.get("key_id") or ""), "")
+                if key_set is not None
+                else ""
+            )
+        return _verify_v2_tool_receipt(
+            receipt,
+            canonical,
+            secret,
+            session_id=session_id,
+            run_id=run_id,
+            now=now,
+            max_age_seconds=max_age_seconds,
+        )
     if not (
-        len(secret) >= MIN_KEY_LENGTH
-        and len(set(secret)) >= 12
-        and receipt.get("receipt_version") == 1
+        receipt.get("receipt_version") == 1
         and receipt.get("attestation") == "hmac-sha256"
         and receipt.get("source") in SUPPORTED_TOOL_RECEIPT_SOURCES
         and canonical["passed"] is True
@@ -204,8 +341,23 @@ def verify_tool_receipt(
         and re.fullmatch(r"[0-9a-f]{64}", signature)
     ):
         return False
-    expected = hmac.new(secret.encode("utf-8"), _canonical_bytes(canonical), sha256).hexdigest()
-    return hmac.compare_digest(signature, expected)
+    if key:
+        verification_keys = [_strong_key(key)]
+    else:
+        key_set = _receipt_key_set()
+        verification_keys = (
+            list(dict.fromkeys(key_set.verification_keys.values()))
+            if key_set is not None
+            else []
+        )
+    return any(
+        secret
+        and hmac.compare_digest(
+            signature,
+            hmac.new(secret.encode("utf-8"), _canonical_bytes(canonical), sha256).hexdigest(),
+        )
+        for secret in verification_keys
+    )
 
 
 def _verify_v2_tool_receipt(
@@ -215,6 +367,8 @@ def _verify_v2_tool_receipt(
     *,
     session_id: str,
     run_id: str,
+    now: datetime | None,
+    max_age_seconds: int | None,
 ) -> bool:
     signature = str(receipt.get("signature") or "").strip().lower()
     if not (
@@ -233,13 +387,36 @@ def _verify_v2_tool_receipt(
     ):
         return False
     try:
+        issued_at = datetime.fromisoformat(canonical["issued_at"].replace("Z", "+00:00"))
         expires_at = datetime.fromisoformat(canonical["expires_at"].replace("Z", "+00:00"))
-        if expires_at <= datetime.now(timezone.utc):
+        verifier_now = now or datetime.now(timezone.utc)
+        if issued_at.tzinfo is None or expires_at.tzinfo is None or verifier_now.tzinfo is None:
             return False
-    except ValueError:
+        issued_at = issued_at.astimezone(timezone.utc)
+        expires_at = expires_at.astimezone(timezone.utc)
+        verifier_now = verifier_now.astimezone(timezone.utc)
+        maximum = _bounded_max_age(max_age_seconds)
+        if (
+            issued_at > verifier_now
+            or verifier_now >= expires_at
+            or expires_at <= issued_at
+            or (expires_at - issued_at).total_seconds() > maximum
+            or (verifier_now - issued_at).total_seconds() > maximum
+        ):
+            return False
+    except (TypeError, ValueError, OverflowError):
         return False
     expected = hmac.new(secret.encode("utf-8"), _canonical_bytes(canonical), sha256).hexdigest()
     return hmac.compare_digest(signature, expected)
+
+
+def _bounded_max_age(value: int | None) -> int:
+    raw: object = value if value is not None else os.environ.get(RECEIPT_MAX_AGE_ENV, V2_MAX_AGE_SECONDS)
+    try:
+        parsed = int(raw)
+    except (TypeError, ValueError):
+        parsed = V2_MAX_AGE_SECONDS
+    return max(60, min(60 * 60, parsed))
 
 
 def verified_tool_receipts(

@@ -137,6 +137,7 @@ class MemoryAPI:
         content: dict | None = None,
         evidence: list[str] | None = None,
         links: list[LinkRef] | None = None,
+        record_id: str = "",
     ) -> RecordEnvelope:
         memory_type = self._normalize_ingest_memory_type(memory_type=memory_type, text=text, title=title)
         meta_payload = {"memory_type": memory_type, "force_capture": force_capture}
@@ -161,6 +162,8 @@ class MemoryAPI:
             source=source,
             meta=meta_payload,
         )
+        if str(record_id or "").strip():
+            record.record_id = str(record_id).strip()
         score = evaluate_memory_score(
             text=str(content_payload.get("text") or text),
             title=title,

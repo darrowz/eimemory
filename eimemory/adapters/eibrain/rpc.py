@@ -411,7 +411,9 @@ class EIBrainRPCBridge:
                 receipt_ids = params.get("receipt_ids", [])
                 rehearsal = params.get("rehearsal", False)
                 if (
-                    not all(isinstance(value, str) for value in (end_kind, session_id, event_id, task_type, verification, terminal_result))
+                    not all(isinstance(value, str) for value in (end_kind, session_id, event_id, task_type))
+                    or not isinstance(verification, (str, dict, list))
+                    or not isinstance(terminal_result, (str, dict, list))
                     or not end_kind.strip()
                     or not session_id.strip()
                     or not event_id.strip()

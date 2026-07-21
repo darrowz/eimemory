@@ -238,7 +238,13 @@ class SqliteRecordStore:
         scope: ScopeRef | dict | None = None,
         commit: bool = True,
     ) -> tuple[dict[str, Any], bool]:
+        from eimemory.governance.tool_receipts import canonical_tool_receipt
+
         scope_ref = normalize_scope(scope)
+        receipt = {
+            **canonical_tool_receipt(receipt),
+            "signature": str(receipt.get("signature") or "").strip().lower(),
+        }
         channel = str(receipt.get("channel") or "").strip()
         session_id = str(receipt.get("session_id") or "").strip()
         run_id = str(receipt.get("run_id") or "").strip()
@@ -267,6 +273,37 @@ class SqliteRecordStore:
             self.conn.commit()
         return dict(receipt), False
 
+    def load_adapter_tool_receipts(
+        self,
+        receipt_ids: list[str],
+        *,
+        channel: str,
+        session_id: str,
+        run_id: str,
+        scope: ScopeRef | dict | None = None,
+    ) -> list[dict[str, Any]]:
+        scope_ref = normalize_scope(scope)
+        loaded: list[dict[str, Any]] = []
+        for receipt_id in dict.fromkeys(str(item).strip() for item in receipt_ids if str(item).strip()):
+            row = self.conn.execute(
+                """SELECT receipt_json FROM adapter_tool_receipts
+                   WHERE receipt_id = ? AND channel = ? AND tenant_id = ? AND agent_id = ? AND workspace_id = ? AND user_id = ?
+                     AND session_id = ? AND run_id = ? AND eligible = 1""",
+                (
+                    receipt_id,
+                    channel,
+                    scope_ref.tenant_id,
+                    scope_ref.agent_id,
+                    scope_ref.workspace_id,
+                    scope_ref.user_id,
+                    session_id,
+                    run_id,
+                ),
+            ).fetchone()
+            if row is not None:
+                loaded.append(json.loads(str(row["receipt_json"])))
+        return loaded
+
     def consume_adapter_tool_receipts(
         self,
         receipt_ids: list[str],
@@ -287,8 +324,11 @@ class SqliteRecordStore:
                      AND session_id = ? AND run_id = ? AND eligible = 1""",
                 (receipt_id, channel, scope_ref.tenant_id, scope_ref.agent_id, scope_ref.workspace_id, scope_ref.user_id, session_id, run_id),
             ).fetchone()
-            if row is None or str(row["consumed_trace_id"] or "") not in {"", trace_id}:
+            if row is None:
                 continue
+            consumed_trace_id = str(row["consumed_trace_id"] or "")
+            if consumed_trace_id not in {"", trace_id}:
+                raise ValueError("tool receipt was consumed by a different terminal trace")
             self.conn.execute(
                 "UPDATE adapter_tool_receipts SET consumed_trace_id = ? WHERE receipt_id = ? AND consumed_trace_id IN ('', ?)",
                 (trace_id, receipt_id, trace_id),

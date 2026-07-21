@@ -14,6 +14,7 @@ from eimemory.adapters.runtime.channel import (
     resolve_channel_scope,
 )
 from eimemory.api.runtime import Runtime
+from eimemory.adapters.runtime.redaction import bounded_redacted_text
 from eimemory.governance.evidence_contract import current_release_identity, release_identity_payload
 from eimemory.governance.tool_receipts import (
     ATTESTATION_PRODUCERS,
@@ -127,6 +128,13 @@ class AgentRuntimeMemoryService:
                 "idempotency_key": idempotency_key,
                 "source_event_id": normalized_event_id,
             },
+            record_id=self._deterministic_record_id(
+                kind="memory",
+                channel=channel_id,
+                scope=channel_scope,
+                operation="remember",
+                idempotency_key=idempotency_key,
+            ),
         )
         if record.status != "active":
             record.meta["authoritative"] = False
@@ -179,8 +187,8 @@ class AgentRuntimeMemoryService:
         event_id: str,
         task_type: str,
         success: bool | None,
-        verification: str = "",
-        result: str = "",
+        verification: Any = "",
+        result: Any = "",
         tool_receipts: list[dict[str, Any]] | None = None,
         receipt_ids: list[str] | None = None,
         rehearsal: bool = False,
@@ -212,22 +220,22 @@ class AgentRuntimeMemoryService:
             session_id=normalized_session_id,
             event_id=normalized_event_id,
         )
-        verification_text = self._bounded_text(verification, 512)
-        result_text = self._bounded_text(result, 2_000)
+        verification_text = bounded_redacted_text(verification, max_chars=512)
+        result_text = bounded_redacted_text(result, max_chars=2_000)
         verified_receipts: list[dict[str, Any]] = []
+        raw_ids: list[str] = []
         if channel_id in {"codex", "hermes"}:
             raw_ids = [str(value).strip() for value in list(receipt_ids or [])[:32] if str(value).strip()]
-            verified_receipts = self.runtime.store.sqlite.consume_adapter_tool_receipts(
+            loaded_receipts = self.runtime.store.sqlite.load_adapter_tool_receipts(
                 raw_ids,
                 channel=channel_id,
                 session_id=normalized_session_id,
                 run_id=normalized_event_id,
-                trace_id=trace_id,
                 scope=channel_scope,
             )
             verified_receipts = [
                 {**canonical_tool_receipt(receipt), "signature": str(receipt.get("signature") or "").lower()}
-                for receipt in verified_receipts
+                for receipt in loaded_receipts
                 if verify_tool_receipt(receipt, session_id=normalized_session_id, run_id=normalized_event_id)
             ]
             # Caller-provided prose and inline receipts are diagnostic only.
@@ -236,6 +244,16 @@ class AgentRuntimeMemoryService:
                 if verified_receipts
                 else ""
             )
+        else:
+            verified_receipts = [
+                {**canonical_tool_receipt(receipt), "signature": str(receipt.get("signature") or "").lower()}
+                for receipt in list(tool_receipts or [])[:32]
+                if verify_tool_receipt(
+                    receipt,
+                    session_id=normalized_session_id,
+                    run_id=normalized_event_id,
+                )
+            ]
         lifecycle_only = normalized_end_kind == "session_end"
         event_payload: dict[str, Any] = {
             "id": f"evt_{channel_id}_{trace_id[-24:]}",
@@ -249,7 +267,7 @@ class AgentRuntimeMemoryService:
             "event_type": normalized_task_type,
             "goal": normalized_task_type,
             "verification": verification_text,
-            "verification_receipts": verified_receipts if channel_id in {"codex", "hermes"} else list(tool_receipts or [])[:32],
+            "verification_receipts": verified_receipts,
             "result": result_text,
             "evidence_class": "lifecycle_event" if lifecycle_only else "verified_real_task",
             "runtime_channel": channel_id,
@@ -263,8 +281,8 @@ class AgentRuntimeMemoryService:
             )
         if release is not None:
             event_payload.update(release_identity_payload(release))
-        recorded_event = self.runtime.record_event(event_payload, scope=channel_scope)
         if lifecycle_only:
+            recorded_event = self.runtime.record_event(event_payload, scope=channel_scope)
             return {
                 "ok": True,
                 "event": recorded_event,
@@ -289,8 +307,6 @@ class AgentRuntimeMemoryService:
             "verification": verification_text,
             "result": result_text,
         }
-        # Runtime event/outcome writes raise on failure; successful payloads intentionally do not expose an `ok` key.
-        recorded_outcome = self.runtime.record_outcome(recorded_event["id"], outcome_payload, scope=channel_scope)
         outcome_trace_payload = {
             "source": method,
             "session_id": normalized_session_id,
@@ -308,7 +324,7 @@ class AgentRuntimeMemoryService:
             "verifier": {
                 "passed": bool(success is True and explicit_verification),
                 "method": method,
-                "evidence_refs": [recorded_event["id"]],
+                "evidence_refs": [event_payload["id"]],
                 "checks": {
                     "verification": verification_text,
                     "result": result_text,
@@ -319,7 +335,29 @@ class AgentRuntimeMemoryService:
         if release is not None:
             outcome_trace_payload.update(release_identity_payload(release))
             outcome_trace_payload["evidence_class"] = "verified_real_task"
-        outcome_trace = self.runtime.record_outcome_trace(outcome_trace_payload, scope=channel_scope)
+        outcome_trace_payload["recorded_at"] = datetime.now(timezone.utc).isoformat()
+        from eimemory.experience.outcome import build_outcome_trace_record
+
+        trace_build = build_outcome_trace_record(
+            outcome_trace_payload,
+            scope=ScopeRef.from_dict(channel_scope),
+        )
+        terminal = self.runtime.store.record_terminal_bundle(
+            verified_receipts=verified_receipts
+            if channel_id in {"codex", "hermes"}
+            else [],
+            channel=channel_id,
+            session_id=normalized_session_id,
+            run_id=normalized_event_id,
+            trace_id=trace_id,
+            event_payload=event_payload,
+            outcome_payload=outcome_payload,
+            trace_record=trace_build.record,
+            scope=channel_scope,
+        )
+        recorded_event = terminal["event"]
+        recorded_outcome = terminal["outcome"]
+        outcome_trace = terminal["outcome_trace"]
         return {
             "ok": bool(outcome_trace.get("ok")),
             "event": recorded_event,
@@ -379,7 +417,6 @@ class AgentRuntimeMemoryService:
             "run_id": normalized_run,
             "issued_at": issued_at.isoformat(),
             "expires_at": (issued_at + timedelta(minutes=15)).isoformat(),
-            "key_id": "active",
             **(release_identity_payload(release) if release is not None else {}),
         }
         signed = sign_tool_receipt(receipt)
@@ -471,26 +508,36 @@ class AgentRuntimeMemoryService:
         return f"trace_{channel}_" + sha256(payload.encode("utf-8")).hexdigest()[:24]
 
     @staticmethod
+    def _deterministic_record_id(
+        *,
+        kind: str,
+        channel: str,
+        scope: dict[str, str],
+        operation: str,
+        idempotency_key: str,
+    ) -> str:
+        payload = json.dumps(
+            {
+                "channel": channel,
+                "scope": scope,
+                "operation": operation,
+                "idempotency_key": idempotency_key,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        prefix = "mem" if kind == "memory" else "rec"
+        return f"{prefix}_" + sha256(payload.encode("utf-8")).hexdigest()[:32]
+
+    @staticmethod
     def _bounded_text(value: object, limit: int) -> str:
         text = str(value or "").strip()
         return text if len(text) <= limit else text[:limit]
 
     @classmethod
     def _bounded_attestation_result(cls, value: Any) -> str:
-        def redact(item: Any, *, depth: int = 0) -> Any:
-            if depth > 8:
-                return "[TRUNCATED]"
-            if isinstance(item, dict):
-                return {
-                    str(key)[:100]: "[REDACTED]" if re.search(r"(?i)(token|secret|password|cookie|authorization|key)", str(key)) else redact(value, depth=depth + 1)
-                    for key, value in list(item.items())[:64]
-                }
-            if isinstance(item, list):
-                return [redact(entry, depth=depth + 1) for entry in item[:64]]
-            if isinstance(item, (int, float, bool)) or item is None:
-                return item
-            return cls._bounded_text(item, 8_000)
-        return cls._bounded_text(json.dumps(redact(value), ensure_ascii=False, sort_keys=True), 16_000)
+        return bounded_redacted_text(value, max_chars=16_000)
 
     @staticmethod
     def _verification_policy(tool_name: str, safe_result: str) -> tuple[str, bool]:

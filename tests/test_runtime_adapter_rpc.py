@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from urllib.error import HTTPError
+import urllib.request
 
 from eimemory.adapters.eibrain.rpc import EIBrainRPCBridge
 from eimemory.adapters.eibrain.rpc_server import EIBrainRPCServer
@@ -12,6 +14,8 @@ from eimemory.ei_bridge.protocol import EIMEMORY_RPC_CONTRACT_VERSION
 
 
 AUTH_TOKEN = "AgentRuntimeAdapterToken_0123456789-Strong"
+CODEX_ATTESTATION_TOKEN = "CodexAttestationToken_0123456789-Strong"
+HERMES_ATTESTATION_TOKEN = "HermesAttestationToken_0123456789-Strong"
 BASE_SCOPE = {
     "tenant_id": "default",
     "agent_id": "hongtu",
@@ -132,6 +136,65 @@ def test_runtime_http_client_calls_authenticated_rpc(tmp_path: Path) -> None:
     assert response["bypassed"] is False
     assert response["result"]["channel"] == "codex"
     assert not (tmp_path / "failures.jsonl").exists()
+
+
+def test_runtime_http_attestation_requires_separate_producer_credential_and_channel_match(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv(
+        "EIMEMORY_EVIDENCE_RECEIPT_HMAC_KEY",
+        "RuntimeReceiptEvidenceKey_0123456789-Strong",
+    )
+    runtime = Runtime.create(root=tmp_path / "store")
+    server = EIBrainRPCServer(
+        runtime,
+        host="127.0.0.1",
+        port=0,
+        auth_token=AUTH_TOKEN,
+        attestation_tokens={
+            CODEX_ATTESTATION_TOKEN: "codex",
+            HERMES_ATTESTATION_TOKEN: "hermes",
+        },
+    )
+    server.start()
+    payload = {
+        "method": "adapter.attest_tool_result",
+        "params": {
+            "channel": "codex", "scope": BASE_SCOPE, "session_id": "s1",
+            "run_id": "r1", "tool_call_id": "c1", "tool_name": "pytest",
+            "result": {"exit_code": 0, "summary": "2 passed"},
+        },
+    }
+
+    def post(token: str, body: dict) -> tuple[int, dict]:
+        request = urllib.request.Request(
+            f"http://{server.address[0]}:{server.address[1]}/",
+            data=json.dumps(body).encode("utf-8"),
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=2) as response:
+                return response.status, json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            return exc.code, json.loads(exc.read().decode("utf-8"))
+
+    try:
+        normal_status, normal = post(AUTH_TOKEN, payload)
+        mismatch_status, mismatch = post(
+            CODEX_ATTESTATION_TOKEN,
+            {**payload, "params": {**payload["params"], "channel": "hermes"}},
+        )
+        codex_status, codex = post(CODEX_ATTESTATION_TOKEN, payload)
+    finally:
+        server.stop()
+        runtime.close()
+
+    assert (normal_status, normal["error"]) == (401, "attestation_unauthorized")
+    assert (mismatch_status, mismatch["error"]) == (400, "invalid_request")
+    assert codex_status == 200
+    assert codex["result"]["receipt"]["channel"] == "codex"
 
 
 def test_runtime_http_client_bypasses_and_opens_bounded_circuit(tmp_path: Path) -> None:
