@@ -494,3 +494,19 @@ def test_overlong_identity_text_fails_closed_instead_of_prefix_colliding() -> No
     assert normalize_identity_text("x" * 257) == ""
     record = _record("bounded identity", aliases=["x" * 256 + "a", "safe alias"])
     assert record.aliases == ["safe alias"]
+
+
+def test_identity_index_cannot_bypass_quality_reject_hard_gate(tmp_path) -> None:
+    store = RuntimeStore(tmp_path)
+    rejected = _record("quality rejected identity", aliases=["rejected alias"])
+    rejected.meta["quality"]["capture_decision"] = "reject"
+    rejected.status = "active"
+    store.append(rejected)
+    bundle = MemoryAPI(store).recall(
+        query="rejected alias",
+        scope=asdict(SCOPE),
+        task_context={"source_ids": ["alpha"], "target_source_id": "alpha"},
+        limit=3,
+    )
+    assert bundle.items == []
+    assert bundle.explanation["fusion"]["create_safety"] == "unknown"

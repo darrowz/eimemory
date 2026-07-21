@@ -500,6 +500,10 @@ class GovernedRecallEngine:
             if record.status != "active":
                 engine_drops["inactive_record"] += 1
                 continue
+            quality = business_metadata(record.meta).get("quality") if isinstance(record.meta, dict) else {}
+            if isinstance(quality, dict) and quality.get("capture_decision") == "reject":
+                engine_drops["quality_rejected"] += 1
+                continue
             if source_request.kinds and record.kind not in source_request.kinds:
                 engine_drops["kind_not_allowed"] += 1
                 continue

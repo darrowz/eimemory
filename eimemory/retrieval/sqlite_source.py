@@ -5,6 +5,7 @@ from typing import Any
 
 from eimemory.storage.runtime_store import RuntimeStore
 from eimemory.models.identity_aliases import normalize_identity_text
+from eimemory.metadata import business_metadata
 
 from .contracts import CandidateBatch, CandidateHit, CandidateRef, CandidateRequest, ExactScope, freeze_value
 
@@ -57,12 +58,14 @@ class SQLiteCandidateSource:
                 scope=row_scope.to_scope_ref(),
                 source_id=row_source_id,
             )
+            quality = business_metadata(authoritative.meta).get("quality") if authoritative is not None else {}
             if (
                 authoritative is None
                 or authoritative.status != "active"
                 or ExactScope.from_scope(authoritative.scope) != row_scope
                 or authoritative.source_id != row_source_id
                 or (request.kinds and authoritative.kind not in request.kinds)
+                or (isinstance(quality, dict) and quality.get("capture_decision") == "reject")
             ):
                 continue
             normalized_query = normalize_identity_text(request.query)
