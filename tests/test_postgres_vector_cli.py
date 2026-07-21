@@ -107,3 +107,61 @@ def test_postgres_driver_is_an_optional_extra_not_a_default_dependency() -> None
     project = tomllib.loads((Path(__file__).parents[1] / "pyproject.toml").read_text(encoding="utf-8"))
     assert project["project"]["dependencies"] == []
     assert project["project"]["optional-dependencies"]["postgres"] == ["psycopg[binary]>=3.1,<4"]
+
+
+def test_status_uses_sqlite_authority_revision_and_fails_closed_after_write(tmp_path: Path, monkeypatch) -> None:
+    from eimemory.api.runtime import Runtime
+    from eimemory.models.records import RecordEnvelope, ScopeRef
+    from eimemory.retrieval import postgres_cli
+    from eimemory.retrieval.postgres_sync import SQLiteProjectionReader
+    from eimemory.retrieval.postgres_vector import (
+        PROJECTION_DIGEST_SCHEMA,
+        IndexState,
+        PostgresVectorConfig,
+        projection_fingerprint,
+    )
+
+    class Provider:
+        def fingerprint(self) -> str:
+            return "f" * 64
+
+        def health(self) -> dict[str, object]:
+            return {"configured": True, "available": True, "circuit": "closed", "dimension": 3}
+
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        revision = SQLiteProjectionReader(runtime.store).snapshot_token()
+        config = PostgresVectorConfig(
+            enabled=True, dsn="postgresql://host/db", vector_dimension=3, embedding_provider=Provider()
+        )
+        state = IndexState(
+            ready=True,
+            watermark="wm-1",
+            lag_seconds=0.0,
+            authoritative_updated_at="",
+            authoritative_storage_key="",
+            embedding_fingerprint="f" * 64,
+            projection_digest_schema=PROJECTION_DIGEST_SCHEMA,
+            projection_fingerprint=projection_fingerprint(config),
+            authority_revision=revision,
+        )
+
+        class Repository:
+            def __init__(self, _config: Any) -> None:
+                pass
+
+            def read_index_state(self) -> IndexState:
+                return state
+
+        monkeypatch.setattr(postgres_cli, "PostgresCandidateRepository", Repository)
+        assert postgres_cli._status(config, runtime=runtime)["available"] is True
+
+        runtime.store.append(RecordEnvelope.create(
+            kind="memory", title="new authority write", content={"text": "content"},
+            scope=ScopeRef("tenant", "agent", "workspace", "user"), meta={"force_capture": True},
+        ))
+        stale = postgres_cli._status(config, runtime=runtime)
+        assert stale["available"] is False
+        assert stale["last_error"] == "index_lag_exceeded"
+    finally:
+        runtime.close()

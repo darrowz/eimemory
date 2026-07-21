@@ -30,6 +30,7 @@ from .contracts import (
 )
 from .sqlite_source import SQLiteCandidateSource
 from .fusion import FUSION_POLICY_VERSION, fuse_ranked_components, page_pool_key
+from .postgres_vector import _canonical_timestamp, candidate_record_projection_digest
 
 
 class RecallCallbacks(Protocol):
@@ -509,6 +510,28 @@ class GovernedRecallEngine:
             if not self._record_matches_ref(record, hit.ref):
                 engine_drops["ref_mismatch"] += 1
                 continue
+            candidate_digest = str(component_hints.get("_candidate_projection_digest") or "")
+            candidate_updated_at = str(component_hints.get("_candidate_authoritative_updated_at") or "")
+            candidate_text_chars = self._safe_int(
+                component_hints.get("_candidate_projection_text_chars"), default=16_000
+            )
+            projection_mismatch = candidate_digest and (
+                candidate_updated_at != _canonical_timestamp(record.time.updated_at)
+                or candidate_digest
+                != candidate_record_projection_digest(
+                    record,
+                    max_text_chars=candidate_text_chars,
+                )
+            )
+            if projection_mismatch:
+                engine_drops["candidate_projection_digest_mismatch"] += 1
+                if component_hints.get("_candidate_sqlite_authority_duplicate") is True:
+                    component_hints.pop("vector_score", None)
+                    for private_key in tuple(component_hints):
+                        if str(private_key).startswith("_candidate_"):
+                            component_hints.pop(private_key, None)
+                else:
+                    continue
             if record.status != "active":
                 engine_drops["inactive_record"] += 1
                 continue
@@ -534,7 +557,11 @@ class GovernedRecallEngine:
                         "user_id": record.scope.user_id,
                     },
                     "source_id": record.source_id,
-                    **hit.component_dict(),
+                    **{
+                        key: value
+                        for key, value in component_hints.items()
+                        if not str(key).startswith("_")
+                    },
                 }
             )
         search_report = self._merge_source_reports(source_reports, scored_items=scored_items)

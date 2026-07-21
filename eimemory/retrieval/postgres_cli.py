@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from math import isfinite
 from typing import Any
 
 from .postgres_sync import PostgresVectorIndexSynchronizer, SQLiteProjectionReader
@@ -9,7 +10,14 @@ from .postgres_vector import (
     OpenAICompatibleEmbeddingProvider,
     PostgresCandidateRepository,
     PostgresVectorConfig,
+    PROJECTION_DIGEST_SCHEMA,
+    embedding_provider_fingerprint,
+    projection_fingerprint,
+    sanitized_embedding_health,
+    candidate_index_lag_seconds,
+    _canonical_timestamp,
 )
+from .sqlite_source import SQLiteCandidateSource
 
 
 def config_from_env() -> PostgresVectorConfig:
@@ -32,6 +40,10 @@ def config_from_env() -> PostgresVectorConfig:
         cache_entries=_env_int("EIMEMORY_POSTGRES_CACHE_ENTRIES", 128),
         cache_ttl_seconds=_env_float("EIMEMORY_POSTGRES_CACHE_TTL_SECONDS", 10.0),
         release_id=os.environ.get("EIMEMORY_RUNTIME_COMMIT", ""),
+        embedding_fingerprint=os.environ.get("EIMEMORY_EMBEDDINGS_FINGERPRINT", ""),
+        projection_text_chars=_env_int("EIMEMORY_POSTGRES_PROJECTION_TEXT_CHARS", 16_000),
+        embedding_queue_timeout_seconds=_env_float("EIMEMORY_EMBEDDINGS_QUEUE_TIMEOUT_SECONDS", 2.0),
+        sync_lease_seconds=_env_float("EIMEMORY_POSTGRES_SYNC_LEASE_SECONDS", 60.0),
     )
 
 
@@ -42,7 +54,7 @@ def handle_vector_index_command(parsed: object, runtime: Any) -> dict[str, Any]:
         return {"ok": False, "error": "invalid_vector_index_config"}
     command = str(getattr(parsed, "vector_index_command", "") or "")
     if command == "status":
-        return {"ok": True, "vector_index": _status(config)}
+        return {"ok": True, "vector_index": _status(config, runtime=runtime)}
     if not config.configured:
         return {"ok": False, "error": "postgres_not_configured"}
     repository = PostgresCandidateRepository(config)
@@ -57,7 +69,7 @@ def handle_vector_index_command(parsed: object, runtime: Any) -> dict[str, Any]:
         if config.embedding_provider is None:
             return {"ok": False, "error": "embedding_not_configured"}
         syncer = PostgresVectorIndexSynchronizer(
-            reader=SQLiteProjectionReader(runtime.store),
+            reader=SQLiteProjectionReader(runtime.store, max_text_chars=config.projection_text_chars),
             repository=repository,
             embedding_provider=config.embedding_provider,
             config=config,
@@ -69,19 +81,17 @@ def handle_vector_index_command(parsed: object, runtime: Any) -> dict[str, Any]:
     return {"ok": False, "error": "unknown_vector_index_command"}
 
 
-def _status(config: PostgresVectorConfig) -> dict[str, Any]:
+def _status(config: PostgresVectorConfig, *, runtime: Any | None = None) -> dict[str, Any]:
+    provider_health = sanitized_embedding_health(config.embedding_provider)
     status: dict[str, Any] = {
         "enabled": config.enabled,
-        "configured": config.configured and config.embedding_provider is not None,
+        "configured": config.configured and provider_health["configured"] is True,
         "available": False,
-        "circuit": "closed",
+        "circuit": provider_health["circuit"],
         "lag_seconds": None,
         "watermark": "",
         "last_error": "",
-        "embedding": config.embedding_provider.health() if config.embedding_provider is not None else {
-            "configured": False,
-            "available": False,
-        },
+        "embedding": provider_health,
     }
     if not config.enabled or not config.configured or config.embedding_provider is None:
         return status
@@ -90,12 +100,52 @@ def _status(config: PostgresVectorConfig) -> dict[str, Any]:
     except Exception:
         status["last_error"] = "postgres_unavailable"
         return status
+    try:
+        fingerprints_match = (
+            state.embedding_fingerprint == embedding_provider_fingerprint(config.embedding_provider, config)
+            and state.projection_digest_schema == PROJECTION_DIGEST_SCHEMA
+            and state.projection_fingerprint == projection_fingerprint(config)
+        )
+    except Exception:
+        fingerprints_match = False
+    try:
+        authority_cursor: tuple[str, str] | None = None
+        authority_revision: str | None = None
+        if runtime is not None:
+            sqlite_source = SQLiteCandidateSource(runtime.store)
+            raw_head = sqlite_source.authority_head()
+            authority_cursor = (_canonical_timestamp(raw_head[0]), raw_head[1])
+            authority_revision = sqlite_source.authority_revision()
+            if not authority_revision.isdigit():
+                raise RuntimeError("authority_revision_unavailable")
+        lag_seconds = candidate_index_lag_seconds(
+            state,
+            authority_cursor=authority_cursor,
+            authority_revision=authority_revision,
+        )
+    except Exception:
+        lag_seconds = float("inf")
+    fresh = lag_seconds <= config.max_index_lag_seconds
+    reported_lag = lag_seconds if isfinite(lag_seconds) else None
     status.update(
         {
-            "available": state.ready and bool(state.watermark),
-            "lag_seconds": state.lag_seconds,
+            "available": (
+                state.ready and bool(state.watermark) and fingerprints_match and fresh
+                and provider_health["available"] is True
+            ),
+            "lag_seconds": reported_lag,
             "watermark": state.watermark,
-            "last_error": "" if state.ready else "index_not_ready",
+            "last_error": (
+                str(provider_health["last_error"] or "embedding_unavailable")
+                if provider_health["available"] is not True
+                else ("" if state.ready and fingerprints_match and fresh else (
+                    "index_not_ready" if not state.ready else (
+                        "index_fingerprint_mismatch" if not fingerprints_match else "index_lag_exceeded"
+                    )
+                ))
+            ),
+            "embedding": provider_health,
+            "circuit": provider_health["circuit"],
         }
     )
     return status

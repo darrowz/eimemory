@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from .postgres_vector import PostgresVectorConfig
+from .postgres_vector import PROJECTION_DIGEST_SCHEMA, PostgresVectorConfig, _derived_identifier
 
 
-DDL_VERSION = "postgres-vector-candidates.v1"
+DDL_VERSION = "postgres-vector-candidates.v2"
 
 
 def build_candidate_projection_ddl(config: PostgresVectorConfig) -> tuple[str, ...]:
@@ -11,12 +11,32 @@ def build_candidate_projection_ddl(config: PostgresVectorConfig) -> tuple[str, .
 
     schema = f'"{config.schema}"'
     table = f'{schema}."{config.table}"'
-    state_table = f'{schema}."{config.table}_sync_state"'
-    migrations = f'{schema}."candidate_projection_migrations"'
-    prefix = config.table[:38]
+    state_table = f'{schema}."{_derived_identifier(config, "state")}"'
+    migrations = f'{schema}."{_derived_identifier(config, "migrations")}"'
+    scope_index = _derived_identifier(config, "scope")
+    hnsw_index = _derived_identifier(config, "hnsw")
+    gin_index = _derived_identifier(config, "gin")
     return (
         "CREATE EXTENSION IF NOT EXISTS vector",
         f"CREATE SCHEMA IF NOT EXISTS {schema}",
+        f"""
+        DO $eimemory_v1_upgrade$
+        DECLARE
+            v1_present BOOLEAN := FALSE;
+        BEGIN
+            IF to_regclass('{config.schema}.candidate_projection_migrations') IS NOT NULL THEN
+                EXECUTE 'SELECT EXISTS (SELECT 1 FROM {schema}."candidate_projection_migrations" '
+                        'WHERE version = ''postgres-vector-candidates.v1'')'
+                INTO v1_present;
+                IF v1_present THEN
+                    DROP TABLE IF EXISTS {schema}."{config.table}_sync_state";
+                    DROP TABLE IF EXISTS {table};
+                    DROP TABLE IF EXISTS {schema}."candidate_projection_migrations";
+                END IF;
+            END IF;
+        END
+        $eimemory_v1_upgrade$
+        """.strip(),
         f"""
         CREATE TABLE IF NOT EXISTS {migrations} (
             version TEXT PRIMARY KEY,
@@ -25,7 +45,7 @@ def build_candidate_projection_ddl(config: PostgresVectorConfig) -> tuple[str, .
         """.strip(),
         f"""
         CREATE TABLE IF NOT EXISTS {table} (
-            storage_key TEXT PRIMARY KEY,
+            storage_key TEXT NOT NULL,
             record_id TEXT NOT NULL,
             tenant_id TEXT NOT NULL,
             agent_id TEXT NOT NULL,
@@ -39,10 +59,12 @@ def build_candidate_projection_ddl(config: PostgresVectorConfig) -> tuple[str, .
             alias_text TEXT NOT NULL DEFAULT '',
             keyword_text TEXT NOT NULL DEFAULT '',
             search_tsv TSVECTOR NOT NULL DEFAULT ''::tsvector,
-            payload_digest TEXT NOT NULL,
+            projection_digest TEXT NOT NULL CHECK (projection_digest ~ '^[0-9a-f]{{64}}$'),
+            projection_digest_schema TEXT NOT NULL DEFAULT '{PROJECTION_DIGEST_SCHEMA}',
             authoritative_updated_at TIMESTAMPTZ NOT NULL,
             index_watermark TEXT NOT NULL,
-            indexed_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+            indexed_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (storage_key, index_watermark)
         )
         """.strip(),
         f"""
@@ -55,7 +77,18 @@ def build_candidate_projection_ddl(config: PostgresVectorConfig) -> tuple[str, .
             cursor_storage_key TEXT NOT NULL DEFAULT '',
             committed_watermark TEXT NOT NULL DEFAULT '',
             authoritative_updated_at TIMESTAMPTZ,
+            authoritative_storage_key TEXT NOT NULL DEFAULT '',
             completed_at TIMESTAMPTZ,
+            embedding_fingerprint TEXT NOT NULL DEFAULT '',
+            projection_digest_schema TEXT NOT NULL DEFAULT '{PROJECTION_DIGEST_SCHEMA}',
+            projection_fingerprint TEXT NOT NULL DEFAULT '',
+            lease_owner TEXT NOT NULL DEFAULT '',
+            lease_expires_at TIMESTAMPTZ,
+            authority_revision TEXT NOT NULL DEFAULT '',
+            staging_embedding_fingerprint TEXT NOT NULL DEFAULT '',
+            staging_projection_digest_schema TEXT NOT NULL DEFAULT '',
+            staging_projection_fingerprint TEXT NOT NULL DEFAULT '',
+            staging_authority_revision TEXT NOT NULL DEFAULT '',
             updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
         )
         """.strip(),
@@ -64,15 +97,15 @@ def build_candidate_projection_ddl(config: PostgresVectorConfig) -> tuple[str, .
         ON CONFLICT (singleton) DO NOTHING
         """.strip(),
         f"""
-        CREATE INDEX IF NOT EXISTS "{prefix}_scope_status_idx"
+        CREATE INDEX IF NOT EXISTS "{scope_index}"
         ON {table} (tenant_id, agent_id, workspace_id, user_id, source_id, status, kind)
         """.strip(),
         f"""
-        CREATE INDEX IF NOT EXISTS "{prefix}_embedding_hnsw_idx"
+        CREATE INDEX IF NOT EXISTS "{hnsw_index}"
         ON {table} USING hnsw (embedding vector_cosine_ops)
         """.strip(),
         f"""
-        CREATE INDEX IF NOT EXISTS "{prefix}_search_gin_idx"
+        CREATE INDEX IF NOT EXISTS "{gin_index}"
         ON {table} USING gin (search_tsv)
         """.strip(),
         f"""

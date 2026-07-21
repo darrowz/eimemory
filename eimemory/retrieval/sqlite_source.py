@@ -20,6 +20,29 @@ class SQLiteCandidateSource:
     def __init__(self, store: RuntimeStore) -> None:
         self.store = store
 
+    def authority_head(self) -> tuple[str, str]:
+        """Return the exact keyset head used by the optional projection sync."""
+        with self.store._lock:
+            row = self.store.sqlite.conn.execute(
+                "SELECT updated_at, storage_key FROM records "
+                "ORDER BY updated_at DESC, storage_key DESC LIMIT 1"
+            ).fetchone()
+        if row is None:
+            return ("", "")
+        return (str(row["updated_at"] or "")[:64], str(row["storage_key"] or "")[:512])
+
+    def authority_revision(self) -> str:
+        with self.store._lock:
+            exists = self.store.sqlite.conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'vector_sync_revision'"
+            ).fetchone()
+            if exists is None:
+                return ""
+            row = self.store.sqlite.conn.execute(
+                "SELECT revision FROM vector_sync_revision WHERE singleton = 1"
+            ).fetchone()
+        return "" if row is None else str(int(row["revision"]))
+
     def search(self, request: CandidateRequest) -> CandidateBatch:
         started = perf_counter()
         if not request.query or request.limit <= 0 or request.budget <= 0 or request.source_ids == ():

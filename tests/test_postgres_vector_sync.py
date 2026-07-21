@@ -16,7 +16,15 @@ from eimemory.retrieval.postgres_sync import (
     SQLiteProjectionReader,
     SyncProgress,
 )
-from eimemory.retrieval.postgres_vector import PostgresCandidateRepository, PostgresVectorConfig
+from eimemory.retrieval.postgres_vector import (
+    PROJECTION_DIGEST_SCHEMA,
+    PostgresCandidateRepository,
+    PostgresVectorConfig,
+    projection_fingerprint,
+)
+
+
+EMBEDDING_FINGERPRINT = "f" * 64
 
 
 class BatchProvider:
@@ -32,7 +40,10 @@ class BatchProvider:
         return [tuple(float(position + 1) / 10 for position in range(self.dimension)) for _ in texts]
 
     def health(self) -> dict[str, object]:
-        return {"available": self.error is None}
+        return {"configured": True, "available": self.error is None, "circuit": "closed", "dimension": self.dimension}
+
+    def fingerprint(self) -> str:
+        return EMBEDDING_FINGERPRINT
 
 
 class FakeSyncRepository:
@@ -40,8 +51,10 @@ class FakeSyncRepository:
         self.progress = progress or SyncProgress(run_id="run-1", cursor=ProjectionCursor(), resumed=False)
         self.fail_apply = fail_apply
         self.apply_calls: list[dict[str, Any]] = []
+        self.release_calls: list[dict[str, str]] = []
+        self.invalidate_calls: list[dict[str, str]] = []
 
-    def begin_or_resume_sync(self) -> SyncProgress:
+    def begin_or_resume_sync(self, **kwargs: Any) -> SyncProgress:
         return self.progress
 
     def apply_sync_page(
@@ -52,6 +65,7 @@ class FakeSyncRepository:
         expected_cursor: ProjectionCursor,
         next_cursor: ProjectionCursor,
         complete: bool,
+        **kwargs: Any,
     ) -> None:
         if self.fail_apply:
             raise RuntimeError("apply failed with postgresql://user:secret@host/db")
@@ -65,15 +79,25 @@ class FakeSyncRepository:
             }
         )
 
+    def release_sync_lease(self, *, run_id: str, lease_owner: str) -> None:
+        self.release_calls.append({"run_id": run_id, "lease_owner": lease_owner})
+
+    def invalidate_index(self, *, watermark: str, reason: str) -> None:
+        self.invalidate_calls.append({"watermark": watermark, "reason": reason})
+
 
 class FakeReader:
     def __init__(self, pages: dict[tuple[str, str], list[dict[str, Any]]]) -> None:
         self.pages = pages
         self.calls: list[tuple[ProjectionCursor, int]] = []
+        self.revision = "0"
 
     def page(self, cursor: ProjectionCursor, *, limit: int) -> list[dict[str, Any]]:
         self.calls.append((cursor, limit))
         return list(self.pages.get((cursor.updated_at, cursor.storage_key), []))[:limit]
+
+    def snapshot_token(self) -> str:
+        return self.revision
 
 
 def _projection(storage_key: str, updated_at: str, *, status: str = "active") -> dict[str, Any]:
@@ -108,6 +132,7 @@ def test_versioned_ddl_is_candidate_only_idempotent_and_indexed() -> None:
     assert 'CREATE SCHEMA IF NOT EXISTS "safe_schema"' in ddl
     assert 'CREATE TABLE IF NOT EXISTS "safe_schema"."safe_candidates"' in ddl
     assert "embedding vector(384)" in ddl
+    assert "PRIMARY KEY (storage_key, index_watermark)" in ddl
     for field in (
         "storage_key",
         "record_id",
@@ -121,7 +146,7 @@ def test_versioned_ddl_is_candidate_only_idempotent_and_indexed() -> None:
         "title_text",
         "alias_text",
         "keyword_text",
-        "payload_digest",
+        "projection_digest",
         "authoritative_updated_at",
         "index_watermark",
     ):
@@ -131,6 +156,21 @@ def test_versioned_ddl_is_candidate_only_idempotent_and_indexed() -> None:
     assert "USING gin" in ddl
     assert ddl.count("IF NOT EXISTS") >= 6
     assert "payload_json" not in ddl
+    assert "postgres-vector-candidates.v1" in ddl
+    assert "candidate_projection_migrations" in ddl
+    assert ddl.index("postgres-vector-candidates.v1") < ddl.index("CREATE TABLE IF NOT EXISTS", ddl.index("postgres-vector-candidates.v1"))
+
+
+def test_v1_upgrade_rebuilds_only_non_authoritative_candidate_tables() -> None:
+    ddl = "\n".join(build_candidate_projection_ddl(PostgresVectorConfig(table="candidates")))
+    start = ddl.index("DO $eimemory_v1_upgrade$")
+    upgrade = ddl[start:ddl.index("$eimemory_v1_upgrade$", start + len("DO $eimemory_v1_upgrade$"))]
+
+    assert 'DROP TABLE IF EXISTS "eimemory_recall"."candidates"' in upgrade
+    assert 'DROP TABLE IF EXISTS "eimemory_recall"."candidates_sync_state"' in upgrade
+    assert 'DROP TABLE IF EXISTS "eimemory_recall"."candidate_projection_migrations"' in upgrade
+    assert "records" not in upgrade
+    assert "payload_json" not in upgrade
 
 
 def test_sqlite_projection_reader_uses_keyset_bounded_projection_without_payload(tmp_path: Path) -> None:
@@ -180,11 +220,45 @@ def test_sqlite_projection_reader_uses_keyset_bounded_projection_without_payload
         assert "OFFSET" not in select_sql.upper()
         assert "payload_json" not in select_sql
         assert "(r.updated_at, r.storage_key) >" in select_sql
+        assert "substr(r.title, 1, 32)" in select_sql
+        assert "substr(r.summary, 1, 32)" in select_sql
+        assert "substr(r.detail, 1, 32)" in select_sql
+        assert "substr(COALESCE" in select_sql
+        assert "substr(a.normalized_alias, 1, 256)" in select_sql
+        assert "LIMIT 128" in select_sql
         index_columns = [
             str(row["name"])
             for row in runtime.store.sqlite.conn.execute("PRAGMA index_info(idx_records_vector_sync_cursor)")
         ]
         assert index_columns == ["updated_at", "storage_key"]
+    finally:
+        runtime.close()
+
+
+def test_sqlite_projection_reader_repairs_wrong_cursor_index_without_temp_sort(tmp_path: Path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        runtime.store.sqlite.conn.execute(
+            "CREATE INDEX idx_records_vector_sync_cursor ON records(storage_key)"
+        )
+        runtime.store.sqlite.conn.commit()
+        SQLiteProjectionReader(runtime.store).page(ProjectionCursor(), limit=1)
+
+        columns = [
+            str(row["name"])
+            for row in runtime.store.sqlite.conn.execute(
+                "PRAGMA index_info(idx_records_vector_sync_cursor)"
+            )
+        ]
+        plan = " ".join(
+            str(row["detail"])
+            for row in runtime.store.sqlite.conn.execute(
+                "EXPLAIN QUERY PLAN SELECT updated_at, storage_key FROM records "
+                "ORDER BY updated_at, storage_key LIMIT 10"
+            )
+        )
+        assert columns == ["updated_at", "storage_key"]
+        assert "TEMP B-TREE" not in plan.upper()
     finally:
         runtime.close()
 
@@ -204,7 +278,9 @@ def test_sync_pages_embeds_bounded_batches_and_only_completes_after_end() -> Non
         reader=reader,
         repository=repository,
         embedding_provider=provider,
-        config=PostgresVectorConfig(enabled=True, dsn="postgresql://host/db", vector_dimension=3),
+        config=PostgresVectorConfig(
+            enabled=True, dsn="postgresql://host/db", vector_dimension=3, projection_text_chars=24
+        ),
         max_text_chars=24,
     )
 
@@ -224,7 +300,7 @@ def test_sync_pages_embeds_bounded_batches_and_only_completes_after_end() -> Non
     assert [call["complete"] for call in repository.apply_calls] == [False, True]
     final_rows = [row for call in repository.apply_calls for row in call["projections"]]
     assert all(len(row["embedding"]) == 3 for row in final_rows)
-    assert all(len(row["payload_digest"]) == 64 for row in final_rows)
+    assert all(len(row["projection_digest"]) == 64 for row in final_rows)
     assert all("payload" not in row for row in final_rows)
     assert final_rows[-1]["status"] == "inactive"
 
@@ -250,6 +326,130 @@ def test_sync_resume_is_keyset_idempotent_and_page_bounded() -> None:
     assert repository.apply_calls[0]["projections"][0]["index_watermark"] == "same-run"
 
 
+def test_partial_sync_releases_lease_for_immediate_bounded_resume() -> None:
+    rows = [_projection("a", "2026-07-22T00:00:01Z"), _projection("b", "2026-07-22T00:00:02Z")]
+    repository = FakeSyncRepository()
+    syncer = PostgresVectorIndexSynchronizer(
+        reader=FakeReader({("", ""): rows}),
+        repository=repository,
+        embedding_provider=BatchProvider(),
+        config=PostgresVectorConfig(enabled=True, dsn="postgresql://host/db", vector_dimension=3),
+    )
+
+    report = syncer.sync(batch_size=2, max_pages=1)
+
+    assert report["ok"] is True and report["complete"] is False
+    assert repository.release_calls[0]["run_id"] == "run-1"
+
+
+def test_revision_change_between_runs_resets_cursor_and_captures_same_timestamp_earlier_key() -> None:
+    class MutableReader:
+        def __init__(self) -> None:
+            self.rows = [_projection("b", "2026-07-22T00:00:01Z")]
+            self.revision = "0"
+
+        def snapshot_token(self) -> str:
+            return self.revision
+
+        def page(self, cursor: ProjectionCursor, *, limit: int) -> list[dict[str, Any]]:
+            rows = sorted(self.rows, key=lambda row: (row["updated_at"], row["storage_key"]))
+            return [
+                row for row in rows
+                if (row["updated_at"], row["storage_key"]) > (cursor.updated_at, cursor.storage_key)
+            ][:limit]
+
+    class RevisionRepository(FakeSyncRepository):
+        def __init__(self) -> None:
+            super().__init__()
+            self.bound_revision = ""
+            self.cursor = ProjectionCursor()
+            self.run_number = 0
+
+        def begin_or_resume_sync(self, **kwargs: Any) -> SyncProgress:
+            revision = str(kwargs["authority_revision"])
+            if revision != self.bound_revision:
+                self.run_number += 1
+                self.bound_revision = revision
+                self.cursor = ProjectionCursor()
+                return SyncProgress(
+                    run_id=f"run-{self.run_number}", cursor=self.cursor, resumed=False,
+                    authority_revision=revision,
+                )
+            return SyncProgress(
+                run_id=f"run-{self.run_number}", cursor=self.cursor, resumed=True,
+                authority_revision=revision,
+            )
+
+        def apply_sync_page(self, **kwargs: Any) -> None:
+            super().apply_sync_page(**kwargs)
+            self.cursor = kwargs["next_cursor"]
+
+    reader = MutableReader()
+    repository = RevisionRepository()
+    config = PostgresVectorConfig(enabled=True, dsn="postgresql://host/db", vector_dimension=3)
+
+    first = PostgresVectorIndexSynchronizer(
+        reader=reader, repository=repository, embedding_provider=BatchProvider(), config=config
+    ).sync(batch_size=1, max_pages=1)
+    assert first["complete"] is False
+    assert repository.cursor.storage_key == "b"
+
+    reader.rows.append(_projection("a", "2026-07-22T00:00:01Z"))
+    reader.revision = "1"
+    second = PostgresVectorIndexSynchronizer(
+        reader=reader, repository=repository, embedding_provider=BatchProvider(), config=config
+    ).sync(batch_size=1, max_pages=1)
+
+    assert second["resumed"] is False
+    assert repository.apply_calls[-1]["projections"][0]["storage_key"] == "a"
+
+
+def test_mutation_during_embedding_does_not_apply_or_advance_watermark() -> None:
+    reader = FakeReader({("", ""): [_projection("a", "2026-07-22T00:00:01Z")]})
+
+    class MutatingProvider(BatchProvider):
+        def embed(self, texts: list[str], *, timeout_seconds: float | None = None) -> list[tuple[float, ...]]:
+            reader.revision = "1"
+            return super().embed(texts, timeout_seconds=timeout_seconds)
+
+    repository = FakeSyncRepository()
+    report = PostgresVectorIndexSynchronizer(
+        reader=reader,
+        repository=repository,
+        embedding_provider=MutatingProvider(),
+        config=PostgresVectorConfig(enabled=True, dsn="postgresql://host/db", vector_dimension=3),
+    ).sync(batch_size=10, max_pages=1)
+
+    assert report == {"ok": False, "complete": False, "error": "authority_changed_during_sync"}
+    assert repository.apply_calls == []
+    assert repository.release_calls
+
+
+def test_continuously_mutating_multi_page_sync_fails_fast_without_partial_progress() -> None:
+    rows = [
+        _projection(chr(ord("a") + index), f"2026-07-22T00:00:0{index + 1}Z")
+        for index in range(4)
+    ]
+    reader = FakeReader({("", ""): rows})
+
+    class AlwaysMutatingProvider(BatchProvider):
+        def embed(self, texts: list[str], *, timeout_seconds: float | None = None) -> list[tuple[float, ...]]:
+            reader.revision = str(int(reader.revision) + 1)
+            return super().embed(texts, timeout_seconds=timeout_seconds)
+
+    repository = FakeSyncRepository()
+    report = PostgresVectorIndexSynchronizer(
+        reader=reader,
+        repository=repository,
+        embedding_provider=AlwaysMutatingProvider(),
+        config=PostgresVectorConfig(enabled=True, dsn="postgresql://host/db", vector_dimension=3),
+    ).sync(batch_size=2, max_pages=10)
+
+    assert report == {"ok": False, "complete": False, "error": "authority_changed_during_sync"}
+    assert repository.apply_calls == []
+    assert len(repository.release_calls) == 1
+
+
 def test_provider_failure_does_not_apply_page_or_advance_watermark_and_is_sanitized() -> None:
     reader = FakeReader({("", ""): [_projection("a", "2026-07-22T00:00:01Z")]})
     repository = FakeSyncRepository()
@@ -271,6 +471,30 @@ def test_provider_failure_does_not_apply_page_or_advance_watermark_and_is_saniti
     assert repository.apply_calls == []
     assert "secret" not in json.dumps(report)
     assert "user" not in json.dumps(report)
+
+
+def test_sync_uses_provider_timeout_not_database_connect_timeout() -> None:
+    class TimeoutRecordingProvider(BatchProvider):
+        def __init__(self) -> None:
+            super().__init__()
+            self.timeouts: list[float | None] = []
+
+        def embed(self, texts: list[str], *, timeout_seconds: float | None = None) -> list[tuple[float, ...]]:
+            self.timeouts.append(timeout_seconds)
+            return super().embed(texts, timeout_seconds=timeout_seconds)
+
+    provider = TimeoutRecordingProvider()
+    syncer = PostgresVectorIndexSynchronizer(
+        reader=FakeReader({("", ""): [_projection("a", "2026-07-22T00:00:01Z")]}),
+        repository=FakeSyncRepository(),
+        embedding_provider=provider,
+        config=PostgresVectorConfig(
+            enabled=True, dsn="postgresql://host/db", vector_dimension=3, connect_timeout_seconds=0.05
+        ),
+    )
+
+    assert syncer.sync(batch_size=10, max_pages=1)["ok"] is True
+    assert provider.timeouts == [None]
 
 
 def test_wrong_provider_dimension_does_not_apply_page() -> None:
@@ -306,7 +530,22 @@ class RecordingCursor:
             raise RuntimeError("forced")
 
     def fetchone(self) -> dict[str, Any]:
-        return {"run_id": "run-1", "in_progress": True}
+        return {
+            "run_id": "run-1",
+            "in_progress": True,
+            "cursor_updated_at": "",
+            "cursor_storage_key": "",
+            "embedding_fingerprint": EMBEDDING_FINGERPRINT,
+            "projection_digest_schema": PROJECTION_DIGEST_SCHEMA,
+            "projection_fingerprint": projection_fingerprint(PostgresVectorConfig(vector_dimension=3)),
+            "lease_owner": "owner",
+            "lease_active": True,
+            "authority_revision": "0",
+            "staging_embedding_fingerprint": EMBEDDING_FINGERPRINT,
+            "staging_projection_digest_schema": PROJECTION_DIGEST_SCHEMA,
+            "staging_projection_fingerprint": projection_fingerprint(PostgresVectorConfig(vector_dimension=3)),
+            "staging_authority_revision": "0",
+        }
 
     def __enter__(self) -> "RecordingCursor":
         return self
@@ -351,7 +590,8 @@ def test_repository_final_page_upsert_state_and_stale_cleanup_are_one_transactio
         "alias_text": "alias",
         "keyword_text": "body",
         "embedding": (0.1, 0.2, 0.3),
-        "payload_digest": "a" * 64,
+        "projection_digest": "a" * 64,
+        "projection_digest_schema": "candidate-projection.v1",
         "index_watermark": "run-1",
     }
 
@@ -361,10 +601,15 @@ def test_repository_final_page_upsert_state_and_stale_cleanup_are_one_transactio
         expected_cursor=ProjectionCursor(),
         next_cursor=ProjectionCursor(projection["updated_at"], projection["storage_key"]),
         complete=True,
+        embedding_fingerprint=EMBEDDING_FINGERPRINT,
+        projection_digest_schema=PROJECTION_DIGEST_SCHEMA,
+        projection_fingerprint=projection_fingerprint(config),
+        lease_owner="owner",
+        authority_revision="0",
     )
 
     sql = "\n".join(statement for statement, _ in connection.cursor_value.calls)
-    assert "ON CONFLICT (storage_key) DO UPDATE" in sql
+    assert "ON CONFLICT (storage_key, index_watermark) DO UPDATE" in sql
     assert "DELETE FROM \"safe\".\"candidates\" WHERE index_watermark <> %s" in sql
     assert "committed_watermark" in sql
     assert connection.commits == 1
@@ -388,7 +633,114 @@ def test_repository_apply_failure_rolls_back_without_commit() -> None:
             expected_cursor=ProjectionCursor(),
             next_cursor=ProjectionCursor(),
             complete=True,
+            embedding_fingerprint=EMBEDDING_FINGERPRINT,
+            projection_digest_schema=PROJECTION_DIGEST_SCHEMA,
+            projection_fingerprint=projection_fingerprint(repository.config),
+            lease_owner="owner",
+            authority_revision="0",
         )
+
+    assert connection.rollbacks == 1
+    assert connection.commits == 0
+
+
+class MigrationCursor(RecordingCursor):
+    def __init__(self, schema_row: dict[str, Any]) -> None:
+        super().__init__()
+        self.schema_row = schema_row
+
+    def fetchone(self) -> dict[str, Any]:
+        return self.schema_row
+
+
+class MigrationConnection(RecordingConnection):
+    def __init__(self, schema_row: dict[str, Any]) -> None:
+        super().__init__()
+        self.cursor_value = MigrationCursor(schema_row)
+
+
+def _valid_postgres_projection_schema(*, dimension: int = 3) -> dict[str, Any]:
+    return {
+        "embedding_type": f"vector({dimension})",
+        "primary_key": "PRIMARY KEY (storage_key, index_watermark)",
+        "hnsw_index": "CREATE INDEX candidates_embedding_hnsw_idx ON safe.candidates USING hnsw (embedding vector_cosine_ops)",
+        "gin_index": "CREATE INDEX candidates_search_gin_idx ON safe.candidates USING gin (search_tsv)",
+        "scope_index": "CREATE INDEX candidates_scope_idx ON safe.candidates (tenant_id, agent_id, workspace_id, user_id, source_id, status, kind)",
+        "vector_version": "0.8.1",
+        "migration_version": True,
+        "candidate_columns": [
+            "storage_key", "record_id", "tenant_id", "agent_id", "workspace_id", "user_id",
+            "source_id", "kind", "status", "embedding", "title_text", "alias_text", "keyword_text",
+            "search_tsv", "projection_digest", "projection_digest_schema", "authoritative_updated_at",
+            "index_watermark", "indexed_at",
+        ],
+        "state_columns": [
+            "singleton", "ready", "in_progress", "run_id", "cursor_updated_at", "cursor_storage_key",
+            "committed_watermark", "authoritative_updated_at", "authoritative_storage_key",
+            "completed_at", "embedding_fingerprint", "projection_digest_schema", "projection_fingerprint",
+            "lease_owner", "lease_expires_at", "updated_at",
+            "authority_revision",
+            "staging_embedding_fingerprint", "staging_projection_digest_schema",
+            "staging_projection_fingerprint", "staging_authority_revision",
+        ],
+    }
+
+
+def test_migrate_validates_existing_dimension_primary_key_and_index_definitions() -> None:
+    connection = MigrationConnection(_valid_postgres_projection_schema())
+    repository = PostgresCandidateRepository(
+        PostgresVectorConfig(
+            enabled=True,
+            connection_factory=lambda **kwargs: connection,
+            vector_dimension=3,
+            schema="safe",
+            table="candidates",
+        )
+    )
+
+    assert repository.migrate()["ok"] is True
+    validation_sql = "\n".join(statement for statement, _ in connection.cursor_value.calls)
+    assert "format_type" in validation_sql
+    assert "pg_get_constraintdef" in validation_sql
+    assert "pg_indexes" in validation_sql
+    validation_params = next(
+        params for sql, params in connection.cursor_value.calls if "format_type" in sql
+    )
+    assert validation_params[-3] == DDL_VERSION
+    assert validation_params[-2] == "safe.candidates"
+    assert str(validation_params[-1]).startswith("safe.candidates_state_")
+    assert connection.commits == 1
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("embedding_type", "vector(384)"),
+        ("primary_key", "PRIMARY KEY (storage_key)"),
+        ("hnsw_index", "CREATE INDEX bad USING btree (embedding)"),
+        ("gin_index", "CREATE INDEX bad USING btree (search_tsv)"),
+        ("scope_index", "CREATE INDEX bad USING btree (tenant_id)"),
+        ("vector_version", "0.7.4"),
+        ("migration_version", False),
+        ("candidate_columns", ["storage_key", "embedding"]),
+    ],
+)
+def test_migrate_fails_closed_on_existing_projection_schema_drift(field: str, value: str) -> None:
+    schema = _valid_postgres_projection_schema()
+    schema[field] = value
+    connection = MigrationConnection(schema)
+    repository = PostgresCandidateRepository(
+        PostgresVectorConfig(
+            enabled=True,
+            connection_factory=lambda **kwargs: connection,
+            vector_dimension=3,
+            schema="safe",
+            table="candidates",
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="postgres_migration_failed"):
+        repository.migrate()
 
     assert connection.rollbacks == 1
     assert connection.commits == 0
@@ -401,6 +753,16 @@ def test_repository_rejects_out_of_order_concurrent_cursor_without_regression() 
         "in_progress": True,
         "cursor_updated_at": "2026-07-22T00:00:09Z",
         "cursor_storage_key": "later",
+        "embedding_fingerprint": EMBEDDING_FINGERPRINT,
+        "projection_digest_schema": PROJECTION_DIGEST_SCHEMA,
+        "projection_fingerprint": projection_fingerprint(PostgresVectorConfig(vector_dimension=3)),
+        "lease_owner": "owner",
+        "lease_active": True,
+        "authority_revision": "0",
+        "staging_embedding_fingerprint": EMBEDDING_FINGERPRINT,
+        "staging_projection_digest_schema": PROJECTION_DIGEST_SCHEMA,
+        "staging_projection_fingerprint": projection_fingerprint(PostgresVectorConfig(vector_dimension=3)),
+        "staging_authority_revision": "0",
     }
     repository = PostgresCandidateRepository(
         PostgresVectorConfig(enabled=True, connection_factory=lambda **kwargs: connection, vector_dimension=3)
@@ -413,9 +775,86 @@ def test_repository_rejects_out_of_order_concurrent_cursor_without_regression() 
             expected_cursor=ProjectionCursor("2026-07-22T00:00:01Z", "earlier"),
             next_cursor=ProjectionCursor("2026-07-22T00:00:02Z", "next"),
             complete=False,
+            embedding_fingerprint=EMBEDDING_FINGERPRINT,
+            projection_digest_schema=PROJECTION_DIGEST_SCHEMA,
+            projection_fingerprint=projection_fingerprint(repository.config),
+            lease_owner="owner",
+            authority_revision="0",
         )
 
     sql = "\n".join(statement for statement, _ in connection.cursor_value.calls)
     assert "cursor_updated_at" in sql
     assert connection.rollbacks == 1
     assert connection.commits == 0
+
+
+def test_active_sync_lease_rejects_concurrent_embedding_worker() -> None:
+    connection = RecordingConnection()
+    connection.cursor_value.fetchone = lambda: {
+        **RecordingCursor().fetchone(),
+        "lease_owner": "other-worker",
+        "lease_active": True,
+        "in_progress": True,
+        "run_id": "existing-run",
+        "committed_watermark": "committed",
+    }
+    repository = PostgresCandidateRepository(
+        PostgresVectorConfig(enabled=True, connection_factory=lambda **kwargs: connection, vector_dimension=3)
+    )
+
+    with pytest.raises(RuntimeError, match="postgres_sync_lease_held"):
+        repository.begin_or_resume_sync(
+            embedding_fingerprint=EMBEDDING_FINGERPRINT,
+            projection_digest_schema=PROJECTION_DIGEST_SCHEMA,
+            projection_fingerprint=projection_fingerprint(repository.config),
+            lease_owner="new-worker",
+            authority_revision="0",
+        )
+
+    assert connection.rollbacks == 1
+
+
+def test_incompatible_restart_preserves_committed_metadata_and_gc_keeps_committed_rows() -> None:
+    connection = RecordingConnection()
+    old_fingerprint = "a" * 64
+    connection.cursor_value.fetchone = lambda: {
+        "run_id": "abandoned-run",
+        "in_progress": True,
+        "cursor_updated_at": "2026-07-22T00:00:01Z",
+        "cursor_storage_key": "b",
+        "embedding_fingerprint": old_fingerprint,
+        "projection_digest_schema": PROJECTION_DIGEST_SCHEMA,
+        "projection_fingerprint": "b" * 64,
+        "authority_revision": "7",
+        "staging_embedding_fingerprint": old_fingerprint,
+        "staging_projection_digest_schema": PROJECTION_DIGEST_SCHEMA,
+        "staging_projection_fingerprint": "b" * 64,
+        "staging_authority_revision": "7",
+        "lease_owner": "old-worker",
+        "lease_active": False,
+        "committed_watermark": "committed-run",
+    }
+    repository = PostgresCandidateRepository(
+        PostgresVectorConfig(enabled=True, connection_factory=lambda **kwargs: connection, vector_dimension=3)
+    )
+
+    progress = repository.begin_or_resume_sync(
+        embedding_fingerprint=EMBEDDING_FINGERPRINT,
+        projection_digest_schema=PROJECTION_DIGEST_SCHEMA,
+        projection_fingerprint=projection_fingerprint(repository.config),
+        lease_owner="new-worker",
+        authority_revision="8",
+    )
+
+    assert progress.resumed is False
+    assert progress.cursor == ProjectionCursor()
+    calls = connection.cursor_value.calls
+    gc_sql, gc_params = next((sql, params) for sql, params in calls if "DELETE FROM" in sql)
+    assert "index_watermark <> %s" in gc_sql
+    assert gc_params == ("committed-run",)
+    staging_sql, staging_params = next(
+        (sql, params) for sql, params in calls if "staging_embedding_fingerprint = %s" in sql
+    )
+    assert "ready = FALSE" not in staging_sql
+    assert " embedding_fingerprint = %s" not in staging_sql.replace("staging_embedding_fingerprint", "")
+    assert old_fingerprint not in staging_params

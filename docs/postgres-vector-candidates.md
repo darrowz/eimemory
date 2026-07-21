@@ -29,14 +29,21 @@ EIMEMORY_POSTGRES_STATEMENT_TIMEOUT_MS=1500
 EIMEMORY_POSTGRES_POOL_SIZE=2
 EIMEMORY_POSTGRES_QUEUE_BOUND=16
 EIMEMORY_POSTGRES_MAX_INDEX_LAG_SECONDS=300
+EIMEMORY_POSTGRES_PROJECTION_TEXT_CHARS=16000
+EIMEMORY_POSTGRES_SYNC_LEASE_SECONDS=60
 EIMEMORY_EMBEDDINGS_BASE_URL=https://provider.example/v1
 EIMEMORY_EMBEDDINGS_API_KEY=...
 EIMEMORY_EMBEDDINGS_MODEL=provider-embedding-model
+EIMEMORY_EMBEDDINGS_QUEUE_TIMEOUT_SECONDS=2
 ```
 
 `EIMEMORY_EMBEDDINGS_MODEL` must name a real embeddings model. A chat model,
 including MiniMax-M3, is not assumed to support `/embeddings`; chat or LLM
 output is never written into the candidate projection or authoritative memory.
+Remote embedding endpoints must use HTTPS; plaintext HTTP is accepted only on
+a loopback address. A custom embedding provider must expose a stable SHA-256
+fingerprint or set `EIMEMORY_EMBEDDINGS_FINGERPRINT`; the fingerprint must not
+contain credentials.
 
 The lifecycle is deliberately operator-driven:
 
@@ -52,7 +59,19 @@ scope/source/status identity, digest, vector, and run watermark. It does not
 store the authoritative payload. A failed provider or Postgres transaction
 does not advance the cursor or committed watermark. The final page removes
 rows not observed in the completed run. Re-running `sync` resumes the same run
-and is idempotent.
+and is idempotent. A lease prevents concurrent workers from issuing duplicate
+embedding calls. Committed and staging fingerprints are separate, so an
+incomplete rebuild cannot relabel the previous watermark.
+
+The SQLite authority maintains a small persistent mutation revision through
+record triggers. A write during a bounded sync makes that run fail fast before
+publishing a partial watermark; the next run resets the keyset cursor so an
+earlier key written in the same timestamp second is not skipped. On a
+continuously busy database this conservative full-projection mode may remain
+bypassed until a quiet sync window is available. It never loops indefinitely
+or replaces SQLite recall. Large always-on installations should schedule a
+quiet window; an incremental dirty-journal tailer is deliberately outside this
+optional first backend.
 
 To inject the optional source programmatically, use
 `build_postgres_vector_candidate_source(store, config)`. This factory always
