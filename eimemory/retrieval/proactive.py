@@ -639,6 +639,7 @@ class ProactiveRecallService:
         turn_id: str = "",
         release_identity: Mapping[str, Any] | None = None,
         terminal_outcome: Mapping[str, Any] | None = None,
+        _stale_lease_guard: Mapping[str, str] | None = None,
     ) -> dict[str, Any]:
         del assistant_text  # Similarity is never evidence of use.
         state = self._decision(query_id=query_id, decision_id=decision_id)
@@ -663,7 +664,17 @@ class ProactiveRecallService:
                 for citation, item in state.items.items()
                 if item.state not in _TERMINAL_STATES
             },
+            stale_lease_guard=_stale_lease_guard,
         )
+        if changed == -2:
+            return {
+                "ok": True,
+                "bypassed": False,
+                "decision_id": state.decision_id,
+                "changed": 0,
+                "outcome_recorded": False,
+                "reason": "stale_lease_renewed",
+            }
         if changed < 0:
             return {
                 "ok": False, "bypassed": True, "decision_id": state.decision_id,
@@ -740,6 +751,7 @@ class ProactiveRecallService:
         )
         closed = 0
         failed = 0
+        skipped = 0
         for decision in stale:
             try:
                 decision_sources = tuple(decision.get("source_ids") or sources)
@@ -752,8 +764,14 @@ class ProactiveRecallService:
                     turn_id=str(decision.get("turn_id") or ""),
                     release_identity=dict(decision.get("release_identity") or {}),
                     terminal_outcome=None,
+                    _stale_lease_guard={
+                        "before_created_at": cutoff,
+                        "before_injected_updated_at": injected_cutoff,
+                    },
                 )
-                if result.get("ok") is True:
+                if result.get("reason") == "stale_lease_renewed":
+                    skipped += 1
+                elif result.get("ok") is True:
                     closed += 1
                 else:
                     failed += 1
@@ -765,7 +783,13 @@ class ProactiveRecallService:
                     query_digest=str(decision.get("query_digest") or ""),
                     reason=f"reconcile_{type(exc).__name__}",
                 )
-        return {"ok": failed == 0, "examined": len(stale), "closed": closed, "failed": failed}
+        return {
+            "ok": failed == 0,
+            "examined": len(stale),
+            "closed": closed,
+            "skipped": skipped,
+            "failed": failed,
+        }
 
     def switch_session(
         self,
@@ -1458,7 +1482,13 @@ class ProactiveRecallService:
             raise ValueError("exact proactive decision is required")
         return state
 
-    def _transition_targets(self, state: _DecisionState, targets: dict[str, str]) -> int:
+    def _transition_targets(
+        self,
+        state: _DecisionState,
+        targets: dict[str, str],
+        *,
+        stale_lease_guard: Mapping[str, str] | None = None,
+    ) -> int:
         if not targets:
             return 0
         feedback: dict[tuple[str, str], RecordEnvelope] = {}
@@ -1485,6 +1515,9 @@ class ProactiveRecallService:
                     "policy_version": state.policy_version,
                     "release_identity": state.release_identity,
                 },
+                stale_lease_guard=(
+                    None if stale_lease_guard is None else dict(stale_lease_guard)
+                ),
             )
         except Exception as exc:  # noqa: BLE001 - telemetry is advisory to host execution
             self._record_bypass(
@@ -1494,6 +1527,8 @@ class ProactiveRecallService:
                 reason=f"transition_{type(exc).__name__}",
             )
             return -1
+        if changed is None:
+            return -2
         with self._lock:
             for item in changed:
                 current = state.items.get(str(item["citation"]))

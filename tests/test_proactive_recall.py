@@ -341,6 +341,56 @@ def test_injected_turn_is_eventually_reconciled_after_its_separate_twenty_four_h
     runtime.close()
 
 
+def test_stale_scan_cannot_close_a_decision_whose_injection_wins_the_cas_race(
+    tmp_path, monkeypatch,
+) -> None:
+    record = _record("injection must renew the lease atomically")
+    runtime, _engine, service = _service(tmp_path, [record])
+    candidate = service.decide(
+        channel="codex", scope=BASE_SCOPE, source_ids=["alpha"],
+        session_id="race-session", query_id="race-turn",
+        query="Recall a candidate before the race",
+    )
+    citation = candidate["items"][0]["citation"]
+    runtime.store.sqlite.conn.execute(
+        "UPDATE proactive_decisions SET created_at=?,updated_at=? WHERE decision_id=?",
+        ("2000-01-01T00:00:00+00:00", "2000-01-01T00:00:00+00:00", candidate["decision_id"]),
+    )
+    runtime.store.sqlite.conn.commit()
+    original_list = runtime.store.list_stale_proactive_decisions
+    injected = False
+
+    def race_after_scan(*args, **kwargs):
+        nonlocal injected
+        rows = original_list(*args, **kwargs)
+        if not injected:
+            injected = True
+            result = service.mark_injected(
+                **_exact_transition(candidate, session_id="race-session", turn_id="race-turn"),
+                injected_citations=[citation],
+            )
+            assert result["changed"] == 1
+        return rows
+
+    monkeypatch.setattr(runtime.store, "list_stale_proactive_decisions", race_after_scan)
+    reconciled = service.reconcile_stale(
+        channel="codex", scope=BASE_SCOPE, source_ids=["alpha"]
+    )
+
+    persisted = runtime.store.load_proactive_decision(candidate["decision_id"])
+    assert reconciled["closed"] == 0
+    assert reconciled["skipped"] == 1
+    assert persisted is not None
+    assert persisted["terminal"] is False
+    assert persisted["items"][0]["state"] == "injected"
+    used = service.record_feedback(
+        **_exact_transition(candidate, session_id="race-session", turn_id="race-turn"),
+        used_citations=[citation],
+    )
+    assert used["changed"] == 1
+    runtime.close()
+
+
 def test_review_counterexample_02_context_cap_persists_and_acks_only_rendered_citations(tmp_path) -> None:
     records = [_record(f"long record {index} " + ("x" * 900)) for index in range(3)]
     runtime, _engine, service = _service(tmp_path, records, max_context_chars=420)

@@ -673,14 +673,36 @@ class SqliteRecordStore:
         targets: dict[str, str],
         *,
         expected: dict[str, Any] | None = None,
+        stale_lease_guard: dict[str, str] | None = None,
         commit: bool = True,
-    ) -> list[dict[str, Any]]:
+    ) -> list[dict[str, Any]] | None:
         decision = self.load_proactive_decision(decision_id)
         if decision is None:
             raise ValueError("exact proactive decision is required")
         for key, value in dict(expected or {}).items():
             if decision.get(key) != value:
                 raise ValueError("proactive decision namespace mismatch")
+        if stale_lease_guard is not None:
+            has_injected = any(
+                str(item.get("state") or "") == "injected"
+                for item in decision.get("items") or []
+            )
+            cutoff = str(
+                stale_lease_guard.get(
+                    "before_injected_updated_at" if has_injected else "before_created_at"
+                )
+                or ""
+            )
+            observed = str(
+                (
+                    decision.get("updated_at")
+                    if has_injected
+                    else decision.get("created_at")
+                )
+                or ""
+            )
+            if not cutoff or not observed or observed >= cutoff:
+                return None
         allowed = {
             "volunteered": {"injected", "not_used", "rejected", "suppressed"},
             "injected": {"used", "not_used", "rejected"},

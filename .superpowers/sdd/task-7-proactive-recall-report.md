@@ -113,6 +113,12 @@ and feedback contract. Tests cover first-fail/next-hook success, used-citation r
 continuous failure/capacity gating, and process-loss recovery for explicit and
 wildcard source scopes.
 
+Lease eligibility is not trusted from the initial scan. SQLite rechecks the
+current item state plus created/updated cutoff inside the same `BEGIN
+IMMEDIATE` transaction that performs the CAS transition and appends feedback.
+If an injection acknowledgement wins after the scan, reconciliation reports a
+lease-renewed skip and the later explicit `used` transition remains valid.
+
 Fresh verification after counterexample closure:
 
 - Named independent-review counterexamples: `12 passed`
@@ -120,7 +126,7 @@ Fresh verification after counterexample closure:
 - OpenClaw full adapter regression: `64 passed`
 - Full Codex + Hermes + runtime RPC channel regression: `63 passed`
 - Final Hermes + runtime RPC boundary regression: `45 passed`
-- Final proactive + Hermes + runtime RPC focused regression: `87 passed`
+- Final proactive + Hermes + runtime RPC focused regression: `88 passed`
 - Task 4-6 recall engine/fusion/Postgres focused regression: `179 passed`
 - `python -m compileall -q eimemory integrations/hermes/eimemory`
 - `git diff --check`

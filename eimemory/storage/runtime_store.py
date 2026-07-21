@@ -210,7 +210,8 @@ class RuntimeStore:
         feedback_records: dict[tuple[str, str], RecordEnvelope],
         *,
         expected: dict | None = None,
-    ) -> list[dict]:
+        stale_lease_guard: dict[str, str] | None = None,
+    ) -> list[dict] | None:
         """CAS decision items and append their usage feedback in one transaction."""
 
         with self._lock:
@@ -219,8 +220,15 @@ class RuntimeStore:
             try:
                 self.sqlite.conn.execute("BEGIN IMMEDIATE")
                 changed = self.sqlite.transition_proactive_items(
-                    decision_id, targets, expected=expected, commit=False
+                    decision_id,
+                    targets,
+                    expected=expected,
+                    stale_lease_guard=stale_lease_guard,
+                    commit=False,
                 )
+                if changed is None:
+                    self.sqlite.conn.commit()
+                    return None
                 for item in changed:
                     key = (str(item["citation"]), str(item["state"]))
                     record = feedback_records.get(key)
