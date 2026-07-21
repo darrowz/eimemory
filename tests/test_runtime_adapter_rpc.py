@@ -8,6 +8,7 @@ from eimemory.adapters.eibrain.rpc_server import EIBrainRPCServer
 from eimemory.adapters.runtime.channel import RUNTIME_ADAPTER_CONTRACT_VERSION
 from eimemory.adapters.runtime.http_client import AgentRuntimeRPCClient
 from eimemory.api.runtime import Runtime
+from eimemory.ei_bridge.protocol import EIMEMORY_RPC_CONTRACT_VERSION
 
 
 AUTH_TOKEN = "AgentRuntimeAdapterToken_0123456789-Strong"
@@ -96,7 +97,7 @@ def test_runtime_adapter_rpc_rejects_invalid_channel_and_terminal_types(tmp_path
     )
 
     assert invalid_channel == {
-        "contract_version": invalid_channel["contract_version"],
+        "contract_version": EIMEMORY_RPC_CONTRACT_VERSION,
         "ok": False,
         "error": "invalid_request",
     }
@@ -163,3 +164,63 @@ def test_runtime_http_client_bypasses_and_opens_bounded_circuit(tmp_path: Path) 
     assert all(AUTH_TOKEN not in json.dumps(entry) for entry in entries)
     assert entries[-1]["error"] == "circuit_open"
 
+
+def test_runtime_http_client_ledger_failure_cannot_break_fail_open(tmp_path: Path) -> None:
+    blocked_parent = tmp_path / "not-a-directory"
+    blocked_parent.write_text("file", encoding="utf-8")
+    client = AgentRuntimeRPCClient(
+        base_url="http://127.0.0.1:1/",
+        auth_token=AUTH_TOKEN,
+        timeout_seconds=0.05,
+        failure_ledger_path=blocked_parent / "failures.jsonl",
+    )
+
+    result = client.call_or_bypass("adapter.status", {"channel": "codex", "scope": BASE_SCOPE})
+
+    assert result == {
+        "ok": False,
+        "bypassed": True,
+        "error": "adapter_unavailable",
+        "result": None,
+    }
+
+
+def test_runtime_http_client_never_writes_an_oversized_failure_entry(tmp_path: Path) -> None:
+    ledger = tmp_path / "failures.jsonl"
+    client = AgentRuntimeRPCClient(
+        base_url="http://127.0.0.1:1/",
+        auth_token=AUTH_TOKEN,
+        timeout_seconds=0.05,
+        failure_ledger_path=ledger,
+        max_failure_ledger_bytes=1_024,
+    )
+
+    result = client.call_or_bypass("adapter." + "x" * 5_000, {})
+
+    assert result["bypassed"] is True
+    assert not ledger.exists() or ledger.stat().st_size <= 1_024
+
+
+def test_runtime_http_client_rejects_oversized_rpc_response(tmp_path: Path, monkeypatch) -> None:
+    class OversizedResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def read(self, size: int = -1) -> bytes:
+            return b"x" * (size if size >= 0 else 10_000)
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda request, timeout: OversizedResponse())
+    client = AgentRuntimeRPCClient(
+        base_url="http://127.0.0.1:8091/",
+        auth_token=AUTH_TOKEN,
+        failure_ledger_path=tmp_path / "failures.jsonl",
+        max_response_bytes=1_024,
+    )
+
+    result = client.call_or_bypass("adapter.status", {"channel": "codex", "scope": BASE_SCOPE})
+
+    assert result["bypassed"] is True
+    assert result["error"] == "adapter_unavailable"

@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import OrderedDict, deque
 from hashlib import sha256
 import json
+import logging
 import os
 from pathlib import Path
 import threading
@@ -16,6 +17,7 @@ MAX_TURN_CHARS = 8_000
 MAX_MEMORY_CHARS = 16_000
 DEFAULT_MAX_WRITE_QUEUE = 16
 DEFAULT_MAX_PREFETCH_CACHE_ENTRIES = 16
+logger = logging.getLogger(__name__)
 
 
 def hermes_client_from_env(*, hermes_home: str = "") -> AgentRuntimeRPCClient:
@@ -57,6 +59,8 @@ class HermesMemoryProviderCore:
         self._write_thread: threading.Thread | None = None
         self._prefetch_thread: threading.Thread | None = None
         self._pending_prefetch: tuple[tuple[str, str], str] | None = None
+        self._last_turn_summary = ""
+        self._dropped_write_count = 0
 
     @property
     def name(self) -> str:
@@ -76,10 +80,15 @@ class HermesMemoryProviderCore:
                 if worker is not None and worker.is_alive()
             )
 
+    @property
+    def dropped_write_count(self) -> int:
+        with self._lock:
+            return self._dropped_write_count
+
     def is_available(self) -> bool:
         if self._client_injected:
             return True
-        return bool(os.getenv("EIMEMORY_RPC_URL", "").strip() and os.getenv("EIMEMORY_RPC_TOKEN", "").strip())
+        return bool(os.getenv("EIMEMORY_RPC_TOKEN", "").strip())
 
     def initialize(self, session_id: str, **kwargs: Any) -> None:
         self._session_id = str(session_id or "").strip() or "hermes-session"
@@ -87,6 +96,7 @@ class HermesMemoryProviderCore:
         self._scope = self._scope_from_context(kwargs)
         agent_context = str(kwargs.get("agent_context") or "primary").strip().lower()
         self._write_enabled = agent_context not in {"cron", "flush", "subagent"}
+        self._last_turn_summary = ""
         if self._client is None:
             self._client = hermes_client_from_env(hermes_home=self._hermes_home)
         self._active = self._client_injected or self.is_available()
@@ -111,7 +121,8 @@ class HermesMemoryProviderCore:
                 self._prefetch_cache.move_to_end(key)
                 return cached
         context = self._fetch_context(normalized_query)
-        self._cache_context(key, context)
+        if context:
+            self._cache_context(key, context)
         return context
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
@@ -149,6 +160,11 @@ class HermesMemoryProviderCore:
         assistant_text = _bounded_text(assistant_content, MAX_TURN_CHARS)
         if not user_text and not assistant_text:
             return
+        with self._lock:
+            self._last_turn_summary = _bounded_text(
+                f"eimemory last completed Hermes turn:\nUser: {user_text}\nAssistant: {assistant_text}",
+                2_000,
+            )
         effective_session = str(session_id or self._session_id).strip() or "hermes-session"
         turn_digest = sha256(
             f"{effective_session}\0{user_text}\0{assistant_text}".encode("utf-8", errors="replace")
@@ -288,15 +304,16 @@ class HermesMemoryProviderCore:
         rewound: bool = False,
         **kwargs: Any,
     ) -> None:
-        del parent_session_id, reset, rewound, kwargs
+        del parent_session_id, kwargs
         self._session_id = str(new_session_id or "").strip() or self._session_id
+        if reset or rewound:
+            with self._lock:
+                self._last_turn_summary = ""
 
     def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
         del messages
         with self._lock:
-            if not self._prefetch_cache:
-                return ""
-            return _bounded_text(next(reversed(self._prefetch_cache.values())), 2_000)
+            return self._last_turn_summary
 
     def on_delegation(self, task: str, result: str, *, child_session_id: str = "", **kwargs: Any) -> None:
         del kwargs
@@ -325,7 +342,8 @@ class HermesMemoryProviderCore:
             {
                 "key": "rpc_url",
                 "description": "Authenticated eimemory RPC endpoint.",
-                "required": True,
+                "required": False,
+                "default": "http://127.0.0.1:8091/",
                 "env_var": "EIMEMORY_RPC_URL",
             },
             {
@@ -381,7 +399,15 @@ class HermesMemoryProviderCore:
                 },
             )
         if tool_name == "eimemory_status":
-            return self._safe_call("adapter.status", common)
+            status = self._safe_call("adapter.status", common)
+            return {
+                **status,
+                "adapter_local": {
+                    "dropped_writes": self.dropped_write_count,
+                    "prefetch_cache_entries": self.prefetch_cache_size,
+                    "background_workers": self.background_worker_count,
+                },
+            }
         raise ValueError("unknown eimemory tool")
 
     def _common_params(self) -> dict[str, Any]:
@@ -414,21 +440,22 @@ class HermesMemoryProviderCore:
         return _bounded_text(result["result"].get("context"), MAX_PREFETCH_CONTEXT_CHARS)
 
     def _prefetch_worker(self, key: tuple[str, str], query: str) -> None:
-        current_key = key
-        current_query = query
         while True:
-            self._cache_context(key, self._fetch_context(query))
+            context = self._fetch_context(query)
+            if context:
+                self._cache_context(key, context)
             with self._lock:
                 pending = self._pending_prefetch
                 self._pending_prefetch = None
                 if pending is not None:
-                    current_key, current_query = pending
-                    key, query = current_key, current_query
+                    key, query = pending
                     continue
                 self._prefetch_thread = None
                 return
 
     def _cache_context(self, key: tuple[str, str], context: str) -> None:
+        if not context:
+            return
         with self._lock:
             self._prefetch_cache[key] = _bounded_text(context, MAX_PREFETCH_CONTEXT_CHARS)
             self._prefetch_cache.move_to_end(key)
@@ -438,7 +465,13 @@ class HermesMemoryProviderCore:
     def _enqueue_write(self, method: str, params: dict[str, Any]) -> None:
         with self._lock:
             if len(self._write_queue) >= self._max_write_queue:
-                self._write_queue.popleft()
+                dropped_method, _ = self._write_queue.popleft()
+                self._dropped_write_count += 1
+                logger.warning(
+                    "Hermes eimemory write queue dropped oldest item method=%s total=%d",
+                    dropped_method,
+                    self._dropped_write_count,
+                )
             self._write_queue.append((method, params))
             if self._write_thread is not None and self._write_thread.is_alive():
                 return

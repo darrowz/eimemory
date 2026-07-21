@@ -11,6 +11,7 @@ import urllib.request
 
 
 DEFAULT_MAX_FAILURE_LEDGER_BYTES = 256 * 1024
+DEFAULT_MAX_RESPONSE_BYTES = 1024 * 1024
 
 
 class AgentRuntimeTransportError(RuntimeError):
@@ -28,6 +29,7 @@ class AgentRuntimeRPCClient:
         circuit_failure_threshold: int = 3,
         circuit_reset_seconds: float = 30.0,
         max_failure_ledger_bytes: int = DEFAULT_MAX_FAILURE_LEDGER_BYTES,
+        max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
     ) -> None:
         self.base_url = str(base_url or "").strip()
         self.auth_token = str(auth_token or "").strip()
@@ -36,8 +38,9 @@ class AgentRuntimeRPCClient:
         self.circuit_failure_threshold = max(1, int(circuit_failure_threshold))
         self.circuit_reset_seconds = max(0.1, float(circuit_reset_seconds))
         self.max_failure_ledger_bytes = max(1_024, int(max_failure_ledger_bytes))
+        self.max_response_bytes = max(1_024, int(max_response_bytes))
         self._failure_count = 0
-        self._circuit_opened_at = 0.0
+        self._circuit_opened_at: float | None = None
         self._lock = threading.Lock()
 
     def call(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -56,7 +59,10 @@ class AgentRuntimeRPCClient:
         )
         try:
             with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
-                payload = json.loads(response.read().decode("utf-8"))
+                raw = response.read(self.max_response_bytes + 1)
+                if len(raw) > self.max_response_bytes:
+                    raise AgentRuntimeTransportError("adapter response exceeds byte limit")
+                payload = json.loads(raw.decode("utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError, urllib.error.URLError) as exc:
             raise AgentRuntimeTransportError(str(exc)) from exc
         if not isinstance(payload, dict):
@@ -78,16 +84,16 @@ class AgentRuntimeRPCClient:
             return self._bypass("adapter_unavailable")
         with self._lock:
             self._failure_count = 0
-            self._circuit_opened_at = 0.0
+            self._circuit_opened_at = None
         return result
 
     def _circuit_is_open(self) -> bool:
         with self._lock:
-            if not self._circuit_opened_at:
+            if self._circuit_opened_at is None:
                 return False
             if monotonic() - self._circuit_opened_at >= self.circuit_reset_seconds:
                 self._failure_count = 0
-                self._circuit_opened_at = 0.0
+                self._circuit_opened_at = None
                 return False
             return True
 
@@ -98,22 +104,28 @@ class AgentRuntimeRPCClient:
             {
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "transport": "eimemory_rpc",
-                "method": str(method or ""),
+                "method": str(method or "")[:256],
                 "error": error,
             },
             ensure_ascii=False,
             sort_keys=True,
         ) + "\n"
         encoded = entry.encode("utf-8")
+        if len(encoded) > self.max_failure_ledger_bytes:
+            return
         with self._lock:
             path = self.failure_ledger_path
-            path.parent.mkdir(parents=True, exist_ok=True)
-            existing = path.read_bytes() if path.exists() else b""
-            if len(existing) + len(encoded) > self.max_failure_ledger_bytes:
-                keep = existing[-max(0, self.max_failure_ledger_bytes - len(encoded)) :]
-                newline = keep.find(b"\n")
-                existing = keep[newline + 1 :] if newline >= 0 else b""
-            path.write_bytes(existing + encoded)
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                existing = path.read_bytes() if path.exists() else b""
+                if len(existing) + len(encoded) > self.max_failure_ledger_bytes:
+                    max_keep = self.max_failure_ledger_bytes - len(encoded)
+                    keep = existing[-max_keep:] if max_keep > 0 else b""
+                    newline = keep.find(b"\n")
+                    existing = keep[newline + 1 :] if newline >= 0 else b""
+                path.write_bytes(existing + encoded)
+            except OSError:
+                return
 
     @staticmethod
     def _bypass(error: str) -> dict[str, Any]:

@@ -19,7 +19,25 @@ MAX_TOOL_RESULT_PREVIEW_CHARS = 4_000
 _SECRET_PATTERNS = (
     re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+"),
     re.compile(r"\bsk-[A-Za-z0-9_-]{8,}\b"),
-    re.compile(r"(?i)(api[_-]?key|token|secret|password)(\s*[:=]\s*)([^\s,;]+)"),
+    re.compile(
+        r'''(?i)(["']?[a-z0-9_-]*(?:api[_-]?key|token|secret|password|private[_-]?key|authorization|cookie)["']?\s*[:=]\s*)["']?[^"'\s,;}\]]+["']?'''
+    ),
+)
+_SENSITIVE_KEY_NAMES = frozenset(
+    {
+        "apikey",
+        "token",
+        "accesstoken",
+        "refreshtoken",
+        "secret",
+        "password",
+        "authorization",
+        "cookie",
+        "cookies",
+        "privatekey",
+        "credential",
+        "credentials",
+    }
 )
 
 
@@ -132,9 +150,12 @@ class CodexHookAdapter:
         )
 
     def _record_stop(self, event: Mapping[str, Any]) -> None:
-        session_id = _event_id(event, "session_id", default="codex-session")
-        event_id = _event_id(event, "turn_id", "event_id", default=f"{session_id}:stop")
-        success = event.get("success") if isinstance(event.get("success"), bool) else None
+        session_id = _event_id(event, "session_id", default="")
+        event_id = _event_id(event, "turn_id", "event_id", default="")
+        if not session_id or not event_id:
+            return
+        success_value = event.get("success")
+        success = success_value if isinstance(success_value, bool) else None
         verification = _bounded_text(
             event.get("verification")
             or event.get("verification_evidence")
@@ -193,14 +214,40 @@ def _safe_summary(value: Any, *, preview_limit: int) -> str:
     except (TypeError, ValueError):
         raw = repr(value)
     digest = sha256(raw.encode("utf-8", errors="replace")).hexdigest()
-    redacted = raw
+    if isinstance(value, str):
+        redacted = value
+    else:
+        try:
+            redacted = json.dumps(_redact_structured(value), ensure_ascii=False, sort_keys=True)
+        except (TypeError, ValueError, RecursionError):
+            redacted = raw
     for pattern in _SECRET_PATTERNS:
-        if pattern.groups >= 3:
-            redacted = pattern.sub(r"\1\2[REDACTED]", redacted)
-        else:
-            redacted = pattern.sub("[REDACTED]", redacted)
+        replacement = r"\1[REDACTED]" if pattern.groups else "[REDACTED]"
+        redacted = pattern.sub(replacement, redacted)
     preview = _bounded_text(redacted, preview_limit)
     return f"sha256={digest}; preview={preview}"
+
+
+def _redact_structured(value: Any, *, depth: int = 0) -> Any:
+    if depth >= 16:
+        return "[TRUNCATED]"
+    if isinstance(value, Mapping):
+        redacted: dict[str, Any] = {}
+        for key, item in value.items():
+            key_text = str(key)
+            canonical = re.sub(r"[^a-z0-9]", "", key_text.lower())
+            sensitive = canonical in _SENSITIVE_KEY_NAMES or canonical.endswith(
+                ("apikey", "token", "secret", "password", "privatekey", "authorization", "cookie")
+            )
+            redacted[key_text] = (
+                "[REDACTED]"
+                if sensitive
+                else _redact_structured(item, depth=depth + 1)
+            )
+        return redacted
+    if isinstance(value, (list, tuple)):
+        return [_redact_structured(item, depth=depth + 1) for item in value]
+    return value
 
 
 def _bounded_text(value: Any, limit: int) -> str:

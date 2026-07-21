@@ -41,8 +41,20 @@ class CodexMCPServer:
             try:
                 result = self._call_tool(name, arguments)
             except (TypeError, ValueError) as exc:
-                return self._result(request_id, self._tool_result({"ok": False, "error": str(exc)}, is_error=True))
-            return self._result(request_id, self._tool_result(result, is_error=False))
+                error = {"ok": False, "error": str(exc)[:300]}
+                return self._result(request_id, self._tool_result(error, is_error=True))
+            except Exception:
+                bypass = {
+                    "ok": False,
+                    "bypassed": True,
+                    "error": "adapter_unavailable",
+                    "result": None,
+                }
+                return self._result(request_id, self._tool_result(bypass, is_error=True))
+            return self._result(
+                request_id,
+                self._tool_result(result, is_error=result.get("ok") is not True),
+            )
         return self._error(request_id, -32601, "Method not found")
 
     def _call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -67,7 +79,7 @@ class CodexMCPServer:
                     "event_id": _required_text(arguments, "event_id"),
                     "memory_type": str(arguments.get("memory_type") or "durable_fact"),
                     "title": str(arguments.get("title") or "Codex long-term memory"),
-                    "force_capture": bool(arguments.get("force_capture", False)),
+                    "force_capture": _optional_bool(arguments, "force_capture", default=False),
                 },
             )
         if name == "eimemory_verify_outcome":
@@ -85,7 +97,7 @@ class CodexMCPServer:
                     "success": success,
                     "verification": _required_text(arguments, "verification"),
                     "result": str(arguments.get("result") or "")[:2_000],
-                    "tool_receipts": list(arguments.get("tool_receipts") or [])[:32],
+                    "tool_receipts": _optional_receipts(arguments),
                     "rehearsal": False,
                 },
             )
@@ -174,6 +186,24 @@ def _required_text(arguments: Mapping[str, Any], name: str) -> str:
     if not value:
         raise ValueError(f"{name} is required")
     return value
+
+
+def _optional_bool(arguments: Mapping[str, Any], name: str, *, default: bool) -> bool:
+    if name not in arguments:
+        return default
+    value = arguments.get(name)
+    if not isinstance(value, bool):
+        raise ValueError(f"{name} must be a boolean")
+    return value
+
+
+def _optional_receipts(arguments: Mapping[str, Any]) -> list[dict[str, Any]]:
+    value = arguments.get("tool_receipts")
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
+        raise ValueError("tool_receipts must be an array of objects")
+    return list(value[:32])
 
 
 def run_stdio(*, stdin: Any = None, stdout: Any = None) -> int:
