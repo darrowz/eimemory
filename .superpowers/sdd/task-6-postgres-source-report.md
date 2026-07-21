@@ -38,8 +38,11 @@ The feature remains disabled and dependency-free by default.
   SQLite or authoritative payload data.
 - Sync uses bounded keyset pages, a persistent SQLite mutation revision, a
   PostgreSQL worker lease, cursor CAS, separate staging/committed fingerprints,
-  abandoned-watermark garbage collection, and atomic final watermark switch.
-  Provider/DB/mutation failures do not advance the committed watermark.
+  abandoned-watermark garbage collection, and a two-phase staging/finalize
+  watermark switch. The lease is renewed immediately before embedding and the
+  provider deadline is the smaller of its configured timeout and 80% of the
+  lease. Provider/DB/mutation failures before finalize do not advance or delete
+  the prior committed watermark.
 - Health and CLI status are allowlisted, secret-safe, strict-JSON-safe, and bind
   availability to provider circuit, committed fingerprints, authority revision,
   authority cursor, and lag. Every optional failure visibly bypasses to SQLite.
@@ -50,10 +53,10 @@ Fresh results from this worktree:
 
 ```text
 python -m pytest tests/test_postgres_vector_source.py tests/test_postgres_vector_sync.py tests/test_postgres_vector_cli.py -q
-68 passed
+71 passed
 
 python -m pytest tests/test_postgres_vector_source.py tests/test_postgres_vector_sync.py tests/test_postgres_vector_cli.py tests/test_recall_fusion.py tests/test_recall_engine.py tests/test_candidate_search_v2.py tests/test_source_partition.py tests/test_eibrain_rpc_contract.py -q
-209 passed
+212 passed
 
 python -m compileall -q eimemory/retrieval eimemory/adapters/eibrain
 passed

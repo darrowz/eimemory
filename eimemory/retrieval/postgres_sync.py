@@ -65,7 +65,15 @@ class SyncRepository(Protocol):
 
     def release_sync_lease(self, *, run_id: str, lease_owner: str) -> None: ...
 
+    def renew_sync_lease(self, *, run_id: str, lease_owner: str) -> None: ...
+
     def invalidate_index(self, *, watermark: str, reason: str) -> None: ...
+
+    def finalize_sync(
+        self, *, run_id: str, expected_cursor: ProjectionCursor,
+        embedding_fingerprint: str, projection_digest_schema: str,
+        projection_fingerprint: str, lease_owner: str, authority_revision: str,
+    ) -> None: ...
 
 
 class SQLiteProjectionReader:
@@ -250,12 +258,9 @@ class PostgresVectorIndexSynchronizer:
                     self._release_lease(progress)
                     return self._failure("authority_changed_during_sync")
                 try:
-                    self.repository.apply_sync_page(
+                    self.repository.finalize_sync(
                         run_id=progress.run_id,
-                        projections=[],
                         expected_cursor=cursor,
-                        next_cursor=cursor,
-                        complete=True,
                         embedding_fingerprint=fingerprint,
                         projection_digest_schema=PROJECTION_DIGEST_SCHEMA,
                         projection_fingerprint=projection_fp,
@@ -274,8 +279,13 @@ class PostgresVectorIndexSynchronizer:
                 )
             texts = [self._embedding_text(row) for row in rows]
             try:
+                self.repository.renew_sync_lease(
+                    run_id=progress.run_id,
+                    lease_owner=self._lease_owner,
+                )
                 vectors = self.embedding_provider.embed(
                     texts,
+                    timeout_seconds=self._embedding_timeout_seconds(),
                 )
                 if len(vectors) != len(rows) or any(
                     len(vector) != self.config.vector_dimension
@@ -304,7 +314,7 @@ class PostgresVectorIndexSynchronizer:
                     projections=projections,
                     expected_cursor=cursor,
                     next_cursor=next_cursor,
-                    complete=complete,
+                    complete=False,
                     embedding_fingerprint=fingerprint,
                     projection_digest_schema=PROJECTION_DIGEST_SCHEMA,
                     projection_fingerprint=projection_fp,
@@ -319,8 +329,21 @@ class PostgresVectorIndexSynchronizer:
             processed += len(rows)
             if complete:
                 if not self._authority_unchanged(authority_revision):
-                    self._invalidate_index(progress)
+                    self._release_lease(progress)
                     return self._failure("authority_changed_during_sync")
+                try:
+                    self.repository.finalize_sync(
+                        run_id=progress.run_id,
+                        expected_cursor=cursor,
+                        embedding_fingerprint=fingerprint,
+                        projection_digest_schema=PROJECTION_DIGEST_SCHEMA,
+                        projection_fingerprint=projection_fp,
+                        lease_owner=self._lease_owner,
+                        authority_revision=authority_revision,
+                    )
+                except Exception as exc:
+                    self._release_lease(progress)
+                    return self._failure(_sync_error_code(exc, "postgres_sync_finalize"))
                 return self._report(
                     progress=progress,
                     cursor=cursor,
@@ -346,20 +369,19 @@ class PostgresVectorIndexSynchronizer:
         except Exception:
             return
 
-    def _invalidate_index(self, progress: SyncProgress) -> None:
-        try:
-            self.repository.invalidate_index(
-                watermark=progress.run_id,
-                reason="authority_changed_during_sync",
-            )
-        except Exception:
-            return
-
     def _authority_unchanged(self, expected: str) -> bool:
         try:
             return self.reader.snapshot_token() == expected
         except Exception:
             return False
+
+    def _embedding_timeout_seconds(self) -> float:
+        lease_bound = max(0.05, self.config.sync_lease_seconds * 0.8)
+        provider_timeout = getattr(self.embedding_provider, "timeout_seconds", lease_bound)
+        try:
+            return max(0.05, min(lease_bound, float(provider_timeout)))
+        except (TypeError, ValueError, OverflowError):
+            return lease_bound
 
     def _embedding_text(self, row: Mapping[str, Any]) -> str:
         return "\n".join(
@@ -444,6 +466,7 @@ def _sync_error_code(exc: Exception, default: str) -> str:
         "postgres_sync_lease_held",
         "embedding_fingerprint_unavailable",
         "authority_changed_during_sync",
+        "postgres_sync_lease_lost",
     }
     if text in allowed:
         return text

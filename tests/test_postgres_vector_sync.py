@@ -53,6 +53,8 @@ class FakeSyncRepository:
         self.apply_calls: list[dict[str, Any]] = []
         self.release_calls: list[dict[str, str]] = []
         self.invalidate_calls: list[dict[str, str]] = []
+        self.renew_calls: list[dict[str, str]] = []
+        self.finalize_calls: list[dict[str, Any]] = []
 
     def begin_or_resume_sync(self, **kwargs: Any) -> SyncProgress:
         return self.progress
@@ -84,6 +86,12 @@ class FakeSyncRepository:
 
     def invalidate_index(self, *, watermark: str, reason: str) -> None:
         self.invalidate_calls.append({"watermark": watermark, "reason": reason})
+
+    def renew_sync_lease(self, *, run_id: str, lease_owner: str) -> None:
+        self.renew_calls.append({"run_id": run_id, "lease_owner": lease_owner})
+
+    def finalize_sync(self, **kwargs: Any) -> None:
+        self.finalize_calls.append(dict(kwargs))
 
 
 class FakeReader:
@@ -297,7 +305,8 @@ def test_sync_pages_embeds_bounded_batches_and_only_completes_after_end() -> Non
     }
     assert [len(call) for call in provider.calls] == [2, 1]
     assert all(len(text) <= 24 for call in provider.calls for text in call)
-    assert [call["complete"] for call in repository.apply_calls] == [False, True]
+    assert [call["complete"] for call in repository.apply_calls] == [False, False]
+    assert len(repository.finalize_calls) == 1
     final_rows = [row for call in repository.apply_calls for row in call["projections"]]
     assert all(len(row["embedding"]) == 3 for row in final_rows)
     assert all(len(row["projection_digest"]) == 64 for row in final_rows)
@@ -425,6 +434,30 @@ def test_mutation_during_embedding_does_not_apply_or_advance_watermark() -> None
     assert repository.release_calls
 
 
+def test_mutation_after_staging_apply_never_finalizes_or_replaces_prior_committed_watermark() -> None:
+    reader = FakeReader({("", ""): [_projection("a", "2026-07-22T00:00:01Z")]})
+
+    class RaceRepository(FakeSyncRepository):
+        def apply_sync_page(self, **kwargs: Any) -> None:
+            super().apply_sync_page(**kwargs)
+            reader.revision = "1"
+
+    repository = RaceRepository()
+    repository.prior_committed = "prior-wm"
+    report = PostgresVectorIndexSynchronizer(
+        reader=reader,
+        repository=repository,
+        embedding_provider=BatchProvider(),
+        config=PostgresVectorConfig(enabled=True, dsn="postgresql://host/db", vector_dimension=3),
+    ).sync(batch_size=10, max_pages=1)
+
+    assert report == {"ok": False, "complete": False, "error": "authority_changed_during_sync"}
+    assert len(repository.apply_calls) == 1
+    assert repository.apply_calls[0]["complete"] is False
+    assert repository.finalize_calls == []
+    assert repository.prior_committed == "prior-wm"
+
+
 def test_continuously_mutating_multi_page_sync_fails_fast_without_partial_progress() -> None:
     rows = [
         _projection(chr(ord("a") + index), f"2026-07-22T00:00:0{index + 1}Z")
@@ -473,7 +506,7 @@ def test_provider_failure_does_not_apply_page_or_advance_watermark_and_is_saniti
     assert "user" not in json.dumps(report)
 
 
-def test_sync_uses_provider_timeout_not_database_connect_timeout() -> None:
+def test_sync_embedding_deadline_is_bounded_by_lease_not_database_connect_timeout() -> None:
     class TimeoutRecordingProvider(BatchProvider):
         def __init__(self) -> None:
             super().__init__()
@@ -489,12 +522,40 @@ def test_sync_uses_provider_timeout_not_database_connect_timeout() -> None:
         repository=FakeSyncRepository(),
         embedding_provider=provider,
         config=PostgresVectorConfig(
-            enabled=True, dsn="postgresql://host/db", vector_dimension=3, connect_timeout_seconds=0.05
+            enabled=True, dsn="postgresql://host/db", vector_dimension=3,
+            connect_timeout_seconds=0.05, sync_lease_seconds=5,
         ),
     )
 
     assert syncer.sync(batch_size=10, max_pages=1)["ok"] is True
-    assert provider.timeouts == [None]
+    assert provider.timeouts == [4.0]
+    assert len(syncer.repository.renew_calls) == 1
+
+
+def test_sync_preserves_shorter_provider_timeout_inside_long_lease() -> None:
+    class ShortProvider(BatchProvider):
+        timeout_seconds = 5.0
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.timeouts: list[float | None] = []
+
+        def embed(self, texts: list[str], *, timeout_seconds: float | None = None) -> list[tuple[float, ...]]:
+            self.timeouts.append(timeout_seconds)
+            return super().embed(texts, timeout_seconds=timeout_seconds)
+
+    provider = ShortProvider()
+    report = PostgresVectorIndexSynchronizer(
+        reader=FakeReader({("", ""): [_projection("a", "2026-07-22T00:00:01Z")]}),
+        repository=FakeSyncRepository(),
+        embedding_provider=provider,
+        config=PostgresVectorConfig(
+            enabled=True, dsn="postgresql://host/db", vector_dimension=3, sync_lease_seconds=60,
+        ),
+    ).sync(batch_size=10, max_pages=1)
+
+    assert report["ok"] is True
+    assert provider.timeouts == [5.0]
 
 
 def test_wrong_provider_dimension_does_not_apply_page() -> None:
@@ -574,7 +635,7 @@ class RecordingConnection:
         self.closed += 1
 
 
-def test_repository_final_page_upsert_state_and_stale_cleanup_are_one_transaction() -> None:
+def test_repository_page_only_stages_rows_before_separate_finalize() -> None:
     connection = RecordingConnection()
     config = PostgresVectorConfig(
         enabled=True,
@@ -600,7 +661,7 @@ def test_repository_final_page_upsert_state_and_stale_cleanup_are_one_transactio
         projections=[projection],
         expected_cursor=ProjectionCursor(),
         next_cursor=ProjectionCursor(projection["updated_at"], projection["storage_key"]),
-        complete=True,
+        complete=False,
         embedding_fingerprint=EMBEDDING_FINGERPRINT,
         projection_digest_schema=PROJECTION_DIGEST_SCHEMA,
         projection_fingerprint=projection_fingerprint(config),
@@ -610,14 +671,40 @@ def test_repository_final_page_upsert_state_and_stale_cleanup_are_one_transactio
 
     sql = "\n".join(statement for statement, _ in connection.cursor_value.calls)
     assert "ON CONFLICT (storage_key, index_watermark) DO UPDATE" in sql
-    assert "DELETE FROM \"safe\".\"candidates\" WHERE index_watermark <> %s" in sql
-    assert "committed_watermark" in sql
+    assert "DELETE FROM \"safe\".\"candidates\" WHERE index_watermark <> %s" not in sql
+    assert "committed_watermark" not in sql
+    assert connection.commits == 1
+    assert connection.rollbacks == 0
+
+
+def test_repository_finalize_atomically_switches_committed_watermark_and_cleans_old_rows() -> None:
+    connection = RecordingConnection()
+    config = PostgresVectorConfig(
+        enabled=True, connection_factory=lambda **kwargs: connection, vector_dimension=3,
+        schema="safe", table="candidates",
+    )
+    repository = PostgresCandidateRepository(config)
+
+    repository.finalize_sync(
+        run_id="run-1",
+        expected_cursor=ProjectionCursor(),
+        embedding_fingerprint=EMBEDDING_FINGERPRINT,
+        projection_digest_schema=PROJECTION_DIGEST_SCHEMA,
+        projection_fingerprint=projection_fingerprint(config),
+        lease_owner="owner",
+        authority_revision="0",
+    )
+
+    sql = "\n".join(statement for statement, _ in connection.cursor_value.calls)
+    assert 'DELETE FROM "safe"."candidates" WHERE index_watermark <> %s' in sql
+    assert "committed_watermark = %s" in sql
+    assert "staging_embedding_fingerprint = ''" in sql
     assert connection.commits == 1
     assert connection.rollbacks == 0
 
 
 def test_repository_apply_failure_rolls_back_without_commit() -> None:
-    connection = RecordingConnection(fail_on="DELETE FROM")
+    connection = RecordingConnection(fail_on="SET cursor_updated_at")
     repository = PostgresCandidateRepository(
         PostgresVectorConfig(
             enabled=True,

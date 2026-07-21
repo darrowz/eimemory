@@ -647,6 +647,34 @@ class PostgresCandidateRepository:
         finally:
             connection.close()
 
+    def renew_sync_lease(self, *, run_id: str, lease_owner: str) -> None:
+        connection = self._connect()
+        try:
+            with connection.cursor() as cursor:
+                self._set_timeout(cursor)
+                cursor.execute(
+                    f"UPDATE {self.qualified_state_table} SET "
+                    "lease_expires_at = CURRENT_TIMESTAMP + (%s * INTERVAL '1 second'), "
+                    "updated_at = CURRENT_TIMESTAMP "
+                    "WHERE singleton = %s AND run_id = %s AND in_progress = TRUE AND lease_owner = %s",
+                    (
+                        self.config.sync_lease_seconds,
+                        True,
+                        str(run_id or "")[:256],
+                        str(lease_owner or "")[:128],
+                    ),
+                )
+                if int(getattr(cursor, "rowcount", -1)) == 0:
+                    raise RuntimeError("postgres_sync_lease_lost")
+            connection.commit()
+        except Exception as exc:
+            connection.rollback()
+            if str(exc) == "postgres_sync_lease_lost":
+                raise RuntimeError("postgres_sync_lease_lost") from None
+            raise RuntimeError("postgres_sync_lease_renew_failed") from None
+        finally:
+            connection.close()
+
     def invalidate_index(self, *, watermark: str, reason: str) -> None:
         connection = self._connect()
         try:
@@ -768,56 +796,96 @@ class PostgresCandidateRepository:
                     )
                 if values:
                     cursor.executemany(upsert_sql, values)
-                if complete:
-                    cursor.execute(
-                        f"DELETE FROM {self.qualified_table} WHERE index_watermark <> %s",
-                        (normalized_run_id,),
-                    )
-                    cursor.execute(
-                        f"UPDATE {self.qualified_state_table} SET "
-                        "ready = TRUE, in_progress = FALSE, committed_watermark = %s, "
-                        "authoritative_updated_at = NULLIF(%s, '')::timestamptz, "
-                        "authoritative_storage_key = %s, "
-                        "embedding_fingerprint = %s, projection_digest_schema = %s, "
-                        "projection_fingerprint = %s, authority_revision = %s, "
-                        "completed_at = CURRENT_TIMESTAMP, cursor_updated_at = %s, cursor_storage_key = %s, "
-                        "lease_owner = '', lease_expires_at = NULL, "
-                        "staging_embedding_fingerprint = '', staging_projection_digest_schema = '', "
-                        "staging_projection_fingerprint = '', staging_authority_revision = '', "
-                        "updated_at = CURRENT_TIMESTAMP WHERE singleton = %s AND run_id = %s",
-                        (
-                            normalized_run_id,
-                            str(next_cursor.updated_at or "")[:64],
-                            str(next_cursor.storage_key or "")[:512],
-                            embedding_fingerprint,
-                            projection_digest_schema,
-                            projection_fingerprint,
-                            authority_revision,
-                            str(next_cursor.updated_at or "")[:64],
-                            str(next_cursor.storage_key or "")[:512],
-                            True,
-                            normalized_run_id,
-                        ),
-                    )
-                else:
-                    cursor.execute(
-                        f"UPDATE {self.qualified_state_table} SET cursor_updated_at = %s, "
-                        "cursor_storage_key = %s, lease_expires_at = CURRENT_TIMESTAMP + (%s * INTERVAL '1 second'), "
-                        "updated_at = CURRENT_TIMESTAMP "
-                        "WHERE singleton = %s AND run_id = %s AND in_progress = TRUE AND lease_owner = %s",
-                        (
-                            str(next_cursor.updated_at or "")[:64],
-                            str(next_cursor.storage_key or "")[:512],
-                            self.config.sync_lease_seconds,
-                            True,
-                            normalized_run_id,
-                            lease_owner,
-                        ),
-                    )
+                cursor.execute(
+                    f"UPDATE {self.qualified_state_table} SET cursor_updated_at = %s, "
+                    "cursor_storage_key = %s, lease_expires_at = CURRENT_TIMESTAMP + (%s * INTERVAL '1 second'), "
+                    "updated_at = CURRENT_TIMESTAMP "
+                    "WHERE singleton = %s AND run_id = %s AND in_progress = TRUE AND lease_owner = %s",
+                    (
+                        str(next_cursor.updated_at or "")[:64],
+                        str(next_cursor.storage_key or "")[:512],
+                        self.config.sync_lease_seconds,
+                        True,
+                        normalized_run_id,
+                        lease_owner,
+                    ),
+                )
             connection.commit()
         except Exception:
             connection.rollback()
             raise RuntimeError("postgres_sync_apply_failed") from None
+        finally:
+            connection.close()
+
+    def finalize_sync(
+        self,
+        *,
+        run_id: str,
+        expected_cursor: Any,
+        embedding_fingerprint: str,
+        projection_digest_schema: str,
+        projection_fingerprint: str,
+        lease_owner: str,
+        authority_revision: str,
+    ) -> None:
+        normalized_run_id = str(run_id or "")[:256]
+        connection = self._connect()
+        try:
+            with connection.cursor() as cursor:
+                self._set_timeout(cursor)
+                cursor.execute(
+                    f"SELECT run_id, in_progress, cursor_updated_at, cursor_storage_key, "
+                    "staging_embedding_fingerprint, staging_projection_digest_schema, "
+                    "staging_projection_fingerprint, staging_authority_revision, lease_owner, "
+                    "(lease_expires_at > CURRENT_TIMESTAMP) AS lease_active "
+                    f"FROM {self.qualified_state_table} WHERE singleton = %s FOR UPDATE",
+                    (True,),
+                )
+                raw = cursor.fetchone()
+                state = _row_mapping(raw, getattr(cursor, "description", None)) if raw is not None else {}
+                if (
+                    str(state.get("run_id") or "") != normalized_run_id
+                    or not bool(state.get("in_progress"))
+                    or str(state.get("cursor_updated_at") or "") != str(expected_cursor.updated_at or "")
+                    or str(state.get("cursor_storage_key") or "") != str(expected_cursor.storage_key or "")
+                    or str(state.get("staging_embedding_fingerprint") or "") != embedding_fingerprint
+                    or str(state.get("staging_projection_digest_schema") or "") != projection_digest_schema
+                    or str(state.get("staging_projection_fingerprint") or "") != projection_fingerprint
+                    or str(state.get("staging_authority_revision") or "") != authority_revision
+                    or str(state.get("lease_owner") or "") != lease_owner
+                    or not bool(state.get("lease_active"))
+                ):
+                    raise RuntimeError("postgres_sync_conflict")
+                cursor.execute(
+                    f"DELETE FROM {self.qualified_table} WHERE index_watermark <> %s",
+                    (normalized_run_id,),
+                )
+                cursor.execute(
+                    f"UPDATE {self.qualified_state_table} SET "
+                    "ready = TRUE, in_progress = FALSE, committed_watermark = %s, "
+                    "authoritative_updated_at = NULLIF(%s, '')::timestamptz, "
+                    "authoritative_storage_key = %s, embedding_fingerprint = %s, "
+                    "projection_digest_schema = %s, projection_fingerprint = %s, authority_revision = %s, "
+                    "completed_at = CURRENT_TIMESTAMP, lease_owner = '', lease_expires_at = NULL, "
+                    "staging_embedding_fingerprint = '', staging_projection_digest_schema = '', "
+                    "staging_projection_fingerprint = '', staging_authority_revision = '', "
+                    "updated_at = CURRENT_TIMESTAMP WHERE singleton = %s AND run_id = %s",
+                    (
+                        normalized_run_id,
+                        str(expected_cursor.updated_at or "")[:64],
+                        str(expected_cursor.storage_key or "")[:512],
+                        embedding_fingerprint,
+                        projection_digest_schema,
+                        projection_fingerprint,
+                        authority_revision,
+                        True,
+                        normalized_run_id,
+                    ),
+                )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise RuntimeError("postgres_sync_finalize_failed") from None
         finally:
             connection.close()
 
