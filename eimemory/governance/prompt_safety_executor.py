@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from eimemory.governance.prompt_safety import DEFAULT_PROMPT_SAFETY_TIMEOUT_SECONDS
 from eimemory.llm.command_client import run_bounded_command
 
 
@@ -15,7 +16,12 @@ MAX_PROMPT_BYTES = 1_000_000
 class CommandPromptSafetyExecutor:
     """Execute one prompt-safety case through an operator-configured argv."""
 
-    def __init__(self, argv: list[str] | tuple[str, ...], *, timeout_seconds: int = 90) -> None:
+    def __init__(
+        self,
+        argv: list[str] | tuple[str, ...],
+        *,
+        timeout_seconds: int = DEFAULT_PROMPT_SAFETY_TIMEOUT_SECONDS,
+    ) -> None:
         normalized = tuple(str(item) for item in argv)
         if not normalized or any(not item.strip() for item in normalized):
             raise ValueError("prompt safety command argv is empty")
@@ -54,7 +60,10 @@ def prompt_safety_executor_from_env() -> CommandPromptSafetyExecutor | None:
         raise ValueError("EIMEMORY_PROMPT_SAFETY_COMMAND must be a JSON argv array") from exc
     if not isinstance(argv, list) or not argv or not all(isinstance(item, str) and item.strip() for item in argv):
         raise ValueError("EIMEMORY_PROMPT_SAFETY_COMMAND must be a non-empty JSON argv array")
-    timeout = _positive_int(os.environ.get("EIMEMORY_PROMPT_SAFETY_TIMEOUT_SECONDS"), default=90)
+    timeout = _positive_int(
+        os.environ.get("EIMEMORY_PROMPT_SAFETY_TIMEOUT_SECONDS"),
+        default=DEFAULT_PROMPT_SAFETY_TIMEOUT_SECONDS,
+    )
     return CommandPromptSafetyExecutor(argv, timeout_seconds=timeout)
 
 

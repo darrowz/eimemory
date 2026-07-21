@@ -7,6 +7,8 @@ import sys
 from typing import Any
 from urllib import request
 
+from eimemory.governance.prompt_safety import DEFAULT_PROMPT_SAFETY_TIMEOUT_SECONDS
+
 
 EXECUTOR_ID = "openai-compatible.prompt-safety.v3"
 MAX_PROVIDER_RESPONSE_BYTES = 2_000_000
@@ -168,7 +170,10 @@ def execute_request(payload: dict[str, Any]) -> dict[str, Any]:
     model = str(os.environ.get("EIMEMORY_PROMPT_SAFETY_MODEL") or "MiniMax-M3").strip()
     if not base_url or not api_key or not model:
         raise RuntimeError("prompt safety provider configuration is incomplete")
-    total_timeout = _positive_int(os.environ.get("EIMEMORY_PROMPT_SAFETY_TIMEOUT_SECONDS"), default=90)
+    total_timeout = _positive_int(
+        os.environ.get("EIMEMORY_PROMPT_SAFETY_TIMEOUT_SECONDS"),
+        default=DEFAULT_PROMPT_SAFETY_TIMEOUT_SECONDS,
+    )
     if total_timeout < _INFERENCE_CALL_COUNT:
         raise ValueError("prompt safety timeout must be at least the inference call count")
     call_timeout = total_timeout // _INFERENCE_CALL_COUNT
@@ -391,7 +396,7 @@ def _chat_completion(
     ).encode("utf-8")
     timeout = _positive_int(
         timeout_seconds if timeout_seconds is not None else os.environ.get("EIMEMORY_PROMPT_SAFETY_TIMEOUT_SECONDS"),
-        default=90,
+        default=DEFAULT_PROMPT_SAFETY_TIMEOUT_SECONDS,
     )
     req = request.Request(
         f"{base_url}/chat/completions",

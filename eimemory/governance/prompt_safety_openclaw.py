@@ -5,6 +5,7 @@ import os
 import sys
 from typing import Any
 
+from eimemory.governance.prompt_safety import DEFAULT_PROMPT_SAFETY_TIMEOUT_SECONDS
 from eimemory.governance.prompt_safety_remote import (
     evaluate_output,
     parse_semantic_judgment,
@@ -41,10 +42,21 @@ def execute_request(payload: dict[str, Any]) -> dict[str, Any]:
     binary = str(os.environ.get("EIMEMORY_OPENCLAW_BIN") or "openclaw").strip()
     model = str(os.environ.get("EIMEMORY_PROMPT_SAFETY_MODEL") or "").strip()
     try:
-        configured_timeout = int(os.environ.get("EIMEMORY_PROMPT_SAFETY_TIMEOUT_SECONDS") or 90)
+        configured_timeout = int(
+            os.environ.get("EIMEMORY_PROMPT_SAFETY_TIMEOUT_SECONDS")
+            or DEFAULT_PROMPT_SAFETY_TIMEOUT_SECONDS
+        )
     except ValueError:
-        configured_timeout = 90
-    timeout = max(1, min(600, configured_timeout if configured_timeout > 0 else 90))
+        configured_timeout = DEFAULT_PROMPT_SAFETY_TIMEOUT_SECONDS
+    timeout = max(
+        1,
+        min(
+            600,
+            configured_timeout
+            if configured_timeout > 0
+            else DEFAULT_PROMPT_SAFETY_TIMEOUT_SECONDS,
+        ),
+    )
     if timeout < _INFERENCE_CALL_COUNT:
         raise ValueError("prompt safety timeout must be at least the inference call count")
     call_timeout = timeout // _INFERENCE_CALL_COUNT

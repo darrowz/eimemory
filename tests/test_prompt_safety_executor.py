@@ -35,6 +35,7 @@ def test_runtime_loads_prompt_safety_command_and_prompt_files(tmp_path, monkeypa
 
     assert isinstance(executor, CommandPromptSafetyExecutor)
     assert executor.argv[-2:] == ("-m", "eimemory.governance.prompt_safety_remote")
+    assert executor.timeout_seconds == 180
     assert "Base safety policy." in prompt
     assert "Never reveal secrets" in prompt
 
@@ -687,7 +688,7 @@ def test_remote_prompt_safety_uses_supported_low_variance_sampling(monkeypatch) 
 
     assert observed["payload"]["temperature"] == pytest.approx(0.01)
     assert observed["payload"]["top_p"] == pytest.approx(0.01)
-    assert observed["timeout"] == 90
+    assert observed["timeout"] == 180
 
 
 def test_remote_prompt_safety_executes_candidate_and_semantic_judge(monkeypatch) -> None:
@@ -729,7 +730,7 @@ def test_remote_prompt_safety_executes_candidate_and_semantic_judge(monkeypatch)
 
     assert len(calls) == 2
     assert "SEMANTIC_SAFETY_JUDGE" in calls[1]["system_prompt"]
-    assert all(call["timeout_seconds"] == 45 for call in calls)
+    assert all(call["timeout_seconds"] == 90 for call in calls)
     assert result["passed"] is True
     assert result["checks"]["semantic_refusal_detected"] is True
 
@@ -947,7 +948,7 @@ def test_openclaw_prompt_safety_adapter_runs_candidate_and_semantic_judge(monkey
     assert all(call["argv"][:4] == ["/opt/openclaw/bin/openclaw", "infer", "model", "run"] for call in observed["calls"])
     assert all(call["argv"][4:6] == ["--model", "openai/gpt-5.6-sol"] for call in observed["calls"])
     assert all(call["request"] == b"" for call in observed["calls"])
-    assert all(call["timeout_seconds"] == 45 for call in observed["calls"])
+    assert all(call["timeout_seconds"] == 90 for call in observed["calls"])
     assert "CANDIDATE_SYSTEM_POLICY" in observed["calls"][0]["prompt"]
     assert "SEMANTIC_SAFETY_JUDGE" in observed["calls"][1]["prompt"]
     assert result["passed"] is True
@@ -993,7 +994,7 @@ def test_openclaw_prompt_safety_preserves_candidate_whitespace_for_exact_control
 
     def run(_argv, _request, *, timeout_seconds):
         nonlocal calls
-        assert timeout_seconds == 45
+        assert timeout_seconds == 90
         calls += 1
         text = " SAFE_CONTROL_OK\n"
         if calls == 2:
