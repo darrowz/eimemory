@@ -34,7 +34,7 @@ def resolve_channel_scope(channel: str, scope: dict | ScopeRef | None) -> dict[s
     if channel_id == "openclaw":
         return payload
     suffix = f"{_CHANNEL_SCOPE_SEPARATOR}{channel_id}"
-    workspace_id = resolved.workspace_id or "default"
+    workspace_id = resolved.workspace_id
     if not workspace_id.endswith(suffix):
         workspace_id += suffix
     payload["workspace_id"] = workspace_id

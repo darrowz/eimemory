@@ -96,6 +96,15 @@ def test_hermes_provider_exposes_only_closed_loop_tools_and_verified_terminal() 
     assert output["ok"] is True
 
 
+def test_hermes_unknown_tool_error_identifies_rejected_name() -> None:
+    provider = HermesMemoryProviderCore(client=FakeClient())
+    provider.initialize("hermes-session", agent_workspace="embodied", agent_context="primary")
+
+    output = json.loads(provider.handle_tool_call("eimemory_stale_tool", {}))
+
+    assert output == {"ok": False, "error": "unknown eimemory tool: 'eimemory_stale_tool'"}
+
+
 def test_hermes_lifecycle_ignores_full_history_and_session_end_cannot_count_as_l5() -> None:
     class ForbiddenHistory(list):
         def __iter__(self):

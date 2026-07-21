@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from eimemory.adapters.runtime.channel import resolve_channel_scope
+from eimemory.adapters.runtime.channel import base_scope_from_channel, resolve_channel_scope
 from eimemory.adapters.runtime.service import AgentRuntimeMemoryService
 from eimemory.api.runtime import Runtime
 from eimemory.models.records import ScopeRef
@@ -33,6 +33,16 @@ def test_channel_scope_is_deterministic_and_openclaw_compatible() -> None:
         )["workspace_id"]
         == "embodied::channel::codex"
     )
+
+
+@pytest.mark.parametrize("channel", ["codex", "hermes"])
+def test_empty_workspace_channel_scope_round_trips_without_implicit_default(channel: str) -> None:
+    base_scope = {**BASE_SCOPE, "workspace_id": ""}
+
+    channel_scope = resolve_channel_scope(channel, base_scope)
+
+    assert channel_scope["workspace_id"] == f"::channel::{channel}"
+    assert base_scope_from_channel(channel, channel_scope) == base_scope
 
 
 def test_unknown_runtime_channel_fails_closed() -> None:
@@ -90,6 +100,20 @@ def test_codex_and_hermes_memories_are_independent_authoritative_records(tmp_pat
     ]
     assert hermes_recall["bundle"]["items"] == []
     assert codex_text in codex_recall["context"]
+
+
+def test_prefetch_invalid_limit_falls_back_to_bounded_default(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+
+    result = service.prefetch(
+        channel="codex",
+        scope=BASE_SCOPE,
+        query="bounded default",
+        limit=None,  # type: ignore[arg-type] - exercise untrusted RPC input
+    )
+
+    assert result["ok"] is True
+    assert result["channel"] == "codex"
 
 
 def test_explicit_memory_write_is_idempotent_per_channel(tmp_path: Path) -> None:
@@ -182,4 +206,3 @@ def test_session_end_is_lifecycle_only_and_does_not_create_outcome_trace(tmp_pat
     assert result["event"]["source"] == "hermes.session_end"
     assert result["event"]["evidence_class"] == "lifecycle_event"
     assert result["outcome_trace"] is None
-

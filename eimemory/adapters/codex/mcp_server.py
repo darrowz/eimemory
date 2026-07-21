@@ -182,10 +182,10 @@ class CodexMCPServer:
 
 
 def _required_text(arguments: Mapping[str, Any], name: str) -> str:
-    value = str(arguments.get(name) or "").strip()
-    if not value:
-        raise ValueError(f"{name} is required")
-    return value
+    value = arguments.get(name)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{name} must be a non-empty string")
+    return value.strip()
 
 
 def _optional_bool(arguments: Mapping[str, Any], name: str, *, default: bool) -> bool:

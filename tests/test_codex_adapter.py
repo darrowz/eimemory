@@ -120,14 +120,24 @@ def test_post_tool_use_hashes_redacts_and_truncates_before_sync() -> None:
     forwarded = json.dumps(params, ensure_ascii=False)
     assert method == "adapter.sync_turn"
     assert params["channel"] == "codex"
+    redacted_input = {
+        "api_key": "[REDACTED]",
+        "client_secret": "[REDACTED]",
+        "nested": {"password": "[REDACTED]", "private_key": "[REDACTED]"},
+    }
+    redacted_result = {"access_token": "[REDACTED]", "output": "x" * 20_000}
     expected_input_digest = sha256(
-        json.dumps(tool_input, ensure_ascii=False, sort_keys=True).encode("utf-8", errors="replace")
+        json.dumps(redacted_input, ensure_ascii=False, sort_keys=True).encode("utf-8", errors="replace")
     ).hexdigest()
     expected_result_digest = sha256(
-        json.dumps(tool_result, ensure_ascii=False, sort_keys=True).encode("utf-8", errors="replace")
+        json.dumps(redacted_result, ensure_ascii=False, sort_keys=True).encode("utf-8", errors="replace")
+    ).hexdigest()
+    raw_input_digest = sha256(
+        json.dumps(tool_input, ensure_ascii=False, sort_keys=True).encode("utf-8", errors="replace")
     ).hexdigest()
     assert f"input_sha256={expected_input_digest}" in params["user_text"]
     assert f"result_sha256={expected_result_digest}" in params["assistant_text"]
+    assert raw_input_digest not in forwarded
     assert secret not in forwarded
     assert password not in forwarded
     assert private_key not in forwarded
@@ -135,6 +145,28 @@ def test_post_tool_use_hashes_redacts_and_truncates_before_sync() -> None:
     assert len(params["user_text"]) <= 2_500
     assert len(params["assistant_text"]) <= 4_500
     assert result == {"continue": True}
+
+
+def test_post_tool_use_redacts_quoted_multiword_secret_embedded_in_leaf_text() -> None:
+    client = FakeClient()
+    adapter = CodexHookAdapter(client=client, scope=BASE_SCOPE)
+    secret = "correct horse battery staple"
+
+    adapter.handle(
+        "PostToolUse",
+        {
+            "session_id": "codex-session",
+            "turn_id": "turn-multiword-secret",
+            "tool_name": "Bash",
+            "tool_input": {"log": f'password="{secret}"; detail=safe'},
+            "tool_response": "ok",
+        },
+    )
+
+    forwarded = json.dumps(client.calls[0][1], ensure_ascii=False)
+    assert secret not in forwarded
+    assert "[REDACTED]" in forwarded
+    assert "detail=safe" in forwarded
 
 
 def test_stop_never_blocks_and_does_not_invent_verification() -> None:
@@ -183,6 +215,32 @@ def test_hook_transport_failure_is_advisory_and_silent() -> None:
 
     assert adapter.handle("SessionStart", {"session_id": "s", "cwd": "E:/repo"}) == {"continue": True}
     assert adapter.handle("Stop", {"session_id": "s", "turn_id": "t"}) == {"continue": True}
+
+
+def test_hook_unexpected_failure_is_fail_open_and_emits_sanitized_diagnostic(capsys) -> None:
+    class RaisingClient:
+        def call_or_bypass(self, method: str, params: dict) -> dict:
+            raise RuntimeError("transport-secret-must-not-be-logged")
+
+    adapter = CodexHookAdapter(client=RaisingClient(), scope=BASE_SCOPE)
+
+    result = adapter.handle("UserPromptSubmit", {"prompt": "recall", "cwd": "E:/repo"})
+
+    captured = capsys.readouterr()
+    assert result == {"continue": True}
+    assert "UserPromptSubmit" in captured.err
+    assert "RuntimeError" in captured.err
+    assert "transport-secret-must-not-be-logged" not in captured.err
+
+
+def test_hook_without_explicit_scope_uses_event_workspace(monkeypatch) -> None:
+    monkeypatch.delenv("EIMEMORY_WORKSPACE_ID", raising=False)
+    client = FakeClient()
+    adapter = CodexHookAdapter(client=client, scope=None)
+
+    adapter.handle("UserPromptSubmit", {"prompt": "recall", "cwd": "E:/repo-alpha"})
+
+    assert client.calls[0][1]["scope"]["workspace_id"] == "repo-alpha"
 
 
 def test_codex_mcp_exposes_only_closed_loop_memory_tools() -> None:
@@ -269,6 +327,24 @@ def test_codex_mcp_rejects_non_boolean_force_capture_before_rpc() -> None:
 
     assert response["result"]["isError"] is True
     assert "force_capture must be a boolean" in response["result"]["content"][0]["text"]
+    assert client.calls == []
+
+
+def test_codex_mcp_rejects_non_string_required_text_before_rpc() -> None:
+    client = FakeClient()
+    server = CodexMCPServer(client=client, scope=BASE_SCOPE)
+
+    response = server.handle_message(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "eimemory_recall", "arguments": {"query": {"nested": "value"}}},
+        }
+    )
+
+    assert response["result"]["isError"] is True
+    assert "query must be a non-empty string" in response["result"]["content"][0]["text"]
     assert client.calls == []
 
 

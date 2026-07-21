@@ -50,7 +50,6 @@ class HermesMemoryProviderCore:
         self._write_enabled = True
         self._session_id = ""
         self._scope = self._scope_from_context({})
-        self._hermes_home = ""
         self._max_write_queue = max(1, min(128, int(max_write_queue)))
         self._max_prefetch_cache_entries = max(1, min(128, int(max_prefetch_cache_entries)))
         self._write_queue: deque[tuple[str, dict[str, Any]]] = deque()
@@ -92,13 +91,13 @@ class HermesMemoryProviderCore:
 
     def initialize(self, session_id: str, **kwargs: Any) -> None:
         self._session_id = str(session_id or "").strip() or "hermes-session"
-        self._hermes_home = str(kwargs.get("hermes_home") or "").strip()
+        hermes_home = str(kwargs.get("hermes_home") or "").strip()
         self._scope = self._scope_from_context(kwargs)
         agent_context = str(kwargs.get("agent_context") or "primary").strip().lower()
         self._write_enabled = agent_context not in {"cron", "flush", "subagent"}
         self._last_turn_summary = ""
         if self._client is None:
-            self._client = hermes_client_from_env(hermes_home=self._hermes_home)
+            self._client = hermes_client_from_env(hermes_home=hermes_home)
         self._active = self._client_injected or self.is_available()
 
     def system_prompt_block(self) -> str:
@@ -317,8 +316,6 @@ class HermesMemoryProviderCore:
 
     def on_delegation(self, task: str, result: str, *, child_session_id: str = "", **kwargs: Any) -> None:
         del kwargs
-        if not self._write_enabled:
-            return
         self.sync_turn(
             f"Delegated task: {_bounded_text(task, MAX_TURN_CHARS)}",
             f"Delegated result: {_bounded_text(result, MAX_TURN_CHARS)}",
@@ -408,7 +405,7 @@ class HermesMemoryProviderCore:
                     "background_workers": self.background_worker_count,
                 },
             }
-        raise ValueError("unknown eimemory tool")
+        raise ValueError(f"unknown eimemory tool: {tool_name!r}")
 
     def _common_params(self) -> dict[str, Any]:
         return {"channel": "hermes", "scope": dict(self._scope)}
@@ -520,7 +517,7 @@ def _bounded_text(value: Any, limit: int) -> str:
 
 
 def _required_text(arguments: Mapping[str, Any], name: str) -> str:
-    value = str(arguments.get(name) or "").strip()
-    if not value:
-        raise ValueError(f"{name} is required")
-    return value
+    value = arguments.get(name)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{name} must be a non-empty string")
+    return value.strip()

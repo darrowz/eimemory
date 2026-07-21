@@ -57,7 +57,7 @@ class AgentRuntimeMemoryService:
             query=normalized_query,
             scope=channel_scope,
             task_context=context,
-            limit=max(1, min(50, int(limit))),
+            limit=max(1, min(50, self._positive_limit(limit, 8))),
         )
         return {
             "ok": True,

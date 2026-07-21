@@ -20,9 +20,10 @@ _SECRET_PATTERNS = (
     re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+"),
     re.compile(r"\bsk-[A-Za-z0-9_-]{8,}\b"),
     re.compile(
-        r'''(?i)(["']?[a-z0-9_-]*(?:api[_-]?key|token|secret|password|private[_-]?key|authorization|cookie)["']?\s*[:=]\s*)["']?[^"'\s,;}\]]+["']?'''
+        r'''(?i)(["']?[a-z0-9_-]*(?:api[_-]?key|token|secret|password|private[_-]?key|authorization|cookie)["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\r\n,;}\]]+)'''
     ),
 )
+_KEY_CANONICAL = re.compile(r"[^a-z0-9]")
 _SENSITIVE_KEY_NAMES = frozenset(
     {
         "apikey",
@@ -74,7 +75,7 @@ def codex_client_from_env() -> AgentRuntimeRPCClient:
 class CodexHookAdapter:
     def __init__(self, *, client: Any, scope: Mapping[str, str] | None = None) -> None:
         self.client = client
-        self.scope = dict(scope or codex_scope_from_env())
+        self.scope = dict(scope) if scope is not None else None
 
     def handle(self, event_name: str, event: Mapping[str, Any] | None) -> dict[str, Any]:
         name = str(event_name or "").strip()
@@ -91,7 +92,11 @@ class CodexHookAdapter:
             if name == "Stop":
                 self._record_stop(payload)
                 return {"continue": True}
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 - hook transport is intentionally fail-open
+            safe_event_name = re.sub(r"[\r\n]+", " ", name)[:80] or "unknown"
+            sys.stderr.write(
+                f"eimemory codex-hook: {safe_event_name} dispatch failed ({type(exc).__name__})\n"
+            )
             return {"continue": True}
         return {"continue": True}
 
@@ -213,19 +218,24 @@ def _safe_summary(value: Any, *, preview_limit: int) -> str:
         raw = json.dumps(value, ensure_ascii=False, sort_keys=True) if not isinstance(value, str) else value
     except (TypeError, ValueError):
         raw = repr(value)
-    digest = sha256(raw.encode("utf-8", errors="replace")).hexdigest()
     if isinstance(value, str):
-        redacted = value
+        redacted = _redact_text(value)
     else:
         try:
             redacted = json.dumps(_redact_structured(value), ensure_ascii=False, sort_keys=True)
         except (TypeError, ValueError, RecursionError):
-            redacted = raw
+            redacted = _redact_text(raw)
+    digest = sha256(redacted.encode("utf-8", errors="replace")).hexdigest()
+    preview = _bounded_text(redacted, preview_limit)
+    return f"sha256={digest}; preview={preview}"
+
+
+def _redact_text(value: str) -> str:
+    redacted = value
     for pattern in _SECRET_PATTERNS:
         replacement = r"\1[REDACTED]" if pattern.groups else "[REDACTED]"
         redacted = pattern.sub(replacement, redacted)
-    preview = _bounded_text(redacted, preview_limit)
-    return f"sha256={digest}; preview={preview}"
+    return redacted
 
 
 def _redact_structured(value: Any, *, depth: int = 0) -> Any:
@@ -235,7 +245,7 @@ def _redact_structured(value: Any, *, depth: int = 0) -> Any:
         redacted: dict[str, Any] = {}
         for key, item in value.items():
             key_text = str(key)
-            canonical = re.sub(r"[^a-z0-9]", "", key_text.lower())
+            canonical = _KEY_CANONICAL.sub("", key_text.lower())
             sensitive = canonical in _SENSITIVE_KEY_NAMES or canonical.endswith(
                 ("apikey", "token", "secret", "password", "privatekey", "authorization", "cookie")
             )
@@ -247,6 +257,8 @@ def _redact_structured(value: Any, *, depth: int = 0) -> Any:
         return redacted
     if isinstance(value, (list, tuple)):
         return [_redact_structured(item, depth=depth + 1) for item in value]
+    if isinstance(value, str):
+        return _redact_text(value)
     return value
 
 
