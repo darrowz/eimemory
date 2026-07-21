@@ -277,7 +277,9 @@ class HermesMemoryProviderCore:
     ) -> None:
         normalized_action = str(action or "").strip().lower()
         text = _bounded_text(content, MAX_MEMORY_CHARS)
-        if not self._active or not self._write_enabled or normalized_action not in {"add", "replace"} or not text:
+        if not self._active or not self._write_enabled or normalized_action not in {"add", "replace", "remove"}:
+            return
+        if normalized_action != "remove" and not text:
             return
         meta = dict(metadata or {})
         event_id = str(meta.get("event_id") or "").strip()
@@ -286,19 +288,28 @@ class HermesMemoryProviderCore:
                 f"{self._session_id}\0{normalized_action}\0{target}\0{text}".encode("utf-8", errors="replace")
             ).hexdigest()[:24]
         self._enqueue_write(
-            "adapter.remember",
+            "adapter.mutate_memory",
             {
                 **self._common_params(),
-                "text": text,
-                "event_id": event_id,
-                "memory_type": "preference" if str(target or "") == "user" else "durable_fact",
-                "title": "Hermes mirrored long-term memory",
-                "force_capture": False,
-                "meta": {
-                    "capture_origin": "hermes.memory_write",
-                    "hermes_action": normalized_action,
-                    "hermes_target": str(target or "memory"),
-                    "session_id": str(meta.get("session_id") or self._session_id),
+                "action": normalized_action,
+                "target": str(target or "memory"),
+                "source_id": "hermes",
+                "content": text,
+                "idempotency_key": f"hermes.memory_write:{event_id}",
+                "old_text": str(meta.get("old_text") or ""),
+                "target_record_id": str(meta.get("target_record_id") or ""),
+                "expected_revision": str(meta.get("expected_revision") or ""),
+                "provenance": {
+                    "write_origin": "hermes.memory_write",
+                    **{
+                        key: str(meta[key])
+                        for key in (
+                            "execution_context", "session_id", "parent_session_id", "platform",
+                            "tool_name", "task_id", "task_call_id", "tool_call_id",
+                        )
+                        if isinstance(meta.get(key), str) and str(meta.get(key)).strip()
+                    },
+                    **({"session_id": self._session_id} if not str(meta.get("session_id") or "").strip() else {}),
                 },
             },
         )

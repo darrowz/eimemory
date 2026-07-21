@@ -1627,6 +1627,9 @@ class SqliteRecordStore:
             if record is None:
                 blocked_counts["corrupt_record"] += 1
                 continue
+            if record.status != "active":
+                blocked_counts["inactive_record"] += 1
+                continue
             lexical_signal = analyze_lexical_signal(
                 query,
                 haystack,

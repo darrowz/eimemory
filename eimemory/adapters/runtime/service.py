@@ -4,6 +4,7 @@ import json
 from hashlib import sha256
 from datetime import datetime, timedelta, timezone
 import re
+import unicodedata
 from typing import Any
 
 from eimemory.adapters.runtime.channel import (
@@ -27,12 +28,30 @@ from eimemory.governance.tool_receipts import (
     sign_tool_receipt,
     verify_tool_receipt,
 )
-from eimemory.models.records import RecallBundle, RecordEnvelope, ScopeRef
+from eimemory.models.records import LinkRef, RecallBundle, RecordEnvelope, ScopeRef
+from eimemory.models.source_partitions import normalize_source_id
 
 
 DEFAULT_MAX_CONTEXT_CHARS = 7_200
 DEFAULT_MAX_TURN_CHARS = 12_000
 DEFAULT_MAX_MEMORY_CHARS = 16_000
+_HERMES_MUTATION_SCHEMA = "adapter.hermes.mutation.v1"
+_HERMES_MUTATION_ACTIONS = frozenset({"add", "replace", "remove"})
+_HERMES_TARGETS = frozenset({"memory", "user"})
+_HERMES_PROVENANCE_FIELDS = frozenset(
+    {
+        "write_origin",
+        "execution_context",
+        "session_id",
+        "parent_session_id",
+        "platform",
+        "tool_name",
+        "task_id",
+        "task_call_id",
+        "tool_call_id",
+    }
+)
+_HERMES_LEGACY_TARGET_LOOKUP_LIMIT = 32
 
 
 class AgentRuntimeMemoryService:
@@ -147,6 +166,218 @@ class AgentRuntimeMemoryService:
                 business_meta["authoritative"] = False
         return self._memory_result(record, channel=channel_id, scope=channel_scope, idempotent=False)
 
+    def mutate_memory(
+        self,
+        *,
+        channel: str,
+        scope: dict,
+        action: str,
+        target: str,
+        source_id: str,
+        content: str,
+        idempotency_key: str,
+        provenance: dict[str, Any],
+        target_record_id: str = "",
+        old_text: str = "",
+        expected_revision: str = "",
+    ) -> dict[str, Any]:
+        """Apply one Hermes memory lifecycle transition under the authority lock."""
+
+        channel_id = normalize_runtime_channel(channel)
+        if channel_id != "hermes":
+            raise ValueError("memory mutation is restricted to the hermes channel")
+        channel_scope = resolve_channel_scope(channel_id, scope)
+        action_id = str(action or "").strip().lower()
+        target_id = str(target or "").strip().lower()
+        source_partition = normalize_source_id(source_id)
+        request_key = str(idempotency_key or "").strip()
+        if action_id not in _HERMES_MUTATION_ACTIONS:
+            raise ValueError("unsupported memory mutation action")
+        if target_id not in _HERMES_TARGETS:
+            raise ValueError("unsupported hermes memory target")
+        if not request_key or len(request_key) > 256:
+            raise ValueError("idempotency_key is required and bounded")
+        normalized_content = self._required_mutation_content(content) if action_id != "remove" else ""
+        normalized_old_text = self._optional_mutation_text(old_text)
+        requested_target_id = str(target_record_id or "").strip()
+        requested_revision = str(expected_revision or "").strip().lower()
+        if requested_revision and not self._is_sha256_digest(requested_revision):
+            raise ValueError("expected_revision must be a SHA-256 digest")
+        if action_id in {"replace", "remove"}:
+            if not normalized_old_text and not (requested_target_id and requested_revision):
+                raise ValueError("replace/remove require old_text or target_record_id with expected_revision")
+            derived_old_revision = self._content_revision(normalized_old_text) if normalized_old_text else ""
+            if normalized_old_text and requested_revision and requested_revision != derived_old_revision:
+                raise ValueError("expected_revision does not match old_text")
+            requested_revision = requested_revision or derived_old_revision
+        elif requested_target_id or normalized_old_text or requested_revision:
+            raise ValueError("add does not accept a target record or expected revision")
+        safe_provenance = self._hermes_provenance(provenance)
+        content_revision = self._content_revision(normalized_content) if normalized_content else ""
+        request_digest = self._mutation_request_digest(
+            channel=channel_id,
+            scope=channel_scope,
+            action=action_id,
+            target=target_id,
+            source_id=source_partition,
+            content_revision=content_revision,
+            expected_revision=requested_revision,
+            target_record_id=requested_target_id,
+            provenance=safe_provenance,
+        )
+        scope_ref = ScopeRef.from_dict(channel_scope)
+
+        def mutation(sqlite) -> dict[str, Any]:
+            existing = sqlite.get_by_idempotency_key(
+                kinds=["memory"], scope=scope_ref, idempotency_key=request_key
+            )
+            if existing is not None:
+                prior_digest = str(existing.meta.get("mutation_request_digest") or "")
+                if prior_digest != request_digest:
+                    return {"ok": False, "error": "mutation_idempotency_conflict"}
+                return self._mutation_result(
+                    existing,
+                    channel=channel_id,
+                    scope=channel_scope,
+                    action=str(existing.meta.get("mutation_action") or action_id),
+                    content_revision=str(existing.meta.get("content_revision") or ""),
+                    idempotent=True,
+                )
+
+            if action_id == "add":
+                record_id = self._mutation_record_id(
+                    channel=channel_id,
+                    scope=channel_scope,
+                    source_id=source_partition,
+                    action="add",
+                    target=target_id,
+                    content_revision=content_revision,
+                )
+                deterministic = sqlite.get_by_id(record_id, scope=scope_ref)
+                if deterministic is not None:
+                    if not self._is_matching_hermes_record(
+                        deterministic, source_id=source_partition, target=target_id, active_only=True
+                    ) or str(deterministic.meta.get("idempotency_key") or "") != request_key or str(
+                        deterministic.meta.get("mutation_request_digest") or ""
+                    ) != request_digest:
+                        return {"ok": False, "error": "mutation_target_conflict"}
+                    return self._mutation_result(
+                        deterministic,
+                        channel=channel_id,
+                        scope=channel_scope,
+                        action="add",
+                        content_revision=str(deterministic.meta.get("content_revision") or content_revision),
+                        idempotent=True,
+                    )
+                record = self._new_hermes_record(
+                    record_id=record_id,
+                    source_id=source_partition,
+                    scope=scope_ref,
+                    target=target_id,
+                    content=normalized_content,
+                    content_revision=content_revision,
+                    action="add",
+                    idempotency_key=request_key,
+                    request_digest=request_digest,
+                    provenance=safe_provenance,
+                )
+                sqlite.upsert(record, commit=False)
+                return self._mutation_result(
+                    record, channel=channel_id, scope=channel_scope, action="add", content_revision=content_revision, idempotent=False
+                )
+
+            resolved = self._resolve_hermes_mutation_target(
+                sqlite=sqlite,
+                scope=scope_ref,
+                source_id=source_partition,
+                target=target_id,
+                target_record_id=requested_target_id,
+                old_text=normalized_old_text,
+            )
+            if isinstance(resolved, str):
+                return {"ok": False, "error": resolved}
+            old_record = resolved
+            actual_revision = str(old_record.meta.get("content_revision") or self._content_revision(self._record_content(old_record)))
+            if actual_revision != requested_revision:
+                return {"ok": False, "error": "mutation_stale_revision"}
+            if action_id == "replace":
+                successor_id = self._mutation_record_id(
+                    channel=channel_id,
+                    scope=channel_scope,
+                    source_id=source_partition,
+                    action="replace",
+                    target=target_id,
+                    content_revision=content_revision,
+                    predecessor_id=old_record.record_id,
+                )
+                successor = self._new_hermes_record(
+                    record_id=successor_id,
+                    source_id=source_partition,
+                    scope=scope_ref,
+                    target=target_id,
+                    content=normalized_content,
+                    content_revision=content_revision,
+                    action="replace",
+                    idempotency_key=request_key,
+                    request_digest=request_digest,
+                    provenance=safe_provenance,
+                    links=[LinkRef(relation="supersedes", target_kind="record", target_id=old_record.record_id)],
+                    predecessor_id=old_record.record_id,
+                )
+                old_record.status = "superseded"
+                old_record.links = self._linked(old_record.links, "superseded_by", successor.record_id)
+                old_record.meta = {
+                    **old_record.meta,
+                    "mutation_state": "superseded",
+                    "superseded_by": successor.record_id,
+                }
+                old_record.touch()
+                sqlite.upsert(successor, commit=False)
+                sqlite.upsert(old_record, commit=False)
+                return self._mutation_result(
+                    successor, channel=channel_id, scope=channel_scope, action="replace", content_revision=content_revision, idempotent=False
+                )
+
+            tombstone_id = self._mutation_record_id(
+                channel=channel_id,
+                scope=channel_scope,
+                source_id=source_partition,
+                action="remove",
+                target=target_id,
+                content_revision=requested_revision,
+                predecessor_id=old_record.record_id,
+            )
+            tombstone = self._new_hermes_record(
+                record_id=tombstone_id,
+                source_id=source_partition,
+                scope=scope_ref,
+                target=target_id,
+                content="",
+                content_revision="",
+                action="remove",
+                idempotency_key=request_key,
+                request_digest=request_digest,
+                provenance=safe_provenance,
+                links=[LinkRef(relation="removes", target_kind="record", target_id=old_record.record_id)],
+                predecessor_id=old_record.record_id,
+                status="removed",
+            )
+            old_record.status = "removed"
+            old_record.links = self._linked(old_record.links, "removed_by", tombstone.record_id)
+            old_record.meta = {
+                **old_record.meta,
+                "mutation_state": "removed",
+                "removed_by": tombstone.record_id,
+            }
+            old_record.touch()
+            sqlite.upsert(tombstone, commit=False)
+            sqlite.upsert(old_record, commit=False)
+            return self._mutation_result(
+                tombstone, channel=channel_id, scope=channel_scope, action="remove", content_revision="", idempotent=False
+            )
+
+        return self.runtime.store.mutate_records_atomically(mutation)
+
     def sync_turn(
         self,
         *,
@@ -180,6 +411,240 @@ class AgentRuntimeMemoryService:
             title=f"{normalize_runtime_channel(channel).title()} completed turn",
             meta={"session_id": normalized_session_id, "turn_id": normalized_turn_id, "capture_origin": "turn_sync"},
         )
+
+    def _resolve_hermes_mutation_target(
+        self,
+        *,
+        sqlite: Any,
+        scope: ScopeRef,
+        source_id: str,
+        target: str,
+        target_record_id: str,
+        old_text: str,
+    ) -> RecordEnvelope | str:
+        if target_record_id:
+            record = sqlite.get_by_id(target_record_id, scope=scope)
+            if record is None:
+                return "mutation_target_not_found"
+            if not self._is_matching_hermes_record(record, source_id=source_id, target=target, active_only=False):
+                return "mutation_target_scope_mismatch"
+            if record.status != "active":
+                return "mutation_target_inactive"
+            if old_text and self._content_revision(self._record_content(record)) != self._content_revision(old_text):
+                return "mutation_stale_revision"
+            return record
+        candidates = sqlite.list_records(
+            kinds=["memory"],
+            scope=scope,
+            status="active",
+            source_ids=[source_id],
+            limit=_HERMES_LEGACY_TARGET_LOOKUP_LIMIT,
+        )
+        old_revision = self._content_revision(old_text)
+        exact = [
+            record
+            for record in candidates
+            if self._is_matching_hermes_record(record, source_id=source_id, target=target, active_only=True)
+            and self._content_revision(self._record_content(record)) == old_revision
+        ]
+        if len(exact) != 1:
+            return "mutation_target_ambiguous" if len(exact) > 1 else "mutation_target_not_found"
+        return exact[0]
+
+    @staticmethod
+    def _is_matching_hermes_record(
+        record: RecordEnvelope,
+        *,
+        source_id: str,
+        target: str,
+        active_only: bool,
+    ) -> bool:
+        return (
+            (not active_only or record.status == "active")
+            and record.source_id == source_id
+            and str(record.meta.get("runtime_channel") or "") == "hermes"
+            and str(record.meta.get("hermes_target") or "") == target
+        )
+
+    @classmethod
+    def _new_hermes_record(
+        cls,
+        *,
+        record_id: str,
+        source_id: str,
+        scope: ScopeRef,
+        target: str,
+        content: str,
+        content_revision: str,
+        action: str,
+        idempotency_key: str,
+        request_digest: str,
+        provenance: dict[str, str],
+        links: list[LinkRef] | None = None,
+        predecessor_id: str = "",
+        status: str = "active",
+    ) -> RecordEnvelope:
+        is_tombstone = action == "remove"
+        record = RecordEnvelope.create(
+            kind="memory",
+            title=("Hermes memory removal audit tombstone" if is_tombstone else "Hermes durable long-term memory"),
+            summary=("Hermes memory removal audit tombstone" if is_tombstone else content),
+            content=({} if is_tombstone else {"text": content, "memory_type": "preference" if target == "user" else "durable_fact"}),
+            scope=scope,
+            source="hermes.memory_write",
+            source_id=source_id,
+            status=status,
+            links=list(links or []),
+            provenance=provenance,
+            meta={
+                "memory_type": "audit_record" if is_tombstone else ("preference" if target == "user" else "durable_fact"),
+                "runtime_channel": "hermes",
+                "authority_mode": AUTHORITY_MODE,
+                "authoritative": True,
+                "adapter_contract_version": RUNTIME_ADAPTER_CONTRACT_VERSION,
+                "hermes_target": target,
+                "mutation_schema": _HERMES_MUTATION_SCHEMA,
+                "mutation_action": action,
+                "mutation_request_digest": request_digest,
+                "idempotency_key": idempotency_key,
+                "content_revision": content_revision,
+                "predecessor_record_id": predecessor_id,
+                "non_recallable": is_tombstone,
+            },
+        )
+        record.record_id = record_id
+        return record
+
+    @staticmethod
+    def _linked(links: list[LinkRef], relation: str, target_id: str) -> list[LinkRef]:
+        existing = list(links)
+        if not any(link.relation == relation and link.target_kind == "record" and link.target_id == target_id for link in existing):
+            existing.append(LinkRef(relation=relation, target_kind="record", target_id=target_id))
+        return existing
+
+    @staticmethod
+    def _record_content(record: RecordEnvelope) -> str:
+        return str(record.content.get("text") or record.summary or record.detail or "")
+
+    def _required_mutation_content(self, value: object) -> str:
+        text = self._optional_mutation_text(value)
+        if not text:
+            raise ValueError("memory content is required")
+        return text
+
+    def _optional_mutation_text(self, value: object) -> str:
+        if not isinstance(value, str):
+            raise ValueError("memory content must be text")
+        text = value.strip()
+        if len(text) > self.max_memory_chars:
+            raise ValueError("memory content exceeds configured limit")
+        return text
+
+    @staticmethod
+    def _content_revision(text: str) -> str:
+        normalized = " ".join(unicodedata.normalize("NFKC", str(text or "")).casefold().split())
+        return sha256(normalized.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _is_sha256_digest(value: str) -> bool:
+        return len(value) == 64 and all(char in "0123456789abcdef" for char in value)
+
+    @staticmethod
+    def _hermes_provenance(value: object) -> dict[str, str]:
+        if not isinstance(value, dict):
+            raise ValueError("provenance must be an object")
+        unexpected = set(value) - _HERMES_PROVENANCE_FIELDS
+        if unexpected:
+            raise ValueError("provenance contains unsupported fields")
+        normalized: dict[str, str] = {}
+        for field, raw_value in value.items():
+            if not isinstance(raw_value, str):
+                raise ValueError("provenance values must be text")
+            text = raw_value.strip()
+            if text:
+                normalized[field] = text[:512]
+        return normalized
+
+    @staticmethod
+    def _mutation_request_digest(
+        *,
+        channel: str,
+        scope: dict[str, str],
+        action: str,
+        target: str,
+        source_id: str,
+        content_revision: str,
+        expected_revision: str,
+        target_record_id: str,
+        provenance: dict[str, str],
+    ) -> str:
+        payload = json.dumps(
+            {
+                "schema": _HERMES_MUTATION_SCHEMA,
+                "channel": channel,
+                "scope": scope,
+                "action": action,
+                "target": target,
+                "source_id": source_id,
+                "content_revision": content_revision,
+                "expected_revision": expected_revision,
+                "target_record_id": target_record_id,
+                "provenance": provenance,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return sha256(payload.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _mutation_record_id(
+        *,
+        channel: str,
+        scope: dict[str, str],
+        source_id: str,
+        action: str,
+        target: str,
+        content_revision: str,
+        predecessor_id: str = "",
+    ) -> str:
+        payload = json.dumps(
+            {
+                "schema": _HERMES_MUTATION_SCHEMA,
+                "channel": channel,
+                "scope": scope,
+                "source_id": source_id,
+                "action": action,
+                "target": target,
+                "content_revision": content_revision,
+                "predecessor_id": predecessor_id,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return "mem_hermes_" + sha256(payload.encode("utf-8")).hexdigest()[:32]
+
+    @staticmethod
+    def _mutation_result(
+        record: RecordEnvelope,
+        *,
+        channel: str,
+        scope: dict[str, str],
+        action: str,
+        content_revision: str,
+        idempotent: bool,
+    ) -> dict[str, Any]:
+        return {
+            "ok": True,
+            "adapter_contract_version": RUNTIME_ADAPTER_CONTRACT_VERSION,
+            "channel": channel,
+            "scope": scope,
+            "action": action,
+            "record": record.to_dict(),
+            "content_revision": content_revision,
+            "idempotent": idempotent,
+        }
 
     def record_terminal(
         self,

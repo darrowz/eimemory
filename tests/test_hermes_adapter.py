@@ -57,8 +57,8 @@ def test_hermes_provider_lifecycle_is_channel_local_and_flushes_bounded_writes(t
     assert provider.name == "eimemory"
     assert "cite primary sources" in context
     assert provider.background_worker_count == 0
-    write_calls = [(method, params) for method, params in client.calls if method in {"adapter.sync_turn", "adapter.remember"}]
-    assert {method for method, _ in write_calls} == {"adapter.sync_turn", "adapter.remember"}
+    write_calls = [(method, params) for method, params in client.calls if method in {"adapter.sync_turn", "adapter.mutate_memory"}]
+    assert {method for method, _ in write_calls} == {"adapter.sync_turn", "adapter.mutate_memory"}
     assert all(params["channel"] == "hermes" for _, params in client.calls)
     assert all(params["scope"]["workspace_id"] == "embodied" for _, params in client.calls)
 
@@ -137,6 +137,49 @@ def test_hermes_provider_skips_non_primary_writes() -> None:
     assert not any(method in written_methods for method, _ in client.calls)
 
 
+def test_hermes_memory_write_forwards_official_replace_and_remove_metadata_to_shared_mutation_rpc() -> None:
+    client = FakeClient()
+    provider = HermesMemoryProviderCore(client=client)
+    provider.initialize("hermes-session", agent_workspace="embodied", agent_context="primary")
+
+    provider.on_memory_write(
+        "replace",
+        "user",
+        "Use concise primary-source summaries.",
+        {
+            "event_id": "memory-replace-1",
+            "old_text": "Use long summaries.",
+            "session_id": "hermes-session",
+            "parent_session_id": "parent-session",
+            "tool_call_id": "tool-44",
+        },
+    )
+    provider.on_memory_write(
+        "remove",
+        "user",
+        "",
+        {
+            "event_id": "memory-remove-1",
+            "old_text": "Use concise primary-source summaries.",
+            "session_id": "hermes-session",
+        },
+    )
+    provider.shutdown()
+
+    writes = [params for method, params in client.calls if method == "adapter.mutate_memory"]
+    assert [params["action"] for params in writes] == ["replace", "remove"]
+    assert writes[0]["target"] == "user"
+    assert writes[0]["old_text"] == "Use long summaries."
+    assert writes[0]["provenance"] == {
+        "write_origin": "hermes.memory_write",
+        "session_id": "hermes-session",
+        "parent_session_id": "parent-session",
+        "tool_call_id": "tool-44",
+    }
+    assert writes[1]["content"] == ""
+    assert writes[1]["source_id"] == "hermes"
+
+
 def test_hermes_provider_is_fail_open_when_primary_rpc_is_unavailable() -> None:
     class RaisingClient:
         def __init__(self) -> None:
@@ -157,7 +200,7 @@ def test_hermes_provider_is_fail_open_when_primary_rpc_is_unavailable() -> None:
 
     assert "adapter.prefetch" in client.calls
     assert "adapter.sync_turn" in client.calls
-    assert "adapter.remember" in client.calls
+    assert "adapter.mutate_memory" in client.calls
 
 
 def test_hermes_prefetch_queue_is_single_worker_and_cache_bounded() -> None:

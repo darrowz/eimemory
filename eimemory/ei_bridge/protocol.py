@@ -15,6 +15,7 @@ type EIMemoryRPCMethod = Literal[
     "adapter.prefetch",
     "adapter.sync_turn",
     "adapter.remember",
+    "adapter.mutate_memory",
     "adapter.record_terminal",
     "adapter.attest_tool_result",
     "adapter.status",

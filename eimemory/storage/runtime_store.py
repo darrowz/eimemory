@@ -7,6 +7,8 @@ from hashlib import sha256
 import re
 from threading import RLock
 import tempfile
+from collections.abc import Callable
+from typing import TypeVar
 
 from eimemory.adapters.openclaw.qmd_export import export_record_markdown
 from eimemory.metadata import business_metadata
@@ -24,6 +26,8 @@ AUXILIARY_JSONL_STREAMS = (
     "policy_rollout_ledger",
     "replay_manifests",
 )
+
+T = TypeVar("T")
 
 
 class RuntimeStore:
@@ -57,6 +61,25 @@ class RuntimeStore:
             self._flush_committed_exports(*(item["operation_id"] for item in exports))
             export_record_markdown(self.root, record)
             return record
+
+    def mutate_records_atomically(self, mutation: Callable[[SqliteRecordStore], T]) -> T:
+        """Run an authoritative record mutation in one SQLite write transaction.
+
+        The callback must use ``commit=False`` for all writes.  This narrow
+        boundary is intentionally shared by adapter mutations that need the
+        target transition and its audit successor to commit or roll back
+        together.
+        """
+
+        with self._lock:
+            try:
+                self.sqlite.conn.execute("BEGIN IMMEDIATE")
+                result = mutation(self.sqlite)
+                self.sqlite.conn.commit()
+                return result
+            except Exception:
+                self.sqlite.conn.rollback()
+                raise
 
     def rewrite(self, record: RecordEnvelope, *, previous_scope: ScopeRef | dict | None = None) -> RecordEnvelope:
         with self._lock:

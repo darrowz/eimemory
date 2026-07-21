@@ -384,6 +384,39 @@ class EIBrainRPCBridge:
                     force_capture=force_capture,
                     meta=meta,
                 )
+            elif method == "adapter.mutate_memory":
+                action = params.get("action", "")
+                target = params.get("target", "")
+                source_id = params.get("source_id", "")
+                content = params.get("content", "")
+                idempotency_key = params.get("idempotency_key", "")
+                provenance = params.get("provenance", {})
+                target_record_id = params.get("target_record_id", "")
+                old_text = params.get("old_text", "")
+                expected_revision = params.get("expected_revision", "")
+                if (
+                    not all(isinstance(value, str) for value in (
+                        action, target, source_id, content, idempotency_key,
+                        target_record_id, old_text, expected_revision,
+                    ))
+                    or not isinstance(provenance, dict)
+                ):
+                    return self._with_contract(self._invalid_request())
+                result = self.runtime_adapter.mutate_memory(
+                    channel=channel,
+                    scope=scope,
+                    action=action,
+                    target=target,
+                    source_id=source_id,
+                    content=content,
+                    idempotency_key=idempotency_key,
+                    provenance=provenance,
+                    target_record_id=target_record_id,
+                    old_text=old_text,
+                    expected_revision=expected_revision,
+                )
+                if result.get("ok") is False:
+                    return self._with_contract({"ok": False, "error": str(result.get("error") or "mutation_failed"), "result": result})
             elif method == "adapter.sync_turn":
                 session_id = params.get("session_id", "")
                 turn_id = params.get("turn_id", "")
