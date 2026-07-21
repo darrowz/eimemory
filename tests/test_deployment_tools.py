@@ -434,6 +434,33 @@ def test_eibrain_rpc_service_requires_protected_auth_environment() -> None:
     assert "deploy/ensure_rpc_auth.py" in Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
 
 
+def test_agent_runtime_adapter_operations_are_reproducible_and_fail_open() -> None:
+    readme = Path("README.md").read_text(encoding="utf-8")
+    operations = Path("docs/operations.md").read_text(encoding="utf-8")
+    unit_text = Path("deploy/systemd/eimemory-rpc.service").read_text(encoding="utf-8")
+
+    for required in (
+        "agent.runtime.v1",
+        "EIMEMORY_RPC_URL",
+        "EIMEMORY_RPC_TOKEN",
+        "embodied::channel::codex",
+        "embodied::channel::hermes",
+        "per_channel",
+        "fail-open",
+    ):
+        assert required in readme
+        assert required in operations
+    assert "codex plugin marketplace add" in operations
+    assert "$HERMES_HOME/plugins/eimemory" in operations
+    assert "provider: eimemory" in operations
+    assert "disable" in operations.lower()
+    assert "eimemory_status" in operations
+    assert "EIMEMORY_RPC_AUTH_TOKEN" in operations
+    assert "EnvironmentFile=/etc/eimemory/rpc.env" in unit_text
+    assert "--host 100.105.189.120 --port 8091" in unit_text
+    assert "--loopback-health-host 127.0.0.1 --loopback-health-port 8091" in unit_text
+
+
 def test_rpc_auth_provisioner_creates_strong_private_token_and_rejects_weak_file(tmp_path) -> None:
     from deploy.ensure_rpc_auth import RPCAuthError, ensure_rpc_auth_file
 

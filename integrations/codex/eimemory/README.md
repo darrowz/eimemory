@@ -5,8 +5,10 @@ Accepted Codex records use `authority_mode=per_channel` and a deterministic
 scope such as `embodied::channel::codex`; they are never recalled by OpenClaw
 or Hermes unless a future explicit federation feature is enabled.
 
-Install the `eimemory` Python package, install or enable this Codex plugin, and
-provide these environment variables to Codex:
+Install the `eimemory` Python package, register this repository's marketplace
+with `codex plugin marketplace add <repo>/integrations/codex`, install or enable
+the eimemory plugin in the desktop app, and provide these environment variables
+to Codex:
 
 ```text
 EIMEMORY_RPC_URL=http://honxin:8091/

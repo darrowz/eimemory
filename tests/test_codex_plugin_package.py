@@ -5,6 +5,7 @@ from pathlib import Path
 
 
 PLUGIN_ROOT = Path(__file__).parents[1] / "integrations" / "codex" / "eimemory"
+MARKETPLACE_ROOT = PLUGIN_ROOT.parent
 
 
 def test_codex_plugin_manifest_and_native_integration_contract() -> None:
@@ -34,3 +35,15 @@ def test_codex_plugin_documents_configuration_bypass_and_channel_authority() -> 
     assert "fail-open" in readme
     assert "transcript_path" in readme
 
+
+def test_codex_plugin_is_installable_from_a_local_marketplace() -> None:
+    marketplace = json.loads(
+        (MARKETPLACE_ROOT / ".agents" / "plugins" / "marketplace.json").read_text(encoding="utf-8")
+    )
+
+    entry = marketplace["plugins"][0]
+    assert marketplace["name"] == "eimemory-adapters"
+    assert entry["name"] == "eimemory"
+    assert entry["source"] == {"source": "local", "path": "./eimemory"}
+    assert entry["policy"] == {"installation": "AVAILABLE", "authentication": "ON_INSTALL"}
+    assert entry["category"] == "Productivity"

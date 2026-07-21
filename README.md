@@ -275,6 +275,24 @@ curl -X POST http://127.0.0.1:8091/api/ingest \
 curl http://127.0.0.1:8091/api/recall?query=test
 ```
 
+### Agent Runtime Adapters
+
+The additive `agent.runtime.v1` contract supports OpenClaw, Codex, and Hermes
+without changing OpenClaw's existing L5 evidence rules. Authority is
+`per_channel`: the base OpenClaw scope is unchanged, while Codex and Hermes use
+deterministic scopes such as `embodied::channel::codex` and
+`embodied::channel::hermes`. Recall never crosses those scopes.
+
+Codex installs through the marketplace under `integrations/codex`; Hermes uses
+the standalone native `MemoryProvider` under `integrations/hermes/eimemory`.
+Both clients require `EIMEMORY_RPC_URL` and `EIMEMORY_RPC_TOKEN`, use bounded
+inputs/caches, and are fail-open when the authenticated RPC is unavailable.
+Successful terminal events count toward L5 only when they carry explicit,
+release-bound verification; session lifecycle events never count.
+
+See [Adapter Operations](docs/operations.md) for install, status, disable,
+bypass, channel isolation, and live-verification procedures.
+
 ### OpenClaw Integration
 
 eimemory provides hooks for OpenClaw agent runtimes. See `docs/architecture.md` for integration details.
