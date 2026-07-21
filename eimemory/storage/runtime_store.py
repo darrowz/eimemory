@@ -62,24 +62,52 @@ class RuntimeStore:
             export_record_markdown(self.root, record)
             return record
 
-    def mutate_records_atomically(self, mutation: Callable[[SqliteRecordStore], T]) -> T:
+    def mutate_records_atomically(
+        self,
+        mutation: Callable[
+            [SqliteRecordStore],
+            tuple[T, list[RecordEnvelope], list[MemoryEdge]],
+        ],
+    ) -> T:
         """Run an authoritative record mutation in one SQLite write transaction.
 
-        The callback must use ``commit=False`` for all writes.  This narrow
-        boundary is intentionally shared by adapter mutations that need the
-        target transition and its audit successor to commit or roll back
-        together.
+        The callback must use ``commit=False`` for record writes and return
+        every changed record plus every graph edge.  Record changes, edges,
+        and their durable JSONL outbox entries commit together; outbox flush
+        and Markdown projection happen only after that commit.
         """
 
         with self._lock:
+            operation_ids: list[str] = []
+            changed_records: list[RecordEnvelope] = []
             try:
                 self.sqlite.conn.execute("BEGIN IMMEDIATE")
-                result = mutation(self.sqlite)
+                result, changed_records, changed_edges = mutation(self.sqlite)
+                self.sqlite.upsert_memory_edges(changed_edges, commit=False)
+                for record in changed_records:
+                    operation_ids.extend(
+                        export["operation_id"]
+                        for export in self._enqueue_record_exports(record)
+                    )
+                for edge in changed_edges:
+                    export = self.sqlite.enqueue_export(
+                        stream="memory_edges",
+                        payload=self._auxiliary_entry(
+                            "memory_edges",
+                            edge.to_dict(),
+                            scope=edge.scope,
+                        ),
+                        commit=False,
+                    )
+                    operation_ids.append(export["operation_id"])
                 self.sqlite.conn.commit()
-                return result
             except Exception:
                 self.sqlite.conn.rollback()
                 raise
+            self._flush_committed_exports(*operation_ids)
+            for record in changed_records:
+                export_record_markdown(self.root, record)
+            return result
 
     def rewrite(self, record: RecordEnvelope, *, previous_scope: ScopeRef | dict | None = None) -> RecordEnvelope:
         with self._lock:

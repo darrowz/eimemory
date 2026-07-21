@@ -28,6 +28,7 @@ from eimemory.governance.tool_receipts import (
     sign_tool_receipt,
     verify_tool_receipt,
 )
+from eimemory.models.memory_edges import MemoryEdge
 from eimemory.models.records import LinkRef, RecallBundle, RecordEnvelope, ScopeRef
 from eimemory.models.source_partitions import normalize_source_id
 
@@ -234,14 +235,18 @@ class AgentRuntimeMemoryService:
             if existing is not None:
                 prior_digest = str(existing.meta.get("mutation_request_digest") or "")
                 if prior_digest != request_digest:
-                    return {"ok": False, "error": "mutation_idempotency_conflict"}
-                return self._mutation_result(
-                    existing,
-                    channel=channel_id,
-                    scope=channel_scope,
-                    action=str(existing.meta.get("mutation_action") or action_id),
-                    content_revision=str(existing.meta.get("content_revision") or ""),
-                    idempotent=True,
+                    return ({"ok": False, "error": "mutation_idempotency_conflict"}, [], [])
+                return (
+                    self._mutation_result(
+                        existing,
+                        channel=channel_id,
+                        scope=channel_scope,
+                        action=str(existing.meta.get("mutation_action") or action_id),
+                        content_revision=str(existing.meta.get("content_revision") or ""),
+                        idempotent=True,
+                    ),
+                    [],
+                    [],
                 )
 
             if action_id == "add":
@@ -260,14 +265,18 @@ class AgentRuntimeMemoryService:
                     ) or str(deterministic.meta.get("idempotency_key") or "") != request_key or str(
                         deterministic.meta.get("mutation_request_digest") or ""
                     ) != request_digest:
-                        return {"ok": False, "error": "mutation_target_conflict"}
-                    return self._mutation_result(
-                        deterministic,
-                        channel=channel_id,
-                        scope=channel_scope,
-                        action="add",
-                        content_revision=str(deterministic.meta.get("content_revision") or content_revision),
-                        idempotent=True,
+                        return ({"ok": False, "error": "mutation_target_conflict"}, [], [])
+                    return (
+                        self._mutation_result(
+                            deterministic,
+                            channel=channel_id,
+                            scope=channel_scope,
+                            action="add",
+                            content_revision=str(deterministic.meta.get("content_revision") or content_revision),
+                            idempotent=True,
+                        ),
+                        [],
+                        [],
                     )
                 record = self._new_hermes_record(
                     record_id=record_id,
@@ -282,8 +291,12 @@ class AgentRuntimeMemoryService:
                     provenance=safe_provenance,
                 )
                 sqlite.upsert(record, commit=False)
-                return self._mutation_result(
-                    record, channel=channel_id, scope=channel_scope, action="add", content_revision=content_revision, idempotent=False
+                return (
+                    self._mutation_result(
+                        record, channel=channel_id, scope=channel_scope, action="add", content_revision=content_revision, idempotent=False
+                    ),
+                    [record],
+                    [],
                 )
 
             resolved = self._resolve_hermes_mutation_target(
@@ -295,11 +308,11 @@ class AgentRuntimeMemoryService:
                 old_text=normalized_old_text,
             )
             if isinstance(resolved, str):
-                return {"ok": False, "error": resolved}
+                return ({"ok": False, "error": resolved}, [], [])
             old_record = resolved
             actual_revision = str(old_record.meta.get("content_revision") or self._content_revision(self._record_content(old_record)))
             if actual_revision != requested_revision:
-                return {"ok": False, "error": "mutation_stale_revision"}
+                return ({"ok": False, "error": "mutation_stale_revision"}, [], [])
             if action_id == "replace":
                 successor_id = self._mutation_record_id(
                     channel=channel_id,
@@ -334,8 +347,21 @@ class AgentRuntimeMemoryService:
                 old_record.touch()
                 sqlite.upsert(successor, commit=False)
                 sqlite.upsert(old_record, commit=False)
-                return self._mutation_result(
-                    successor, channel=channel_id, scope=channel_scope, action="replace", content_revision=content_revision, idempotent=False
+                edges = self._mutation_edges(
+                    scope=scope_ref,
+                    mutation_record_id=successor.record_id,
+                    target_record_id=old_record.record_id,
+                    forward_relation="supersedes",
+                    reverse_relation="superseded_by",
+                    source_id=source_partition,
+                    target=target_id,
+                )
+                return (
+                    self._mutation_result(
+                        successor, channel=channel_id, scope=channel_scope, action="replace", content_revision=content_revision, idempotent=False
+                    ),
+                    [successor, old_record],
+                    edges,
                 )
 
             tombstone_id = self._mutation_record_id(
@@ -372,8 +398,21 @@ class AgentRuntimeMemoryService:
             old_record.touch()
             sqlite.upsert(tombstone, commit=False)
             sqlite.upsert(old_record, commit=False)
-            return self._mutation_result(
-                tombstone, channel=channel_id, scope=channel_scope, action="remove", content_revision="", idempotent=False
+            edges = self._mutation_edges(
+                scope=scope_ref,
+                mutation_record_id=tombstone.record_id,
+                target_record_id=old_record.record_id,
+                forward_relation="removes",
+                reverse_relation="removed_by",
+                source_id=source_partition,
+                target=target_id,
+            )
+            return (
+                self._mutation_result(
+                    tombstone, channel=channel_id, scope=channel_scope, action="remove", content_revision="", idempotent=False
+                ),
+                [tombstone, old_record],
+                edges,
             )
 
         return self.runtime.store.mutate_records_atomically(mutation)
@@ -521,6 +560,45 @@ class AgentRuntimeMemoryService:
         if not any(link.relation == relation and link.target_kind == "record" and link.target_id == target_id for link in existing):
             existing.append(LinkRef(relation=relation, target_kind="record", target_id=target_id))
         return existing
+
+    @staticmethod
+    def _mutation_edges(
+        *,
+        scope: ScopeRef,
+        mutation_record_id: str,
+        target_record_id: str,
+        forward_relation: str,
+        reverse_relation: str,
+        source_id: str,
+        target: str,
+    ) -> list[MemoryEdge]:
+        common_meta = {
+            "schema_version": _HERMES_MUTATION_SCHEMA,
+            "source_id": source_id,
+            "hermes_target": target,
+        }
+        return [
+            MemoryEdge.create(
+                from_id=mutation_record_id,
+                to_id=target_record_id,
+                edge_type="temporal",
+                confidence=1.0,
+                evidence_id=mutation_record_id,
+                scope=scope,
+                reason=forward_relation,
+                meta={**common_meta, "relation": forward_relation},
+            ),
+            MemoryEdge.create(
+                from_id=target_record_id,
+                to_id=mutation_record_id,
+                edge_type="temporal",
+                confidence=1.0,
+                evidence_id=mutation_record_id,
+                scope=scope,
+                reason=reverse_relation,
+                meta={**common_meta, "relation": reverse_relation},
+            ),
+        ]
 
     @staticmethod
     def _record_content(record: RecordEnvelope) -> str:

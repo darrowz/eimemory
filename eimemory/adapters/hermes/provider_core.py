@@ -7,6 +7,7 @@ import logging
 import os
 from pathlib import Path
 import threading
+import unicodedata
 from typing import Any, Dict, List, Mapping, Optional
 
 from eimemory.adapters.runtime.http_client import AgentRuntimeRPCClient
@@ -284,9 +285,16 @@ class HermesMemoryProviderCore:
         meta = dict(metadata or {})
         event_id = str(meta.get("event_id") or "").strip()
         if not event_id:
-            event_id = "memory-" + sha256(
-                f"{self._session_id}\0{normalized_action}\0{target}\0{text}".encode("utf-8", errors="replace")
-            ).hexdigest()[:24]
+            event_id = _memory_write_fallback_event_id(
+                source_id="hermes",
+                session_id=self._session_id,
+                action=normalized_action,
+                target=str(target or "memory"),
+                content=text,
+                old_text=str(meta.get("old_text") or ""),
+                target_record_id=str(meta.get("target_record_id") or ""),
+                expected_revision=str(meta.get("expected_revision") or ""),
+            )
         self._enqueue_write(
             "adapter.mutate_memory",
             {
@@ -596,6 +604,40 @@ class HermesMemoryProviderCore:
 def _bounded_text(value: Any, limit: int) -> str:
     text = str(value or "").strip()
     return text if len(text) <= limit else text[:limit]
+
+
+def _memory_write_fallback_event_id(
+    *,
+    source_id: str,
+    session_id: str,
+    action: str,
+    target: str,
+    content: str,
+    old_text: str,
+    target_record_id: str,
+    expected_revision: str,
+) -> str:
+    payload = json.dumps(
+        {
+            "source_id": str(source_id or "").strip().casefold(),
+            "session_id": str(session_id or "").strip(),
+            "action": str(action or "").strip().lower(),
+            "target": str(target or "").strip().lower(),
+            "content_revision": _normalized_text_revision(content),
+            "old_content_revision": _normalized_text_revision(old_text) if str(old_text or "").strip() else "",
+            "target_record_id": str(target_record_id or "").strip(),
+            "expected_revision": str(expected_revision or "").strip().lower(),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return "memory-" + sha256(payload.encode("utf-8")).hexdigest()[:24]
+
+
+def _normalized_text_revision(value: object) -> str:
+    normalized = " ".join(unicodedata.normalize("NFKC", str(value or "")).casefold().split())
+    return sha256(normalized.encode("utf-8")).hexdigest()
 
 
 def _required_text(arguments: Mapping[str, Any], name: str) -> str:

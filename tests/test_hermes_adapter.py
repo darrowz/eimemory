@@ -180,6 +180,43 @@ def test_hermes_memory_write_forwards_official_replace_and_remove_metadata_to_sh
     assert writes[1]["source_id"] == "hermes"
 
 
+def test_hermes_memory_write_fallback_key_distinguishes_old_revision_and_explicit_target() -> None:
+    client = FakeClient()
+    provider = HermesMemoryProviderCore(client=client)
+    provider.initialize("hermes-session", agent_workspace="embodied", agent_context="primary")
+
+    provider.on_memory_write("remove", "user", "", {"old_text": "first old preference"})
+    provider.on_memory_write("remove", "user", "", {"old_text": "second old preference"})
+    provider.on_memory_write("remove", "user", "", {"old_text": "first old preference"})
+    provider.on_memory_write("replace", "user", "same replacement", {"old_text": "first prior text"})
+    provider.on_memory_write("replace", "user", "same replacement", {"old_text": "second prior text"})
+    provider.on_memory_write("replace", "user", "same replacement", {"old_text": "first prior text"})
+    provider.on_memory_write(
+        "remove",
+        "memory",
+        "",
+        {"target_record_id": "mem-one", "expected_revision": "1" * 64},
+    )
+    provider.on_memory_write(
+        "remove",
+        "memory",
+        "",
+        {"target_record_id": "mem-two", "expected_revision": "2" * 64},
+    )
+    provider.shutdown()
+
+    keys = [
+        params["idempotency_key"]
+        for method, params in client.calls
+        if method == "adapter.mutate_memory"
+    ]
+    assert keys[0] != keys[1]
+    assert keys[0] == keys[2]
+    assert keys[3] != keys[4]
+    assert keys[3] == keys[5]
+    assert keys[6] != keys[7]
+
+
 def test_hermes_provider_is_fail_open_when_primary_rpc_is_unavailable() -> None:
     class RaisingClient:
         def __init__(self) -> None:
