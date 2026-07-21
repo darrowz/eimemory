@@ -6,6 +6,7 @@ import ipaddress
 import json
 import os
 from pathlib import Path
+from typing import Mapping
 import socket
 import subprocess
 import threading
@@ -81,6 +82,7 @@ class _RPCHandler(BaseHTTPRequestHandler):
     listen_host: str
     listen_port: int
     auth_token: str = ""
+    attestation_tokens: dict[str, str] = {}
     loopback_health: dict[str, object] | None = None
 
     def do_GET(self) -> None:  # noqa: N802
@@ -144,9 +146,6 @@ class _RPCHandler(BaseHTTPRequestHandler):
         self._send_json(200, payload)
 
     def do_POST(self) -> None:  # noqa: N802
-        if self._auth_required() and not self._authorized():
-            self._send_json(401, {"ok": False, "error": "unauthorized"})
-            return
         try:
             length = int(self.headers.get("Content-Length", "0"))
             if length < 0:
@@ -158,7 +157,18 @@ class _RPCHandler(BaseHTTPRequestHandler):
             request: EIMemoryRPCRequest = json.loads(raw.decode("utf-8"))
             if not isinstance(request, dict):
                 raise ValueError("request body must be a JSON object")
-            response: EIMemoryRPCResponse = self.bridge.handle(request)
+            method = request.get("method")
+            if method == "adapter.attest_tool_result":
+                producer = self._attestation_producer()
+                if not producer:
+                    self._send_json(401, {"ok": False, "error": "attestation_unauthorized"})
+                    return
+                response: EIMemoryRPCResponse = self.bridge.handle(request, attestation_producer=producer)
+            else:
+                if self._auth_required() and not self._authorized():
+                    self._send_json(401, {"ok": False, "error": "unauthorized"})
+                    return
+                response = self.bridge.handle(request)
             status = 400 if response.get("ok") is False else 200
             self._send_json(status, response)
         except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
@@ -179,6 +189,16 @@ class _RPCHandler(BaseHTTPRequestHandler):
         if not token or not header.startswith(prefix):
             return False
         return hmac.compare_digest(header[len(prefix) :].strip(), token)
+
+    def _attestation_producer(self) -> str:
+        header = str(self.headers.get("Authorization", "") or "")
+        if not header.startswith("Bearer "):
+            return ""
+        candidate = header[len("Bearer ") :].strip()
+        for token, producer in self.attestation_tokens.items():
+            if hmac.compare_digest(candidate, token):
+                return producer
+        return ""
 
     def log_message(self, format: str, *args) -> None:  # noqa: A003
         return
@@ -223,16 +243,23 @@ class EIBrainRPCServer:
         loopback_health_host: str = "",
         loopback_health_port: int | None = None,
         auth_token: str | None = None,
+        attestation_tokens: Mapping[str, str] | None = None,
     ) -> None:
         self.runtime = runtime
         self.host = host
         self.port = port
         self.auth_token = str(auth_token if auth_token is not None else os.environ.get("EIMEMORY_RPC_AUTH_TOKEN", "")).strip()
+        self.attestation_tokens = {
+            str(token).strip(): str(producer).strip().lower()
+            for token, producer in dict(attestation_tokens or _attestation_tokens_from_env()).items()
+            if _is_strong_auth_token(str(token)) and str(producer).strip().lower() in {"codex", "hermes"}
+        }
         validate_rpc_auth_configuration(host=host, token=self.auth_token)
         handler = type("EIMemoryRPCHandler", (_RPCHandler,), {})
         handler.bridge = EIBrainRPCBridge(runtime)
         handler.runtime = runtime
         handler.auth_token = self.auth_token
+        handler.attestation_tokens = dict(self.attestation_tokens)
         self._server = ThreadingHTTPServer((host, port), handler)
         self.address = self._server.server_address
         handler.listen_host = str(self.address[0])
@@ -314,6 +341,17 @@ def _first_query_value(query: dict[str, list[str]], key: str, default: str = "")
     if not values:
         return default
     return str(values[0] or default)
+
+
+def _attestation_tokens_from_env() -> dict[str, str]:
+    raw = str(os.environ.get("EIMEMORY_ATTESTATION_TOKENS_JSON") or "").strip()
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    return dict(parsed) if isinstance(parsed, dict) else {}
 
 
 def _compact_health_payload(

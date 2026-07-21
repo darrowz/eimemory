@@ -78,10 +78,21 @@ def codex_client_from_env() -> AgentRuntimeRPCClient:
     )
 
 
+def codex_attestation_client_from_env() -> AgentRuntimeRPCClient | None:
+    token = os.getenv("EIMEMORY_ATTESTATION_TOKEN", "").strip()
+    if not token:
+        return None
+    client = codex_client_from_env()
+    client.auth_token = token
+    return client
+
+
 class CodexHookAdapter:
-    def __init__(self, *, client: Any, scope: Mapping[str, str] | None = None) -> None:
+    def __init__(self, *, client: Any, scope: Mapping[str, str] | None = None, attestation_client: Any | None = None) -> None:
         self.client = client
         self.scope = dict(scope) if scope is not None else None
+        self.attestation_client = attestation_client
+        self._receipt_ids: dict[tuple[str, str], list[str]] = {}
 
     def handle(self, event_name: str, event: Mapping[str, Any] | None) -> dict[str, Any]:
         name = str(event_name or "").strip()
@@ -149,6 +160,19 @@ class CodexHookAdapter:
         tool_name = _bounded_text(event.get("tool_name") or event.get("tool"), 200) or "unknown"
         tool_input = event.get("tool_input", event.get("input", {}))
         tool_result = event.get("tool_response", event.get("tool_result", event.get("tool_output", "")))
+        if self.attestation_client is not None:
+            result = self.attestation_client.call_or_bypass(
+                "adapter.attest_tool_result",
+                {
+                    "channel": "codex", "scope": self._scope_for_event(event),
+                    "session_id": session_id, "run_id": turn_id, "tool_call_id": _event_id(event, "tool_call_id", "tool_use_id", default=turn_id),
+                    "tool_name": tool_name, "result": _redact_structured(tool_result),
+                    "duration_ms": event.get("duration_ms", 0) if isinstance(event.get("duration_ms", 0), int) else 0,
+                },
+            )
+            receipt_id = result.get("result", {}).get("receipt_id") if isinstance(result.get("result"), dict) else ""
+            if isinstance(receipt_id, str) and receipt_id:
+                self._receipt_ids.setdefault((session_id, turn_id), []).append(receipt_id)
         input_summary = _safe_summary(tool_input, preview_limit=MAX_TOOL_INPUT_PREVIEW_CHARS)
         result_summary = _safe_summary(tool_result, preview_limit=MAX_TOOL_RESULT_PREVIEW_CHARS)
         self.client.call_or_bypass(
@@ -180,7 +204,6 @@ class CodexHookAdapter:
             event.get("last_assistant_message") or event.get("result") or event.get("response"),
             2_000,
         )
-        receipts = event.get("verification_receipts")
         self.client.call_or_bypass(
             "adapter.record_terminal",
             {
@@ -193,7 +216,8 @@ class CodexHookAdapter:
                 "success": success,
                 "verification": verification,
                 "result": result,
-                "tool_receipts": receipts[:32] if isinstance(receipts, list) else [],
+                "tool_receipts": [],
+                "receipt_ids": self._receipt_ids.pop((session_id, event_id), [])[:32],
                 "rehearsal": False,
             },
         )
@@ -332,6 +356,7 @@ def run_hook_from_stdio(event_name: str, *, stdin: Any = None, stdout: Any = Non
     adapter = CodexHookAdapter(
         client=codex_client_from_env(),
         scope=codex_scope_from_env(cwd=str(event.get("cwd") or "")),
+        attestation_client=codex_attestation_client_from_env(),
     )
     result = adapter.handle(event_name, event)
     output_stream.write(json.dumps(result, ensure_ascii=False, separators=(",", ":")) + "\n")

@@ -21,7 +21,7 @@ class EIBrainRPCBridge:
         self.runtime = runtime
         self.runtime_adapter = AgentRuntimeMemoryService(runtime)
 
-    def handle(self, request: EIMemoryRPCRequest) -> EIMemoryRPCResponse:
+    def handle(self, request: EIMemoryRPCRequest, *, attestation_producer: str = "") -> EIMemoryRPCResponse:
         # RPC transport boundary: accept only dict-shaped request payloads then map
         # directly into runtime services with strict per-method validation.
         if not isinstance(request, dict):
@@ -35,7 +35,7 @@ class EIBrainRPCBridge:
         if not isinstance(params, dict):
             return self._with_contract(self._invalid_request())
         if method.startswith("adapter."):
-            return self._handle_runtime_adapter(method, params)
+            return self._handle_runtime_adapter(method, params, attestation_producer=attestation_producer)
         if method in {"memory.recall", "memory.search"}:
             limit = params.get("limit", 8)
             scope: BridgeScope = params.get("scope", {})
@@ -292,13 +292,43 @@ class EIBrainRPCBridge:
             return self._with_contract({"ok": True, "result": policy})
         return self._with_contract({"ok": False, "error": "unknown_method"})
 
-    def _handle_runtime_adapter(self, method: str, params: dict[str, Any]) -> EIMemoryRPCResponse:
+    def _handle_runtime_adapter(
+        self, method: str, params: dict[str, Any], *, attestation_producer: str = ""
+    ) -> EIMemoryRPCResponse:
         channel = params.get("channel", "")
         scope: BridgeScope = params.get("scope", {})
         if not isinstance(channel, str) or not channel.strip() or not self._valid_scope(scope):
             return self._with_contract(self._invalid_request())
         try:
-            if method == "adapter.status":
+            if method == "adapter.attest_tool_result":
+                producer = str(attestation_producer or "").strip().lower()
+                if not producer:
+                    return self._with_contract({"ok": False, "error": "attestation_unauthorized"})
+                session_id = params.get("session_id", "")
+                run_id = params.get("run_id", "")
+                tool_call_id = params.get("tool_call_id", "")
+                tool_name = params.get("tool_name", "")
+                result_value = params.get("result")
+                duration_ms = params.get("duration_ms", 0)
+                if (
+                    not all(isinstance(value, str) and value.strip() for value in (session_id, run_id, tool_call_id, tool_name))
+                    or not isinstance(duration_ms, int)
+                    or isinstance(duration_ms, bool)
+                    or result_value is None
+                ):
+                    return self._with_contract(self._invalid_request())
+                result = self.runtime_adapter.attest_tool_result(
+                    producer=producer,
+                    channel=channel,
+                    scope=scope,
+                    session_id=session_id,
+                    run_id=run_id,
+                    tool_call_id=tool_call_id,
+                    tool_name=tool_name,
+                    result=result_value,
+                    duration_ms=duration_ms,
+                )
+            elif method == "adapter.status":
                 result = self.runtime_adapter.status(channel=channel, scope=scope)
             elif method == "adapter.prefetch":
                 query = params.get("query", "")
@@ -378,6 +408,7 @@ class EIBrainRPCBridge:
                 verification = params.get("verification", "")
                 terminal_result = params.get("result", "")
                 tool_receipts = params.get("tool_receipts", [])
+                receipt_ids = params.get("receipt_ids", [])
                 rehearsal = params.get("rehearsal", False)
                 if (
                     not all(isinstance(value, str) for value in (end_kind, session_id, event_id, task_type, verification, terminal_result))
@@ -388,6 +419,8 @@ class EIBrainRPCBridge:
                     or (success is not None and not isinstance(success, bool))
                     or not isinstance(tool_receipts, list)
                     or not all(isinstance(item, dict) for item in tool_receipts)
+                    or not isinstance(receipt_ids, list)
+                    or not all(isinstance(item, str) for item in receipt_ids)
                     or not isinstance(rehearsal, bool)
                 ):
                     return self._with_contract(self._invalid_request())
@@ -402,6 +435,7 @@ class EIBrainRPCBridge:
                     verification=verification,
                     result=terminal_result,
                     tool_receipts=tool_receipts,
+                    receipt_ids=receipt_ids,
                     rehearsal=rehearsal,
                 )
             else:

@@ -85,9 +85,21 @@ def _seed_base_release(runtime: Runtime) -> None:
     assert current_release_identity(runtime, scope_ref) is not None
 
 
-def test_verified_codex_and_hermes_tasks_are_release_bound_per_channel(runtime: Runtime) -> None:
+def test_verified_codex_and_hermes_tasks_are_release_bound_per_channel(monkeypatch, runtime: Runtime) -> None:
     _seed_base_release(runtime)
+    monkeypatch.setenv("EIMEMORY_EVIDENCE_RECEIPT_HMAC_KEY", RECEIPT_KEY)
     service = AgentRuntimeMemoryService(runtime)
+
+    codex_receipt = service.attest_tool_result(
+        producer="codex", channel="codex", scope=BASE_SCOPE,
+        session_id="codex-session", run_id="codex-turn", tool_call_id="codex-call",
+        tool_name="pytest", result={"exit_code": 0, "summary": "3 passed"},
+    )
+    hermes_receipt = service.attest_tool_result(
+        producer="hermes", channel="hermes", scope=BASE_SCOPE,
+        session_id="hermes-session", run_id="hermes-task", tool_call_id="hermes-call",
+        tool_name="pytest", result={"exit_code": 0, "summary": "2 passed"},
+    )
 
     codex = service.record_terminal(
         channel="codex",
@@ -99,6 +111,7 @@ def test_verified_codex_and_hermes_tasks_are_release_bound_per_channel(runtime: 
         success=True,
         verification="pytest:passed",
         result="regression test passed",
+        receipt_ids=[codex_receipt["receipt_id"]],
     )
     hermes = service.record_terminal(
         channel="hermes",
@@ -110,6 +123,7 @@ def test_verified_codex_and_hermes_tasks_are_release_bound_per_channel(runtime: 
         success=True,
         verification="source-check:passed",
         result="research audit passed",
+        receipt_ids=[hermes_receipt["receipt_id"]],
     )
 
     codex_scope = resolve_channel_scope("codex", BASE_SCOPE)
@@ -154,6 +168,31 @@ def test_unverified_codex_success_cannot_enter_verified_real_task_count(runtime:
     assert result["outcome"]["outcome"] == "verification_missing"
     assert metrics["sample_counts"]["verified_real_tasks"] == 0
     assert metrics["sample_counts"]["current_deployment_verified_real_tasks"] == 0
+
+
+def test_codex_terminal_cannot_mint_or_replay_a_v2_receipt(monkeypatch, runtime: Runtime) -> None:
+    _seed_base_release(runtime)
+    monkeypatch.setenv("EIMEMORY_EVIDENCE_RECEIPT_HMAC_KEY", RECEIPT_KEY)
+    service = AgentRuntimeMemoryService(runtime)
+    receipt = service.attest_tool_result(
+        producer="codex", channel="codex", scope=BASE_SCOPE,
+        session_id="session-1", run_id="turn-1", tool_call_id="call-1",
+        tool_name="pytest", result={"exit_code": 0, "summary": "1 passed"},
+    )
+    first = service.record_terminal(
+        channel="codex", scope=BASE_SCOPE, end_kind="stop", session_id="session-1", event_id="turn-1",
+        task_type="code.fix", success=True, verification="caller-forged", result="done",
+        tool_receipts=[{"passed": True, "source": "codex.post_tool_use"}], receipt_ids=[receipt["receipt_id"]],
+    )
+    replay = service.record_terminal(
+        channel="codex", scope=BASE_SCOPE, end_kind="stop", session_id="session-2", event_id="turn-2",
+        task_type="code.fix", success=True, verification="caller-forged", result="done",
+        receipt_ids=[receipt["receipt_id"]],
+    )
+
+    assert first["outcome"]["outcome"] == "good"
+    assert first["event"]["verification_receipts"][0]["receipt_id"] == receipt["receipt_id"]
+    assert replay["outcome"]["outcome"] == "verification_missing"
 
 
 def test_tool_receipt_signature_preserves_runtime_source(monkeypatch) -> None:

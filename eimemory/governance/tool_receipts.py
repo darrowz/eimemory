@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import stat
 from typing import Any, Mapping
+from datetime import datetime, timezone
 
 
 RECEIPT_KEY_ENV = "EIMEMORY_EVIDENCE_RECEIPT_HMAC_KEY"
@@ -21,6 +22,13 @@ SUPPORTED_TOOL_RECEIPT_SOURCES = frozenset(
         "hermes.post_tool_call",
     }
 )
+V2_RECEIPT_VERSION = 2
+V2_ATTESTATION = "hmac-sha256-v2"
+V2_MAX_AGE_SECONDS = 15 * 60
+ATTESTATION_PRODUCERS = {
+    "codex": ("codex", "codex.post_tool_use"),
+    "hermes": ("hermes", "hermes.post_tool_call"),
+}
 
 
 def _receipt_key() -> str:
@@ -39,14 +47,16 @@ def _receipt_key() -> str:
         int(metadata.st_dev),
         int(metadata.st_ino),
         int(metadata.st_mtime_ns),
-        int(metadata.st_ctime_ns),
         int(metadata.st_size),
     )
+    # Key rotation must be observed even on filesystems with coarse timestamp
+    # resolution; the secure descriptor checks below remain the trust boundary.
+    _receipt_key_from_file.cache_clear()
     return _receipt_key_from_file(str(path), identity)
 
 
 @lru_cache(maxsize=16)
-def _receipt_key_from_file(path_value: str, expected_identity: tuple[int, int, int, int, int]) -> str:
+def _receipt_key_from_file(path_value: str, expected_identity: tuple[int, int, int, int]) -> str:
     path = Path(path_value)
     try:
         if path.is_symlink():
@@ -63,7 +73,6 @@ def _receipt_key_from_file(path_value: str, expected_identity: tuple[int, int, i
             int(metadata.st_dev),
             int(metadata.st_ino),
             int(metadata.st_mtime_ns),
-            int(metadata.st_ctime_ns),
             int(metadata.st_size),
         )
         if (
@@ -95,6 +104,8 @@ def _receipt_key_from_file(path_value: str, expected_identity: tuple[int, int, i
 
 
 def canonical_tool_receipt(receipt: Mapping[str, Any]) -> dict[str, Any]:
+    if receipt.get("receipt_version") == V2_RECEIPT_VERSION:
+        return _canonical_v2_tool_receipt(receipt)
     try:
         duration_ms = max(0, int(receipt.get("duration_ms") or 0))
     except (TypeError, ValueError):
@@ -110,6 +121,37 @@ def canonical_tool_receipt(receipt: Mapping[str, Any]) -> dict[str, Any]:
         "source": str(receipt.get("source") or "openclaw.after_tool_call").strip(),
         "tool_call_id": str(receipt.get("tool_call_id") or "").strip(),
         "tool_name": str(receipt.get("tool_name") or "").strip(),
+    }
+
+
+def _canonical_v2_tool_receipt(receipt: Mapping[str, Any]) -> dict[str, Any]:
+    """The v2 allowlist is also the persistence/redaction boundary."""
+    try:
+        duration_ms = max(0, int(receipt.get("duration_ms") or 0))
+    except (TypeError, ValueError):
+        duration_ms = 0
+    return {
+        "attestation": V2_ATTESTATION,
+        "attestation_id": str(receipt.get("attestation_id") or "").strip(),
+        "channel": str(receipt.get("channel") or "").strip(),
+        "deployment_receipt_id": str(receipt.get("deployment_receipt_id") or "").strip(),
+        "duration_ms": duration_ms,
+        "expires_at": str(receipt.get("expires_at") or "").strip(),
+        "issued_at": str(receipt.get("issued_at") or "").strip(),
+        "key_id": str(receipt.get("key_id") or "active").strip(),
+        "passed": receipt.get("passed") is True,
+        "receipt_id": str(receipt.get("receipt_id") or "").strip(),
+        "receipt_version": V2_RECEIPT_VERSION,
+        "release_commit": str(receipt.get("release_commit") or "").strip(),
+        "release_version": str(receipt.get("release_version") or "").strip(),
+        "result_digest": str(receipt.get("result_digest") or "").strip().lower(),
+        "retrieval_policy_digest": str(receipt.get("retrieval_policy_digest") or "").strip().lower(),
+        "run_id": str(receipt.get("run_id") or "").strip(),
+        "session_id": str(receipt.get("session_id") or "").strip(),
+        "source": str(receipt.get("source") or "").strip(),
+        "tool_call_id": str(receipt.get("tool_call_id") or "").strip(),
+        "tool_name": str(receipt.get("tool_name") or "").strip(),
+        "verification_policy_id": str(receipt.get("verification_policy_id") or "").strip(),
     }
 
 
@@ -143,6 +185,8 @@ def verify_tool_receipt(
     secret = str(key or _receipt_key()).strip()
     signature = str(receipt.get("signature") or "").strip().lower()
     canonical = canonical_tool_receipt(receipt)
+    if canonical.get("receipt_version") == V2_RECEIPT_VERSION:
+        return _verify_v2_tool_receipt(receipt, canonical, secret, session_id=session_id, run_id=run_id)
     if not (
         len(secret) >= MIN_KEY_LENGTH
         and len(set(secret)) >= 12
@@ -159,6 +203,40 @@ def verify_tool_receipt(
         and re.fullmatch(r"[0-9a-f]{64}", canonical["result_digest"])
         and re.fullmatch(r"[0-9a-f]{64}", signature)
     ):
+        return False
+    expected = hmac.new(secret.encode("utf-8"), _canonical_bytes(canonical), sha256).hexdigest()
+    return hmac.compare_digest(signature, expected)
+
+
+def _verify_v2_tool_receipt(
+    receipt: Mapping[str, Any],
+    canonical: Mapping[str, Any],
+    secret: str,
+    *,
+    session_id: str,
+    run_id: str,
+) -> bool:
+    signature = str(receipt.get("signature") or "").strip().lower()
+    if not (
+        len(secret) >= MIN_KEY_LENGTH
+        and len(set(secret)) >= 12
+        and receipt.get("attestation") == V2_ATTESTATION
+        and canonical["source"] in {value[1] for value in ATTESTATION_PRODUCERS.values()}
+        and canonical["channel"] in {value[0] for value in ATTESTATION_PRODUCERS.values()}
+        and canonical["passed"] is True
+        and canonical["session_id"] == str(session_id or "").strip()
+        and canonical["run_id"] == str(run_id or "").strip()
+        and all(canonical[name] for name in ("receipt_id", "attestation_id", "key_id", "issued_at", "expires_at", "tool_name", "tool_call_id", "verification_policy_id"))
+        and re.fullmatch(r"[0-9a-f]{64}", canonical["result_digest"])
+        and re.fullmatch(r"[0-9a-f]{64}", canonical["retrieval_policy_digest"])
+        and re.fullmatch(r"[0-9a-f]{64}", signature)
+    ):
+        return False
+    try:
+        expires_at = datetime.fromisoformat(canonical["expires_at"].replace("Z", "+00:00"))
+        if expires_at <= datetime.now(timezone.utc):
+            return False
+    except ValueError:
         return False
     expected = hmac.new(secret.encode("utf-8"), _canonical_bytes(canonical), sha256).hexdigest()
     return hmac.compare_digest(signature, expected)

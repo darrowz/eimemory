@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 from hashlib import sha256
+from datetime import datetime, timedelta, timezone
+import re
 from typing import Any
 
 from eimemory.adapters.runtime.channel import (
@@ -13,6 +15,13 @@ from eimemory.adapters.runtime.channel import (
 )
 from eimemory.api.runtime import Runtime
 from eimemory.governance.evidence_contract import current_release_identity, release_identity_payload
+from eimemory.governance.tool_receipts import (
+    ATTESTATION_PRODUCERS,
+    V2_RECEIPT_VERSION,
+    canonical_tool_receipt,
+    sign_tool_receipt,
+    verify_tool_receipt,
+)
 from eimemory.models.records import RecallBundle, RecordEnvelope, ScopeRef
 
 
@@ -173,6 +182,7 @@ class AgentRuntimeMemoryService:
         verification: str = "",
         result: str = "",
         tool_receipts: list[dict[str, Any]] | None = None,
+        receipt_ids: list[str] | None = None,
         rehearsal: bool = False,
     ) -> dict[str, Any]:
         channel_id = normalize_runtime_channel(channel)
@@ -204,6 +214,28 @@ class AgentRuntimeMemoryService:
         )
         verification_text = self._bounded_text(verification, 512)
         result_text = self._bounded_text(result, 2_000)
+        verified_receipts: list[dict[str, Any]] = []
+        if channel_id in {"codex", "hermes"}:
+            raw_ids = [str(value).strip() for value in list(receipt_ids or [])[:32] if str(value).strip()]
+            verified_receipts = self.runtime.store.sqlite.consume_adapter_tool_receipts(
+                raw_ids,
+                channel=channel_id,
+                session_id=normalized_session_id,
+                run_id=normalized_event_id,
+                trace_id=trace_id,
+                scope=channel_scope,
+            )
+            verified_receipts = [
+                {**canonical_tool_receipt(receipt), "signature": str(receipt.get("signature") or "").lower()}
+                for receipt in verified_receipts
+                if verify_tool_receipt(receipt, session_id=normalized_session_id, run_id=normalized_event_id)
+            ]
+            # Caller-provided prose and inline receipts are diagnostic only.
+            verification_text = (
+                f"{verified_receipts[0]['source']}:{verified_receipts[0]['receipt_id']}"
+                if verified_receipts
+                else ""
+            )
         lifecycle_only = normalized_end_kind == "session_end"
         event_payload: dict[str, Any] = {
             "id": f"evt_{channel_id}_{trace_id[-24:]}",
@@ -211,12 +243,13 @@ class AgentRuntimeMemoryService:
             "source": method,
             "hook": normalized_end_kind,
             "session_id": normalized_session_id,
+            "run_id": normalized_event_id,
             "outcome_trace_id": trace_id,
             "outcome_trace_task_type": normalized_task_type,
             "event_type": normalized_task_type,
             "goal": normalized_task_type,
             "verification": verification_text,
-            "verification_receipts": list(tool_receipts or [])[:32],
+            "verification_receipts": verified_receipts if channel_id in {"codex", "hermes"} else list(tool_receipts or [])[:32],
             "result": result_text,
             "evidence_class": "lifecycle_event" if lifecycle_only else "verified_real_task",
             "runtime_channel": channel_id,
@@ -279,7 +312,7 @@ class AgentRuntimeMemoryService:
                 "checks": {
                     "verification": verification_text,
                     "result": result_text,
-                    "tool_receipts": list(tool_receipts or [])[:32],
+                    "receipt_ids": [receipt["receipt_id"] for receipt in verified_receipts],
                 },
             },
         }
@@ -293,6 +326,65 @@ class AgentRuntimeMemoryService:
             "outcome": recorded_outcome,
             "outcome_trace": outcome_trace,
         }
+
+    def attest_tool_result(
+        self,
+        *,
+        producer: str,
+        channel: str,
+        scope: dict,
+        session_id: str,
+        run_id: str,
+        tool_call_id: str,
+        tool_name: str,
+        result: Any,
+        duration_ms: int = 0,
+    ) -> dict[str, Any]:
+        producer_id = str(producer or "").strip().lower()
+        channel_id = normalize_runtime_channel(channel)
+        expected = ATTESTATION_PRODUCERS.get(producer_id)
+        if expected is None or expected[0] != channel_id:
+            raise ValueError("attestation producer is not authorized for channel")
+        normalized_session = str(session_id or "").strip()
+        normalized_run = str(run_id or "").strip()
+        normalized_call = str(tool_call_id or "").strip()
+        normalized_tool = self._bounded_text(tool_name, 200)
+        if not all((normalized_session, normalized_run, normalized_call, normalized_tool)):
+            raise ValueError("session_id, run_id, tool_call_id, and tool_name are required")
+        channel_scope = resolve_channel_scope(channel_id, scope)
+        safe_result = self._bounded_attestation_result(result)
+        result_digest = sha256(safe_result.encode("utf-8", errors="replace")).hexdigest()
+        policy_id, passed = self._verification_policy(normalized_tool, safe_result)
+        release = current_release_identity(self.runtime, ScopeRef.from_dict(base_scope_from_channel(channel_id, channel_scope)))
+        issued_at = datetime.now(timezone.utc)
+        stable = json.dumps(
+            {"channel": channel_id, "scope": channel_scope, "session_id": normalized_session, "run_id": normalized_run, "tool_call_id": normalized_call},
+            ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        )
+        receipt_id = f"rcpt_{channel_id}_{sha256(stable.encode('utf-8')).hexdigest()[:32]}"
+        receipt = {
+            "receipt_version": V2_RECEIPT_VERSION,
+            "attestation_id": receipt_id,
+            "receipt_id": receipt_id,
+            "channel": channel_id,
+            "source": expected[1],
+            "tool_name": normalized_tool,
+            "tool_call_id": normalized_call,
+            "duration_ms": max(0, min(300_000, int(duration_ms or 0))),
+            "passed": passed,
+            "result_digest": result_digest,
+            "verification_policy_id": policy_id,
+            "retrieval_policy_digest": sha256(b"adapter.attestation.policy.v1").hexdigest(),
+            "session_id": normalized_session,
+            "run_id": normalized_run,
+            "issued_at": issued_at.isoformat(),
+            "expires_at": (issued_at + timedelta(minutes=15)).isoformat(),
+            "key_id": "active",
+            **(release_identity_payload(release) if release is not None else {}),
+        }
+        signed = sign_tool_receipt(receipt)
+        stored, idempotent = self.runtime.store.sqlite.register_adapter_tool_receipt(signed, scope=channel_scope)
+        return {"ok": True, "receipt_id": stored["receipt_id"], "receipt": canonical_tool_receipt(stored), "idempotent": idempotent}
 
     def status(self, *, channel: str, scope: dict) -> dict[str, Any]:
         channel_id = normalize_runtime_channel(channel)
@@ -382,6 +474,39 @@ class AgentRuntimeMemoryService:
     def _bounded_text(value: object, limit: int) -> str:
         text = str(value or "").strip()
         return text if len(text) <= limit else text[:limit]
+
+    @classmethod
+    def _bounded_attestation_result(cls, value: Any) -> str:
+        def redact(item: Any, *, depth: int = 0) -> Any:
+            if depth > 8:
+                return "[TRUNCATED]"
+            if isinstance(item, dict):
+                return {
+                    str(key)[:100]: "[REDACTED]" if re.search(r"(?i)(token|secret|password|cookie|authorization|key)", str(key)) else redact(value, depth=depth + 1)
+                    for key, value in list(item.items())[:64]
+                }
+            if isinstance(item, list):
+                return [redact(entry, depth=depth + 1) for entry in item[:64]]
+            if isinstance(item, (int, float, bool)) or item is None:
+                return item
+            return cls._bounded_text(item, 8_000)
+        return cls._bounded_text(json.dumps(redact(value), ensure_ascii=False, sort_keys=True), 16_000)
+
+    @staticmethod
+    def _verification_policy(tool_name: str, safe_result: str) -> tuple[str, bool]:
+        try:
+            parsed = json.loads(safe_result)
+        except json.JSONDecodeError:
+            parsed = None
+        name = str(tool_name or "").strip().lower()
+        if (
+            name not in {"echo", "print"}
+            and isinstance(parsed, dict)
+            and parsed.get("exit_code") == 0
+            and re.search(r"\b[1-9]\d*\s+(?:passed|tests?)\b", str(parsed.get("summary") or ""), re.I)
+        ):
+            return "test_command.exit_zero.positive_count.v1", True
+        return "execution_only.v1", False
 
     @staticmethod
     def _positive_limit(value: object, default: int) -> int:

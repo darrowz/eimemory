@@ -85,6 +85,8 @@ class SqliteRecordStore:
         self.conn.execute("PRAGMA busy_timeout = 30000")
         self._configure_connection()
         self._init_db()
+        self._create_adapter_receipt_tables()
+        self.conn.commit()
         self.preload_report = self.preload_hot_pages()
 
     def _configure_connection(self) -> None:
@@ -201,6 +203,100 @@ class SqliteRecordStore:
             """
         )
         self._create_recall_index_tables()
+
+    def _create_adapter_receipt_tables(self) -> None:
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS adapter_tool_receipts (
+                receipt_id TEXT PRIMARY KEY,
+                channel TEXT NOT NULL,
+                source TEXT NOT NULL,
+                tenant_id TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                run_id TEXT NOT NULL,
+                tool_call_id TEXT NOT NULL,
+                eligible INTEGER NOT NULL,
+                consumed_trace_id TEXT NOT NULL DEFAULT '',
+                receipt_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(channel, tenant_id, agent_id, workspace_id, user_id, session_id, run_id, tool_call_id)
+            )
+            """
+        )
+        self.conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_adapter_receipts_consumed_trace "
+            "ON adapter_tool_receipts(consumed_trace_id) WHERE consumed_trace_id != ''"
+        )
+
+    def register_adapter_tool_receipt(
+        self,
+        receipt: dict[str, Any],
+        *,
+        scope: ScopeRef | dict | None = None,
+        commit: bool = True,
+    ) -> tuple[dict[str, Any], bool]:
+        scope_ref = normalize_scope(scope)
+        channel = str(receipt.get("channel") or "").strip()
+        session_id = str(receipt.get("session_id") or "").strip()
+        run_id = str(receipt.get("run_id") or "").strip()
+        tool_call_id = str(receipt.get("tool_call_id") or "").strip()
+        row = self.conn.execute(
+            """SELECT receipt_json FROM adapter_tool_receipts
+               WHERE channel = ? AND tenant_id = ? AND agent_id = ? AND workspace_id = ? AND user_id = ?
+                 AND session_id = ? AND run_id = ? AND tool_call_id = ?""",
+            (channel, scope_ref.tenant_id, scope_ref.agent_id, scope_ref.workspace_id, scope_ref.user_id, session_id, run_id, tool_call_id),
+        ).fetchone()
+        if row is not None:
+            return json.loads(str(row["receipt_json"])), True
+        self.conn.execute(
+            """INSERT INTO adapter_tool_receipts (
+                receipt_id, channel, source, tenant_id, agent_id, workspace_id, user_id,
+                session_id, run_id, tool_call_id, eligible, receipt_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                str(receipt["receipt_id"]), channel, str(receipt.get("source") or ""),
+                scope_ref.tenant_id, scope_ref.agent_id, scope_ref.workspace_id, scope_ref.user_id,
+                session_id, run_id, tool_call_id, int(receipt.get("passed") is True),
+                json.dumps(receipt, ensure_ascii=False, sort_keys=True), str(receipt.get("issued_at") or ""),
+            ),
+        )
+        if commit:
+            self.conn.commit()
+        return dict(receipt), False
+
+    def consume_adapter_tool_receipts(
+        self,
+        receipt_ids: list[str],
+        *,
+        channel: str,
+        session_id: str,
+        run_id: str,
+        trace_id: str,
+        scope: ScopeRef | dict | None = None,
+        commit: bool = True,
+    ) -> list[dict[str, Any]]:
+        scope_ref = normalize_scope(scope)
+        accepted: list[dict[str, Any]] = []
+        for receipt_id in receipt_ids:
+            row = self.conn.execute(
+                """SELECT receipt_json, consumed_trace_id FROM adapter_tool_receipts
+                   WHERE receipt_id = ? AND channel = ? AND tenant_id = ? AND agent_id = ? AND workspace_id = ? AND user_id = ?
+                     AND session_id = ? AND run_id = ? AND eligible = 1""",
+                (receipt_id, channel, scope_ref.tenant_id, scope_ref.agent_id, scope_ref.workspace_id, scope_ref.user_id, session_id, run_id),
+            ).fetchone()
+            if row is None or str(row["consumed_trace_id"] or "") not in {"", trace_id}:
+                continue
+            self.conn.execute(
+                "UPDATE adapter_tool_receipts SET consumed_trace_id = ? WHERE receipt_id = ? AND consumed_trace_id IN ('', ?)",
+                (trace_id, receipt_id, trace_id),
+            )
+            accepted.append(json.loads(str(row["receipt_json"])))
+        if commit:
+            self.conn.commit()
+        return accepted
 
     def _create_indexes(self) -> None:
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_records_record_id ON records(record_id)")

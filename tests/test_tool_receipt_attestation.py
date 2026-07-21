@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from eimemory.adapters.openclaw.hooks import OpenClawMemoryHooks
+from eimemory.adapters.eibrain.rpc import EIBrainRPCBridge
 from eimemory.api.runtime import Runtime
 from eimemory.governance.tool_receipts import (
     RECEIPT_KEY_ENV,
@@ -101,3 +102,63 @@ def test_openclaw_hook_accepts_bridge_attested_tool_receipt(monkeypatch, tmp_pat
 
     assert result["event"]["verification_receipts"][0]["attestation"] == "hmac-sha256"
     assert result["outcome_trace"]["ok"] is True
+
+
+def test_v2_attestation_credential_is_mapped_to_one_producer_and_computes_policy(monkeypatch, tmp_path) -> None:
+    """A normal RPC caller cannot mint Codex verification evidence."""
+    runtime = Runtime.create(root=tmp_path)
+    monkeypatch.setenv(RECEIPT_KEY_ENV, KEY)
+    bridge = EIBrainRPCBridge(runtime)
+    request = {
+        "method": "adapter.attest_tool_result",
+        "params": {
+            "channel": "codex",
+            "scope": {"agent_id": "codex", "workspace_id": "project", "user_id": "user"},
+            "session_id": "session-1",
+            "run_id": "turn-1",
+            "tool_call_id": "call-1",
+            "tool_name": "pytest",
+            "result": {"exit_code": 0, "summary": "5 passed in 0.12s"},
+            "passed": True,
+        },
+    }
+    try:
+        denied = bridge.handle(request)
+        minted = bridge.handle(request, attestation_producer="codex")
+    finally:
+        runtime.close()
+
+    assert denied["ok"] is False
+    assert denied["error"] == "attestation_unauthorized"
+    assert minted["ok"] is True
+    assert minted["result"]["receipt_id"].startswith("rcpt_codex_")
+    assert minted["result"]["receipt"]["receipt_version"] == 2
+    assert minted["result"]["receipt"]["passed"] is True
+    assert minted["result"]["receipt"]["verification_policy_id"] == "test_command.exit_zero.positive_count.v1"
+
+
+def test_v2_attestation_rejects_caller_selected_success_and_echo(monkeypatch, tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    monkeypatch.setenv(RECEIPT_KEY_ENV, KEY)
+    bridge = EIBrainRPCBridge(runtime)
+    request = {
+        "method": "adapter.attest_tool_result",
+        "params": {
+            "channel": "codex",
+            "scope": {"agent_id": "codex", "workspace_id": "project", "user_id": "user"},
+            "session_id": "session-1",
+            "run_id": "turn-1",
+            "tool_call_id": "call-echo",
+            "tool_name": "echo",
+            "result": {"exit_code": 0, "summary": "passed=true"},
+            "passed": True,
+        },
+    }
+    try:
+        minted = bridge.handle(request, attestation_producer="codex")
+    finally:
+        runtime.close()
+
+    assert minted["ok"] is True
+    assert minted["result"]["receipt"]["passed"] is False
+    assert minted["result"]["receipt"]["verification_policy_id"] == "execution_only.v1"
