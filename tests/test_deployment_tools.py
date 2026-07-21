@@ -453,7 +453,8 @@ def test_agent_runtime_adapter_operations_are_reproducible_and_fail_open() -> No
     assert "codex plugin marketplace add" in operations
     assert "$HERMES_HOME/plugins/eimemory" in operations
     assert "provider: eimemory" in operations
-    assert "disable" in operations.lower()
+    assert "codex plugin marketplace remove eimemory-adapters" in operations
+    assert "hermes memory off" in operations
     assert "eimemory_status" in operations
     assert "EIMEMORY_RPC_AUTH_TOKEN" in operations
     assert "EnvironmentFile=/etc/eimemory/rpc.env" in unit_text

@@ -169,6 +169,45 @@ def test_post_tool_use_redacts_quoted_multiword_secret_embedded_in_leaf_text() -
     assert "detail=safe" in forwarded
 
 
+def test_post_tool_use_redacts_versioned_and_plural_sensitive_keys() -> None:
+    client = FakeClient()
+    adapter = CodexHookAdapter(client=client, scope=BASE_SCOPE)
+    versioned_secret = "versioned-secret-value"
+    plural_secret = "plural-secret-value"
+
+    adapter.handle(
+        "PostToolUse",
+        {
+            "session_id": "codex-session",
+            "turn_id": "turn-key-variants",
+            "tool_name": "Bash",
+            "tool_input": {
+                "client_token_v2": versioned_secret,
+                "api_keys": [plural_secret],
+                "tokenizer_id": "public-tokenizer-name",
+            },
+            "tool_response": "ok",
+        },
+    )
+
+    forwarded = json.dumps(client.calls[0][1], ensure_ascii=False)
+    assert versioned_secret not in forwarded
+    assert plural_secret not in forwarded
+    assert "public-tokenizer-name" in forwarded
+
+
+def test_post_tool_use_with_missing_host_ids_does_not_create_colliding_turn() -> None:
+    client = FakeClient()
+    adapter = CodexHookAdapter(client=client, scope=BASE_SCOPE)
+
+    first = adapter.handle("PostToolUse", {"tool_name": "Read", "tool_response": "first"})
+    second = adapter.handle("PostToolUse", {"tool_name": "Read", "tool_response": "second"})
+
+    assert first == {"continue": True}
+    assert second == {"continue": True}
+    assert client.calls == []
+
+
 def test_stop_never_blocks_and_does_not_invent_verification() -> None:
     client = FakeClient()
     adapter = CodexHookAdapter(client=client, scope=BASE_SCOPE)
@@ -284,6 +323,57 @@ def test_codex_mcp_exposes_only_closed_loop_memory_tools() -> None:
     assert called["result"]["isError"] is False
 
 
+def test_codex_mcp_recall_and_remember_forward_normalized_contract() -> None:
+    client = FakeClient()
+    server = CodexMCPServer(client=client, scope=BASE_SCOPE)
+
+    recall = server.handle_message(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "eimemory_recall",
+                "arguments": {"query": " release contract ", "task_type": "code.audit", "limit": 99},
+            },
+        }
+    )
+    recall_method, recall_params = client.calls[-1]
+    remember = server.handle_message(
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "eimemory_remember",
+                "arguments": {"text": " verified rule ", "event_id": " event-1 "},
+            },
+        }
+    )
+    remember_method, remember_params = client.calls[-1]
+
+    assert recall_method == "adapter.prefetch"
+    assert recall_params == {
+        "channel": "codex",
+        "scope": BASE_SCOPE,
+        "query": "release contract",
+        "task_type": "code.audit",
+        "limit": 50,
+    }
+    assert recall["result"]["isError"] is False
+    assert remember_method == "adapter.remember"
+    assert remember_params == {
+        "channel": "codex",
+        "scope": BASE_SCOPE,
+        "text": "verified rule",
+        "event_id": "event-1",
+        "memory_type": "durable_fact",
+        "title": "Codex long-term memory",
+        "force_capture": False,
+    }
+    assert remember["result"]["isError"] is False
+
+
 def test_codex_mcp_surfaces_bypass_as_tool_error_without_stopping_server() -> None:
     class BypassClient:
         def call_or_bypass(self, method: str, params: dict) -> dict:
@@ -348,7 +438,7 @@ def test_codex_mcp_rejects_non_string_required_text_before_rpc() -> None:
     assert client.calls == []
 
 
-def test_codex_mcp_contains_unexpected_client_exception_and_keeps_serving() -> None:
+def test_codex_mcp_contains_unexpected_client_exception_and_keeps_serving(capsys) -> None:
     class RaisingClient:
         def call_or_bypass(self, method: str, params: dict) -> dict:
             raise OSError("sensitive transport detail")
@@ -363,6 +453,7 @@ def test_codex_mcp_contains_unexpected_client_exception_and_keeps_serving() -> N
         }
     )
     listed = server.handle_message({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
+    captured = capsys.readouterr()
 
     assert failed["result"]["isError"] is True
     assert failed["result"]["structuredContent"] == {
@@ -372,6 +463,9 @@ def test_codex_mcp_contains_unexpected_client_exception_and_keeps_serving() -> N
         "result": None,
     }
     assert "sensitive transport detail" not in json.dumps(failed)
+    assert "eimemory_status" in captured.err
+    assert "OSError" in captured.err
+    assert "sensitive transport detail" not in captured.err
     assert len(listed["result"]["tools"]) == 4
 
 

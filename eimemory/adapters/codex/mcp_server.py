@@ -43,7 +43,11 @@ class CodexMCPServer:
             except (TypeError, ValueError) as exc:
                 error = {"ok": False, "error": str(exc)[:300]}
                 return self._result(request_id, self._tool_result(error, is_error=True))
-            except Exception:
+            except Exception as exc:  # noqa: BLE001 - keep MCP process fail-open
+                safe_name = name.replace("\r", " ").replace("\n", " ")[:80] or "unknown"
+                sys.stderr.write(
+                    f"eimemory codex-mcp: {safe_name} dispatch failed ({type(exc).__name__})\n"
+                )
                 bypass = {
                     "ok": False,
                     "bypassed": True,
@@ -222,8 +226,7 @@ def run_stdio(*, stdin: Any = None, stdout: Any = None) -> int:
     return 0
 
 
-def main(argv: list[str] | None = None) -> int:
-    del argv
+def main(_argv: list[str] | None = None) -> int:
     return run_stdio()
 
 

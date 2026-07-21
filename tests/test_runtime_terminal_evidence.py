@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
+
+import pytest
 
 from eimemory.adapters.runtime.channel import resolve_channel_scope
 from eimemory.adapters.runtime.service import AgentRuntimeMemoryService
@@ -18,6 +21,15 @@ BASE_SCOPE = {
     "user_id": "darrow",
 }
 RECEIPT_KEY = "RuntimeReceiptEvidenceKey_0123456789-Strong"
+
+
+@pytest.fixture
+def runtime(tmp_path: Path) -> Iterator[Runtime]:
+    instance = Runtime.create(root=tmp_path)
+    try:
+        yield instance
+    finally:
+        instance.close()
 
 
 def _seed_base_release(runtime: Runtime) -> None:
@@ -73,8 +85,7 @@ def _seed_base_release(runtime: Runtime) -> None:
     assert current_release_identity(runtime, scope_ref) is not None
 
 
-def test_verified_codex_and_hermes_tasks_are_release_bound_per_channel(tmp_path: Path) -> None:
-    runtime = Runtime.create(root=tmp_path)
+def test_verified_codex_and_hermes_tasks_are_release_bound_per_channel(runtime: Runtime) -> None:
     _seed_base_release(runtime)
     service = AgentRuntimeMemoryService(runtime)
 
@@ -120,8 +131,7 @@ def test_verified_codex_and_hermes_tasks_are_release_bound_per_channel(tmp_path:
     assert "hermes.task_end" in VERIFIED_REAL_TASK_METHODS
 
 
-def test_unverified_codex_success_cannot_enter_verified_real_task_count(tmp_path: Path) -> None:
-    runtime = Runtime.create(root=tmp_path)
+def test_unverified_codex_success_cannot_enter_verified_real_task_count(runtime: Runtime) -> None:
     _seed_base_release(runtime)
     service = AgentRuntimeMemoryService(runtime)
 
@@ -167,4 +177,3 @@ def test_tool_receipt_signature_preserves_runtime_source(monkeypatch) -> None:
         session_id="codex-session",
         run_id="codex-turn",
     ) is True
-

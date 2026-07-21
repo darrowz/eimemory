@@ -20,10 +20,13 @@ _SECRET_PATTERNS = (
     re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+"),
     re.compile(r"\bsk-[A-Za-z0-9_-]{8,}\b"),
     re.compile(
-        r'''(?i)(["']?[a-z0-9_-]*(?:api[_-]?key|token|secret|password|private[_-]?key|authorization|cookie)["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\r\n,;}\]]+)'''
+        r'''(?i)(["']?[a-z0-9_-]*(?:api[_-]?key|token|secret|password|private[_-]?key|authorization|cookie)(?:[_-]?(?:s|v\d+))?["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\r\n,;}\]]+)'''
     ),
 )
 _KEY_CANONICAL = re.compile(r"[^a-z0-9]")
+_SENSITIVE_KEY_SUFFIX = re.compile(
+    r"(?:apikey|token|secret|password|privatekey|authorization|cookie)(?:s|v\d+)?$"
+)
 _SENSITIVE_KEY_NAMES = frozenset(
     {
         "apikey",
@@ -135,8 +138,10 @@ class CodexHookAdapter:
         }
 
     def _sync_tool_use(self, event: Mapping[str, Any]) -> None:
-        session_id = _event_id(event, "session_id", default="codex-session")
-        turn_id = _event_id(event, "turn_id", "tool_call_id", "tool_use_id", default="codex-tool")
+        session_id = _event_id(event, "session_id", default="")
+        turn_id = _event_id(event, "turn_id", "tool_call_id", "tool_use_id", default="")
+        if not session_id or not turn_id:
+            return
         tool_name = _bounded_text(event.get("tool_name") or event.get("tool"), 200) or "unknown"
         tool_input = event.get("tool_input", event.get("input", {}))
         tool_result = event.get("tool_response", event.get("tool_result", event.get("tool_output", "")))
@@ -246,9 +251,7 @@ def _redact_structured(value: Any, *, depth: int = 0) -> Any:
         for key, item in value.items():
             key_text = str(key)
             canonical = _KEY_CANONICAL.sub("", key_text.lower())
-            sensitive = canonical in _SENSITIVE_KEY_NAMES or canonical.endswith(
-                ("apikey", "token", "secret", "password", "privatekey", "authorization", "cookie")
-            )
+            sensitive = canonical in _SENSITIVE_KEY_NAMES or _SENSITIVE_KEY_SUFFIX.search(canonical) is not None
             redacted[key_text] = (
                 "[REDACTED]"
                 if sensitive

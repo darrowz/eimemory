@@ -20,6 +20,7 @@ from eimemory.governance.rollout_lifecycle import is_executed_rollback_ledger_re
 from eimemory.models.records import ScopeRef
 from eimemory.runtime_identity import package_import_root
 from eimemory.adapters.runtime.channel import (
+    SUPPORTED_RUNTIME_CHANNELS,
     base_scope_from_channel,
     runtime_channel_from_scope,
 )
@@ -557,7 +558,7 @@ def _current_release_identity_for_scope(
     if release is not None:
         return release
     channel = runtime_channel_from_scope(scope)
-    if channel not in {"codex", "hermes"}:
+    if not channel or channel == "openclaw" or channel not in SUPPORTED_RUNTIME_CHANNELS:
         return None
     return current_release_identity(
         runtime,

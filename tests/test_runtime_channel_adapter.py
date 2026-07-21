@@ -102,8 +102,16 @@ def test_codex_and_hermes_memories_are_independent_authoritative_records(tmp_pat
     assert codex_text in codex_recall["context"]
 
 
-def test_prefetch_invalid_limit_falls_back_to_bounded_default(tmp_path: Path) -> None:
+def test_prefetch_invalid_limit_falls_back_to_bounded_default(tmp_path: Path, monkeypatch) -> None:
     service = _service(tmp_path)
+    observed: dict[str, int] = {}
+    original_recall = service.runtime.memory.recall
+
+    def capture_limit(**kwargs):
+        observed["limit"] = kwargs["limit"]
+        return original_recall(**kwargs)
+
+    monkeypatch.setattr(service.runtime.memory, "recall", capture_limit)
 
     result = service.prefetch(
         channel="codex",
@@ -114,6 +122,7 @@ def test_prefetch_invalid_limit_falls_back_to_bounded_default(tmp_path: Path) ->
 
     assert result["ok"] is True
     assert result["channel"] == "codex"
+    assert observed["limit"] == 8
 
 
 def test_explicit_memory_write_is_idempotent_per_channel(tmp_path: Path) -> None:

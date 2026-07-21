@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Keep empty workspace scopes reversible and reject malformed required MCP text before RPC dispatch.
 - Redact structured, embedded, and multi-word credentials before hashing or forwarding Codex tool summaries.
 - Preserve fail-open host behavior while surfacing sanitized adapter diagnostics and local degradation counters.
+- Skip incomplete Codex tool events instead of collapsing them into a shared idempotency key, and redact versioned or plural credential fields.
 
 ## [1.9.77] - 2026-07-20
 
