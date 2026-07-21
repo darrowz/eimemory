@@ -23,6 +23,10 @@ from eimemory.governance.evidence_contract import (
 )
 from eimemory.governance.tool_receipts import (
     ATTESTATION_PRODUCERS,
+    HOST_OUTPUT_TEST_POLICY_ID,
+    MAX_ELIGIBLE_RECEIPTS_PER_RUN,
+    STRUCTURED_TEST_POLICY_ID,
+    TRUSTED_TEST_POLICY_IDS,
     V2_RECEIPT_VERSION,
     canonical_tool_receipt,
     sign_tool_receipt,
@@ -778,13 +782,28 @@ class AgentRuntimeMemoryService:
         verified_receipts: list[dict[str, Any]] = []
         raw_ids: list[str] = []
         if channel_id in {"codex", "hermes"}:
+            submitted_receipt_ids = list(receipt_ids or [])
+            if len(submitted_receipt_ids) > MAX_ELIGIBLE_RECEIPTS_PER_RUN:
+                raise ValueError("terminal receipt set exceeds the protected per-run bound")
             raw_ids = list(
                 dict.fromkeys(
                     str(value).strip()
-                    for value in list(receipt_ids or [])[:32]
+                    for value in submitted_receipt_ids
                     if str(value).strip()
                 )
             )
+            receipt_states = self.runtime.store.sqlite.load_adapter_tool_receipt_states(
+                raw_ids,
+                channel=channel_id,
+                session_id=normalized_session_id,
+                run_id=normalized_event_id,
+                scope=channel_scope,
+            )
+            if set(receipt_states) != set(raw_ids):
+                raise ValueError(
+                    "terminal receipt set does not match the protected pending set "
+                    "(unknown or cross-scope receipt)"
+                )
             loaded_receipts = self.runtime.store.sqlite.load_claimable_adapter_tool_receipts(
                 channel=channel_id,
                 session_id=normalized_session_id,
@@ -792,19 +811,16 @@ class AgentRuntimeMemoryService:
                 trace_id=trace_id,
                 scope=channel_scope,
             )
-            loaded_ids = [str(receipt.get("receipt_id") or "") for receipt in loaded_receipts]
-            if sorted(raw_ids) != sorted(loaded_ids):
-                raise ValueError("terminal receipt set does not match the protected pending set")
             expected_source = ATTESTATION_PRODUCERS[channel_id][1]
-            verified_receipts = [
-                {**canonical_tool_receipt(receipt), "signature": str(receipt.get("signature") or "").lower()}
-                for receipt in loaded_receipts
-                if (
+            stale_ids: set[str] = set()
+            for receipt in loaded_receipts:
+                receipt_id = str(receipt.get("receipt_id") or "")
+                trusted = (
                     receipt.get("receipt_version") == V2_RECEIPT_VERSION
                     and receipt.get("channel") == channel_id
                     and receipt.get("source") == expected_source
                     and receipt.get("passed") is True
-                    and receipt.get("verification_policy_id") == "test_command.exit_zero.positive_count.v1"
+                    and receipt.get("verification_policy_id") in TRUSTED_TEST_POLICY_IDS
                     and verify_tool_receipt(
                         receipt,
                         session_id=normalized_session_id,
@@ -812,9 +828,32 @@ class AgentRuntimeMemoryService:
                     )
                     and (release is None or release_identity_from_record(receipt) == release)
                 )
-            ]
-            if len(verified_receipts) != len(loaded_receipts):
-                raise ValueError("terminal receipt set contains untrusted evidence")
+                if trusted:
+                    verified_receipts.append(
+                        {
+                            **canonical_tool_receipt(receipt),
+                            "signature": str(receipt.get("signature") or "").lower(),
+                        }
+                    )
+                else:
+                    stale_ids.add(receipt_id)
+            if stale_ids:
+                self.runtime.store.sqlite.quarantine_adapter_tool_receipts(
+                    sorted(stale_ids),
+                    channel=channel_id,
+                    session_id=normalized_session_id,
+                    run_id=normalized_event_id,
+                    scope=channel_scope,
+                )
+            verified_ids = {str(receipt["receipt_id"]) for receipt in verified_receipts}
+            ignored_ids = stale_ids | {
+                receipt_id
+                for receipt_id, state in receipt_states.items()
+                if state["eligible"] is False and not state["consumed_trace_id"]
+            }
+            raw_id_set = set(raw_ids)
+            if verified_ids - raw_id_set or raw_id_set - verified_ids - ignored_ids:
+                raise ValueError("terminal receipt set does not match the protected pending set")
             # Caller-provided prose and inline receipts are diagnostic only.
             verification_text = (
                 f"{verified_receipts[0]['source']}:{verified_receipts[0]['receipt_id']}"
@@ -832,6 +871,15 @@ class AgentRuntimeMemoryService:
                 )
             ]
         lifecycle_only = normalized_end_kind == "session_end"
+        if channel_id in {"codex", "hermes"} and not lifecycle_only:
+            if verified_receipts:
+                success = True
+                normalized_task_type = "code.test" if channel_id == "codex" else "research.test"
+            else:
+                success = None
+                normalized_task_type = (
+                    "code.unverified" if channel_id == "codex" else "research.unverified"
+                )
         event_payload: dict[str, Any] = {
             "id": f"evt_{channel_id}_{trace_id[-24:]}",
             "idempotency_key": f"{method}:{normalized_event_id}",
@@ -846,7 +894,11 @@ class AgentRuntimeMemoryService:
             "verification": verification_text,
             "verification_receipts": verified_receipts,
             "result": result_text,
-            "evidence_class": "lifecycle_event" if lifecycle_only else "verified_real_task",
+            "evidence_class": (
+                "lifecycle_event"
+                if lifecycle_only
+                else ("verified_real_task" if verified_receipts else "diagnostic_task")
+            ),
             "runtime_channel": channel_id,
             "authority_mode": AUTHORITY_MODE,
         }
@@ -902,10 +954,10 @@ class AgentRuntimeMemoryService:
                     "receipt_ids": [receipt["receipt_id"] for receipt in verified_receipts],
                 },
             },
+            "evidence_class": "verified_real_task" if verified_receipts else "diagnostic_task",
         }
         if release is not None:
             outcome_trace_payload.update(release_identity_payload(release))
-            outcome_trace_payload["evidence_class"] = "verified_real_task"
         terminal_contract_digest = self._terminal_contract_digest(
             {
                 "channel": channel_id,
@@ -1172,13 +1224,17 @@ class AgentRuntimeMemoryService:
         name = str(tool_name or "").strip().lower()
         direct_test_tool = name in {"pytest", "unittest", "cargo_test", "npm_test"}
         wrapped_test_tool = False
-        if name in {"shell_command", "exec_command", "bash", "powershell"}:
+        if name in {"shell_command", "exec_command", "bash", "powershell", "terminal"}:
             try:
                 invocation = json.loads(safe_input)
             except json.JSONDecodeError:
                 invocation = None
             command = str(invocation.get("command") or "") if isinstance(invocation, dict) else ""
-            wrapped_test_tool = re.match(
+            control_view = command.lstrip()
+            if control_view.startswith("&"):
+                control_view = control_view[1:]
+            has_shell_control = re.search(r"[\r\n;|`&]|\$\(", control_view) is not None
+            wrapped_test_tool = not has_shell_control and re.match(
                 r"^\s*(?:"
                 r"python(?:\.exe)?\s+-m\s+pytest|pytest|cargo\s+test|npm\s+test|"
                 r"rtk(?:\.exe)?\s+pytest|&\s+['\"][^'\"]*rtk(?:\.exe)?['\"]\s+pytest"
@@ -1186,14 +1242,41 @@ class AgentRuntimeMemoryService:
                 command,
                 re.I,
             ) is not None
+        recognized_test = direct_test_tool or wrapped_test_tool
+        if recognized_test and isinstance(parsed, dict):
+            output = str(parsed.get("summary") or parsed.get("output") or "")
+            error = str(parsed.get("error") or "").strip()
+            if (
+                parsed.get("exit_code") == 0
+                and not error
+                and AgentRuntimeMemoryService._positive_test_output(output)
+            ):
+                return STRUCTURED_TEST_POLICY_ID, True
         if (
-            (direct_test_tool or wrapped_test_tool)
-            and isinstance(parsed, dict)
-            and parsed.get("exit_code") == 0
-            and re.search(r"\b[1-9]\d*\s+(?:passed|tests?)\b", str(parsed.get("summary") or ""), re.I)
+            recognized_test
+            and parsed is None
+            and AgentRuntimeMemoryService._positive_test_output(safe_result)
         ):
-            return "test_command.exit_zero.positive_count.v1", True
+            return HOST_OUTPUT_TEST_POLICY_ID, True
         return "execution_only.v1", False
+
+    @staticmethod
+    def _positive_test_output(output: str) -> bool:
+        text = str(output or "")
+        positive = bool(
+            re.search(r"\b[1-9]\d*\s+(?:passed|passing)\b", text, re.I)
+            or re.search(
+                r"\bRan\s+[1-9]\d*\s+tests?\b[\s\S]{0,500}(?:^|\n)\s*OK\b",
+                text,
+                re.I,
+            )
+        )
+        negative = re.search(
+            r"(?:\b[1-9]\d*\s+(?:failed|failures?|errors?)\b|(?:^|\n)\s*FAILED\b|test result:\s*FAILED)",
+            text,
+            re.I,
+        )
+        return positive and negative is None
 
     @staticmethod
     def _positive_limit(value: object, default: int) -> int:

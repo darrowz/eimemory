@@ -25,6 +25,7 @@ from eimemory.identity import hongtu_query_scopes
 from eimemory.models.memory_edges import MEMORY_EDGE_TYPES, MemoryEdge
 from eimemory.models.records import RecordEnvelope, ScopeRef, TimeRef
 from eimemory.models.source_partitions import DEFAULT_SOURCE_ID, normalize_source_id, normalize_source_ids
+from eimemory.governance.tool_receipts import MAX_ELIGIBLE_RECEIPTS_PER_RUN
 from eimemory.governance.policy_rollout import (
     AUTO_PROMOTION_BUDGET_PER_DAY,
     AUTO_ROLLBACK_BUDGET_PER_DAY,
@@ -306,6 +307,25 @@ class SqliteRecordStore:
                 json.dumps(receipt, ensure_ascii=False, sort_keys=True), str(receipt.get("issued_at") or ""),
             ),
         )
+        self.conn.execute(
+            """UPDATE adapter_tool_receipts SET eligible = 0
+               WHERE receipt_id IN (
+                   SELECT receipt_id FROM adapter_tool_receipts
+                   WHERE channel = ? AND tenant_id = ? AND agent_id = ? AND workspace_id = ? AND user_id = ?
+                     AND session_id = ? AND run_id = ? AND eligible = 1 AND consumed_trace_id = ''
+                   ORDER BY created_at DESC, receipt_id DESC LIMIT -1 OFFSET ?
+               )""",
+            (
+                channel,
+                scope_ref.tenant_id,
+                scope_ref.agent_id,
+                scope_ref.workspace_id,
+                scope_ref.user_id,
+                session_id,
+                run_id,
+                MAX_ELIGIBLE_RECEIPTS_PER_RUN,
+            ),
+        )
         if commit:
             self.conn.commit()
         return dict(receipt), False
@@ -369,6 +389,79 @@ class SqliteRecordStore:
             ),
         ).fetchall()
         return [json.loads(str(row["receipt_json"])) for row in rows]
+
+    def load_adapter_tool_receipt_states(
+        self,
+        receipt_ids: list[str],
+        *,
+        channel: str,
+        session_id: str,
+        run_id: str,
+        scope: ScopeRef | dict | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        scope_ref = normalize_scope(scope)
+        states: dict[str, dict[str, Any]] = {}
+        for receipt_id in dict.fromkeys(
+            str(item).strip() for item in receipt_ids if str(item).strip()
+        ):
+            row = self.conn.execute(
+                """SELECT receipt_id, eligible, consumed_trace_id FROM adapter_tool_receipts
+                   WHERE receipt_id = ? AND channel = ?
+                     AND tenant_id = ? AND agent_id = ? AND workspace_id = ? AND user_id = ?
+                     AND session_id = ? AND run_id = ?""",
+                (
+                    receipt_id,
+                    channel,
+                    scope_ref.tenant_id,
+                    scope_ref.agent_id,
+                    scope_ref.workspace_id,
+                    scope_ref.user_id,
+                    session_id,
+                    run_id,
+                ),
+            ).fetchone()
+            if row is not None:
+                states[receipt_id] = {
+                    "eligible": bool(row["eligible"]),
+                    "consumed_trace_id": str(row["consumed_trace_id"] or ""),
+                }
+        return states
+
+    def quarantine_adapter_tool_receipts(
+        self,
+        receipt_ids: list[str],
+        *,
+        channel: str,
+        session_id: str,
+        run_id: str,
+        scope: ScopeRef | dict | None = None,
+        commit: bool = True,
+    ) -> None:
+        scope_ref = normalize_scope(scope)
+        clean_ids = list(
+            dict.fromkeys(str(item).strip() for item in receipt_ids if str(item).strip())
+        )
+        if not clean_ids:
+            return
+        placeholders = ",".join("?" for _ in clean_ids)
+        self.conn.execute(
+            f"""UPDATE adapter_tool_receipts SET eligible = 0
+                WHERE receipt_id IN ({placeholders}) AND channel = ?
+                  AND tenant_id = ? AND agent_id = ? AND workspace_id = ? AND user_id = ?
+                  AND session_id = ? AND run_id = ? AND consumed_trace_id = ''""",
+            (
+                *clean_ids,
+                channel,
+                scope_ref.tenant_id,
+                scope_ref.agent_id,
+                scope_ref.workspace_id,
+                scope_ref.user_id,
+                session_id,
+                run_id,
+            ),
+        )
+        if commit:
+            self.conn.commit()
 
     def consume_adapter_tool_receipts(
         self,

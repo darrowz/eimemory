@@ -212,14 +212,6 @@ class CodexHookAdapter:
         event_id = _event_id(event, "turn_id", "event_id", default="")
         if not session_id or not event_id:
             return
-        success_value = event.get("success")
-        success = success_value if isinstance(success_value, bool) else None
-        verification = _bounded_text(
-            event.get("verification")
-            or event.get("verification_evidence")
-            or event.get("eimemory_verification"),
-            512,
-        )
         result = _bounded_text(
             event.get("last_assistant_message") or event.get("result") or event.get("response"),
             2_000,
@@ -243,9 +235,11 @@ class CodexHookAdapter:
                 "end_kind": "stop",
                 "session_id": session_id,
                 "event_id": event_id,
-                "task_type": _task_type(event, default="code.task"),
-                "success": success,
-                "verification": verification,
+                # Codex Stop does not carry host-authenticated outcome fields.
+                # The runtime derives these values exclusively from exact receipts.
+                "task_type": "code.unverified",
+                "success": None,
+                "verification": "",
                 "result": result,
                 "tool_receipts": [],
                 "receipt_ids": receipt_ids,

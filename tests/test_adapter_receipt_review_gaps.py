@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
@@ -17,6 +18,7 @@ from eimemory.adapters.runtime.receipt_handoff import ReceiptIdHandoff
 from eimemory.adapters.runtime.service import AgentRuntimeMemoryService
 from eimemory.api.runtime import Runtime
 from eimemory.governance.evidence_contract import current_release_identity
+from eimemory.governance.tool_receipts import sign_tool_receipt
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
@@ -31,10 +33,13 @@ RPC_TOKEN = "RuntimeRpcToken_0123456789-Abcdefghijklmnop"
 PRODUCER_TOKEN = "ProducerReceiptToken_0123456789-Abcdefghijk"
 
 
-def _seed_release(runtime: Runtime) -> None:
+def _seed_release(
+    runtime: Runtime,
+    *,
+    commit: str = "d" * 40,
+    version: str = "1.9.77",
+) -> None:
     scope = ScopeRef.from_dict(BASE_SCOPE)
-    commit = "d" * 40
-    version = "1.9.77"
     runtime._test_runtime_commit = commit
     release_path = f"/opt/eimemory/releases/{commit}"
     runtime.store.append(
@@ -87,7 +92,7 @@ def _attest(
     service: AgentRuntimeMemoryService,
     *,
     call_id: str,
-    result: dict | None = None,
+    result: object | None = None,
     tool_name: str = "pytest",
     tool_input: dict | None = None,
 ) -> dict:
@@ -100,7 +105,7 @@ def _attest(
         tool_call_id=call_id,
         tool_name=tool_name,
         tool_input=tool_input,
-        result=result or {"exit_code": 0, "summary": "3 passed"},
+        result=result if result is not None else {"exit_code": 0, "summary": "3 passed"},
     )
 
 
@@ -170,6 +175,128 @@ def test_legacy_unique_consumed_trace_index_is_migrated(monkeypatch, tmp_path: P
 
     assert len(target) == 1 and int(target[0]["unique"]) == 0
     assert terminal["ok"] is True
+
+
+def test_receipt_database_and_handoff_share_deterministic_32_item_cap(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("EIMEMORY_EVIDENCE_RECEIPT_HMAC_KEY", RECEIPT_KEY)
+    handoff_path = tmp_path / "receipt-handoff.sqlite3"
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    service = AgentRuntimeMemoryService(runtime)
+    handoff = ReceiptIdHandoff(handoff_path)
+    receipt_ids: list[str] = []
+    for index in range(33):
+        receipt = _attest(service, call_id=f"bounded-call-{index:02d}")
+        receipt_ids.append(receipt["receipt_id"])
+        handoff.append(
+            channel="codex",
+            scope=resolve_channel_scope("codex", BASE_SCOPE),
+            session_id="session-1",
+            run_id="turn-1",
+            receipt_id=receipt["receipt_id"],
+        )
+    submitted_ids = handoff.list_ids(
+        channel="codex",
+        scope=resolve_channel_scope("codex", BASE_SCOPE),
+        session_id="session-1",
+        run_id="turn-1",
+    )
+    try:
+        claimable = runtime.store.sqlite.load_claimable_adapter_tool_receipts(
+            channel="codex",
+            session_id="session-1",
+            run_id="turn-1",
+            trace_id="",
+            scope=resolve_channel_scope("codex", BASE_SCOPE),
+        )
+        terminal = _terminal(service, submitted_ids)
+        rows = runtime.store.sqlite.conn.execute(
+            "SELECT receipt_id, eligible, consumed_trace_id FROM adapter_tool_receipts ORDER BY receipt_id"
+        ).fetchall()
+    finally:
+        runtime.close()
+
+    assert len(submitted_ids) == 32
+    assert set(submitted_ids) == set(receipt_ids[-32:])
+    assert {item["receipt_id"] for item in claimable} == set(submitted_ids)
+    assert terminal["ok"] is True
+    assert sum(int(row["eligible"]) for row in rows) == 32
+    assert sum(bool(str(row["consumed_trace_id"])) for row in rows) == 32
+    assert set(receipt_ids) - set(submitted_ids)
+
+
+def test_old_release_receipt_is_quarantined_without_poisoning_current_terminal(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("EIMEMORY_EVIDENCE_RECEIPT_HMAC_KEY", RECEIPT_KEY)
+    runtime = Runtime.create(root=tmp_path)
+    service = AgentRuntimeMemoryService(runtime)
+    _seed_release(runtime, commit="c" * 40, version="1.9.76")
+    old = _attest(service, call_id="old-release-call")
+    _seed_release(runtime, commit="d" * 40, version="1.9.77")
+    current = _attest(service, call_id="current-release-call")
+    try:
+        terminal = _terminal(service, [old["receipt_id"], current["receipt_id"]])
+        rows = {
+            str(row["receipt_id"]): row
+            for row in runtime.store.sqlite.conn.execute(
+                "SELECT receipt_id, eligible, consumed_trace_id FROM adapter_tool_receipts"
+            )
+        }
+    finally:
+        runtime.close()
+
+    assert terminal["ok"] is True
+    assert int(rows[old["receipt_id"]]["eligible"]) == 0
+    assert str(rows[old["receipt_id"]]["consumed_trace_id"]) == ""
+    assert str(rows[current["receipt_id"]]["consumed_trace_id"])
+
+
+def test_expired_receipt_is_quarantined_without_poisoning_fresh_terminal(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("EIMEMORY_EVIDENCE_RECEIPT_HMAC_KEY", RECEIPT_KEY)
+    runtime = Runtime.create(root=tmp_path)
+    service = AgentRuntimeMemoryService(runtime)
+    expired = _attest(service, call_id="expired-call")
+    row = runtime.store.sqlite.conn.execute(
+        "SELECT receipt_json FROM adapter_tool_receipts WHERE receipt_id = ?",
+        (expired["receipt_id"],),
+    ).fetchone()
+    expired_payload = json.loads(str(row["receipt_json"]))
+    past = datetime.now(timezone.utc) - timedelta(hours=1)
+    expired_payload["issued_at"] = (past - timedelta(minutes=5)).isoformat()
+    expired_payload["expires_at"] = past.isoformat()
+    expired_payload = sign_tool_receipt(expired_payload, key=RECEIPT_KEY)
+    runtime.store.sqlite.conn.execute(
+        "UPDATE adapter_tool_receipts SET receipt_json = ?, created_at = ? WHERE receipt_id = ?",
+        (
+            json.dumps(expired_payload, ensure_ascii=False, sort_keys=True),
+            expired_payload["issued_at"],
+            expired["receipt_id"],
+        ),
+    )
+    runtime.store.sqlite.conn.commit()
+    fresh = _attest(service, call_id="fresh-call")
+    try:
+        terminal = _terminal(service, [expired["receipt_id"], fresh["receipt_id"]])
+        rows = {
+            str(item["receipt_id"]): item
+            for item in runtime.store.sqlite.conn.execute(
+                "SELECT receipt_id, eligible, consumed_trace_id FROM adapter_tool_receipts"
+            )
+        }
+    finally:
+        runtime.close()
+
+    assert terminal["ok"] is True
+    assert int(rows[expired["receipt_id"]]["eligible"]) == 0
+    assert str(rows[expired["receipt_id"]]["consumed_trace_id"]) == ""
+    assert str(rows[fresh["receipt_id"]]["consumed_trace_id"])
 
 
 def test_terminal_rejects_missing_untrusted_handoff_hint_without_consuming_pending_receipt(
@@ -313,6 +440,51 @@ def test_shell_wrapper_requires_an_anchored_test_command(monkeypatch, tmp_path: 
     assert generic["receipt"]["passed"] is False
     assert verified["receipt"]["passed"] is True
     assert verified["receipt"]["verification_policy_id"] == "test_command.exit_zero.positive_count.v1"
+
+
+def test_codex_bash_string_output_requires_recognized_test_command(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("EIMEMORY_EVIDENCE_RECEIPT_HMAC_KEY", RECEIPT_KEY)
+    runtime = Runtime.create(root=tmp_path)
+    service = AgentRuntimeMemoryService(runtime)
+    official_shell_output = "================ test session starts ================\n3 passed in 0.12s"
+    try:
+        verified = _attest(
+            service,
+            call_id="codex-bash-test",
+            tool_name="Bash",
+            tool_input={"command": "python -m pytest tests/test_unit.py -q"},
+            result=official_shell_output,
+        )
+        forged_echo = _attest(
+            service,
+            call_id="codex-bash-echo",
+            tool_name="Bash",
+            tool_input={"command": "echo '3 passed in 0.12s'"},
+            result=official_shell_output,
+        )
+        collection_only = _attest(
+            service,
+            call_id="codex-bash-collection-only",
+            tool_name="Bash",
+            tool_input={"command": "python -m pytest tests/test_unit.py -q"},
+            result="================ test session starts ================\n3 tests collected",
+        )
+        chained_echo = _attest(
+            service,
+            call_id="codex-bash-chained-echo",
+            tool_name="Bash",
+            tool_input={
+                "command": "python -m pytest tests/missing.py -q; echo '3 passed in 0.12s'"
+            },
+            result=official_shell_output,
+        )
+    finally:
+        runtime.close()
+
+    assert verified["receipt"]["passed"] is True
+    assert forged_echo["receipt"]["passed"] is False
+    assert collection_only["receipt"]["passed"] is False
+    assert chained_echo["receipt"]["passed"] is False
 
 
 def test_codex_receipt_handoff_survives_adapter_process_boundary_and_clears_after_success(
@@ -596,17 +768,25 @@ def test_codex_post_tool_and_stop_separate_processes_preserve_exact_receipts(
     post_env["EIMEMORY_ATTESTATION_HOST_PROFILE"] = "operator-separated-v1"
     post = {
         "session_id": "session-1",
+        "transcript_path": None,
+        "cwd": str(Path(__file__).parents[1]),
+        "hook_event_name": "PostToolUse",
+        "permission_mode": "default",
+        "model": "gpt-5.6-sol",
         "turn_id": "turn-1",
-        "tool_call_id": "call-1",
-        "tool_name": "pytest",
-        "tool_input": {"command": "pytest -q"},
-        "tool_response": {"exit_code": 0, "summary": "2 passed"},
+        "tool_use_id": "call-1",
+        "tool_name": "Bash",
+        "tool_input": {"command": "python -m pytest tests/test_unit.py -q"},
+        "tool_response": "================ test session starts ================\n2 passed in 0.12s",
     }
     stop = {
         "session_id": "session-1",
+        "transcript_path": None,
+        "cwd": str(Path(__file__).parents[1]),
+        "hook_event_name": "Stop",
+        "permission_mode": "default",
+        "model": "gpt-5.6-sol",
         "turn_id": "turn-1",
-        "task_type": "code.fix",
-        "success": True,
         "last_assistant_message": "done",
     }
     try:
@@ -633,6 +813,9 @@ def test_codex_post_tool_and_stop_separate_processes_preserve_exact_receipts(
         row = runtime.store.sqlite.conn.execute(
             "SELECT receipt_json, consumed_trace_id FROM adapter_tool_receipts"
         ).fetchone()
+        event_row = runtime.store.sqlite.conn.execute(
+            "SELECT payload_json FROM events WHERE source = 'codex.stop'"
+        ).fetchone()
     finally:
         server.stop()
         runtime.close()
@@ -640,10 +823,13 @@ def test_codex_post_tool_and_stop_separate_processes_preserve_exact_receipts(
     assert (first.returncode, second.returncode) == (0, 0)
     assert row is not None and str(row["consumed_trace_id"])
     assert json.loads(str(row["receipt_json"]))["source"] == "codex.post_tool_use"
+    event = json.loads(str(event_row["payload_json"]))
+    assert event["outcome_trace_task_type"] == "code.test"
+    assert event["verification"].startswith("codex.post_tool_use:")
     assert PRODUCER_TOKEN not in env.values()
 
 
-def test_hermes_post_tool_and_terminal_separate_processes_preserve_exact_receipts(
+def test_hermes_official_terminal_lifecycle_binds_verified_host_turn(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -664,7 +850,8 @@ def test_hermes_post_tool_and_terminal_separate_processes_preserve_exact_receipt
     env = _subprocess_env(tmp_path, server)
     post_env = {**env, "EIMEMORY_HERMES_ATTESTATION_TOKEN_FILE": str(producer_file)}
     post_env["EIMEMORY_ATTESTATION_HOST_PROFILE"] = "operator-separated-v1"
-    post_script = """
+    lifecycle_script = """
+import json
 from integrations.hermes.eimemory import register
 class Context:
     def register_memory_provider(self, provider): self.provider = provider
@@ -672,17 +859,19 @@ class Context:
 ctx = Context()
 register(ctx)
 ctx.provider.initialize('session-1', agent_identity='hongtu', agent_workspace='embodied', user_id='darrow')
-ctx.callback('pytest', {'command': 'pytest -q'}, {'exit_code': 0, 'summary': '2 passed'}, 'call-1', 10, session_id='session-1', turn_id='turn-1', tool_call_id='call-1')
-"""
-    terminal_script = """
-from integrations.hermes.eimemory import EIMemoryProvider
-p = EIMemoryProvider()
-p.initialize('session-1', agent_identity='hongtu', agent_workspace='embodied', user_id='darrow')
-p.handle_tool_call('eimemory_verify_outcome', {'session_id':'session-1','event_id':'turn-1','task_type':'research.audit','success':True,'verification':'verified','result':'done'})
+ctx.callback('terminal', {'command': 'python -m pytest tests/test_unit.py -q'}, json.dumps({'output':'2 passed in 0.12s','exit_code':0,'error':''}), 'task-1', 10, session_id='session-1', turn_id='turn-1', tool_call_id='call-1')
+bad = json.loads(ctx.provider.handle_tool_call('eimemory_verify_outcome', {'session_id':'session-1','event_id':'forged-turn','task_type':'research.audit','success':True,'verification':'verified','result':'done'}))
+assert bad['ok'] is False
+good = json.loads(ctx.provider.handle_tool_call('eimemory_verify_outcome', {'session_id':'session-1','event_id':'turn-1','task_type':'research.audit','success':True,'verification':'verified','result':'done'}))
+assert good['ok'] is True
+ctx.callback('terminal', {'command': 'python -m pytest tests/test_a.py -q'}, json.dumps({'output':'1 passed in 0.10s','exit_code':0,'error':''}), 'task-2', 10, session_id='session-1', turn_id='turn-2', tool_call_id='call-2')
+ctx.callback('terminal', {'command': 'python -m pytest tests/test_b.py -q'}, json.dumps({'output':'1 passed in 0.10s','exit_code':0,'error':''}), 'task-3', 10, session_id='session-1', turn_id='turn-3', tool_call_id='call-3')
+ambiguous = json.loads(ctx.provider.handle_tool_call('eimemory_verify_outcome', {'session_id':'session-1','event_id':'turn-2','task_type':'research.audit','success':True,'verification':'verified','result':'done'}))
+assert ambiguous['ok'] is False
 """
     try:
-        first = subprocess.run(
-            [sys.executable, "-c", post_script],
+        process = subprocess.run(
+            [sys.executable, "-c", lifecycle_script],
             text=True,
             capture_output=True,
             cwd=Path(__file__).parents[1],
@@ -690,23 +879,14 @@ p.handle_tool_call('eimemory_verify_outcome', {'session_id':'session-1','event_i
             timeout=20,
             check=False,
         )
-        second = subprocess.run(
-            [sys.executable, "-c", terminal_script],
-            text=True,
-            capture_output=True,
-            cwd=Path(__file__).parents[1],
-            env=env,
-            timeout=20,
-            check=False,
-        )
         row = runtime.store.sqlite.conn.execute(
-            "SELECT receipt_json, consumed_trace_id FROM adapter_tool_receipts"
+            "SELECT receipt_json, consumed_trace_id FROM adapter_tool_receipts WHERE consumed_trace_id != ''"
         ).fetchone()
     finally:
         server.stop()
         runtime.close()
 
-    assert (first.returncode, second.returncode) == (0, 0), (first.stderr, second.stderr)
+    assert process.returncode == 0, process.stderr
     assert row is not None and str(row["consumed_trace_id"])
     assert json.loads(str(row["receipt_json"]))["source"] == "hermes.post_tool_call"
 

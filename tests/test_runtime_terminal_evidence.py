@@ -145,7 +145,9 @@ def test_verified_codex_and_hermes_tasks_are_release_bound_per_channel(monkeypat
     assert "hermes.task_end" in VERIFIED_REAL_TASK_METHODS
 
 
-def test_unverified_codex_success_cannot_enter_verified_real_task_count(runtime: Runtime) -> None:
+def test_unverified_codex_success_claim_is_diagnostic_and_cannot_enter_verified_real_task_count(
+    runtime: Runtime,
+) -> None:
     _seed_base_release(runtime)
     service = AgentRuntimeMemoryService(runtime)
 
@@ -165,7 +167,8 @@ def test_unverified_codex_success_cannot_enter_verified_real_task_count(runtime:
         persist=False,
     )
 
-    assert result["outcome"]["outcome"] == "verification_missing"
+    assert result["outcome"]["outcome"] == "uncertain"
+    assert result["event"]["evidence_class"] == "diagnostic_task"
     assert metrics["sample_counts"]["verified_real_tasks"] == 0
     assert metrics["sample_counts"]["current_deployment_verified_real_tasks"] == 0
 

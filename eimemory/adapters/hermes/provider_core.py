@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Mapping, Optional
 
 from eimemory.adapters.runtime.http_client import AgentRuntimeRPCClient
 from eimemory.adapters.runtime.receipt_handoff import ReceiptIdHandoff
+from eimemory.governance.tool_receipts import MAX_ELIGIBLE_RECEIPTS_PER_RUN
 
 
 MAX_PREFETCH_CONTEXT_CHARS = 7_200
@@ -65,6 +66,8 @@ class HermesMemoryProviderCore:
         self._last_turn_summary = ""
         self._dropped_write_count = 0
         self._receipt_handoff = ReceiptIdHandoff.from_env()
+        self._verified_host_turns: OrderedDict[tuple[str, str], None] = OrderedDict()
+        self._verified_host_turn_overflow = False
 
     @property
     def name(self) -> str:
@@ -101,6 +104,9 @@ class HermesMemoryProviderCore:
         agent_context = str(kwargs.get("agent_context") or "primary").strip().lower()
         self._write_enabled = agent_context not in {"cron", "flush", "subagent"}
         self._last_turn_summary = ""
+        with self._lock:
+            self._verified_host_turns.clear()
+            self._verified_host_turn_overflow = False
         if self._client is None:
             self._client = hermes_client_from_env(hermes_home=hermes_home)
         self._active = self._client_injected or self.is_available()
@@ -352,10 +358,33 @@ class HermesMemoryProviderCore:
         **kwargs: Any,
     ) -> None:
         del parent_session_id, kwargs
-        self._session_id = str(new_session_id or "").strip() or self._session_id
-        if reset or rewound:
-            with self._lock:
+        next_session_id = str(new_session_id or "").strip() or self._session_id
+        with self._lock:
+            if next_session_id != self._session_id:
+                self._verified_host_turns.clear()
+                self._verified_host_turn_overflow = False
+            self._session_id = next_session_id
+            if reset or rewound:
                 self._last_turn_summary = ""
+
+    def bind_verified_host_turn(self, *, session_id: str, turn_id: str) -> bool:
+        """Bind one host-attested turn for a later model-requested terminal close."""
+        normalized_session = str(session_id or "").strip()
+        normalized_turn = str(turn_id or "").strip()
+        if not normalized_session or not normalized_turn:
+            return False
+        with self._lock:
+            if normalized_session != self._session_id:
+                return False
+            key = (normalized_session, normalized_turn)
+            if key in self._verified_host_turns:
+                self._verified_host_turns.move_to_end(key)
+                return True
+            if len(self._verified_host_turns) >= MAX_ELIGIBLE_RECEIPTS_PER_RUN:
+                self._verified_host_turn_overflow = True
+                return False
+            self._verified_host_turns[key] = None
+            return True
 
     def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
         del messages
@@ -425,11 +454,14 @@ class HermesMemoryProviderCore:
                 },
             )
         if tool_name == "eimemory_verify_outcome":
-            success = args.get("success")
-            if not isinstance(success, bool):
-                raise ValueError("success must be a boolean")
             session_id = _required_text(args, "session_id")
             event_id = _required_text(args, "event_id")
+            with self._lock:
+                bindings = tuple(self._verified_host_turns)
+                if self._verified_host_turn_overflow or len(bindings) != 1:
+                    raise ValueError("exactly one unfinalized host-verified Hermes turn is required")
+                if bindings[0] != (session_id, event_id) or session_id != self._session_id:
+                    raise ValueError("terminal identity does not match the host-verified Hermes turn")
             receipt_ids = (
                 self._receipt_handoff.list_ids(
                     channel="hermes",
@@ -447,9 +479,11 @@ class HermesMemoryProviderCore:
                     "end_kind": "task_end",
                     "session_id": session_id,
                     "event_id": event_id,
-                    "task_type": _required_text(args, "task_type"),
-                    "success": success,
-                    "verification": _required_text(args, "verification")[:512],
+                    # Model-provided claims are diagnostic only. The runtime
+                    # derives terminal status and task type from exact receipts.
+                    "task_type": "research.unverified",
+                    "success": None,
+                    "verification": "",
                     "result": str(args.get("result") or "")[:2_000],
                     "tool_receipts": [],
                     "receipt_ids": receipt_ids,
@@ -470,6 +504,8 @@ class HermesMemoryProviderCore:
                     run_id=event_id,
                     receipt_ids=receipt_ids,
                 )
+                with self._lock:
+                    self._verified_host_turns.pop((session_id, event_id), None)
             return terminal
         if tool_name == "eimemory_status":
             status = self._safe_call("adapter.status", common)

@@ -10,9 +10,20 @@ _SENSITIVE_KEY = re.compile(
 )
 _SENSITIVE_ASSIGNMENT = re.compile(
     r"(?i)\b(authorization|cookie|credential|password|private[_-]?key|access[_-]?key|secret|token|api[_-]?key)"
-    r"(\s*[:=]\s*)(?:bearer\s+)?[^\s,;\]}]+"
+    r"(\s*[:=]\s*)(?:"
+    r'"(?:\\.|[^"\\\r\n])*"|'
+    r"'(?:\\.|[^'\\\r\n])*'|"
+    r"bearer\s+[^\r\n,;\]}]+|"
+    r"[^\s,;\]}]+"
+    r")"
 )
-_BEARER = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+")
+_BEARER = re.compile(
+    r"(?i)\bbearer\s+(?:"
+    r'"(?:\\.|[^"\\\r\n])*"|'
+    r"'(?:\\.|[^'\\\r\n])*'|"
+    r"[^\r\n,;\]}]+"
+    r")"
+)
 _SECRET_TOKEN = re.compile(r"\b(?:sk|ghp|github_pat)-[A-Za-z0-9_-]{8,}\b", re.IGNORECASE)
 _TRUNCATED = "[TRUNCATED]"
 _REDACTED = "[REDACTED]"

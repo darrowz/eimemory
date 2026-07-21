@@ -204,7 +204,7 @@ def test_sync_turn_rejects_empty_content_without_polluting_memory(
     assert recalled["bundle"]["items"] == []
 
 
-def test_unverified_success_records_terminal_evidence_without_verified_pass(
+def test_unverified_success_claim_records_diagnostic_terminal_evidence(
     service: AgentRuntimeMemoryService,
 ) -> None:
 
@@ -221,7 +221,8 @@ def test_unverified_success_records_terminal_evidence_without_verified_pass(
     )
 
     assert result["event"]["source"] == "codex.stop"
-    assert result["outcome"]["outcome"] == "verification_missing"
+    assert result["outcome"]["outcome"] == "uncertain"
+    assert result["event"]["evidence_class"] == "diagnostic_task"
     assert result["outcome_trace"]["ok"] is True
     trace = service.runtime.store.get_by_id(
         result["outcome_trace"]["record_id"],
@@ -229,8 +230,9 @@ def test_unverified_success_records_terminal_evidence_without_verified_pass(
     )
     assert trace is not None
     assert trace.content["payload"]["verifier"]["passed"] is False
-    assert trace.content["payload"]["outcome"]["success"] is True
-    assert trace.content["payload"]["outcome"]["status"] == "verification_missing"
+    assert trace.content["payload"]["outcome"]["success"] is None
+    assert trace.content["payload"]["outcome"]["status"] == "uncertain"
+    assert trace.content["payload"]["evidence_class"] == "diagnostic_task"
 
 
 def test_duplicate_terminal_event_is_idempotent_per_channel(

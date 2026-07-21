@@ -1095,7 +1095,17 @@ def _reflection_fingerprint(record: RecordEnvelope) -> str:
 
 def _deterministic_insert_once(record: RecordEnvelope) -> bool:
     if record.source == "eimemory.experience.outcome_trace":
-        return True
+        payload = record.content.get("payload") if isinstance(record.content, dict) else None
+        if isinstance(payload, dict):
+            terminal_source = str(payload.get("source") or "").strip()
+            idempotency_key = str(payload.get("idempotency_key") or "").strip()
+            if terminal_source in {
+                "openclaw.agent_end",
+                "openclaw.task_end",
+                "codex.stop",
+                "hermes.task_end",
+            } and idempotency_key.startswith(f"{terminal_source}:"):
+                return True
     return (
         record.kind == "memory"
         and str(record.source or "").endswith(".memory")

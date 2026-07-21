@@ -71,6 +71,7 @@ def register(ctx) -> None:
                     run_id=run_id,
                     receipt_id=receipt_id,
                 )
+                provider.bind_verified_host_turn(session_id=session_id, turn_id=run_id)
         except Exception:
             return
 

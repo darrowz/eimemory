@@ -76,6 +76,28 @@ def _effect_counts(runtime: Runtime) -> dict[str, int]:
     }
 
 
+def _all_sqlite_text(runtime: Runtime) -> str:
+    conn = runtime.store.sqlite.conn
+    material: list[str] = []
+    for table_row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'"):
+        table = str(table_row[0])
+        if not table.replace("_", "").isalnum():
+            continue
+        columns = [
+            str(column[1])
+            for column in conn.execute(f"PRAGMA table_info({table})")
+            if "TEXT" in str(column[2]).upper()
+        ]
+        if columns:
+            quoted = ", ".join(f'"{column}"' for column in columns)
+            material.extend(
+                str(value or "")
+                for db_row in conn.execute(f'SELECT {quoted} FROM "{table}"')
+                for value in db_row
+            )
+    return "\n".join(material)
+
+
 @pytest.mark.parametrize("fault_stage", ["after_event", "after_outcome"])
 def test_terminal_bundle_rolls_back_every_effect_and_retry_succeeds(
     monkeypatch: pytest.MonkeyPatch,
@@ -308,24 +330,7 @@ def test_terminal_structural_redaction_and_receipt_allowlist_leave_no_sqlite_sec
         )
         assert result["ok"] is True
 
-        material: list[str] = []
-        for table_row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'"):
-            table = str(table_row[0])
-            if not table.replace("_", "").isalnum():
-                continue
-            columns = [
-                str(column[1])
-                for column in conn.execute(f"PRAGMA table_info({table})")
-                if "TEXT" in str(column[2]).upper()
-            ]
-            if columns:
-                quoted = ", ".join(f'"{column}"' for column in columns)
-                material.extend(
-                    str(value or "")
-                    for db_row in conn.execute(f'SELECT {quoted} FROM "{table}"')
-                    for value in db_row
-                )
-        persisted = "\n".join(material)
+        persisted = _all_sqlite_text(runtime)
         for secret in (
             "terminal-auth-secret", "terminal-token-secret",
             "terminal-password-secret", "terminal-cookie-secret",
@@ -334,3 +339,60 @@ def test_terminal_structural_redaction_and_receipt_allowlist_leave_no_sqlite_sec
             assert secret not in persisted
     finally:
         runtime.close()
+
+
+@pytest.mark.parametrize(
+    ("field", "sensitive_text", "secret_fragments", "expected_safe_text"),
+    [
+        (
+            "result",
+            'prefix password="quoted-head-alpha quoted-tail-bravo quoted-tail-charlie"; detail=safe\nnext line stays',
+            ("quoted-head-alpha", "quoted-tail-bravo", "quoted-tail-charlie"),
+            "prefix [REDACTED]; detail=safe\nnext line stays",
+        ),
+        (
+            "verification",
+            "check Authorization: Bearer bearer-head-alpha bearer-tail-bravo bearer-tail-charlie; detail=safe\nnext line stays",
+            ("bearer-head-alpha", "bearer-tail-bravo", "bearer-tail-charlie"),
+            "check [REDACTED]; detail=safe\nnext line stays",
+        ),
+        (
+            "result",
+            "check Bearer standalone-head-alpha standalone-tail-bravo standalone-tail-charlie; detail=safe\nnext line stays",
+            ("standalone-head-alpha", "standalone-tail-bravo", "standalone-tail-charlie"),
+            "check Bearer [REDACTED]; detail=safe\nnext line stays",
+        ),
+    ],
+)
+def test_terminal_multiword_secrets_leave_no_tail_in_any_sqlite_text(
+    tmp_path: Path,
+    field: str,
+    sensitive_text: str,
+    secret_fragments: tuple[str, ...],
+    expected_safe_text: str,
+) -> None:
+    runtime, service = _service(tmp_path)
+    arguments = {
+        "verification": "safe verification",
+        "result": "safe result",
+        field: sensitive_text,
+    }
+    try:
+        terminal = service.record_terminal(
+            channel="openclaw",
+            scope=BASE_SCOPE,
+            end_kind="task_end",
+            session_id="session-multiword-secret",
+            event_id=f"turn-{field}",
+            task_type="security.redaction",
+            success=True,
+            tool_receipts=[],
+            **arguments,
+        )
+        persisted = _all_sqlite_text(runtime)
+    finally:
+        runtime.close()
+
+    assert terminal["event"][field] == expected_safe_text
+    for secret_fragment in secret_fragments:
+        assert secret_fragment not in persisted

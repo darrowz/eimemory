@@ -239,7 +239,8 @@ def test_stop_never_blocks_and_does_not_invent_verification() -> None:
     assert method == "adapter.record_terminal"
     assert params["end_kind"] == "stop"
     assert params["verification"] == ""
-    assert params["success"] is True
+    assert params["success"] is None
+    assert params["task_type"] == "code.unverified"
     assert result["continue"] is True
     assert "stopReason" not in result
 

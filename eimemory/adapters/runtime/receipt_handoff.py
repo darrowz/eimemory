@@ -10,9 +10,10 @@ import sqlite3
 import stat
 from typing import Mapping
 
+from eimemory.governance.tool_receipts import MAX_ELIGIBLE_RECEIPTS_PER_RUN
 
 RECEIPT_HANDOFF_FILE_ENV = "EIMEMORY_ADAPTER_RECEIPT_HANDOFF_FILE"
-MAX_RECEIPTS_PER_RUN = 32
+MAX_RECEIPTS_PER_RUN = MAX_ELIGIBLE_RECEIPTS_PER_RUN
 MAX_TOTAL_RECEIPTS = 2_048
 _RECEIPT_ID = re.compile(r"[A-Za-z0-9._:-]{1,256}")
 

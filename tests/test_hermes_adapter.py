@@ -63,7 +63,7 @@ def test_hermes_provider_lifecycle_is_channel_local_and_flushes_bounded_writes(t
     assert all(params["scope"]["workspace_id"] == "embodied" for _, params in client.calls)
 
 
-def test_hermes_provider_exposes_only_closed_loop_tools_and_verified_terminal() -> None:
+def test_hermes_provider_exposes_only_closed_loop_tools_and_rejects_unbound_terminal() -> None:
     client = FakeClient()
     provider = HermesMemoryProviderCore(client=client)
     provider.initialize("hermes-session", agent_workspace="embodied", agent_context="primary")
@@ -83,17 +83,15 @@ def test_hermes_provider_exposes_only_closed_loop_tools_and_verified_terminal() 
         )
     )
 
-    method, params = client.calls[-1]
     assert names == [
         "eimemory_recall",
         "eimemory_remember",
         "eimemory_verify_outcome",
         "eimemory_status",
     ]
-    assert method == "adapter.record_terminal"
-    assert params["end_kind"] == "task_end"
-    assert params["verification"] == "primary-source-check:passed"
-    assert output["ok"] is True
+    assert client.calls == []
+    assert output["ok"] is False
+    assert "host-verified Hermes turn" in output["error"]
 
 
 def test_hermes_unknown_tool_error_identifies_rejected_name() -> None:
