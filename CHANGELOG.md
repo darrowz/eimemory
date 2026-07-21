@@ -13,6 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Advanced rollback strategies
 - Performance optimizations for large memory stores
 
+## [1.9.79] - 2026-07-21
+
+### Fixed
+- Raise the shared prompt-safety case budget from 90 to 180 seconds so the candidate response and independent semantic judge each receive a 90-second inference budget under production tail latency, without relaxing fail-closed L5 verdict rules.
+
 ## [1.9.78] - 2026-07-21
 
 ### Added
