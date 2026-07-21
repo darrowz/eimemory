@@ -18,10 +18,11 @@ class CodexMCPServer:
     def handle_message(self, message: Mapping[str, Any]) -> dict[str, Any] | None:
         method = str(message.get("method") or "")
         request_id = message.get("id")
+        suppress_response = "id" not in message
         if method.startswith("notifications/"):
             return None
         if method == "initialize":
-            return self._result(
+            response = self._result(
                 request_id,
                 {
                     "protocolVersion": MCP_PROTOCOL_VERSION,
@@ -30,10 +31,12 @@ class CodexMCPServer:
                     "instructions": "Recall before durable decisions; remember only reusable verified knowledge; verify outcomes explicitly.",
                 },
             )
+            return None if suppress_response else response
         if method == "ping":
-            return self._result(request_id, {})
+            return None if suppress_response else self._result(request_id, {})
         if method == "tools/list":
-            return self._result(request_id, {"tools": self._tool_schemas()})
+            response = self._result(request_id, {"tools": self._tool_schemas()})
+            return None if suppress_response else response
         if method == "tools/call":
             params = message.get("params") if isinstance(message.get("params"), dict) else {}
             name = str(params.get("name") or "")
@@ -42,7 +45,8 @@ class CodexMCPServer:
                 result = self._call_tool(name, arguments)
             except (TypeError, ValueError) as exc:
                 error = {"ok": False, "error": str(exc)[:300]}
-                return self._result(request_id, self._tool_result(error, is_error=True))
+                response = self._result(request_id, self._tool_result(error, is_error=True))
+                return None if suppress_response else response
             except Exception as exc:  # noqa: BLE001 - keep MCP process fail-open
                 safe_name = name.replace("\r", " ").replace("\n", " ")[:80] or "unknown"
                 sys.stderr.write(
@@ -54,12 +58,14 @@ class CodexMCPServer:
                     "error": "adapter_unavailable",
                     "result": None,
                 }
-                return self._result(request_id, self._tool_result(bypass, is_error=True))
-            return self._result(
+                response = self._result(request_id, self._tool_result(bypass, is_error=True))
+                return None if suppress_response else response
+            response = self._result(
                 request_id,
                 self._tool_result(result, is_error=result.get("ok") is not True),
             )
-        return self._error(request_id, -32601, "Method not found")
+            return None if suppress_response else response
+        return None if suppress_response else self._error(request_id, -32601, "Method not found")
 
     def _call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         common = {"channel": "codex", "scope": dict(self.scope)}
@@ -220,6 +226,10 @@ def run_stdio(*, stdin: Any = None, stdout: Any = None) -> int:
             response = server.handle_message(message if isinstance(message, dict) else {})
         except json.JSONDecodeError:
             response = server._error(None, -32700, "Parse error")
+        except Exception as exc:  # noqa: BLE001 - keep MCP stdio loop fail-open
+            sys.stderr.write(f"eimemory codex-mcp: stdio dispatch failed ({type(exc).__name__})\n")
+            sys.stderr.flush()
+            response = server._error(None, -32603, "Internal error")
         if response is not None:
             output_stream.write(json.dumps(response, ensure_ascii=False, separators=(",", ":")) + "\n")
             output_stream.flush()

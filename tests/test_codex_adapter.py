@@ -125,23 +125,23 @@ def test_post_tool_use_hashes_redacts_and_truncates_before_sync() -> None:
         "client_secret": "[REDACTED]",
         "nested": {"password": "[REDACTED]", "private_key": "[REDACTED]"},
     }
-    redacted_result = {"access_token": "[REDACTED]", "output": "x" * 20_000}
     expected_input_digest = sha256(
         json.dumps(redacted_input, ensure_ascii=False, sort_keys=True).encode("utf-8", errors="replace")
-    ).hexdigest()
-    expected_result_digest = sha256(
-        json.dumps(redacted_result, ensure_ascii=False, sort_keys=True).encode("utf-8", errors="replace")
     ).hexdigest()
     raw_input_digest = sha256(
         json.dumps(tool_input, ensure_ascii=False, sort_keys=True).encode("utf-8", errors="replace")
     ).hexdigest()
+    raw_result_digest = sha256(
+        json.dumps(tool_result, ensure_ascii=False, sort_keys=True).encode("utf-8", errors="replace")
+    ).hexdigest()
     assert f"input_sha256={expected_input_digest}" in params["user_text"]
-    assert f"result_sha256={expected_result_digest}" in params["assistant_text"]
     assert raw_input_digest not in forwarded
+    assert raw_result_digest not in forwarded
     assert secret not in forwarded
     assert password not in forwarded
     assert private_key not in forwarded
     assert tool_result["output"] not in forwarded
+    assert "[TRUNCATED]" in params["assistant_text"]
     assert len(params["user_text"]) <= 2_500
     assert len(params["assistant_text"]) <= 4_500
     assert result == {"continue": True}
@@ -206,6 +206,17 @@ def test_post_tool_use_with_missing_host_ids_does_not_create_colliding_turn() ->
     assert first == {"continue": True}
     assert second == {"continue": True}
     assert client.calls == []
+
+
+def test_safe_summary_bounds_large_payload_before_digesting() -> None:
+    summary = codex_hook._safe_summary(
+        {"output": "x" * 1_000_000, "tail": "must-not-reach-summary"},
+        preview_limit=4_000,
+    )
+
+    assert len(summary) <= 4_100
+    assert "[TRUNCATED]" in summary
+    assert "must-not-reach-summary" not in summary
 
 
 def test_stop_never_blocks_and_does_not_invent_verification() -> None:
@@ -393,6 +404,27 @@ def test_codex_mcp_surfaces_bypass_as_tool_error_without_stopping_server() -> No
     assert failed["result"]["isError"] is True
     assert failed["result"]["structuredContent"]["bypassed"] is True
     assert len(listed["result"]["tools"]) == 4
+
+
+def test_codex_mcp_notification_without_id_suppresses_response() -> None:
+    client = FakeClient()
+    server = CodexMCPServer(client=client, scope=BASE_SCOPE)
+
+    listed = server.handle_message({"jsonrpc": "2.0", "method": "tools/list", "params": {}})
+    remembered = server.handle_message(
+        {
+            "jsonrpc": "2.0",
+            "method": "tools/call",
+            "params": {
+                "name": "eimemory_remember",
+                "arguments": {"text": "notification memory", "event_id": "notify-1"},
+            },
+        }
+    )
+
+    assert listed is None
+    assert remembered is None
+    assert client.calls[-1][0] == "adapter.remember"
 
 
 def test_codex_mcp_rejects_non_boolean_force_capture_before_rpc() -> None:

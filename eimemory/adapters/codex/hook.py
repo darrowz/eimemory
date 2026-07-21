@@ -16,6 +16,9 @@ MAX_HOOK_CONTEXT_CHARS = 7_200
 MAX_PROMPT_CHARS = 8_000
 MAX_TOOL_INPUT_PREVIEW_CHARS = 2_000
 MAX_TOOL_RESULT_PREVIEW_CHARS = 4_000
+SUMMARY_REDACTION_SLACK_CHARS = 512
+MAX_SUMMARY_REDACTION_NODES = 256
+_TRUNCATED = "[TRUNCATED]"
 _SECRET_PATTERNS = (
     re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+"),
     re.compile(r"\bsk-[A-Za-z0-9_-]{8,}\b"),
@@ -100,6 +103,7 @@ class CodexHookAdapter:
             sys.stderr.write(
                 f"eimemory codex-hook: {safe_event_name} dispatch failed ({type(exc).__name__})\n"
             )
+            sys.stderr.flush()
             return {"continue": True}
         return {"continue": True}
 
@@ -189,7 +193,7 @@ class CodexHookAdapter:
                 "success": success,
                 "verification": verification,
                 "result": result,
-                "tool_receipts": list(receipts)[:32] if isinstance(receipts, list) else [],
+                "tool_receipts": receipts[:32] if isinstance(receipts, list) else [],
                 "rehearsal": False,
             },
         )
@@ -203,7 +207,7 @@ class CodexHookAdapter:
     def _session_query(event: Mapping[str, Any]) -> str:
         cwd = _bounded_text(event.get("cwd"), 1_000)
         model = _bounded_text(event.get("model"), 200)
-        return _bounded_text(f"Resume Codex work in {cwd} using {model}".strip(), MAX_PROMPT_CHARS)
+        return _bounded_text(f"Resume Codex work in {cwd} using {model}", MAX_PROMPT_CHARS)
 
 
 def _task_type(event: Mapping[str, Any], *, default: str) -> str:
@@ -219,17 +223,19 @@ def _event_id(event: Mapping[str, Any], *names: str, default: str) -> str:
 
 
 def _safe_summary(value: Any, *, preview_limit: int) -> str:
+    budget = {
+        "chars": max(1_024, int(preview_limit) + SUMMARY_REDACTION_SLACK_CHARS),
+        "nodes": MAX_SUMMARY_REDACTION_NODES,
+    }
     try:
-        raw = json.dumps(value, ensure_ascii=False, sort_keys=True) if not isinstance(value, str) else value
-    except (TypeError, ValueError):
-        raw = repr(value)
-    if isinstance(value, str):
-        redacted = _redact_text(value)
-    else:
-        try:
-            redacted = json.dumps(_redact_structured(value), ensure_ascii=False, sort_keys=True)
-        except (TypeError, ValueError, RecursionError):
-            redacted = _redact_text(raw)
+        safe_value = _redact_structured(value, budget=budget)
+        redacted = safe_value if isinstance(safe_value, str) else json.dumps(
+            safe_value,
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    except (TypeError, ValueError, RecursionError):
+        redacted = f"[UNSERIALIZABLE:{type(value).__name__}]"
     digest = sha256(redacted.encode("utf-8", errors="replace")).hexdigest()
     preview = _bounded_text(redacted, preview_limit)
     return f"sha256={digest}; preview={preview}"
@@ -243,26 +249,70 @@ def _redact_text(value: str) -> str:
     return redacted
 
 
-def _redact_structured(value: Any, *, depth: int = 0) -> Any:
-    if depth >= 16:
-        return "[TRUNCATED]"
+def _redact_structured(
+    value: Any,
+    *,
+    depth: int = 0,
+    budget: dict[str, int] | None = None,
+) -> Any:
+    remaining = budget if budget is not None else {
+        "chars": MAX_TOOL_RESULT_PREVIEW_CHARS + SUMMARY_REDACTION_SLACK_CHARS,
+        "nodes": MAX_SUMMARY_REDACTION_NODES,
+    }
+    if depth >= 16 or remaining["nodes"] <= 0 or remaining["chars"] <= 0:
+        return _TRUNCATED
+    remaining["nodes"] -= 1
     if isinstance(value, Mapping):
         redacted: dict[str, Any] = {}
         for key, item in value.items():
-            key_text = str(key)
+            if remaining["nodes"] <= 0 or remaining["chars"] <= 0:
+                redacted[_TRUNCATED] = _TRUNCATED
+                break
+            key_text = _bounded_redacted_text(str(key), remaining, max_chars=256, redact=False)
             canonical = _KEY_CANONICAL.sub("", key_text.lower())
             sensitive = canonical in _SENSITIVE_KEY_NAMES or _SENSITIVE_KEY_SUFFIX.search(canonical) is not None
             redacted[key_text] = (
                 "[REDACTED]"
                 if sensitive
-                else _redact_structured(item, depth=depth + 1)
+                else _redact_structured(item, depth=depth + 1, budget=remaining)
             )
         return redacted
     if isinstance(value, (list, tuple)):
-        return [_redact_structured(item, depth=depth + 1) for item in value]
+        redacted_items: list[Any] = []
+        for item in value:
+            if remaining["nodes"] <= 0 or remaining["chars"] <= 0:
+                redacted_items.append(_TRUNCATED)
+                break
+            redacted_items.append(_redact_structured(item, depth=depth + 1, budget=remaining))
+        return redacted_items
     if isinstance(value, str):
-        return _redact_text(value)
-    return value
+        return _bounded_redacted_text(value, remaining)
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return f"[UNSERIALIZABLE:{type(value).__name__}]"
+
+
+def _bounded_redacted_text(
+    value: str,
+    budget: dict[str, int],
+    *,
+    max_chars: int | None = None,
+    redact: bool = True,
+) -> str:
+    allowed = max(0, budget["chars"])
+    if max_chars is not None:
+        allowed = min(allowed, max(0, int(max_chars)))
+    if allowed <= 0:
+        return _TRUNCATED
+    scan_limit = min(len(value), allowed + SUMMARY_REDACTION_SLACK_CHARS)
+    candidate = value[:scan_limit]
+    safe = _redact_text(candidate) if redact else candidate
+    truncated = len(value) > scan_limit or len(safe) > allowed
+    if truncated:
+        keep = max(0, allowed - len(_TRUNCATED))
+        safe = safe[:keep] + _TRUNCATED
+    budget["chars"] = max(0, budget["chars"] - len(safe))
+    return safe
 
 
 def _bounded_text(value: Any, limit: int) -> str:

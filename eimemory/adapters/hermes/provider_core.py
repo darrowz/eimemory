@@ -17,6 +17,7 @@ MAX_TURN_CHARS = 8_000
 MAX_MEMORY_CHARS = 16_000
 DEFAULT_MAX_WRITE_QUEUE = 16
 DEFAULT_MAX_PREFETCH_CACHE_ENTRIES = 16
+PREFETCH_SINGLE_FLIGHT_WAIT_SECONDS = 3.0
 logger = logging.getLogger(__name__)
 
 
@@ -58,6 +59,7 @@ class HermesMemoryProviderCore:
         self._write_thread: threading.Thread | None = None
         self._prefetch_thread: threading.Thread | None = None
         self._pending_prefetch: tuple[tuple[str, str], str] | None = None
+        self._inflight_prefetch: dict[tuple[str, str], threading.Event] = {}
         self._last_turn_summary = ""
         self._dropped_write_count = 0
 
@@ -119,10 +121,27 @@ class HermesMemoryProviderCore:
             if cached is not None:
                 self._prefetch_cache.move_to_end(key)
                 return cached
-        context = self._fetch_context(normalized_query)
-        if context:
-            self._cache_context(key, context)
-        return context
+            waiter = self._inflight_prefetch.get(key)
+            owner = waiter is None
+            if owner:
+                waiter = threading.Event()
+                self._inflight_prefetch[key] = waiter
+        if not owner:
+            assert waiter is not None
+            waiter.wait(timeout=PREFETCH_SINGLE_FLIGHT_WAIT_SECONDS)
+            with self._lock:
+                cached = self._prefetch_cache.get(key)
+                if cached is not None:
+                    self._prefetch_cache.move_to_end(key)
+                    return cached
+            return ""
+        try:
+            context = self._fetch_context(normalized_query)
+            if context:
+                self._cache_context(key, context)
+            return context
+        finally:
+            self._complete_prefetch(key)
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
         normalized_query = _bounded_text(query, 8_000)
@@ -132,7 +151,15 @@ class HermesMemoryProviderCore:
         with self._lock:
             if key in self._prefetch_cache:
                 return
+            if key in self._inflight_prefetch:
+                return
+            self._inflight_prefetch[key] = threading.Event()
             if self._prefetch_thread is not None and self._prefetch_thread.is_alive():
+                previous = self._pending_prefetch
+                if previous is not None:
+                    previous_waiter = self._inflight_prefetch.pop(previous[0], None)
+                    if previous_waiter is not None:
+                        previous_waiter.set()
                 self._pending_prefetch = (key, normalized_query)
                 return
             worker = threading.Thread(
@@ -438,9 +465,17 @@ class HermesMemoryProviderCore:
 
     def _prefetch_worker(self, key: tuple[str, str], query: str) -> None:
         while True:
-            context = self._fetch_context(query)
-            if context:
-                self._cache_context(key, context)
+            try:
+                context = self._fetch_context(query)
+                if context:
+                    self._cache_context(key, context)
+            except Exception as exc:  # noqa: BLE001 - keep the bounded worker alive
+                logger.debug(
+                    "Hermes eimemory prefetch failed type=%s",
+                    type(exc).__name__,
+                )
+            finally:
+                self._complete_prefetch(key)
             with self._lock:
                 pending = self._pending_prefetch
                 self._pending_prefetch = None
@@ -449,6 +484,12 @@ class HermesMemoryProviderCore:
                     continue
                 self._prefetch_thread = None
                 return
+
+    def _complete_prefetch(self, key: tuple[str, str]) -> None:
+        with self._lock:
+            waiter = self._inflight_prefetch.pop(key, None)
+            if waiter is not None:
+                waiter.set()
 
     def _cache_context(self, key: tuple[str, str], context: str) -> None:
         if not context:

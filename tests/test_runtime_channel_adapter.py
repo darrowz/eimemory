@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -18,8 +19,18 @@ BASE_SCOPE = {
 }
 
 
-def _service(tmp_path: Path) -> AgentRuntimeMemoryService:
-    return AgentRuntimeMemoryService(Runtime.create(root=tmp_path))
+@pytest.fixture
+def runtime(tmp_path: Path) -> Iterator[Runtime]:
+    instance = Runtime.create(root=tmp_path)
+    try:
+        yield instance
+    finally:
+        instance.close()
+
+
+@pytest.fixture
+def service(runtime: Runtime) -> AgentRuntimeMemoryService:
+    return AgentRuntimeMemoryService(runtime)
 
 
 def test_channel_scope_is_deterministic_and_openclaw_compatible() -> None:
@@ -50,8 +61,9 @@ def test_unknown_runtime_channel_fails_closed() -> None:
         resolve_channel_scope("unknown-host", BASE_SCOPE)
 
 
-def test_codex_and_hermes_memories_are_independent_authoritative_records(tmp_path: Path) -> None:
-    service = _service(tmp_path)
+def test_codex_and_hermes_memories_are_independent_authoritative_records(
+    service: AgentRuntimeMemoryService,
+) -> None:
     codex_text = "Always keep Codex deployment reports concise and include the verified release identity."
     hermes_text = "Always keep Hermes research summaries detailed and include the supporting evidence."
 
@@ -102,8 +114,10 @@ def test_codex_and_hermes_memories_are_independent_authoritative_records(tmp_pat
     assert codex_text in codex_recall["context"]
 
 
-def test_prefetch_invalid_limit_falls_back_to_bounded_default(tmp_path: Path, monkeypatch) -> None:
-    service = _service(tmp_path)
+def test_prefetch_invalid_limit_falls_back_to_bounded_default(
+    service: AgentRuntimeMemoryService,
+    monkeypatch,
+) -> None:
     observed: dict[str, int] = {}
     original_recall = service.runtime.memory.recall
 
@@ -125,8 +139,7 @@ def test_prefetch_invalid_limit_falls_back_to_bounded_default(tmp_path: Path, mo
     assert observed["limit"] == 8
 
 
-def test_explicit_memory_write_is_idempotent_per_channel(tmp_path: Path) -> None:
-    service = _service(tmp_path)
+def test_explicit_memory_write_is_idempotent_per_channel(service: AgentRuntimeMemoryService) -> None:
     params = {
         "channel": "codex",
         "scope": BASE_SCOPE,
@@ -143,8 +156,8 @@ def test_explicit_memory_write_is_idempotent_per_channel(tmp_path: Path) -> None
     assert second["idempotent"] is True
 
 
-def test_sync_turn_truncates_payload_and_reuses_turn_id(tmp_path: Path) -> None:
-    service = AgentRuntimeMemoryService(Runtime.create(root=tmp_path), max_turn_chars=160)
+def test_sync_turn_truncates_payload_and_reuses_turn_id(runtime: Runtime) -> None:
+    service = AgentRuntimeMemoryService(runtime, max_turn_chars=160)
     user_text = "Remember this Codex turn preference. " + ("u" * 300)
     assistant_text = "The preference was stored and verified. " + ("a" * 300)
 
@@ -170,8 +183,30 @@ def test_sync_turn_truncates_payload_and_reuses_turn_id(tmp_path: Path) -> None:
     assert first["record"]["record_id"] == second["record"]["record_id"]
 
 
-def test_unverified_success_records_terminal_evidence_without_verified_pass(tmp_path: Path) -> None:
-    service = _service(tmp_path)
+def test_sync_turn_rejects_empty_content_without_polluting_memory(
+    service: AgentRuntimeMemoryService,
+) -> None:
+    with pytest.raises(ValueError, match="turn text is required"):
+        service.sync_turn(
+            channel="codex",
+            scope=BASE_SCOPE,
+            session_id="session-empty",
+            turn_id="turn-empty",
+            user_text="  ",
+            assistant_text="",
+        )
+
+    recalled = service.prefetch(
+        channel="codex",
+        scope=BASE_SCOPE,
+        query="User Assistant",
+    )
+    assert recalled["bundle"]["items"] == []
+
+
+def test_unverified_success_records_terminal_evidence_without_verified_pass(
+    service: AgentRuntimeMemoryService,
+) -> None:
 
     result = service.record_terminal(
         channel="codex",
@@ -195,10 +230,36 @@ def test_unverified_success_records_terminal_evidence_without_verified_pass(tmp_
     assert trace is not None
     assert trace.content["payload"]["verifier"]["passed"] is False
     assert trace.content["payload"]["outcome"]["success"] is True
+    assert trace.content["payload"]["outcome"]["status"] == "verification_missing"
 
 
-def test_session_end_is_lifecycle_only_and_does_not_create_outcome_trace(tmp_path: Path) -> None:
-    service = _service(tmp_path)
+def test_duplicate_terminal_event_is_idempotent_per_channel(
+    service: AgentRuntimeMemoryService,
+) -> None:
+    params = {
+        "channel": "codex",
+        "scope": BASE_SCOPE,
+        "end_kind": "stop",
+        "session_id": "codex-session-idempotent",
+        "event_id": "codex-turn-idempotent",
+        "task_type": "code.fix",
+        "success": True,
+        "verification": "pytest:passed",
+        "result": "deployment verified",
+    }
+
+    first = service.record_terminal(**params)
+    second = service.record_terminal(**params)
+
+    assert first["event"]["id"] == second["event"]["id"]
+    assert first["outcome"]["id"] == second["outcome"]["id"]
+    assert first["outcome_trace"]["record_id"] == second["outcome_trace"]["record_id"]
+    assert second["outcome_trace"]["idempotent"] is True
+
+
+def test_session_end_is_lifecycle_only_and_does_not_create_outcome_trace(
+    service: AgentRuntimeMemoryService,
+) -> None:
 
     result = service.record_terminal(
         channel="hermes",

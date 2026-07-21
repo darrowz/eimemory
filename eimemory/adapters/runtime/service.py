@@ -142,8 +142,12 @@ class AgentRuntimeMemoryService:
             raise ValueError("session_id is required")
         if not normalized_turn_id:
             raise ValueError("turn_id is required")
+        normalized_user_text = str(user_text or "").strip()
+        normalized_assistant_text = str(assistant_text or "").strip()
+        if not normalized_user_text and not normalized_assistant_text:
+            raise ValueError("turn text is required")
         turn_text = self._bounded_text(
-            f"User: {str(user_text or '').strip()}\nAssistant: {str(assistant_text or '').strip()}",
+            f"User: {normalized_user_text}\nAssistant: {normalized_assistant_text}",
             self.max_turn_chars,
         )
         return self.remember(
@@ -252,6 +256,7 @@ class AgentRuntimeMemoryService:
             "verification": verification_text,
             "result": result_text,
         }
+        # Runtime event/outcome writes raise on failure; successful payloads intentionally do not expose an `ok` key.
         recorded_outcome = self.runtime.record_outcome(recorded_event["id"], outcome_payload, scope=channel_scope)
         outcome_trace_payload = {
             "source": method,
@@ -263,7 +268,7 @@ class AgentRuntimeMemoryService:
             "selected_tools": [],
             "actions": [],
             "outcome": {
-                "status": "success" if success is True else "bad" if success is False else "uncertain",
+                "status": outcome_name,
                 "success": success,
                 "rehearsal": bool(rehearsal),
             },

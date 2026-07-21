@@ -175,6 +175,44 @@ def test_hermes_prefetch_queue_is_single_worker_and_cache_bounded() -> None:
     assert "query-7" in prefetch_queries
 
 
+def test_hermes_prefetch_single_flight_deduplicates_same_hot_key() -> None:
+    class BlockingPrefetchClient:
+        def __init__(self) -> None:
+            self.started = threading.Event()
+            self.release = threading.Event()
+            self.call_count = 0
+
+        def call_or_bypass(self, method: str, params: dict) -> dict:
+            assert method == "adapter.prefetch"
+            self.call_count += 1
+            self.started.set()
+            self.release.wait(timeout=2.0)
+            return {
+                "ok": True,
+                "bypassed": False,
+                "result": {"context": "single-flight context"},
+            }
+
+    client = BlockingPrefetchClient()
+    provider = HermesMemoryProviderCore(client=client)
+    provider.initialize("hermes-session", agent_workspace="embodied", agent_context="primary")
+    provider.queue_prefetch("same hot query", session_id="hermes-session")
+    assert client.started.wait(timeout=1.0)
+    result: list[str] = []
+    reader = threading.Thread(
+        target=lambda: result.append(provider.prefetch("same hot query", session_id="hermes-session"))
+    )
+    reader.start()
+    client.release.set()
+    reader.join(timeout=2.0)
+    provider.shutdown()
+
+    assert reader.is_alive() is False
+    assert result == ["single-flight context"]
+    assert client.call_count == 1
+    assert provider.background_worker_count == 0
+
+
 def test_hermes_prefetch_does_not_cache_transient_bypass() -> None:
     class FlakyClient:
         def __init__(self) -> None:

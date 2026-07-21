@@ -27,6 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Redact structured, embedded, and multi-word credentials before hashing or forwarding Codex tool summaries.
 - Preserve fail-open host behavior while surfacing sanitized adapter diagnostics and local degradation counters.
 - Skip incomplete Codex tool events instead of collapsing them into a shared idempotency key, and redact versioned or plural credential fields.
+- Bound Codex summary traversal before redaction and hashing, suppress JSON-RPC notification responses, reject empty turn synchronization, and single-flight identical Hermes prefetches.
+- Keep unverified successful terminal traces labeled `verification_missing` so downstream closure consumers cannot mistake them for verified success.
 
 ## [1.9.77] - 2026-07-20
 
