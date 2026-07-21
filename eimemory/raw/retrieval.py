@@ -610,6 +610,13 @@ def _record_payload(record: Any, *, text: str) -> dict[str, Any]:
             "kind": record.kind,
             "title": record.title,
             "source": record.source,
+            "source_id": record.source_id,
+            "scope": {
+                "tenant_id": record.scope.tenant_id,
+                "agent_id": record.scope.agent_id,
+                "workspace_id": record.scope.workspace_id,
+                "user_id": record.scope.user_id,
+            },
             "text": text,
             "occurred_at": _timestamp_text(record),
             "session_id": str(record.content.get("session_id") or ""),

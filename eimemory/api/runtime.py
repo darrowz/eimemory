@@ -24,6 +24,7 @@ from eimemory.knowledge.synthesis import build_research_digest, digest_to_record
 from eimemory.config.defaults import default_root
 from eimemory.models.records import RecordEnvelope, ScopeRef, TimeRef
 from eimemory.raw.store import RawEvidenceAPI
+from eimemory.retrieval.contracts import CandidateSource, RecallEngine
 from eimemory.storage.runtime_store import RuntimeStore
 
 
@@ -61,10 +62,21 @@ def _non_negative_int(value: Any) -> int:
 
 
 class Runtime:
-    def __init__(self, store: RuntimeStore) -> None:
+    def __init__(
+        self,
+        store: RuntimeStore,
+        *,
+        candidate_source: CandidateSource | None = None,
+        recall_engine: RecallEngine | None = None,
+    ) -> None:
         self.store = store
         self.sources = SourceRegistry(self.store.root / "state" / "source_registry.json")
-        self.memory = MemoryAPI(store, source_registry=self.sources)
+        self.memory = MemoryAPI(
+            store,
+            source_registry=self.sources,
+            candidate_source=candidate_source,
+            recall_engine=recall_engine,
+        )
         self.evolution = EvolutionAPI(store)
         self.raw = RawEvidenceAPI(store)
         from eimemory.governance.prompt_safety_executor import (
@@ -85,9 +97,19 @@ class Runtime:
             self.prompt_safety_config_error = type(exc).__name__
 
     @classmethod
-    def create(cls, *, root: str | Path | None = None) -> "Runtime":
+    def create(
+        cls,
+        *,
+        root: str | Path | None = None,
+        candidate_source: CandidateSource | None = None,
+        recall_engine: RecallEngine | None = None,
+    ) -> "Runtime":
         final_root = default_root(root)
-        return cls(RuntimeStore(final_root))
+        return cls(
+            RuntimeStore(final_root),
+            candidate_source=candidate_source,
+            recall_engine=recall_engine,
+        )
 
     def close(self) -> None:
         self.store.close()

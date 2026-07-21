@@ -1,0 +1,196 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any, Mapping, Protocol, runtime_checkable
+
+from eimemory.models.records import RecallBundle, ScopeRef
+from eimemory.models.source_partitions import normalize_source_id, normalize_source_ids
+
+
+@dataclass(frozen=True, slots=True)
+class _FrozenMapping:
+    items: tuple[tuple[str, Any], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _FrozenSequence:
+    items: tuple[Any, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _FrozenSet:
+    items: tuple[Any, ...]
+
+
+def freeze_value(value: Any) -> Any:
+    if isinstance(value, (_FrozenMapping, _FrozenSequence, _FrozenSet)):
+        return value
+    if isinstance(value, Mapping):
+        return _FrozenMapping(tuple((str(key), freeze_value(item)) for key, item in value.items()))
+    if isinstance(value, (list, tuple)):
+        return _FrozenSequence(tuple(freeze_value(item) for item in value))
+    if isinstance(value, set):
+        return _FrozenSet(tuple(sorted((freeze_value(item) for item in value), key=repr)))
+    return value
+
+
+def thaw_value(value: Any) -> Any:
+    if isinstance(value, _FrozenMapping):
+        return {key: thaw_value(item) for key, item in value.items}
+    if isinstance(value, _FrozenSequence):
+        return [thaw_value(item) for item in value.items]
+    if isinstance(value, _FrozenSet):
+        return {thaw_value(item) for item in value.items}
+    if isinstance(value, tuple):
+        return {key: thaw_value(item) for key, item in value}
+    return value
+
+
+@dataclass(frozen=True, slots=True)
+class ExactScope:
+    tenant_id: str = "default"
+    agent_id: str = ""
+    workspace_id: str = ""
+    user_id: str = ""
+
+    @classmethod
+    def from_scope(cls, scope: ScopeRef | Mapping[str, Any] | None) -> "ExactScope":
+        ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(dict(scope or {}))
+        return cls(
+            tenant_id=str(ref.tenant_id or "default"),
+            agent_id=str(ref.agent_id or ""),
+            workspace_id=str(ref.workspace_id or ""),
+            user_id=str(ref.user_id or ""),
+        )
+
+    def to_scope_ref(self) -> ScopeRef:
+        return ScopeRef(
+            tenant_id=self.tenant_id,
+            agent_id=self.agent_id,
+            workspace_id=self.workspace_id,
+            user_id=self.user_id,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateRequest:
+    query: str
+    scope: ExactScope
+    kinds: tuple[str, ...] = ()
+    source_ids: tuple[str, ...] | None = None
+    limit: int = 8
+    budget: int = 24
+    recall_filters: tuple[tuple[str, Any], ...] = ()
+    task_context: tuple[tuple[str, Any], ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "query", str(self.query or "").strip())
+        object.__setattr__(self, "kinds", tuple(str(kind).strip() for kind in self.kinds if str(kind).strip()))
+        normalized_sources = normalize_source_ids(self.source_ids)
+        object.__setattr__(self, "source_ids", normalized_sources)
+        bounded_limit = max(0, min(1000, int(self.limit)))
+        object.__setattr__(self, "limit", bounded_limit)
+        object.__setattr__(self, "budget", max(bounded_limit, min(5000, int(self.budget))))
+        object.__setattr__(self, "recall_filters", _freeze_pairs(self.recall_filters))
+        object.__setattr__(self, "task_context", _freeze_pairs(self.task_context))
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        query: str,
+        scope: ScopeRef | Mapping[str, Any] | None,
+        kinds: tuple[str, ...] | list[str] = (),
+        source_ids: tuple[str, ...] | list[str] | None = None,
+        limit: int = 8,
+        budget: int | None = None,
+        recall_filters: Mapping[str, Any] | None = None,
+        task_context: Mapping[str, Any] | None = None,
+    ) -> "CandidateRequest":
+        bounded_limit = max(0, min(1000, int(limit)))
+        return cls(
+            query=query,
+            scope=ExactScope.from_scope(scope),
+            kinds=tuple(kinds or ()),
+            source_ids=None if source_ids is None else tuple(source_ids),
+            limit=bounded_limit,
+            budget=max(bounded_limit, bounded_limit * 3) if budget is None else budget,
+            recall_filters=freeze_value(dict(recall_filters or {})),
+            task_context=freeze_value(dict(task_context or {})),
+        )
+
+    def recall_filter_dict(self) -> dict[str, Any]:
+        return dict(thaw_value(self.recall_filters))
+
+    def task_context_dict(self) -> dict[str, Any]:
+        return dict(thaw_value(self.task_context))
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateRef:
+    record_id: str
+    scope: ExactScope
+    source_id: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "record_id", str(self.record_id or "").strip())
+        object.__setattr__(self, "source_id", normalize_source_id(self.source_id))
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateHit:
+    ref: CandidateRef
+    source_rank: int
+    source_score: float
+    component_hints: tuple[tuple[str, Any], ...] = ()
+    evidence_hints: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "source_rank", max(1, int(self.source_rank)))
+        object.__setattr__(self, "source_score", float(self.source_score))
+        object.__setattr__(self, "component_hints", _freeze_pairs(self.component_hints))
+        object.__setattr__(
+            self,
+            "evidence_hints",
+            tuple(str(item).strip() for item in self.evidence_hints if str(item).strip()),
+        )
+
+    def component_dict(self) -> dict[str, Any]:
+        return dict(thaw_value(self.component_hints))
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateBatch:
+    hits: tuple[CandidateHit, ...] = ()
+    diagnostics: tuple[tuple[str, Any], ...] = field(default_factory=tuple)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "hits", tuple(self.hits))
+        object.__setattr__(self, "diagnostics", _freeze_pairs(self.diagnostics, max_items=12))
+
+    def diagnostic_dict(self) -> dict[str, Any]:
+        return dict(thaw_value(self.diagnostics))
+
+
+@runtime_checkable
+class CandidateSource(Protocol):
+    name: str
+
+    def search(self, request: CandidateRequest) -> CandidateBatch: ...
+
+
+@runtime_checkable
+class RecallEngine(Protocol):
+    def recall(self, request: CandidateRequest) -> RecallBundle: ...
+
+
+def _freeze_pairs(value: Any, *, max_items: int | None = None) -> tuple[tuple[str, Any], ...]:
+    if isinstance(value, _FrozenMapping):
+        pairs = list(value.items)
+    elif isinstance(value, Mapping):
+        pairs = list(value.items())
+    else:
+        pairs = list(value or ())
+    if max_items is not None:
+        pairs = pairs[:max_items]
+    return tuple((str(key), freeze_value(item)) for key, item in pairs)

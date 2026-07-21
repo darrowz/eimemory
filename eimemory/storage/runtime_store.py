@@ -425,6 +425,32 @@ class RuntimeStore:
             scope_ref = None if scope is None else (scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope))
             return self.sqlite.get_by_id(record_id, scope=scope_ref)
 
+    def get_by_exact_ref(
+        self,
+        record_id: str,
+        *,
+        scope: ScopeRef | dict,
+        source_id: str,
+    ) -> RecordEnvelope | None:
+        with self._lock:
+            scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+            return self.sqlite.get_by_exact_ref(record_id, scope=scope_ref, source_id=source_id)
+
+    def list_by_record_id_exact_scope(
+        self,
+        record_id: str,
+        *,
+        scope: ScopeRef | dict,
+        source_ids: list[str] | tuple[str, ...] | None = None,
+    ) -> list[RecordEnvelope]:
+        with self._lock:
+            scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+            return self.sqlite.list_by_record_id_exact_scope(
+                record_id,
+                scope=scope_ref,
+                source_ids=source_ids,
+            )
+
     def get_by_idempotency_key(
         self,
         *,
@@ -559,6 +585,7 @@ class RuntimeStore:
         meta_value: object,
         status: str | None = None,
         limit: int = 100,
+        source_ids: list[str] | tuple[str, ...] | None = None,
     ) -> list[RecordEnvelope] | None:
         with self._lock:
             scope_ref = None if scope is None else (scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope))
@@ -569,6 +596,7 @@ class RuntimeStore:
                 meta_value=meta_value,
                 status=status,
                 limit=limit,
+                source_ids=source_ids,
             )
 
     def upsert_memory_edge(self, edge: MemoryEdge) -> MemoryEdge:

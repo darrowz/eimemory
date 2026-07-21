@@ -1,0 +1,604 @@
+from __future__ import annotations
+
+from collections import Counter
+from dataclasses import replace
+from time import perf_counter
+from typing import Any
+
+from eimemory.governance.memory_graph import build_evidence_refs, build_timeline, graph_route_for_query
+from eimemory.identity import extract_user_aliases, hongtu_query_scopes_with_aliases
+from eimemory.knowledge.views import build_recall_view, choose_view_type, records_from_view
+from eimemory.metadata import business_metadata
+from eimemory.models.records import RecallBundle, RecordEnvelope, ScopeRef
+from eimemory.raw.retrieval import search_raw_chunks
+from eimemory.recall import classify_recall_intent
+from eimemory.storage.runtime_store import RuntimeStore
+
+from .contracts import CandidateRequest, CandidateSource, ExactScope, freeze_value
+
+
+class GovernedRecallEngine:
+    """Single owner of recall hydration, governance, ordering, and packaging."""
+
+    name = "governed"
+    policy_version = "governed-recall.v1"
+
+    def __init__(self, *, store: RuntimeStore, candidate_source: CandidateSource, callbacks: Any | None = None) -> None:
+        self.store = store
+        self.candidate_source = candidate_source
+        self._callbacks = callbacks
+
+    def bind(self, callbacks: Any) -> None:
+        if self._callbacks is not None and self._callbacks is not callbacks:
+            raise ValueError("recall engine is already bound to another MemoryAPI instance")
+        self._callbacks = callbacks
+
+    def recall(self, request: CandidateRequest) -> RecallBundle:
+        started = perf_counter()
+        memory = self._callbacks
+        if memory is None:
+            raise RuntimeError("GovernedRecallEngine must be bound to MemoryAPI before recall")
+        normalized_query = request.query
+        limit = request.limit
+        task_context = request.task_context_dict()
+        source_ids = request.source_ids
+        recall_mode = str(task_context.get("recall_mode") or "").strip().lower()
+        raw_hybrid = recall_mode == "raw_hybrid"
+        scope_ref = request.scope.to_scope_ref()
+        recall_scope_aliases = extract_user_aliases(task_context)
+        query_scope_refs = hongtu_query_scopes_with_aliases(scope_ref, aliases=recall_scope_aliases)
+        query_scope_limit = memory._positive_int(task_context.get("query_scope_limit"))
+        if recall_mode == "fast" and query_scope_limit:
+            query_scope_refs = memory._prioritize_fast_query_scopes(
+                query_scope_refs,
+                primary_scope=scope_ref,
+            )[:query_scope_limit]
+        policy_scope_ref = query_scope_refs[0] if query_scope_refs else scope_ref
+        task_type = str(task_context.get("task_type") or "")
+        if not normalized_query:
+            return RecallBundle(
+                items=[],
+                rules=[],
+                reflections=[],
+                confidence=0.0,
+                next_action_hint="",
+                explanation={
+                    "query": normalized_query,
+                    "task_context": task_context,
+                    "invalid_request": "empty_query",
+                },
+            )
+        if limit <= 0:
+            return RecallBundle(
+                items=[],
+                rules=[],
+                reflections=[],
+                confidence=0.0,
+                next_action_hint="",
+                explanation={
+                    "query": normalized_query,
+                    "task_context": task_context,
+                    "invalid_request": "non_positive_limit",
+                },
+            )
+        if source_ids == ():
+            return RecallBundle(
+                items=[],
+                rules=[],
+                reflections=[],
+                confidence=0.0,
+                next_action_hint="",
+                explanation={
+                    "query": normalized_query,
+                    "task_context": task_context,
+                    "selected_count": 0,
+                    "recall_mode": "raw_hybrid" if raw_hybrid else (recall_mode or "structured"),
+                    "engine_diagnostics": {
+                        "engine_name": self.name,
+                        "source_names": [],
+                        "candidate_count": 0,
+                        "candidate_limit": limit,
+                        "elapsed_ms": round(max(0.0, (perf_counter() - started) * 1000.0), 3),
+                        "drops": {},
+                        "fallback": False,
+                        "fallback_reason": "empty_source_allowlist",
+                        "policy_version": self.policy_version,
+                    },
+                },
+            )
+        active_policy = {"retrieval_policy": {}, "response_policy": {}}
+        if task_type:
+            active_policy = self.store.get_active_policy(task_type=task_type, scope=policy_scope_ref)
+        policy_search = self.store.search_policy(
+            normalized_query,
+            scope=policy_scope_ref,
+            context=task_context,
+            limit=5,
+        )
+        retrieval_policy = dict(active_policy.get("retrieval_policy") or {})
+        recall_profile, recall_profile_source = memory._resolve_recall_profile(
+            task_context=task_context,
+            retrieval_policy=retrieval_policy,
+        )
+        profile_config = memory._recall_profile_config(recall_profile)
+        search_limit = max(limit * profile_config["search_multiplier"], limit)
+        recall_intent = classify_recall_intent(normalized_query, task_context)
+        graph_route = graph_route_for_query(
+            normalized_query,
+            intent_name=recall_intent.name,
+            task_context=task_context,
+        )
+        report_query = memory._is_report_query(normalized_query, task_context)
+        recall_filters = memory._recall_filters_from_task_context(task_context)
+        policy_source_weights = memory._source_weights(retrieval_policy.get("source_weights"))
+        if policy_source_weights:
+            recall_filters["source_weights"] = {
+                **policy_source_weights,
+                **dict(recall_filters.get("source_weights") or {}),
+            }
+        memory._merge_recall_intent_filters(recall_filters, recall_intent)
+        recall_filters["scoring_profile"] = recall_profile
+        operational_recall_allowed = report_query or memory._allows_operational_recall(normalized_query, task_context)
+        if operational_recall_allowed:
+            recall_filters["include_evidence_only"] = True
+            recall_filters["include_report_records"] = True
+        else:
+            recall_filters["blocked_recall_lanes"] = list(
+                dict.fromkeys(
+                    [
+                        *memory._string_list(recall_filters.get("blocked_recall_lanes")),
+                        *memory._default_blocked_recall_lanes(),
+                    ]
+                )
+            )
+        pipeline_snapshot = memory._pipeline_snapshot(
+            search_limit=search_limit,
+            raw_hybrid=raw_hybrid,
+            recall_profile=recall_profile,
+            recall_profile_source=recall_profile_source,
+            recall_intent_name=recall_intent.name,
+            graph_depth=int(profile_config["graph_depth"]),
+            query_scope_count=len(query_scope_refs),
+            report_query=report_query,
+            operational_recall_allowed=operational_recall_allowed,
+        )
+        engine_drops: Counter[str] = Counter()
+        raw_evidence: list[dict] = []
+        if raw_hybrid and source_ids != ():
+            seen_raw_ids: set[str] = set()
+            for query_scope_ref in query_scope_refs:
+                for evidence in search_raw_chunks(
+                    self.store,
+                    query=normalized_query,
+                    scope=query_scope_ref,
+                    task_context=task_context,
+                    limit=max(limit, 1),
+                ):
+                    record_payload = evidence.get("record") if isinstance(evidence, dict) else {}
+                    record_id = str(record_payload.get("record_id") or "") if isinstance(record_payload, dict) else ""
+                    raw_source_id = str(record_payload.get("source_id") or "") if isinstance(record_payload, dict) else ""
+                    raw_scope_payload = record_payload.get("scope") if isinstance(record_payload, dict) else None
+                    if source_ids is not None and raw_source_id not in source_ids:
+                        engine_drops["raw_source_not_allowed"] += 1
+                        continue
+                    if not record_id or not raw_source_id or not isinstance(raw_scope_payload, dict):
+                        engine_drops["raw_ref_missing"] += 1
+                        continue
+                    raw_scope = ExactScope.from_scope(raw_scope_payload)
+                    visible_scopes = {ExactScope.from_scope(item) for item in self._visible_exact_scopes([query_scope_ref])}
+                    if raw_scope not in visible_scopes:
+                        engine_drops["raw_scope_not_allowed"] += 1
+                        continue
+                    raw_record = self.store.get_by_exact_ref(
+                        record_id,
+                        scope=raw_scope.to_scope_ref(),
+                        source_id=raw_source_id,
+                    )
+                    if (
+                        raw_record is None
+                        or raw_record.status != "active"
+                        or ExactScope.from_scope(raw_record.scope) != raw_scope
+                        or raw_record.source_id != raw_source_id
+                    ):
+                        engine_drops["raw_not_authoritative"] += 1
+                        continue
+                    if record_id in seen_raw_ids:
+                        continue
+                    seen_raw_ids.add(record_id)
+                    raw_evidence.append(evidence)
+            raw_evidence = raw_evidence[:limit]
+        report_query = report_query or operational_recall_allowed
+        items: list[RecordEnvelope] = []
+        seen_item_refs: set[tuple[str, ExactScope, str]] = set()
+        report_items_direct = self._report_records_from_query(
+            normalized_query,
+            query_scope_refs,
+            source_ids=source_ids,
+        )
+        for item in report_items_direct:
+            seen_item_refs.add(self._record_key(item))
+            items.append(item)
+        search_kinds = memory._search_kinds_for_recall_intent(
+            recall_intent=recall_intent,
+            report_query=report_query,
+            operational_recall_allowed=operational_recall_allowed,
+        )
+        source_reports: list[dict[str, Any]] = []
+        scored_items: list[dict[str, Any]] = []
+        for query_scope_ref in query_scope_refs:
+            source_request = replace(
+                request,
+                scope=ExactScope.from_scope(query_scope_ref),
+                kinds=tuple(search_kinds),
+                limit=search_limit,
+                budget=max(search_limit, memory._positive_int(recall_filters.get("candidate_limit")) or search_limit * 36),
+                recall_filters=freeze_value(recall_filters),
+            )
+            batch = self.candidate_source.search(source_request)
+            source_reports.append(batch.diagnostic_dict())
+            for hit in batch.hits:
+                if source_ids is not None and hit.ref.source_id not in source_ids:
+                    engine_drops["source_not_allowed"] += 1
+                    continue
+                record = self.store.get_by_exact_ref(
+                    hit.ref.record_id,
+                    scope=hit.ref.scope.to_scope_ref(),
+                    source_id=hit.ref.source_id,
+                )
+                if record is None:
+                    engine_drops["missing_or_corrupt_record"] += 1
+                    continue
+                if not self._record_matches_ref(record, hit.ref):
+                    engine_drops["ref_mismatch"] += 1
+                    continue
+                if record.status != "active":
+                    engine_drops["inactive_record"] += 1
+                    continue
+                record_key = self._record_key(record)
+                if record_key in seen_item_refs:
+                    continue
+                seen_item_refs.add(record_key)
+                items.append(record)
+                scored_items.append({"record_id": record.record_id, **hit.component_dict()})
+        search_report = self._merge_source_reports(source_reports, scored_items=scored_items)
+        blocked_counts: Counter[str] = Counter(dict(search_report.get("blocked_counts") or {}))
+        diagnostic_blocked_counts = memory._diagnostic_blocked_operational_counts(
+            query=normalized_query,
+            query_scope_refs=query_scope_refs,
+            recall_filters=recall_filters,
+            operational_recall_allowed=operational_recall_allowed,
+            source_ids=source_ids,
+        )
+        blocked_counts.update(diagnostic_blocked_counts)
+        items, suppressed_counts = memory._filter_default_suppressed_items(
+            items,
+            task_context,
+            allow_operational_recall=operational_recall_allowed,
+        )
+        blocked_counts.update(suppressed_counts)
+        report_items = [item for item in items if report_query and memory._is_recallable_report_record(item)]
+        preference_query = memory._is_preference_query(
+            normalized_query,
+            task_context,
+            recall_intent=recall_intent,
+        ) and not report_query
+        if preference_query:
+            items = [item for item in items if memory._is_preference_recall_candidate(item, normalized_query)]
+        graph_expanded = 0
+        graph_edge_refs = []
+        related_ids: list[str] = []
+        base_items = list(items)
+        base_ids = {item.record_id for item in base_items}
+        for item in base_items:
+            for link in item.links:
+                if link.target_kind in {"memory", "multimodal_memory"}:
+                    related_ids.append(link.target_id)
+        if related_ids and profile_config["graph_depth"] > 0:
+            items = memory._expand_graph_items(
+                base_items=base_items,
+                scopes=query_scope_refs,
+                graph_depth=profile_config["graph_depth"],
+                source_ids=source_ids,
+            )
+            items, graph_suppressed_counts = memory._filter_default_suppressed_items(
+                items,
+                task_context,
+                allow_operational_recall=operational_recall_allowed,
+            )
+            blocked_counts.update(graph_suppressed_counts)
+            if preference_query:
+                items = [item for item in items if memory._is_preference_recall_candidate(item, normalized_query)]
+        if base_items and profile_config["graph_depth"] > 0:
+            edge_items, graph_edge_refs = memory._expand_memory_edge_items(
+                base_items=base_items,
+                scopes=query_scope_refs,
+                edge_types=list(graph_route.get("edge_types") or []),
+                limit=max(limit * 2, limit),
+                source_ids=source_ids,
+            )
+            if edge_items:
+                items = memory._dedupe_records([*items, *edge_items])
+                items, edge_suppressed_counts = memory._filter_default_suppressed_items(
+                    items,
+                    task_context,
+                    allow_operational_recall=operational_recall_allowed,
+                )
+                blocked_counts.update(edge_suppressed_counts)
+                if preference_query:
+                    items = [item for item in items if memory._is_preference_recall_candidate(item, normalized_query)]
+        claims = [item for item in items if item.kind == "claim_card"]
+        pages = [item for item in items if item.kind == "knowledge_page"]
+        memories = [item for item in items if item.kind in {"memory", "rule"}]
+        view = build_recall_view(
+            view_type=choose_view_type(task_context),
+            claims=claims,
+            pages=pages,
+            memories=memories,
+            query=normalized_query,
+        )
+        view_items = records_from_view(view, items, limit=max(limit * 4, limit))
+        if operational_recall_allowed:
+            view_items = memory._dedupe_records([*view_items, *items])
+        items, hard_filter_counts = memory._apply_hard_recall_filters_with_counts(
+            memory._dedupe_records(view_items),
+            recall_filters,
+        )
+        blocked_counts.update(hard_filter_counts)
+        memory_usage_adjustments = memory._memory_usage_adjustments(scope_ref, source_ids=source_ids)
+        items = memory._apply_memory_usage_feedback(items, memory_usage_adjustments)
+        items = items[:limit]
+        if report_items:
+            items = memory._dedupe_records([*report_items, *items])[:limit]
+        graph_expanded = sum(1 for item in items if item.record_id not in base_ids)
+        active_rules = self.store.list_records(
+            kinds=["rule"],
+            scope=scope_ref,
+            status="active",
+            limit=100,
+            source_ids=source_ids,
+        )
+        active_rules = [item for item in active_rules if self._record_is_exact_and_active(item)]
+        rules = [
+            rule
+            for rule in active_rules
+            if not task_type or str(business_metadata(rule.meta).get("task_type") or "") == task_type
+        ][:50]
+        rule_recall_items = memory._matching_active_rule_recall_items(
+            active_rules=active_rules,
+            query=normalized_query,
+            recall_intent=recall_intent,
+            limit=limit,
+        )
+        if rule_recall_items:
+            items = memory._dedupe_records([*rule_recall_items, *items])[:limit]
+        items, online_gate_counts = memory._apply_online_recall_pollution_gate(
+            items,
+            allow_operational_recall=operational_recall_allowed,
+        )
+        blocked_counts.update(online_gate_counts)
+        if blocked_counts:
+            recall_filters["blocked_counts"] = dict(sorted(blocked_counts.items()))
+        memory_telemetry_summary = memory._memory_usage_summary(items, memory_usage_adjustments)
+        final_view = build_recall_view(
+            view_type=view.view_type,
+            claims=[item for item in items if item.kind == "claim_card"],
+            pages=[item for item in items if item.kind == "knowledge_page"],
+            memories=[item for item in items if item.kind in {"memory", "rule"}],
+            query=normalized_query,
+        )
+        reflection_items = self.store.search(
+            query=normalized_query,
+            kinds=["reflection"],
+            scope=scope_ref,
+            limit=3,
+            source_ids=source_ids,
+        )
+        reflections = [item for item in reflection_items if self._record_is_exact_and_active(item)][:3]
+        confidence = 0.0
+        if items:
+            confidence = 0.92 if active_policy.get("retrieval_policy", {}).get("route_hint") == "task_context_first" else 0.81
+        next_hint = ""
+        response_policy = dict(active_policy.get("response_policy") or {})
+        if response_policy.get("next_action_hint"):
+            next_hint = str(response_policy["next_action_hint"])
+        elif items:
+            next_hint = items[0].title.lower()
+        gap = None
+        retrieval_policy = dict(active_policy.get("retrieval_policy") or {})
+        if not items and retrieval_policy.get("open_unknown_on_low_confidence"):
+            from eimemory.api.evolution import EvolutionAPI
+
+            gap = EvolutionAPI(self.store).capture_recall_gap(
+                query=normalized_query,
+                task_context=task_context,
+                scope=memory._scope_dict(scope_ref),
+                policy=retrieval_policy,
+            )
+            reflections = [gap["reflection"], *reflections][:3]
+        event_graph_summary = memory._event_graph_summary(items, graph_edge_refs)
+        engine_diagnostics = self._engine_diagnostics(
+            source_reports=source_reports,
+            drops=engine_drops,
+            limit=limit,
+            elapsed_ms=(perf_counter() - started) * 1000.0,
+        )
+        return RecallBundle(
+            items=items,
+            rules=rules,
+            reflections=reflections,
+            confidence=confidence,
+            next_action_hint=next_hint,
+            explanation={
+                "query": normalized_query,
+                "task_context": task_context,
+                "recall_profile": recall_profile,
+                "recall_profile_source": recall_profile_source,
+                "recall_profile_params": profile_config,
+                "selected_count": len(items),
+                "active_policy": dict(active_policy.get("retrieval_policy") or {}),
+                "policy_first": bool(policy_search.get("policy_suggestions")),
+                "policy_suggestions": list(policy_search.get("policy_suggestions") or []),
+                "matched_event_type": str(policy_search.get("matched_event_type") or ""),
+                "rule_count": len(rules),
+                "rule_recall_promoted_count": len(rule_recall_items),
+                "unknown_record_id": gap["unknown"].record_id if gap else "",
+                "graph_expanded": graph_expanded,
+                "graph_route": graph_route,
+                "event_graph": event_graph_summary,
+                "retrieval_mode": str(search_report.get("retrieval_mode") or "hybrid"),
+                "vector_hits": int(search_report.get("vector_hits") or 0),
+                "quality_summary": memory._quality_summary(items),
+                "source_composition": memory._source_composition(items),
+                "selected_records": memory._selected_record_summaries(items),
+                "evidence_refs": build_evidence_refs(items, graph_edge_refs),
+                "timeline": build_timeline(items),
+                "pipeline": memory._recall_pipeline_summary(
+                    pipeline_snapshot,
+                    retrieved_count=len(search_report.get("scored_items") or []),
+                    candidate_count=len(base_items),
+                    selected_count=len(items),
+                    blocked_counts=blocked_counts,
+                ),
+                "memory_telemetry": memory_telemetry_summary,
+                "online_recall_gate": {
+                    "ok": True,
+                    "mode": "bypassed" if operational_recall_allowed else "enforced",
+                    "blocked_counts": dict(sorted(online_gate_counts.items())),
+                },
+                "scoring": memory._scoring_for_items(
+                    items,
+                    search_report,
+                    memory_usage_adjustments=memory_usage_adjustments,
+                ),
+                "recall_intent": memory._recall_intent_summary(recall_intent),
+                "query_scopes": [memory._scope_dict(item) for item in query_scope_refs],
+                "recall_scope_aliases": recall_scope_aliases,
+                "recall_filters": recall_filters,
+                "recall_mode": "raw_hybrid" if raw_hybrid else (recall_mode or "structured"),
+                **({"raw_evidence": raw_evidence} if raw_hybrid else {}),
+                "preference_query": preference_query,
+                "report_query": report_query,
+                "recall_view": final_view.to_dict(),
+                "engine_diagnostics": engine_diagnostics,
+            },
+        )
+
+    @staticmethod
+    def _record_key(record: RecordEnvelope) -> tuple[str, ExactScope, str]:
+        return (record.record_id, ExactScope.from_scope(record.scope), record.source_id)
+
+    @staticmethod
+    def _record_matches_ref(record: RecordEnvelope, ref: Any) -> bool:
+        return (
+            record.record_id == ref.record_id
+            and ExactScope.from_scope(record.scope) == ref.scope
+            and record.source_id == ref.source_id
+        )
+
+    def _record_is_exact_and_active(self, record: RecordEnvelope) -> bool:
+        if record.status != "active":
+            return False
+        hydrated = self.store.get_by_exact_ref(
+            record.record_id,
+            scope=record.scope,
+            source_id=record.source_id,
+        )
+        return hydrated is not None and self._record_key(hydrated) == self._record_key(record) and hydrated.status == "active"
+
+    def _visible_exact_scopes(self, scopes: list[ScopeRef]) -> list[ScopeRef]:
+        visible: list[ScopeRef] = []
+        seen: set[tuple[str, str, str, str]] = set()
+        for scope in scopes:
+            candidates = [scope]
+            if scope.user_id:
+                candidates.append(
+                    ScopeRef(
+                        tenant_id=scope.tenant_id,
+                        agent_id=scope.agent_id,
+                        workspace_id=scope.workspace_id,
+                        user_id="",
+                    )
+                )
+            for candidate in candidates:
+                key = (candidate.tenant_id, candidate.agent_id, candidate.workspace_id, candidate.user_id)
+                if key not in seen:
+                    seen.add(key)
+                    visible.append(candidate)
+        return visible
+
+    def _resolve_visible_record(
+        self,
+        record_id: str,
+        scopes: list[ScopeRef],
+        source_ids: tuple[str, ...] | None,
+    ) -> RecordEnvelope | None:
+        if not record_id or source_ids == ():
+            return None
+        for exact_scope in self._visible_exact_scopes(scopes):
+            for record in self.store.list_by_record_id_exact_scope(
+                record_id,
+                scope=exact_scope,
+                source_ids=source_ids,
+            ):
+                if self._record_is_exact_and_active(record):
+                    return record
+        return None
+
+    def _report_records_from_query(
+        self,
+        query: str,
+        scopes: list[ScopeRef],
+        *,
+        source_ids: tuple[str, ...] | None,
+    ) -> list[RecordEnvelope]:
+        import re
+
+        records: list[RecordEnvelope] = []
+        seen: set[tuple[str, ExactScope, str]] = set()
+        for record_id in re.findall(r"rule_evolution_[A-Za-z0-9_-]+", str(query or "")):
+            record = self._resolve_visible_record(record_id, scopes, source_ids)
+            if record is None or not self._callbacks._is_recallable_report_record(record):
+                continue
+            key = self._record_key(record)
+            if key in seen:
+                continue
+            seen.add(key)
+            records.append(record)
+        return records
+
+    @staticmethod
+    def _merge_source_reports(source_reports: list[dict[str, Any]], *, scored_items: list[dict[str, Any]]) -> dict[str, Any]:
+        merged: dict[str, Any] = {
+            "retrieval_mode": "recall_index_hybrid",
+            "vector_hits": 0,
+            "blocked_counts": {},
+            "scored_items": scored_items,
+        }
+        for report in source_reports:
+            merged["retrieval_mode"] = str(report.get("retrieval_mode") or merged["retrieval_mode"])
+            merged["vector_hits"] += int(report.get("vector_hits") or 0)
+            for key, value in dict(report.get("drops") or {}).items():
+                merged["blocked_counts"][str(key)] = int(merged["blocked_counts"].get(str(key), 0)) + int(value or 0)
+        return merged
+
+    def _engine_diagnostics(
+        self,
+        *,
+        source_reports: list[dict[str, Any]],
+        drops: Counter[str],
+        limit: int,
+        elapsed_ms: float,
+    ) -> dict[str, Any]:
+        fallback_reports = [item for item in source_reports if bool(item.get("fallback"))]
+        source_names = list(dict.fromkeys(str(item.get("source_name") or self.candidate_source.name) for item in source_reports))
+        return {
+            "engine_name": self.name,
+            "source_names": source_names[:4],
+            "candidate_count": sum(int(item.get("candidate_count") or 0) for item in source_reports),
+            "candidate_limit": max([int(item.get("candidate_limit") or 0) for item in source_reports] or [limit]),
+            "elapsed_ms": round(max(0.0, elapsed_ms), 3),
+            "drops": {str(key): int(value) for key, value in list(sorted(drops.items()))[:8]},
+            "fallback": bool(fallback_reports),
+            "fallback_reason": str(fallback_reports[0].get("fallback_reason") or "") if fallback_reports else "",
+            "policy_version": self.policy_version,
+        }

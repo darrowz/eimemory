@@ -2298,6 +2298,80 @@ class SqliteRecordStore:
             return None
         return self._record_from_payload_json(row["payload_json"])
 
+    def get_by_exact_ref(
+        self,
+        record_id: str,
+        *,
+        scope: ScopeRef,
+        source_id: str,
+    ) -> RecordEnvelope | None:
+        """Hydrate one authoritative record without alias or global-user expansion."""
+
+        normalized_source_id = normalize_source_id(source_id)
+        row = self.conn.execute(
+            """
+            SELECT payload_json
+            FROM records
+            WHERE record_id = ?
+              AND tenant_id = ?
+              AND agent_id = ?
+              AND workspace_id = ?
+              AND user_id = ?
+              AND source_id = ?
+            LIMIT 1
+            """,
+            (
+                str(record_id or "").strip(),
+                scope.tenant_id or "default",
+                scope.agent_id,
+                scope.workspace_id,
+                scope.user_id,
+                normalized_source_id,
+            ),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._record_from_payload_json(row["payload_json"])
+
+    def list_by_record_id_exact_scope(
+        self,
+        record_id: str,
+        *,
+        scope: ScopeRef,
+        source_ids: list[str] | tuple[str, ...] | None = None,
+    ) -> list[RecordEnvelope]:
+        """List exact-scope matches for direct-ID/report and graph resolution."""
+
+        allowed_source_ids = normalize_source_ids(source_ids)
+        if allowed_source_ids == ():
+            return []
+        where = [
+            "record_id = ?",
+            "tenant_id = ?",
+            "agent_id = ?",
+            "workspace_id = ?",
+            "user_id = ?",
+        ]
+        params: list[object] = [
+            str(record_id or "").strip(),
+            scope.tenant_id or "default",
+            scope.agent_id,
+            scope.workspace_id,
+            scope.user_id,
+        ]
+        if allowed_source_ids is not None:
+            where.append(f"source_id IN ({','.join('?' for _ in allowed_source_ids)})")
+            params.extend(allowed_source_ids)
+        rows = self.conn.execute(
+            "SELECT payload_json FROM records WHERE " + " AND ".join(where) + " ORDER BY updated_at DESC",
+            params,
+        ).fetchall()
+        return [
+            record
+            for row in rows
+            if (record := self._record_from_payload_json(row["payload_json"])) is not None
+        ]
+
     def get_by_idempotency_key(
         self,
         *,
@@ -2630,6 +2704,7 @@ class SqliteRecordStore:
         meta_value: Any,
         status: str | None = None,
         limit: int = 100,
+        source_ids: list[str] | tuple[str, ...] | None = None,
     ) -> list[RecordEnvelope] | None:
         expression = _meta_json_text_expression(meta_key)
         if not expression:
@@ -2645,6 +2720,12 @@ class SqliteRecordStore:
             params.append(status)
         if scope:
             self._apply_scope_filters(where, params, scope)
+        allowed_source_ids = normalize_source_ids(source_ids)
+        if allowed_source_ids == ():
+            return []
+        if allowed_source_ids is not None:
+            where.append(f"source_id IN ({','.join('?' for _ in allowed_source_ids)})")
+            params.extend(allowed_source_ids)
         try:
             # The key-first CTE relies on records.storage_key remaining the
             # primary key, so the payload join preserves the bounded row count.
