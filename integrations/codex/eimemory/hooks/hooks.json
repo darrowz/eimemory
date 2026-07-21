@@ -1,0 +1,35 @@
+{
+  "description": "Bounded, advisory eimemory lifecycle integration for Codex.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {"type": "command", "command": "eimemory codex-hook --event SessionStart", "timeout": 2}
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {"type": "command", "command": "eimemory codex-hook --event UserPromptSubmit", "timeout": 2}
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {"type": "command", "command": "eimemory codex-hook --event PostToolUse", "timeout": 2}
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {"type": "command", "command": "eimemory codex-hook --event Stop", "timeout": 2}
+        ]
+      }
+    ]
+  }
+}

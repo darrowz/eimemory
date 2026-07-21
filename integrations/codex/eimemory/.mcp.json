@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "eimemory": {
+      "command": "eimemory",
+      "args": ["codex-mcp"]
+    }
+  }
+}

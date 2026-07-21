@@ -1,0 +1,18 @@
+{
+  "name": "eimemory",
+  "version": "1.9.78",
+  "description": "Channel-isolated authoritative long-term memory for Codex",
+  "author": {
+    "name": "eimemory contributors"
+  },
+  "interface": {
+    "displayName": "Eimemory",
+    "shortDescription": "Recall and retain verified Codex knowledge.",
+    "longDescription": "Eimemory adds bounded lifecycle recall, durable memory tools, verified outcomes, and fail-open operation to Codex.",
+    "developerName": "eimemory contributors",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write"],
+    "defaultPrompt": "Use eimemory recall before durable decisions and record only reusable, verified knowledge."
+  },
+  "mcpServers": "./.mcp.json"
+}

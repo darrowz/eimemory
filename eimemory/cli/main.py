@@ -948,6 +948,14 @@ def main(argv: list[str] | None = None) -> int:
     args_list = list(sys.argv[1:] if argv is None else argv)
     if args_list and args_list[0] == "qmd":
         return qmd_main(args_list[1:])
+    if args_list and args_list[0] == "codex-hook":
+        from eimemory.adapters.codex.hook import main as codex_hook_main
+
+        return codex_hook_main(args_list[1:])
+    if args_list and args_list[0] == "codex-mcp":
+        from eimemory.adapters.codex.mcp_server import main as codex_mcp_main
+
+        return codex_mcp_main(args_list[1:])
     parser = _build_parser()
     parsed = parser.parse_args(args_list)
     try:
