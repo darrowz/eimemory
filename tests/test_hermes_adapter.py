@@ -69,17 +69,13 @@ def test_hermes_provider_exposes_only_closed_loop_tools_and_rejects_unbound_term
     provider.initialize("hermes-session", agent_workspace="embodied", agent_context="primary")
 
     names = [schema["name"] for schema in provider.get_tool_schemas()]
+    verify_schema = next(
+        schema for schema in provider.get_tool_schemas() if schema["name"] == "eimemory_verify_outcome"
+    )
     output = json.loads(
         provider.handle_tool_call(
             "eimemory_verify_outcome",
-            {
-                "session_id": "hermes-session",
-                "event_id": "hermes-task-1",
-                "task_type": "research.audit",
-                "success": True,
-                "verification": "primary-source-check:passed",
-                "result": "audit complete",
-            },
+            {"result": "audit complete"},
         )
     )
 
@@ -89,6 +85,8 @@ def test_hermes_provider_exposes_only_closed_loop_tools_and_rejects_unbound_term
         "eimemory_verify_outcome",
         "eimemory_status",
     ]
+    assert verify_schema["parameters"]["properties"] == {"result": {"type": "string"}}
+    assert verify_schema["parameters"]["required"] == ["result"]
     assert client.calls == []
     assert output["ok"] is False
     assert "host-verified Hermes turn" in output["error"]

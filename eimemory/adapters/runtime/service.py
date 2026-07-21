@@ -5,7 +5,7 @@ from hashlib import sha256
 from datetime import datetime, timedelta, timezone
 import re
 import unicodedata
-from typing import Any
+from typing import Any, Mapping
 
 from eimemory.adapters.runtime.channel import (
     AUTHORITY_MODE,
@@ -23,7 +23,6 @@ from eimemory.governance.evidence_contract import (
 )
 from eimemory.governance.tool_receipts import (
     ATTESTATION_PRODUCERS,
-    HOST_OUTPUT_TEST_POLICY_ID,
     MAX_ELIGIBLE_RECEIPTS_PER_RUN,
     STRUCTURED_TEST_POLICY_ID,
     TRUSTED_TEST_POLICY_IDS,
@@ -1036,7 +1035,19 @@ class AgentRuntimeMemoryService:
         safe_result = self._bounded_attestation_result(result)
         invocation_digest = sha256(safe_input.encode("utf-8", errors="replace")).hexdigest()
         result_digest = sha256(safe_result.encode("utf-8", errors="replace")).hexdigest()
-        policy_id, passed = self._verification_policy(normalized_tool, safe_input, safe_result)
+        # Preserve the host result shape as part of the trust decision. Codex
+        # raw output strings do not prove process exit status; Hermes strings
+        # are accepted only as the host's documented JSON status envelope.
+        policy_id, passed = self._verification_policy(
+            normalized_tool,
+            safe_input,
+            safe_result,
+            structured_envelope=(
+                isinstance(result, Mapping)
+                or (channel_id == "hermes" and isinstance(result, str))
+            ),
+            require_complete_envelope=(channel_id == "hermes" and isinstance(result, str)),
+        )
         release = current_release_identity(self.runtime, ScopeRef.from_dict(base_scope_from_channel(channel_id, channel_scope)))
         issued_at = datetime.now(timezone.utc)
         stable = json.dumps(
@@ -1216,6 +1227,9 @@ class AgentRuntimeMemoryService:
         tool_name: str,
         safe_input: str,
         safe_result: str,
+        *,
+        structured_envelope: bool = True,
+        require_complete_envelope: bool = False,
     ) -> tuple[str, bool]:
         try:
             parsed = json.loads(safe_result)
@@ -1243,21 +1257,22 @@ class AgentRuntimeMemoryService:
                 re.I,
             ) is not None
         recognized_test = direct_test_tool or wrapped_test_tool
-        if recognized_test and isinstance(parsed, dict):
-            output = str(parsed.get("summary") or parsed.get("output") or "")
-            error = str(parsed.get("error") or "").strip()
+        if recognized_test and structured_envelope and isinstance(parsed, dict):
+            output_value = parsed.get("output") if require_complete_envelope else (
+                parsed.get("summary") or parsed.get("output")
+            )
+            error_value = parsed.get("error", "")
+            exit_code = parsed.get("exit_code")
             if (
-                parsed.get("exit_code") == 0
-                and not error
-                and AgentRuntimeMemoryService._positive_test_output(output)
+                isinstance(output_value, str)
+                and isinstance(error_value, str)
+                and (not require_complete_envelope or "error" in parsed)
+                and type(exit_code) is int
+                and exit_code == 0
+                and not error_value.strip()
+                and AgentRuntimeMemoryService._positive_test_output(output_value)
             ):
                 return STRUCTURED_TEST_POLICY_ID, True
-        if (
-            recognized_test
-            and parsed is None
-            and AgentRuntimeMemoryService._positive_test_output(safe_result)
-        ):
-            return HOST_OUTPUT_TEST_POLICY_ID, True
         return "execution_only.v1", False
 
     @staticmethod
@@ -1271,12 +1286,7 @@ class AgentRuntimeMemoryService:
                 re.I,
             )
         )
-        negative = re.search(
-            r"(?:\b[1-9]\d*\s+(?:failed|failures?|errors?)\b|(?:^|\n)\s*FAILED\b|test result:\s*FAILED)",
-            text,
-            re.I,
-        )
-        return positive and negative is None
+        return positive
 
     @staticmethod
     def _positive_limit(value: object, default: int) -> int:

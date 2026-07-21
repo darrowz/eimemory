@@ -49,7 +49,7 @@ class ReceiptIdHandoff:
                 (*key, clean_id, datetime.now(timezone.utc).isoformat()),
             )
             conn.execute(
-                "DELETE FROM receipt_handoff WHERE rowid IN (SELECT rowid FROM receipt_handoff WHERE channel = ? AND scope_digest = ? AND session_id = ? AND run_id = ? ORDER BY created_at DESC, receipt_id DESC LIMIT -1 OFFSET ?)",
+                "DELETE FROM receipt_handoff WHERE rowid IN (SELECT rowid FROM receipt_handoff WHERE channel = ? AND scope_digest = ? AND session_id = ? AND run_id = ? ORDER BY receipt_id DESC LIMIT -1 OFFSET ?)",
                 (*key, MAX_RECEIPTS_PER_RUN),
             )
             conn.execute(
@@ -71,7 +71,7 @@ class ReceiptIdHandoff:
             return []
         with self._connect(create=False) as conn:
             rows = conn.execute(
-                "SELECT receipt_id FROM receipt_handoff WHERE channel = ? AND scope_digest = ? AND session_id = ? AND run_id = ? ORDER BY created_at, receipt_id",
+                "SELECT receipt_id FROM receipt_handoff WHERE channel = ? AND scope_digest = ? AND session_id = ? AND run_id = ? ORDER BY receipt_id",
                 key,
             ).fetchall()
         return [str(row[0]) for row in rows[:MAX_RECEIPTS_PER_RUN]]
@@ -104,8 +104,12 @@ class ReceiptIdHandoff:
             if os.name == "posix":
                 self.path.parent.chmod(0o700)
             if not self.path.exists():
-                descriptor = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
-                os.close(descriptor)
+                try:
+                    descriptor = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+                except FileExistsError:
+                    pass
+                else:
+                    os.close(descriptor)
         if self.path.is_symlink():
             raise ValueError("receipt handoff file must not be a symlink")
         metadata = self.path.stat(follow_symlinks=False)

@@ -246,18 +246,11 @@ class HermesMemoryProviderCore:
             },
             {
                 "name": "eimemory_verify_outcome",
-                "description": "Record an explicitly verified Hermes task outcome bound to release evidence.",
+                "description": "Close the unique host-verified Hermes turn using its bound release evidence.",
                 "parameters": {
                     "type": "object",
-                    "properties": {
-                        "session_id": {"type": "string"},
-                        "event_id": {"type": "string"},
-                        "task_type": {"type": "string"},
-                        "success": {"type": "boolean"},
-                        "verification": {"type": "string"},
-                        "result": {"type": "string"},
-                    },
-                    "required": ["session_id", "event_id", "task_type", "success", "verification"],
+                    "properties": {"result": {"type": "string"}},
+                    "required": ["result"],
                 },
             },
             {
@@ -454,14 +447,13 @@ class HermesMemoryProviderCore:
                 },
             )
         if tool_name == "eimemory_verify_outcome":
-            session_id = _required_text(args, "session_id")
-            event_id = _required_text(args, "event_id")
             with self._lock:
                 bindings = tuple(self._verified_host_turns)
                 if self._verified_host_turn_overflow or len(bindings) != 1:
                     raise ValueError("exactly one unfinalized host-verified Hermes turn is required")
-                if bindings[0] != (session_id, event_id) or session_id != self._session_id:
-                    raise ValueError("terminal identity does not match the host-verified Hermes turn")
+                session_id, event_id = bindings[0]
+                if session_id != self._session_id:
+                    raise ValueError("terminal identity does not match the active Hermes session")
             receipt_ids = (
                 self._receipt_handoff.list_ids(
                     channel="hermes",

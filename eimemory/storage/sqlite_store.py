@@ -313,7 +313,7 @@ class SqliteRecordStore:
                    SELECT receipt_id FROM adapter_tool_receipts
                    WHERE channel = ? AND tenant_id = ? AND agent_id = ? AND workspace_id = ? AND user_id = ?
                      AND session_id = ? AND run_id = ? AND eligible = 1 AND consumed_trace_id = ''
-                   ORDER BY created_at DESC, receipt_id DESC LIMIT -1 OFFSET ?
+                   ORDER BY receipt_id DESC LIMIT -1 OFFSET ?
                )""",
             (
                 channel,

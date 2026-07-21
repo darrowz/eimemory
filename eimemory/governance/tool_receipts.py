@@ -32,10 +32,7 @@ V2_ATTESTATION = "hmac-sha256-v2"
 V2_MAX_AGE_SECONDS = 15 * 60
 MAX_ELIGIBLE_RECEIPTS_PER_RUN = 32
 STRUCTURED_TEST_POLICY_ID = "test_command.exit_zero.positive_count.v1"
-HOST_OUTPUT_TEST_POLICY_ID = "test_command.host_output.positive_count.v2"
-TRUSTED_TEST_POLICY_IDS = frozenset(
-    {STRUCTURED_TEST_POLICY_ID, HOST_OUTPUT_TEST_POLICY_ID}
-)
+TRUSTED_TEST_POLICY_IDS = frozenset({STRUCTURED_TEST_POLICY_ID})
 ATTESTATION_PRODUCERS = {
     "codex": ("codex", "codex.post_tool_use"),
     "hermes": ("hermes", "hermes.post_tool_call"),

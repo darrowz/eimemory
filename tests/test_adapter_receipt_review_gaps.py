@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 import json
 import os
@@ -177,9 +178,11 @@ def test_legacy_unique_consumed_trace_index_is_migrated(monkeypatch, tmp_path: P
     assert terminal["ok"] is True
 
 
-def test_receipt_database_and_handoff_share_deterministic_32_item_cap(
+@pytest.mark.parametrize("handoff_order", ["reverse", "concurrent"])
+def test_receipt_database_and_handoff_share_stable_32_item_cap(
     monkeypatch,
     tmp_path: Path,
+    handoff_order: str,
 ) -> None:
     monkeypatch.setenv("EIMEMORY_EVIDENCE_RECEIPT_HMAC_KEY", RECEIPT_KEY)
     handoff_path = tmp_path / "receipt-handoff.sqlite3"
@@ -188,15 +191,24 @@ def test_receipt_database_and_handoff_share_deterministic_32_item_cap(
     handoff = ReceiptIdHandoff(handoff_path)
     receipt_ids: list[str] = []
     for index in range(33):
-        receipt = _attest(service, call_id=f"bounded-call-{index:02d}")
-        receipt_ids.append(receipt["receipt_id"])
+        receipt_ids.append(_attest(service, call_id=f"bounded-call-{index:02d}")["receipt_id"])
+
+    def append_handoff(receipt_id: str) -> None:
         handoff.append(
             channel="codex",
             scope=resolve_channel_scope("codex", BASE_SCOPE),
             session_id="session-1",
             run_id="turn-1",
-            receipt_id=receipt["receipt_id"],
+            receipt_id=receipt_id,
         )
+
+    reverse_ids = list(reversed(receipt_ids))
+    if handoff_order == "reverse":
+        for receipt_id in reverse_ids:
+            append_handoff(receipt_id)
+    else:
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            list(pool.map(append_handoff, reverse_ids))
     submitted_ids = handoff.list_ids(
         channel="codex",
         scope=resolve_channel_scope("codex", BASE_SCOPE),
@@ -218,8 +230,9 @@ def test_receipt_database_and_handoff_share_deterministic_32_item_cap(
     finally:
         runtime.close()
 
+    stable_ids = set(sorted(receipt_ids, reverse=True)[:32])
     assert len(submitted_ids) == 32
-    assert set(submitted_ids) == set(receipt_ids[-32:])
+    assert set(submitted_ids) == stable_ids
     assert {item["receipt_id"] for item in claimable} == set(submitted_ids)
     assert terminal["ok"] is True
     assert sum(int(row["eligible"]) for row in rows) == 32
@@ -434,21 +447,43 @@ def test_shell_wrapper_requires_an_anchored_test_command(monkeypatch, tmp_path: 
             tool_name="shell_command",
             tool_input={"command": "rtk pytest -- tests/test_unit.py -q"},
         )
+        coverage_failure = _attest(
+            service,
+            call_id="test-shell-coverage-failure",
+            tool_name="shell_command",
+            tool_input={"command": "python -m pytest --cov --cov-fail-under=90"},
+            result={
+                "exit_code": 1,
+                "summary": "3 passed; coverage failure below fail-under=90",
+            },
+        )
+        plugin_error = _attest(
+            service,
+            call_id="test-shell-plugin-error",
+            tool_name="shell_command",
+            tool_input={"command": "python -m pytest tests/test_unit.py -q"},
+            result={"exit_code": 0, "summary": "3 passed", "error": "plugin failed"},
+        )
     finally:
         runtime.close()
 
     assert generic["receipt"]["passed"] is False
     assert verified["receipt"]["passed"] is True
     assert verified["receipt"]["verification_policy_id"] == "test_command.exit_zero.positive_count.v1"
+    assert coverage_failure["receipt"]["passed"] is False
+    assert plugin_error["receipt"]["passed"] is False
 
 
-def test_codex_bash_string_output_requires_recognized_test_command(monkeypatch, tmp_path: Path) -> None:
+def test_codex_bash_string_output_never_counts_without_explicit_exit_status(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
     monkeypatch.setenv("EIMEMORY_EVIDENCE_RECEIPT_HMAC_KEY", RECEIPT_KEY)
     runtime = Runtime.create(root=tmp_path)
     service = AgentRuntimeMemoryService(runtime)
     official_shell_output = "================ test session starts ================\n3 passed in 0.12s"
     try:
-        verified = _attest(
+        positive_text_only = _attest(
             service,
             call_id="codex-bash-test",
             tool_name="Bash",
@@ -478,13 +513,85 @@ def test_codex_bash_string_output_requires_recognized_test_command(monkeypatch, 
             },
             result=official_shell_output,
         )
+        coverage_gate_failure = _attest(
+            service,
+            call_id="codex-bash-coverage-failure",
+            tool_name="Bash",
+            tool_input={"command": "python -m pytest --cov --cov-fail-under=90"},
+            result="3 passed in 0.12s\nERROR Coverage failure: total of 72 is less than fail-under=90",
+        )
+        plugin_error = _attest(
+            service,
+            call_id="codex-bash-plugin-error",
+            tool_name="Bash",
+            tool_input={"command": "python -m pytest tests/test_unit.py -q"},
+            result="3 passed in 0.12s\nERROR pytest plugin teardown failed",
+        )
+        configuration_error = _attest(
+            service,
+            call_id="codex-bash-config-error",
+            tool_name="Bash",
+            tool_input={"command": "python -m pytest tests/test_unit.py -q"},
+            result="3 passed in 0.12s\nERROR: invalid pytest configuration",
+        )
+        json_shaped_raw_output = _attest(
+            service,
+            call_id="codex-bash-json-shaped-raw",
+            tool_name="Bash",
+            tool_input={"command": "python -m pytest tests/test_unit.py -q"},
+            result=json.dumps({"output": "3 passed in 0.12s", "exit_code": 0, "error": ""}),
+        )
     finally:
         runtime.close()
 
-    assert verified["receipt"]["passed"] is True
-    assert forged_echo["receipt"]["passed"] is False
-    assert collection_only["receipt"]["passed"] is False
-    assert chained_echo["receipt"]["passed"] is False
+    for receipt in (
+        positive_text_only,
+        forged_echo,
+        collection_only,
+        chained_echo,
+        coverage_gate_failure,
+        plugin_error,
+        configuration_error,
+        json_shaped_raw_output,
+    ):
+        assert receipt["receipt"]["passed"] is False
+        assert receipt["receipt"]["verification_policy_id"] == "execution_only.v1"
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected_passed"),
+    [
+        ({"output": "3 passed in 0.12s", "exit_code": 0, "error": ""}, True),
+        ({"output": "3 passed in 0.12s", "exit_code": 0}, False),
+        ({"output": "3 passed in 0.12s", "exit_code": 1, "error": ""}, False),
+        ({"output": "3 passed in 0.12s", "exit_code": 0, "error": "plugin failed"}, False),
+    ],
+)
+def test_hermes_json_string_requires_complete_host_status_envelope(
+    monkeypatch,
+    tmp_path: Path,
+    payload: dict,
+    expected_passed: bool,
+) -> None:
+    monkeypatch.setenv("EIMEMORY_EVIDENCE_RECEIPT_HMAC_KEY", RECEIPT_KEY)
+    runtime = Runtime.create(root=tmp_path)
+    service = AgentRuntimeMemoryService(runtime)
+    try:
+        result = service.attest_tool_result(
+            producer="hermes",
+            channel="hermes",
+            scope=BASE_SCOPE,
+            session_id="session-1",
+            run_id="turn-1",
+            tool_call_id="call-1",
+            tool_name="terminal",
+            tool_input={"command": "python -m pytest tests/test_unit.py -q"},
+            result=json.dumps(payload),
+        )
+    finally:
+        runtime.close()
+
+    assert result["receipt"]["passed"] is expected_passed
 
 
 def test_codex_receipt_handoff_survives_adapter_process_boundary_and_clears_after_success(
@@ -821,11 +928,15 @@ def test_codex_post_tool_and_stop_separate_processes_preserve_exact_receipts(
         runtime.close()
 
     assert (first.returncode, second.returncode) == (0, 0)
-    assert row is not None and str(row["consumed_trace_id"])
-    assert json.loads(str(row["receipt_json"]))["source"] == "codex.post_tool_use"
+    assert row is not None and str(row["consumed_trace_id"]) == ""
+    receipt = json.loads(str(row["receipt_json"]))
+    assert receipt["source"] == "codex.post_tool_use"
+    assert receipt["passed"] is False
+    assert receipt["verification_policy_id"] == "execution_only.v1"
     event = json.loads(str(event_row["payload_json"]))
-    assert event["outcome_trace_task_type"] == "code.test"
-    assert event["verification"].startswith("codex.post_tool_use:")
+    assert event["outcome_trace_task_type"] == "code.unverified"
+    assert event["verification"] == ""
+    assert event["evidence_class"] == "diagnostic_task"
     assert PRODUCER_TOKEN not in env.values()
 
 
@@ -860,13 +971,11 @@ ctx = Context()
 register(ctx)
 ctx.provider.initialize('session-1', agent_identity='hongtu', agent_workspace='embodied', user_id='darrow')
 ctx.callback('terminal', {'command': 'python -m pytest tests/test_unit.py -q'}, json.dumps({'output':'2 passed in 0.12s','exit_code':0,'error':''}), 'task-1', 10, session_id='session-1', turn_id='turn-1', tool_call_id='call-1')
-bad = json.loads(ctx.provider.handle_tool_call('eimemory_verify_outcome', {'session_id':'session-1','event_id':'forged-turn','task_type':'research.audit','success':True,'verification':'verified','result':'done'}))
-assert bad['ok'] is False
-good = json.loads(ctx.provider.handle_tool_call('eimemory_verify_outcome', {'session_id':'session-1','event_id':'turn-1','task_type':'research.audit','success':True,'verification':'verified','result':'done'}))
+good = json.loads(ctx.provider.handle_tool_call('eimemory_verify_outcome', {'result':'done'}))
 assert good['ok'] is True
 ctx.callback('terminal', {'command': 'python -m pytest tests/test_a.py -q'}, json.dumps({'output':'1 passed in 0.10s','exit_code':0,'error':''}), 'task-2', 10, session_id='session-1', turn_id='turn-2', tool_call_id='call-2')
 ctx.callback('terminal', {'command': 'python -m pytest tests/test_b.py -q'}, json.dumps({'output':'1 passed in 0.10s','exit_code':0,'error':''}), 'task-3', 10, session_id='session-1', turn_id='turn-3', tool_call_id='call-3')
-ambiguous = json.loads(ctx.provider.handle_tool_call('eimemory_verify_outcome', {'session_id':'session-1','event_id':'turn-2','task_type':'research.audit','success':True,'verification':'verified','result':'done'}))
+ambiguous = json.loads(ctx.provider.handle_tool_call('eimemory_verify_outcome', {'result':'done'}))
 assert ambiguous['ok'] is False
 """
     try:

@@ -6,22 +6,24 @@ from typing import Any
 
 
 _SENSITIVE_KEY = re.compile(
-    r"(?i)(authorization|cookie|credential|password|private[_-]?key|access[_-]?key|secret|token|api[_-]?key)"
+    r"(?i)(authorization|auth|cookie|credential|password|private[_-]?key|access[_-]?key|secret|token|api[_-]?key)"
 )
 _SENSITIVE_ASSIGNMENT = re.compile(
-    r"(?i)\b(authorization|cookie|credential|password|private[_-]?key|access[_-]?key|secret|token|api[_-]?key)"
+    r"(?i)\b(authorization|auth|cookie|credential|password|private[_-]?key|access[_-]?key|secret|token|api[_-]?key)"
     r"(\s*[:=]\s*)(?:"
     r'"(?:\\.|[^"\\\r\n])*"|'
     r"'(?:\\.|[^'\\\r\n])*'|"
-    r"bearer\s+[^\r\n,;\]}]+|"
-    r"[^\s,;\]}]+"
+    r"bearer\s+[^\r\n,;|&\]})]+|"
+    # Unquoted values are field tails, not single tokens. Consume spaces and
+    # tabs, but preserve newlines and explicit structured-field separators.
+    r"[^\r\n,;|&\]})]+"
     r")"
 )
 _BEARER = re.compile(
     r"(?i)\bbearer\s+(?:"
     r'"(?:\\.|[^"\\\r\n])*"|'
     r"'(?:\\.|[^'\\\r\n])*'|"
-    r"[^\r\n,;\]}]+"
+    r"[^\r\n,;|&\]})]+"
     r")"
 )
 _SECRET_TOKEN = re.compile(r"\b(?:sk|ghp|github_pat)-[A-Za-z0-9_-]{8,}\b", re.IGNORECASE)
