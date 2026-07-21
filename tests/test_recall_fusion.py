@@ -284,6 +284,7 @@ def test_rrf_order_change_from_legacy_weight_is_explicit_and_replay_stable(tmp_p
     [
         "missing_marker", "wrong_title_index", "wrong_alias_index", "title_column", "alias_column",
         "alias_table", "partial_title_index", "partial_alias_index", "alias_collation", "alias_primary_key",
+        "title_wrong_type_nullable",
     ],
 )
 def test_markered_identity_migration_repairs_physical_schema_and_backfills(tmp_path, damage: str) -> None:
@@ -334,6 +335,24 @@ def test_markered_identity_migration_repairs_physical_schema_and_backfills(tmp_p
             "tenant_id TEXT NOT NULL, agent_id TEXT NOT NULL, workspace_id TEXT NOT NULL, "
             "user_id TEXT NOT NULL)"
         )
+    elif damage == "title_wrong_type_nullable":
+        connection.execute("ALTER TABLE recall_index RENAME TO recall_index_legacy")
+        connection.execute(
+            "CREATE TABLE recall_index ("
+            "storage_key TEXT PRIMARY KEY, record_id TEXT NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL, "
+            "source TEXT NOT NULL, source_id TEXT NOT NULL DEFAULT 'default', tenant_id TEXT NOT NULL, "
+            "agent_id TEXT NOT NULL, workspace_id TEXT NOT NULL, user_id TEXT NOT NULL, lane TEXT NOT NULL, "
+            "visibility TEXT NOT NULL, source_class TEXT NOT NULL, memory_type TEXT NOT NULL, "
+            "projection_type TEXT NOT NULL, quality_score REAL NOT NULL DEFAULT 0.0, title_text TEXT NOT NULL, "
+            "title_normalized BLOB, body_text TEXT NOT NULL, anchor_terms TEXT NOT NULL, updated_at TEXT NOT NULL)"
+        )
+        columns = (
+            "storage_key, record_id, kind, status, source, source_id, tenant_id, agent_id, workspace_id, "
+            "user_id, lane, visibility, source_class, memory_type, projection_type, quality_score, title_text, "
+            "title_normalized, body_text, anchor_terms, updated_at"
+        )
+        connection.execute(f"INSERT INTO recall_index ({columns}) SELECT {columns} FROM recall_index_legacy")
+        connection.execute("DROP TABLE recall_index_legacy")
     else:
         connection.execute("DROP TABLE recall_alias_index")
     connection.commit()
@@ -368,6 +387,9 @@ def test_markered_identity_migration_repairs_physical_schema_and_backfills(tmp_p
         assert set(collations) == {"BINARY"}
     repaired.append(_record("multi alias after repair", aliases=["multi one", "multi two"]))
     repaired.close()
+    reopened = RuntimeStore(root)
+    assert reopened.sqlite._recall_identity_physical_ready() is True
+    reopened.close()
 
 
 def test_exact_identity_queries_use_covering_indexes(tmp_path) -> None:
@@ -641,6 +663,29 @@ def test_actual_alias_query_uses_covering_alias_index_without_temp_sort(tmp_path
     store.close()
 
 
+def test_alias_query_uses_explicit_stable_order_before_bounded_limit(tmp_path) -> None:
+    store = RuntimeStore(tmp_path)
+    for index, source_id in enumerate(("beta", "alpha", "gamma", "alpha")):
+        record = _record(f"stable alias {index}", source_id=source_id, aliases=["shared stable alias"])
+        record.record_id = f"stable-{3 - index}"
+        store.append(record)
+    traced: list[str] = []
+    store.sqlite.conn.set_trace_callback(traced.append)
+    first = store.sqlite.search_identity_candidates(
+        query="shared stable alias", kinds=["memory"], scope=SCOPE, limit=2, source_ids=None
+    )
+    second = store.sqlite.search_identity_candidates(
+        query="shared stable alias", kinds=["memory"], scope=SCOPE, limit=2, source_ids=None
+    )
+    store.sqlite.conn.set_trace_callback(None)
+    alias_sql = next(sql for sql in traced if "FROM recall_alias_index a" in sql)
+    assert "ORDER BY a.source_id, a.status, a.kind, a.storage_key" in alias_sql
+    assert [(row["source_id"], row["storage_key"]) for row in first] == [
+        (row["source_id"], row["storage_key"]) for row in second
+    ]
+    store.close()
+
+
 def test_report_and_rule_promotions_cannot_bypass_hard_filters(tmp_path) -> None:
     store = RuntimeStore(tmp_path)
     report = RecordEnvelope.create(
@@ -702,6 +747,28 @@ def test_online_pollution_gate_precedes_create_safety(tmp_path) -> None:
     store.close()
 
 
+def test_reflections_cannot_bypass_hard_or_online_recall_gates(tmp_path) -> None:
+    store = RuntimeStore(tmp_path)
+    reflection = RecordEnvelope.create(
+        kind="reflection",
+        title="blocked reflection marker",
+        summary="blocked reflection marker",
+        scope=SCOPE,
+        source="blocked.reflection",
+        source_id="alpha",
+    )
+    store.append(reflection)
+    bundle = MemoryAPI(store).recall(
+        query="blocked reflection marker",
+        scope=asdict(SCOPE),
+        task_context={"source_ids": ["alpha"], "blocked_sources": ["blocked.reflection"]},
+        limit=3,
+    )
+    assert bundle.items == []
+    assert bundle.reflections == []
+    store.close()
+
+
 def test_same_record_id_across_physical_scopes_preserves_logical_group_authority(tmp_path) -> None:
     store = RuntimeStore(tmp_path)
     main_scope = ScopeRef(tenant_id="default", agent_id="main", workspace_id="repo-x", user_id="darrow")
@@ -737,9 +804,17 @@ def test_corrupt_identity_source_ref_is_dropped_not_raised(tmp_path) -> None:
 
 def test_long_document_pool_overfetches_past_profile_multiplier(tmp_path) -> None:
     store = RuntimeStore(tmp_path)
-    other = store.append(_record("diversity marker page b", content={"page_id": "page-b"}))
+    other_record = _record("other", content={"page_id": "page-b"})
+    other_record.summary = "diversity marker"
+    other_record.content["text"] = "diversity marker"
+    other_record.meta["quality"]["salience_score"] = 0.0
+    other = store.append(other_record)
     for index in range(12):
-        store.append(_record(f"diversity marker page a {index}", content={"page_id": "page-a"}))
+        record = _record(f"diversity marker dominant page a {index}", content={"page_id": "page-a"})
+        record.summary = "diversity marker"
+        record.content["text"] = "diversity marker"
+        record.meta["quality"]["salience_score"] = 1.0
+        store.append(record)
     bundle = MemoryAPI(store).recall(
         query="diversity marker",
         scope=asdict(SCOPE),
@@ -846,3 +921,101 @@ def test_rrf_intentionally_changes_a_fixed_legacy_hand_weight_order() -> None:
         "keyword": pytest.approx(2.0 / 62.0),
         "vector": pytest.approx(1.5 / 61.0),
     }
+
+
+def test_usage_feedback_is_partitioned_by_exact_scope_and_source(tmp_path) -> None:
+    store = RuntimeStore(tmp_path)
+    main_scope = ScopeRef(tenant_id="default", agent_id="main", workspace_id="repo-x", user_id="darrow")
+    canonical_scope = ScopeRef(tenant_id="default", agent_id="hongtu", workspace_id="embodied", user_id="darrow")
+    alpha = _record("shared usage marker", source_id="alpha", scope=main_scope)
+    beta = _record("shared usage marker", source_id="beta", scope=canonical_scope)
+    alpha.record_id = beta.record_id = "shared-usage-id"
+    store.append(alpha)
+    store.append(beta)
+    store.append(
+        RecordEnvelope.create(
+            kind="feedback",
+            title="alpha usage feedback",
+            content={"report_type": "memory_usage_telemetry", "used_record_ids": [alpha.record_id]},
+            meta={"report_type": "memory_usage_telemetry"},
+            scope=main_scope,
+            source="test.usage",
+            source_id="alpha",
+        )
+    )
+    bundle = MemoryAPI(store).recall(
+        query="shared usage marker",
+        scope=asdict(main_scope),
+        task_context={"source_ids": ["alpha", "beta"]},
+        limit=2,
+    )
+    selected = {entry["source_id"]: entry for entry in bundle.explanation["fusion"]["selected"]}
+    assert selected["alpha"]["contributions"].get("usage", 0.0) > 0.0
+    assert selected["beta"]["contributions"].get("usage", 0.0) == 0.0
+    store.close()
+
+
+def test_fusion_token_preserves_legal_long_exact_refs(tmp_path) -> None:
+    long_scope = ScopeRef(
+        tenant_id="tenant-a",
+        agent_id="openclaw",
+        workspace_id="workspace-a",
+        user_id="u" * 300,
+    )
+    store = RuntimeStore(tmp_path)
+    record = store.append(_record("long exact ref marker", scope=long_scope))
+    bundle = MemoryAPI(store).recall(
+        query="long exact ref marker",
+        scope=asdict(long_scope),
+        task_context={"source_ids": ["alpha"]},
+        limit=1,
+    )
+    assert [item.record_id for item in bundle.items] == [record.record_id]
+    assert bundle.explanation["fusion"]["pre_pool_count"] == 1
+    assert bundle.explanation["fusion"]["post_pool_count"] == 1
+    store.close()
+
+
+def test_knowledge_source_caps_are_partitioned_by_exact_authority() -> None:
+    pages: list[RecordEnvelope] = []
+    for index, source_id in enumerate(("alpha", "alpha", "beta")):
+        pages.append(
+            RecordEnvelope.create(
+                kind="knowledge_page",
+                title=f"page {index}",
+                summary=f"page {index}",
+                content={"paper_source_id": "paper-shared"},
+                provenance={"paper_source_id": "paper-shared"},
+                scope=SCOPE,
+                source="test.paper",
+                source_id=source_id,
+            )
+        )
+    assert [(item.source_id, item.title) for item in MemoryAPI._dedupe_records(pages)] == [
+        ("alpha", "page 0"),
+        ("alpha", "page 1"),
+        ("beta", "page 2"),
+    ]
+
+
+def test_scoring_explanation_is_keyed_by_exact_physical_ref(tmp_path) -> None:
+    main_scope = ScopeRef(tenant_id="default", agent_id="main", workspace_id="repo-x", user_id="darrow")
+    canonical_scope = ScopeRef(tenant_id="default", agent_id="hongtu", workspace_id="embodied", user_id="darrow")
+    main = _record("main scoring marker", scope=main_scope)
+    canonical = _record("canonical scoring marker", scope=canonical_scope)
+    main.record_id = canonical.record_id = "shared-scoring-id"
+    main.meta["quality"]["salience_score"] = 0.95
+    canonical.meta["quality"]["salience_score"] = 0.05
+    store = RuntimeStore(tmp_path)
+    store.append(main)
+    store.append(canonical)
+    bundle = MemoryAPI(store).recall(
+        query="scoring marker",
+        scope=asdict(main_scope),
+        task_context={"source_ids": ["alpha"]},
+        limit=2,
+    )
+    scoring = {entry["title"]: entry for entry in bundle.explanation["scoring"]}
+    assert scoring["main scoring marker"]["base_quality_score"] == pytest.approx(0.95)
+    assert scoring["canonical scoring marker"]["base_quality_score"] == pytest.approx(0.05)
+    store.close()

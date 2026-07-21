@@ -379,7 +379,7 @@ class MemoryAPI:
         scope: ScopeRef,
         *,
         source_ids: tuple[str, ...] | None = None,
-    ) -> dict[str, dict[str, object]]:
+    ) -> dict[tuple[str, str, str, str, str, str], dict[str, object]]:
         feedback_records = self.store.list_records_by_meta_value(
             kinds=["feedback"],
             scope=scope,
@@ -398,7 +398,7 @@ class MemoryAPI:
                 source_ids=source_ids,
             )
 
-        adjustments: dict[str, dict[str, object]] = {}
+        adjustments: dict[tuple[str, str, str, str, str, str], dict[str, object]] = {}
         for feedback in feedback_records:
             meta = business_metadata(feedback.meta)
             content = feedback.content if isinstance(feedback.content, dict) else {}
@@ -406,16 +406,26 @@ class MemoryAPI:
             if report_type != _MEMORY_USAGE_TELEMETRY_REPORT_TYPE:
                 continue
             for record_id in self._unique_record_ids(self._string_list(content.get("used_record_ids"))):
-                entry = adjustments.setdefault(
+                usage_key = self._memory_usage_key_for_namespace(
                     record_id,
+                    scope=feedback.scope,
+                    source_id=feedback.source_id,
+                )
+                entry = adjustments.setdefault(
+                    usage_key,
                     {"adjustment": 0.0, "used_count": 0, "rejected_count": 0, "latest_feedback_at": ""},
                 )
                 entry["adjustment"] = float(entry["adjustment"]) + _MEMORY_USAGE_PROMOTION_WEIGHT
                 entry["used_count"] = int(entry["used_count"]) + 1
                 entry["latest_feedback_at"] = max(str(entry["latest_feedback_at"]), str(feedback.time.updated_at or ""))
             for record_id in self._unique_record_ids(self._string_list(content.get("rejected_record_ids"))):
-                entry = adjustments.setdefault(
+                usage_key = self._memory_usage_key_for_namespace(
                     record_id,
+                    scope=feedback.scope,
+                    source_id=feedback.source_id,
+                )
+                entry = adjustments.setdefault(
+                    usage_key,
                     {"adjustment": 0.0, "used_count": 0, "rejected_count": 0, "latest_feedback_at": ""},
                 )
                 entry["adjustment"] = float(entry["adjustment"]) + _MEMORY_USAGE_REJECTION_WEIGHT
@@ -429,14 +439,14 @@ class MemoryAPI:
     def _apply_memory_usage_feedback(
         self,
         items: list[RecordEnvelope],
-        adjustments: dict[str, dict[str, object]],
+        adjustments: dict[tuple[str, str, str, str, str, str], dict[str, object]],
     ) -> list[RecordEnvelope]:
         if not items or not adjustments:
             return items
         indexed = list(enumerate(items))
         indexed.sort(
             key=lambda pair: (
-                float(adjustments.get(pair[1].record_id, {}).get("adjustment") or 0.0),
+                float(adjustments.get(self._memory_usage_key(pair[1]), {}).get("adjustment") or 0.0),
                 -pair[0],
             ),
             reverse=True,
@@ -446,12 +456,12 @@ class MemoryAPI:
     def _memory_usage_summary(
         self,
         items: list[RecordEnvelope],
-        adjustments: dict[str, dict[str, object]],
+        adjustments: dict[tuple[str, str, str, str, str, str], dict[str, object]],
     ) -> dict[str, object]:
         selected_adjustments = {
-            item.record_id: adjustments[item.record_id]
+            self._memory_usage_output_key(item): adjustments[self._memory_usage_key(item)]
             for item in items
-            if item.record_id in adjustments
+            if self._memory_usage_key(item) in adjustments
         }
         return {
             "schema_version": _MEMORY_USAGE_TELEMETRY_SCHEMA,
@@ -466,6 +476,36 @@ class MemoryAPI:
             ),
             "selected_adjustments": selected_adjustments,
         }
+
+    @staticmethod
+    def _memory_usage_key_for_namespace(
+        record_id: str,
+        *,
+        scope: ScopeRef,
+        source_id: str,
+    ) -> tuple[str, str, str, str, str, str]:
+        return (
+            str(record_id or ""),
+            scope.tenant_id or "default",
+            scope.agent_id,
+            scope.workspace_id,
+            scope.user_id,
+            str(source_id or "default"),
+        )
+
+    @classmethod
+    def _memory_usage_key(cls, item: RecordEnvelope) -> tuple[str, str, str, str, str, str]:
+        return cls._memory_usage_key_for_namespace(
+            item.record_id,
+            scope=item.scope,
+            source_id=item.source_id,
+        )
+
+    @classmethod
+    def _memory_usage_output_key(cls, item: RecordEnvelope) -> str:
+        exact_key = cls._memory_usage_key(item)
+        namespace_digest = sha256("\x1f".join(exact_key[1:]).encode("utf-8")).hexdigest()[:16]
+        return f"{item.record_id}@{namespace_digest}"
 
     @staticmethod
     def _recall_pipeline_summary(
@@ -1174,7 +1214,19 @@ class MemoryAPI:
             if str(link.target_kind or "").strip().lower() == "paper_source" and str(link.target_id or "").strip()
         )
         normalized = sorted({value for value in values if value})
-        return f"paper::{normalized[0]}" if normalized else ""
+        if not normalized:
+            return ""
+        scope = item.scope
+        namespace = "\x1f".join(
+            (
+                scope.tenant_id or "default",
+                scope.agent_id,
+                scope.workspace_id,
+                scope.user_id,
+                item.source_id,
+            )
+        )
+        return f"paper::{sha256(namespace.encode('utf-8')).hexdigest()}::{normalized[0]}"
 
     @staticmethod
     def _record_text(item: RecordEnvelope) -> str:
@@ -1692,21 +1744,21 @@ class MemoryAPI:
         items: list[RecordEnvelope],
         search_report: dict,
         *,
-        memory_usage_adjustments: dict[str, dict[str, object]] | None = None,
+        memory_usage_adjustments: dict[tuple[str, str, str, str, str, str], dict[str, object]] | None = None,
     ) -> list[dict]:
-        scored_by_id = {
-            str(entry.get("record_id")): dict(entry)
+        scored_by_ref = {
+            self._scored_entry_key(entry): dict(entry)
             for entry in (search_report.get("scored_items") or [])
-            if isinstance(entry, dict)
+            if isinstance(entry, dict) and self._scored_entry_key(entry) is not None
         }
         memory_usage_adjustments = memory_usage_adjustments or {}
         scoring: list[dict] = []
         for item in items:
-            entry = dict(scored_by_id.get(item.record_id) or {})
+            entry = dict(scored_by_ref.get(self._memory_usage_key(item)) or {})
             quality = business_metadata(item.meta).get("quality") if isinstance(item.meta, dict) else {}
             if not isinstance(quality, dict):
                 quality = {}
-            telemetry = dict(memory_usage_adjustments.get(item.record_id) or {})
+            telemetry = dict(memory_usage_adjustments.get(self._memory_usage_key(item)) or {})
             telemetry_adjustment = self._bounded_adjustment(telemetry.get("adjustment"))
             base_quality_score = self._bounded_score(
                 entry.get("quality_score", quality.get("salience_score", 0.0)),
@@ -1726,6 +1778,8 @@ class MemoryAPI:
             scoring.append(
                 {
                     "record_id": item.record_id,
+                    "source_id": item.source_id,
+                    "scope": self._scope_dict(item.scope),
                     "kind": item.kind,
                     "title": item.title,
                     "lexical_score": entry.get("lexical_score", 0),
@@ -1776,3 +1830,19 @@ class MemoryAPI:
                 }
             )
         return scoring
+
+    @staticmethod
+    def _scored_entry_key(entry: dict) -> tuple[str, str, str, str, str, str] | None:
+        scope = entry.get("scope")
+        record_id = str(entry.get("record_id") or "")
+        source_id = str(entry.get("source_id") or "")
+        if not record_id or not source_id or not isinstance(scope, dict):
+            return None
+        return (
+            record_id,
+            str(scope.get("tenant_id") or "default"),
+            str(scope.get("agent_id") or ""),
+            str(scope.get("workspace_id") or ""),
+            str(scope.get("user_id") or ""),
+            source_id,
+        )

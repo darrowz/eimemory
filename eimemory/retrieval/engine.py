@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import replace
 from datetime import datetime, timezone
+from hashlib import sha256
+import json
 import re
 from time import perf_counter
 from typing import Any, Protocol
@@ -120,9 +122,11 @@ class RecallCallbacks(Protocol):
     ) -> tuple[list[RecordEnvelope], Counter[str]]: ...
     def _memory_usage_adjustments(
         self, scope: ScopeRef, *, source_ids: tuple[str, ...] | None = None
-    ) -> dict[str, dict[str, object]]: ...
+    ) -> dict[tuple[str, str, str, str, str, str], dict[str, object]]: ...
     def _apply_memory_usage_feedback(
-        self, items: list[RecordEnvelope], adjustments: dict[str, dict[str, object]]
+        self,
+        items: list[RecordEnvelope],
+        adjustments: dict[tuple[str, str, str, str, str, str], dict[str, object]],
     ) -> list[RecordEnvelope]: ...
     def _dedupe_records(self, items: list[RecordEnvelope]) -> list[RecordEnvelope]: ...
     def _matching_active_rule_recall_items(
@@ -150,12 +154,14 @@ class RecallCallbacks(Protocol):
         items: list[RecordEnvelope],
         search_report: dict,
         *,
-        memory_usage_adjustments: dict[str, dict[str, object]] | None = None,
+        memory_usage_adjustments: dict[tuple[str, str, str, str, str, str], dict[str, object]] | None = None,
     ) -> list[dict[str, object]]: ...
     def _selected_record_summaries(self, items: list[RecordEnvelope]) -> list[dict[str, object]]: ...
     def _source_composition(self, items: list[RecordEnvelope]) -> dict[str, object]: ...
     def _memory_usage_summary(
-        self, items: list[RecordEnvelope], adjustments: dict[str, dict[str, object]]
+        self,
+        items: list[RecordEnvelope],
+        adjustments: dict[tuple[str, str, str, str, str, str], dict[str, object]],
     ) -> dict[str, object]: ...
     def _event_graph_summary(
         self, items: list[RecordEnvelope], edges: list[object]
@@ -434,16 +440,20 @@ class GovernedRecallEngine:
         pending_hits: list[tuple[CandidateRequest, int, int, int, CandidateHit]] = []
         for group_index, scope_group in enumerate(candidate_scope_groups):
             for scope_index, query_scope_ref in enumerate(scope_group):
+                candidate_budget = max(
+                    search_limit,
+                    memory._positive_int(recall_filters.get("candidate_limit"))
+                    or max(self._minimum_candidate_budget, search_limit * 36),
+                )
+                provider_limit = search_limit
+                if isinstance(self.candidate_source, SQLiteCandidateSource):
+                    provider_limit = min(candidate_budget, max(search_limit, self._minimum_candidate_budget))
                 source_request = replace(
                     request,
                     scope=ExactScope.from_scope(query_scope_ref),
                     kinds=tuple(search_kinds),
-                    limit=search_limit,
-                    budget=max(
-                        search_limit,
-                        memory._positive_int(recall_filters.get("candidate_limit"))
-                        or max(self._minimum_candidate_budget, search_limit * 36),
-                    ),
+                    limit=provider_limit,
+                    budget=candidate_budget,
                     recall_filters=freeze_value(recall_filters),
                 )
                 batch = self.candidate_source.search(source_request)
@@ -512,7 +522,19 @@ class GovernedRecallEngine:
                 continue
             seen_item_refs.add(record_key)
             items.append(record)
-            scored_items.append({"record_id": record.record_id, **hit.component_dict()})
+            scored_items.append(
+                {
+                    "record_id": record.record_id,
+                    "scope": {
+                        "tenant_id": record.scope.tenant_id,
+                        "agent_id": record.scope.agent_id,
+                        "workspace_id": record.scope.workspace_id,
+                        "user_id": record.scope.user_id,
+                    },
+                    "source_id": record.source_id,
+                    **hit.component_dict(),
+                }
+            )
         search_report = self._merge_source_reports(source_reports, scored_items=scored_items)
         blocked_counts: Counter[str] = Counter(dict(search_report.get("blocked_counts") or {}))
         diagnostic_blocked_counts = memory._diagnostic_blocked_operational_counts(
@@ -622,7 +644,7 @@ class GovernedRecallEngine:
             memories=memories,
             query=normalized_query,
         )
-        view_items = records_from_view(view, items, limit=max(limit * 4, limit))
+        view_items = records_from_view(view, items, limit=min(5000, max(search_limit, len(items))))
         if operational_recall_allowed:
             view_items = memory._dedupe_records([*view_items, *items])
         view_items = memory._dedupe_records([*report_items, *rule_recall_items, *view_items])
@@ -655,8 +677,6 @@ class GovernedRecallEngine:
         rule_recall_promoted_count = sum(
             1 for item in rule_recall_items if self._record_key(item) in selected_refs
         )
-        if blocked_counts:
-            recall_filters["blocked_counts"] = dict(sorted(blocked_counts.items()))
         memory_telemetry_summary = memory._memory_usage_summary(items, memory_usage_adjustments)
         final_view = build_recall_view(
             view_type=view.view_type,
@@ -700,6 +720,18 @@ class GovernedRecallEngine:
                 policy=retrieval_policy,
             )
             reflections = [gap["reflection"], *reflections][:3]
+        reflections, reflection_hard_filter_counts = memory._apply_hard_recall_filters_with_counts(
+            reflections,
+            recall_filters,
+        )
+        blocked_counts.update(reflection_hard_filter_counts)
+        reflections, reflection_online_gate_counts = memory._apply_online_recall_pollution_gate(
+            reflections,
+            allow_operational_recall=operational_recall_allowed,
+        )
+        blocked_counts.update(reflection_online_gate_counts)
+        if blocked_counts:
+            recall_filters["blocked_counts"] = dict(sorted(blocked_counts.items()))
         event_graph_summary = memory._event_graph_summary(items, graph_edge_refs)
         engine_diagnostics = self._engine_diagnostics(
             source_reports=source_reports,
@@ -780,7 +812,7 @@ class GovernedRecallEngine:
         component_hints_by_ref: dict[tuple[str, ExactScope, str], dict[str, Any]],
         identity_evidence_by_ref: dict[tuple[str, ExactScope, str], set[str]],
         base_ids: set[tuple[str, ExactScope, str]],
-        memory_usage_adjustments: dict[str, dict[str, object]],
+        memory_usage_adjustments: dict[tuple[str, str, str, str, str, str], dict[str, object]],
     ) -> tuple[list[RecordEnvelope], dict[str, Any]]:
         pre_pool_items = list(items)[:5000]
         by_token = {self._fusion_record_token(item): item for item in pre_pool_items}
@@ -881,9 +913,9 @@ class GovernedRecallEngine:
             usage = self._rank_component(
                 group_records,
                 score=lambda item: self._safe_float(
-                    (memory_usage_adjustments.get(item.record_id) or {}).get("adjustment")
+                    (memory_usage_adjustments.get(self._memory_usage_key(item)) or {}).get("adjustment")
                 ),
-                eligible=lambda item: bool(memory_usage_adjustments.get(item.record_id)),
+                eligible=lambda item: bool(memory_usage_adjustments.get(self._memory_usage_key(item))),
             )
             result = fuse_ranked_components(
                 [
@@ -1116,16 +1148,19 @@ class GovernedRecallEngine:
     @staticmethod
     def _fusion_record_token(record: RecordEnvelope) -> str:
         scope = record.scope
-        return "\x1e".join(
-            (
+        canonical = json.dumps(
+            [
                 str(record.record_id or ""),
                 str(scope.tenant_id or "default"),
                 str(scope.agent_id or ""),
                 str(scope.workspace_id or ""),
                 str(scope.user_id or ""),
                 str(record.source_id or "default"),
-            )
+            ],
+            ensure_ascii=False,
+            separators=(",", ":"),
         )
+        return "exact-ref.v1:" + sha256(canonical.encode("utf-8")).hexdigest()
 
     @staticmethod
     def _safe_int(value: Any, *, default: int) -> int:
@@ -1137,6 +1172,18 @@ class GovernedRecallEngine:
     @staticmethod
     def _record_key(record: RecordEnvelope) -> tuple[str, ExactScope, str]:
         return (record.record_id, ExactScope.from_scope(record.scope), record.source_id)
+
+    @staticmethod
+    def _memory_usage_key(record: RecordEnvelope) -> tuple[str, str, str, str, str, str]:
+        scope = record.scope
+        return (
+            record.record_id,
+            scope.tenant_id or "default",
+            scope.agent_id,
+            scope.workspace_id,
+            scope.user_id,
+            record.source_id,
+        )
 
     @staticmethod
     def _record_matches_ref(record: RecordEnvelope, ref: Any) -> bool:

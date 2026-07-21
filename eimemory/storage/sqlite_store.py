@@ -1420,7 +1420,17 @@ class SqliteRecordStore:
                 self.conn.execute(
                     "ALTER TABLE recall_index ADD COLUMN title_normalized TEXT NOT NULL DEFAULT ''"
                 )
+            elif not self._recall_title_column_ready():
+                # recall_index is a derived projection. Rebuilding it inside
+                # this migration transaction is safer than repeatedly trying
+                # to write through an incompatible affinity/nullability.
+                self.conn.execute("DROP TABLE recall_index")
+                self._create_recall_index_tables(create_indexes=False)
             self._create_recall_identity_tables(rebuild_indexes=True)
+            self.conn.execute("DELETE FROM recall_index")
+            self.conn.execute("DELETE FROM recall_alias_index")
+            if self._has_fts_table():
+                self.conn.execute("DELETE FROM recall_index_fts")
             last_storage_key = ""
             while True:
                 rows = self.conn.execute(
@@ -1440,6 +1450,8 @@ class SqliteRecordStore:
                             content_text=str(row["content_text"] or ""),
                         )
                 last_storage_key = str(rows[-1]["storage_key"])
+            self._create_recall_index_tables()
+            self._create_source_partition_indexes(rebuild=True)
             self._mark_schema_migration(_RECALL_IDENTITY_MIGRATION)
             self.conn.commit()
         except Exception:
@@ -1454,8 +1466,7 @@ class SqliteRecordStore:
             ).fetchone()
             if "title_normalized" not in columns or not alias_table:
                 return False
-            title_column = columns["title_normalized"]
-            if str(title_column["type"]).upper() != "TEXT" or int(title_column["notnull"]) != 1:
+            if not self._recall_title_column_ready():
                 return False
             if not self._recall_alias_table_ready():
                 return False
@@ -1480,6 +1491,15 @@ class SqliteRecordStore:
             )
         except sqlite3.OperationalError:
             return False
+
+    def _recall_title_column_ready(self) -> bool:
+        columns = {row["name"]: row for row in self.conn.execute("PRAGMA table_info(recall_index)")}
+        title_column = columns.get("title_normalized")
+        return bool(
+            title_column is not None
+            and str(title_column["type"]).upper() == "TEXT"
+            and int(title_column["notnull"]) == 1
+        )
 
     @staticmethod
     def _legacy_source_partition(payload: dict[str, Any], kind: str) -> tuple[str, str]:
@@ -1931,7 +1951,8 @@ class SqliteRecordStore:
         title_rows = self.conn.execute(
             "SELECT " + projection + " FROM recall_index i WHERE "
             + " AND ".join(where)
-            + " AND i.title_normalized = ? ORDER BY i.storage_key LIMIT ?",
+            + " AND i.title_normalized = ? "
+            + "ORDER BY i.source_id, i.status, i.kind, i.storage_key LIMIT ?",
             [*params, normalized_query, bounded_limit],
         ).fetchall()
         alias_rows = self.conn.execute(
@@ -1943,7 +1964,7 @@ class SqliteRecordStore:
             + " AND ".join(alias_where)
             + " AND "
             + " AND ".join(where)
-            + " LIMIT ?",
+            + " ORDER BY a.source_id, a.status, a.kind, a.storage_key LIMIT ?",
             [*alias_params, *params, bounded_limit],
         ).fetchall()
         evidence_by_key: dict[str, set[str]] = {}
