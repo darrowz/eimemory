@@ -635,6 +635,14 @@ def _build_parser() -> argparse.ArgumentParser:
     patch_list = patch_sub.add_parser("list")
     patch_list.add_argument("--limit", type=int, default=100)
 
+    vector_index = sub.add_parser("vector-index")
+    vector_index_sub = vector_index.add_subparsers(dest="vector_index_command")
+    vector_index_sub.add_parser("status")
+    vector_index_sub.add_parser("migrate")
+    vector_index_sync = vector_index_sub.add_parser("sync")
+    vector_index_sync.add_argument("--batch-size", type=int, default=32)
+    vector_index_sync.add_argument("--max-pages", type=int, default=1)
+
     return parser
 
 
@@ -766,6 +774,13 @@ def _handle_patch(parsed: object, *, runtime: Any, scope: dict[str, Any]) -> int
 @register("patch")
 def _dispatch_patch(parsed: object, runtime: Any, scope: dict[str, Any]) -> int:
     return _handle_patch(parsed, runtime=runtime, scope=scope)
+
+
+@register("vector-index")
+def _dispatch_vector_index(parsed: object, runtime: Any, scope: dict[str, Any]) -> dict[str, Any]:
+    from eimemory.retrieval.postgres_cli import handle_vector_index_command
+
+    return handle_vector_index_command(parsed, runtime)
 
 
 @register("recall")

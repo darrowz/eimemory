@@ -6,6 +6,7 @@ import ipaddress
 import json
 import os
 from pathlib import Path
+import re
 from typing import Mapping
 import socket
 import subprocess
@@ -400,7 +401,56 @@ def _compact_health_payload(
     }
     if loopback_health:
         payload["loopback_health"] = loopback_health
+    candidate_health = _candidate_source_health(runtime)
+    if candidate_health is not None:
+        payload["retrieval"] = {"candidate_source": candidate_health}
     return payload
+
+
+def _candidate_source_health(runtime: Runtime) -> dict[str, object] | None:
+    memory = getattr(runtime, "memory", None)
+    engine = getattr(memory, "recall_engine", None)
+    source = getattr(engine, "candidate_source", None)
+    health_fn = getattr(source, "health", None)
+    if not callable(health_fn):
+        return None
+    try:
+        raw = health_fn()
+    except Exception:
+        return {
+            "enabled": True,
+            "configured": False,
+            "available": False,
+            "circuit": "open",
+            "lag_seconds": None,
+            "watermark": "",
+            "last_error": "candidate_health_unavailable",
+        }
+    if not isinstance(raw, Mapping):
+        return None
+    circuit = str(raw.get("circuit") or "")
+    if circuit not in {"closed", "open", "half_open"}:
+        circuit = "open"
+    last_error = str(raw.get("last_error") or "")
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]{0,80}", last_error):
+        last_error = "candidate_source_unavailable"
+    watermark = str(raw.get("watermark") or "")
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]{0,256}", watermark):
+        watermark = ""
+    lag = raw.get("lag_seconds")
+    try:
+        lag_value = None if lag is None else max(0.0, min(10_000_000.0, float(lag)))
+    except (TypeError, ValueError, OverflowError):
+        lag_value = None
+    return {
+        "enabled": raw.get("enabled") is True,
+        "configured": raw.get("configured") is True,
+        "available": raw.get("available") is True,
+        "circuit": circuit,
+        "lag_seconds": lag_value,
+        "watermark": watermark,
+        "last_error": last_error,
+    }
 
 
 def build_health_payload(

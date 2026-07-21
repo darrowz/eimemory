@@ -6,6 +6,9 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = []
 
+[project.optional-dependencies]
+postgres = ["psycopg[binary]>=3.1,<4"]
+
 [project.scripts]
 eimemory = "eimemory.cli.main:main"
 eimemory-qmd = "eimemory.adapters.openclaw.qmd_compat:main"
