@@ -1148,6 +1148,51 @@ def test_sqlite_candidate_search_rejects_projection_payload_swap(tmp_path) -> No
     store.close()
 
 
+def test_sqlite_candidate_search_rejects_cross_scope_recall_index_projection(tmp_path) -> None:
+    store = RuntimeStore(tmp_path)
+    exact_scope = ScopeRef(
+        tenant_id="default",
+        agent_id="hongtu",
+        workspace_id="embodied",
+        user_id="darrow",
+    )
+    foreign_scope = ScopeRef(
+        tenant_id="default",
+        agent_id="main",
+        workspace_id="repo-x",
+        user_id="darrow",
+    )
+    store.append(_record(text="unrelated exact record", scope=exact_scope, source_id="alpha"))
+    foreign = store.append(
+        _record(text="INDEX-CROSS-SCOPE-MARKER", scope=foreign_scope, source_id="alpha")
+    )
+    storage_key = str(
+        store.sqlite.conn.execute(
+            "SELECT storage_key FROM records WHERE record_id = ? AND tenant_id = ? AND agent_id = ? AND workspace_id = ?",
+            (foreign.record_id, foreign_scope.tenant_id, foreign_scope.agent_id, foreign_scope.workspace_id),
+        ).fetchone()[0]
+    )
+    store.sqlite.conn.execute(
+        "UPDATE recall_index SET tenant_id = ?, agent_id = ?, workspace_id = ?, user_id = ? WHERE storage_key = ?",
+        (exact_scope.tenant_id, exact_scope.agent_id, exact_scope.workspace_id, exact_scope.user_id, storage_key),
+    )
+    store.sqlite.conn.commit()
+
+    batch = SQLiteCandidateSource(store).search(
+        CandidateRequest(
+            query="INDEX-CROSS-SCOPE-MARKER",
+            scope=ExactScope.from_scope(exact_scope),
+            kinds=("memory",),
+            source_ids=("alpha",),
+            limit=10,
+            budget=360,
+        )
+    )
+
+    assert batch.hits == ()
+    store.close()
+
+
 def test_exact_scope_fanout_preserves_joint_sqlite_top_one_ranking(tmp_path) -> None:
     store = RuntimeStore(tmp_path)
     user_scope = ScopeRef(tenant_id="tenant-z", agent_id="agent-z", workspace_id="workspace-z", user_id="user-z")
@@ -1214,4 +1259,38 @@ def test_default_source_allowlist_preserves_default_policy_search(tmp_path) -> N
     assert explicit_default.explanation["policy_suggestions"] == unrestricted.explanation["policy_suggestions"]
     assert explicit_default.explanation["matched_event_type"] == "policy_default_event"
     assert explicit_alpha.explanation["policy_suggestions"] == []
+    store.close()
+
+
+def test_hongtu_logical_scope_order_precedes_cross_alias_score(tmp_path) -> None:
+    store = RuntimeStore(tmp_path)
+    main_scope = ScopeRef(
+        tenant_id="default",
+        agent_id="main",
+        workspace_id="repo-x",
+        user_id="darrow",
+    )
+    canonical_scope = ScopeRef(
+        tenant_id="default",
+        agent_id="hongtu",
+        workspace_id="embodied",
+        user_id="darrow",
+    )
+    main = _record(text="marker peripheral detail", scope=main_scope, source_id="alpha")
+    main.title = "MAIN-PARTIAL"
+    main.meta["quality"]["salience_score"] = 0.1
+    canonical = _record(text="marker exact target", scope=canonical_scope, source_id="alpha")
+    canonical.title = "CANONICAL-EXACT"
+    canonical.meta["quality"]["salience_score"] = 0.99
+    store.append(main)
+    store.append(canonical)
+
+    bundle = MemoryAPI(store).recall(
+        query="marker exact target",
+        scope=asdict(main_scope),
+        task_context={"source_ids": ["alpha"], "recall_profile": "balanced"},
+        limit=1,
+    )
+
+    assert [item.record_id for item in bundle.items] == [main.record_id]
     store.close()

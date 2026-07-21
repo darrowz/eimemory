@@ -220,8 +220,18 @@ class GovernedRecallEngine:
                 primary_scope=scope_ref,
             )[:query_scope_limit]
         policy_scope_ref = query_scope_refs[0] if query_scope_refs else scope_ref
-        candidate_scope_refs = self._visible_exact_scopes(query_scope_refs)
-        authorized_exact_scopes = {ExactScope.from_scope(item) for item in candidate_scope_refs}
+        candidate_scope_groups: list[list[ScopeRef]] = []
+        authorized_exact_scopes: set[ExactScope] = set()
+        for logical_scope in query_scope_refs:
+            group: list[ScopeRef] = []
+            for exact_scope_ref in self._visible_exact_scopes([logical_scope]):
+                exact_scope = ExactScope.from_scope(exact_scope_ref)
+                if exact_scope in authorized_exact_scopes:
+                    continue
+                authorized_exact_scopes.add(exact_scope)
+                group.append(exact_scope_ref)
+            if group:
+                candidate_scope_groups.append(group)
         task_type = str(task_context.get("task_type") or "")
         if not normalized_query:
             return RecallBundle(
@@ -413,40 +423,42 @@ class GovernedRecallEngine:
         )
         source_reports: list[dict[str, Any]] = []
         scored_items: list[dict[str, Any]] = []
-        pending_hits: list[tuple[CandidateRequest, int, int, CandidateHit]] = []
-        for scope_index, query_scope_ref in enumerate(candidate_scope_refs):
-            source_request = replace(
-                request,
-                scope=ExactScope.from_scope(query_scope_ref),
-                kinds=tuple(search_kinds),
-                limit=search_limit,
-                budget=max(
-                    search_limit,
-                    memory._positive_int(recall_filters.get("candidate_limit"))
-                    or max(self._minimum_candidate_budget, search_limit * 36),
-                ),
-                recall_filters=freeze_value(recall_filters),
-            )
-            batch = self.candidate_source.search(source_request)
-            source_reports.append(batch.diagnostic_dict())
-            indexed_hits = list(enumerate(batch.hits))
-            indexed_hits.sort(key=lambda pair: (pair[1].source_rank, -pair[1].source_score, pair[0]))
-            bounded_hits = indexed_hits[: source_request.limit]
-            if len(indexed_hits) > len(bounded_hits):
-                engine_drops["provider_over_limit"] += len(indexed_hits) - len(bounded_hits)
-            pending_hits.extend(
-                (source_request, scope_index, provider_index, hit)
-                for provider_index, hit in bounded_hits
-            )
+        pending_hits: list[tuple[CandidateRequest, int, int, int, CandidateHit]] = []
+        for group_index, scope_group in enumerate(candidate_scope_groups):
+            for scope_index, query_scope_ref in enumerate(scope_group):
+                source_request = replace(
+                    request,
+                    scope=ExactScope.from_scope(query_scope_ref),
+                    kinds=tuple(search_kinds),
+                    limit=search_limit,
+                    budget=max(
+                        search_limit,
+                        memory._positive_int(recall_filters.get("candidate_limit"))
+                        or max(self._minimum_candidate_budget, search_limit * 36),
+                    ),
+                    recall_filters=freeze_value(recall_filters),
+                )
+                batch = self.candidate_source.search(source_request)
+                source_reports.append(batch.diagnostic_dict())
+                indexed_hits = list(enumerate(batch.hits))
+                indexed_hits.sort(key=lambda pair: (pair[1].source_rank, -pair[1].source_score, pair[0]))
+                bounded_hits = indexed_hits[: source_request.limit]
+                if len(indexed_hits) > len(bounded_hits):
+                    engine_drops["provider_over_limit"] += len(indexed_hits) - len(bounded_hits)
+                pending_hits.extend(
+                    (source_request, group_index, scope_index, provider_index, hit)
+                    for provider_index, hit in bounded_hits
+                )
         pending_hits.sort(
             key=lambda entry: (
-                -self._safe_float(entry[3].source_score),
-                entry[3].source_rank,
                 entry[1],
+                -self._safe_float(entry[4].source_score),
+                entry[4].source_rank,
                 entry[2],
+                entry[3],
             )
         )
-        for source_request, _scope_index, _provider_index, hit in pending_hits:
+        for source_request, _group_index, _scope_index, _provider_index, hit in pending_hits:
             candidate_key = (hit.ref.record_id, hit.ref.scope, hit.ref.source_id)
             if candidate_key in seen_candidate_refs:
                 continue

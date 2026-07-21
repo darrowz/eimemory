@@ -1723,6 +1723,20 @@ class SqliteRecordStore:
             if not self._record_matches_projection_row(record, row):
                 blocked_counts["projection_payload_mismatch"] += 1
                 continue
+            if bool(recall_filters.get("_exact_scope")) and not self._record_matches_exact_ref(
+                record,
+                record_id=record.record_id,
+                scope=scope,
+                source_id=record.source_id,
+            ):
+                blocked_counts["request_scope_mismatch"] += 1
+                continue
+            if kinds and record.kind not in kinds:
+                blocked_counts["request_kind_mismatch"] += 1
+                continue
+            if allowed_source_ids is not None and record.source_id not in allowed_source_ids:
+                blocked_counts["request_source_mismatch"] += 1
+                continue
             if record.status != "active":
                 blocked_counts["inactive_record"] += 1
                 continue
