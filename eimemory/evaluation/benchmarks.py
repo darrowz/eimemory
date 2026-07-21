@@ -87,6 +87,7 @@ def _seed_records(runtime: Any, suite: dict[str, Any]) -> list[str]:
             title=title,
             scope=asdict(scope_ref),
             source=str(item.get("source") or "eimemory.eval.seed"),
+            source_id=item["source_id"] if "source_id" in item else "default",
             tags=[str(tag) for tag in (item.get("tags") or [])],
             force_capture=bool(item.get("force_capture", True)),
             meta=dict(item.get("meta") or {}),

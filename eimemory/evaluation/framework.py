@@ -46,6 +46,7 @@ def run_evaluation(
                     title=str(item.get("title") or f"Eval seed {index + 1}"),
                     scope=dict(item.get("scope") or asdict(scope_ref)),
                     source=str(item.get("source") or "eimemory.eval.seed"),
+                    source_id=item["source_id"] if "source_id" in item else "default",
                     tags=[str(tag) for tag in (item.get("tags") or [])],
                     force_capture=bool(item.get("force_capture", True)),
                 )

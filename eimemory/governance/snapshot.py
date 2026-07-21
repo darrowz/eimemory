@@ -503,6 +503,7 @@ def _candidate_summary(record: RecordEnvelope) -> dict[str, Any]:
     )
     return {
         "record_id": record.record_id,
+        "source_id": record.source_id,
         "status": record.status,
         "title": record.title,
         "summary": record.summary,
@@ -527,6 +528,7 @@ def _paper_source_summary(record: RecordEnvelope) -> dict[str, Any]:
     )
     return {
         "record_id": record.record_id,
+        "source_id": record.source_id,
         "status": record.status,
         "title": record.title,
         "summary": record.summary,
@@ -540,6 +542,7 @@ def _paper_source_summary(record: RecordEnvelope) -> dict[str, Any]:
 def _knowledge_page_summary(record: RecordEnvelope) -> dict[str, Any]:
     return {
         "record_id": record.record_id,
+        "source_id": record.source_id,
         "status": record.status,
         "title": record.title,
         "summary": record.summary,
@@ -553,6 +556,7 @@ def _knowledge_page_summary(record: RecordEnvelope) -> dict[str, Any]:
 def _projected_memory_summary(record: RecordEnvelope) -> dict[str, Any]:
     return {
         "record_id": record.record_id,
+        "source_id": record.source_id,
         "status": record.status,
         "title": record.title,
         "summary": record.summary,

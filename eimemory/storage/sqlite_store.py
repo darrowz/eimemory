@@ -24,6 +24,7 @@ from eimemory.events import (
 from eimemory.identity import hongtu_query_scopes
 from eimemory.models.memory_edges import MEMORY_EDGE_TYPES, MemoryEdge
 from eimemory.models.records import RecordEnvelope, ScopeRef, TimeRef
+from eimemory.models.source_partitions import DEFAULT_SOURCE_ID, normalize_source_id, normalize_source_ids
 from eimemory.governance.policy_rollout import (
     AUTO_PROMOTION_BUDGET_PER_DAY,
     AUTO_ROLLBACK_BUDGET_PER_DAY,
@@ -49,6 +50,7 @@ _MAX_CANDIDATE_LIMIT = 1200
 _RECORD_META_KEYS_MIGRATION = "records.meta_keys.v1"
 _INTENT_PATTERN_STATUS_MIGRATION = "intent_patterns.payload_status.v1"
 _STORAGE_SCHEMA_MIGRATION = "storage.schema.v1"
+_SOURCE_PARTITION_MIGRATION = "records.source_partition.v1"
 _RECALL_LANE_MEMORY_TYPE_ALIASES = {
     "audit": "audit_record",
     "audit_record": "audit_record",
@@ -124,6 +126,7 @@ class SqliteRecordStore:
             self._seed_default_intent_patterns()
             self._mark_schema_migration(_INTENT_PATTERN_STATUS_MIGRATION)
             self._mark_schema_migration(_STORAGE_SCHEMA_MIGRATION)
+            self._mark_schema_migration(_SOURCE_PARTITION_MIGRATION)
             self.conn.commit()
             return
         migrations_ready = self.conn.execute(
@@ -134,6 +137,8 @@ class SqliteRecordStore:
             and self._schema_migration_applied(_STORAGE_SCHEMA_MIGRATION)
             and self._schema_migration_applied(_RECORD_META_KEYS_MIGRATION)
             and self._schema_migration_applied(_INTENT_PATTERN_STATUS_MIGRATION)
+            and self._schema_migration_applied(_SOURCE_PARTITION_MIGRATION)
+            and self._source_partition_physical_ready()
         )
         if schema_ready:
             self._seed_default_intent_patterns()
@@ -158,6 +163,7 @@ class SqliteRecordStore:
         if "semantic_key" not in columns:
             self.conn.execute("ALTER TABLE records ADD COLUMN semantic_key TEXT NOT NULL DEFAULT ''")
         self._create_schema_migrations_table()
+        self._migrate_source_partition_schema()
         self._create_indexes()
         self.conn.commit()
         self._backfill_record_meta_keys_if_needed()
@@ -188,6 +194,7 @@ class SqliteRecordStore:
                 detail TEXT NOT NULL,
                 content_text TEXT NOT NULL,
                 source TEXT NOT NULL,
+                source_id TEXT NOT NULL DEFAULT 'default',
                 agent_id TEXT NOT NULL,
                 workspace_id TEXT NOT NULL,
                 user_id TEXT NOT NULL,
@@ -406,6 +413,10 @@ class SqliteRecordStore:
             "CREATE INDEX IF NOT EXISTS idx_records_scope_updated "
             "ON records(tenant_id, agent_id, workspace_id, user_id, updated_at DESC, record_id DESC)"
         )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_records_scope_source_updated "
+            "ON records(tenant_id, agent_id, workspace_id, user_id, source_id, updated_at DESC, record_id DESC, status, storage_key)"
+        )
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_records_kind_scope ON records(kind, tenant_id, agent_id, workspace_id, user_id)")
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_records_kind_scope_updated "
@@ -462,7 +473,7 @@ class SqliteRecordStore:
         except sqlite3.OperationalError:
             pass
 
-    def _create_recall_index_tables(self) -> None:
+    def _create_recall_index_tables(self, *, create_indexes: bool = True) -> None:
         self.conn.execute(
             """
             CREATE TABLE IF NOT EXISTS recall_index (
@@ -471,6 +482,7 @@ class SqliteRecordStore:
                 kind TEXT NOT NULL,
                 status TEXT NOT NULL,
                 source TEXT NOT NULL,
+                source_id TEXT NOT NULL DEFAULT 'default',
                 tenant_id TEXT NOT NULL,
                 agent_id TEXT NOT NULL,
                 workspace_id TEXT NOT NULL,
@@ -488,11 +500,13 @@ class SqliteRecordStore:
             )
             """
         )
-        self.conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_recall_index_scope_lane ON recall_index(tenant_id, agent_id, workspace_id, user_id, lane, visibility)"
-        )
-        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_recall_index_kind ON recall_index(kind, visibility)")
-        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_recall_index_source_class ON recall_index(source_class, visibility)")
+        if create_indexes:
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_recall_index_scope_lane ON recall_index(tenant_id, agent_id, workspace_id, user_id, lane, visibility)"
+            )
+            self._create_source_partition_indexes()
+            self.conn.execute("CREATE INDEX IF NOT EXISTS idx_recall_index_kind ON recall_index(kind, visibility)")
+            self.conn.execute("CREATE INDEX IF NOT EXISTS idx_recall_index_source_class ON recall_index(source_class, visibility)")
         try:
             self.conn.execute(
                 """
@@ -1144,6 +1158,136 @@ class SqliteRecordStore:
             self.conn.rollback()
             raise
 
+    def _migrate_source_partition_schema(self) -> None:
+        """Add the explicit partition projection without trusting provenance IDs."""
+
+        legacy_mapping_required = not self._schema_migration_applied(_SOURCE_PARTITION_MIGRATION)
+        if not legacy_mapping_required and self._source_partition_physical_ready():
+            return
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            record_columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(records)")}
+            records_source_added = "source_id" not in record_columns
+            if "source_id" not in record_columns:
+                self.conn.execute(
+                    "ALTER TABLE records ADD COLUMN source_id TEXT NOT NULL DEFAULT 'default'"
+                )
+            self._create_recall_index_tables(create_indexes=False)
+            recall_columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(recall_index)")}
+            if "source_id" not in recall_columns:
+                self.conn.execute(
+                    "ALTER TABLE recall_index ADD COLUMN source_id TEXT NOT NULL DEFAULT 'default'"
+                )
+            self._create_recall_index_tables()
+            self._create_indexes()
+            self._create_source_partition_indexes(rebuild=True)
+
+            diagnostics: dict[str, int] = {"ambiguous": 0, "invalid": 0}
+            if legacy_mapping_required or records_source_added:
+                last_storage_key = ""
+                while True:
+                    rows = self.conn.execute(
+                        "SELECT storage_key, kind, payload_json FROM records "
+                        "WHERE storage_key > ? ORDER BY storage_key LIMIT 200",
+                        (last_storage_key,),
+                    ).fetchall()
+                    if not rows:
+                        break
+                    updates: list[tuple[str, str, str]] = []
+                    for row in rows:
+                        payload = self._payload_dict_from_json(row["payload_json"])
+                        if legacy_mapping_required:
+                            source_id, reason = self._legacy_source_partition(payload, str(row["kind"] or ""))
+                            if reason:
+                                diagnostics[reason] = diagnostics.get(reason, 0) + 1
+                            payload["source_id"] = source_id
+                            updates.append((source_id, json.dumps(payload, ensure_ascii=False), str(row["storage_key"])))
+                        else:
+                            source_id = normalize_source_id(payload.get("source_id", DEFAULT_SOURCE_ID))
+                            updates.append((source_id, str(row["payload_json"]), str(row["storage_key"])))
+                    self.conn.executemany(
+                        "UPDATE records SET source_id = ?, payload_json = ? WHERE storage_key = ?", updates
+                    )
+                    last_storage_key = str(rows[-1]["storage_key"])
+            # Rebuild the projection in this migration transaction so the two tables cannot disagree.
+            self.conn.execute("DELETE FROM recall_index")
+            if self._has_fts_table():
+                self.conn.execute("DELETE FROM recall_index_fts")
+            self._backfill_recall_index_if_needed()
+            self._mark_schema_migration(_SOURCE_PARTITION_MIGRATION)
+            self.conn.commit()
+            self.source_partition_migration_diagnostics = {
+                key: min(value, 1_000) for key, value in diagnostics.items() if value
+            }
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    @staticmethod
+    def _legacy_source_partition(payload: dict[str, Any], kind: str) -> tuple[str, str]:
+        if kind != "knowledge_page":
+            return DEFAULT_SOURCE_ID, ""
+        candidates: list[object] = []
+        for container_name in ("content", "meta", "provenance"):
+            container = payload.get(container_name)
+            if not isinstance(container, dict):
+                continue
+            raw_source_ids = container.get("source_ids")
+            if isinstance(raw_source_ids, (list, tuple)):
+                candidates.extend(raw_source_ids)
+            elif raw_source_ids is not None:
+                candidates.append(raw_source_ids)
+        if not candidates:
+            return DEFAULT_SOURCE_ID, ""
+        normalized: set[str] = set()
+        try:
+            for candidate in candidates:
+                normalized.add(normalize_source_id(candidate))
+        except ValueError:
+            return DEFAULT_SOURCE_ID, "invalid"
+        if len(normalized) != 1:
+            return DEFAULT_SOURCE_ID, "ambiguous"
+        return next(iter(normalized)), ""
+
+    def _create_source_partition_indexes(self, *, rebuild: bool = False) -> None:
+        if rebuild:
+            self.conn.execute("DROP INDEX IF EXISTS idx_records_scope_source_updated")
+            self.conn.execute("DROP INDEX IF EXISTS idx_recall_index_scope_source_updated")
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_records_scope_source_updated "
+            "ON records(tenant_id, agent_id, workspace_id, user_id, source_id, updated_at DESC, record_id DESC, status, storage_key)"
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_recall_index_scope_source_updated "
+            "ON recall_index(tenant_id, agent_id, workspace_id, user_id, source_id, updated_at DESC, quality_score, status, lane, visibility, storage_key)"
+        )
+
+    def _source_partition_physical_ready(self) -> bool:
+        try:
+            record_columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(records)")}
+            recall_columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(recall_index)")}
+            indexes = {
+                "idx_records_scope_source_updated": [
+                    "tenant_id", "agent_id", "workspace_id", "user_id", "source_id",
+                    "updated_at", "record_id", "status", "storage_key",
+                ],
+                "idx_recall_index_scope_source_updated": [
+                    "tenant_id", "agent_id", "workspace_id", "user_id", "source_id",
+                    "updated_at", "quality_score", "status", "lane", "visibility", "storage_key",
+                ],
+            }
+            if "source_id" not in record_columns or "source_id" not in recall_columns:
+                return False
+            for index_name, expected_columns in indexes.items():
+                columns = [row[2] for row in self.conn.execute(f"PRAGMA index_info({index_name})")]
+                if columns != expected_columns:
+                    return False
+                if "status" not in columns:
+                    return False
+            return True
+        except sqlite3.OperationalError:
+            return False
+
     def upsert(self, record: RecordEnvelope, *, commit: bool = True) -> None:
         payload = record.to_dict()
         raw_index_parts = []
@@ -1168,15 +1312,20 @@ class SqliteRecordStore:
         )
         embedding = json.dumps(embed_text(content_text), ensure_ascii=False)
         storage_key = self._storage_key(record)
+        existing = self.conn.execute(
+            "SELECT source_id FROM records WHERE storage_key = ?", (storage_key,)
+        ).fetchone()
+        if existing is not None and str(existing["source_id"]) != record.source_id:
+            raise ValueError("source_id move requires an explicit mutation path")
         idempotency_key = str(record.meta.get("idempotency_key") or "")
         semantic_key = str(record.meta.get("semantic_key") or "")
         self.conn.execute(
             """
             INSERT INTO records (
                 storage_key, record_id, kind, status, title, summary, detail, content_text,
-                source, agent_id, workspace_id, user_id, tenant_id,
+                source, source_id, agent_id, workspace_id, user_id, tenant_id,
                 embedding_json, idempotency_key, semantic_key, meta_json, payload_json, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(storage_key) DO UPDATE SET
                 kind=excluded.kind,
                 status=excluded.status,
@@ -1185,6 +1334,7 @@ class SqliteRecordStore:
                 detail=excluded.detail,
                 content_text=excluded.content_text,
                 source=excluded.source,
+                source_id=excluded.source_id,
                 agent_id=excluded.agent_id,
                 workspace_id=excluded.workspace_id,
                 user_id=excluded.user_id,
@@ -1206,6 +1356,7 @@ class SqliteRecordStore:
                 record.detail,
                 content_text,
                 record.source,
+                record.source_id,
                 record.scope.agent_id,
                 record.scope.workspace_id,
                 record.scope.user_id,
@@ -1281,16 +1432,17 @@ class SqliteRecordStore:
         self.conn.execute(
             """
             INSERT INTO recall_index (
-                storage_key, record_id, kind, status, source,
+                storage_key, record_id, kind, status, source, source_id,
                 tenant_id, agent_id, workspace_id, user_id,
                 lane, visibility, source_class, memory_type, projection_type,
                 quality_score, title_text, body_text, anchor_terms, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(storage_key) DO UPDATE SET
                 record_id=excluded.record_id,
                 kind=excluded.kind,
                 status=excluded.status,
                 source=excluded.source,
+                source_id=excluded.source_id,
                 tenant_id=excluded.tenant_id,
                 agent_id=excluded.agent_id,
                 workspace_id=excluded.workspace_id,
@@ -1312,6 +1464,7 @@ class SqliteRecordStore:
                 record.kind,
                 record.status,
                 record.source,
+                record.source_id,
                 record.scope.tenant_id,
                 record.scope.agent_id,
                 record.scope.workspace_id,
@@ -1421,8 +1574,11 @@ class SqliteRecordStore:
         kinds: list[str] | None,
         scope: ScopeRef,
         limit: int,
+        source_ids: list[str] | tuple[str, ...] | None = None,
     ) -> list[RecordEnvelope]:
-        records, _ = self.search_with_diagnostics(query=query, kinds=kinds, scope=scope, limit=limit)
+        records, _ = self.search_with_diagnostics(
+            query=query, kinds=kinds, scope=scope, limit=limit, source_ids=source_ids
+        )
         return records
 
     def search_with_diagnostics(
@@ -1433,9 +1589,23 @@ class SqliteRecordStore:
         scope: ScopeRef,
         limit: int,
         recall_filters: dict | None = None,
+        source_ids: list[str] | tuple[str, ...] | None = None,
     ) -> tuple[list[RecordEnvelope], dict]:
         limit = self._normalize_limit(limit)
         recall_filters = self._normalized_recall_filters(recall_filters)
+        allowed_source_ids = normalize_source_ids(source_ids)
+        if allowed_source_ids == ():
+            return [], {
+                "vector_hits": 0,
+                "retrieval_mode": "recall_index_hybrid",
+                "scored_items": [],
+                "candidate_count": 0,
+                "candidate_limit": 0,
+                "candidate_sources": {},
+                "source_ids": [],
+            }
+        if allowed_source_ids is not None:
+            recall_filters = {**recall_filters, "_source_ids": allowed_source_ids}
         rows, candidate_report = self._candidate_rows(
             query=query,
             kinds=kinds,
@@ -1692,6 +1862,10 @@ class SqliteRecordStore:
             where.append(f"kind IN ({','.join('?' for _ in kinds)})")
             params.extend(kinds)
         self._apply_scope_filters(where, params, scope)
+        source_ids = recall_filters.get("_source_ids")
+        if source_ids is not None:
+            where.append(f"source_id IN ({','.join('?' for _ in source_ids)})")
+            params.extend(source_ids)
         where.append("status != 'rejected'")
         sql = (
             "SELECT storage_key, payload_json, content_text, embedding_json FROM records WHERE "
@@ -1856,6 +2030,10 @@ class SqliteRecordStore:
             where.append(f"{prefix}kind IN ({','.join('?' for _ in kinds)})")
             params.extend(kinds)
         self._apply_recall_index_scope_filters(where, params, scope, alias=alias)
+        source_ids = recall_filters.get("_source_ids")
+        if source_ids is not None:
+            where.append(f"{prefix}source_id IN ({','.join('?' for _ in source_ids)})")
+            params.extend(source_ids)
         lanes = self._allowed_recall_lanes(kinds=kinds, recall_filters=recall_filters)
         if lanes:
             where.append(f"{prefix}lane IN ({','.join('?' for _ in lanes)})")
@@ -2080,6 +2258,7 @@ class SqliteRecordStore:
         offset: int = 0,
         since: str | None = None,
         until: str | None = None,
+        source_ids: list[str] | tuple[str, ...] | None = None,
     ) -> list[RecordEnvelope]:
         limit = self._normalize_limit(limit)
         offset = max(0, int(offset))
@@ -2093,6 +2272,12 @@ class SqliteRecordStore:
             params.append(status)
         if scope:
             self._apply_scope_filters(where, params, scope)
+        allowed_source_ids = normalize_source_ids(source_ids)
+        if allowed_source_ids == ():
+            return []
+        if allowed_source_ids is not None:
+            where.append(f"source_id IN ({','.join('?' for _ in allowed_source_ids)})")
+            params.extend(allowed_source_ids)
         since_value = _normalize_datetime_bound(since, end_of_day=False)
         until_value = _normalize_datetime_bound(until, end_of_day=True)
         if since_value:
@@ -2126,6 +2311,7 @@ class SqliteRecordStore:
         kinds: list[str] | None = None,
         scope: ScopeRef | None = None,
         status: str | None = None,
+        source_ids: list[str] | tuple[str, ...] | None = None,
     ) -> int:
         where = ["1=1"]
         params: list[object] = []
@@ -2137,6 +2323,12 @@ class SqliteRecordStore:
             params.append(status)
         if scope is not None:
             self._apply_scope_filters(where, params, scope)
+        allowed_source_ids = normalize_source_ids(source_ids)
+        if allowed_source_ids == ():
+            return 0
+        if allowed_source_ids is not None:
+            where.append(f"source_id IN ({','.join('?' for _ in allowed_source_ids)})")
+            params.extend(allowed_source_ids)
         return int(
             self.conn.execute(
                 "SELECT COUNT(*) FROM records WHERE " + " AND ".join(where),
@@ -2525,6 +2717,10 @@ class SqliteRecordStore:
                 workspace_id=previous_scope.workspace_id,
                 user_id=previous_scope.user_id,
             )
+        for key in {self._storage_key(record), previous_key} - {None}:
+            existing = self.conn.execute("SELECT source_id FROM records WHERE storage_key = ?", (key,)).fetchone()
+            if existing is not None and str(existing["source_id"]) != record.source_id:
+                raise ValueError("source_id move requires an explicit mutation path")
         new_key = self._storage_key(record)
         if previous_key and previous_key != new_key:
             try:

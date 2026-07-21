@@ -104,6 +104,7 @@ def _seed_records(runtime, seed: list[dict[str, Any]], *, default_scope: ScopeRe
             title=title,
             scope=dict(item.get("scope") or asdict(default_scope)),
             source=str(item.get("source") or "eimemory.livingmem.seed"),
+            source_id=item["source_id"] if "source_id" in item else "default",
             tags=[str(tag) for tag in list(item.get("tags") or [])],
             force_capture=bool(item.get("force_capture", True)),
             meta=meta,

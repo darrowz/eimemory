@@ -87,10 +87,13 @@ class RuntimeStore:
         kinds: list[str] | None = None,
         scope: ScopeRef | dict | None = None,
         limit: int = 10,
+        source_ids: list[str] | tuple[str, ...] | None = None,
     ) -> list[RecordEnvelope]:
         with self._lock:
             scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
-            return self.sqlite.search(query=query, kinds=kinds, scope=scope_ref, limit=limit)
+            return self.sqlite.search(
+                query=query, kinds=kinds, scope=scope_ref, limit=limit, source_ids=source_ids
+            )
 
     def search_with_diagnostics(
         self,
@@ -100,6 +103,7 @@ class RuntimeStore:
         scope: ScopeRef | dict | None = None,
         limit: int = 10,
         recall_filters: dict | None = None,
+        source_ids: list[str] | tuple[str, ...] | None = None,
     ) -> tuple[list[RecordEnvelope], dict]:
         with self._lock:
             scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
@@ -109,6 +113,7 @@ class RuntimeStore:
                 scope=scope_ref,
                 limit=limit,
                 recall_filters=recall_filters,
+                source_ids=source_ids,
             )
 
     def get_active_policy(self, *, task_type: str, scope: ScopeRef | dict | None = None) -> dict:
@@ -403,6 +408,7 @@ class RuntimeStore:
         offset: int = 0,
         since: str | None = None,
         until: str | None = None,
+        source_ids: list[str] | tuple[str, ...] | None = None,
     ) -> list[RecordEnvelope]:
         with self._lock:
             scope_ref = None if scope is None else (scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope))
@@ -414,6 +420,7 @@ class RuntimeStore:
                 offset=offset,
                 since=since,
                 until=until,
+                source_ids=source_ids,
             )
 
     def count_records(
@@ -422,6 +429,7 @@ class RuntimeStore:
         kinds: list[str] | None = None,
         scope: ScopeRef | dict | None = None,
         status: str | None = None,
+        source_ids: list[str] | tuple[str, ...] | None = None,
     ) -> int:
         with self._lock:
             scope_ref = None if scope is None else (
@@ -431,6 +439,7 @@ class RuntimeStore:
                 kinds=kinds,
                 scope=scope_ref,
                 status=status,
+                source_ids=source_ids,
             )
 
     def count_records_exact_scope(
@@ -1000,6 +1009,8 @@ class RuntimeStore:
         release_identity = _record_release_identity(record)
         for existing in self.list_records(kinds=["reflection"], scope=record.scope, limit=200):
             if str(existing.source or "") != str(record.source or ""):
+                continue
+            if existing.source_id != record.source_id:
                 continue
             existing_report_type = str(
                 business_metadata(existing.meta).get("report_type") or existing.provenance.get("report_type") or ""

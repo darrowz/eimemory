@@ -132,6 +132,7 @@ class MemoryAPI:
         scope: dict,
         tags: list[str] | None = None,
         source: str = "runtime",
+        source_id: str = "default",
         force_capture: bool = False,
         meta: dict | None = None,
         content: dict | None = None,
@@ -160,6 +161,7 @@ class MemoryAPI:
             links=links or [],
             evidence=evidence or [],
             source=source,
+            source_id=source_id,
             meta=meta_payload,
         )
         if str(record_id or "").strip():

@@ -302,12 +302,17 @@ def _first_text(*values: Any) -> str:
 
 
 def _source_id(payload: Mapping[str, Any]) -> str:
-    return _first_text(
-        payload.get("source_id"),
+    # RecordEnvelope.source_id is a channel-local partition, not evidence or
+    # source-registry provenance.  Generic intake payloads may still carry a
+    # top-level source_id, but persisted envelopes must use their provenance.
+    values: list[Any] = [
         _nested(payload, "meta", "source_id"),
         _nested(payload, "content", "source_id"),
         _nested(payload, "provenance", "source_id"),
-    )
+    ]
+    if not payload.get("record_id"):
+        values.insert(0, payload.get("source_id"))
+    return _first_text(*values)
 
 
 def _source_kind(payload: Mapping[str, Any]) -> str:

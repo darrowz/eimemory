@@ -7,6 +7,7 @@ from typing import Any
 from eimemory.core.clock import now_iso
 from eimemory.core.ids import generate_record_id
 from eimemory.metadata import normalize_metadata
+from eimemory.models.source_partitions import DEFAULT_SOURCE_ID, normalize_source_id
 from eimemory.scoring import ScoreContext, evaluate_memory_score, memory_score_to_legacy_quality, with_score_metadata
 
 VALID_KINDS: frozenset[str] = frozenset(
@@ -155,9 +156,11 @@ class RecordEnvelope:
     time: TimeRef
     provenance: dict[str, Any]
     meta: dict[str, Any]
+    source_id: str = DEFAULT_SOURCE_ID
 
     def __post_init__(self) -> None:
         self._validate_kind(self.kind)
+        self.source_id = normalize_source_id(self.source_id)
 
     @staticmethod
     def _validate_kind(kind: str) -> None:
@@ -178,6 +181,7 @@ class RecordEnvelope:
         links: list[LinkRef] | None = None,
         evidence: list[str] | None = None,
         source: str = "eimemory",
+        source_id: str = DEFAULT_SOURCE_ID,
         status: str = "active",
         provenance: dict[str, Any] | None = None,
         meta: dict[str, Any] | None = None,
@@ -216,6 +220,7 @@ class RecordEnvelope:
             time=TimeRef.now(),
             provenance=dict(provenance or {}),
             meta=meta_payload,
+            source_id=source_id,
         )
 
     @classmethod
@@ -253,6 +258,7 @@ class RecordEnvelope:
             time=time,
             provenance=dict(data.get("provenance") or {}),
             meta=dict(data.get("meta") or {}),
+            source_id=data.get("source_id", DEFAULT_SOURCE_ID),
         )
 
     def touch(self) -> None:

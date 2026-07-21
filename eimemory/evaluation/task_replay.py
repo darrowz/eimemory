@@ -134,6 +134,7 @@ def _seed_records(runtime, seed_records: list[dict[str, Any]], *, scope: ScopeRe
             title=str(item.get("title") or f"Real task replay seed {index + 1}"),
             scope=asdict(ScopeRef.from_dict(item.get("scope") or asdict(scope))),
             source=str(item.get("source") or "eimemory.real_task_replay.seed"),
+            source_id=item["source_id"] if "source_id" in item else "default",
             tags=[str(tag) for tag in list(item.get("tags") or [])],
             force_capture=bool(item.get("force_capture", True)),
             meta=dict(item.get("meta") or {}),
