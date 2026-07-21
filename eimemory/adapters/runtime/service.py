@@ -1263,13 +1263,13 @@ class AgentRuntimeMemoryService:
             )
             error_value = parsed.get("error", "")
             exit_code = parsed.get("exit_code")
+            empty_error = error_value is None or error_value == ""
             if (
                 isinstance(output_value, str)
-                and isinstance(error_value, str)
                 and (not require_complete_envelope or "error" in parsed)
                 and type(exit_code) is int
                 and exit_code == 0
-                and not error_value.strip()
+                and empty_error
                 and AgentRuntimeMemoryService._positive_test_output(output_value)
             ):
                 return STRUCTURED_TEST_POLICY_ID, True

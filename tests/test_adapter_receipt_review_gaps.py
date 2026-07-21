@@ -561,10 +561,39 @@ def test_codex_bash_string_output_never_counts_without_explicit_exit_status(
 @pytest.mark.parametrize(
     ("payload", "expected_passed"),
     [
-        ({"output": "3 passed in 0.12s", "exit_code": 0, "error": ""}, True),
+        pytest.param(
+            {"output": "3 passed in 0.12s", "exit_code": 0, "error": None},
+            True,
+            id="official-null-error",
+        ),
+        pytest.param(
+            {"output": "3 passed in 0.12s", "exit_code": 0, "error": ""},
+            True,
+            id="empty-string-error",
+        ),
         ({"output": "3 passed in 0.12s", "exit_code": 0}, False),
         ({"output": "3 passed in 0.12s", "exit_code": 1, "error": ""}, False),
         ({"output": "3 passed in 0.12s", "exit_code": 0, "error": "plugin failed"}, False),
+        pytest.param(
+            {"output": "3 passed in 0.12s", "exit_code": 0, "error": "   "},
+            False,
+            id="whitespace-error",
+        ),
+        pytest.param(
+            {"output": "3 passed in 0.12s", "exit_code": 0, "error": 0},
+            False,
+            id="numeric-error",
+        ),
+        pytest.param(
+            {"output": "3 passed in 0.12s", "exit_code": 0, "error": False},
+            False,
+            id="boolean-error",
+        ),
+        pytest.param(
+            {"output": "3 passed in 0.12s", "exit_code": 0, "error": []},
+            False,
+            id="list-error",
+        ),
     ],
 )
 def test_hermes_json_string_requires_complete_host_status_envelope(
@@ -970,11 +999,11 @@ class Context:
 ctx = Context()
 register(ctx)
 ctx.provider.initialize('session-1', agent_identity='hongtu', agent_workspace='embodied', user_id='darrow')
-ctx.callback('terminal', {'command': 'python -m pytest tests/test_unit.py -q'}, json.dumps({'output':'2 passed in 0.12s','exit_code':0,'error':''}), 'task-1', 10, session_id='session-1', turn_id='turn-1', tool_call_id='call-1')
+ctx.callback('terminal', {'command': 'python -m pytest tests/test_unit.py -q'}, json.dumps({'output':'2 passed in 0.12s','exit_code':0,'error':None}), 'task-1', 10, session_id='session-1', turn_id='turn-1', tool_call_id='call-1')
 good = json.loads(ctx.provider.handle_tool_call('eimemory_verify_outcome', {'result':'done'}))
 assert good['ok'] is True
-ctx.callback('terminal', {'command': 'python -m pytest tests/test_a.py -q'}, json.dumps({'output':'1 passed in 0.10s','exit_code':0,'error':''}), 'task-2', 10, session_id='session-1', turn_id='turn-2', tool_call_id='call-2')
-ctx.callback('terminal', {'command': 'python -m pytest tests/test_b.py -q'}, json.dumps({'output':'1 passed in 0.10s','exit_code':0,'error':''}), 'task-3', 10, session_id='session-1', turn_id='turn-3', tool_call_id='call-3')
+ctx.callback('terminal', {'command': 'python -m pytest tests/test_a.py -q'}, json.dumps({'output':'1 passed in 0.10s','exit_code':0,'error':None}), 'task-2', 10, session_id='session-1', turn_id='turn-2', tool_call_id='call-2')
+ctx.callback('terminal', {'command': 'python -m pytest tests/test_b.py -q'}, json.dumps({'output':'1 passed in 0.10s','exit_code':0,'error':None}), 'task-3', 10, session_id='session-1', turn_id='turn-3', tool_call_id='call-3')
 ambiguous = json.loads(ctx.provider.handle_tool_call('eimemory_verify_outcome', {'result':'done'}))
 assert ambiguous['ok'] is False
 """
