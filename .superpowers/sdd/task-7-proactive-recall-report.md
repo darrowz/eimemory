@@ -90,12 +90,23 @@ suggestions plus mandatory fallback context when optional proactive persistence
 fails. Legacy OpenClaw recall-view rows are selection audits (`injected=false`);
 actual delivery remains the citation-bound proactive acknowledgement.
 
+Final submitted-state review found and closed two additional boundary gaps.
+The shared adapter RPC now rejects every caller-supplied non-empty
+`terminal_outcome`, so possession of the common bearer plus a forged channel
+cannot mint verified paired/L5 evidence; trusted OpenClaw outcome attestation
+continues to use its in-process host hook. Hermes now terminalizes the exact
+persisted decision on capacity eviction, session switch/reset, reinitialize,
+foreground/background abandonment, and shutdown. Cleanup snapshots pending
+identities while locked and performs bounded RPC calls after releasing the
+lock.
+
 Fresh verification after counterexample closure:
 
 - Named independent-review counterexamples: `12 passed`
 - Task 7 service + Codex + Hermes + RPC + OpenClaw JS selection: `84 passed`
 - OpenClaw full adapter regression: `64 passed`
 - Full Codex + Hermes + runtime RPC channel regression: `63 passed`
+- Final Hermes + runtime RPC boundary regression: `45 passed`
 - Task 4-6 recall engine/fusion/Postgres focused regression: `179 passed`
 - `python -m compileall -q eimemory integrations/hermes/eimemory`
 - `git diff --check`

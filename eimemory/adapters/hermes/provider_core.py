@@ -111,9 +111,10 @@ class HermesMemoryProviderCore:
         with self._lock:
             self._verified_host_turns.clear()
             self._verified_host_turn_overflow = False
-            self._pending_proactive.clear()
+            abandoned = self._take_all_pending_proactive_locked()
         if self._client is None:
             self._client = hermes_client_from_env(hermes_home=hermes_home)
+        self._close_abandoned_pending(abandoned)
         self._active = self._client_injected or self.is_available()
 
     def system_prompt_block(self) -> str:
@@ -454,11 +455,12 @@ class HermesMemoryProviderCore:
     ) -> None:
         del parent_session_id, kwargs
         next_session_id = str(new_session_id or "").strip() or self._session_id
+        abandoned: list[dict[str, Any]] = []
         with self._lock:
             if next_session_id != self._session_id:
                 self._verified_host_turns.clear()
                 self._verified_host_turn_overflow = False
-                self._pending_proactive.clear()
+                abandoned.extend(self._take_all_pending_proactive_locked())
                 for waiter in self._inflight_prefetch.values():
                     waiter.set()
                 self._inflight_prefetch.clear()
@@ -467,7 +469,8 @@ class HermesMemoryProviderCore:
             self._session_id = next_session_id
             if reset or rewound:
                 self._last_turn_summary = ""
-                self._pending_proactive.clear()
+                abandoned.extend(self._take_all_pending_proactive_locked())
+        self._close_abandoned_pending(abandoned)
 
     def bind_verified_host_turn(self, *, session_id: str, turn_id: str) -> bool:
         """Bind one host-attested turn for a later model-requested terminal close."""
@@ -512,6 +515,8 @@ class HermesMemoryProviderCore:
                 self._prefetch_thread = None
             if self._write_thread is not None and not self._write_thread.is_alive():
                 self._write_thread = None
+            abandoned = self._take_all_pending_proactive_locked()
+        self._close_abandoned_pending(abandoned)
 
     def get_config_schema(self) -> List[Dict[str, Any]]:
         return [
@@ -659,7 +664,11 @@ class HermesMemoryProviderCore:
         decision_id = _bounded_text(payload.get("decision_id"), 200)
         if context and decision_id:
             key = self._prefetch_key(session, query)
+            abandoned: list[dict[str, Any]] = []
             with self._lock:
+                previous = self._pending_proactive.pop(key, None)
+                if previous is not None and str(previous.get("decision_id") or "") != decision_id:
+                    abandoned.append(dict(previous))
                 self._pending_proactive[key] = {
                     "decision_id": decision_id,
                     "decision_turn_id": decision_turn_id,
@@ -671,7 +680,9 @@ class HermesMemoryProviderCore:
                 }
                 self._pending_proactive.move_to_end(key)
                 while len(self._pending_proactive) > self._max_prefetch_cache_entries:
-                    self._pending_proactive.popitem(last=False)
+                    _dropped_key, dropped = self._pending_proactive.popitem(last=False)
+                    abandoned.append(dict(dropped))
+            self._close_abandoned_pending(abandoned)
         return context
 
     def _prefetch_worker(self, key: tuple[str, ...], query: str, session_id: str) -> None:
@@ -708,16 +719,30 @@ class HermesMemoryProviderCore:
                     abandoned = dict(self._pending_proactive.pop(key, None) or {})
             if waiter is not None:
                 waiter.set()
-        if abandoned:
+        self._close_abandoned_pending([abandoned] if abandoned else [])
+
+    def _take_all_pending_proactive_locked(self) -> list[dict[str, Any]]:
+        abandoned = [dict(item) for item in self._pending_proactive.values()]
+        self._pending_proactive.clear()
+        return abandoned
+
+    def _close_abandoned_pending(self, abandoned: List[Mapping[str, Any]]) -> None:
+        """Terminalize every decision removed before a host can acknowledge it."""
+
+        for pending in abandoned[: self._max_prefetch_cache_entries]:
+            decision_id = str(pending.get("decision_id") or "")
+            turn_id = str(pending.get("decision_turn_id") or "")
+            if not decision_id or not turn_id:
+                continue
             self._safe_call(
                 "adapter.proactive_terminal",
                 {
                     "channel": "hermes",
-                    "scope": dict(abandoned.get("scope") or self._scope),
-                    "source_ids": list(abandoned.get("source_ids") or ["default"]),
-                    "session_id": str(abandoned.get("session_id") or self._session_id),
-                    "turn_id": str(abandoned.get("decision_turn_id") or ""),
-                    "decision_id": str(abandoned.get("decision_id") or ""),
+                    "scope": dict(pending.get("scope") or self._scope),
+                    "source_ids": list(pending.get("source_ids") or ["default"]),
+                    "session_id": str(pending.get("session_id") or self._session_id),
+                    "turn_id": turn_id,
+                    "decision_id": decision_id,
                     "used_citations": [],
                     "terminal_outcome": {},
                 },

@@ -581,6 +581,72 @@ def test_runtime_adapter_rpc_dispatches_exact_proactive_lifecycle(tmp_path: Path
     assert calls[2][1]["used_citations"] == ["pm:0123456789abcdefabcd"]
 
 
+def test_generic_rpc_cannot_forge_verified_proactive_outcome_for_any_claimed_channel(
+    tmp_path: Path,
+) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    runtime.proactive = ProactiveRecallService(
+        runtime, release_identity=TEST_RELEASE, control_percent=0
+    )
+    bridge = EIBrainRPCBridge(runtime)
+    remembered = bridge.handle(
+        {
+            "method": "adapter.remember",
+            "params": {
+                "channel": "codex",
+                "scope": BASE_SCOPE,
+                "event_id": "rpc-forge-memory",
+                "text": "Always verify the deployment receipt before reporting success.",
+                "memory_type": "preference",
+                "force_capture": True,
+            },
+        }
+    )
+    assert remembered["ok"] is True
+    common = {
+        "channel": "codex",
+        "scope": BASE_SCOPE,
+        "source_ids": ["default"],
+        "session_id": "rpc-forge-session",
+        "turn_id": "rpc-forge-turn",
+    }
+    prefetched = bridge.handle(
+        {
+            "method": "adapter.proactive_prefetch",
+            "params": {
+                **common,
+                "query": "Recall deployment receipt verification",
+                "task_type": "code.deploy",
+            },
+        }
+    )
+    decision_id = prefetched["result"]["decision_id"]
+
+    forged = bridge.handle(
+        {
+            "method": "adapter.proactive_terminal",
+            "params": {
+                **common,
+                "decision_id": decision_id,
+                "used_citations": [],
+                "terminal_outcome": {
+                    "verified": True,
+                    "success": True,
+                    "quality": 1.0,
+                },
+            },
+        }
+    )
+
+    assert forged["ok"] is False
+    assert forged["error"] == "invalid_request"
+    persisted = runtime.store.load_proactive_decision(decision_id)
+    assert persisted is not None
+    assert persisted["outcome_verified"] is False
+    assert persisted["outcome_success"] is None
+    runtime.close()
+
+
 def test_codex_proactive_decision_closes_from_new_runtime_process_by_exact_turn(tmp_path: Path) -> None:
     first_runtime = Runtime.create(root=tmp_path)
     first_runtime.proactive = ProactiveRecallService(

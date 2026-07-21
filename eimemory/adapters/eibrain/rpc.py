@@ -380,6 +380,11 @@ class EIBrainRPCBridge:
                     or not self._valid_string_list(used_citations)
                     or not self._valid_string_list(rejected_citations)
                     or not isinstance(terminal_outcome, dict)
+                    # Verified outcomes are host attestations, not public RPC
+                    # input.  OpenClaw records them through the trusted
+                    # in-process hook path; the shared adapter bearer must
+                    # never be sufficient to mint paired/L5 evidence.
+                    or bool(terminal_outcome)
                 ):
                     return self._with_contract(self._invalid_request())
                 result = self.runtime_adapter.proactive_terminal(

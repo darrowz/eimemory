@@ -201,6 +201,62 @@ def test_hermes_session_switch_clears_pending_proactive_context_and_full_namespa
     assert not [method for method, _params in client.calls if method == "adapter.proactive_ack"]
 
 
+def test_hermes_prefetch_capacity_eviction_terminalizes_the_exact_abandoned_decision() -> None:
+    client = FakeClient()
+    provider = HermesMemoryProviderCore(client=client, max_prefetch_cache_entries=1)
+    provider.initialize("hermes-session", agent_workspace="embodied", agent_context="primary")
+
+    provider.prefetch("first pending query", session_id="hermes-session")
+    provider.prefetch("second pending query", session_id="hermes-session")
+
+    terminals = [params for method, params in client.calls if method == "adapter.proactive_terminal"]
+    assert len(terminals) == 1
+    assert terminals[0]["decision_id"] == "pd:hermes-turn"
+    assert terminals[0]["session_id"] == "hermes-session"
+    assert terminals[0]["used_citations"] == []
+    assert terminals[0]["terminal_outcome"] == {}
+
+
+def test_hermes_session_switch_terminalizes_all_abandoned_pending_decisions() -> None:
+    client = FakeClient()
+    provider = HermesMemoryProviderCore(client=client, max_prefetch_cache_entries=2)
+    provider.initialize("session-a", agent_workspace="embodied", agent_context="primary")
+    provider.prefetch("first pending query", session_id="session-a")
+    provider.prefetch("second pending query", session_id="session-a")
+
+    provider.on_session_switch("session-b")
+
+    terminals = [params for method, params in client.calls if method == "adapter.proactive_terminal"]
+    assert len(terminals) == 2
+    assert {params["session_id"] for params in terminals} == {"session-a"}
+    assert all(params["used_citations"] == [] for params in terminals)
+    assert all(params["terminal_outcome"] == {} for params in terminals)
+
+
+def test_hermes_reset_reinitialize_and_shutdown_terminalize_foreground_pending() -> None:
+    actions = (
+        lambda provider: provider.on_session_switch("session-a", reset=True),
+        lambda provider: provider.initialize(
+            "session-b", agent_workspace="embodied", agent_context="primary"
+        ),
+        lambda provider: provider.shutdown(),
+    )
+    for index, action in enumerate(actions):
+        client = FakeClient()
+        provider = HermesMemoryProviderCore(client=client)
+        provider.initialize("session-a", agent_workspace="embodied", agent_context="primary")
+        provider.prefetch(f"pending query {index}", session_id="session-a")
+
+        action(provider)
+
+        terminals = [
+            params for method, params in client.calls if method == "adapter.proactive_terminal"
+        ]
+        assert len(terminals) == 1
+        assert terminals[0]["session_id"] == "session-a"
+        assert terminals[0]["used_citations"] == []
+
+
 def test_hermes_provider_exposes_only_closed_loop_tools_and_rejects_unbound_terminal() -> None:
     client = FakeClient()
     provider = HermesMemoryProviderCore(client=client)
