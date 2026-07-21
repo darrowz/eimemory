@@ -10,6 +10,8 @@ import sys
 from typing import Any, Mapping
 
 from eimemory.adapters.runtime.http_client import AgentRuntimeRPCClient
+from eimemory.adapters.runtime.host_auth import producer_token_from_private_file
+from eimemory.adapters.runtime.receipt_handoff import ReceiptIdHandoff
 
 
 MAX_HOOK_CONTEXT_CHARS = 7_200
@@ -79,10 +81,12 @@ def codex_client_from_env() -> AgentRuntimeRPCClient:
 
 
 def codex_attestation_client_from_env() -> AgentRuntimeRPCClient | None:
-    token = os.getenv("EIMEMORY_ATTESTATION_TOKEN", "").strip()
+    token = producer_token_from_private_file("codex")
     if not token:
         return None
     client = codex_client_from_env()
+    if token == client.auth_token:
+        return None
     client.auth_token = token
     return client
 
@@ -92,7 +96,7 @@ class CodexHookAdapter:
         self.client = client
         self.scope = dict(scope) if scope is not None else None
         self.attestation_client = attestation_client
-        self._receipt_ids: dict[tuple[str, str], list[str]] = {}
+        self.receipt_handoff = ReceiptIdHandoff.from_env()
 
     def handle(self, event_name: str, event: Mapping[str, Any] | None) -> dict[str, Any]:
         name = str(event_name or "").strip()
@@ -160,19 +164,35 @@ class CodexHookAdapter:
         tool_name = _bounded_text(event.get("tool_name") or event.get("tool"), 200) or "unknown"
         tool_input = event.get("tool_input", event.get("input", {}))
         tool_result = event.get("tool_response", event.get("tool_result", event.get("tool_output", "")))
+        scope = self._scope_for_event(event)
         if self.attestation_client is not None:
             result = self.attestation_client.call_or_bypass(
                 "adapter.attest_tool_result",
                 {
-                    "channel": "codex", "scope": self._scope_for_event(event),
+                    "channel": "codex", "scope": scope,
                     "session_id": session_id, "run_id": turn_id, "tool_call_id": _event_id(event, "tool_call_id", "tool_use_id", default=turn_id),
-                    "tool_name": tool_name, "result": _redact_structured(tool_result),
+                    "tool_name": tool_name,
+                    "tool_input": _redact_structured(tool_input),
+                    "result": _redact_structured(tool_result),
                     "duration_ms": event.get("duration_ms", 0) if isinstance(event.get("duration_ms", 0), int) else 0,
                 },
             )
             receipt_id = result.get("result", {}).get("receipt_id") if isinstance(result.get("result"), dict) else ""
-            if isinstance(receipt_id, str) and receipt_id:
-                self._receipt_ids.setdefault((session_id, turn_id), []).append(receipt_id)
+            receipt = result.get("result", {}).get("receipt") if isinstance(result.get("result"), dict) else None
+            if (
+                isinstance(receipt_id, str)
+                and receipt_id
+                and isinstance(receipt, dict)
+                and receipt.get("passed") is True
+                and self.receipt_handoff is not None
+            ):
+                self.receipt_handoff.append(
+                    channel="codex",
+                    scope=scope,
+                    session_id=session_id,
+                    run_id=turn_id,
+                    receipt_id=receipt_id,
+                )
         input_summary = _safe_summary(tool_input, preview_limit=MAX_TOOL_INPUT_PREVIEW_CHARS)
         result_summary = _safe_summary(tool_result, preview_limit=MAX_TOOL_RESULT_PREVIEW_CHARS)
         self.client.call_or_bypass(
@@ -204,11 +224,22 @@ class CodexHookAdapter:
             event.get("last_assistant_message") or event.get("result") or event.get("response"),
             2_000,
         )
-        self.client.call_or_bypass(
+        scope = self._scope_for_event(event)
+        receipt_ids = (
+            self.receipt_handoff.list_ids(
+                channel="codex",
+                scope=scope,
+                session_id=session_id,
+                run_id=event_id,
+            )
+            if self.receipt_handoff is not None
+            else []
+        )
+        response = self.client.call_or_bypass(
             "adapter.record_terminal",
             {
                 "channel": "codex",
-                "scope": self._scope_for_event(event),
+                "scope": scope,
                 "end_kind": "stop",
                 "session_id": session_id,
                 "event_id": event_id,
@@ -217,10 +248,24 @@ class CodexHookAdapter:
                 "verification": verification,
                 "result": result,
                 "tool_receipts": [],
-                "receipt_ids": self._receipt_ids.pop((session_id, event_id), [])[:32],
+                "receipt_ids": receipt_ids,
                 "rehearsal": False,
             },
         )
+        terminal_result = response.get("result") if isinstance(response, dict) else None
+        if (
+            response.get("ok") is True
+            and isinstance(terminal_result, dict)
+            and terminal_result.get("ok") is True
+            and self.receipt_handoff is not None
+        ):
+            self.receipt_handoff.clear_exact(
+                channel="codex",
+                scope=scope,
+                session_id=session_id,
+                run_id=event_id,
+                receipt_ids=receipt_ids,
+            )
 
     def _scope_for_event(self, event: Mapping[str, Any]) -> dict[str, str]:
         if self.scope:

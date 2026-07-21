@@ -128,7 +128,12 @@ def _load_receipt_keyring(path: Path) -> ReceiptKeySet | None:
             return None
         entry_id = _safe_key_id(entry.get("key_id"))
         entry_key = _strong_key(entry.get("key"))
-        if not entry_id or not entry_key or entry_id in keys:
+        if (
+            not entry_id
+            or not entry_key
+            or entry_id != _key_id(entry_key)
+            or entry_id in keys
+        ):
             return None
         keys[entry_id] = entry_key
     active_id = _safe_key_id(active.get("key_id"))
@@ -242,11 +247,13 @@ def _canonical_v2_tool_receipt(receipt: Mapping[str, Any]) -> dict[str, Any]:
         "duration_ms": duration_ms,
         "expires_at": str(receipt.get("expires_at") or "").strip(),
         "issued_at": str(receipt.get("issued_at") or "").strip(),
+        "invocation_digest": str(receipt.get("invocation_digest") or "").strip().lower(),
         "key_id": str(receipt.get("key_id") or "").strip(),
         "passed": receipt.get("passed") is True,
         "receipt_id": str(receipt.get("receipt_id") or "").strip(),
         "receipt_version": V2_RECEIPT_VERSION,
         "release_commit": str(receipt.get("release_commit") or "").strip(),
+        "release_session_id": str(receipt.get("release_session_id") or "").strip(),
         "release_version": str(receipt.get("release_version") or "").strip(),
         "result_digest": str(receipt.get("result_digest") or "").strip().lower(),
         "retrieval_policy_digest": str(receipt.get("retrieval_policy_digest") or "").strip().lower(),
@@ -277,7 +284,9 @@ def sign_tool_receipt(
     is_v2 = receipt.get("receipt_version") == V2_RECEIPT_VERSION
     if key:
         secret = _strong_key(key)
-        signing_key_id = _safe_key_id(key_id) or _key_id(secret)
+        signing_key_id = _key_id(secret) if secret else ""
+        if key_id and str(key_id).strip() != signing_key_id:
+            raise ValueError("tool receipt key_id must match the key fingerprint")
     elif is_v2:
         key_set = _receipt_key_set()
         secret = key_set.active_key if key_set is not None else ""
@@ -381,6 +390,7 @@ def _verify_v2_tool_receipt(
         and canonical["session_id"] == str(session_id or "").strip()
         and canonical["run_id"] == str(run_id or "").strip()
         and all(canonical[name] for name in ("receipt_id", "attestation_id", "key_id", "issued_at", "expires_at", "tool_name", "tool_call_id", "verification_policy_id"))
+        and re.fullmatch(r"[0-9a-f]{64}", canonical["invocation_digest"])
         and re.fullmatch(r"[0-9a-f]{64}", canonical["result_digest"])
         and re.fullmatch(r"[0-9a-f]{64}", canonical["retrieval_policy_digest"])
         and re.fullmatch(r"[0-9a-f]{64}", signature)

@@ -186,6 +186,56 @@ class RuntimeStore:
             operation_ids: list[str] = []
             try:
                 self.sqlite.conn.execute("BEGIN IMMEDIATE")
+                canonical_outcome = ensure_outcome_payload(
+                    str(event_payload.get("id") or ""),
+                    outcome_payload,
+                )
+                recorded_event = self._existing_terminal_event(
+                    str(event_payload.get("id") or ""), scope=scope_ref
+                )
+                recorded_outcome = self._existing_terminal_outcome(
+                    str(canonical_outcome["id"]), scope=scope_ref
+                )
+                stored_trace = self.sqlite.get_by_id(trace_record.record_id, scope=scope_ref)
+                existing_parts = (
+                    recorded_event is not None,
+                    recorded_outcome is not None,
+                    stored_trace is not None,
+                )
+                if any(existing_parts):
+                    if not all(existing_parts):
+                        raise ValueError("terminal retry conflict: incomplete persisted bundle")
+                    expected_digest = str(event_payload.get("terminal_contract_digest") or "")
+                    trace_payload = (
+                        stored_trace.content.get("payload")
+                        if isinstance(stored_trace.content, dict)
+                        else None
+                    )
+                    observed_digests = {
+                        str(recorded_event.get("terminal_contract_digest") or ""),
+                        str(recorded_outcome.get("terminal_contract_digest") or ""),
+                        str(trace_payload.get("terminal_contract_digest") or "")
+                        if isinstance(trace_payload, dict)
+                        else "",
+                    }
+                    if not expected_digest or observed_digests != {expected_digest}:
+                        raise ValueError("terminal retry conflict: payload or receipt set changed")
+
+                claimable = self.sqlite.load_claimable_adapter_tool_receipts(
+                    channel=channel,
+                    session_id=session_id,
+                    run_id=run_id,
+                    trace_id=trace_id,
+                    scope=scope_ref,
+                )
+                claimable_ids = [str(item.get("receipt_id") or "") for item in claimable]
+                if sorted(claimable_ids) != sorted(clean_receipt_ids):
+                    raise ValueError("terminal receipt set changed before atomic consumption")
+                if sorted(claimable, key=lambda item: str(item.get("receipt_id") or "")) != sorted(
+                    expected_receipts,
+                    key=lambda item: str(item.get("receipt_id") or ""),
+                ):
+                    raise ValueError("terminal receipt payload changed before atomic consumption")
                 consumed = self.sqlite.consume_adapter_tool_receipts(
                     clean_receipt_ids,
                     channel=channel,
@@ -196,14 +246,14 @@ class RuntimeStore:
                     commit=False,
                 )
                 consumed_ids = [str(item.get("receipt_id") or "") for item in consumed]
-                if consumed_ids != clean_receipt_ids:
+                if sorted(consumed_ids) != sorted(clean_receipt_ids):
                     raise ValueError("terminal receipt set changed before atomic consumption")
-                if consumed != expected_receipts:
+                if sorted(consumed, key=lambda item: str(item.get("receipt_id") or "")) != sorted(
+                    expected_receipts,
+                    key=lambda item: str(item.get("receipt_id") or ""),
+                ):
                     raise ValueError("terminal receipt payload changed before atomic consumption")
 
-                recorded_event = self._existing_terminal_event(
-                    str(event_payload.get("id") or ""), scope=scope_ref
-                )
                 if recorded_event is None:
                     recorded_event = self.sqlite.record_event(
                         event_payload,
@@ -217,10 +267,6 @@ class RuntimeStore:
                 )
                 operation_ids.append(event_export["operation_id"])
 
-                canonical_outcome = ensure_outcome_payload(recorded_event["id"], outcome_payload)
-                recorded_outcome = self._existing_terminal_outcome(
-                    str(canonical_outcome["id"]), scope=scope_ref
-                )
                 if recorded_outcome is None:
                     recorded_outcome = self.sqlite.record_outcome(
                         recorded_event["id"],
@@ -238,7 +284,6 @@ class RuntimeStore:
                 )
                 operation_ids.append(outcome_export["operation_id"])
 
-                stored_trace = self.sqlite.get_by_id(trace_record.record_id, scope=scope_ref)
                 if stored_trace is None:
                     self.sqlite.upsert(trace_record, commit=False)
                     stored_trace = trace_record

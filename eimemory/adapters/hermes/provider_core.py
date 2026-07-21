@@ -10,6 +10,7 @@ import threading
 from typing import Any, Dict, List, Mapping, Optional
 
 from eimemory.adapters.runtime.http_client import AgentRuntimeRPCClient
+from eimemory.adapters.runtime.receipt_handoff import ReceiptIdHandoff
 
 
 MAX_PREFETCH_CONTEXT_CHARS = 7_200
@@ -62,6 +63,7 @@ class HermesMemoryProviderCore:
         self._inflight_prefetch: dict[tuple[str, str], threading.Event] = {}
         self._last_turn_summary = ""
         self._dropped_write_count = 0
+        self._receipt_handoff = ReceiptIdHandoff.from_env()
 
     @property
     def name(self) -> str:
@@ -407,21 +409,49 @@ class HermesMemoryProviderCore:
             success = args.get("success")
             if not isinstance(success, bool):
                 raise ValueError("success must be a boolean")
-            return self._safe_call(
+            session_id = _required_text(args, "session_id")
+            event_id = _required_text(args, "event_id")
+            receipt_ids = (
+                self._receipt_handoff.list_ids(
+                    channel="hermes",
+                    scope=self._scope,
+                    session_id=session_id,
+                    run_id=event_id,
+                )
+                if self._receipt_handoff is not None
+                else []
+            )
+            terminal = self._safe_call(
                 "adapter.record_terminal",
                 {
                     **common,
                     "end_kind": "task_end",
-                    "session_id": _required_text(args, "session_id"),
-                    "event_id": _required_text(args, "event_id"),
+                    "session_id": session_id,
+                    "event_id": event_id,
                     "task_type": _required_text(args, "task_type"),
                     "success": success,
                     "verification": _required_text(args, "verification")[:512],
                     "result": str(args.get("result") or "")[:2_000],
                     "tool_receipts": [],
+                    "receipt_ids": receipt_ids,
                     "rehearsal": False,
                 },
             )
+            terminal_result = terminal.get("result") if isinstance(terminal, dict) else None
+            if (
+                terminal.get("ok") is True
+                and isinstance(terminal_result, dict)
+                and terminal_result.get("ok") is True
+                and self._receipt_handoff is not None
+            ):
+                self._receipt_handoff.clear_exact(
+                    channel="hermes",
+                    scope=self._scope,
+                    session_id=session_id,
+                    run_id=event_id,
+                    receipt_ids=receipt_ids,
+                )
+            return terminal
         if tool_name == "eimemory_status":
             status = self._safe_call("adapter.status", common)
             return {

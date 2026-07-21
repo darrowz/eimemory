@@ -31,5 +31,16 @@ Calls are fail-open with short timeouts, a single bounded writer, a single
 prefetch worker, bounded cache, and a bounded failure ledger. Service failure
 never blocks Hermes. The provider deliberately ignores the full conversation history
 supplied to session/compression hooks; only bounded completed turns are
-sent. A session end is lifecycle evidence only. L5 task evidence requires the
-`eimemory_verify_outcome` tool and an explicit verification string.
+sent. A session end is lifecycle evidence only. An explicit verification
+string is diagnostic, not trusted L5 proof.
+
+Trusted Hermes task evidence is fail-closed behind the operator-separated
+host profile. The host plugin receives a private
+`EIMEMORY_HERMES_ATTESTATION_TOKEN_FILE` plus
+`EIMEMORY_ATTESTATION_HOST_PROFILE=operator-separated-v1`, loads the token
+once, and removes producer configuration from the inherited environment before
+ordinary child tools can run. `EIMEMORY_ADAPTER_RECEIPT_HANDOFF_FILE` stores
+only bounded receipt IDs; the protected runtime database remains authoritative
+for the exact pending set and atomic terminal claim. Without this separated
+profile, memory and recall keep working, `attestation_available` is false, and
+Hermes tasks do not count toward L5.

@@ -15,7 +15,7 @@ from eimemory.governance.evidence_contract import (
     release_identity_from_record,
 )
 from eimemory.governance.live_task_acceptance import validate_live_acceptance_case
-from eimemory.governance.tool_receipts import verify_tool_receipt
+from eimemory.governance.tool_receipts import V2_RECEIPT_VERSION, verify_tool_receipt
 from eimemory.governance.rollout_lifecycle import is_executed_rollback_ledger_record
 from eimemory.models.records import ScopeRef
 from eimemory.runtime_identity import package_import_root
@@ -498,7 +498,61 @@ def _valid_runtime_task_evidence(
         return False
     verification = str(event.get("verification") or "").strip()
     receipt_source = TERMINAL_TOOL_RECEIPT_SOURCES.get(method, "")
-    if receipt_source and verification.startswith(receipt_source + ":"):
+    channel = method.split(".", 1)[0]
+    if channel in {"codex", "hermes"}:
+        receipt_rows = conn.execute(
+            """SELECT receipt_json FROM adapter_tool_receipts
+               WHERE consumed_trace_id = ? AND channel = ?
+                 AND tenant_id = ? AND agent_id = ? AND workspace_id = ? AND user_id = ?
+                 AND session_id = ? AND run_id = ? AND eligible = 1
+               ORDER BY receipt_id""",
+            (
+                trace_id,
+                channel,
+                scope.tenant_id,
+                scope.agent_id,
+                scope.workspace_id,
+                scope.user_id,
+                session_id,
+                str(event.get("run_id") or ""),
+            ),
+        ).fetchall()
+        persisted_receipts: list[dict[str, Any]] = []
+        try:
+            persisted_receipts = [json.loads(str(item["receipt_json"] or "{}")) for item in receipt_rows]
+        except (TypeError, json.JSONDecodeError):
+            return False
+        event_receipts = event.get("verification_receipts")
+        event_receipt_ids = sorted(
+            str(receipt.get("receipt_id") or "")
+            for receipt in event_receipts
+            if isinstance(receipt, dict)
+        ) if isinstance(event_receipts, list) else []
+        persisted_receipt_ids = sorted(
+            str(receipt.get("receipt_id") or "") for receipt in persisted_receipts
+        )
+        if not (
+            release.complete
+            and receipt_source
+            and persisted_receipts
+            and event_receipt_ids == persisted_receipt_ids
+            and all(
+                receipt.get("receipt_version") == V2_RECEIPT_VERSION
+                and receipt.get("channel") == channel
+                and receipt.get("source") == receipt_source
+                and receipt.get("verification_policy_id") == "test_command.exit_zero.positive_count.v1"
+                and receipt.get("passed") is True
+                and release_identity_from_record(receipt) == release
+                and verify_tool_receipt(
+                    receipt,
+                    session_id=str(event.get("session_id") or ""),
+                    run_id=str(event.get("run_id") or ""),
+                )
+                for receipt in persisted_receipts
+            )
+        ):
+            return False
+    elif receipt_source and verification.startswith(receipt_source + ":"):
         receipts = event.get("verification_receipts")
         if not (
             isinstance(receipts, list)

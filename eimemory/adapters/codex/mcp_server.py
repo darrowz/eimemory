@@ -5,6 +5,7 @@ import sys
 from typing import Any, Mapping
 
 from eimemory.adapters.codex.hook import codex_client_from_env, codex_scope_from_env
+from eimemory.adapters.runtime.receipt_handoff import ReceiptIdHandoff
 
 
 MCP_PROTOCOL_VERSION = "2025-06-18"
@@ -14,6 +15,7 @@ class CodexMCPServer:
     def __init__(self, *, client: Any, scope: Mapping[str, str]) -> None:
         self.client = client
         self.scope = dict(scope)
+        self.receipt_handoff = ReceiptIdHandoff.from_env()
 
     def handle_message(self, message: Mapping[str, Any]) -> dict[str, Any] | None:
         method = str(message.get("method") or "")
@@ -96,21 +98,49 @@ class CodexMCPServer:
             success = arguments.get("success")
             if not isinstance(success, bool):
                 raise ValueError("success must be a boolean")
-            return self.client.call_or_bypass(
+            session_id = _required_text(arguments, "session_id")
+            event_id = _required_text(arguments, "event_id")
+            receipt_ids = (
+                self.receipt_handoff.list_ids(
+                    channel="codex",
+                    scope=self.scope,
+                    session_id=session_id,
+                    run_id=event_id,
+                )
+                if self.receipt_handoff is not None
+                else []
+            )
+            terminal = self.client.call_or_bypass(
                 "adapter.record_terminal",
                 {
                     **common,
                     "end_kind": "stop",
-                    "session_id": _required_text(arguments, "session_id"),
-                    "event_id": _required_text(arguments, "event_id"),
+                    "session_id": session_id,
+                    "event_id": event_id,
                     "task_type": _required_text(arguments, "task_type"),
                     "success": success,
                     "verification": _required_text(arguments, "verification"),
                     "result": str(arguments.get("result") or "")[:2_000],
                     "tool_receipts": _optional_receipts(arguments),
+                    "receipt_ids": receipt_ids,
                     "rehearsal": False,
                 },
             )
+            terminal_result = terminal.get("result") if isinstance(terminal, dict) else None
+            if (
+                terminal.get("ok") is True
+                and isinstance(terminal_result, dict)
+                and terminal_result.get("ok") is True
+                and self.receipt_handoff is not None
+            ):
+                self.receipt_handoff.clear_exact(
+                    channel="codex",
+                    scope=self.scope,
+                    session_id=session_id,
+                    run_id=event_id,
+                    receipt_ids=receipt_ids,
+                )
+            return terminal
         if name == "eimemory_status":
             return self.client.call_or_bypass("adapter.status", common)
         raise ValueError("unknown eimemory tool")

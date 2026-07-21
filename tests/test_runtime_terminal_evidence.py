@@ -184,15 +184,15 @@ def test_codex_terminal_cannot_mint_or_replay_a_v2_receipt(monkeypatch, runtime:
         task_type="code.fix", success=True, verification="caller-forged", result="done",
         tool_receipts=[{"passed": True, "source": "codex.post_tool_use"}], receipt_ids=[receipt["receipt_id"]],
     )
-    replay = service.record_terminal(
-        channel="codex", scope=BASE_SCOPE, end_kind="stop", session_id="session-2", event_id="turn-2",
-        task_type="code.fix", success=True, verification="caller-forged", result="done",
-        receipt_ids=[receipt["receipt_id"]],
-    )
+    with pytest.raises(ValueError, match="protected pending set"):
+        service.record_terminal(
+            channel="codex", scope=BASE_SCOPE, end_kind="stop", session_id="session-2", event_id="turn-2",
+            task_type="code.fix", success=True, verification="caller-forged", result="done",
+            receipt_ids=[receipt["receipt_id"]],
+        )
 
     assert first["outcome"]["outcome"] == "good"
     assert first["event"]["verification_receipts"][0]["receipt_id"] == receipt["receipt_id"]
-    assert replay["outcome"]["outcome"] == "verification_missing"
 
 
 def test_tool_receipt_signature_preserves_runtime_source(monkeypatch) -> None:

@@ -15,7 +15,11 @@ from eimemory.adapters.runtime.channel import (
 )
 from eimemory.api.runtime import Runtime
 from eimemory.adapters.runtime.redaction import bounded_redacted_text
-from eimemory.governance.evidence_contract import current_release_identity, release_identity_payload
+from eimemory.governance.evidence_contract import (
+    current_release_identity,
+    release_identity_from_record,
+    release_identity_payload,
+)
 from eimemory.governance.tool_receipts import (
     ATTESTATION_PRODUCERS,
     V2_RECEIPT_VERSION,
@@ -220,24 +224,54 @@ class AgentRuntimeMemoryService:
             session_id=normalized_session_id,
             event_id=normalized_event_id,
         )
+        release = current_release_identity(self.runtime, ScopeRef.from_dict(channel_scope))
+        if release is None and channel_id != "openclaw":
+            release = current_release_identity(
+                self.runtime,
+                ScopeRef.from_dict(base_scope_from_channel(channel_id, channel_scope)),
+            )
         verification_text = bounded_redacted_text(verification, max_chars=512)
         result_text = bounded_redacted_text(result, max_chars=2_000)
         verified_receipts: list[dict[str, Any]] = []
         raw_ids: list[str] = []
         if channel_id in {"codex", "hermes"}:
-            raw_ids = [str(value).strip() for value in list(receipt_ids or [])[:32] if str(value).strip()]
-            loaded_receipts = self.runtime.store.sqlite.load_adapter_tool_receipts(
-                raw_ids,
+            raw_ids = list(
+                dict.fromkeys(
+                    str(value).strip()
+                    for value in list(receipt_ids or [])[:32]
+                    if str(value).strip()
+                )
+            )
+            loaded_receipts = self.runtime.store.sqlite.load_claimable_adapter_tool_receipts(
                 channel=channel_id,
                 session_id=normalized_session_id,
                 run_id=normalized_event_id,
+                trace_id=trace_id,
                 scope=channel_scope,
             )
+            loaded_ids = [str(receipt.get("receipt_id") or "") for receipt in loaded_receipts]
+            if sorted(raw_ids) != sorted(loaded_ids):
+                raise ValueError("terminal receipt set does not match the protected pending set")
+            expected_source = ATTESTATION_PRODUCERS[channel_id][1]
             verified_receipts = [
                 {**canonical_tool_receipt(receipt), "signature": str(receipt.get("signature") or "").lower()}
                 for receipt in loaded_receipts
-                if verify_tool_receipt(receipt, session_id=normalized_session_id, run_id=normalized_event_id)
+                if (
+                    receipt.get("receipt_version") == V2_RECEIPT_VERSION
+                    and receipt.get("channel") == channel_id
+                    and receipt.get("source") == expected_source
+                    and receipt.get("passed") is True
+                    and receipt.get("verification_policy_id") == "test_command.exit_zero.positive_count.v1"
+                    and verify_tool_receipt(
+                        receipt,
+                        session_id=normalized_session_id,
+                        run_id=normalized_event_id,
+                    )
+                    and (release is None or release_identity_from_record(receipt) == release)
+                )
             ]
+            if len(verified_receipts) != len(loaded_receipts):
+                raise ValueError("terminal receipt set contains untrusted evidence")
             # Caller-provided prose and inline receipts are diagnostic only.
             verification_text = (
                 f"{verified_receipts[0]['source']}:{verified_receipts[0]['receipt_id']}"
@@ -273,12 +307,6 @@ class AgentRuntimeMemoryService:
             "runtime_channel": channel_id,
             "authority_mode": AUTHORITY_MODE,
         }
-        release = current_release_identity(self.runtime, ScopeRef.from_dict(channel_scope))
-        if release is None and channel_id != "openclaw":
-            release = current_release_identity(
-                self.runtime,
-                ScopeRef.from_dict(base_scope_from_channel(channel_id, channel_scope)),
-            )
         if release is not None:
             event_payload.update(release_identity_payload(release))
         if lifecycle_only:
@@ -335,6 +363,24 @@ class AgentRuntimeMemoryService:
         if release is not None:
             outcome_trace_payload.update(release_identity_payload(release))
             outcome_trace_payload["evidence_class"] = "verified_real_task"
+        terminal_contract_digest = self._terminal_contract_digest(
+            {
+                "channel": channel_id,
+                "scope": channel_scope,
+                "end_kind": normalized_end_kind,
+                "session_id": normalized_session_id,
+                "event_id": normalized_event_id,
+                "task_type": normalized_task_type,
+                "success": success,
+                "rehearsal": bool(rehearsal),
+                "verification": verification_text,
+                "result": result_text,
+                "receipt_ids": [receipt["receipt_id"] for receipt in verified_receipts],
+            }
+        )
+        event_payload["terminal_contract_digest"] = terminal_contract_digest
+        outcome_payload["terminal_contract_digest"] = terminal_contract_digest
+        outcome_trace_payload["terminal_contract_digest"] = terminal_contract_digest
         outcome_trace_payload["recorded_at"] = datetime.now(timezone.utc).isoformat()
         from eimemory.experience.outcome import build_outcome_trace_record
 
@@ -376,6 +422,7 @@ class AgentRuntimeMemoryService:
         tool_call_id: str,
         tool_name: str,
         result: Any,
+        tool_input: Any = None,
         duration_ms: int = 0,
     ) -> dict[str, Any]:
         producer_id = str(producer or "").strip().lower()
@@ -390,9 +437,11 @@ class AgentRuntimeMemoryService:
         if not all((normalized_session, normalized_run, normalized_call, normalized_tool)):
             raise ValueError("session_id, run_id, tool_call_id, and tool_name are required")
         channel_scope = resolve_channel_scope(channel_id, scope)
+        safe_input = self._bounded_attestation_result(tool_input)
         safe_result = self._bounded_attestation_result(result)
+        invocation_digest = sha256(safe_input.encode("utf-8", errors="replace")).hexdigest()
         result_digest = sha256(safe_result.encode("utf-8", errors="replace")).hexdigest()
-        policy_id, passed = self._verification_policy(normalized_tool, safe_result)
+        policy_id, passed = self._verification_policy(normalized_tool, safe_input, safe_result)
         release = current_release_identity(self.runtime, ScopeRef.from_dict(base_scope_from_channel(channel_id, channel_scope)))
         issued_at = datetime.now(timezone.utc)
         stable = json.dumps(
@@ -410,6 +459,7 @@ class AgentRuntimeMemoryService:
             "tool_call_id": normalized_call,
             "duration_ms": max(0, min(300_000, int(duration_ms or 0))),
             "passed": passed,
+            "invocation_digest": invocation_digest,
             "result_digest": result_digest,
             "verification_policy_id": policy_id,
             "retrieval_policy_digest": sha256(b"adapter.attestation.policy.v1").hexdigest(),
@@ -439,6 +489,23 @@ class AgentRuntimeMemoryService:
             "authority_mode": AUTHORITY_MODE,
             "scope": channel_scope,
             "release": release_identity_payload(release) if release is not None else {},
+            "attestation_available": channel_id in set(
+                getattr(self.runtime, "_attestation_available_channels", ())
+            ),
+            "attestation_reason": (
+                "operator_separated_profile_active"
+                if channel_id in set(getattr(self.runtime, "_attestation_available_channels", ()))
+                else (
+                    str(
+                        getattr(
+                            self.runtime,
+                            "_attestation_unavailable_reason",
+                            "operator_separated_attestation_profile_not_configured",
+                        )
+                    )
+                    or "operator_separated_attestation_profile_not_configured_for_channel"
+                )
+            ),
         }
 
     def _render_context(self, bundle: RecallBundle) -> str:
@@ -531,6 +598,16 @@ class AgentRuntimeMemoryService:
         return f"{prefix}_" + sha256(payload.encode("utf-8")).hexdigest()[:32]
 
     @staticmethod
+    def _terminal_contract_digest(payload: dict[str, Any]) -> str:
+        stable = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return sha256(stable.encode("utf-8")).hexdigest()
+
+    @staticmethod
     def _bounded_text(value: object, limit: int) -> str:
         text = str(value or "").strip()
         return text if len(text) <= limit else text[:limit]
@@ -540,14 +617,34 @@ class AgentRuntimeMemoryService:
         return bounded_redacted_text(value, max_chars=16_000)
 
     @staticmethod
-    def _verification_policy(tool_name: str, safe_result: str) -> tuple[str, bool]:
+    def _verification_policy(
+        tool_name: str,
+        safe_input: str,
+        safe_result: str,
+    ) -> tuple[str, bool]:
         try:
             parsed = json.loads(safe_result)
         except json.JSONDecodeError:
             parsed = None
         name = str(tool_name or "").strip().lower()
+        direct_test_tool = name in {"pytest", "unittest", "cargo_test", "npm_test"}
+        wrapped_test_tool = False
+        if name in {"shell_command", "exec_command", "bash", "powershell"}:
+            try:
+                invocation = json.loads(safe_input)
+            except json.JSONDecodeError:
+                invocation = None
+            command = str(invocation.get("command") or "") if isinstance(invocation, dict) else ""
+            wrapped_test_tool = re.match(
+                r"^\s*(?:"
+                r"python(?:\.exe)?\s+-m\s+pytest|pytest|cargo\s+test|npm\s+test|"
+                r"rtk(?:\.exe)?\s+pytest|&\s+['\"][^'\"]*rtk(?:\.exe)?['\"]\s+pytest"
+                r")(?:\s|$)",
+                command,
+                re.I,
+            ) is not None
         if (
-            name not in {"echo", "print"}
+            (direct_test_tool or wrapped_test_tool)
             and isinstance(parsed, dict)
             and parsed.get("exit_code") == 0
             and re.search(r"\b[1-9]\d*\s+(?:passed|tests?)\b", str(parsed.get("summary") or ""), re.I)

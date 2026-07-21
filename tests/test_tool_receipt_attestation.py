@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from hashlib import sha256
 import json
 import os
 from pathlib import Path
@@ -21,6 +22,8 @@ from eimemory.governance.tool_receipts import (
 
 KEY = "test-openclaw-receipt-key-with-at-least-32-characters"
 PREVIOUS_KEY = "previous-openclaw-receipt-key-with-at-least-32-characters"
+KEY_ID = "key_" + sha256(KEY.encode("utf-8")).hexdigest()[:16]
+PREVIOUS_KEY_ID = "key_" + sha256(PREVIOUS_KEY.encode("utf-8")).hexdigest()[:16]
 
 
 def _receipt(*, session_id: str = "session-1", run_id: str = "run-1") -> dict:
@@ -75,8 +78,8 @@ def test_v2_keyring_signs_with_active_id_and_verifies_previous_key(
     keyring.write_text(
         json.dumps(
             {
-                "active": {"key_id": "current-2026-07", "key": KEY},
-                "previous": [{"key_id": "previous-2026-06", "key": PREVIOUS_KEY}],
+                "active": {"key_id": KEY_ID, "key": KEY},
+                "previous": [{"key_id": PREVIOUS_KEY_ID, "key": PREVIOUS_KEY}],
             }
         ),
         encoding="utf-8",
@@ -89,13 +92,13 @@ def test_v2_keyring_signs_with_active_id_and_verifies_previous_key(
 
     current = sign_tool_receipt(_v2_receipt(now=now))
     previous = sign_tool_receipt(
-        _v2_receipt(now=now, key_id="previous-2026-06"),
+        _v2_receipt(now=now, key_id=PREVIOUS_KEY_ID),
         key=PREVIOUS_KEY,
-        key_id="previous-2026-06",
+        key_id=PREVIOUS_KEY_ID,
     )
     historical_v1 = sign_tool_receipt(_receipt(), key=PREVIOUS_KEY)
 
-    assert current["key_id"] == "current-2026-07"
+    assert current["key_id"] == KEY_ID
     assert verify_tool_receipt(
         current, session_id="session-1", run_id="run-1", now=now,
     ) is True
@@ -105,6 +108,55 @@ def test_v2_keyring_signs_with_active_id_and_verifies_previous_key(
     assert verify_tool_receipt(
         historical_v1, session_id="session-1", run_id="run-1",
     ) is True
+
+
+def test_v2_keyring_rejects_alias_key_ids_and_uses_key_fingerprints(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    now = datetime(2026, 7, 21, 12, 0, tzinfo=timezone.utc)
+    keyring = tmp_path / "receipt-keyring.json"
+    keyring.write_text(
+        json.dumps({"active": {"key_id": "friendly-alias", "key": KEY}, "previous": []}),
+        encoding="utf-8",
+    )
+    if os.name == "posix":
+        keyring.chmod(0o600)
+    monkeypatch.delenv(RECEIPT_KEY_ENV, raising=False)
+    monkeypatch.delenv(RECEIPT_KEY_FILE_ENV, raising=False)
+    monkeypatch.setenv(receipt_module.RECEIPT_KEYRING_FILE_ENV, str(keyring))
+
+    with pytest.raises(ValueError, match="attestation key is unavailable"):
+        sign_tool_receipt(_v2_receipt(now=now))
+
+    fingerprint = "key_" + sha256(KEY.encode("utf-8")).hexdigest()[:16]
+    keyring.write_text(
+        json.dumps({"active": {"key_id": fingerprint, "key": KEY}, "previous": []}),
+        encoding="utf-8",
+    )
+    if os.name == "posix":
+        keyring.chmod(0o600)
+    signed = sign_tool_receipt(_v2_receipt(now=now))
+
+    assert signed["key_id"] == fingerprint
+
+
+def test_v2_direct_sign_rejects_key_id_alias() -> None:
+    now = datetime(2026, 7, 21, 12, 0, tzinfo=timezone.utc)
+
+    with pytest.raises(ValueError, match="must match the key fingerprint"):
+        sign_tool_receipt(
+            _v2_receipt(now=now, key_id="friendly-alias"),
+            key=KEY,
+            key_id="friendly-alias",
+        )
+
+    signed = sign_tool_receipt(
+        _v2_receipt(now=now, key_id=KEY_ID),
+        key=KEY,
+        key_id=KEY_ID,
+    )
+    assert signed["key_id"] == KEY_ID
 
 
 @pytest.mark.parametrize(
@@ -168,11 +220,11 @@ def test_v2_keyring_rejects_symlink_and_posix_permissive_mode(
 
 def test_v2_receipt_enforces_issued_at_expiry_future_and_server_maximum() -> None:
     now = datetime(2026, 7, 21, 12, 0, tzinfo=timezone.utc)
-    signed = sign_tool_receipt(_v2_receipt(now=now), key=KEY, key_id="current")
+    signed = sign_tool_receipt(_v2_receipt(now=now), key=KEY, key_id=KEY_ID)
     overlong = sign_tool_receipt(
         {**_v2_receipt(now=now), "expires_at": (now + timedelta(minutes=16)).isoformat()},
         key=KEY,
-        key_id="current",
+        key_id=KEY_ID,
     )
 
     assert verify_tool_receipt(
@@ -258,7 +310,7 @@ def test_v2_attestation_credential_is_mapped_to_one_producer_and_computes_policy
     }
 
 
-def _v2_receipt(*, now: datetime, key_id: str = "current") -> dict:
+def _v2_receipt(*, now: datetime, key_id: str = KEY_ID) -> dict:
     return {
         "receipt_version": 2,
         "attestation": "hmac-sha256-v2",
@@ -270,6 +322,7 @@ def _v2_receipt(*, now: datetime, key_id: str = "current") -> dict:
         "tool_call_id": "call-1",
         "duration_ms": 12,
         "passed": True,
+        "invocation_digest": "c" * 64,
         "result_digest": "a" * 64,
         "verification_policy_id": "test_command.exit_zero.positive_count.v1",
         "retrieval_policy_digest": "b" * 64,

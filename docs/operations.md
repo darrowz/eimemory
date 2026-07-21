@@ -16,10 +16,11 @@ channel's evidence can bind to the same deployed eimemory commit.
 
 ## RPC security
 
-Production loads `/etc/eimemory/rpc.env`, which contains only the strong server
-secret `EIMEMORY_RPC_AUTH_TOKEN`. Clients receive the same value through their
-own secret manager as `EIMEMORY_RPC_TOKEN`; never print, commit, or copy the
-token into plugin files.
+Production loads `/etc/eimemory/rpc.env`, which contains the strong server
+secret `EIMEMORY_RPC_AUTH_TOKEN` plus, when enabled, only non-secret paths and
+profile markers for attestation. Clients receive the runtime secret through
+their own secret manager as `EIMEMORY_RPC_TOKEN`; never print, commit, or copy
+the token into plugin files.
 
 The production service binds RPC to the honxin Tailscale address on port 8091
 and exposes a separate loopback health probe. Check it without revealing auth:
@@ -40,6 +41,34 @@ EIMEMORY_WORKSPACE_ID=embodied
 EIMEMORY_USER_ID=<stable user identity>
 EIMEMORY_ADAPTER_TIMEOUT_SECONDS=0.8
 ```
+
+### Optional fail-closed task attestation
+
+Codex/Hermes task receipts require an operator-separated producer boundary;
+same-UID file permissions alone do not make a producer model-unforgeable. The
+RPC service reads producer credentials only from a private JSON file shaped as
+`{"codex":"<token>","hermes":"<token>"}`. Its environment contains only the
+file path and explicit profile marker:
+
+```text
+EIMEMORY_ATTESTATION_HOST_PROFILE=operator-separated-v1
+EIMEMORY_ATTESTATION_TOKENS_FILE=/etc/eimemory/attestation-producers.json
+```
+
+The producer tokens must be strong, distinct from each other and from
+`EIMEMORY_RPC_AUTH_TOKEN`, and the file must be a regular non-symlink private
+file (mode `0600` on POSIX). Codex and Hermes host integrations receive only
+their channel-specific private token-file path. Do not put a producer token or
+token-file path in the ordinary model/tool environment. For Codex, enforce the
+corresponding `shell_environment_policy` stripping `KEY`, `SECRET`, and
+`TOKEN` variables from model-launched commands.
+
+The local receipt handoff file contains receipt IDs only and is not a trust
+boundary. The runtime database joins and atomically claims the exact pending
+receipt set. Check `eimemory_status.attestation_available` and
+`attestation_reason`; when the profile is absent or malformed, receipt issuance
+is unavailable and those tasks cannot count toward L5, while memory/recall
+remain fail-open.
 
 ## Codex
 
@@ -113,8 +142,10 @@ only; it never contains the RPC token or full host transcripts. Fix the service
 and use `eimemory_status` to confirm recovery.
 
 Codex `Stop` and Hermes `task_end` can enter the verified-real-task pipeline
-only after `eimemory_verify_outcome` supplies an explicit verification string.
-Signed tool receipt sources are channel-specific. Unverified successes and all
+only when the terminal transaction consumes the exact protected set of
+eligible, channel-specific v2 receipts joined from the runtime database. The
+verification text is diagnostic only; the service may replace it with a
+receipt label, but prose is never the trust gate. Unverified successes and all
 `session_end` events remain diagnostic/lifecycle evidence and cannot raise L5.
 
 ## Live closure checklist

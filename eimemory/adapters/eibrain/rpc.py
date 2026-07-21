@@ -308,6 +308,7 @@ class EIBrainRPCBridge:
                 run_id = params.get("run_id", "")
                 tool_call_id = params.get("tool_call_id", "")
                 tool_name = params.get("tool_name", "")
+                tool_input = params.get("tool_input", {})
                 result_value = params.get("result")
                 duration_ms = params.get("duration_ms", 0)
                 if (
@@ -326,6 +327,7 @@ class EIBrainRPCBridge:
                     tool_call_id=tool_call_id,
                     tool_name=tool_name,
                     result=result_value,
+                    tool_input=tool_input,
                     duration_ms=duration_ms,
                 )
             elif method == "adapter.status":

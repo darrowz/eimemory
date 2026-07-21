@@ -226,10 +226,19 @@ class SqliteRecordStore:
             )
             """
         )
-        self.conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_adapter_receipts_consumed_trace "
-            "ON adapter_tool_receipts(consumed_trace_id) WHERE consumed_trace_id != ''"
-        )
+        consumed_indexes = [
+            row
+            for row in self.conn.execute("PRAGMA index_list(adapter_tool_receipts)").fetchall()
+            if str(row["name"]) == "idx_adapter_receipts_consumed_trace"
+        ]
+        if consumed_indexes and int(consumed_indexes[0]["unique"]) == 1:
+            self.conn.execute("DROP INDEX idx_adapter_receipts_consumed_trace")
+            consumed_indexes = []
+        if not consumed_indexes:
+            self.conn.execute(
+                "CREATE INDEX idx_adapter_receipts_consumed_trace "
+                "ON adapter_tool_receipts(consumed_trace_id) WHERE consumed_trace_id != ''"
+            )
 
     def register_adapter_tool_receipt(
         self,
@@ -256,7 +265,28 @@ class SqliteRecordStore:
             (channel, scope_ref.tenant_id, scope_ref.agent_id, scope_ref.workspace_id, scope_ref.user_id, session_id, run_id, tool_call_id),
         ).fetchone()
         if row is not None:
-            return json.loads(str(row["receipt_json"])), True
+            existing = json.loads(str(row["receipt_json"]))
+            conflict_fields = (
+                "receipt_version",
+                "channel",
+                "source",
+                "session_id",
+                "run_id",
+                "tool_call_id",
+                "tool_name",
+                "invocation_digest",
+                "result_digest",
+                "passed",
+                "verification_policy_id",
+                "retrieval_policy_digest",
+                "release_commit",
+                "release_version",
+                "deployment_receipt_id",
+                "release_session_id",
+            )
+            if any(existing.get(name) != receipt.get(name) for name in conflict_fields):
+                raise ValueError("tool receipt conflict for an existing tool call")
+            return existing, True
         self.conn.execute(
             """INSERT INTO adapter_tool_receipts (
                 receipt_id, channel, source, tenant_id, agent_id, workspace_id, user_id,
@@ -304,6 +334,35 @@ class SqliteRecordStore:
                 loaded.append(json.loads(str(row["receipt_json"])))
         return loaded
 
+    def load_claimable_adapter_tool_receipts(
+        self,
+        *,
+        channel: str,
+        session_id: str,
+        run_id: str,
+        trace_id: str,
+        scope: ScopeRef | dict | None = None,
+    ) -> list[dict[str, Any]]:
+        scope_ref = normalize_scope(scope)
+        rows = self.conn.execute(
+            """SELECT receipt_json FROM adapter_tool_receipts
+               WHERE channel = ? AND tenant_id = ? AND agent_id = ? AND workspace_id = ? AND user_id = ?
+                 AND session_id = ? AND run_id = ? AND eligible = 1
+                 AND consumed_trace_id IN ('', ?)
+               ORDER BY created_at, receipt_id""",
+            (
+                channel,
+                scope_ref.tenant_id,
+                scope_ref.agent_id,
+                scope_ref.workspace_id,
+                scope_ref.user_id,
+                session_id,
+                run_id,
+                trace_id,
+            ),
+        ).fetchall()
+        return [json.loads(str(row["receipt_json"])) for row in rows]
+
     def consume_adapter_tool_receipts(
         self,
         receipt_ids: list[str],
@@ -317,7 +376,7 @@ class SqliteRecordStore:
     ) -> list[dict[str, Any]]:
         scope_ref = normalize_scope(scope)
         accepted: list[dict[str, Any]] = []
-        for receipt_id in receipt_ids:
+        for receipt_id in dict.fromkeys(str(item).strip() for item in receipt_ids if str(item).strip()):
             row = self.conn.execute(
                 """SELECT receipt_json, consumed_trace_id FROM adapter_tool_receipts
                    WHERE receipt_id = ? AND channel = ? AND tenant_id = ? AND agent_id = ? AND workspace_id = ? AND user_id = ?

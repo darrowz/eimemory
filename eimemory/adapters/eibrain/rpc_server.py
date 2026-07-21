@@ -15,6 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from eimemory.adapters.eibrain.rpc import EIBrainRPCBridge
+from eimemory.adapters.runtime.host_auth import attestation_tokens_from_private_file
 from eimemory.api.runtime import Runtime
 from eimemory.ei_bridge.protocol import EIMEMORY_RPC_CONTRACT_VERSION
 from eimemory.ei_bridge.protocol import EIMemoryRPCRequest, EIMemoryRPCResponse
@@ -249,12 +250,25 @@ class EIBrainRPCServer:
         self.host = host
         self.port = port
         self.auth_token = str(auth_token if auth_token is not None else os.environ.get("EIMEMORY_RPC_AUTH_TOKEN", "")).strip()
+        configured_attestation_tokens = (
+            dict(attestation_tokens)
+            if attestation_tokens is not None
+            else attestation_tokens_from_private_file()
+        )
         self.attestation_tokens = {
             str(token).strip(): str(producer).strip().lower()
-            for token, producer in dict(attestation_tokens or _attestation_tokens_from_env()).items()
+            for token, producer in configured_attestation_tokens.items()
             if _is_strong_auth_token(str(token)) and str(producer).strip().lower() in {"codex", "hermes"}
         }
         validate_rpc_auth_configuration(host=host, token=self.auth_token)
+        if self.auth_token and self.auth_token in self.attestation_tokens:
+            raise ValueError("runtime RPC and attestation producer credentials must be distinct")
+        runtime._attestation_available_channels = frozenset(self.attestation_tokens.values())
+        runtime._attestation_unavailable_reason = (
+            ""
+            if self.attestation_tokens
+            else "operator_separated_attestation_profile_not_configured"
+        )
         handler = type("EIMemoryRPCHandler", (_RPCHandler,), {})
         handler.bridge = EIBrainRPCBridge(runtime)
         handler.runtime = runtime
@@ -344,14 +358,8 @@ def _first_query_value(query: dict[str, list[str]], key: str, default: str = "")
 
 
 def _attestation_tokens_from_env() -> dict[str, str]:
-    raw = str(os.environ.get("EIMEMORY_ATTESTATION_TOKENS_JSON") or "").strip()
-    if not raw:
-        return {}
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError:
-        return {}
-    return dict(parsed) if isinstance(parsed, dict) else {}
+    """Backward-compatible helper name; credentials are file-only."""
+    return attestation_tokens_from_private_file()
 
 
 def _compact_health_payload(
