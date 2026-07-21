@@ -3,14 +3,21 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import subprocess
+import time
 from typing import Any
 
-from eimemory.governance.prompt_safety import DEFAULT_PROMPT_SAFETY_TIMEOUT_SECONDS
+from eimemory.governance.prompt_safety import (
+    DEFAULT_PROMPT_SAFETY_MAX_ATTEMPTS,
+    DEFAULT_PROMPT_SAFETY_TIMEOUT_SECONDS,
+)
 from eimemory.llm.command_client import run_bounded_command
 
 
 MAX_RESULT_BYTES = 1_000_000
 MAX_PROMPT_BYTES = 1_000_000
+MAX_PROMPT_SAFETY_ATTEMPTS = 3
+PROMPT_SAFETY_RETRY_DELAY_SECONDS = 2.0
 
 
 class CommandPromptSafetyExecutor:
@@ -21,12 +28,14 @@ class CommandPromptSafetyExecutor:
         argv: list[str] | tuple[str, ...],
         *,
         timeout_seconds: int = DEFAULT_PROMPT_SAFETY_TIMEOUT_SECONDS,
+        max_attempts: int = DEFAULT_PROMPT_SAFETY_MAX_ATTEMPTS,
     ) -> None:
         normalized = tuple(str(item) for item in argv)
         if not normalized or any(not item.strip() for item in normalized):
             raise ValueError("prompt safety command argv is empty")
         self.argv = normalized
         self.timeout_seconds = max(1, min(600, int(timeout_seconds)))
+        self.max_attempts = max(1, min(MAX_PROMPT_SAFETY_ATTEMPTS, int(max_attempts)))
 
     def execute_case(self, *, system_prompt: str, case: dict[str, Any], release: dict[str, Any]) -> dict[str, Any]:
         request = json.dumps(
@@ -34,13 +43,23 @@ class CommandPromptSafetyExecutor:
             ensure_ascii=False,
             sort_keys=True,
         )
-        completed = run_bounded_command(
-            list(self.argv),
-            request.encode("utf-8"),
-            timeout_seconds=self.timeout_seconds,
-        )
-        if completed[0] != 0:
-            raise RuntimeError(f"prompt safety command failed with exit code {completed[0]}")
+        completed: tuple[int, bytes, bytes] | None = None
+        for attempt in range(1, self.max_attempts + 1):
+            try:
+                candidate = run_bounded_command(
+                    list(self.argv),
+                    request.encode("utf-8"),
+                    timeout_seconds=self.timeout_seconds,
+                )
+            except (subprocess.TimeoutExpired, RuntimeError):
+                candidate = None
+            if candidate is not None and candidate[0] == 0:
+                completed = candidate
+                break
+            if attempt < self.max_attempts:
+                time.sleep(PROMPT_SAFETY_RETRY_DELAY_SECONDS)
+        if completed is None:
+            raise RuntimeError(f"prompt safety command failed after {self.max_attempts} attempts")
         raw = completed[1]
         if not raw or len(raw) > MAX_RESULT_BYTES:
             raise ValueError("prompt safety command returned an empty or oversized result")
@@ -64,7 +83,15 @@ def prompt_safety_executor_from_env() -> CommandPromptSafetyExecutor | None:
         os.environ.get("EIMEMORY_PROMPT_SAFETY_TIMEOUT_SECONDS"),
         default=DEFAULT_PROMPT_SAFETY_TIMEOUT_SECONDS,
     )
-    return CommandPromptSafetyExecutor(argv, timeout_seconds=timeout)
+    max_attempts = _positive_int(
+        os.environ.get("EIMEMORY_PROMPT_SAFETY_MAX_ATTEMPTS"),
+        default=DEFAULT_PROMPT_SAFETY_MAX_ATTEMPTS,
+    )
+    return CommandPromptSafetyExecutor(
+        argv,
+        timeout_seconds=timeout,
+        max_attempts=max_attempts,
+    )
 
 
 def prompt_safety_prompt_from_env() -> str:

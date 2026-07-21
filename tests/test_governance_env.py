@@ -16,6 +16,7 @@ def test_governance_env_loader_unquotes_allowlisted_values_without_expansion(tmp
             [
                 "EIMEMORY_PROMPT_SAFETY_COMMAND='[\"/opt/eimemory/current/python\",\"-m\",\"safety\"]'",
                 "EIMEMORY_PROMPT_SAFETY_MODEL=",
+                "EIMEMORY_PROMPT_SAFETY_MAX_ATTEMPTS=3",
                 "EIMEMORY_LLM_TIMEOUT_SECONDS=90",
                 "UNRELATED_SECRET=must-not-be-imported",
             ]
@@ -30,6 +31,7 @@ def test_governance_env_loader_unquotes_allowlisted_values_without_expansion(tmp
         "PATH": "trusted",
         "EIMEMORY_PROMPT_SAFETY_COMMAND": '["/opt/eimemory/current/python","-m","safety"]',
         "EIMEMORY_PROMPT_SAFETY_MODEL": "",
+        "EIMEMORY_PROMPT_SAFETY_MAX_ATTEMPTS": "3",
         "EIMEMORY_LLM_TIMEOUT_SECONDS": "90",
     }
 
