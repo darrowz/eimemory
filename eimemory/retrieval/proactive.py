@@ -25,6 +25,7 @@ DEFAULT_MAX_CACHE_ENTRIES = 128
 DEFAULT_MAX_BYPASS_DIAGNOSTICS = 64
 DEFAULT_RECALL_TIMEOUT_SECONDS = 0.8
 DEFAULT_STALE_DECISION_SECONDS = 900
+DEFAULT_INJECTED_STALE_DECISION_SECONDS = 86_400
 _MAX_TURNS_PER_SESSION = 4
 _MAX_TURN_SUMMARY_CHARS = 1_000
 _MAX_QUERY_CHARS = 8_000
@@ -127,6 +128,7 @@ class ProactiveRecallService:
         max_bypass_diagnostics: int = DEFAULT_MAX_BYPASS_DIAGNOSTICS,
         recall_timeout_seconds: float = DEFAULT_RECALL_TIMEOUT_SECONDS,
         stale_decision_seconds: float = DEFAULT_STALE_DECISION_SECONDS,
+        injected_stale_decision_seconds: float = DEFAULT_INJECTED_STALE_DECISION_SECONDS,
     ) -> None:
         self.runtime = runtime
         self._release_override = self._normalize_release(release_identity or {})
@@ -138,6 +140,10 @@ class ProactiveRecallService:
         self.max_cache_entries = max(1, min(2_048, int(max_cache_entries)))
         self.recall_timeout_seconds = max(0.01, min(10.0, float(recall_timeout_seconds)))
         self.stale_decision_seconds = max(60.0, min(86_400.0, float(stale_decision_seconds)))
+        self.injected_stale_decision_seconds = max(
+            self.stale_decision_seconds,
+            min(604_800.0, max(900.0, float(injected_stale_decision_seconds))),
+        )
         self._sessions: OrderedDict[tuple[Any, ...], _SessionState] = OrderedDict()
         self._decisions: OrderedDict[str, _DecisionState] = OrderedDict()
         self._candidate_cache: OrderedDict[str, _CachedRecall | tuple[RecordEnvelope, ...]] = OrderedDict()
@@ -719,6 +725,9 @@ class ProactiveRecallService:
         cutoff = (
             datetime.now(timezone.utc) - timedelta(seconds=self.stale_decision_seconds)
         ).isoformat()
+        injected_cutoff = (
+            datetime.now(timezone.utc) - timedelta(seconds=self.injected_stale_decision_seconds)
+        ).isoformat()
         stale = self.runtime.store.list_stale_proactive_decisions(
             {
                 "channel": channel_id,
@@ -726,6 +735,7 @@ class ProactiveRecallService:
                 "source_key": self._source_digest(sources),
             },
             before_created_at=cutoff,
+            before_injected_updated_at=injected_cutoff,
             limit=max(1, min(512, int(limit))),
         )
         closed = 0

@@ -262,6 +262,85 @@ def test_stale_reconcile_uses_fifteen_minute_lease_and_never_closes_a_fresh_deci
     runtime.close()
 
 
+def test_fifteen_minute_orphan_lease_never_reaps_an_active_injected_turn(
+    tmp_path,
+) -> None:
+    record = _record("active injected turn may run longer than orphan lease")
+    runtime, _engine, service = _service(tmp_path, [record])
+    active = service.decide(
+        channel="codex", scope=BASE_SCOPE, source_ids=["alpha"],
+        session_id="active-session", query_id="active-turn",
+        query="Recall an active injected decision",
+    )
+    citation = active["items"][0]["citation"]
+    injected = service.mark_injected(
+        **_exact_transition(active, session_id="active-session", turn_id="active-turn"),
+        injected_citations=[citation],
+    )
+    assert injected["changed"] == 1
+    old_created_at = (
+        datetime.now(timezone.utc) - timedelta(seconds=901)
+    ).isoformat()
+    runtime.store.sqlite.conn.execute(
+        "UPDATE proactive_decisions SET created_at=? WHERE decision_id=?",
+        (old_created_at, active["decision_id"]),
+    )
+    runtime.store.sqlite.conn.commit()
+
+    service.decide(
+        channel="codex", scope=BASE_SCOPE, source_ids=["alpha"],
+        session_id="parallel-session", query_id="parallel-turn",
+        query="Start another turn in the same authority namespace",
+    )
+
+    persisted = runtime.store.load_proactive_decision(active["decision_id"])
+    assert persisted is not None
+    assert persisted["terminal"] is False
+    assert persisted["items"][0]["state"] == "injected"
+    used = service.record_feedback(
+        **_exact_transition(active, session_id="active-session", turn_id="active-turn"),
+        used_citations=[citation],
+    )
+    assert used["changed"] == 1
+    runtime.close()
+
+
+def test_injected_turn_is_eventually_reconciled_after_its_separate_twenty_four_hour_lease(
+    tmp_path,
+) -> None:
+    record = _record("expired injected turn must eventually close")
+    runtime, _engine, service = _service(tmp_path, [record])
+    expired = service.decide(
+        channel="codex", scope=BASE_SCOPE, source_ids=["alpha"],
+        session_id="expired-injected-session", query_id="expired-injected-turn",
+        query="Recall an injected decision that later crashes",
+    )
+    citation = expired["items"][0]["citation"]
+    service.mark_injected(
+        **_exact_transition(
+            expired, session_id="expired-injected-session", turn_id="expired-injected-turn"
+        ),
+        injected_citations=[citation],
+    )
+    runtime.store.sqlite.conn.execute(
+        "UPDATE proactive_decisions SET created_at=?,updated_at=? WHERE decision_id=?",
+        ("2000-01-01T00:00:00+00:00", "2000-01-01T00:00:00+00:00", expired["decision_id"]),
+    )
+    runtime.store.sqlite.conn.commit()
+
+    service.decide(
+        channel="codex", scope=BASE_SCOPE, source_ids=["alpha"],
+        session_id="reconcile-injected-session", query_id="reconcile-injected-turn",
+        query="Trigger authoritative reconciliation",
+    )
+
+    persisted = runtime.store.load_proactive_decision(expired["decision_id"])
+    assert persisted is not None
+    assert persisted["terminal"] is True
+    assert persisted["items"][0]["state"] == "not_used"
+    runtime.close()
+
+
 def test_review_counterexample_02_context_cap_persists_and_acks_only_rendered_citations(tmp_path) -> None:
     records = [_record(f"long record {index} " + ("x" * 900)) for index in range(3)]
     runtime, _engine, service = _service(tmp_path, records, max_context_chars=420)

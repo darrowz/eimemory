@@ -625,19 +625,25 @@ class SqliteRecordStore:
         payload: dict[str, Any],
         *,
         before_created_at: str,
+        before_injected_updated_at: str,
         limit: int = 64,
     ) -> list[dict[str, Any]]:
         """List expired nonterminal decisions in one authoritative namespace."""
 
         scope = normalize_scope(payload.get("scope"))
         rows = self.conn.execute(
-            "SELECT decision_id FROM proactive_decisions WHERE channel=? AND tenant_id=? "
-            "AND agent_id=? AND workspace_id=? AND user_id=? AND source_key=? "
-            "AND terminal=0 AND created_at<? ORDER BY created_at,decision_id LIMIT ?",
+            "SELECT d.decision_id FROM proactive_decisions d WHERE d.channel=? AND d.tenant_id=? "
+            "AND d.agent_id=? AND d.workspace_id=? AND d.user_id=? AND d.source_key=? "
+            "AND d.terminal=0 AND ((d.created_at<? AND NOT EXISTS ("
+            "SELECT 1 FROM proactive_decision_items i WHERE i.decision_id=d.decision_id AND i.state='injected'"
+            ")) OR (d.updated_at<? AND EXISTS ("
+            "SELECT 1 FROM proactive_decision_items i WHERE i.decision_id=d.decision_id AND i.state='injected'"
+            "))) ORDER BY d.created_at,d.decision_id LIMIT ?",
             (
                 str(payload.get("channel") or ""), scope.tenant_id, scope.agent_id,
                 scope.workspace_id, scope.user_id, str(payload.get("source_key") or ""),
-                str(before_created_at or ""), max(1, min(512, int(limit))),
+                str(before_created_at or ""), str(before_injected_updated_at or ""),
+                max(1, min(512, int(limit))),
             ),
         ).fetchall()
         return [

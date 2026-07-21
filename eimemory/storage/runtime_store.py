@@ -184,11 +184,19 @@ class RuntimeStore:
             return self.sqlite.find_proactive_decision(payload)
 
     def list_stale_proactive_decisions(
-        self, payload: dict, *, before_created_at: str, limit: int = 64
+        self,
+        payload: dict,
+        *,
+        before_created_at: str,
+        before_injected_updated_at: str,
+        limit: int = 64,
     ) -> list[dict]:
         with self._lock:
             return self.sqlite.list_stale_proactive_decisions(
-                payload, before_created_at=before_created_at, limit=limit
+                payload,
+                before_created_at=before_created_at,
+                before_injected_updated_at=before_injected_updated_at,
+                limit=limit,
             )
 
     def proactive_session_refs(self, payload: dict, *, limit: int = 512) -> set[tuple[str, str]]:
