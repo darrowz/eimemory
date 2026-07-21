@@ -12,6 +12,11 @@ type BridgeCommandDict = dict[str, BridgeJSONValue]
 type BridgeResultDict = dict[str, BridgeJSONValue]
 type BridgeEventDict = dict[str, BridgeJSONValue]
 type EIMemoryRPCMethod = Literal[
+    "adapter.prefetch",
+    "adapter.sync_turn",
+    "adapter.remember",
+    "adapter.record_terminal",
+    "adapter.status",
     "memory.recall",
     "memory.ingest",
     "evolution.observe",

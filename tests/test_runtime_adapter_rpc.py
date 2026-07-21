@@ -1,0 +1,165 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from eimemory.adapters.eibrain.rpc import EIBrainRPCBridge
+from eimemory.adapters.eibrain.rpc_server import EIBrainRPCServer
+from eimemory.adapters.runtime.channel import RUNTIME_ADAPTER_CONTRACT_VERSION
+from eimemory.adapters.runtime.http_client import AgentRuntimeRPCClient
+from eimemory.api.runtime import Runtime
+
+
+AUTH_TOKEN = "AgentRuntimeAdapterToken_0123456789-Strong"
+BASE_SCOPE = {
+    "tenant_id": "default",
+    "agent_id": "hongtu",
+    "workspace_id": "embodied",
+    "user_id": "darrow",
+}
+
+
+def test_runtime_adapter_rpc_status_derives_channel_scope(tmp_path: Path) -> None:
+    bridge = EIBrainRPCBridge(Runtime.create(root=tmp_path))
+
+    response = bridge.handle(
+        {"method": "adapter.status", "params": {"channel": "codex", "scope": BASE_SCOPE}}
+    )
+
+    assert response["ok"] is True
+    assert response["result"]["adapter_contract_version"] == RUNTIME_ADAPTER_CONTRACT_VERSION
+    assert response["result"]["scope"]["workspace_id"] == "embodied::channel::codex"
+    assert response["result"]["authority_mode"] == "per_channel"
+
+
+def test_runtime_adapter_rpc_remember_and_prefetch_stay_in_channel(tmp_path: Path) -> None:
+    bridge = EIBrainRPCBridge(Runtime.create(root=tmp_path))
+    remember = bridge.handle(
+        {
+            "method": "adapter.remember",
+            "params": {
+                "channel": "hermes",
+                "scope": BASE_SCOPE,
+                "event_id": "hermes-explicit-1",
+                "text": "Always include primary evidence when Hermes writes a durable research conclusion.",
+                "memory_type": "preference",
+            },
+        }
+    )
+    prefetch = bridge.handle(
+        {
+            "method": "adapter.prefetch",
+            "params": {
+                "channel": "hermes",
+                "scope": BASE_SCOPE,
+                "query": "Hermes primary evidence durable research conclusion",
+                "task_type": "research.summary",
+            },
+        }
+    )
+    codex = bridge.handle(
+        {
+            "method": "adapter.prefetch",
+            "params": {
+                "channel": "codex",
+                "scope": BASE_SCOPE,
+                "query": "Hermes primary evidence durable research conclusion",
+                "task_type": "code.review",
+            },
+        }
+    )
+
+    assert remember["ok"] is True
+    assert prefetch["result"]["bundle"]["items"][0]["record_id"] == remember["result"]["record"]["record_id"]
+    assert codex["result"]["bundle"]["items"] == []
+
+
+def test_runtime_adapter_rpc_rejects_invalid_channel_and_terminal_types(tmp_path: Path) -> None:
+    bridge = EIBrainRPCBridge(Runtime.create(root=tmp_path))
+
+    invalid_channel = bridge.handle(
+        {"method": "adapter.status", "params": {"channel": "other", "scope": BASE_SCOPE}}
+    )
+    invalid_terminal = bridge.handle(
+        {
+            "method": "adapter.record_terminal",
+            "params": {
+                "channel": "codex",
+                "scope": BASE_SCOPE,
+                "end_kind": "agent_end",
+                "session_id": "s1",
+                "event_id": "t1",
+                "task_type": "code.fix",
+                "success": True,
+            },
+        }
+    )
+
+    assert invalid_channel == {
+        "contract_version": invalid_channel["contract_version"],
+        "ok": False,
+        "error": "invalid_request",
+    }
+    assert invalid_terminal["ok"] is False
+    assert invalid_terminal["error"] == "invalid_request"
+
+
+def test_runtime_http_client_calls_authenticated_rpc(tmp_path: Path) -> None:
+    runtime = Runtime.create(root=tmp_path / "store")
+    server = EIBrainRPCServer(
+        runtime,
+        host="127.0.0.1",
+        port=0,
+        auth_token=AUTH_TOKEN,
+    )
+    server.start()
+    try:
+        client = AgentRuntimeRPCClient(
+            base_url=f"http://{server.address[0]}:{server.address[1]}/",
+            auth_token=AUTH_TOKEN,
+            timeout_seconds=1.0,
+            failure_ledger_path=tmp_path / "failures.jsonl",
+        )
+        response = client.call_or_bypass(
+            "adapter.status",
+            {"channel": "codex", "scope": BASE_SCOPE},
+        )
+    finally:
+        server.stop()
+
+    assert response["ok"] is True
+    assert response["bypassed"] is False
+    assert response["result"]["channel"] == "codex"
+    assert not (tmp_path / "failures.jsonl").exists()
+
+
+def test_runtime_http_client_bypasses_and_opens_bounded_circuit(tmp_path: Path) -> None:
+    ledger = tmp_path / "failures.jsonl"
+    client = AgentRuntimeRPCClient(
+        base_url="http://127.0.0.1:1/",
+        auth_token=AUTH_TOKEN,
+        timeout_seconds=0.05,
+        failure_ledger_path=ledger,
+        circuit_failure_threshold=2,
+        circuit_reset_seconds=60.0,
+        max_failure_ledger_bytes=2_048,
+    )
+
+    first = client.call_or_bypass("adapter.status", {"channel": "codex", "scope": BASE_SCOPE})
+    second = client.call_or_bypass("adapter.status", {"channel": "codex", "scope": BASE_SCOPE})
+    third = client.call_or_bypass("adapter.status", {"channel": "codex", "scope": BASE_SCOPE})
+
+    assert first == {
+        "ok": False,
+        "bypassed": True,
+        "error": "adapter_unavailable",
+        "result": None,
+    }
+    assert second["error"] == "adapter_unavailable"
+    assert third["error"] == "circuit_open"
+    assert ledger.stat().st_size <= 2_048
+    entries = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
+    assert len(entries) == 3
+    assert all(AUTH_TOKEN not in json.dumps(entry) for entry in entries)
+    assert entries[-1]["error"] == "circuit_open"
+

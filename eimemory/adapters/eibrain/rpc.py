@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from eimemory.api.runtime import Runtime
 from eimemory.experience import record_experience_item, record_skill_trace
 from eimemory.identity import extract_user_aliases, hongtu_identity_meta, hongtu_scope
 from eimemory.models.records import LinkRef, ScopeRef
+from eimemory.adapters.runtime.service import AgentRuntimeMemoryService
 from eimemory.ei_bridge.protocol import (
     EIMEMORY_RPC_CONTRACT_VERSION,
     BridgeScope,
@@ -17,6 +19,7 @@ from eimemory.ei_bridge.protocol import (
 class EIBrainRPCBridge:
     def __init__(self, runtime: Runtime) -> None:
         self.runtime = runtime
+        self.runtime_adapter = AgentRuntimeMemoryService(runtime)
 
     def handle(self, request: EIMemoryRPCRequest) -> EIMemoryRPCResponse:
         # RPC transport boundary: accept only dict-shaped request payloads then map
@@ -31,6 +34,8 @@ class EIBrainRPCBridge:
             params = {}
         if not isinstance(params, dict):
             return self._with_contract(self._invalid_request())
+        if method.startswith("adapter."):
+            return self._handle_runtime_adapter(method, params)
         if method in {"memory.recall", "memory.search"}:
             limit = params.get("limit", 8)
             scope: BridgeScope = params.get("scope", {})
@@ -286,6 +291,124 @@ class EIBrainRPCBridge:
             )
             return self._with_contract({"ok": True, "result": policy})
         return self._with_contract({"ok": False, "error": "unknown_method"})
+
+    def _handle_runtime_adapter(self, method: str, params: dict[str, Any]) -> EIMemoryRPCResponse:
+        channel = params.get("channel", "")
+        scope: BridgeScope = params.get("scope", {})
+        if not isinstance(channel, str) or not channel.strip() or not self._valid_scope(scope):
+            return self._with_contract(self._invalid_request())
+        try:
+            if method == "adapter.status":
+                result = self.runtime_adapter.status(channel=channel, scope=scope)
+            elif method == "adapter.prefetch":
+                query = params.get("query", "")
+                task_type = params.get("task_type", "")
+                task_context = params.get("task_context", {})
+                limit = params.get("limit", 8)
+                if (
+                    not isinstance(query, str)
+                    or not query.strip()
+                    or not isinstance(task_type, str)
+                    or not isinstance(task_context, dict)
+                    or not isinstance(limit, int)
+                    or isinstance(limit, bool)
+                    or limit <= 0
+                ):
+                    return self._with_contract(self._invalid_request())
+                result = self.runtime_adapter.prefetch(
+                    channel=channel,
+                    scope=scope,
+                    query=query,
+                    task_type=task_type,
+                    limit=limit,
+                    task_context=task_context,
+                )
+            elif method == "adapter.remember":
+                text = params.get("text", "")
+                memory_type = params.get("memory_type", "durable_fact")
+                event_id = params.get("event_id", "")
+                title = params.get("title", "")
+                force_capture = params.get("force_capture", False)
+                meta = params.get("meta", {})
+                if (
+                    not isinstance(text, str)
+                    or not text.strip()
+                    or not isinstance(memory_type, str)
+                    or not memory_type.strip()
+                    or not isinstance(event_id, str)
+                    or not event_id.strip()
+                    or not isinstance(title, str)
+                    or not isinstance(force_capture, bool)
+                    or not isinstance(meta, dict)
+                ):
+                    return self._with_contract(self._invalid_request())
+                result = self.runtime_adapter.remember(
+                    channel=channel,
+                    scope=scope,
+                    text=text,
+                    memory_type=memory_type,
+                    event_id=event_id,
+                    title=title,
+                    force_capture=force_capture,
+                    meta=meta,
+                )
+            elif method == "adapter.sync_turn":
+                session_id = params.get("session_id", "")
+                turn_id = params.get("turn_id", "")
+                user_text = params.get("user_text", "")
+                assistant_text = params.get("assistant_text", "")
+                if not all(isinstance(value, str) for value in (session_id, turn_id, user_text, assistant_text)):
+                    return self._with_contract(self._invalid_request())
+                if not session_id.strip() or not turn_id.strip() or not (user_text.strip() or assistant_text.strip()):
+                    return self._with_contract(self._invalid_request())
+                result = self.runtime_adapter.sync_turn(
+                    channel=channel,
+                    scope=scope,
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    user_text=user_text,
+                    assistant_text=assistant_text,
+                )
+            elif method == "adapter.record_terminal":
+                end_kind = params.get("end_kind", "")
+                session_id = params.get("session_id", "")
+                event_id = params.get("event_id", "")
+                task_type = params.get("task_type", "")
+                success = params.get("success")
+                verification = params.get("verification", "")
+                terminal_result = params.get("result", "")
+                tool_receipts = params.get("tool_receipts", [])
+                rehearsal = params.get("rehearsal", False)
+                if (
+                    not all(isinstance(value, str) for value in (end_kind, session_id, event_id, task_type, verification, terminal_result))
+                    or not end_kind.strip()
+                    or not session_id.strip()
+                    or not event_id.strip()
+                    or not task_type.strip()
+                    or (success is not None and not isinstance(success, bool))
+                    or not isinstance(tool_receipts, list)
+                    or not all(isinstance(item, dict) for item in tool_receipts)
+                    or not isinstance(rehearsal, bool)
+                ):
+                    return self._with_contract(self._invalid_request())
+                result = self.runtime_adapter.record_terminal(
+                    channel=channel,
+                    scope=scope,
+                    end_kind=end_kind,
+                    session_id=session_id,
+                    event_id=event_id,
+                    task_type=task_type,
+                    success=success,
+                    verification=verification,
+                    result=terminal_result,
+                    tool_receipts=tool_receipts,
+                    rehearsal=rehearsal,
+                )
+            else:
+                return self._with_contract({"ok": False, "error": "unknown_method"})
+        except (TypeError, ValueError):
+            return self._with_contract(self._invalid_request())
+        return self._with_contract({"ok": bool(result.get("ok")), "result": result})
 
     @staticmethod
     def _resolve_scope(scope: BridgeScope, *, aliases: object = None) -> dict[str, str]:
