@@ -6,6 +6,8 @@ from pathlib import Path
 import sys
 import types
 
+from eimemory.version import __version__
+
 
 PLUGIN_ROOT = Path(__file__).parents[1] / "integrations" / "hermes" / "eimemory"
 
@@ -56,7 +58,7 @@ def test_hermes_plugin_metadata_and_reproducible_install_contract() -> None:
     readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
 
     assert "name: eimemory" in metadata
-    assert "version: 1.9.78" in metadata
+    assert f"version: {__version__}" in metadata
     assert "$HERMES_HOME/plugins/eimemory" in readme
     assert "memory:" in readme and "provider: eimemory" in readme
     assert "EIMEMORY_RPC_URL" in readme

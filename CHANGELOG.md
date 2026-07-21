@@ -13,6 +13,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Advanced rollback strategies
 - Performance optimizations for large memory stores
 
+## [1.9.78] - 2026-07-21
+
+### Added
+- Add independent authoritative long-term-memory channels for Codex and Hermes while preserving OpenClaw as its existing authoritative source.
+- Add a distributable Codex plugin with bounded fail-open hooks and four closed-loop MCP tools for recall, durable capture, verified outcomes, and status.
+- Add a native Hermes memory provider with bounded single-writer synchronization, latest-wins prefetch, lifecycle integration, and the same four closed-loop tools.
+- Add channel-specific verified terminal evidence without changing the existing OpenClaw L5 acceptance contract.
+
+### Fixed
+- Bound adapter response reads, local failure ledgers, write queues, recall limits, context payloads, and background workers.
+- Keep empty workspace scopes reversible and reject malformed required MCP text before RPC dispatch.
+- Redact structured, embedded, and multi-word credentials before hashing or forwarding Codex tool summaries.
+- Preserve fail-open host behavior while surfacing sanitized adapter diagnostics and local degradation counters.
+
 ## [1.9.77] - 2026-07-20
 
 ### Fixed

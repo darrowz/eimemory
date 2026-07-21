@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from eimemory.version import __version__
+
 
 PLUGIN_ROOT = Path(__file__).parents[1] / "integrations" / "codex" / "eimemory"
 MARKETPLACE_ROOT = PLUGIN_ROOT.parent
@@ -14,6 +16,7 @@ def test_codex_plugin_manifest_and_native_integration_contract() -> None:
     mcp = json.loads((PLUGIN_ROOT / ".mcp.json").read_text(encoding="utf-8"))
 
     assert manifest["name"] == "eimemory"
+    assert manifest["version"] == __version__
     assert manifest["mcpServers"] == "./.mcp.json"
     assert "hooks" not in manifest
     assert set(hooks["hooks"]) == {"SessionStart", "UserPromptSubmit", "PostToolUse", "Stop"}

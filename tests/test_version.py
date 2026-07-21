@@ -12,5 +12,7 @@ def test_package_version_matches_pyproject() -> None:
     assert __version__ == pyproject["project"]["version"]
 
 
-def test_release_version_is_1_9_77() -> None:
-    assert __version__ == "1.9.77"
+def test_release_version_has_changelog_entry() -> None:
+    changelog = Path("CHANGELOG.md").read_text(encoding="utf-8")
+
+    assert f"## [{__version__}]" in changelog
