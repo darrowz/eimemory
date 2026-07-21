@@ -1294,3 +1294,118 @@ def test_hongtu_logical_scope_order_precedes_cross_alias_score(tmp_path) -> None
 
     assert [item.record_id for item in bundle.items] == [main.record_id]
     store.close()
+
+
+def test_canonical_hongtu_group_jointly_scores_legacy_aliases(tmp_path) -> None:
+    store = RuntimeStore(tmp_path)
+    canonical_scope = ScopeRef(
+        tenant_id="default",
+        agent_id="hongtu",
+        workspace_id="embodied",
+        user_id="darrow",
+    )
+    legacy_scope = ScopeRef(
+        tenant_id="default",
+        agent_id="main",
+        workspace_id="repo-x",
+        user_id="darrow",
+    )
+    canonical = _record(text="marker peripheral detail", scope=canonical_scope, source_id="alpha")
+    canonical.title = "CANONICAL-PARTIAL"
+    canonical.meta["quality"]["salience_score"] = 0.1
+    legacy = _record(text="marker exact target", scope=legacy_scope, source_id="alpha")
+    legacy.title = "LEGACY-EXACT"
+    legacy.meta["quality"]["salience_score"] = 0.99
+    store.append(canonical)
+    store.append(legacy)
+    legacy_joint, _report = store.search_with_diagnostics(
+        query="marker exact target",
+        kinds=["memory", "claim_card", "knowledge_page"],
+        scope=canonical_scope,
+        limit=3,
+        recall_filters={
+            "scoring_profile": "balanced",
+            "blocked_recall_lanes": ["run_log", "audit_record", "incident_report", "evolution_artifact"],
+        },
+        source_ids=["alpha"],
+    )
+
+    bundle = MemoryAPI(store).recall(
+        query="marker exact target",
+        scope=asdict(canonical_scope),
+        task_context={"source_ids": ["alpha"], "recall_profile": "balanced"},
+        limit=1,
+    )
+
+    assert legacy_joint[0].record_id == legacy.record_id
+    assert [item.record_id for item in bundle.items] == [legacy_joint[0].record_id]
+    store.close()
+
+
+def test_inactive_projection_cannot_be_revived_by_active_payload(tmp_path) -> None:
+    import json
+
+    store = RuntimeStore(tmp_path)
+    inactive = store.append(
+        _record(text="INACTIVE-PAYLOAD-REVIVAL-MARKER", source_id="alpha", status="inactive")
+    )
+    forged_payload = inactive.to_dict()
+    forged_payload["status"] = "active"
+    store.sqlite.conn.execute(
+        "UPDATE records SET payload_json = ? WHERE record_id = ? AND source_id = ?",
+        (json.dumps(forged_payload), inactive.record_id, inactive.source_id),
+    )
+    store.sqlite.conn.commit()
+
+    exact = store.get_by_exact_ref(
+        inactive.record_id,
+        scope=SCOPE,
+        source_id="alpha",
+    )
+    batch = SQLiteCandidateSource(store).search(
+        CandidateRequest(
+            query="INACTIVE-PAYLOAD-REVIVAL-MARKER",
+            scope=ExactScope.from_scope(SCOPE),
+            kinds=("memory",),
+            source_ids=("alpha",),
+            limit=5,
+            budget=360,
+        )
+    )
+    bundle = MemoryAPI(store).recall(
+        query="INACTIVE-PAYLOAD-REVIVAL-MARKER",
+        scope=asdict(SCOPE),
+        task_context={"source_ids": ["alpha"]},
+        limit=5,
+    )
+
+    assert exact is None
+    assert batch.hits == ()
+    assert bundle.items == []
+    store.close()
+
+
+def test_physical_kind_projection_cannot_be_disguised_by_payload(tmp_path) -> None:
+    import json
+
+    store = RuntimeStore(tmp_path)
+    rule = RecordEnvelope.create(
+        kind="rule",
+        title="PHYSICAL-RULE-KIND",
+        summary="PHYSICAL-RULE-KIND",
+        scope=SCOPE,
+        source_id="alpha",
+        status="active",
+    )
+    store.append(rule)
+    forged_payload = rule.to_dict()
+    forged_payload["kind"] = "memory"
+    store.sqlite.conn.execute(
+        "UPDATE records SET payload_json = ? WHERE record_id = ? AND source_id = ?",
+        (json.dumps(forged_payload), rule.record_id, rule.source_id),
+    )
+    store.sqlite.conn.commit()
+
+    assert store.get_by_exact_ref(rule.record_id, scope=SCOPE, source_id="alpha") is None
+    assert store.list_by_record_id_exact_scope(rule.record_id, scope=SCOPE, source_ids=["alpha"]) == []
+    store.close()

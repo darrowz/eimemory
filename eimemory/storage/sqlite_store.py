@@ -1945,7 +1945,7 @@ class SqliteRecordStore:
             }
         placeholders = ",".join("?" for _ in ordered_keys)
         rows = self.conn.execute(
-            "SELECT storage_key, record_id, tenant_id, agent_id, workspace_id, user_id, source_id, "
+            "SELECT storage_key, record_id, kind, status, tenant_id, agent_id, workspace_id, user_id, source_id, "
             "payload_json, content_text, embedding_json FROM records WHERE storage_key IN ("
             + placeholders
             + ")",
@@ -1985,7 +1985,7 @@ class SqliteRecordStore:
             params.extend(source_ids)
         where.append("status != 'rejected'")
         sql = (
-            "SELECT storage_key, record_id, tenant_id, agent_id, workspace_id, user_id, source_id, "
+            "SELECT storage_key, record_id, kind, status, tenant_id, agent_id, workspace_id, user_id, source_id, "
             "payload_json, content_text, embedding_json FROM records WHERE "
             + " AND ".join(where)
             + " ORDER BY updated_at DESC LIMIT ?"
@@ -2335,7 +2335,8 @@ class SqliteRecordStore:
             order_by = "CASE WHEN user_id = ? THEN 1 ELSE 0 END DESC, updated_at DESC"
             params = [*params, scope.user_id]
         row = self.conn.execute(
-            "SELECT record_id, tenant_id, agent_id, workspace_id, user_id, source_id, payload_json FROM records WHERE "
+            "SELECT record_id, kind, status, tenant_id, agent_id, workspace_id, user_id, source_id, payload_json "
+            "FROM records WHERE "
             + " AND ".join(where)
             + f" ORDER BY {order_by} LIMIT 1",
             params,
@@ -2373,7 +2374,7 @@ class SqliteRecordStore:
         normalized_source_id = normalize_source_id(source_id)
         row = self.conn.execute(
             """
-            SELECT payload_json
+            SELECT record_id, kind, status, tenant_id, agent_id, workspace_id, user_id, source_id, payload_json
             FROM records
             WHERE record_id = ?
               AND tenant_id = ?
@@ -2395,12 +2396,7 @@ class SqliteRecordStore:
         if row is None:
             return None
         record = self._record_from_payload_json(row["payload_json"])
-        if record is None or not self._record_matches_exact_ref(
-            record,
-            record_id=str(record_id or "").strip(),
-            scope=scope,
-            source_id=normalized_source_id,
-        ):
+        if record is None or not self._record_matches_projection_row(record, row):
             return None
         return record
 
@@ -2434,7 +2430,7 @@ class SqliteRecordStore:
             where.append(f"source_id IN ({','.join('?' for _ in allowed_source_ids)})")
             params.extend(allowed_source_ids)
         rows = self.conn.execute(
-            "SELECT record_id, tenant_id, agent_id, workspace_id, user_id, source_id, payload_json "
+            "SELECT record_id, kind, status, tenant_id, agent_id, workspace_id, user_id, source_id, payload_json "
             "FROM records WHERE " + " AND ".join(where) + " ORDER BY updated_at DESC",
             params,
         ).fetchall()
@@ -2465,16 +2461,20 @@ class SqliteRecordStore:
 
     @classmethod
     def _record_matches_projection_row(cls, record: RecordEnvelope, row: sqlite3.Row) -> bool:
-        return cls._record_matches_exact_ref(
-            record,
-            record_id=str(row["record_id"] or ""),
-            scope=ScopeRef(
-                tenant_id=str(row["tenant_id"] or "default"),
-                agent_id=str(row["agent_id"] or ""),
-                workspace_id=str(row["workspace_id"] or ""),
-                user_id=str(row["user_id"] or ""),
-            ),
-            source_id=str(row["source_id"] or "default"),
+        return (
+            cls._record_matches_exact_ref(
+                record,
+                record_id=str(row["record_id"] or ""),
+                scope=ScopeRef(
+                    tenant_id=str(row["tenant_id"] or "default"),
+                    agent_id=str(row["agent_id"] or ""),
+                    workspace_id=str(row["workspace_id"] or ""),
+                    user_id=str(row["user_id"] or ""),
+                ),
+                source_id=str(row["source_id"] or "default"),
+            )
+            and record.kind == str(row["kind"] or "")
+            and record.status == str(row["status"] or "")
         )
 
     def get_by_idempotency_key(

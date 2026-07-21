@@ -7,7 +7,7 @@ from time import perf_counter
 from typing import Any, Protocol
 
 from eimemory.governance.memory_graph import build_evidence_refs, build_timeline, graph_route_for_query
-from eimemory.identity import extract_user_aliases, hongtu_query_scopes_with_aliases
+from eimemory.identity import extract_user_aliases, hongtu_query_scopes, hongtu_query_scopes_with_aliases
 from eimemory.knowledge.views import build_recall_view, choose_view_type, records_from_view
 from eimemory.metadata import business_metadata
 from eimemory.models.records import RecallBundle, RecordEnvelope, ScopeRef
@@ -224,12 +224,13 @@ class GovernedRecallEngine:
         authorized_exact_scopes: set[ExactScope] = set()
         for logical_scope in query_scope_refs:
             group: list[ScopeRef] = []
-            for exact_scope_ref in self._visible_exact_scopes([logical_scope]):
-                exact_scope = ExactScope.from_scope(exact_scope_ref)
-                if exact_scope in authorized_exact_scopes:
-                    continue
-                authorized_exact_scopes.add(exact_scope)
-                group.append(exact_scope_ref)
+            for physical_scope in hongtu_query_scopes(logical_scope):
+                for exact_scope_ref in self._visible_exact_scopes([physical_scope]):
+                    exact_scope = ExactScope.from_scope(exact_scope_ref)
+                    if exact_scope in authorized_exact_scopes:
+                        continue
+                    authorized_exact_scopes.add(exact_scope)
+                    group.append(exact_scope_ref)
             if group:
                 candidate_scope_groups.append(group)
         task_type = str(task_context.get("task_type") or "")
