@@ -630,16 +630,8 @@ class SqliteRecordStore:
         alias_table = self.conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='recall_alias_index'"
         ).fetchone()
-        if alias_table:
-            alias_columns = {
-                str(row["name"]) for row in self.conn.execute("PRAGMA table_info(recall_alias_index)")
-            }
-            required_alias_columns = {
-                "storage_key", "normalized_alias", "alias_ordinal", "record_id", "kind", "status",
-                "source_id", "tenant_id", "agent_id", "workspace_id", "user_id",
-            }
-            if not required_alias_columns.issubset(alias_columns):
-                self.conn.execute("DROP TABLE recall_alias_index")
+        if alias_table and not self._recall_alias_table_ready():
+            self.conn.execute("DROP TABLE recall_alias_index")
         self.conn.execute(
             """
             CREATE TABLE IF NOT EXISTS recall_alias_index (
@@ -660,11 +652,47 @@ class SqliteRecordStore:
         )
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_recall_alias_exact "
-            "ON recall_alias_index(tenant_id, agent_id, workspace_id, user_id, source_id, normalized_alias, status, kind, storage_key)"
+            "ON recall_alias_index(tenant_id, agent_id, workspace_id, user_id, normalized_alias, source_id, status, kind, storage_key)"
         )
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_recall_title_exact "
-            "ON recall_index(tenant_id, agent_id, workspace_id, user_id, source_id, title_normalized, status, kind, storage_key)"
+            "ON recall_index(tenant_id, agent_id, workspace_id, user_id, title_normalized, source_id, status, kind, storage_key)"
+        )
+
+    def _recall_alias_table_ready(self) -> bool:
+        expected = [
+            ("storage_key", "TEXT", 1, 1),
+            ("normalized_alias", "TEXT", 1, 2),
+            ("alias_ordinal", "INTEGER", 1, 0),
+            ("record_id", "TEXT", 1, 0),
+            ("kind", "TEXT", 1, 0),
+            ("status", "TEXT", 1, 0),
+            ("source_id", "TEXT", 1, 0),
+            ("tenant_id", "TEXT", 1, 0),
+            ("agent_id", "TEXT", 1, 0),
+            ("workspace_id", "TEXT", 1, 0),
+            ("user_id", "TEXT", 1, 0),
+        ]
+        rows = self.conn.execute("PRAGMA table_info(recall_alias_index)").fetchall()
+        actual = [
+            (str(row["name"]), str(row["type"]).upper(), int(row["notnull"]), int(row["pk"]))
+            for row in rows
+        ]
+        return actual == expected
+
+    def _identity_index_ready(self, *, table: str, index_name: str, expected_columns: list[str]) -> bool:
+        index_rows = [
+            row for row in self.conn.execute(f"PRAGMA index_list({table})") if str(row["name"]) == index_name
+        ]
+        if len(index_rows) != 1:
+            return False
+        index_row = index_rows[0]
+        if int(index_row["unique"]) != 0 or int(index_row["partial"]) != 0 or str(index_row["origin"]) != "c":
+            return False
+        key_rows = [row for row in self.conn.execute(f"PRAGMA index_xinfo({index_name})") if int(row["key"])]
+        return [str(row["name"]) for row in key_rows] == expected_columns and all(
+            str(row["coll"] or "").upper() == "BINARY" and int(row["desc"]) == 0
+            for row in key_rows
         )
 
     def _create_memory_edge_tables(self) -> None:
@@ -1350,6 +1378,9 @@ class SqliteRecordStore:
                     updates: list[tuple[str, str, str]] = []
                     for row in rows:
                         payload = self._payload_dict_from_json(row["payload_json"])
+                        if payload is None:
+                            diagnostics["corrupt"] = diagnostics.get("corrupt", 0) + 1
+                            continue
                         if legacy_mapping_required:
                             source_id, reason = self._legacy_source_partition(payload, str(row["kind"] or ""))
                             if reason:
@@ -1417,33 +1448,35 @@ class SqliteRecordStore:
 
     def _recall_identity_physical_ready(self) -> bool:
         try:
-            columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(recall_index)")}
+            columns = {row["name"]: row for row in self.conn.execute("PRAGMA table_info(recall_index)")}
             alias_table = self.conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='recall_alias_index'"
             ).fetchone()
             if "title_normalized" not in columns or not alias_table:
                 return False
-            alias_columns = {
-                str(row["name"]) for row in self.conn.execute("PRAGMA table_info(recall_alias_index)")
-            }
-            if not {
-                "storage_key", "normalized_alias", "alias_ordinal", "record_id", "kind", "status",
-                "source_id", "tenant_id", "agent_id", "workspace_id", "user_id",
-            }.issubset(alias_columns):
+            title_column = columns["title_normalized"]
+            if str(title_column["type"]).upper() != "TEXT" or int(title_column["notnull"]) != 1:
+                return False
+            if not self._recall_alias_table_ready():
                 return False
             expected = {
                 "idx_recall_title_exact": [
-                    "tenant_id", "agent_id", "workspace_id", "user_id", "source_id",
-                    "title_normalized", "status", "kind", "storage_key",
+                    "tenant_id", "agent_id", "workspace_id", "user_id", "title_normalized",
+                    "source_id", "status", "kind", "storage_key",
                 ],
                 "idx_recall_alias_exact": [
-                    "tenant_id", "agent_id", "workspace_id", "user_id", "source_id",
-                    "normalized_alias", "status", "kind", "storage_key",
+                    "tenant_id", "agent_id", "workspace_id", "user_id", "normalized_alias",
+                    "source_id", "status", "kind", "storage_key",
                 ],
             }
-            return all(
-                [row[2] for row in self.conn.execute(f"PRAGMA index_info({name})")] == expected_columns
-                for name, expected_columns in expected.items()
+            return self._identity_index_ready(
+                table="recall_index",
+                index_name="idx_recall_title_exact",
+                expected_columns=expected["idx_recall_title_exact"],
+            ) and self._identity_index_ready(
+                table="recall_alias_index",
+                index_name="idx_recall_alias_exact",
+                expected_columns=expected["idx_recall_alias_exact"],
             )
         except sqlite3.OperationalError:
             return False
@@ -1870,6 +1903,27 @@ class SqliteRecordStore:
             alias="i",
         )
         where.append("i.status = 'active'")
+        alias_where = [
+            "a.tenant_id = ?",
+            "a.agent_id = ?",
+            "a.workspace_id = ?",
+            "a.user_id = ?",
+            "a.normalized_alias = ?",
+            "a.status = 'active'",
+        ]
+        alias_params: list[object] = [
+            scope.tenant_id or "default",
+            scope.agent_id,
+            scope.workspace_id,
+            scope.user_id,
+            normalized_query,
+        ]
+        if allowed_source_ids is not None:
+            alias_where.append(f"a.source_id IN ({','.join('?' for _ in allowed_source_ids)})")
+            alias_params.extend(allowed_source_ids)
+        if kinds:
+            alias_where.append(f"a.kind IN ({','.join('?' for _ in kinds)})")
+            alias_params.extend(kinds)
         projection = (
             "i.storage_key, i.record_id, i.kind, i.source_id, i.tenant_id, i.agent_id, "
             "i.workspace_id, i.user_id"
@@ -1882,10 +1936,15 @@ class SqliteRecordStore:
         ).fetchall()
         alias_rows = self.conn.execute(
             "SELECT " + projection + " FROM recall_alias_index a "
-            "JOIN recall_index i ON i.storage_key = a.storage_key WHERE "
+            "JOIN recall_index i ON i.storage_key = a.storage_key "
+            "AND i.record_id = a.record_id AND i.kind = a.kind AND i.status = a.status "
+            "AND i.source_id = a.source_id AND i.tenant_id = a.tenant_id "
+            "AND i.agent_id = a.agent_id AND i.workspace_id = a.workspace_id AND i.user_id = a.user_id WHERE "
+            + " AND ".join(alias_where)
+            + " AND "
             + " AND ".join(where)
-            + " AND a.normalized_alias = ? ORDER BY i.storage_key LIMIT ?",
-            [*params, normalized_query, bounded_limit],
+            + " LIMIT ?",
+            [*alias_params, *params, bounded_limit],
         ).fetchall()
         evidence_by_key: dict[str, set[str]] = {}
         rows_by_key: dict[str, sqlite3.Row] = {}
@@ -2182,8 +2241,13 @@ class SqliteRecordStore:
             }
         placeholders = ",".join("?" for _ in ordered_keys)
         rows = self.conn.execute(
-            "SELECT storage_key, record_id, kind, status, tenant_id, agent_id, workspace_id, user_id, source_id, "
-            "payload_json, content_text, embedding_json FROM records WHERE storage_key IN ("
+            "SELECT r.storage_key, r.record_id, r.kind, r.status, r.tenant_id, r.agent_id, "
+            "r.workspace_id, r.user_id, r.source_id, r.payload_json, r.content_text, r.embedding_json "
+            "FROM records r JOIN recall_index i ON i.storage_key = r.storage_key "
+            "AND i.record_id = r.record_id AND i.kind = r.kind AND i.status = r.status "
+            "AND i.tenant_id = r.tenant_id AND i.agent_id = r.agent_id "
+            "AND i.workspace_id = r.workspace_id AND i.user_id = r.user_id "
+            "AND i.source_id = r.source_id WHERE r.storage_key IN ("
             + placeholders
             + ")",
             ordered_keys,

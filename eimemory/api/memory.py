@@ -1073,21 +1073,31 @@ class MemoryAPI:
 
     @staticmethod
     def _dedupe_records(items: list[RecordEnvelope]) -> list[RecordEnvelope]:
-        seen_ids: set[str] = set()
-        seen_content_positions: dict[str, int] = {}
+        seen_refs: set[tuple[str, str, str, str, str, str]] = set()
+        seen_content_positions: dict[tuple[tuple[str, str, str, str, str], str], int] = {}
         deduped: list[RecordEnvelope] = []
         for item in items:
-            if item.record_id in seen_ids:
+            scope = item.scope
+            namespace = (
+                scope.tenant_id or "default",
+                scope.agent_id,
+                scope.workspace_id,
+                scope.user_id,
+                item.source_id,
+            )
+            exact_ref = (item.record_id, *namespace)
+            if exact_ref in seen_refs:
                 continue
-            seen_ids.add(item.record_id)
+            seen_refs.add(exact_ref)
             content_key = MemoryAPI._record_content_key(item)
             if content_key:
-                existing_index = seen_content_positions.get(content_key)
+                namespaced_content_key = (namespace, content_key)
+                existing_index = seen_content_positions.get(namespaced_content_key)
                 if existing_index is not None:
                     if MemoryAPI._prefer_dedupe_replacement(item, deduped[existing_index]):
                         deduped[existing_index] = item
                     continue
-                seen_content_positions[content_key] = len(deduped)
+                seen_content_positions[namespaced_content_key] = len(deduped)
             deduped.append(item)
         return MemoryAPI._cap_knowledge_source_groups(deduped)
 

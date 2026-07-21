@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from hashlib import sha256
+import json
 from math import isfinite
 from typing import Iterable, Mapping, Sequence
 
@@ -116,17 +118,10 @@ def fuse_ranked_components(
 
 def page_pool_key(record: RecordEnvelope) -> str:
     scope = record.scope
-    namespace = "\x1f".join(
-        (
-            str(scope.tenant_id or "default")[:256],
-            str(scope.agent_id or "")[:256],
-            str(scope.workspace_id or "")[:256],
-            str(scope.user_id or "")[:256],
-            str(record.source_id or "default")[:256],
-        )
-    )
     content = record.content if isinstance(record.content, dict) else {}
     meta = record.meta if isinstance(record.meta, dict) else {}
+    identity_type = "record"
+    identity_values: tuple[str, ...] = (str(record.record_id or ""),)
     for label, keys in (
         ("page", ("page_id",)),
         ("parent", ("parent_record_id",)),
@@ -134,21 +129,44 @@ def page_pool_key(record: RecordEnvelope) -> str:
     ):
         value = _first_identifier(content, meta, keys=keys)
         if value:
-            return f"{namespace}\x1f{label}:{value}"
-    session_id = _first_identifier(content, meta, keys=("session_id",))
-    source_event_id = _first_identifier(content, meta, keys=("source_event_id",))
-    if session_id and source_event_id:
-        return f"{namespace}\x1fraw:{session_id}:{source_event_id}"
-    return f"{namespace}\x1frecord:{str(record.record_id or '')[:256]}"
+            identity_type = label
+            identity_values = (value,)
+            break
+    else:
+        session_id = _first_identifier(content, meta, keys=("session_id",))
+        source_event_id = _first_identifier(content, meta, keys=("source_event_id",))
+        if session_id and source_event_id:
+            identity_type = "raw"
+            identity_values = (session_id, source_event_id)
+    canonical = {
+        "scope": [
+            _identity_descriptor(scope.tenant_id or "default"),
+            _identity_descriptor(scope.agent_id),
+            _identity_descriptor(scope.workspace_id),
+            _identity_descriptor(scope.user_id),
+        ],
+        "source_id": _identity_descriptor(record.source_id or "default"),
+        "type": identity_type,
+        "identity": [_identity_descriptor(value) for value in identity_values],
+    }
+    digest = sha256(
+        json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return f"page-pool.v1:{identity_type}:{digest}"
 
 
 def _first_identifier(content: Mapping[str, object], meta: Mapping[str, object], *, keys: tuple[str, ...]) -> str:
     for container in (content, meta):
         for key in keys:
-            value = " ".join(str(container.get(key) or "").split())[:256]
+            value = " ".join(str(container.get(key) or "").split())
             if value:
                 return value
     return ""
+
+
+def _identity_descriptor(value: object) -> dict[str, object]:
+    text = str(value or "")
+    return {"chars": len(text), "sha256": sha256(text.encode("utf-8")).hexdigest()}
 
 
 def _bounded_int(value: object, *, default: int, minimum: int, maximum: int) -> int:

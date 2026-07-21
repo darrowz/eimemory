@@ -5,6 +5,7 @@ from typing import Any
 
 from eimemory.storage.runtime_store import RuntimeStore
 from eimemory.models.identity_aliases import normalize_identity_text
+from eimemory.models.source_partitions import normalize_source_id
 from eimemory.metadata import business_metadata
 
 from .contracts import CandidateBatch, CandidateHit, CandidateRef, CandidateRequest, ExactScope, freeze_value
@@ -50,14 +51,27 @@ class SQLiteCandidateSource:
             source_ids=request.source_ids,
         )
         verified_identity_rows: list[dict[str, object]] = []
+        identity_drop_count = 0
         for row in identity_rows:
             row_scope = ExactScope.from_scope(row.get("scope") if isinstance(row.get("scope"), dict) else {})
-            row_source_id = str(row.get("source_id") or "")
-            authoritative = self.store.get_by_exact_ref(
-                str(row.get("record_id") or ""),
-                scope=row_scope.to_scope_ref(),
-                source_id=row_source_id,
-            )
+            row_record_id = str(row.get("record_id") or "").strip()
+            try:
+                row_source_id = normalize_source_id(row.get("source_id"))
+            except (TypeError, ValueError):
+                identity_drop_count += 1
+                continue
+            if not row_record_id or row_scope != request.scope:
+                identity_drop_count += 1
+                continue
+            try:
+                authoritative = self.store.get_by_exact_ref(
+                    row_record_id,
+                    scope=row_scope.to_scope_ref(),
+                    source_id=row_source_id,
+                )
+            except (TypeError, ValueError):
+                identity_drop_count += 1
+                continue
             quality = business_metadata(authoritative.meta).get("quality") if authoritative is not None else {}
             if (
                 authoritative is None
@@ -79,6 +93,10 @@ class SQLiteCandidateSource:
                 continue
             verified_identity_rows.append({**row, "evidence": verified_evidence})
         identity_rows = verified_identity_rows
+        if identity_drop_count:
+            blocked = dict(report.get("blocked_counts") or {})
+            blocked["identity_invalid_ref"] = min(1000, int(blocked.get("identity_invalid_ref") or 0) + identity_drop_count)
+            report["blocked_counts"] = blocked
         identity_by_ref = {
             (
                 str(row.get("record_id") or ""),

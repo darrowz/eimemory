@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timezone
 import re
 from time import perf_counter
 from typing import Any, Protocol
@@ -579,6 +579,39 @@ class GovernedRecallEngine:
                 blocked_counts.update(edge_suppressed_counts)
                 if preference_query:
                     items = [item for item in items if memory._is_preference_recall_candidate(item, normalized_query)]
+        active_rules = self.store.list_records(
+            kinds=["rule"],
+            scope=scope_ref,
+            status="active",
+            limit=100,
+            source_ids=source_ids,
+        )
+        active_rules = [item for item in active_rules if self._record_is_exact_and_active(item)]
+        active_rules = [
+            item for item in active_rules if ExactScope.from_scope(item.scope) in authorized_exact_scopes
+        ]
+        active_rules, rule_hard_filter_counts = memory._apply_hard_recall_filters_with_counts(
+            active_rules,
+            recall_filters,
+        )
+        blocked_counts.update(rule_hard_filter_counts)
+        active_rules, rule_online_gate_counts = memory._apply_online_recall_pollution_gate(
+            active_rules,
+            allow_operational_recall=operational_recall_allowed,
+        )
+        blocked_counts.update(rule_online_gate_counts)
+        rules = [
+            rule
+            for rule in active_rules
+            if not task_type or str(business_metadata(rule.meta).get("task_type") or "") == task_type
+        ][:50]
+        rule_recall_items = memory._matching_active_rule_recall_items(
+            active_rules=active_rules,
+            query=normalized_query,
+            recall_intent=recall_intent,
+            limit=limit,
+        )
+
         claims = [item for item in items if item.kind == "claim_card"]
         pages = [item for item in items if item.kind == "knowledge_page"]
         memories = [item for item in items if item.kind in {"memory", "rule"}]
@@ -592,11 +625,17 @@ class GovernedRecallEngine:
         view_items = records_from_view(view, items, limit=max(limit * 4, limit))
         if operational_recall_allowed:
             view_items = memory._dedupe_records([*view_items, *items])
+        view_items = memory._dedupe_records([*report_items, *rule_recall_items, *view_items])
         items, hard_filter_counts = memory._apply_hard_recall_filters_with_counts(
-            memory._dedupe_records(view_items),
+            view_items,
             recall_filters,
         )
         blocked_counts.update(hard_filter_counts)
+        items, online_gate_counts = memory._apply_online_recall_pollution_gate(
+            items,
+            allow_operational_recall=operational_recall_allowed,
+        )
+        blocked_counts.update(online_gate_counts)
         memory_usage_adjustments = memory._memory_usage_adjustments(scope_ref, source_ids=source_ids)
         items = memory._apply_memory_usage_feedback(items, memory_usage_adjustments)
         items, fusion_state = self._fuse_and_pool_items(
@@ -611,38 +650,11 @@ class GovernedRecallEngine:
             memory_usage_adjustments=memory_usage_adjustments,
         )
         items = items[:limit]
-        if report_items:
-            items = memory._dedupe_records([*report_items, *items])[:limit]
         graph_expanded = sum(1 for item in items if self._record_key(item) not in base_ids)
-        active_rules = self.store.list_records(
-            kinds=["rule"],
-            scope=scope_ref,
-            status="active",
-            limit=100,
-            source_ids=source_ids,
+        selected_refs = {self._record_key(item) for item in items}
+        rule_recall_promoted_count = sum(
+            1 for item in rule_recall_items if self._record_key(item) in selected_refs
         )
-        active_rules = [item for item in active_rules if self._record_is_exact_and_active(item)]
-        active_rules = [
-            item for item in active_rules if ExactScope.from_scope(item.scope) in authorized_exact_scopes
-        ]
-        rules = [
-            rule
-            for rule in active_rules
-            if not task_type or str(business_metadata(rule.meta).get("task_type") or "") == task_type
-        ][:50]
-        rule_recall_items = memory._matching_active_rule_recall_items(
-            active_rules=active_rules,
-            query=normalized_query,
-            recall_intent=recall_intent,
-            limit=limit,
-        )
-        if rule_recall_items:
-            items = memory._dedupe_records([*rule_recall_items, *items])[:limit]
-        items, online_gate_counts = memory._apply_online_recall_pollution_gate(
-            items,
-            allow_operational_recall=operational_recall_allowed,
-        )
-        blocked_counts.update(online_gate_counts)
         if blocked_counts:
             recall_filters["blocked_counts"] = dict(sorted(blocked_counts.items()))
         memory_telemetry_summary = memory._memory_usage_summary(items, memory_usage_adjustments)
@@ -713,7 +725,7 @@ class GovernedRecallEngine:
                 "policy_suggestions": list(policy_search.get("policy_suggestions") or []),
                 "matched_event_type": str(policy_search.get("matched_event_type") or ""),
                 "rule_count": len(rules),
-                "rule_recall_promoted_count": len(rule_recall_items),
+                "rule_recall_promoted_count": rule_recall_promoted_count,
                 "unknown_record_id": gap["unknown"].record_id if gap else "",
                 "graph_expanded": graph_expanded,
                 "graph_route": graph_route,
@@ -773,6 +785,7 @@ class GovernedRecallEngine:
         pre_pool_items = list(items)[:5000]
         by_token = {self._fusion_record_token(item): item for item in pre_pool_items}
         evidence_by_ref: dict[tuple[str, ExactScope, str], set[str]] = {}
+        strong_evidence_by_ref: dict[tuple[str, ExactScope, str], set[str]] = {}
         group_items: dict[int, list[RecordEnvelope]] = {}
         for item in pre_pool_items:
             exact_scope = ExactScope.from_scope(item.scope)
@@ -789,11 +802,16 @@ class GovernedRecallEngine:
             hints = component_hints_by_ref.get(ref) or {}
             if self._keyword_exact_match(query, item):
                 evidence.add("keyword_exact")
-            if self._safe_float(hints.get("vector_score")) >= 0.12:
+            vector_score = self._safe_float(hints.get("vector_score"))
+            if vector_score >= 0.12:
                 evidence.add("vector_match")
             if ref not in base_ids:
                 evidence.add("graph_path")
             evidence_by_ref[ref] = evidence
+            strong_evidence = evidence & {"keyword_exact", "graph_path"}
+            if vector_score >= 0.7:
+                strong_evidence.add("vector_match")
+            strong_evidence_by_ref[ref] = strong_evidence
 
         fused: list[RecordEnvelope] = []
         detail_by_ref: dict[tuple[str, ExactScope, str], dict[str, Any]] = {}
@@ -918,21 +936,20 @@ class GovernedRecallEngine:
             for item in target_records
             if evidence_by_ref.get(self._record_key(item), set()) & {"exact_title", "alias_hit"}
         ]
-        target_identity_pages = {page_pool_key(item) for item in target_identity}
+        target_identity_refs = {self._record_key(item) for item in target_identity}
         if target_source_id is None:
             create_safety = "unknown"
             ambiguity_reasons.append("target_source_omitted")
         elif request.source_ids is not None and target_source_id not in request.source_ids:
             create_safety = "unknown"
             ambiguity_reasons.append("target_source_not_searched")
-        elif len(target_identity_pages) == 1:
+        elif len(target_identity_refs) == 1:
             create_safety = "exists"
-        elif len(target_identity_pages) > 1:
+        elif len(target_identity_refs) > 1:
             create_safety = "probable"
             ambiguity_reasons.append("ambiguous_identity")
         elif any(
-            evidence_by_ref.get(self._record_key(item), set())
-            & {"keyword_exact", "vector_match", "graph_path"}
+            strong_evidence_by_ref.get(self._record_key(item), set())
             for item in target_records
         ):
             create_safety = "probable"
@@ -952,7 +969,7 @@ class GovernedRecallEngine:
             "pool_members": pool_members,
             "create_safety": create_safety,
             "target_source_id": target_source_id,
-            "target_identity_refs": {self._record_key(item) for item in target_identity},
+            "target_identity_refs": target_identity_refs,
             "ambiguity_reasons": ambiguity_reasons,
         }
 
@@ -1049,12 +1066,10 @@ class GovernedRecallEngine:
             record_kind=record.kind,
             record_source=record.source,
         )
-        return bool(
-            signal.exact_phrase_hits
-            or signal.token_hits
-            or signal.entity_hits
-            or signal.version_hits
-        )
+        query_signal = analyze_lexical_signal(query, query)
+        required_terms = set(query_signal.token_hits) | set(query_signal.entity_hits) | set(query_signal.version_hits)
+        matched_terms = set(signal.token_hits) | set(signal.entity_hits) | set(signal.version_hits)
+        return bool(required_terms) and required_terms.issubset(matched_terms)
 
     def _rank_component(self, items, *, score, eligible) -> list[str]:
         ranked = [item for item in items if eligible(item)]
@@ -1066,10 +1081,21 @@ class GovernedRecallEngine:
         living_score = self._safe_float(living.get("total_adjustment")) if isinstance(living, dict) else 0.0
         quality_score = self._safe_float(hints.get("quality_score"))
         try:
-            timestamp = datetime.fromisoformat(str(item.time.updated_at or "").replace("Z", "+00:00")).timestamp()
-        except (TypeError, ValueError, OverflowError):
-            timestamp = 0.0
-        return (-living_score, -quality_score, -timestamp, self._fusion_record_token(item))
+            parsed = datetime.fromisoformat(str(item.time.updated_at or "").replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            else:
+                parsed = parsed.astimezone(timezone.utc)
+            timestamp_rank = (
+                parsed.toordinal() * 86_400_000_000
+                + parsed.hour * 3_600_000_000
+                + parsed.minute * 60_000_000
+                + parsed.second * 1_000_000
+                + parsed.microsecond
+            )
+        except (TypeError, ValueError, OverflowError, OSError):
+            timestamp_rank = 0
+        return (-living_score, -quality_score, -float(timestamp_rank), self._fusion_record_token(item))
 
     def _keyword_component_score(self, hints: dict[str, Any]) -> float:
         lexical_score = self._safe_float(hints.get("lexical_score"))

@@ -14,6 +14,8 @@ from eimemory.retrieval.fusion import (
     fuse_ranked_components,
     page_pool_key,
 )
+from eimemory.retrieval.contracts import CandidateBatch, CandidateHit, CandidateRef, ExactScope
+from eimemory.retrieval.engine import GovernedRecallEngine
 from eimemory.storage.runtime_store import RuntimeStore
 
 
@@ -121,24 +123,23 @@ def test_entity_legacy_alias_projection_is_explicit_per_kind() -> None:
 
 
 @pytest.mark.parametrize(
-    ("content", "expected_suffix"),
+    ("content", "expected_type"),
     [
-        ({"page_id": "page-1"}, "page:page-1"),
-        ({"parent_record_id": "parent-1"}, "parent:parent-1"),
-        ({"source_document_id": "document-1"}, "document:document-1"),
-        ({"session_id": "session-1", "source_event_id": "event-1"}, "raw:session-1:event-1"),
-        ({}, "record:"),
+        ({"page_id": "page-1"}, "page"),
+        ({"parent_record_id": "parent-1"}, "parent"),
+        ({"source_document_id": "document-1"}, "document"),
+        ({"session_id": "session-1", "source_event_id": "event-1"}, "raw"),
+        ({}, "record"),
     ],
 )
-def test_page_pool_key_has_hard_scope_source_namespace_and_priority(content: dict, expected_suffix: str) -> None:
+def test_page_pool_key_has_hard_scope_source_namespace_and_priority(content: dict, expected_type: str) -> None:
     record = _record("chunk", content=content)
     key = page_pool_key(record)
-
-    assert key.startswith("tenant-a\x1fopenclaw\x1fworkspace-a\x1fuser-a\x1falpha\x1f")
-    if expected_suffix == "record:":
-        assert key.endswith(f"record:{record.record_id}")
-    else:
-        assert key.endswith(expected_suffix)
+    assert key.startswith(f"page-pool.v1:{expected_type}:")
+    assert len(key) < 100
+    other_source = _record("chunk", source_id="beta", content=content)
+    other_source.record_id = record.record_id
+    assert page_pool_key(other_source) != key
 
 
 def test_indexed_identity_is_source_local_and_target_source_is_not_search_allowlist(tmp_path) -> None:
@@ -239,7 +240,8 @@ def test_page_max_pool_keeps_diverse_pages_and_aggregates_chunk_diagnostics(tmp_
     assert len(bundle.items) == 2
     assert {item.content["page_id"] for item in bundle.items} == {"page-a", "page-b"}
     selected = bundle.explanation["fusion"]["selected"]
-    pooled = next(item for item in selected if item["page_key"].endswith("page:page-a"))
+    pooled_key = page_pool_key(chunks[0])
+    pooled = next(item for item in selected if item["page_key"] == pooled_key)
     assert pooled["chunk_count"] == 4
     assert set(pooled["member_record_ids"]) == {item.record_id for item in chunks}
     assert other.record_id in {item["record_id"] for item in selected}
@@ -279,7 +281,10 @@ def test_rrf_order_change_from_legacy_weight_is_explicit_and_replay_stable(tmp_p
 
 @pytest.mark.parametrize(
     "damage",
-    ["missing_marker", "wrong_title_index", "wrong_alias_index", "title_column", "alias_column", "alias_table"],
+    [
+        "missing_marker", "wrong_title_index", "wrong_alias_index", "title_column", "alias_column",
+        "alias_table", "partial_title_index", "partial_alias_index", "alias_collation", "alias_primary_key",
+    ],
 )
 def test_markered_identity_migration_repairs_physical_schema_and_backfills(tmp_path, damage: str) -> None:
     root = tmp_path / damage
@@ -300,6 +305,35 @@ def test_markered_identity_migration_repairs_physical_schema_and_backfills(tmp_p
         connection.execute("ALTER TABLE recall_index RENAME COLUMN title_normalized TO legacy_title_normalized")
     elif damage == "alias_column":
         connection.execute("ALTER TABLE recall_alias_index RENAME COLUMN normalized_alias TO legacy_normalized_alias")
+    elif damage == "partial_title_index":
+        connection.execute("DROP INDEX idx_recall_title_exact")
+        connection.execute(
+            "CREATE INDEX idx_recall_title_exact ON recall_index("
+            "tenant_id, agent_id, workspace_id, user_id, source_id, title_normalized, status, kind, storage_key"
+            ") WHERE status = 'active'"
+        )
+    elif damage == "partial_alias_index":
+        connection.execute("DROP INDEX idx_recall_alias_exact")
+        connection.execute(
+            "CREATE INDEX idx_recall_alias_exact ON recall_alias_index("
+            "tenant_id, agent_id, workspace_id, user_id, source_id, normalized_alias, status, kind, storage_key"
+            ") WHERE status = 'active'"
+        )
+    elif damage == "alias_collation":
+        connection.execute("DROP INDEX idx_recall_alias_exact")
+        connection.execute(
+            "CREATE INDEX idx_recall_alias_exact ON recall_alias_index("
+            "tenant_id, agent_id, workspace_id, user_id, source_id, normalized_alias COLLATE NOCASE, status, kind, storage_key)"
+        )
+    elif damage == "alias_primary_key":
+        connection.execute("DROP TABLE recall_alias_index")
+        connection.execute(
+            "CREATE TABLE recall_alias_index ("
+            "storage_key TEXT PRIMARY KEY, normalized_alias TEXT NOT NULL, alias_ordinal INTEGER NOT NULL, "
+            "record_id TEXT NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL, source_id TEXT NOT NULL, "
+            "tenant_id TEXT NOT NULL, agent_id TEXT NOT NULL, workspace_id TEXT NOT NULL, "
+            "user_id TEXT NOT NULL)"
+        )
     else:
         connection.execute("DROP TABLE recall_alias_index")
     connection.commit()
@@ -317,6 +351,22 @@ def test_markered_identity_migration_repairs_physical_schema_and_backfills(tmp_p
     )
     assert [item["record_id"] for item in hits] == [record.record_id]
     assert hits[0]["evidence"] == ["alias_hit"]
+    alias_pk = {
+        row["name"]: int(row["pk"])
+        for row in repaired.sqlite.conn.execute("PRAGMA table_info(recall_alias_index)")
+    }
+    assert alias_pk["storage_key"] == 1 and alias_pk["normalized_alias"] == 2
+    for table, index_name in (
+        ("recall_index", "idx_recall_title_exact"),
+        ("recall_alias_index", "idx_recall_alias_exact"),
+    ):
+        index_row = next(
+            row for row in repaired.sqlite.conn.execute(f"PRAGMA index_list({table})") if row["name"] == index_name
+        )
+        assert int(index_row["partial"]) == 0
+        collations = [row["coll"] for row in repaired.sqlite.conn.execute(f"PRAGMA index_xinfo({index_name})") if row["key"]]
+        assert set(collations) == {"BINARY"}
+    repaired.append(_record("multi alias after repair", aliases=["multi one", "multi two"]))
     repaired.close()
 
 
@@ -510,3 +560,289 @@ def test_identity_index_cannot_bypass_quality_reject_hard_gate(tmp_path) -> None
     )
     assert bundle.items == []
     assert bundle.explanation["fusion"]["create_safety"] == "unknown"
+
+
+@pytest.mark.parametrize(("vector_score", "expected"), [(0.13, "unknown"), (0.8, "probable")])
+def test_create_safety_requires_strong_vector_evidence(tmp_path, vector_score: float, expected: str) -> None:
+    store = RuntimeStore(tmp_path)
+    record = store.append(_record("unrelated backend candidate"))
+
+    class VectorSource:
+        name = "vector-test"
+
+        def search(self, request):
+            return CandidateBatch(
+                hits=(
+                    CandidateHit(
+                        ref=CandidateRef(
+                            record_id=record.record_id,
+                            scope=ExactScope.from_scope(record.scope),
+                            source_id=record.source_id,
+                        ),
+                        source_rank=1,
+                        source_score=vector_score,
+                        component_hints={"vector_score": vector_score},
+                    ),
+                )
+            )
+
+    bundle = MemoryAPI(
+        store,
+        recall_engine=GovernedRecallEngine(store=store, candidate_source=VectorSource()),
+    ).recall(
+        query="no lexical overlap query",
+        scope=asdict(SCOPE),
+        task_context={"source_ids": ["alpha"], "target_source_id": "alpha"},
+        limit=2,
+    )
+    assert bundle.explanation["fusion"]["create_safety"] == expected
+    store.close()
+
+
+def test_same_page_alias_collision_remains_ambiguous_before_pooling(tmp_path) -> None:
+    store = RuntimeStore(tmp_path)
+    store.append(_record("collision one", aliases=["same identity"], content={"page_id": "same-page"}))
+    store.append(_record("collision two", aliases=["same identity"], content={"page_id": "same-page"}))
+    fusion = MemoryAPI(store).recall(
+        query="same identity",
+        scope=asdict(SCOPE),
+        task_context={"source_ids": ["alpha"], "target_source_id": "alpha"},
+        limit=3,
+    ).explanation["fusion"]
+    assert fusion["create_safety"] == "probable"
+    assert fusion["ambiguity_reasons"] == ["ambiguous_identity"]
+    assert fusion["selected"][0]["chunk_count"] == 2
+    store.close()
+
+
+def test_page_pool_key_is_collision_safe_for_long_and_raw_identifiers() -> None:
+    long_left = _record("left", content={"page_id": "x" * 256 + "a"})
+    long_right = _record("right", content={"page_id": "x" * 256 + "b"})
+    raw_left = _record("raw-left", content={"session_id": "a:b", "source_event_id": "c"})
+    raw_right = _record("raw-right", content={"session_id": "a", "source_event_id": "b:c"})
+    assert page_pool_key(long_left) != page_pool_key(long_right)
+    assert page_pool_key(raw_left) != page_pool_key(raw_right)
+
+
+def test_actual_alias_query_uses_covering_alias_index_without_temp_sort(tmp_path) -> None:
+    store = RuntimeStore(tmp_path)
+    store.append(_record("plan title", aliases=["plan alias"]))
+    traced: list[str] = []
+    store.sqlite.conn.set_trace_callback(traced.append)
+    store.sqlite.search_identity_candidates(
+        query="plan alias", kinds=["memory"], scope=SCOPE, limit=5, source_ids=["alpha"]
+    )
+    store.sqlite.conn.set_trace_callback(None)
+    alias_sql = next(sql for sql in traced if "FROM recall_alias_index a" in sql)
+    plan = store.sqlite.conn.execute("EXPLAIN QUERY PLAN " + alias_sql).fetchall()
+    details = [str(row[3]) for row in plan]
+    assert any("idx_recall_alias_exact" in detail for detail in details)
+    assert not any("SCAN i" in detail or "TEMP B-TREE" in detail for detail in details)
+    store.close()
+
+
+def test_report_and_rule_promotions_cannot_bypass_hard_filters(tmp_path) -> None:
+    store = RuntimeStore(tmp_path)
+    report = RecordEnvelope.create(
+        kind="reflection",
+        title="blocked report",
+        summary="blocked report",
+        content={"report_type": "rule_evolution"},
+        meta={"report_type": "rule_evolution"},
+        scope=SCOPE,
+        source="blocked.report",
+        source_id="alpha",
+    )
+    report.record_id = "rule_evolution_blocked_probe"
+    rule = RecordEnvelope.create(
+        kind="rule",
+        title="Communication style reply preference",
+        summary="Communication style reply preference concise",
+        scope=SCOPE,
+        source="blocked.rules",
+        source_id="alpha",
+    )
+    store.append(report)
+    store.append(rule)
+    memory = MemoryAPI(store)
+    report_bundle = memory.recall(
+        query="governance report rule_evolution_blocked_probe",
+        scope=asdict(SCOPE),
+        task_context={"source_ids": ["alpha"], "blocked_sources": ["blocked.report"]},
+        limit=3,
+    )
+    rule_bundle = memory.recall(
+        query="What is my reply style preference?",
+        scope=asdict(SCOPE),
+        task_context={"source_ids": ["alpha"], "blocked_sources": ["blocked.rules"]},
+        limit=3,
+    )
+    assert report.record_id not in {item.record_id for item in report_bundle.items}
+    assert rule.record_id not in {item.record_id for item in rule_bundle.items}
+    assert report_bundle.explanation["fusion"]["selected"] == []
+    assert rule_bundle.explanation["rule_recall_promoted_count"] == 0
+    store.close()
+
+
+def test_online_pollution_gate_precedes_create_safety(tmp_path) -> None:
+    store = RuntimeStore(tmp_path)
+    stale = _record("stale identity", aliases=["stale alias"])
+    stale.meta["living_memory_v1"] = {"temporal": {"status": "expired"}}
+    store.append(stale)
+    bundle = MemoryAPI(store).recall(
+        query="stale alias",
+        scope=asdict(SCOPE),
+        task_context={"source_ids": ["alpha"], "target_source_id": "alpha"},
+        limit=3,
+    )
+    assert bundle.items == []
+    assert bundle.explanation["online_recall_gate"]["blocked_counts"]["stale_memory"] == 1
+    assert bundle.explanation["fusion"]["create_safety"] == "unknown"
+    assert bundle.explanation["fusion"]["ambiguity_reasons"] == ["no_identity_evidence"]
+    store.close()
+
+
+def test_same_record_id_across_physical_scopes_preserves_logical_group_authority(tmp_path) -> None:
+    store = RuntimeStore(tmp_path)
+    main_scope = ScopeRef(tenant_id="default", agent_id="main", workspace_id="repo-x", user_id="darrow")
+    canonical_scope = ScopeRef(tenant_id="default", agent_id="hongtu", workspace_id="embodied", user_id="darrow")
+    main = _record("MAIN-PHYSICAL", scope=main_scope)
+    canonical = _record("CANONICAL-ALIAS", scope=canonical_scope)
+    main.record_id = canonical.record_id = "same_physical_id"
+    store.append(main)
+    store.append(canonical)
+    bundle = MemoryAPI(store).recall(
+        query="physical",
+        scope=asdict(main_scope),
+        task_context={"source_ids": ["alpha"]},
+        limit=1,
+    )
+    assert [(item.title, item.scope.agent_id, item.scope.workspace_id) for item in bundle.items] == [
+        ("MAIN-PHYSICAL", "main", "repo-x")
+    ]
+    store.close()
+
+
+def test_corrupt_identity_source_ref_is_dropped_not_raised(tmp_path) -> None:
+    store = RuntimeStore(tmp_path)
+    record = store.append(_record("corrupt ref", aliases=["corrupt alias"]))
+    store.sqlite.conn.execute(
+        "UPDATE recall_index SET source_id = 'bad/source' WHERE record_id = ?", (record.record_id,)
+    )
+    store.sqlite.conn.commit()
+    bundle = MemoryAPI(store).recall(query="corrupt alias", scope=asdict(SCOPE), limit=3)
+    assert bundle.items == []
+    store.close()
+
+
+def test_long_document_pool_overfetches_past_profile_multiplier(tmp_path) -> None:
+    store = RuntimeStore(tmp_path)
+    other = store.append(_record("diversity marker page b", content={"page_id": "page-b"}))
+    for index in range(12):
+        store.append(_record(f"diversity marker page a {index}", content={"page_id": "page-a"}))
+    bundle = MemoryAPI(store).recall(
+        query="diversity marker",
+        scope=asdict(SCOPE),
+        task_context={"source_ids": ["alpha"]},
+        limit=2,
+    )
+    assert {item.content["page_id"] for item in bundle.items} == {"page-a", "page-b"}
+    assert other.record_id in {
+        member_id
+        for selected in bundle.explanation["fusion"]["selected"]
+        for member_id in selected["member_record_ids"]
+    }
+    store.close()
+
+
+def test_extreme_naive_timestamp_is_stable_and_does_not_crash(tmp_path) -> None:
+    store = RuntimeStore(tmp_path)
+    record = _record("extreme timestamp")
+    record.time.updated_at = "0001-01-01T00:00:00"
+    store.append(record)
+    first = MemoryAPI(store).recall(query="extreme timestamp", scope=asdict(SCOPE), limit=1)
+    second = MemoryAPI(store).recall(query="extreme timestamp", scope=asdict(SCOPE), limit=1)
+    assert [item.record_id for item in first.items] == [record.record_id]
+    assert first.explanation["fusion"] == second.explanation["fusion"]
+    store.close()
+
+
+def test_partial_common_keyword_is_not_strong_create_evidence(tmp_path) -> None:
+    store = RuntimeStore(tmp_path)
+    candidate = store.append(_record("what happened elsewhere"))
+
+    class KeywordSource:
+        name = "keyword-test"
+
+        def search(self, request):
+            return CandidateBatch(
+                hits=(CandidateHit(
+                    ref=CandidateRef(candidate.record_id, ExactScope.from_scope(candidate.scope), candidate.source_id),
+                    source_rank=1,
+                    source_score=1.0,
+                    component_hints={"lexical_score": 0.1},
+                ),)
+            )
+
+    bundle = MemoryAPI(
+        store, recall_engine=GovernedRecallEngine(store=store, candidate_source=KeywordSource())
+    ).recall(
+        query="what is target",
+        scope=asdict(SCOPE),
+        task_context={"source_ids": ["alpha"], "target_source_id": "alpha"},
+        limit=2,
+    )
+    assert "keyword_exact" not in bundle.explanation["fusion"]["selected"][0]["evidence"]
+    assert bundle.explanation["fusion"]["create_safety"] == "unknown"
+    store.close()
+
+
+def test_source_migration_skips_one_malformed_payload_without_startup_dos(tmp_path) -> None:
+    root = tmp_path / "malformed-source-migration"
+    store = RuntimeStore(root)
+    record = store.append(_record("malformed source payload"))
+    store.close()
+    connection = sqlite3.connect(root / "state" / "eimemory.sqlite")
+    connection.execute("DELETE FROM schema_migrations WHERE migration_id = 'records.source_partition.v1'")
+    connection.execute("UPDATE records SET payload_json = '{' WHERE record_id = ?", (record.record_id,))
+    connection.commit()
+    connection.close()
+    reopened = RuntimeStore(root)
+    assert reopened.sqlite.source_partition_migration_diagnostics["corrupt"] == 1
+    reopened.close()
+
+
+def test_identical_content_across_sources_stays_independent_for_target_safety(tmp_path) -> None:
+    store = RuntimeStore(tmp_path)
+    alpha = store.append(_record("identical authority", source_id="alpha", aliases=["shared authority"]))
+    beta = store.append(_record("identical authority", source_id="beta", aliases=["shared authority"]))
+    bundle = MemoryAPI(store).recall(
+        query="shared authority",
+        scope=asdict(SCOPE),
+        task_context={"source_ids": ["alpha", "beta"], "target_source_id": "alpha"},
+        limit=5,
+    )
+    assert {item.record_id for item in bundle.items} == {alpha.record_id, beta.record_id}
+    assert bundle.explanation["fusion"]["create_safety"] == "exists"
+    store.close()
+
+
+def test_rrf_intentionally_changes_a_fixed_legacy_hand_weight_order() -> None:
+    legacy_scores = {"legacy-a": 0.95, "multi-signal-b": 0.80}
+    legacy_order = sorted(legacy_scores, key=lambda record_id: (-legacy_scores[record_id], record_id))
+    fused = fuse_ranked_components(
+        [
+            ("keyword", ["legacy-a", "multi-signal-b"]),
+            ("vector", ["multi-signal-b"]),
+            ("graph", ["multi-signal-b"]),
+        ],
+        rrf_k=60,
+    )
+    rrf_order = [item.record_id for item in fused.items]
+    assert legacy_order == ["legacy-a", "multi-signal-b"]
+    assert rrf_order == ["multi-signal-b", "legacy-a"]
+    assert fused.items[0].contributions == {
+        "graph": pytest.approx(1.0 / 61.0),
+        "keyword": pytest.approx(2.0 / 62.0),
+        "vector": pytest.approx(1.5 / 61.0),
+    }
