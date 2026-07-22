@@ -374,6 +374,14 @@ def _compact_health_payload(
     root = getattr(getattr(runtime, "store", None), "root", None)
     store_root = Path(root) if root else None
     store_ready = bool(store_root and store_root.exists())
+    sqlite_store = getattr(getattr(runtime, "store", None), "sqlite", None)
+    pending_migrations_fn = getattr(sqlite_store, "pending_storage_migrations", None)
+    try:
+        pending_migrations = (
+            list(pending_migrations_fn()) if callable(pending_migrations_fn) else []
+        )
+    except Exception:
+        pending_migrations = ["storage.migration_status_unavailable"]
     import_root = package_import_root()
     payload: EIMemoryRPCResponse = {
         "ok": store_ready,
@@ -392,6 +400,8 @@ def _compact_health_payload(
         "store": {
             "ready": store_ready,
             "root": str(store_root) if store_root else "",
+            "migration_complete": not pending_migrations,
+            "pending_migrations": pending_migrations[:16],
         },
         "checks": {
             "process": True,

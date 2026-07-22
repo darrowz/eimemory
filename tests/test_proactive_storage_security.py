@@ -117,7 +117,7 @@ def test_proactive_ledgers_never_persist_turn_query_or_rendered_record_plaintext
     assert rendered_secret.encode() not in persisted
 
 
-def test_proactive_plaintext_migration_clears_all_legacy_columns(tmp_path) -> None:
+def test_proactive_plaintext_migration_is_deferred_bounded_and_resumable(tmp_path) -> None:
     store = RuntimeStore(tmp_path)
     conn = store.sqlite.conn
     exact = resolve_channel_scope("codex", BASE_SCOPE)
@@ -151,6 +151,26 @@ def test_proactive_plaintext_migration_clears_all_legacy_columns(tmp_path) -> No
     store.close()
 
     migrated = RuntimeStore(tmp_path)
+    assert "proactive.storage_text_free.v1" in migrated.sqlite.pending_storage_migrations()
+    row = migrated.sqlite.conn.execute(
+        "SELECT query_text,context_text FROM proactive_decisions WHERE decision_id='pd:legacy'"
+    ).fetchone()
+    item = migrated.sqlite.conn.execute(
+        "SELECT title_text,content_text FROM proactive_decision_items WHERE decision_id='pd:legacy'"
+    ).fetchone()
+    turn = migrated.sqlite.conn.execute(
+        "SELECT summary,entities_json FROM proactive_turns WHERE turn_id='turn'"
+    ).fetchone()
+    assert tuple(row) == ("legacy-query", "legacy-context")
+    assert tuple(item) == ("legacy-title", "legacy-content")
+    assert tuple(turn) == ("legacy-summary", '["legacy-entity"]')
+
+    reports = []
+    while "proactive.storage_text_free.v1" in migrated.sqlite.pending_storage_migrations():
+        reports.append(migrated.sqlite.apply_storage_migrations(batch_size=1))
+    assert reports
+    assert all(report["processed"] <= 1 for report in reports)
+
     row = migrated.sqlite.conn.execute(
         "SELECT query_text,context_text FROM proactive_decisions WHERE decision_id='pd:legacy'"
     ).fetchone()
@@ -232,6 +252,42 @@ def test_deleted_authoritative_record_is_never_resurrected_from_candidate_cache(
     runtime.store.sqlite.conn.commit()
 
     replay = service.decide(**request)
+
+    assert replay["items"] == []
+    assert replay["context"] == ""
+    runtime.close()
+
+
+def test_deleted_authoritative_record_is_never_resurrected_from_cross_session_candidate_cache(
+    tmp_path,
+) -> None:
+    record = _record("cross-session cache must revalidate")
+    runtime = Runtime(RuntimeStore(tmp_path), recall_engine=FixedEngine([record]))
+    runtime.store.append(record)
+    service = ProactiveRecallService(runtime, release_identity=RELEASE, control_percent=0)
+    first = service.decide(
+        channel="codex",
+        scope=BASE_SCOPE,
+        source_ids=["alpha"],
+        session_id="session-a",
+        query_id="turn-a",
+        query="Recall cache authority",
+    )
+    assert first["items"]
+    runtime.store.sqlite.conn.execute(
+        "DELETE FROM records WHERE record_id=? AND source_id=?",
+        (record.record_id, record.source_id),
+    )
+    runtime.store.sqlite.conn.commit()
+
+    replay = service.decide(
+        channel="codex",
+        scope=BASE_SCOPE,
+        source_ids=["alpha"],
+        session_id="session-b",
+        query_id="turn-b",
+        query="Recall cache authority",
+    )
 
     assert replay["items"] == []
     assert replay["context"] == ""

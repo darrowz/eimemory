@@ -386,10 +386,12 @@ class ProactiveRecallService:
             cached = self._candidate_cache.get(cache_key)
             if cached is not None:
                 self._candidate_cache.move_to_end(cache_key)
+        cache_hit = cached is not None
         if recall_bundle is not None:
             # OpenClaw has already applied its authoritative policy/evidence
             # gates to this exact turn. Never replace that bundle with a cache.
             cached = None
+            cache_hit = False
         if cached is None:
             try:
                 bundle = recall_bundle or self._recall_with_timeout(
@@ -421,6 +423,12 @@ class ProactiveRecallService:
                 while len(self._candidate_cache) > self.max_cache_entries:
                     self._candidate_cache.popitem(last=False)
         records, explanation, bundle_confidence = self._cached_parts(cached)
+        if cache_hit:
+            records = self._revalidate_cached_records(
+                records,
+                exact_scope=exact_scope,
+                source_ids=sources,
+            )
         authorized = [
             record for record in records
             if self._authorized(record, exact_scope=exact_scope, source_ids=sources)
@@ -1391,6 +1399,35 @@ class ProactiveRecallService:
         if isinstance(cached, _CachedRecall):
             return cached.records, dict(cached.explanation), cached.confidence
         return tuple(cached), {}, 0.81
+
+    def _revalidate_cached_records(
+        self,
+        records: tuple[RecordEnvelope, ...],
+        *,
+        exact_scope: Mapping[str, Any],
+        source_ids: tuple[str, ...],
+    ) -> tuple[RecordEnvelope, ...]:
+        """Resolve every cache hit through the current authority namespace.
+
+        Candidate objects are only latency hints.  Deletion, revocation and
+        content replacement in SQLite take effect before another session can
+        consume a cached result.
+        """
+
+        current: list[RecordEnvelope] = []
+        for candidate in records[:8]:
+            record = self.runtime.store.get_by_exact_ref(
+                candidate.record_id,
+                scope=dict(exact_scope),
+                source_id=candidate.source_id,
+            )
+            if record is not None and self._authorized(
+                record,
+                exact_scope=exact_scope,
+                source_ids=source_ids,
+            ):
+                current.append(record)
+        return tuple(current)
 
     @staticmethod
     def _authorized(

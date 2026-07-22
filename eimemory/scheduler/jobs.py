@@ -682,6 +682,7 @@ def load_json_dataset_with_evidence(
     parent_lstat = _validate_dataset_parent_chain(parent, trusted_uids=trusted_uids)
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     parent_descriptor: int | None = None
+    windows_identity_before: tuple[int, int] | None = None
     try:
         if os.open in getattr(os, "supports_dir_fd", set()):
             parent_descriptor = os.open(
@@ -702,7 +703,17 @@ def load_json_dataset_with_evidence(
                 raise ValueError("production recall dataset must not be group/world writable")
             if int(metadata.st_size) > MAX_PRODUCTION_RECALL_DATASET_BYTES:
                 raise ValueError("production recall dataset exceeds size limit")
+            if _requires_windows_handle_verification():
+                windows_identity_before = _windows_file_identity(handle.fileno(), candidate)
             raw = handle.read(MAX_PRODUCTION_RECALL_DATASET_BYTES + 1)
+            if _requires_windows_handle_verification():
+                windows_identity_after = _windows_file_identity(handle.fileno(), candidate)
+                if (
+                    windows_identity_before is not None
+                    and windows_identity_after is not None
+                    and windows_identity_after != windows_identity_before
+                ):
+                    raise ValueError("production recall dataset changed during Windows handle read")
         if parent_descriptor is not None:
             opened_parent = os.fstat(parent_descriptor)
             if (int(opened_parent.st_dev), int(opened_parent.st_ino)) != (
@@ -722,7 +733,29 @@ def load_json_dataset_with_evidence(
         raise ValueError("production recall dataset exceeds size limit")
     dataset = json.loads(raw.decode("utf-8"))
     if isinstance(dataset, (dict, list)):
+        if (
+            _requires_windows_handle_verification()
+            and windows_identity_before is None
+            and isinstance(dataset, dict)
+            and str(dataset.get("dataset_kind") or "") == "production"
+        ):
+            raise ValueError("production recall dataset Windows handle identity is unavailable")
         digest = sha256(raw).hexdigest()
+        canonical_source: Any = dataset
+        if isinstance(dataset, dict):
+            canonical_source = {
+                key: value
+                for key, value in dataset.items()
+                if key not in {"_secure_dataset_evidence", "secure_dataset_evidence"}
+            }
+        canonical_digest = sha256(
+            json.dumps(
+                canonical_source,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
         return dataset, {
             "schema": "secure_dataset_fingerprint.v1",
             "sha256": digest,
@@ -730,6 +763,7 @@ def load_json_dataset_with_evidence(
             "size": len(raw),
             "device": int(metadata.st_dev),
             "inode": int(metadata.st_ino),
+            "canonical_digest": canonical_digest,
         }
     raise ValueError("dataset must be a JSON object or list")
 
@@ -741,7 +775,12 @@ def _validate_dataset_parent_chain(parent: Path, *, trusted_uids: set[int]) -> o
         metadata = current.lstat()
         if immediate is None:
             immediate = metadata
-        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+        file_attributes = int(getattr(metadata, "st_file_attributes", 0) or 0)
+        if (
+            stat.S_ISLNK(metadata.st_mode)
+            or file_attributes & int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+            or not stat.S_ISDIR(metadata.st_mode)
+        ):
             raise ValueError("production recall dataset parent chain must contain trusted directories only")
         if trusted_uids and int(metadata.st_uid) not in trusted_uids:
             raise ValueError("production recall dataset parent owner is not trusted")
@@ -760,11 +799,73 @@ def _validate_dataset_parent_chain(parent: Path, *, trusted_uids: set[int]) -> o
     return immediate
 
 
+def _requires_windows_handle_verification() -> bool:
+    return os.name == "nt"
+
+
+def _windows_file_identity(descriptor: int, expected_path: Path) -> tuple[int, int] | None:
+    """Return a stable Windows volume/file identity bound to the open handle."""
+
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        import msvcrt
+        from ctypes import wintypes
+
+        class _FileInformation(ctypes.Structure):
+            _fields_ = [
+                ("dwFileAttributes", wintypes.DWORD),
+                ("ftCreationTime", wintypes.FILETIME),
+                ("ftLastAccessTime", wintypes.FILETIME),
+                ("ftLastWriteTime", wintypes.FILETIME),
+                ("dwVolumeSerialNumber", wintypes.DWORD),
+                ("nFileSizeHigh", wintypes.DWORD),
+                ("nFileSizeLow", wintypes.DWORD),
+                ("nNumberOfLinks", wintypes.DWORD),
+                ("nFileIndexHigh", wintypes.DWORD),
+                ("nFileIndexLow", wintypes.DWORD),
+            ]
+
+        handle = wintypes.HANDLE(msvcrt.get_osfhandle(descriptor))
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        final_name = ctypes.create_unicode_buffer(32_768)
+        length = kernel32.GetFinalPathNameByHandleW(
+            handle, final_name, len(final_name), 0
+        )
+        if not length or length >= len(final_name):
+            return None
+        final_path = final_name.value
+        if final_path.startswith("\\\\?\\UNC\\"):
+            final_path = "\\\\" + final_path[8:]
+        elif final_path.startswith("\\\\?\\"):
+            final_path = final_path[4:]
+        expected = os.path.normcase(os.path.abspath(os.path.realpath(expected_path)))
+        if os.path.normcase(os.path.abspath(final_path)) != expected:
+            raise ValueError("production recall dataset final Windows path changed")
+        information = _FileInformation()
+        if not kernel32.GetFileInformationByHandle(handle, ctypes.byref(information)):
+            return None
+        if int(information.dwFileAttributes) & 0x400:
+            raise ValueError("production recall dataset must not be a Windows reparse point")
+        file_index = (int(information.nFileIndexHigh) << 32) | int(information.nFileIndexLow)
+        return int(information.dwVolumeSerialNumber), file_index
+    except ValueError:
+        raise
+    except (AttributeError, ImportError, OSError):
+        return None
+
+
 def _load_json_dataset(path: str) -> dict[str, Any] | list[Any]:
     dataset, evidence = load_json_dataset_with_evidence(path)
     if isinstance(dataset, dict):
         return {**dataset, "_secure_dataset_evidence": evidence}
-    return dataset
+    return {
+        "schema": "diagnostic_list_v1",
+        "dataset_kind": "diagnostic",
+        "cases": list(dataset),
+        "_secure_dataset_evidence": evidence,
+    }
 
 
 def _dataset_cases(dataset: Any) -> list[Any]:

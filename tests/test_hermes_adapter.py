@@ -6,7 +6,7 @@ from pathlib import Path
 import re
 import threading
 
-from eimemory.adapters.hermes.provider_core import HermesMemoryProviderCore
+from eimemory.adapters.hermes.provider_core import HermesMemoryProviderCore, _source_ids_from_env
 from eimemory.adapters.eibrain.rpc import EIBrainRPCBridge
 from eimemory.adapters.runtime.channel import resolve_channel_scope
 from eimemory.api.runtime import Runtime
@@ -42,6 +42,12 @@ class FakeClient:
                 "result": {"authority_mode": "per_channel", "channel": "hermes"},
             }
         return {"ok": True, "bypassed": False, "result": {"stored": True}}
+
+
+def test_hermes_configured_sources_always_include_native_authority(monkeypatch) -> None:
+    monkeypatch.setenv("EIMEMORY_SOURCE_IDS", "project-a,default,project-a")
+
+    assert _source_ids_from_env("default") == ["project-a", "default", "hermes"]
 
 
 class FlakyTerminalClient(FakeClient):

@@ -86,3 +86,28 @@ def test_bounded_exact_count_visits_constant_work_at_100k_rows() -> None:
     assert result == 5
     assert progress_ticks < 10
     connection.close()
+
+
+def test_existing_large_database_defers_new_covering_index_until_explicit_maintenance(tmp_path) -> None:
+    store = RuntimeStore(tmp_path)
+    store.sqlite.conn.execute("DROP INDEX idx_records_scope_source_status_kind")
+    store.sqlite.conn.execute(
+        "DELETE FROM schema_migrations WHERE migration_id='records.bounded_count_index.v1'"
+    )
+    store.sqlite.conn.commit()
+    store.close()
+
+    reopened = RuntimeStore(tmp_path)
+    assert reopened.sqlite.conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_records_scope_source_status_kind'"
+    ).fetchone() is None
+    assert "records.bounded_count_index.v1" in reopened.sqlite.pending_storage_migrations()
+
+    report = reopened.sqlite.apply_storage_migrations(batch_size=1, offline=True)
+
+    assert report["index_created"] is True
+    assert reopened.sqlite.conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_records_scope_source_status_kind'"
+    ).fetchone() is not None
+    assert "records.bounded_count_index.v1" not in reopened.sqlite.pending_storage_migrations()
+    reopened.close()

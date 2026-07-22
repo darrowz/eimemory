@@ -59,6 +59,15 @@ _STORAGE_SCHEMA_MIGRATION = "storage.schema.v1"
 _SOURCE_PARTITION_MIGRATION = "records.source_partition.v1"
 _RECALL_IDENTITY_MIGRATION = "recall.identity_index.v1"
 _PROACTIVE_TEXT_FREE_MIGRATION = "proactive.storage_text_free.v1"
+_BOUNDED_COUNT_INDEX_MIGRATION = "records.bounded_count_index.v1"
+_IDENTITY_PAYLOAD_KINDS = (
+    "memory",
+    "knowledge_page",
+    "claim_card",
+    "rule",
+    "sop",
+    "intent_pattern",
+)
 _RECALL_LANE_MEMORY_TYPE_ALIASES = {
     "audit": "audit_record",
     "audit_record": "audit_record",
@@ -90,14 +99,16 @@ class SqliteRecordStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.auxiliary_log_dir = Path(auxiliary_log_dir) if auxiliary_log_dir is not None else None
         self.suppress_auxiliary_logging = False
+        self.source_partition_migration_diagnostics: dict[str, int] = {}
+        self.recall_identity_migration_diagnostics: dict[str, int] = {}
         self.conn = sqlite3.connect(self.path, timeout=30, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA busy_timeout = 30000")
         self._configure_connection()
         self._init_db()
+        self._create_schema_migrations_table()
         self._create_adapter_receipt_tables()
         self._create_proactive_recall_tables()
-        self._create_bounded_count_index()
         self.conn.commit()
         self.preload_report = self.preload_hot_pages()
 
@@ -142,25 +153,6 @@ class SqliteRecordStore:
             self._mark_schema_migration(_RECALL_IDENTITY_MIGRATION)
             self.conn.commit()
             return
-        migrations_ready = self.conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations'"
-        ).fetchone()
-        schema_ready = bool(
-            migrations_ready
-            and self._schema_migration_applied(_STORAGE_SCHEMA_MIGRATION)
-            and self._schema_migration_applied(_RECORD_META_KEYS_MIGRATION)
-            and self._schema_migration_applied(_INTENT_PATTERN_STATUS_MIGRATION)
-            and self._schema_migration_applied(_SOURCE_PARTITION_MIGRATION)
-            and self._source_partition_physical_ready()
-            and self._schema_migration_applied(_RECALL_IDENTITY_MIGRATION)
-            and self._recall_identity_physical_ready()
-        )
-        if schema_ready:
-            self._seed_default_intent_patterns()
-            if str(os.environ.get("EIMEMORY_RECALL_INDEX_BACKFILL_ON_START") or "").strip() == "1":
-                self._backfill_recall_index_if_needed()
-            self.conn.commit()
-            return
         columns = {
             row["name"]
             for row in self.conn.execute("PRAGMA table_info(records)").fetchall()
@@ -178,12 +170,9 @@ class SqliteRecordStore:
         if "semantic_key" not in columns:
             self.conn.execute("ALTER TABLE records ADD COLUMN semantic_key TEXT NOT NULL DEFAULT ''")
         self._create_schema_migrations_table()
-        self._migrate_source_partition_schema()
-        self._migrate_recall_identity_schema()
-        self._create_indexes()
-        self.conn.commit()
-        self._backfill_record_meta_keys_if_needed()
-        self._create_recall_index_tables()
+        self._prepare_deferred_recall_schema()
+        self._create_recall_index_tables(create_indexes=False)
+        self._create_recall_alias_table_only()
         self._create_memory_edge_tables()
         self._create_event_memory_tables()
         self.conn.commit()
@@ -193,9 +182,35 @@ class SqliteRecordStore:
         self._create_replay_manifest_sequence_table()
         self._seed_default_intent_patterns()
         self._mark_schema_migration(_STORAGE_SCHEMA_MIGRATION)
-        if str(os.environ.get("EIMEMORY_RECALL_INDEX_BACKFILL_ON_START") or "").strip() == "1":
-            self._backfill_recall_index_if_needed()
         self.conn.commit()
+
+    def _prepare_deferred_recall_schema(self) -> None:
+        """Make legacy tables runtime-compatible using metadata-only changes.
+
+        Historical body scans, projection rebuilds and index construction are
+        explicit maintenance operations.  Process startup never performs them.
+        """
+
+        record_columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(records)")}
+        if "source_id" not in record_columns:
+            self.conn.execute(
+                "ALTER TABLE records ADD COLUMN source_id TEXT NOT NULL DEFAULT 'default'"
+            )
+        recall_exists = self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='recall_index'"
+        ).fetchone()
+        if recall_exists:
+            recall_columns = {
+                row["name"] for row in self.conn.execute("PRAGMA table_info(recall_index)")
+            }
+            if "source_id" not in recall_columns:
+                self.conn.execute(
+                    "ALTER TABLE recall_index ADD COLUMN source_id TEXT NOT NULL DEFAULT 'default'"
+                )
+            if "title_normalized" not in recall_columns:
+                self.conn.execute(
+                    "ALTER TABLE recall_index ADD COLUMN title_normalized TEXT NOT NULL DEFAULT ''"
+                )
 
     def _create_records_table(self) -> None:
         self.conn.execute(
@@ -264,6 +279,9 @@ class SqliteRecordStore:
             )
 
     def _create_proactive_recall_tables(self) -> None:
+        proactive_tables_existed = self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='proactive_turns'"
+        ).fetchone() is not None
         self.conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS proactive_turns (
@@ -392,13 +410,7 @@ class SqliteRecordStore:
         ):
             if name not in turn_columns:
                 self.conn.execute(f"ALTER TABLE proactive_turns ADD COLUMN {name} {definition}")
-        if not self._schema_migration_applied(_PROACTIVE_TEXT_FREE_MIGRATION):
-            # These legacy columns remain for rolling-schema compatibility only.
-            # Secure-delete overwrites the old cells instead of leaving query or
-            # rendered memory text in SQLite freelist pages.
-            self.conn.execute("UPDATE proactive_turns SET summary='',entities_json='[]'")
-            self.conn.execute("UPDATE proactive_decisions SET query_text='',context_text=''")
-            self.conn.execute("UPDATE proactive_decision_items SET title_text='',content_text=''")
+        if not proactive_tables_existed:
             self._mark_schema_migration(_PROACTIVE_TEXT_FREE_MIGRATION)
 
     def append_proactive_turn(
@@ -1214,6 +1226,10 @@ class SqliteRecordStore:
             "CREATE INDEX IF NOT EXISTS idx_records_scope_source_status_kind "
             "ON records(tenant_id, agent_id, workspace_id, user_id, source_id, status, kind)"
         )
+        if self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations'"
+        ).fetchone() is not None:
+            self._mark_schema_migration(_BOUNDED_COUNT_INDEX_MIGRATION)
 
     def _create_recall_index_tables(self, *, create_indexes: bool = True) -> None:
         self.conn.execute(
@@ -1309,6 +1325,30 @@ class SqliteRecordStore:
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_recall_title_exact_kind "
             "ON recall_index(tenant_id, agent_id, workspace_id, user_id, title_normalized, status, kind, source_id, storage_key)"
+        )
+
+    def _create_recall_alias_table_only(self) -> None:
+        if self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='recall_alias_index'"
+        ).fetchone() is not None:
+            return
+        self.conn.execute(
+            """
+            CREATE TABLE recall_alias_index (
+                storage_key TEXT NOT NULL,
+                normalized_alias TEXT NOT NULL,
+                alias_ordinal INTEGER NOT NULL,
+                record_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                status TEXT NOT NULL,
+                source_id TEXT NOT NULL,
+                tenant_id TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                PRIMARY KEY (storage_key, normalized_alias)
+            )
+            """
         )
 
     def _recall_alias_table_ready(self) -> bool:
@@ -1934,6 +1974,429 @@ class SqliteRecordStore:
             )
             """
         )
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS schema_migration_progress (
+                migration_id TEXT PRIMARY KEY,
+                phase TEXT NOT NULL,
+                cursor TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+
+    def pending_storage_migrations(self) -> list[str]:
+        """Return deferred write-heavy migrations without scanning record bodies."""
+
+        pending: list[str] = []
+        for migration_id in (
+            _RECORD_META_KEYS_MIGRATION,
+            _SOURCE_PARTITION_MIGRATION,
+            _RECALL_IDENTITY_MIGRATION,
+            _PROACTIVE_TEXT_FREE_MIGRATION,
+            _BOUNDED_COUNT_INDEX_MIGRATION,
+        ):
+            if not self._schema_migration_applied(migration_id):
+                pending.append(migration_id)
+        if (
+            _SOURCE_PARTITION_MIGRATION not in pending
+            and not self._source_partition_physical_ready()
+        ):
+            pending.append(_SOURCE_PARTITION_MIGRATION)
+        if (
+            _RECALL_IDENTITY_MIGRATION not in pending
+            and not self._recall_identity_physical_ready()
+        ):
+            pending.append(_RECALL_IDENTITY_MIGRATION)
+        return pending
+
+    def apply_storage_migrations(
+        self,
+        *,
+        batch_size: int = 200,
+        offline: bool = False,
+    ) -> dict[str, Any]:
+        """Apply one bounded maintenance batch; never runs from construction."""
+
+        bounded = max(1, min(2_000, int(batch_size)))
+        processed = 0
+        index_created = False
+        pending = set(self.pending_storage_migrations())
+        for migration_id, apply_batch in (
+            (_RECORD_META_KEYS_MIGRATION, self._apply_record_meta_keys_batch),
+            (
+                _SOURCE_PARTITION_MIGRATION,
+                lambda *, batch_size: self._apply_source_partition_batch(
+                    batch_size=batch_size, offline=offline
+                ),
+            ),
+            (
+                _RECALL_IDENTITY_MIGRATION,
+                lambda *, batch_size: self._apply_recall_identity_batch(
+                    batch_size=batch_size, offline=offline
+                ),
+            ),
+        ):
+            if migration_id in pending:
+                processed = apply_batch(batch_size=bounded)
+                if migration_id in self.pending_storage_migrations():
+                    return {
+                        "ok": True,
+                        "processed": processed,
+                        "index_created": False,
+                        "offline_required": bool(
+                            self._schema_migration_applied(migration_id)
+                        ),
+                        "pending": self.pending_storage_migrations(),
+                    }
+        if not self._schema_migration_applied(_PROACTIVE_TEXT_FREE_MIGRATION):
+            processed = self._apply_proactive_text_free_batch(batch_size=bounded)
+            if not self._schema_migration_applied(_PROACTIVE_TEXT_FREE_MIGRATION):
+                return {
+                    "ok": True,
+                    "processed": processed,
+                    "index_created": False,
+                    "pending": self.pending_storage_migrations(),
+                }
+        if not self._schema_migration_applied(_BOUNDED_COUNT_INDEX_MIGRATION):
+            if not offline:
+                return {
+                    "ok": True,
+                    "processed": processed,
+                    "index_created": False,
+                    "offline_required": True,
+                    "pending": self.pending_storage_migrations(),
+                }
+            self.conn.execute("BEGIN IMMEDIATE")
+            try:
+                self._create_bounded_count_index()
+                self.conn.commit()
+                index_created = True
+            except Exception:
+                self.conn.rollback()
+                raise
+        return {
+            "ok": True,
+            "processed": processed,
+            "index_created": index_created,
+            "offline_required": False,
+            "pending": self.pending_storage_migrations(),
+        }
+
+    def _migration_cursor(self, migration_id: str) -> str:
+        row = self.conn.execute(
+            "SELECT cursor FROM schema_migration_progress WHERE migration_id=?",
+            (migration_id,),
+        ).fetchone()
+        return str(row["cursor"] or "") if row is not None else ""
+
+    def _save_migration_cursor(self, migration_id: str, cursor: str, *, phase: str = "rows") -> None:
+        self.conn.execute(
+            "INSERT INTO schema_migration_progress(migration_id,phase,cursor,updated_at) "
+            "VALUES(?,?,?,?) ON CONFLICT(migration_id) DO UPDATE SET "
+            "phase=excluded.phase,cursor=excluded.cursor,updated_at=excluded.updated_at",
+            (migration_id, phase, str(cursor), datetime.now(timezone.utc).isoformat()),
+        )
+
+    def _complete_deferred_migration(self, migration_id: str) -> None:
+        self._mark_schema_migration(migration_id)
+        self.conn.execute(
+            "DELETE FROM schema_migration_progress WHERE migration_id=?",
+            (migration_id,),
+        )
+
+    def _apply_record_meta_keys_batch(self, *, batch_size: int) -> int:
+        cursor = self._migration_cursor(_RECORD_META_KEYS_MIGRATION)
+        rows = self.conn.execute(
+            "SELECT storage_key,meta_json FROM records WHERE storage_key>? "
+            "ORDER BY storage_key LIMIT ?",
+            (cursor, batch_size),
+        ).fetchall()
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            for row in rows:
+                idempotency_key, semantic_key = _record_meta_keys_from_json(str(row["meta_json"] or "{}"))
+                self.conn.execute(
+                    "UPDATE records SET idempotency_key=?,semantic_key=? WHERE storage_key=?",
+                    (idempotency_key, semantic_key, str(row["storage_key"])),
+                )
+            if rows:
+                self._save_migration_cursor(
+                    _RECORD_META_KEYS_MIGRATION, str(rows[-1]["storage_key"])
+                )
+            else:
+                self._complete_deferred_migration(_RECORD_META_KEYS_MIGRATION)
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+        return len(rows)
+
+    def _apply_source_partition_batch(self, *, batch_size: int, offline: bool) -> int:
+        progress = self.conn.execute(
+            "SELECT phase,cursor FROM schema_migration_progress WHERE migration_id=?",
+            (_SOURCE_PARTITION_MIGRATION,),
+        ).fetchone()
+        phase = str(progress["phase"] or "legacy_columns") if progress is not None else "legacy_columns"
+        cursor = str(progress["cursor"] or "") if progress is not None else ""
+        legacy_record_columns = {
+            row["name"] for row in self.conn.execute("PRAGMA table_info(records)")
+        }
+        if phase == "legacy_columns" and "legacy_source_id" in legacy_record_columns:
+            rows = self.conn.execute(
+                "SELECT storage_key,legacy_source_id FROM records WHERE storage_key>? "
+                "ORDER BY storage_key LIMIT ?",
+                (cursor, batch_size),
+            ).fetchall()
+        elif phase == "knowledge_pages":
+            rows = self.conn.execute(
+                "WITH keys AS (SELECT storage_key FROM records WHERE kind='knowledge_page' "
+                "AND storage_key>? ORDER BY storage_key LIMIT ?) "
+                "SELECT r.storage_key,r.kind,json_valid(r.payload_json) AS payload_valid,"
+                "CASE WHEN json_valid(r.payload_json) THEN json_extract(r.payload_json,'$.source_id') END AS direct_source_id,"
+                "CASE WHEN json_valid(r.payload_json) THEN json_extract(r.payload_json,'$.content.source_ids[0]') END AS content_source_id,"
+                "CASE WHEN json_valid(r.payload_json) THEN json_extract(r.payload_json,'$.meta.source_ids[0]') END AS meta_source_id,"
+                "CASE WHEN json_valid(r.payload_json) THEN json_extract(r.payload_json,'$.provenance.source_ids[0]') END AS provenance_source_id,"
+                "'' AS legacy_source_id FROM keys JOIN records r USING(storage_key) "
+                "ORDER BY r.storage_key",
+                (cursor, batch_size),
+            ).fetchall()
+        else:
+            rows = []
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            for row in rows:
+                if phase == "legacy_columns":
+                    try:
+                        source_id = normalize_source_id(
+                            str(row["legacy_source_id"] or DEFAULT_SOURCE_ID)
+                        )
+                    except ValueError:
+                        source_id = DEFAULT_SOURCE_ID
+                else:
+                    if not bool(row["payload_valid"]):
+                        self.source_partition_migration_diagnostics["corrupt"] = min(
+                            1_000,
+                            self.source_partition_migration_diagnostics.get("corrupt", 0) + 1,
+                        )
+                    source_id = self._projected_legacy_source_partition(row)
+                storage_key = str(row["storage_key"])
+                self.conn.execute(
+                    "UPDATE records SET source_id=? WHERE storage_key=?",
+                    (source_id, storage_key),
+                )
+                self.conn.execute(
+                    "UPDATE recall_index SET source_id=? WHERE storage_key=?",
+                    (source_id, storage_key),
+                )
+            if rows:
+                self._save_migration_cursor(
+                    _SOURCE_PARTITION_MIGRATION,
+                    str(rows[-1]["storage_key"]),
+                    phase=phase,
+                )
+            elif phase == "legacy_columns":
+                self._save_migration_cursor(
+                    _SOURCE_PARTITION_MIGRATION, "", phase="knowledge_pages"
+                )
+            else:
+                self._mark_schema_migration(_SOURCE_PARTITION_MIGRATION)
+                if offline:
+                    self._create_source_partition_indexes(rebuild=True)
+                    self.conn.execute(
+                        "DELETE FROM schema_migration_progress WHERE migration_id=?",
+                        (_SOURCE_PARTITION_MIGRATION,),
+                    )
+                else:
+                    self._save_migration_cursor(
+                        _SOURCE_PARTITION_MIGRATION, "~", phase="offline_indexes"
+                    )
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+        return len(rows)
+
+    @staticmethod
+    def _projected_legacy_source_partition(row: sqlite3.Row) -> str:
+        legacy = str(row["legacy_source_id"] or "").strip()
+        if legacy and legacy != DEFAULT_SOURCE_ID:
+            try:
+                return normalize_source_id(legacy)
+            except ValueError:
+                return DEFAULT_SOURCE_ID
+        direct = str(row["direct_source_id"] or "").strip()
+        if direct and direct != DEFAULT_SOURCE_ID:
+            try:
+                return normalize_source_id(direct)
+            except ValueError:
+                return DEFAULT_SOURCE_ID
+        if str(row["kind"] or "") != "knowledge_page":
+            return DEFAULT_SOURCE_ID
+        candidates = {
+            str(row[key]).strip()
+            for key in ("content_source_id", "meta_source_id", "provenance_source_id")
+            if str(row[key] or "").strip()
+        }
+        try:
+            normalized = {normalize_source_id(value) for value in candidates}
+        except ValueError:
+            return DEFAULT_SOURCE_ID
+        return next(iter(normalized)) if len(normalized) == 1 else DEFAULT_SOURCE_ID
+
+    def _apply_recall_identity_batch(self, *, batch_size: int, offline: bool) -> int:
+        if not self._recall_index_runtime_shape_ready():
+            raise RuntimeError("offline recall_index schema rebuild required")
+        progress = self.conn.execute(
+            "SELECT phase,cursor FROM schema_migration_progress WHERE migration_id=?",
+            (_RECALL_IDENTITY_MIGRATION,),
+        ).fetchone()
+        phase = str(progress["phase"] or "titles") if progress is not None else "titles"
+        cursor = str(progress["cursor"] or "") if progress is not None else ""
+        placeholders = ",".join("?" for _ in _IDENTITY_PAYLOAD_KINDS)
+        if phase == "titles":
+            rows = self.conn.execute(
+                "SELECT storage_key,title_text FROM recall_index WHERE storage_key>? "
+                "ORDER BY storage_key LIMIT ?",
+                (cursor, batch_size),
+            ).fetchall()
+        elif phase == "aliases":
+            rows = self.conn.execute(
+                "WITH keys AS (SELECT storage_key FROM records WHERE kind IN ("
+                + placeholders
+                + ") AND storage_key>? ORDER BY storage_key LIMIT ?) "
+                "SELECT r.storage_key,r.payload_json,r.content_text FROM keys "
+                "JOIN records r USING(storage_key) ORDER BY r.storage_key",
+                (*_IDENTITY_PAYLOAD_KINDS, cursor, batch_size),
+            ).fetchall()
+        else:
+            rows = []
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            if phase == "titles":
+                for row in rows:
+                    self.conn.execute(
+                        "UPDATE recall_index SET title_normalized=? WHERE storage_key=?",
+                        (
+                            normalize_identity_text(str(row["title_text"] or "")),
+                            str(row["storage_key"]),
+                        ),
+                    )
+            elif phase == "aliases":
+                for row in rows:
+                    record = self._record_from_payload_json(row["payload_json"])
+                    if record is not None:
+                        self._upsert_recall_index(
+                            record=record,
+                            storage_key=str(row["storage_key"]),
+                            content_text=str(row["content_text"] or ""),
+                        )
+            if rows:
+                self._save_migration_cursor(
+                    _RECALL_IDENTITY_MIGRATION,
+                    str(rows[-1]["storage_key"]),
+                    phase=phase,
+                )
+            elif phase == "titles":
+                self._save_migration_cursor(
+                    _RECALL_IDENTITY_MIGRATION, "", phase="aliases"
+                )
+            else:
+                self._mark_schema_migration(_RECALL_IDENTITY_MIGRATION)
+                if offline:
+                    self._create_recall_identity_tables(rebuild_indexes=True)
+                    self.conn.execute(
+                        "DELETE FROM schema_migration_progress WHERE migration_id=?",
+                        (_RECALL_IDENTITY_MIGRATION,),
+                    )
+                else:
+                    self._save_migration_cursor(
+                        _RECALL_IDENTITY_MIGRATION, "~", phase="offline_indexes"
+                    )
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+        return len(rows)
+
+    def _recall_index_runtime_shape_ready(self) -> bool:
+        columns = {row["name"]: row for row in self.conn.execute("PRAGMA table_info(recall_index)")}
+        storage_key = columns.get("storage_key")
+        title = columns.get("title_normalized")
+        return not bool(
+            storage_key is None
+            or int(storage_key["pk"]) != 1
+            or title is None
+            or str(title["type"]).upper() != "TEXT"
+            or int(title["notnull"]) != 1
+        )
+
+    def _apply_proactive_text_free_batch(self, *, batch_size: int) -> int:
+        phases = (
+            ("turns", "proactive_turns", "summary='',entities_json='[]'", "summary!='' OR entities_json!='[]'"),
+            ("decisions", "proactive_decisions", "query_text='',context_text=''", "query_text!='' OR context_text!=''"),
+            ("items", "proactive_decision_items", "title_text='',content_text=''", "title_text!='' OR content_text!=''"),
+        )
+        progress = self.conn.execute(
+            "SELECT phase,cursor FROM schema_migration_progress WHERE migration_id=?",
+            (_PROACTIVE_TEXT_FREE_MIGRATION,),
+        ).fetchone()
+        phase_name = str(progress["phase"]) if progress is not None else phases[0][0]
+        cursor = int(progress["cursor"]) if progress is not None else 0
+        phase_index = next(
+            (index for index, phase in enumerate(phases) if phase[0] == phase_name),
+            0,
+        )
+        now = datetime.now(timezone.utc).isoformat()
+        while phase_index < len(phases):
+            name, table, assignments, predicate = phases[phase_index]
+            rows = self.conn.execute(
+                f"SELECT rowid AS migration_rowid FROM {table} "
+                f"WHERE rowid>? AND ({predicate}) ORDER BY rowid LIMIT ?",
+                (cursor, batch_size),
+            ).fetchall()
+            if rows:
+                rowids = [int(row["migration_rowid"]) for row in rows]
+                placeholders = ",".join("?" for _ in rowids)
+                self.conn.execute("BEGIN IMMEDIATE")
+                try:
+                    self.conn.execute(
+                        f"UPDATE {table} SET {assignments} WHERE rowid IN ({placeholders})",
+                        tuple(rowids),
+                    )
+                    self.conn.execute(
+                        "INSERT INTO schema_migration_progress(migration_id,phase,cursor,updated_at) "
+                        "VALUES(?,?,?,?) ON CONFLICT(migration_id) DO UPDATE SET "
+                        "phase=excluded.phase,cursor=excluded.cursor,updated_at=excluded.updated_at",
+                        (_PROACTIVE_TEXT_FREE_MIGRATION, name, rowids[-1], now),
+                    )
+                    self.conn.commit()
+                except Exception:
+                    self.conn.rollback()
+                    raise
+                return len(rowids)
+            phase_index += 1
+            cursor = 0
+            if phase_index < len(phases):
+                self.conn.execute(
+                    "INSERT INTO schema_migration_progress(migration_id,phase,cursor,updated_at) "
+                    "VALUES(?,?,0,?) ON CONFLICT(migration_id) DO UPDATE SET "
+                    "phase=excluded.phase,cursor=0,updated_at=excluded.updated_at",
+                    (_PROACTIVE_TEXT_FREE_MIGRATION, phases[phase_index][0], now),
+                )
+                self.conn.commit()
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            self._mark_schema_migration(_PROACTIVE_TEXT_FREE_MIGRATION)
+            self.conn.execute(
+                "DELETE FROM schema_migration_progress WHERE migration_id=?",
+                (_PROACTIVE_TEXT_FREE_MIGRATION,),
+            )
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+        return 0
 
     def _mark_schema_migration(self, migration_id: str) -> None:
         self.conn.execute(
@@ -1947,172 +2410,6 @@ class SqliteRecordStore:
             (migration_id,),
         ).fetchone() is not None
 
-    def _backfill_record_meta_keys_if_needed(self) -> None:
-        if self._schema_migration_applied(_RECORD_META_KEYS_MIGRATION):
-            return
-        self.conn.execute("BEGIN IMMEDIATE")
-        try:
-            if self._schema_migration_applied(_RECORD_META_KEYS_MIGRATION):
-                self.conn.commit()
-                return
-            last_storage_key = ""
-            while True:
-                rows = self.conn.execute(
-                    """
-                    SELECT storage_key, meta_json
-                    FROM records
-                    WHERE storage_key > ?
-                      AND (idempotency_key = '' OR semantic_key = '')
-                    ORDER BY storage_key
-                    LIMIT 500
-                    """,
-                    (last_storage_key,),
-                ).fetchall()
-                if not rows:
-                    break
-                updates = []
-                for row in rows:
-                    idempotency_key, semantic_key = _record_meta_keys_from_json(str(row["meta_json"] or "{}"))
-                    if idempotency_key or semantic_key:
-                        updates.append((idempotency_key, semantic_key, str(row["storage_key"])))
-                if updates:
-                    self.conn.executemany(
-                        "UPDATE records SET idempotency_key = ?, semantic_key = ? WHERE storage_key = ?",
-                        updates,
-                    )
-                last_storage_key = str(rows[-1]["storage_key"])
-            self._mark_schema_migration(_RECORD_META_KEYS_MIGRATION)
-            self.conn.commit()
-        except Exception:
-            self.conn.rollback()
-            raise
-
-    def _migrate_source_partition_schema(self) -> None:
-        """Add the explicit partition projection without trusting provenance IDs."""
-
-        legacy_mapping_required = not self._schema_migration_applied(_SOURCE_PARTITION_MIGRATION)
-        if not legacy_mapping_required and self._source_partition_physical_ready():
-            return
-        self.conn.execute("BEGIN IMMEDIATE")
-        try:
-            record_columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(records)")}
-            records_source_added = "source_id" not in record_columns
-            if "source_id" not in record_columns:
-                self.conn.execute(
-                    "ALTER TABLE records ADD COLUMN source_id TEXT NOT NULL DEFAULT 'default'"
-                )
-            self._create_recall_index_tables(create_indexes=False)
-            recall_columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(recall_index)")}
-            if "source_id" not in recall_columns:
-                self.conn.execute(
-                    "ALTER TABLE recall_index ADD COLUMN source_id TEXT NOT NULL DEFAULT 'default'"
-                )
-            if "title_normalized" not in recall_columns:
-                self.conn.execute(
-                    "ALTER TABLE recall_index ADD COLUMN title_normalized TEXT NOT NULL DEFAULT ''"
-                )
-            if not self._recall_index_table_ready():
-                self.conn.execute("DROP TABLE recall_index")
-                self._create_recall_index_tables(create_indexes=False)
-            self._create_recall_index_tables()
-            self._create_recall_identity_tables()
-            self._create_indexes()
-            self._create_source_partition_indexes(rebuild=True)
-
-            diagnostics: dict[str, int] = {"ambiguous": 0, "invalid": 0}
-            if legacy_mapping_required or records_source_added:
-                last_storage_key = ""
-                while True:
-                    rows = self.conn.execute(
-                        "SELECT storage_key, kind, payload_json FROM records "
-                        "WHERE storage_key > ? ORDER BY storage_key LIMIT 200",
-                        (last_storage_key,),
-                    ).fetchall()
-                    if not rows:
-                        break
-                    updates: list[tuple[str, str, str]] = []
-                    for row in rows:
-                        payload = self._payload_dict_from_json(row["payload_json"])
-                        if payload is None:
-                            diagnostics["corrupt"] = diagnostics.get("corrupt", 0) + 1
-                            continue
-                        if legacy_mapping_required:
-                            source_id, reason = self._legacy_source_partition(payload, str(row["kind"] or ""))
-                            if reason:
-                                diagnostics[reason] = diagnostics.get(reason, 0) + 1
-                            payload["source_id"] = source_id
-                            updates.append((source_id, json.dumps(payload, ensure_ascii=False), str(row["storage_key"])))
-                        else:
-                            source_id = normalize_source_id(payload.get("source_id", DEFAULT_SOURCE_ID))
-                            updates.append((source_id, str(row["payload_json"]), str(row["storage_key"])))
-                    self.conn.executemany(
-                        "UPDATE records SET source_id = ?, payload_json = ? WHERE storage_key = ?", updates
-                    )
-                    last_storage_key = str(rows[-1]["storage_key"])
-            # Rebuild the projection in this migration transaction so the two tables cannot disagree.
-            self.conn.execute("DELETE FROM recall_index")
-            self.conn.execute("DELETE FROM recall_alias_index")
-            if self._has_fts_table():
-                self.conn.execute("DELETE FROM recall_index_fts")
-            self._backfill_recall_index_if_needed()
-            self._mark_schema_migration(_SOURCE_PARTITION_MIGRATION)
-            self.conn.commit()
-            self.source_partition_migration_diagnostics = {
-                key: min(value, 1_000) for key, value in diagnostics.items() if value
-            }
-        except Exception:
-            self.conn.rollback()
-            raise
-
-    def _migrate_recall_identity_schema(self) -> None:
-        if self._schema_migration_applied(_RECALL_IDENTITY_MIGRATION) and self._recall_identity_physical_ready():
-            return
-        self.conn.execute("BEGIN IMMEDIATE")
-        try:
-            self._create_recall_index_tables(create_indexes=False)
-            columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(recall_index)")}
-            if "title_normalized" not in columns:
-                self.conn.execute(
-                    "ALTER TABLE recall_index ADD COLUMN title_normalized TEXT NOT NULL DEFAULT ''"
-                )
-            if not self._recall_index_table_ready():
-                # recall_index is a derived projection. Rebuilding it inside
-                # this migration transaction is safer than repeatedly trying
-                # to write through an incompatible affinity/nullability.
-                self.conn.execute("DROP TABLE recall_index")
-                self._create_recall_index_tables(create_indexes=False)
-            self._create_recall_identity_tables(rebuild_indexes=True)
-            self.conn.execute("DELETE FROM recall_index")
-            self.conn.execute("DELETE FROM recall_alias_index")
-            if self._has_fts_table():
-                self.conn.execute("DELETE FROM recall_index_fts")
-            last_storage_key = ""
-            while True:
-                rows = self.conn.execute(
-                    "SELECT storage_key, payload_json, content_text FROM records "
-                    "WHERE storage_key > ? ORDER BY storage_key LIMIT 200",
-                    (last_storage_key,),
-                ).fetchall()
-                if not rows:
-                    break
-                for row in rows:
-                    payload = self._payload_dict_from_json(row["payload_json"])
-                    record = self._record_from_payload_dict(payload)
-                    if record is not None:
-                        self._upsert_recall_index(
-                            record=record,
-                            storage_key=str(row["storage_key"]),
-                            content_text=str(row["content_text"] or ""),
-                        )
-                last_storage_key = str(rows[-1]["storage_key"])
-            self._create_recall_index_tables()
-            self._create_source_partition_indexes(rebuild=True)
-            self._mark_schema_migration(_RECALL_IDENTITY_MIGRATION)
-            self.conn.commit()
-        except Exception:
-            self.conn.rollback()
-            raise
-
     def _recall_identity_physical_ready(self) -> bool:
         try:
             columns = {row["name"]: row for row in self.conn.execute("PRAGMA table_info(recall_index)")}
@@ -2121,7 +2418,16 @@ class SqliteRecordStore:
             ).fetchone()
             if "title_normalized" not in columns or not alias_table:
                 return False
-            if not self._recall_index_table_ready():
+            storage_key = columns.get("storage_key")
+            source_id = columns.get("source_id")
+            if (
+                not self._recall_title_column_ready()
+                or storage_key is None
+                or int(storage_key["pk"]) != 1
+                or source_id is None
+                or str(source_id["type"]).upper() != "TEXT"
+                or int(source_id["notnull"]) != 1
+            ):
                 return False
             if not self._recall_alias_table_ready():
                 return False
@@ -2163,63 +2469,6 @@ class SqliteRecordStore:
             and str(title_column["type"]).upper() == "TEXT"
             and int(title_column["notnull"]) == 1
         )
-
-    def _recall_index_table_ready(self) -> bool:
-        expected = [
-            ("storage_key", "TEXT", 0, 1),
-            ("record_id", "TEXT", 1, 0),
-            ("kind", "TEXT", 1, 0),
-            ("status", "TEXT", 1, 0),
-            ("source", "TEXT", 1, 0),
-            ("source_id", "TEXT", 1, 0),
-            ("tenant_id", "TEXT", 1, 0),
-            ("agent_id", "TEXT", 1, 0),
-            ("workspace_id", "TEXT", 1, 0),
-            ("user_id", "TEXT", 1, 0),
-            ("lane", "TEXT", 1, 0),
-            ("visibility", "TEXT", 1, 0),
-            ("source_class", "TEXT", 1, 0),
-            ("memory_type", "TEXT", 1, 0),
-            ("projection_type", "TEXT", 1, 0),
-            ("quality_score", "REAL", 1, 0),
-            ("title_text", "TEXT", 1, 0),
-            ("title_normalized", "TEXT", 1, 0),
-            ("body_text", "TEXT", 1, 0),
-            ("anchor_terms", "TEXT", 1, 0),
-            ("updated_at", "TEXT", 1, 0),
-        ]
-        rows = self.conn.execute("PRAGMA table_info(recall_index)").fetchall()
-        actual = [
-            (str(row["name"]), str(row["type"]).upper(), int(row["notnull"]), int(row["pk"]))
-            for row in rows
-        ]
-        return actual == expected
-
-    @staticmethod
-    def _legacy_source_partition(payload: dict[str, Any], kind: str) -> tuple[str, str]:
-        if kind != "knowledge_page":
-            return DEFAULT_SOURCE_ID, ""
-        candidates: list[object] = []
-        for container_name in ("content", "meta", "provenance"):
-            container = payload.get(container_name)
-            if not isinstance(container, dict):
-                continue
-            raw_source_ids = container.get("source_ids")
-            if isinstance(raw_source_ids, (list, tuple)):
-                candidates.extend(raw_source_ids)
-            elif raw_source_ids is not None:
-                candidates.append(raw_source_ids)
-        if not candidates:
-            return DEFAULT_SOURCE_ID, ""
-        normalized: set[str] = set()
-        try:
-            for candidate in candidates:
-                normalized.add(normalize_source_id(candidate))
-        except ValueError:
-            return DEFAULT_SOURCE_ID, "invalid"
-        if len(normalized) != 1:
-            return DEFAULT_SOURCE_ID, "ambiguous"
-        return next(iter(normalized)), ""
 
     def _create_source_partition_indexes(self, *, rebuild: bool = False) -> None:
         if rebuild:
@@ -2500,42 +2749,6 @@ class SqliteRecordStore:
         if self._has_fts_table():
             self.conn.execute("DELETE FROM recall_index_fts WHERE storage_key = ?", (storage_key,))
 
-    def _backfill_recall_index_if_needed(self) -> None:
-        try:
-            record_count = int(self.conn.execute("SELECT COUNT(*) FROM records").fetchone()[0])
-            index_count = int(self.conn.execute("SELECT COUNT(*) FROM recall_index").fetchone()[0])
-        except sqlite3.OperationalError:
-            return
-        fts_count = index_count
-        if self._has_fts_table():
-            try:
-                fts_count = int(self.conn.execute("SELECT COUNT(*) FROM recall_index_fts").fetchone()[0])
-            except sqlite3.OperationalError:
-                fts_count = 0
-        if record_count == index_count == fts_count:
-            return
-        if index_count > record_count:
-            self.conn.execute("DELETE FROM recall_index")
-            self.conn.execute("DELETE FROM recall_alias_index")
-            if self._has_fts_table():
-                self.conn.execute("DELETE FROM recall_index_fts")
-        cursor = self.conn.execute(
-            "SELECT storage_key, payload_json, content_text FROM records ORDER BY storage_key"
-        )
-        while True:
-            rows = cursor.fetchmany(500)
-            if not rows:
-                break
-            for row in rows:
-                record = self._record_from_payload_json(row["payload_json"])
-                if record is None:
-                    continue
-                self._upsert_recall_index(
-                    record=record,
-                    storage_key=str(row["storage_key"]),
-                    content_text=str(row["content_text"] or ""),
-                )
-
     def _payload_dict_from_json(self, payload_json: Any) -> dict[str, Any] | None:
         try:
             payload = json.loads(str(payload_json))
@@ -2601,6 +2814,8 @@ class SqliteRecordStore:
     ) -> list[dict[str, object]]:
         """Return bounded exact title/alias refs from indexed projections only."""
 
+        if not self._recall_identity_physical_ready():
+            return []
         normalized_query = normalize_identity_text(query)
         bounded_limit = max(0, min(MAX_QUERY_LIMIT, int(limit)))
         allowed_source_ids = normalize_source_ids(source_ids)

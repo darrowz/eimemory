@@ -928,7 +928,10 @@ def _source_ids_from_env(default_source: str) -> list[str]:
         if value.strip()
     ]
     if configured:
-        return list(dict.fromkeys(configured))
+        sources = list(dict.fromkeys(configured))
+        if "hermes" not in sources:
+            sources.append("hermes")
+        return sources
     if default_source == "default":
         # Native Hermes writes are authoritative under the hermes partition;
         # retain default for legacy/shared imports during the transition.
