@@ -301,3 +301,86 @@ def test_restore_staging_failure_never_touches_live_database_or_segments(tmp_pat
         for path in (db_path.parent / "payload_segments").rglob("*")
         if path.is_file()
     } == before_segments
+
+
+def test_restore_payload_validation_is_strictly_read_only(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "state" / "eimemory.sqlite"
+    store = SqliteRecordStore(db_path, archive_writes=False)
+    store.upsert(_large_score())
+    store.close()
+    snapshot = tmp_path / "snapshot"
+    create_consistent_storage_snapshot(
+        db_path=db_path,
+        segment_root=db_path.parent / "payload_segments",
+        snapshot_dir=snapshot,
+        offline=True,
+    )
+    migrated = run_storage_migrations(
+        db_path=db_path,
+        offline=True,
+        batch_size=10,
+        max_batches=20,
+        snapshot_dir=snapshot,
+    )
+    assert migrated["ok"] is True
+
+    original_store = maintenance.PayloadSegmentStore
+
+    class ReadOnlyProbe:
+        def __init__(self, root, *, read_only=False):
+            assert read_only is True
+            self.delegate = original_store(root, read_only=True)
+
+        def read(self, pointer):
+            return self.delegate.read(pointer)
+
+    monkeypatch.setattr(maintenance, "PayloadSegmentStore", ReadOnlyProbe)
+    maintenance._validate_live_payload_pointers(
+        db_path,
+        db_path.parent / "payload_segments",
+    )
+
+
+def test_restore_failure_after_mutation_rolls_back_and_preserves_journal(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "state" / "eimemory.sqlite"
+    store = SqliteRecordStore(db_path, archive_writes=False)
+    record = _large_score()
+    store.upsert(record)
+    store.close()
+    snapshot = tmp_path / "snapshot"
+    create_consistent_storage_snapshot(
+        db_path=db_path,
+        segment_root=db_path.parent / "payload_segments",
+        snapshot_dir=snapshot,
+        offline=True,
+    )
+    migrated = run_storage_migrations(
+        db_path=db_path,
+        offline=True,
+        batch_size=10,
+        max_batches=20,
+        snapshot_dir=snapshot,
+    )
+    assert migrated["ok"] is True
+    migrated_digest = _digest(db_path)
+
+    monkeypatch.setattr(
+        maintenance,
+        "_validate_live_payload_pointers",
+        lambda *_args: (_ for _ in ()).throw(StorageMaintenanceError("injected validation failure")),
+    )
+    with pytest.raises(StorageMaintenanceError, match="injected validation failure"):
+        restore_storage_snapshot(
+            snapshot_dir=snapshot,
+            db_path=db_path,
+            segment_root=db_path.parent / "payload_segments",
+            offline=True,
+        )
+
+    assert _digest(db_path) == migrated_digest
+    journal = json.loads(
+        (db_path.parent / ".storage-restore-journal.json").read_text(encoding="utf-8")
+    )
+    assert journal["schema"] == "storage_restore_journal.v1"
+    assert journal["status"] == "rolled_back_after_failure"
+    assert journal["mutation_started"] is True

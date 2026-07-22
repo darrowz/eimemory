@@ -203,6 +203,32 @@ def preflight_storage_maintenance(
     }
 
 
+def inspect_storage_migration_need(db_path: str | Path) -> dict[str, Any]:
+    """Inspect migration markers and physical indexes without initializing a store."""
+
+    database = Path(db_path)
+    _validate_regular(database)
+    connection = sqlite3.connect(f"file:{database.as_posix()}?mode=ro", uri=True)
+    connection.row_factory = sqlite3.Row
+    try:
+        probe = object.__new__(SqliteRecordStore)
+        probe.conn = connection
+        try:
+            pending = SqliteRecordStore.pending_storage_migrations(probe)
+        except sqlite3.OperationalError:
+            # A database predating the migration ledger necessarily needs the
+            # candidate schema initializer and bounded offline migrations.
+            pending = ["storage.schema_inspection_required"]
+    finally:
+        connection.close()
+    return {
+        "schema": "storage_migration_need.v1",
+        "ok": True,
+        "needed": bool(pending),
+        "pending": pending,
+    }
+
+
 def _checkpoint_and_exclusive_connection(db_path: Path) -> sqlite3.Connection:
     connection = sqlite3.connect(db_path, timeout=0.1, isolation_level=None)
     try:
@@ -268,6 +294,7 @@ def create_consistent_storage_snapshot(
     segment_root: str | Path,
     snapshot_dir: str | Path,
     offline: bool,
+    binding: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     if not offline:
         raise StorageMaintenanceError("consistent storage snapshot requires offline writer stop")
@@ -275,7 +302,10 @@ def create_consistent_storage_snapshot(
     segments = Path(segment_root)
     snapshot = Path(snapshot_dir)
     if snapshot.exists():
-        return verify_storage_snapshot(snapshot)
+        existing = verify_storage_snapshot(snapshot)
+        if binding is not None and existing["binding"] != dict(binding):
+            raise StorageMaintenanceError("storage snapshot binding mismatch")
+        return existing
     preflight = preflight_storage_maintenance(
         db_path=database,
         segment_root=segments,
@@ -305,6 +335,7 @@ def create_consistent_storage_snapshot(
             "database": database.name,
             "segment_directory": "payload_segments",
             "sidecar_policy": "checkpointed_and_excluded",
+            "binding": dict(binding or {}),
             "preflight": preflight,
             "files": _snapshot_file_manifest(staging),
         }
@@ -348,6 +379,9 @@ def verify_storage_snapshot(snapshot_dir: str | Path) -> dict[str, Any]:
         raise StorageMaintenanceError("storage snapshot manifest is invalid") from exc
     if str(manifest.get("schema") or "") != "storage_snapshot.v1":
         raise StorageMaintenanceError("storage snapshot schema is invalid")
+    binding = manifest.get("binding") or {}
+    if not isinstance(binding, dict):
+        raise StorageMaintenanceError("storage snapshot binding is invalid")
     expected: dict[str, dict[str, Any]] = {}
     for entry in list(manifest.get("files") or []):
         if not isinstance(entry, dict):
@@ -403,6 +437,7 @@ def verify_storage_snapshot(snapshot_dir: str | Path) -> dict[str, Any]:
         "pointer_count": pointer_count,
         "integrity_check": validation["integrity_check"],
         "manifest_sha256": _file_digest(manifest_path),
+        "binding": dict(binding),
     }
 
 
@@ -412,7 +447,7 @@ def _validate_live_payload_pointers(db_path: Path, segment_root: Path) -> None:
         columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(records)")}
         if not {"payload_pointer_json", "payload_digest"}.issubset(columns):
             return
-        store = PayloadSegmentStore(segment_root)
+        store = PayloadSegmentStore(segment_root, read_only=True)
         for row in connection.execute(
             "SELECT payload_pointer_json,payload_digest FROM records WHERE payload_pointer_json!=''"
         ):
@@ -449,11 +484,14 @@ def restore_storage_snapshot(
     db_path: str | Path,
     segment_root: str | Path,
     offline: bool,
+    expected_binding: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     if not offline:
         raise StorageMaintenanceError("storage restore requires offline writer stop")
     snapshot = Path(snapshot_dir)
     verification = verify_storage_snapshot(snapshot)
+    if expected_binding is not None and verification["binding"] != dict(expected_binding):
+        raise StorageMaintenanceError("storage snapshot binding mismatch")
     database = Path(db_path)
     segments = Path(segment_root)
     token = uuid4().hex
@@ -461,6 +499,7 @@ def restore_storage_snapshot(
     backups: list[tuple[Path, Path]] = []
     installed: list[Path] = []
     mutation_started = False
+    journal: dict[str, Any] | None = None
     lock_path = database.parent / ".storage-maintenance.lock"
     journal_path = database.parent / ".storage-restore-journal.json"
     if journal_path.exists():
@@ -506,6 +545,7 @@ def restore_storage_snapshot(
             journal = {
                 "schema": "storage_restore_journal.v1",
                 "snapshot_dir": str(snapshot),
+                "status": "in_progress",
                 "mutation_started": False,
                 "entries": planned,
             }
@@ -564,7 +604,13 @@ def restore_storage_snapshot(
                         if backup.exists():
                             os.replace(backup, live)
                     _fsync_directory(database.parent)
-                journal_path.unlink(missing_ok=True)
+                if journal is not None and journal_path.exists():
+                    journal["status"] = "rolled_back_after_failure"
+                    journal["failure"] = {
+                        "error": type(exc).__name__,
+                        "detail": str(exc),
+                    }
+                    atomic_write_json(journal_path, journal)
             except Exception as rollback_exc:
                 raise StorageMaintenanceError(
                     "storage restore rollback failed; journal preserved"
@@ -594,12 +640,15 @@ def run_storage_migrations(
     max_batches: int = 10_000,
     max_seconds: float = 3600.0,
     snapshot_dir: str | Path | None = None,
+    expected_binding: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     if not offline:
         raise StorageMaintenanceError("production storage migration runner requires offline writer stop")
     if snapshot_dir is None:
         raise StorageMaintenanceError("storage migration requires a verified pre-migration snapshot")
-    verify_storage_snapshot(snapshot_dir)
+    verification = verify_storage_snapshot(snapshot_dir)
+    if expected_binding is not None and verification["binding"] != dict(expected_binding):
+        raise StorageMaintenanceError("storage snapshot binding mismatch")
     database = Path(db_path)
     lock_path = database.parent / ".storage-maintenance.lock"
     with _exclusive_maintenance_lock(lock_path):
