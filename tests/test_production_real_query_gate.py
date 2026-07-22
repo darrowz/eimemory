@@ -448,6 +448,11 @@ def test_query_features_allow_title_case_product_place_entity_and_iso_date() -> 
         "release 12345678",
         "build 1234567890",
         "order 20000000000",
+        "build4155550123hash",
+        "record_4155550123_id",
+        "order 2345678901",
+        "2026072212",
+        "2026-07-22 12",
         "2026-07-22",
     ],
 )
@@ -470,6 +475,8 @@ def test_query_features_allow_non_phone_numeric_identifiers(safe_value: str) -> 
         "138-00138000",
         "415-5550123",
         "8613800138000",
+        "008613800138000",
+        "٤١٥٥٥٥٠١٢٣",
         "+44 20 7946 0958",
     ],
 )

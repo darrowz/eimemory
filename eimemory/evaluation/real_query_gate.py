@@ -18,7 +18,7 @@ import re
 from time import perf_counter
 import tracemalloc
 from typing import Any
-from unicodedata import normalize as normalize_unicode
+from unicodedata import decimal as unicode_decimal, normalize as normalize_unicode
 
 from eimemory.adapters.runtime.channel import (
     SUPPORTED_RUNTIME_CHANNELS,
@@ -91,10 +91,21 @@ _RAW_FIELD_MARKERS = frozenset(
     }
 )
 _EMAIL_FEATURE_RE = re.compile(r"(?i)(?<![\w.+-])[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+(?![\w.-])")
-_PHONE_FEATURE_RE = re.compile(r"(?<![0-9])\+?[0-9](?:[\s().-]*[0-9]){7,14}(?![0-9])")
+_PHONE_FEATURE_RE = re.compile(r"(?<![A-Za-z0-9_])\+?[0-9](?:[\s().-]*[0-9]){7,14}(?![A-Za-z0-9_])")
 _PHONE_CONTEXT_RE = re.compile(r"(?i)\b(?:phone|mobile|tel(?:ephone)?|contact)\s*[:=]?\s*$")
-_CN_MOBILE_RE = re.compile(r"(?:86)?1[3-9][0-9]{9}")
+_NON_PHONE_NUMERIC_CONTEXT_RE = re.compile(
+    r"(?i)\b(?:build|release|order|record|ticket|issue|commit|revision|version|id|identifier|"
+    r"job|task|case|invoice|serial|reference|ref)\s*[:#=_-]?\s*$"
+)
+_CN_MOBILE_RE = re.compile(r"(?:(?:00)?86)?1[3-9][0-9]{9}")
 _NANP_PHONE_RE = re.compile(r"1?[2-9][0-9]{2}[2-9][0-9]{6}")
+_DATE_TIME_CANDIDATE_FORMATS = (
+    (re.compile(r"(?:19|20)[0-9]{8}"), "%Y%m%d%H"),
+    (re.compile(r"(?:19|20)[0-9]{10}"), "%Y%m%d%H%M"),
+    (re.compile(r"(?:19|20)[0-9]{12}"), "%Y%m%d%H%M%S"),
+    (re.compile(r"(?:19|20)[0-9]{2}-[0-9]{2}-[0-9]{2} [0-9]{2}"), "%Y-%m-%d %H"),
+    (re.compile(r"(?:19|20)[0-9]{2}\.[0-9]{2}\.[0-9]{2} [0-9]{2}"), "%Y.%m.%d %H"),
+)
 _ACCESS_CREDENTIAL_RE = re.compile(
     r"(?i)(?:\b(?:authorization|password|passphrase|client[_-]?secret|access[_-]?token|refresh[_-]?token|"
     r"session[_-]?cookie|api[_-]?key|credential)s?\s*[:=]|\bbearer\s+|\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|"
@@ -431,7 +442,7 @@ def _looks_like_secret(value: str) -> bool:
 
 
 def _looks_like_high_confidence_phone(value: str) -> bool:
-    text = normalize_unicode("NFKC", str(value or "")).strip()
+    text = _normalize_decimal_digits(value)
     for match in _PHONE_FEATURE_RE.finditer(text):
         candidate = match.group(0)
         try:
@@ -445,15 +456,46 @@ def _looks_like_high_confidence_phone(value: str) -> bool:
             continue
         if candidate.startswith("+"):
             return True
-        normalized_digits = re.sub(r"[^0-9]", "", candidate)
-        if _CN_MOBILE_RE.fullmatch(normalized_digits) or _NANP_PHONE_RE.fullmatch(normalized_digits):
-            return True
+        if _looks_like_date_time_candidate(candidate):
+            continue
         if digit_count >= 10 and re.search(r"\(\d{2,4}\)", candidate):
             return True
         if digit_count >= 10 and len(re.findall(r"[\s.-]+", candidate)) >= 2:
             return True
+        normalized_digits = re.sub(r"[^0-9]", "", candidate)
+        if _CN_MOBILE_RE.fullmatch(normalized_digits) or _NANP_PHONE_RE.fullmatch(normalized_digits):
+            prefix = text[max(0, match.start() - 32) : match.start()]
+            if _PHONE_CONTEXT_RE.search(prefix):
+                return True
+            if _NON_PHONE_NUMERIC_CONTEXT_RE.search(prefix):
+                continue
+            return True
         if _PHONE_CONTEXT_RE.search(text[max(0, match.start() - 24) : match.start()]):
             return True
+    return False
+
+
+def _normalize_decimal_digits(value: str) -> str:
+    normalized = normalize_unicode("NFKC", str(value or "")).strip()
+    characters: list[str] = []
+    for character in normalized:
+        try:
+            characters.append(str(unicode_decimal(character)))
+        except (TypeError, ValueError):
+            characters.append(character)
+    return "".join(characters)
+
+
+def _looks_like_date_time_candidate(value: str) -> bool:
+    candidate = " ".join(str(value or "").strip().split())
+    for shape, date_format in _DATE_TIME_CANDIDATE_FORMATS:
+        if not shape.fullmatch(candidate):
+            continue
+        try:
+            datetime.strptime(candidate, date_format)
+        except ValueError:
+            continue
+        return True
     return False
 
 
