@@ -97,6 +97,8 @@ def _record(
 def _service(tmp_path, records, **kwargs):
     engine = FixedRecallEngine(records)
     runtime = Runtime(RuntimeStore(tmp_path), recall_engine=engine)
+    for record in records:
+        runtime.store.append(record)
     control_percent = kwargs.pop("control_percent", 0)
     release_provider = kwargs.pop("release_identity_provider", None)
     service = ProactiveRecallService(
@@ -634,7 +636,8 @@ def test_failure_and_timeout_fail_open_with_bounded_bypass_diagnostics(tmp_path)
 
 
 def test_turn_ledger_and_decision_state_survive_runtime_restart(tmp_path) -> None:
-    first_runtime, _engine, first = _service(tmp_path, [_record("Zephyr durable preference")])
+    durable_record = _record("Zephyr durable preference")
+    first_runtime, _engine, first = _service(tmp_path, [durable_record])
     first.complete_turn(
         channel="codex", scope=BASE_SCOPE, source_ids=["alpha"], session_id="session-a",
         turn_id="turn-1", user_summary="Project Zephyr uses PostgreSQL. password=do-not-recall",
@@ -671,8 +674,9 @@ def test_turn_ledger_and_decision_state_survive_runtime_restart(tmp_path) -> Non
             "session_id": "session-a",
         }
     )[0]
-    assert "do-not-recall" not in stored_turn["summary"]
-    assert "[REDACTED]" in stored_turn["summary"]
+    assert stored_turn["summary"] == ""
+    assert stored_turn["turn_digest"]
+    assert stored_turn["entity_digests"]
     persisted = second_runtime.store.list_records_by_meta_value(
         kinds=["feedback"], scope=ScopeRef.from_dict(resolve_channel_scope("codex", BASE_SCOPE)),
         meta_key="proactive_query_id", meta_value="turn-2", limit=20,

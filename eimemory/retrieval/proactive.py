@@ -86,6 +86,7 @@ class _DecisionState:
     decision_id: str
     query_id: str
     query: str
+    query_digest: str
     channel: str
     scope: dict[str, str]
     source_ids: tuple[str, ...]
@@ -193,15 +194,18 @@ class ProactiveRecallService:
         )
         safe_summary = self._redact_sensitive_summary(summary)
         entities = self._entities(safe_summary)
-        persisted = self.runtime.store.append_proactive_turn(
+        self.runtime.store.append_proactive_turn(
             {
                 "channel": channel_id,
                 "scope": exact_scope,
                 "source_key": self._source_digest(sources),
                 "session_id": normalized_session,
                 "turn_id": normalized_turn,
-                "summary": safe_summary,
-                "entities": entities,
+                "turn_digest": sha256(safe_summary.encode("utf-8", errors="replace")).hexdigest(),
+                "entity_digests": [
+                    sha256(entity.encode("utf-8", errors="replace")).hexdigest()
+                    for entity in entities
+                ],
             },
             max_session_turns=_MAX_TURNS_PER_SESSION,
             max_global_turns=self.max_sessions * _MAX_TURNS_PER_SESSION,
@@ -209,11 +213,10 @@ class ProactiveRecallService:
         key = self._session_key(channel_id, exact_scope, sources, normalized_session)
         with self._lock:
             state = self._session(key)
+            retained = [item for item in state.turns if item[0] != normalized_turn]
             state.turns.clear()
-            state.turns.extend(
-                (str(item["turn_id"]), " ".join(item.get("entities") or []))
-                for item in persisted
-            )
+            state.turns.extend(retained)
+            state.turns.append((normalized_turn, " ".join(entities)))
             self._sessions.move_to_end(key)
 
     def decide(
@@ -312,14 +315,31 @@ class ProactiveRecallService:
             },
             limit=_MAX_TURNS_PER_SESSION,
         )
+        rehydrated_turn_context = self._rehydrate_turn_context(
+            channel=channel_id,
+            exact_scope=exact_scope,
+            source_ids=sources,
+            session_id=normalized_session,
+            persisted_turns=persisted_turns,
+        )
         with self._lock:
             session = self._session(session_key)
+            persisted_turn_ids = {str(item["turn_id"]) for item in persisted_turns}
+            retained_turns = [item for item in session.turns if item[0] in persisted_turn_ids]
             session.turns.clear()
-            session.turns.extend(
-                (str(item["turn_id"]), " ".join(item.get("entities") or []))
-                for item in persisted_turns
-            )
+            session.turns.extend(retained_turns)
             turn_summaries = [summary for _turn_id, summary in session.turns]
+        for context_terms in rehydrated_turn_context:
+            if context_terms not in turn_summaries:
+                turn_summaries.append(context_terms)
+        turn_summaries = turn_summaries[-_MAX_TURNS_PER_SESSION:]
+        if persisted_turns and not turn_summaries:
+            self._record_bypass(
+                channel=channel_id,
+                session_id=normalized_session,
+                query_digest=query_digest,
+                reason="turn_context_unavailable_after_restart",
+            )
         recall_query = self._recall_query(normalized_query, turn_summaries)
         effective_query_digest = sha256(
             f"{normalized_task_type}\x1f{recall_query}".encode("utf-8", errors="replace")
@@ -473,6 +493,7 @@ class ProactiveRecallService:
             decision_id=decision_id,
             query_id=normalized_query_id,
             query=normalized_query,
+            query_digest=query_digest,
             channel=channel_id,
             scope=exact_scope,
             source_ids=sources,
@@ -490,9 +511,7 @@ class ProactiveRecallService:
             task_type=normalized_task_type,
             effective_query_digest=effective_query_digest,
         )
-        public_by_citation = {
-            str(item["citation"]): item for item in persisted_items
-        }
+        public_by_citation = {str(item["citation"]): item for item in public_items}
         item_payloads = [
             {
                 "citation": item.citation,
@@ -502,8 +521,10 @@ class ProactiveRecallService:
                 "state": item.state,
                 "mandatory": item.mandatory,
                 "order": index,
-                "title": str(public_by_citation[item.citation].get("title") or ""),
-                "text": str(public_by_citation[item.citation].get("text") or ""),
+                "render_digest": self._render_snapshot_digest(
+                    str(public_by_citation[item.citation].get("title") or ""),
+                    str(public_by_citation[item.citation].get("text") or ""),
+                ),
             }
             for index, item in enumerate(decision_items.values(), start=1)
         ]
@@ -700,7 +721,7 @@ class ProactiveRecallService:
                 self._record_bypass(
                     channel=state.channel,
                     session_id=state.session_id,
-                    query_digest=sha256(state.query.encode("utf-8")).hexdigest(),
+                    query_digest=state.query_digest,
                     reason=f"outcome_{type(exc).__name__}",
                 )
                 return {
@@ -825,7 +846,7 @@ class ProactiveRecallService:
         return {
             "turn_count": len(persisted),
             "turn_digests": [
-                sha256(" ".join(item.get("entities") or []).encode("utf-8")).hexdigest()
+                str(item.get("turn_digest") or "")
                 for item in persisted
             ],
         }
@@ -840,21 +861,10 @@ class ProactiveRecallService:
         for key, value in expected.items():
             if payload.get(key) != value:
                 raise ValueError("persisted proactive decision identity conflict")
-        public_items = [
-            {
-                "record_id": str(raw.get("record_id") or ""),
-                "source_id": str(raw.get("source_id") or "default"),
-                "citation": str(raw.get("citation") or ""),
-                "confidence": float(raw.get("confidence") or 0.0),
-                "title": str(raw.get("title") or ""),
-                "text": str(raw.get("text") or ""),
-                "mandatory": bool(raw.get("mandatory")),
-            }
-            for raw in (payload.get("items") or [])
-            if isinstance(raw, Mapping)
-        ]
+        public_items = self._rehydrate_persisted_items(payload, cache_key=cache_key)
         control = bool(payload.get("control_cohort"))
-        delivered = [item for item in public_items if item["mandatory"]] if control else public_items
+        proposed = [item for item in public_items if item["mandatory"]] if control else public_items
+        context, delivered = self._render_context_with_items(proposed)
         suppressed = [item for item in public_items if not item["mandatory"]] if control else []
         return {
             "ok": True,
@@ -869,9 +879,125 @@ class ProactiveRecallService:
             "pair_id": str(payload.get("pair_id") or ""),
             "items": delivered,
             "suppressed_items": suppressed,
-            "context": str(payload.get("context") or ""),
+            "context": context,
             "idempotent": True,
         }
+
+    def _rehydrate_persisted_items(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        cache_key: str,
+    ) -> list[dict[str, Any]]:
+        """Hydrate a bounded snapshot only from the exact authority namespace."""
+
+        del cache_key  # SQLite exact refs are authority; cached bodies never resurrect deletion.
+        exact_scope = dict(payload.get("scope") or {})
+        allowed_sources = tuple(str(item) for item in (payload.get("source_ids") or []))
+        hydrated: list[dict[str, Any]] = []
+        for raw in list(payload.get("items") or [])[:_MAX_VOLUNTEERED_ITEMS]:
+            if not isinstance(raw, Mapping):
+                continue
+            record_id = str(raw.get("record_id") or "")
+            source_id = str(raw.get("source_id") or "default")
+            if source_id not in allowed_sources and allowed_sources != ("*",):
+                continue
+            record = self.runtime.store.get_by_exact_ref(
+                record_id,
+                scope=exact_scope,
+                source_id=source_id,
+            )
+            if record is None or not self._authorized(
+                record,
+                exact_scope=exact_scope,
+                source_ids=allowed_sources,
+            ):
+                continue
+            title = _bounded_text(record.title, 240)
+            text = self._record_text(record)
+            expected_digest = str(raw.get("render_digest") or "")
+            if not expected_digest or self._render_snapshot_digest(title, text) != expected_digest:
+                continue
+            hydrated.append(
+                {
+                    "record_id": record_id,
+                    "source_id": source_id,
+                    "citation": str(raw.get("citation") or ""),
+                    "confidence": float(raw.get("confidence") or 0.0),
+                    "title": title,
+                    "text": text,
+                    "mandatory": bool(raw.get("mandatory")),
+                }
+            )
+        return hydrated
+
+    def _rehydrate_turn_context(
+        self,
+        *,
+        channel: str,
+        exact_scope: Mapping[str, Any],
+        source_ids: tuple[str, ...],
+        session_id: str,
+        persisted_turns: list[Mapping[str, Any]],
+    ) -> list[str]:
+        """Recover terms from exact record refs, never from persisted raw turns."""
+
+        entity_digests = {
+            str(digest)
+            for turn in persisted_turns
+            for digest in (turn.get("entity_digests") or [])
+            if str(digest)
+        }
+        if not entity_digests:
+            return []
+        refs = self.runtime.store.list_proactive_session_item_refs(
+            {
+                "channel": channel,
+                "scope": dict(exact_scope),
+                "source_key": self._source_digest(source_ids),
+                "session_id": session_id,
+            },
+            limit=_MAX_TURNS_PER_SESSION * _MAX_VOLUNTEERED_ITEMS,
+        )
+        context: list[str] = []
+        seen: set[tuple[str, str]] = set()
+        for record_id, source_id in refs:
+            ref = (record_id, source_id)
+            if ref in seen:
+                continue
+            seen.add(ref)
+            record = self.runtime.store.get_by_exact_ref(
+                record_id,
+                scope=dict(exact_scope),
+                source_id=source_id,
+            )
+            if record is None or not self._authorized(
+                record,
+                exact_scope=exact_scope,
+                source_ids=source_ids,
+            ):
+                continue
+            terms = self._entities(f"{record.title} {self._record_text(record)}")
+            if not any(
+                sha256(term.encode("utf-8", errors="replace")).hexdigest() in entity_digests
+                for term in terms
+            ):
+                continue
+            context.append(" ".join(terms))
+            if len(context) >= _MAX_TURNS_PER_SESSION:
+                break
+        return list(reversed(context))
+
+    @staticmethod
+    def _render_snapshot_digest(title: str, text: str) -> str:
+        return sha256(
+            json.dumps(
+                {"text": str(text), "title": str(title)},
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8", errors="replace")
+        ).hexdigest()
 
     def paired_metrics(
         self,
@@ -1530,7 +1656,7 @@ class ProactiveRecallService:
             self._record_bypass(
                 channel=state.channel,
                 session_id=state.session_id,
-                query_digest=sha256(state.query.encode("utf-8")).hexdigest(),
+                query_digest=state.query_digest,
                 reason=f"transition_{type(exc).__name__}",
             )
             return -1
@@ -1560,7 +1686,7 @@ class ProactiveRecallService:
             scope=state.scope,
             used_record_ids=[item.record_id] if target == "used" else [],
             rejected_record_ids=[item.record_id] if target == "rejected" else [],
-            query=state.query,
+            query="",
             source=f"{state.channel}.proactive_recall",
             source_id=item.source_id,
             proactive_state=target,
@@ -1580,6 +1706,7 @@ class ProactiveRecallService:
                 "source_allowlist": list(state.source_ids),
                 "mandatory": item.mandatory,
                 "release_bound": state.release_bound,
+                "query_digest": state.query_digest,
             },
             persist=False,
         )
@@ -1605,7 +1732,6 @@ class ProactiveRecallService:
             "turn_id": state.turn_id,
             "query_id": state.query_id,
             "query_digest": query_digest,
-            "query": state.query,
             "task_type": str(task_type),
             "effective_query_digest": str(effective_query_digest),
             "policy_version": state.policy_version,
@@ -1613,7 +1739,6 @@ class ProactiveRecallService:
             "release_bound": state.release_bound,
             "control_cohort": state.control_cohort,
             "pair_id": state.pair_id,
-            "context": str(context),
         }
 
     @staticmethod
@@ -1635,6 +1760,7 @@ class ProactiveRecallService:
             decision_id=str(payload.get("decision_id") or ""),
             query_id=str(payload.get("query_id") or ""),
             query=str(payload.get("query") or ""),
+            query_digest=str(payload.get("query_digest") or ""),
             channel=str(payload.get("channel") or ""),
             scope=dict(payload.get("scope") or {}),
             source_ids=tuple(str(item) for item in (payload.get("source_ids") or [])),

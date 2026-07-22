@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 import json
+from hashlib import sha256
 from pathlib import Path
+import re
 import threading
 
 from eimemory.adapters.hermes.provider_core import HermesMemoryProviderCore
+from eimemory.adapters.eibrain.rpc import EIBrainRPCBridge
+from eimemory.adapters.runtime.channel import resolve_channel_scope
+from eimemory.api.runtime import Runtime
+from eimemory.models.records import ScopeRef
+from eimemory.retrieval.proactive import ProactiveRecallService
 
 
 class FakeClient:
@@ -101,6 +108,130 @@ def test_hermes_provider_lifecycle_is_channel_local_and_flushes_bounded_writes(t
     assert {method for method, _ in write_calls} == {"adapter.sync_turn", "adapter.mutate_memory"}
     assert all(params["channel"] == "hermes" for _, params in client.calls)
     assert all(params["scope"]["workspace_id"] == "embodied" for _, params in client.calls)
+
+
+def test_hermes_native_write_and_new_session_proactive_lifecycle_share_default_sources() -> None:
+    client = FakeClient()
+    provider = HermesMemoryProviderCore(client=client)
+    provider.initialize("write-session", agent_workspace="embodied", agent_context="primary")
+    provider.on_memory_write(
+        "add", "memory", "Hermes durable project rule", {"event_id": "native-write-1"}
+    )
+    provider.shutdown()
+
+    provider.initialize("recall-session", agent_workspace="embodied", agent_context="primary")
+    context = provider.prefetch("Recall the durable project rule", session_id="recall-session")
+    provider.on_pre_llm_call(
+        user_message="Recall the durable project rule",
+        session_id="recall-session",
+        turn_id="recall-turn",
+    )
+    provider.on_post_llm_call(
+        user_message="Recall the durable project rule",
+        assistant_message="Used pm:abcdef0123456789abcd.",
+        session_id="recall-session",
+        turn_id="recall-turn",
+    )
+    provider.shutdown()
+
+    write = next(params for method, params in client.calls if method == "adapter.mutate_memory")
+    prefetch = next(params for method, params in client.calls if method == "adapter.proactive_prefetch")
+    ack = next(params for method, params in client.calls if method == "adapter.proactive_ack")
+    terminal = next(params for method, params in client.calls if method == "adapter.proactive_terminal")
+    assert write["source_id"] == "hermes"
+    assert prefetch["source_ids"] == ["default", "hermes"]
+    assert "pm:abcdef0123456789abcd" in context
+    assert ack["source_ids"] == prefetch["source_ids"]
+    assert terminal["source_ids"] == prefetch["source_ids"]
+    assert terminal["used_citations"] == ["pm:abcdef0123456789abcd"]
+
+
+def test_hermes_native_write_to_new_session_recall_injection_and_feedback_is_closed(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    runtime.proactive = ProactiveRecallService(
+        runtime,
+        release_identity={
+            "release_commit": "a" * 40,
+            "release_version": "1.9.80",
+            "deployment_receipt_id": "receipt-a",
+            "release_session_id": "release-session-a",
+        },
+        control_percent=0,
+    )
+    bridge = EIBrainRPCBridge(runtime)
+
+    class BridgeClient:
+        def call_or_bypass(self, method: str, params: dict) -> dict:
+            return dict(bridge.handle({"method": method, "params": params}))
+
+    provider = HermesMemoryProviderCore(client=BridgeClient())
+    provider.initialize(
+        "write-session",
+        agent_workspace="embodied",
+        user_id="darrow",
+        agent_context="primary",
+    )
+    provider.on_memory_write(
+        "add",
+        "memory",
+        "Hermes project Borealis requires primary-source citations.",
+        {"event_id": "borealis-write"},
+    )
+    provider.shutdown()
+
+    provider.initialize(
+        "recall-session",
+        agent_workspace="embodied",
+        user_id="darrow",
+        agent_context="primary",
+    )
+    query = "What does project Borealis require?"
+    context = provider.prefetch(query, session_id="recall-session")
+    citation = re.search(r"pm:[0-9a-f]{20}", context)
+    assert citation is not None
+    provider.on_pre_llm_call(
+        user_message=query,
+        session_id="recall-session",
+        turn_id="recall-turn",
+    )
+    provider.on_post_llm_call(
+        user_message=query,
+        assistant_message=f"It requires primary-source citations [{citation.group(0)}].",
+        session_id="recall-session",
+        turn_id="recall-turn",
+    )
+    provider.shutdown()
+
+    exact_scope = ScopeRef.from_dict(
+        resolve_channel_scope(
+            "hermes",
+            {
+                "tenant_id": "default",
+                "agent_id": "hermes",
+                "workspace_id": "embodied",
+                "user_id": "darrow",
+            },
+        )
+    )
+    memories = runtime.store.list_records(
+        kinds=["memory"], scope=exact_scope, source_ids=["hermes"], status="active"
+    )
+    feedback = runtime.store.list_records_by_meta_value(
+        kinds=["feedback"],
+        scope=exact_scope,
+        meta_key="proactive_query_id",
+        meta_value="hermes-query-" + sha256(
+            f"recall-session\0{query}".encode("utf-8")
+        ).hexdigest()[:24],
+        limit=20,
+    ) or []
+    assert any("Borealis" in record.summary for record in memories)
+    assert {record.meta["proactive_state"] for record in feedback} >= {
+        "volunteered",
+        "injected",
+        "used",
+    }
+    runtime.close()
 
 
 def test_hermes_proactive_prefetch_is_acked_and_closed_by_official_llm_hooks_without_history() -> None:

@@ -927,7 +927,13 @@ def _source_ids_from_env(default_source: str) -> list[str]:
         for value in os.getenv("EIMEMORY_SOURCE_IDS", "").split(",")
         if value.strip()
     ]
-    return configured or [default_source]
+    if configured:
+        return list(dict.fromkeys(configured))
+    if default_source == "default":
+        # Native Hermes writes are authoritative under the hermes partition;
+        # retain default for legacy/shared imports during the transition.
+        return ["default", "hermes"]
+    return [default_source]
 
 
 def _memory_write_fallback_event_id(

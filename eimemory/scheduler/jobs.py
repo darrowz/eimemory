@@ -5,6 +5,7 @@ import os
 import stat
 import time
 import tracemalloc
+from hashlib import sha256
 from collections import Counter
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
@@ -665,30 +666,105 @@ def _record_content_text(record: RecordEnvelope) -> str:
     return _first_text(content.get("text"), content.get("summary"), content.get("detail"))
 
 
-def _load_json_dataset(path: str) -> dict[str, Any] | list[Any]:
+def load_json_dataset_with_evidence(
+    path: str,
+) -> tuple[dict[str, Any] | list[Any], dict[str, Any]]:
+    """Read one trusted JSON dataset and bind evidence to the opened fd."""
+
     candidate = Path(path).expanduser()
     if not candidate.is_absolute():
         candidate = candidate.absolute()
     if candidate.is_symlink():
         raise ValueError("production recall dataset must not be a symlink")
+    getuid = getattr(os, "getuid", None)
+    trusted_uids = {0, int(getuid())} if callable(getuid) else set()
+    parent = candidate.parent
+    parent_lstat = _validate_dataset_parent_chain(parent, trusted_uids=trusted_uids)
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(candidate, flags)
-    with os.fdopen(descriptor, "rb", closefd=True) as handle:
-        metadata = os.fstat(handle.fileno())
-        if not stat.S_ISREG(metadata.st_mode):
-            raise ValueError("production recall dataset must be a regular file")
-        getuid = getattr(os, "getuid", None)
-        if callable(getuid) and int(metadata.st_uid) not in {0, int(getuid())}:
-            raise ValueError("production recall dataset owner is not trusted")
-        if int(metadata.st_size) > MAX_PRODUCTION_RECALL_DATASET_BYTES:
-            raise ValueError("production recall dataset exceeds size limit")
-        raw = handle.read(MAX_PRODUCTION_RECALL_DATASET_BYTES + 1)
+    parent_descriptor: int | None = None
+    try:
+        if os.open in getattr(os, "supports_dir_fd", set()):
+            parent_descriptor = os.open(
+                parent,
+                os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+            )
+            descriptor = os.open(candidate.name, flags, dir_fd=parent_descriptor)
+        else:
+            descriptor = os.open(candidate, flags)
+        with os.fdopen(descriptor, "rb", closefd=True) as handle:
+            metadata = os.fstat(handle.fileno())
+            if not stat.S_ISREG(metadata.st_mode):
+                raise ValueError("production recall dataset must be a regular file")
+            if trusted_uids and int(metadata.st_uid) not in trusted_uids:
+                raise ValueError("production recall dataset owner is not trusted")
+            if os.name != "nt" and metadata.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+                raise ValueError("production recall dataset must not be group/world writable")
+            if int(metadata.st_size) > MAX_PRODUCTION_RECALL_DATASET_BYTES:
+                raise ValueError("production recall dataset exceeds size limit")
+            raw = handle.read(MAX_PRODUCTION_RECALL_DATASET_BYTES + 1)
+        if parent_descriptor is not None:
+            opened_parent = os.fstat(parent_descriptor)
+            if (int(opened_parent.st_dev), int(opened_parent.st_ino)) != (
+                int(parent_lstat.st_dev), int(parent_lstat.st_ino)
+            ):
+                raise ValueError("production recall dataset parent changed during open")
+        else:
+            parent_after = parent.lstat()
+            if (int(parent_after.st_dev), int(parent_after.st_ino)) != (
+                int(parent_lstat.st_dev), int(parent_lstat.st_ino)
+            ):
+                raise ValueError("production recall dataset parent changed during open")
+    finally:
+        if parent_descriptor is not None:
+            os.close(parent_descriptor)
     if len(raw) > MAX_PRODUCTION_RECALL_DATASET_BYTES:
         raise ValueError("production recall dataset exceeds size limit")
     dataset = json.loads(raw.decode("utf-8"))
     if isinstance(dataset, (dict, list)):
-        return dataset
+        digest = sha256(raw).hexdigest()
+        return dataset, {
+            "schema": "secure_dataset_fingerprint.v1",
+            "sha256": digest,
+            "digest": digest,
+            "size": len(raw),
+            "device": int(metadata.st_dev),
+            "inode": int(metadata.st_ino),
+        }
     raise ValueError("dataset must be a JSON object or list")
+
+
+def _validate_dataset_parent_chain(parent: Path, *, trusted_uids: set[int]) -> os.stat_result:
+    current = parent
+    immediate: os.stat_result | None = None
+    while True:
+        metadata = current.lstat()
+        if immediate is None:
+            immediate = metadata
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+            raise ValueError("production recall dataset parent chain must contain trusted directories only")
+        if trusted_uids and int(metadata.st_uid) not in trusted_uids:
+            raise ValueError("production recall dataset parent owner is not trusted")
+        if os.name != "nt" and metadata.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+            sticky_root = bool(metadata.st_mode & stat.S_ISVTX) and int(metadata.st_uid) == 0
+            if not sticky_root:
+                raise ValueError(
+                    "production recall dataset parent must not be group/world writable"
+                )
+        ancestor = current.parent
+        if ancestor == current:
+            break
+        current = ancestor
+    if immediate is None:  # pragma: no cover - every absolute path has a parent
+        raise ValueError("production recall dataset parent is unavailable")
+    return immediate
+
+
+def _load_json_dataset(path: str) -> dict[str, Any] | list[Any]:
+    dataset, evidence = load_json_dataset_with_evidence(path)
+    if isinstance(dataset, dict):
+        return {**dataset, "_secure_dataset_evidence": evidence}
+    return dataset
 
 
 def _dataset_cases(dataset: Any) -> list[Any]:

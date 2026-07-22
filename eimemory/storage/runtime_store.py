@@ -203,6 +203,15 @@ class RuntimeStore:
         with self._lock:
             return self.sqlite.proactive_session_refs(payload, limit=limit)
 
+    def list_proactive_session_item_refs(
+        self,
+        payload: dict,
+        *,
+        limit: int = 12,
+    ) -> list[tuple[str, str]]:
+        with self._lock:
+            return self.sqlite.list_proactive_session_item_refs(payload, limit=limit)
+
     def transition_proactive_decision(
         self,
         decision_id: str,
@@ -734,6 +743,25 @@ class RuntimeStore:
                 since=since,
                 until=until,
                 source_ids=source_ids,
+            )
+
+    def count_records_bounded_exact_scope(
+        self,
+        *,
+        scope: ScopeRef | dict,
+        status: str,
+        source_ids: list[str] | tuple[str, ...],
+        kinds: list[str] | tuple[str, ...] | None = None,
+        limit: int = 5,
+    ) -> int:
+        with self._lock:
+            scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+            return self.sqlite.count_records_bounded_exact_scope(
+                scope=scope_ref,
+                status=status,
+                source_ids=source_ids,
+                kinds=kinds,
+                limit=limit,
             )
 
     def list_capability_scores_compact(

@@ -58,6 +58,7 @@ _INTENT_PATTERN_STATUS_MIGRATION = "intent_patterns.payload_status.v1"
 _STORAGE_SCHEMA_MIGRATION = "storage.schema.v1"
 _SOURCE_PARTITION_MIGRATION = "records.source_partition.v1"
 _RECALL_IDENTITY_MIGRATION = "recall.identity_index.v1"
+_PROACTIVE_TEXT_FREE_MIGRATION = "proactive.storage_text_free.v1"
 _RECALL_LANE_MEMORY_TYPE_ALIASES = {
     "audit": "audit_record",
     "audit_record": "audit_record",
@@ -96,6 +97,7 @@ class SqliteRecordStore:
         self._init_db()
         self._create_adapter_receipt_tables()
         self._create_proactive_recall_tables()
+        self._create_bounded_count_index()
         self.conn.commit()
         self.preload_report = self.preload_hot_pages()
 
@@ -105,6 +107,7 @@ class SqliteRecordStore:
         except sqlite3.OperationalError:
             pass
         self.conn.execute("PRAGMA synchronous=NORMAL")
+        self.conn.execute("PRAGMA secure_delete=ON")
         self.conn.execute("PRAGMA temp_store=FILE")
         self.conn.execute("PRAGMA wal_autocheckpoint=1000")
         self.conn.execute(f"PRAGMA journal_size_limit={64 * 1024 * 1024}")
@@ -275,6 +278,8 @@ class SqliteRecordStore:
                 turn_id TEXT NOT NULL,
                 summary TEXT NOT NULL,
                 entities_json TEXT NOT NULL,
+                turn_digest TEXT NOT NULL DEFAULT '',
+                entity_digests_json TEXT NOT NULL DEFAULT '[]',
                 created_at TEXT NOT NULL,
                 UNIQUE(channel, tenant_id, agent_id, workspace_id, user_id, source_key, session_id, turn_id)
             );
@@ -330,6 +335,7 @@ class SqliteRecordStore:
                 ever_injected INTEGER NOT NULL DEFAULT 0,
                 mandatory INTEGER NOT NULL DEFAULT 0,
                 item_order INTEGER NOT NULL DEFAULT 0,
+                render_digest TEXT NOT NULL DEFAULT '',
                 title_text TEXT NOT NULL DEFAULT '',
                 content_text TEXT NOT NULL DEFAULT '',
                 updated_at TEXT NOT NULL,
@@ -369,6 +375,7 @@ class SqliteRecordStore:
         for name, definition in (
             ("ever_injected", "INTEGER NOT NULL DEFAULT 0"),
             ("item_order", "INTEGER NOT NULL DEFAULT 0"),
+            ("render_digest", "TEXT NOT NULL DEFAULT ''"),
             ("title_text", "TEXT NOT NULL DEFAULT ''"),
             ("content_text", "TEXT NOT NULL DEFAULT ''"),
         ):
@@ -376,6 +383,23 @@ class SqliteRecordStore:
                 self.conn.execute(
                     f"ALTER TABLE proactive_decision_items ADD COLUMN {name} {definition}"
                 )
+        turn_columns = {
+            str(row["name"]) for row in self.conn.execute("PRAGMA table_info(proactive_turns)")
+        }
+        for name, definition in (
+            ("turn_digest", "TEXT NOT NULL DEFAULT ''"),
+            ("entity_digests_json", "TEXT NOT NULL DEFAULT '[]'"),
+        ):
+            if name not in turn_columns:
+                self.conn.execute(f"ALTER TABLE proactive_turns ADD COLUMN {name} {definition}")
+        if not self._schema_migration_applied(_PROACTIVE_TEXT_FREE_MIGRATION):
+            # These legacy columns remain for rolling-schema compatibility only.
+            # Secure-delete overwrites the old cells instead of leaving query or
+            # rendered memory text in SQLite freelist pages.
+            self.conn.execute("UPDATE proactive_turns SET summary='',entities_json='[]'")
+            self.conn.execute("UPDATE proactive_decisions SET query_text='',context_text=''")
+            self.conn.execute("UPDATE proactive_decision_items SET title_text='',content_text=''")
+            self._mark_schema_migration(_PROACTIVE_TEXT_FREE_MIGRATION)
 
     def append_proactive_turn(
         self,
@@ -399,10 +423,11 @@ class SqliteRecordStore:
         )
         self.conn.execute(
             "INSERT INTO proactive_turns(channel,tenant_id,agent_id,workspace_id,user_id,source_key,session_id,"
-            "turn_id,summary,entities_json,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            "turn_id,summary,entities_json,turn_digest,entity_digests_json,created_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
-                *identity, turn_id, str(payload.get("summary") or ""),
-                json.dumps(list(payload.get("entities") or []), ensure_ascii=False, sort_keys=True),
+                *identity, turn_id, "", "[]", str(payload.get("turn_digest") or ""),
+                json.dumps(list(payload.get("entity_digests") or []), ensure_ascii=True, sort_keys=True),
                 str(payload.get("created_at") or datetime.now(timezone.utc).isoformat()),
             ),
         )
@@ -432,7 +457,7 @@ class SqliteRecordStore:
     def load_proactive_turns(self, payload: dict[str, Any], *, limit: int = 4) -> list[dict[str, Any]]:
         scope = normalize_scope(payload.get("scope"))
         rows = self.conn.execute(
-            "SELECT turn_id,summary,entities_json,created_at FROM proactive_turns WHERE channel=? AND tenant_id=? "
+            "SELECT turn_id,turn_digest,entity_digests_json,created_at FROM proactive_turns WHERE channel=? AND tenant_id=? "
             "AND agent_id=? AND workspace_id=? AND user_id=? AND source_key=? AND session_id=? "
             "ORDER BY entry_id DESC LIMIT ?",
             (
@@ -443,8 +468,11 @@ class SqliteRecordStore:
         ).fetchall()
         return [
             {
-                "turn_id": str(row["turn_id"]), "summary": str(row["summary"]),
-                "entities": [str(item) for item in json.loads(str(row["entities_json"] or "[]"))],
+                "turn_id": str(row["turn_id"]), "summary": "", "entities": [],
+                "turn_digest": str(row["turn_digest"]),
+                "entity_digests": [
+                    str(item) for item in json.loads(str(row["entity_digests_json"] or "[]"))
+                ],
                 "created_at": str(row["created_at"]),
             }
             for row in reversed(rows)
@@ -463,7 +491,7 @@ class SqliteRecordStore:
             stable = (
                 "channel", "scope", "source_key", "session_id", "turn_id", "query_id",
                 "query_digest", "policy_version", "release_identity", "control_cohort",
-                "pair_id", "context", "task_type", "effective_query_digest",
+                "pair_id", "task_type", "effective_query_digest",
             )
             if any(existing.get(key) != payload.get(key) for key in stable):
                 raise ValueError("proactive decision identity conflict")
@@ -471,8 +499,8 @@ class SqliteRecordStore:
                 (
                     str(item.get("citation") or ""), str(item.get("record_id") or ""),
                     normalize_source_id(item.get("source_id")), round(float(item.get("confidence") or 0.0), 6),
-                    bool(item.get("mandatory")), str(item.get("title") or ""),
-                    str(item.get("text") or ""), int(item.get("order") or 0),
+                    bool(item.get("mandatory")), int(item.get("order") or 0),
+                    str(item.get("render_digest") or ""),
                 )
                 for item in items
             )
@@ -480,8 +508,8 @@ class SqliteRecordStore:
                 (
                     str(item.get("citation") or ""), str(item.get("record_id") or ""),
                     normalize_source_id(item.get("source_id")), round(float(item.get("confidence") or 0.0), 6),
-                    bool(item.get("mandatory")), str(item.get("title") or ""),
-                    str(item.get("text") or ""), int(item.get("order") or 0),
+                    bool(item.get("mandatory")), int(item.get("order") or 0),
+                    str(item.get("render_digest") or ""),
                 )
                 for item in existing.get("items", [])
             )
@@ -501,27 +529,27 @@ class SqliteRecordStore:
                 scope.workspace_id, scope.user_id, str(payload["source_key"]),
                 json.dumps(list(payload.get("source_ids") or []), ensure_ascii=False), str(payload["session_id"]),
                 str(payload.get("turn_id") or payload["query_id"]), str(payload["query_id"]),
-                str(payload["query_digest"]), str(payload.get("query") or ""),
+                str(payload["query_digest"]), "",
                 str(payload.get("task_type") or ""), str(payload.get("effective_query_digest") or ""),
                 str(payload["policy_version"]),
                 str(release.get("release_commit") or ""), str(release.get("release_version") or ""),
                 str(release.get("deployment_receipt_id") or ""), str(release.get("release_session_id") or ""),
                 int(bool(payload.get("release_bound"))), int(bool(payload.get("control_cohort"))),
-                str(payload.get("pair_id") or ""), str(payload.get("context") or ""),
+                str(payload.get("pair_id") or ""), "",
                 created_at, created_at,
             ),
         )
         for item in items:
             self.conn.execute(
-                "INSERT INTO proactive_decision_items(decision_id,citation,record_id,source_id,confidence,state,ever_injected,mandatory,item_order,title_text,content_text,updated_at) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO proactive_decision_items(decision_id,citation,record_id,source_id,confidence,state,ever_injected,mandatory,item_order,render_digest,title_text,content_text,updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     str(payload["decision_id"]), str(item["citation"]), str(item["record_id"]),
                     normalize_source_id(item["source_id"]), float(item.get("confidence") or 0.0),
                     str(item.get("state") or "volunteered"), int(str(item.get("state") or "") == "injected"),
                     int(bool(item.get("mandatory"))),
-                    int(item.get("order") or 0), str(item.get("title") or ""),
-                    str(item.get("text") or ""), created_at,
+                    int(item.get("order") or 0), str(item.get("render_digest") or ""),
+                    "", "", created_at,
                 ),
             )
         cap = max(1, int(max_global_decisions))
@@ -558,7 +586,7 @@ class SqliteRecordStore:
         if row is None:
             return None
         item_rows = self.conn.execute(
-            "SELECT citation,record_id,source_id,confidence,state,ever_injected,mandatory,item_order AS 'order',title_text AS title,"
+            "SELECT citation,record_id,source_id,confidence,state,ever_injected,mandatory,item_order AS 'order',render_digest,title_text AS title,"
             "content_text AS text,updated_at "
             "FROM proactive_decision_items WHERE decision_id=? ORDER BY item_order,citation",
             (str(decision_id),),
@@ -571,7 +599,7 @@ class SqliteRecordStore:
             "source_ids": [str(item) for item in json.loads(str(row["source_ids_json"] or "[]"))],
             "session_id": str(row["session_id"]), "turn_id": str(row["turn_id"]),
             "query_id": str(row["query_id"]), "query_digest": str(row["query_digest"]),
-            "query": str(row["query_text"]), "task_type": str(row["task_type"]),
+            "query": "", "task_type": str(row["task_type"]),
             "effective_query_digest": str(row["effective_query_digest"]),
             "policy_version": str(row["policy_version"]),
             "release_identity": {"release_commit": str(row["release_commit"]),
@@ -580,7 +608,7 @@ class SqliteRecordStore:
                                  "release_session_id": str(row["release_session_id"])},
             "release_bound": bool(row["release_bound"]), "control_cohort": bool(row["control_cohort"]),
             "pair_id": str(row["pair_id"]), "terminal": bool(row["terminal"]),
-            "context": str(row["context_text"] or ""),
+            "context": "",
             "outcome_success": None if row["outcome_success"] is None else bool(row["outcome_success"]),
             "outcome_verified": bool(row["outcome_verified"]),
             "outcome_quality": None if row["outcome_quality"] is None else float(row["outcome_quality"]),
@@ -669,6 +697,34 @@ class SqliteRecordStore:
             ),
         ).fetchall()
         return {(str(row["record_id"]), str(row["source_id"])) for row in rows}
+
+    def list_proactive_session_item_refs(
+        self,
+        payload: dict[str, Any],
+        *,
+        limit: int = 12,
+    ) -> list[tuple[str, str]]:
+        """Return a small, deterministic exact-session reference window."""
+
+        scope = normalize_scope(payload.get("scope"))
+        rows = self.conn.execute(
+            "SELECT i.record_id,i.source_id FROM proactive_decisions d "
+            "JOIN proactive_decision_items i ON i.decision_id=d.decision_id "
+            "WHERE d.channel=? AND d.tenant_id=? AND d.agent_id=? AND d.workspace_id=? "
+            "AND d.user_id=? AND d.source_key=? AND d.session_id=? AND i.state!='rejected' "
+            "ORDER BY d.created_at DESC,d.decision_id DESC,i.item_order ASC,i.citation ASC LIMIT ?",
+            (
+                str(payload.get("channel") or ""),
+                scope.tenant_id,
+                scope.agent_id,
+                scope.workspace_id,
+                scope.user_id,
+                str(payload.get("source_key") or ""),
+                str(payload.get("session_id") or ""),
+                max(1, min(12, int(limit))),
+            ),
+        ).fetchall()
+        return [(str(row["record_id"]), str(row["source_id"])) for row in rows]
 
     def transition_proactive_items(
         self,
@@ -1095,6 +1151,7 @@ class SqliteRecordStore:
             "CREATE INDEX IF NOT EXISTS idx_records_scope_source_updated "
             "ON records(tenant_id, agent_id, workspace_id, user_id, source_id, updated_at DESC, record_id DESC, status, storage_key)"
         )
+        self._create_bounded_count_index()
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_records_kind_scope ON records(kind, tenant_id, agent_id, workspace_id, user_id)")
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_records_kind_scope_updated "
@@ -1125,6 +1182,7 @@ class SqliteRecordStore:
             )
         except sqlite3.OperationalError:
             pass
+
         try:
             self.conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_records_meta_report_type "
@@ -1150,6 +1208,12 @@ class SqliteRecordStore:
             )
         except sqlite3.OperationalError:
             pass
+
+    def _create_bounded_count_index(self) -> None:
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_records_scope_source_status_kind "
+            "ON records(tenant_id, agent_id, workspace_id, user_id, source_id, status, kind)"
+        )
 
     def _create_recall_index_tables(self, *, create_indexes: bool = True) -> None:
         self.conn.execute(
@@ -3682,6 +3746,58 @@ class SqliteRecordStore:
             params,
         ).fetchone()
         return int(row[0]) if row is not None else 0
+
+    def count_records_bounded_exact_scope(
+        self,
+        *,
+        scope: ScopeRef,
+        status: str,
+        source_ids: list[str] | tuple[str, ...],
+        kinds: list[str] | tuple[str, ...] | None = None,
+        limit: int = 5,
+    ) -> int:
+        """Return only whether an exact authority partition reaches a small cap.
+
+        The LIMIT lives inside the one SQL statement, so SQLite can stop at the
+        configured high-water instead of counting an unbounded records table.
+        """
+
+        bounded = max(0, min(1_000, int(limit)))
+        if bounded == 0:
+            return 0
+        normalized_sources = normalize_source_ids(source_ids)
+        if normalized_sources == ():
+            return 0
+        if normalized_sources is None:
+            raise ValueError("source_ids are required for an exact bounded count")
+        normalized_status = str(status or "").strip()
+        if not normalized_status:
+            raise ValueError("status is required for an exact bounded count")
+        source_placeholders = ",".join("?" for _ in normalized_sources)
+        clean_kinds = None if kinds is None else tuple(
+            dict.fromkeys(str(kind).strip() for kind in kinds if str(kind).strip())
+        )
+        if clean_kinds == ():
+            return 0
+        kind_clause = ""
+        if clean_kinds is not None:
+            kind_clause = f" AND kind IN ({','.join('?' for _ in clean_kinds)})"
+        row = self.conn.execute(
+            "SELECT COUNT(*) FROM (SELECT 1 FROM records "
+            "WHERE tenant_id=? AND agent_id=? AND workspace_id=? AND user_id=? "
+            f"AND source_id IN ({source_placeholders}) AND status=?{kind_clause} LIMIT ?)",
+            (
+                scope.tenant_id or "default",
+                scope.agent_id,
+                scope.workspace_id,
+                scope.user_id,
+                *normalized_sources,
+                normalized_status,
+                *(clean_kinds or ()),
+                bounded,
+            ),
+        ).fetchone()
+        return min(bounded, int(row[0]) if row is not None else 0)
 
     def list_capability_scores_compact(
         self,
