@@ -31,6 +31,7 @@ from eimemory.evaluation.real_query_gate import (
 )
 from eimemory.metadata import business_metadata
 from eimemory.models.records import RecordEnvelope, ScopeRef
+from eimemory.models.source_partitions import normalize_source_id, normalize_source_ids
 
 
 RECALL_QUALITY_GATE_THRESHOLDS: dict[str, float] = {
@@ -883,14 +884,14 @@ def _record_runtime_channel(record: RecordEnvelope) -> str:
 
 def _task_source_filter_ids(task_context: dict[str, Any]) -> set[str]:
     raw_source_ids = task_context.get("source_ids")
-    if isinstance(raw_source_ids, (list, tuple, set, frozenset)):
-        source_ids = {str(item).strip().lower() for item in raw_source_ids if str(item).strip()}
-    elif raw_source_ids is None:
-        source_ids = set()
-    else:
-        source_ids = {str(raw_source_ids).strip().lower()} if str(raw_source_ids).strip() else set()
-    target_source_id = str(task_context.get("target_source_id") or "").strip().lower()
-    if not source_ids and target_source_id:
+    if raw_source_ids is not None and not isinstance(raw_source_ids, (list, tuple)):
+        raise ValueError("source_ids must be an allowlist")
+    source_ids = set(normalize_source_ids(raw_source_ids) or ())
+    if source_ids:
+        return source_ids
+    raw_target_source_id = str(task_context.get("target_source_id") or "").strip()
+    target_source_id = normalize_source_id(raw_target_source_id) if raw_target_source_id else ""
+    if target_source_id:
         source_ids.add(target_source_id)
     return source_ids
 

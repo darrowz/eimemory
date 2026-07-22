@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from eimemory.adapters.runtime.channel import resolve_channel_scope
 from eimemory.api.runtime import Runtime
 from eimemory.cli.main import main as cli_main
@@ -232,11 +234,7 @@ def test_production_recall_eval_blocks_cross_channel_leaks_for_all_authority_cha
                         "query": "expected answer",
                         "expected_titles": [leaked.title],
                         "scope": expected_scope,
-                        "task_context": (
-                            {"runtime_channel": expected_channel}
-                            if expected_channel == "openclaw"
-                            else {}
-                        ),
+                        "task_context": {"runtime_channel": expected_channel},
                     }
                 ],
             },
@@ -248,6 +246,47 @@ def test_production_recall_eval_blocks_cross_channel_leaks_for_all_authority_cha
         assert report["source_filter_leakage_count"] == 0
         assert report["quality_gate"]["ok"] is False
         assert report["quality_gate"]["blocking_metrics"]["cross_channel_leakage_count"]["actual"] == 1
+
+
+def test_production_recall_eval_uses_scope_channel_fallback_and_explicit_override(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+
+    for case_scope_channel, task_context, returned_channel in (
+        ("hermes", {}, "hermes"),
+        ("openclaw", {"runtime_channel": "codex"}, "codex"),
+    ):
+        returned = RecordEnvelope.create(
+            kind="knowledge_page",
+            title="Authority answer",
+            scope=ScopeRef.from_dict(resolve_channel_scope(returned_channel, _scope())),
+            source="test.production_recall",
+        )
+        monkeypatch.setattr(
+            runtime.memory,
+            "recall",
+            lambda **_kwargs: RecallBundle(
+                items=[returned], rules=[], reflections=[], confidence=1.0,
+                next_action_hint="", explanation={},
+            ),
+        )
+        case_scope = resolve_channel_scope(case_scope_channel, _scope())
+
+        report = run_production_recall_eval(
+            runtime,
+            {
+                "scope": case_scope,
+                "cases": [{
+                    "query": "authority answer",
+                    "expected_titles": [returned.title],
+                    "scope": case_scope,
+                    "task_context": task_context,
+                }],
+            },
+            seed=False,
+        )
+
+        assert report["cross_channel_leakage_count"] == 0
+        assert report["quality_gate"]["ok"] is True
 
 
 def test_production_recall_eval_blocks_source_filter_leaks_and_treats_no_filter_as_unconstrained(
@@ -321,6 +360,89 @@ def test_production_recall_eval_blocks_source_filter_leaks_and_treats_no_filter_
     assert unconstrained["source_filter_leakage_count"] == 0
     assert unconstrained["samples"][0]["source_filter_leakage_count"] == 0
     assert unconstrained["quality_gate"]["ok"] is True
+
+
+def test_production_recall_eval_uses_candidate_source_id_normalization(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    returned = RecordEnvelope.create(
+        kind="knowledge_page",
+        title="Normalized source answer",
+        scope=ScopeRef.from_dict(_scope()),
+        source="test.production_recall",
+        source_id="alpha",
+    )
+    monkeypatch.setattr(
+        runtime.memory,
+        "recall",
+        lambda **_kwargs: RecallBundle(
+            items=[returned], rules=[], reflections=[], confidence=1.0,
+            next_action_hint="", explanation={},
+        ),
+    )
+
+    for task_context in (
+        {"source_ids": ["ALPHA"]},
+        {"source_ids": ["ＡＬＰＨＡ"]},
+        {"target_source_id": " ALPHA "},
+    ):
+        report = run_production_recall_eval(
+            runtime,
+            {
+                "scope": _scope(),
+                "cases": [{
+                    "query": "normalized source answer",
+                    "expected_titles": [returned.title],
+                    "scope": _scope(),
+                    "task_context": task_context,
+                }],
+            },
+            seed=False,
+        )
+
+        assert report["source_filter_leakage_count"] == 0
+        assert report["quality_gate"]["ok"] is True
+
+
+def test_production_recall_eval_rejects_invalid_source_filter_contracts(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    returned = RecordEnvelope.create(
+        kind="knowledge_page",
+        title="Source answer",
+        scope=ScopeRef.from_dict(_scope()),
+        source="test.production_recall",
+        source_id="alpha",
+    )
+    monkeypatch.setattr(
+        runtime.memory,
+        "recall",
+        lambda **_kwargs: RecallBundle(
+            items=[returned], rules=[], reflections=[], confidence=1.0,
+            next_action_hint="", explanation={},
+        ),
+    )
+
+    invalid_contexts = (
+        {"source_ids": "alpha"},
+        {"source_ids": {"alpha"}},
+        {"source_ids": [" alpha "]},
+        {"source_ids": ["ALPHA", "ＡＬＰＨＡ"]},
+        {"target_source_id": "bad source"},
+    )
+    for task_context in invalid_contexts:
+        with pytest.raises(ValueError):
+            run_production_recall_eval(
+                runtime,
+                {
+                    "scope": _scope(),
+                    "cases": [{
+                        "query": "source answer",
+                        "expected_titles": [returned.title],
+                        "scope": _scope(),
+                        "task_context": task_context,
+                    }],
+                },
+                seed=False,
+            )
 
 
 def test_production_recall_eval_seeds_temporary_runtime(tmp_path) -> None:
