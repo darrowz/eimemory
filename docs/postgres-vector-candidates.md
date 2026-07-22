@@ -49,7 +49,14 @@ a loopback address. A custom embedding provider must expose a stable SHA-256
 fingerprint or set `EIMEMORY_EMBEDDINGS_FINGERPRINT`; the fingerprint must not
 contain credentials.
 
-The lifecycle is deliberately operator-driven:
+When `EIMEMORY_POSTGRES_VECTOR_ENABLED=1`, `Runtime.create()` installs the
+SQLite-authority/Postgres-candidate composition for the real RPC/service
+process. Invalid environment values, a missing optional driver, an unavailable
+database, or an unhealthy index produce an allowlisted bypass reason; they do
+not prevent service startup or SQLite recall. Leaving the variable unset keeps
+the default SQLite-only, zero-third-party runtime.
+
+The index lifecycle remains deliberately operator-driven:
 
 ```text
 eimemory vector-index status
@@ -80,5 +87,13 @@ optional first backend.
 To inject the optional source programmatically, use
 `build_postgres_vector_candidate_source(store, config)`. This factory always
 installs SQLite as the participating authority. Production remains SQLite-only
-until an operator explicitly supplies and injects the enabled configuration;
-there is no autonomous background sync.
+until an operator explicitly enables the configuration; there is no autonomous
+background sync.
+
+`GovernedRecallEngine.effective_identity()` exposes the release-gate identity:
+engine and RRF policy versions, candidate-source type, SQLite authority
+revision, non-secret configuration/projection/embedding fingerprints, provider
+and model identity, committed Postgres watermark/index revision, circuit state,
+and bypass reason. Its digest changes when effective configuration or committed
+candidate state changes. DSNs, URLs, API keys, connection-factory details, raw
+exceptions, and provider payloads are never part of the returned identity.

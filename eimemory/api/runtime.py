@@ -108,9 +108,20 @@ class Runtime:
         recall_engine: RecallEngine | None = None,
     ) -> "Runtime":
         final_root = default_root(root)
+        store = RuntimeStore(final_root)
+        effective_source = candidate_source
+        if effective_source is None and recall_engine is None:
+            from eimemory.retrieval.postgres_cli import runtime_candidate_source_from_env
+
+            try:
+                effective_source = runtime_candidate_source_from_env(store)
+            except Exception:
+                # Optional candidate construction never owns service
+                # availability; MemoryAPI will install SQLite authority.
+                effective_source = None
         return cls(
-            RuntimeStore(final_root),
-            candidate_source=candidate_source,
+            store,
+            candidate_source=effective_source,
             recall_engine=recall_engine,
         )
 

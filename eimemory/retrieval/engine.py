@@ -7,7 +7,7 @@ from hashlib import sha256
 import json
 import re
 from time import perf_counter
-from typing import Any, Protocol
+from typing import Any, Mapping, Protocol
 
 from eimemory.governance.memory_graph import build_evidence_refs, build_timeline, graph_route_for_query
 from eimemory.identity import extract_user_aliases, hongtu_query_scopes, hongtu_query_scopes_with_aliases
@@ -30,7 +30,11 @@ from .contracts import (
 )
 from .sqlite_source import SQLiteCandidateSource
 from .fusion import FUSION_POLICY_VERSION, fuse_ranked_components, page_pool_key
-from .postgres_vector import _canonical_timestamp, candidate_record_projection_digest
+from .postgres_vector import (
+    PostgresVectorCandidateSource,
+    _canonical_timestamp,
+    candidate_record_projection_digest,
+)
 
 
 class RecallCallbacks(Protocol):
@@ -208,6 +212,30 @@ class GovernedRecallEngine:
         if self._callbacks is not None and self._callbacks is not callbacks:
             raise ValueError("recall engine is already bound to another MemoryAPI instance")
         self._callbacks = callbacks
+
+    def effective_identity(self) -> dict[str, object]:
+        """Return the effective secret-free retrieval contract used by gates."""
+        identity_fn = getattr(self.candidate_source, "effective_identity", None)
+        raw_source: object = {}
+        if callable(identity_fn):
+            try:
+                raw_source = identity_fn()
+            except Exception:
+                raw_source = {}
+        payload: dict[str, object] = {
+            "engine_type": type(self).__name__,
+            "name": self.name,
+            "policy_version": self.policy_version,
+            "fusion_version": FUSION_POLICY_VERSION,
+            "candidate_source": _sanitize_candidate_identity(
+                raw_source,
+                source=self.candidate_source,
+            ),
+        }
+        payload["identity_digest"] = sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        return payload
 
     def recall(self, request: CandidateRequest) -> RecallBundle:
         started = perf_counter()
@@ -1375,3 +1403,58 @@ class GovernedRecallEngine:
         if re.fullmatch(r"[A-Za-z0-9_.:-]{1,64}", label):
             return label
         return ""
+
+
+def _sanitize_candidate_identity(raw: object, *, source: CandidateSource) -> dict[str, object]:
+    trusted_source = isinstance(source, (SQLiteCandidateSource, PostgresVectorCandidateSource))
+    value = raw if trusted_source and isinstance(raw, Mapping) else {}
+    result: dict[str, object] = {
+        "candidate_source_type": type(source).__name__[:64],
+        "name": _public_identity_label(getattr(source, "name", ""), maximum=64) if trusted_source else "",
+        "policy_version": _public_identity_label(getattr(source, "policy_version", ""), maximum=64) if trusted_source else "",
+        "sqlite_authority": value.get("sqlite_authority") is True,
+        "authority_revision": _numeric_identity(value.get("authority_revision")),
+    }
+    config_fingerprint = _sha256_identity(value.get("config_fingerprint"))
+    if config_fingerprint:
+        result["config_fingerprint"] = config_fingerprint
+    projection = _sha256_identity(value.get("projection_fingerprint"))
+    if projection:
+        result["projection_fingerprint"] = projection
+    for flag in ("enabled", "configured"):
+        if flag in value:
+            result[flag] = value.get(flag) is True
+    embedding = value.get("embedding")
+    if isinstance(embedding, Mapping):
+        result["embedding"] = {
+            "provider_type": _public_identity_label(embedding.get("provider_type"), maximum=64),
+            "model": _public_identity_label(embedding.get("model"), maximum=256),
+            "fingerprint": _sha256_identity(embedding.get("fingerprint")),
+        }
+    postgres = value.get("postgres")
+    if isinstance(postgres, Mapping):
+        state = str(postgres.get("state") or "")
+        circuit = str(postgres.get("circuit") or "")
+        result["postgres"] = {
+            "state": state if state in {"available", "bypassed", "disabled", "not_configured"} else "bypassed",
+            "committed_watermark": _public_identity_label(postgres.get("committed_watermark"), maximum=256),
+            "index_revision": _numeric_identity(postgres.get("index_revision")),
+            "circuit": circuit if circuit in {"closed", "open", "half_open"} else "open",
+            "bypass_reason": _public_identity_label(postgres.get("bypass_reason"), maximum=80),
+        }
+    return result
+
+
+def _public_identity_label(value: object, *, maximum: int) -> str:
+    text = str(value or "")[:maximum]
+    return text if re.fullmatch(r"[A-Za-z0-9_.:/-]{0," + str(maximum) + r"}", text) else ""
+
+
+def _sha256_identity(value: object) -> str:
+    text = str(value or "").lower()
+    return text if re.fullmatch(r"[0-9a-f]{64}", text) else ""
+
+
+def _numeric_identity(value: object) -> str:
+    text = str(value or "")[:64]
+    return text if text.isdigit() else ""

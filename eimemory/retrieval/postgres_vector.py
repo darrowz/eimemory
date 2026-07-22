@@ -290,6 +290,13 @@ class OpenAICompatibleEmbeddingProvider:
             json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
 
+    def effective_identity(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "provider_type": "openai-compatible-embeddings.v1",
+            "model": self._model if re.fullmatch(r"[A-Za-z0-9_.:/-]{1,256}", self._model) else "",
+            "fingerprint": self.fingerprint(),
+        }
+
 
 def _stdlib_embedding_transport(
     *,
@@ -1005,12 +1012,20 @@ class PostgresVectorCandidateSource:
         config: PostgresVectorConfig,
         repository: Any | None = None,
         embedding_provider: EmbeddingProvider | None = None,
+        startup_error: str = "",
+        configuration_fingerprint: str = "",
         clock: Callable[[], float] = monotonic,
     ) -> None:
         self.sqlite_source = sqlite_source
         self.config = config
         self.repository = repository or PostgresCandidateRepository(config)
         self.embedding_provider = embedding_provider or config.embedding_provider
+        self._startup_error = _safe_candidate_error(startup_error)
+        self._configuration_fingerprint = (
+            str(configuration_fingerprint or "").lower()
+            if re.fullmatch(r"[0-9a-f]{64}", str(configuration_fingerprint or "").lower())
+            else ""
+        )
         self._clock = clock
         self._circuit = _Circuit(
             threshold=config.failure_threshold,
@@ -1021,7 +1036,7 @@ class PostgresVectorCandidateSource:
             pool_size=config.pool_size,
             queue_bound=config.queue_bound,
         )
-        self._last_error = ""
+        self._last_error = self._startup_error
         self._last_state = IndexState()
         self._last_query_valid = False
         self._cache: OrderedDict[tuple[Any, ...], tuple[float, tuple[dict[str, Any], ...]]] = OrderedDict()
@@ -1029,6 +1044,13 @@ class PostgresVectorCandidateSource:
 
     def search(self, request: CandidateRequest) -> CandidateBatch:
         sqlite_batch = self.sqlite_source.search(request)
+        if self._startup_error:
+            return self._batch(
+                sqlite_batch,
+                request=request,
+                state="bypassed",
+                error_code=self._startup_error,
+            )
         if not self.config.enabled:
             return self._batch(sqlite_batch, request=request, state="bypassed", error_code="disabled")
         if not self.config.configured or self.embedding_provider is None:
@@ -1153,6 +1175,86 @@ class PostgresVectorCandidateSource:
             "cache_entries": len(self._cache),
             "embedding": provider_health,
         }
+
+    def refresh_index_identity(self) -> bool:
+        """Refresh only bounded committed-state metadata; failures remain bypassable."""
+        if self._startup_error:
+            self._last_error = self._startup_error
+            return False
+        if not self.config.enabled:
+            self._last_error = "disabled"
+            return False
+        if not self.config.configured or self.embedding_provider is None:
+            self._last_error = "not_configured"
+            return False
+        try:
+            state = self.repository.read_index_state()
+            self._last_state = state
+            if not state.ready or not state.watermark:
+                self._last_error = "index_not_ready"
+                return False
+            expected = embedding_provider_fingerprint(self.embedding_provider, self.config)
+            if state.embedding_fingerprint != expected:
+                self._last_error = "embedding_fingerprint_mismatch"
+                return False
+            if (
+                state.projection_digest_schema != PROJECTION_DIGEST_SCHEMA
+                or state.projection_fingerprint != projection_fingerprint(self.config)
+            ):
+                self._last_error = "projection_fingerprint_mismatch"
+                return False
+            authority_revision = self._authority_revision()
+            if authority_revision is not None and state.authority_revision != authority_revision:
+                self._last_error = "authority_revision_changed"
+                return False
+            self._last_error = ""
+            return True
+        except Exception as exc:
+            self._last_error = _error_code(exc, prefix="postgres")
+            self._last_query_valid = False
+            return False
+
+    def effective_identity(self) -> dict[str, object]:
+        self.refresh_index_identity()
+        sqlite_identity_fn = getattr(self.sqlite_source, "effective_identity", None)
+        sqlite_identity = sqlite_identity_fn() if callable(sqlite_identity_fn) else {}
+        authority_revision = str(
+            sqlite_identity.get("authority_revision", "")
+            if isinstance(sqlite_identity, Mapping)
+            else ""
+        )
+        provider_identity = embedding_provider_identity(self.embedding_provider, self.config)
+        if not self.config.enabled:
+            state = "disabled"
+        elif not self.config.configured or self.embedding_provider is None:
+            state = "not_configured"
+        elif self._last_query_valid and not self._last_error:
+            state = "available"
+        else:
+            state = "bypassed"
+        return {
+            "candidate_source_type": type(self).__name__,
+            "name": self.name,
+            "policy_version": self.policy_version,
+            "sqlite_authority": True,
+            "authority_revision": authority_revision,
+            "enabled": self.config.enabled,
+            "configured": self.config.configured and self.embedding_provider is not None,
+            "config_fingerprint": self._configuration_fingerprint or postgres_config_fingerprint(self.config),
+            "projection_fingerprint": projection_fingerprint(self.config),
+            "embedding": provider_identity,
+            "postgres": {
+                "state": state,
+                "committed_watermark": self._last_state.watermark,
+                "index_revision": self._last_state.authority_revision,
+                "circuit": self._circuit.state(),
+                "bypass_reason": self._last_error or ("index_not_verified" if state == "bypassed" else ""),
+            },
+        }
+        payload["identity_digest"] = sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        return payload
 
     def _validated_hits(
         self,
@@ -1366,6 +1468,8 @@ def build_postgres_vector_candidate_source(
     *,
     repository: Any | None = None,
     embedding_provider: EmbeddingProvider | None = None,
+    startup_error: str = "",
+    configuration_fingerprint: str = "",
 ) -> PostgresVectorCandidateSource:
     """Build the supported SQLite-authority/Postgres-candidate composition."""
 
@@ -1376,6 +1480,8 @@ def build_postgres_vector_candidate_source(
         config=config,
         repository=repository,
         embedding_provider=embedding_provider,
+        startup_error=startup_error,
+        configuration_fingerprint=configuration_fingerprint,
     )
 
 
@@ -1479,6 +1585,74 @@ def projection_fingerprint(config: PostgresVectorConfig) -> str:
             separators=(",", ":"),
         ).encode("utf-8")
     ).hexdigest()
+
+
+def postgres_config_fingerprint(config: PostgresVectorConfig) -> str:
+    """Fingerprint effective non-secret retrieval semantics and the DSN target."""
+    dsn_target = ""
+    if config.dsn:
+        try:
+            parsed = urlsplit(config.dsn)
+            dsn_target = json.dumps(
+                {
+                    "scheme": parsed.scheme.lower(),
+                    "host": (parsed.hostname or "").lower(),
+                    "port": parsed.port,
+                    "database": parsed.path,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        except (TypeError, ValueError):
+            dsn_target = "invalid"
+    payload = {
+        "enabled": config.enabled,
+        "configured": config.configured,
+        "dsn_target_fingerprint": sha256(dsn_target.encode("utf-8")).hexdigest() if dsn_target else "",
+        "connect_timeout_seconds": config.connect_timeout_seconds,
+        "statement_timeout_ms": config.statement_timeout_ms,
+        "pool_size": config.pool_size,
+        "queue_bound": config.queue_bound,
+        "vector_dimension": config.vector_dimension,
+        "schema": config.schema,
+        "table": config.table,
+        "max_index_lag_seconds": config.max_index_lag_seconds,
+        "failure_threshold": config.failure_threshold,
+        "cooldown_seconds": config.cooldown_seconds,
+        "top_k_max": config.top_k_max,
+        "cache_entries": config.cache_entries,
+        "cache_ttl_seconds": config.cache_ttl_seconds,
+        "projection_fingerprint": projection_fingerprint(config),
+    }
+    return sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def embedding_provider_identity(
+    provider: EmbeddingProvider | None,
+    config: PostgresVectorConfig,
+) -> dict[str, object]:
+    if provider is None:
+        return {"provider_type": "", "model": "", "fingerprint": ""}
+    identity_fn = getattr(provider, "effective_identity", None)
+    try:
+        raw = identity_fn() if callable(identity_fn) else {}
+    except Exception:
+        raw = {}
+    if not isinstance(raw, Mapping):
+        raw = {}
+    provider_type = str(raw.get("provider_type") or type(provider).__name__)[:64]
+    model = str(raw.get("model") or "")[:256] if isinstance(provider, OpenAICompatibleEmbeddingProvider) else ""
+    try:
+        fingerprint = embedding_provider_fingerprint(provider, config)
+    except Exception:
+        fingerprint = ""
+    return {
+        "provider_type": provider_type if re.fullmatch(r"[A-Za-z0-9_.:/-]{1,64}", provider_type) else "",
+        "model": model if re.fullmatch(r"[A-Za-z0-9_.:/-]{0,256}", model) else "",
+        "fingerprint": fingerprint,
+    }
 
 
 def sanitized_embedding_health(provider: EmbeddingProvider | None) -> dict[str, object]:
@@ -1683,6 +1857,11 @@ def _error_code(exc: Exception, *, prefix: str) -> str:
     if isinstance(exc, (json.JSONDecodeError, UnicodeError, TypeError, ValueError)):
         return f"{prefix}_response_invalid"
     return f"{prefix}_unavailable"
+
+
+def _safe_candidate_error(value: object) -> str:
+    text = str(value or "")
+    return text if text in {"invalid_vector_index_config", "postgres_dependency_unavailable"} else ""
 
 
 def _bounded_int(value: object, minimum: int, maximum: int) -> int:

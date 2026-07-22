@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from hashlib import sha256
+import json
 from time import perf_counter
 from typing import Any
 
@@ -19,6 +21,26 @@ class SQLiteCandidateSource:
 
     def __init__(self, store: RuntimeStore) -> None:
         self.store = store
+        self._ensure_authority_revision()
+
+    def _ensure_authority_revision(self) -> None:
+        with self.store._lock:
+            already_in_transaction = self.store.sqlite.conn.in_transaction
+            self.store.sqlite.conn.execute(
+                "CREATE TABLE IF NOT EXISTS vector_sync_revision ("
+                "singleton INTEGER PRIMARY KEY CHECK (singleton = 1), revision INTEGER NOT NULL)"
+            )
+            self.store.sqlite.conn.execute(
+                "INSERT OR IGNORE INTO vector_sync_revision(singleton, revision) VALUES (1, 0)"
+            )
+            for operation in ("INSERT", "UPDATE", "DELETE"):
+                name = f"trg_records_vector_sync_{operation.lower()}"
+                self.store.sqlite.conn.execute(
+                    f"CREATE TRIGGER IF NOT EXISTS {name} AFTER {operation} ON records BEGIN "
+                    "UPDATE vector_sync_revision SET revision = revision + 1 WHERE singleton = 1; END"
+                )
+            if not already_in_transaction:
+                self.store.sqlite.conn.commit()
 
     def authority_head(self) -> tuple[str, str]:
         """Return the exact keyset head used by the optional projection sync."""
@@ -42,6 +64,20 @@ class SQLiteCandidateSource:
                 "SELECT revision FROM vector_sync_revision WHERE singleton = 1"
             ).fetchone()
         return "" if row is None else str(int(row["revision"]))
+
+    def effective_identity(self) -> dict[str, object]:
+        """Return the bounded identity of the authoritative retrieval source."""
+        payload: dict[str, object] = {
+            "candidate_source_type": type(self).__name__,
+            "name": self.name,
+            "policy_version": self.policy_version,
+            "sqlite_authority": True,
+            "authority_revision": self.authority_revision(),
+        }
+        payload["identity_digest"] = sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        return payload
 
     def search(self, request: CandidateRequest) -> CandidateBatch:
         started = perf_counter()

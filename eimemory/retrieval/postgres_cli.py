@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+from hashlib import sha256
+import json
 from math import isfinite
 from typing import Any
 
@@ -16,6 +18,7 @@ from .postgres_vector import (
     sanitized_embedding_health,
     candidate_index_lag_seconds,
     _canonical_timestamp,
+    build_postgres_vector_candidate_source,
 )
 from .sqlite_source import SQLiteCandidateSource
 
@@ -45,6 +48,113 @@ def config_from_env() -> PostgresVectorConfig:
         embedding_queue_timeout_seconds=_env_float("EIMEMORY_EMBEDDINGS_QUEUE_TIMEOUT_SECONDS", 2.0),
         sync_lease_seconds=_env_float("EIMEMORY_POSTGRES_SYNC_LEASE_SECONDS", 60.0),
     )
+
+
+def runtime_candidate_source_from_env(store: Any) -> Any | None:
+    """Build the optional runtime source without making service startup depend on it."""
+    requested = os.environ.get("EIMEMORY_POSTGRES_VECTOR_ENABLED", "").strip().lower()
+    if not requested or requested in {"0", "false", "no", "off"}:
+        return None
+    config_fingerprint = _runtime_environment_fingerprint()
+    if requested not in {"1", "true", "yes", "on"}:
+        return build_postgres_vector_candidate_source(
+            store,
+            PostgresVectorConfig(enabled=True),
+            startup_error="invalid_vector_index_config",
+            configuration_fingerprint=config_fingerprint,
+        )
+    try:
+        _validate_runtime_environment()
+        config = config_from_env()
+        source = build_postgres_vector_candidate_source(
+            store,
+            config,
+            configuration_fingerprint=config_fingerprint,
+        )
+    except (OSError, TypeError, UnicodeError, ValueError):
+        return build_postgres_vector_candidate_source(
+            store,
+            PostgresVectorConfig(enabled=True),
+            startup_error="invalid_vector_index_config",
+            configuration_fingerprint=config_fingerprint,
+        )
+    # The probe is bounded by the configured connection timeout.  It only
+    # observes projection metadata and can never prevent SQLite startup.
+    source.refresh_index_identity()
+    return source
+
+
+def _validate_runtime_environment() -> None:
+    integer_names = (
+        "EIMEMORY_POSTGRES_VECTOR_DIMENSION",
+        "EIMEMORY_POSTGRES_STATEMENT_TIMEOUT_MS",
+        "EIMEMORY_POSTGRES_POOL_SIZE",
+        "EIMEMORY_POSTGRES_QUEUE_BOUND",
+        "EIMEMORY_POSTGRES_FAILURE_THRESHOLD",
+        "EIMEMORY_POSTGRES_TOP_K_MAX",
+        "EIMEMORY_POSTGRES_CACHE_ENTRIES",
+        "EIMEMORY_POSTGRES_PROJECTION_TEXT_CHARS",
+        "EIMEMORY_EMBEDDINGS_MAX_BATCH",
+        "EIMEMORY_EMBEDDINGS_MAX_TEXT_CHARS",
+        "EIMEMORY_EMBEDDINGS_MAX_REQUEST_BYTES",
+        "EIMEMORY_EMBEDDINGS_MAX_RESPONSE_BYTES",
+        "EIMEMORY_EMBEDDINGS_FAILURE_THRESHOLD",
+    )
+    float_names = (
+        "EIMEMORY_POSTGRES_CONNECT_TIMEOUT_SECONDS",
+        "EIMEMORY_POSTGRES_MAX_INDEX_LAG_SECONDS",
+        "EIMEMORY_POSTGRES_COOLDOWN_SECONDS",
+        "EIMEMORY_POSTGRES_CACHE_TTL_SECONDS",
+        "EIMEMORY_POSTGRES_SYNC_LEASE_SECONDS",
+        "EIMEMORY_EMBEDDINGS_TIMEOUT_SECONDS",
+        "EIMEMORY_EMBEDDINGS_COOLDOWN_SECONDS",
+        "EIMEMORY_EMBEDDINGS_QUEUE_TIMEOUT_SECONDS",
+    )
+    for name in integer_names:
+        raw = os.environ.get(name)
+        if raw not in (None, ""):
+            int(raw)
+    for name in float_names:
+        raw = os.environ.get(name)
+        if raw not in (None, ""):
+            value = float(raw)
+            if not isfinite(value):
+                raise ValueError("non-finite runtime vector config")
+
+
+def _runtime_environment_fingerprint() -> str:
+    names = (
+        "EIMEMORY_POSTGRES_VECTOR_ENABLED",
+        "EIMEMORY_POSTGRES_VECTOR_DIMENSION",
+        "EIMEMORY_POSTGRES_VECTOR_SCHEMA",
+        "EIMEMORY_POSTGRES_VECTOR_TABLE",
+        "EIMEMORY_POSTGRES_CONNECT_TIMEOUT_SECONDS",
+        "EIMEMORY_POSTGRES_STATEMENT_TIMEOUT_MS",
+        "EIMEMORY_POSTGRES_POOL_SIZE",
+        "EIMEMORY_POSTGRES_QUEUE_BOUND",
+        "EIMEMORY_POSTGRES_MAX_INDEX_LAG_SECONDS",
+        "EIMEMORY_POSTGRES_FAILURE_THRESHOLD",
+        "EIMEMORY_POSTGRES_COOLDOWN_SECONDS",
+        "EIMEMORY_POSTGRES_TOP_K_MAX",
+        "EIMEMORY_POSTGRES_CACHE_ENTRIES",
+        "EIMEMORY_POSTGRES_CACHE_TTL_SECONDS",
+        "EIMEMORY_POSTGRES_PROJECTION_TEXT_CHARS",
+        "EIMEMORY_POSTGRES_SYNC_LEASE_SECONDS",
+        "EIMEMORY_EMBEDDINGS_MODEL",
+        "EIMEMORY_EMBEDDINGS_MAX_BATCH",
+        "EIMEMORY_EMBEDDINGS_MAX_TEXT_CHARS",
+        "EIMEMORY_EMBEDDINGS_MAX_REQUEST_BYTES",
+        "EIMEMORY_EMBEDDINGS_MAX_RESPONSE_BYTES",
+        "EIMEMORY_EMBEDDINGS_TIMEOUT_SECONDS",
+        "EIMEMORY_EMBEDDINGS_FAILURE_THRESHOLD",
+        "EIMEMORY_EMBEDDINGS_COOLDOWN_SECONDS",
+        "EIMEMORY_EMBEDDINGS_QUEUE_TIMEOUT_SECONDS",
+        "EIMEMORY_EMBEDDINGS_FINGERPRINT",
+    )
+    payload = {name: os.environ.get(name, "") for name in names}
+    return sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8", errors="replace")
+    ).hexdigest()
 
 
 def handle_vector_index_command(parsed: object, runtime: Any) -> dict[str, Any]:
