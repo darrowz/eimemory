@@ -1256,7 +1256,9 @@ class SqliteRecordStore:
         except sqlite3.OperationalError:
             pass
 
-    def _create_bounded_count_index(self) -> None:
+    def _create_bounded_count_index(self, *, rebuild: bool = False) -> None:
+        if rebuild:
+            self.conn.execute("DROP INDEX IF EXISTS idx_records_scope_source_status_kind")
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_records_scope_source_status_kind "
             "ON records(tenant_id, agent_id, workspace_id, user_id, source_id, status, kind)"
@@ -1265,6 +1267,26 @@ class SqliteRecordStore:
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations'"
         ).fetchone() is not None:
             self._mark_schema_migration(_BOUNDED_COUNT_INDEX_MIGRATION)
+
+    def _bounded_count_index_ready(self) -> bool:
+        try:
+            columns = [
+                str(row[2])
+                for row in self.conn.execute(
+                    "PRAGMA index_info(idx_records_scope_source_status_kind)"
+                )
+            ]
+        except sqlite3.OperationalError:
+            return False
+        return columns == [
+            "tenant_id",
+            "agent_id",
+            "workspace_id",
+            "user_id",
+            "source_id",
+            "status",
+            "kind",
+        ]
 
     def _create_recall_index_tables(self, *, create_indexes: bool = True) -> None:
         self.conn.execute(
@@ -2044,6 +2066,11 @@ class SqliteRecordStore:
             and not self._recall_identity_physical_ready()
         ):
             pending.append(_RECALL_IDENTITY_MIGRATION)
+        if (
+            _BOUNDED_COUNT_INDEX_MIGRATION not in pending
+            and not self._bounded_count_index_ready()
+        ):
+            pending.append(_BOUNDED_COUNT_INDEX_MIGRATION)
         return pending
 
     def apply_storage_migrations(
@@ -2104,7 +2131,7 @@ class SqliteRecordStore:
                     "index_created": False,
                     "pending": self.pending_storage_migrations(),
                 }
-        if not self._schema_migration_applied(_BOUNDED_COUNT_INDEX_MIGRATION):
+        if not self._bounded_count_index_ready():
             if not offline:
                 return {
                     "ok": True,
@@ -2115,7 +2142,7 @@ class SqliteRecordStore:
                 }
             self.conn.execute("BEGIN IMMEDIATE")
             try:
-                self._create_bounded_count_index()
+                self._create_bounded_count_index(rebuild=True)
                 self.conn.commit()
                 index_created = True
             except Exception:

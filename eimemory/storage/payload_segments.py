@@ -34,29 +34,41 @@ class PayloadSegmentStore:
         *,
         max_segment_bytes: int = DEFAULT_MAX_SEGMENT_BYTES,
         max_payload_bytes: int = DEFAULT_MAX_PAYLOAD_BYTES,
+        read_only: bool = False,
     ) -> None:
         self.root = Path(root)
+        self.read_only = bool(read_only)
         self.max_segment_bytes = max(
             _HEADER.size + 64,
             min(DEFAULT_MAX_SEGMENT_BYTES, int(max_segment_bytes)),
         )
         self.max_payload_bytes = max(256, min(DEFAULT_MAX_PAYLOAD_BYTES, int(max_payload_bytes)))
+        if self.read_only and not self.root.is_dir():
+            raise PayloadSegmentError("read-only payload segment root is missing")
         self.root.mkdir(parents=True, exist_ok=True)
         self._validate_ancestor_chain(self.root)
-        self._make_private(self.root, directory=True)
+        if not self.read_only:
+            self._make_private(self.root, directory=True)
         self._validate_directory(self.root)
         self.index_root = self.root / "index"
-        self.index_root.mkdir(parents=True, exist_ok=True)
-        self._make_private(self.index_root, directory=True)
-        self._validate_directory(self.index_root)
+        if not self.read_only:
+            self.index_root.mkdir(parents=True, exist_ok=True)
+            self._make_private(self.index_root, directory=True)
+        if self.index_root.exists():
+            self._validate_directory(self.index_root)
+        elif not self.read_only:
+            raise PayloadSegmentError("payload pointer index is missing")
         self._lock_path = self.root / ".append.lock"
         self._stats_path = self.root / "stats.json"
         self._digest_index: dict[str, dict[str, Any]] = {}
-        with interprocess_lock(self._lock_path):
-            self._recover_latest_segment()
-            self._initialize_stats()
+        if not self.read_only:
+            with interprocess_lock(self._lock_path):
+                self._recover_latest_segment()
+                self._initialize_stats()
 
     def append(self, payload: bytes) -> dict[str, Any]:
+        if self.read_only:
+            raise PayloadSegmentError("read-only payload segment store cannot append")
         raw = bytes(payload)
         if len(raw) > self.max_payload_bytes:
             raise PayloadSegmentError("payload exceeds hard limit")

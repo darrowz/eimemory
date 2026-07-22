@@ -111,3 +111,20 @@ def test_existing_large_database_defers_new_covering_index_until_explicit_mainte
     ).fetchone() is not None
     assert "records.bounded_count_index.v1" not in reopened.sqlite.pending_storage_migrations()
     reopened.close()
+
+
+def test_bounded_count_marker_cannot_hide_missing_physical_index(tmp_path) -> None:
+    store = RuntimeStore(tmp_path)
+    assert store.sqlite.conn.execute(
+        "SELECT 1 FROM schema_migrations WHERE migration_id='records.bounded_count_index.v1'"
+    ).fetchone() is not None
+    store.sqlite.conn.execute("DROP INDEX idx_records_scope_source_status_kind")
+    store.sqlite.conn.commit()
+
+    assert "records.bounded_count_index.v1" in store.sqlite.pending_storage_migrations()
+    report = store.sqlite.apply_storage_migrations(batch_size=1, offline=True)
+
+    assert report["index_created"] is True
+    assert store.sqlite._bounded_count_index_ready() is True
+    assert "records.bounded_count_index.v1" not in store.sqlite.pending_storage_migrations()
+    store.close()

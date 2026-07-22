@@ -235,6 +235,23 @@ def _build_parser() -> argparse.ArgumentParser:
     storage_sub.add_parser("flush-exports")
     storage_maintain = storage_sub.add_parser("maintain")
     storage_maintain.add_argument("--outbox-keep", type=int, default=10_000)
+    storage_status = storage_sub.add_parser("status")
+    storage_status.add_argument("--deep", action="store_true")
+    storage_migrate = storage_sub.add_parser("migrate")
+    storage_migrate.add_argument("--batch-size", type=int, default=200)
+    storage_migrate.add_argument("--max-batches", type=int, default=10_000)
+    storage_migrate.add_argument("--max-seconds", type=float, default=3600.0)
+    storage_migrate.add_argument("--offline", action="store_true")
+    storage_migrate.add_argument("--snapshot-dir", default="")
+    storage_snapshot = storage_sub.add_parser("snapshot")
+    storage_snapshot.add_argument("--snapshot-dir", required=True)
+    storage_snapshot.add_argument("--offline", action="store_true")
+    storage_restore = storage_sub.add_parser("restore")
+    storage_restore.add_argument("--snapshot-dir", required=True)
+    storage_restore.add_argument("--offline", action="store_true")
+    storage_vacuum = storage_sub.add_parser("vacuum")
+    storage_vacuum.add_argument("--apply", action="store_true")
+    storage_vacuum.add_argument("--offline", action="store_true")
 
     migrate = sub.add_parser("migrate")
     migrate_sub = migrate.add_subparsers(dest="migrate_command")
@@ -1093,14 +1110,99 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0 if report.get("ok") is True else 1
     if parsed.command == "storage":
-        if parsed.storage_command == "flush-exports":
-            report = runtime.store.flush_exports()
-        elif parsed.storage_command == "maintain":
-            report = runtime.store.maintain_storage(
-                outbox_keep=int(parsed.outbox_keep)
+        from eimemory.storage.maintenance import (
+            StorageMaintenanceError,
+            create_consistent_storage_snapshot,
+            restore_storage_snapshot,
+            run_storage_migrations,
+            vacuum_into_atomic,
+        )
+
+        db_path = runtime.store.sqlite.path
+        segment_root = runtime.store.sqlite.payload_segments.root
+        try:
+            if parsed.storage_command == "flush-exports":
+                report = runtime.store.flush_exports()
+            elif parsed.storage_command == "maintain":
+                report = runtime.store.maintain_storage(
+                    outbox_keep=int(parsed.outbox_keep)
+                )
+            elif parsed.storage_command == "status":
+                report = {
+                    "ok": True,
+                    "pending": runtime.store.sqlite.pending_storage_migrations(),
+                    "footprint": runtime.store.storage_footprint(),
+                }
+                if bool(parsed.deep):
+                    report["payload_archive_plan"] = runtime.store.sqlite.plan_payload_archival()
+                    report["payload_segment_maintenance"] = (
+                        runtime.store.payload_segment_maintenance_report()
+                    )
+            elif parsed.storage_command == "snapshot":
+                runtime.close()
+                report = create_consistent_storage_snapshot(
+                    db_path=db_path,
+                    segment_root=segment_root,
+                    snapshot_dir=parsed.snapshot_dir,
+                    offline=bool(parsed.offline),
+                )
+            elif parsed.storage_command == "restore":
+                runtime.close()
+                report = restore_storage_snapshot(
+                    snapshot_dir=parsed.snapshot_dir,
+                    db_path=db_path,
+                    segment_root=segment_root,
+                    offline=bool(parsed.offline),
+                )
+            elif parsed.storage_command == "vacuum":
+                runtime.close()
+                report = vacuum_into_atomic(
+                    db_path=db_path,
+                    offline=bool(parsed.offline),
+                    apply=bool(parsed.apply),
+                )
+            elif parsed.storage_command == "migrate":
+                pending = runtime.store.sqlite.pending_storage_migrations()
+                if not bool(parsed.offline):
+                    if "records.payload_archive.v1" in pending:
+                        print(json.dumps({"ok": False, "error": "offline_snapshot_required"}))
+                        return 2
+                    reports = []
+                    for _index in range(max(1, min(100, int(parsed.max_batches)))):
+                        pending = runtime.store.sqlite.pending_storage_migrations()
+                        if not pending:
+                            break
+                        batch = runtime.store.sqlite.apply_storage_migrations(
+                            batch_size=int(parsed.batch_size), offline=False
+                        )
+                        reports.append(batch)
+                        if batch.get("offline_required"):
+                            break
+                    report = {
+                        "ok": not runtime.store.sqlite.pending_storage_migrations(),
+                        "pending": runtime.store.sqlite.pending_storage_migrations(),
+                        "reports": reports[-20:],
+                    }
+                else:
+                    runtime.close()
+                    report = run_storage_migrations(
+                        db_path=db_path,
+                        offline=True,
+                        batch_size=int(parsed.batch_size),
+                        max_batches=int(parsed.max_batches),
+                        max_seconds=float(parsed.max_seconds),
+                        snapshot_dir=str(parsed.snapshot_dir or "") or None,
+                    )
+            else:
+                print(json.dumps({"ok": False, "error": "missing_storage_command"}))
+                return 2
+        except StorageMaintenanceError as exc:
+            print(
+                json.dumps(
+                    {"ok": False, "error": "storage_maintenance_failed", "detail": str(exc)},
+                    ensure_ascii=False,
+                )
             )
-        else:
-            print(json.dumps({"ok": False, "error": "missing_storage_command"}))
             return 2
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0 if report.get("ok") is True else 1
