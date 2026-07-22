@@ -10,6 +10,10 @@ from eimemory.governance.capability_acceptance import (
 )
 from eimemory.governance.capability_replay_packs import CORE_REPLAY_CAPABILITIES
 from eimemory.governance.change_policy import decide_change_policy
+from eimemory.governance.evidence_contract import (
+    ReleaseIdentity,
+    release_identity_payload,
+)
 from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.governance.l5_readiness import readiness_gate_status
 from eimemory.models.records import ScopeRef
@@ -32,6 +36,8 @@ def run_l5_closure_rehearsal(
     scope: dict[str, Any] | ScopeRef | None = None,
     persist: bool = True,
     replay_bootstrap: dict[str, Any] | None = None,
+    bootstrap_pending: dict[str, Any] | None = None,
+    release_identity: ReleaseIdentity | None = None,
 ) -> dict[str, Any]:
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
     report = _initial_closure_report(scope_ref)
@@ -192,17 +198,177 @@ def run_l5_closure_rehearsal(
     report["sequence"].append("readiness")
     readiness_status = readiness_gate_status(l5_readiness)
     if not readiness_status:
-        return _blocked_closure(report, "l5_readiness_not_l5")
+        if bootstrap_pending is None and release_identity is None:
+            return _blocked_closure(report, "l5_readiness_not_l5")
+        pending_verification = verify_bootstrap_pending_readiness_contract(
+            runtime,
+            scope=scope_ref,
+            bootstrap_pending=bootstrap_pending,
+            release=release_identity,
+            readiness=l5_readiness,
+        )
+        report["bootstrap_pending_verification"] = pending_verification
+        if pending_verification.get("ok") is not True:
+            return _blocked_closure(
+                report,
+                str(pending_verification.get("reason") or "bootstrap_pending_contract_invalid"),
+            )
     report["outcome_trace"] = _record_successful_task_outcome(runtime, scope=scope_ref, persist=persist)
     report["ok"] = True
     report["closure_complete"] = readiness_status == "L5"
-    report["data_accumulating"] = readiness_status == "data_accumulating"
+    report["data_accumulating"] = not report["closure_complete"]
     report["change_policy"] = decide_change_policy(
         event="code_change",
         closure_complete=bool(report["closure_complete"]),
     )
     report["blocked_reasons"] = []
     return report
+
+
+def verify_bootstrap_pending_readiness_contract(
+    runtime: Any,
+    *,
+    scope: dict[str, Any] | ScopeRef | None,
+    bootstrap_pending: dict[str, Any] | None,
+    release: ReleaseIdentity | None,
+    readiness: dict[str, Any],
+) -> dict[str, Any]:
+    """Verify the one release-bound L4.5 state allowed inside release closure."""
+
+    rejected = {
+        "ok": False,
+        "status": "blocked",
+        "reason": "bootstrap_pending_contract_invalid",
+        "record_id": "",
+    }
+    if not isinstance(release, ReleaseIdentity) or not release.complete:
+        return {**rejected, "reason": "bootstrap_pending_release_identity_invalid"}
+    if not isinstance(bootstrap_pending, dict):
+        return rejected
+    from eimemory.evaluation.real_query_gate import verify_current_bootstrap_data_pending
+
+    reverified = verify_current_bootstrap_data_pending(
+        runtime,
+        scope=scope,
+        release=release,
+    )
+    if reverified.get("ok") is not True:
+        return {
+            **rejected,
+            "reason": str(reverified.get("reason") or "bootstrap_pending_reverification_failed"),
+            "record_id": str(reverified.get("record_id") or ""),
+            "reverified": reverified,
+        }
+    compared_fields = ("ok", "status", "reason", "record_id", "progress")
+    if any(bootstrap_pending.get(field) != reverified.get(field) for field in compared_fields):
+        return {
+            **rejected,
+            "reason": "bootstrap_pending_credential_mismatch",
+            "record_id": str(reverified.get("record_id") or ""),
+            "reverified": reverified,
+        }
+    evidence_reason = _bootstrap_pending_readiness_evidence_reason(
+        readiness,
+        release=release,
+        pending_record_id=str(reverified.get("record_id") or ""),
+    )
+    if evidence_reason:
+        return {
+            **rejected,
+            "reason": evidence_reason,
+            "record_id": str(reverified.get("record_id") or ""),
+            "reverified": reverified,
+        }
+    return {
+        "ok": True,
+        "status": "bootstrap_data_pending",
+        "reason": str(reverified.get("reason") or ""),
+        "record_id": str(reverified.get("record_id") or ""),
+        "progress": dict(reverified.get("progress") or {}),
+        "release_identity": release_identity_payload(release),
+        "reverified": reverified,
+    }
+
+
+def _bootstrap_pending_readiness_evidence_reason(
+    readiness: dict[str, Any],
+    *,
+    release: ReleaseIdentity,
+    pending_record_id: str,
+) -> str:
+    if not isinstance(readiness, dict) or readiness.get("schema_version") != "l5_readiness.v2":
+        return "bootstrap_pending_readiness_schema_invalid"
+    if readiness.get("ok") is not True:
+        return "bootstrap_pending_readiness_not_ok"
+    identity = readiness.get("release_identity") if isinstance(readiness.get("release_identity"), dict) else {}
+    if any(identity.get(key) != value for key, value in release_identity_payload(release).items()):
+        return "bootstrap_pending_readiness_release_mismatch"
+    score = readiness.get("readiness_score")
+    if (
+        readiness.get("current_stage") != "L4.5"
+        or not isinstance(score, (int, float))
+        or isinstance(score, bool)
+        or float(score) != 0.8
+    ):
+        return "bootstrap_pending_readiness_not_exact_l45"
+    recall = readiness.get("production_recall_gate") if isinstance(readiness.get("production_recall_gate"), dict) else {}
+    if not (
+        recall.get("ok") is False
+        and recall.get("status") == "not_run"
+        and recall.get("reason") == "current_release_production_recall_report_missing"
+        and not str(recall.get("record_id") or "")
+    ):
+        return "bootstrap_pending_recall_gap_not_dataset_only"
+    strict = (
+        readiness.get("production_recall_strict_state")
+        if isinstance(readiness.get("production_recall_strict_state"), dict)
+        else {}
+    )
+    if not (
+        strict.get("ok") is False
+        and strict.get("status") == "not_run"
+        and strict.get("reason") == "strict_state_missing"
+        and str(strict.get("record_id") or "") == pending_record_id
+    ):
+        return "bootstrap_pending_strict_gap_invalid"
+    weak = readiness.get("verified_replay") if isinstance(readiness.get("verified_replay"), dict) else {}
+    core = (
+        readiness.get("verified_core_replay")
+        if isinstance(readiness.get("verified_core_replay"), dict)
+        else {}
+    )
+    if not _replay_summary_consistent(weak) or not _replay_summary_consistent(core):
+        return "bootstrap_pending_replay_evidence_inconsistent"
+    shadow = {
+        **readiness,
+        "current_stage": "L5",
+        "readiness_score": 1.0,
+        "production_recall_gate": {"ok": True, "status": "accepted"},
+        "production_recall_strict_state": {
+            "ok": True,
+            "status": "strict_activated",
+            "candidate_commit": release.commit,
+        },
+    }
+    if readiness_gate_status(shadow) != "L5":
+        return "bootstrap_pending_non_recall_l5_evidence_incomplete"
+    return ""
+
+
+def _replay_summary_consistent(summary: dict[str, Any]) -> bool:
+    try:
+        executed = int(summary.get("executed_count") or 0)
+        passed = int(summary.get("pass_count") or 0)
+        failed = int(summary.get("fail_count") or 0)
+        pass_rate = float(summary.get("pass_rate") or 0.0)
+    except (TypeError, ValueError):
+        return False
+    return bool(
+        executed > 0
+        and passed + failed == executed
+        and pass_rate >= 0.8
+        and abs(pass_rate - round(passed / executed, 3)) <= 0.001
+    )
 
 
 def run_weak_capability_replay_gate(
@@ -278,6 +444,7 @@ def _initial_closure_report(scope: ScopeRef) -> dict[str, Any]:
         "l5_observation": dict(not_run),
         "capability_dashboard": dict(not_run),
         "l5_readiness": dict(not_run),
+        "bootstrap_pending_verification": dict(not_run),
     }
 
 

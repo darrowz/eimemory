@@ -888,6 +888,8 @@ class Runtime:
         scope: dict | None = None,
         persist: bool = True,
         replay_bootstrap: dict | None = None,
+        bootstrap_pending: dict | None = None,
+        release_identity: Any | None = None,
     ) -> dict:
         from eimemory.governance.closure_rehearsal import run_l5_closure_rehearsal
 
@@ -896,6 +898,8 @@ class Runtime:
             scope=scope,
             persist=persist,
             replay_bootstrap=replay_bootstrap,
+            bootstrap_pending=bootstrap_pending,
+            release_identity=release_identity,
         )
 
     def run_weak_capability_replay_gate(

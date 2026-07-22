@@ -184,11 +184,19 @@ class FakeRuntime:
 
     def run_l5_closure_rehearsal(self, **kwargs) -> dict:
         self.calls.append("closure_rehearsal")
-        assert kwargs == {
+        expected = {
             "scope": SCOPE,
             "persist": True,
             "replay_bootstrap": self.replay_bootstrap,
         }
+        if "bootstrap_pending" in kwargs or "release_identity" in kwargs:
+            pending = kwargs.pop("bootstrap_pending")
+            identity = kwargs.pop("release_identity")
+            assert pending["status"] == "bootstrap_data_pending"
+            assert identity.commit == CURRENT_COMMIT
+            assert identity.version == "1.9.51"
+            assert identity.receipt_id == "receipt-1"
+        assert kwargs == expected
         return deepcopy(self.rehearsal)
 
     def build_l5_readiness_report(self, **kwargs) -> dict:
@@ -334,11 +342,44 @@ def test_release_closure_fails_closed_before_replay_when_production_dataset_not_
 
 def test_release_closure_allows_only_verified_bootstrap_data_pending_and_keeps_l5_downgraded(monkeypatch) -> None:
     runtime = ProductionGateRuntime(accepted=False)
+    runtime.rehearsal = {
+        **runtime.rehearsal,
+        "closure_complete": False,
+        "data_accumulating": True,
+    }
     runtime.readiness = {
         **runtime.readiness,
         "schema_version": "l5_readiness.v2",
+        "release_identity": {
+            "release_commit": CURRENT_COMMIT,
+            "release_version": "1.9.51",
+            "deployment_receipt_id": "receipt-1",
+            "release_session_id": "receipt-1",
+        },
         "current_stage": "L4.5",
         "readiness_score": 0.8,
+        "production_recall_gate": {
+            "ok": False,
+            "status": "not_run",
+            "reason": "current_release_production_recall_report_missing",
+            "record_id": "",
+        },
+        "production_recall_strict_state": {
+            "ok": False,
+            "status": "not_run",
+            "reason": "strict_state_missing",
+            "record_id": "bootstrap-pending-current",
+        },
+        "verified_replay": {
+            **runtime.readiness["verified_replay"],
+            "pass_rate": 1.0,
+        },
+        "verified_core_replay": {
+            **runtime.readiness["verified_core_replay"],
+            "pass_count": 15,
+            "fail_count": 0,
+            "pass_rate": 1.0,
+        },
     }
     monkeypatch.setattr(
         "eimemory.evaluation.real_query_gate.verify_current_bootstrap_data_pending",

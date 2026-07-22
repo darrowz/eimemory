@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+import shutil
+import subprocess
+import sys
 
 import pytest
 
 from deploy.run_with_governance_env import GovernanceEnvironmentError, load_governance_environment
+from deploy.summarize_release_closure import main as summarize_main
 from deploy.summarize_release_closure import summarize_release_closure
 
 
@@ -121,3 +126,72 @@ def test_release_closure_summary_marks_data_accumulating_rehearsal_as_gate_succe
     assert summary["data_accumulating"] is True
     assert summary["rehearsal_ok"] is True
     assert summary["readiness_stage"] == "data_accumulating"
+
+
+def test_release_closure_summary_cli_returns_nonzero_for_false_report_under_bash(tmp_path) -> None:
+    report_path = tmp_path / "closure.json"
+    report_path.write_text(
+        json.dumps(
+            {
+                "ok": False,
+                "closure_complete": False,
+                "data_accumulating": False,
+                "blocked_stage": "closure_rehearsal",
+                "blocked_reason": "l5_readiness_not_l5",
+                "closure_rehearsal": {"ok": False, "closure_complete": False},
+            }
+        ),
+        encoding="utf-8",
+    )
+    git_bash = Path("C:/Program Files/Git/bin/bash.exe")
+    bash = str(git_bash) if git_bash.exists() else shutil.which("bash")
+    if not bash:
+        pytest.skip("bash is required for the deployment status harness")
+
+    result = subprocess.run(
+        [
+            bash,
+            "-c",
+            '"$1" -I -B "$2" --path "$3"',
+            "bash",
+            _bash_path(Path(sys.executable)),
+            _bash_path(Path("deploy/summarize_release_closure.py").resolve()),
+            _bash_path(report_path),
+        ],
+        cwd=Path.cwd(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert json.loads(result.stdout)["ok"] is False
+
+
+def test_release_closure_summary_cli_accepts_valid_data_accumulating_contract(tmp_path, capsys) -> None:
+    report_path = tmp_path / "closure.json"
+    report_path.write_text(
+        json.dumps(
+            {
+                "ok": True,
+                "closure_complete": False,
+                "data_accumulating": True,
+                "closure_rehearsal": {
+                    "ok": True,
+                    "closure_complete": False,
+                    "data_accumulating": True,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert summarize_main(["--path", str(report_path)]) == 0
+    assert json.loads(capsys.readouterr().out)["data_accumulating"] is True
+
+
+def _bash_path(path: Path) -> str:
+    value = path.as_posix()
+    if os.name == "nt" and len(value) > 2 and value[1] == ":":
+        return f"/{value[0].lower()}{value[2:]}"
+    return value

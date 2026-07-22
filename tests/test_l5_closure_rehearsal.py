@@ -2,12 +2,25 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from eimemory.api.runtime import Runtime
 from eimemory.cli.main import main as cli_main
 from eimemory.governance.capability_acceptance import CORE_CAPABILITY_ACCEPTANCE_CASE_IDS
 from eimemory.governance.capability_replay_packs import CORE_REPLAY_CAPABILITIES
-from eimemory.governance.closure_rehearsal import _weak_replay_gate
-from eimemory.governance.evidence_contract import current_release_identity, release_identity_payload
+from eimemory.governance.closure_rehearsal import (
+    _weak_replay_gate,
+    verify_bootstrap_pending_readiness_contract,
+)
+from eimemory.evaluation.real_query_gate import (
+    _persist_bootstrap_state,
+    verify_current_bootstrap_data_pending,
+)
+from eimemory.governance.evidence_contract import (
+    ReleaseIdentity,
+    current_release_identity,
+    release_identity_payload,
+)
 from eimemory.governance.prompt_safety_remote import EXECUTOR_ID
 from eimemory.models.records import RecordEnvelope, ScopeRef
 from eimemory.runtime_identity import runtime_package_tree_digest
@@ -193,6 +206,136 @@ def test_l5_closure_rehearsal_blocks_data_accumulating_as_incomplete(tmp_path, m
         "closure_required": True,
         "premature_bump": True,
     }
+
+
+def test_release_bound_bootstrap_pending_rehearsal_keeps_complete_runtime_at_l45(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        release = _seed_executed_deployment(runtime)
+        prior = ReleaseIdentity("b" * 40, "1.9.15", "prior-receipt", "prior-session")
+        _persist_bootstrap_state(
+            runtime,
+            scope=ScopeRef.from_dict(SCOPE),
+            state="bootstrap_data_pending",
+            candidate_commit=release.commit,
+            prior_release=prior,
+            reason="production_dataset_not_ready",
+            progress={"case_count": 2, "required_case_count": 15},
+        )
+        pending = verify_current_bootstrap_data_pending(runtime, scope=SCOPE, release=release)
+        assert pending["ok"] is True
+        _seed_verified_live_tasks(runtime)
+
+        report = runtime.run_l5_closure_rehearsal(
+            scope=SCOPE,
+            persist=True,
+            bootstrap_pending=pending,
+            release_identity=release,
+        )
+    finally:
+        runtime.close()
+
+    assert report["ok"] is True
+    assert report["closure_complete"] is False
+    assert report["data_accumulating"] is True
+    assert report["blocked_reasons"] == []
+    assert report["l5_readiness"]["current_stage"] == "L4.5"
+    assert report["l5_readiness"]["readiness_score"] == 0.8
+    assert report["l5_readiness"]["live_task_gate"]["ok"] is True
+    assert report["l5_readiness"]["storage_migrations"] == {
+        "ok": True,
+        "status": "ready",
+        "pending": [],
+    }
+    assert report["bootstrap_pending_verification"]["ok"] is True
+    assert report["outcome_trace"]["outcome"]["rehearsal"] is True
+
+
+@pytest.mark.parametrize(
+    ("path", "value", "reason"),
+    [
+        (("capability_gaps",), [{"capability": "memory.recall"}], "bootstrap_pending_non_recall_l5_evidence_incomplete"),
+        (("storage_migrations", "pending"), ["records.payload_archive.v1"], "bootstrap_pending_non_recall_l5_evidence_incomplete"),
+        (("verified_replay", "weak_capabilities_missing"), ["device.control"], "bootstrap_pending_non_recall_l5_evidence_incomplete"),
+        (("live_task_gate", "ok"), False, "bootstrap_pending_non_recall_l5_evidence_incomplete"),
+        (("latest_l5_assessment", "complete"), False, "bootstrap_pending_non_recall_l5_evidence_incomplete"),
+        (("production_recall_gate", "reason"), "other_l45_reason", "bootstrap_pending_recall_gap_not_dataset_only"),
+        (("production_recall_strict_state", "status"), "blocked", "bootstrap_pending_strict_gap_invalid"),
+    ],
+)
+def test_bootstrap_pending_contract_rejects_every_non_dataset_l45_gap(
+    tmp_path,
+    path: tuple[str, ...],
+    value,
+    reason: str,
+) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        release, pending = _seed_bootstrap_pending(runtime)
+        readiness = _complete_bootstrap_pending_readiness(release, pending["record_id"])
+        target = readiness
+        for key in path[:-1]:
+            target = target[key]
+        target[path[-1]] = value
+
+        result = verify_bootstrap_pending_readiness_contract(
+            runtime,
+            scope=SCOPE,
+            bootstrap_pending=pending,
+            release=release,
+            readiness=readiness,
+        )
+    finally:
+        runtime.close()
+
+    assert result["ok"] is False
+    assert result["reason"] == reason
+
+
+def test_bootstrap_pending_contract_rejects_forged_stale_and_receipt_mismatched_credentials(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        release, pending = _seed_bootstrap_pending(runtime)
+        readiness = _complete_bootstrap_pending_readiness(release, pending["record_id"])
+        forged = {**pending, "record_id": "forged-pending"}
+        forged_result = verify_bootstrap_pending_readiness_contract(
+            runtime,
+            scope=SCOPE,
+            bootstrap_pending=forged,
+            release=release,
+            readiness=readiness,
+        )
+        mismatch = ReleaseIdentity(release.commit, release.version, "wrong-receipt", release.session_id)
+        mismatch_result = verify_bootstrap_pending_readiness_contract(
+            runtime,
+            scope=SCOPE,
+            bootstrap_pending=pending,
+            release=mismatch,
+            readiness=readiness,
+        )
+        _persist_bootstrap_state(
+            runtime,
+            scope=ScopeRef.from_dict(SCOPE),
+            state="anchor_ready",
+            candidate_commit=release.commit,
+            prior_release=ReleaseIdentity("b" * 40, "1.9.15", "prior-receipt", "prior-session"),
+            reason="dataset_ready",
+            progress={"case_count": 15},
+        )
+        stale_result = verify_bootstrap_pending_readiness_contract(
+            runtime,
+            scope=SCOPE,
+            bootstrap_pending=pending,
+            release=release,
+            readiness=readiness,
+        )
+    finally:
+        runtime.close()
+
+    assert forged_result["reason"] == "bootstrap_pending_credential_mismatch"
+    assert mismatch_result["reason"] == "bootstrap_pending_release_binding_invalid"
+    assert stale_result["reason"] == "bootstrap_pending_not_current_state"
+    assert forged_result["ok"] is mismatch_result["ok"] is stale_result["ok"] is False
 
 
 def test_l5_closure_rehearsal_fails_closed_without_executed_deployment(tmp_path) -> None:
@@ -407,7 +550,7 @@ def test_weak_replay_gate_requires_each_named_capability_once() -> None:
     assert "weak_capability_replay_invalid" in gate["blocked_reasons"]
 
 
-def _seed_executed_deployment(runtime: Runtime) -> None:
+def _seed_executed_deployment(runtime: Runtime) -> ReleaseIdentity:
     scope = ScopeRef.from_dict(SCOPE)
     commit = "a" * 40
     prior = "b" * 40
@@ -426,7 +569,7 @@ def _seed_executed_deployment(runtime: Runtime) -> None:
             "ok": True,
             "production_applied": True,
             "deployment_executed": True,
-            "verification": {"ok": True, "skipped": False},
+            "verification": {"ok": True, "skipped": False, "prior_commit": prior},
             "deployment": {"ok": True, "skipped": False, "release_path": release_path},
             "post_deploy_health": {
                 "ok": True,
@@ -467,6 +610,67 @@ def _seed_executed_deployment(runtime: Runtime) -> None:
             },
         )
     )
+    release = current_release_identity(runtime, scope)
+    assert release is not None
+    return release
+
+
+def _seed_bootstrap_pending(runtime: Runtime) -> tuple[ReleaseIdentity, dict]:
+    release = _seed_executed_deployment(runtime)
+    _persist_bootstrap_state(
+        runtime,
+        scope=ScopeRef.from_dict(SCOPE),
+        state="bootstrap_data_pending",
+        candidate_commit=release.commit,
+        prior_release=ReleaseIdentity("b" * 40, "1.9.15", "prior-receipt", "prior-session"),
+        reason="production_dataset_not_ready",
+        progress={"case_count": 2, "required_case_count": 15},
+    )
+    pending = verify_current_bootstrap_data_pending(runtime, scope=SCOPE, release=release)
+    assert pending["ok"] is True
+    return release, pending
+
+
+def _complete_bootstrap_pending_readiness(release: ReleaseIdentity, pending_record_id: str) -> dict:
+    return {
+        "ok": True,
+        "schema_version": "l5_readiness.v2",
+        "release_identity": release_identity_payload(release),
+        "current_stage": "L4.5",
+        "readiness_score": 0.8,
+        "capability_gaps": [],
+        "latest_l5_assessment": {"trusted": True, "complete": True, "level": "L5"},
+        "live_task_gate": {"ok": True, "current_deployment_verified_real_tasks": 10},
+        "verified_replay": {
+            "executed_count": 12,
+            "pass_count": 12,
+            "fail_count": 0,
+            "pass_rate": 1.0,
+            "weak_capabilities_missing": [],
+            "manifest_rejection_reasons": {},
+        },
+        "verified_core_replay": {
+            "executed_count": 15,
+            "pass_count": 15,
+            "fail_count": 0,
+            "pass_rate": 1.0,
+            "core_capabilities_missing": [],
+            "manifest_rejection_reasons": {},
+        },
+        "production_recall_gate": {
+            "ok": False,
+            "status": "not_run",
+            "reason": "current_release_production_recall_report_missing",
+            "record_id": "",
+        },
+        "production_recall_strict_state": {
+            "ok": False,
+            "status": "not_run",
+            "reason": "strict_state_missing",
+            "record_id": pending_record_id,
+        },
+        "storage_migrations": {"ok": True, "status": "ready", "pending": []},
+    }
 
 
 def _seed_verified_live_tasks(runtime: Runtime) -> None:

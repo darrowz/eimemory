@@ -5,6 +5,7 @@ from typing import Any
 
 from eimemory.governance.l5_readiness import readiness_gate_status
 from eimemory.governance.evidence_contract import ReleaseIdentity
+from eimemory.governance.closure_rehearsal import verify_bootstrap_pending_readiness_contract
 from eimemory.models.records import ScopeRef
 
 
@@ -37,6 +38,7 @@ def run_release_closure(
         "live_acceptance": dict(not_run),
         "closure_rehearsal": dict(not_run),
         "readiness": dict(not_run),
+        "bootstrap_pending_verification": dict(not_run),
     }
     identity_kwargs = {
         "scope": scope_payload,
@@ -148,14 +150,28 @@ def run_release_closure(
     if not _live_acceptance_ok(live_acceptance, receipt=receipt):
         return _blocked(report, "live_acceptance", _failure_reason(live_acceptance, "live_acceptance_failed"))
 
-    rehearsal = runtime.run_l5_closure_rehearsal(
-        scope=scope_payload,
-        persist=True,
-        replay_bootstrap=replay_bootstrap,
-    )
+    rehearsal_kwargs: dict[str, Any] = {
+        "scope": scope_payload,
+        "persist": True,
+        "replay_bootstrap": replay_bootstrap,
+    }
+    if bootstrap_pending is not None:
+        rehearsal_kwargs.update(
+            {
+                "bootstrap_pending": bootstrap_pending,
+                "release_identity": receipt_identity,
+            }
+        )
+    rehearsal = runtime.run_l5_closure_rehearsal(**rehearsal_kwargs)
     report["closure_rehearsal"] = rehearsal
     if not _rehearsal_gate_ok(rehearsal):
         return _blocked(report, "closure_rehearsal", _failure_reason(rehearsal, "closure_rehearsal_failed"))
+    if bootstrap_pending is not None and not (
+        rehearsal.get("ok") is True
+        and rehearsal.get("closure_complete") is False
+        and rehearsal.get("data_accumulating") is True
+    ):
+        return _blocked(report, "closure_rehearsal", "bootstrap_pending_rehearsal_state_invalid")
 
     readiness = runtime.build_l5_readiness_report(
         scope=scope_payload,
@@ -167,8 +183,20 @@ def run_release_closure(
     report["record_ids"]["readiness"] = str(readiness.get("persisted_record_id") or "")
     readiness_status = readiness_gate_status(readiness)
     if bootstrap_pending is not None:
-        if str(readiness.get("schema_version") or "") != "l5_readiness.v2" or str(readiness.get("current_stage") or "") != "L4.5":
-            return _blocked(report, "readiness", "bootstrap_data_pending_readiness_not_downgraded")
+        pending_verification = verify_bootstrap_pending_readiness_contract(
+            runtime,
+            scope=scope_payload,
+            bootstrap_pending=bootstrap_pending,
+            release=receipt_identity,
+            readiness=readiness,
+        )
+        report["bootstrap_pending_verification"] = pending_verification
+        if pending_verification.get("ok") is not True:
+            return _blocked(
+                report,
+                "readiness",
+                str(pending_verification.get("reason") or "bootstrap_data_pending_readiness_invalid"),
+            )
         report["ok"] = True
         report["closure_complete"] = False
         report["data_accumulating"] = True

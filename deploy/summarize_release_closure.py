@@ -72,7 +72,9 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
         parser.exit(2, f"release closure summary failed: {exc}\n")
     print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
-    return 0
+    complete = summary.get("closure_complete") is True
+    accumulating = summary.get("data_accumulating") is True
+    return 0 if summary.get("ok") is True and summary.get("rehearsal_ok") is True and complete != accumulating else 1
 
 
 if __name__ == "__main__":
