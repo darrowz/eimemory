@@ -178,12 +178,19 @@ def _message_body_text(item: dict) -> str:
 
 
 def find_existing_reply(payload: dict) -> dict:
-    conversation_id = str(payload.get("conversation_id") or "").strip()
+    conversation_id = str(
+        payload.get("feishu_chat_id")
+        or payload.get("chat_id")
+        or payload.get("conversation_id")
+        or ""
+    ).strip()
     inbound_id = str(payload.get("inbound_message_id") or "").strip()
     expected_text = _canonical_text(payload.get("text"))
     received_at_ms = int(payload.get("received_at_ms") or 0)
     if not inbound_id.startswith("om_") or not expected_text:
         return {"status": "error", "error": "missing reply correlation fields"}
+    # OpenClaw DM contexts often carry user:<open_id>. The Feishu message list API
+    # needs an oc_* chat container; without it we cannot safely prove absence.
     if not conversation_id.startswith("oc_"):
         return {"status": "not_found"}
     params = {
@@ -216,8 +223,10 @@ def find_existing_reply(payload: dict) -> dict:
             return {"status": "error", "error": str(response.get("msg") or "reply query failed")}
         data = response.get("data") if isinstance(response.get("data"), dict) else {}
         items = data.get("items") if isinstance(data.get("items"), list) else []
+        parent_hit = ""
+        same_text_hit = ""
         for item in items:
-            if not isinstance(item, dict) or item.get("parent_id") != inbound_id:
+            if not isinstance(item, dict):
                 continue
             sender = item.get("sender") if isinstance(item.get("sender"), dict) else {}
             if sender.get("sender_type") not in {"app", "bot"}:
@@ -225,8 +234,20 @@ def find_existing_reply(payload: dict) -> dict:
             if _canonical_text(_message_body_text(item)) != expected_text:
                 continue
             message_id = str(item.get("message_id") or "").strip()
-            if message_id:
-                return {"status": "found", "messageId": message_id}
+            if not message_id:
+                continue
+            # Prefer threaded/parent-linked receipts, but gateway automatic finals
+            # often land without parent_id. Same-text bot replies after the inbound
+            # timestamp still prove delivery and must block a second send.
+            if item.get("parent_id") == inbound_id:
+                parent_hit = message_id
+                break
+            if not same_text_hit:
+                same_text_hit = message_id
+        if parent_hit:
+            return {"status": "found", "messageId": parent_hit}
+        if same_text_hit:
+            return {"status": "found", "messageId": same_text_hit}
         page_token = str(data.get("page_token") or "").strip()
         if data.get("has_more") is not True or not page_token:
             return {"status": "not_found"}
@@ -316,6 +337,56 @@ def scan_once(
             continue
         status = str(raw_entry.get("status") or "")
         final_text = str(raw_entry.get("final_text") or "").strip()
+        # If the bridge already recorded a successful gateway outbound, close the
+        # receipt without another external send.
+        existing_receipt = str(
+            raw_entry.get("delivery_message_id")
+            or raw_entry.get("last_sent_message_id")
+            or ""
+        ).strip()
+        if (
+            status in {"answered", "final_ready"}
+            and final_text
+            and existing_receipt
+            and raw_entry.get("last_sent_success") is True
+            and _canonical_text(raw_entry.get("last_sent_content")) == _canonical_text(final_text)
+        ):
+            try:
+                decision = prepare_delivery(
+                    attempts_path,
+                    key=str(inbound_id),
+                    delivery_kind="final",
+                    idempotency_key=_delivery_idempotency_key(str(inbound_id), "final"),
+                    payload_digest=hashlib.sha256(
+                        json.dumps(
+                            {
+                                "inbound_message_id": inbound_id,
+                                "text": final_text,
+                                "delivery_kind": "final",
+                            },
+                            ensure_ascii=False,
+                            sort_keys=True,
+                        ).encode("utf-8")
+                    ).hexdigest(),
+                    now_ms=now_ms,
+                )
+                if decision.get("send") is True or str(
+                    (decision.get("entry") or {}).get("state") or ""
+                ) in {"sending", "delivery_uncertain"}:
+                    recorded = complete_delivery(
+                        attempts_path,
+                        key=str(inbound_id),
+                        ok=True,
+                        message_id=existing_receipt,
+                        error="",
+                        now_ms=now_ms,
+                    )
+                    attempt_entries[str(inbound_id)] = recorded
+                    retried += 1
+            except (OSError, ValueError, KeyError):
+                failed += 1
+                persistence_failed += 1
+            continue
         if status in {"answered", "final_ready"} and final_text:
             due_at = int(raw_entry.get("agent_end_at_ms") or raw_entry.get("received_at_ms") or 0)
             if now_ms - due_at < delivery_timeout_ms:
@@ -339,6 +410,7 @@ def scan_once(
         previous_attempt = attempt_entries.get(attempt_key)
         payload = {
             "conversation_id": conversation_id,
+            "feishu_chat_id": str(raw_entry.get("feishu_chat_id") or conversation_id),
             "sender_id": sender_id,
             "text": text,
             "idempotency_key": _delivery_idempotency_key(inbound_id, delivery_kind),

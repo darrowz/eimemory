@@ -1527,7 +1527,9 @@ function latestPendingReplyEntry(state, sessionKey, runId = '', content = '') {
     }
   }
   if (content) {
-    const exactContent = candidates.find((entry) => entry?.final_text === content);
+    const wanted = canonicalReplyText(content);
+    const exactContent = candidates.find((entry) => canonicalReplyText(entry?.final_text) === wanted)
+      || candidates.find((entry) => canonicalReplyText(entry?.last_sent_content) === wanted);
     if (exactContent) {
       return exactContent;
     }
@@ -1578,12 +1580,35 @@ function isInternalSilentReply(text) {
   return /^(?:NO_REPLY|HEARTBEAT_OK)$/i.test(String(text || '').trim());
 }
 
+function canonicalReplyText(value) {
+  return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+function resolveFeishuConversationId(event, context) {
+  const candidates = [
+    context?.chatId,
+    context?.chat_id,
+    event?.chatId,
+    event?.chat_id,
+    context?.conversationId,
+    event?.conversationId,
+    context?.to,
+    event?.to,
+  ];
+  const values = candidates.map((item) => String(item || '').trim()).filter(Boolean);
+  const oc = values.find((item) => item.startsWith('oc_'));
+  if (oc) {
+    return oc;
+  }
+  return values[0] || '';
+}
+
 function trackReplyInbound(event, context) {
   if (!isDirectFeishuReplyContext(context)) {
     return;
   }
   const inboundMessageId = String(event?.messageId || context?.messageId || '').trim();
-  const conversationId = String(context?.conversationId || '').trim();
+  const conversationId = resolveFeishuConversationId(event, context);
   const senderId = String(event?.senderId || event?.from || context?.senderId || '').trim();
   if (!inboundMessageId.startsWith('om_') || (!conversationId && !senderId)) {
     return;
@@ -1591,6 +1616,10 @@ function trackReplyInbound(event, context) {
   updateReplyDeliveryState((state) => {
     reconcileWatchdogReceipts(state);
     if (state.entries[inboundMessageId]) {
+      // Backfill a real Feishu chat id when later hooks carry oc_*.
+      if (conversationId.startsWith('oc_') && !String(state.entries[inboundMessageId].conversation_id || '').startsWith('oc_')) {
+        state.entries[inboundMessageId].conversation_id = conversationId;
+      }
       return;
     }
     state.entries[inboundMessageId] = {
@@ -1657,9 +1686,10 @@ function trackReplyAgentEnd(event, context) {
     entry.final_text = finalText;
     entry.suppress_stalled_notice = false;
     entry.agent_end_at_ms = Date.now();
-    entry.status = entry.last_sent_success === true && entry.last_sent_message_id && entry.last_sent_content === finalText
-      ? 'platform_accepted'
-      : 'final_ready';
+    const sentMatched = entry.last_sent_success === true
+      && entry.last_sent_message_id
+      && canonicalReplyText(entry.last_sent_content) === canonicalReplyText(finalText);
+    entry.status = sentMatched ? 'platform_accepted' : 'final_ready';
     if (entry.status === 'platform_accepted') {
       entry.delivery_message_id = entry.last_sent_message_id || '';
       entry.platform_accepted_at_ms = entry.last_sent_at_ms || Date.now();
@@ -1683,15 +1713,30 @@ function trackReplyMessageSent(event, context) {
     if (!entry) {
       return;
     }
+    // Prefer a real Feishu chat container id when the outbound hook carries it.
+    const conversationId = resolveFeishuConversationId(event, context);
+    if (conversationId.startsWith('oc_')) {
+      entry.conversation_id = conversationId;
+    }
     entry.last_sent_success = event?.success === true;
     entry.last_sent_content = sentContent;
     entry.last_sent_message_id = messageId;
     entry.last_sent_at_ms = Date.now();
-    if (event?.success === true && messageId && entry.final_text && entry.final_text === entry.last_sent_content) {
-      entry.status = 'platform_accepted';
-      entry.delivery_message_id = entry.last_sent_message_id;
-      entry.platform_accepted_at_ms = entry.last_sent_at_ms;
-      entry.delivered_at_ms = entry.platform_accepted_at_ms;
+    // Gateway automatic finals must close the receipt loop immediately once the
+    // platform accepts the outbound message. Waiting for exact final_text pre-match
+    // left final_ready windows that the watchdog could double-send.
+    if (event?.success === true && messageId) {
+      if (!entry.final_text) {
+        entry.final_text = sentContent;
+      }
+      const matched = !entry.final_text
+        || canonicalReplyText(entry.final_text) === canonicalReplyText(sentContent);
+      if (matched) {
+        entry.status = 'platform_accepted';
+        entry.delivery_message_id = messageId;
+        entry.platform_accepted_at_ms = entry.last_sent_at_ms;
+        entry.delivered_at_ms = entry.last_sent_at_ms;
+      }
     }
   });
 }

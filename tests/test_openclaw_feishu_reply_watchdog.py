@@ -143,6 +143,7 @@ def test_watchdog_retries_overdue_answer_once(tmp_path: Path) -> None:
     assert calls == [
         {
             "conversation_id": "oc_test",
+            "feishu_chat_id": "oc_test",
             "sender_id": "ou_test",
             "text": "最终答复",
             "idempotency_key": _delivery_idempotency_key("om_in_1", "final"),
@@ -318,6 +319,72 @@ def test_reply_query_error_defers_send(tmp_path: Path) -> None:
 
     assert result["failed"] == 1
     assert sends == []
+
+
+def test_watchdog_does_not_resend_when_bridge_already_has_gateway_receipt(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.json"
+    attempts_path = tmp_path / "attempts.json"
+    _write_state(
+        state_path,
+        {
+            "inbound_message_id": "om_gateway_closed",
+            "session_key": "agent:main:feishu:direct:ou_test",
+            "conversation_id": "user:ou_test",
+            "sender_id": "ou_test",
+            "received_at_ms": 1_000,
+            "agent_end_at_ms": 2_000,
+            "status": "final_ready",
+            "final_text": "已由 gateway 发出",
+            "last_sent_success": True,
+            "last_sent_content": "已由 gateway 发出",
+            "last_sent_message_id": "om_gateway_existing",
+            "delivery_message_id": "om_gateway_existing",
+        },
+    )
+    sends: list[dict] = []
+
+    result = _scan_once(
+        state_path=state_path,
+        attempts_path=attempts_path,
+        now_ms=10_000,
+        find_existing=lambda _payload: {"status": "not_found"},
+        send=lambda payload: sends.append(payload) or {"ok": True, "messageId": "om_duplicate"},
+    )
+
+    assert result["retried"] == 1
+    assert sends == []
+    attempts = json.loads(attempts_path.read_text(encoding="utf-8"))["entries"]
+    assert attempts["om_gateway_closed"]["message_id"] == "om_gateway_existing"
+
+
+def test_find_existing_accepts_same_text_bot_reply_without_parent_id(monkeypatch) -> None:
+    def run(command, **kwargs):
+        payload = {
+            "code": 0,
+            "data": {
+                "items": [
+                    {
+                        "message_id": "om_same_text",
+                        "parent_id": "",
+                        "sender": {"sender_type": "app"},
+                        "body": {"content": json.dumps({"text": "同一答复"}, ensure_ascii=False)},
+                    }
+                ],
+                "has_more": False,
+            },
+        }
+        return type("Result", (), {"returncode": 0, "stdout": json.dumps(payload), "stderr": ""})()
+
+    monkeypatch.setattr(watchdog.subprocess, "run", run)
+    found = watchdog.find_existing_reply(
+        {
+            "conversation_id": "oc_test",
+            "inbound_message_id": "om_in",
+            "text": "同一答复",
+            "received_at_ms": 1_000,
+        }
+    )
+    assert found == {"status": "found", "messageId": "om_same_text"}
 
 
 def test_existing_parent_reply_closes_ambiguous_send_without_duplicate(tmp_path: Path) -> None:

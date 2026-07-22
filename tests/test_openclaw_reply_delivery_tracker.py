@@ -310,6 +310,44 @@ Promise.resolve()
     assert entry["suppress_stalled_notice"] is True
 
 
+def test_tracker_closes_gateway_final_receipt_even_if_agent_end_came_first(tmp_path: Path) -> None:
+    """Automatic Feishu finals must close receipt on message_sent to stop watchdog resend."""
+    state = _run_node(
+        """
+const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
+const handlers = {};
+plugin.register({ on(name, handler) { handlers[name] = handler; } });
+const ctx = {
+  channelId: 'feishu',
+  conversationId: 'user:ou_test',
+  chatId: 'oc_real_chat',
+  sessionKey: 'agent:main:feishu:direct:ou_test'
+};
+Promise.resolve()
+  .then(() => handlers.message_received({
+    from: 'ou_test', messageId: 'om_auto_final', runId: 'run-auto'
+  }, ctx))
+  .then(() => handlers.agent_end({
+    success: true,
+    runId: 'run-auto',
+    messages: [{ role: 'assistant', content: '同一条最终答复' }]
+  }, ctx))
+  .then(() => handlers.message_sent({
+    content: '同一条最终答复\\n',
+    success: true,
+    messageId: 'om_gateway_out',
+    chatId: 'oc_real_chat'
+  }, ctx));
+""",
+        tmp_path / "reply-state.json",
+    )
+
+    entry = state["entries"]["om_auto_final"]
+    assert entry["status"] == "platform_accepted"
+    assert entry["delivery_message_id"] == "om_gateway_out"
+    assert entry["conversation_id"] == "oc_real_chat"
+
+
 def test_tracker_requires_nonempty_platform_receipt(tmp_path: Path) -> None:
     state = _run_node(
         """
