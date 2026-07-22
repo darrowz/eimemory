@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import json
 import os
 from pathlib import Path
@@ -220,6 +221,20 @@ def test_release_closure_summary_cli_keeps_strict_l5_contract(tmp_path, capsys) 
     assert json.loads(capsys.readouterr().out)["closure_complete"] is True
 
 
+def test_release_bound_accumulating_fixture_keeps_three_pending_identities_independent() -> None:
+    report = _release_bound_accumulating_report()
+    top = report["bootstrap_pending_verification"]["release_identity"]
+    recall = report["production_recall_gate"]["bootstrap"]["release_identity"]
+    rehearsal = report["closure_rehearsal"]["bootstrap_pending_verification"]["release_identity"]
+
+    assert top is not recall
+    assert top is not rehearsal
+    assert recall is not rehearsal
+    top["release_session_id"] = "mutated-top-only"
+    assert recall["release_session_id"] == "receipt-1"
+    assert rehearsal["release_session_id"] == "receipt-1"
+
+
 @pytest.mark.parametrize(
     ("path", "value"),
     [
@@ -303,9 +318,9 @@ def _release_bound_accumulating_report() -> dict:
         "production_recall_gate": {
             "ok": False,
             "status": "data_accumulating",
-            "bootstrap": dict(pending),
+            "bootstrap": deepcopy(pending),
         },
-        "bootstrap_pending_verification": dict(pending),
+        "bootstrap_pending_verification": deepcopy(pending),
         "replay_bootstrap": {"ok": True},
         "live_acceptance": {
             "ok": True,
@@ -323,7 +338,7 @@ def _release_bound_accumulating_report() -> dict:
             "ok": True,
             "closure_complete": False,
             "data_accumulating": True,
-            "bootstrap_pending_verification": dict(pending),
+            "bootstrap_pending_verification": deepcopy(pending),
         },
         "readiness": {
             "ok": True,
