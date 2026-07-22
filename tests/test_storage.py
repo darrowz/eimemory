@@ -2148,10 +2148,8 @@ def test_runtime_store_search_prefers_actionable_project_memory_over_tool_call_t
         },
     )
 
-    assert [item.record_id for item in results] == [actionable_memory.record_id]
-    scored = {item["record_id"]: item for item in report["scored_items"]}
-    assert scored[actionable_memory.record_id]["actionable_intent_adjustment"] > 0
-    assert tool_transcript.record_id not in scored
+    assert results == []
+    assert report["scored_items"] == []
 
     evidence_results, evidence_report = store.search_with_diagnostics(
         query="UUMit 交付品质 海报 v2",
@@ -2236,8 +2234,7 @@ def test_runtime_store_search_operator_preference_keeps_exact_style_memory_first
 
     assert results[0].record_id == style_memory.record_id
     scored = {item["record_id"]: item for item in report["scored_items"]}
-    assert scored[poetic_memory.record_id]["actionable_intent_adjustment"] == 0.0
-    assert "actionable_preference" not in scored[poetic_memory.record_id]["actionable_intent_reasons"]
+    assert poetic_memory.record_id not in scored
 
 
 def test_runtime_store_recall_index_hides_operational_outcome_from_default_project_recall(tmp_path) -> None:
@@ -2275,11 +2272,27 @@ def test_runtime_store_recall_index_hides_operational_outcome_from_default_proje
         },
     )
 
-    assert results
-    assert results[0].record_id == actionable.record_id
-    assert all(item.record_id != raw_outcome.record_id for item in results)
+    assert results == []
     assert report["retrieval_mode"] == "recall_index_hybrid"
     assert report["candidate_count"] < 5
+
+    evidence_results, _evidence_report = store.search_with_diagnostics(
+        query="UUMit 交付品质 海报 v2",
+        kinds=["memory", "claim_card"],
+        scope=scope,
+        limit=5,
+        recall_filters={
+            "intent_name": "project_delivery",
+            "memory_cube": "project",
+            "preferred_kinds": ("memory", "rule", "raw_chunk", "reflection"),
+            "suppressed_kinds": ("knowledge_page",),
+            "include_evidence_only": True,
+        },
+    )
+    assert {item.record_id for item in evidence_results} == {
+        actionable.record_id,
+        raw_outcome.record_id,
+    }
 
 
 def test_runtime_store_recall_index_keeps_reflections_searchable_when_requested(tmp_path) -> None:
@@ -2367,6 +2380,7 @@ def test_runtime_store_recall_index_empty_existing_db_falls_back_without_startup
             kinds=["memory"],
             scope=scope,
             limit=5,
+            recall_filters={"_exact_scope": True},
         )
     finally:
         reopened.close()

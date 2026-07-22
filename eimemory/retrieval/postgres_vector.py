@@ -1061,6 +1061,19 @@ class PostgresVectorCandidateSource:
 
     def search(self, request: CandidateRequest) -> CandidateBatch:
         sqlite_batch = self.sqlite_source.search(request)
+        if request.recall_filter_dict().get("_result_limit") == 1:
+            identity_hits = tuple(
+                hit
+                for hit in sqlite_batch.hits
+                if set(hit.evidence_hints) & {"exact_title", "alias_hit"}
+            )
+            if identity_hits:
+                return self._batch(
+                    sqlite_batch,
+                    request=request,
+                    state="sqlite_authority",
+                    hits=identity_hits[:1],
+                )
         if self._startup_error:
             return self._batch(
                 sqlite_batch,

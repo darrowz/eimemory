@@ -177,8 +177,10 @@ class GovernedRecallEngine:
     """Single owner of recall hydration, governance, ordering, and packaging."""
 
     name = "governed"
-    policy_version = "governed-recall.v1"
-    _minimum_candidate_budget = 360
+    policy_version = "governed-recall.v2"
+    _minimum_candidate_budget = 48
+    _candidate_budget_multiplier = 3
+    _max_query_scope_refs = 64
     _safe_raw_boosts = frozenset(
         {
             "keyword_overlap",
@@ -227,6 +229,11 @@ class GovernedRecallEngine:
             "name": self.name,
             "policy_version": self.policy_version,
             "fusion_version": FUSION_POLICY_VERSION,
+            "candidate_budget_policy": {
+                "minimum": self._minimum_candidate_budget,
+                "multiplier": self._candidate_budget_multiplier,
+                "max_query_scope_refs": self._max_query_scope_refs,
+            },
             "candidate_source": _sanitize_candidate_identity(
                 raw_source,
                 source=self.candidate_source,
@@ -262,6 +269,8 @@ class GovernedRecallEngine:
                 query_scope_refs,
                 primary_scope=scope_ref,
             )[:query_scope_limit]
+        query_scope_refs_truncated = len(query_scope_refs) > self._max_query_scope_refs
+        query_scope_refs = query_scope_refs[: self._max_query_scope_refs]
         policy_scope_ref = query_scope_refs[0] if query_scope_refs else scope_ref
         candidate_scope_groups: list[list[ScopeRef]] = []
         authorized_exact_scopes: set[ExactScope] = set()
@@ -361,6 +370,7 @@ class GovernedRecallEngine:
         )
         report_query = memory._is_report_query(normalized_query, task_context)
         recall_filters = memory._recall_filters_from_task_context(task_context)
+        recall_filters["_result_limit"] = limit
         policy_source_weights = memory._source_weights(retrieval_policy.get("source_weights"))
         if policy_source_weights:
             recall_filters["source_weights"] = {
@@ -394,6 +404,8 @@ class GovernedRecallEngine:
             operational_recall_allowed=operational_recall_allowed,
         )
         engine_drops: Counter[str] = Counter()
+        if query_scope_refs_truncated:
+            engine_drops["query_scope_limit"] += 1
         raw_evidence: list[dict] = []
         if raw_hybrid and source_ids != ():
             seen_raw_refs: set[tuple[str, ExactScope, str]] = set()
@@ -479,7 +491,7 @@ class GovernedRecallEngine:
                 candidate_budget = max(
                     search_limit,
                     memory._positive_int(recall_filters.get("candidate_limit"))
-                    or max(self._minimum_candidate_budget, search_limit * 36),
+                    or max(self._minimum_candidate_budget, search_limit * self._candidate_budget_multiplier),
                 )
                 provider_limit = search_limit
                 if isinstance(self.candidate_source, SQLiteCandidateSource) or (
@@ -601,14 +613,15 @@ class GovernedRecallEngine:
             )
         search_report = self._merge_source_reports(source_reports, scored_items=scored_items)
         blocked_counts: Counter[str] = Counter(dict(search_report.get("blocked_counts") or {}))
-        diagnostic_blocked_counts = memory._diagnostic_blocked_operational_counts(
-            query=normalized_query,
-            query_scope_refs=query_scope_refs,
-            recall_filters=recall_filters,
-            operational_recall_allowed=operational_recall_allowed,
-            source_ids=source_ids,
-        )
-        blocked_counts.update(diagnostic_blocked_counts)
+        if task_context.get("recall_diagnostics") is True:
+            diagnostic_blocked_counts = memory._diagnostic_blocked_operational_counts(
+                query=normalized_query,
+                query_scope_refs=query_scope_refs,
+                recall_filters=recall_filters,
+                operational_recall_allowed=operational_recall_allowed,
+                source_ids=source_ids,
+            )
+            blocked_counts.update(diagnostic_blocked_counts)
         items, suppressed_counts = memory._filter_default_suppressed_items(
             items,
             task_context,
@@ -735,7 +748,13 @@ class GovernedRecallEngine:
             base_ids=base_ids,
             memory_usage_adjustments=memory_usage_adjustments,
         )
-        items = items[:limit]
+        items, anchor_reserve_swapped = self._reserve_high_quality_anchor_only(
+            items,
+            limit=limit,
+            component_hints_by_ref=component_hints_by_ref,
+        )
+        if anchor_reserve_swapped:
+            engine_drops["anchor_reserve_swap"] += 1
         graph_expanded = sum(1 for item in items if self._record_key(item) not in base_ids)
         selected_refs = {self._record_key(item) for item in items}
         rule_recall_promoted_count = sum(
@@ -749,12 +768,16 @@ class GovernedRecallEngine:
             memories=[item for item in items if item.kind in {"memory", "rule"}],
             query=normalized_query,
         )
-        reflection_items = self.store.search(
-            query=normalized_query,
-            kinds=["reflection"],
-            scope=scope_ref,
-            limit=3,
-            source_ids=source_ids,
+        reflection_items = (
+            self.store.search(
+                query=normalized_query,
+                kinds=["reflection"],
+                scope=scope_ref,
+                limit=3,
+                source_ids=source_ids,
+            )
+            if operational_recall_allowed
+            else []
         )
         reflections = [
             item
@@ -1225,6 +1248,41 @@ class GovernedRecallEngine:
             return lexical_score
         provider_rank = self._safe_int(hints.get("_provider_rank"), default=0)
         return (1.0 / provider_rank) if self._keyword_component_eligible(hints) and provider_rank else 0.0
+
+    def _reserve_high_quality_anchor_only(
+        self,
+        items: list[RecordEnvelope],
+        *,
+        limit: int,
+        component_hints_by_ref: dict[tuple[str, ExactScope, str], dict[str, Any]],
+    ) -> tuple[list[RecordEnvelope], bool]:
+        selected = list(items[:limit])
+        if limit <= 1 or not selected:
+            return selected, False
+
+        def qualifies(item: RecordEnvelope) -> bool:
+            hints = component_hints_by_ref.get(self._record_key(item)) or {}
+            sources = set(str(value) for value in hints.get("candidate_sources") or ())
+            return (
+                "anchor" in sources
+                and "fts" not in sources
+                and self._safe_float(hints.get("quality_score")) >= 0.8
+                and (
+                    self._safe_float(hints.get("lexical_score")) > 0.0
+                    or (
+                        self._safe_float(hints.get("semantic_score")) >= 0.12
+                        and self._safe_float(hints.get("vector_score")) >= 0.35
+                    )
+                )
+            )
+
+        if any(qualifies(item) for item in selected):
+            return selected, False
+        reserved = next((item for item in items[limit:] if qualifies(item)), None)
+        if reserved is None:
+            return selected, False
+        selected[-1] = reserved
+        return selected, True
 
     def _keyword_component_tie_key(self, hints: dict[str, Any]) -> tuple[float, float, int]:
         provider_rank = self._safe_int(hints.get("_provider_rank"), default=0)

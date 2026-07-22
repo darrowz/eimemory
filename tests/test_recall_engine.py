@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import FrozenInstanceError, asdict
 import inspect
+import json
 from typing import Any, get_type_hints
 
 import pytest
@@ -19,6 +20,7 @@ from eimemory.retrieval.contracts import (
 )
 from eimemory.retrieval.engine import GovernedRecallEngine, RecallCallbacks
 from eimemory.retrieval.sqlite_source import SQLiteCandidateSource
+from eimemory.storage.jsonl import canonical_payload_json, payload_digest
 from eimemory.storage.runtime_store import RuntimeStore
 
 
@@ -147,6 +149,24 @@ def test_candidate_contracts_are_frozen_and_id_only() -> None:
         ref.record_id = "changed"  # type: ignore[misc]
     with pytest.raises(FrozenInstanceError):
         request.limit = 4  # type: ignore[misc]
+
+
+def test_effective_identity_binds_candidate_budget_policy(tmp_path) -> None:
+    store = RuntimeStore(tmp_path)
+    engine = GovernedRecallEngine(store=store, candidate_source=SQLiteCandidateSource(store))
+
+    original = engine.effective_identity()
+    assert original["policy_version"] == "governed-recall.v2"
+    assert original["candidate_budget_policy"] == {
+        "minimum": 48,
+        "multiplier": 3,
+        "max_query_scope_refs": 64,
+    }
+
+    engine._candidate_budget_multiplier = 4
+    changed = engine.effective_identity()
+    assert changed["identity_digest"] != original["identity_digest"]
+    store.close()
 
 
 def test_candidate_request_round_trips_empty_nested_container_types() -> None:
@@ -1055,6 +1075,95 @@ def test_exact_list_rejects_projection_payload_swap_for_direct_report(tmp_path) 
     store.close()
 
 
+def test_recall_hydrates_legacy_knowledge_source_from_authoritative_projection(tmp_path) -> None:
+    store = RuntimeStore(tmp_path)
+    target = RecordEnvelope.create(
+        kind="knowledge_page",
+        title="Legacy source projection",
+        summary="A migrated knowledge page must remain searchable in its authoritative source partition.",
+        scope=SCOPE,
+        source="eimemory.knowledge.synthesis",
+        source_id="alpha",
+        content={"source_ids": ["alpha", "beta"]},
+    )
+    store.append(target)
+
+    row = store.sqlite.conn.execute(
+        "SELECT storage_key, payload_json FROM records WHERE record_id = ? AND source_id = ?",
+        (target.record_id, "alpha"),
+    ).fetchone()
+    legacy_payload = json.loads(str(row["payload_json"]))
+    legacy_payload["source_id"] = "default"
+    store.sqlite.conn.execute(
+        "UPDATE records SET payload_json = ?, payload_digest = ? WHERE storage_key = ?",
+        (
+            canonical_payload_json(legacy_payload),
+            payload_digest(legacy_payload),
+            str(row["storage_key"]),
+        ),
+    )
+    store.sqlite.conn.commit()
+
+    records, report = store.search_with_diagnostics(
+        query="migrated knowledge authoritative source partition",
+        kinds=["knowledge_page"],
+        scope=SCOPE,
+        limit=5,
+        recall_filters={"_exact_scope": True},
+        source_ids=["alpha"],
+    )
+
+    assert [record.record_id for record in records] == [target.record_id]
+    assert report["blocked_counts"].get("projection_payload_mismatch", 0) == 0
+    store.close()
+
+
+def test_recall_rejects_tampered_inline_payload_before_legacy_source_overlay(tmp_path) -> None:
+    store = RuntimeStore(tmp_path)
+    target = RecordEnvelope.create(
+        kind="knowledge_page",
+        title="Trusted projection title",
+        summary="Trusted projection summary",
+        scope=SCOPE,
+        source="eimemory.knowledge.synthesis",
+        source_id="alpha",
+        content={"source_ids": ["alpha"]},
+    )
+    store.append(target)
+
+    row = store.sqlite.conn.execute(
+        "SELECT storage_key, payload_json FROM records WHERE record_id = ? AND source_id = ?",
+        (target.record_id, "alpha"),
+    ).fetchone()
+    tampered = json.loads(str(row["payload_json"]))
+    tampered["source_id"] = "default"
+    tampered["title"] = "TAMPERED"
+    tampered["summary"] = "TAMPERED"
+    store.sqlite.conn.execute(
+        "UPDATE records SET payload_json = ? WHERE storage_key = ?",
+        (canonical_payload_json(tampered), str(row["storage_key"])),
+    )
+    store.sqlite.conn.commit()
+
+    records, report = store.search_with_diagnostics(
+        query="Trusted projection",
+        kinds=["knowledge_page"],
+        scope=SCOPE,
+        limit=5,
+        recall_filters={"_exact_scope": True},
+        source_ids=["alpha"],
+    )
+
+    assert records == []
+    assert report["blocked_counts"]["corrupt_record"] == 1
+    assert store.get_by_exact_ref(
+        target.record_id,
+        scope=SCOPE,
+        source_id="alpha",
+    ) is None
+    store.close()
+
+
 def test_default_engine_golden_bundle_preserves_local_rank_and_explanation_shape(tmp_path) -> None:
     store = RuntimeStore(tmp_path)
     older = store.append(_record(text="golden recall exact first detail", source_id="alpha"))
@@ -1083,7 +1192,7 @@ def test_default_engine_golden_bundle_preserves_local_rank_and_explanation_shape
     store.close()
 
 
-def test_governed_sqlite_default_preserves_legacy_minimum_candidate_budget(tmp_path) -> None:
+def test_governed_sqlite_default_uses_bounded_candidate_budget(tmp_path) -> None:
     store = RuntimeStore(tmp_path)
     store.append(_record(text="candidate budget marker", source_id="alpha"))
     bundle = MemoryAPI(store).recall(
@@ -1093,7 +1202,522 @@ def test_governed_sqlite_default_preserves_legacy_minimum_candidate_budget(tmp_p
         limit=1,
     )
 
-    assert bundle.explanation["engine_diagnostics"]["candidate_limit"] == 360
+    assert bundle.explanation["engine_diagnostics"]["candidate_limit"] == 48
+    store.close()
+
+
+def test_exact_empty_scope_short_circuits_before_fts_and_anchor(tmp_path, monkeypatch) -> None:
+    store = RuntimeStore(tmp_path)
+    store.append(_record(text="record exists only in another scope", source_id="alpha"))
+    empty_scope = ScopeRef(
+        tenant_id="tenant-a",
+        agent_id="missing-agent",
+        workspace_id="missing-workspace",
+        user_id="missing-user",
+    )
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("empty exact scopes must not execute FTS or anchor scans")
+
+    monkeypatch.setattr(store.sqlite, "_collect_fts_candidates", forbidden)
+    monkeypatch.setattr(store.sqlite, "_collect_anchor_candidates", forbidden)
+
+    records, report = store.search_with_diagnostics(
+        query="record exists",
+        kinds=["memory"],
+        scope=empty_scope,
+        limit=5,
+        recall_filters={"_exact_scope": True},
+        source_ids=["alpha"],
+    )
+
+    assert records == []
+    assert report["candidate_count"] == 0
+    assert report["candidate_short_circuit"] == "empty_exact_scope"
+    store.close()
+
+
+def test_fts_hit_keeps_anchor_scan_within_reserved_budget(tmp_path, monkeypatch) -> None:
+    store = RuntimeStore(tmp_path)
+    targets = [
+        store.append(_record(text=f"indexed deployment marker {index}", source_id="alpha"))
+        for index in range(8)
+    ]
+
+    anchor_limits: list[int] = []
+    original_anchor = store.sqlite._collect_anchor_candidates
+
+    def recording_anchor(*args, **kwargs):
+        anchor_limits.append(int(kwargs["limit"]))
+        return original_anchor(*args, **kwargs)
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("lane fallback must not run after lexical candidates")
+
+    monkeypatch.setattr(store.sqlite, "_collect_anchor_candidates", recording_anchor)
+    monkeypatch.setattr(store.sqlite, "_collect_lane_seed_candidates", forbidden)
+
+    records, report = store.search_with_diagnostics(
+        query="indexed deployment marker",
+        kinds=["memory"],
+        scope=SCOPE,
+        limit=5,
+        recall_filters={"_exact_scope": True, "intent_name": "project_delivery"},
+        source_ids=["alpha"],
+    )
+
+    assert {record.record_id for record in records}.issubset({target.record_id for target in targets})
+    assert report["candidate_sources"]["fts"] >= 5
+    assert anchor_limits == [16]
+    store.close()
+
+
+def test_sparse_fts_hit_falls_back_to_anchor_before_declaring_no_match(tmp_path) -> None:
+    store = RuntimeStore(tmp_path)
+    store.append(_record(text="验证", source_id="alpha"))
+    strong = store.append(_record(text="部署完成后必须验证生产健康状态", source_id="alpha"))
+
+    records, report = store.search_with_diagnostics(
+        query="验证生产健康",
+        kinds=["memory"],
+        scope=SCOPE,
+        limit=5,
+        recall_filters={"_exact_scope": True},
+        source_ids=["alpha"],
+    )
+
+    assert records[0].record_id == strong.record_id
+    assert report["candidate_sources"]["fts"] >= 1
+    assert report["candidate_sources"]["anchor"] >= 1
+    store.close()
+
+
+def test_dense_weak_chinese_fts_pool_cannot_hide_strong_anchor_match(tmp_path) -> None:
+    store = RuntimeStore(tmp_path)
+    for index in range(8):
+        weak = _record(text=f"验证生 {index}", source_id="alpha")
+        weak.meta["quality"]["salience_score"] = 0.05
+        store.append(weak)
+    strong = _record(text="部署完成后必须验证生产健康状态", source_id="alpha")
+    strong.meta["quality"]["salience_score"] = 1.0
+    store.append(strong)
+
+    records, report = store.search_with_diagnostics(
+        query="验证生产健康",
+        kinds=["memory"],
+        scope=SCOPE,
+        limit=5,
+        recall_filters={"_exact_scope": True, "candidate_limit": 64},
+        source_ids=["alpha"],
+    )
+
+    assert records[0].record_id == strong.record_id
+    assert report["candidate_sources"]["fts"] >= 8
+    assert report["candidate_sources"]["anchor"] >= 1
+    store.close()
+
+
+def test_dense_weak_ascii_fts_pool_cannot_hide_substring_anchor_match(tmp_path) -> None:
+    store = RuntimeStore(tmp_path)
+    for index in range(8):
+        weak = _record(text=f"alphabeta weak {index}", source_id="alpha")
+        weak.meta["quality"]["salience_score"] = 0.05
+        store.append(weak)
+    strong = _record(text="xalphabetay authoritative durable target", source_id="alpha")
+    strong.meta["quality"]["salience_score"] = 1.0
+    store.append(strong)
+
+    records, report = store.search_with_diagnostics(
+        query="alphabeta",
+        kinds=["memory"],
+        scope=SCOPE,
+        limit=5,
+        recall_filters={"_exact_scope": True, "candidate_limit": 64},
+        source_ids=["alpha"],
+    )
+
+    assert strong.record_id in {record.record_id for record in records}
+    strong_report = next(item for item in report["scored_items"] if item["record_id"] == strong.record_id)
+    assert strong_report["selection_reserve"] == "high_quality_anchor_only"
+    assert report["candidate_sources"]["fts"] >= 8
+    assert report["candidate_sources"]["anchor"] >= 1
+
+    bundle = MemoryAPI(store).recall(
+        query="alphabeta",
+        scope=asdict(SCOPE),
+        task_context={"exact_scope_only": True, "source_ids": ["alpha"]},
+        limit=5,
+    )
+    assert strong.record_id in {record.record_id for record in bundle.items}
+    assert bundle.explanation["engine_diagnostics"]["drops"]["anchor_reserve_swap"] == 1
+    store.close()
+
+
+def test_anchor_reserve_does_not_replace_exact_token_hits_with_short_substring_noise(tmp_path) -> None:
+    store = RuntimeStore(tmp_path)
+    exact = []
+    for index in range(5):
+        record = _record(text=f"cat fact {index}", source_id="alpha")
+        record.meta["quality"]["salience_score"] = 0.9
+        exact.append(store.append(record))
+    noise = _record(text="catastrophe", source_id="alpha")
+    noise.meta["quality"]["salience_score"] = 1.0
+    store.append(noise)
+
+    records, _report = store.search_with_diagnostics(
+        query="cat",
+        kinds=["memory"],
+        scope=SCOPE,
+        limit=5,
+        recall_filters={"_exact_scope": True, "candidate_limit": 64},
+        source_ids=["alpha"],
+    )
+
+    assert {record.record_id for record in records} == {record.record_id for record in exact}
+    assert noise.record_id not in {record.record_id for record in records}
+
+    bundle = MemoryAPI(store).recall(
+        query="cat",
+        scope=asdict(SCOPE),
+        task_context={"exact_scope_only": True, "source_ids": ["alpha"]},
+        limit=5,
+    )
+    assert {record.record_id for record in bundle.items} == {record.record_id for record in exact}
+    store.close()
+
+
+def test_exact_scope_with_partial_recall_index_uses_bounded_legacy_fallback(tmp_path) -> None:
+    store = RuntimeStore(tmp_path)
+    scope_a = ScopeRef(tenant_id="tenant-a", agent_id="agent-a", workspace_id="partial-a", user_id="user-a")
+    scope_b = ScopeRef(tenant_id="tenant-a", agent_id="agent-b", workspace_id="partial-b", user_id="user-b")
+    target = store.append(_record(text="partial migration target", source_id="alpha", scope=scope_a))
+    store.append(_record(text="indexed other scope", source_id="alpha", scope=scope_b))
+    storage_key = store.sqlite.conn.execute(
+        "SELECT storage_key FROM records WHERE record_id = ? AND workspace_id = ?",
+        (target.record_id, scope_a.workspace_id),
+    ).fetchone()[0]
+    store.sqlite.conn.execute("DELETE FROM recall_index WHERE storage_key = ?", (storage_key,))
+    store.sqlite.conn.execute(
+        "DELETE FROM schema_migrations WHERE migration_id = ?",
+        ("recall.identity_index.v1",),
+    )
+    if store.sqlite._has_fts_table():
+        store.sqlite.conn.execute("DELETE FROM recall_index_fts WHERE storage_key = ?", (storage_key,))
+    store.sqlite.conn.commit()
+
+    records, report = store.search_with_diagnostics(
+        query="partial migration target",
+        kinds=["memory"],
+        scope=scope_a,
+        limit=5,
+        recall_filters={"_exact_scope": True, "candidate_limit": 64},
+        source_ids=["alpha"],
+    )
+
+    assert [record.record_id for record in records] == [target.record_id]
+    assert report["candidate_fallback"] == "legacy_scan"
+    assert report["candidate_count"] <= 64
+    store.close()
+
+
+def test_candidate_collectors_share_the_declared_budget(tmp_path, monkeypatch) -> None:
+    store = RuntimeStore(tmp_path)
+    store.append(_record(text="bounded collector budget", source_id="alpha"))
+    limits: list[int] = []
+    original_fts = store.sqlite._collect_fts_candidates
+    original_anchor = store.sqlite._collect_anchor_candidates
+
+    def recording_fts(*args, **kwargs):
+        limits.append(int(kwargs["limit"]))
+        return original_fts(*args, **kwargs)
+
+    def recording_anchor(*args, **kwargs):
+        limits.append(int(kwargs["limit"]))
+        return original_anchor(*args, **kwargs)
+
+    monkeypatch.setattr(store.sqlite, "_collect_fts_candidates", recording_fts)
+    monkeypatch.setattr(store.sqlite, "_collect_anchor_candidates", recording_anchor)
+
+    _records, report = store.search_with_diagnostics(
+        query="bounded collector budget",
+        kinds=["memory"],
+        scope=SCOPE,
+        limit=5,
+        recall_filters={"_exact_scope": True, "candidate_limit": 64},
+        source_ids=["alpha"],
+    )
+
+    assert limits == [48, 16]
+    assert sum(limits) == 64
+    assert report["candidate_count"] <= 64
+    store.close()
+
+
+def test_bounded_fts_pool_reserves_high_quality_matches_for_reranking(tmp_path) -> None:
+    store = RuntimeStore(tmp_path)
+    target = RecordEnvelope.create(
+        kind="memory",
+        title="alpha authoritative preference",
+        summary="alpha " + ("durable operator preference " * 160),
+        content={"text": "alpha " + ("durable operator preference " * 160)},
+        scope=SCOPE,
+        source="operator.preference",
+        source_id="alpha",
+        meta={
+            "memory_type": "preference",
+            "quality": {"salience_score": 1.0, "importance": 1.0, "capture_decision": "accept"},
+        },
+    )
+    store.append(target)
+    for index in range(100):
+        store.append(
+            RecordEnvelope.create(
+                kind="memory",
+                title=f"alpha distractor {index}",
+                summary="alpha",
+                content={"text": "alpha"},
+                scope=SCOPE,
+                source="test.noise",
+                source_id="alpha",
+                meta={
+                    "memory_type": "fact",
+                    "quality": {"salience_score": 0.0, "importance": 0.0, "capture_decision": "accept"},
+                },
+            )
+        )
+
+    batch = SQLiteCandidateSource(store).search(
+        CandidateRequest.create(
+            query="alpha",
+            scope=SCOPE,
+            kinds=("memory",),
+            source_ids=("alpha",),
+            limit=64,
+            budget=64,
+            recall_filters={"candidate_limit": 64},
+        )
+    )
+
+    assert batch.hits[0].ref.record_id == target.record_id
+    assert any(hit.ref.record_id == target.record_id for hit in batch.hits)
+    assert batch.diagnostic_dict()["candidate_count"] <= 64
+
+    bundle = MemoryAPI(store).recall(
+        query="alpha",
+        scope=asdict(SCOPE),
+        task_context={"exact_scope_only": True, "source_ids": ["alpha"]},
+        limit=5,
+    )
+    assert target.record_id in {record.record_id for record in bundle.items}
+    store.close()
+
+
+def test_filtered_fts_pool_retries_anchor_fallback(tmp_path) -> None:
+    store = RuntimeStore(tmp_path)
+    for _index in range(8):
+        store.append(_record(text="alphabeta", source_id="alpha", status="inactive"))
+    strong = store.append(_record(text="xalphabetay", source_id="alpha"))
+
+    records, report = store.search_with_diagnostics(
+        query="alphabeta",
+        kinds=["memory"],
+        scope=SCOPE,
+        limit=5,
+        recall_filters={"_exact_scope": True},
+        source_ids=["alpha"],
+    )
+
+    assert records[0].record_id == strong.record_id
+    assert report["candidate_sources"]["anchor"] >= 1
+    store.close()
+
+
+def test_exact_identity_candidate_bounds_hybrid_search(tmp_path, monkeypatch) -> None:
+    store = RuntimeStore(tmp_path)
+    target = store.append(_record(text="UNIQUE EXACT IDENTITY TITLE", source_id="alpha"))
+    calls: list[dict] = []
+    original = store.search_with_diagnostics
+
+    def recording_search(*args, **kwargs):
+        calls.append(dict(kwargs))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(store, "search_with_diagnostics", recording_search)
+
+    batch = SQLiteCandidateSource(store).search(
+        CandidateRequest(
+            query=target.title,
+            scope=ExactScope.from_scope(SCOPE),
+            kinds=("memory",),
+            source_ids=("alpha",),
+            limit=5,
+            budget=360,
+        )
+    )
+
+    assert [hit.ref.record_id for hit in batch.hits] == [target.record_id]
+    assert calls[0]["limit"] <= 32
+    assert calls[0]["recall_filters"]["candidate_limit"] <= 96
+    assert batch.diagnostic_dict()["retrieval_mode"] == "identity_hybrid"
+    store.close()
+
+
+def test_single_result_identity_candidate_skips_hybrid_search(tmp_path, monkeypatch) -> None:
+    store = RuntimeStore(tmp_path)
+    target = store.append(_record(text="EXACT SCOPE IDENTITY TITLE", source_id="alpha"))
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("an exact-scope identity hit must not run fuzzy retrieval")
+
+    monkeypatch.setattr(store, "search_with_diagnostics", forbidden)
+
+    batch = SQLiteCandidateSource(store).search(
+        CandidateRequest.create(
+            query=target.title,
+            scope=SCOPE,
+            kinds=("memory",),
+            source_ids=("alpha",),
+            limit=1,
+            budget=360,
+            recall_filters={"_result_limit": 1},
+        )
+    )
+
+    assert [hit.ref.record_id for hit in batch.hits] == [target.record_id]
+    assert batch.diagnostic_dict()["retrieval_mode"] == "identity_index"
+    store.close()
+
+
+def test_fts_zero_hit_keeps_anchor_fallback_for_chinese_substring(tmp_path, monkeypatch) -> None:
+    store = RuntimeStore(tmp_path)
+    target = store.append(_record(text="部署完成后必须验证生产健康状态", source_id="alpha"))
+    monkeypatch.setattr(store.sqlite, "_collect_fts_candidates", lambda *_args, **_kwargs: None)
+
+    records, report = store.search_with_diagnostics(
+        query="验证生产健康",
+        kinds=["memory"],
+        scope=SCOPE,
+        limit=5,
+        recall_filters={"_exact_scope": True},
+        source_ids=["alpha"],
+    )
+
+    assert [record.record_id for record in records] == [target.record_id]
+    assert report["candidate_sources"] == {"anchor": 1}
+    store.close()
+
+
+def test_default_recall_does_not_issue_operational_diagnostic_requeries(tmp_path, monkeypatch) -> None:
+    store = RuntimeStore(tmp_path)
+    store.append(_record(text="ordinary recall marker", source_id="alpha"))
+    limits: list[int] = []
+    original = store.sqlite.search_with_diagnostics
+
+    def recording_search(*args, **kwargs):
+        limits.append(int(kwargs.get("limit") or 0))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(store.sqlite, "search_with_diagnostics", recording_search)
+
+    bundle = MemoryAPI(store).recall(
+        query="ordinary recall marker",
+        scope=asdict(SCOPE),
+        task_context={"source_ids": ["alpha"]},
+        limit=1,
+    )
+
+    assert [item.title for item in bundle.items] == ["ordinary recall marker"]
+    assert 24 not in limits
+    assert 3 not in limits
+    store.close()
+
+
+def test_explicit_recall_diagnostics_still_runs_bounded_operational_probe(tmp_path, monkeypatch) -> None:
+    store = RuntimeStore(tmp_path)
+    store.append(_record(text="explicit probe marker", source_id="alpha"))
+    limits: list[int] = []
+    original = store.sqlite.search_with_diagnostics
+
+    def recording_search(*args, **kwargs):
+        limits.append(int(kwargs.get("limit") or 0))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(store.sqlite, "search_with_diagnostics", recording_search)
+
+    MemoryAPI(store).recall(
+        query="explicit probe marker",
+        scope=asdict(SCOPE),
+        task_context={"source_ids": ["alpha"], "recall_diagnostics": True},
+        limit=1,
+    )
+
+    assert 24 in limits
+    store.close()
+
+
+def test_authoritative_online_gate_blocks_outcome_candidate_but_report_can_request_it(tmp_path) -> None:
+    store = RuntimeStore(tmp_path)
+    outcome = RecordEnvelope.create(
+        kind="memory",
+        title="OpenClaw agent outcome",
+        summary="An agent outcome summary must remain operational evidence.",
+        content={"text": "An agent outcome summary must remain operational evidence.", "memory_type": "fact"},
+        scope=SCOPE,
+        source="openclaw.agent_end",
+        source_id="alpha",
+        meta={"memory_type": "fact"},
+    )
+    store.append(outcome)
+    memory = MemoryAPI(
+        store,
+        recall_engine=GovernedRecallEngine(store=store, candidate_source=FakeCandidateSource((_hit(outcome),))),
+    )
+
+    ordinary = memory.recall(
+        query="terminal agent result",
+        scope=asdict(SCOPE),
+        task_context={"source_ids": ["alpha"]},
+        limit=3,
+    )
+    report = memory.recall(
+        query="governance report terminal agent result",
+        scope=asdict(SCOPE),
+        task_context={"source_ids": ["alpha"]},
+        limit=3,
+    )
+
+    assert ordinary.items == []
+    assert ordinary.explanation["online_recall_gate"]["blocked_counts"]["agent_outcome"] == 1
+    assert [item.record_id for item in report.items] == [outcome.record_id]
+    store.close()
+
+
+def test_user_alias_fanout_is_hard_bounded(tmp_path) -> None:
+    store = RuntimeStore(tmp_path)
+    source = FakeCandidateSource(())
+    canonical_scope = ScopeRef(
+        tenant_id="default",
+        agent_id="hongtu",
+        workspace_id="embodied",
+        user_id="darrow",
+    )
+    memory = MemoryAPI(
+        store,
+        recall_engine=GovernedRecallEngine(store=store, candidate_source=source),
+    )
+
+    bundle = memory.recall(
+        query="bounded alias fanout",
+        scope=asdict(canonical_scope),
+        task_context={
+            "source_ids": ["alpha"],
+            "user_aliases": [f"alias-{index}" for index in range(1000)],
+        },
+        limit=1,
+    )
+
+    assert len(source.requests) <= 128
+    assert bundle.explanation["engine_diagnostics"]["drops"]["query_scope_limit"] >= 1
     store.close()
 
 

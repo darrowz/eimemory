@@ -36,6 +36,8 @@ DEFAULT_HONGTU_USER_ALIASES: dict[str, tuple[str, ...]] = {
     for aliases in _CANONICAL_HONGTU_USER_ALIASES.values()
     for alias in aliases
 }
+_MAX_CONTEXT_USER_ALIASES = 8
+_MAX_ALIAS_VALUES = 32
 _ALIAS_TO_CANONICAL_USER_ID: dict[str, str] = {
     alias.casefold(): canonical
     for canonical, aliases in _CANONICAL_HONGTU_USER_ALIASES.items()
@@ -142,14 +144,15 @@ def extract_user_aliases(task_context: Mapping[str, Any] | None) -> list[str]:
     if not isinstance(task_context, Mapping):
         return []
     subject_context = task_context.get("subject_context")
+    priority_aliases: list[str] = []
+    for key in ("canonical_user_id", "user_id", "actor_id"):
+        priority_aliases.extend(_alias_values(task_context.get(key)))
+        if isinstance(subject_context, Mapping):
+            priority_aliases.extend(_alias_values(subject_context.get(key)))
     aliases: list[str] = []
     aliases.extend(_alias_values(task_context.get("user_aliases")))
     aliases.extend(_alias_values(subject_context))
-    for key in ("actor_id", "user_id", "canonical_user_id"):
-        aliases.extend(_alias_values(task_context.get(key)))
-        if isinstance(subject_context, Mapping):
-            aliases.extend(_alias_values(subject_context.get(key)))
-    return _ordered_unique(aliases)
+    return _ordered_unique([*priority_aliases, *aliases])[:_MAX_CONTEXT_USER_ALIASES]
 
 
 def is_hongtuish_scope(scope: ScopeRef | dict[str, Any] | None, *, aliases: Any = None) -> bool:
@@ -315,12 +318,16 @@ def _alias_values(value: Any) -> list[str]:
         values: list[str] = []
         for key in ("user_aliases", "aliases", "user_ids", "actor_ids", "actor_id", "user_id", "canonical_user_id"):
             values.extend(_alias_values(value.get(key)))
-        return values
+            if len(values) >= _MAX_ALIAS_VALUES:
+                break
+        return values[:_MAX_ALIAS_VALUES]
     if isinstance(value, Iterable):
         values: list[str] = []
         for item in value:
             values.extend(_alias_values(item))
-        return values
+            if len(values) >= _MAX_ALIAS_VALUES:
+                break
+        return values[:_MAX_ALIAS_VALUES]
     text = _clean_text(value)
     return [text] if text else []
 

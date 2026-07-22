@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Planned
 - Multi-agent memory coordination
 
+## [1.9.85] - 2026-07-22
+
+### Fixed
+- Close the production recall proof contract with exact source and scope matching, bounded pagination, outcome and diagnostic exclusion, and deduplicated canonical smoke samples.
+- Bound SQLite recall candidate work while preserving sparse lexical, substring, and high-quality semantic anchors, with governed fallback, lazy payload hydration, and digest-verified legacy source recovery.
+- Keep OpenClaw, Codex, and Hermes authority isolated across aliases, scopes, and optional PostgreSQL candidates, while retaining deterministic SQLite bypass behavior and release-gate observability.
+
 ## [1.9.84] - 2026-07-22
 
 ### Fixed

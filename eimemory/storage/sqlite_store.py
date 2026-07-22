@@ -2540,7 +2540,8 @@ class SqliteRecordStore:
                 continue
             values = container.get("source_ids")
             if isinstance(values, (list, tuple)):
-                candidates.extend(values)
+                if values:
+                    candidates.append(values[0])
             elif values is not None:
                 candidates.append(values)
         try:
@@ -3411,7 +3412,12 @@ class SqliteRecordStore:
                 if isinstance(exc, PayloadSegmentError):
                     raise
                 raise PayloadSegmentError("payload segment hydration failed") from exc
-        record = self._record_from_payload_json(payload_json)
+        payload = self._payload_dict_from_json(payload_json)
+        if not pointer_json and payload is not None and "payload_digest" in keys:
+            expected = str(row["payload_digest"] or "")
+            if expected and payload_digest(payload) != expected:
+                return None
+        record = self._record_from_payload_dict(payload)
         if record is None or "source_id" not in keys:
             return record
         projected_source_id = normalize_source_id(row["source_id"])
@@ -3819,6 +3825,9 @@ class SqliteRecordStore:
             limit=limit,
             recall_filters=recall_filters,
         )
+        candidate_sources_by_key = dict(
+            candidate_report.pop("_candidate_sources_by_storage_key", {}) or {}
+        )
         query_tokens_for_filter = [token for token in self._clean_text_for_query(query).split() if token]
         query_token_count = max(1, len(query_tokens_for_filter))
         query_ngrams = self._char_ngrams(query.lower())
@@ -3826,10 +3835,18 @@ class SqliteRecordStore:
         scored: list[tuple[float, float, RecordEnvelope, dict]] = []
         vector_hits = 0
         blocked_counts: Counter[str] = Counter()
+        legacy_projection_fallback = candidate_report.get("candidate_fallback") == "legacy_scan"
         for row in rows:
             haystack = str(row["content_text"] or "").lower()
+            candidate_sources = tuple(
+                str(source)
+                for source in candidate_sources_by_key.get(str(row["storage_key"]), ())
+            )
             payload = self._payload_dict_from_json(row["payload_json"])
-            record = self._record_from_payload_dict(payload)
+            # Search operates on the compact payload so cold archived segments stay lazy,
+            # while authoritative row projections repair the narrowly defined legacy
+            # knowledge-page source partition during hydration.
+            record = self._record_from_storage_row(row, hydrate=False)
             if record is None:
                 blocked_counts["corrupt_record"] += 1
                 continue
@@ -3853,6 +3870,19 @@ class SqliteRecordStore:
             if record.status != "active":
                 blocked_counts["inactive_record"] += 1
                 continue
+            if legacy_projection_fallback:
+                document = build_recall_index_document(record)
+                allowed_lanes = self._allowed_recall_lanes(kinds=kinds, recall_filters=recall_filters)
+                allowed_visibilities = self._allowed_recall_visibilities(
+                    kinds=kinds,
+                    recall_filters=recall_filters,
+                )
+                if allowed_lanes and document.lane not in allowed_lanes:
+                    blocked_counts["legacy_lane_filtered"] += 1
+                    continue
+                if allowed_visibilities and document.visibility not in allowed_visibilities:
+                    blocked_counts["legacy_visibility_filtered"] += 1
+                    continue
             lexical_signal = analyze_lexical_signal(
                 query,
                 haystack,
@@ -3952,6 +3982,7 @@ class SqliteRecordStore:
                         "vector_score": round(vector_score, 4),
                         "quality_score": round(quality_score, 4),
                         "quality": quality,
+                        "candidate_sources": list(candidate_sources),
                         "source_weight": round(source_weight, 4),
                         "modality_boost": round(modality_boost, 4),
                         "lexical_adjustment": round(float(lexical_adjustment), 4),
@@ -3974,7 +4005,32 @@ class SqliteRecordStore:
             )
         scored.sort(key=lambda item: item[0], reverse=True)
         selected_rows = scored[:limit]
+        if limit > 1 and selected_rows and not any(
+            self._is_high_quality_anchor_only(entry[3]) for entry in selected_rows
+        ):
+            reserved = next(
+                (entry for entry in scored[limit:] if self._is_high_quality_anchor_only(entry[3])),
+                None,
+            )
+            if reserved is not None:
+                reserved[3]["selection_reserve"] = "high_quality_anchor_only"
+                selected_rows[-1] = reserved
         selected = [record for _, _, record, _ in selected_rows]
+        candidate_sources = dict(candidate_report.get("candidate_sources") or {})
+        if (
+            not selected
+            and candidate_sources.get("fts")
+            and not candidate_sources.get("anchor")
+            and not bool(recall_filters.get("_force_anchor_fallback"))
+        ):
+            return self.search_with_diagnostics(
+                query=query,
+                kinds=kinds,
+                scope=scope,
+                limit=limit,
+                recall_filters={**recall_filters, "_force_anchor_fallback": True},
+                source_ids=allowed_source_ids,
+            )
         return selected, {
             "vector_hits": vector_hits,
             "retrieval_mode": "recall_index_hybrid",
@@ -3997,32 +4053,71 @@ class SqliteRecordStore:
         recall_filters: dict,
     ) -> tuple[list[sqlite3.Row], dict]:
         candidate_limit = self._candidate_limit(limit, recall_filters)
-        candidates: dict[str, dict[str, Any]] = {}
-        fts_query = self._fts_query(query)
-        if fts_query and self._has_fts_table():
-            self._collect_fts_candidates(
-                candidates,
-                fts_query=fts_query,
+        has_recall_index_records = self._has_any_recall_index_records()
+        if (
+            bool(recall_filters.get("_exact_scope"))
+            and has_recall_index_records
+            and self._exact_scope_recall_projection_incomplete(
+                kinds=kinds,
+                scope=scope,
+                recall_filters=recall_filters,
+            )
+        ):
+            return self._legacy_candidate_rows(
                 kinds=kinds,
                 scope=scope,
                 limit=candidate_limit,
                 recall_filters=recall_filters,
             )
-        self._collect_anchor_candidates(
-            candidates,
-            query=query,
+        if (
+            bool(recall_filters.get("_exact_scope"))
+            and has_recall_index_records
+            and not self._exact_scope_has_recall_candidates(
             kinds=kinds,
             scope=scope,
-            limit=max(80, candidate_limit // 2),
             recall_filters=recall_filters,
-        )
-        self._collect_lane_seed_candidates(
-            candidates,
-            kinds=kinds,
-            scope=scope,
-            limit=max(40, candidate_limit // 5),
-            recall_filters=recall_filters,
-        )
+            )
+        ):
+            return [], {
+                "candidate_count": 0,
+                "candidate_limit": candidate_limit,
+                "candidate_sources": {},
+                "candidate_short_circuit": "empty_exact_scope",
+                "retrieval_mode": "empty_exact_scope",
+            }
+        candidates: dict[str, dict[str, Any]] = {}
+        force_anchor = bool(recall_filters.get("_force_anchor_fallback"))
+        anchor_reserve = min(16, max(1, candidate_limit // 4))
+        fts_query = self._fts_query(query)
+        if fts_query and self._has_fts_table() and not force_anchor:
+            fts_limit = max(1, candidate_limit - anchor_reserve)
+            self._collect_fts_candidates(
+                candidates,
+                fts_query=fts_query,
+                kinds=kinds,
+                scope=scope,
+                limit=max(1, fts_limit),
+                recall_filters=recall_filters,
+            )
+        if force_anchor or anchor_reserve:
+            anchor_limit = candidate_limit if force_anchor else anchor_reserve
+            if anchor_limit:
+                self._collect_anchor_candidates(
+                    candidates,
+                    query=query,
+                    kinds=kinds,
+                    scope=scope,
+                    limit=anchor_limit,
+                    recall_filters=recall_filters,
+                )
+        if not candidates:
+            self._collect_lane_seed_candidates(
+                candidates,
+                kinds=kinds,
+                scope=scope,
+                limit=candidate_limit,
+                recall_filters=recall_filters,
+            )
         if not candidates:
             self._collect_recent_candidates(
                 candidates,
@@ -4031,7 +4126,7 @@ class SqliteRecordStore:
                 limit=max(limit, min(candidate_limit, 120)),
                 recall_filters=recall_filters,
             )
-        if not candidates and self._recall_index_record_count() == 0:
+        if not candidates and not has_recall_index_records:
             return self._legacy_candidate_rows(
                 kinds=kinds,
                 scope=scope,
@@ -4059,7 +4154,8 @@ class SqliteRecordStore:
         placeholders = ",".join("?" for _ in ordered_keys)
         rows = self.conn.execute(
             "SELECT r.storage_key, r.record_id, r.kind, r.status, r.tenant_id, r.agent_id, "
-            "r.workspace_id, r.user_id, r.source_id, r.payload_json, r.content_text, r.embedding_json "
+            "r.workspace_id, r.user_id, r.source_id, r.payload_json, r.payload_pointer_json, "
+            "r.payload_digest, r.content_text, r.embedding_json "
             "FROM records r JOIN recall_index i ON i.storage_key = r.storage_key "
             "AND i.record_id = r.record_id AND i.kind = r.kind AND i.status = r.status "
             "AND i.tenant_id = r.tenant_id AND i.agent_id = r.agent_id "
@@ -4078,7 +4174,45 @@ class SqliteRecordStore:
             "candidate_count": len(ordered_keys),
             "candidate_limit": candidate_limit,
             "candidate_sources": source_counts,
+            "_candidate_sources_by_storage_key": {
+                key: tuple(candidates[key].get("sources") or ())
+                for key in ordered_keys
+                if key in by_key
+            },
         }
+
+    def _exact_scope_has_recall_candidates(
+        self,
+        *,
+        kinds: list[str] | None,
+        scope: ScopeRef,
+        recall_filters: dict,
+    ) -> bool:
+        where, params = self._recall_index_where(
+            kinds=kinds,
+            scope=scope,
+            recall_filters=recall_filters,
+            alias="i",
+        )
+        row = self.conn.execute(
+            "SELECT 1 FROM recall_index i WHERE " + " AND ".join(where) + " LIMIT 1",
+            params,
+        ).fetchone()
+        return row is not None
+
+    def _exact_scope_recall_projection_incomplete(
+        self,
+        *,
+        kinds: list[str] | None,
+        scope: ScopeRef,
+        recall_filters: dict,
+    ) -> bool:
+        if self._schema_migration_applied(_RECALL_IDENTITY_MIGRATION):
+            return False
+        # A pending projection migration must never trigger an unbounded
+        # completeness proof on the recall hot path. Use the already bounded,
+        # governance-filtered legacy candidate path until the migration receipt exists.
+        return True
 
     def _legacy_candidate_rows(
         self,
@@ -4104,7 +4238,8 @@ class SqliteRecordStore:
         where.append("status != 'rejected'")
         sql = (
             "SELECT storage_key, record_id, kind, status, tenant_id, agent_id, workspace_id, user_id, source_id, "
-            "payload_json, content_text, embedding_json FROM records WHERE "
+            "payload_json, payload_pointer_json, payload_digest, content_text, embedding_json "
+            "FROM records WHERE "
             + " AND ".join(where)
             + " ORDER BY updated_at DESC LIMIT ?"
         )
@@ -4116,11 +4251,11 @@ class SqliteRecordStore:
             "candidate_fallback": "legacy_scan",
         }
 
-    def _recall_index_record_count(self) -> int:
+    def _has_any_recall_index_records(self) -> bool:
         try:
-            return int(self.conn.execute("SELECT COUNT(*) FROM recall_index").fetchone()[0])
+            return self.conn.execute("SELECT 1 FROM recall_index LIMIT 1").fetchone() is not None
         except sqlite3.OperationalError:
-            return 0
+            return False
 
     def _collect_fts_candidates(
         self,
@@ -4141,7 +4276,7 @@ class SqliteRecordStore:
             + " ORDER BY bm25_score ASC, i.quality_score DESC, i.updated_at DESC LIMIT ?"
         )
         try:
-            rows = self.conn.execute(sql, [fts_query, *params, limit]).fetchall()
+            rows = self.conn.execute(sql, [fts_query, *params, max(1, int(limit))]).fetchall()
         except sqlite3.OperationalError:
             return
         for index, row in enumerate(rows):
@@ -4385,6 +4520,22 @@ class SqliteRecordStore:
         if source not in sources:
             sources.append(source)
         entry["sources"] = sources
+
+    @staticmethod
+    def _is_high_quality_anchor_only(score_report: dict[str, Any]) -> bool:
+        sources = set(str(item) for item in score_report.get("candidate_sources") or ())
+        return (
+            "anchor" in sources
+            and "fts" not in sources
+            and float(score_report.get("quality_score") or 0.0) >= 0.8
+            and (
+                float(score_report.get("lexical_score") or 0.0) > 0.0
+                or (
+                    float(score_report.get("semantic_score") or 0.0) >= 0.12
+                    and float(score_report.get("vector_score") or 0.0) >= 0.35
+                )
+            )
+        )
 
     def _candidate_limit(self, limit: int, recall_filters: dict) -> int:
         raw = recall_filters.get("candidate_limit")

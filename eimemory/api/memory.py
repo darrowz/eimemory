@@ -18,7 +18,7 @@ from eimemory.identity import (
 from eimemory.living import LIVING_MEMORY_META_KEY, enrich_living_memory, refresh_living_quality_snapshot
 from eimemory.metadata import business_metadata, runtime_metadata
 from eimemory.models.records import LinkRef, RecallBundle, RecordEnvelope, ScopeRef
-from eimemory.recall import RecallIntent
+from eimemory.recall import RecallIntent, build_recall_index_document, is_outcome_pollution_record
 from eimemory.scoring import ScoreContext, evaluate_memory_score, extract_memory_score, with_score_metadata
 from eimemory.storage.runtime_store import RuntimeStore
 from eimemory.retrieval.contracts import CandidateRequest, CandidateSource, RecallEngine, RecallPipelineSnapshot
@@ -977,6 +977,15 @@ class MemoryAPI:
             return "stale_rule"
         if self._is_temporally_stale_memory(item):
             return "stale_memory"
+        document = build_recall_index_document(item)
+        if is_outcome_pollution_record(item):
+            return "agent_outcome"
+        if document.source_class in {"agent_outcome", "tool_call", "diagnostic", "deployment"}:
+            return document.source_class
+        if document.lane in {"operational", "raw"}:
+            return document.lane
+        if document.visibility != "default":
+            return document.visibility
         lane = self._record_recall_lane(item)
         if lane in _DEFAULT_BLOCKED_RECALL_LANES:
             return lane

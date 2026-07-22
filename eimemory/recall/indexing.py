@@ -68,8 +68,6 @@ def classify_recall_lane(record: RecordEnvelope) -> str:
             return "primary"
         if projection_type == "operational_knowledge":
             return "operational"
-        if source_class == "agent_outcome" and _looks_like_actionable_memory(_combined_record_text(record)):
-            return "primary"
         if source_class in {"tool_call", "agent_outcome", "diagnostic", "deployment", "operational_projection"}:
             return "operational"
         return "primary"
@@ -134,6 +132,38 @@ def classify_source_class(record: RecordEnvelope) -> str:
     if memory_type in {"preference", "rule", "policy", "living_posture"}:
         return memory_type
     return "default"
+
+
+def is_outcome_pollution_record(record: RecordEnvelope) -> bool:
+    """Return the shared release-gate definition of terminal outcome evidence."""
+
+    source = str(record.source or "").lower()
+    title = str(record.title or "").lower()
+    content = record.content if isinstance(record.content, dict) else {}
+    meta = business_metadata(record.meta)
+    combined = " ".join(
+        [
+            str(record.title or ""),
+            str(record.summary or ""),
+            str(record.detail or ""),
+            str(content.get("text") or ""),
+            str(content.get("summary") or ""),
+        ]
+    ).lower()
+    report_type = str(
+        meta.get("report_type")
+        or record.provenance.get("report_type")
+        or content.get("report_type")
+        or ""
+    ).strip().lower()
+    projection_type = _projection_type(record)
+    return (
+        _looks_like_agent_outcome_record(source=source, title=title, text=combined)
+        or source == "agent_outcome"
+        or source == "eimemory.experience.outcome_trace"
+        or report_type == "outcome_trace"
+        or projection_type in {"agent_outcome", "outcome_trace", "terminal_outcome"}
+    )
 
 
 def build_recall_index_document(record: RecordEnvelope) -> RecallIndexDocument:

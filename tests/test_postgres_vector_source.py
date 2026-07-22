@@ -267,6 +267,41 @@ def test_successful_empty_postgres_query_is_valid_not_a_failure() -> None:
     assert pg["fallback"] is False
 
 
+def test_single_result_exact_identity_uses_same_sqlite_authority_with_postgres_enabled() -> None:
+    sqlite_hit = _hit("sqlite-identity")
+    sqlite_hit = CandidateHit(
+        ref=sqlite_hit.ref,
+        source_rank=sqlite_hit.source_rank,
+        source_score=sqlite_hit.source_score,
+        component_hints=sqlite_hit.component_hints,
+        evidence_hints=("exact_title",),
+    )
+    provider = StaticProvider()
+    repository = FakeRepository([_row("postgres-only")])
+    source = PostgresVectorCandidateSource(
+        sqlite_source=SQLiteSource((sqlite_hit,)),
+        config=PostgresVectorConfig(enabled=True, dsn="postgresql://host/db", vector_dimension=3),
+        repository=repository,
+        embedding_provider=provider,
+    )
+    request = CandidateRequest.create(
+        query="postgres safety",
+        scope=SCOPE.to_scope_ref(),
+        kinds=("memory",),
+        source_ids=("alpha",),
+        limit=5,
+        budget=360,
+        recall_filters={"_result_limit": 1},
+    )
+
+    batch = source.search(request)
+
+    assert [hit.ref.record_id for hit in batch.hits] == ["sqlite-identity"]
+    assert batch.diagnostic_dict()["postgres"]["state"] == "sqlite_authority"
+    assert provider.calls == 0
+    assert repository.state_reads == 0
+
+
 def test_postgres_refs_are_bounded_and_cross_boundary_rows_are_dropped() -> None:
     rows = [
         _row("valid"),

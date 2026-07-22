@@ -4,9 +4,21 @@ import json
 
 from eimemory.api.runtime import Runtime
 from eimemory.cli.main import main as cli_main
-from eimemory.identity import hongtu_scope
+from eimemory.identity import extract_user_aliases, hongtu_scope
 from eimemory.identity_ops import repair_hongtu_identity
 from eimemory.models.records import RecordEnvelope, ScopeRef
+
+
+def test_explicit_user_identity_precedes_bounded_secondary_aliases() -> None:
+    aliases = extract_user_aliases(
+        {
+            "user_aliases": [f"alias-{index}" for index in range(8)],
+            "canonical_user_id": "real-user",
+        }
+    )
+
+    assert aliases[0] == "real-user"
+    assert len(aliases) == 8
 
 
 def test_hongtu_scope_recall_reads_legacy_main_and_honjia_records(tmp_path) -> None:

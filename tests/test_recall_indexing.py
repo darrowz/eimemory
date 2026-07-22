@@ -2,6 +2,7 @@ from eimemory.models.records import RecordEnvelope, ScopeRef
 from eimemory.recall import (
     RecallIndexDocument,
     build_recall_index_document,
+    is_outcome_pollution_record,
     classify_recall_lane,
     classify_recall_visibility,
     classify_source_class,
@@ -90,7 +91,7 @@ def test_recall_index_classifies_operator_preference_memory_as_primary_default()
     assert build_recall_index_document(record).source_class == "preference"
 
 
-def test_recall_index_promotes_actionable_agent_outcome_memory_to_default_recall() -> None:
+def test_recall_index_keeps_actionable_agent_outcome_as_operational_evidence() -> None:
     record = _record(
         kind="memory",
         title="OpenClaw agent outcome",
@@ -101,8 +102,8 @@ def test_recall_index_promotes_actionable_agent_outcome_memory_to_default_recall
     doc = build_recall_index_document(record)
 
     assert doc.source_class == "agent_outcome"
-    assert doc.lane == "primary"
-    assert doc.visibility == "default"
+    assert doc.lane == "operational"
+    assert doc.visibility == "evidence_only"
 
 
 def test_recall_index_keeps_openclaw_fact_memory_with_domain_title_in_default_recall() -> None:
@@ -118,6 +119,25 @@ def test_recall_index_keeps_openclaw_fact_memory_with_domain_title_in_default_re
     assert doc.source_class == "default"
     assert doc.lane == "primary"
     assert doc.visibility == "default"
+    assert is_outcome_pollution_record(record) is False
+
+
+def test_outcome_pollution_classifier_does_not_block_research_outcomes() -> None:
+    outcomes_page = _record(
+        kind="knowledge_page",
+        title="Treatment outcomes evidence",
+        source="research.outcomes",
+        summary="Clinical outcome evidence belongs in the knowledge lane.",
+    )
+    modeling_page = _record(
+        kind="knowledge_page",
+        title="Agent outcome modeling methods",
+        source="papers.agent-evaluation",
+        summary="A research paper about outcome modeling is not a terminal event.",
+    )
+
+    assert is_outcome_pollution_record(outcomes_page) is False
+    assert is_outcome_pollution_record(modeling_page) is False
 
 
 def test_recall_index_classifies_knowledge_page_and_claim_card_as_knowledge_default() -> None:

@@ -93,14 +93,6 @@ class SQLiteCandidateSource:
             request.budget,
             configured_budget if configured_budget else request.budget,
         )
-        records, report = self.store.search_with_diagnostics(
-            query=request.query,
-            kinds=list(request.kinds) or None,
-            scope=request.scope.to_scope_ref(),
-            limit=request.limit,
-            recall_filters=recall_filters,
-            source_ids=request.source_ids,
-        )
         identity_rows = self.store.sqlite.search_identity_candidates(
             query=request.query,
             kinds=list(request.kinds) or None,
@@ -152,6 +144,57 @@ class SQLiteCandidateSource:
                 continue
             verified_identity_rows.append({**row, "evidence": verified_evidence})
         identity_rows = verified_identity_rows
+        if identity_rows and _positive_int(recall_filters.get("_result_limit")) == 1:
+            hits = tuple(
+                CandidateHit(
+                    ref=CandidateRef(
+                        record_id=str(row.get("record_id") or ""),
+                        scope=ExactScope.from_scope(
+                            row.get("scope") if isinstance(row.get("scope"), dict) else {}
+                        ),
+                        source_id=str(row.get("source_id") or ""),
+                    ),
+                    source_rank=rank,
+                    source_score=1.0,
+                    component_hints={"final_score": 1.0, "identity_indexed": True},
+                    evidence_hints=tuple(str(item) for item in (row.get("evidence") or ())),
+                )
+                for rank, row in enumerate(identity_rows[: request.limit], start=1)
+            )
+            return self._batch(
+                request=request,
+                hits=hits,
+                elapsed_ms=(perf_counter() - started) * 1000.0,
+                report={
+                    "candidate_count": len(identity_rows),
+                    "candidate_limit": request.limit,
+                    "retrieval_mode": "identity_index",
+                    "vector_hits": 0,
+                    "blocked_counts": (
+                        {"identity_invalid_ref": min(1000, identity_drop_count)}
+                        if identity_drop_count
+                        else {}
+                    ),
+                },
+            )
+        hybrid_limit = request.limit
+        if identity_rows:
+            recall_filters["candidate_limit"] = min(
+                _positive_int(recall_filters.get("candidate_limit")) or request.budget,
+                96,
+            )
+            hybrid_limit = min(request.limit, max(8, min(32, len(identity_rows) + 8)))
+        records, report = self.store.search_with_diagnostics(
+            query=request.query,
+            kinds=list(request.kinds) or None,
+            scope=request.scope.to_scope_ref(),
+            limit=hybrid_limit,
+            recall_filters=recall_filters,
+            source_ids=request.source_ids,
+        )
+        if identity_rows:
+            report["retrieval_mode"] = "identity_hybrid"
+            report["identity_candidate_count"] = len(identity_rows)
         if identity_drop_count:
             blocked = dict(report.get("blocked_counts") or {})
             blocked["identity_invalid_ref"] = min(1000, int(blocked.get("identity_invalid_ref") or 0) + identity_drop_count)

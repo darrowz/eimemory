@@ -6,6 +6,7 @@ from eimemory.recall.indexing import (
     classify_recall_lane,
     classify_recall_visibility,
     classify_source_class,
+    is_outcome_pollution_record,
 )
 
 __all__ = [
@@ -14,6 +15,7 @@ __all__ = [
     "classify_recall_lane",
     "classify_recall_visibility",
     "classify_source_class",
+    "is_outcome_pollution_record",
     "LexicalSignal",
     "RecallIntent",
     "analyze_lexical_signal",

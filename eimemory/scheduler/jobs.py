@@ -17,6 +17,7 @@ from eimemory.governance.supervisor import persist_supervisor_summary, superviso
 from eimemory.intake.loop import candidates_to_records
 from eimemory.metadata import business_metadata
 from eimemory.models.records import RecordEnvelope, ScopeRef
+from eimemory.recall import build_recall_index_document, is_outcome_pollution_record
 
 
 OUTCOME_RULE_SOURCES = {"diagnosis_pattern", "operator_gap", "visual_evidence_gap", "world_state_mismatch"}
@@ -631,29 +632,56 @@ def _production_recall_smoke_dataset(runtime: Runtime, *, scope: dict) -> dict[s
     list_records = getattr(store, "list_records", None)
     if not callable(list_records):
         return {"name": "nightly-production-recall-smoke", "scope": scope, "cases": []}
-    records = list_records(
-        kinds=["memory", "multimodal_memory", "knowledge_page", "claim_card"],
-        scope=scope,
-        status="active",
-        limit=5,
-    )
+    target_scope = ScopeRef.from_dict(scope)
     cases = []
-    for record in records:
-        query = _first_text(record.title, record.summary, _record_content_text(record))
-        if not query:
-            continue
-        expected_text = _first_text(record.summary, _record_content_text(record), record.title)
-        cases.append(
-            {
-                "case_id": f"generated-{record.record_id}",
-                "query": query[:160],
-                "expected_record_ids": [record.record_id],
-                "expected_titles": [record.title],
-                "expected_text": [expected_text] if expected_text else [],
-                "topk": 5,
-                "scope": scope,
-            }
+    seen_queries: set[str] = set()
+    page_size = 200
+    scan_limit = 2_000
+    for offset in range(0, scan_limit, page_size):
+        records = list_records(
+            kinds=["memory", "multimodal_memory", "knowledge_page", "claim_card"],
+            scope=scope,
+            status="active",
+            limit=page_size,
+            offset=offset,
         )
+        for record in records:
+            if record.scope != target_scope:
+                continue
+            document = build_recall_index_document(record)
+            if (
+                document.lane not in {"primary", "knowledge"}
+                or document.visibility != "default"
+                or document.source_class in {"agent_outcome", "tool_call", "diagnostic", "deployment"}
+                or document.projection_type == "operational_knowledge"
+                or is_outcome_pollution_record(record)
+            ):
+                continue
+            query = _first_text(record.summary, _record_content_text(record), record.title)
+            if not query:
+                continue
+            bounded_query = query[:160]
+            query_key = " ".join(bounded_query.casefold().split())
+            if not query_key or query_key in seen_queries:
+                continue
+            seen_queries.add(query_key)
+            cases.append(
+                {
+                    "case_id": f"generated-{record.record_id}",
+                    "query": bounded_query,
+                    "expected_record_ids": [record.record_id],
+                    "topk": 5,
+                    "scope": scope,
+                    "task_context": {
+                        "exact_scope_only": True,
+                        "source_ids": [record.source_id],
+                    },
+                }
+            )
+            if len(cases) >= 5:
+                break
+        if len(cases) >= 5 or len(records) < page_size:
+            break
     return {
         "name": "nightly-production-recall-smoke",
         "scope": scope,

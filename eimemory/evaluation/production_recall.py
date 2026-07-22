@@ -32,6 +32,7 @@ from eimemory.evaluation.real_query_gate import (
 from eimemory.metadata import business_metadata
 from eimemory.models.records import RecordEnvelope, ScopeRef
 from eimemory.models.source_partitions import normalize_source_id, normalize_source_ids
+from eimemory.recall import is_outcome_pollution_record
 
 
 RECALL_QUALITY_GATE_THRESHOLDS: dict[str, float] = {
@@ -719,20 +720,7 @@ def _is_stale_rule_record(record: RecordEnvelope) -> bool:
 
 
 def _is_outcome_pollution(record: RecordEnvelope) -> bool:
-    source = str(record.source or "").lower()
-    title = str(record.title or "").lower()
-    title_text = " ".join(
-        [record.title, record.summary, record.detail, str(record.content.get("text") or ""), str(record.content.get("summary") or "")]
-    ).lower()
-    return (
-        source == "openclaw.agent_end"
-        or "openclaw.agent_end" in source
-        or title == "openclaw agent outcome"
-        or "openclaw agent outcome" in title_text
-        or source == "agent_outcome"
-        or "agent outcome" in title_text
-        or "outcome" in source
-    )
+    return is_outcome_pollution_record(record)
 
 
 def _is_reflection_record(record: RecordEnvelope) -> bool:

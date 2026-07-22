@@ -1,9 +1,16 @@
 from __future__ import annotations
 
 import json
+from dataclasses import asdict
 
 from eimemory.cli.main import main as cli_main
-from eimemory.scheduler.jobs import _run_memory_eval_ci, _run_production_recall_eval, run_nightly_jobs
+from eimemory.scheduler.jobs import (
+    _production_recall_smoke_dataset,
+    _run_memory_eval_ci,
+    _run_production_recall_eval,
+    run_nightly_jobs,
+)
+from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
 def test_intake_review_promote_policy_and_pack_cli_flow(tmp_path, monkeypatch, capsys) -> None:
@@ -289,6 +296,139 @@ def test_production_recall_eval_can_use_runtime_generated_dataset(monkeypatch) -
     assert report["ok"] is True
     assert report["configured"] is True
     assert report["dataset_source"] == "runtime_generated"
+
+
+def test_production_recall_smoke_skips_newer_outcomes_and_uses_clean_canonical_record(tmp_path) -> None:
+    from eimemory.api.runtime import Runtime
+
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = ScopeRef(agent_id="hongtu", workspace_id="embodied", user_id="darrow")
+    clean = runtime.store.append(
+        RecordEnvelope.create(
+            kind="memory",
+            title="Canonical delivery preference",
+            summary="Always verify deployment health before declaring success.",
+            content={"text": "Always verify deployment health before declaring success.", "memory_type": "preference"},
+            scope=scope,
+            source="operator.preference",
+            meta={"memory_type": "preference"},
+        )
+    )
+    for index in range(6):
+        runtime.store.append(
+            RecordEnvelope.create(
+                kind="memory",
+                title="OpenClaw agent outcome",
+                summary=f"agent outcome summary {index}",
+                content={"text": f"agent outcome summary {index}", "memory_type": "fact"},
+                scope=scope,
+                source="openclaw.agent_end",
+            )
+        )
+
+    dataset = _production_recall_smoke_dataset(runtime, scope=asdict(scope))
+
+    assert [case["expected_record_ids"] for case in dataset["cases"]] == [[clean.record_id]]
+    assert all("expected_titles" not in case and "expected_text" not in case for case in dataset["cases"])
+    assert dataset["cases"][0]["task_context"] == {
+        "exact_scope_only": True,
+        "source_ids": [clean.source_id],
+    }
+    runtime.close()
+
+
+def test_production_recall_smoke_pages_past_pollution_without_unbounded_read(tmp_path) -> None:
+    from eimemory.api.runtime import Runtime
+
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = ScopeRef(agent_id="hongtu", workspace_id="embodied", user_id="darrow")
+    clean_record = RecordEnvelope.create(
+        kind="memory",
+        title="Older canonical preference",
+        summary="Verify the live release receipt before reporting deployment success.",
+        scope=scope,
+        source="operator.preference",
+        meta={"memory_type": "preference"},
+    )
+    clean_record.time.created_at = "2000-01-01T00:00:00+00:00"
+    clean_record.time.updated_at = "2000-01-01T00:00:00+00:00"
+    clean = runtime.store.append(clean_record)
+    for index in range(205):
+        outcome = RecordEnvelope.create(
+            kind="memory",
+            title="OpenClaw agent outcome",
+            summary=f"agent outcome summary {index}",
+            scope=scope,
+            source="openclaw.agent_end",
+            meta={"memory_type": "conversation"},
+        )
+        outcome.time.created_at = "2100-01-01T00:00:00+00:00"
+        outcome.time.updated_at = "2100-01-01T00:00:00+00:00"
+        runtime.store.append(outcome)
+
+    dataset = _production_recall_smoke_dataset(runtime, scope=asdict(scope))
+
+    assert [case["expected_record_ids"] for case in dataset["cases"]] == [[clean.record_id]]
+    runtime.close()
+
+
+def test_production_recall_smoke_fails_closed_when_only_pollution_records_exist(tmp_path) -> None:
+    from eimemory.api.runtime import Runtime
+
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = ScopeRef(agent_id="hongtu", workspace_id="embodied", user_id="darrow")
+    runtime.store.append(
+        RecordEnvelope.create(
+            kind="memory",
+            title="OpenClaw agent outcome",
+            summary="agent execution failed",
+            content={"text": "agent execution failed", "memory_type": "fact"},
+            scope=scope,
+            source="openclaw.agent_end",
+        )
+    )
+
+    dataset = _production_recall_smoke_dataset(runtime, scope=asdict(scope))
+
+    assert dataset["cases"] == []
+    runtime.close()
+
+
+def test_production_recall_smoke_deduplicates_queries_without_identity_prevalidation(tmp_path) -> None:
+    from eimemory.api.runtime import Runtime
+
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = ScopeRef(agent_id="hongtu", workspace_id="embodied", user_id="darrow")
+    for _index in range(2):
+        runtime.store.append(
+            RecordEnvelope.create(
+                kind="memory",
+                title="Repeated task episode",
+                summary="A repeated title cannot identify one authoritative record.",
+                scope=scope,
+                source="test.task_episode",
+                source_id="alpha",
+                meta={"memory_type": "task_episode"},
+            )
+        )
+    unique = runtime.store.append(
+        RecordEnvelope.create(
+            kind="memory",
+            title="Unique production recall target",
+            summary="This exact title identifies one authoritative record.",
+            scope=scope,
+            source="operator.preference",
+            source_id="alpha",
+            meta={"memory_type": "preference"},
+        )
+    )
+
+    dataset = _production_recall_smoke_dataset(runtime, scope=asdict(scope))
+
+    expected_ids = [case["expected_record_ids"][0] for case in dataset["cases"]]
+    assert unique.record_id in expected_ids
+    assert len(expected_ids) == 2
+    runtime.close()
 
 
 def test_nightly_jobs_do_not_reset_reviewed_candidates(tmp_path) -> None:
