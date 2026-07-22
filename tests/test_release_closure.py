@@ -6,9 +6,13 @@ import pytest
 
 from eimemory.api.runtime import Runtime
 from eimemory.cli.main import main as cli_main
+from eimemory.evaluation.production_recall import run_production_recall_eval
 from eimemory.governance import closure_rehearsal as closure_rehearsal_module
 from eimemory.governance import release_closure as release_closure_module
-from eimemory.governance.release_closure import run_release_closure
+from eimemory.governance.release_closure import (
+    _recall_result_allows_bootstrap_pending,
+    run_release_closure,
+)
 
 
 SCOPE = {
@@ -376,6 +380,83 @@ def test_release_closure_never_masks_cross_channel_leakage_with_bootstrap_pendin
     assert report["replay_bootstrap"]["status"] == "not_run"
 
 
+def test_release_closure_allows_real_passing_diagnostic_only_as_bootstrap_input(tmp_path) -> None:
+    report = _passing_diagnostic_recall_report(tmp_path)
+
+    assert report["ok"] is True
+    assert report["accepted"] is False
+    assert report["gate_status"] == "diagnostic"
+    assert report["dataset_kind"] == "diagnostic"
+    assert report["quality_gate"]["ok"] is True
+    assert _recall_result_allows_bootstrap_pending(report) is True
+
+
+def test_release_closure_routes_real_passing_diagnostic_to_release_bound_pending_verifier(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    diagnostic = _passing_diagnostic_recall_report(tmp_path)
+    runtime = ProductionGateRuntime(accepted=False)
+    runtime.run_configured_production_recall_gate = lambda **_kwargs: diagnostic
+    calls: list[bool] = []
+
+    def pending_verifier(*_args, **_kwargs):
+        calls.append(True)
+        return {
+            "ok": False,
+            "status": "blocked",
+            "reason": "diagnostic_reached_release_bound_pending_verifier",
+            "record_id": "",
+        }
+
+    monkeypatch.setattr(
+        "eimemory.evaluation.real_query_gate.verify_current_bootstrap_data_pending",
+        pending_verifier,
+    )
+
+    report = _run(runtime)
+
+    assert report["ok"] is False
+    assert report["blocked_stage"] == "production_recall_gate"
+    assert report["blocked_reason"] == "production_recall_gate_failed"
+    assert calls == [True]
+
+
+def test_release_closure_rejects_every_incomplete_or_failed_diagnostic_contract(tmp_path) -> None:
+    report = _passing_diagnostic_recall_report(tmp_path)
+    mutations = [
+        (("quality_gate", "ok"), False),
+        (("quality_gate", "blocking_metrics"), {"hit_at_1": {"actual": 0.0}}),
+        (("errors",), [{"error": "seed_failed"}]),
+        (("seed_error_count",), 1),
+        (("false_recall_rate",), 0.01),
+        (("forbidden_hit_rate",), 0.01),
+        (("gate_ok",), False),
+        (("passed_threshold",), False),
+        (("blocked_reason",), "recall_quality_gate_failed"),
+    ]
+    for path, value in mutations:
+        changed = deepcopy(report)
+        target = changed
+        for key in path[:-1]:
+            target = target[key]
+        target[path[-1]] = value
+        assert _recall_result_allows_bootstrap_pending(changed) is False, path
+    for required in (
+        "quality_gate",
+        "errors",
+        "seed_error_count",
+        "false_recall_rate",
+        "forbidden_hit_rate",
+        "gate_ok",
+        "passed_threshold",
+        "dataset_kind",
+    ):
+        changed = deepcopy(report)
+        changed.pop(required)
+        assert _recall_result_allows_bootstrap_pending(changed) is False, required
+
+
 def test_release_closure_allows_only_verified_bootstrap_data_pending_and_keeps_l5_downgraded(monkeypatch) -> None:
     runtime = ProductionGateRuntime(accepted=False)
     runtime.expect_bootstrap_pending = True
@@ -618,6 +699,37 @@ def _run(runtime: FakeRuntime) -> dict:
         health_url=HEALTH_URL,
         prior_commit=PRIOR_COMMIT,
     )
+
+
+def _passing_diagnostic_recall_report(tmp_path) -> dict:
+    runtime = Runtime.create(root=tmp_path / "diagnostic-runtime")
+    dataset = {
+        "name": "release-bootstrap-diagnostic",
+        "scope": SCOPE,
+        "seed": [
+            {
+                "id": "deployment-receipt-memory",
+                "kind": "memory",
+                "title": "Deployment receipt rollback evidence",
+                "text": "Deployment receipt rollback evidence keeps the immutable release safe.",
+                "memory_type": "fact",
+            }
+        ],
+        "cases": [
+            {
+                "case_id": "deployment-receipt-recall",
+                "query": "deployment receipt rollback evidence",
+                "expected_record_ids": ["deployment-receipt-memory"],
+                "expected_titles": ["Deployment receipt rollback evidence"],
+                "topk": 5,
+                "scope": SCOPE,
+            }
+        ],
+    }
+    try:
+        return run_production_recall_eval(runtime, dataset)
+    finally:
+        runtime.close()
 
 
 def _identity_kwargs() -> dict:

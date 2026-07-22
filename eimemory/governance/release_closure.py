@@ -274,6 +274,10 @@ def _rehearsal_gate_ok(rehearsal: dict[str, Any]) -> bool:
 
 
 def _recall_result_allows_bootstrap_pending(report: dict[str, Any]) -> bool:
+    return _missing_dataset_recall_result(report) or _passing_diagnostic_recall_result(report)
+
+
+def _missing_dataset_recall_result(report: dict[str, Any]) -> bool:
     threshold = report.get("threshold_gate") if isinstance(report.get("threshold_gate"), dict) else {}
     blocking_metrics = threshold.get("blocking_metrics")
     cross_channel_leakage = report.get("cross_channel_leakage_count")
@@ -287,6 +291,35 @@ def _recall_result_allows_bootstrap_pending(report: dict[str, Any]) -> bool:
         and _zero_or_missing(source_filter_leakage)
         and (blocking_metrics is None or blocking_metrics == {})
     )
+
+
+def _passing_diagnostic_recall_result(report: dict[str, Any]) -> bool:
+    quality = report.get("quality_gate") if isinstance(report.get("quality_gate"), dict) else {}
+    return bool(
+        report.get("ok") is True
+        and report.get("accepted") is False
+        and report.get("gate_status") == "diagnostic"
+        and report.get("dataset_kind") == "diagnostic"
+        and report.get("gate_ok") is True
+        and report.get("passed_threshold") is True
+        and report.get("blocked_reason") == ""
+        and quality.get("ok") is True
+        and quality.get("blocked_reason") == ""
+        and quality.get("blocking_metrics") == {}
+        and report.get("errors") == []
+        and type(report.get("seed_error_count")) is int
+        and report.get("seed_error_count") == 0
+        and type(report.get("sample_count")) is int
+        and int(report.get("sample_count")) > 0
+        and _exact_zero_number(report.get("false_recall_rate"))
+        and _exact_zero_number(report.get("forbidden_hit_rate"))
+        and _zero_or_missing(report.get("cross_channel_leakage_count"))
+        and _zero_or_missing(report.get("source_filter_leakage_count"))
+    )
+
+
+def _exact_zero_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and float(value) == 0.0
 
 
 def _zero_or_missing(value: Any) -> bool:
