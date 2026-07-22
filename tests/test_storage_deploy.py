@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 from hashlib import sha256
 import json
 import os
@@ -856,6 +857,154 @@ def test_storage_release_transaction_marker_fails_closed_and_clears_atomically(t
     assert guard_allows_start(marker) is False
     with pytest.raises(StorageReleaseTransactionError, match="invalid"):
         load_storage_release_transaction(marker)
+
+
+@pytest.mark.parametrize("failure_call", [1, 2])
+def test_storage_release_clear_fsync_failure_preserves_a_blocking_credential(
+    tmp_path: Path, monkeypatch, failure_call: int
+) -> None:
+    from deploy import storage_release_transaction as transaction
+
+    marker = tmp_path / "state" / "storage-release-transaction.json"
+    transaction.begin_storage_release_transaction(
+        marker,
+        prior_commit="1" * 40,
+        candidate_commit="2" * 40,
+        current_link=tmp_path / "install" / "current",
+        attempt_id="attempt-clear-fsync",
+        snapshot_dir=tmp_path / "state" / "snapshot",
+        active_writer_units=[],
+    )
+    calls = 0
+
+    def fail_selected_parent_sync(_path: Path) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == failure_call:
+            raise OSError(errno.EIO, "injected parent fsync failure")
+
+    monkeypatch.setattr(transaction, "_fsync_directory", fail_selected_parent_sync)
+
+    with pytest.raises(
+        transaction.StorageReleaseTransactionError,
+        match="storage release transaction clear is not durable",
+    ):
+        transaction.clear_storage_release_transaction(
+            marker,
+            expected_attempt_id="attempt-clear-fsync",
+        )
+
+    tombstone = marker.with_name(f".{marker.name}.clearing")
+    assert marker.exists() or marker.is_symlink() or tombstone.exists() or tombstone.is_symlink()
+    assert transaction.guard_allows_start(marker) is False
+    if failure_call == 2:
+        assert calls == 3
+        assert transaction.load_storage_release_transaction(marker)["attempt_id"] == (
+            "attempt-clear-fsync"
+        )
+
+
+def test_storage_release_guard_waits_for_clear_parent_durability(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    from deploy import storage_release_transaction as transaction
+
+    marker = tmp_path / "state" / "storage-release-transaction.json"
+    transaction.begin_storage_release_transaction(
+        marker,
+        prior_commit="1" * 40,
+        candidate_commit="2" * 40,
+        current_link=tmp_path / "install" / "current",
+        attempt_id="attempt-clear-lock",
+        snapshot_dir=tmp_path / "state" / "snapshot",
+        active_writer_units=[],
+    )
+    real_sync = transaction._sync_marker_parent
+    entered_second_sync = Event()
+    release_second_sync = Event()
+    guard_started = Event()
+    guard_returned = Event()
+    calls = 0
+
+    def delay_second_parent_sync(path: Path, *, parent_fd: int | None) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            entered_second_sync.set()
+            if not release_second_sync.wait(timeout=5):
+                raise AssertionError("timed out waiting to release parent fsync")
+        real_sync(path, parent_fd=parent_fd)
+
+    monkeypatch.setattr(transaction, "_sync_marker_parent", delay_second_parent_sync)
+
+    def run_guard() -> bool:
+        guard_started.set()
+        result = transaction.guard_allows_start(marker)
+        guard_returned.set()
+        return result
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        clear_future = executor.submit(
+            transaction.clear_storage_release_transaction,
+            marker,
+            expected_attempt_id="attempt-clear-lock",
+        )
+        assert entered_second_sync.wait(timeout=5)
+        guard_future = executor.submit(run_guard)
+        assert guard_started.wait(timeout=5)
+        try:
+            assert not guard_returned.wait(timeout=0.2)
+        finally:
+            release_second_sync.set()
+        clear_future.result(timeout=5)
+        assert guard_future.result(timeout=5) is True
+
+
+def test_storage_release_clear_reports_blocker_fsync_failure_but_keeps_guard_closed(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from deploy import storage_release_transaction as transaction
+
+    marker = tmp_path / "state" / "storage-release-transaction.json"
+    transaction.begin_storage_release_transaction(
+        marker,
+        prior_commit="1" * 40,
+        candidate_commit="2" * 40,
+        current_link=tmp_path / "install" / "current",
+        attempt_id="attempt-clear-restore",
+        snapshot_dir=tmp_path / "state" / "snapshot",
+        active_writer_units=[],
+    )
+    calls = 0
+
+    def fail_second_parent_sync(_path: Path, *, parent_fd: int | None) -> None:
+        nonlocal calls
+        del parent_fd
+        calls += 1
+        if calls == 2:
+            raise OSError(errno.EIO, "injected parent fsync failure")
+
+    monkeypatch.setattr(transaction, "_sync_marker_parent", fail_second_parent_sync)
+    monkeypatch.setattr(
+        transaction.os,
+        "fsync",
+        lambda _fd: (_ for _ in ()).throw(OSError(errno.EIO, "injected blocker fsync")),
+    )
+
+    with pytest.raises(
+        transaction.StorageReleaseTransactionError,
+        match="blocker recovery failed; startup remains blocked",
+    ):
+        transaction.clear_storage_release_transaction(
+            marker,
+            expected_attempt_id="attempt-clear-restore",
+        )
+
+    assert marker.exists() or marker.is_symlink()
+    assert transaction.guard_allows_start(marker) is False
 
 
 def test_storage_release_transaction_rejects_symlinked_marker_and_lock(tmp_path) -> None:
