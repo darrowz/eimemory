@@ -56,6 +56,93 @@ def test_record_capability_score_counts_sequence_without_record_scan(tmp_path, m
     assert second.meta["score_sequence"] == 2
 
 
+def test_archived_capability_scores_use_compact_projection_when_sequence_counter_is_unavailable(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"}
+    compact_calls: list[dict[str, object]] = []
+    try:
+        runtime.store.sqlite.payload_archive_inline_bytes = 256
+        record_capability_score(
+            runtime,
+            scope=scope,
+            loop_id="archived-sequence-1",
+            capability="memory.recall",
+            score=0.5,
+            evidence_record_ids=["archive-evidence-" + ("x" * 400)],
+        )
+        pointer_count = runtime.store.sqlite.conn.execute(
+            "SELECT COUNT(*) FROM records WHERE kind='capability_score' AND payload_pointer_json!=''"
+        ).fetchone()[0]
+        assert pointer_count == 1
+
+        original_compact = runtime.store.list_capability_scores_compact
+
+        def tracked_compact(*args, **kwargs):
+            compact_calls.append(dict(kwargs))
+            return original_compact(*args, **kwargs)
+
+        def reject_full_load(*_args, **_kwargs):
+            raise AssertionError("governance must not hydrate archived capability-score payloads")
+
+        monkeypatch.setattr(runtime.store, "count_records_by_meta_value", lambda **_kwargs: None)
+        monkeypatch.setattr(runtime.store, "list_capability_scores_compact", tracked_compact)
+        monkeypatch.setattr(runtime.store, "list_records", reject_full_load)
+        monkeypatch.setattr(runtime.store.sqlite.payload_segments, "read", reject_full_load)
+
+        second_id = record_capability_score(
+            runtime,
+            scope=scope,
+            loop_id="archived-sequence-2",
+            capability="memory.recall",
+            score=0.8,
+            evidence_record_ids=["archive-evidence-2-" + ("y" * 400)],
+        )
+        ledger = build_capability_ledger(
+            runtime,
+            scope=scope,
+            attribute_outcomes=False,
+        )
+        stored_meta = json.loads(
+            runtime.store.sqlite.conn.execute(
+                "SELECT meta_json FROM records WHERE record_id=?",
+                (second_id,),
+            ).fetchone()[0]
+        )
+    finally:
+        runtime.close()
+
+    assert stored_meta["score_sequence"] == 2
+    assert ledger["capabilities"]["memory.recall"]["score"] == 0.8
+    assert [call["limit"] for call in compact_calls] == [500, 500]
+
+
+def test_build_capability_ledger_fails_closed_without_compact_projection(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    list_calls = 0
+
+    def tracked_full_load(*_args, **_kwargs):
+        nonlocal list_calls
+        list_calls += 1
+        return []
+
+    try:
+        monkeypatch.setattr(runtime.store, "list_capability_scores_compact", None)
+        monkeypatch.setattr(runtime.store, "list_records", tracked_full_load)
+        with pytest.raises(RuntimeError, match="compact capability-score projection is unavailable"):
+            build_capability_ledger(
+                runtime,
+                scope={"agent_id": "hongtu"},
+                attribute_outcomes=False,
+            )
+    finally:
+        runtime.close()
+
+    assert list_calls == 0
+
+
 def test_build_capability_ledger_uses_compact_score_projection(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path)
     scope = {"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"}

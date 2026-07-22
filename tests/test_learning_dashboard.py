@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 import eimemory.governance.learning_dashboard as learning_dashboard
 
 from eimemory.api.runtime import Runtime
@@ -49,21 +51,58 @@ def test_capability_seed_is_idempotent_and_dashboard_lists_all_capabilities(tmp_
 
 def test_capability_seeding_uses_compact_score_projection(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path)
+    compact_calls: list[dict[str, object]] = []
     try:
         ensure_all_seeded(runtime, scope={"agent_id": "hongtu"})
+        archived_count = runtime.store.sqlite.conn.execute(
+            "SELECT COUNT(*) FROM records WHERE kind='capability_score' AND payload_pointer_json!=''"
+        ).fetchone()[0]
+        assert archived_count == 0
+        original_compact = runtime.store.list_capability_scores_compact
         original = runtime.store.list_records
+
+        def tracked_compact(*args, **kwargs):
+            compact_calls.append(dict(kwargs))
+            return original_compact(*args, **kwargs)
 
         def reject_full_score_load(*args, **kwargs):
             if kwargs.get("kinds") == ["capability_score"]:
                 raise AssertionError("capability seeding loaded full score payloads")
             return original(*args, **kwargs)
 
+        monkeypatch.setattr(runtime.store, "list_capability_scores_compact", tracked_compact)
         monkeypatch.setattr(runtime.store, "list_records", reject_full_score_load)
+        monkeypatch.setattr(
+            runtime.store.sqlite.payload_segments,
+            "read",
+            lambda _pointer: (_ for _ in ()).throw(AssertionError("inline seed payload was hydrated")),
+        )
         report = ensure_all_seeded(runtime, scope={"agent_id": "hongtu"})
     finally:
         runtime.close()
 
     assert report["created_count"] == 0
+    assert [call["limit"] for call in compact_calls] == [1000]
+
+
+def test_capability_seeding_fails_closed_without_compact_projection(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    list_calls = 0
+
+    def tracked_full_load(*_args, **_kwargs):
+        nonlocal list_calls
+        list_calls += 1
+        return []
+
+    try:
+        monkeypatch.setattr(runtime.store, "list_capability_scores_compact", None)
+        monkeypatch.setattr(runtime.store, "list_records", tracked_full_load)
+        with pytest.raises(RuntimeError, match="compact capability-score projection is unavailable"):
+            ensure_all_seeded(runtime, scope={"agent_id": "hongtu"})
+    finally:
+        runtime.close()
+
+    assert list_calls == 0
 
 
 def test_build_weekly_dashboard_writes_output_on_success(tmp_path) -> None:

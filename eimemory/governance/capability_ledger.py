@@ -208,10 +208,29 @@ def _next_capability_score_sequence(runtime: Any, *, scope: ScopeRef, capability
             return int(count) + 1
     existing = [
         record
-        for record in runtime.store.list_records(kinds=["capability_score"], scope=scope, limit=500)
+        for record in _require_compact_capability_scores(runtime, scope=scope, limit=500)
         if str(record.meta.get("capability") or "") == capability
     ]
     return len(existing) + 1
+
+
+def _require_compact_capability_scores(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    limit: int,
+    since: str | None = None,
+    until: str | None = None,
+) -> list[RecordEnvelope]:
+    compact_loader = getattr(runtime.store, "list_capability_scores_compact", None)
+    if not callable(compact_loader):
+        raise RuntimeError("compact capability-score projection is unavailable")
+    return compact_loader(
+        scope=scope,
+        limit=limit,
+        since=since,
+        until=until,
+    )
 
 
 def build_capability_ledger(
@@ -239,22 +258,13 @@ def build_capability_ledger(
             pass
     normalized_since = _normalize_date_bound(since, end_of_day=False)
     normalized_until = _normalize_date_bound(until, end_of_day=True)
-    compact_loader = getattr(runtime.store, "list_capability_scores_compact", None)
-    if callable(compact_loader):
-        records = compact_loader(
-            scope=scope_ref,
-            limit=limit,
-            since=normalized_since,
-            until=normalized_until,
-        )
-    else:
-        records = runtime.store.list_records(
-            kinds=["capability_score"],
-            scope=scope_ref,
-            limit=limit,
-            since=normalized_since,
-            until=normalized_until,
-        )
+    records = _require_compact_capability_scores(
+        runtime,
+        scope=scope_ref,
+        limit=limit,
+        since=normalized_since,
+        until=normalized_until,
+    )
     records = [
         record
         for record in records

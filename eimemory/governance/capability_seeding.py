@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from eimemory.governance.capability_ledger import record_capability_score
+from eimemory.governance.capability_ledger import (
+    _require_compact_capability_scores,
+    record_capability_score,
+)
 from eimemory.models.records import ScopeRef
 
 
@@ -28,11 +31,7 @@ def ensure_all_seeded(
     loop_id: str = "seed",
 ) -> dict[str, Any]:
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
-    compact_loader = getattr(runtime.store, "list_capability_scores_compact", None)
-    if callable(compact_loader):
-        records = compact_loader(scope=scope_ref, limit=1000)
-    else:
-        records = runtime.store.list_records(kinds=["capability_score"], scope=scope_ref, limit=1000)
+    records = _require_compact_capability_scores(runtime, scope=scope_ref, limit=1000)
     existing = {
         str(record.meta.get("capability") or record.content.get("capability") or "")
         for record in records
