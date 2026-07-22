@@ -702,25 +702,38 @@ def _create_recovery_blocker(
     marker: Path,
     parent_fd: int | None,
 ) -> None:
+    temporary = recovery.with_name(
+        f".{recovery.name}.pending-{secrets.token_hex(8)}"
+    )
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | int(getattr(os, "O_NOFOLLOW", 0))
-    if parent_fd is None:
-        descriptor = os.open(recovery, flags, 0o600)
-    else:
-        descriptor = os.open(recovery.name, flags, 0o600, dir_fd=parent_fd)
     serialized = (
         json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     ).encode("utf-8")
+    published = False
     try:
-        remaining = memoryview(serialized)
-        while remaining:
-            written = os.write(descriptor, remaining)
-            if written <= 0:
-                raise OSError("failed to restore storage release transaction blocker")
-            remaining = remaining[written:]
-        os.fsync(descriptor)
+        if parent_fd is None:
+            descriptor = os.open(temporary, flags, 0o600)
+        else:
+            descriptor = os.open(temporary.name, flags, 0o600, dir_fd=parent_fd)
+        try:
+            remaining = memoryview(serialized)
+            while remaining:
+                written = os.write(descriptor, remaining)
+                if written <= 0:
+                    raise OSError("failed to write storage release recovery blocker")
+                remaining = remaining[written:]
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        _replace_marker_entry(temporary, recovery, parent_fd=parent_fd)
+        published = True
+        _sync_marker_parent(marker, parent_fd=parent_fd)
     finally:
-        os.close(descriptor)
-    _sync_marker_parent(marker, parent_fd=parent_fd)
+        if not published:
+            try:
+                _unlink_marker_entry(temporary, parent_fd=parent_fd)
+            except OSError:
+                pass
 
 
 def _marker_entry_exists(marker: Path, *, parent_fd: int | None) -> bool:

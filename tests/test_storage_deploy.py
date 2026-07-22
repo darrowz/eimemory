@@ -907,6 +907,7 @@ def test_storage_release_clear_recovery_precreate_enospc_keeps_tombstone(
     marker = tmp_path / "state" / "storage-release-transaction.json"
     recovery = marker.with_name(f".{marker.name}.recovery")
     tombstone = marker.with_name(f".{marker.name}.clearing")
+    pending_prefix = f".{recovery.name}.pending-"
     transaction.begin_storage_release_transaction(
         marker,
         prior_commit="1" * 40,
@@ -919,7 +920,7 @@ def test_storage_release_clear_recovery_precreate_enospc_keeps_tombstone(
     real_open = transaction.os.open
 
     def fail_recovery_create(path, flags, mode=0o777, **kwargs):
-        if Path(str(path)).name == recovery.name and flags & os.O_CREAT:
+        if Path(str(path)).name.startswith(pending_prefix) and flags & os.O_CREAT:
             raise OSError(errno.ENOSPC, "injected recovery create failure")
         return real_open(path, flags, mode, **kwargs)
 
@@ -937,6 +938,130 @@ def test_storage_release_clear_recovery_precreate_enospc_keeps_tombstone(
     assert tombstone.exists()
     assert not recovery.exists()
     assert transaction.guard_allows_start(marker) is False
+
+
+@pytest.mark.parametrize("error_code", [errno.EIO, errno.ENOSPC])
+def test_storage_release_clear_partial_recovery_write_never_publishes_corrupt_blocker(
+    tmp_path: Path, monkeypatch, error_code: int
+) -> None:
+    from deploy import storage_release_transaction as transaction
+
+    marker = tmp_path / "state" / "storage-release-transaction.json"
+    recovery = marker.with_name(f".{marker.name}.recovery")
+    tombstone = marker.with_name(f".{marker.name}.clearing")
+    transaction.begin_storage_release_transaction(
+        marker,
+        prior_commit="1" * 40,
+        candidate_commit="2" * 40,
+        current_link=tmp_path / "install" / "current",
+        attempt_id=f"attempt-partial-{error_code}",
+        snapshot_dir=tmp_path / "state" / "snapshot",
+        active_writer_units=[],
+    )
+    real_write = transaction.os.write
+    writes = 0
+
+    def fail_after_partial_write(descriptor: int, payload) -> int:
+        nonlocal writes
+        writes += 1
+        if writes == 1:
+            return real_write(descriptor, payload[:8])
+        raise OSError(error_code, "injected recovery write failure")
+
+    monkeypatch.setattr(transaction.os, "write", fail_after_partial_write)
+
+    with pytest.raises(
+        transaction.StorageReleaseTransactionError,
+        match="recovery blocker creation failed",
+    ):
+        transaction.clear_storage_release_transaction(
+            marker,
+            expected_attempt_id=f"attempt-partial-{error_code}",
+        )
+
+    assert tombstone.exists()
+    assert not recovery.exists()
+    assert not list(marker.parent.glob(f".{recovery.name}.pending-*"))
+    assert transaction.guard_allows_start(marker) is False
+
+    monkeypatch.setattr(transaction.os, "write", real_write)
+    transaction.clear_storage_release_transaction(
+        marker,
+        expected_attempt_id=f"attempt-partial-{error_code}",
+    )
+    assert transaction.guard_allows_start(marker) is True
+
+
+@pytest.mark.parametrize("failure", ["cleanup", "publish"])
+def test_storage_release_clear_unpublished_temp_failure_does_not_poison_retry(
+    tmp_path: Path, monkeypatch, failure: str
+) -> None:
+    from deploy import storage_release_transaction as transaction
+
+    marker = tmp_path / "state" / "storage-release-transaction.json"
+    recovery = marker.with_name(f".{marker.name}.recovery")
+    tombstone = marker.with_name(f".{marker.name}.clearing")
+    pending_prefix = f".{recovery.name}.pending-"
+    transaction.begin_storage_release_transaction(
+        marker,
+        prior_commit="1" * 40,
+        candidate_commit="2" * 40,
+        current_link=tmp_path / "install" / "current",
+        attempt_id=f"attempt-{failure}-failure",
+        snapshot_dir=tmp_path / "state" / "snapshot",
+        active_writer_units=[],
+    )
+    real_write = transaction.os.write
+    real_unlink = transaction.os.unlink
+    real_replace = transaction.os.replace
+    writes = 0
+
+    def fail_after_partial_write(descriptor: int, payload) -> int:
+        nonlocal writes
+        writes += 1
+        if writes == 1:
+            return real_write(descriptor, payload[:8])
+        raise OSError(errno.EIO, "injected recovery write failure")
+
+    def fail_pending_cleanup(path, **kwargs) -> None:
+        if Path(str(path)).name.startswith(pending_prefix):
+            raise OSError(errno.EACCES, "injected pending cleanup failure")
+        real_unlink(path, **kwargs)
+
+    def fail_recovery_publish(source, destination, **kwargs) -> None:
+        if Path(str(destination)).name == recovery.name:
+            raise OSError(errno.EIO, "injected recovery publish failure")
+        real_replace(source, destination, **kwargs)
+
+    if failure == "cleanup":
+        monkeypatch.setattr(transaction.os, "write", fail_after_partial_write)
+        monkeypatch.setattr(transaction.os, "unlink", fail_pending_cleanup)
+    else:
+        monkeypatch.setattr(transaction.os, "replace", fail_recovery_publish)
+
+    with pytest.raises(
+        transaction.StorageReleaseTransactionError,
+        match="recovery blocker creation failed",
+    ):
+        transaction.clear_storage_release_transaction(
+            marker,
+            expected_attempt_id=f"attempt-{failure}-failure",
+        )
+
+    pending = list(marker.parent.glob(f"{pending_prefix}*"))
+    assert tombstone.exists()
+    assert not recovery.exists()
+    assert len(pending) == (1 if failure == "cleanup" else 0)
+    assert transaction.guard_allows_start(marker) is False
+
+    monkeypatch.setattr(transaction.os, "write", real_write)
+    monkeypatch.setattr(transaction.os, "unlink", real_unlink)
+    monkeypatch.setattr(transaction.os, "replace", real_replace)
+    transaction.clear_storage_release_transaction(
+        marker,
+        expected_attempt_id=f"attempt-{failure}-failure",
+    )
+    assert transaction.guard_allows_start(marker) is True
 
 
 def test_storage_release_clear_uses_precreated_recovery_when_delete_sync_fails(
@@ -1144,6 +1269,7 @@ def test_storage_release_clear_recovery_file_fsync_failure_keeps_tombstone(
         snapshot_dir=tmp_path / "state" / "snapshot",
         active_writer_units=[],
     )
+    real_fsync = transaction.os.fsync
     monkeypatch.setattr(
         transaction.os,
         "fsync",
@@ -1162,8 +1288,16 @@ def test_storage_release_clear_recovery_file_fsync_failure_keeps_tombstone(
     tombstone = marker.with_name(f".{marker.name}.clearing")
     recovery = marker.with_name(f".{marker.name}.recovery")
     assert tombstone.exists()
-    assert recovery.exists()
+    assert not recovery.exists()
+    assert not list(marker.parent.glob(f".{recovery.name}.pending-*"))
     assert transaction.guard_allows_start(marker) is False
+
+    monkeypatch.setattr(transaction.os, "fsync", real_fsync)
+    transaction.clear_storage_release_transaction(
+        marker,
+        expected_attempt_id="attempt-clear-restore",
+    )
+    assert transaction.guard_allows_start(marker) is True
 
 
 def test_storage_release_transaction_rejects_symlinked_marker_and_lock(tmp_path) -> None:
