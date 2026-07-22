@@ -23,6 +23,18 @@ def _record(*, source_id: str = "default", title: str = "Shared title") -> Recor
     )
 
 
+def _apply_all_storage_migrations(
+    store: SqliteRecordStore, *, batch_size: int = 2
+) -> list[dict]:
+    reports: list[dict] = []
+    for _ in range(100):
+        if not store.pending_storage_migrations():
+            break
+        reports.append(store.apply_storage_migrations(batch_size=batch_size, offline=True))
+    assert store.pending_storage_migrations() == []
+    return reports
+
+
 def test_envelope_normalizes_and_round_trips_top_level_source_id() -> None:
     record = _record(source_id="\uff34\uff25\uff21\uff2d-A")
 
@@ -144,6 +156,11 @@ def test_ready_legacy_database_migrates_only_unambiguous_knowledge_page_source_i
 
     migrated = SqliteRecordStore(db_path)
 
+    assert "records.source_partition.v1" in migrated.pending_storage_migrations()
+    assert migrated.conn.execute(
+        "SELECT source_id FROM records WHERE record_id = ?", (good.record_id,)
+    ).fetchone()[0] == "default"
+    _apply_all_storage_migrations(migrated)
     assert migrated.get_by_id(good.record_id, scope=SCOPE).source_id == "paper-a"
     assert migrated.get_by_id(ambiguous.record_id, scope=SCOPE).source_id == "default"
     assert migrated.get_by_id(paper_only.record_id, scope=SCOPE).source_id == "default"
@@ -181,6 +198,8 @@ def test_markered_schema_repairs_missing_source_index_before_ready_fast_path(tmp
     store.sqlite.close()
 
     repaired = SqliteRecordStore(tmp_path / "state" / "eimemory.sqlite")
+    assert "records.source_partition.v1" in repaired.pending_storage_migrations()
+    _apply_all_storage_migrations(repaired)
     assert repaired._source_partition_physical_ready() is True
 
 
@@ -208,6 +227,8 @@ def test_markered_schema_repairs_same_name_corrupt_source_index(tmp_path, index_
     connection.close()
 
     repaired = SqliteRecordStore(tmp_path / "state" / "eimemory.sqlite")
+    assert "records.source_partition.v1" in repaired.pending_storage_migrations()
+    _apply_all_storage_migrations(repaired)
     assert repaired._source_partition_physical_ready() is True
     where, params = repaired._recall_index_where(
         kinds=None, scope=SCOPE, recall_filters={"_source_ids": ("alpha",), "blocked_recall_lanes": ["operational"]}, alias="i"
@@ -238,6 +259,8 @@ def test_markered_nonempty_database_repairs_physical_source_schema_without_remap
     connection.close()
 
     repaired = SqliteRecordStore(root / "state" / "eimemory.sqlite")
+    assert "records.source_partition.v1" in repaired.pending_storage_migrations()
+    _apply_all_storage_migrations(repaired)
     assert repaired.get_by_id(alpha.record_id, scope=SCOPE).source_id == "alpha"
     assert repaired.conn.execute("SELECT source_id FROM records WHERE record_id = ?", (alpha.record_id,)).fetchone()[0] == "alpha"
     assert repaired.conn.execute("SELECT source_id FROM recall_index WHERE record_id = ?", (alpha.record_id,)).fetchone()[0] == "alpha"
@@ -338,25 +361,50 @@ def test_memory_service_accepts_only_explicit_validated_top_level_source_id(tmp_
         )
 
 
-def test_source_migration_rolls_back_records_and_recall_projection_on_failure(tmp_path, monkeypatch) -> None:
+def test_source_migration_rolls_back_records_and_recall_projection_on_failure(tmp_path) -> None:
     db_path = tmp_path / "rollback.sqlite"
     legacy = SqliteRecordStore(db_path)
+    record = _record(source_id="alpha", title="rollback alpha")
+    legacy.upsert(record)
     legacy.conn.execute("DELETE FROM schema_migrations WHERE migration_id = 'records.source_partition.v1'")
     legacy.conn.execute("ALTER TABLE records RENAME COLUMN source_id TO legacy_source_id")
     legacy.conn.execute("ALTER TABLE recall_index RENAME COLUMN source_id TO legacy_source_id")
     legacy.conn.commit()
     legacy.close()
 
-    original = SqliteRecordStore._backfill_recall_index_if_needed
-    monkeypatch.setattr(SqliteRecordStore, "_backfill_recall_index_if_needed", lambda _self: (_ for _ in ()).throw(RuntimeError("inject rollback")))
-    with pytest.raises(RuntimeError, match="inject rollback"):
-        SqliteRecordStore(db_path)
-    monkeypatch.setattr(SqliteRecordStore, "_backfill_recall_index_if_needed", original)
-    connection = sqlite3.connect(db_path)
-    assert "source_id" not in {row[1] for row in connection.execute("PRAGMA table_info(records)")}
-    assert "source_id" not in {row[1] for row in connection.execute("PRAGMA table_info(recall_index)")}
-    assert not connection.execute("SELECT 1 FROM schema_migrations WHERE migration_id = 'records.source_partition.v1'").fetchone()
-    connection.close()
+    migrated = SqliteRecordStore(db_path)
+
+    def reject_recall_projection_update(action, table, _column, _database, _trigger):
+        if action == sqlite3.SQLITE_UPDATE and table == "recall_index":
+            return sqlite3.SQLITE_DENY
+        return sqlite3.SQLITE_OK
+
+    migrated.conn.set_authorizer(reject_recall_projection_update)
+    try:
+        with pytest.raises(sqlite3.DatabaseError, match="not authorized"):
+            migrated.apply_storage_migrations(batch_size=2, offline=True)
+    finally:
+        migrated.conn.set_authorizer(None)
+
+    storage_key = migrated._storage_key(record)
+    assert migrated.conn.execute(
+        "SELECT source_id FROM records WHERE storage_key = ?", (storage_key,)
+    ).fetchone()[0] == "default"
+    assert migrated.conn.execute(
+        "SELECT source_id FROM recall_index WHERE storage_key = ?", (storage_key,)
+    ).fetchone()[0] == "default"
+    assert not migrated.conn.execute(
+        "SELECT 1 FROM schema_migration_progress WHERE migration_id = 'records.source_partition.v1'"
+    ).fetchone()
+
+    _apply_all_storage_migrations(migrated)
+    assert migrated.conn.execute(
+        "SELECT source_id FROM records WHERE storage_key = ?", (storage_key,)
+    ).fetchone()[0] == "alpha"
+    assert migrated.conn.execute(
+        "SELECT source_id FROM recall_index WHERE storage_key = ?", (storage_key,)
+    ).fetchone()[0] == "alpha"
+    migrated.close()
 
 
 def test_source_allowlist_is_bounded() -> None:

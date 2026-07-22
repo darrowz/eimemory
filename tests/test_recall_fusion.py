@@ -53,6 +53,18 @@ def _record(
     )
 
 
+def _apply_all_storage_migrations(store: RuntimeStore, *, batch_size: int = 2) -> list[dict]:
+    reports: list[dict] = []
+    for _ in range(100):
+        if not store.sqlite.pending_storage_migrations():
+            break
+        reports.append(
+            store.sqlite.apply_storage_migrations(batch_size=batch_size, offline=True)
+        )
+    assert store.sqlite.pending_storage_migrations() == []
+    return reports
+
+
 def test_rrf_is_bounded_deterministic_and_exposes_math() -> None:
     result = fuse_ranked_components(
         [
@@ -384,6 +396,8 @@ def test_markered_identity_migration_repairs_physical_schema_and_backfills(tmp_p
     connection.close()
 
     repaired = RuntimeStore(root)
+    assert "recall.identity_index.v1" in repaired.sqlite.pending_storage_migrations()
+    _apply_all_storage_migrations(repaired)
     assert repaired.sqlite._recall_identity_physical_ready() is True
     storage_key_column = next(
         row for row in repaired.sqlite.conn.execute("PRAGMA table_info(recall_index)") if row["name"] == "storage_key"
@@ -950,7 +964,9 @@ def test_partial_common_keyword_is_not_strong_create_evidence(tmp_path) -> None:
 def test_source_migration_skips_one_malformed_payload_without_startup_dos(tmp_path) -> None:
     root = tmp_path / "malformed-source-migration"
     store = RuntimeStore(root)
-    record = store.append(_record("malformed source payload"))
+    candidate = _record("malformed source payload")
+    candidate.kind = "knowledge_page"
+    record = store.append(candidate)
     store.close()
     connection = sqlite3.connect(root / "state" / "eimemory.sqlite")
     connection.execute("DELETE FROM schema_migrations WHERE migration_id = 'records.source_partition.v1'")
@@ -958,6 +974,9 @@ def test_source_migration_skips_one_malformed_payload_without_startup_dos(tmp_pa
     connection.commit()
     connection.close()
     reopened = RuntimeStore(root)
+    assert "records.source_partition.v1" in reopened.sqlite.pending_storage_migrations()
+    assert reopened.sqlite.source_partition_migration_diagnostics == {}
+    _apply_all_storage_migrations(reopened)
     assert reopened.sqlite.source_partition_migration_diagnostics["corrupt"] == 1
     reopened.close()
 

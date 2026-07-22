@@ -178,6 +178,8 @@ class SqliteRecordStore:
             self._mark_schema_migration(_PAYLOAD_ARCHIVE_MIGRATION)
             self.conn.commit()
             return
+        if self._completed_storage_schema_ready():
+            return
         columns = {
             row["name"]
             for row in self.conn.execute("PRAGMA table_info(records)").fetchall()
@@ -216,6 +218,50 @@ class SqliteRecordStore:
         self._seed_default_intent_patterns()
         self._mark_schema_migration(_STORAGE_SCHEMA_MIGRATION)
         self.conn.commit()
+
+    def _completed_storage_schema_ready(self) -> bool:
+        """Recognize a fully migrated store without opening a write transaction."""
+
+        required_tables = {
+            "records",
+            "schema_migrations",
+            "schema_migration_progress",
+            "recall_index",
+            "recall_alias_index",
+            "memory_edges",
+            "events",
+            "intent_patterns",
+            "event_outcomes",
+            "policy_rollout_ledger",
+            "export_outbox",
+            "replay_manifest_sequences",
+            "replay_manifest_evidence",
+        }
+        try:
+            present = {
+                str(row[0])
+                for row in self.conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+            if not required_tables.issubset(present):
+                return False
+            if not self._schema_migration_applied(_STORAGE_SCHEMA_MIGRATION):
+                return False
+            if not self._schema_migration_applied(_INTENT_PATTERN_STATUS_MIGRATION):
+                return False
+            if self.pending_storage_migrations():
+                return False
+            scope = ScopeRef()
+            for payload in DEFAULT_INTENT_PATTERNS:
+                pattern_id = str(ensure_pattern_payload(payload, scope)["id"])
+                if self.conn.execute(
+                    "SELECT 1 FROM intent_patterns WHERE id = ?", (pattern_id,)
+                ).fetchone() is None:
+                    return False
+            return True
+        except sqlite3.OperationalError:
+            return False
 
     def _prepare_deferred_recall_schema(self) -> None:
         """Make legacy tables runtime-compatible using metadata-only changes.
@@ -2327,9 +2373,33 @@ class SqliteRecordStore:
             return DEFAULT_SOURCE_ID
         return next(iter(normalized)) if len(normalized) == 1 else DEFAULT_SOURCE_ID
 
+    @staticmethod
+    def _legacy_source_partition_from_record(record: RecordEnvelope) -> str:
+        """Re-derive the only legacy source projection safe to overlay on hydration."""
+
+        if record.kind != "knowledge_page" or record.source_id != DEFAULT_SOURCE_ID:
+            return record.source_id
+        candidates: list[object] = []
+        for container in (record.content, record.meta, record.provenance):
+            if not isinstance(container, dict):
+                continue
+            values = container.get("source_ids")
+            if isinstance(values, (list, tuple)):
+                candidates.extend(values)
+            elif values is not None:
+                candidates.append(values)
+        try:
+            normalized = {normalize_source_id(value) for value in candidates}
+        except ValueError:
+            return DEFAULT_SOURCE_ID
+        return next(iter(normalized)) if len(normalized) == 1 else DEFAULT_SOURCE_ID
+
     def _apply_recall_identity_batch(self, *, batch_size: int, offline: bool) -> int:
-        if not self._recall_index_runtime_shape_ready():
-            raise RuntimeError("offline recall_index schema rebuild required")
+        if self._recall_projection_schema_rebuild_required():
+            if not offline:
+                raise RuntimeError("offline recall projection schema rebuild required")
+            self._reset_recall_projection_schema_for_offline_migration()
+            return 0
         progress = self.conn.execute(
             "SELECT phase,cursor FROM schema_migration_progress WHERE migration_id=?",
             (_RECALL_IDENTITY_MIGRATION,),
@@ -2348,9 +2418,17 @@ class SqliteRecordStore:
                 "WITH keys AS (SELECT storage_key FROM records WHERE kind IN ("
                 + placeholders
                 + ") AND storage_key>? ORDER BY storage_key LIMIT ?) "
-                "SELECT r.storage_key,r.payload_json,r.content_text FROM keys "
+                "SELECT r.storage_key,r.payload_json,r.payload_pointer_json,r.payload_digest,"
+                "r.source_id,r.content_text FROM keys "
                 "JOIN records r USING(storage_key) ORDER BY r.storage_key",
                 (*_IDENTITY_PAYLOAD_KINDS, cursor, batch_size),
+            ).fetchall()
+        elif phase == "projection_rebuild":
+            rows = self.conn.execute(
+                "SELECT storage_key,payload_json,payload_pointer_json,payload_digest,"
+                "source_id,content_text FROM records WHERE storage_key>? "
+                "ORDER BY storage_key LIMIT ?",
+                (cursor, batch_size),
             ).fetchall()
         else:
             rows = []
@@ -2365,9 +2443,9 @@ class SqliteRecordStore:
                             str(row["storage_key"]),
                         ),
                     )
-            elif phase == "aliases":
+            elif phase in {"aliases", "projection_rebuild"}:
                 for row in rows:
-                    record = self._record_from_payload_json(row["payload_json"])
+                    record = self._record_from_storage_row(row, hydrate=True)
                     if record is not None:
                         self._upsert_recall_index(
                             record=record,
@@ -2389,6 +2467,7 @@ class SqliteRecordStore:
                 self._mark_schema_migration(_RECALL_IDENTITY_MIGRATION)
                 if offline:
                     self._create_recall_identity_tables(rebuild_indexes=True)
+                    self._create_source_partition_indexes(rebuild=True)
                     self.conn.execute(
                         "DELETE FROM schema_migration_progress WHERE migration_id=?",
                         (_RECALL_IDENTITY_MIGRATION,),
@@ -2402,6 +2481,53 @@ class SqliteRecordStore:
             self.conn.rollback()
             raise
         return len(rows)
+
+    def _recall_projection_schema_rebuild_required(self) -> bool:
+        if not self._recall_index_runtime_shape_ready():
+            return True
+        alias_table = self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='recall_alias_index'"
+        ).fetchone()
+        return alias_table is None or not self._recall_alias_table_ready()
+
+    def _reset_recall_projection_schema_for_offline_migration(self) -> None:
+        """Recreate corrupt derived tables before bounded authoritative backfill."""
+
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            self.conn.execute("DROP TABLE IF EXISTS recall_index_fts")
+            self.conn.execute("DROP TABLE IF EXISTS recall_alias_index")
+            self.conn.execute("DROP TABLE IF EXISTS recall_index")
+            self._create_recall_index_tables(create_indexes=False)
+            self._create_recall_alias_table_only()
+            self._restore_vector_sync_alias_triggers_if_configured()
+            self._save_migration_cursor(
+                _RECALL_IDENTITY_MIGRATION, "", phase="projection_rebuild"
+            )
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    def _restore_vector_sync_alias_triggers_if_configured(self) -> None:
+        tables = {
+            str(row[0])
+            for row in self.conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name IN ('vector_sync_revision','vector_sync_alias_guard')"
+            ).fetchall()
+        }
+        if tables != {"vector_sync_revision", "vector_sync_alias_guard"}:
+            return
+        for operation in ("INSERT", "UPDATE", "DELETE"):
+            name = f"trg_recall_alias_vector_sync_{operation.lower()}"
+            self.conn.execute(f"DROP TRIGGER IF EXISTS {name}")
+            self.conn.execute(
+                f"CREATE TRIGGER {name} AFTER {operation} ON recall_alias_index "
+                "WHEN COALESCE((SELECT suppress_revision FROM vector_sync_alias_guard "
+                "WHERE singleton = 1), 0) = 0 BEGIN UPDATE vector_sync_revision "
+                "SET revision = revision + 1 WHERE singleton = 1; END"
+            )
 
     def _recall_index_runtime_shape_ready(self) -> bool:
         columns = {row["name"]: row for row in self.conn.execute("PRAGMA table_info(recall_index)")}
@@ -3080,7 +3206,17 @@ class SqliteRecordStore:
                 if isinstance(exc, PayloadSegmentError):
                     raise
                 raise PayloadSegmentError("payload segment hydration failed") from exc
-        return self._record_from_payload_json(payload_json)
+        record = self._record_from_payload_json(payload_json)
+        if record is None or "source_id" not in keys:
+            return record
+        projected_source_id = normalize_source_id(row["source_id"])
+        if (
+            record.source_id == DEFAULT_SOURCE_ID
+            and projected_source_id != DEFAULT_SOURCE_ID
+            and self._legacy_source_partition_from_record(record) == projected_source_id
+        ):
+            record.source_id = projected_source_id
+        return record
 
     def payload_segment_health(self) -> dict[str, Any]:
         return {
@@ -4130,7 +4266,7 @@ class SqliteRecordStore:
         if scope is not None:
             self._apply_scope_filters(where, params, scope)
         row = self.conn.execute(
-            "SELECT payload_json, payload_pointer_json, payload_digest FROM records WHERE "
+            "SELECT source_id, payload_json, payload_pointer_json, payload_digest FROM records WHERE "
             + " AND ".join(where)
             + " ORDER BY updated_at DESC LIMIT 1",
             params,
@@ -4277,7 +4413,7 @@ class SqliteRecordStore:
             order_prefix = "CASE WHEN user_id = ? THEN 1 ELSE 0 END DESC, "
         row = self.conn.execute(
             f"""
-            SELECT payload_json, payload_pointer_json, payload_digest
+            SELECT source_id, payload_json, payload_pointer_json, payload_digest
             FROM records
             WHERE kind IN ({placeholders})
               AND tenant_id = ?
@@ -4345,7 +4481,7 @@ class SqliteRecordStore:
             "SELECT storage_key, updated_at, record_id FROM records WHERE "
             + " AND ".join(where)
             + " ORDER BY updated_at DESC, record_id DESC LIMIT ? OFFSET ?"
-            + ") SELECT selected_records.storage_key, records.payload_json, "
+            + ") SELECT selected_records.storage_key, records.source_id, records.payload_json, "
             + "records.payload_pointer_json, records.payload_digest "
             + "FROM selected_records JOIN records USING (storage_key) "
             + "ORDER BY selected_records.updated_at DESC, selected_records.record_id DESC",
@@ -4375,7 +4511,7 @@ class SqliteRecordStore:
         if not str(meta_key or "").replace("_", "").isalnum():
             raise ValueError("meta_key must be a simple identifier")
         row = self.conn.execute(
-            "SELECT payload_json, payload_pointer_json, payload_digest "
+            "SELECT source_id, payload_json, payload_pointer_json, payload_digest "
             "FROM records WHERE kind=? AND source=? AND status=? "
             "AND tenant_id=? AND agent_id=? AND workspace_id=? AND user_id=? "
             f"AND CAST(json_extract(meta_json, '$.{meta_key}') AS TEXT)=? "
@@ -4762,7 +4898,7 @@ class SqliteRecordStore:
                 "SELECT storage_key, updated_at, record_id FROM records WHERE "
                 + " AND ".join(where)
                 + " ORDER BY updated_at DESC, record_id DESC LIMIT ?"
-                + ") SELECT selected_records.storage_key, records.payload_json, "
+                + ") SELECT selected_records.storage_key, records.source_id, records.payload_json, "
                 + "records.payload_pointer_json, records.payload_digest "
                 + "FROM selected_records JOIN records USING (storage_key) "
                 + "ORDER BY selected_records.updated_at DESC, selected_records.record_id DESC",

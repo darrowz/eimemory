@@ -798,7 +798,7 @@ def test_runtime_store_does_not_repeat_meta_key_backfill_after_migration(tmp_pat
     assert calls == 0
 
 
-def test_applied_meta_key_migration_does_not_open_a_write_transaction_on_startup(tmp_path) -> None:
+def test_applied_meta_key_migration_does_not_open_a_write_transaction_when_checked(tmp_path) -> None:
     store = RuntimeStore(root=tmp_path)
 
     def deny_transactions(action, _arg1, _arg2, _database, _trigger):
@@ -808,10 +808,11 @@ def test_applied_meta_key_migration_does_not_open_a_write_transaction_on_startup
 
     store.sqlite.conn.set_authorizer(deny_transactions)
     try:
-        store.sqlite._backfill_record_meta_keys_if_needed()
+        report = store.sqlite.apply_storage_migrations(batch_size=1, offline=True)
     finally:
         store.sqlite.conn.set_authorizer(None)
         store.close()
+    assert report["pending"] == []
 
 
 def test_intent_pattern_payload_migration_is_marked_and_read_only_after_first_run(tmp_path) -> None:
@@ -964,6 +965,11 @@ def test_runtime_store_meta_key_migration_backfills_legacy_rows_once(tmp_path) -
     store.close()
 
     migrated = RuntimeStore(root=tmp_path)
+    assert sqlite_store_module._RECORD_META_KEYS_MIGRATION in migrated.sqlite.pending_storage_migrations()
+    for _ in range(10):
+        if sqlite_store_module._RECORD_META_KEYS_MIGRATION not in migrated.sqlite.pending_storage_migrations():
+            break
+        migrated.sqlite.apply_storage_migrations(batch_size=1, offline=True)
     row = migrated.sqlite.conn.execute(
         "SELECT idempotency_key, semantic_key FROM records WHERE storage_key = ?",
         (storage_key,),
@@ -1811,7 +1817,10 @@ def test_runtime_store_list_records_limits_keys_before_loading_bounded_payloads(
     assert "WITH selected_records AS" in statement
     assert "SELECT storage_key, updated_at, record_id FROM records" in statement
     assert "ORDER BY updated_at DESC, record_id DESC LIMIT 2 OFFSET 0" in statement
-    assert "SELECT selected_records.storage_key, records.payload_json" in statement
+    assert (
+        "SELECT selected_records.storage_key, records.source_id, records.payload_json"
+        in statement
+    )
     assert statement.index("LIMIT 2 OFFSET 0") < statement.index("payload_json")
 
 
