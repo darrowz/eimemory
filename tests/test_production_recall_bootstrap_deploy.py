@@ -283,7 +283,9 @@ def test_installer_runs_candidate_bootstrap_before_atomic_current_switch() -> No
     invocation = installer.index("_run_pre_switch_production_recall_bootstrap\n")
     switch = installer.index('ln -sfn "$RELEASE_DIR" "$CURRENT_LINK.next"')
     assert invocation < switch
-    function = installer[installer.index("_run_pre_switch_production_recall_bootstrap()") : invocation]
+    function_start = installer.index("_run_pre_switch_production_recall_bootstrap()")
+    function_end = installer.index("\n}", function_start)
+    function = installer[function_start:function_end]
     assert '"$RELEASE_DIR/.venv/bin/python"' in function
     assert '--candidate-commit "$COMMIT" --prior-commit "$PREVIOUS_COMMIT"' in function
     bootstrap = Path("deploy/bootstrap_production_recall.py").read_text(encoding="utf-8")

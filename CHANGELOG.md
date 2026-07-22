@@ -8,10 +8,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Planned
-- Enhanced semantic recall with vector embeddings
 - Multi-agent memory coordination
-- Advanced rollback strategies
-- Performance optimizations for large memory stores
+
+## [1.9.81] - 2026-07-22
+
+### Added
+- Add a governed `RecallEngine` contract with explainable RRF fusion, exact-title and alias evidence, graph expansion, stable quality-aware ordering, and an optional PostgreSQL vector candidate source while retaining SQLite as the lightweight default.
+- Add channel-local source partitions and authoritative Codex and Hermes memory mutations without changing OpenClaw's existing authority or L5 evidence contract.
+- Add bounded proactive recall injection with durable volunteered/used feedback, reconciliation, replay evidence, and release-gated real-query quality metrics.
+- Add cold governance payload archival, rollback-safe online storage maintenance, and crash-recoverable release transaction credentials.
+
+### Changed
+- Defer heavyweight SQLite migrations, compact recall attribution audits, bound projection work, and fail closed when required recall datasets, candidate providers, release identities, or capability projections are unavailable.
+- Make the optional PostgreSQL path replaceable and bypass-safe so provider failure cannot break the default SQLite recall path or falsely pass the release gate.
+
+### Fixed
+- Preserve strict tenant, user, workspace, agent, channel, and source authority across every recall candidate and adapter mutation.
+- Harden PII rejection for Unicode and unformatted phone numbers and person names while retaining deterministic product and business-identifier handling.
+- Make storage snapshot, vacuum, rollback, systemd drop-in, marker, lock, tombstone, and recovery operations fail closed across partial writes, ENOSPC/EIO, process interruption, and path/inode replacement races.
+- Keep completed SQLite startup read-only while repairing missing lightweight FTS, event, vector-trigger, and replay-uniqueness structures; rebuild damaged recall projections only through bounded offline maintenance without startup payload scans.
+- Attribute pre-existing verified real outcomes before autonomous-cycle probes, preserve prior scores against failed synthetic evidence, and degrade attribution errors without interrupting the learning cycle.
+- Require verifiable adapter receipts, immutable replay evidence, and exact release binding without weakening the existing OpenClaw L5 closure.
 
 ## [1.9.80] - 2026-07-21
 
