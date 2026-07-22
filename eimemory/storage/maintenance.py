@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import datetime, timezone
+import errno
 from hashlib import sha256
 import json
 import os
@@ -123,13 +124,50 @@ def _exclusive_maintenance_lock(path: Path):
 
 
 def _fsync_directory(path: Path) -> None:
-    if os.name != "posix":
-        return
-    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    flags = os.O_RDONLY | int(getattr(os, "O_DIRECTORY", 0))
     try:
-        os.fsync(descriptor)
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        if _directory_fsync_is_unsupported(exc):
+            return
+        raise
+    try:
+        try:
+            os.fsync(descriptor)
+        except OSError as exc:
+            if _directory_fsync_is_unsupported(exc):
+                return
+            raise
     finally:
         os.close(descriptor)
+
+
+def _directory_fsync_is_unsupported(exc: OSError) -> bool:
+    unsupported = {
+        errno.EINVAL,
+        int(getattr(errno, "ENOTSUP", errno.EINVAL)),
+        int(getattr(errno, "EOPNOTSUPP", errno.EINVAL)),
+        int(getattr(errno, "ENOSYS", errno.EINVAL)),
+    }
+    if os.name == "nt":
+        unsupported.add(errno.EACCES)
+    return exc.errno in unsupported
+
+
+def _mkdir_with_durable_ancestors(path: Path) -> None:
+    path = Path(path)
+    missing: list[Path] = []
+    current = path
+    while not current.exists():
+        missing.append(current)
+        if current == current.parent:
+            break
+        current = current.parent
+    path.mkdir(parents=True, exist_ok=True)
+    for directory in missing:
+        _fsync_directory(directory)
+    if missing:
+        _fsync_directory(current)
 
 
 def _validate_regular(path: Path) -> os.stat_result:
@@ -364,7 +402,7 @@ def create_consistent_storage_snapshot(
     )
     if not preflight["ok"]:
         raise StorageMaintenanceError("insufficient free disk for snapshot, migration, and vacuum")
-    snapshot.parent.mkdir(parents=True, exist_ok=True)
+    _mkdir_with_durable_ancestors(snapshot.parent)
     # Keep the staging name independent of the externally supplied attempt ID.
     # Besides bounding the path length on Windows, the random token still makes
     # concurrent staging directories collision-resistant.
@@ -373,12 +411,15 @@ def create_consistent_storage_snapshot(
     with _exclusive_maintenance_lock(lock_path):
         connection = _checkpoint_and_exclusive_connection(database)
         try:
-            staging.mkdir(mode=0o700)
+            _mkdir_with_durable_ancestors(staging)
+            os.chmod(staging, 0o700)
             _copy_file(database, staging / database.name)
             if segments.exists():
                 _copy_tree(segments, staging / "payload_segments")
             else:
-                (staging / "payload_segments").mkdir(mode=0o700)
+                empty_segments = staging / "payload_segments"
+                _mkdir_with_durable_ancestors(empty_segments)
+                os.chmod(empty_segments, 0o700)
         finally:
             connection.rollback()
             connection.close()
@@ -902,7 +943,8 @@ def restore_storage_snapshot(
                 & int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
             ):
                 raise StorageMaintenanceError("live payload segment root is a symlink or reparse point")
-            staging.mkdir(mode=0o700)
+            _mkdir_with_durable_ancestors(staging)
+            os.chmod(staging, 0o700)
             for suffix in _DB_SIDECAR_SUFFIXES:
                 source = snapshot / (database.name + suffix)
                 if source.exists():
@@ -978,6 +1020,7 @@ def restore_storage_snapshot(
             next(item for item in planned if item["live"] == str(segments))["state"] = "installed"
             atomic_write_json(journal_path, journal)
             _fsync_file(database)
+            _fsync_directory(segments)
             _fsync_directory(database.parent)
             _validate_sqlite_database(database)
             _validate_live_payload_pointers(database, segments)

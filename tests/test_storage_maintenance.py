@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 from hashlib import sha256
 import json
 import os
@@ -121,6 +122,97 @@ def test_copy_tree_rejects_nested_reparse_directory(tmp_path, monkeypatch) -> No
 
     with pytest.raises(StorageMaintenanceError, match="reparse"):
         maintenance._copy_tree(source, target)
+
+
+def test_snapshot_creation_fsyncs_each_new_snapshot_root_ancestor(
+    tmp_path, monkeypatch
+) -> None:
+    db_path = tmp_path / "state" / "eimemory.sqlite"
+    store = SqliteRecordStore(db_path)
+    store.close()
+    snapshot = tmp_path / "snapshot-root" / "nested" / "attempt"
+    synced: list[Path] = []
+    monkeypatch.setattr(maintenance, "_fsync_directory", lambda path: synced.append(Path(path)))
+
+    create_consistent_storage_snapshot(
+        db_path=db_path,
+        segment_root=db_path.parent / "payload_segments",
+        snapshot_dir=snapshot,
+        offline=True,
+    )
+
+    assert synced[:3] == [snapshot.parent, snapshot.parent.parent, tmp_path]
+
+
+def test_snapshot_creation_fsyncs_empty_payload_directory(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "state" / "eimemory.sqlite"
+    store = SqliteRecordStore(db_path)
+    store.close()
+    snapshot = tmp_path / "snapshots" / "attempt"
+    synced: list[Path] = []
+    monkeypatch.setattr(maintenance, "_fsync_directory", lambda path: synced.append(Path(path)))
+
+    create_consistent_storage_snapshot(
+        db_path=db_path,
+        segment_root=db_path.parent / "missing-payload-segments",
+        snapshot_dir=snapshot,
+        offline=True,
+    )
+
+    empty_payload = next(
+        path
+        for path in synced
+        if path.name == "payload_segments" and path.parent.name.startswith(".snapshot-stage-")
+    )
+    empty_index = synced.index(empty_payload)
+    assert any(
+        index > empty_index and path == empty_payload.parent
+        for index, path in enumerate(synced)
+    )
+
+
+def test_restore_fsyncs_live_segment_root_after_publish(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "state" / "eimemory.sqlite"
+    store = SqliteRecordStore(db_path)
+    store.upsert(_large_score())
+    store.close()
+    segments = db_path.parent / "payload_segments"
+    snapshot = tmp_path / "snapshot"
+    create_consistent_storage_snapshot(
+        db_path=db_path,
+        segment_root=segments,
+        snapshot_dir=snapshot,
+        offline=True,
+    )
+    synced: list[Path] = []
+    monkeypatch.setattr(maintenance, "_fsync_directory", lambda path: synced.append(Path(path)))
+
+    restore_storage_snapshot(
+        snapshot_dir=snapshot,
+        db_path=db_path,
+        segment_root=segments,
+        offline=True,
+    )
+
+    assert segments in synced
+    assert synced.index(segments) < synced.index(db_path.parent, synced.index(segments))
+
+
+def test_portable_directory_fsync_propagates_io_failure(tmp_path, monkeypatch) -> None:
+    directory = tmp_path / "state"
+    directory.mkdir()
+    monkeypatch.setattr(maintenance.os, "name", "nt")
+    monkeypatch.setattr(maintenance.os, "open", lambda _path, _flags: 91)
+    monkeypatch.setattr(maintenance.os, "close", lambda _fd: None)
+    monkeypatch.setattr(
+        maintenance.os,
+        "fsync",
+        lambda _fd: (_ for _ in ()).throw(OSError(errno.EIO, "injected fsync failure")),
+    )
+
+    with pytest.raises(OSError) as exc_info:
+        maintenance._fsync_directory(directory)
+    assert exc_info.value.errno == errno.EIO
 
 
 def test_fresh_process_recovers_vacuum_after_live_database_was_moved(tmp_path) -> None:

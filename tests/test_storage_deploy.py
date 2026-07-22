@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import shutil
 import sqlite3
+import stat
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -95,6 +96,87 @@ _acquire_storage_deploy_lock
 printf 'ready\\n'
 IFS= read -r _release_lock
 """
+
+
+def _run_rollback_control_harness(
+    tmp_path: Path,
+    *,
+    failure_point: str,
+    transaction_active: bool,
+    current_switched: bool = False,
+) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+    installer = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
+    body = installer.split("_rollback_current_release() {", 1)[1].split("\n}", 1)[0]
+    trace = tmp_path / "rollback.trace"
+    current = tmp_path / "install" / "current"
+    current.parent.mkdir(parents=True)
+    previous = tmp_path / "install" / "releases" / ("1" * 40)
+    previous.mkdir(parents=True)
+    candidate = tmp_path / "install" / "releases" / ("2" * 40)
+    candidate.mkdir()
+    harness = f"""#!/usr/bin/env bash
+set -u
+_rollback_current_release() {{{body}
+}}
+FAILURE_POINT="$1"
+TRACE_PATH="$2"
+CURRENT_LINK="$3"
+PREVIOUS_CURRENT="$4"
+PREVIOUS_COMMIT="{'1' * 40}"
+RELEASE_DIR="$5"
+STORAGE_TRANSACTION_ACTIVE="{1 if transaction_active else 0}"
+STORAGE_SNAPSHOT_READY=1
+STORAGE_VACUUM_BACKUP=""
+STORAGE_WRITERS_STOPPED=0
+CURRENT_SWITCHED="{1 if current_switched else 0}"
+USER_SYSTEMD_ENABLE_SERVICE=1
+EIMEMORY_DEPLOY_FAIL_ROLLBACK_STAGE=""
+trace() {{ printf '%s\n' "$1" >>"$TRACE_PATH"; }}
+systemctl() {{ return 0; }}
+_capture_storage_writers() {{ trace capture; [ "$FAILURE_POINT" != capture ]; }}
+_begin_storage_release_transaction() {{
+  trace begin
+  if [ "$FAILURE_POINT" = begin ]; then return 42; fi
+  STORAGE_TRANSACTION_ACTIVE=1
+}}
+_update_storage_release_transaction() {{
+  trace "update:$1"
+  [ "$FAILURE_POINT" != "update_$1" ]
+}}
+_stop_storage_writers() {{ trace stop; return 0; }}
+_fsync_install_root() {{ trace fsync_link; [ "$FAILURE_POINT" != fsync_link ]; }}
+_restore_storage_snapshot() {{ trace restore; return 0; }}
+_cleanup_storage_vacuum_backup() {{ trace cleanup_vacuum; return 0; }}
+_refresh_openclaw_gateway_metadata() {{ trace gateway_metadata; return 0; }}
+_install_current_runtime_metadata() {{ trace runtime_metadata; return 0; }}
+_install_openclaw_loop_compat_script() {{ trace compat; return 0; }}
+_refresh_openclaw_plugin_registry() {{ trace registry; return 0; }}
+_clear_storage_release_transaction() {{ trace clear; [ "$FAILURE_POINT" != clear ]; }}
+_restart_storage_writers() {{ trace restart; return 0; }}
+_inspect_openclaw_plugin_runtime() {{ trace inspect; return 0; }}
+_verify_release_health() {{ trace health; return 0; }}
+set +e
+_rollback_current_release
+exit $?
+"""
+    result = subprocess.run(
+        [
+            _bash_executable(),
+            "-c",
+            harness,
+            "rollback-control",
+            failure_point,
+            str(trace),
+            str(current),
+            str(previous),
+            str(candidate),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    events = trace.read_text(encoding="utf-8").splitlines() if trace.exists() else []
+    return result, events
 
 
 def _legacy_record() -> RecordEnvelope:
@@ -290,6 +372,32 @@ def test_vacuum_cleanup_rejects_reparse_journal_before_reading_it(
 
     with pytest.raises(maintenance.StorageMaintenanceError, match="journal is unsafe"):
         storage_release._cleanup_vacuum_backup(db_path, str(backup))
+
+
+def test_vacuum_cleanup_requires_journal_binding_for_existing_backup(tmp_path: Path) -> None:
+    db_path = tmp_path / "state" / "eimemory.sqlite"
+    db_path.parent.mkdir()
+    db_path.write_bytes(b"sqlite")
+    backup = db_path.parent / f".{db_path.name}.pre-vacuum-{'a' * 32}.bak"
+    backup.write_bytes(b"must remain")
+
+    with pytest.raises(maintenance.StorageMaintenanceError, match="journal binding"):
+        storage_release._cleanup_vacuum_backup(db_path, str(backup))
+
+    assert backup.read_bytes() == b"must remain"
+
+
+def test_vacuum_cleanup_is_idempotent_when_backup_and_journal_are_absent(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "state" / "eimemory.sqlite"
+    db_path.parent.mkdir()
+    db_path.write_bytes(b"sqlite")
+    backup = db_path.parent / f".{db_path.name}.pre-vacuum-{'a' * 32}.bak"
+
+    result = storage_release._cleanup_vacuum_backup(db_path, str(backup))
+
+    assert result == {"schema": "storage_vacuum_cleanup.v1", "ok": True, "removed": False}
 
 
 def test_release_helper_recovers_missing_live_database_before_safety_check(tmp_path, capsys) -> None:
@@ -649,7 +757,7 @@ def test_active_legacy_system_rpc_is_stopped_confirmed_disabled_and_retired(tmp_
     ).is_file()
 
 
-def test_legacy_system_rpc_is_quiesced_after_marker_and_before_user_writers() -> None:
+def test_legacy_system_rpc_is_quiesced_fail_closed_before_marker_and_user_writers() -> None:
     script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
     prepare = script.split("_prepare_storage_for_release() {", 1)[1].split(
         "\n}", 1
@@ -659,7 +767,8 @@ def test_legacy_system_rpc_is_quiesced_after_marker_and_before_user_writers() ->
     marker = prepare.index("_begin_storage_release_transaction")
     legacy = prepare.index("_retire_system_rpc_unit")
     user_writers = prepare.index("_stop_storage_writers")
-    assert marker < legacy < user_writers
+    assert legacy < marker < user_writers
+    assert "if ! _retire_system_rpc_unit; then" in prepare
 
     main = script[script.rindex("_prepare_storage_for_release\n") - 200 :]
     assert main.index("_prepare_storage_for_release") < main.index("_retire_system_rpc_unit")
@@ -1008,7 +1117,7 @@ def test_installer_installs_stable_guard_before_marker_and_delays_candidate_meta
             "_restore_storage_snapshot() {"
         )
     ]
-    marker_begin = prepare_body.index("_begin_storage_release_transaction\n")
+    marker_begin = prepare_body.index("_begin_storage_release_transaction")
     migrate = prepare_body.index("_storage_release_action migrate")
     metadata_body = script[
         script.index("_install_candidate_runtime_metadata() {") : script.index(
@@ -1051,19 +1160,30 @@ def test_durable_guard_sync_fsyncs_file_and_every_parent_and_propagates_failure(
     synced: list[Path] = []
     next_fd = iter(range(100, 200))
 
-    def fake_open(path, _flags):
+    def metadata(path: Path) -> SimpleNamespace:
+        return SimpleNamespace(
+            st_mode=(0o100600 if path == helper else 0o040700),
+            st_dev=1,
+            st_ino=abs(hash(str(path))),
+        )
+
+    def fake_open(path, _flags, _mode=0o777, *, dir_fd=None):
         descriptor = next(next_fd)
-        opened[descriptor] = Path(path)
+        opened[descriptor] = (
+            Path(path) if dir_fd is None else opened[int(dir_fd)] / str(path)
+        )
         return descriptor
+
+    def fake_stat(path, *, dir_fd=None, follow_symlinks=True):
+        del follow_symlinks
+        resolved = Path(path) if dir_fd is None else opened[int(dir_fd)] / str(path)
+        return metadata(resolved)
 
     monkeypatch.setattr(transaction.os, "open", fake_open)
     monkeypatch.setattr(transaction.os, "close", lambda _fd: None)
+    monkeypatch.setattr(transaction.os, "stat", fake_stat)
     monkeypatch.setattr(transaction.os, "fsync", lambda fd: synced.append(opened[fd]))
-    monkeypatch.setattr(
-        transaction.os,
-        "fstat",
-        lambda fd: SimpleNamespace(st_mode=(0o100600 if opened[fd].is_file() else 0o040700)),
-    )
+    monkeypatch.setattr(transaction.os, "fstat", lambda fd: metadata(opened[fd]))
 
     transaction._durably_sync_path_posix(helper, boundary=boundary)
 
@@ -1076,6 +1196,194 @@ def test_durable_guard_sync_fsyncs_file_and_every_parent_and_propagates_failure(
     monkeypatch.setattr(transaction.os, "fsync", fail_libexec)
     with pytest.raises(OSError, match="injected directory fsync failure"):
         transaction._durably_sync_path_posix(helper, boundary=boundary)
+
+
+def test_durable_sync_and_marker_use_fd_relative_inode_validation() -> None:
+    source = Path("deploy/storage_release_transaction.py").read_text(encoding="utf-8")
+
+    assert "dir_fd=parent_fd" in source
+    assert "st_dev" in source and "st_ino" in source
+    assert "durable sync entry changed during fsync" in source
+    assert "storage release transaction lock changed while held" in source
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX openat race behavior is required")
+def test_durable_sync_rejects_target_inode_replacement_after_open(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from deploy import storage_release_transaction as transaction
+
+    boundary = tmp_path / "install"
+    helper = boundary / "libexec" / "storage-release-transaction.py"
+    helper.parent.mkdir(parents=True)
+    helper.write_text("trusted", encoding="utf-8")
+    replacement = boundary / "replacement"
+    replacement.write_text("replacement", encoding="utf-8")
+    real_fsync = transaction.os.fsync
+    replaced = False
+
+    def replace_after_file_open(descriptor: int) -> None:
+        nonlocal replaced
+        if not replaced and stat.S_ISREG(transaction.os.fstat(descriptor).st_mode):
+            replaced = True
+            transaction.os.replace(replacement, helper)
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(transaction.os, "fsync", replace_after_file_open)
+
+    with pytest.raises(
+        transaction.StorageReleaseTransactionError,
+        match="durable sync entry changed during fsync",
+    ):
+        transaction._durably_sync_path_posix(helper, boundary=boundary)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX openat race behavior is required")
+def test_durable_sync_rejects_ancestor_inode_replacement_after_open(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from deploy import storage_release_transaction as transaction
+
+    boundary = tmp_path / "install"
+    libexec = boundary / "libexec"
+    helper = libexec / "storage-release-transaction.py"
+    libexec.mkdir(parents=True)
+    helper.write_text("trusted", encoding="utf-8")
+    real_fsync = transaction.os.fsync
+    replaced = False
+
+    def replace_after_file_sync(descriptor: int) -> None:
+        nonlocal replaced
+        real_fsync(descriptor)
+        if not replaced and stat.S_ISREG(transaction.os.fstat(descriptor).st_mode):
+            replaced = True
+            libexec.replace(boundary / "libexec.old")
+            libexec.mkdir()
+
+    monkeypatch.setattr(transaction.os, "fsync", replace_after_file_sync)
+
+    with pytest.raises(
+        transaction.StorageReleaseTransactionError,
+        match="durable sync entry changed during fsync",
+    ):
+        transaction._durably_sync_path_posix(helper, boundary=boundary)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX openat race behavior is required")
+def test_marker_lock_rejects_inode_replacement_before_entering_critical_section(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import fcntl
+    from deploy import storage_release_transaction as transaction
+
+    marker = tmp_path / "state" / "transaction.json"
+    marker.parent.mkdir()
+    lock = marker.with_name(f".{marker.name}.lock")
+    real_flock = fcntl.flock
+    replaced = False
+
+    def replace_before_lock(descriptor: int, operation: int) -> None:
+        nonlocal replaced
+        if operation & fcntl.LOCK_EX and not replaced:
+            replaced = True
+            lock.replace(lock.with_suffix(".old"))
+            lock.write_text("replacement", encoding="utf-8")
+        real_flock(descriptor, operation)
+
+    monkeypatch.setattr(fcntl, "flock", replace_before_lock)
+
+    with pytest.raises(
+        transaction.StorageReleaseTransactionError,
+        match="storage release transaction lock changed while held",
+    ):
+        transaction.begin_storage_release_transaction(
+            marker,
+            prior_commit="1" * 40,
+            candidate_commit="2" * 40,
+            current_link=tmp_path / "install" / "current",
+            attempt_id="attempt-1",
+            snapshot_dir=tmp_path / "snapshot",
+            active_writer_units=[],
+        )
+    assert not marker.exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX openat race behavior is required")
+def test_marker_lock_rejects_ancestor_replacement_before_critical_section(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import fcntl
+    from deploy import storage_release_transaction as transaction
+
+    state = tmp_path / "state"
+    marker = state / "transaction.json"
+    state.mkdir()
+    real_flock = fcntl.flock
+    replaced = False
+
+    def replace_parent_before_lock(descriptor: int, operation: int) -> None:
+        nonlocal replaced
+        if operation & fcntl.LOCK_EX and not replaced:
+            replaced = True
+            state.replace(tmp_path / "state.old")
+            state.mkdir()
+        real_flock(descriptor, operation)
+
+    monkeypatch.setattr(fcntl, "flock", replace_parent_before_lock)
+
+    with pytest.raises(
+        transaction.StorageReleaseTransactionError,
+        match="storage release transaction lock parent changed while held",
+    ):
+        transaction.begin_storage_release_transaction(
+            marker,
+            prior_commit="1" * 40,
+            candidate_commit="2" * 40,
+            current_link=tmp_path / "install" / "current",
+            attempt_id="attempt-1",
+            snapshot_dir=tmp_path / "snapshot",
+            active_writer_units=[],
+        )
+    assert not marker.exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX openat race behavior is required")
+def test_marker_write_rejects_published_inode_replacement(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from deploy import storage_release_transaction as transaction
+
+    marker = tmp_path / "state" / "transaction.json"
+    marker.parent.mkdir()
+    real_replace = transaction.os.replace
+
+    def replace_published_marker(source, destination, **kwargs) -> None:
+        real_replace(source, destination, **kwargs)
+        parent_fd = kwargs["dst_dir_fd"]
+        transaction.os.unlink(destination, dir_fd=parent_fd)
+        replacement = transaction.os.open(
+            destination,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            0o600,
+            dir_fd=parent_fd,
+        )
+        transaction.os.close(replacement)
+
+    monkeypatch.setattr(transaction.os, "replace", replace_published_marker)
+
+    with pytest.raises(
+        transaction.StorageReleaseTransactionError,
+        match="storage release transaction marker changed while publishing",
+    ):
+        transaction.begin_storage_release_transaction(
+            marker,
+            prior_commit="1" * 40,
+            candidate_commit="2" * 40,
+            current_link=tmp_path / "install" / "current",
+            attempt_id="attempt-1",
+            snapshot_dir=tmp_path / "snapshot",
+            active_writer_units=[],
+        )
 
 
 def test_installer_durably_syncs_stable_helper_and_guard_dropin_ancestors() -> None:
@@ -1106,6 +1414,11 @@ def test_installer_acquires_stable_global_lock_before_reconcile_or_begin() -> No
     assert "flock -n" in lock_body
     assert "storage_deploy_lock=contended" in lock_body
     assert 'if [ -L "$STORAGE_DEPLOY_LOCK_PATH" ]' in lock_body
+    assert '/proc/$$/fd/$STORAGE_DEPLOY_LOCK_FD' in lock_body
+    assert "storage_deploy_lock=failed inode_changed" in lock_body
+    assert "parent_identity_before" in lock_body
+    assert "parent_identity_after" in lock_body
+    assert "storage_deploy_lock=failed ancestor_inode_changed" in lock_body
 
 
 def test_installer_misc_storage_boundaries_fail_closed() -> None:
@@ -1151,6 +1464,74 @@ def test_two_installer_processes_cannot_hold_the_storage_deploy_lock(tmp_path: P
         first.wait(timeout=10)
 
 
+@pytest.mark.skipif(shutil.which("flock") is None, reason="flock is unavailable")
+def test_global_installer_lock_rejects_path_inode_replacement_during_flock(
+    tmp_path: Path,
+) -> None:
+    installer = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
+    body = installer.split("_acquire_storage_deploy_lock() {", 1)[1].split("\n}", 1)[0]
+    lock = tmp_path / "storage-release-install.lock"
+    harness = f"""#!/usr/bin/env bash
+set -u
+_acquire_storage_deploy_lock() {{{body}
+}}
+STORAGE_DEPLOY_LOCK_PATH="$1"
+flock() {{
+  mv "$STORAGE_DEPLOY_LOCK_PATH" "$STORAGE_DEPLOY_LOCK_PATH.old"
+  : >"$STORAGE_DEPLOY_LOCK_PATH"
+  command flock "$@"
+}}
+_acquire_storage_deploy_lock
+"""
+
+    result = subprocess.run(
+        [_bash_executable(), "-c", harness, "lock-race", str(lock)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "storage_deploy_lock=failed inode_changed" in result.stderr
+
+
+@pytest.mark.skipif(shutil.which("flock") is None, reason="flock is unavailable")
+def test_global_installer_lock_rejects_parent_inode_replacement_during_flock(
+    tmp_path: Path,
+) -> None:
+    installer = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
+    body = installer.split("_acquire_storage_deploy_lock() {", 1)[1].split("\n}", 1)[0]
+    lock_parent = tmp_path / "locks"
+    lock_parent.mkdir()
+    lock = lock_parent / "storage-release-install.lock"
+    harness = f"""#!/usr/bin/env bash
+set -u
+_acquire_storage_deploy_lock() {{{body}
+}}
+STORAGE_DEPLOY_LOCK_PATH="$1"
+flock() {{
+  local parent
+  parent="$(dirname "$STORAGE_DEPLOY_LOCK_PATH")"
+  mv "$parent" "$parent.old"
+  mkdir "$parent"
+  ln "$parent.old/$(basename "$STORAGE_DEPLOY_LOCK_PATH")" \
+    "$STORAGE_DEPLOY_LOCK_PATH"
+  command flock "$@"
+}}
+_acquire_storage_deploy_lock
+"""
+
+    result = subprocess.run(
+        [_bash_executable(), "-c", harness, "lock-parent-race", str(lock)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "storage_deploy_lock=failed ancestor_inode_changed" in result.stderr
+
+
 def test_concurrent_marker_begin_has_exactly_one_process_winner(tmp_path: Path) -> None:
     marker = tmp_path / "state" / "transaction.json"
     start = tmp_path / "start"
@@ -1164,9 +1545,9 @@ marker = Path(sys.argv[1])
 start = Path(sys.argv[2])
 real_write = transaction._atomic_write_json
 
-def delayed_write(path, payload):
+def delayed_write(path, payload, **kwargs):
     time.sleep(0.2)
-    real_write(path, payload)
+    real_write(path, payload, **kwargs)
 
 transaction._atomic_write_json = delayed_write
 while not start.exists():
@@ -1215,3 +1596,46 @@ def test_installer_rollback_is_guarded_until_prior_storage_link_and_metadata_mat
 
     assert marker_begin < marker_rollback < stop < restore < metadata < marker_clear < restart
     assert "_refresh_current_runtime_metadata" not in rollback
+
+
+@pytest.mark.parametrize(
+    ("failure_point", "transaction_active"),
+    [("capture", False), ("begin", False), ("update_rollback_started", True)],
+)
+def test_rollback_never_restores_storage_without_durable_transaction_progress(
+    tmp_path: Path, failure_point: str, transaction_active: bool
+) -> None:
+    result, events = _run_rollback_control_harness(
+        tmp_path,
+        failure_point=failure_point,
+        transaction_active=transaction_active,
+    )
+
+    assert result.returncode != 0
+    assert "restore" not in events
+    assert "clear" not in events
+    assert "restart" not in events
+
+
+@pytest.mark.parametrize(
+    ("failure_point", "current_switched", "forbidden"),
+    [
+        ("fsync_link", True, "restore"),
+        ("update_rollback_link_restored", True, "restore"),
+        ("update_rollback_storage_restored", False, "gateway_metadata"),
+        ("update_rollback_metadata_ready", False, "clear"),
+        ("clear", False, "restart"),
+    ],
+)
+def test_rollback_phase_or_clear_failure_stays_fail_closed(
+    tmp_path: Path, failure_point: str, current_switched: bool, forbidden: str
+) -> None:
+    result, events = _run_rollback_control_harness(
+        tmp_path,
+        failure_point=failure_point,
+        transaction_active=True,
+        current_switched=current_switched,
+    )
+
+    assert result.returncode != 0
+    assert forbidden not in events

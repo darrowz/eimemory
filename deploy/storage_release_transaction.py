@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 import stat
 import tempfile
 import threading
@@ -67,55 +68,206 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
+def _inode_identity(metadata: os.stat_result) -> tuple[int, int]:
+    return (int(metadata.st_dev), int(metadata.st_ino))
+
+
+def _assert_fd_matches_entry(
+    descriptor: int,
+    *,
+    parent_fd: int,
+    name: str,
+    message: str,
+) -> None:
+    descriptor_metadata = os.fstat(descriptor)
+    try:
+        entry_metadata = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except OSError as exc:
+        raise StorageReleaseTransactionError(message) from exc
+    if _inode_identity(descriptor_metadata) != _inode_identity(entry_metadata):
+        raise StorageReleaseTransactionError(message)
+
+
+def _assert_directory_chain(
+    entries: list[tuple[int | None, str, int]],
+    *,
+    message: str,
+) -> None:
+    for parent_fd, name, descriptor in entries[1:]:
+        if parent_fd is None:
+            raise StorageReleaseTransactionError(message)
+        _assert_fd_matches_entry(
+            descriptor,
+            parent_fd=parent_fd,
+            name=name,
+            message=message,
+        )
+
+
+@contextmanager
+def _open_directory_fds(path: Path, *, create: bool = False):
+    path = Path(path)
+    if not path.is_absolute() or ".." in path.parts:
+        raise StorageReleaseTransactionError("directory path must be absolute and normalized")
+    flags = os.O_RDONLY | int(getattr(os, "O_DIRECTORY", 0)) | int(
+        getattr(os, "O_NOFOLLOW", 0)
+    )
+    entries: list[tuple[int | None, str, int]] = []
+    try:
+        root_fd = os.open(path.anchor, flags)
+        entries.append((None, path.anchor, root_fd))
+        for component in path.parts[1:]:
+            parent_fd = entries[-1][2]
+            created = False
+            try:
+                descriptor = os.open(component, flags, dir_fd=parent_fd)
+            except FileNotFoundError:
+                if not create:
+                    raise
+                os.mkdir(component, mode=0o700, dir_fd=parent_fd)
+                created = True
+                descriptor = os.open(component, flags, dir_fd=parent_fd)
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISDIR(metadata.st_mode):
+                os.close(descriptor)
+                raise StorageReleaseTransactionError("path component is not a directory")
+            entries.append((parent_fd, component, descriptor))
+            _assert_fd_matches_entry(
+                descriptor,
+                parent_fd=parent_fd,
+                name=component,
+                message="directory entry changed while opening path",
+            )
+            if created:
+                os.fsync(descriptor)
+                os.fsync(parent_fd)
+        yield entries
+    finally:
+        for _parent_fd, _name, descriptor in reversed(entries):
+            os.close(descriptor)
+
+
 def _durably_sync_path_posix(path: Path, *, boundary: Path) -> None:
     path = Path(path)
     boundary = Path(boundary)
-    if not path.is_absolute() or not boundary.is_absolute():
-        raise StorageReleaseTransactionError("durable sync paths must be absolute")
-    resolved_boundary = boundary.resolve(strict=True)
-    resolved_path = path.resolve(strict=True)
-    if resolved_boundary != Path(os.path.abspath(boundary)) or resolved_path != Path(
-        os.path.abspath(path)
+    if (
+        not path.is_absolute()
+        or not boundary.is_absolute()
+        or ".." in path.parts
+        or ".." in boundary.parts
     ):
-        raise StorageReleaseTransactionError("durable sync path must not traverse symlinks")
+        raise StorageReleaseTransactionError("durable sync paths must be absolute")
     try:
-        resolved_path.relative_to(resolved_boundary)
+        path.relative_to(boundary)
     except ValueError as exc:
         raise StorageReleaseTransactionError("durable sync path escapes its boundary") from exc
     nofollow = int(getattr(os, "O_NOFOLLOW", 0))
-    directory = int(getattr(os, "O_DIRECTORY", 0))
-    if path.is_file():
-        descriptor = os.open(path, os.O_RDONLY | nofollow)
+    directory_flags = os.O_RDONLY | int(getattr(os, "O_DIRECTORY", 0)) | nofollow
+    with _open_directory_fds(path.parent) as entries:
+        parent_fd = entries[-1][2]
         try:
-            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-                raise StorageReleaseTransactionError("durable sync target is not a regular file")
+            target_metadata = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+        except OSError as exc:
+            raise StorageReleaseTransactionError("durable sync target is unavailable") from exc
+        target_directory_fd = -1
+        if stat.S_ISREG(target_metadata.st_mode):
+            descriptor = os.open(path.name, os.O_RDONLY | nofollow, dir_fd=parent_fd)
+            try:
+                if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                    raise StorageReleaseTransactionError(
+                        "durable sync target is not a regular file"
+                    )
+                os.fsync(descriptor)
+                _assert_fd_matches_entry(
+                    descriptor,
+                    parent_fd=parent_fd,
+                    name=path.name,
+                    message="durable sync entry changed during fsync",
+                )
+            finally:
+                os.close(descriptor)
+        elif stat.S_ISDIR(target_metadata.st_mode):
+            target_directory_fd = os.open(path.name, directory_flags, dir_fd=parent_fd)
+            _assert_fd_matches_entry(
+                target_directory_fd,
+                parent_fd=parent_fd,
+                name=path.name,
+                message="durable sync entry changed during fsync",
+            )
+            entries.append((parent_fd, path.name, target_directory_fd))
+        else:
+            raise StorageReleaseTransactionError("durable sync target is not a file or directory")
+
+        boundary_index = len(boundary.parts) - 1
+        if boundary_index >= len(entries):
+            raise StorageReleaseTransactionError("durable sync boundary is not a directory")
+        for entry_parent_fd, entry_name, descriptor in reversed(entries[boundary_index:]):
+            if entry_parent_fd is not None:
+                _assert_fd_matches_entry(
+                    descriptor,
+                    parent_fd=entry_parent_fd,
+                    name=entry_name,
+                    message="durable sync entry changed during fsync",
+                )
             os.fsync(descriptor)
+            if entry_parent_fd is not None:
+                _assert_fd_matches_entry(
+                    descriptor,
+                    parent_fd=entry_parent_fd,
+                    name=entry_name,
+                    message="durable sync entry changed during fsync",
+                )
+
+
+def _atomic_write_json(
+    path: Path,
+    payload: dict[str, Any],
+    *,
+    parent_fd: int | None = None,
+) -> None:
+    if parent_fd is not None:
+        temporary_name = f".{path.name}.{secrets.token_hex(8)}"
+        descriptor = os.open(
+            temporary_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | int(getattr(os, "O_NOFOLLOW", 0)),
+            0o600,
+            dir_fd=parent_fd,
+        )
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n", closefd=False) as handle:
+                json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.fchmod(descriptor, 0o600)
+            os.fsync(descriptor)
+            os.replace(
+                temporary_name,
+                path.name,
+                src_dir_fd=parent_fd,
+                dst_dir_fd=parent_fd,
+            )
+            _assert_fd_matches_entry(
+                descriptor,
+                parent_fd=parent_fd,
+                name=path.name,
+                message="storage release transaction marker changed while publishing",
+            )
+            os.fsync(parent_fd)
+            _assert_fd_matches_entry(
+                descriptor,
+                parent_fd=parent_fd,
+                name=path.name,
+                message="storage release transaction marker changed while publishing",
+            )
         finally:
             os.close(descriptor)
-        current = path.parent
-    elif path.is_dir():
-        current = path
-    else:
-        raise StorageReleaseTransactionError("durable sync target is not a file or directory")
-    while True:
-        descriptor = os.open(current, os.O_RDONLY | directory | nofollow)
-        try:
-            if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
-                raise StorageReleaseTransactionError("durable sync ancestor is not a directory")
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
-        if current == boundary:
-            break
-        current = current.parent
+            try:
+                os.unlink(temporary_name, dir_fd=parent_fd)
+            except FileNotFoundError:
+                pass
+        return
 
-
-def durably_sync_path(path: str | Path, *, boundary: str | Path) -> None:
-    if os.name == "posix":
-        _durably_sync_path_posix(Path(path), boundary=Path(boundary))
-
-
-def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.is_symlink():
         raise StorageReleaseTransactionError("storage release transaction marker is a symlink")
@@ -132,6 +284,11 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
         _fsync_directory(path.parent)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def durably_sync_path(path: str | Path, *, boundary: str | Path) -> None:
+    if os.name == "posix":
+        _durably_sync_path_posix(Path(path), boundary=Path(boundary))
 
 
 def _absolute_path(value: str | Path, *, label: str) -> str:
@@ -186,67 +343,146 @@ def _validated_transaction(payload: Any) -> dict[str, Any]:
 @contextmanager
 def _marker_lock(marker: Path):
     lock_path = marker.with_name(f".{marker.name}.lock")
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        if lock_path.parent.resolve(strict=True) != Path(os.path.abspath(lock_path.parent)):
+    if os.name == "posix":
+        parent_context = _open_directory_fds(lock_path.parent, create=True)
+    else:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            if lock_path.parent.resolve(strict=True) != Path(os.path.abspath(lock_path.parent)):
+                raise StorageReleaseTransactionError(
+                    "storage release transaction lock parent traverses a symlink"
+                )
+        except OSError as exc:
             raise StorageReleaseTransactionError(
-                "storage release transaction lock parent traverses a symlink"
+                "storage release transaction lock parent is invalid"
+            ) from exc
+        parent_context = _portable_marker_parent_context()
+    with parent_context as parent_entries:
+        parent_fd = parent_entries[-1][2] if parent_entries else None
+        if parent_fd is not None:
+            descriptor = os.open(
+                lock_path.name,
+                os.O_RDWR | os.O_CREAT | int(getattr(os, "O_NOFOLLOW", 0)),
+                0o600,
+                dir_fd=parent_fd,
             )
-    except OSError as exc:
-        raise StorageReleaseTransactionError(
-            "storage release transaction lock parent is invalid"
-        ) from exc
-    if lock_path.is_symlink():
-        raise StorageReleaseTransactionError("storage release transaction lock is a symlink")
-    descriptor = os.open(
-        lock_path,
-        os.O_RDWR | os.O_CREAT | int(getattr(os, "O_NOFOLLOW", 0)),
-        0o600,
-    )
-    try:
-        metadata = os.fstat(descriptor)
-        if (
-            int(getattr(metadata, "st_file_attributes", 0) or 0)
-            & int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
-            or not stat.S_ISREG(metadata.st_mode)
-            or int(getattr(metadata, "st_nlink", 1)) != 1
-        ):
-            raise StorageReleaseTransactionError("storage release transaction lock is unsafe")
-        if metadata.st_size == 0:
-            os.write(descriptor, b"0")
-            os.fsync(descriptor)
-        with _PROCESS_MARKER_LOCK:
-            if os.name == "posix":
-                import fcntl
-
-                fcntl.flock(descriptor, fcntl.LOCK_EX)
-            elif os.name == "nt":
-                import msvcrt
-
-                os.lseek(descriptor, 0, os.SEEK_SET)
-                msvcrt.locking(descriptor, msvcrt.LK_LOCK, 1)
-            try:
-                yield
-            finally:
+        else:
+            if lock_path.is_symlink():
+                raise StorageReleaseTransactionError(
+                    "storage release transaction lock is a symlink"
+                )
+            descriptor = os.open(
+                lock_path,
+                os.O_RDWR | os.O_CREAT | int(getattr(os, "O_NOFOLLOW", 0)),
+                0o600,
+            )
+        try:
+            metadata = os.fstat(descriptor)
+            if (
+                int(getattr(metadata, "st_file_attributes", 0) or 0)
+                & int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+                or not stat.S_ISREG(metadata.st_mode)
+                or int(getattr(metadata, "st_nlink", 1)) != 1
+            ):
+                raise StorageReleaseTransactionError("storage release transaction lock is unsafe")
+            if metadata.st_size == 0:
+                os.write(descriptor, b"0")
+                os.fsync(descriptor)
+                if parent_fd is not None:
+                    os.fsync(parent_fd)
+            with _PROCESS_MARKER_LOCK:
                 if os.name == "posix":
                     import fcntl
 
-                    fcntl.flock(descriptor, fcntl.LOCK_UN)
+                    fcntl.flock(descriptor, fcntl.LOCK_EX)
                 elif os.name == "nt":
                     import msvcrt
 
                     os.lseek(descriptor, 0, os.SEEK_SET)
-                    msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
-    finally:
-        os.close(descriptor)
+                    msvcrt.locking(descriptor, msvcrt.LK_LOCK, 1)
+                try:
+                    _assert_directory_chain(
+                        parent_entries,
+                        message=(
+                            "storage release transaction lock parent changed while held"
+                        ),
+                    )
+                    _assert_lock_binding(
+                        descriptor,
+                        lock_path=lock_path,
+                        parent_fd=parent_fd,
+                    )
+                    yield parent_fd
+                    _assert_directory_chain(
+                        parent_entries,
+                        message=(
+                            "storage release transaction lock parent changed while held"
+                        ),
+                    )
+                    _assert_lock_binding(
+                        descriptor,
+                        lock_path=lock_path,
+                        parent_fd=parent_fd,
+                    )
+                finally:
+                    if os.name == "posix":
+                        import fcntl
+
+                        fcntl.flock(descriptor, fcntl.LOCK_UN)
+                    elif os.name == "nt":
+                        import msvcrt
+
+                        os.lseek(descriptor, 0, os.SEEK_SET)
+                        msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+        finally:
+            os.close(descriptor)
 
 
-def _load_storage_release_transaction_unlocked(marker: Path) -> dict[str, Any]:
+@contextmanager
+def _portable_marker_parent_context():
+    yield []
+
+
+def _assert_lock_binding(
+    descriptor: int,
+    *,
+    lock_path: Path,
+    parent_fd: int | None,
+) -> None:
+    message = "storage release transaction lock changed while held"
+    if parent_fd is not None:
+        _assert_fd_matches_entry(
+            descriptor,
+            parent_fd=parent_fd,
+            name=lock_path.name,
+            message=message,
+        )
+        return
+    try:
+        entry_metadata = lock_path.stat(follow_symlinks=False)
+    except OSError as exc:
+        raise StorageReleaseTransactionError(message) from exc
+    if _inode_identity(os.fstat(descriptor)) != _inode_identity(entry_metadata):
+        raise StorageReleaseTransactionError(message)
+
+
+def _load_storage_release_transaction_unlocked(
+    marker: Path,
+    *,
+    parent_fd: int | None = None,
+) -> dict[str, Any]:
     marker = Path(marker)
     if marker.is_symlink():
         raise StorageReleaseTransactionError("storage release transaction marker is invalid")
     try:
-        descriptor = os.open(marker, os.O_RDONLY | int(getattr(os, "O_NOFOLLOW", 0)))
+        if parent_fd is not None:
+            descriptor = os.open(
+                marker.name,
+                os.O_RDONLY | int(getattr(os, "O_NOFOLLOW", 0)),
+                dir_fd=parent_fd,
+            )
+        else:
+            descriptor = os.open(marker, os.O_RDONLY | int(getattr(os, "O_NOFOLLOW", 0)))
         try:
             metadata = os.fstat(descriptor)
             if (
@@ -260,6 +496,13 @@ def _load_storage_release_transaction_unlocked(marker: Path) -> dict[str, Any]:
                 )
             with os.fdopen(descriptor, "r", encoding="utf-8", closefd=False) as handle:
                 payload = json.load(handle)
+            if parent_fd is not None:
+                _assert_fd_matches_entry(
+                    descriptor,
+                    parent_fd=parent_fd,
+                    name=marker.name,
+                    message="storage release transaction marker changed while reading",
+                )
         finally:
             os.close(descriptor)
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
@@ -269,8 +512,8 @@ def _load_storage_release_transaction_unlocked(marker: Path) -> dict[str, Any]:
 
 def load_storage_release_transaction(marker_path: str | Path) -> dict[str, Any]:
     marker = Path(marker_path)
-    with _marker_lock(marker):
-        return _load_storage_release_transaction_unlocked(marker)
+    with _marker_lock(marker) as parent_fd:
+        return _load_storage_release_transaction_unlocked(marker, parent_fd=parent_fd)
 
 
 def begin_storage_release_transaction(
@@ -284,8 +527,8 @@ def begin_storage_release_transaction(
     active_writer_units: list[str],
 ) -> dict[str, Any]:
     marker = Path(marker_path)
-    with _marker_lock(marker):
-        if marker.exists() or marker.is_symlink():
+    with _marker_lock(marker) as parent_fd:
+        if _marker_entry_exists(marker, parent_fd=parent_fd):
             raise StorageReleaseTransactionError("storage release transaction already exists")
         now = datetime.now(timezone.utc).isoformat()
         payload = _validated_transaction({
@@ -304,7 +547,7 @@ def begin_storage_release_transaction(
             "created_at": now,
             "updated_at": now,
         })
-        _atomic_write_json(marker, payload)
+        _atomic_write_json(marker, payload, parent_fd=parent_fd)
     return payload
 
 
@@ -318,8 +561,8 @@ def update_storage_release_transaction(
     vacuum_backup_path: str | None = None,
 ) -> dict[str, Any]:
     marker = Path(marker_path)
-    with _marker_lock(marker):
-        payload = _load_storage_release_transaction_unlocked(marker)
+    with _marker_lock(marker) as parent_fd:
+        payload = _load_storage_release_transaction_unlocked(marker, parent_fd=parent_fd)
         if payload["attempt_id"] != str(expected_attempt_id):
             raise StorageReleaseTransactionError("storage release transaction attempt mismatch")
         payload["phase"] = str(phase)
@@ -331,7 +574,7 @@ def update_storage_release_transaction(
             payload["vacuum_backup_path"] = str(vacuum_backup_path)
         payload["updated_at"] = datetime.now(timezone.utc).isoformat()
         payload = _validated_transaction(payload)
-        _atomic_write_json(marker, payload)
+        _atomic_write_json(marker, payload, parent_fd=parent_fd)
     return payload
 
 
@@ -341,12 +584,26 @@ def clear_storage_release_transaction(
     expected_attempt_id: str,
 ) -> None:
     marker = Path(marker_path)
-    with _marker_lock(marker):
-        payload = _load_storage_release_transaction_unlocked(marker)
+    with _marker_lock(marker) as parent_fd:
+        payload = _load_storage_release_transaction_unlocked(marker, parent_fd=parent_fd)
         if payload["attempt_id"] != str(expected_attempt_id):
             raise StorageReleaseTransactionError("storage release transaction attempt mismatch")
-        marker.unlink()
-        _fsync_directory(marker.parent)
+        if parent_fd is not None:
+            os.unlink(marker.name, dir_fd=parent_fd)
+            os.fsync(parent_fd)
+        else:
+            marker.unlink()
+            _fsync_directory(marker.parent)
+
+
+def _marker_entry_exists(marker: Path, *, parent_fd: int | None) -> bool:
+    if parent_fd is None:
+        return marker.exists() or marker.is_symlink()
+    try:
+        os.stat(marker.name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return False
+    return True
 
 
 def guard_allows_start(marker_path: str | Path) -> bool:

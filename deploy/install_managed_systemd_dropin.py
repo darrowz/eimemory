@@ -143,9 +143,17 @@ def _install_with_directory_fds(
             os.mkdir(parent_name, mode=0o755, dir_fd=root_fd)
             os.fsync(root_fd)
             parent_created = True
-            parent_fd = os.open(parent_name, DIRECTORY_FLAGS, dir_fd=root_fd)
+            try:
+                parent_fd = os.open(parent_name, DIRECTORY_FLAGS, dir_fd=root_fd)
+            except OSError as exc:
+                try:
+                    os.rmdir(parent_name, dir_fd=root_fd)
+                    os.fsync(root_fd)
+                except OSError:
+                    pass
+                _raise_parent_open_error(exc)
         except OSError as exc:
-            raise ManagedDropinError("drop-in directory must not be a symlink") from exc
+            _raise_parent_open_error(exc)
         try:
             if os.fstat(parent_fd).st_uid not in allowed_owners:
                 raise ManagedDropinError("drop-in directory has an unexpected owner")
@@ -176,6 +184,12 @@ def _open_directory_without_symlinks(path: Path) -> int:
         raise ManagedDropinError(
             "systemd root must be an existing path without symlink components"
         ) from exc
+
+
+def _raise_parent_open_error(exc: OSError) -> None:
+    if exc.errno == errno.ELOOP:
+        raise ManagedDropinError("drop-in directory must not be a symlink") from exc
+    raise exc
 
 
 def _validate_existing_target_at(*, parent_fd: int, target_name: str) -> None:
@@ -268,20 +282,42 @@ def _install_portable(
 
 
 def _fsync_portable_if_supported(path: Path, *, directory: bool) -> None:
-    flags = os.O_RDONLY
+    flags = os.O_RDONLY if directory else os.O_RDWR
     if directory:
         flags |= int(getattr(os, "O_DIRECTORY", 0))
     try:
         descriptor = os.open(path, flags)
-    except (AttributeError, NotImplementedError, OSError):
+    except (AttributeError, NotImplementedError):
         return
+    except OSError as exc:
+        if _portable_fsync_is_unsupported(exc, directory=directory):
+            return
+        raise
     try:
         try:
             os.fsync(descriptor)
-        except (AttributeError, NotImplementedError, OSError):
+        except (AttributeError, NotImplementedError):
             return
+        except OSError as exc:
+            if _portable_fsync_is_unsupported(exc, directory=directory):
+                return
+            raise
     finally:
         os.close(descriptor)
+
+
+def _portable_fsync_is_unsupported(exc: OSError, *, directory: bool) -> bool:
+    if not directory:
+        return False
+    unsupported = {
+        errno.EINVAL,
+        int(getattr(errno, "ENOTSUP", errno.EINVAL)),
+        int(getattr(errno, "EOPNOTSUPP", errno.EINVAL)),
+        int(getattr(errno, "ENOSYS", errno.EINVAL)),
+    }
+    if os.name == "nt":
+        unsupported.add(errno.EACCES)
+    return exc.errno in unsupported
 
 
 def main(argv: list[str] | None = None) -> int:

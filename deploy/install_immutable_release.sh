@@ -451,6 +451,19 @@ _acquire_storage_deploy_lock() {
     echo "storage_deploy_lock=failed flock_unavailable" >&2
     return 2
   fi
+  local lock_parent resolved_parent lexical_parent parent_identity_before
+  local parent_identity_after fd_identity path_identity
+  lock_parent="$(dirname "$STORAGE_DEPLOY_LOCK_PATH")"
+  if ! resolved_parent="$(realpath -e -- "$lock_parent")" || \
+     ! lexical_parent="$(realpath -m -s -- "$lock_parent")" || \
+     [ "$resolved_parent" != "$lexical_parent" ]; then
+    echo "storage_deploy_lock=failed ancestor_symlink" >&2
+    return 2
+  fi
+  if ! parent_identity_before="$(stat -Lc '%d:%i:%F' "$lock_parent")"; then
+    echo "storage_deploy_lock=failed ancestor_identity" >&2
+    return 2
+  fi
   if [ -L "$STORAGE_DEPLOY_LOCK_PATH" ]; then
     echo "storage_deploy_lock=failed symlink" >&2
     return 2
@@ -467,6 +480,23 @@ _acquire_storage_deploy_lock() {
   if ! flock -n "$STORAGE_DEPLOY_LOCK_FD"; then
     echo "storage_deploy_lock=contended" >&2
     return 73
+  fi
+  if ! resolved_parent="$(realpath -e -- "$lock_parent")" || \
+     ! lexical_parent="$(realpath -m -s -- "$lock_parent")" || \
+     [ "$resolved_parent" != "$lexical_parent" ]; then
+    echo "storage_deploy_lock=failed ancestor_changed" >&2
+    return 2
+  fi
+  if ! parent_identity_after="$(stat -Lc '%d:%i:%F' "$lock_parent")" || \
+     [ "$parent_identity_before" != "$parent_identity_after" ]; then
+    echo "storage_deploy_lock=failed ancestor_inode_changed" >&2
+    return 2
+  fi
+  if ! fd_identity="$(stat -Lc '%d:%i:%h:%F' "/proc/$$/fd/$STORAGE_DEPLOY_LOCK_FD")" || \
+     ! path_identity="$(stat -Lc '%d:%i:%h:%F' "$STORAGE_DEPLOY_LOCK_PATH")" || \
+     [ "$fd_identity" != "$path_identity" ]; then
+    echo "storage_deploy_lock=failed inode_changed" >&2
+    return 2
   fi
   echo "storage_deploy_lock=acquired"
 }
@@ -532,11 +562,14 @@ _begin_storage_release_transaction() {
   for unit in "${ACTIVE_STORAGE_WRITER_UNITS[@]}"; do
     active_args+=(--active-unit "$unit")
   done
-  "$PYTHON_BIN" -I -B "$STORAGE_TRANSACTION_HELPER" begin \
+  if ! "$PYTHON_BIN" -I -B "$STORAGE_TRANSACTION_HELPER" begin \
     --marker "$STORAGE_TRANSACTION_MARKER" \
     --prior-commit "$PREVIOUS_COMMIT" --candidate-commit "$COMMIT" \
     --current-link "$CURRENT_LINK" --attempt-id "$STORAGE_ATTEMPT_ID" \
-    --snapshot-dir "$STORAGE_SNAPSHOT_DIR" "${active_args[@]}" >/dev/null
+    --snapshot-dir "$STORAGE_SNAPSHOT_DIR" "${active_args[@]}" >/dev/null; then
+    echo "storage_release_transaction=failed begin" >&2
+    return 2
+  fi
   STORAGE_TRANSACTION_ACTIVE=1
 }
 
@@ -559,8 +592,11 @@ _update_storage_release_transaction() {
 }
 
 _clear_storage_release_transaction() {
-  "$PYTHON_BIN" -I -B "$STORAGE_TRANSACTION_HELPER" clear \
-    --marker "$STORAGE_TRANSACTION_MARKER" --attempt-id "$STORAGE_ATTEMPT_ID"
+  if ! "$PYTHON_BIN" -I -B "$STORAGE_TRANSACTION_HELPER" clear \
+    --marker "$STORAGE_TRANSACTION_MARKER" --attempt-id "$STORAGE_ATTEMPT_ID"; then
+    echo "storage_release_transaction=failed clear" >&2
+    return 2
+  fi
   STORAGE_TRANSACTION_ACTIVE=0
 }
 
@@ -809,8 +845,13 @@ _prepare_storage_for_release() {
     echo "storage_writer_capture=failed before_transaction" >&2
     return 2
   fi
-  _begin_storage_release_transaction
-  _retire_system_rpc_unit
+  if ! _retire_system_rpc_unit; then
+    echo "legacy_system_rpc=failed before_storage_marker" >&2
+    return 2
+  fi
+  if ! _begin_storage_release_transaction; then
+    return 2
+  fi
   _stop_storage_writers
   _update_storage_release_transaction writers_stopped
   _maybe_fail_stage storage_writer_stop
@@ -1132,14 +1173,26 @@ _rollback_current_release() {
   fi
   if [ "$STORAGE_TRANSACTION_ACTIVE" != "1" ] && \
      [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ] && command -v systemctl >/dev/null 2>&1; then
-    _capture_storage_writers
-    _begin_storage_release_transaction
+    if ! _capture_storage_writers; then
+      echo "rollback_step=capture_writers status=failed" >&2
+      return 1
+    fi
+    if ! _begin_storage_release_transaction; then
+      echo "rollback_step=begin_transaction status=failed" >&2
+      return 1
+    fi
   fi
   if [ "$STORAGE_TRANSACTION_ACTIVE" = "1" ]; then
     if [ "$STORAGE_SNAPSHOT_READY" = "1" ]; then
-      _update_storage_release_transaction rollback_started 1 "$STORAGE_VACUUM_BACKUP"
+      if ! _update_storage_release_transaction rollback_started 1 "$STORAGE_VACUUM_BACKUP"; then
+        echo "rollback_step=mark_started status=failed" >&2
+        return 1
+      fi
     else
-      _update_storage_release_transaction rollback_started 0
+      if ! _update_storage_release_transaction rollback_started 0; then
+        echo "rollback_step=mark_started status=failed" >&2
+        return 1
+      fi
     fi
   fi
   if [ "$STORAGE_SNAPSHOT_READY" = "1" ] || \
@@ -1158,10 +1211,17 @@ _rollback_current_release() {
       echo "rollback_step=restore_link status=failed" >&2
       link_restored=0
     else
-      _fsync_install_root
+      if ! _fsync_install_root; then
+        echo "rollback_step=sync_link status=failed" >&2
+        return 1
+      fi
       if [ "$STORAGE_TRANSACTION_ACTIVE" = "1" ]; then
-        _update_storage_release_transaction rollback_link_restored \
-          "$([ "$STORAGE_SNAPSHOT_READY" = "1" ] && printf 1 || printf 0)" "$STORAGE_VACUUM_BACKUP"
+        if ! _update_storage_release_transaction rollback_link_restored \
+          "$([ "$STORAGE_SNAPSHOT_READY" = "1" ] && printf 1 || printf 0)" \
+          "$STORAGE_VACUUM_BACKUP"; then
+          echo "rollback_step=mark_link_restored status=failed" >&2
+          return 1
+        fi
       fi
     fi
   fi
@@ -1172,8 +1232,12 @@ _rollback_current_release() {
     return 1
   fi
   if [ "$STORAGE_TRANSACTION_ACTIVE" = "1" ]; then
-    _update_storage_release_transaction rollback_storage_restored \
-      "$([ "$STORAGE_SNAPSHOT_READY" = "1" ] && printf 1 || printf 0)" "$STORAGE_VACUUM_BACKUP"
+    if ! _update_storage_release_transaction rollback_storage_restored \
+      "$([ "$STORAGE_SNAPSHOT_READY" = "1" ] && printf 1 || printf 0)" \
+      "$STORAGE_VACUUM_BACKUP"; then
+      echo "rollback_step=mark_storage_restored status=failed" >&2
+      return 1
+    fi
   fi
   if ! _cleanup_storage_vacuum_backup; then
     echo "rollback_step=vacuum_backup_cleanup status=failed" >&2
@@ -1200,15 +1264,21 @@ _rollback_current_release() {
     rollback_failed=1
   fi
   if [ "$STORAGE_TRANSACTION_ACTIVE" = "1" ]; then
-    _update_storage_release_transaction rollback_metadata_ready \
-      "$([ "$STORAGE_SNAPSHOT_READY" = "1" ] && printf 1 || printf 0)"
+    if ! _update_storage_release_transaction rollback_metadata_ready \
+      "$([ "$STORAGE_SNAPSHOT_READY" = "1" ] && printf 1 || printf 0)"; then
+      echo "rollback_step=mark_metadata_ready status=failed" >&2
+      return 1
+    fi
   fi
   if [ "$rollback_failed" != "0" ]; then
     echo "rollback_current_release=failed" >&2
     return 1
   fi
   if [ "$STORAGE_TRANSACTION_ACTIVE" = "1" ]; then
-    _clear_storage_release_transaction
+    if ! _clear_storage_release_transaction; then
+      echo "rollback_step=clear_transaction status=failed" >&2
+      return 1
+    fi
   fi
   if ! _restart_storage_writers; then
     echo "rollback_step=background_writers status=failed" >&2

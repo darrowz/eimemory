@@ -130,7 +130,13 @@ def _cleanup_vacuum_backup(db_path: Path, value: str) -> dict[str, Any]:
     ):
         raise StorageMaintenanceError("vacuum backup path is outside the storage transaction")
     journal_path = db_path.parent / ".storage-vacuum-journal.json"
-    if journal_path.exists() or journal_path.is_symlink():
+    journal_present = journal_path.exists() or journal_path.is_symlink()
+    backup_present = backup.exists() or backup.is_symlink()
+    if backup_present and not journal_present:
+        raise StorageMaintenanceError("vacuum cleanup requires a completed journal binding")
+    if not backup_present and not journal_present:
+        return {"schema": "storage_vacuum_cleanup.v1", "ok": True, "removed": False}
+    if journal_present:
         if journal_path.is_symlink() or _is_reparse(journal_path) or not journal_path.is_file():
             raise StorageMaintenanceError("vacuum journal is unsafe")
         recovery = recover_vacuum_journal(db_path)

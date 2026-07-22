@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import importlib.util
 from concurrent.futures import ThreadPoolExecutor
 import json
@@ -1211,6 +1212,174 @@ def test_managed_systemd_dropin_portable_path_syncs_file_and_parent_chain(
     )
 
     assert calls == [(target, False), (target.parent, True), (root, True)]
+
+
+@pytest.mark.parametrize("error_code", [errno.EIO, errno.EROFS, errno.ENOSPC])
+def test_managed_systemd_dropin_portable_fsync_propagates_real_io_failures(
+    tmp_path, monkeypatch, error_code: int
+) -> None:
+    helper = _load_managed_systemd_dropin_installer()
+    target = tmp_path / "dropin.conf"
+    target.write_text("managed", encoding="utf-8")
+    monkeypatch.setattr(helper.os, "open", lambda _path, _flags: 71)
+    monkeypatch.setattr(helper.os, "close", lambda _fd: None)
+    monkeypatch.setattr(
+        helper.os,
+        "fsync",
+        lambda _fd: (_ for _ in ()).throw(OSError(error_code, "injected fsync failure")),
+    )
+
+    with pytest.raises(OSError) as exc_info:
+        helper._fsync_portable_if_supported(target, directory=True)
+    assert exc_info.value.errno == error_code
+
+
+def test_managed_systemd_dropin_portable_directory_fsync_ignores_unsupported_errno(
+    tmp_path, monkeypatch
+) -> None:
+    helper = _load_managed_systemd_dropin_installer()
+    directory = tmp_path / "dropin"
+    directory.mkdir()
+    monkeypatch.setattr(helper.os, "open", lambda _path, _flags: 72)
+    monkeypatch.setattr(helper.os, "close", lambda _fd: None)
+    monkeypatch.setattr(
+        helper.os,
+        "fsync",
+        lambda _fd: (_ for _ in ()).throw(OSError(errno.EINVAL, "unsupported")),
+    )
+
+    helper._fsync_portable_if_supported(directory, directory=True)
+
+
+@pytest.mark.parametrize("error_code", [errno.EACCES, errno.ENOTDIR, errno.EMFILE, errno.EIO])
+def test_managed_systemd_dropin_initial_parent_open_propagates_non_symlink_errors(
+    tmp_path, monkeypatch, error_code: int
+) -> None:
+    helper = _load_managed_systemd_dropin_installer()
+    root = tmp_path / "systemd"
+    root.mkdir()
+    monkeypatch.setattr(helper, "_open_directory_without_symlinks", lambda _path: 51)
+    monkeypatch.setattr(helper.os, "fstat", lambda _fd: type("S", (), {"st_uid": 1000})())
+    monkeypatch.setattr(helper.os, "close", lambda _fd: None)
+    monkeypatch.setattr(
+        helper.os,
+        "open",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            OSError(error_code, "injected parent open failure")
+        ),
+    )
+
+    with pytest.raises(OSError) as exc_info:
+        helper._install_with_directory_fds(
+            payload=b"managed",
+            target=root / "example.service.d" / "90-runtime.conf",
+            root=root,
+            allowed_owners={1000},
+        )
+    assert exc_info.value.errno == error_code
+
+
+def test_managed_systemd_dropin_initial_parent_eloop_is_a_symlink_error(
+    tmp_path, monkeypatch
+) -> None:
+    helper = _load_managed_systemd_dropin_installer()
+    root = tmp_path / "systemd"
+    root.mkdir()
+    monkeypatch.setattr(helper, "_open_directory_without_symlinks", lambda _path: 53)
+    monkeypatch.setattr(helper.os, "fstat", lambda _fd: type("S", (), {"st_uid": 1000})())
+    monkeypatch.setattr(helper.os, "close", lambda _fd: None)
+    monkeypatch.setattr(
+        helper.os,
+        "open",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            OSError(errno.ELOOP, "injected symlink")
+        ),
+    )
+
+    with pytest.raises(helper.ManagedDropinError, match="must not be a symlink"):
+        helper._install_with_directory_fds(
+            payload=b"managed",
+            target=root / "example.service.d" / "90-runtime.conf",
+            root=root,
+            allowed_owners={1000},
+        )
+
+
+def test_managed_systemd_dropin_second_parent_open_failure_removes_new_directory(
+    tmp_path, monkeypatch
+) -> None:
+    helper = _load_managed_systemd_dropin_installer()
+    root = tmp_path / "systemd"
+    root.mkdir()
+    opens = 0
+    removed: list[tuple[str, int]] = []
+
+    def fail_parent_open(*_args, **_kwargs):
+        nonlocal opens
+        opens += 1
+        if opens == 1:
+            raise FileNotFoundError(errno.ENOENT, "missing")
+        raise OSError(errno.EIO, "injected reopen failure")
+
+    monkeypatch.setattr(helper, "_open_directory_without_symlinks", lambda _path: 52)
+    monkeypatch.setattr(helper.os, "fstat", lambda _fd: type("S", (), {"st_uid": 1000})())
+    monkeypatch.setattr(helper.os, "open", fail_parent_open)
+    monkeypatch.setattr(helper.os, "mkdir", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(helper.os, "fsync", lambda _fd: None)
+    monkeypatch.setattr(helper.os, "close", lambda _fd: None)
+    monkeypatch.setattr(
+        helper.os,
+        "rmdir",
+        lambda name, *, dir_fd: removed.append((str(name), int(dir_fd))),
+    )
+
+    with pytest.raises(OSError) as exc_info:
+        helper._install_with_directory_fds(
+            payload=b"managed",
+            target=root / "example.service.d" / "90-runtime.conf",
+            root=root,
+            allowed_owners={1000},
+        )
+    assert exc_info.value.errno == errno.EIO
+    assert removed == [("example.service.d", 52)]
+
+
+def test_managed_systemd_dropin_second_parent_eloop_removes_directory_and_converts_error(
+    tmp_path, monkeypatch
+) -> None:
+    helper = _load_managed_systemd_dropin_installer()
+    root = tmp_path / "systemd"
+    root.mkdir()
+    opens = 0
+    removed: list[tuple[str, int]] = []
+
+    def fail_parent_open(*_args, **_kwargs):
+        nonlocal opens
+        opens += 1
+        if opens == 1:
+            raise FileNotFoundError(errno.ENOENT, "missing")
+        raise OSError(errno.ELOOP, "injected symlink")
+
+    monkeypatch.setattr(helper, "_open_directory_without_symlinks", lambda _path: 54)
+    monkeypatch.setattr(helper.os, "fstat", lambda _fd: type("S", (), {"st_uid": 1000})())
+    monkeypatch.setattr(helper.os, "open", fail_parent_open)
+    monkeypatch.setattr(helper.os, "mkdir", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(helper.os, "fsync", lambda _fd: None)
+    monkeypatch.setattr(helper.os, "close", lambda _fd: None)
+    monkeypatch.setattr(
+        helper.os,
+        "rmdir",
+        lambda name, *, dir_fd: removed.append((str(name), int(dir_fd))),
+    )
+
+    with pytest.raises(helper.ManagedDropinError, match="must not be a symlink"):
+        helper._install_with_directory_fds(
+            payload=b"managed",
+            target=root / "example.service.d" / "90-runtime.conf",
+            root=root,
+            allowed_owners={1000},
+        )
+    assert removed == [("example.service.d", 54)]
 
 
 def test_release_bytecode_cleaner_cleans_only_source_bytecode(tmp_path) -> None:
