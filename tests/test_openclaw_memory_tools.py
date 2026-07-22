@@ -57,20 +57,32 @@ def test_openclaw_tools_latest_audit_uses_indexed_session_lookup(tmp_path, monke
     runtime = Runtime.create(root=tmp_path)
     tools = OpenClawMemoryTools(runtime)
     scope = ScopeRef(agent_id="hongtu", workspace_id="embodied", user_id="darrow")
-    runtime.store.append(
+    runtime.store.sqlite.payload_archive_inline_bytes = 256
+    stored = runtime.store.append(
         RecordEnvelope.create(
             kind="recall_view",
             title="Session audit",
             source="openclaw.before_prompt_build",
             scope=scope,
-            content={"session_id": "sess-indexed-tool"},
+            content={"session_id": "sess-indexed-tool", "large_body": "x" * 4096},
             meta={"session_id": "sess-indexed-tool"},
         )
     )
     def reject_audit_scan(*_args, **_kwargs):
-        raise AssertionError("OpenClaw tool scanned record pages instead of using the indexed audit lookup")
+        raise AssertionError("OpenClaw tool used a hydrating record lookup")
 
+    compact_calls = []
+    original_compact = runtime.store.list_recall_audits_compact_by_session
+    monkeypatch.setattr(
+        runtime.store,
+        "list_recall_audits_compact_by_session",
+        lambda **kwargs: compact_calls.append(kwargs) or original_compact(**kwargs),
+    )
     monkeypatch.setattr(runtime.store, "list_records", reject_audit_scan)
+    monkeypatch.setattr(runtime.store, "list_records_by_meta_value", reject_audit_scan)
+    payload_segments = getattr(runtime.store.sqlite, "payload_segments", None)
+    if payload_segments is not None:
+        monkeypatch.setattr(payload_segments, "read", reject_audit_scan)
     try:
         audit = tools._latest_recall_audit(
             session_id="sess-indexed-tool",
@@ -81,11 +93,48 @@ def test_openclaw_tools_latest_audit_uses_indexed_session_lookup(tmp_path, monke
                 "user_id": scope.user_id,
             },
         )
+        payload_pointer = runtime.store.sqlite.conn.execute(
+            "SELECT payload_pointer_json FROM records WHERE record_id=?",
+            (stored.record_id,),
+        ).fetchone()[0]
     finally:
         runtime.close()
 
     assert audit is not None
     assert audit.content["session_id"] == "sess-indexed-tool"
+    assert payload_pointer
+    assert compact_calls == [{"scope": scope, "session_id": "sess-indexed-tool", "limit": 10}]
+
+
+def test_openclaw_tools_latest_audit_fails_closed_without_compact_lookup(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    tools = OpenClawMemoryTools(runtime)
+    scope = ScopeRef(agent_id="hongtu", workspace_id="embodied", user_id="darrow")
+
+    def reject_hydration(*_args, **_kwargs):
+        raise AssertionError("fail-closed path hydrated audit records")
+
+    monkeypatch.setattr(runtime.store, "list_records", reject_hydration)
+    monkeypatch.setattr(runtime.store, "list_records_by_meta_value", reject_hydration)
+    monkeypatch.setattr(runtime.store, "list_recall_audits_compact_by_session", None, raising=False)
+    scope_payload = {
+        "tenant_id": scope.tenant_id,
+        "agent_id": scope.agent_id,
+        "workspace_id": scope.workspace_id,
+        "user_id": scope.user_id,
+    }
+    unavailable = tools._latest_recall_audit(session_id="sess-missing", scope=scope_payload)
+    monkeypatch.setattr(
+        runtime.store,
+        "list_recall_audits_compact_by_session",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("projection unavailable")),
+        raising=False,
+    )
+    failed = tools._latest_recall_audit(session_id="sess-failed", scope=scope_payload)
+    runtime.close()
+
+    assert unavailable is None
+    assert failed is None
 
 
 def test_openclaw_tools_latest_audit_rejects_alias_scope_policy_evidence(tmp_path) -> None:

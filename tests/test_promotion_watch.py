@@ -86,35 +86,77 @@ def test_shadow_observe_activates_after_three_hit_improvement_observations(tmp_p
 def test_promotion_watch_uses_indexed_session_audit_lookup(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path)
     scope = ScopeRef(agent_id="hongtu", workspace_id="embodied", user_id="darrow")
-    runtime.store.append(
+    runtime.store.sqlite.payload_archive_inline_bytes = 256
+    stored = runtime.store.append(
         RecordEnvelope.create(
             kind="recall_view",
             title="Promotion audit",
             source="openclaw.before_prompt_build",
             scope=scope,
-            content={"session_id": "sess-indexed-watch", "policy_suggestion_ids": ["policy-1"]},
+            content={
+                "session_id": "sess-indexed-watch",
+                "policy_suggestion_ids": ["policy-1"],
+                "selected_records": [{"record_id": "memory-1", "detail": "x" * 4096}],
+            },
             meta={"session_id": "sess-indexed-watch", "policy_suggestion_ids": ["policy-1"]},
         )
     )
-    original = runtime.store.list_records
+    def reject_audit_scan(*_args, **_kwargs):
+        raise AssertionError("promotion watch used a hydrating record lookup")
 
-    def reject_audit_scan(*args, **kwargs):
-        if "recall_view" in list(kwargs.get("kinds") or []):
-            raise AssertionError("promotion watch scanned full recall-view pages")
-        return original(*args, **kwargs)
-
+    compact_calls = []
+    original_compact = runtime.store.list_recall_audits_compact_by_session
+    monkeypatch.setattr(
+        runtime.store,
+        "list_recall_audits_compact_by_session",
+        lambda **kwargs: compact_calls.append(kwargs) or original_compact(**kwargs),
+    )
     monkeypatch.setattr(runtime.store, "list_records", reject_audit_scan)
+    monkeypatch.setattr(runtime.store, "list_records_by_meta_value", reject_audit_scan)
+    payload_segments = getattr(runtime.store.sqlite, "payload_segments", None)
+    if payload_segments is not None:
+        monkeypatch.setattr(payload_segments, "read", reject_audit_scan)
     try:
         audit = _latest_recall_audit_for_session(
             runtime,
             session_id="sess-indexed-watch",
             scope=scope,
         )
+        payload_pointer = runtime.store.sqlite.conn.execute(
+            "SELECT payload_pointer_json FROM records WHERE record_id=?",
+            (stored.record_id,),
+        ).fetchone()[0]
     finally:
         runtime.close()
 
     assert audit is not None
     assert audit.content["policy_suggestion_ids"] == ["policy-1"]
+    assert payload_pointer
+    assert compact_calls == [{"scope": scope, "session_id": "sess-indexed-watch", "limit": 10}]
+
+
+def test_promotion_watch_fails_closed_without_compact_audit_lookup(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = ScopeRef(agent_id="hongtu", workspace_id="embodied", user_id="darrow")
+
+    def reject_hydration(*_args, **_kwargs):
+        raise AssertionError("fail-closed promotion watch hydrated audit records")
+
+    monkeypatch.setattr(runtime.store, "list_records", reject_hydration)
+    monkeypatch.setattr(runtime.store, "list_records_by_meta_value", reject_hydration)
+    monkeypatch.setattr(runtime.store, "list_recall_audits_compact_by_session", None, raising=False)
+    unavailable = _latest_recall_audit_for_session(runtime, session_id="sess-missing", scope=scope)
+    monkeypatch.setattr(
+        runtime.store,
+        "list_recall_audits_compact_by_session",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("projection unavailable")),
+        raising=False,
+    )
+    failed = _latest_recall_audit_for_session(runtime, session_id="sess-failed", scope=scope)
+    runtime.close()
+
+    assert unavailable is None
+    assert failed is None
 
 
 def test_shadow_observe_decision_updates_autonomy_watch_summary(tmp_path) -> None:

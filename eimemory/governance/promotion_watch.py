@@ -547,24 +547,18 @@ def _latest_recall_audit_for_session(
     scope: dict[str, Any] | ScopeRef | None,
 ) -> RecordEnvelope | None:
     scope_ref = _scope(scope)
+    lookup = getattr(runtime.store, "list_recall_audits_compact_by_session", None)
+    if not callable(lookup):
+        return None
     try:
-        records = None
-        lookup = getattr(runtime.store, "list_records_by_meta_value", None)
-        if callable(lookup):
-            records = lookup(
-                kinds=["recall_view", "reflection"],
-                scope=scope_ref,
-                meta_key="session_id",
-                meta_value=session_id,
-                limit=10,
-            )
-        if records is None:
-            records = runtime.store.list_records(
-                kinds=["recall_view", "reflection"],
-                scope=scope_ref,
-                limit=100,
-            )
+        records = lookup(
+            scope=scope_ref,
+            session_id=session_id,
+            limit=10,
+        )
     except Exception:
+        return None
+    if not isinstance(records, list):
         return None
     for record in records:
         if record.scope != scope_ref:

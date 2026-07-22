@@ -284,22 +284,19 @@ class OpenClawMemoryTools:
 
     def _latest_recall_audit(self, *, session_id: str, scope: dict) -> RecordEnvelope | None:
         scope_ref = ScopeRef.from_dict(scope)
-        records = None
-        lookup = getattr(self.runtime.store, "list_records_by_meta_value", None)
-        if callable(lookup):
+        lookup = getattr(self.runtime.store, "list_recall_audits_compact_by_session", None)
+        if not callable(lookup):
+            return None
+        try:
             records = lookup(
-                kinds=["recall_view", "reflection"],
                 scope=scope_ref,
-                meta_key="session_id",
-                meta_value=str(session_id).strip(),
+                session_id=str(session_id).strip(),
                 limit=10,
             )
-        if records is None:
-            records = self.runtime.store.list_records(
-                kinds=["recall_view", "reflection"],
-                scope=scope_ref,
-                limit=100,
-            )
+        except Exception:
+            return None
+        if not isinstance(records, list):
+            return None
         for record in records:
             if record.scope != scope_ref:
                 continue
