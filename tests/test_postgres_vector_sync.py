@@ -312,6 +312,61 @@ def test_sqlite_projection_revision_tracks_alias_only_mutations_without_upsert_a
         runtime.close()
 
 
+def test_alias_identity_maintenance_advances_projection_revision_without_upsert_double_increment(
+    tmp_path: Path,
+) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    reader = SQLiteProjectionReader(runtime.store)
+    scope = ScopeRef("tenant", "openclaw", "workspace", "user")
+    record = runtime.store.append(
+        RecordEnvelope.create(
+            kind="memory", title="Alias maintenance", summary="stable alias projection",
+            content={"text": "stable alias projection"}, aliases=["stable alias"],
+            source_id="alpha", scope=scope,
+        )
+    )
+    try:
+        reader.snapshot_token()
+        row = runtime.store.sqlite.conn.execute(
+            "SELECT storage_key FROM records WHERE record_id=?",
+            (record.record_id,),
+        ).fetchone()
+        assert row is not None
+        storage_key = str(row["storage_key"])
+        runtime.store.sqlite.conn.execute(
+            "UPDATE recall_alias_index SET normalized_alias='broken alias' WHERE storage_key=?",
+            (storage_key,),
+        )
+        runtime.store.sqlite.conn.commit()
+        after_corruption = int(reader.snapshot_token())
+
+        runtime.store.sqlite._save_migration_cursor(
+            "recall.identity_index.v1", "", phase="aliases"
+        )
+        runtime.store.sqlite.conn.commit()
+        repaired = runtime.store.sqlite._apply_recall_identity_batch(
+            batch_size=100, offline=False
+        )
+        after_repair = int(reader.snapshot_token())
+        aliases = {
+            str(alias_row["normalized_alias"])
+            for alias_row in runtime.store.sqlite.conn.execute(
+                "SELECT normalized_alias FROM recall_alias_index WHERE storage_key=?",
+                (storage_key,),
+            )
+        }
+
+        assert repaired >= 1
+        assert aliases == {"stable alias"}
+        assert after_repair > after_corruption
+
+        record.summary = "ordinary record upsert after maintenance"
+        runtime.store.append(record)
+        assert int(reader.snapshot_token()) == after_repair + 1
+    finally:
+        runtime.close()
+
+
 def test_sync_pages_embeds_bounded_batches_and_only_completes_after_end() -> None:
     first = [_projection("a", "2026-07-22T00:00:01Z"), _projection("b", "2026-07-22T00:00:02Z")]
     second = [_projection("c", "2026-07-22T00:00:03Z", status="inactive")]

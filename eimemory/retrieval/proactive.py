@@ -5,6 +5,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import json
+import logging
 import re
 from threading import BoundedSemaphore, RLock, Thread
 from time import monotonic
@@ -17,6 +18,7 @@ from eimemory.models.records import RecallBundle, RecordEnvelope, ScopeRef
 from eimemory.models.source_partitions import normalize_source_ids
 
 
+logger = logging.getLogger(__name__)
 PROACTIVE_POLICY_VERSION = "proactive-recall.v1"
 PROACTIVE_CONFIDENCE_THRESHOLD = 0.70
 DEFAULT_MAX_CONTEXT_CHARS = 3_600
@@ -155,6 +157,9 @@ class ProactiveRecallService:
         self._workers: set[Thread] = set()
         self._closing = False
         self._on_drained_called = False
+        self._on_drained_callback: Any | None = None
+        self._on_drained_running = False
+        self._drain_finalizer: Thread | None = None
         self._lock = RLock()
 
     @staticmethod
@@ -1193,19 +1198,78 @@ class ProactiveRecallService:
 
         with self._lock:
             self._closing = True
+            if (
+                on_drained is not None
+                and not self._on_drained_called
+                and self._on_drained_callback is None
+            ):
+                self._on_drained_callback = on_drained
             workers = tuple(self._workers)
+            finalizer = self._drain_finalizer
         deadline = monotonic() + max(0.0, min(60.0, float(timeout_seconds)))
         for worker in workers:
             worker.join(timeout=max(0.0, deadline - monotonic()))
+        if finalizer is not None and finalizer.is_alive():
+            finalizer.join(timeout=max(0.0, deadline - monotonic()))
         with self._lock:
             alive = tuple(worker for worker in self._workers if worker.is_alive())
-            should_close = on_drained is not None and not self._on_drained_called and not alive
-            if should_close:
-                self._on_drained_called = True
+            finalizer_alive = self._drain_finalizer is not None and self._drain_finalizer.is_alive()
         if alive:
+            self._start_drain_finalizer(alive)
             raise TimeoutError("proactive recall workers did not drain before shutdown timeout")
-        if should_close:
-            on_drained()
+        if finalizer_alive:
+            raise TimeoutError("proactive recall workers did not drain before shutdown timeout")
+        self._run_on_drained_if_ready(propagate=True)
+
+    def _start_drain_finalizer(self, workers: tuple[Thread, ...]) -> None:
+        def finalize() -> None:
+            try:
+                for worker in workers:
+                    worker.join()
+                self._run_on_drained_if_ready(propagate=False)
+            finally:
+                with self._lock:
+                    if self._drain_finalizer is finalizer:
+                        self._drain_finalizer = None
+
+        with self._lock:
+            if self._drain_finalizer is not None and self._drain_finalizer.is_alive():
+                return
+            finalizer = Thread(
+                target=finalize,
+                name="eimemory-proactive-drain-finalizer",
+                daemon=True,
+            )
+            self._drain_finalizer = finalizer
+            finalizer.start()
+
+    def _run_on_drained_if_ready(self, *, propagate: bool) -> None:
+        with self._lock:
+            if (
+                self._workers
+                or self._on_drained_called
+                or self._on_drained_running
+                or self._on_drained_callback is None
+            ):
+                return
+            callback = self._on_drained_callback
+            self._on_drained_running = True
+        try:
+            callback()
+        except BaseException as exc:  # noqa: BLE001 - callback must remain retryable
+            with self._lock:
+                self._on_drained_running = False
+            if propagate:
+                raise
+            logger.error(
+                "proactive on_drained callback failed type=%s; callback remains pending",
+                type(exc).__name__,
+            )
+        else:
+            with self._lock:
+                self._on_drained_running = False
+                self._on_drained_called = True
+                self._on_drained_callback = None
 
     def mandatory_fallback(
         self,

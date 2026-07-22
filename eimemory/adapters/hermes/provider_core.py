@@ -62,8 +62,17 @@ class HermesMemoryProviderCore:
         self._pending_proactive: OrderedDict[tuple[str, ...], dict[str, Any]] = OrderedDict()
         self._pending_terminal_retries: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self._max_terminal_retries = self._max_prefetch_cache_entries * 2
+        self._terminal_retry_evidence: OrderedDict[str, dict[str, Any]] = OrderedDict()
+        self._max_terminal_retry_evidence = max(32, self._max_terminal_retries * 4)
         self._terminal_retry_overflow_count = 0
+        self._terminal_retry_total_count = 0
+        self._terminal_retry_evicted_count = 0
+        self._terminal_retry_chain_digest = "0" * 64
+        self._terminal_retry_recovered_count = 0
+        self._terminal_retry_ledger_path: Path | None = None
+        self._terminal_retry_persist_error = ""
         self._lock = threading.RLock()
+        self._terminal_retry_flush_lock = threading.Lock()
         self._write_thread: threading.Thread | None = None
         self._prefetch_thread: threading.Thread | None = None
         self._pending_prefetch: tuple[tuple[str, ...], str, str] | None = None
@@ -125,6 +134,7 @@ class HermesMemoryProviderCore:
             self._verified_host_turns.clear()
             self._verified_host_turn_overflow = False
             abandoned = self._take_all_pending_proactive_locked()
+            self._configure_terminal_retry_ledger_locked(hermes_home)
         if self._client is None:
             self._client = hermes_client_from_env(hermes_home=hermes_home)
         self._flush_terminal_retries()
@@ -642,12 +652,28 @@ class HermesMemoryProviderCore:
             return terminal
         if tool_name == "eimemory_status":
             status = self._safe_call("adapter.status", common)
+            with self._lock:
+                retry_evidence = {
+                    "pending_count": len(self._terminal_retry_evidence),
+                    "overflow_count": self._terminal_retry_overflow_count,
+                    "total_count": self._terminal_retry_total_count,
+                    "evicted_count": self._terminal_retry_evicted_count,
+                    "chain_digest": self._terminal_retry_chain_digest,
+                    "recovered_count": self._terminal_retry_recovered_count,
+                    "persisted": bool(
+                        self._terminal_retry_ledger_path is not None
+                        and not self._terminal_retry_persist_error
+                        and self._terminal_retry_ledger_path.is_file()
+                    ),
+                    "persist_error": self._terminal_retry_persist_error,
+                }
             return {
                 **status,
                 "adapter_local": {
                     "dropped_writes": self.dropped_write_count,
                     "prefetch_cache_entries": self.prefetch_cache_size,
                     "pending_terminal_retries": self.pending_terminal_retry_count,
+                    "terminal_retry_evidence": retry_evidence,
                     "background_workers": self.background_worker_count,
                 },
             }
@@ -784,38 +810,188 @@ class HermesMemoryProviderCore:
 
     def _retain_terminal_retries(self, entries: List[Mapping[str, Any]]) -> None:
         with self._lock:
+            changed = False
             for raw in entries:
                 if not self._valid_terminal_retry(raw):
                     continue
                 params = dict(raw)
                 key = self._terminal_retry_key(params)
-                if key in self._pending_terminal_retries:
+                if key in self._terminal_retry_evidence:
                     continue
+                self._terminal_retry_evidence[key] = params
+                self._terminal_retry_total_count += 1
+                self._terminal_retry_chain_digest = sha256(
+                    f"{self._terminal_retry_chain_digest}\0{key}".encode("ascii")
+                ).hexdigest()
+                changed = True
                 if len(self._pending_terminal_retries) >= self._max_terminal_retries:
-                    # The terminal RPC was already attempted, so the server-side
-                    # decision ledger (and the RPC failure ledger in production)
-                    # remains authoritative and traceable.  Never let bounded
-                    # local retry pressure escape through a public Hermes hook.
                     self._terminal_retry_overflow_count += 1
                     logger.warning(
                         "Hermes proactive terminal retry overflow decision_id=%s",
                         str(params.get("decision_id") or "")[:200],
                     )
-                    continue
-                self._pending_terminal_retries[key] = params
+                else:
+                    self._pending_terminal_retries[key] = params
+                while len(self._terminal_retry_evidence) > self._max_terminal_retry_evidence:
+                    evicted_key, _evicted = self._terminal_retry_evidence.popitem(last=False)
+                    self._pending_terminal_retries.pop(evicted_key, None)
+                    self._terminal_retry_evicted_count += 1
+            if changed:
+                self._persist_terminal_retry_evidence_locked()
 
     def _flush_terminal_retries(self) -> bool:
-        with self._lock:
-            pending = [(key, dict(params)) for key, params in self._pending_terminal_retries.items()]
-        for key, params in pending:
-            result = self._safe_call("adapter.proactive_terminal", params)
-            if not self._terminal_call_succeeded(result):
-                continue
-            with self._lock:
-                if self._pending_terminal_retries.get(key) == params:
-                    self._pending_terminal_retries.pop(key, None)
-        with self._lock:
-            return not self._pending_terminal_retries
+        with self._terminal_retry_flush_lock:
+            while True:
+                with self._lock:
+                    self._promote_terminal_retry_evidence_locked()
+                    pending = [
+                        (key, dict(params))
+                        for key, params in self._pending_terminal_retries.items()
+                    ]
+                    if not pending:
+                        return not self._terminal_retry_evidence
+                succeeded: list[tuple[str, dict[str, Any]]] = []
+                for key, params in pending:
+                    result = self._safe_call("adapter.proactive_terminal", params)
+                    if self._terminal_call_succeeded(result):
+                        succeeded.append((key, params))
+                if not succeeded:
+                    return False
+                with self._lock:
+                    changed = False
+                    for key, params in succeeded:
+                        if self._pending_terminal_retries.get(key) == params:
+                            self._pending_terminal_retries.pop(key, None)
+                        if self._terminal_retry_evidence.get(key) == params:
+                            self._terminal_retry_evidence.pop(key, None)
+                            changed = True
+                    if changed:
+                        self._persist_terminal_retry_evidence_locked()
+
+    def _promote_terminal_retry_evidence_locked(self) -> None:
+        for key, params in self._terminal_retry_evidence.items():
+            if len(self._pending_terminal_retries) >= self._max_terminal_retries:
+                return
+            if key not in self._pending_terminal_retries:
+                self._pending_terminal_retries[key] = dict(params)
+
+    def _configure_terminal_retry_ledger_locked(self, hermes_home: str) -> None:
+        if not hermes_home:
+            return
+        path = Path(hermes_home) / "logs" / "eimemory-terminal-retries.json"
+        if self._terminal_retry_ledger_path == path:
+            return
+        self._terminal_retry_ledger_path = path
+        self._terminal_retry_persist_error = ""
+        self._load_terminal_retry_evidence_locked()
+
+    def _load_terminal_retry_evidence_locked(self) -> None:
+        path = self._terminal_retry_ledger_path
+        if path is None or not path.exists():
+            return
+        try:
+            if path.is_symlink():
+                raise OSError("retry ledger must not be a symlink")
+            if path.stat().st_size > 1_000_000:
+                raise ValueError("retry ledger exceeds size limit")
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(payload, Mapping) or payload.get("schema_version") != 1:
+                raise ValueError("unsupported retry ledger schema")
+            entries = payload.get("entries")
+            if not isinstance(entries, list):
+                raise ValueError("invalid retry ledger entries")
+            recovered = 0
+            for item in entries[: self._max_terminal_retry_evidence]:
+                if not isinstance(item, Mapping):
+                    continue
+                params = item.get("params")
+                if not self._valid_terminal_retry(params):
+                    continue
+                normalized = dict(params)
+                key = self._terminal_retry_key(normalized)
+                if item.get("key") != key or key in self._terminal_retry_evidence:
+                    continue
+                self._terminal_retry_evidence[key] = normalized
+                recovered += 1
+            self._terminal_retry_recovered_count = recovered
+            self._terminal_retry_total_count = max(
+                recovered,
+                self._bounded_nonnegative_int(payload.get("total_count")),
+            )
+            self._terminal_retry_overflow_count = self._bounded_nonnegative_int(
+                payload.get("overflow_count")
+            )
+            self._terminal_retry_evicted_count = self._bounded_nonnegative_int(
+                payload.get("evicted_count")
+            )
+            chain = str(payload.get("chain_digest") or "")
+            self._terminal_retry_chain_digest = (
+                chain.lower() if re.fullmatch(r"[0-9a-fA-F]{64}", chain) else "0" * 64
+            )
+            self._promote_terminal_retry_evidence_locked()
+        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            self._terminal_retry_persist_error = type(exc).__name__
+            logger.warning("Hermes terminal retry ledger load failed type=%s", type(exc).__name__)
+
+    def _persist_terminal_retry_evidence_locked(self) -> None:
+        path = self._terminal_retry_ledger_path
+        if path is None:
+            return
+        temp_path: Path | None = None
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if path.exists() and path.is_symlink():
+                raise OSError("retry ledger must not be a symlink")
+            payload = {
+                "schema_version": 1,
+                "total_count": self._terminal_retry_total_count,
+                "overflow_count": self._terminal_retry_overflow_count,
+                "evicted_count": self._terminal_retry_evicted_count,
+                "chain_digest": self._terminal_retry_chain_digest,
+                "entries": [
+                    {"key": key, "params": params}
+                    for key, params in self._terminal_retry_evidence.items()
+                ],
+            }
+            temp_path = path.with_name(
+                f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+            )
+            serialized = json.dumps(
+                payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            descriptor = os.open(temp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            try:
+                with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
+                    stream.write(serialized)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+            except BaseException:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+                raise
+            os.replace(temp_path, path)
+            if os.name != "nt":
+                os.chmod(path, 0o600)
+            self._terminal_retry_persist_error = ""
+        except (OSError, ValueError, TypeError) as exc:
+            self._terminal_retry_persist_error = type(exc).__name__
+            logger.warning("Hermes terminal retry ledger persist failed type=%s", type(exc).__name__)
+            if temp_path is not None:
+                try:
+                    temp_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
+    @staticmethod
+    def _bounded_nonnegative_int(raw: Any) -> int:
+        if isinstance(raw, bool) or not isinstance(raw, int):
+            return 0
+        return max(0, min(raw, 1_000_000_000))
 
     @staticmethod
     def _terminal_retry_key(params: Mapping[str, Any]) -> str:

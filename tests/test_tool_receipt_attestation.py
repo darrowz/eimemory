@@ -16,6 +16,7 @@ from eimemory.governance.tool_receipts import (
     RECEIPT_KEY_ENV,
     RECEIPT_KEY_FILE_ENV,
     sign_tool_receipt,
+    tool_receipt_commitment,
     verify_tool_receipt,
 )
 
@@ -48,6 +49,17 @@ def test_tool_receipt_hmac_binds_terminal_session_run_and_result(monkeypatch) ->
     assert verify_tool_receipt(signed, session_id="session-1", run_id="run-1") is True
     assert verify_tool_receipt(signed, session_id="other", run_id="run-1") is False
     assert verify_tool_receipt({**signed, "result_digest": "b" * 64}, session_id="session-1", run_id="run-1") is False
+
+
+def test_tool_receipt_commitment_rejects_arbitrary_object_representation(monkeypatch) -> None:
+    monkeypatch.setenv(RECEIPT_KEY_ENV, KEY)
+
+    class AmbiguousObject:
+        def __str__(self) -> str:
+            return "shared-representation"
+
+    with pytest.raises(TypeError, match="unsupported tool receipt commitment value type"):
+        tool_receipt_commitment(AmbiguousObject(), domain="result")
 
 
 def test_receipt_key_file_cache_observes_provisioning_and_rotation(monkeypatch, tmp_path: Path) -> None:

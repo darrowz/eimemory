@@ -281,20 +281,37 @@ def _canonical_bytes(receipt: Mapping[str, Any]) -> bytes:
 def tool_receipt_commitment(value: Any, *, domain: str) -> str:
     """Return a secret-keyed, domain-separated commitment to complete raw data."""
 
+    return tool_receipt_commitments(value, domain=domain)[0]
+
+
+def tool_receipt_commitments(value: Any, *, domain: str) -> tuple[str, ...]:
+    """Return active-first commitments for every accepted rotation key."""
+
     key_set = _receipt_key_set()
     if key_set is None or not key_set.active_key:
         raise ValueError("tool receipt attestation key is unavailable")
     domain_id = str(domain or "").strip().lower()
     if domain_id not in {"invocation", "result"}:
         raise ValueError("unsupported tool receipt commitment domain")
-    digest = hmac.new(
-        key_set.active_key.encode("utf-8"),
-        f"eimemory.tool-receipt.commitment.v1\0{domain_id}\0".encode("ascii"),
-        sha256,
-    )
-    for chunk in _canonical_raw_chunks(value, active=set()):
-        digest.update(chunk)
-    return digest.hexdigest()
+    keys = [
+        key_set.active_key,
+        *(
+            key
+            for key in key_set.verification_keys.values()
+            if key != key_set.active_key
+        ),
+    ]
+    commitments: list[str] = []
+    for key in keys:
+        digest = hmac.new(
+            key.encode("utf-8"),
+            f"eimemory.tool-receipt.commitment.v1\0{domain_id}\0".encode("ascii"),
+            sha256,
+        )
+        for chunk in _canonical_raw_chunks(value, active=set()):
+            digest.update(chunk)
+        commitments.append(digest.hexdigest())
+    return tuple(commitments)
 
 
 def _canonical_raw_chunks(value: Any, *, active: set[int]) -> Iterable[bytes]:
@@ -345,10 +362,10 @@ def _canonical_raw_chunks(value: Any, *, active: set[int]) -> Iterable[bytes]:
                 yield from _canonical_raw_chunks(nested, active=active)
             yield b";"
             return
-        fallback = f"{type(value).__module__}.{type(value).__qualname__}\0{value}".encode(
-            "utf-8", errors="replace"
+        raise TypeError(
+            "unsupported tool receipt commitment value type: "
+            f"{type(value).__module__}.{type(value).__qualname__}"
         )
-        yield from _framed_chunks(b"o", fallback)
     finally:
         active.remove(identity)
 

@@ -7,7 +7,7 @@ import os
 import re
 import sqlite3
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 from hashlib import sha256
 from eimemory.recall import analyze_lexical_signal, build_recall_index_document
 
@@ -941,6 +941,8 @@ class SqliteRecordStore:
         receipt: dict[str, Any],
         *,
         scope: ScopeRef | dict | None = None,
+        compatible_invocation_digests: Iterable[str] | None = None,
+        compatible_result_digests: Iterable[str] | None = None,
         commit: bool = True,
     ) -> tuple[dict[str, Any], bool]:
         from eimemory.governance.tool_receipts import canonical_tool_receipt
@@ -970,8 +972,6 @@ class SqliteRecordStore:
                 "run_id",
                 "tool_call_id",
                 "tool_name",
-                "invocation_digest",
-                "result_digest",
                 "passed",
                 "verification_policy_id",
                 "retrieval_policy_digest",
@@ -980,7 +980,17 @@ class SqliteRecordStore:
                 "deployment_receipt_id",
                 "release_session_id",
             )
-            if any(existing.get(name) != receipt.get(name) for name in conflict_fields):
+            invocation_digests = set(
+                compatible_invocation_digests or (str(receipt.get("invocation_digest") or ""),)
+            )
+            result_digests = set(
+                compatible_result_digests or (str(receipt.get("result_digest") or ""),)
+            )
+            if (
+                any(existing.get(name) != receipt.get(name) for name in conflict_fields)
+                or existing.get("invocation_digest") not in invocation_digests
+                or existing.get("result_digest") not in result_digests
+            ):
                 raise ValueError("tool receipt conflict for an existing tool call")
             return existing, True
         self.conn.execute(
@@ -2363,6 +2373,7 @@ class SqliteRecordStore:
                             record=record,
                             storage_key=str(row["storage_key"]),
                             content_text=str(row["content_text"] or ""),
+                            suppress_alias_revision=False,
                         )
             if rows:
                 self._save_migration_cursor(
@@ -2889,7 +2900,14 @@ class SqliteRecordStore:
                 ),
             )
 
-    def _upsert_recall_index(self, *, record: RecordEnvelope, storage_key: str, content_text: str) -> None:
+    def _upsert_recall_index(
+        self,
+        *,
+        record: RecordEnvelope,
+        storage_key: str,
+        content_text: str,
+        suppress_alias_revision: bool = True,
+    ) -> None:
         lane, visibility, source_class, memory_type, projection_type, quality_score = self._recall_index_traits(record)
         title_text = str(record.title or "")
         title_normalized = normalize_identity_text(title_text)
@@ -2960,7 +2978,7 @@ class SqliteRecordStore:
                 record.time.updated_at,
             ),
         )
-        alias_guarded = self._set_vector_sync_alias_guard(True)
+        alias_guarded = bool(suppress_alias_revision) and self._set_vector_sync_alias_guard(True)
         try:
             self.conn.execute("DELETE FROM recall_alias_index WHERE storage_key = ?", (storage_key,))
             if record.aliases:

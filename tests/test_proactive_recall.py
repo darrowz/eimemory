@@ -1219,6 +1219,74 @@ def test_close_is_bounded_and_closes_store_once_only_after_worker_drains(tmp_pat
         runtime.store.sqlite.conn.execute("SELECT 1")
 
 
+def test_close_timeout_registers_callback_that_runs_automatically_after_worker_drains(
+    tmp_path,
+) -> None:
+    runtime, _engine, service = _service(
+        tmp_path, [_record("automatic drain callback record")], recall_timeout_seconds=0.01,
+    )
+    worker_entered = threading.Event()
+    release_worker = threading.Event()
+    callback_finished = threading.Event()
+    close_calls = 0
+
+    def blocked_recall(*_args, **_kwargs):
+        worker_entered.set()
+        release_worker.wait(timeout=2.0)
+        runtime.store.list_proactive_bypasses(limit=1)
+        return RecallBundle([], [], [], 0.0, "")
+
+    def close_store() -> None:
+        nonlocal close_calls
+        close_calls += 1
+        runtime.store.close()
+        callback_finished.set()
+
+    runtime.memory.recall = blocked_recall
+    assert service.decide(
+        channel="codex", scope=BASE_SCOPE, source_ids=["alpha"],
+        session_id="automatic-close-session", query_id="automatic-close-turn",
+        query="Recall an automatic drain callback record",
+    )["bypassed"] is True
+    assert worker_entered.is_set()
+
+    with pytest.raises(TimeoutError, match="workers did not drain"):
+        service.close(on_drained=close_store, timeout_seconds=0.02)
+    assert close_calls == 0
+    runtime.store.sqlite.conn.execute("SELECT 1")
+
+    release_worker.set()
+    assert callback_finished.wait(timeout=1.0)
+    assert close_calls == 1
+    with pytest.raises(Exception):
+        runtime.store.sqlite.conn.execute("SELECT 1")
+    service.close(on_drained=close_store, timeout_seconds=0.10)
+    assert close_calls == 1
+
+
+def test_close_retries_on_drained_callback_after_first_exception(tmp_path) -> None:
+    runtime, _engine, service = _service(tmp_path, [])
+    attempts = 0
+
+    def flaky_close_store() -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("injected close callback failure")
+        runtime.store.close()
+
+    with pytest.raises(OSError, match="injected close callback failure"):
+        service.close(on_drained=flaky_close_store, timeout_seconds=0.10)
+    assert attempts == 1
+    runtime.store.sqlite.conn.execute("SELECT 1")
+
+    service.close(on_drained=flaky_close_store, timeout_seconds=0.10)
+    service.close(on_drained=flaky_close_store, timeout_seconds=0.10)
+    assert attempts == 2
+    with pytest.raises(Exception):
+        runtime.store.sqlite.conn.execute("SELECT 1")
+
+
 def test_review_counterexample_12_session_dedupe_scans_more_than_512_item_rows(tmp_path) -> None:
     runtime, _engine, service = _service(tmp_path, [], max_decisions=300)
     exact_scope = resolve_channel_scope("codex", BASE_SCOPE)

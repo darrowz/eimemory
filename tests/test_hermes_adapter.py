@@ -513,7 +513,9 @@ def test_hermes_continuous_terminal_failure_is_retained_and_blocks_new_prefetch(
     assert provider.pending_terminal_retry_count == 0
 
 
-def test_concurrent_prefetch_retry_overflow_never_escapes_public_hook_and_is_traceable() -> None:
+def test_concurrent_prefetch_retry_overflow_is_persisted_queryable_and_recoverable(
+    tmp_path: Path,
+) -> None:
     class ConcurrentFailureClient(FlakyTerminalClient):
         def __init__(self) -> None:
             super().__init__(terminal_available=False)
@@ -540,7 +542,10 @@ def test_concurrent_prefetch_retry_overflow_never_escapes_public_hook_and_is_tra
 
     client = ConcurrentFailureClient()
     provider = HermesMemoryProviderCore(client=client, max_prefetch_cache_entries=1)
-    provider.initialize("session-a", agent_workspace="embodied", agent_context="primary")
+    provider.initialize(
+        "session-a", hermes_home=str(tmp_path),
+        agent_workspace="embodied", agent_context="primary",
+    )
 
     with ThreadPoolExecutor(max_workers=4) as pool:
         contexts = list(
@@ -561,6 +566,75 @@ def test_concurrent_prefetch_retry_overflow_never_escapes_public_hook_and_is_tra
     assert len(set(terminal_attempts)) == 3
     assert provider.pending_terminal_retry_count == 2
     assert provider.terminal_retry_overflow_count == 1
+    local = json.loads(provider.handle_tool_call("eimemory_status", {}))["adapter_local"]
+    assert local["terminal_retry_evidence"]["pending_count"] == 3
+    assert local["terminal_retry_evidence"]["overflow_count"] == 1
+    assert local["terminal_retry_evidence"]["persisted"] is True
+    assert (tmp_path / "logs" / "eimemory-terminal-retries.json").is_file()
+
+    recovered = HermesMemoryProviderCore(client=client, max_prefetch_cache_entries=1)
+    recovered.initialize(
+        "session-b", hermes_home=str(tmp_path),
+        agent_workspace="embodied", agent_context="primary",
+    )
+    recovered_local = json.loads(
+        recovered.handle_tool_call("eimemory_status", {})
+    )["adapter_local"]
+    assert recovered_local["terminal_retry_evidence"]["recovered_count"] == 3
+    assert recovered_local["terminal_retry_evidence"]["pending_count"] == 3
+
+    client.terminal_available = True
+    recovered.on_pre_llm_call(user_message="ordinary hook", session_id="session-b")
+    final_local = json.loads(
+        recovered.handle_tool_call("eimemory_status", {})
+    )["adapter_local"]
+    assert final_local["terminal_retry_evidence"]["pending_count"] == 0
+    retried_ids = {
+        params["decision_id"]
+        for method, params in client.calls
+        if method == "adapter.proactive_terminal"
+    }
+    assert set(terminal_attempts).issubset(retried_ids)
+
+
+def test_terminal_transport_exception_is_persisted_and_recovered(
+    tmp_path: Path,
+) -> None:
+    class RaisingTerminalClient(FlakyTerminalClient):
+        def call_or_bypass(self, method: str, params: dict) -> dict:
+            if method == "adapter.proactive_terminal":
+                self.calls.append((method, dict(params)))
+                raise OSError("transport unavailable")
+            return super().call_or_bypass(method, params)
+
+    failing = RaisingTerminalClient(terminal_available=False)
+    provider = HermesMemoryProviderCore(client=failing, max_prefetch_cache_entries=1)
+    provider.initialize(
+        "session-a", hermes_home=str(tmp_path),
+        agent_workspace="embodied", agent_context="primary",
+    )
+    provider.prefetch("transport pending one", session_id="session-a")
+    provider.prefetch("transport pending two", session_id="session-a")
+
+    local = json.loads(provider.handle_tool_call("eimemory_status", {}))["adapter_local"]
+    assert local["terminal_retry_evidence"]["pending_count"] == 1
+    assert local["terminal_retry_evidence"]["persist_error"] == ""
+
+    healthy = FlakyTerminalClient(terminal_available=True)
+    recovered = HermesMemoryProviderCore(client=healthy, max_prefetch_cache_entries=1)
+    recovered.initialize(
+        "session-b", hermes_home=str(tmp_path),
+        agent_workspace="embodied", agent_context="primary",
+    )
+    assert any(
+        method == "adapter.proactive_terminal"
+        and params["decision_id"] == "pd:hermes-turn-1"
+        for method, params in healthy.calls
+    )
+    recovered_local = json.loads(
+        recovered.handle_tool_call("eimemory_status", {})
+    )["adapter_local"]
+    assert recovered_local["terminal_retry_evidence"]["pending_count"] == 0
 
 
 def test_hermes_provider_exposes_only_closed_loop_tools_and_rejects_unbound_terminal() -> None:

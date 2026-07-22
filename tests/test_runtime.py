@@ -165,6 +165,77 @@ def test_runtime_ingest_identical_caller_record_id_request_is_idempotent(tmp_pat
         runtime.close()
 
 
+def _remove_ingest_request_digest(runtime: Runtime, record: RecordEnvelope) -> RecordEnvelope:
+    legacy = runtime.store.get_by_id(record.record_id, scope=record.scope)
+    assert legacy is not None
+    legacy.meta.pop("ingest_request_digest", None)
+    business = legacy.meta.get("business_meta")
+    if isinstance(business, dict):
+        business.pop("ingest_request_digest", None)
+    runtime.store.sqlite.upsert(legacy)
+    reloaded = runtime.store.get_by_id(record.record_id, scope=record.scope)
+    assert reloaded is not None
+    return reloaded
+
+
+def test_runtime_ingest_identical_legacy_record_without_request_digest_is_idempotent(
+    tmp_path,
+) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    request = {
+        "text": "legacy stable deterministic memory",
+        "memory_type": "durable_fact",
+        "title": "Legacy stable",
+        "scope": {"agent_id": "main", "workspace_id": "repo-x"},
+        "tags": ["legacy", "stable"],
+        "source": "trusted.runtime",
+        "source_id": "alpha",
+        "force_capture": True,
+        "meta": {"capture_origin": "legacy-import"},
+        "content": {"format": "plain"},
+        "record_id": "caller-legacy-stable-record",
+    }
+    first = runtime.memory.ingest(**request)
+    legacy = _remove_ingest_request_digest(runtime, first)
+    before_changes = runtime.store.sqlite.conn.total_changes
+    before_jsonl = (tmp_path / "records.jsonl").read_bytes()
+    try:
+        retried = runtime.memory.ingest(**request)
+        assert retried.to_dict() == legacy.to_dict()
+        assert runtime.store.sqlite.conn.total_changes == before_changes
+        assert (tmp_path / "records.jsonl").read_bytes() == before_jsonl
+    finally:
+        runtime.close()
+
+
+def test_runtime_ingest_changed_legacy_record_without_request_digest_still_conflicts(
+    tmp_path,
+) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    request = {
+        "text": "legacy protected memory",
+        "memory_type": "durable_fact",
+        "title": "Legacy protected",
+        "scope": {"agent_id": "main", "workspace_id": "repo-x"},
+        "source": "trusted.runtime",
+        "source_id": "alpha",
+        "force_capture": True,
+        "record_id": "caller-legacy-protected-record",
+    }
+    first = runtime.memory.ingest(**request)
+    legacy = _remove_ingest_request_digest(runtime, first)
+    before_changes = runtime.store.sqlite.conn.total_changes
+    try:
+        with pytest.raises(ValueError, match="record_id conflict"):
+            runtime.memory.ingest(**{**request, "text": "changed attacker replacement"})
+        persisted = runtime.store.get_by_id(first.record_id, scope=first.scope)
+        assert persisted is not None
+        assert persisted.to_dict() == legacy.to_dict()
+        assert runtime.store.sqlite.conn.total_changes == before_changes
+    finally:
+        runtime.close()
+
+
 def test_runtime_recall_excludes_internal_audit_memories_by_default(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     audit = runtime.memory.ingest(

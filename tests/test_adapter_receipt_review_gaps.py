@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from hashlib import sha256
 import json
 import os
 from pathlib import Path
@@ -11,6 +12,7 @@ import sys
 
 import pytest
 
+import eimemory.governance.tool_receipts as receipt_module
 from eimemory.adapters.codex.hook import CodexHookAdapter, codex_attestation_client_from_env
 from eimemory.adapters.codex.mcp_server import CodexMCPServer
 from eimemory.adapters.eibrain.rpc_server import EIBrainRPCServer
@@ -396,6 +398,73 @@ def test_same_tool_call_with_only_post_bound_invocation_change_conflicts(
                 call_id="long-invocation",
                 tool_input={"command": "x" * 16_000 + "bravo"},
             )
+    finally:
+        runtime.close()
+
+
+def test_same_raw_tool_retry_is_idempotent_across_receipt_key_rotation(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    old_key = "OldReceiptCommitmentKey_0123456789-Strong-Alpha"
+    new_key = "NewReceiptCommitmentKey_0123456789-Strong-Bravo"
+    keyring = tmp_path / "receipt-keyring.json"
+
+    def key_id(key: str) -> str:
+        return "key_" + sha256(key.encode("utf-8")).hexdigest()[:16]
+
+    def write_keyring(active: str, previous: list[str]) -> None:
+        keyring.write_text(
+            json.dumps(
+                {
+                    "active": {"key_id": key_id(active), "key": active},
+                    "previous": [
+                        {"key_id": key_id(key), "key": key} for key in previous
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        if os.name == "posix":
+            keyring.chmod(0o600)
+
+    monkeypatch.delenv(receipt_module.RECEIPT_KEY_ENV, raising=False)
+    monkeypatch.delenv(receipt_module.RECEIPT_KEY_FILE_ENV, raising=False)
+    monkeypatch.setenv(receipt_module.RECEIPT_KEYRING_FILE_ENV, str(keyring))
+    write_keyring(old_key, [])
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    service = AgentRuntimeMemoryService(runtime)
+    raw_input = {"command": "pytest -q", "accessToken": "rotation-input-canary"}
+    raw_result = {
+        "exit_code": 0,
+        "summary": "2 passed",
+        "refreshToken": "rotation-result-canary",
+    }
+    try:
+        first = _attest(
+            service, call_id="rotated-call", tool_input=raw_input, result=raw_result,
+        )
+        write_keyring(new_key, [old_key])
+        same = _attest(
+            service, call_id="rotated-call", tool_input=raw_input, result=raw_result,
+        )
+        assert first["idempotent"] is False
+        assert same["idempotent"] is True
+
+        with pytest.raises(ValueError, match="conflict"):
+            _attest(
+                service,
+                call_id="rotated-call",
+                tool_input=raw_input,
+                result={**raw_result, "refreshToken": "changed-rotation-canary"},
+            )
+        persisted = "\n".join(runtime.store.sqlite.conn.iterdump())
+        for canary in (
+            "rotation-input-canary",
+            "rotation-result-canary",
+            "changed-rotation-canary",
+        ):
+            assert canary not in persisted
     finally:
         runtime.close()
 

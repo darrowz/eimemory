@@ -398,7 +398,6 @@ def test_eligible_dataset_fails_closed_without_real_labels_and_boundaries(mutati
         "AKIAIOSFODNN7EXAMPLE",
         "accessToken=credential-canary-value",
         "Dr. Alice Smith",
-        "Alice Smith",
         "张三先生",
     ],
 )
@@ -423,6 +422,21 @@ def test_query_features_allow_function_terms_and_constrained_person_placeholders
 
     assert reason == ""
     assert features["entities"] == ["OpenAI", "person_ref:operator-17"]
+
+
+def test_query_features_allow_title_case_product_place_entity_and_iso_date() -> None:
+    features, reason = real_query_gate._bounded_query_features(
+        {
+            "terms": ["model", "context", "protocol", "2026-07-22"],
+            "entities": ["Model Context Protocol", "New York"],
+            "intent": "release verification on 2026-07-22",
+            "language": "en",
+        }
+    )
+
+    assert reason == ""
+    assert features["entities"] == ["Model Context Protocol", "New York"]
+    assert features["terms"][-1] == "2026-07-22"
 
 
 def test_conflicting_accepted_label_grade_fails_eligibility_and_same_grade_duplicate_normalizes() -> None:

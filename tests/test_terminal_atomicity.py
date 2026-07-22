@@ -379,6 +379,34 @@ def test_terminal_serialized_json_camel_case_secrets_leave_no_sqlite_canary(
         runtime.close()
 
 
+def test_terminal_embedded_quoted_json_secret_leaves_no_event_outcome_or_trace_canary(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("EIMEMORY_EVIDENCE_RECEIPT_HMAC_KEY", RECEIPT_KEY)
+    runtime, service = _service(tmp_path)
+    receipt = _attest(service)
+    canary = "embedded-refresh-token-canary"
+    embedded_log = (
+        'prefix payload={"refreshToken":"'
+        + canary
+        + '","summary":"safe embedded diagnostic"} suffix'
+    )
+    try:
+        terminal = service.record_terminal(
+            channel="codex", scope=BASE_SCOPE, end_kind="stop",
+            session_id="session-1", event_id="turn-1", task_type="code.fix",
+            success=True, verification=embedded_log, result=embedded_log,
+            receipt_ids=[receipt["receipt_id"]],
+        )
+        assert terminal["ok"] is True
+        assert canary not in json.dumps(terminal, ensure_ascii=False)
+        assert canary not in _all_sqlite_text(runtime)
+        assert "safe embedded diagnostic" in _all_sqlite_text(runtime)
+    finally:
+        runtime.close()
+
+
 @pytest.mark.parametrize(
     ("field", "sensitive_text", "secret_fragments", "expected_safe_text"),
     [

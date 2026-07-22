@@ -29,7 +29,7 @@ from eimemory.governance.tool_receipts import (
     V2_RECEIPT_VERSION,
     canonical_tool_receipt,
     sign_tool_receipt,
-    tool_receipt_commitment,
+    tool_receipt_commitments,
     verify_tool_receipt,
 )
 from eimemory.models.memory_edges import MemoryEdge
@@ -611,9 +611,9 @@ class AgentRuntimeMemoryService:
             scope=scope,
             status="active",
             source_ids=[source_id],
-            limit=_HERMES_LEGACY_TARGET_LOOKUP_LIMIT,
+            limit=_HERMES_LEGACY_TARGET_LOOKUP_LIMIT + 1,
         )
-        if len(candidates) >= _HERMES_LEGACY_TARGET_LOOKUP_LIMIT:
+        if len(candidates) > _HERMES_LEGACY_TARGET_LOOKUP_LIMIT:
             # A bounded legacy scan cannot prove either absence or uniqueness.
             # Require the optimistic-concurrency identity contract instead of
             # returning a false not-found or mutating a possibly ambiguous row.
@@ -1169,8 +1169,10 @@ class AgentRuntimeMemoryService:
         channel_scope = resolve_channel_scope(channel_id, scope)
         safe_input = self._bounded_attestation_result(tool_input)
         safe_result = self._bounded_attestation_result(result)
-        invocation_digest = tool_receipt_commitment(tool_input, domain="invocation")
-        result_digest = tool_receipt_commitment(result, domain="result")
+        invocation_commitments = tool_receipt_commitments(tool_input, domain="invocation")
+        result_commitments = tool_receipt_commitments(result, domain="result")
+        invocation_digest = invocation_commitments[0]
+        result_digest = result_commitments[0]
         # Preserve the host result shape as part of the trust decision. Codex
         # raw output strings do not prove process exit status; Hermes strings
         # are accepted only as the host's documented JSON status envelope.
@@ -1212,7 +1214,12 @@ class AgentRuntimeMemoryService:
             **(release_identity_payload(release) if release is not None else {}),
         }
         signed = sign_tool_receipt(receipt)
-        stored, idempotent = self.runtime.store.sqlite.register_adapter_tool_receipt(signed, scope=channel_scope)
+        stored, idempotent = self.runtime.store.sqlite.register_adapter_tool_receipt(
+            signed,
+            scope=channel_scope,
+            compatible_invocation_digests=invocation_commitments,
+            compatible_result_digests=result_commitments,
+        )
         return {"ok": True, "receipt_id": stored["receipt_id"], "receipt": canonical_tool_receipt(stored), "idempotent": idempotent}
 
     def status(self, *, channel: str, scope: dict) -> dict[str, Any]:

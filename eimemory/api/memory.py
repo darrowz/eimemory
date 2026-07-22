@@ -16,7 +16,7 @@ from eimemory.identity import (
     hongtu_query_scopes_with_aliases,
 )
 from eimemory.living import LIVING_MEMORY_META_KEY, enrich_living_memory, refresh_living_quality_snapshot
-from eimemory.metadata import business_metadata
+from eimemory.metadata import business_metadata, runtime_metadata
 from eimemory.models.records import LinkRef, RecallBundle, RecordEnvelope, ScopeRef
 from eimemory.recall import RecallIntent
 from eimemory.scoring import ScoreContext, evaluate_memory_score, extract_memory_score, with_score_metadata
@@ -198,6 +198,13 @@ class MemoryAPI:
                     or ""
                 )
                 if existing.source_id == record.source_id and existing_digest == request_digest:
+                    return existing
+                if not existing_digest and self._legacy_ingest_request_matches(
+                    existing,
+                    requested=record,
+                    request_meta=request_meta,
+                    force_capture=force_capture,
+                ):
                     return existing
                 raise ValueError("memory record_id conflict for exact scope")
         score = evaluate_memory_score(
@@ -420,6 +427,55 @@ class MemoryAPI:
         if not persist:
             return record
         return self.store.append(record)
+
+    @staticmethod
+    def _legacy_ingest_request_matches(
+        existing: RecordEnvelope,
+        *,
+        requested: RecordEnvelope,
+        request_meta: dict,
+        force_capture: bool,
+    ) -> bool:
+        if not (
+            existing.kind == "memory"
+            and existing.status == "active"
+            and existing.scope == requested.scope
+            and existing.source == requested.source
+            and existing.source_id == requested.source_id
+            and existing.title == requested.title
+            and existing.summary == requested.summary
+            and existing.content == requested.content
+            and existing.tags == requested.tags
+            and existing.evidence == requested.evidence
+            and existing.links == requested.links
+        ):
+            return False
+        existing_business = business_metadata(existing.meta)
+        requested_business = business_metadata(request_meta)
+        if (
+            str(existing_business.get("memory_type") or "")
+            != str(business_metadata(requested.meta).get("memory_type") or "")
+            or bool(existing_business.get("force_capture")) != bool(force_capture)
+        ):
+            return False
+        mutable_generated = {
+            _INGEST_REQUEST_DIGEST_META_KEY,
+            LIVING_MEMORY_META_KEY,
+            "quality",
+            "scoring",
+            "capture_warnings",
+        }
+        if any(
+            existing_business.get(key) != value
+            for key, value in requested_business.items()
+            if key not in mutable_generated
+        ):
+            return False
+        existing_runtime = runtime_metadata(existing.meta)
+        return all(
+            existing_runtime.get(key) == value
+            for key, value in runtime_metadata(request_meta).items()
+        )
 
     @staticmethod
     def _ingest_request_digest(

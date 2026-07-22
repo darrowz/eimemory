@@ -90,6 +90,7 @@ _RAW_FIELD_MARKERS = frozenset(
 )
 _EMAIL_FEATURE_RE = re.compile(r"(?i)(?<![\w.+-])[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+(?![\w.-])")
 _PHONE_FEATURE_RE = re.compile(r"(?<!\w)\+?\d(?:[\s().-]*\d){7,14}(?!\w)")
+_ISO_DATE_RE = re.compile(r"\b\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])\b")
 _ACCESS_CREDENTIAL_RE = re.compile(
     r"(?i)(?:\b(?:authorization|password|passphrase|client[_-]?secret|access[_-]?token|refresh[_-]?token|"
     r"session[_-]?cookie|api[_-]?key|credential)s?\s*[:=]|\bbearer\s+|\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|"
@@ -97,7 +98,6 @@ _ACCESS_CREDENTIAL_RE = re.compile(
 )
 _PERSON_PLACEHOLDER_RE = re.compile(r"(?i)^(?:person_ref:[a-z0-9][a-z0-9._-]{2,63}|\[person(?::[a-z0-9._-]{1,48})?\]|<person>)$")
 _HONORIFIC_PERSON_RE = re.compile(r"^(?:Mr|Mrs|Ms|Miss|Dr|Prof)\.?\s+[A-Z][a-z]{1,30}(?:\s+[A-Z][a-z]{1,30}){0,2}$")
-_WESTERN_FULL_NAME_RE = re.compile(r"^[A-Z][a-z]{1,30}(?:[-'][A-Z]?[a-z]{1,30})?\s+[A-Z][a-z]{1,30}(?:[-'][A-Z]?[a-z]{1,30})?(?:\s+[A-Z][a-z]{1,30})?$")
 _CJK_TITLED_PERSON_RE = re.compile(r"^[\u3400-\u9fff]{2,4}(?:先生|女士|博士|老师)$")
 
 
@@ -419,7 +419,7 @@ def _looks_like_secret(value: str) -> bool:
     text = str(value or "").strip()
     if not text:
         return False
-    phone_match = _PHONE_FEATURE_RE.search(text)
+    phone_match = _PHONE_FEATURE_RE.search(_ISO_DATE_RE.sub("", text))
     high_confidence_phone = bool(
         phone_match
         and 8 <= sum(character.isdigit() for character in phone_match.group(0)) <= 15
@@ -439,7 +439,6 @@ def _looks_like_person_entity(value: str) -> bool:
         return False
     return bool(
         _HONORIFIC_PERSON_RE.fullmatch(text)
-        or _WESTERN_FULL_NAME_RE.fullmatch(text)
         or _CJK_TITLED_PERSON_RE.fullmatch(text)
     )
 

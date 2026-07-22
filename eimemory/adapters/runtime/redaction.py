@@ -9,8 +9,8 @@ _SENSITIVE_KEY = re.compile(
     r"(?i)(authorization|auth|cookie|credential|password|private[_-]?key|access[_-]?key|secret|token|api[_-]?key)"
 )
 _SENSITIVE_ASSIGNMENT = re.compile(
-    r"(?i)\b([a-z0-9_.-]*(?:authorization|auth|cookies?|credentials?|passwords?|"
-    r"private[_-]?keys?|access[_-]?keys?|secrets?|tokens?|api[_-]?keys?)[a-z0-9_.-]*)"
+    r"(?i)[\"']?\b([a-z0-9_.-]*(?:authorization|auth|cookies?|credentials?|passwords?|"
+    r"private[_-]?keys?|access[_-]?keys?|secrets?|tokens?|api[_-]?keys?)[a-z0-9_.-]*)[\"']?"
     r"(\s*[:=]\s*)(?:"
     r'"(?:\\.|[^"\\\r\n])*"|'
     r"'(?:\\.|[^'\\\r\n])*'|"
