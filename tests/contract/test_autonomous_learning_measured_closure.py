@@ -155,3 +155,71 @@ def test_autonomous_learning_attributes_preexisting_verified_real_outcome_before
     assert capability["score"] == 0.82
     assert capability["last_record_id"] in attribution["record_ids"]
     assert trace["record_id"] in capability["evidence_record_ids"]
+
+
+def test_autonomous_learning_degrades_preexisting_outcome_attribution_failure_without_leaking_error(
+    tmp_path, monkeypatch
+) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "measured-attribution-failure"}
+
+    def fail_attribution(*_args, **_kwargs):
+        raise RuntimeError("secret-token-must-not-leak")
+
+    monkeypatch.setattr(
+        "eimemory.governance.autonomous_learning.attribute_capability_outcomes",
+        fail_attribution,
+    )
+    monkeypatch.setattr(
+        "eimemory.governance.autonomous_learning.build_replay_dataset",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "schema_version": "real_task_replay.v1",
+            "report_type": "proactive_replay_dataset",
+            "case_count": 1,
+            "cases": [{"case_id": "case_1", "query": "sample query", "task_type": "brain.respond"}],
+        },
+    )
+    monkeypatch.setattr(
+        runtime,
+        "run_real_task_replay",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "report_type": "real_task_replay",
+            "schema_version": "real_task_replay.v1",
+            "verdict": "pass",
+            "pass_rate": "bad",
+            "threshold": 0.6,
+            "sample_count": "bad",
+        },
+    )
+
+    report = runtime.run_autonomous_learning_cycle(
+        scope=scope,
+        force=True,
+        apply=True,
+        max_goals=1,
+        max_promotions=1,
+    )
+
+    assert report["ok"] is True
+    assert report["preexisting_outcome_attribution"] == {
+        "ok": False,
+        "status": "failed",
+        "reason": "preexisting_outcome_attribution_failed",
+        "error_type": "RuntimeError",
+        "record_count": 0,
+        "record_ids": [],
+        "capabilities": {},
+    }
+    assert "secret-token-must-not-leak" not in str(report)
+    loop = runtime.store.get_by_id(report["loop_record_id"], scope=scope)
+    assert loop is not None
+    assert loop.status == "completed"
+    ledger_step = next(step for step in loop.content["steps"] if step["step_name"] == "ledger")
+    assert ledger_step["metrics"]["preexisting_outcome_attribution_status"] == "failed"
+    assert (
+        ledger_step["metrics"]["preexisting_outcome_attribution_reason"]
+        == "preexisting_outcome_attribution_failed"
+    )
+    assert "secret-token-must-not-leak" not in str(ledger_step)

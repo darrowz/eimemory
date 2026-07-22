@@ -118,11 +118,22 @@ def run_autonomous_learning_cycle(
     loop = start_learning_loop(runtime, scope=scope_ref, trigger="learn_cycle", dry_run=dry_run, force=force)
     loop_id = str(loop.meta.get("loop_id") or loop.content.get("loop_id") or loop.record_id)
     try:
-        preexisting_outcome_attribution = attribute_capability_outcomes(
-            runtime,
-            scope=scope_ref,
-            loop_id="outcome_attribution",
-        )
+        try:
+            preexisting_outcome_attribution = attribute_capability_outcomes(
+                runtime,
+                scope=scope_ref,
+                loop_id="outcome_attribution",
+            )
+        except Exception as exc:
+            preexisting_outcome_attribution = {
+                "ok": False,
+                "status": "failed",
+                "reason": "preexisting_outcome_attribution_failed",
+                "error_type": type(exc).__name__,
+                "record_count": 0,
+                "record_ids": [],
+                "capabilities": {},
+            }
         watch_report = collect_world_signals(
             runtime,
             scope=scope_ref,
@@ -554,6 +565,13 @@ def run_autonomous_learning_cycle(
             + [item for item in [score_id, regression_report.get("record_id", "")] if item],
             metrics={
                 "preexisting_outcome_attribution_count": preexisting_outcome_attribution.get("record_count", 0),
+                "preexisting_outcome_attribution_status": str(
+                    preexisting_outcome_attribution.get("status")
+                    or ("completed" if preexisting_outcome_attribution.get("ok") is True else "failed")
+                ),
+                "preexisting_outcome_attribution_reason": str(
+                    preexisting_outcome_attribution.get("reason") or ""
+                ),
                 "retention_disabled_count": retention_report.get("disabled_count", 0),
                 "regressed": regression_report.get("regressed", False),
             },
