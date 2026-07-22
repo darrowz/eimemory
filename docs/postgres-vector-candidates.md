@@ -35,6 +35,7 @@ EIMEMORY_POSTGRES_QUEUE_BOUND=16
 EIMEMORY_POSTGRES_MAX_INDEX_LAG_SECONDS=300
 EIMEMORY_POSTGRES_PROJECTION_TEXT_CHARS=16000
 EIMEMORY_POSTGRES_SYNC_LEASE_SECONDS=60
+EIMEMORY_POSTGRES_IDENTITY_REFRESH_TTL_SECONDS=10
 EIMEMORY_EMBEDDINGS_BASE_URL=https://provider.example/v1
 EIMEMORY_EMBEDDINGS_API_KEY=...
 EIMEMORY_EMBEDDINGS_MODEL=provider-embedding-model
@@ -51,10 +52,14 @@ contain credentials.
 
 When `EIMEMORY_POSTGRES_VECTOR_ENABLED=1`, `Runtime.create()` installs the
 SQLite-authority/Postgres-candidate composition for the real RPC/service
-process. Invalid environment values, a missing optional driver, an unavailable
-database, or an unhealthy index produce an allowlisted bypass reason; they do
-not prevent service startup or SQLite recall. Leaving the variable unset keeps
-the default SQLite-only, zero-third-party runtime.
+process without opening a network connection. Invalid environment values are
+immediately represented as an allowlisted bypass. A missing optional driver,
+an unavailable database, or an unhealthy index becomes an observable bypass
+on an actual query or explicit status/identity refresh; none prevents service
+startup or SQLite recall. Identity reads use cached local state and never probe
+Postgres. Explicit refreshes are TTL-cached, single-flight, bounded by the
+configured timeout, and protected by the same circuit breaker. Leaving the
+variable unset keeps the default SQLite-only, zero-third-party runtime.
 
 The index lifecycle remains deliberately operator-driven:
 
@@ -94,6 +99,9 @@ background sync.
 engine and RRF policy versions, candidate-source type, SQLite authority
 revision, non-secret configuration/projection/embedding fingerprints, provider
 and model identity, committed Postgres watermark/index revision, circuit state,
-and bypass reason. Its digest changes when effective configuration or committed
-candidate state changes. DSNs, URLs, API keys, connection-factory details, raw
-exceptions, and provider payloads are never part of the returned identity.
+and bypass reason. `index_verified` means an explicit metadata refresh passed;
+only a candidate query against that exact watermark/revision may set the state
+to `available`. A later watermark change invalidates the prior query evidence.
+The digest changes when effective configuration or committed candidate state
+changes. DSNs, URLs, API keys, connection-factory details, raw exceptions, and
+provider payloads are never part of the returned identity.

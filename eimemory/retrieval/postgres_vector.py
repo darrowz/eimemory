@@ -94,6 +94,7 @@ class PostgresVectorConfig:
     projection_text_chars: int = 16_000
     embedding_queue_timeout_seconds: float = 2.0
     sync_lease_seconds: float = 60.0
+    identity_refresh_ttl_seconds: float = 10.0
 
     def __post_init__(self) -> None:
         for label in ("schema", "table"):
@@ -118,6 +119,11 @@ class PostgresVectorConfig:
         object.__setattr__(self, "projection_text_chars", _bounded_int(self.projection_text_chars, 1, 64_000))
         object.__setattr__(self, "embedding_queue_timeout_seconds", _bounded_float(self.embedding_queue_timeout_seconds, 0.05, 60.0))
         object.__setattr__(self, "sync_lease_seconds", _bounded_float(self.sync_lease_seconds, 5.0, 3_600.0))
+        object.__setattr__(
+            self,
+            "identity_refresh_ttl_seconds",
+            _bounded_float(self.identity_refresh_ttl_seconds, 0.0, 3_600.0),
+        )
 
     @property
     def configured(self) -> bool:
@@ -296,6 +302,7 @@ class OpenAICompatibleEmbeddingProvider:
             "model": self._model if re.fullmatch(r"[A-Za-z0-9_.:/-]{1,256}", self._model) else "",
             "fingerprint": self.fingerprint(),
         }
+        return payload
 
 
 def _stdlib_embedding_transport(
@@ -1021,10 +1028,16 @@ class PostgresVectorCandidateSource:
         self.repository = repository or PostgresCandidateRepository(config)
         self.embedding_provider = embedding_provider or config.embedding_provider
         self._startup_error = _safe_candidate_error(startup_error)
-        self._configuration_fingerprint = (
+        environment_fingerprint = (
             str(configuration_fingerprint or "").lower()
             if re.fullmatch(r"[0-9a-f]{64}", str(configuration_fingerprint or "").lower())
             else ""
+        )
+        config_fingerprint = postgres_config_fingerprint(config)
+        self._configuration_fingerprint = (
+            sha256(f"{config_fingerprint}:{environment_fingerprint}".encode("ascii")).hexdigest()
+            if environment_fingerprint
+            else config_fingerprint
         )
         self._clock = clock
         self._circuit = _Circuit(
@@ -1039,6 +1052,10 @@ class PostgresVectorCandidateSource:
         self._last_error = self._startup_error
         self._last_state = IndexState()
         self._last_query_valid = False
+        self._last_query_index_identity: tuple[str, str] | None = None
+        self._index_verified = False
+        self._identity_refreshed_at: float | None = None
+        self._identity_refresh_lock = Lock()
         self._cache: OrderedDict[tuple[Any, ...], tuple[float, tuple[dict[str, Any], ...]]] = OrderedDict()
         self._cache_lock = Lock()
 
@@ -1052,8 +1069,10 @@ class PostgresVectorCandidateSource:
                 error_code=self._startup_error,
             )
         if not self.config.enabled:
+            self._index_verified = False
             return self._batch(sqlite_batch, request=request, state="bypassed", error_code="disabled")
         if not self.config.configured or self.embedding_provider is None:
+            self._index_verified = False
             return self._batch(sqlite_batch, request=request, state="bypassed", error_code="not_configured")
         if not self._circuit.allow():
             return self._batch(sqlite_batch, request=request, state="bypassed", error_code="circuit_open")
@@ -1136,10 +1155,16 @@ class PostgresVectorCandidateSource:
                     else stable_state.lag_seconds
                 ),
             )
+            self._index_verified = True
+            self._identity_refreshed_at = self._clock()
             hits, drops = self._validated_hits(request, cached, watermark=index_state.watermark)
             merged = _merge_hits(sqlite_batch.hits, hits, limit=request.limit)
             self._last_error = ""
             self._last_query_valid = True
+            self._last_query_index_identity = (
+                self._last_state.watermark,
+                self._last_state.authority_revision,
+            )
             self._circuit.success()
             return self._batch(
                 sqlite_batch,
@@ -1154,12 +1179,25 @@ class PostgresVectorCandidateSource:
             code = _error_code(exc, prefix="postgres")
             self._last_error = code
             self._last_query_valid = False
+            self._last_query_index_identity = None
+            if code.startswith("postgres_") or code in {
+                "index_lag_exceeded",
+                "index_not_ready",
+                "index_watermark_changed",
+                "embedding_fingerprint_mismatch",
+                "projection_fingerprint_mismatch",
+                "authority_cursor_unavailable",
+                "authority_revision_changed",
+                "authority_revision_unavailable",
+            }:
+                self._index_verified = False
             self._circuit.failure()
             return self._batch(sqlite_batch, request=request, state="bypassed", error_code=code)
 
     def health(self) -> dict[str, object]:
         provider_health = sanitized_embedding_health(self.embedding_provider)
         provider_available = provider_health.get("available") is True
+        query_valid = self._query_is_valid()
         return {
             "enabled": self.config.enabled,
             "configured": (
@@ -1167,7 +1205,9 @@ class PostgresVectorCandidateSource:
                 and self.embedding_provider is not None
                 and provider_health.get("configured") is True
             ),
-            "available": self._last_query_valid and self._circuit.state() != "open" and provider_available,
+            "available": query_valid and self._circuit.state() != "open" and provider_available,
+            "index_verified": self._index_verified,
+            "query_valid": query_valid,
             "circuit": self._circuit.state(),
             "lag_seconds": _public_lag_seconds(self._last_state.lag_seconds),
             "watermark": self._last_state.watermark,
@@ -1176,46 +1216,90 @@ class PostgresVectorCandidateSource:
             "embedding": provider_health,
         }
 
-    def refresh_index_identity(self) -> bool:
-        """Refresh only bounded committed-state metadata; failures remain bypassable."""
+    def refresh_index_identity(self, *, force: bool = False) -> bool:
+        """Explicitly refresh bounded state with TTL, single-flight, and circuit gates."""
         if self._startup_error:
             self._last_error = self._startup_error
+            self._index_verified = False
             return False
         if not self.config.enabled:
             self._last_error = "disabled"
+            self._index_verified = False
             return False
         if not self.config.configured or self.embedding_provider is None:
             self._last_error = "not_configured"
+            self._index_verified = False
+            return False
+        now = self._clock()
+        if (
+            not force
+            and self._identity_refreshed_at is not None
+            and now - self._identity_refreshed_at < self.config.identity_refresh_ttl_seconds
+        ):
+            return self._index_verified
+        if not self._identity_refresh_lock.acquire(blocking=False):
             return False
         try:
-            state = self.repository.read_index_state()
-            self._last_state = state
-            if not state.ready or not state.watermark:
-                self._last_error = "index_not_ready"
-                return False
-            expected = embedding_provider_fingerprint(self.embedding_provider, self.config)
-            if state.embedding_fingerprint != expected:
-                self._last_error = "embedding_fingerprint_mismatch"
-                return False
+            now = self._clock()
             if (
-                state.projection_digest_schema != PROJECTION_DIGEST_SCHEMA
-                or state.projection_fingerprint != projection_fingerprint(self.config)
+                not force
+                and self._identity_refreshed_at is not None
+                and now - self._identity_refreshed_at < self.config.identity_refresh_ttl_seconds
             ):
-                self._last_error = "projection_fingerprint_mismatch"
+                return self._index_verified
+            if not self._circuit.allow():
+                self._last_error = "circuit_open"
+                self._index_verified = False
+                self._last_query_valid = False
+                self._last_query_index_identity = None
                 return False
-            authority_revision = self._authority_revision()
-            if authority_revision is not None and state.authority_revision != authority_revision:
-                self._last_error = "authority_revision_changed"
+            try:
+                state = self.repository.read_index_state()
+                self._last_state = state
+                if not state.ready or not state.watermark:
+                    raise RuntimeError("index_not_ready")
+                expected = embedding_provider_fingerprint(self.embedding_provider, self.config)
+                if state.embedding_fingerprint != expected:
+                    raise RuntimeError("embedding_fingerprint_mismatch")
+                if (
+                    state.projection_digest_schema != PROJECTION_DIGEST_SCHEMA
+                    or state.projection_fingerprint != projection_fingerprint(self.config)
+                ):
+                    raise RuntimeError("projection_fingerprint_mismatch")
+                authority_cursor = self._authority_head()
+                authority_revision = self._authority_revision()
+                lag = candidate_index_lag_seconds(
+                    state,
+                    authority_cursor=authority_cursor,
+                    authority_revision=authority_revision,
+                )
+                if lag > self.config.max_index_lag_seconds:
+                    raise RuntimeError(
+                        "authority_revision_changed"
+                        if authority_revision is not None and state.authority_revision != authority_revision
+                        else "index_lag_exceeded"
+                    )
+                self._last_state = replace(state, lag_seconds=lag)
+                if self._last_query_index_identity != (state.watermark, state.authority_revision):
+                    self._last_query_valid = False
+                    self._last_query_index_identity = None
+                self._last_error = ""
+                self._index_verified = True
+                self._identity_refreshed_at = self._clock()
+                self._circuit.success()
+                return True
+            except Exception as exc:
+                self._last_error = _error_code(exc, prefix="postgres")
+                self._index_verified = False
+                self._last_query_valid = False
+                self._last_query_index_identity = None
+                self._identity_refreshed_at = self._clock()
+                self._circuit.failure()
                 return False
-            self._last_error = ""
-            return True
-        except Exception as exc:
-            self._last_error = _error_code(exc, prefix="postgres")
-            self._last_query_valid = False
-            return False
+        finally:
+            self._identity_refresh_lock.release()
 
     def effective_identity(self) -> dict[str, object]:
-        self.refresh_index_identity()
         sqlite_identity_fn = getattr(self.sqlite_source, "effective_identity", None)
         sqlite_identity = sqlite_identity_fn() if callable(sqlite_identity_fn) else {}
         authority_revision = str(
@@ -1224,15 +1308,18 @@ class PostgresVectorCandidateSource:
             else ""
         )
         provider_identity = embedding_provider_identity(self.embedding_provider, self.config)
+        query_valid = self._query_is_valid()
         if not self.config.enabled:
             state = "disabled"
         elif not self.config.configured or self.embedding_provider is None:
             state = "not_configured"
-        elif self._last_query_valid and not self._last_error:
+        elif query_valid and self._index_verified and not self._last_error:
             state = "available"
+        elif self._index_verified and not self._last_error:
+            state = "index_verified"
         else:
             state = "bypassed"
-        return {
+        payload: dict[str, object] = {
             "candidate_source_type": type(self).__name__,
             "name": self.name,
             "policy_version": self.policy_version,
@@ -1240,7 +1327,7 @@ class PostgresVectorCandidateSource:
             "authority_revision": authority_revision,
             "enabled": self.config.enabled,
             "configured": self.config.configured and self.embedding_provider is not None,
-            "config_fingerprint": self._configuration_fingerprint or postgres_config_fingerprint(self.config),
+            "config_fingerprint": self._configuration_fingerprint,
             "projection_fingerprint": projection_fingerprint(self.config),
             "embedding": provider_identity,
             "postgres": {
@@ -1248,13 +1335,26 @@ class PostgresVectorCandidateSource:
                 "committed_watermark": self._last_state.watermark,
                 "index_revision": self._last_state.authority_revision,
                 "circuit": self._circuit.state(),
-                "bypass_reason": self._last_error or ("index_not_verified" if state == "bypassed" else ""),
+                "index_verified": self._index_verified,
+                "query_valid": query_valid,
+                "bypass_reason": (
+                    self._last_error or "index_not_verified"
+                    if state == "bypassed"
+                    else ""
+                ),
             },
         }
         payload["identity_digest"] = sha256(
             json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
         return payload
+
+    def _query_is_valid(self) -> bool:
+        return bool(
+            self._last_query_valid
+            and self._last_query_index_identity
+            == (self._last_state.watermark, self._last_state.authority_revision)
+        )
 
     def _validated_hits(
         self,
@@ -1593,18 +1693,21 @@ def postgres_config_fingerprint(config: PostgresVectorConfig) -> str:
     if config.dsn:
         try:
             parsed = urlsplit(config.dsn)
-            dsn_target = json.dumps(
-                {
-                    "scheme": parsed.scheme.lower(),
-                    "host": (parsed.hostname or "").lower(),
-                    "port": parsed.port,
-                    "database": parsed.path,
-                },
-                sort_keys=True,
-                separators=(",", ":"),
-            )
+            if parsed.scheme.lower() in {"postgres", "postgresql"} and parsed.hostname:
+                dsn_target = json.dumps(
+                    {
+                        "scheme": parsed.scheme.lower(),
+                        "host": parsed.hostname.lower(),
+                        "port": parsed.port,
+                        "database": parsed.path,
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            else:
+                dsn_target = "opaque-dsn"
         except (TypeError, ValueError):
-            dsn_target = "invalid"
+            dsn_target = "invalid-dsn"
     payload = {
         "enabled": config.enabled,
         "configured": config.configured,
@@ -1622,6 +1725,7 @@ def postgres_config_fingerprint(config: PostgresVectorConfig) -> str:
         "top_k_max": config.top_k_max,
         "cache_entries": config.cache_entries,
         "cache_ttl_seconds": config.cache_ttl_seconds,
+        "identity_refresh_ttl_seconds": config.identity_refresh_ttl_seconds,
         "projection_fingerprint": projection_fingerprint(config),
     }
     return sha256(

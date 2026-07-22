@@ -47,6 +47,9 @@ def config_from_env() -> PostgresVectorConfig:
         projection_text_chars=_env_int("EIMEMORY_POSTGRES_PROJECTION_TEXT_CHARS", 16_000),
         embedding_queue_timeout_seconds=_env_float("EIMEMORY_EMBEDDINGS_QUEUE_TIMEOUT_SECONDS", 2.0),
         sync_lease_seconds=_env_float("EIMEMORY_POSTGRES_SYNC_LEASE_SECONDS", 60.0),
+        identity_refresh_ttl_seconds=_env_float(
+            "EIMEMORY_POSTGRES_IDENTITY_REFRESH_TTL_SECONDS", 10.0
+        ),
     )
 
 
@@ -78,9 +81,6 @@ def runtime_candidate_source_from_env(store: Any) -> Any | None:
             startup_error="invalid_vector_index_config",
             configuration_fingerprint=config_fingerprint,
         )
-    # The probe is bounded by the configured connection timeout.  It only
-    # observes projection metadata and can never prevent SQLite startup.
-    source.refresh_index_identity()
     return source
 
 
@@ -106,6 +106,7 @@ def _validate_runtime_environment() -> None:
         "EIMEMORY_POSTGRES_COOLDOWN_SECONDS",
         "EIMEMORY_POSTGRES_CACHE_TTL_SECONDS",
         "EIMEMORY_POSTGRES_SYNC_LEASE_SECONDS",
+        "EIMEMORY_POSTGRES_IDENTITY_REFRESH_TTL_SECONDS",
         "EIMEMORY_EMBEDDINGS_TIMEOUT_SECONDS",
         "EIMEMORY_EMBEDDINGS_COOLDOWN_SECONDS",
         "EIMEMORY_EMBEDDINGS_QUEUE_TIMEOUT_SECONDS",
@@ -140,6 +141,7 @@ def _runtime_environment_fingerprint() -> str:
         "EIMEMORY_POSTGRES_CACHE_TTL_SECONDS",
         "EIMEMORY_POSTGRES_PROJECTION_TEXT_CHARS",
         "EIMEMORY_POSTGRES_SYNC_LEASE_SECONDS",
+        "EIMEMORY_POSTGRES_IDENTITY_REFRESH_TTL_SECONDS",
         "EIMEMORY_EMBEDDINGS_MODEL",
         "EIMEMORY_EMBEDDINGS_MAX_BATCH",
         "EIMEMORY_EMBEDDINGS_MAX_TEXT_CHARS",

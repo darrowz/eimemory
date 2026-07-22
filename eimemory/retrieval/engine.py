@@ -1436,10 +1436,12 @@ def _sanitize_candidate_identity(raw: object, *, source: CandidateSource) -> dic
         state = str(postgres.get("state") or "")
         circuit = str(postgres.get("circuit") or "")
         result["postgres"] = {
-            "state": state if state in {"available", "bypassed", "disabled", "not_configured"} else "bypassed",
+            "state": state if state in {"available", "index_verified", "bypassed", "disabled", "not_configured"} else "bypassed",
             "committed_watermark": _public_identity_label(postgres.get("committed_watermark"), maximum=256),
             "index_revision": _numeric_identity(postgres.get("index_revision")),
             "circuit": circuit if circuit in {"closed", "open", "half_open"} else "open",
+            "index_verified": postgres.get("index_verified") is True,
+            "query_valid": postgres.get("query_valid") is True,
             "bypass_reason": _public_identity_label(postgres.get("bypass_reason"), maximum=80),
         }
     return result
