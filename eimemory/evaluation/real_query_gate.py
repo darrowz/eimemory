@@ -92,6 +92,8 @@ _RAW_FIELD_MARKERS = frozenset(
 _EMAIL_FEATURE_RE = re.compile(r"(?i)(?<![\w.+-])[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+(?![\w.-])")
 _PHONE_FEATURE_RE = re.compile(r"(?<!\w)\+?\d(?:[\s().-]*\d){7,14}(?!\w)")
 _PHONE_CONTEXT_RE = re.compile(r"(?i)\b(?:phone|mobile|tel(?:ephone)?|contact)\s*[:=]?\s*$")
+_CN_MOBILE_RE = re.compile(r"1[3-9][0-9]{9}")
+_NANP_PHONE_RE = re.compile(r"1?[2-9][0-9]{2}[2-9][0-9]{6}")
 _ACCESS_CREDENTIAL_RE = re.compile(
     r"(?i)(?:\b(?:authorization|password|passphrase|client[_-]?secret|access[_-]?token|refresh[_-]?token|"
     r"session[_-]?cookie|api[_-]?key|credential)s?\s*[:=]|\bbearer\s+|\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|"
@@ -441,6 +443,10 @@ def _looks_like_high_confidence_phone(value: str) -> bool:
         if not 8 <= digit_count <= 15:
             continue
         if candidate.startswith("+"):
+            return True
+        if candidate.isascii() and candidate.isdigit() and (
+            _CN_MOBILE_RE.fullmatch(candidate) or _NANP_PHONE_RE.fullmatch(candidate)
+        ):
             return True
         if digit_count >= 10 and re.search(r"\(\d{2,4}\)", candidate):
             return True

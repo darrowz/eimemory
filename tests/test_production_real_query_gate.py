@@ -446,6 +446,8 @@ def test_query_features_allow_title_case_product_place_entity_and_iso_date() -> 
         "192.168.100.200",
         "build 1234-5678",
         "release 12345678",
+        "build 1234567890",
+        "order 20000000000",
         "2026-07-22",
     ],
 )
@@ -458,6 +460,10 @@ def test_query_features_allow_non_phone_numeric_identifiers(safe_value: str) -> 
     [
         "+1 (415) 555-0123",
         "415-555-0123",
+        "4155550123",
+        "prefix 4155550123 suffix",
+        "13800138000",
+        "prefix 13800138000 suffix",
         "+44 20 7946 0958",
     ],
 )
