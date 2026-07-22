@@ -410,6 +410,27 @@ def test_query_features_reject_high_confidence_pii_secret_and_person_entities(un
     assert features["terms"] == ["deployment", "receipt"]
 
 
+@pytest.mark.parametrize(
+    "query_features",
+    [
+        {
+            "terms": ["release", "notes"],
+            "entities": [],
+            "intent": "find Dr. Alice Smith release notes",
+        },
+        {
+            "terms": ["find", "Dr.", "Alice", "Smith", "release"],
+            "entities": [],
+            "intent": "release verification",
+        },
+    ],
+)
+def test_query_features_reject_person_pii_hidden_in_intent_or_split_terms(query_features: dict) -> None:
+    _features, reason = real_query_gate._bounded_query_features(query_features)
+
+    assert reason == "query_features_not_redacted"
+
+
 def test_query_features_allow_function_terms_and_constrained_person_placeholders() -> None:
     features, reason = real_query_gate._bounded_query_features(
         {
@@ -562,6 +583,21 @@ def test_conflicting_accepted_label_grade_fails_eligibility_and_same_grade_dupli
     rejected = freeze_production_recall_dataset(conflicting)
     assert rejected["eligibility"]["ok"] is False
     assert "accepted_label_grade_conflict" in rejected["eligibility"]["blocked_reasons"]
+
+
+def test_duplicate_case_id_is_blocked_without_inflating_frozen_metrics_or_digest() -> None:
+    dataset = _dataset({channel: f"record-{channel}" for channel in ("openclaw", "codex", "hermes")})
+    baseline = freeze_production_recall_dataset(dataset)
+    dataset["cases"].append(deepcopy(dataset["cases"][0]))
+    _refresh_dataset_evidence(dataset)
+
+    duplicate = freeze_production_recall_dataset(dataset)
+
+    assert "duplicate_case_id" in duplicate["eligibility"]["blocked_reasons"]
+    assert duplicate["cases"] == baseline["cases"]
+    assert duplicate["dataset_digest"] == baseline["dataset_digest"]
+    assert duplicate["eligibility"]["case_count"] == baseline["eligibility"]["case_count"]
+    assert duplicate["eligibility"]["accepted_label_count"] == baseline["eligibility"]["accepted_label_count"]
 
 
 def test_production_dataset_loader_rejects_symlink_and_oversized_file(tmp_path, monkeypatch) -> None:

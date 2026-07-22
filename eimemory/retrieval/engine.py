@@ -883,6 +883,8 @@ class GovernedRecallEngine:
         memory_usage_adjustments: dict[tuple[str, str, str, str, str, str], dict[str, object]],
     ) -> tuple[list[RecordEnvelope], dict[str, Any]]:
         pre_pool_items = list(items)[:5000]
+        normalized_query = normalize_identity_text(query)
+        keyword_required_terms = self._keyword_required_terms(query)
         by_token = {self._fusion_record_token(item): item for item in pre_pool_items}
         evidence_by_ref: dict[tuple[str, ExactScope, str], set[str]] = {}
         strong_evidence_by_ref: dict[tuple[str, ExactScope, str], set[str]] = {}
@@ -893,14 +895,13 @@ class GovernedRecallEngine:
             group_items.setdefault(group, []).append(item)
             ref = self._record_key(item)
             identity_evidence = set(identity_evidence_by_ref.get(ref) or ())
-            normalized_query = normalize_identity_text(query)
             evidence: set[str] = set()
             if "exact_title" in identity_evidence and normalize_identity_text(item.title) == normalized_query:
                 evidence.add("exact_title")
             if "alias_hit" in identity_evidence and normalized_query in item.aliases:
                 evidence.add("alias_hit")
             hints = component_hints_by_ref.get(ref) or {}
-            if self._keyword_exact_match(query, item):
+            if self._keyword_exact_match(query, item, required_terms=keyword_required_terms):
                 evidence.add("keyword_exact")
             vector_score = self._safe_float(hints.get("vector_score"))
             if vector_score >= 0.12:
@@ -1150,7 +1151,12 @@ class GovernedRecallEngine:
         }
 
     @staticmethod
-    def _keyword_exact_match(query: str, record: RecordEnvelope) -> bool:
+    def _keyword_exact_match(
+        query: str,
+        record: RecordEnvelope,
+        *,
+        required_terms: frozenset[str] | None = None,
+    ) -> bool:
         if not normalize_identity_text(query):
             return False
         bounded_text = " ".join(
@@ -1169,10 +1175,18 @@ class GovernedRecallEngine:
             record_kind=record.kind,
             record_source=record.source,
         )
-        query_signal = analyze_lexical_signal(query, query)
-        required_terms = set(query_signal.token_hits) | set(query_signal.entity_hits) | set(query_signal.version_hits)
+        effective_required_terms = required_terms
+        if effective_required_terms is None:
+            effective_required_terms = GovernedRecallEngine._keyword_required_terms(query)
         matched_terms = set(signal.token_hits) | set(signal.entity_hits) | set(signal.version_hits)
-        return bool(required_terms) and required_terms.issubset(matched_terms)
+        return bool(effective_required_terms) and effective_required_terms.issubset(matched_terms)
+
+    @staticmethod
+    def _keyword_required_terms(query: str) -> frozenset[str]:
+        query_signal = analyze_lexical_signal(query, query)
+        return frozenset(
+            set(query_signal.token_hits) | set(query_signal.entity_hits) | set(query_signal.version_hits)
+        )
 
     def _rank_component(self, items, *, score, eligible, tie_break=None) -> list[str]:
         ranked = [item for item in items if eligible(item)]
@@ -1333,8 +1347,6 @@ class GovernedRecallEngine:
         *,
         source_ids: tuple[str, ...] | None,
     ) -> list[RecordEnvelope]:
-        import re
-
         records: list[RecordEnvelope] = []
         seen: set[tuple[str, ExactScope, str]] = set()
         for record_id in re.findall(r"rule_evolution_[A-Za-z0-9_-]+", str(query or "")):

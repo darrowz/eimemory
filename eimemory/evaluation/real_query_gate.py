@@ -114,6 +114,11 @@ _ACCESS_CREDENTIAL_RE = re.compile(
 _PERSON_PLACEHOLDER_RE = re.compile(r"(?i)^(?:person_ref:[a-z0-9][a-z0-9._-]{2,63}|\[person(?::[a-z0-9._-]{1,48})?\]|<person>)$")
 _HONORIFIC_PERSON_RE = re.compile(r"^(?:Mr|Mrs|Ms|Miss|Dr|Prof)\.?\s+[A-Z][a-z]{1,30}(?:\s+[A-Z][a-z]{1,30}){0,2}$")
 _CJK_TITLED_PERSON_RE = re.compile(r"^[\u3400-\u9fff]{2,4}(?:先生|女士|博士|老师)$")
+_HONORIFIC_PERSON_IN_TEXT_RE = re.compile(
+    r"(?<![A-Za-z])(?:Mr|Mrs|Ms|Miss|Dr|Prof)\.?\s+[A-Z][a-z]{1,30}"
+    r"(?:\s+[A-Z][a-z]{1,30}){0,2}(?![A-Za-z])"
+)
+_CJK_TITLED_PERSON_IN_TEXT_RE = re.compile(r"[\u3400-\u9fff]{2,4}(?:先生|女士|博士|老师)")
 
 
 def freeze_production_recall_dataset(dataset: dict[str, Any]) -> dict[str, Any]:
@@ -163,6 +168,7 @@ def freeze_production_recall_dataset(dataset: dict[str, Any]) -> dict[str, Any]:
         if case_id in seen_case_ids:
             if "duplicate_case_id" not in blocked:
                 blocked.append("duplicate_case_id")
+            continue
         seen_case_ids.add(case_id)
         channels.add(str(case["channel"]))
         if str(case["channel"]) in channel_counts:
@@ -418,7 +424,8 @@ def _bounded_query_features(value: object) -> tuple[dict[str, Any], str]:
         or any(len(item) > _MAX_QUERY_TERM_CHARS for item in all_values)
         or sum(len(item) for item in all_values) > _MAX_QUERY_FEATURE_CHARS
         or any(_looks_like_secret(item) for item in all_values)
-        or any(_looks_like_person_entity(item) for item in entities)
+        or any(_contains_person_entity(item) for item in [*entities, intent] if item)
+        or _contains_person_entity(" ".join(terms))
     )
     frozen: dict[str, Any] = {"terms": terms[:_MAX_QUERY_TERMS]}
     if intent:
@@ -508,6 +515,16 @@ def _looks_like_person_entity(value: str) -> bool:
     return bool(
         _HONORIFIC_PERSON_RE.fullmatch(text)
         or _CJK_TITLED_PERSON_RE.fullmatch(text)
+    )
+
+
+def _contains_person_entity(value: str) -> bool:
+    text = " ".join(str(value or "").strip().split())
+    if not text or _PERSON_PLACEHOLDER_RE.fullmatch(text):
+        return False
+    return bool(
+        _HONORIFIC_PERSON_IN_TEXT_RE.search(text)
+        or _CJK_TITLED_PERSON_IN_TEXT_RE.search(text)
     )
 
 

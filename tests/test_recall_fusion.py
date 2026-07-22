@@ -591,6 +591,28 @@ def test_keyword_exact_evidence_uses_token_boundaries_not_substrings() -> None:
     assert engine._keyword_exact_match("retrieval", record) is True
 
 
+def test_keyword_query_signal_is_analyzed_once_per_fusion(tmp_path, monkeypatch) -> None:
+    from eimemory.retrieval import engine as engine_module
+
+    store = RuntimeStore(tmp_path)
+    for index in range(6):
+        store.append(_record(f"Bounded fusion query record {index}"))
+    original = engine_module.analyze_lexical_signal
+    query_analysis_calls = 0
+
+    def tracking_analysis(query, text, **kwargs):
+        nonlocal query_analysis_calls
+        if query == text == "bounded fusion query":
+            query_analysis_calls += 1
+        return original(query, text, **kwargs)
+
+    monkeypatch.setattr(engine_module, "analyze_lexical_signal", tracking_analysis)
+    MemoryAPI(store).recall(query="bounded fusion query", scope=asdict(SCOPE), limit=6)
+
+    assert query_analysis_calls == 1
+    store.close()
+
+
 def test_overlong_identity_text_fails_closed_instead_of_prefix_colliding() -> None:
     assert normalize_identity_text("x" * 257) == ""
     record = _record("bounded identity", aliases=["x" * 256 + "a", "safe alias"])
