@@ -326,10 +326,10 @@ def _run_case(
         for item in returned
         if _record_runtime_channel(item) != expected_runtime_channel
     )
-    source_filter_ids = _task_source_filter_ids(task_context)
+    allowed_source_ids = _task_source_filter_ids(task_context)
     source_filter_leakage_count = (
-        sum(1 for item in returned if item.source_id not in source_filter_ids)
-        if source_filter_ids
+        sum(1 for item in returned if item.source_id not in allowed_source_ids)
+        if allowed_source_ids is not None
         else 0
     )
 
@@ -882,18 +882,16 @@ def _record_runtime_channel(record: RecordEnvelope) -> str:
     return runtime_channel_from_scope(record.scope) or "openclaw"
 
 
-def _task_source_filter_ids(task_context: dict[str, Any]) -> set[str]:
-    raw_source_ids = task_context.get("source_ids")
-    if raw_source_ids is not None and not isinstance(raw_source_ids, (list, tuple)):
-        raise ValueError("source_ids must be an allowlist")
-    source_ids = set(normalize_source_ids(raw_source_ids) or ())
-    if source_ids:
-        return source_ids
+def _task_source_filter_ids(task_context: dict[str, Any]) -> set[str] | None:
     raw_target_source_id = str(task_context.get("target_source_id") or "").strip()
-    target_source_id = normalize_source_id(raw_target_source_id) if raw_target_source_id else ""
-    if target_source_id:
-        source_ids.add(target_source_id)
-    return source_ids
+    if raw_target_source_id:
+        normalize_source_id(raw_target_source_id)
+    raw_source_ids = task_context.get("source_ids")
+    if raw_source_ids is None:
+        return None
+    if not isinstance(raw_source_ids, (list, tuple)):
+        raise ValueError("source_ids must be an allowlist")
+    return set(normalize_source_ids(raw_source_ids) or ())
 
 
 def _invalid_case(index: int, scope: ScopeRef, error: str) -> dict[str, Any]:

@@ -315,26 +315,38 @@ def test_production_recall_eval_blocks_source_filter_leaks_and_treats_no_filter_
         ),
     )
 
-    constrained_reports = []
-    for task_context in ({"source_ids": ["alpha"]}, {"target_source_id": "alpha"}):
-        constrained_reports.append(
-            run_production_recall_eval(
-                runtime,
+    constrained = run_production_recall_eval(
+        runtime,
+        {
+            "name": "source-filter-leak",
+            "scope": _scope(),
+            "cases": [
                 {
-                    "name": "source-filter-leak",
+                    "query": "filtered source answer",
+                    "expected_titles": [returned.title],
                     "scope": _scope(),
-                    "cases": [
-                        {
-                            "query": "filtered source answer",
-                            "expected_titles": [returned.title],
-                            "scope": _scope(),
-                            "task_context": task_context,
-                        }
-                    ],
-                },
-                seed=False,
-            )
-        )
+                    "task_context": {"source_ids": ["alpha"]},
+                }
+            ],
+        },
+        seed=False,
+    )
+    target_only = run_production_recall_eval(
+        runtime,
+        {
+            "name": "target-source-is-not-a-filter",
+            "scope": _scope(),
+            "cases": [
+                {
+                    "query": "filtered source answer",
+                    "expected_titles": [returned.title],
+                    "scope": _scope(),
+                    "task_context": {"target_source_id": "alpha"},
+                }
+            ],
+        },
+        seed=False,
+    )
     unconstrained = run_production_recall_eval(
         runtime,
         {
@@ -352,14 +364,52 @@ def test_production_recall_eval_blocks_source_filter_leaks_and_treats_no_filter_
         seed=False,
     )
 
-    for constrained in constrained_reports:
-        assert constrained["source_filter_leakage_count"] == 1
-        assert constrained["samples"][0]["source_filter_leakage_count"] == 1
-        assert constrained["quality_gate"]["ok"] is False
-        assert constrained["quality_gate"]["blocking_metrics"]["source_filter_leakage_count"]["actual"] == 1
+    assert constrained["source_filter_leakage_count"] == 1
+    assert constrained["samples"][0]["source_filter_leakage_count"] == 1
+    assert constrained["quality_gate"]["ok"] is False
+    assert constrained["quality_gate"]["blocking_metrics"]["source_filter_leakage_count"]["actual"] == 1
+    assert target_only["source_filter_leakage_count"] == 0
+    assert target_only["quality_gate"]["ok"] is True
     assert unconstrained["source_filter_leakage_count"] == 0
     assert unconstrained["samples"][0]["source_filter_leakage_count"] == 0
     assert unconstrained["quality_gate"]["ok"] is True
+
+
+def test_production_recall_eval_treats_empty_source_allowlist_as_deny_all(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    returned = RecordEnvelope.create(
+        kind="knowledge_page",
+        title="Defective engine result",
+        scope=ScopeRef.from_dict(_scope()),
+        source="test.production_recall",
+        source_id="alpha",
+    )
+    monkeypatch.setattr(
+        runtime.memory,
+        "recall",
+        lambda **_kwargs: RecallBundle(
+            items=[returned], rules=[], reflections=[], confidence=1.0,
+            next_action_hint="", explanation={},
+        ),
+    )
+
+    report = run_production_recall_eval(
+        runtime,
+        {
+            "scope": _scope(),
+            "cases": [{
+                "query": "deny all sources",
+                "expected_titles": [returned.title],
+                "scope": _scope(),
+                "task_context": {"source_ids": []},
+            }],
+        },
+        seed=False,
+    )
+
+    assert report["source_filter_leakage_count"] == 1
+    assert report["samples"][0]["source_filter_leakage_count"] == 1
+    assert report["quality_gate"]["ok"] is False
 
 
 def test_production_recall_eval_uses_candidate_source_id_normalization(tmp_path, monkeypatch) -> None:
@@ -383,7 +433,7 @@ def test_production_recall_eval_uses_candidate_source_id_normalization(tmp_path,
     for task_context in (
         {"source_ids": ["ALPHA"]},
         {"source_ids": ["ＡＬＰＨＡ"]},
-        {"target_source_id": " ALPHA "},
+        {"target_source_id": " BETA "},
     ):
         report = run_production_recall_eval(
             runtime,
@@ -427,6 +477,7 @@ def test_production_recall_eval_rejects_invalid_source_filter_contracts(tmp_path
         {"source_ids": [" alpha "]},
         {"source_ids": ["ALPHA", "ＡＬＰＨＡ"]},
         {"target_source_id": "bad source"},
+        {"source_ids": ["alpha"], "target_source_id": "bad source"},
     )
     for task_context in invalid_contexts:
         with pytest.raises(ValueError):
