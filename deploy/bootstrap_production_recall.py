@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import stat
 from typing import Any
 
 from eimemory.api.runtime import Runtime
@@ -23,6 +24,10 @@ from eimemory.evaluation.production_query_dataset import (
     write_production_query_dataset,
 )
 from eimemory.scheduler.jobs import load_json_dataset_with_evidence
+
+
+_MAX_PRIOR_HEALTH_SNAPSHOT_BYTES = 64 * 1024
+_MAX_PRIOR_HEALTH_SNAPSHOT_PATH_CHARS = 4096
 
 
 def _progress(frozen: dict[str, Any]) -> dict[str, Any]:
@@ -44,12 +49,43 @@ def _collection_summary(collection: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _load_prior_health_snapshot(path_value: str) -> dict[str, Any] | None:
+    value = str(path_value or "").strip()
+    if not value:
+        return None
+    if len(value) > _MAX_PRIOR_HEALTH_SNAPSHOT_PATH_CHARS:
+        raise ValueError("invalid prior health snapshot")
+    path = Path(value).expanduser()
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = -1
+    try:
+        if path.is_symlink():
+            raise ValueError("invalid prior health snapshot")
+        descriptor = os.open(path, flags)
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > _MAX_PRIOR_HEALTH_SNAPSHOT_BYTES:
+            raise ValueError("invalid prior health snapshot")
+        raw = os.read(descriptor, _MAX_PRIOR_HEALTH_SNAPSHOT_BYTES + 1)
+        if len(raw) > _MAX_PRIOR_HEALTH_SNAPSHOT_BYTES or os.read(descriptor, 1):
+            raise ValueError("invalid prior health snapshot")
+        payload = json.loads(raw.decode("utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        raise ValueError("invalid prior health snapshot") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    if not isinstance(payload, dict):
+        raise ValueError("invalid prior health snapshot")
+    return payload
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Pre-switch production recall bootstrap")
     parser.add_argument("--candidate-commit", required=True)
     parser.add_argument("--prior-commit", required=True)
     parser.add_argument("--current-link", required=True)
     parser.add_argument("--health-url", required=True)
+    parser.add_argument("--prior-health-snapshot", default="")
     parser.add_argument("--dataset", default=os.environ.get("EIMEMORY_PRODUCTION_RECALL_DATASET", ""))
     parser.add_argument("--root", default=os.environ.get("EIMEMORY_ROOT", "~/.eimemory"))
     parser.add_argument("--tenant", default="default")
@@ -57,6 +93,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--workspace", required=True)
     parser.add_argument("--user", required=True)
     args = parser.parse_args(argv)
+    try:
+        prior_health_snapshot = _load_prior_health_snapshot(args.prior_health_snapshot)
+    except ValueError:
+        print(json.dumps({"ok": False, "status": "blocked", "reason": "prior_health_snapshot_invalid"}, sort_keys=True))
+        return 2
     scope = {
         "tenant_id": args.tenant,
         "agent_id": args.agent,
@@ -92,6 +133,7 @@ def main(argv: list[str] | None = None) -> int:
                     prior_commit=args.prior_commit,
                     current_link=args.current_link,
                     health_url=args.health_url,
+                    prior_health_snapshot=prior_health_snapshot,
                     reason="production_dataset_not_ready",
                     progress={**dict(accumulated.get("progress") or {}), "pending_collected": int(collection.get("created") or 0)},
                 )
@@ -112,6 +154,7 @@ def main(argv: list[str] | None = None) -> int:
                     prior_commit=args.prior_commit,
                     current_link=args.current_link,
                     health_url=args.health_url,
+                    prior_health_snapshot=prior_health_snapshot,
                     reason="production_dataset_not_ready",
                     progress=_progress(frozen),
                 )
@@ -123,6 +166,7 @@ def main(argv: list[str] | None = None) -> int:
                     prior_commit=args.prior_commit,
                     current_link=args.current_link,
                     health_url=args.health_url,
+                    prior_health_snapshot=prior_health_snapshot,
                     scope=scope,
                     persist_report=True,
                 )

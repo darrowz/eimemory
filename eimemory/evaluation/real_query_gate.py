@@ -50,6 +50,7 @@ PRODUCTION_REAL_QUERY_POLICY = "production_recall_gate_policy.v1"
 PRODUCTION_REAL_QUERY_REQUIRED_CHANNELS = frozenset({"openclaw", "codex", "hermes"})
 PRODUCTION_REAL_QUERY_DATASET_EVIDENCE_SCHEMA = "secure_dataset_fingerprint.v1"
 PRODUCTION_RECALL_BOOTSTRAP_STATE_SCHEMA = "production_recall_bootstrap_state.v1"
+PRIOR_HEALTH_SNAPSHOT_SCHEMA = "prior_health_snapshot.v1"
 PRODUCTION_REAL_QUERY_TRUSTED_LABELERS = frozenset({"operator", "release_operator"})
 PRODUCTION_REAL_QUERY_TRUSTED_COLLECTORS = frozenset({"production_capture", "proactive_audit_capture"})
 PRODUCTION_REAL_QUERY_THRESHOLDS: dict[str, float] = {
@@ -69,6 +70,7 @@ _MAX_QUERY_TERMS = 16
 _MAX_QUERY_TERM_CHARS = 64
 _MAX_QUERY_FEATURE_CHARS = 512
 _MAX_BASELINE_CHAIN_DEPTH = 8
+_MAX_PRIOR_HEALTH_SNAPSHOT_BYTES = 64 * 1024
 _RECALL_CORPUS_KINDS = ("memory", "claim_card", "knowledge_page", "reflection")
 _DIGEST_KEYS = frozenset(
     {"dataset_digest", "engine_digest", "fusion_digest", "policy_digest", "result_digest"}
@@ -652,6 +654,7 @@ def bootstrap_production_recall_baseline(
     prior_commit: str,
     current_link: str = DEFAULT_DEPLOYMENT_CURRENT_LINK,
     health_url: str = DEFAULT_DEPLOYMENT_HEALTH_URL,
+    prior_health_snapshot: dict[str, Any] | None = None,
     scope: dict[str, Any] | None = None,
     persist_report: bool = True,
 ) -> dict[str, Any]:
@@ -671,6 +674,7 @@ def bootstrap_production_recall_baseline(
         prior_commit=prior_commit,
         current_link=current_link,
         health_url=health_url,
+        prior_health_snapshot=prior_health_snapshot,
     )
     if release is None:
         return _not_run_real_query_report(frozen, prior_reason)
@@ -779,6 +783,7 @@ def _verified_live_prior_release(
     prior_commit: str,
     current_link: str,
     health_url: str,
+    prior_health_snapshot: dict[str, Any] | None = None,
 ) -> tuple[ReleaseIdentity | None, str]:
     commit = str(prior_commit or "").strip().lower()
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
@@ -815,10 +820,21 @@ def _verified_live_prior_release(
         return None, "current_link_unresolvable"
     if release_path.name.lower() != commit or release_path.parent.name != "releases":
         return None, "current_link_prior_commit_mismatch"
-    health = _fetch_health(normalized_health)
-    if health.get("_fetch_error"):
-        return None, "prior_health_fetch_failed"
-    health_release = str((health.get("paths") or {}).get("release") or health.get("release_path") or "")
+    if prior_health_snapshot is None:
+        health = _fetch_health(normalized_health)
+        if health.get("_fetch_error"):
+            return None, "prior_health_fetch_failed"
+    else:
+        health, snapshot_reason = _validated_prior_health_snapshot(
+            prior_health_snapshot,
+            health_url=normalized_health,
+        )
+        if health is None:
+            return None, snapshot_reason
+    health_paths = health.get("paths")
+    if health_paths is not None and not isinstance(health_paths, dict):
+        return None, "prior_health_snapshot_invalid" if prior_health_snapshot is not None else "prior_health_identity_mismatch"
+    health_release = str((health_paths or {}).get("release") or health.get("release_path") or "")
     try:
         health_release_path = Path(health_release).expanduser().resolve(strict=True)
     except OSError:
@@ -833,6 +849,30 @@ def _verified_live_prior_release(
     return identity, ""
 
 
+def _validated_prior_health_snapshot(
+    snapshot: Any,
+    *,
+    health_url: str,
+) -> tuple[dict[str, Any] | None, str]:
+    if not isinstance(snapshot, dict) or set(snapshot) != {"schema", "health_url", "health"}:
+        return None, "prior_health_snapshot_invalid"
+    try:
+        encoded = json.dumps(snapshot, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    except (TypeError, ValueError, UnicodeError):
+        return None, "prior_health_snapshot_invalid"
+    if len(encoded) > _MAX_PRIOR_HEALTH_SNAPSHOT_BYTES:
+        return None, "prior_health_snapshot_invalid"
+    if snapshot.get("schema") != PRIOR_HEALTH_SNAPSHOT_SCHEMA:
+        return None, "prior_health_snapshot_invalid"
+    snapshot_url = _normalize_health_url(str(snapshot.get("health_url") or ""))
+    if snapshot_url != health_url:
+        return None, "prior_health_snapshot_invalid"
+    health = snapshot.get("health")
+    if not isinstance(health, dict) or health.get("_fetch_error"):
+        return None, "prior_health_snapshot_invalid"
+    return health, ""
+
+
 def record_production_recall_bootstrap_pending(
     runtime: Any,
     *,
@@ -841,6 +881,7 @@ def record_production_recall_bootstrap_pending(
     prior_commit: str,
     current_link: str = DEFAULT_DEPLOYMENT_CURRENT_LINK,
     health_url: str = DEFAULT_DEPLOYMENT_HEALTH_URL,
+    prior_health_snapshot: dict[str, Any] | None = None,
     reason: str = "production_dataset_not_ready",
     progress: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -854,6 +895,7 @@ def record_production_recall_bootstrap_pending(
         prior_commit=prior_commit,
         current_link=current_link,
         health_url=health_url,
+        prior_health_snapshot=prior_health_snapshot,
     )
     if prior is None:
         return {"ok": False, "status": "blocked", "reason": prior_reason, "record_id": ""}

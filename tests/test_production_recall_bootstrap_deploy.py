@@ -5,6 +5,7 @@ import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import subprocess
+import sys
 from threading import Thread
 
 import pytest
@@ -278,6 +279,217 @@ def test_prior_identity_is_taken_from_live_link_health_and_receipt_not_candidate
     assert resolved == prior
 
 
+def test_prior_identity_accepts_bound_snapshot_when_live_health_is_already_stopped(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    prior = _receipt(runtime, commit="b" * 40, prior_commit="c" * 40)
+    release = tmp_path / "releases" / prior.commit
+    release.mkdir(parents=True)
+    current = tmp_path / "current"
+    _link(current, release)
+    health_url = "http://127.0.0.1:1/health"
+    snapshot = {
+        "schema": "prior_health_snapshot.v1",
+        "health_url": health_url,
+        "health": {
+            "ok": True,
+            "commit": prior.commit,
+            "version": prior.version,
+            "paths": {"release": str(release)},
+        },
+    }
+    monkeypatch.setattr(real_query_gate, "DEFAULT_DEPLOYMENT_CURRENT_LINK", str(current))
+    monkeypatch.setattr(real_query_gate, "DEFAULT_DEPLOYMENT_HEALTH_URL", health_url)
+    monkeypatch.setattr(
+        real_query_gate,
+        "_fetch_health",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must use the protected snapshot")),
+    )
+
+    resolved, reason = real_query_gate._verified_live_prior_release(
+        runtime,
+        scope=ScopeRef.from_dict(SCOPE),
+        prior_commit=prior.commit,
+        current_link=str(current),
+        health_url=health_url,
+        prior_health_snapshot=snapshot,
+    )
+    runtime.close()
+
+    assert reason == ""
+    assert resolved == prior
+
+
+@pytest.mark.parametrize(
+    "snapshot",
+    [
+        [],
+        {"schema": "prior_health_snapshot.v0", "health_url": "http://127.0.0.1:1/health", "health": {}},
+        {"schema": "prior_health_snapshot.v1", "health_url": "http://127.0.0.1:2/health", "health": {}},
+        {"schema": "prior_health_snapshot.v1", "health_url": "http://127.0.0.1:1/health", "health": []},
+        {
+            "schema": "prior_health_snapshot.v1",
+            "health_url": "http://127.0.0.1:1/health",
+            "health": {"padding": "x" * 65536},
+        },
+    ],
+    ids=["non-dict", "schema", "url", "health-non-dict", "oversized"],
+)
+def test_prior_health_snapshot_rejects_non_dict_mismatched_or_oversized_payloads(
+    tmp_path,
+    monkeypatch,
+    snapshot,
+) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    prior = _receipt(runtime, commit="b" * 40, prior_commit="c" * 40)
+    release = tmp_path / "releases" / prior.commit
+    release.mkdir(parents=True)
+    current = tmp_path / "current"
+    _link(current, release)
+    health_url = "http://127.0.0.1:1/health"
+    monkeypatch.setattr(real_query_gate, "DEFAULT_DEPLOYMENT_CURRENT_LINK", str(current))
+    monkeypatch.setattr(real_query_gate, "DEFAULT_DEPLOYMENT_HEALTH_URL", health_url)
+
+    resolved, reason = real_query_gate._verified_live_prior_release(
+        runtime,
+        scope=ScopeRef.from_dict(SCOPE),
+        prior_commit=prior.commit,
+        current_link=str(current),
+        health_url=health_url,
+        prior_health_snapshot=snapshot,
+    )
+    runtime.close()
+
+    assert resolved is None
+    assert reason == "prior_health_snapshot_invalid"
+
+
+@pytest.mark.parametrize("field", ["commit", "version", "release"])
+def test_prior_health_snapshot_cannot_forge_release_identity(tmp_path, monkeypatch, field: str) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    prior = _receipt(runtime, commit="b" * 40, prior_commit="c" * 40)
+    release = tmp_path / "releases" / prior.commit
+    release.mkdir(parents=True)
+    current = tmp_path / "current"
+    _link(current, release)
+    health_url = "http://127.0.0.1:1/health"
+    health = {
+        "ok": True,
+        "commit": prior.commit,
+        "version": prior.version,
+        "paths": {"release": str(release)},
+    }
+    if field == "commit":
+        health["commit"] = "d" * 40
+    elif field == "version":
+        health["version"] = "9.9.9"
+    else:
+        forged = tmp_path / "releases" / ("d" * 40)
+        forged.mkdir(parents=True)
+        health["paths"]["release"] = str(forged)
+    snapshot = {"schema": "prior_health_snapshot.v1", "health_url": health_url, "health": health}
+    monkeypatch.setattr(real_query_gate, "DEFAULT_DEPLOYMENT_CURRENT_LINK", str(current))
+    monkeypatch.setattr(real_query_gate, "DEFAULT_DEPLOYMENT_HEALTH_URL", health_url)
+
+    resolved, reason = real_query_gate._verified_live_prior_release(
+        runtime,
+        scope=ScopeRef.from_dict(SCOPE),
+        prior_commit=prior.commit,
+        current_link=str(current),
+        health_url=health_url,
+        prior_health_snapshot=snapshot,
+    )
+    runtime.close()
+
+    assert resolved is None
+    assert reason == "prior_health_identity_mismatch"
+
+
+def test_bootstrap_cli_loads_a_bounded_snapshot_and_passes_it_to_the_gate(tmp_path, monkeypatch, capsys) -> None:
+    runtime, calls = _patch_ready_accumulated_gate(monkeypatch, tmp_path)
+    captured: list[dict] = []
+    monkeypatch.setattr(
+        bootstrap_deploy,
+        "bootstrap_production_recall_baseline",
+        lambda *_args, **kwargs: captured.append(kwargs) or {"ok": True, "bootstrap_status": "anchor_ready"},
+    )
+    snapshot = {
+        "schema": "prior_health_snapshot.v1",
+        "health_url": "http://127.0.0.1:1/health",
+        "health": {"ok": True},
+    }
+    snapshot_path = tmp_path / "prior-health.json"
+    snapshot_path.write_text(json.dumps(snapshot), encoding="utf-8")
+    args = _bootstrap_args(tmp_path) + ["--prior-health-snapshot", str(snapshot_path)]
+
+    exit_code = bootstrap_deploy.main(args)
+    capsys.readouterr()
+
+    assert exit_code == 0
+    assert calls["gate"] == []
+    assert captured[0]["prior_health_snapshot"] == snapshot
+    assert runtime.closed is True
+
+
+def test_prior_health_capture_runs_in_isolated_mode_and_never_echoes_failed_payload() -> None:
+    helper = Path("deploy/capture_prior_health_snapshot.py").resolve()
+    payload = {"ok": True, "commit": "b" * 40, "version": "1.9.80"}
+    with _health(payload) as health_url:
+        captured = subprocess.run(
+            [sys.executable, "-I", "-B", str(helper), "--health-url", health_url],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    assert captured.returncode == 0, captured.stderr
+    snapshot = json.loads(captured.stdout)
+    assert snapshot == {
+        "schema": "prior_health_snapshot.v1",
+        "health_url": health_url,
+        "health": payload,
+    }
+
+    with _health(["sensitive-response-must-not-leak"]) as invalid_url:
+        rejected = subprocess.run(
+            [sys.executable, "-I", "-B", str(helper), "--health-url", invalid_url],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    assert rejected.returncode != 0
+    assert rejected.stdout == ""
+    assert rejected.stderr.strip() == "prior_health_capture_failed"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    ["[]", json.dumps({"padding": "x" * 65536})],
+    ids=["non-dict", "oversized"],
+)
+def test_bootstrap_cli_rejects_non_dict_or_oversized_snapshot_before_opening_runtime(
+    tmp_path,
+    monkeypatch,
+    capsys,
+    payload: str,
+) -> None:
+    snapshot_path = tmp_path / "prior-health.json"
+    snapshot_path.write_text(payload, encoding="utf-8")
+    monkeypatch.setattr(
+        bootstrap_deploy.Runtime,
+        "create",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("invalid snapshot must fail before runtime writes")),
+    )
+
+    exit_code = bootstrap_deploy.main(
+        _bootstrap_args(tmp_path) + ["--prior-health-snapshot", str(snapshot_path)]
+    )
+    report = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 2
+    assert report == {"ok": False, "reason": "prior_health_snapshot_invalid", "status": "blocked"}
+
+
 def test_installer_runs_candidate_bootstrap_before_atomic_current_switch() -> None:
     installer = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
     invocation = installer.index("_run_pre_switch_production_recall_bootstrap\n")
@@ -290,6 +502,25 @@ def test_installer_runs_candidate_bootstrap_before_atomic_current_switch() -> No
     assert '--candidate-commit "$COMMIT" --prior-commit "$PREVIOUS_COMMIT"' in function
     bootstrap = Path("deploy/bootstrap_production_recall.py").read_text(encoding="utf-8")
     assert "current_release_identity" not in bootstrap
+
+
+def test_installer_captures_prior_health_before_quiesce_and_bootstrap_consumes_snapshot() -> None:
+    installer = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
+    prepare = installer.split("_prepare_storage_for_release() {", 1)[1].split("\n}", 1)[0]
+    capture = prepare.index("if ! _capture_prior_health_snapshot; then")
+    writer_capture = prepare.index("_capture_storage_writers", capture)
+    retire = prepare.index("_retire_system_rpc_unit", writer_capture)
+    marker = prepare.index("_begin_storage_release_transaction", retire)
+    stop = prepare.index("_stop_storage_writers", marker)
+    snapshot_ready = prepare.index("STORAGE_SNAPSHOT_READY=1", stop)
+    bootstrap = prepare.index("_run_pre_switch_production_recall_bootstrap", snapshot_ready)
+
+    assert capture < writer_capture < retire < marker < stop < snapshot_ready < bootstrap
+    assert "prior_health_capture=failed before_transaction" in prepare[capture:writer_capture]
+    assert "return 2" in prepare[capture:writer_capture]
+    runner = installer.split("_run_pre_switch_production_recall_bootstrap() {", 1)[1].split("\n}", 1)[0]
+    assert 'if [ -z "$PRIOR_HEALTH_SNAPSHOT_FILE" ] || [ ! -f "$PRIOR_HEALTH_SNAPSHOT_FILE" ] ||' in runner
+    assert '--prior-health-snapshot "$PRIOR_HEALTH_SNAPSHOT_FILE"' in runner
 
 
 def test_bootstrap_state_uses_full_record_identity_not_fuzzy_reflection_title(tmp_path) -> None:

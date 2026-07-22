@@ -841,6 +841,12 @@ _prepare_storage_for_release() {
     return
   fi
   STORAGE_MIGRATION_REQUIRED="$storage_needed"
+  if [ "$bootstrap_needed" = "1" ]; then
+    if ! _capture_prior_health_snapshot; then
+      echo "prior_health_capture=failed before_transaction" >&2
+      return 2
+    fi
+  fi
   if ! _capture_storage_writers; then
     echo "storage_writer_capture=failed before_transaction" >&2
     return 2
@@ -1105,6 +1111,33 @@ _record_deployment_receipt() {
       --scope-user "$EIMEMORY_DEPLOY_SCOPE_USER" --json
 }
 
+_capture_prior_health_snapshot() {
+  if [ "$EIMEMORY_POST_SWITCH_GATES" != "1" ] || [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ]; then
+    return
+  fi
+  local snapshot_file
+  if ! snapshot_file="$(mktemp "$INSTALL_ROOT/.prior-health-${COMMIT}-XXXXXXXX.json")"; then
+    echo "prior_health_capture=failed" >&2
+    return 2
+  fi
+  chmod 0600 "$snapshot_file"
+  if ! "$RELEASE_DIR/.venv/bin/python" -I -B \
+      "$RELEASE_DIR/deploy/capture_prior_health_snapshot.py" \
+      --health-url "$EIMEMORY_HEALTH_URL" >"$snapshot_file"; then
+    rm -f -- "$snapshot_file"
+    echo "prior_health_capture=failed" >&2
+    return 2
+  fi
+  if [ "$(id -u)" -eq 0 ]; then
+    if ! chown "$SERVICE_USER:$SERVICE_GROUP" "$snapshot_file"; then
+      rm -f -- "$snapshot_file"
+      echo "prior_health_capture=failed" >&2
+      return 2
+    fi
+  fi
+  PRIOR_HEALTH_SNAPSHOT_FILE="$snapshot_file"
+}
+
 _run_pre_switch_production_recall_bootstrap() {
   if [ "$EIMEMORY_POST_SWITCH_GATES" != "1" ] || [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ]; then
     return
@@ -1113,7 +1146,13 @@ _run_pre_switch_production_recall_bootstrap() {
     echo "Production recall bootstrap requires the verified prior commit" >&2
     return 2
   fi
-  _run_as_service_user env \
+  if [ -z "$PRIOR_HEALTH_SNAPSHOT_FILE" ] || [ ! -f "$PRIOR_HEALTH_SNAPSHOT_FILE" ] || \
+     [ -L "$PRIOR_HEALTH_SNAPSHOT_FILE" ]; then
+    echo "Production recall bootstrap requires a protected prior health snapshot" >&2
+    return 2
+  fi
+  local bootstrap_status=0
+  if _run_as_service_user env \
     EIMEMORY_ROOT="$EIMEMORY_ROOT" \
     EIMEMORY_CONFIG_DIR="$EIMEMORY_CONFIG_DIR" \
     "$PYTHON_BIN" -I -B "$RELEASE_DIR/deploy/run_with_governance_env.py" \
@@ -1122,10 +1161,18 @@ _run_pre_switch_production_recall_bootstrap() {
         "$RELEASE_DIR/deploy/bootstrap_production_recall.py" \
         --candidate-commit "$COMMIT" --prior-commit "$PREVIOUS_COMMIT" \
         --current-link "$CURRENT_LINK" --health-url "$EIMEMORY_HEALTH_URL" \
+        --prior-health-snapshot "$PRIOR_HEALTH_SNAPSHOT_FILE" \
         --root "$EIMEMORY_ROOT" \
         --agent "$EIMEMORY_DEPLOY_SCOPE_AGENT" \
         --workspace "$EIMEMORY_DEPLOY_SCOPE_WORKSPACE" \
-        --user "$EIMEMORY_DEPLOY_SCOPE_USER"
+        --user "$EIMEMORY_DEPLOY_SCOPE_USER"; then
+    bootstrap_status=0
+  else
+    bootstrap_status=$?
+  fi
+  rm -f -- "$PRIOR_HEALTH_SNAPSHOT_FILE"
+  PRIOR_HEALTH_SNAPSHOT_FILE=""
+  return "$bootstrap_status"
 }
 
 _run_post_switch_closure() {
@@ -1352,6 +1399,7 @@ STORAGE_WRITERS_CAPTURED=0
 STORAGE_WRITERS_STOPPED=0
 STORAGE_WRITERS_RELOADED=0
 STORAGE_MIGRATION_REQUIRED=0
+PRIOR_HEALTH_SNAPSHOT_FILE=""
 STORAGE_TRANSACTION_ACTIVE=0
 
 _ensure_runtime_dir "$EIMEMORY_ROOT" 0750
@@ -1449,6 +1497,9 @@ cleanup_stage() {
   if [ -n "${STAGE_DIR:-}" ] && [ -e "$STAGE_DIR" ]; then
     "$PYTHON_BIN" -I -B "$REPO_DIR/deploy/clean_release_bytecode.py" \
       --remove-stage --release-dir "$STAGE_DIR" --releases-root "$INSTALL_ROOT/releases" || true
+  fi
+  if [ -n "$PRIOR_HEALTH_SNAPSHOT_FILE" ]; then
+    rm -f -- "$PRIOR_HEALTH_SNAPSHOT_FILE"
   fi
   exit "$exit_code"
 }
