@@ -464,6 +464,12 @@ def test_query_features_allow_non_phone_numeric_identifiers(safe_value: str) -> 
         "prefix 4155550123 suffix",
         "13800138000",
         "prefix 13800138000 suffix",
+        "联系电话13800138000",
+        "请联系13800138000谢谢",
+        "１３８００１３８０００",
+        "138-00138000",
+        "415-5550123",
+        "8613800138000",
         "+44 20 7946 0958",
     ],
 )
