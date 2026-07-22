@@ -29,6 +29,7 @@ from eimemory.governance.tool_receipts import (
     V2_RECEIPT_VERSION,
     canonical_tool_receipt,
     sign_tool_receipt,
+    tool_receipt_commitment,
     verify_tool_receipt,
 )
 from eimemory.models.memory_edges import MemoryEdge
@@ -612,6 +613,11 @@ class AgentRuntimeMemoryService:
             source_ids=[source_id],
             limit=_HERMES_LEGACY_TARGET_LOOKUP_LIMIT,
         )
+        if len(candidates) >= _HERMES_LEGACY_TARGET_LOOKUP_LIMIT:
+            # A bounded legacy scan cannot prove either absence or uniqueness.
+            # Require the optimistic-concurrency identity contract instead of
+            # returning a false not-found or mutating a possibly ambiguous row.
+            return "mutation_target_id_required"
         old_revision = self._content_revision(old_text)
         exact = [
             record
@@ -1163,8 +1169,8 @@ class AgentRuntimeMemoryService:
         channel_scope = resolve_channel_scope(channel_id, scope)
         safe_input = self._bounded_attestation_result(tool_input)
         safe_result = self._bounded_attestation_result(result)
-        invocation_digest = sha256(safe_input.encode("utf-8", errors="replace")).hexdigest()
-        result_digest = sha256(safe_result.encode("utf-8", errors="replace")).hexdigest()
+        invocation_digest = tool_receipt_commitment(tool_input, domain="invocation")
+        result_digest = tool_receipt_commitment(result, domain="result")
         # Preserve the host result shape as part of the trust decision. Codex
         # raw output strings do not prove process exit status; Hermes strings
         # are accepted only as the host's documented JSON status envelope.

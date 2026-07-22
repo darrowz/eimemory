@@ -88,6 +88,17 @@ _RAW_FIELD_MARKERS = frozenset(
         "api_key",
     }
 )
+_EMAIL_FEATURE_RE = re.compile(r"(?i)(?<![\w.+-])[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+(?![\w.-])")
+_PHONE_FEATURE_RE = re.compile(r"(?<!\w)\+?\d(?:[\s().-]*\d){7,14}(?!\w)")
+_ACCESS_CREDENTIAL_RE = re.compile(
+    r"(?i)(?:\b(?:authorization|password|passphrase|client[_-]?secret|access[_-]?token|refresh[_-]?token|"
+    r"session[_-]?cookie|api[_-]?key|credential)s?\s*[:=]|\bbearer\s+|\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|"
+    r"\b(?:ghp|github_pat|sk)-[A-Za-z0-9_-]{8,}\b)"
+)
+_PERSON_PLACEHOLDER_RE = re.compile(r"(?i)^(?:person_ref:[a-z0-9][a-z0-9._-]{2,63}|\[person(?::[a-z0-9._-]{1,48})?\]|<person>)$")
+_HONORIFIC_PERSON_RE = re.compile(r"^(?:Mr|Mrs|Ms|Miss|Dr|Prof)\.?\s+[A-Z][a-z]{1,30}(?:\s+[A-Z][a-z]{1,30}){0,2}$")
+_WESTERN_FULL_NAME_RE = re.compile(r"^[A-Z][a-z]{1,30}(?:[-'][A-Z]?[a-z]{1,30})?\s+[A-Z][a-z]{1,30}(?:[-'][A-Z]?[a-z]{1,30})?(?:\s+[A-Z][a-z]{1,30})?$")
+_CJK_TITLED_PERSON_RE = re.compile(r"^[\u3400-\u9fff]{2,4}(?:先生|女士|博士|老师)$")
 
 
 def freeze_production_recall_dataset(dataset: dict[str, Any]) -> dict[str, Any]:
@@ -392,6 +403,7 @@ def _bounded_query_features(value: object) -> tuple[dict[str, Any], str]:
         or any(len(item) > _MAX_QUERY_TERM_CHARS for item in all_values)
         or sum(len(item) for item in all_values) > _MAX_QUERY_FEATURE_CHARS
         or any(_looks_like_secret(item) for item in all_values)
+        or any(_looks_like_person_entity(item) for item in entities)
     )
     frozen: dict[str, Any] = {"terms": terms[:_MAX_QUERY_TERMS]}
     if intent:
@@ -404,8 +416,32 @@ def _bounded_query_features(value: object) -> tuple[dict[str, Any], str]:
 
 
 def _looks_like_secret(value: str) -> bool:
-    lowered = str(value or "").lower()
-    return any(marker in lowered for marker in ("password=", "token=", "api_key=", "bearer ", "sk-"))
+    text = str(value or "").strip()
+    if not text:
+        return False
+    phone_match = _PHONE_FEATURE_RE.search(text)
+    high_confidence_phone = bool(
+        phone_match
+        and 8 <= sum(character.isdigit() for character in phone_match.group(0)) <= 15
+    )
+    return bool(
+        _EMAIL_FEATURE_RE.search(text)
+        or high_confidence_phone
+        or _ACCESS_CREDENTIAL_RE.search(text)
+    )
+
+
+def _looks_like_person_entity(value: str) -> bool:
+    """Reject only constrained high-confidence person shapes, not arbitrary names."""
+
+    text = " ".join(str(value or "").strip().split())
+    if not text or _PERSON_PLACEHOLDER_RE.fullmatch(text):
+        return False
+    return bool(
+        _HONORIFIC_PERSON_RE.fullmatch(text)
+        or _WESTERN_FULL_NAME_RE.fullmatch(text)
+        or _CJK_TITLED_PERSON_RE.fullmatch(text)
+    )
 
 
 def evaluate_labeled_ranking_at_5(

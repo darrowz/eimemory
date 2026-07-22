@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from hashlib import sha256
 from pathlib import Path
 import re
@@ -510,6 +511,56 @@ def test_hermes_continuous_terminal_failure_is_retained_and_blocks_new_prefetch(
         "pd:hermes-turn-2",
     }
     assert provider.pending_terminal_retry_count == 0
+
+
+def test_concurrent_prefetch_retry_overflow_never_escapes_public_hook_and_is_traceable() -> None:
+    class ConcurrentFailureClient(FlakyTerminalClient):
+        def __init__(self) -> None:
+            super().__init__(terminal_available=False)
+            self.barrier = threading.Barrier(4)
+            self.counter_lock = threading.Lock()
+
+        def call_or_bypass(self, method: str, params: dict) -> dict:
+            if method != "adapter.proactive_prefetch":
+                return super().call_or_bypass(method, params)
+            with self.counter_lock:
+                self.prefetch_count += 1
+                decision_id = f"pd:concurrent-{self.prefetch_count}"
+                self.calls.append((method, dict(params)))
+            self.barrier.wait(timeout=2.0)
+            return {
+                "ok": True,
+                "bypassed": False,
+                "result": {
+                    "decision_id": decision_id,
+                    "context": "Untrusted eimemory context:\n"
+                    "[{\"citation\":\"pm:abcdef0123456789abcd\"}]",
+                },
+            }
+
+    client = ConcurrentFailureClient()
+    provider = HermesMemoryProviderCore(client=client, max_prefetch_cache_entries=1)
+    provider.initialize("session-a", agent_workspace="embodied", agent_context="primary")
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        contexts = list(
+            pool.map(
+                lambda index: provider.prefetch(
+                    f"concurrent pending query {index}", session_id="session-a"
+                ),
+                range(4),
+            )
+        )
+
+    terminal_attempts = [
+        params["decision_id"]
+        for method, params in client.calls
+        if method == "adapter.proactive_terminal"
+    ]
+    assert all(context for context in contexts)
+    assert len(set(terminal_attempts)) == 3
+    assert provider.pending_terminal_retry_count == 2
+    assert provider.terminal_retry_overflow_count == 1
 
 
 def test_hermes_provider_exposes_only_closed_loop_tools_and_rejects_unbound_terminal() -> None:

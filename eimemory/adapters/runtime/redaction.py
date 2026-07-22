@@ -9,7 +9,8 @@ _SENSITIVE_KEY = re.compile(
     r"(?i)(authorization|auth|cookie|credential|password|private[_-]?key|access[_-]?key|secret|token|api[_-]?key)"
 )
 _SENSITIVE_ASSIGNMENT = re.compile(
-    r"(?i)\b(authorization|auth|cookie|credential|password|private[_-]?key|access[_-]?key|secret|token|api[_-]?key)"
+    r"(?i)\b([a-z0-9_.-]*(?:authorization|auth|cookies?|credentials?|passwords?|"
+    r"private[_-]?keys?|access[_-]?keys?|secrets?|tokens?|api[_-]?keys?)[a-z0-9_.-]*)"
     r"(\s*[:=]\s*)(?:"
     r'"(?:\\.|[^"\\\r\n])*"|'
     r"'(?:\\.|[^'\\\r\n])*'|"
@@ -69,8 +70,10 @@ def redact_bounded(value: Any, *, max_chars: int, max_depth: int = 8, max_items:
 
 
 def bounded_redacted_text(value: Any, *, max_chars: int) -> str:
-    safe = redact_bounded(value, max_chars=max_chars)
-    if isinstance(value, str) and isinstance(safe, str):
+    parsed_value = _serialized_container(value) if isinstance(value, str) else None
+    source = parsed_value if parsed_value is not None else value
+    safe = redact_bounded(source, max_chars=max_chars)
+    if isinstance(source, str) and isinstance(safe, str):
         rendered = safe.strip()
     else:
         rendered = json.dumps(safe, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -81,3 +84,14 @@ def _redact_text(value: str) -> str:
     safe = _SENSITIVE_ASSIGNMENT.sub(_REDACTED, value)
     safe = _BEARER.sub(f"Bearer {_REDACTED}", safe)
     return _SECRET_TOKEN.sub(_REDACTED, safe)
+
+
+def _serialized_container(value: str) -> Any | None:
+    text = str(value or "").strip()
+    if not text or text[0] not in "[{":
+        return None
+    try:
+        parsed = json.loads(text)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    return parsed if isinstance(parsed, (dict, list)) else None

@@ -331,6 +331,41 @@ def test_runtime_adapter_rpc_fails_closed_for_reused_key_stale_or_inactive_targe
     assert inactive["error"] == "mutation_target_inactive"
 
 
+def test_hermes_legacy_mutation_requires_explicit_id_when_lookup_window_is_full(
+    tmp_path: Path,
+) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    bridge = EIBrainRPCBridge(runtime)
+    added: list[dict] = []
+    for index in range(33):
+        response = bridge.handle(
+            {
+                "method": "adapter.mutate_memory",
+                "params": _hermes_mutation_params(
+                    content=f"legacy target content {index:02d}",
+                    idempotency_key=f"hermes-legacy-window-{index:02d}",
+                ),
+            }
+        )
+        assert response["ok"] is True
+        added.append(response)
+
+    legacy_replace = bridge.handle(
+        {
+            "method": "adapter.mutate_memory",
+            "params": _hermes_mutation_params(
+                action="replace",
+                content="replacement must use an explicit record id",
+                old_text=added[0]["result"]["record"]["content"]["text"],
+                idempotency_key="hermes-legacy-full-window-replace",
+            ),
+        }
+    )
+
+    assert legacy_replace["ok"] is False
+    assert legacy_replace["error"] == "mutation_target_id_required"
+
+
 def test_runtime_adapter_rpc_rejects_cross_source_and_unknown_provenance(tmp_path: Path) -> None:
     bridge = EIBrainRPCBridge(Runtime.create(root=tmp_path))
     added = bridge.handle({"method": "adapter.mutate_memory", "params": _hermes_mutation_params()})

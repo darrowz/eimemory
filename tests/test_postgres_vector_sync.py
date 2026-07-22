@@ -271,6 +271,47 @@ def test_sqlite_projection_reader_repairs_wrong_cursor_index_without_temp_sort(t
         runtime.close()
 
 
+def test_sqlite_projection_revision_tracks_alias_only_mutations_without_upsert_amplification(
+    tmp_path: Path,
+) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = ScopeRef("tenant", "openclaw", "workspace", "user")
+    record = runtime.store.append(
+        RecordEnvelope.create(
+            kind="memory", title="Alias authority", summary="stable", content={"text": "stable"},
+            aliases=["first alias"], source_id="alpha", scope=scope,
+        )
+    )
+    reader = SQLiteProjectionReader(runtime.store)
+    try:
+        initial = int(reader.snapshot_token())
+        storage_key = runtime.store.sqlite._storage_key(record)
+        runtime.store.sqlite.conn.execute(
+            "INSERT INTO recall_alias_index (storage_key, normalized_alias, alias_ordinal, record_id, kind, status, source_id, tenant_id, agent_id, workspace_id, user_id) "
+            "VALUES (?, 'direct alias', 99, ?, 'memory', 'active', 'alpha', 'tenant', 'openclaw', 'workspace', 'user')",
+            (storage_key, record.record_id),
+        )
+        after_insert = int(reader.snapshot_token())
+        runtime.store.sqlite.conn.execute(
+            "UPDATE recall_alias_index SET normalized_alias='direct alias updated' WHERE storage_key=? AND alias_ordinal=99",
+            (storage_key,),
+        )
+        after_update = int(reader.snapshot_token())
+        runtime.store.sqlite.conn.execute(
+            "DELETE FROM recall_alias_index WHERE storage_key=? AND alias_ordinal=99",
+            (storage_key,),
+        )
+        after_delete = int(reader.snapshot_token())
+        record.summary = "normal upsert"
+        runtime.store.append(record)
+        after_upsert = int(reader.snapshot_token())
+
+        assert (after_insert, after_update, after_delete) == (initial + 1, initial + 2, initial + 3)
+        assert after_upsert == after_delete + 1
+    finally:
+        runtime.close()
+
+
 def test_sync_pages_embeds_bounded_batches_and_only_completes_after_end() -> None:
     first = [_projection("a", "2026-07-22T00:00:01Z"), _projection("b", "2026-07-22T00:00:02Z")]
     second = [_projection("c", "2026-07-22T00:00:03Z", status="inactive")]

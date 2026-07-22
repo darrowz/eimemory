@@ -527,11 +527,17 @@ def _valid_runtime_task_evidence(
         except (TypeError, json.JSONDecodeError):
             return False
         event_receipts = event.get("verification_receipts")
+        if not (
+            isinstance(event_receipts, list)
+            and event_receipts
+            and all(isinstance(receipt, dict) for receipt in event_receipts)
+            and all(isinstance(receipt, dict) for receipt in persisted_receipts)
+        ):
+            return False
         event_receipt_ids = sorted(
             str(receipt.get("receipt_id") or "")
             for receipt in event_receipts
-            if isinstance(receipt, dict)
-        ) if isinstance(event_receipts, list) else []
+        )
         persisted_receipt_ids = sorted(
             str(receipt.get("receipt_id") or "") for receipt in persisted_receipts
         )

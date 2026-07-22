@@ -62,6 +62,7 @@ class HermesMemoryProviderCore:
         self._pending_proactive: OrderedDict[tuple[str, ...], dict[str, Any]] = OrderedDict()
         self._pending_terminal_retries: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self._max_terminal_retries = self._max_prefetch_cache_entries * 2
+        self._terminal_retry_overflow_count = 0
         self._lock = threading.RLock()
         self._write_thread: threading.Thread | None = None
         self._prefetch_thread: threading.Thread | None = None
@@ -102,6 +103,11 @@ class HermesMemoryProviderCore:
     def pending_terminal_retry_count(self) -> int:
         with self._lock:
             return len(self._pending_terminal_retries)
+
+    @property
+    def terminal_retry_overflow_count(self) -> int:
+        with self._lock:
+            return self._terminal_retry_overflow_count
 
     def is_available(self) -> bool:
         if self._client_injected:
@@ -786,7 +792,16 @@ class HermesMemoryProviderCore:
                 if key in self._pending_terminal_retries:
                     continue
                 if len(self._pending_terminal_retries) >= self._max_terminal_retries:
-                    raise RuntimeError("Hermes proactive terminal retry capacity exhausted")
+                    # The terminal RPC was already attempted, so the server-side
+                    # decision ledger (and the RPC failure ledger in production)
+                    # remains authoritative and traceable.  Never let bounded
+                    # local retry pressure escape through a public Hermes hook.
+                    self._terminal_retry_overflow_count += 1
+                    logger.warning(
+                        "Hermes proactive terminal retry overflow decision_id=%s",
+                        str(params.get("decision_id") or "")[:200],
+                    )
+                    continue
                 self._pending_terminal_retries[key] = params
 
     def _flush_terminal_retries(self) -> bool:

@@ -1,6 +1,8 @@
 import json
 import re
 
+import pytest
+
 from eimemory.api.runtime import Runtime
 from eimemory.api import memory as memory_module
 from eimemory.cli.main import main as cli_main
@@ -96,6 +98,71 @@ def test_runtime_ingest_can_force_capture_low_salience_memory(tmp_path) -> None:
     assert record.status == "active"
     assert record.meta["quality"]["capture_decision"] == "accept"
     assert persisted[0].record_id == record.record_id
+
+
+def test_runtime_ingest_caller_record_id_conflict_is_rejected_without_side_effects(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"tenant_id": "tenant", "agent_id": "main", "workspace_id": "repo-x", "user_id": "user"}
+    first = runtime.memory.ingest(
+        text="original protected memory",
+        memory_type="durable_fact",
+        title="Original",
+        scope=scope,
+        source="trusted.runtime",
+        source_id="alpha",
+        force_capture=True,
+        record_id="caller-fixed-record",
+    )
+    before_jsonl = (tmp_path / "records.jsonl").read_bytes()
+    before_rows = [tuple(row) for row in runtime.store.sqlite.conn.execute(
+        "SELECT storage_key, normalized_alias, alias_ordinal FROM recall_alias_index ORDER BY storage_key, alias_ordinal"
+    )]
+    try:
+        with pytest.raises(ValueError, match="record_id conflict"):
+            runtime.memory.ingest(
+                text="attacker replacement",
+                memory_type="durable_fact",
+                title="Replacement",
+                scope=scope,
+                source="trusted.runtime",
+                source_id="alpha",
+                force_capture=True,
+                record_id="caller-fixed-record",
+            )
+        persisted = runtime.store.get_by_id(first.record_id, scope=scope)
+        assert persisted is not None
+        assert persisted.title == "Original"
+        assert persisted.content["text"] == "original protected memory"
+        assert (tmp_path / "records.jsonl").read_bytes() == before_jsonl
+        assert [tuple(row) for row in runtime.store.sqlite.conn.execute(
+            "SELECT storage_key, normalized_alias, alias_ordinal FROM recall_alias_index ORDER BY storage_key, alias_ordinal"
+        )] == before_rows
+    finally:
+        runtime.close()
+
+
+def test_runtime_ingest_identical_caller_record_id_request_is_idempotent(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    request = {
+        "text": "stable deterministic memory",
+        "memory_type": "durable_fact",
+        "title": "Stable",
+        "scope": {"agent_id": "main", "workspace_id": "repo-x"},
+        "source": "trusted.runtime",
+        "source_id": "alpha",
+        "force_capture": True,
+        "record_id": "caller-stable-record",
+    }
+    first = runtime.memory.ingest(**request)
+    before_jsonl = (tmp_path / "records.jsonl").read_bytes()
+    before_changes = runtime.store.sqlite.conn.total_changes
+    try:
+        second = runtime.memory.ingest(**request)
+        assert second.to_dict() == first.to_dict()
+        assert (tmp_path / "records.jsonl").read_bytes() == before_jsonl
+        assert runtime.store.sqlite.conn.total_changes == before_changes
+    finally:
+        runtime.close()
 
 
 def test_runtime_recall_excludes_internal_audit_memories_by_default(tmp_path) -> None:

@@ -193,12 +193,26 @@ class SQLiteProjectionReader:
         self.store.sqlite.conn.execute(
             "INSERT OR IGNORE INTO vector_sync_revision(singleton, revision) VALUES (1, 0)"
         )
+        self.store.sqlite.conn.execute(
+            "CREATE TABLE IF NOT EXISTS vector_sync_alias_guard ("
+            "singleton INTEGER PRIMARY KEY CHECK (singleton = 1), suppress_revision INTEGER NOT NULL)"
+        )
+        self.store.sqlite.conn.execute(
+            "INSERT OR IGNORE INTO vector_sync_alias_guard(singleton, suppress_revision) VALUES (1, 0)"
+        )
         for operation in ("INSERT", "UPDATE", "DELETE"):
             name = f"trg_records_vector_sync_{operation.lower()}"
             self.store.sqlite.conn.execute(f"DROP TRIGGER IF EXISTS {name}")
             self.store.sqlite.conn.execute(
                 f"CREATE TRIGGER {name} AFTER {operation} ON records BEGIN "
                 "UPDATE vector_sync_revision SET revision = revision + 1 WHERE singleton = 1; END"
+            )
+            alias_name = f"trg_recall_alias_vector_sync_{operation.lower()}"
+            self.store.sqlite.conn.execute(f"DROP TRIGGER IF EXISTS {alias_name}")
+            self.store.sqlite.conn.execute(
+                f"CREATE TRIGGER {alias_name} AFTER {operation} ON recall_alias_index "
+                "WHEN COALESCE((SELECT suppress_revision FROM vector_sync_alias_guard WHERE singleton = 1), 0) = 0 "
+                "BEGIN UPDATE vector_sync_revision SET revision = revision + 1 WHERE singleton = 1; END"
             )
         self.store.sqlite.conn.commit()
         self._index_ready = True

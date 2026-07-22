@@ -7,6 +7,7 @@ from hashlib import sha256
 import json
 import re
 from threading import BoundedSemaphore, RLock, Thread
+from time import monotonic
 from typing import Any, Iterable, Mapping
 
 from eimemory.adapters.runtime.channel import base_scope_from_channel, normalize_runtime_channel, resolve_channel_scope
@@ -24,6 +25,7 @@ DEFAULT_MAX_DECISIONS = 512
 DEFAULT_MAX_CACHE_ENTRIES = 128
 DEFAULT_MAX_BYPASS_DIAGNOSTICS = 64
 DEFAULT_RECALL_TIMEOUT_SECONDS = 0.8
+DEFAULT_CLOSE_TIMEOUT_SECONDS = 5.0
 DEFAULT_STALE_DECISION_SECONDS = 900
 DEFAULT_INJECTED_STALE_DECISION_SECONDS = 86_400
 _MAX_TURNS_PER_SESSION = 4
@@ -152,6 +154,7 @@ class ProactiveRecallService:
         self._recall_slots = BoundedSemaphore(_MAX_RECALL_WORKERS)
         self._workers: set[Thread] = set()
         self._closing = False
+        self._on_drained_called = False
         self._lock = RLock()
 
     @staticmethod
@@ -1180,15 +1183,28 @@ class ProactiveRecallService:
             normalized["latency_ms"] = latency_value
         return normalized
 
-    def close(self, *, on_drained: Any | None = None) -> None:
-        """Stop admission, drain timed-out readers, then close on this thread."""
+    def close(
+        self,
+        *,
+        on_drained: Any | None = None,
+        timeout_seconds: float = DEFAULT_CLOSE_TIMEOUT_SECONDS,
+    ) -> None:
+        """Stop admission and close only after workers drain within a bounded wait."""
 
         with self._lock:
             self._closing = True
             workers = tuple(self._workers)
+        deadline = monotonic() + max(0.0, min(60.0, float(timeout_seconds)))
         for worker in workers:
-            worker.join()
-        if on_drained is not None:
+            worker.join(timeout=max(0.0, deadline - monotonic()))
+        with self._lock:
+            alive = tuple(worker for worker in self._workers if worker.is_alive())
+            should_close = on_drained is not None and not self._on_drained_called and not alive
+            if should_close:
+                self._on_drained_called = True
+        if alive:
+            raise TimeoutError("proactive recall workers did not drain before shutdown timeout")
+        if should_close:
             on_drained()
 
     def mandatory_fallback(

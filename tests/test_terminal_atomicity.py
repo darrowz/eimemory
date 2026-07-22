@@ -341,6 +341,44 @@ def test_terminal_structural_redaction_and_receipt_allowlist_leave_no_sqlite_sec
         runtime.close()
 
 
+def test_terminal_serialized_json_camel_case_secrets_leave_no_sqlite_canary(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("EIMEMORY_EVIDENCE_RECEIPT_HMAC_KEY", RECEIPT_KEY)
+    runtime, service = _service(tmp_path)
+    receipt = _attest(service)
+    canaries = (
+        "refresh-token-canary",
+        "access-token-canary",
+        "client-secret-canary",
+        "session-cookie-canary",
+    )
+    serialized = json.dumps(
+        {
+            "refreshToken": canaries[0],
+            "accessToken": canaries[1],
+            "clientSecret": canaries[2],
+            "sessionCookies": [canaries[3]],
+            "summary": "safe diagnostic",
+        }
+    )
+    try:
+        result = service.record_terminal(
+            channel="codex", scope=BASE_SCOPE, end_kind="stop",
+            session_id="session-1", event_id="turn-1", task_type="code.fix",
+            success=True, verification="caller prose is diagnostic",
+            result=serialized, receipt_ids=[receipt["receipt_id"]],
+        )
+        assert result["ok"] is True
+        persisted = _all_sqlite_text(runtime)
+        assert "safe diagnostic" in persisted
+        for canary in canaries:
+            assert canary not in persisted
+    finally:
+        runtime.close()
+
+
 @pytest.mark.parametrize(
     ("field", "sensitive_text", "secret_fragments", "expected_safe_text"),
     [

@@ -2960,30 +2960,35 @@ class SqliteRecordStore:
                 record.time.updated_at,
             ),
         )
-        self.conn.execute("DELETE FROM recall_alias_index WHERE storage_key = ?", (storage_key,))
-        if record.aliases:
-            self.conn.executemany(
-                "INSERT INTO recall_alias_index ("
-                "storage_key, normalized_alias, alias_ordinal, record_id, kind, status, source_id, "
-                "tenant_id, agent_id, workspace_id, user_id"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                [
-                    (
-                        storage_key,
-                        alias,
-                        ordinal,
-                        record.record_id,
-                        record.kind,
-                        record.status,
-                        record.source_id,
-                        record.scope.tenant_id,
-                        record.scope.agent_id,
-                        record.scope.workspace_id,
-                        record.scope.user_id,
-                    )
-                    for ordinal, alias in enumerate(record.aliases)
-                ],
-            )
+        alias_guarded = self._set_vector_sync_alias_guard(True)
+        try:
+            self.conn.execute("DELETE FROM recall_alias_index WHERE storage_key = ?", (storage_key,))
+            if record.aliases:
+                self.conn.executemany(
+                    "INSERT INTO recall_alias_index ("
+                    "storage_key, normalized_alias, alias_ordinal, record_id, kind, status, source_id, "
+                    "tenant_id, agent_id, workspace_id, user_id"
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    [
+                        (
+                            storage_key,
+                            alias,
+                            ordinal,
+                            record.record_id,
+                            record.kind,
+                            record.status,
+                            record.source_id,
+                            record.scope.tenant_id,
+                            record.scope.agent_id,
+                            record.scope.workspace_id,
+                            record.scope.user_id,
+                        )
+                        for ordinal, alias in enumerate(record.aliases)
+                    ],
+                )
+        finally:
+            if alias_guarded:
+                self._set_vector_sync_alias_guard(False)
         if self._has_fts_table():
             self.conn.execute("DELETE FROM recall_index_fts WHERE storage_key = ?", (storage_key,))
             self.conn.execute(
@@ -2993,9 +2998,26 @@ class SqliteRecordStore:
 
     def _delete_recall_index(self, storage_key: str) -> None:
         self.conn.execute("DELETE FROM recall_index WHERE storage_key = ?", (storage_key,))
-        self.conn.execute("DELETE FROM recall_alias_index WHERE storage_key = ?", (storage_key,))
+        alias_guarded = self._set_vector_sync_alias_guard(True)
+        try:
+            self.conn.execute("DELETE FROM recall_alias_index WHERE storage_key = ?", (storage_key,))
+        finally:
+            if alias_guarded:
+                self._set_vector_sync_alias_guard(False)
         if self._has_fts_table():
             self.conn.execute("DELETE FROM recall_index_fts WHERE storage_key = ?", (storage_key,))
+
+    def _set_vector_sync_alias_guard(self, suppress: bool) -> bool:
+        try:
+            cursor = self.conn.execute(
+                "UPDATE vector_sync_alias_guard SET suppress_revision = ? WHERE singleton = 1",
+                (int(bool(suppress)),),
+            )
+        except sqlite3.OperationalError as exc:
+            if "no such table" in str(exc).lower():
+                return False
+            raise
+        return cursor.rowcount > 0
 
     def _payload_dict_from_json(self, payload_json: Any) -> dict[str, Any] | None:
         try:

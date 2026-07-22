@@ -345,6 +345,61 @@ def test_same_tool_call_with_changed_result_conflicts(monkeypatch, tmp_path: Pat
         runtime.close()
 
 
+def test_same_tool_call_with_only_secret_result_change_conflicts_without_persisting_raw_secret(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("EIMEMORY_EVIDENCE_RECEIPT_HMAC_KEY", RECEIPT_KEY)
+    runtime = Runtime.create(root=tmp_path)
+    service = AgentRuntimeMemoryService(runtime)
+    first_canary = "receipt-secret-alpha"
+    second_canary = "receipt-secret-bravo"
+    try:
+        _attest(
+            service,
+            call_id="secret-result",
+            result={"exit_code": 0, "summary": "2 passed", "refreshToken": first_canary},
+        )
+        with pytest.raises(ValueError, match="conflict"):
+            _attest(
+                service,
+                call_id="secret-result",
+                result={"exit_code": 0, "summary": "2 passed", "refreshToken": second_canary},
+            )
+        persisted = "\n".join(
+            str(value)
+            for row in runtime.store.sqlite.conn.iterdump()
+            for value in (row,)
+        )
+        assert first_canary not in persisted
+        assert second_canary not in persisted
+    finally:
+        runtime.close()
+
+
+def test_same_tool_call_with_only_post_bound_invocation_change_conflicts(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("EIMEMORY_EVIDENCE_RECEIPT_HMAC_KEY", RECEIPT_KEY)
+    runtime = Runtime.create(root=tmp_path)
+    service = AgentRuntimeMemoryService(runtime)
+    try:
+        _attest(
+            service,
+            call_id="long-invocation",
+            tool_input={"command": "x" * 16_000 + "alpha"},
+        )
+        with pytest.raises(ValueError, match="conflict"):
+            _attest(
+                service,
+                call_id="long-invocation",
+                tool_input={"command": "x" * 16_000 + "bravo"},
+            )
+    finally:
+        runtime.close()
+
+
 def test_terminal_retry_changed_payload_or_receipt_set_rolls_back(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("EIMEMORY_EVIDENCE_RECEIPT_HMAC_KEY", RECEIPT_KEY)
     runtime = Runtime.create(root=tmp_path)
@@ -414,6 +469,61 @@ def test_dashboard_requires_persisted_v2_receipt_join_for_codex(monkeypatch, tmp
 
     assert terminal["ok"] is True
     assert before["sample_counts"]["verified_real_tasks"] == 1
+    assert after["sample_counts"]["verified_real_tasks"] == 0
+
+
+def test_dashboard_rejects_mixed_type_event_receipt_list(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("EIMEMORY_EVIDENCE_RECEIPT_HMAC_KEY", RECEIPT_KEY)
+    runtime = Runtime.create(root=tmp_path)
+    _seed_release(runtime)
+    service = AgentRuntimeMemoryService(runtime)
+    receipt = _attest(service, call_id="call-mixed-event-receipts")
+    terminal = _terminal(service, [receipt["receipt_id"]])
+    scope = resolve_channel_scope("codex", BASE_SCOPE)
+    assert runtime.build_capability_dashboard_metrics(
+        scope=scope, persist=False
+    )["sample_counts"]["verified_real_tasks"] == 1
+
+    event = dict(terminal["event"])
+    event["verification_receipts"] = [*event["verification_receipts"], "not-a-receipt"]
+    runtime.store.sqlite.conn.execute(
+        "UPDATE events SET payload_json = ? WHERE id = ?",
+        (json.dumps(event, sort_keys=True), event["id"]),
+    )
+    runtime.store.sqlite.conn.commit()
+    try:
+        after = runtime.build_capability_dashboard_metrics(scope=scope, persist=False)
+    finally:
+        runtime.close()
+
+    assert after["sample_counts"]["verified_real_tasks"] == 0
+
+
+def test_dashboard_fails_closed_for_non_object_persisted_receipt_json(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("EIMEMORY_EVIDENCE_RECEIPT_HMAC_KEY", RECEIPT_KEY)
+    runtime = Runtime.create(root=tmp_path)
+    _seed_release(runtime)
+    service = AgentRuntimeMemoryService(runtime)
+    receipt = _attest(service, call_id="call-non-object-persisted-receipt")
+    _terminal(service, [receipt["receipt_id"]])
+    scope = resolve_channel_scope("codex", BASE_SCOPE)
+    assert runtime.build_capability_dashboard_metrics(
+        scope=scope, persist=False
+    )["sample_counts"]["verified_real_tasks"] == 1
+
+    runtime.store.sqlite.conn.execute(
+        "UPDATE adapter_tool_receipts SET receipt_json = ? WHERE receipt_id = ?",
+        ("[]", receipt["receipt_id"]),
+    )
+    runtime.store.sqlite.conn.commit()
+    try:
+        after = runtime.build_capability_dashboard_metrics(scope=scope, persist=False)
+    finally:
+        runtime.close()
+
     assert after["sample_counts"]["verified_real_tasks"] == 0
 
 

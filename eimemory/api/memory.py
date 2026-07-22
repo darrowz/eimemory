@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import Counter
 from datetime import datetime, timezone
 from hashlib import sha256
+import json
 import re
 
 from eimemory.intake.registry import SourceRegistry
@@ -38,6 +39,7 @@ _MEMORY_USAGE_PROMOTION_WEIGHT = 0.08
 _MEMORY_USAGE_REJECTION_WEIGHT = -0.12
 _MEMORY_USAGE_MAX_ADJUSTMENT = 0.30
 _RECALL_PIPELINE_SCHEMA = "recall_pipeline.v1"
+_INGEST_REQUEST_DIGEST_META_KEY = "ingest_request_digest"
 _RECALL_PIPELINE_PHASES = ("prepare", "retrieve", "graph_expand", "score_filter", "package")
 _DEFAULT_PREFERENCE_QUERY_MARKERS = (
     "preference",
@@ -153,10 +155,20 @@ class MemoryAPI:
         record_id: str = "",
     ) -> RecordEnvelope:
         memory_type = self._normalize_ingest_memory_type(memory_type=memory_type, text=text, title=title)
+        scope_ref = ScopeRef.from_dict(scope)
+        request_meta = dict(meta or {})
+        request_meta.pop(_INGEST_REQUEST_DIGEST_META_KEY, None)
+        request_digest = self._ingest_request_digest(
+            text=text, memory_type=memory_type, title=title, scope=scope_ref,
+            tags=tags or [], source=source, source_id=source_id,
+            force_capture=force_capture, meta=request_meta, content=dict(content or {}),
+            evidence=evidence or [], links=links or [],
+        )
         meta_payload = {"memory_type": memory_type, "force_capture": force_capture}
-        if meta:
-            meta_payload.update(dict(meta))
+        if request_meta:
+            meta_payload.update(request_meta)
         meta_payload["memory_type"] = memory_type
+        meta_payload[_INGEST_REQUEST_DIGEST_META_KEY] = request_digest
         content_payload = {"text": text, "memory_type": memory_type}
         if content:
             content_payload.update(dict(content))
@@ -178,6 +190,16 @@ class MemoryAPI:
         )
         if str(record_id or "").strip():
             record.record_id = str(record_id).strip()
+            existing = self.store.get_by_id(record.record_id, scope=scope_ref)
+            if existing is not None:
+                existing_digest = str(
+                    business_metadata(existing.meta).get(_INGEST_REQUEST_DIGEST_META_KEY)
+                    or existing.meta.get(_INGEST_REQUEST_DIGEST_META_KEY)
+                    or ""
+                )
+                if existing.source_id == record.source_id and existing_digest == request_digest:
+                    return existing
+                raise ValueError("memory record_id conflict for exact scope")
         score = evaluate_memory_score(
             text=str(content_payload.get("text") or text),
             title=title,
@@ -398,6 +420,51 @@ class MemoryAPI:
         if not persist:
             return record
         return self.store.append(record)
+
+    @staticmethod
+    def _ingest_request_digest(
+        *,
+        text: str,
+        memory_type: str,
+        title: str,
+        scope: ScopeRef,
+        tags: list[str],
+        source: str,
+        source_id: str,
+        force_capture: bool,
+        meta: dict,
+        content: dict,
+        evidence: list[str],
+        links: list[LinkRef],
+    ) -> str:
+        payload = {
+            "text": text,
+            "memory_type": memory_type,
+            "title": title,
+            "scope": {
+                "tenant_id": scope.tenant_id,
+                "agent_id": scope.agent_id,
+                "workspace_id": scope.workspace_id,
+                "user_id": scope.user_id,
+            },
+            "tags": list(tags),
+            "source": source,
+            "source_id": source_id,
+            "force_capture": bool(force_capture),
+            "meta": dict(meta),
+            "content": dict(content),
+            "evidence": list(evidence),
+            "links": [
+                {
+                    "relation": link.relation,
+                    "target_kind": link.target_kind,
+                    "target_id": link.target_id,
+                }
+                for link in links
+            ],
+        }
+        canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return sha256(canonical.encode("utf-8")).hexdigest()
 
     def recall(
         self,

@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 import re
 import stat
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 from datetime import datetime, timezone
 
 
@@ -276,6 +276,87 @@ def _canonical_bytes(receipt: Mapping[str, Any]) -> bytes:
         separators=(",", ":"),
         sort_keys=True,
     ).encode("utf-8")
+
+
+def tool_receipt_commitment(value: Any, *, domain: str) -> str:
+    """Return a secret-keyed, domain-separated commitment to complete raw data."""
+
+    key_set = _receipt_key_set()
+    if key_set is None or not key_set.active_key:
+        raise ValueError("tool receipt attestation key is unavailable")
+    domain_id = str(domain or "").strip().lower()
+    if domain_id not in {"invocation", "result"}:
+        raise ValueError("unsupported tool receipt commitment domain")
+    digest = hmac.new(
+        key_set.active_key.encode("utf-8"),
+        f"eimemory.tool-receipt.commitment.v1\0{domain_id}\0".encode("ascii"),
+        sha256,
+    )
+    for chunk in _canonical_raw_chunks(value, active=set()):
+        digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _canonical_raw_chunks(value: Any, *, active: set[int]) -> Iterable[bytes]:
+    if value is None:
+        yield b"n;"
+        return
+    if isinstance(value, bool):
+        yield b"b1;" if value else b"b0;"
+        return
+    if isinstance(value, int):
+        yield from _framed_chunks(b"i", str(value).encode("ascii"))
+        return
+    if isinstance(value, float):
+        yield from _framed_chunks(b"f", repr(value).encode("ascii"))
+        return
+    if isinstance(value, str):
+        yield from _framed_chunks(b"s", value.encode("utf-8", errors="surrogatepass"))
+        return
+    if isinstance(value, bytes):
+        yield from _framed_chunks(b"y", value)
+        return
+
+    identity = id(value)
+    if identity in active:
+        raise ValueError("cyclic tool receipt input is unsupported")
+    active.add(identity)
+    try:
+        if isinstance(value, Mapping):
+            yield f"d{len(value)}:".encode("ascii")
+            ordered = sorted(value.items(), key=lambda item: (type(item[0]).__qualname__, repr(item[0])))
+            for key, nested in ordered:
+                yield from _canonical_raw_chunks(key, active=active)
+                yield from _canonical_raw_chunks(nested, active=active)
+            yield b";"
+            return
+        if isinstance(value, (list, tuple)):
+            marker = b"l" if isinstance(value, list) else b"t"
+            yield marker + str(len(value)).encode("ascii") + b":"
+            for nested in value:
+                yield from _canonical_raw_chunks(nested, active=active)
+            yield b";"
+            return
+        if isinstance(value, (set, frozenset)):
+            marker = b"e" if isinstance(value, set) else b"r"
+            ordered = sorted(value, key=lambda item: (type(item).__qualname__, repr(item)))
+            yield marker + str(len(ordered)).encode("ascii") + b":"
+            for nested in ordered:
+                yield from _canonical_raw_chunks(nested, active=active)
+            yield b";"
+            return
+        fallback = f"{type(value).__module__}.{type(value).__qualname__}\0{value}".encode(
+            "utf-8", errors="replace"
+        )
+        yield from _framed_chunks(b"o", fallback)
+    finally:
+        active.remove(identity)
+
+
+def _framed_chunks(marker: bytes, payload: bytes) -> Iterable[bytes]:
+    yield marker + str(len(payload)).encode("ascii") + b":"
+    yield payload
+    yield b";"
 
 
 def sign_tool_receipt(

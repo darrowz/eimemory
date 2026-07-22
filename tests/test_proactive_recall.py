@@ -1173,6 +1173,52 @@ def test_review_counterexample_07_close_defers_store_shutdown_until_timed_out_wo
         runtime.store.sqlite.conn.execute("SELECT 1")
 
 
+def test_close_is_bounded_and_closes_store_once_only_after_worker_drains(tmp_path) -> None:
+    runtime, _engine, service = _service(
+        tmp_path, [_record("blocked shutdown record")], recall_timeout_seconds=0.01,
+    )
+    worker_entered = threading.Event()
+    release_worker = threading.Event()
+    worker_finished = threading.Event()
+    close_calls = 0
+
+    def blocked_recall(*_args, **_kwargs):
+        worker_entered.set()
+        release_worker.wait(timeout=2.0)
+        runtime.store.list_proactive_bypasses(limit=1)
+        worker_finished.set()
+        return RecallBundle([], [], [], 0.0, "")
+
+    def close_store() -> None:
+        nonlocal close_calls
+        close_calls += 1
+        runtime.store.close()
+
+    runtime.memory.recall = blocked_recall
+    result = service.decide(
+        channel="codex", scope=BASE_SCOPE, source_ids=["alpha"],
+        session_id="bounded-close-session", query_id="bounded-close-turn",
+        query="Recall a blocked shutdown record",
+    )
+    assert result["bypassed"] is True
+    assert worker_entered.is_set()
+
+    started = time.perf_counter()
+    with pytest.raises(TimeoutError, match="workers did not drain"):
+        service.close(on_drained=close_store, timeout_seconds=0.03)
+    assert time.perf_counter() - started < 0.20
+    assert close_calls == 0
+    runtime.store.sqlite.conn.execute("SELECT 1")
+
+    release_worker.set()
+    assert worker_finished.wait(timeout=1.0)
+    service.close(on_drained=close_store, timeout_seconds=0.10)
+    service.close(on_drained=close_store, timeout_seconds=0.10)
+    assert close_calls == 1
+    with pytest.raises(Exception):
+        runtime.store.sqlite.conn.execute("SELECT 1")
+
+
 def test_review_counterexample_12_session_dedupe_scans_more_than_512_item_rows(tmp_path) -> None:
     runtime, _engine, service = _service(tmp_path, [], max_decisions=300)
     exact_scope = resolve_channel_scope("codex", BASE_SCOPE)

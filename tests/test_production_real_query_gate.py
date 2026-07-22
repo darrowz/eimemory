@@ -390,6 +390,41 @@ def test_eligible_dataset_fails_closed_without_real_labels_and_boundaries(mutati
     assert reason in frozen["eligibility"]["blocked_reasons"]
 
 
+@pytest.mark.parametrize(
+    "unsafe_value",
+    [
+        "operator@example.com",
+        "+1 (415) 555-0123",
+        "AKIAIOSFODNN7EXAMPLE",
+        "accessToken=credential-canary-value",
+        "Dr. Alice Smith",
+        "Alice Smith",
+        "张三先生",
+    ],
+)
+def test_query_features_reject_high_confidence_pii_secret_and_person_entities(unsafe_value: str) -> None:
+    features, reason = real_query_gate._bounded_query_features(
+        {"terms": ["deployment", "receipt"], "entities": [unsafe_value], "intent": "release verification"}
+    )
+
+    assert reason == "query_features_not_redacted"
+    assert features["terms"] == ["deployment", "receipt"]
+
+
+def test_query_features_allow_function_terms_and_constrained_person_placeholders() -> None:
+    features, reason = real_query_gate._bounded_query_features(
+        {
+            "terms": ["deployment", "postgresql", "receipt", "memory.recall"],
+            "entities": ["OpenAI", "person_ref:operator-17"],
+            "intent": "release verification",
+            "language": "en",
+        }
+    )
+
+    assert reason == ""
+    assert features["entities"] == ["OpenAI", "person_ref:operator-17"]
+
+
 def test_conflicting_accepted_label_grade_fails_eligibility_and_same_grade_duplicate_normalizes() -> None:
     dataset = _dataset({channel: f"record-{channel}" for channel in ("openclaw", "codex", "hermes")})
     original = deepcopy(dataset["cases"][0]["labels"][0])
@@ -1032,6 +1067,17 @@ def _ready_l5_payload() -> dict:
             "manifest_rejection_reasons": {},
         },
         "production_recall_gate": {"ok": True, "status": "accepted"},
+        "release_identity": {
+            "release_commit": RELEASE.commit,
+            "release_version": RELEASE.version,
+            "deployment_receipt_id": RELEASE.receipt_id,
+            "release_session_id": RELEASE.session_id,
+        },
+        "production_recall_strict_state": {
+            "ok": True,
+            "status": "strict_activated",
+            "candidate_commit": RELEASE.commit,
+        },
         "storage_migrations": {"ok": True, "status": "ready", "pending": []},
     }
 
