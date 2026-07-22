@@ -528,8 +528,9 @@ def begin_storage_release_transaction(
 ) -> dict[str, Any]:
     marker = Path(marker_path)
     with _marker_lock(marker) as parent_fd:
-        if _marker_entry_exists(marker, parent_fd=parent_fd) or _marker_entry_exists(
-            _clear_tombstone(marker), parent_fd=parent_fd
+        if any(
+            _marker_entry_exists(path, parent_fd=parent_fd)
+            for path in (marker, _clear_tombstone(marker), _recovery_blocker(marker))
         ):
             raise StorageReleaseTransactionError("storage release transaction already exists")
         now = datetime.now(timezone.utc).isoformat()
@@ -587,14 +588,16 @@ def clear_storage_release_transaction(
 ) -> None:
     marker = Path(marker_path)
     tombstone = _clear_tombstone(marker)
+    recovery = _recovery_blocker(marker)
     with _marker_lock(marker) as parent_fd:
         marker_present = _marker_entry_exists(marker, parent_fd=parent_fd)
         tombstone_present = _marker_entry_exists(tombstone, parent_fd=parent_fd)
-        if marker_present and tombstone_present:
+        recovery_present = _marker_entry_exists(recovery, parent_fd=parent_fd)
+        if marker_present and (tombstone_present or recovery_present):
             raise StorageReleaseTransactionError(
                 "storage release transaction clear state is ambiguous"
             )
-        source = tombstone if tombstone_present else marker
+        source = tombstone if tombstone_present else recovery if recovery_present else marker
         payload = _load_storage_release_transaction_unlocked(source, parent_fd=parent_fd)
         if payload["attempt_id"] != str(expected_attempt_id):
             raise StorageReleaseTransactionError("storage release transaction attempt mismatch")
@@ -606,34 +609,64 @@ def clear_storage_release_transaction(
                 raise StorageReleaseTransactionError(
                     "storage release transaction clear is not durable"
                 ) from exc
-        try:
-            _unlink_marker_entry(tombstone, parent_fd=parent_fd)
-            _sync_marker_parent(marker, parent_fd=parent_fd)
-        except OSError as exc:
-            try:
-                _restore_blocking_marker(marker, tombstone, payload, parent_fd=parent_fd)
-            except OSError as restore_exc:
-                try:
-                    blocker_present = _marker_entry_exists(
-                        marker, parent_fd=parent_fd
-                    ) or _marker_entry_exists(tombstone, parent_fd=parent_fd)
-                except OSError:
-                    blocker_present = False
-                detail = (
-                    "startup remains blocked"
-                    if blocker_present
-                    else "manual fail-closed intervention is required"
+            tombstone_present = True
+        if tombstone_present:
+            if recovery_present:
+                recovery_payload = _load_storage_release_transaction_unlocked(
+                    recovery, parent_fd=parent_fd
                 )
+                if recovery_payload != payload:
+                    raise StorageReleaseTransactionError(
+                        "storage release transaction recovery blocker does not match tombstone"
+                    )
+            else:
+                try:
+                    _create_recovery_blocker(
+                        recovery,
+                        payload,
+                        marker=marker,
+                        parent_fd=parent_fd,
+                    )
+                except OSError as exc:
+                    raise StorageReleaseTransactionError(
+                        "storage release transaction recovery blocker creation failed; "
+                        "tombstone remains active"
+                    ) from exc
+                recovery_present = True
+            try:
+                _unlink_marker_entry(tombstone, parent_fd=parent_fd)
+                _sync_marker_parent(marker, parent_fd=parent_fd)
+            except OSError as exc:
                 raise StorageReleaseTransactionError(
-                    f"storage release transaction blocker recovery failed; {detail}"
-                ) from restore_exc
+                    "storage release transaction clear is not durable"
+                ) from exc
+        elif recovery_present:
+            try:
+                _sync_marker_parent(marker, parent_fd=parent_fd)
+            except OSError as exc:
+                raise StorageReleaseTransactionError(
+                    "storage release transaction clear is not durable"
+                ) from exc
+        try:
+            _unlink_marker_entry(recovery, parent_fd=parent_fd)
+        except OSError as exc:
             raise StorageReleaseTransactionError(
-                "storage release transaction clear is not durable"
+                "storage release transaction recovery cleanup failed; startup remains blocked"
             ) from exc
+        try:
+            _sync_marker_parent(marker, parent_fd=parent_fd)
+        except OSError:
+            # Tombstone deletion was already durable. A crash may resurrect the
+            # recovery blocker and cause an extra safe block, never a false allow.
+            pass
 
 
 def _clear_tombstone(marker: Path) -> Path:
     return marker.with_name(f".{marker.name}.clearing")
+
+
+def _recovery_blocker(marker: Path) -> Path:
+    return marker.with_name(f".{marker.name}.recovery")
 
 
 def _replace_marker_entry(source: Path, destination: Path, *, parent_fd: int | None) -> None:
@@ -662,22 +695,18 @@ def _sync_marker_parent(marker: Path, *, parent_fd: int | None) -> None:
     os.fsync(parent_fd)
 
 
-def _restore_blocking_marker(
-    marker: Path,
-    tombstone: Path,
+def _create_recovery_blocker(
+    recovery: Path,
     payload: dict[str, Any],
     *,
+    marker: Path,
     parent_fd: int | None,
 ) -> None:
-    if _marker_entry_exists(marker, parent_fd=parent_fd) or _marker_entry_exists(
-        tombstone, parent_fd=parent_fd
-    ):
-        return
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | int(getattr(os, "O_NOFOLLOW", 0))
     if parent_fd is None:
-        descriptor = os.open(marker, flags, 0o600)
+        descriptor = os.open(recovery, flags, 0o600)
     else:
-        descriptor = os.open(marker.name, flags, 0o600, dir_fd=parent_fd)
+        descriptor = os.open(recovery.name, flags, 0o600, dir_fd=parent_fd)
     serialized = (
         json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     ).encode("utf-8")
@@ -691,12 +720,7 @@ def _restore_blocking_marker(
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
-    try:
-        _sync_marker_parent(marker, parent_fd=parent_fd)
-    except OSError:
-        # The live marker already blocks startup. Preserve it even when the
-        # filesystem continues to reject durability barriers.
-        pass
+    _sync_marker_parent(marker, parent_fd=parent_fd)
 
 
 def _marker_entry_exists(marker: Path, *, parent_fd: int | None) -> bool:
@@ -714,9 +738,13 @@ def guard_allows_start(marker_path: str | Path) -> bool:
 
     marker = Path(marker_path)
     tombstone = _clear_tombstone(marker)
+    recovery = _recovery_blocker(marker)
     try:
         with _marker_lock(marker) as parent_fd:
-            if _marker_entry_exists(tombstone, parent_fd=parent_fd):
+            if any(
+                _marker_entry_exists(path, parent_fd=parent_fd)
+                for path in (tombstone, recovery)
+            ):
                 return False
             return not _marker_entry_exists(marker, parent_fd=parent_fd)
     except (OSError, StorageReleaseTransactionError):

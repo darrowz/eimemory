@@ -885,23 +885,189 @@ def test_storage_release_clear_fsync_failure_preserves_a_blocking_credential(
 
     monkeypatch.setattr(transaction, "_fsync_directory", fail_selected_parent_sync)
 
-    with pytest.raises(
-        transaction.StorageReleaseTransactionError,
-        match="storage release transaction clear is not durable",
-    ):
+    with pytest.raises(transaction.StorageReleaseTransactionError):
         transaction.clear_storage_release_transaction(
             marker,
             expected_attempt_id="attempt-clear-fsync",
         )
 
     tombstone = marker.with_name(f".{marker.name}.clearing")
-    assert marker.exists() or marker.is_symlink() or tombstone.exists() or tombstone.is_symlink()
+    recovery = marker.with_name(f".{marker.name}.recovery")
+    assert any(
+        path.exists() or path.is_symlink() for path in (marker, tombstone, recovery)
+    )
     assert transaction.guard_allows_start(marker) is False
-    if failure_call == 2:
-        assert calls == 3
-        assert transaction.load_storage_release_transaction(marker)["attempt_id"] == (
-            "attempt-clear-fsync"
+
+
+def test_storage_release_clear_recovery_precreate_enospc_keeps_tombstone(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from deploy import storage_release_transaction as transaction
+
+    marker = tmp_path / "state" / "storage-release-transaction.json"
+    recovery = marker.with_name(f".{marker.name}.recovery")
+    tombstone = marker.with_name(f".{marker.name}.clearing")
+    transaction.begin_storage_release_transaction(
+        marker,
+        prior_commit="1" * 40,
+        candidate_commit="2" * 40,
+        current_link=tmp_path / "install" / "current",
+        attempt_id="attempt-recovery-enospc",
+        snapshot_dir=tmp_path / "state" / "snapshot",
+        active_writer_units=[],
+    )
+    real_open = transaction.os.open
+
+    def fail_recovery_create(path, flags, mode=0o777, **kwargs):
+        if Path(str(path)).name == recovery.name and flags & os.O_CREAT:
+            raise OSError(errno.ENOSPC, "injected recovery create failure")
+        return real_open(path, flags, mode, **kwargs)
+
+    monkeypatch.setattr(transaction.os, "open", fail_recovery_create)
+
+    with pytest.raises(
+        transaction.StorageReleaseTransactionError,
+        match="recovery blocker creation failed",
+    ):
+        transaction.clear_storage_release_transaction(
+            marker,
+            expected_attempt_id="attempt-recovery-enospc",
         )
+
+    assert tombstone.exists()
+    assert not recovery.exists()
+    assert transaction.guard_allows_start(marker) is False
+
+
+def test_storage_release_clear_uses_precreated_recovery_when_delete_sync_fails(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from deploy import storage_release_transaction as transaction
+
+    marker = tmp_path / "state" / "storage-release-transaction.json"
+    recovery = marker.with_name(f".{marker.name}.recovery")
+    tombstone = marker.with_name(f".{marker.name}.clearing")
+    transaction.begin_storage_release_transaction(
+        marker,
+        prior_commit="1" * 40,
+        candidate_commit="2" * 40,
+        current_link=tmp_path / "install" / "current",
+        attempt_id="attempt-precreated-recovery",
+        snapshot_dir=tmp_path / "state" / "snapshot",
+        active_writer_units=[],
+    )
+    real_open = transaction.os.open
+    real_sync = transaction._sync_marker_parent
+    calls = 0
+    delete_sync_failed = False
+
+    def fail_tombstone_delete_sync(path: Path, *, parent_fd: int | None) -> None:
+        nonlocal calls, delete_sync_failed
+        calls += 1
+        if calls == 3:
+            delete_sync_failed = True
+            raise OSError(errno.EIO, "injected tombstone delete fsync failure")
+        real_sync(path, parent_fd=parent_fd)
+
+    def reject_late_blocker_creation(path, flags, mode=0o777, **kwargs):
+        if (
+            delete_sync_failed
+            and flags & os.O_CREAT
+            and Path(str(path)).name in {marker.name, recovery.name, tombstone.name}
+        ):
+            raise OSError(errno.ENOSPC, "injected late create failure")
+        return real_open(path, flags, mode, **kwargs)
+
+    monkeypatch.setattr(transaction, "_sync_marker_parent", fail_tombstone_delete_sync)
+    monkeypatch.setattr(transaction.os, "open", reject_late_blocker_creation)
+
+    with pytest.raises(
+        transaction.StorageReleaseTransactionError,
+        match="storage release transaction clear is not durable",
+    ):
+        transaction.clear_storage_release_transaction(
+            marker,
+            expected_attempt_id="attempt-precreated-recovery",
+        )
+
+    assert delete_sync_failed is True
+    assert recovery.exists()
+    assert not tombstone.exists()
+    assert transaction.guard_allows_start(marker) is False
+
+    transaction.clear_storage_release_transaction(
+        marker,
+        expected_attempt_id="attempt-precreated-recovery",
+    )
+    assert transaction.guard_allows_start(marker) is True
+
+
+def test_storage_release_clear_rejects_mismatched_tombstone_and_recovery(
+    tmp_path: Path,
+) -> None:
+    from deploy import storage_release_transaction as transaction
+
+    marker = tmp_path / "state" / "storage-release-transaction.json"
+    recovery = marker.with_name(f".{marker.name}.recovery")
+    tombstone = marker.with_name(f".{marker.name}.clearing")
+    transaction.begin_storage_release_transaction(
+        marker,
+        prior_commit="1" * 40,
+        candidate_commit="2" * 40,
+        current_link=tmp_path / "install" / "current",
+        attempt_id="attempt-mismatch",
+        snapshot_dir=tmp_path / "state" / "snapshot",
+        active_writer_units=[],
+    )
+    marker.replace(tombstone)
+    recovery_payload = json.loads(tombstone.read_text(encoding="utf-8"))
+    recovery_payload["attempt_id"] = "different-attempt"
+    recovery.write_text(json.dumps(recovery_payload), encoding="utf-8")
+
+    with pytest.raises(
+        transaction.StorageReleaseTransactionError,
+        match="recovery blocker does not match tombstone",
+    ):
+        transaction.clear_storage_release_transaction(
+            marker,
+            expected_attempt_id="attempt-mismatch",
+        )
+    assert transaction.guard_allows_start(marker) is False
+
+
+def test_storage_release_clear_cleanup_fsync_failure_is_safe_after_durable_delete(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from deploy import storage_release_transaction as transaction
+
+    marker = tmp_path / "state" / "storage-release-transaction.json"
+    transaction.begin_storage_release_transaction(
+        marker,
+        prior_commit="1" * 40,
+        candidate_commit="2" * 40,
+        current_link=tmp_path / "install" / "current",
+        attempt_id="attempt-cleanup-fsync",
+        snapshot_dir=tmp_path / "state" / "snapshot",
+        active_writer_units=[],
+    )
+    real_sync = transaction._sync_marker_parent
+    calls = 0
+
+    def fail_cleanup_sync(path: Path, *, parent_fd: int | None) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 4:
+            raise OSError(errno.EIO, "injected recovery cleanup fsync failure")
+        real_sync(path, parent_fd=parent_fd)
+
+    monkeypatch.setattr(transaction, "_sync_marker_parent", fail_cleanup_sync)
+
+    transaction.clear_storage_release_transaction(
+        marker,
+        expected_attempt_id="attempt-cleanup-fsync",
+    )
+    assert calls == 4
+    assert transaction.guard_allows_start(marker) is True
 
 
 def test_storage_release_guard_waits_for_clear_parent_durability(
@@ -932,7 +1098,7 @@ def test_storage_release_guard_waits_for_clear_parent_durability(
     def delay_second_parent_sync(path: Path, *, parent_fd: int | None) -> None:
         nonlocal calls
         calls += 1
-        if calls == 2:
+        if calls == 3:
             entered_second_sync.set()
             if not release_second_sync.wait(timeout=5):
                 raise AssertionError("timed out waiting to release parent fsync")
@@ -963,7 +1129,7 @@ def test_storage_release_guard_waits_for_clear_parent_durability(
         assert guard_future.result(timeout=5) is True
 
 
-def test_storage_release_clear_reports_blocker_fsync_failure_but_keeps_guard_closed(
+def test_storage_release_clear_recovery_file_fsync_failure_keeps_tombstone(
     tmp_path: Path, monkeypatch
 ) -> None:
     from deploy import storage_release_transaction as transaction
@@ -978,16 +1144,6 @@ def test_storage_release_clear_reports_blocker_fsync_failure_but_keeps_guard_clo
         snapshot_dir=tmp_path / "state" / "snapshot",
         active_writer_units=[],
     )
-    calls = 0
-
-    def fail_second_parent_sync(_path: Path, *, parent_fd: int | None) -> None:
-        nonlocal calls
-        del parent_fd
-        calls += 1
-        if calls == 2:
-            raise OSError(errno.EIO, "injected parent fsync failure")
-
-    monkeypatch.setattr(transaction, "_sync_marker_parent", fail_second_parent_sync)
     monkeypatch.setattr(
         transaction.os,
         "fsync",
@@ -996,14 +1152,17 @@ def test_storage_release_clear_reports_blocker_fsync_failure_but_keeps_guard_clo
 
     with pytest.raises(
         transaction.StorageReleaseTransactionError,
-        match="blocker recovery failed; startup remains blocked",
+        match="recovery blocker creation failed; tombstone remains active",
     ):
         transaction.clear_storage_release_transaction(
             marker,
             expected_attempt_id="attempt-clear-restore",
         )
 
-    assert marker.exists() or marker.is_symlink()
+    tombstone = marker.with_name(f".{marker.name}.clearing")
+    recovery = marker.with_name(f".{marker.name}.recovery")
+    assert tombstone.exists()
+    assert recovery.exists()
     assert transaction.guard_allows_start(marker) is False
 
 
