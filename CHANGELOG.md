@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Planned
 - Multi-agent memory coordination
 
+## [1.9.84] - 2026-07-22
+
+### Fixed
+- Accept a configured diagnostic recall run as bootstrap evidence only when the evaluator itself completed successfully, passed every quality threshold, emitted no errors, and is paired with the current release-bound production-query pending credential.
+- Measure cross-channel and source-filter leakage from every returned diagnostic record, expose explicit sample and report counts, and hard-block the quality and release gates unless both are native integer zero.
+- Preserve the recall request's exact source-filter semantics (`None`, deny-all, or allowlist), validate target source identities independently, and reuse the production source-ID normalization contract.
+
 ## [1.9.83] - 2026-07-22
 
 ### Fixed
