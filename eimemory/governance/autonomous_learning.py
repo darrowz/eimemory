@@ -5,6 +5,7 @@ import json
 import os
 from typing import Any
 
+from eimemory.governance.capability_attribution import attribute_capability_outcomes
 from eimemory.governance.capability_distiller import distill_capability_candidate
 from eimemory.governance.capability_ledger import build_capability_ledger, record_capability_score
 from eimemory.governance.capability_dashboard import build_capability_dashboard_metrics
@@ -117,6 +118,11 @@ def run_autonomous_learning_cycle(
     loop = start_learning_loop(runtime, scope=scope_ref, trigger="learn_cycle", dry_run=dry_run, force=force)
     loop_id = str(loop.meta.get("loop_id") or loop.content.get("loop_id") or loop.record_id)
     try:
+        preexisting_outcome_attribution = attribute_capability_outcomes(
+            runtime,
+            scope=scope_ref,
+            loop_id="outcome_attribution",
+        )
         watch_report = collect_world_signals(
             runtime,
             scope=scope_ref,
@@ -544,8 +550,13 @@ def run_autonomous_learning_cycle(
             loop,
             step_name="ledger",
             status="completed",
-            record_ids=[item for item in [score_id, regression_report.get("record_id", "")] if item],
-            metrics={"retention_disabled_count": retention_report.get("disabled_count", 0), "regressed": regression_report.get("regressed", False)},
+            record_ids=list(preexisting_outcome_attribution.get("record_ids") or [])
+            + [item for item in [score_id, regression_report.get("record_id", "")] if item],
+            metrics={
+                "preexisting_outcome_attribution_count": preexisting_outcome_attribution.get("record_count", 0),
+                "retention_disabled_count": retention_report.get("disabled_count", 0),
+                "regressed": regression_report.get("regressed", False),
+            },
         )
         complete_learning_loop(runtime, loop, status="completed", summary=f"Autonomous learning cycle completed; candidate={candidate_id or 'none'}")
 
@@ -607,6 +618,7 @@ def run_autonomous_learning_cycle(
             "regression_watches": regression_reports,
             "replay_dataset": replay_dataset,
             "capability_score_id": score_id,
+            "preexisting_outcome_attribution": preexisting_outcome_attribution,
             "skill_sedimentation": skill_sedimentation,
             "capability_dashboard": capability_dashboard,
             "ledger": ledger,
