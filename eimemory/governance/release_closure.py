@@ -313,13 +313,17 @@ def _passing_diagnostic_recall_result(report: dict[str, Any]) -> bool:
         and int(report.get("sample_count")) > 0
         and _exact_zero_number(report.get("false_recall_rate"))
         and _exact_zero_number(report.get("forbidden_hit_rate"))
-        and _zero_or_missing(report.get("cross_channel_leakage_count"))
-        and _zero_or_missing(report.get("source_filter_leakage_count"))
+        and _exact_zero_int(report.get("cross_channel_leakage_count"))
+        and _exact_zero_int(report.get("source_filter_leakage_count"))
     )
 
 
 def _exact_zero_number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and float(value) == 0.0
+
+
+def _exact_zero_int(value: Any) -> bool:
+    return type(value) is int and value == 0
 
 
 def _zero_or_missing(value: Any) -> bool:

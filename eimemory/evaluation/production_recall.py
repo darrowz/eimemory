@@ -16,6 +16,7 @@ import tempfile
 from time import perf_counter
 from typing import Any
 
+from eimemory.adapters.runtime.channel import normalize_runtime_channel, runtime_channel_from_scope
 from eimemory.core.clock import now_iso
 from eimemory.evaluation.metrics import mean_reciprocal_rank, percentile
 from eimemory.evaluation.real_query_gate import (
@@ -153,6 +154,8 @@ def _run_production_recall_eval_on_runtime(
     evolution_polluted_count = 0
     stale_rule_polluted_count = 0
     selected_record_polluted_count = 0
+    cross_channel_leakage_count = 0
+    source_filter_leakage_count = 0
     policy_hit_scores: list[float] = []
     injection_withheld_rates: list[float] = []
     empty_count = 0
@@ -193,6 +196,8 @@ def _run_production_recall_eval_on_runtime(
             stale_rule_polluted_count += 1
         if sample.get("selected_record_polluted"):
             selected_record_polluted_count += 1
+        cross_channel_leakage_count += int(sample.get("cross_channel_leakage_count") or 0)
+        source_filter_leakage_count += int(sample.get("source_filter_leakage_count") or 0)
         policy_hit_scores.append(float(sample.get("policy_hit") or 0.0))
         injection_withheld_rates.append(float(sample.get("injection_withheld_rate") or 0.0))
         if sample.get("empty"):
@@ -232,6 +237,8 @@ def _run_production_recall_eval_on_runtime(
         "evolution_pollution_rate": round(evolution_polluted_count / sample_count, 3) if sample_count else 0.0,
         "stale_rule_pollution_rate": round(stale_rule_polluted_count / sample_count, 3) if sample_count else 0.0,
         "selected_record_pollution_rate": round(selected_record_polluted_count / sample_count, 3) if sample_count else 0.0,
+        "cross_channel_leakage_count": int(cross_channel_leakage_count),
+        "source_filter_leakage_count": int(source_filter_leakage_count),
         "policy_hit_rate": round(sum(policy_hit_scores) / sample_count, 3) if sample_count else 0.0,
         "injection_withheld_rate": round(sum(injection_withheld_rates) / sample_count, 3) if sample_count else 0.0,
         "empty_rate": round(empty_count / sample_count, 3) if sample_count else 0.0,
@@ -268,6 +275,11 @@ def evaluate_production_recall_quality_gate(
                 blocking[metric] = {"actual": actual, "threshold": threshold, "operator": ">="}
         elif actual > threshold:
             blocking[metric] = {"actual": actual, "threshold": threshold, "operator": "<="}
+
+    for metric in ("cross_channel_leakage_count", "source_filter_leakage_count"):
+        actual = report.get(metric)
+        if type(actual) is not int or actual != 0:
+            blocking[metric] = {"actual": actual, "threshold": 0, "operator": "=="}
 
     ok = not blocking
     return {
@@ -307,6 +319,18 @@ def _run_case(
     returned_sources = [str(item.source or "") for item in returned]
     returned_recall_lanes = [_record_recall_lane(item) for item in returned]
     returned_texts = _record_texts(returned)
+    expected_runtime_channel = _expected_runtime_channel(task_context=task_context, scope=case_scope)
+    cross_channel_leakage_count = sum(
+        1
+        for item in returned
+        if _record_runtime_channel(item) != expected_runtime_channel
+    )
+    source_filter_ids = _task_source_filter_ids(task_context)
+    source_filter_leakage_count = (
+        sum(1 for item in returned if item.source_id not in source_filter_ids)
+        if source_filter_ids
+        else 0
+    )
 
     expected_record_ids = _expected_record_ids(case, seed_lookup=seed_lookup)
     expected_titles = _normalize_set(case.get("expected_titles") or case.get("expect_any_title"), lower=False)
@@ -390,6 +414,8 @@ def _run_case(
             evolution_polluted,
             stale_rule_polluted,
             selected_record_polluted,
+            cross_channel_leakage_count > 0,
+            source_filter_leakage_count > 0,
         ]
     )
 
@@ -432,6 +458,8 @@ def _run_case(
         "evolution_polluted": bool(evolution_polluted),
         "stale_rule_polluted": bool(stale_rule_polluted),
         "selected_record_polluted": bool(selected_record_polluted),
+        "cross_channel_leakage_count": int(cross_channel_leakage_count),
+        "source_filter_leakage_count": int(source_filter_leakage_count),
         "policy_hit": policy_hit,
         "policy_suggestion_ids": [str(item.get("id") or item.get("pattern_id") or "") for item in policy_suggestions],
         "injection_withheld_rate": injection_withheld_rate,
@@ -808,6 +836,7 @@ def _sanitized_diagnostic_report(report: dict[str, Any]) -> dict[str, Any]:
                 "reciprocal_rank", "matched_expected", "empty", "false_recall", "forbid_hit",
                 "outcome_polluted", "reflection_polluted", "audit_polluted", "incident_polluted",
                 "evolution_polluted", "stale_rule_polluted", "selected_record_polluted", "passed", "error",
+                "cross_channel_leakage_count", "source_filter_leakage_count",
             }
         }
         for sample in list(report.get("samples") or [])
@@ -836,6 +865,34 @@ def _normalize_set(value: Any, *, lower: bool) -> set[str]:
 
 def _normalize_list(value: Any) -> list[str]:
     return [str(item).strip() for item in list(value or []) if str(item).strip()]
+
+
+def _expected_runtime_channel(*, task_context: dict[str, Any], scope: ScopeRef) -> str:
+    configured = str(task_context.get("runtime_channel") or "").strip()
+    if configured:
+        try:
+            return normalize_runtime_channel(configured)
+        except ValueError:
+            return configured.lower()
+    return runtime_channel_from_scope(scope) or "openclaw"
+
+
+def _record_runtime_channel(record: RecordEnvelope) -> str:
+    return runtime_channel_from_scope(record.scope) or "openclaw"
+
+
+def _task_source_filter_ids(task_context: dict[str, Any]) -> set[str]:
+    raw_source_ids = task_context.get("source_ids")
+    if isinstance(raw_source_ids, (list, tuple, set, frozenset)):
+        source_ids = {str(item).strip().lower() for item in raw_source_ids if str(item).strip()}
+    elif raw_source_ids is None:
+        source_ids = set()
+    else:
+        source_ids = {str(raw_source_ids).strip().lower()} if str(raw_source_ids).strip() else set()
+    target_source_id = str(task_context.get("target_source_id") or "").strip().lower()
+    if not source_ids and target_source_id:
+        source_ids.add(target_source_id)
+    return source_ids
 
 
 def _invalid_case(index: int, scope: ScopeRef, error: str) -> dict[str, Any]:
@@ -870,6 +927,8 @@ def _invalid_case(index: int, scope: ScopeRef, error: str) -> dict[str, Any]:
         "reflection_returned": False,
         "reflection_allowed": False,
         "reflection_polluted": False,
+        "cross_channel_leakage_count": 0,
+        "source_filter_leakage_count": 0,
         "error": error,
         "explanation": {},
     }

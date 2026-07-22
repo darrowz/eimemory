@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 
+from eimemory.adapters.runtime.channel import resolve_channel_scope
 from eimemory.api.runtime import Runtime
 from eimemory.cli.main import main as cli_main
 from eimemory.evaluation.production_recall import evaluate_production_recall_quality_gate, run_production_recall_eval
+from eimemory.models.records import RecallBundle, RecordEnvelope, ScopeRef
 
 
 def _scope() -> dict[str, str]:
@@ -178,6 +180,8 @@ def test_production_recall_eval_reports_regression_metrics(tmp_path) -> None:
     assert report["outcome_pollution_rate"] == 0.0
     assert report["reflection_pollution_rate"] == 0.0
     assert report["empty_rate"] == 0.0
+    assert report["cross_channel_leakage_count"] == 0
+    assert report["source_filter_leakage_count"] == 0
     assert report["latency_ms_avg"] >= 0.0
     assert report["latency_ms_p95"] >= 0.0
     assert len(report["samples"]) == 5
@@ -187,6 +191,136 @@ def test_production_recall_eval_reports_regression_metrics(tmp_path) -> None:
     assert report["samples"][4]["reflection_polluted"] is False
     assert report["samples"][3]["forbid_hit"] is False
     assert report["samples"][4]["forbid_hit"] is False
+    assert all(sample["cross_channel_leakage_count"] == 0 for sample in report["samples"])
+    assert all(sample["source_filter_leakage_count"] == 0 for sample in report["samples"])
+
+
+def test_production_recall_eval_blocks_cross_channel_leaks_for_all_authority_channels(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+
+    channel_pairs = (("openclaw", "codex"), ("codex", "hermes"), ("hermes", "openclaw"))
+    for expected_channel, actual_channel in channel_pairs:
+        expected_scope = resolve_channel_scope(expected_channel, _scope())
+        leaked = RecordEnvelope.create(
+            kind="knowledge_page",
+            title=f"{expected_channel} expected answer",
+            summary="A correct result returned from the wrong authority channel.",
+            scope=ScopeRef.from_dict(resolve_channel_scope(actual_channel, _scope())),
+            source="test.production_recall",
+        )
+        monkeypatch.setattr(
+            runtime.memory,
+            "recall",
+            lambda **_kwargs: RecallBundle(
+                items=[leaked],
+                rules=[],
+                reflections=[],
+                confidence=1.0,
+                next_action_hint="",
+                explanation={},
+            ),
+        )
+
+        report = run_production_recall_eval(
+            runtime,
+            {
+                "name": f"cross-channel-{expected_channel}",
+                "scope": expected_scope,
+                "cases": [
+                    {
+                        "case_id": expected_channel,
+                        "query": "expected answer",
+                        "expected_titles": [leaked.title],
+                        "scope": expected_scope,
+                        "task_context": (
+                            {"runtime_channel": expected_channel}
+                            if expected_channel == "openclaw"
+                            else {}
+                        ),
+                    }
+                ],
+            },
+            seed=False,
+        )
+
+        assert report["cross_channel_leakage_count"] == 1
+        assert report["samples"][0]["cross_channel_leakage_count"] == 1
+        assert report["source_filter_leakage_count"] == 0
+        assert report["quality_gate"]["ok"] is False
+        assert report["quality_gate"]["blocking_metrics"]["cross_channel_leakage_count"]["actual"] == 1
+
+
+def test_production_recall_eval_blocks_source_filter_leaks_and_treats_no_filter_as_unconstrained(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    returned = RecordEnvelope.create(
+        kind="knowledge_page",
+        title="Filtered source answer",
+        summary="A result from source beta.",
+        scope=ScopeRef.from_dict(_scope()),
+        source="test.production_recall",
+        source_id="beta",
+    )
+    monkeypatch.setattr(
+        runtime.memory,
+        "recall",
+        lambda **_kwargs: RecallBundle(
+            items=[returned],
+            rules=[],
+            reflections=[],
+            confidence=1.0,
+            next_action_hint="",
+            explanation={},
+        ),
+    )
+
+    constrained_reports = []
+    for task_context in ({"source_ids": ["alpha"]}, {"target_source_id": "alpha"}):
+        constrained_reports.append(
+            run_production_recall_eval(
+                runtime,
+                {
+                    "name": "source-filter-leak",
+                    "scope": _scope(),
+                    "cases": [
+                        {
+                            "query": "filtered source answer",
+                            "expected_titles": [returned.title],
+                            "scope": _scope(),
+                            "task_context": task_context,
+                        }
+                    ],
+                },
+                seed=False,
+            )
+        )
+    unconstrained = run_production_recall_eval(
+        runtime,
+        {
+            "name": "source-filter-unconstrained",
+            "scope": _scope(),
+            "cases": [
+                {
+                    "query": "filtered source answer",
+                    "expected_titles": [returned.title],
+                    "scope": _scope(),
+                    "task_context": {},
+                }
+            ],
+        },
+        seed=False,
+    )
+
+    for constrained in constrained_reports:
+        assert constrained["source_filter_leakage_count"] == 1
+        assert constrained["samples"][0]["source_filter_leakage_count"] == 1
+        assert constrained["quality_gate"]["ok"] is False
+        assert constrained["quality_gate"]["blocking_metrics"]["source_filter_leakage_count"]["actual"] == 1
+    assert unconstrained["source_filter_leakage_count"] == 0
+    assert unconstrained["samples"][0]["source_filter_leakage_count"] == 0
+    assert unconstrained["quality_gate"]["ok"] is True
 
 
 def test_production_recall_eval_seeds_temporary_runtime(tmp_path) -> None:

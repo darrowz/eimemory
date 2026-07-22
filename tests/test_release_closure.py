@@ -388,6 +388,8 @@ def test_release_closure_allows_real_passing_diagnostic_only_as_bootstrap_input(
     assert report["gate_status"] == "diagnostic"
     assert report["dataset_kind"] == "diagnostic"
     assert report["quality_gate"]["ok"] is True
+    assert report["cross_channel_leakage_count"] == 0
+    assert report["source_filter_leakage_count"] == 0
     assert _recall_result_allows_bootstrap_pending(report) is True
 
 
@@ -431,6 +433,10 @@ def test_release_closure_rejects_every_incomplete_or_failed_diagnostic_contract(
         (("seed_error_count",), 1),
         (("false_recall_rate",), 0.01),
         (("forbidden_hit_rate",), 0.01),
+        (("cross_channel_leakage_count",), 1),
+        (("source_filter_leakage_count",), 1),
+        (("cross_channel_leakage_count",), "0"),
+        (("source_filter_leakage_count",), False),
         (("gate_ok",), False),
         (("passed_threshold",), False),
         (("blocked_reason",), "recall_quality_gate_failed"),
@@ -448,6 +454,8 @@ def test_release_closure_rejects_every_incomplete_or_failed_diagnostic_contract(
         "seed_error_count",
         "false_recall_rate",
         "forbidden_hit_rate",
+        "cross_channel_leakage_count",
+        "source_filter_leakage_count",
         "gate_ok",
         "passed_threshold",
         "dataset_kind",
