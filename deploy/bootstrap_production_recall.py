@@ -11,6 +11,8 @@ from typing import Any
 
 from eimemory.api.runtime import Runtime
 from eimemory.evaluation.real_query_gate import (
+    _REAL_QUERY_MIN_CASES,
+    _REAL_QUERY_MIN_CASES_PER_CHANNEL,
     bootstrap_production_recall_baseline,
     freeze_production_recall_dataset,
     record_production_recall_bootstrap_pending,
@@ -29,9 +31,16 @@ def _progress(frozen: dict[str, Any]) -> dict[str, Any]:
         "case_count": int(eligibility.get("case_count") or 0),
         "accepted_label_count": int(eligibility.get("accepted_label_count") or 0),
         "per_channel_case_count": dict(eligibility.get("per_channel_case_count") or {}),
-        "required_case_count": 15,
-        "required_per_channel": 5,
+        "required_case_count": _REAL_QUERY_MIN_CASES,
+        "required_per_channel": _REAL_QUERY_MIN_CASES_PER_CHANNEL,
         "blocked_reasons": list(eligibility.get("blocked_reasons") or []),
+    }
+
+
+def _collection_summary(collection: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "created": int(collection.get("created") or 0),
+        "skipped": dict(collection.get("skipped") or {}),
     }
 
 
@@ -57,8 +66,19 @@ def main(argv: list[str] | None = None) -> int:
     runtime = Runtime.create(root=Path(args.root).expanduser())
     try:
         collection = collect_pending_production_queries(runtime, scope=scope)
+        collection_summary = _collection_summary(collection)
         dataset_path = str(args.dataset or "").strip()
-        if not dataset_path or not Path(dataset_path).is_file():
+        if dataset_path and not Path(dataset_path).is_file():
+            report = {
+                "ok": False,
+                "status": "blocked",
+                "reason": "dataset_path_unavailable",
+                "path": dataset_path,
+                "collection": collection_summary,
+            }
+            print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+            return 2
+        if not dataset_path:
             accumulated = build_production_query_dataset(runtime, scope=scope)
             if accumulated.get("ready") is True:
                 conventional = Path(args.root).expanduser() / "evaluation" / "production_recall.json"
@@ -75,6 +95,7 @@ def main(argv: list[str] | None = None) -> int:
                     reason="production_dataset_not_ready",
                     progress={**dict(accumulated.get("progress") or {}), "pending_collected": int(collection.get("created") or 0)},
                 )
+                report["collection"] = collection_summary
                 print(json.dumps(report, ensure_ascii=False, sort_keys=True))
                 return 0 if report.get("ok") is True else 1
         if dataset_path and Path(dataset_path).is_file():
@@ -105,7 +126,7 @@ def main(argv: list[str] | None = None) -> int:
                     scope=scope,
                     persist_report=True,
                 )
-        report["collection"] = {"created": int(collection.get("created") or 0), "skipped": dict(collection.get("skipped") or {})}
+        report["collection"] = collection_summary
         print(json.dumps(report, ensure_ascii=False, sort_keys=True))
         return 0 if report.get("ok") is True or report.get("status") == "bootstrap_data_pending" or report.get("bootstrap_status") in {"anchor_ready", "baseline_ready"} else 1
     finally:

@@ -7,6 +7,9 @@ from pathlib import Path
 import subprocess
 from threading import Thread
 
+import pytest
+
+import deploy.bootstrap_production_recall as bootstrap_deploy
 from eimemory.api.runtime import Runtime
 from eimemory.evaluation import real_query_gate
 from eimemory.governance.evidence_contract import ReleaseIdentity
@@ -14,6 +17,79 @@ from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
 SCOPE = {"tenant_id": "default", "agent_id": "main", "workspace_id": "production", "user_id": "darrow"}
+
+
+class _BootstrapRuntime:
+    def __init__(self) -> None:
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _bootstrap_args(tmp_path: Path, *, dataset: str | None = None) -> list[str]:
+    args = [
+        "--candidate-commit",
+        "a" * 40,
+        "--prior-commit",
+        "b" * 40,
+        "--current-link",
+        str(tmp_path / "current"),
+        "--health-url",
+        "http://127.0.0.1:1/health",
+        "--root",
+        str(tmp_path / "runtime"),
+        "--agent",
+        SCOPE["agent_id"],
+        "--workspace",
+        SCOPE["workspace_id"],
+        "--user",
+        SCOPE["user_id"],
+    ]
+    if dataset is not None:
+        args.extend(["--dataset", dataset])
+    return args
+
+
+def _patch_ready_accumulated_gate(monkeypatch, tmp_path: Path) -> tuple[_BootstrapRuntime, dict[str, list]]:
+    runtime = _BootstrapRuntime()
+    calls: dict[str, list] = {"build": [], "write": [], "gate": []}
+    monkeypatch.setattr(bootstrap_deploy.Runtime, "create", lambda **_kwargs: runtime)
+    monkeypatch.setattr(
+        bootstrap_deploy,
+        "collect_pending_production_queries",
+        lambda *_args, **_kwargs: {"created": 2, "skipped": {"duplicate": 1}},
+    )
+
+    def build(*_args, **_kwargs):
+        calls["build"].append(True)
+        return {"ready": True, "dataset": {"schema": "production_redacted_v1"}}
+
+    def write(dataset, path):
+        target = Path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(dataset), encoding="utf-8")
+        calls["write"].append(target)
+
+    monkeypatch.setattr(bootstrap_deploy, "build_production_query_dataset", build)
+    monkeypatch.setattr(bootstrap_deploy, "write_production_query_dataset", write)
+    monkeypatch.setattr(
+        bootstrap_deploy,
+        "load_json_dataset_with_evidence",
+        lambda path: ({"schema": "production_redacted_v1"}, {"path": str(path)}),
+    )
+    monkeypatch.setattr(
+        bootstrap_deploy,
+        "freeze_production_recall_dataset",
+        lambda _dataset: {"eligibility": {"ok": True}},
+    )
+
+    def gate(*_args, **_kwargs):
+        calls["gate"].append(True)
+        return {"ok": True, "bootstrap_status": "anchor_ready"}
+
+    monkeypatch.setattr(bootstrap_deploy, "bootstrap_production_recall_baseline", gate)
+    return runtime, calls
 
 
 def _link(link: Path, target: Path) -> None:
@@ -46,6 +122,100 @@ def _health(payload: dict):
         server.shutdown()
         thread.join(timeout=5)
         server.server_close()
+
+
+@pytest.mark.parametrize("dataset_source", ["cli", "environment"])
+def test_explicit_missing_dataset_fails_closed_without_building_or_running_gate(
+    tmp_path,
+    monkeypatch,
+    capsys,
+    dataset_source: str,
+) -> None:
+    runtime, calls = _patch_ready_accumulated_gate(monkeypatch, tmp_path)
+    missing = tmp_path / "operator-selected" / "missing.json"
+    monkeypatch.delenv("EIMEMORY_PRODUCTION_RECALL_DATASET", raising=False)
+    args = _bootstrap_args(tmp_path)
+    if dataset_source == "cli":
+        args.extend(["--dataset", str(missing)])
+    else:
+        monkeypatch.setenv("EIMEMORY_PRODUCTION_RECALL_DATASET", str(missing))
+
+    exit_code = bootstrap_deploy.main(args)
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code != 0
+    assert payload == {
+        "collection": {"created": 2, "skipped": {"duplicate": 1}},
+        "ok": False,
+        "path": str(missing),
+        "reason": "dataset_path_unavailable",
+        "status": "blocked",
+    }
+    assert calls == {"build": [], "write": [], "gate": []}
+    assert not (tmp_path / "runtime" / "evaluation" / "production_recall.json").exists()
+    assert runtime.closed is True
+
+
+def test_unspecified_dataset_keeps_accumulated_build_path(tmp_path, monkeypatch, capsys) -> None:
+    runtime, calls = _patch_ready_accumulated_gate(monkeypatch, tmp_path)
+    monkeypatch.delenv("EIMEMORY_PRODUCTION_RECALL_DATASET", raising=False)
+
+    exit_code = bootstrap_deploy.main(_bootstrap_args(tmp_path))
+    payload = json.loads(capsys.readouterr().out)
+
+    conventional = tmp_path / "runtime" / "evaluation" / "production_recall.json"
+    assert exit_code == 0
+    assert calls == {"build": [True], "write": [conventional], "gate": [True]}
+    assert conventional.is_file()
+    assert payload["collection"] == {"created": 2, "skipped": {"duplicate": 1}}
+    assert runtime.closed is True
+
+
+def test_early_pending_report_has_the_same_collection_shape(tmp_path, monkeypatch, capsys) -> None:
+    runtime = _BootstrapRuntime()
+    monkeypatch.delenv("EIMEMORY_PRODUCTION_RECALL_DATASET", raising=False)
+    monkeypatch.setattr(bootstrap_deploy.Runtime, "create", lambda **_kwargs: runtime)
+    monkeypatch.setattr(
+        bootstrap_deploy,
+        "collect_pending_production_queries",
+        lambda *_args, **_kwargs: {"created": 3, "skipped": {"duplicate": 2}},
+    )
+    monkeypatch.setattr(
+        bootstrap_deploy,
+        "build_production_query_dataset",
+        lambda *_args, **_kwargs: {"ready": False, "progress": {"case_count": 4}},
+    )
+    monkeypatch.setattr(
+        bootstrap_deploy,
+        "record_production_recall_bootstrap_pending",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "status": "bootstrap_data_pending",
+            "reason": "production_dataset_not_ready",
+        },
+    )
+
+    exit_code = bootstrap_deploy.main(_bootstrap_args(tmp_path))
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert payload["collection"] == {"created": 3, "skipped": {"duplicate": 2}}
+    assert runtime.closed is True
+
+
+def test_progress_thresholds_use_real_query_gate_constants(monkeypatch) -> None:
+    monkeypatch.setattr(bootstrap_deploy, "_REAL_QUERY_MIN_CASES", 27, raising=False)
+    monkeypatch.setattr(
+        bootstrap_deploy,
+        "_REAL_QUERY_MIN_CASES_PER_CHANNEL",
+        9,
+        raising=False,
+    )
+
+    progress = bootstrap_deploy._progress({"eligibility": {}})
+
+    assert progress["required_case_count"] == 27
+    assert progress["required_per_channel"] == 9
 
 
 def _receipt(runtime: Runtime, *, commit: str, prior_commit: str) -> ReleaseIdentity:
