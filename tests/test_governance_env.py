@@ -225,10 +225,25 @@ def test_release_closure_summary_cli_keeps_strict_l5_contract(tmp_path, capsys) 
     [
         (("deployment", "commit"), "short"),
         (("deployment", "promotion_request_id"), ""),
+        (("deployment_receipt",), {}),
+        (("deployment_receipt", "ok"), False),
+        (("deployment_receipt", "commit"), "b" * 40),
+        (("deployment_receipt", "version"), "1.9.81"),
+        (("deployment_receipt", "promotion_request_id"), "other-receipt"),
+        (("deployment_receipt", "release_session_id"), "other-session"),
         (("production_recall_gate", "status"), "accepted"),
         (("bootstrap_pending_verification", "ok"), False),
         (("bootstrap_pending_verification", "record_id"), ""),
+        (("bootstrap_pending_verification", "release_identity"), {}),
+        (("bootstrap_pending_verification", "release_identity", "release_session_id"), "other-session"),
         (("production_recall_gate", "bootstrap", "record_id"), "other-pending"),
+        (("production_recall_gate", "bootstrap", "release_identity"), {}),
+        (("production_recall_gate", "bootstrap", "release_identity", "release_commit"), "b" * 40),
+        (("closure_rehearsal", "bootstrap_pending_verification", "release_identity"), {}),
+        (
+            ("closure_rehearsal", "bootstrap_pending_verification", "release_identity", "deployment_receipt_id"),
+            "other-receipt",
+        ),
         (("replay_bootstrap", "ok"), False),
         (("live_acceptance", "pass_count"), 9),
         (("readiness", "readiness_score"), 0.9),
@@ -262,6 +277,12 @@ def _release_bound_accumulating_report() -> dict:
         "ok": True,
         "status": "bootstrap_data_pending",
         "record_id": pending_id,
+        "release_identity": {
+            "release_commit": commit,
+            "release_version": "1.9.82",
+            "deployment_receipt_id": receipt_id,
+            "release_session_id": receipt_id,
+        },
     }
     return {
         "ok": True,
@@ -271,6 +292,13 @@ def _release_bound_accumulating_report() -> dict:
             "commit": commit,
             "version": "1.9.82",
             "promotion_request_id": receipt_id,
+        },
+        "deployment_receipt": {
+            "ok": True,
+            "commit": commit,
+            "version": "1.9.82",
+            "promotion_request_id": receipt_id,
+            "release_session_id": receipt_id,
         },
         "production_recall_gate": {
             "ok": False,

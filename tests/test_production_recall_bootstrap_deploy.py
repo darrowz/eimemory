@@ -969,7 +969,18 @@ def test_bootstrap_pending_can_follow_patch_lineage_but_cannot_regress_after_anc
     )
     current = _receipt(runtime, commit="a" * 40, prior_commit=prior.commit)
     assert first["status"] == "bootstrap_data_pending"
-    assert real_query_gate.verify_current_bootstrap_data_pending(runtime, scope=SCOPE, release=current)["ok"] is True
+    verified_first = real_query_gate.verify_current_bootstrap_data_pending(
+        runtime,
+        scope=SCOPE,
+        release=current,
+    )
+    assert verified_first["ok"] is True
+    assert verified_first["release_identity"] == {
+        "release_commit": current.commit,
+        "release_version": current.version,
+        "deployment_receipt_id": current.receipt_id,
+        "release_session_id": current.session_id,
+    }
 
     monkeypatch.setattr(real_query_gate, "_verified_live_prior_release", lambda *_args, **_kwargs: (current, ""))
     second = real_query_gate.record_production_recall_bootstrap_pending(
@@ -983,6 +994,7 @@ def test_bootstrap_pending_can_follow_patch_lineage_but_cannot_regress_after_anc
     assert second["status"] == "bootstrap_data_pending"
     verified_second = real_query_gate.verify_current_bootstrap_data_pending(runtime, scope=SCOPE, release=newer)
     assert verified_second["ok"] is True, verified_second
+    assert verified_second["release_identity"]["release_session_id"] == newer.session_id
 
     real_query_gate._persist_bootstrap_state(
         runtime,

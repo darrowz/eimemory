@@ -87,6 +87,7 @@ def test_deployment_receipt_reads_and_cross_checks_live_release_evidence(tmp_pat
     assert Path(report["release_path"]).resolve() == release_dir.resolve()
     assert report["prior_commit"] == prior_commit
     assert report["promotion_request_id"]
+    assert report["release_session_id"] == report["promotion_request_id"]
     assert len(records) == 1
     receipt = records[0]
     assert receipt.status == "deployed"

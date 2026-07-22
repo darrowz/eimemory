@@ -426,6 +426,12 @@ def test_release_closure_allows_only_verified_bootstrap_data_pending_and_keeps_l
             "reason": "production_dataset_not_ready",
             "record_id": "bootstrap-pending-current",
             "progress": {"case_count": 2, "required_case_count": 15},
+            "release_identity": {
+                "release_commit": CURRENT_COMMIT,
+                "release_version": "1.9.51",
+                "deployment_receipt_id": "receipt-1",
+                "release_session_id": "receipt-1",
+            },
         },
     )
 
@@ -632,6 +638,7 @@ def _successful_receipt() -> dict:
         "version": "1.9.51",
         "release_path": f"/opt/eimemory/releases/{CURRENT_COMMIT}",
         "promotion_request_id": "receipt-1",
+        "release_session_id": "receipt-1",
     }
 
 

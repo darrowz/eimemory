@@ -259,7 +259,7 @@ def verify_bootstrap_pending_readiness_contract(
             "record_id": str(reverified.get("record_id") or ""),
             "reverified": reverified,
         }
-    compared_fields = ("ok", "status", "reason", "record_id", "progress")
+    compared_fields = ("ok", "status", "reason", "record_id", "progress", "release_identity")
     if any(bootstrap_pending.get(field) != reverified.get(field) for field in compared_fields):
         return {
             **rejected,

@@ -249,6 +249,7 @@ def _deployment_receipt_response(record: Any) -> dict[str, Any]:
         "prior_commit": str(verification.get("prior_commit") or ""),
         "health_url": str(health.get("url") or ""),
         "promotion_request_id": record.record_id,
+        "release_session_id": record.record_id,
     }
 
 

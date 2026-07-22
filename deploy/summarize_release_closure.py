@@ -84,6 +84,14 @@ def _release_closure_summary_contract_ok(report: object, summary: dict[str, Any]
     commit = str(deployment.get("commit") or "").strip().lower()
     version = str(deployment.get("version") or "").strip()
     receipt_id = str(deployment.get("promotion_request_id") or "").strip()
+    receipt = report.get("deployment_receipt") if isinstance(report.get("deployment_receipt"), dict) else {}
+    session_id = str(receipt.get("release_session_id") or "").strip()
+    release_identity = {
+        "release_commit": commit,
+        "release_version": version,
+        "deployment_receipt_id": receipt_id,
+        "release_session_id": session_id,
+    }
     replay = report.get("replay_bootstrap") if isinstance(report.get("replay_bootstrap"), dict) else {}
     live = report.get("live_acceptance") if isinstance(report.get("live_acceptance"), dict) else {}
     rehearsal = report.get("closure_rehearsal") if isinstance(report.get("closure_rehearsal"), dict) else {}
@@ -97,6 +105,12 @@ def _release_closure_summary_contract_ok(report: object, summary: dict[str, Any]
         re.fullmatch(r"[0-9a-f]{40}", commit)
         and version
         and receipt_id
+        and session_id
+        and receipt.get("ok") is True
+        and receipt.get("commit") == commit
+        and receipt.get("version") == version
+        and receipt.get("promotion_request_id") == receipt_id
+        and receipt.get("release_session_id") == session_id
         and not str(report.get("blocked_stage") or "")
         and not str(report.get("blocked_reason") or "")
         and replay.get("ok") is True
@@ -108,9 +122,7 @@ def _release_closure_summary_contract_ok(report: object, summary: dict[str, Any]
         and _deployment_identity_matches(live_deployment, commit=commit, version=version, receipt_id=receipt_id)
         and readiness.get("ok") is True
         and readiness.get("schema_version") == "l5_readiness.v2"
-        and readiness_identity.get("release_commit") == commit
-        and readiness_identity.get("release_version") == version
-        and readiness_identity.get("deployment_receipt_id") == receipt_id
+        and readiness_identity == release_identity
     )
     if not common:
         return False
@@ -138,6 +150,7 @@ def _release_closure_summary_contract_ok(report: object, summary: dict[str, Any]
                 item.get("ok") is True
                 and item.get("status") == "bootstrap_data_pending"
                 and str(item.get("record_id") or "") == pending_record_id
+                and item.get("release_identity") == release_identity
                 for item in (pending, recall_pending, rehearsal_pending)
             )
             and pending_record_id

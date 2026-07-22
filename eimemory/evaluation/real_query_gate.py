@@ -984,6 +984,7 @@ def verify_current_bootstrap_data_pending(
         "reason": str(latest.get("reason") or ""),
         "record_id": str(latest.get("record_id") or ""),
         "progress": dict(latest.get("progress") or {}),
+        "release_identity": release_identity_payload(release),
     }
 
 
