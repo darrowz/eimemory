@@ -295,6 +295,7 @@ def create_consistent_storage_snapshot(
     snapshot_dir: str | Path,
     offline: bool,
     binding: dict[str, str] | None = None,
+    seal: bool = False,
 ) -> dict[str, Any]:
     if not offline:
         raise StorageMaintenanceError("consistent storage snapshot requires offline writer stop")
@@ -305,6 +306,12 @@ def create_consistent_storage_snapshot(
         existing = verify_storage_snapshot(snapshot)
         if binding is not None and existing["binding"] != dict(binding):
             raise StorageMaintenanceError("storage snapshot binding mismatch")
+        if seal:
+            verify_sealed_snapshot_identity(
+                snapshot,
+                expected_manifest_sha256=str(existing["manifest_sha256"]),
+                expected_binding=binding,
+            )
         return existing
     preflight = preflight_storage_maintenance(
         db_path=database,
@@ -336,6 +343,9 @@ def create_consistent_storage_snapshot(
             "segment_directory": "payload_segments",
             "sidecar_policy": "checkpointed_and_excluded",
             "binding": dict(binding or {}),
+            "immutability": {
+                "policy": "readonly_tree_v1" if seal else "none",
+            },
             "preflight": preflight,
             "files": _snapshot_file_manifest(staging),
         }
@@ -343,7 +353,96 @@ def create_consistent_storage_snapshot(
         _fsync_directory(staging)
         os.replace(staging, snapshot)
         _fsync_directory(snapshot.parent)
-    return verify_storage_snapshot(snapshot)
+    if seal:
+        _seal_snapshot_tree(snapshot)
+    verification = verify_storage_snapshot(snapshot)
+    if seal:
+        verify_sealed_snapshot_identity(
+            snapshot,
+            expected_manifest_sha256=str(verification["manifest_sha256"]),
+            expected_binding=binding,
+        )
+    return verification
+
+
+def _seal_snapshot_tree(snapshot: Path) -> None:
+    files = _tree_files(snapshot)
+    directories = [path for path in snapshot.rglob("*") if path.is_dir()]
+    for path in files:
+        os.chmod(path, 0o400, follow_symlinks=False)
+    for path in sorted(directories, key=lambda item: len(item.parts), reverse=True):
+        if path.is_symlink():
+            raise StorageMaintenanceError("storage snapshot seal rejects linked directory")
+        os.chmod(path, 0o500, follow_symlinks=False)
+    os.chmod(snapshot, 0o500, follow_symlinks=False)
+    _fsync_directory(snapshot.parent)
+
+
+def verify_sealed_snapshot_identity(
+    snapshot_dir: str | Path,
+    *,
+    expected_manifest_sha256: str,
+    expected_binding: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Verify immutable identity and metadata without rereading snapshot payload bytes.
+
+    The deployment UID is trusted. The read-only tree seal prevents ordinary
+    writers and accidental mutation between the initial deep verification and
+    later migration steps; a hostile same-UID process is outside this boundary.
+    """
+
+    snapshot = Path(snapshot_dir)
+    manifest_path = snapshot / _MANIFEST_NAME
+    try:
+        manifest = read_json_strict(manifest_path, dict)
+    except (OSError, ValueError) as exc:
+        raise StorageMaintenanceError("sealed storage snapshot manifest is invalid") from exc
+    if str(manifest.get("schema") or "") != "storage_snapshot.v1":
+        raise StorageMaintenanceError("sealed storage snapshot schema is invalid")
+    immutability = manifest.get("immutability")
+    if not isinstance(immutability, dict) or immutability.get("policy") != "readonly_tree_v1":
+        raise StorageMaintenanceError("storage snapshot is not sealed")
+    binding = manifest.get("binding") or {}
+    if not isinstance(binding, dict):
+        raise StorageMaintenanceError("sealed storage snapshot binding is invalid")
+    if expected_binding is not None and binding != dict(expected_binding):
+        raise StorageMaintenanceError("storage snapshot binding mismatch")
+    manifest_digest = _file_digest(manifest_path)
+    if manifest_digest != str(expected_manifest_sha256 or ""):
+        raise StorageMaintenanceError("storage snapshot manifest identity mismatch")
+    expected: dict[str, dict[str, Any]] = {}
+    for entry in list(manifest.get("files") or []):
+        if not isinstance(entry, dict):
+            raise StorageMaintenanceError("sealed storage snapshot file manifest is invalid")
+        relative = Path(str(entry.get("path") or ""))
+        if relative.is_absolute() or ".." in relative.parts:
+            raise StorageMaintenanceError("sealed storage snapshot path escapes root")
+        expected[relative.as_posix()] = entry
+    actual_paths = {
+        path.relative_to(snapshot).as_posix(): path
+        for path in _tree_files(snapshot)
+        if path != manifest_path
+    }
+    if set(actual_paths) != set(expected):
+        raise StorageMaintenanceError("sealed storage snapshot file set mismatch")
+    sealed_paths = [manifest_path, *actual_paths.values()]
+    for relative, path in actual_paths.items():
+        if int(path.stat(follow_symlinks=False).st_size) != int(expected[relative].get("size") or -1):
+            raise StorageMaintenanceError("sealed storage snapshot file size mismatch")
+    for path in sealed_paths:
+        if int(path.stat(follow_symlinks=False).st_mode) & 0o222:
+            raise StorageMaintenanceError("sealed storage snapshot file is writable")
+    for path in [snapshot, *(item for item in snapshot.rglob("*") if item.is_dir())]:
+        if path.is_symlink() or int(path.stat(follow_symlinks=False).st_mode) & 0o222:
+            raise StorageMaintenanceError("sealed storage snapshot directory is writable or linked")
+    return {
+        "schema": "storage_snapshot_sealed_identity.v1",
+        "ok": True,
+        "snapshot_dir": str(snapshot),
+        "manifest_sha256": manifest_digest,
+        "binding": dict(binding),
+        "file_count": len(actual_paths),
+    }
 
 
 def _validate_sqlite_database(path: str | Path) -> dict[str, Any]:
@@ -485,6 +584,7 @@ def restore_storage_snapshot(
     segment_root: str | Path,
     offline: bool,
     expected_binding: dict[str, str] | None = None,
+    expected_manifest_sha256: str | None = None,
 ) -> dict[str, Any]:
     if not offline:
         raise StorageMaintenanceError("storage restore requires offline writer stop")
@@ -492,6 +592,11 @@ def restore_storage_snapshot(
     verification = verify_storage_snapshot(snapshot)
     if expected_binding is not None and verification["binding"] != dict(expected_binding):
         raise StorageMaintenanceError("storage snapshot binding mismatch")
+    if (
+        expected_manifest_sha256 is not None
+        and verification["manifest_sha256"] != str(expected_manifest_sha256)
+    ):
+        raise StorageMaintenanceError("storage snapshot manifest identity mismatch")
     database = Path(db_path)
     segments = Path(segment_root)
     token = uuid4().hex
@@ -641,12 +746,20 @@ def run_storage_migrations(
     max_seconds: float = 3600.0,
     snapshot_dir: str | Path | None = None,
     expected_binding: dict[str, str] | None = None,
+    expected_manifest_sha256: str | None = None,
 ) -> dict[str, Any]:
     if not offline:
         raise StorageMaintenanceError("production storage migration runner requires offline writer stop")
     if snapshot_dir is None:
         raise StorageMaintenanceError("storage migration requires a verified pre-migration snapshot")
-    verification = verify_storage_snapshot(snapshot_dir)
+    if expected_manifest_sha256:
+        verification = verify_sealed_snapshot_identity(
+            snapshot_dir,
+            expected_manifest_sha256=expected_manifest_sha256,
+            expected_binding=expected_binding,
+        )
+    else:
+        verification = verify_storage_snapshot(snapshot_dir)
     if expected_binding is not None and verification["binding"] != dict(expected_binding):
         raise StorageMaintenanceError("storage snapshot binding mismatch")
     database = Path(db_path)

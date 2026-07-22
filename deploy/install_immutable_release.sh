@@ -238,8 +238,8 @@ _storage_unit_is_active() {
 
 _stop_storage_writers() {
   if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ] || ! command -v systemctl >/dev/null 2>&1; then
-    STORAGE_WRITERS_STOPPED=1
-    return
+    echo "storage_writer_stop=failed systemd_unavailable" >&2
+    return 2
   fi
   if [ "$STORAGE_WRITERS_CAPTURED" != "1" ]; then
     ACTIVE_STORAGE_WRITER_UNITS=()
@@ -326,6 +326,7 @@ _storage_release_action() {
       --snapshot-dir "$STORAGE_SNAPSHOT_DIR" \
       --candidate-commit "$COMMIT" \
       --attempt-id "$STORAGE_ATTEMPT_ID" \
+      --snapshot-manifest-sha256 "$STORAGE_SNAPSHOT_MANIFEST_SHA256" \
       --batch-size "$EIMEMORY_STORAGE_BATCH_SIZE" \
       --max-batches "$EIMEMORY_STORAGE_MAX_BATCHES" \
       --max-seconds "$EIMEMORY_STORAGE_MAX_SECONDS" \
@@ -333,16 +334,10 @@ _storage_release_action() {
 }
 
 _prepare_storage_for_release() {
-  if [ "$EIMEMORY_STORAGE_MIGRATION" != "1" ]; then
-    echo "storage_release_migration=skipped disabled"
-    return
-  fi
   if [ ! -f "$EIMEMORY_ROOT/state/eimemory.sqlite" ]; then
     echo "storage_release_migration=skipped database_missing"
     return
   fi
-  _stop_storage_writers
-  _maybe_fail_stage storage_writer_stop
   local needs_report storage_needed
   needs_report="$(_storage_release_action needs)"
   printf '%s\n' "$needs_report"
@@ -353,15 +348,32 @@ _prepare_storage_for_release() {
   storage_needed="$(printf '%s' "$needs_report" | \
     "$RELEASE_DIR/.venv/bin/python" -I -B -c \
       'import json,sys; print("1" if json.load(sys.stdin).get("needed") is True else "0")')"
+  if [ "$EIMEMORY_STORAGE_MIGRATION" != "1" ]; then
+    if [ "$storage_needed" = "1" ]; then
+      echo "storage_release_migration=blocked disabled_with_pending_migrations" >&2
+      return 2
+    fi
+    echo "storage_release_migration=skipped disabled_no_pending_migrations"
+    return
+  fi
   if [ "$storage_needed" != "1" ]; then
     STORAGE_MIGRATION_REQUIRED=0
     echo "storage_release_migration=skipped no_pending_migrations"
     return
   fi
   STORAGE_MIGRATION_REQUIRED=1
+  _stop_storage_writers
+  _maybe_fail_stage storage_writer_stop
   _storage_release_action preflight
   _maybe_fail_stage storage_preflight
-  _storage_release_action snapshot
+  local snapshot_report
+  snapshot_report="$(_storage_release_action snapshot)"
+  printf '%s\n' "$snapshot_report"
+  STORAGE_SNAPSHOT_MANIFEST_SHA256="$(printf '%s' "$snapshot_report" | \
+    "$RELEASE_DIR/.venv/bin/python" -I -B -c \
+      'import json,re,sys; value=str(json.load(sys.stdin).get("manifest_sha256") or ""); sys.exit(2) if re.fullmatch(r"[0-9a-f]{64}", value) is None else print(value)')"
+  # The snapshot operation itself is read-only against live storage. Arm the
+  # rollback trap only after its immutable identity has been parsed safely.
   STORAGE_SNAPSHOT_READY=1
   _maybe_fail_stage storage_snapshot
   _storage_release_action migrate
@@ -395,7 +407,8 @@ _cleanup_storage_vacuum_backup() {
 }
 
 _prune_storage_snapshots() {
-  if [ "$EIMEMORY_STORAGE_MIGRATION" != "1" ] || \
+  if [ "$STORAGE_SNAPSHOT_READY" != "1" ] || \
+     [ "$EIMEMORY_STORAGE_MIGRATION" != "1" ] || \
      [ ! -d "$EIMEMORY_STORAGE_SNAPSHOT_ROOT" ] || \
      [ ! -f "$EIMEMORY_ROOT/state/eimemory.sqlite" ]; then
     return
@@ -620,9 +633,12 @@ _rollback_current_release() {
     echo "rollback_step=cleanup_next status=failed" >&2
     rollback_failed=1
   fi
-  if ! _stop_storage_writers; then
-    echo "rollback_step=stop_writers status=failed" >&2
-    return 1
+  if [ "$STORAGE_SNAPSHOT_READY" = "1" ] || \
+     { [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ] && command -v systemctl >/dev/null 2>&1; }; then
+    if ! _stop_storage_writers; then
+      echo "rollback_step=stop_writers status=failed" >&2
+      return 1
+    fi
   fi
   if [ "$CURRENT_SWITCHED" = "1" ]; then
     if [ -z "${PREVIOUS_CURRENT:-}" ] || [ ! -d "$PREVIOUS_CURRENT" ]; then
@@ -783,6 +799,7 @@ COMMITTED=0
 ROLLBACK_RESTORED=0
 STORAGE_SNAPSHOT_READY=0
 STORAGE_RESTORED=0
+STORAGE_SNAPSHOT_MANIFEST_SHA256=""
 STORAGE_VACUUM_BACKUP=""
 STORAGE_WRITERS_CAPTURED=0
 STORAGE_WRITERS_STOPPED=0

@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import sqlite3
+from types import SimpleNamespace
 
+import deploy.migrate_storage_release as storage_release
 from deploy.migrate_storage_release import main as storage_release_main
 from eimemory.models.records import RecordEnvelope, ScopeRef
+import eimemory.storage.maintenance as maintenance
 from eimemory.storage.maintenance import create_consistent_storage_snapshot
 from eimemory.storage.sqlite_store import SqliteRecordStore
 
@@ -85,6 +89,7 @@ def test_release_helper_binds_snapshot_and_restores_legacy_payload_after_accepta
         "attempt_id": ATTEMPT,
         "candidate_commit": COMMIT,
     }
+    identity = ["--snapshot-manifest-sha256", created["manifest_sha256"]]
     assert storage_release_main(
         _args(
             "migrate",
@@ -95,10 +100,13 @@ def test_release_helper_binds_snapshot_and_restores_legacy_payload_after_accepta
             "1",
             "--max-batches",
             "20",
+            *identity,
         )
     ) == 0
     capsys.readouterr()
-    assert storage_release_main(_args("vacuum", root, snapshot_root, snapshot)) == 0
+    assert storage_release_main(
+        _args("vacuum", root, snapshot_root, snapshot, *identity)
+    ) == 0
     capsys.readouterr()
 
     migrated = sqlite3.connect(db_path)
@@ -109,7 +117,9 @@ def test_release_helper_binds_snapshot_and_restores_legacy_payload_after_accepta
     assert pointer
 
     # This is the candidate acceptance-failure path: restore before old 1.9.80 starts.
-    assert storage_release_main(_args("restore", root, snapshot_root, snapshot)) == 0
+    assert storage_release_main(
+        _args("restore", root, snapshot_root, snapshot, *identity)
+    ) == 0
     capsys.readouterr()
     legacy = sqlite3.connect(db_path)
     payload_json = legacy.execute(
@@ -159,9 +169,12 @@ def test_vacuum_backup_is_kept_until_explicit_release_cleanup(tmp_path, capsys) 
     snapshot_root = root / "state" / "release-snapshots"
     snapshot = snapshot_root / ATTEMPT
     assert storage_release_main(_args("snapshot", root, snapshot_root, snapshot)) == 0
-    capsys.readouterr()
+    created = json.loads(capsys.readouterr().out)
+    identity = ["--snapshot-manifest-sha256", created["manifest_sha256"]]
 
-    assert storage_release_main(_args("vacuum", root, snapshot_root, snapshot)) == 0
+    assert storage_release_main(
+        _args("vacuum", root, snapshot_root, snapshot, *identity)
+    ) == 0
     vacuum = json.loads(capsys.readouterr().out)
     backup = Path(vacuum["backup_path"])
     assert backup.is_file()
@@ -175,6 +188,7 @@ def test_vacuum_backup_is_kept_until_explicit_release_cleanup(tmp_path, capsys) 
             snapshot,
             "--backup-path",
             str(backup),
+            *identity,
         )
     ) == 0
     cleanup = json.loads(capsys.readouterr().out)
@@ -232,6 +246,156 @@ def test_snapshot_retention_keeps_current_and_one_previous(tmp_path, capsys) -> 
     assert corrupt.is_dir()
 
 
+def test_snapshot_retention_clamps_one_to_current_plus_previous(tmp_path, capsys) -> None:
+    root = tmp_path / "runtime"
+    db_path = root / "state" / "eimemory.sqlite"
+    store = SqliteRecordStore(db_path)
+    store.close()
+    snapshot_root = root / "state" / "release-snapshots"
+    attempts = [f"{COMMIT}-20260722T13000{index}Z-{index}" for index in range(3)]
+    for attempt in attempts:
+        create_consistent_storage_snapshot(
+            db_path=db_path,
+            segment_root=db_path.parent / "payload_segments",
+            snapshot_dir=snapshot_root / attempt,
+            offline=True,
+            binding={"candidate_commit": COMMIT, "attempt_id": attempt},
+        )
+    current = attempts[-1]
+    args = _args("prune-snapshots", root, snapshot_root, snapshot_root / current)
+    args[args.index(ATTEMPT, args.index("--attempt-id"))] = current
+    args.extend(["--retain-snapshots", "1"])
+
+    assert storage_release_main(args) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["retained"] == 2
+    assert (snapshot_root / attempts[-1]).is_dir()
+    assert (snapshot_root / attempts[-2]).is_dir()
+
+
+def test_snapshot_retention_never_deletes_deep_corrupt_candidate(tmp_path, capsys) -> None:
+    root = tmp_path / "runtime"
+    db_path = root / "state" / "eimemory.sqlite"
+    store = SqliteRecordStore(db_path)
+    store.close()
+    snapshot_root = root / "state" / "release-snapshots"
+    attempts = [f"{COMMIT}-20260722T14000{index}Z-{index}" for index in range(3)]
+    for attempt in attempts:
+        create_consistent_storage_snapshot(
+            db_path=db_path,
+            segment_root=db_path.parent / "payload_segments",
+            snapshot_dir=snapshot_root / attempt,
+            offline=True,
+            binding={"candidate_commit": COMMIT, "attempt_id": attempt},
+        )
+    corrupt = snapshot_root / attempts[0] / db_path.name
+    os.chmod(corrupt, 0o600)
+    with corrupt.open("ab") as handle:
+        handle.write(b"corrupt")
+    current = attempts[-1]
+    args = _args("prune-snapshots", root, snapshot_root, snapshot_root / current)
+    args[args.index(ATTEMPT, args.index("--attempt-id"))] = current
+    args.extend(["--retain-snapshots", "2"])
+
+    assert storage_release_main(args) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert (snapshot_root / attempts[0]).is_dir()
+    assert str(snapshot_root / attempts[0]) in report["ignored"]
+
+
+def test_snapshot_retention_deep_verifies_only_deletion_candidates(
+    tmp_path, monkeypatch
+) -> None:
+    root = tmp_path / "runtime"
+    db_path = root / "state" / "eimemory.sqlite"
+    store = SqliteRecordStore(db_path)
+    store.close()
+    snapshot_root = root / "state" / "release-snapshots"
+    attempts = [f"{COMMIT}-20260722T15000{index}Z-{index}" for index in range(3)]
+    for attempt in attempts:
+        create_consistent_storage_snapshot(
+            db_path=db_path,
+            segment_root=db_path.parent / "payload_segments",
+            snapshot_dir=snapshot_root / attempt,
+            offline=True,
+            binding={"candidate_commit": COMMIT, "attempt_id": attempt},
+        )
+    verified: list[str] = []
+    original_verify = storage_release.verify_storage_snapshot
+
+    def counted_verify(path):
+        verified.append(Path(path).name)
+        return original_verify(path)
+
+    monkeypatch.setattr(storage_release, "verify_storage_snapshot", counted_verify)
+    current = attempts[-1]
+    args = SimpleNamespace(
+        action="prune-snapshots",
+        root=str(root),
+        snapshot_root=str(snapshot_root),
+        snapshot_dir=str(snapshot_root / current),
+        candidate_commit=COMMIT,
+        attempt_id=current,
+        snapshot_manifest_sha256="",
+        backup_path="",
+        retain_snapshots=2,
+        batch_size=10,
+        max_batches=20,
+        max_seconds=60.0,
+    )
+
+    assert storage_release.run_action(args)["ok"] is True
+    assert verified == [attempts[0]]
+
+
+def test_release_migration_deep_verifies_once_then_uses_sealed_identity(
+    tmp_path, monkeypatch
+) -> None:
+    root = tmp_path / "runtime"
+    db_path = root / "state" / "eimemory.sqlite"
+    store = SqliteRecordStore(db_path, archive_writes=False)
+    store.conn.execute(
+        "DELETE FROM schema_migrations WHERE migration_id='records.payload_archive.v1'"
+    )
+    store.conn.commit()
+    store.close()
+    snapshot_root = root / "state" / "release-snapshots"
+    snapshot = snapshot_root / ATTEMPT
+    deep_verifications = 0
+    original_verify = maintenance.verify_storage_snapshot
+
+    def counted_verify(path):
+        nonlocal deep_verifications
+        deep_verifications += 1
+        return original_verify(path)
+
+    monkeypatch.setattr(maintenance, "verify_storage_snapshot", counted_verify)
+    monkeypatch.setattr(storage_release, "verify_storage_snapshot", counted_verify)
+
+    args = SimpleNamespace(
+        action="snapshot",
+        root=str(root),
+        snapshot_root=str(snapshot_root),
+        snapshot_dir=str(snapshot),
+        candidate_commit=COMMIT,
+        attempt_id=ATTEMPT,
+        snapshot_manifest_sha256="",
+        backup_path="",
+        retain_snapshots=2,
+        batch_size=10,
+        max_batches=20,
+        max_seconds=60.0,
+    )
+    created = storage_release.run_action(args)
+    args.snapshot_manifest_sha256 = created["manifest_sha256"]
+    args.action = "migrate"
+    assert storage_release.run_action(args)["ok"] is True
+    args.action = "vacuum"
+    assert storage_release.run_action(args)["ok"] is True
+
+    assert deep_verifications == 1
+
+
 def test_installer_storage_transaction_order_and_writer_stop_contract() -> None:
     script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
     call_site = script.index("_run_pre_switch_production_recall_bootstrap\n")
@@ -254,13 +418,41 @@ def test_installer_storage_transaction_order_and_writer_stop_contract() -> None:
         )
     ]
     assert prepare.index("_storage_release_action needs") < prepare.index(
+        'if [ "$EIMEMORY_STORAGE_MIGRATION" != "1" ]'
+    )
+    assert prepare.index('if [ "$storage_needed" != "1" ]; then') < prepare.index(
+        "_stop_storage_writers"
+    )
+    assert prepare.index("_storage_release_action needs") < prepare.index(
         "_storage_release_action snapshot"
     )
     assert "_storage_release_action verify" not in prepare
+    snapshot_action = prepare.index('_storage_release_action snapshot)"')
+    snapshot_identity = prepare.index('STORAGE_SNAPSHOT_MANIFEST_SHA256="', snapshot_action)
+    snapshot_ready = prepare.index("STORAGE_SNAPSHOT_READY=1", snapshot_action)
+    migrate_action = prepare.index("_storage_release_action migrate", snapshot_action)
+    assert snapshot_action < snapshot_identity < snapshot_ready < migrate_action
     no_pending = prepare.index('if [ "$storage_needed" != "1" ]; then')
     assert no_pending < prepare.index("return", no_pending) < prepare.index(
         "_storage_release_action snapshot"
     )
+    disabled = prepare.index('if [ "$EIMEMORY_STORAGE_MIGRATION" != "1" ]; then')
+    assert 'if [ "$storage_needed" = "1" ]; then' in prepare[disabled:]
+
+    stop = script[
+        script.index("_stop_storage_writers() {") : script.index(
+            "_restart_storage_writers() {", script.index("_stop_storage_writers() {")
+        )
+    ]
+    assert "storage_writer_stop=failed systemd_unavailable" in stop
+    assert 'STORAGE_WRITERS_STOPPED=1\n    return' not in stop
+
+    prune = script[
+        script.index("_prune_storage_snapshots() {") : script.index(
+            "_maybe_fail_stage() {", script.index("_prune_storage_snapshots() {")
+        )
+    ]
+    assert '[ "$STORAGE_SNAPSHOT_READY" != "1" ]' in prune
 
     cleanup = script[script.index("cleanup_stage() {") : script.index("trap cleanup_stage EXIT")]
     assert '"$STORAGE_SNAPSHOT_READY" = "1"' in cleanup

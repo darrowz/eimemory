@@ -17,6 +17,7 @@ from eimemory.storage.maintenance import (
     restore_storage_snapshot,
     run_storage_migrations,
     vacuum_into_atomic,
+    verify_sealed_snapshot_identity,
     verify_storage_snapshot,
 )
 
@@ -90,24 +91,29 @@ def _verify_bound_snapshot(args: argparse.Namespace, snapshot: Path) -> dict[str
     verification = verify_storage_snapshot(snapshot)
     if verification.get("binding") != _binding(args):
         raise StorageMaintenanceError("storage snapshot release binding mismatch")
+    expected_digest = str(args.snapshot_manifest_sha256 or "")
+    if expected_digest and verification.get("manifest_sha256") != expected_digest:
+        raise StorageMaintenanceError("storage snapshot manifest identity mismatch")
     return verification
 
 
-def _verify_binding_shallow(args: argparse.Namespace, snapshot: Path) -> None:
-    manifest_path = snapshot / "storage-snapshot.json"
-    if (
-        not manifest_path.is_file()
-        or manifest_path.is_symlink()
-        or _is_reparse(manifest_path)
-        or manifest_path.stat(follow_symlinks=False).st_size > 1024 * 1024
-    ):
-        raise StorageMaintenanceError("storage snapshot manifest is missing or unsafe")
-    try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        raise StorageMaintenanceError("storage snapshot manifest is invalid") from exc
-    if not isinstance(manifest, dict) or manifest.get("binding") != _binding(args):
-        raise StorageMaintenanceError("storage snapshot release binding mismatch")
+def _verify_release_snapshot_seal(
+    args: argparse.Namespace,
+    snapshot: Path,
+) -> dict[str, Any]:
+    expected_digest = _required_snapshot_digest(args)
+    return verify_sealed_snapshot_identity(
+        snapshot,
+        expected_manifest_sha256=expected_digest,
+        expected_binding=_binding(args),
+    )
+
+
+def _required_snapshot_digest(args: argparse.Namespace) -> str:
+    expected_digest = str(args.snapshot_manifest_sha256 or "")
+    if not re.fullmatch(r"[0-9a-f]{64}", expected_digest):
+        raise StorageMaintenanceError("sealed snapshot manifest identity is required")
+    return expected_digest
 
 
 def _cleanup_vacuum_backup(db_path: Path, value: str) -> dict[str, Any]:
@@ -176,6 +182,17 @@ def _assert_safe_snapshot_tree(path: Path) -> None:
                 raise StorageMaintenanceError("snapshot retention rejects unsafe file")
 
 
+def _make_snapshot_tree_deletable(path: Path) -> None:
+    os.chmod(path, 0o700, follow_symlinks=False)
+    for root, directories, files in os.walk(path, topdown=True, followlinks=False):
+        root_path = Path(root)
+        os.chmod(root_path, 0o700, follow_symlinks=False)
+        for name in directories:
+            os.chmod(root_path / name, 0o700, follow_symlinks=False)
+        for name in files:
+            os.chmod(root_path / name, 0o600, follow_symlinks=False)
+
+
 def _prune_snapshots(
     snapshot_root: Path,
     *,
@@ -183,13 +200,15 @@ def _prune_snapshots(
     current_attempt: str,
 ) -> dict[str, Any]:
     accepted: list[tuple[str, Path]] = []
+    ignored: list[str] = []
     for path in snapshot_root.iterdir():
         manifest = _snapshot_manifest_for_prune(path)
         if manifest is None:
+            ignored.append(str(path))
             continue
         accepted.append((str(manifest.get("created_at") or ""), path))
     accepted.sort(key=lambda item: (item[0], item[1].name), reverse=True)
-    keep = max(1, min(10, int(retain)))
+    keep = max(2, min(10, int(retain)))
     protected = [item for item in accepted if item[1].name == current_attempt]
     selected = protected[:1]
     selected.extend(
@@ -201,7 +220,17 @@ def _prune_snapshots(
     for _created_at, path in accepted:
         if path in selected_paths:
             continue
+        manifest = _snapshot_manifest_for_prune(path)
+        try:
+            verification = verify_storage_snapshot(path)
+        except (OSError, ValueError, StorageMaintenanceError):
+            ignored.append(str(path))
+            continue
+        if manifest is None or verification.get("binding") != manifest.get("binding"):
+            ignored.append(str(path))
+            continue
         _assert_safe_snapshot_tree(path)
+        _make_snapshot_tree_deletable(path)
         shutil.rmtree(path)
         removed.append(str(path))
     if os.name == "posix" and removed:
@@ -215,7 +244,7 @@ def _prune_snapshots(
         "ok": True,
         "retained": len(selected),
         "removed": removed,
-        "ignored": max(0, len(list(snapshot_root.iterdir())) - len(selected)),
+        "ignored": ignored,
     }
 
 
@@ -239,10 +268,12 @@ def run_action(args: argparse.Namespace) -> dict[str, Any]:
             snapshot_dir=snapshot,
             offline=True,
             binding=_binding(args),
+            seal=True,
         )
     if args.action == "verify":
         return _verify_bound_snapshot(args, snapshot)
     if args.action == "migrate":
+        expected_digest = _required_snapshot_digest(args)
         return run_storage_migrations(
             db_path=db_path,
             offline=True,
@@ -251,23 +282,26 @@ def run_action(args: argparse.Namespace) -> dict[str, Any]:
             max_seconds=float(args.max_seconds),
             snapshot_dir=snapshot,
             expected_binding=_binding(args),
+            expected_manifest_sha256=expected_digest,
         )
     if args.action == "vacuum":
-        _verify_bound_snapshot(args, snapshot)
+        _verify_release_snapshot_seal(args, snapshot)
         return vacuum_into_atomic(db_path=db_path, offline=True, apply=True)
     if args.action == "restore":
+        expected_digest = _required_snapshot_digest(args)
         return restore_storage_snapshot(
             snapshot_dir=snapshot,
             db_path=db_path,
             segment_root=segment_root,
             offline=True,
             expected_binding=_binding(args),
+            expected_manifest_sha256=expected_digest,
         )
     if args.action == "cleanup-vacuum":
-        _verify_binding_shallow(args, snapshot)
+        _verify_release_snapshot_seal(args, snapshot)
         return _cleanup_vacuum_backup(db_path, str(args.backup_path or ""))
     if args.action == "status":
-        _verify_binding_shallow(args, snapshot)
+        _verify_release_snapshot_seal(args, snapshot)
         need = inspect_storage_migration_need(db_path)
         return {
             "schema": "storage_release_status.v1",
@@ -305,6 +339,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--snapshot-dir", required=True)
     parser.add_argument("--candidate-commit", required=True)
     parser.add_argument("--attempt-id", required=True)
+    parser.add_argument("--snapshot-manifest-sha256", default="")
     parser.add_argument("--backup-path", default="")
     parser.add_argument("--retain-snapshots", type=int, default=2)
     parser.add_argument("--batch-size", type=int, default=200)
