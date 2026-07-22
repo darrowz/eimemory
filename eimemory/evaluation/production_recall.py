@@ -18,6 +18,14 @@ from typing import Any
 
 from eimemory.core.clock import now_iso
 from eimemory.evaluation.metrics import mean_reciprocal_rank, percentile
+from eimemory.evaluation.real_query_gate import (
+    PRODUCTION_REAL_QUERY_REPORT_SCHEMA,
+    PRODUCTION_REAL_QUERY_SCHEMA,
+    evaluate_labeled_ranking_at_5,
+    freeze_production_recall_dataset,
+    run_real_query_gate as _run_real_query_gate,
+    verify_current_production_recall_gate,
+)
 from eimemory.metadata import business_metadata
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
@@ -69,6 +77,14 @@ def run_production_recall_eval(
     scope: dict | None = None,
     persist_report: bool = False,
 ) -> dict[str, Any]:
+    if isinstance(dataset, dict) and str(dataset.get("schema") or dataset.get("schema_version") or "") == PRODUCTION_REAL_QUERY_SCHEMA:
+        return _run_real_query_gate(
+            runtime,
+            dataset,
+            seed=seed,
+            scope=scope,
+            persist_report=persist_report,
+        )
     normalized = normalize_production_recall_dataset(dataset)
     dataset_scope = ScopeRef.from_dict({**dict(normalized["scope"]), **(scope or {})})
     seed_records = list(normalized["seed"])
@@ -103,7 +119,12 @@ def run_production_recall_eval(
         }
     else:
         report = {**report, "persisted": False, "persisted_record_id": ""}
-    return report
+    return {
+        **report,
+        "accepted": False,
+        "gate_status": "diagnostic",
+        "dataset_kind": "diagnostic",
+    }
 
 
 def _run_production_recall_eval_on_runtime(
@@ -733,11 +754,7 @@ def _persist_recall_quality_report(runtime: Any, report: dict[str, Any], *, scop
 
 
 def _recall_quality_report_record(report: dict[str, Any], *, scope: ScopeRef) -> RecordEnvelope:
-    report_payload = {
-        key: value
-        for key, value in dict(report).items()
-        if key not in {"persisted", "persisted_record_id"}
-    }
+    report_payload = _sanitized_diagnostic_report(report)
     name = str(report.get("name") or "production_recall")
     summary = (
         f"Recall quality {name}: "
@@ -769,6 +786,32 @@ def _recall_quality_report_record(report: dict[str, Any], *, scope: ScopeRef) ->
             "legacy_report_type": "production_recall_eval",
         },
     )
+
+
+def _sanitized_diagnostic_report(report: dict[str, Any]) -> dict[str, Any]:
+    """Keep legacy smoke useful without persisting raw query/result bodies."""
+
+    safe = {
+        key: value
+        for key, value in dict(report).items()
+        if key not in {"persisted", "persisted_record_id", "samples", "seed_lookup", "seeded_record_ids"}
+    }
+    safe["samples"] = [
+        {
+            key: value
+            for key, value in sample.items()
+            if key in {
+                "index", "case_id", "scope", "topk", "latency_ms", "returned_record_ids",
+                "returned_count", "rank", "hit_at_1", "hit_at_k", "hit_at_5",
+                "reciprocal_rank", "matched_expected", "empty", "false_recall", "forbid_hit",
+                "outcome_polluted", "reflection_polluted", "audit_polluted", "incident_polluted",
+                "evolution_polluted", "stale_rule_polluted", "selected_record_polluted", "passed", "error",
+            }
+        }
+        for sample in list(report.get("samples") or [])
+        if isinstance(sample, dict)
+    ]
+    return safe
 
 
 def _expected_record_ids(case: dict[str, Any], *, seed_lookup: dict[str, str]) -> set[str]:

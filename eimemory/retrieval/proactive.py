@@ -908,10 +908,14 @@ class ProactiveRecallService:
             "control": {state: 0 for state in ("used", "not_used", "suppressed", "rejected")},
             "treatment": {state: 0 for state in ("used", "not_used", "suppressed", "rejected")},
         }
+        volunteered_count = 0
+        injected_count = 0
         arms: dict[str, dict[str, list[dict[str, Any]]]] = {}
         for decision in decisions:
             arm = "control" if bool(decision.get("control_cohort")) else "treatment"
             for item in decision.get("items") or []:
+                volunteered_count += 1
+                injected_count += int(bool(item.get("ever_injected")))
                 state_name = str(item.get("state") or "")
                 if state_name in usage[arm]:
                     usage[arm][state_name] += 1
@@ -953,6 +957,8 @@ class ProactiveRecallService:
         pair_count = len(pairs)
         result: dict[str, Any] = {
             **usage,
+            "volunteered_count": volunteered_count,
+            "injected_count": injected_count,
             "effect_available": bool(pair_count),
             "reason": "" if pair_count else "verified_paired_outcomes_unavailable",
             "pair_count": pair_count,
@@ -1006,6 +1012,7 @@ class ProactiveRecallService:
         empty = {state: 0 for state in ("used", "not_used", "suppressed", "rejected")}
         return {
             "control": dict(empty), "treatment": dict(empty),
+            "volunteered_count": 0, "injected_count": 0,
             "effect_available": False, "reason": str(reason), "pair_count": 0,
             "pairs": [], "used_rate_delta": None, "success_rate_delta": None,
             "quality_delta": None, "latency_ms_delta": None,

@@ -480,6 +480,7 @@ if { [ -e "$CURRENT_LINK" ] || [ -L "$CURRENT_LINK" ] || [ -d "$CURRENT_LINK" ];
   _restart_current_services
   _verify_release_health "$RELEASE_DIR" "$COMMIT"
   _record_deployment_receipt
+  _run_post_switch_closure
   echo "release=$RELEASE_DIR"
   echo "current=$CURRENT_LINK"
   echo "commit=$COMMIT"

@@ -4,6 +4,7 @@ from dataclasses import asdict
 from typing import Any
 
 from eimemory.governance.l5_readiness import readiness_gate_status
+from eimemory.governance.evidence_contract import ReleaseIdentity
 from eimemory.models.records import ScopeRef
 
 
@@ -29,6 +30,7 @@ def run_release_closure(
         "deployment": {},
         "record_ids": {},
         "deployment_receipt": dict(not_run),
+        "production_recall_gate": dict(not_run),
         "replay_bootstrap": dict(not_run),
         "live_acceptance": dict(not_run),
         "closure_rehearsal": dict(not_run),
@@ -48,6 +50,41 @@ def run_release_closure(
         return _blocked(report, "deployment_receipt", _failure_reason(receipt, "deployment_receipt_failed"))
     report["deployment"] = _deployment_identity(receipt)
     report["record_ids"]["deployment_receipt"] = str(receipt.get("promotion_request_id") or "")
+
+    run_recall = getattr(runtime, "run_configured_production_recall_gate", None)
+    if not callable(run_recall):
+        return _blocked(report, "production_recall_gate", "production_recall_gate_runner_unavailable")
+    executed_recall_gate = run_recall(scope=scope_payload)
+    report["production_recall_gate"] = executed_recall_gate
+    if executed_recall_gate.get("accepted") is not True:
+        return _blocked(
+            report,
+            "production_recall_gate",
+            _failure_reason(executed_recall_gate, "production_recall_gate_failed"),
+        )
+
+    verify_recall = getattr(runtime, "verify_production_recall_gate", None)
+    if not callable(verify_recall):
+        return _blocked(report, "production_recall_gate", "production_recall_gate_verifier_unavailable")
+    receipt_identity = ReleaseIdentity(
+        commit=str(receipt.get("commit") or ""),
+        version=str(receipt.get("version") or ""),
+        receipt_id=str(receipt.get("promotion_request_id") or ""),
+        session_id=str(receipt.get("release_session_id") or receipt.get("promotion_request_id") or ""),
+    )
+    recall_gate = verify_recall(
+        scope=scope_payload,
+        release_identity=receipt_identity,
+        limit=500,
+    )
+    report["production_recall_gate"] = recall_gate
+    report["record_ids"]["production_recall_gate"] = str(recall_gate.get("record_id") or "")
+    if recall_gate.get("ok") is not True:
+        return _blocked(
+            report,
+            "production_recall_gate",
+            _failure_reason(recall_gate, "production_recall_gate_failed"),
+        )
 
     replay_bootstrap = runtime.run_weak_capability_replay_gate(
         scope=scope_payload,

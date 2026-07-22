@@ -19,6 +19,7 @@ def summarize_release_closure(report: object) -> dict[str, Any]:
         raise ValueError("release closure report must be an object")
     deployment = report.get("deployment") if isinstance(report.get("deployment"), dict) else {}
     replay = report.get("replay_bootstrap") if isinstance(report.get("replay_bootstrap"), dict) else {}
+    recall_gate = report.get("production_recall_gate") if isinstance(report.get("production_recall_gate"), dict) else {}
     live = report.get("live_acceptance") if isinstance(report.get("live_acceptance"), dict) else {}
     rehearsal = report.get("closure_rehearsal") if isinstance(report.get("closure_rehearsal"), dict) else {}
     readiness = report.get("readiness") if isinstance(report.get("readiness"), dict) else {}
@@ -33,6 +34,10 @@ def summarize_release_closure(report: object) -> dict[str, Any]:
         "commit": str(deployment.get("commit") or ""),
         "version": str(deployment.get("version") or ""),
         "receipt_id": str(deployment.get("promotion_request_id") or ""),
+        "production_recall_gate_ok": recall_gate.get("ok") is True,
+        "production_recall_gate_status": str(recall_gate.get("status") or ""),
+        "production_recall_gate_report_id": str(recall_gate.get("report_id") or ""),
+        "production_recall_gate_reason": str(recall_gate.get("reason") or ""),
         "replay_ok": replay.get("ok") is True,
         "live_acceptance_ok": live.get("ok") is True,
         "live_pass_count": int(live.get("pass_count") or 0),

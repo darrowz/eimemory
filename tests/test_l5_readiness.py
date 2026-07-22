@@ -33,6 +33,7 @@ SCOPE = {"agent_id": "agent-l5-readiness", "workspace_id": "l5-readiness", "user
 def test_readiness_gate_status_allows_only_l5_or_strict_data_accumulation() -> None:
     common = {
         "ok": True,
+        "production_recall_gate": {"ok": True, "status": "accepted"},
         "capability_gaps": [],
         "latest_l5_assessment": {"trusted": True, "complete": True, "level": "L5"},
         "verified_replay": {

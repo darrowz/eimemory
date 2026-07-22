@@ -46,8 +46,12 @@ class _PassingPromptSafetyExecutor:
         }
 
 
-def test_l5_closure_rehearsal_opens_success_skill_and_rollback_metrics(tmp_path) -> None:
+def test_l5_closure_rehearsal_opens_success_skill_and_rollback_metrics(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path)
+    monkeypatch.setattr(
+        "eimemory.evaluation.production_recall.verify_current_production_recall_gate",
+        lambda *_args, **_kwargs: {"ok": True, "status": "accepted", "record_id": "prg-test"},
+    )
     try:
         _seed_executed_deployment(runtime)
         before = runtime.build_capability_dashboard_metrics(scope=SCOPE, persist=False)
@@ -118,6 +122,10 @@ def test_l5_closure_rehearsal_opens_success_skill_and_rollback_metrics(tmp_path)
 
 def test_l5_closure_rehearsal_allows_only_verified_real_task_data_to_accumulate(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path)
+    monkeypatch.setattr(
+        "eimemory.evaluation.production_recall.verify_current_production_recall_gate",
+        lambda *_args, **_kwargs: {"ok": True, "status": "accepted", "record_id": "prg-test"},
+    )
     real_readiness = runtime.build_l5_readiness_report
 
     def current_release_data_accumulating(**kwargs):

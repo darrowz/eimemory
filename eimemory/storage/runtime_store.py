@@ -722,6 +722,7 @@ class RuntimeStore:
         statuses: list[str] | set[str] | tuple[str, ...] | None = None,
         since: str | None = None,
         until: str | None = None,
+        source_ids: list[str] | tuple[str, ...] | None = None,
     ) -> int:
         with self._lock:
             scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
@@ -732,6 +733,7 @@ class RuntimeStore:
                 statuses=statuses,
                 since=since,
                 until=until,
+                source_ids=source_ids,
             )
 
     def list_capability_scores_compact(
@@ -791,6 +793,27 @@ class RuntimeStore:
                 status=status,
                 limit=limit,
                 source_ids=source_ids,
+            )
+
+    def latest_record_by_meta_value_exact_scope(
+        self,
+        *,
+        kind: str,
+        source: str,
+        status: str,
+        scope: ScopeRef | dict,
+        meta_key: str,
+        meta_value: object,
+    ) -> RecordEnvelope | None:
+        with self._lock:
+            scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+            return self.sqlite.latest_record_by_meta_value_exact_scope(
+                kind=kind,
+                source=source,
+                status=status,
+                scope=scope_ref,
+                meta_key=meta_key,
+                meta_value=meta_value,
             )
 
     def upsert_memory_edge(self, edge: MemoryEdge) -> MemoryEdge:

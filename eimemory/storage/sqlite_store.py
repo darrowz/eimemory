@@ -327,6 +327,7 @@ class SqliteRecordStore:
                 source_id TEXT NOT NULL,
                 confidence REAL NOT NULL,
                 state TEXT NOT NULL,
+                ever_injected INTEGER NOT NULL DEFAULT 0,
                 mandatory INTEGER NOT NULL DEFAULT 0,
                 item_order INTEGER NOT NULL DEFAULT 0,
                 title_text TEXT NOT NULL DEFAULT '',
@@ -366,6 +367,7 @@ class SqliteRecordStore:
             str(row["name"]) for row in self.conn.execute("PRAGMA table_info(proactive_decision_items)")
         }
         for name, definition in (
+            ("ever_injected", "INTEGER NOT NULL DEFAULT 0"),
             ("item_order", "INTEGER NOT NULL DEFAULT 0"),
             ("title_text", "TEXT NOT NULL DEFAULT ''"),
             ("content_text", "TEXT NOT NULL DEFAULT ''"),
@@ -511,12 +513,13 @@ class SqliteRecordStore:
         )
         for item in items:
             self.conn.execute(
-                "INSERT INTO proactive_decision_items(decision_id,citation,record_id,source_id,confidence,state,mandatory,item_order,title_text,content_text,updated_at) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO proactive_decision_items(decision_id,citation,record_id,source_id,confidence,state,ever_injected,mandatory,item_order,title_text,content_text,updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     str(payload["decision_id"]), str(item["citation"]), str(item["record_id"]),
                     normalize_source_id(item["source_id"]), float(item.get("confidence") or 0.0),
-                    str(item.get("state") or "volunteered"), int(bool(item.get("mandatory"))),
+                    str(item.get("state") or "volunteered"), int(str(item.get("state") or "") == "injected"),
+                    int(bool(item.get("mandatory"))),
                     int(item.get("order") or 0), str(item.get("title") or ""),
                     str(item.get("text") or ""), created_at,
                 ),
@@ -555,7 +558,7 @@ class SqliteRecordStore:
         if row is None:
             return None
         item_rows = self.conn.execute(
-            "SELECT citation,record_id,source_id,confidence,state,mandatory,item_order AS 'order',title_text AS title,"
+            "SELECT citation,record_id,source_id,confidence,state,ever_injected,mandatory,item_order AS 'order',title_text AS title,"
             "content_text AS text,updated_at "
             "FROM proactive_decision_items WHERE decision_id=? ORDER BY item_order,citation",
             (str(decision_id),),
@@ -722,8 +725,9 @@ class SqliteRecordStore:
             if target not in allowed.get(current, set()):
                 continue
             self.conn.execute(
-                "UPDATE proactive_decision_items SET state=?,updated_at=? WHERE decision_id=? AND citation=? AND state=?",
-                (target, now, str(decision_id), str(citation), current),
+                "UPDATE proactive_decision_items SET state=?,ever_injected=CASE WHEN ?='injected' THEN 1 ELSE ever_injected END,updated_at=? "
+                "WHERE decision_id=? AND citation=? AND state=?",
+                (target, target, now, str(decision_id), str(citation), current),
             )
             if self.conn.execute("SELECT changes()").fetchone()[0] != 1:
                 raise RuntimeError("proactive transition lost an atomic compare-and-swap")
@@ -3560,6 +3564,32 @@ class SqliteRecordStore:
             if (record := self._record_from_payload_json(row["payload_json"])) is not None
         ]
 
+    def latest_record_by_meta_value_exact_scope(
+        self,
+        *,
+        kind: str,
+        source: str,
+        status: str,
+        scope: ScopeRef,
+        meta_key: str,
+        meta_value: object,
+    ) -> RecordEnvelope | None:
+        """Return insertion high-water evidence without trusting wall clocks."""
+
+        if not str(meta_key or "").replace("_", "").isalnum():
+            raise ValueError("meta_key must be a simple identifier")
+        row = self.conn.execute(
+            "SELECT payload_json FROM records WHERE kind=? AND source=? AND status=? "
+            "AND tenant_id=? AND agent_id=? AND workspace_id=? AND user_id=? "
+            f"AND CAST(json_extract(meta_json, '$.{meta_key}') AS TEXT)=? "
+            "ORDER BY rowid DESC LIMIT 1",
+            (
+                str(kind), str(source), str(status), scope.tenant_id, scope.agent_id,
+                scope.workspace_id, scope.user_id, str(meta_value),
+            ),
+        ).fetchone()
+        return None if row is None else self._record_from_payload_json(row["payload_json"])
+
     def count_records(
         self,
         *,
@@ -3600,6 +3630,7 @@ class SqliteRecordStore:
         statuses: list[str] | set[str] | tuple[str, ...] | None = None,
         since: str | None = None,
         until: str | None = None,
+        source_ids: list[str] | tuple[str, ...] | None = None,
     ) -> int:
         """Count one canonical scope without decoding or alias-expanding payloads.
 
@@ -3632,6 +3663,12 @@ class SqliteRecordStore:
         if clean_statuses:
             where.append(f"status IN ({','.join('?' for _ in clean_statuses)})")
             params.extend(clean_statuses)
+        allowed_source_ids = normalize_source_ids(source_ids)
+        if allowed_source_ids == ():
+            return 0
+        if allowed_source_ids is not None:
+            where.append(f"source_id IN ({','.join('?' for _ in allowed_source_ids)})")
+            params.extend(allowed_source_ids)
         since_value = _normalize_datetime_bound(since, end_of_day=False)
         until_value = _normalize_datetime_bound(until, end_of_day=True)
         if since_value:

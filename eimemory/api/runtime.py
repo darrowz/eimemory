@@ -1356,6 +1356,48 @@ class Runtime:
 
         return run_production_recall_eval(self, dataset, seed=seed, scope=scope, persist_report=persist_report)
 
+    def verify_production_recall_gate(
+        self,
+        *,
+        scope: dict | None = None,
+        release_identity=None,
+        limit: int = 200,
+    ) -> dict:
+        from eimemory.evaluation.production_recall import verify_current_production_recall_gate
+
+        return verify_current_production_recall_gate(
+            self,
+            scope=scope,
+            release=release_identity,
+            limit=limit,
+        )
+
+    def run_configured_production_recall_gate(self, *, scope: dict | None = None) -> dict:
+        """Run only the configured production-redacted dataset for a release."""
+
+        from eimemory.scheduler.jobs import _dataset_cases, _production_recall_dataset
+
+        exact_scope = dict(scope or {})
+        dataset, configured, dataset_source, skipped_reason = _production_recall_dataset(
+            self,
+            scope=exact_scope,
+        )
+        if not configured or not _dataset_cases(dataset):
+            return {
+                "ok": False,
+                "accepted": False,
+                "gate_status": "not_run",
+                "blocked_reason": skipped_reason or "production_recall_dataset_unconfigured",
+                "dataset_source": dataset_source,
+            }
+        report = self.run_production_recall_eval(
+            dataset,
+            seed=False,
+            scope=exact_scope,
+            persist_report=True,
+        )
+        return {**report, "dataset_source": dataset_source}
+
     def run_real_task_replay(
         self,
         dataset: dict | list,

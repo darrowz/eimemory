@@ -83,6 +83,9 @@ def readiness_gate_status(readiness: dict[str, Any]) -> str:
         and not core_missing
         and isinstance(core_manifest_rejections, dict)
         and not core_manifest_rejections
+        and isinstance(readiness.get("production_recall_gate"), dict)
+        and readiness["production_recall_gate"].get("ok") is True
+        and readiness["production_recall_gate"].get("status") == "accepted"
     )
     if not common_verified:
         return ""
@@ -144,6 +147,22 @@ def build_l5_readiness_report(
         release=release,
     )
     latest_l5_assessment = _latest_l5_assessment(runtime, scope=scope_ref, release=release)
+    try:
+        from eimemory.evaluation.production_recall import verify_current_production_recall_gate
+
+        production_recall_gate = verify_current_production_recall_gate(
+            runtime,
+            scope=scope_ref,
+            release=release,
+            limit=limit,
+        )
+    except Exception as exc:
+        production_recall_gate = {
+            "ok": False,
+            "status": "not_run",
+            "reason": f"production_recall_gate_error:{type(exc).__name__}",
+            "record_id": "",
+        }
     weak_outcome_evidence = _weak_outcome_evidence(runtime, scope=scope_ref, limit=limit)
     capability_gaps = _capability_gaps(ledger, weak_outcome_evidence=weak_outcome_evidence)
     stage = _stage_for(
@@ -166,7 +185,7 @@ def build_l5_readiness_report(
     report = {
         "ok": True,
         "report_type": "l5_readiness_report",
-        "schema_version": "l5_readiness.v1",
+        "schema_version": "l5_readiness.v2",
         "generated_at": now_iso(),
         "scope": asdict(scope_ref),
         "current_stage": stage["stage"],
@@ -183,6 +202,7 @@ def build_l5_readiness_report(
         "verified_replay": verified_replay,
         "verified_core_replay": verified_core_replay,
         "latest_l5_assessment": latest_l5_assessment,
+        "production_recall_gate": production_recall_gate,
         "weak_outcome_evidence": weak_outcome_evidence,
         "capability_gaps": capability_gaps,
         "next_actions": next_actions,

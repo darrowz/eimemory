@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import time
 import tracemalloc
 from collections import Counter
@@ -18,6 +19,7 @@ from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
 OUTCOME_RULE_SOURCES = {"diagnosis_pattern", "operator_gap", "visual_evidence_gap", "world_state_mismatch"}
+MAX_PRODUCTION_RECALL_DATASET_BYTES = 8 * 1024 * 1024
 
 
 def run_nightly_jobs(
@@ -664,8 +666,26 @@ def _record_content_text(record: RecordEnvelope) -> str:
 
 
 def _load_json_dataset(path: str) -> dict[str, Any] | list[Any]:
-    with Path(path).open("r", encoding="utf-8") as handle:
-        dataset = json.load(handle)
+    candidate = Path(path).expanduser()
+    if not candidate.is_absolute():
+        candidate = candidate.absolute()
+    if candidate.is_symlink():
+        raise ValueError("production recall dataset must not be a symlink")
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(candidate, flags)
+    with os.fdopen(descriptor, "rb", closefd=True) as handle:
+        metadata = os.fstat(handle.fileno())
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError("production recall dataset must be a regular file")
+        getuid = getattr(os, "getuid", None)
+        if callable(getuid) and int(metadata.st_uid) not in {0, int(getuid())}:
+            raise ValueError("production recall dataset owner is not trusted")
+        if int(metadata.st_size) > MAX_PRODUCTION_RECALL_DATASET_BYTES:
+            raise ValueError("production recall dataset exceeds size limit")
+        raw = handle.read(MAX_PRODUCTION_RECALL_DATASET_BYTES + 1)
+    if len(raw) > MAX_PRODUCTION_RECALL_DATASET_BYTES:
+        raise ValueError("production recall dataset exceeds size limit")
+    dataset = json.loads(raw.decode("utf-8"))
     if isinstance(dataset, (dict, list)):
         return dataset
     raise ValueError("dataset must be a JSON object or list")

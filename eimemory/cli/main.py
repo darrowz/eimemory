@@ -2279,8 +2279,9 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if report.get("ok") else 1
         if parsed.eval_command == "production-recall":
             try:
-                with open(parsed.dataset_json, "r", encoding="utf-8") as handle:
-                    dataset = json.load(handle)
+                from eimemory.scheduler.jobs import _load_json_dataset
+
+                dataset = _load_json_dataset(parsed.dataset_json)
             except OSError as exc:
                 print(
                     json.dumps(
@@ -2289,7 +2290,7 @@ def main(argv: list[str] | None = None) -> int:
                     )
                 )
                 return 2
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
                 print(json.dumps({"ok": False, "error": "invalid_dataset_json"}, ensure_ascii=False))
                 return 2
             try:
@@ -2319,6 +2320,8 @@ def main(argv: list[str] | None = None) -> int:
                     return 2
                 report = {**report, "output": str(output_path)}
             print(json.dumps(report, ensure_ascii=False, indent=2))
+            if isinstance(dataset, dict) and str(dataset.get("schema") or dataset.get("schema_version") or "") == "production_redacted_v1":
+                return 0 if report.get("accepted") is True and report.get("gate_status") == "accepted" else 1
             return 0 if report.get("ok") else 1
         if parsed.eval_command == "openclaw-e2e":
             from eimemory.adapters.openclaw.tools import OpenClawMemoryTools

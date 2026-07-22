@@ -141,6 +141,20 @@ class FakeRuntime:
         assert kwargs == _identity_kwargs()
         return deepcopy(self.live_acceptance)
 
+    def run_configured_production_recall_gate(self, **kwargs) -> dict:
+        self.calls.append("production_recall_run")
+        assert kwargs == {"scope": SCOPE}
+        return {"ok": True, "accepted": True, "gate_status": "accepted", "blocked_reason": ""}
+
+    def verify_production_recall_gate(self, **kwargs) -> dict:
+        self.calls.append("production_recall_verify")
+        identity = kwargs.pop("release_identity")
+        assert kwargs == {"scope": SCOPE, "limit": 500}
+        assert identity.commit == CURRENT_COMMIT
+        assert identity.version == "1.9.51"
+        assert identity.receipt_id == "receipt-1"
+        return {"ok": True, "status": "accepted", "record_id": "prg-current", "report_id": "prg-current"}
+
     def run_weak_capability_replay_gate(self, **kwargs) -> dict:
         self.calls.append("replay_bootstrap")
         assert kwargs == {
@@ -177,6 +191,8 @@ def test_release_closure_runs_all_stages_in_order() -> None:
 
     assert runtime.calls == [
         "deployment_receipt",
+        "production_recall_run",
+        "production_recall_verify",
         "replay_bootstrap",
         "live_acceptance",
         "closure_rehearsal",
@@ -194,8 +210,81 @@ def test_release_closure_runs_all_stages_in_order() -> None:
     }
     assert report["record_ids"] == {
         "deployment_receipt": "receipt-1",
+        "production_recall_gate": "prg-current",
         "readiness": "readiness-1",
     }
+
+
+class ProductionGateRuntime(FakeRuntime):
+    def __init__(self, *, accepted: bool = True) -> None:
+        super().__init__()
+        self.accepted = accepted
+
+    def run_configured_production_recall_gate(self, **kwargs) -> dict:
+        self.calls.append("production_recall_run")
+        assert kwargs == {"scope": SCOPE}
+        return {
+            "ok": self.accepted,
+            "accepted": self.accepted,
+            "gate_status": "accepted" if self.accepted else "not_run",
+            "blocked_reason": "" if self.accepted else "eligible_dataset_missing",
+        }
+
+    def verify_production_recall_gate(self, **kwargs) -> dict:
+        self.calls.append("production_recall_verify")
+        identity = kwargs.pop("release_identity")
+        assert kwargs == {"scope": SCOPE, "limit": 500}
+        assert identity.commit == CURRENT_COMMIT
+        assert identity.version == "1.9.51"
+        assert identity.receipt_id == "receipt-1"
+        assert identity.session_id == "receipt-1"
+        return {
+            "ok": True,
+            "status": "accepted",
+            "record_id": "prg-current",
+            "report_id": "prg-current",
+        }
+
+
+def test_release_closure_runs_production_recall_after_receipt_before_replay() -> None:
+    runtime = ProductionGateRuntime()
+
+    report = _run(runtime)
+
+    assert runtime.calls == [
+        "deployment_receipt",
+        "production_recall_run",
+        "production_recall_verify",
+        "replay_bootstrap",
+        "live_acceptance",
+        "closure_rehearsal",
+        "readiness",
+    ]
+    assert report["production_recall_gate"]["ok"] is True
+    assert report["record_ids"]["production_recall_gate"] == "prg-current"
+
+
+def test_release_closure_fails_closed_before_replay_when_production_dataset_not_run() -> None:
+    runtime = ProductionGateRuntime(accepted=False)
+
+    report = _run(runtime)
+
+    assert runtime.calls == ["deployment_receipt", "production_recall_run"]
+    assert report["ok"] is False
+    assert report["blocked_stage"] == "production_recall_gate"
+    assert report["blocked_reason"] == "eligible_dataset_missing"
+
+
+def test_release_closure_fails_closed_when_production_gate_runner_is_unavailable() -> None:
+    class ReceiptOnly:
+        def verify_and_record_deployment(self, **_kwargs) -> dict:
+            return _successful_receipt()
+
+    report = _run(ReceiptOnly())
+
+    assert report["ok"] is False
+    assert report["blocked_stage"] == "production_recall_gate"
+    assert report["blocked_reason"] == "production_recall_gate_runner_unavailable"
 
 
 @pytest.mark.parametrize(
@@ -210,25 +299,25 @@ def test_release_closure_runs_all_stages_in_order() -> None:
         (
             "replay_bootstrap",
             {"replay_bootstrap": {"ok": False, "blocked_reasons": ["weak_capability_replay_failed"]}},
-            ["deployment_receipt", "replay_bootstrap"],
+            ["deployment_receipt", "production_recall_run", "production_recall_verify", "replay_bootstrap"],
             "weak_capability_replay_failed",
         ),
         (
             "live_acceptance",
             {"live_acceptance": {"ok": False, "error": "acceptance_case_failed"}},
-            ["deployment_receipt", "replay_bootstrap", "live_acceptance"],
+            ["deployment_receipt", "production_recall_run", "production_recall_verify", "replay_bootstrap", "live_acceptance"],
             "acceptance_case_failed",
         ),
         (
             "closure_rehearsal",
             {"rehearsal": {"ok": False, "closure_complete": False, "blocked_reasons": ["replay_failed"]}},
-            ["deployment_receipt", "replay_bootstrap", "live_acceptance", "closure_rehearsal"],
+            ["deployment_receipt", "production_recall_run", "production_recall_verify", "replay_bootstrap", "live_acceptance", "closure_rehearsal"],
             "replay_failed",
         ),
         (
             "readiness",
             {"readiness_score": 0.9},
-            ["deployment_receipt", "replay_bootstrap", "live_acceptance", "closure_rehearsal", "readiness"],
+            ["deployment_receipt", "production_recall_run", "production_recall_verify", "replay_bootstrap", "live_acceptance", "closure_rehearsal", "readiness"],
             "readiness_not_l5",
         ),
     ],
@@ -413,6 +502,7 @@ def _successful_rehearsal() -> dict:
 def _successful_readiness() -> dict:
     return {
         "ok": True,
+        "production_recall_gate": {"ok": True, "status": "accepted"},
         "capability_gaps": [],
         "current_stage": "L5",
         "readiness_score": 1.0,
