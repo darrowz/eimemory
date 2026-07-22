@@ -23,6 +23,7 @@ from eimemory.evaluation.real_query_gate import (
     PRODUCTION_REAL_QUERY_SCHEMA,
     evaluate_labeled_ranking_at_5,
     freeze_production_recall_dataset,
+    bootstrap_production_recall_baseline,
     run_real_query_gate as _run_real_query_gate,
     verify_current_production_recall_gate,
 )

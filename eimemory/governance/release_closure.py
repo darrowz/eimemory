@@ -31,6 +31,7 @@ def run_release_closure(
         "record_ids": {},
         "deployment_receipt": dict(not_run),
         "production_recall_gate": dict(not_run),
+        "storage_migrations": dict(not_run),
         "replay_bootstrap": dict(not_run),
         "live_acceptance": dict(not_run),
         "closure_rehearsal": dict(not_run),
@@ -50,41 +51,63 @@ def run_release_closure(
         return _blocked(report, "deployment_receipt", _failure_reason(receipt, "deployment_receipt_failed"))
     report["deployment"] = _deployment_identity(receipt)
     report["record_ids"]["deployment_receipt"] = str(receipt.get("promotion_request_id") or "")
+    from eimemory.governance.l5_readiness import _storage_migration_status
 
-    run_recall = getattr(runtime, "run_configured_production_recall_gate", None)
-    if not callable(run_recall):
-        return _blocked(report, "production_recall_gate", "production_recall_gate_runner_unavailable")
-    executed_recall_gate = run_recall(scope=scope_payload)
-    report["production_recall_gate"] = executed_recall_gate
-    if executed_recall_gate.get("accepted") is not True:
-        return _blocked(
-            report,
-            "production_recall_gate",
-            _failure_reason(executed_recall_gate, "production_recall_gate_failed"),
-        )
-
-    verify_recall = getattr(runtime, "verify_production_recall_gate", None)
-    if not callable(verify_recall):
-        return _blocked(report, "production_recall_gate", "production_recall_gate_verifier_unavailable")
+    migration_status = _storage_migration_status(runtime)
+    report["storage_migrations"] = migration_status
+    if migration_status.get("ok") is not True:
+        return _blocked(report, "storage_migrations", "storage_migrations_pending")
     receipt_identity = ReleaseIdentity(
         commit=str(receipt.get("commit") or ""),
         version=str(receipt.get("version") or ""),
         receipt_id=str(receipt.get("promotion_request_id") or ""),
         session_id=str(receipt.get("release_session_id") or receipt.get("promotion_request_id") or ""),
     )
-    recall_gate = verify_recall(
-        scope=scope_payload,
-        release_identity=receipt_identity,
-        limit=500,
-    )
-    report["production_recall_gate"] = recall_gate
-    report["record_ids"]["production_recall_gate"] = str(recall_gate.get("record_id") or "")
-    if recall_gate.get("ok") is not True:
-        return _blocked(
-            report,
-            "production_recall_gate",
-            _failure_reason(recall_gate, "production_recall_gate_failed"),
+
+    run_recall = getattr(runtime, "run_configured_production_recall_gate", None)
+    if not callable(run_recall):
+        return _blocked(report, "production_recall_gate", "production_recall_gate_runner_unavailable")
+    executed_recall_gate = run_recall(scope=scope_payload)
+    report["production_recall_gate"] = executed_recall_gate
+    bootstrap_pending: dict[str, Any] | None = None
+    if executed_recall_gate.get("accepted") is not True:
+        from eimemory.evaluation.real_query_gate import verify_current_bootstrap_data_pending
+
+        bootstrap_pending = verify_current_bootstrap_data_pending(
+            runtime,
+            scope=scope_payload,
+            release=receipt_identity,
         )
+        if bootstrap_pending.get("ok") is not True:
+            return _blocked(
+                report,
+                "production_recall_gate",
+                _failure_reason(executed_recall_gate, "production_recall_gate_failed"),
+            )
+        report["production_recall_gate"] = {
+            **executed_recall_gate,
+            "bootstrap": bootstrap_pending,
+            "status": "data_accumulating",
+        }
+        report["record_ids"]["production_recall_bootstrap"] = str(bootstrap_pending.get("record_id") or "")
+
+    if bootstrap_pending is None:
+        verify_recall = getattr(runtime, "verify_production_recall_gate", None)
+        if not callable(verify_recall):
+            return _blocked(report, "production_recall_gate", "production_recall_gate_verifier_unavailable")
+        recall_gate = verify_recall(
+            scope=scope_payload,
+            release_identity=receipt_identity,
+            limit=500,
+        )
+        report["production_recall_gate"] = recall_gate
+        report["record_ids"]["production_recall_gate"] = str(recall_gate.get("record_id") or "")
+        if recall_gate.get("ok") is not True:
+            return _blocked(
+                report,
+                "production_recall_gate",
+                _failure_reason(recall_gate, "production_recall_gate_failed"),
+            )
 
     replay_bootstrap = runtime.run_weak_capability_replay_gate(
         scope=scope_payload,
@@ -122,7 +145,14 @@ def run_release_closure(
     report["readiness"] = readiness
     report["record_ids"]["readiness"] = str(readiness.get("persisted_record_id") or "")
     readiness_status = readiness_gate_status(readiness)
-    if readiness_status == "data_accumulating":
+    if bootstrap_pending is not None:
+        if str(readiness.get("schema_version") or "") != "l5_readiness.v2" or str(readiness.get("current_stage") or "") != "L4.5":
+            return _blocked(report, "readiness", "bootstrap_data_pending_readiness_not_downgraded")
+        report["ok"] = True
+        report["closure_complete"] = False
+        report["data_accumulating"] = True
+        return report
+    if _readiness_data_accumulating(readiness):
         report["ok"] = True
         report["closure_complete"] = False
         report["data_accumulating"] = True
@@ -176,3 +206,21 @@ def _rehearsal_gate_ok(rehearsal: dict[str, Any]) -> bool:
     complete = rehearsal.get("closure_complete") is True
     accumulating = rehearsal.get("data_accumulating") is True
     return bool(rehearsal.get("ok") is True and complete != accumulating)
+
+
+def _readiness_data_accumulating(readiness: dict[str, Any]) -> bool:
+    live = readiness.get("live_task_gate") if isinstance(readiness.get("live_task_gate"), dict) else {}
+    recall = readiness.get("production_recall_gate") if isinstance(readiness.get("production_recall_gate"), dict) else {}
+    score = readiness.get("readiness_score")
+    return bool(
+        readiness.get("schema_version") == "l5_readiness.v2"
+        and readiness.get("current_stage") == "L4.5"
+        and isinstance(score, (int, float))
+        and not isinstance(score, bool)
+        and float(score) <= 0.8
+        and recall.get("ok") is True
+        and recall.get("status") == "accepted"
+        and live.get("ok") is False
+        and int(live.get("current_deployment_operational_probes") or 0) >= 10
+        and (int(live.get("sample_deficit") or 0) > 0 or int(live.get("task_type_deficit") or 0) > 0)
+    )

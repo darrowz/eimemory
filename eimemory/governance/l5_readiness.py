@@ -49,6 +49,8 @@ WEAK_CAPABILITIES = {"search.discovery", "research.synthesis", "operations.uumit
 def readiness_gate_status(readiness: dict[str, Any]) -> str:
     """Return the only release-gate states backed by complete L5 evidence."""
 
+    if readiness.get("schema_version") != "l5_readiness.v2":
+        return ""
     assessment = (
         readiness.get("latest_l5_assessment")
         if isinstance(readiness.get("latest_l5_assessment"), dict)
@@ -86,6 +88,9 @@ def readiness_gate_status(readiness: dict[str, Any]) -> str:
         and isinstance(readiness.get("production_recall_gate"), dict)
         and readiness["production_recall_gate"].get("ok") is True
         and readiness["production_recall_gate"].get("status") == "accepted"
+        and isinstance(readiness.get("storage_migrations"), dict)
+        and readiness["storage_migrations"].get("ok") is True
+        and readiness["storage_migrations"].get("pending") == []
     )
     if not common_verified:
         return ""
@@ -99,19 +104,6 @@ def readiness_gate_status(readiness: dict[str, Any]) -> str:
         and int(live_gate.get("current_deployment_verified_real_tasks") or 0) >= 10
     ):
         return "L5"
-    if (
-        readiness.get("current_stage") == "data_accumulating"
-        and isinstance(score, (int, float))
-        and not isinstance(score, bool)
-        and float(score) == 0.9
-        and live_gate.get("ok") is False
-        and int(live_gate.get("current_deployment_operational_probes") or 0) >= 10
-        and (
-            int(live_gate.get("sample_deficit") or 0) > 0
-            or int(live_gate.get("task_type_deficit") or 0) > 0
-        )
-    ):
-        return "data_accumulating"
     return ""
 
 
@@ -163,6 +155,7 @@ def build_l5_readiness_report(
             "reason": f"production_recall_gate_error:{type(exc).__name__}",
             "record_id": "",
         }
+    storage_migrations = _storage_migration_status(runtime)
     weak_outcome_evidence = _weak_outcome_evidence(runtime, scope=scope_ref, limit=limit)
     capability_gaps = _capability_gaps(ledger, weak_outcome_evidence=weak_outcome_evidence)
     stage = _stage_for(
@@ -175,13 +168,21 @@ def build_l5_readiness_report(
         verified_core_replay,
         latest_l5_assessment,
     )
+    stage = _apply_production_recall_gate(stage, production_recall_gate)
+    stage = _apply_storage_migration_gate(stage, storage_migrations)
     next_actions = _next_actions(
         stage,
         capability_gaps,
         evidence_counts,
         verified_replay=verified_replay,
         latest_l5_assessment=latest_l5_assessment,
+        production_recall_gate=production_recall_gate,
     )
+    if storage_migrations.get("pending"):
+        next_actions = [
+            "Complete and verify all deferred storage migrations before claiming L5 or closing a release.",
+            *next_actions,
+        ]
     report = {
         "ok": True,
         "report_type": "l5_readiness_report",
@@ -203,6 +204,7 @@ def build_l5_readiness_report(
         "verified_core_replay": verified_core_replay,
         "latest_l5_assessment": latest_l5_assessment,
         "production_recall_gate": production_recall_gate,
+        "storage_migrations": storage_migrations,
         "weak_outcome_evidence": weak_outcome_evidence,
         "capability_gaps": capability_gaps,
         "next_actions": next_actions,
@@ -231,6 +233,53 @@ def build_l5_readiness_report(
         )
         report["persisted_record_id"] = record.record_id
     return report
+
+
+def _apply_production_recall_gate(stage: dict[str, Any], gate: dict[str, Any]) -> dict[str, Any]:
+    if gate.get("ok") is True and gate.get("status") == "accepted":
+        return stage
+    downgraded = dict(stage)
+    downgraded["readiness_score"] = min(float(stage.get("readiness_score") or 0.0), 0.8)
+    if str(stage.get("stage") or "") in {"L5", "data_accumulating"}:
+        downgraded.update(
+            {
+                "stage": "L4.5",
+                "label": "L5 evidence present; production recall gate incomplete",
+                "reason": "The production real-query recall gate is not independently accepted for the current release.",
+                "done_when": "Collect and label the required real queries, then pass the release-bound production recall gate.",
+            }
+        )
+    return downgraded
+
+
+def _storage_migration_status(runtime: Any) -> dict[str, Any]:
+    provider = getattr(getattr(getattr(runtime, "store", None), "sqlite", None), "pending_storage_migrations", None)
+    if not callable(provider):
+        return {"ok": False, "status": "unavailable", "pending": ["migration_status_unavailable"]}
+    try:
+        pending = provider()
+    except Exception as exc:
+        return {"ok": False, "status": "error", "pending": [f"migration_status_error:{type(exc).__name__}"]}
+    if not isinstance(pending, list) or any(not isinstance(item, str) or not item for item in pending):
+        return {"ok": False, "status": "invalid", "pending": ["migration_status_invalid"]}
+    normalized = sorted(set(pending))
+    return {"ok": not normalized, "status": "ready" if not normalized else "pending", "pending": normalized}
+
+
+def _apply_storage_migration_gate(stage: dict[str, Any], migration: dict[str, Any]) -> dict[str, Any]:
+    if migration.get("ok") is True and migration.get("pending") == []:
+        return stage
+    downgraded = dict(stage)
+    downgraded["readiness_score"] = min(float(stage.get("readiness_score") or 0.0), 0.8)
+    if str(stage.get("stage") or "") == "L5":
+        downgraded.update(
+            {
+                "stage": "L4.5",
+                "label": "L5 evidence present; storage migrations pending",
+                "reason": "Deferred storage migrations must finish before L5 can be claimed.",
+            }
+        )
+    return downgraded
 
 
 def _safe_hard_metrics(runtime: Any, *, scope: ScopeRef, limit: int) -> dict[str, Any]:
@@ -1081,8 +1130,8 @@ def _stage_for(
     if structural_ready:
         return {
             **common,
-            "readiness_score": 0.9,
-            "stage": "data_accumulating",
+            "readiness_score": 0.8,
+            "stage": "L4.5",
             "label": "release structure complete; real-task evidence accumulating",
             "reason": "All structural and safety gates pass, but the current release has not accumulated ten verified real tasks across five task types.",
             "done_when": "Accumulate the remaining current-release verified real tasks; operational probes do not count as user-task evidence.",
@@ -1153,8 +1202,14 @@ def _next_actions(
     *,
     verified_replay: dict[str, Any],
     latest_l5_assessment: dict[str, Any],
+    production_recall_gate: dict[str, Any],
 ) -> list[str]:
     actions = []
+    if production_recall_gate.get("ok") is not True or production_recall_gate.get("status") != "accepted":
+        reason = str(production_recall_gate.get("reason") or production_recall_gate.get("blocked_reason") or "not accepted")
+        actions.append(
+            f"Complete the production recall real-query gate ({reason}); L5 remains downgraded until independent verification accepts it."
+        )
     live_task_gate = stage.get("live_task_gate") if isinstance(stage.get("live_task_gate"), dict) else {}
     if not live_task_gate.get("ok"):
         actions.append(

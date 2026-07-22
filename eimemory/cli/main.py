@@ -603,6 +603,22 @@ def _build_parser() -> argparse.ArgumentParser:
     eval_production_recall.add_argument("--output", default="")
     eval_production_recall.add_argument("--no-seed", action="store_true")
     eval_production_recall.add_argument("--persist-report", action="store_true")
+    eval_production_query = eval_sub.add_parser("production-query")
+    eval_production_query_sub = eval_production_query.add_subparsers(dest="production_query_command")
+    for operation in ("collect", "status", "build"):
+        operation_parser = eval_production_query_sub.add_parser(operation)
+        operation_parser.add_argument("--scope-agent", default="")
+        operation_parser.add_argument("--scope-workspace", default="")
+        operation_parser.add_argument("--scope-user", default="")
+        operation_parser.add_argument("--limit", type=int, default=500)
+        if operation == "build":
+            operation_parser.add_argument("--output", required=True)
+    eval_production_query_accept = eval_production_query_sub.add_parser("accept")
+    eval_production_query_accept.add_argument("pending_record_id")
+    eval_production_query_accept.add_argument("--label-json", required=True)
+    eval_production_query_accept.add_argument("--scope-agent", default="")
+    eval_production_query_accept.add_argument("--scope-workspace", default="")
+    eval_production_query_accept.add_argument("--scope-user", default="")
     eval_openclaw_e2e = eval_sub.add_parser("openclaw-e2e")
     eval_openclaw_e2e.add_argument("--query", default="eimemory openclaw e2e")
     eval_openclaw_e2e.add_argument("--scope-agent", default="")
@@ -2277,6 +2293,50 @@ def main(argv: list[str] | None = None) -> int:
                 report = {**report, "output": str(output_path)}
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0 if report.get("ok") else 1
+        if parsed.eval_command == "production-query":
+            from eimemory.evaluation.production_query_dataset import (
+                accept_pending_production_query,
+                build_production_query_dataset,
+                collect_pending_production_queries,
+                write_production_query_dataset,
+            )
+
+            exact_scope = _cli_scope(parsed, defaults=scope)
+            operation = str(parsed.production_query_command or "")
+            try:
+                if operation == "collect":
+                    report = collect_pending_production_queries(runtime, scope=exact_scope, limit=parsed.limit)
+                elif operation == "accept":
+                    from eimemory.scheduler.jobs import load_json_dataset_with_evidence
+
+                    packet, packet_evidence = load_json_dataset_with_evidence(str(parsed.label_json))
+                    if not isinstance(packet, dict) or set(packet) != {"query_features", "labels", "labeler"}:
+                        raise ValueError("label packet requires only query_features, labels, and labeler")
+                    report = accept_pending_production_query(
+                        runtime,
+                        pending_record_id=str(parsed.pending_record_id),
+                        query_features=dict(packet.get("query_features") or {}),
+                        labels=list(packet.get("labels") or []),
+                        labeler=str(packet.get("labeler") or ""),
+                        operator_scope=exact_scope,
+                        label_packet_evidence=packet_evidence,
+                    )
+                elif operation in {"status", "build"}:
+                    report = build_production_query_dataset(runtime, scope=exact_scope, limit=parsed.limit)
+                    if operation == "build":
+                        if report.get("ready") is not True:
+                            print(json.dumps(report, ensure_ascii=False, indent=2))
+                            return 1
+                        written = write_production_query_dataset(report["dataset"], parsed.output)
+                        report = {**report, "dataset": {}, "write": written}
+                else:
+                    print(json.dumps({"ok": False, "error": "production_query_operation_required"}, ensure_ascii=False))
+                    return 2
+            except (OSError, ValueError, FileExistsError) as exc:
+                print(json.dumps({"ok": False, "error": "production_query_operation_failed", "detail": str(exc)}, ensure_ascii=False))
+                return 2
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0 if report.get("ok") is True else 1
         if parsed.eval_command == "production-recall":
             try:
                 from eimemory.scheduler.jobs import _load_json_dataset

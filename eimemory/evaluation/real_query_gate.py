@@ -8,10 +8,12 @@ It intentionally defines no separate CLI or scheduler entry point.
 from __future__ import annotations
 
 from dataclasses import asdict
-from datetime import datetime
+from datetime import datetime, timezone
 from hashlib import sha256
 import json
 from math import log2
+from pathlib import Path
+import re
 from time import perf_counter
 import tracemalloc
 from typing import Any
@@ -31,6 +33,12 @@ from eimemory.governance.evidence_contract import (
     same_scope,
     verified_deployment_receipt_identity,
 )
+from eimemory.governance.deployment_receipt import (
+    DEFAULT_DEPLOYMENT_CURRENT_LINK,
+    DEFAULT_DEPLOYMENT_HEALTH_URL,
+    _fetch_health,
+    _normalize_health_url,
+)
 from eimemory.models.records import RecordEnvelope, ScopeRef
 from eimemory.models.source_partitions import normalize_source_id
 
@@ -38,6 +46,10 @@ PRODUCTION_REAL_QUERY_SCHEMA = "production_redacted_v1"
 PRODUCTION_REAL_QUERY_REPORT_SCHEMA = "production_recall_gate.v1"
 PRODUCTION_REAL_QUERY_POLICY = "production_recall_gate_policy.v1"
 PRODUCTION_REAL_QUERY_REQUIRED_CHANNELS = frozenset({"openclaw", "codex", "hermes"})
+PRODUCTION_REAL_QUERY_DATASET_EVIDENCE_SCHEMA = "secure_dataset_fingerprint.v1"
+PRODUCTION_RECALL_BOOTSTRAP_STATE_SCHEMA = "production_recall_bootstrap_state.v1"
+PRODUCTION_REAL_QUERY_TRUSTED_LABELERS = frozenset({"operator", "release_operator"})
+PRODUCTION_REAL_QUERY_TRUSTED_COLLECTORS = frozenset({"production_capture", "proactive_audit_capture"})
 PRODUCTION_REAL_QUERY_THRESHOLDS: dict[str, float] = {
     "recall_at_5": 0.90,
     "precision_at_5": 0.20,
@@ -54,6 +66,8 @@ _REAL_QUERY_MIN_CASES_PER_CHANNEL = 5
 _MAX_QUERY_TERMS = 16
 _MAX_QUERY_TERM_CHARS = 64
 _MAX_QUERY_FEATURE_CHARS = 512
+_MAX_BASELINE_CHAIN_DEPTH = 8
+_RECALL_CORPUS_KINDS = ("memory", "claim_card", "knowledge_page", "reflection")
 _DIGEST_KEYS = frozenset(
     {"dataset_digest", "engine_digest", "fusion_digest", "policy_digest", "result_digest"}
 )
@@ -93,6 +107,16 @@ def freeze_production_recall_dataset(dataset: dict[str, Any]) -> dict[str, Any]:
         blocked.append("dataset_not_production")
     if raw.get("seed") or raw.get("seed_records"):
         blocked.append("seeded_dataset_not_eligible")
+    dataset_evidence, dataset_evidence_reason = _secure_dataset_evidence(
+        raw.get("_secure_dataset_evidence") or raw.get("secure_dataset_evidence")
+    )
+    if dataset_evidence_reason:
+        blocked.append(dataset_evidence_reason)
+    source_canonical = _stable_digest(
+        {key: value for key, value in raw.items() if key not in {"_secure_dataset_evidence", "secure_dataset_evidence"}}
+    )
+    if dataset_evidence and str(dataset_evidence.get("canonical_digest") or "") != source_canonical:
+        blocked.append("secure_dataset_canonical_digest_mismatch")
 
     frozen_cases: list[dict[str, Any]] = []
     seen_case_ids: set[str] = set()
@@ -136,10 +160,17 @@ def freeze_production_recall_dataset(dataset: dict[str, Any]) -> dict[str, Any]:
         "cases": frozen_cases,
     }
     digest = _stable_digest(frozen)
+    if dataset_evidence:
+        dataset_evidence = {
+            **dataset_evidence,
+            "source_canonical_digest": str(dataset_evidence.get("canonical_digest") or ""),
+            "canonical_digest": digest,
+        }
     return {
         **frozen,
         "dataset_digest": digest,
         "baseline_report_id": str(raw.get("baseline_report_id") or "").strip(),
+        "secure_dataset_evidence": dataset_evidence,
         "eligibility": {
             "ok": not blocked,
             "status": "eligible" if not blocked else "not_run",
@@ -209,6 +240,9 @@ def _freeze_real_query_case(
         record_ref = str(label.get("record_ref") or "").strip()
         grade = label.get("grade")
         provenance = label.get("provenance") if isinstance(label.get("provenance"), dict) else {}
+        labelled_at = _parse_bounded_timestamp(provenance.get("labelled_at"))
+        window_start = _parse_bounded_timestamp(window.get("started_at"))
+        window_end = _parse_bounded_timestamp(window.get("ended_at"))
         if (
             not record_ref
             or isinstance(grade, bool)
@@ -216,8 +250,20 @@ def _freeze_real_query_case(
             or grade < 1
             or grade > 3
             or not all(str(provenance.get(key) or "").strip() for key in ("labeler", "labelled_at", "evidence_ref"))
+            or str(provenance.get("labeler") or "").strip() not in PRODUCTION_REAL_QUERY_TRUSTED_LABELERS
+            or labelled_at is None
+            or window_start is None
+            or window_end is None
+            or not (window_start <= labelled_at <= window_end)
         ):
-            reasons.append("accepted_label_invalid")
+            if str(provenance.get("labeler") or "").strip() not in PRODUCTION_REAL_QUERY_TRUSTED_LABELERS:
+                reasons.append("accepted_labeler_untrusted")
+            elif labelled_at is None:
+                reasons.append("accepted_label_time_invalid")
+            elif window_start is None or window_end is None or not (window_start <= labelled_at <= window_end):
+                reasons.append("accepted_label_time_outside_collection_window")
+            else:
+                reasons.append("accepted_label_invalid")
             continue
         bounded_ref = record_ref[:200]
         previous_grade = accepted_label_grades.get(bounded_ref)
@@ -242,6 +288,8 @@ def _freeze_real_query_case(
     provenance = case.get("provenance") if isinstance(case.get("provenance"), dict) else {}
     if not all(str(provenance.get(key) or "").strip() for key in ("collector", "capture_ref")):
         reasons.append("case_provenance_missing")
+    elif str(provenance.get("collector") or "").strip() not in PRODUCTION_REAL_QUERY_TRUSTED_COLLECTORS:
+        reasons.append("case_collector_untrusted")
 
     frozen = {
         "case_id": case_id or f"invalid-{index}",
@@ -273,6 +321,55 @@ def _bounded_window(value: object) -> dict[str, str] | None:
     if start_dt.tzinfo is None or end_dt.tzinfo is None or start_dt >= end_dt:
         return None
     return {"started_at": started[:80], "ended_at": ended[:80]}
+
+
+def _parse_bounded_timestamp(value: object) -> datetime | None:
+    text = str(value or "").strip()
+    if not text or len(text) > 80:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else None
+
+
+def _secure_dataset_evidence(value: object) -> tuple[dict[str, Any], str]:
+    if not isinstance(value, dict):
+        return {}, "secure_dataset_fingerprint_missing"
+    digest = str(value.get("digest") or value.get("sha256") or "").strip().lower()
+    schema = str(value.get("schema") or value.get("schema_version") or "").strip()
+    size = value.get("size")
+    device = value.get("device")
+    inode = value.get("inode")
+    canonical_digest = str(value.get("canonical_digest") or "").strip().lower()
+    source_canonical_digest = str(value.get("source_canonical_digest") or "").strip().lower()
+    if (
+        schema != PRODUCTION_REAL_QUERY_DATASET_EVIDENCE_SCHEMA
+        or len(digest) != 64
+        or any(char not in "0123456789abcdef" for char in digest)
+        or isinstance(size, bool)
+        or not isinstance(size, int)
+        or size <= 0
+        or isinstance(device, bool)
+        or not isinstance(device, int)
+        or device < 0
+        or isinstance(inode, bool)
+        or not isinstance(inode, int)
+        or inode < 0
+        or (canonical_digest and (len(canonical_digest) != 64 or any(char not in "0123456789abcdef" for char in canonical_digest)))
+        or (source_canonical_digest and (len(source_canonical_digest) != 64 or any(char not in "0123456789abcdef" for char in source_canonical_digest)))
+    ):
+        return {}, "secure_dataset_fingerprint_invalid"
+    return {
+        "schema": schema,
+        "digest": digest,
+        "size": size,
+        "device": device,
+        "inode": inode,
+        **({"canonical_digest": canonical_digest} if canonical_digest else {}),
+        **({"source_canonical_digest": source_canonical_digest} if source_canonical_digest else {}),
+    }, ""
 
 
 def _bounded_query_features(value: object) -> tuple[dict[str, Any], str]:
@@ -406,6 +503,7 @@ def run_real_query_gate(
         report_id=str(frozen.get("baseline_report_id") or ""),
         dataset_digest=str(frozen["dataset_digest"]),
         current_release=release,
+        dataset_evidence=dict(frozen.get("secure_dataset_evidence") or {}),
     )
     if baseline is None:
         # This remains eligible evidence and must advance the high-water mark.
@@ -423,8 +521,7 @@ def run_real_query_gate(
                 "accepted": False,
                 "gate_status": "not_run",
                 "blocked_reason": baseline_reason,
-                "baseline_capture": report.get("cross_channel_leakage_count") == 0
-                and report.get("source_filter_leakage_count") == 0,
+                "baseline_capture": False,
             }
         )
         return _persist_eligible_high_water(runtime, report, scope=dataset_scope, persist=persist_report)
@@ -437,6 +534,432 @@ def run_real_query_gate(
         capacities=capacities,
     )
     return _persist_eligible_high_water(runtime, report, scope=dataset_scope, persist=persist_report)
+
+
+def bootstrap_production_recall_baseline(
+    runtime: Any,
+    dataset: dict[str, Any],
+    *,
+    candidate_commit: str,
+    prior_commit: str,
+    current_link: str = DEFAULT_DEPLOYMENT_CURRENT_LINK,
+    health_url: str = DEFAULT_DEPLOYMENT_HEALTH_URL,
+    scope: dict[str, Any] | None = None,
+    persist_report: bool = True,
+) -> dict[str, Any]:
+    """Capture an immutable predecessor baseline before switching releases.
+
+    The running release and its verified receipt remain authoritative while the
+    candidate evaluator executes.  A normal post-switch evaluation cannot call
+    this path implicitly, which prevents a candidate from blessing itself.
+    """
+
+    frozen = freeze_production_recall_dataset(dataset)
+    dataset_scope = ScopeRef.from_dict({**dict(frozen["scope"]), **dict(scope or {})})
+    candidate = str(candidate_commit or "").strip().lower()
+    release, prior_reason = _verified_live_prior_release(
+        runtime,
+        scope=dataset_scope,
+        prior_commit=prior_commit,
+        current_link=current_link,
+        health_url=health_url,
+    )
+    if release is None:
+        return _not_run_real_query_report(frozen, prior_reason)
+    if not same_scope(dataset_scope, ScopeRef.from_dict(frozen["scope"])):
+        return _not_run_real_query_report(frozen, "dataset_scope_override_mismatch", release=release)
+    if len(candidate) != 40 or any(char not in "0123456789abcdef" for char in candidate):
+        return _not_run_real_query_report(frozen, "candidate_commit_invalid", release=release)
+    if candidate == release.commit:
+        return _not_run_real_query_report(frozen, "candidate_must_not_be_running_release", release=release)
+    if not frozen["eligibility"].get("ok"):
+        reason = str((frozen["eligibility"].get("blocked_reasons") or ["dataset_not_eligible"])[0])
+        return _persist_eligible_high_water(
+            runtime,
+            _not_run_real_query_report(frozen, reason, release=release),
+            scope=dataset_scope,
+            persist=persist_report,
+        )
+    labels_ok, label_reason, capacities = _hydrate_real_query_labels(runtime, frozen["cases"])
+    if not labels_ok:
+        return _persist_eligible_high_water(
+            runtime,
+            _not_run_real_query_report(frozen, label_reason, release=release),
+            scope=dataset_scope,
+            persist=persist_report,
+        )
+
+    latest = runtime.store.latest_record_by_meta_value_exact_scope(
+        kind="reflection",
+        source="eimemory.evaluation.production_recall",
+        status="active",
+        scope=dataset_scope,
+        meta_key="baseline_high_water_key",
+        meta_value=_baseline_high_water_key(release.commit, str(frozen["dataset_digest"])),
+    )
+    if latest is not None:
+        latest_report = (
+            latest.content.get("report")
+            if isinstance(latest.content, dict) and isinstance(latest.content.get("report"), dict)
+            else {}
+        )
+        if (
+            _record_payload_digest_valid(latest, latest_report)
+            and str(latest_report.get("attempt_id") or "") == latest.record_id
+            and latest_report.get("accepted") is True
+            and latest_report.get("gate_status") == "accepted"
+        ):
+            return {
+                **_api_report_from_persisted(latest_report, record_id=latest.record_id),
+                "bootstrap_status": "baseline_ready",
+            }
+        if (
+            _record_payload_digest_valid(latest, latest_report)
+            and str(latest_report.get("attempt_id") or "") == latest.record_id
+            and latest_report.get("baseline_capture") is True
+            and latest_report.get("blocked_reason") == "pre_switch_bootstrap_anchor"
+            and str(latest_report.get("evaluator_commit") or "") == candidate
+            and _independent_real_query_metrics_valid(latest_report, baseline=None)
+        ):
+            return {
+                **_api_report_from_persisted(latest_report, record_id=latest.record_id),
+                "bootstrap_status": "anchor_ready",
+            }
+
+    report = _evaluate_real_query_candidate(
+        runtime,
+        frozen=frozen,
+        release=release,
+        baseline=None,
+        capacities=capacities,
+        evaluator_commit=candidate,
+    )
+    blocking = report.get("threshold_gate", {}).get("blocking_metrics", {})
+    anchor_ready = set(blocking) == {"baseline"}
+    report.update(
+        {
+            "accepted": False,
+            "gate_status": "not_run" if anchor_ready else "blocked",
+            "blocked_reason": "pre_switch_bootstrap_anchor" if anchor_ready else "pre_switch_bootstrap_gate_failed",
+            "baseline_capture": anchor_ready,
+        }
+    )
+    persisted = _persist_eligible_high_water(
+        runtime,
+        report,
+        scope=dataset_scope,
+        persist=persist_report,
+    )
+    if anchor_ready and persisted.get("persisted_record_id"):
+        state_record = _persist_bootstrap_state(
+            runtime,
+            scope=dataset_scope,
+            state="anchor_ready",
+            candidate_commit=candidate,
+            prior_release=release,
+            reason="pre_switch_bootstrap_anchor",
+            progress={"baseline_record_id": str(persisted.get("persisted_record_id") or "")},
+        )
+        persisted["bootstrap_state_record_id"] = state_record.record_id
+    return {**persisted, "bootstrap_status": "anchor_ready" if anchor_ready else "blocked"}
+
+
+def _verified_live_prior_release(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    prior_commit: str,
+    current_link: str,
+    health_url: str,
+) -> tuple[ReleaseIdentity | None, str]:
+    commit = str(prior_commit or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{40}", commit):
+        return None, "prior_commit_invalid"
+    records = runtime.store.list_records(
+        kinds=["promotion_request"],
+        scope=scope,
+        limit=500,
+    )
+    identity = next(
+        (
+            candidate
+            for record in records
+            if same_scope(record.scope, scope)
+            and (candidate := verified_deployment_receipt_identity(record)) is not None
+            and candidate.commit == commit
+        ),
+        None,
+    )
+    if identity is None:
+        return None, "verified_prior_deployment_receipt_missing"
+    caller_link = Path(current_link).expanduser().absolute()
+    trusted_link = Path(DEFAULT_DEPLOYMENT_CURRENT_LINK).expanduser().absolute()
+    if str(caller_link).replace("\\", "/").rstrip("/").casefold() != str(trusted_link).replace("\\", "/").rstrip("/").casefold():
+        return None, "untrusted_current_link"
+    normalized_health = _normalize_health_url(health_url)
+    if normalized_health != _normalize_health_url(DEFAULT_DEPLOYMENT_HEALTH_URL):
+        return None, "untrusted_health_url"
+    try:
+        if not (caller_link.is_symlink() or bool(getattr(caller_link, "is_junction", lambda: False)())):
+            return None, "current_link_not_symlink"
+        release_path = caller_link.resolve(strict=True)
+    except OSError:
+        return None, "current_link_unresolvable"
+    if release_path.name.lower() != commit or release_path.parent.name != "releases":
+        return None, "current_link_prior_commit_mismatch"
+    health = _fetch_health(normalized_health)
+    if health.get("_fetch_error"):
+        return None, "prior_health_fetch_failed"
+    health_release = str((health.get("paths") or {}).get("release") or health.get("release_path") or "")
+    try:
+        health_release_path = Path(health_release).expanduser().resolve(strict=True)
+    except OSError:
+        return None, "prior_health_release_path_invalid"
+    if not (
+        health.get("ok") is True
+        and str(health.get("commit") or "").strip().lower() == commit
+        and str(health.get("version") or "").strip() == identity.version
+        and health_release_path == release_path
+    ):
+        return None, "prior_health_identity_mismatch"
+    return identity, ""
+
+
+def record_production_recall_bootstrap_pending(
+    runtime: Any,
+    *,
+    scope: dict[str, Any] | ScopeRef | None,
+    candidate_commit: str,
+    prior_commit: str,
+    current_link: str = DEFAULT_DEPLOYMENT_CURRENT_LINK,
+    health_url: str = DEFAULT_DEPLOYMENT_HEALTH_URL,
+    reason: str = "production_dataset_not_ready",
+    progress: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+    candidate = str(candidate_commit or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{40}", candidate):
+        return {"ok": False, "status": "blocked", "reason": "candidate_commit_invalid", "record_id": ""}
+    prior, prior_reason = _verified_live_prior_release(
+        runtime,
+        scope=scope_ref,
+        prior_commit=prior_commit,
+        current_link=current_link,
+        health_url=health_url,
+    )
+    if prior is None:
+        return {"ok": False, "status": "blocked", "reason": prior_reason, "record_id": ""}
+    if candidate == prior.commit:
+        return {"ok": False, "status": "blocked", "reason": "candidate_must_not_be_running_release", "record_id": ""}
+    latest = _latest_bootstrap_state(runtime, scope=scope_ref)
+    if latest is not None and str(latest.get("state") or "") in {"anchor_ready", "strict_activated"}:
+        return {
+            "ok": False,
+            "status": "blocked",
+            "reason": "bootstrap_pending_regression_forbidden",
+            "record_id": str(latest.get("record_id") or ""),
+        }
+    payload = {
+        "schema": PRODUCTION_RECALL_BOOTSTRAP_STATE_SCHEMA,
+        "state": "bootstrap_data_pending",
+        "candidate_commit": candidate,
+        "prior_release": release_identity_payload(prior),
+        "scope": asdict(scope_ref),
+        "reason": str(reason or "production_dataset_not_ready")[:160],
+        "progress": _bounded_safe_value(progress or {}),
+        "previous_record_id": str((latest or {}).get("record_id") or ""),
+        "generated_at": now_iso(),
+    }
+    record = _bootstrap_state_record(payload, scope=scope_ref)
+    existing = runtime.store.get_by_id(record.record_id, scope=scope_ref)
+    if existing is None:
+        runtime.store.append(record)
+    return {
+        "ok": True,
+        "status": "bootstrap_data_pending",
+        "reason": payload["reason"],
+        "record_id": record.record_id,
+        "candidate_commit": candidate,
+        "prior_release": payload["prior_release"],
+        "progress": payload["progress"],
+        "next_actions": [
+            "eimemory eval production-query collect --scope-agent <agent> --scope-workspace <workspace> --scope-user <user>",
+            "eimemory eval production-query status --scope-agent <agent> --scope-workspace <workspace> --scope-user <user>",
+            "eimemory eval production-query accept <pending_record_id> --label-json <trusted-operator-label.json> --scope-agent <agent> --scope-workspace <workspace> --scope-user <user>",
+            "eimemory eval production-query build --output <production_recall.json> --scope-agent <agent> --scope-workspace <workspace> --scope-user <user>",
+        ],
+    }
+
+
+def verify_current_bootstrap_data_pending(
+    runtime: Any,
+    *,
+    scope: dict[str, Any] | ScopeRef | None,
+    release: ReleaseIdentity,
+) -> dict[str, Any]:
+    scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+    if not callable(getattr(getattr(runtime, "store", None), "latest_record_by_meta_value_exact_scope", None)):
+        return {"ok": False, "status": "not_run", "reason": "bootstrap_state_store_unavailable", "record_id": ""}
+    latest = _latest_bootstrap_state(runtime, scope=scope_ref)
+    if latest is None:
+        return {"ok": False, "status": "not_run", "reason": "bootstrap_state_missing", "record_id": ""}
+    if latest.get("state") != "bootstrap_data_pending":
+        return {
+            "ok": False,
+            "status": "blocked",
+            "reason": "bootstrap_pending_not_current_state",
+            "record_id": str(latest.get("record_id") or ""),
+        }
+    prior = _release_from_payload(latest.get("prior_release"))
+    receipt = runtime.store.get_by_id(release.receipt_id, scope=scope_ref)
+    receipt_identity = verified_deployment_receipt_identity(receipt) if receipt is not None else None
+    side_effect = receipt.content.get("side_effect") if receipt is not None and isinstance(receipt.content, dict) else {}
+    verification = side_effect.get("verification") if isinstance(side_effect, dict) and isinstance(side_effect.get("verification"), dict) else {}
+    if not (
+        release.complete
+        and receipt_identity == release
+        and prior is not None
+        and str(latest.get("candidate_commit") or "") == release.commit
+        and str(verification.get("prior_commit") or "").strip().lower() == prior.commit
+    ):
+        return {
+            "ok": False,
+            "status": "blocked",
+            "reason": "bootstrap_pending_release_binding_invalid",
+            "record_id": str(latest.get("record_id") or ""),
+        }
+    return {
+        "ok": True,
+        "status": "bootstrap_data_pending",
+        "reason": str(latest.get("reason") or ""),
+        "record_id": str(latest.get("record_id") or ""),
+        "progress": dict(latest.get("progress") or {}),
+    }
+
+
+def activate_production_recall_strict_state(
+    runtime: Any,
+    *,
+    scope: dict[str, Any] | ScopeRef | None,
+    release: ReleaseIdentity,
+    gate_record_id: str,
+) -> dict[str, Any]:
+    scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+    verified = verify_current_production_recall_gate(runtime, scope=scope_ref, release=release)
+    if verified.get("ok") is not True or str(verified.get("record_id") or "") != str(gate_record_id or ""):
+        return {"ok": False, "status": "blocked", "reason": "strict_gate_not_verified", "record_id": ""}
+    latest = _latest_bootstrap_state(runtime, scope=scope_ref)
+    if latest is not None and latest.get("state") == "strict_activated":
+        if str(latest.get("candidate_commit") or "") == release.commit:
+            return {"ok": True, "status": "strict_activated", "reason": "", "record_id": str(latest.get("record_id") or "")}
+        return {"ok": False, "status": "blocked", "reason": "strict_state_commit_mismatch", "record_id": str(latest.get("record_id") or "")}
+    if latest is None or latest.get("state") != "anchor_ready" or str(latest.get("candidate_commit") or "") != release.commit:
+        return {"ok": False, "status": "blocked", "reason": "pre_switch_anchor_state_missing", "record_id": ""}
+    prior = _release_from_payload(latest.get("prior_release"))
+    if prior is None:
+        return {"ok": False, "status": "blocked", "reason": "pre_switch_anchor_release_invalid", "record_id": ""}
+    state_record = _persist_bootstrap_state(
+        runtime,
+        scope=scope_ref,
+        state="strict_activated",
+        candidate_commit=release.commit,
+        prior_release=prior,
+        reason="strict_gate_accepted",
+        progress={"gate_record_id": str(gate_record_id)},
+    )
+    return {"ok": True, "status": "strict_activated", "reason": "", "record_id": state_record.record_id}
+
+
+def _bootstrap_state_key(scope: ScopeRef) -> str:
+    return _stable_digest({"schema": PRODUCTION_RECALL_BOOTSTRAP_STATE_SCHEMA, "scope": asdict(scope)})
+
+
+def _bootstrap_state_record(payload: dict[str, Any], *, scope: ScopeRef) -> RecordEnvelope:
+    bounded = _bounded_safe_value(payload)
+    previous = str(bounded.get("previous_record_id") or "")
+    record_id = "prbs_" + _stable_digest(
+        {
+            "state_key": _bootstrap_state_key(scope),
+            "candidate_commit": bounded.get("candidate_commit"),
+            "state": bounded.get("state"),
+            "previous_record_id": previous,
+        }
+    )[:32]
+    record = RecordEnvelope.create(
+        kind="reflection",
+        title=f"Production recall bootstrap {bounded.get('state')} {str(bounded.get('candidate_commit') or '')[:12]}",
+        summary=f"Production recall bootstrap: {bounded.get('state')}",
+        content={"state": bounded},
+        tags=["evaluation", "production_recall", "bootstrap"],
+        source="eimemory.evaluation.production_recall.bootstrap",
+        scope=scope,
+        status="active",
+        evidence=[str((bounded.get("prior_release") or {}).get("deployment_receipt_id") or "")],
+        meta={
+            "report_type": "production_recall_bootstrap_state",
+            "schema": PRODUCTION_RECALL_BOOTSTRAP_STATE_SCHEMA,
+            "bootstrap_state_key": _bootstrap_state_key(scope),
+            "state": str(bounded.get("state") or ""),
+            "candidate_commit": str(bounded.get("candidate_commit") or ""),
+            "state_payload_digest": _stable_digest(bounded),
+        },
+    )
+    record.record_id = record_id
+    timestamp = datetime.now(timezone.utc).isoformat(timespec="microseconds")
+    record.time.created_at = timestamp
+    record.time.updated_at = timestamp
+    return record
+
+
+def _persist_bootstrap_state(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    state: str,
+    candidate_commit: str,
+    prior_release: ReleaseIdentity,
+    reason: str,
+    progress: dict[str, Any],
+) -> RecordEnvelope:
+    latest = _latest_bootstrap_state(runtime, scope=scope)
+    payload = {
+        "schema": PRODUCTION_RECALL_BOOTSTRAP_STATE_SCHEMA,
+        "state": state,
+        "candidate_commit": candidate_commit,
+        "prior_release": release_identity_payload(prior_release),
+        "scope": asdict(scope),
+        "reason": str(reason or "")[:160],
+        "progress": _bounded_safe_value(progress),
+        "previous_record_id": str((latest or {}).get("record_id") or ""),
+        "generated_at": now_iso(),
+    }
+    record = _bootstrap_state_record(payload, scope=scope)
+    existing = runtime.store.get_by_id(record.record_id, scope=scope)
+    if existing is None:
+        runtime.store.append(record)
+    return existing or record
+
+
+def _latest_bootstrap_state(runtime: Any, *, scope: ScopeRef) -> dict[str, Any] | None:
+    record = runtime.store.latest_record_by_meta_value_exact_scope(
+        kind="reflection",
+        source="eimemory.evaluation.production_recall.bootstrap",
+        status="active",
+        scope=scope,
+        meta_key="bootstrap_state_key",
+        meta_value=_bootstrap_state_key(scope),
+    )
+    if record is None or not same_scope(record.scope, scope):
+        return None
+    payload = record.content.get("state") if isinstance(record.content, dict) and isinstance(record.content.get("state"), dict) else {}
+    if (
+        payload.get("schema") != PRODUCTION_RECALL_BOOTSTRAP_STATE_SCHEMA
+        or str(record.meta.get("state_payload_digest") or "") != _stable_digest(payload)
+        or str(record.meta.get("state") or "") != str(payload.get("state") or "")
+        or str(record.meta.get("candidate_commit") or "") != str(payload.get("candidate_commit") or "")
+    ):
+        return {"state": "invalid", "record_id": record.record_id}
+    return {**payload, "record_id": record.record_id}
 
 
 def _hydrate_real_query_labels(
@@ -458,24 +981,51 @@ def _hydrate_real_query_labels(
                 or _record_runtime_channel(record) != str(case["channel"])
             ):
                 return False, "accepted_label_boundary_mismatch", {}
+            evidence = runtime.store.get_by_id(str(label.get("provenance", {}).get("evidence_ref") or ""), scope=scope)
+            if evidence is None:
+                return False, "accepted_label_evidence_missing", {}
+            if (
+                evidence.status != "active"
+                or evidence.kind != "evaluation_packet"
+                or evidence.source != "eimemory.production_recall.label_evidence"
+                or evidence.source_id != source_id
+                or not same_scope(evidence.scope, scope)
+                or _record_runtime_channel(evidence) != str(case["channel"])
+                or evidence.meta.get("authoritative") is not True
+                or str(evidence.meta.get("report_type") or "") != "production_recall_label_evidence"
+                or str(evidence.content.get("evidence_class") or "") != "operator_relevance_label"
+                or str(evidence.content.get("labeler") or "") != str(label.get("provenance", {}).get("labeler") or "")
+                or _secure_dataset_evidence(evidence.content.get("operator_packet_evidence"))[1]
+                or str(evidence.meta.get("operator_packet_digest") or "")
+                != str((evidence.content.get("operator_packet_evidence") or {}).get("digest") or "")
+            ):
+                return False, "accepted_label_evidence_untrusted", {}
         capacity = _trusted_result_capacity(runtime, scope=scope, source_id=source_id)
+        if capacity is None:
+            return False, "bounded_capacity_counter_unavailable", {}
         if capacity <= 0:
             return False, "eligible_corpus_empty", {}
         capacities[str(case["case_id"])] = capacity
     return True, "", capacities
 
 
-def _trusted_result_capacity(runtime: Any, *, scope: ScopeRef, source_id: str) -> int:
-    return min(
-        5,
-        int(
-            runtime.store.count_records_exact_scope(
-                scope=scope,
-                status="active",
-                source_ids=[source_id],
-            )
-        ),
-    )
+def _trusted_result_capacity(runtime: Any, *, scope: ScopeRef, source_id: str) -> int | None:
+    counter = getattr(runtime.store, "count_records_bounded_exact_scope", None)
+    if not callable(counter):
+        return None
+    try:
+        value = counter(
+            scope=scope,
+            status="active",
+            source_ids=[source_id],
+            kinds=list(_RECALL_CORPUS_KINDS),
+            limit=5,
+        )
+    except Exception:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 5:
+        return None
+    return value
 
 
 def _resolve_trusted_baseline(
@@ -485,7 +1035,11 @@ def _resolve_trusted_baseline(
     report_id: str,
     dataset_digest: str,
     current_release: ReleaseIdentity,
+    dataset_evidence: dict[str, Any] | None = None,
+    _depth: int = 0,
 ) -> tuple[dict[str, Any] | None, str]:
+    if _depth > _MAX_BASELINE_CHAIN_DEPTH:
+        return None, "baseline_chain_depth_exceeded"
     current_receipt = runtime.store.get_by_id(current_release.receipt_id, scope=scope)
     if current_receipt is None or verified_deployment_receipt_identity(current_receipt) != current_release:
         return None, "current_deployment_receipt_invalid"
@@ -494,9 +1048,19 @@ def _resolve_trusted_baseline(
     prior_commit = str(verification.get("prior_commit") or "").strip().lower()
     if len(prior_commit) != 40 or prior_commit == current_release.commit:
         return None, "verified_prior_release_unavailable"
-    if not report_id:
-        return None, "baseline_report_id_missing"
-    record = runtime.store.get_by_id(report_id, scope=scope)
+    high_water_key = _baseline_high_water_key(prior_commit, dataset_digest)
+    record = runtime.store.latest_record_by_meta_value_exact_scope(
+        kind="reflection",
+        source="eimemory.evaluation.production_recall",
+        status="active",
+        scope=scope,
+        meta_key="baseline_high_water_key",
+        meta_value=high_water_key,
+    )
+    if record is None:
+        return None, "prior_release_baseline_high_water_missing"
+    if report_id and report_id != record.record_id:
+        return None, "baseline_report_not_latest_prior_high_water"
     if (
         record is None
         or record.kind != "reflection"
@@ -508,8 +1072,8 @@ def _resolve_trusted_baseline(
     report = record.content.get("report") if isinstance(record.content, dict) and isinstance(record.content.get("report"), dict) else {}
     if not _record_payload_digest_valid(record, report):
         return None, "baseline_report_payload_tampered"
-    if report.get("attempt_id") and str(report.get("attempt_id") or "") != record.record_id:
-        return None, "baseline_attempt_identity_invalid"
+    if str(report.get("attempt_id") or "") != record.record_id:
+        return None, "baseline_physical_attempt_required"
     identity = _release_from_payload(report.get("release_identity"))
     if identity is None or identity.commit != prior_commit or identity.commit == current_release.commit:
         return None, "baseline_release_not_verified_predecessor"
@@ -525,21 +1089,54 @@ def _resolve_trusted_baseline(
         and report.get("gate_status") == "accepted"
         and baseline_gate.get("ok") is True
         and not baseline_blocks
+        and str(report.get("evaluator_commit") or "") == identity.commit
     )
     bootstrap_baseline = bool(
         report.get("accepted") is False
         and report.get("gate_status") == "not_run"
         and report.get("baseline_capture") is True
-        and str(report.get("blocked_reason") or "") in {
-            "baseline_report_id_missing",
-            "verified_prior_release_unavailable",
-        }
+        and str(report.get("blocked_reason") or "") == "pre_switch_bootstrap_anchor"
         and set(baseline_blocks) == {"baseline"}
+        and str(report.get("evaluator_commit") or "") == current_release.commit
+        and str(report.get("evaluator_commit") or "") != identity.commit
     )
     if not (accepted_baseline or bootstrap_baseline):
         return None, "baseline_report_not_qualified"
     if str(report.get("dataset_digest") or "") != dataset_digest:
         return None, "baseline_dataset_digest_mismatch"
+    if dataset_evidence is not None:
+        current_evidence, current_evidence_reason = _secure_dataset_evidence(dataset_evidence)
+        baseline_evidence, baseline_evidence_reason = _secure_dataset_evidence(
+            report.get("secure_dataset_evidence")
+        )
+        if (
+            current_evidence_reason
+            or baseline_evidence_reason
+            or str(current_evidence.get("canonical_digest") or "") != dataset_digest
+            or str(baseline_evidence.get("canonical_digest") or "") != dataset_digest
+        ):
+            return None, "baseline_dataset_fingerprint_mismatch"
+    if int(report.get("sample_count") or 0) < _REAL_QUERY_MIN_CASES or not isinstance(report.get("samples"), list):
+        return None, "baseline_samples_missing"
+    if bootstrap_baseline:
+        if not _independent_real_query_metrics_valid(report, baseline=None):
+            return None, "baseline_metrics_invalid"
+    else:
+        parent_identity = report.get("baseline_identity") if isinstance(report.get("baseline_identity"), dict) else {}
+        parent_id = str(parent_identity.get("persisted_record_id") or "")
+        parent, parent_reason = _resolve_trusted_baseline(
+            runtime,
+            scope=scope,
+            report_id=parent_id,
+            dataset_digest=dataset_digest,
+            current_release=identity,
+            dataset_evidence=dict(report.get("secure_dataset_evidence") or {}),
+            _depth=_depth + 1,
+        )
+        if parent is None:
+            return None, f"baseline_parent_invalid:{parent_reason}"
+        if not _independent_real_query_metrics_valid(report, baseline=parent):
+            return None, "baseline_metrics_invalid"
     results = report.get("result_refs") if isinstance(report.get("result_refs"), dict) else {}
     if str(report.get("result_digest") or "") != _stable_digest(results):
         return None, "baseline_result_digest_mismatch"
@@ -549,6 +1146,7 @@ def _resolve_trusted_baseline(
         "persisted_record_id": record.record_id,
         "release_identity": release_identity_payload(identity),
         "dataset_digest": dataset_digest,
+        "secure_dataset_evidence": dict(report.get("secure_dataset_evidence") or {}),
         "engine_digest": str(report["engine_digest"]),
         "fusion_digest": str(report["fusion_digest"]),
         "policy_digest": str(report["policy_digest"]),
@@ -559,6 +1157,25 @@ def _resolve_trusted_baseline(
         },
         "metrics": dict(report.get("metrics") or {}),
     }, ""
+
+
+def _baseline_high_water_key(release_commit: str, dataset_digest: str) -> str:
+    return _stable_digest(
+        {
+            "schema": PRODUCTION_REAL_QUERY_REPORT_SCHEMA,
+            "release_commit": str(release_commit or "").lower(),
+            "dataset_digest": str(dataset_digest or "").lower(),
+        }
+    )
+
+
+def _release_high_water_key(release_commit: str) -> str:
+    return _stable_digest(
+        {
+            "schema": PRODUCTION_REAL_QUERY_REPORT_SCHEMA,
+            "release_commit": str(release_commit or "").lower(),
+        }
+    )
 
 
 def _release_from_payload(value: object) -> ReleaseIdentity | None:
@@ -580,13 +1197,10 @@ def _evaluate_real_query_candidate(
     release: ReleaseIdentity,
     baseline: dict[str, Any] | None,
     capacities: dict[str, int],
+    evaluator_commit: str = "",
 ) -> dict[str, Any]:
-    started_tracing = tracemalloc.is_tracing()
-    before_current = 0
-    sampled_peak_delta = 0
-    if started_tracing:
-        before_current = int(tracemalloc.get_traced_memory()[0])
-    else:
+    external_tracer = tracemalloc.is_tracing()
+    if not external_tracer:
         tracemalloc.start()
     samples: list[dict[str, Any]] = []
     result_refs: dict[str, list[str]] = {}
@@ -610,11 +1224,6 @@ def _evaluate_real_query_candidate(
                 limit=5,
             )
             latency_ms = (perf_counter() - start) * 1000.0
-            if started_tracing:
-                sampled_peak_delta = max(
-                    sampled_peak_delta,
-                    max(0, int(tracemalloc.get_traced_memory()[0]) - before_current),
-                )
             returned: list[RecordEnvelope] = []
             returned_ids: set[str] = set()
             for item in bundle.items:
@@ -657,10 +1266,17 @@ def _evaluate_real_query_candidate(
                 }
             )
         _current, peak = tracemalloc.get_traced_memory()
-        peak_memory = sampled_peak_delta if started_tracing else int(peak)
+        peak_memory = 0 if external_tracer else int(peak)
     finally:
-        if not started_tracing and tracemalloc.is_tracing():
+        if not external_tracer and tracemalloc.is_tracing():
             tracemalloc.stop()
+    memory_measurement = {
+        "schema": "production_recall_memory_measurement.v1",
+        "ok": not external_tracer,
+        "mode": "isolated_tracemalloc" if not external_tracer else "external_tracer_unavailable",
+        "sample_count": len(samples),
+        "captures_released_peak": not external_tracer,
+    }
     latencies = [float(item["latency_ms"]) for item in samples]
     metric_fields = {
         "recall_at_5": "recall_at_5",
@@ -690,13 +1306,18 @@ def _evaluate_real_query_candidate(
         cross_channel_leakage=cross_channel_leakage,
         source_filter_leakage=source_filter_leakage,
         has_baseline=baseline is not None,
+        engine_identity_valid=bool(retrieval_identity.get("engine_identity_valid")),
+        memory_measurement_ok=memory_measurement["ok"] is True,
     )
     release_payload = release_identity_payload(release)
+    effective_evaluator_commit = str(evaluator_commit or release.commit).strip().lower()
     result_digest = _stable_digest(result_refs)
     report_seed = {
         "schema": PRODUCTION_REAL_QUERY_REPORT_SCHEMA,
         "release_identity": release_payload,
+        "evaluator_commit": effective_evaluator_commit,
         "dataset_digest": frozen["dataset_digest"],
+        "secure_dataset_evidence": dict(frozen.get("secure_dataset_evidence") or {}),
         **retrieval_identity,
         "result_digest": result_digest,
         "policy_schema": PRODUCTION_REAL_QUERY_POLICY,
@@ -704,6 +1325,7 @@ def _evaluate_real_query_candidate(
         "blocking_metrics": sorted((gate.get("blocking_metrics") or {}).keys()),
         "cross_channel_leakage_count": cross_channel_leakage,
         "source_filter_leakage_count": source_filter_leakage,
+        "memory_measurement": memory_measurement,
     }
     report_id = "prg_" + _stable_digest(report_seed)[:32]
     return {
@@ -719,7 +1341,9 @@ def _evaluate_real_query_candidate(
         "scope": dict(frozen["scope"]),
         "release_identity": release_payload,
         "deployment_receipt_id": release.receipt_id,
+        "evaluator_commit": effective_evaluator_commit,
         "dataset_digest": str(frozen["dataset_digest"]),
+        "secure_dataset_evidence": dict(frozen.get("secure_dataset_evidence") or {}),
         **retrieval_identity,
         "policy_schema": PRODUCTION_REAL_QUERY_POLICY,
         "result_digest": result_digest,
@@ -733,6 +1357,7 @@ def _evaluate_real_query_candidate(
         "cross_channel_leakage_count": cross_channel_leakage,
         "source_filter_leakage_count": source_filter_leakage,
         "proactive_metrics": proactive,
+        "memory_measurement": memory_measurement,
         "threshold_gate": gate,
         "eligibility": dict(frozen["eligibility"]),
         "samples": samples,
@@ -741,12 +1366,33 @@ def _evaluate_real_query_candidate(
     }
 
 
-def _retrieval_identity(runtime: Any, *, samples: list[dict[str, Any]]) -> dict[str, str]:
+def _retrieval_identity(runtime: Any, *, samples: list[dict[str, Any]]) -> dict[str, Any]:
     engine = getattr(getattr(runtime, "memory", None), "recall_engine", None)
-    engine_payload = {
-        "class": f"{type(engine).__module__}.{type(engine).__qualname__}",
-        "policy_version": str(getattr(engine, "policy_version", "")),
-    }
+    identity_provider = getattr(engine, "effective_identity", None)
+    raw_identity: object = None
+    if callable(identity_provider):
+        try:
+            raw_identity = identity_provider()
+        except Exception:
+            raw_identity = None
+    engine_payload = dict(raw_identity) if isinstance(raw_identity, dict) else {}
+    provided_digest = str(engine_payload.pop("identity_digest", "") or "").strip().lower()
+    upstream_identity_valid = bool(
+        engine_payload
+        and all(str(engine_payload.get(key) or "").strip() for key in ("engine_type", "name", "policy_version", "fusion_version"))
+        and isinstance(engine_payload.get("candidate_source"), dict)
+        and len(provided_digest) == 64
+        and provided_digest == _engine_identity_digest(engine_payload)
+    )
+    if upstream_identity_valid and isinstance(engine_payload.get("candidate_source"), dict):
+        # Storage revision changes when the evaluator persists its own audit
+        # attempt.  It is data high-water, not retrieval implementation
+        # identity, and including it makes an identical run non-idempotent.
+        stable_source = dict(engine_payload["candidate_source"])
+        stable_source.pop("authority_revision", None)
+        engine_payload["candidate_source"] = stable_source
+    engine_identity_valid = upstream_identity_valid
+    effective_engine_digest = _engine_identity_digest(engine_payload) if engine_identity_valid else ""
     try:
         from eimemory.retrieval.fusion import FUSION_POLICY_VERSION
     except ImportError:  # pragma: no cover
@@ -758,7 +1404,9 @@ def _retrieval_identity(runtime: Any, *, samples: list[dict[str, Any]]) -> dict[
         "k": 5,
     }
     return {
-        "engine_digest": _stable_digest(engine_payload),
+        "engine_digest": effective_engine_digest,
+        "engine_identity": _bounded_safe_value(engine_payload) if engine_identity_valid else {},
+        "engine_identity_valid": engine_identity_valid,
         "fusion_digest": _stable_digest(fusion_payload),
         "policy_digest": _stable_digest(policy_payload),
     }
@@ -799,6 +1447,8 @@ def _real_query_threshold_gate(
     cross_channel_leakage: int,
     source_filter_leakage: int,
     has_baseline: bool,
+    engine_identity_valid: bool = True,
+    memory_measurement_ok: bool = True,
 ) -> dict[str, Any]:
     blocking: dict[str, dict[str, Any]] = {}
     for name, threshold in PRODUCTION_REAL_QUERY_THRESHOLDS.items():
@@ -825,6 +1475,10 @@ def _real_query_threshold_gate(
         blocking["source_filter_leakage_count"] = {"actual": source_filter_leakage, "threshold": 0, "operator": "=="}
     if not has_baseline:
         blocking["baseline"] = {"actual": "unavailable", "threshold": "trusted_prior_release", "operator": "=="}
+    if not engine_identity_valid:
+        blocking["engine_effective_identity"] = {"actual": "unavailable", "threshold": "verified", "operator": "=="}
+    if not memory_measurement_ok:
+        blocking["peak_memory_measurement"] = {"actual": "untrusted", "threshold": "isolated", "operator": "=="}
     return {
         "ok": not blocking,
         "schema": PRODUCTION_REAL_QUERY_POLICY,
@@ -863,6 +1517,7 @@ def _not_run_real_query_report(
         "release_identity": release_payload,
         "deployment_receipt_id": str(release_payload.get("deployment_receipt_id") or ""),
         "dataset_digest": str(frozen.get("dataset_digest") or ""),
+        "secure_dataset_evidence": dict(frozen.get("secure_dataset_evidence") or {}),
         "engine_digest": "",
         "fusion_digest": "",
         "policy_digest": _stable_digest({"schema": PRODUCTION_REAL_QUERY_POLICY, "thresholds": PRODUCTION_REAL_QUERY_THRESHOLDS, "k": 5}),
@@ -870,6 +1525,7 @@ def _not_run_real_query_report(
         "result_digest": _stable_digest({}),
         "result_refs": {},
         "baseline_identity": {},
+        "baseline_capture": False,
         "sample_count": 0,
         "metrics": {},
         "cross_channel_leakage_count": 0,
@@ -894,13 +1550,15 @@ def _persist_eligible_high_water(
         return {**report, "persisted": False, "persisted_record_id": ""}
 
     def mutation(sqlite: Any) -> tuple[dict[str, Any], list[RecordEnvelope], list[Any]]:
+        release_payload = report.get("release_identity") if isinstance(report.get("release_identity"), dict) else {}
+        release_high_water_key = _release_high_water_key(str(release_payload.get("release_commit") or ""))
         latest = sqlite.latest_record_by_meta_value_exact_scope(
             kind="reflection",
             source="eimemory.evaluation.production_recall",
             status="active",
             scope=scope,
-            meta_key="report_type",
-            meta_value="production_recall_gate",
+            meta_key="release_high_water_key",
+            meta_value=release_high_water_key,
         )
         latest_report = (
             latest.content.get("report")
@@ -981,6 +1639,9 @@ def _real_query_report_record(
     if attempt_id:
         payload["attempt_id"] = attempt_id
         payload["previous_attempt_id"] = previous_attempt_id
+    release_payload = report.get("release_identity") if isinstance(report.get("release_identity"), dict) else {}
+    release_commit = str(release_payload.get("release_commit") or "")
+    dataset_digest = str(report.get("dataset_digest") or "")
     record = RecordEnvelope.create(
         kind="reflection",
         title=f"Production recall gate {str(report.get('report_id') or '')[-12:]}",
@@ -999,6 +1660,8 @@ def _real_query_report_record(
             "gate_status": str(report.get("gate_status") or ""),
             "accepted": bool(report.get("accepted")),
             "dataset_digest": str(report.get("dataset_digest") or ""),
+            "baseline_high_water_key": _baseline_high_water_key(release_commit, dataset_digest),
+            "release_high_water_key": _release_high_water_key(release_commit),
             "attempt_id": attempt_id,
             "previous_attempt_id": previous_attempt_id,
             "report_payload_digest": _stable_digest(payload),
@@ -1013,10 +1676,12 @@ def _sanitized_real_query_report(report: dict[str, Any]) -> dict[str, Any]:
     allowed = {
         "ok", "accepted", "gate_status", "blocked_reason", "schema", "report_type", "report_id",
         "generated_at", "dataset_kind", "scope", "release_identity", "deployment_receipt_id",
-        "dataset_digest", "engine_digest", "fusion_digest", "policy_digest", "policy_schema",
+        "dataset_digest", "secure_dataset_evidence", "engine_digest", "engine_identity",
+        "engine_identity_valid", "fusion_digest", "policy_digest", "policy_schema",
+        "evaluator_commit",
         "result_digest", "result_refs", "baseline_identity", "sample_count", "metrics",
         "cross_channel_leakage_count", "source_filter_leakage_count", "proactive_metrics",
-        "threshold_gate", "eligibility", "samples", "baseline_capture", "attempt_id",
+        "threshold_gate", "eligibility", "samples", "baseline_capture", "memory_measurement", "attempt_id",
         "previous_attempt_id",
     }
     return {key: _bounded_safe_value(value) for key, value in report.items() if key in allowed}
@@ -1050,6 +1715,25 @@ def verify_current_production_recall_gate(
     release: ReleaseIdentity | None = None,
     limit: int = 200,
 ) -> dict[str, Any]:
+    for attempt in range(2):
+        result = _verify_current_production_recall_gate_once(
+            runtime,
+            scope=scope,
+            release=release,
+            limit=limit,
+        )
+        if result.get("reason") != "production_recall_high_water_changed":
+            return result
+    return result
+
+
+def _verify_current_production_recall_gate_once(
+    runtime: Any,
+    *,
+    scope: dict[str, Any] | ScopeRef | None,
+    release: ReleaseIdentity | None = None,
+    limit: int = 200,
+) -> dict[str, Any]:
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
     current = release or current_release_identity(runtime, scope_ref, limit=limit)
     if current is None or not current.complete:
@@ -1059,8 +1743,8 @@ def verify_current_production_recall_gate(
         source="eimemory.evaluation.production_recall",
         status="active",
         scope=scope_ref,
-        meta_key="report_type",
-        meta_value="production_recall_gate",
+        meta_key="release_high_water_key",
+        meta_value=_release_high_water_key(current.commit),
     )
     if record is None:
         return {"ok": False, "status": "not_run", "reason": "current_release_production_recall_report_missing", "record_id": ""}
@@ -1091,16 +1775,37 @@ def verify_current_production_recall_gate(
         report_id=baseline_id,
         dataset_digest=str(report.get("dataset_digest") or ""),
         current_release=current,
+        dataset_evidence=dict(report.get("secure_dataset_evidence") or {}),
     )
     if baseline is None:
         return {"ok": False, "status": "not_run", "reason": baseline_reason, "record_id": record.record_id}
     expected_retrieval = _retrieval_identity(runtime, samples=[])
-    if any(str(report.get(key) or "") != value for key, value in expected_retrieval.items()):
+    if any(report.get(key) != value for key, value in expected_retrieval.items()):
         return {"ok": False, "status": "blocked", "reason": "retrieval_identity_mismatch", "record_id": record.record_id}
     if not _independent_real_query_metrics_valid(report, baseline=baseline):
         return {"ok": False, "status": "blocked", "reason": "production_recall_metrics_invalid", "record_id": record.record_id}
     if report.get("accepted") is not True or report.get("gate_status") != "accepted":
         return {"ok": False, "status": str(report.get("gate_status") or "blocked"), "reason": str(report.get("blocked_reason") or "production_recall_gate_not_accepted"), "record_id": record.record_id}
+    latest = runtime.store.latest_record_by_meta_value_exact_scope(
+        kind="reflection",
+        source="eimemory.evaluation.production_recall",
+        status="active",
+        scope=scope_ref,
+        meta_key="release_high_water_key",
+        meta_value=_release_high_water_key(current.commit),
+    )
+    if (
+        latest is None
+        or latest.record_id != record.record_id
+        or str(latest.meta.get("report_payload_digest") or "")
+        != str(record.meta.get("report_payload_digest") or "")
+    ):
+        return {
+            "ok": False,
+            "status": "not_run",
+            "reason": "production_recall_high_water_changed",
+            "record_id": record.record_id,
+        }
     return {
         "ok": True,
         "status": "accepted",
@@ -1119,8 +1824,15 @@ def verify_current_production_recall_gate(
     }
 
 
-def _independent_real_query_metrics_valid(report: dict[str, Any], *, baseline: dict[str, Any]) -> bool:
+def _independent_real_query_metrics_valid(
+    report: dict[str, Any],
+    *,
+    baseline: dict[str, Any] | None,
+) -> bool:
     samples = report.get("samples") if isinstance(report.get("samples"), list) else []
+    memory_measurement_ok = _memory_measurement_valid(report, samples=samples)
+    if not memory_measurement_ok:
+        return False
     if len(samples) < _REAL_QUERY_MIN_CASES:
         return False
     channels: set[str] = set()
@@ -1156,11 +1868,12 @@ def _independent_real_query_metrics_valid(report: dict[str, Any], *, baseline: d
                 return False
             labels.append({"record_ref": ref, "grade": grade})
         capacity = int(sample.get("corpus_result_capacity") or 0)
+        baseline_refs = list((baseline or {}).get("result_refs", {}).get(case_id, []))
         ranking = evaluate_labeled_ranking_at_5(
             candidate_refs=refs,
             labels=labels,
             corpus_result_capacity=capacity,
-            baseline_refs=list((baseline.get("result_refs") or {}).get(case_id, [])),
+            baseline_refs=baseline_refs,
         )
         for key, expected in ranking.items():
             if abs(float(sample.get(key) or 0.0) - round(float(expected), 6)) > 1e-6:
@@ -1194,16 +1907,35 @@ def _independent_real_query_metrics_valid(report: dict[str, Any], *, baseline: d
         return False
     gate = _real_query_threshold_gate(
         expected_metrics,
-        baseline_metrics=dict(baseline.get("metrics") or {}),
+        baseline_metrics=dict((baseline or {}).get("metrics") or {}),
         cross_channel_leakage=cross_leakage,
         source_filter_leakage=source_leakage,
-        has_baseline=True,
+        has_baseline=baseline is not None,
+        engine_identity_valid=report.get("engine_identity_valid") is True,
+        memory_measurement_ok=memory_measurement_ok,
     )
-    return bool(
+    common_valid = bool(
         cross_leakage == int(report.get("cross_channel_leakage_count") or 0) == 0
         and source_leakage == int(report.get("source_filter_leakage_count") or 0) == 0
         and gate == report.get("threshold_gate")
-        and gate.get("ok") is True
+    )
+    if not common_valid:
+        return False
+    if baseline is None:
+        blocking = gate.get("blocking_metrics") if isinstance(gate.get("blocking_metrics"), dict) else {}
+        return bool(
+            gate.get("ok") is False
+            and set(blocking) == {"baseline"}
+            and report.get("accepted") is False
+            and report.get("gate_status") == "not_run"
+            and report.get("baseline_capture") is True
+            and report.get("blocked_reason") == "pre_switch_bootstrap_anchor"
+        )
+    return bool(
+        gate.get("ok") is True
+        and report.get("accepted") is True
+        and report.get("gate_status") == "accepted"
+        and not report.get("blocked_reason")
     )
 
 
@@ -1217,12 +1949,39 @@ def _validate_persisted_real_query_report(report: dict[str, Any], *, expected_re
         and report.get("dataset_kind") == "production"
         and _release_from_payload(report.get("release_identity")) == expected_release
         and str(report.get("deployment_receipt_id") or "") == expected_release.receipt_id
+        and len(str(report.get("evaluator_commit") or "")) == 40
+        and _secure_dataset_evidence(report.get("secure_dataset_evidence"))[1] == ""
+        and str((report.get("secure_dataset_evidence") or {}).get("canonical_digest") or "")
+        == str(report.get("dataset_digest") or "")
+        and len(str((report.get("secure_dataset_evidence") or {}).get("source_canonical_digest") or "")) == 64
         and all(len(str(report.get(key) or "")) == 64 for key in _DIGEST_KEYS)
+        and report.get("engine_identity_valid") is True
+        and isinstance(report.get("engine_identity"), dict)
+        and str(report.get("engine_digest") or "") == _engine_identity_digest(report.get("engine_identity"))
+        and _memory_measurement_valid(
+            report,
+            samples=report.get("samples") if isinstance(report.get("samples"), list) else [],
+        )
         and str(report.get("result_digest") or "") == _stable_digest(results)
         and gate.get("schema") == PRODUCTION_REAL_QUERY_POLICY
         and thresholds == PRODUCTION_REAL_QUERY_THRESHOLDS
         and int(report.get("cross_channel_leakage_count") or 0) == 0
         and int(report.get("source_filter_leakage_count") or 0) == 0
+    )
+
+
+def _memory_measurement_valid(report: dict[str, Any], *, samples: list[Any]) -> bool:
+    measurement = report.get("memory_measurement") if isinstance(report.get("memory_measurement"), dict) else {}
+    peak = (report.get("metrics") or {}).get("peak_memory_bytes") if isinstance(report.get("metrics"), dict) else None
+    return bool(
+        measurement.get("schema") == "production_recall_memory_measurement.v1"
+        and measurement.get("ok") is True
+        and measurement.get("mode") == "isolated_tracemalloc"
+        and measurement.get("captures_released_peak") is True
+        and int(measurement.get("sample_count") or 0) == len(samples)
+        and isinstance(peak, int)
+        and not isinstance(peak, bool)
+        and peak >= 0
     )
 
 
@@ -1233,4 +1992,9 @@ def _record_runtime_channel(record: RecordEnvelope) -> str:
 
 def _stable_digest(value: Any) -> str:
     payload = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _engine_identity_digest(value: Any) -> str:
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":"))
     return sha256(payload.encode("utf-8")).hexdigest()

@@ -30,10 +30,12 @@ from eimemory.models.records import RecordEnvelope, ScopeRef
 SCOPE = {"agent_id": "agent-l5-readiness", "workspace_id": "l5-readiness", "user_id": "darrow"}
 
 
-def test_readiness_gate_status_allows_only_l5_or_strict_data_accumulation() -> None:
+def test_readiness_gate_status_allows_only_l5_and_keeps_accumulation_out_of_stage_vocabulary() -> None:
     common = {
         "ok": True,
+        "schema_version": "l5_readiness.v2",
         "production_recall_gate": {"ok": True, "status": "accepted"},
+        "storage_migrations": {"ok": True, "status": "ready", "pending": []},
         "capability_gaps": [],
         "latest_l5_assessment": {"trusted": True, "complete": True, "level": "L5"},
         "verified_replay": {
@@ -55,8 +57,8 @@ def test_readiness_gate_status_allows_only_l5_or_strict_data_accumulation() -> N
     }
     accumulating = {
         **common,
-        "current_stage": "data_accumulating",
-        "readiness_score": 0.9,
+        "current_stage": "L4.5",
+        "readiness_score": 0.8,
         "live_task_gate": {
             "ok": False,
             "current_deployment_verified_real_tasks": 0,
@@ -67,7 +69,7 @@ def test_readiness_gate_status_allows_only_l5_or_strict_data_accumulation() -> N
     }
 
     assert readiness_gate_status(full) == "L5"
-    assert readiness_gate_status(accumulating) == "data_accumulating"
+    assert readiness_gate_status(accumulating) == ""
     assert (
         readiness_gate_status(
             {**accumulating, "latest_l5_assessment": {"complete": True, "level": "L5"}}
@@ -484,7 +486,11 @@ def test_l5_readiness_rejects_status_only_patch_samples(tmp_path) -> None:
     assert report["hard_metrics"]["auto_patch_success_rate"] == 1.0
 
 
-def test_l5_readiness_reaches_l5_only_with_attributed_weak_outcomes_and_patch_samples(tmp_path) -> None:
+def test_l5_readiness_reaches_l5_only_with_attributed_weak_outcomes_and_patch_samples(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "eimemory.evaluation.production_recall.verify_current_production_recall_gate",
+        lambda *_args, **_kwargs: {"ok": True, "status": "accepted", "record_id": "recall-gate"},
+    )
     runtime = Runtime.create(root=tmp_path)
     try:
         _seed_l5_prerequisites(
@@ -510,7 +516,11 @@ def test_l5_readiness_reaches_l5_only_with_attributed_weak_outcomes_and_patch_sa
     assert report["latest_l5_assessment"]["complete"] is True
 
 
-def test_l5_readiness_reports_data_accumulating_without_current_release_real_tasks(tmp_path) -> None:
+def test_l5_readiness_reports_data_accumulating_without_current_release_real_tasks(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "eimemory.evaluation.production_recall.verify_current_production_recall_gate",
+        lambda *_args, **_kwargs: {"ok": True, "status": "accepted", "record_id": "recall-gate"},
+    )
     runtime = Runtime.create(root=tmp_path)
     try:
         _seed_l5_prerequisites(
@@ -527,8 +537,8 @@ def test_l5_readiness_reports_data_accumulating_without_current_release_real_tas
     finally:
         runtime.close()
 
-    assert report["current_stage"] == "data_accumulating"
-    assert report["readiness_score"] == 0.9
+    assert report["current_stage"] == "L4.5"
+    assert report["readiness_score"] == 0.8
     assert report["live_task_gate"]["ok"] is False
     assert report["live_task_gate"]["sample_count"] == 0
     assert report["live_task_gate"]["sample_deficit"] == 10
@@ -560,7 +570,11 @@ def test_l5_readiness_does_not_report_data_accumulating_with_a_core_capability_g
     assert readiness_gate_status(report) == ""
 
 
-def test_l5_readiness_uses_latest_execution_batch_instead_of_legacy_case_ids(tmp_path) -> None:
+def test_l5_readiness_uses_latest_execution_batch_instead_of_legacy_case_ids(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "eimemory.evaluation.production_recall.verify_current_production_recall_gate",
+        lambda *_args, **_kwargs: {"ok": True, "status": "accepted", "record_id": "recall-gate"},
+    )
     runtime = Runtime.create(root=tmp_path)
     scope_ref = ScopeRef.from_dict(SCOPE)
     try:

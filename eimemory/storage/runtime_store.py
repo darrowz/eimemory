@@ -1328,7 +1328,7 @@ class RuntimeStore:
         if not fingerprint:
             return None
         report_type = str(business_metadata(record.meta).get("report_type") or record.provenance.get("report_type") or "")
-        if report_type == "outcome_trace":
+        if report_type in {"outcome_trace", "production_recall_bootstrap_state"}:
             return None
         release_identity = _record_release_identity(record)
         for existing in self.list_records(kinds=["reflection"], scope=record.scope, limit=200):
@@ -1367,6 +1367,13 @@ def _reflection_fingerprint(record: RecordEnvelope) -> str:
 
 
 def _deterministic_insert_once(record: RecordEnvelope) -> bool:
+    report_type = str(
+        business_metadata(record.meta).get("report_type")
+        or record.provenance.get("report_type")
+        or ""
+    )
+    if record.kind == "reflection" and report_type == "production_recall_bootstrap_state":
+        return True
     if record.source == "eimemory.experience.outcome_trace":
         payload = record.content.get("payload") if isinstance(record.content, dict) else None
         if isinstance(payload, dict):

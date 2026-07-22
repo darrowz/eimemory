@@ -331,6 +331,29 @@ _record_deployment_receipt() {
       --scope-user "$EIMEMORY_DEPLOY_SCOPE_USER" --json
 }
 
+_run_pre_switch_production_recall_bootstrap() {
+  if [ "$EIMEMORY_POST_SWITCH_GATES" != "1" ] || [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ]; then
+    return
+  fi
+  if [[ ! "$PREVIOUS_COMMIT" =~ ^[0-9a-fA-F]{40}$ ]]; then
+    echo "Production recall bootstrap requires the verified prior commit" >&2
+    return 2
+  fi
+  _run_as_service_user env \
+    EIMEMORY_ROOT="$EIMEMORY_ROOT" \
+    EIMEMORY_CONFIG_DIR="$EIMEMORY_CONFIG_DIR" \
+    "$PYTHON_BIN" -I -B "$RELEASE_DIR/deploy/run_with_governance_env.py" \
+      --env-file "$GOVERNANCE_ENV_FILE" --optional -- \
+      "$RELEASE_DIR/.venv/bin/python" -I -B \
+        "$RELEASE_DIR/deploy/bootstrap_production_recall.py" \
+        --candidate-commit "$COMMIT" --prior-commit "$PREVIOUS_COMMIT" \
+        --current-link "$CURRENT_LINK" --health-url "$EIMEMORY_HEALTH_URL" \
+        --root "$EIMEMORY_ROOT" \
+        --agent "$EIMEMORY_DEPLOY_SCOPE_AGENT" \
+        --workspace "$EIMEMORY_DEPLOY_SCOPE_WORKSPACE" \
+        --user "$EIMEMORY_DEPLOY_SCOPE_USER"
+}
+
 _run_post_switch_closure() {
   if [ "$EIMEMORY_POST_SWITCH_GATES" != "1" ] || [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ]; then
     return
@@ -640,6 +663,11 @@ if [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ] && command -v systemctl >/dev/null 2
   _user_systemctl enable openclaw-feishu-reply-watchdog.service
 fi
 _install_openclaw_loop_compat_script
+
+# The previous release is still live here.  Capture/bind the predecessor
+# baseline (or an explicit data-accumulation state) before changing current.
+_run_pre_switch_production_recall_bootstrap
+_maybe_fail_stage pre_switch_recall_bootstrap
 
 ln -sfn "$RELEASE_DIR" "$CURRENT_LINK.next"
 mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"

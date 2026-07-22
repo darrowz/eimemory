@@ -21,6 +21,7 @@ from eimemory.evaluation import real_query_gate
 from eimemory.evaluation.production_recall import (
     PRODUCTION_REAL_QUERY_REPORT_SCHEMA,
     PRODUCTION_REAL_QUERY_SCHEMA,
+    bootstrap_production_recall_baseline,
     evaluate_labeled_ranking_at_5,
     freeze_production_recall_dataset,
     run_production_recall_eval,
@@ -78,7 +79,7 @@ def _case(channel: str, source_id: str, record_id: str, *, grade: int = 3, index
                 "accepted": True,
                 "provenance": {
                     "labeler": "operator",
-                    "labelled_at": "2026-07-21T01:00:00+00:00",
+                    "labelled_at": "2026-07-20T12:00:00+00:00",
                     "evidence_ref": f"label-{channel}",
                 },
             }
@@ -103,7 +104,24 @@ def _dataset(record_ids: dict[str, str]) -> dict:
         ],
         "baseline_report_id": "prg_baseline_previous_release",
     }
+    _refresh_dataset_evidence(payload)
     return payload
+
+
+def _refresh_dataset_evidence(dataset: dict) -> None:
+    canonical = {
+        key: value
+        for key, value in dataset.items()
+        if key not in {"_secure_dataset_evidence", "secure_dataset_evidence"}
+    }
+    dataset["_secure_dataset_evidence"] = {
+        "schema": "secure_dataset_fingerprint.v1",
+        "digest": "f" * 64,
+        "canonical_digest": _digest(canonical),
+        "size": 4096,
+        "device": 1,
+        "inode": 1,
+    }
 
 
 def _trusted_baseline(dataset: dict) -> dict:
@@ -121,6 +139,7 @@ def _trusted_baseline(dataset: dict) -> dict:
             "release_session_id": "deployment-session-baseline",
         },
         "dataset_digest": frozen["dataset_digest"],
+        "secure_dataset_evidence": frozen["secure_dataset_evidence"],
         "engine_digest": "c" * 64,
         "fusion_digest": "d" * 64,
         "policy_digest": "e" * 64,
@@ -154,6 +173,45 @@ def _record(record_id: str, channel: str, source_id: str) -> RecordEnvelope:
     )
     record.record_id = record_id
     return record
+
+
+def _label_evidence(channel: str) -> RecordEnvelope:
+    scope = dict(BASE_SCOPE)
+    if channel != "openclaw":
+        scope["workspace_id"] += f"::channel::{channel}"
+    record = RecordEnvelope.create(
+        kind="evaluation_packet",
+        title=f"Trusted operator label evidence for {channel}",
+        summary="Operator accepted the exact relevance label.",
+        source="eimemory.production_recall.label_evidence",
+        source_id=f"source-{channel}",
+        scope=ScopeRef.from_dict(scope),
+        status="active",
+        content={
+            "evidence_class": "operator_relevance_label",
+            "labeler": "operator",
+            "operator_packet_evidence": {
+                "schema": "secure_dataset_fingerprint.v1",
+                "digest": "e" * 64,
+                "size": 512,
+                "device": 1,
+                "inode": 1,
+            },
+        },
+        meta={
+            "report_type": "production_recall_label_evidence",
+            "authoritative": True,
+            "operator_packet_digest": "e" * 64,
+        },
+    )
+    record.record_id = f"label-{channel}"
+    return record
+
+
+def _append_records_and_label_evidence(runtime: Runtime, records: dict[str, RecordEnvelope]) -> None:
+    for channel, record in records.items():
+        runtime.store.append(record)
+        runtime.store.append(_label_evidence(channel))
 
 
 def _receipt(runtime: Runtime, *, commit: str, version: str, prior_commit: str) -> ReleaseIdentity:
@@ -219,6 +277,7 @@ def _persist_baseline(runtime: Runtime, dataset: dict, release: ReleaseIdentity)
         "release_identity": baseline["release_identity"],
         "deployment_receipt_id": release.receipt_id,
         "dataset_digest": baseline["dataset_digest"],
+        "secure_dataset_evidence": baseline["secure_dataset_evidence"],
         "engine_digest": baseline["engine_digest"],
         "fusion_digest": baseline["fusion_digest"],
         "policy_digest": baseline["policy_digest"],
@@ -295,11 +354,12 @@ def test_trusted_capacity_uses_exact_scope_source_index_without_offset(tmp_path,
         source_id="alpha",
     ) == 5
     plan = runtime.store.sqlite.conn.execute(
-        "EXPLAIN QUERY PLAN SELECT COUNT(*) FROM records WHERE "
-        "tenant_id=? AND agent_id=? AND workspace_id=? AND user_id=? AND status=? AND source_id IN (?)",
-        ("default", "main", "production", "darrow", "active", "alpha"),
+        "EXPLAIN QUERY PLAN SELECT COUNT(*) FROM (SELECT 1 FROM records WHERE "
+        "tenant_id=? AND agent_id=? AND workspace_id=? AND user_id=? AND source_id IN (?) "
+        "AND status=? AND kind IN (?,?,?,?) LIMIT ?)",
+        ("default", "main", "production", "darrow", "alpha", "active", *real_query_gate._RECALL_CORPUS_KINDS, 5),
     ).fetchall()
-    assert any("idx_records_scope_source_updated" in str(row[3]) for row in plan)
+    assert any("idx_records_scope_source_status_kind" in str(row[3]) for row in plan)
     runtime.close()
 
 
@@ -314,6 +374,10 @@ def test_trusted_capacity_uses_exact_scope_source_index_without_offset(tmp_path,
         (lambda data: data["cases"][0].update({"labels": []}), "accepted_labels_missing"),
         (lambda data: data["cases"][0].update({"source_id": "*"}), "exact_source_required"),
         (lambda data: data["cases"][0]["query_features"].update({"raw_query": "password=hunter2"}), "query_features_not_redacted"),
+        (lambda data: data.pop("_secure_dataset_evidence"), "secure_dataset_fingerprint_missing"),
+        (lambda data: data["cases"][0]["labels"][0]["provenance"].update({"labeler": "model"}), "accepted_labeler_untrusted"),
+        (lambda data: data["cases"][0]["labels"][0]["provenance"].update({"labelled_at": "2026-07-22T00:00:00+00:00"}), "accepted_label_time_outside_collection_window"),
+        (lambda data: data["cases"][0]["provenance"].update({"collector": "unknown"}), "case_collector_untrusted"),
     ],
 )
 def test_eligible_dataset_fails_closed_without_real_labels_and_boundaries(mutation, reason) -> None:
@@ -331,6 +395,7 @@ def test_conflicting_accepted_label_grade_fails_eligibility_and_same_grade_dupli
     original = deepcopy(dataset["cases"][0]["labels"][0])
     same_grade = deepcopy(dataset)
     same_grade["cases"][0]["labels"].append(deepcopy(original))
+    _refresh_dataset_evidence(same_grade)
     normalized = freeze_production_recall_dataset(same_grade)
     assert normalized["eligibility"]["ok"] is True
     assert len(normalized["cases"][0]["labels"]) == 1
@@ -339,6 +404,7 @@ def test_conflicting_accepted_label_grade_fails_eligibility_and_same_grade_dupli
     conflicting_label = deepcopy(original)
     conflicting_label["grade"] = 1
     conflicting["cases"][0]["labels"].append(conflicting_label)
+    _refresh_dataset_evidence(conflicting)
     rejected = freeze_production_recall_dataset(conflicting)
     assert rejected["eligibility"]["ok"] is False
     assert "accepted_label_grade_conflict" in rejected["eligibility"]["blocked_reasons"]
@@ -359,6 +425,30 @@ def test_production_dataset_loader_rejects_symlink_and_oversized_file(tmp_path, 
         handle.truncate(MAX_PRODUCTION_RECALL_DATASET_BYTES + 1)
     with pytest.raises(ValueError, match="size limit"):
         _load_json_dataset(str(oversized))
+
+
+def test_accepted_labels_require_resolvable_authoritative_evidence(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    records = {
+        channel: _record(f"evidence-{channel}", channel, f"source-{channel}")
+        for channel in ("openclaw", "codex", "hermes")
+    }
+    for record in records.values():
+        runtime.store.append(record)
+    dataset = _dataset({channel: record.record_id for channel, record in records.items()})
+    monkeypatch.setattr(real_query_gate, "current_release_identity", lambda *_args, **_kwargs: RELEASE)
+
+    missing = run_production_recall_eval(runtime, dataset, seed=False, persist_report=False)
+    assert missing["blocked_reason"] == "accepted_label_evidence_missing"
+
+    for channel in records:
+        evidence = _label_evidence(channel)
+        if channel == "openclaw":
+            evidence.meta["authoritative"] = False
+        runtime.store.append(evidence)
+    untrusted = run_production_recall_eval(runtime, dataset, seed=False, persist_report=False)
+    assert untrusted["blocked_reason"] == "accepted_label_evidence_untrusted"
+    runtime.close()
 
 
 def test_production_cli_output_never_contains_raw_query_canary(tmp_path, monkeypatch, capsys) -> None:
@@ -383,12 +473,13 @@ def test_real_query_gate_is_bound_sanitized_and_deterministic(tmp_path, monkeypa
         for channel in ("openclaw", "codex", "hermes")
     }
     dataset = _dataset({channel: record.record_id for channel, record in records.items()})
-    for record in records.values():
-        runtime.store.append(record)
+    _append_records_and_label_evidence(runtime, records)
     requested: list[tuple[str, dict, dict]] = []
 
     def recall(*, query: str, scope: dict, task_context: dict, limit: int) -> RecallBundle:
         requested.append((query, dict(scope), dict(task_context)))
+        transient = bytearray(2 * 1024 * 1024)
+        del transient
         channel = "openclaw"
         if str(scope["workspace_id"]).endswith("::channel::codex"):
             channel = "codex"
@@ -414,17 +505,8 @@ def test_real_query_gate_is_bound_sanitized_and_deterministic(tmp_path, monkeypa
         "_resolve_trusted_baseline",
         lambda *_args, **_kwargs: (_trusted_baseline(dataset), ""),
     )
-    tracing_before = tracemalloc.is_tracing()
-    if not tracing_before:
-        tracemalloc.start()
-    historical_noise = bytearray(16 * 1024 * 1024)
-    del historical_noise
-    gc.collect()
-    historical_peak = tracemalloc.get_traced_memory()[1]
     first = run_production_recall_eval(runtime, dataset, seed=False, persist_report=True)
     second = run_production_recall_eval(runtime, dataset, seed=False, persist_report=True)
-    if not tracing_before:
-        tracemalloc.stop()
 
     assert first["accepted"] is True, first
     assert first["gate_status"] == "accepted"
@@ -442,7 +524,14 @@ def test_real_query_gate_is_bound_sanitized_and_deterministic(tmp_path, monkeypa
     assert first["source_filter_leakage_count"] == 0
     assert all(len(sample["returned_refs"]) == 1 for sample in first["samples"])
     assert first["peak_memory_bytes"] >= 0
-    assert first["peak_memory_bytes"] < historical_peak
+    assert first["peak_memory_bytes"] >= 2 * 1024 * 1024
+    assert first["memory_measurement"] == {
+        "schema": "production_recall_memory_measurement.v1",
+        "ok": True,
+        "mode": "isolated_tracemalloc",
+        "sample_count": 15,
+        "captures_released_peak": True,
+    }
     assert set(first["proactive_metrics"]) >= {
         "volunteered", "injected", "used", "not_used", "rejected", "control"
     }
@@ -460,6 +549,45 @@ def test_real_query_gate_is_bound_sanitized_and_deterministic(tmp_path, monkeypa
     runtime.close()
 
 
+def test_external_tracemalloc_is_never_reset_or_stopped_and_cannot_accept_memory_gate(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    records = {
+        channel: _record(f"external-{channel}", channel, f"source-{channel}")
+        for channel in ("openclaw", "codex", "hermes")
+    }
+    _append_records_and_label_evidence(runtime, records)
+    dataset = _dataset({channel: record.record_id for channel, record in records.items()})
+    monkeypatch.setattr(real_query_gate, "current_release_identity", lambda *_args, **_kwargs: RELEASE)
+    monkeypatch.setattr(
+        real_query_gate,
+        "_resolve_trusted_baseline",
+        lambda *_args, **_kwargs: (_trusted_baseline(dataset), ""),
+    )
+    monkeypatch.setattr(
+        runtime.memory,
+        "recall",
+        lambda **kwargs: RecallBundle(
+            items=[records[str(kwargs["task_context"]["runtime_channel"])]],
+            rules=[], reflections=[], confidence=1.0, next_action_hint="", explanation={},
+        ),
+    )
+    tracemalloc.start()
+    historical = bytearray(8 * 1024 * 1024)
+    del historical
+    gc.collect()
+    peak_before = tracemalloc.get_traced_memory()[1]
+    try:
+        report = run_production_recall_eval(runtime, dataset, seed=False, persist_report=True)
+        assert tracemalloc.is_tracing() is True
+        assert tracemalloc.get_traced_memory()[1] >= peak_before
+    finally:
+        tracemalloc.stop()
+    assert report["accepted"] is False
+    assert report["memory_measurement"]["mode"] == "external_tracer_unavailable"
+    assert "peak_memory_measurement" in report["threshold_gate"]["blocking_metrics"]
+    runtime.close()
+
+
 def test_poisoned_scope_or_source_is_an_unconditional_leakage_block(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path)
     good = {
@@ -468,8 +596,7 @@ def test_poisoned_scope_or_source_is_an_unconditional_leakage_block(tmp_path, mo
     }
     poisoned = _record("poison", "codex", "source-codex")
     dataset = _dataset({channel: record.record_id for channel, record in good.items()})
-    for record in good.values():
-        runtime.store.append(record)
+    _append_records_and_label_evidence(runtime, good)
 
     def recall(*, query: str, scope: dict, task_context: dict, limit: int) -> RecallBundle:
         return RecallBundle(
@@ -510,10 +637,10 @@ def test_diagnostic_and_baseline_mismatch_never_overwrite_accepted_report(tmp_pa
         channel: _record(f"record-{channel}", channel, f"source-{channel}")
         for channel in ("openclaw", "codex", "hermes")
     }
-    for record in records.values():
-        runtime.store.append(record)
+    _append_records_and_label_evidence(runtime, records)
     dataset = _dataset({channel: record.record_id for channel, record in records.items()})
     dataset["baseline"] = {"dataset_digest": freeze_production_recall_dataset(dataset)["dataset_digest"], "accepted": True}
+    _refresh_dataset_evidence(dataset)
     report = run_production_recall_eval(runtime, dataset, seed=False, persist_report=True)
     assert report["gate_status"] == "not_run"
     assert report["blocked_reason"] == "current_deployment_receipt_invalid"
@@ -527,11 +654,41 @@ def test_trusted_prior_release_baseline_and_latest_blocked_high_water(tmp_path, 
         channel: _record(f"trusted-{channel}", channel, f"source-{channel}")
         for channel in ("openclaw", "codex", "hermes")
     }
-    for record in records.values():
-        runtime.store.append(record)
+    _append_records_and_label_evidence(runtime, records)
     dataset = _dataset({channel: record.record_id for channel, record in records.items()})
+
+    def recall(*, query: str, scope: dict, task_context: dict, limit: int) -> RecallBundle:
+        channel = "openclaw"
+        if str(scope["workspace_id"]).endswith("::channel::codex"):
+            channel = "codex"
+        elif str(scope["workspace_id"]).endswith("::channel::hermes"):
+            channel = "hermes"
+        return RecallBundle(
+            items=[records[channel]], rules=[], reflections=[], confidence=1.0,
+            next_action_hint="", explanation={"fusion": {"policy_version": "rrf-page-pool.v1"}},
+        )
+
+    monkeypatch.setattr(runtime.memory, "recall", recall)
     prior = _receipt(runtime, commit="b" * 40, version="1.9.79", prior_commit="c" * 40)
-    dataset["baseline_report_id"] = _persist_baseline(runtime, dataset, prior)
+    runtime._test_runtime_commit = prior.commit
+    monkeypatch.setattr(
+        real_query_gate,
+        "_verified_live_prior_release",
+        lambda *_args, **_kwargs: (prior, ""),
+    )
+    bootstrap_dataset = deepcopy(dataset)
+    bootstrap_dataset["baseline_report_id"] = ""
+    _refresh_dataset_evidence(bootstrap_dataset)
+    bootstrap = bootstrap_production_recall_baseline(
+        runtime,
+        bootstrap_dataset,
+        candidate_commit="a" * 40,
+        prior_commit=prior.commit,
+        persist_report=True,
+    )
+    assert bootstrap["bootstrap_status"] == "anchor_ready", bootstrap
+    dataset["baseline_report_id"] = bootstrap["persisted_record_id"]
+    _refresh_dataset_evidence(dataset)
     current = _receipt(runtime, commit="a" * 40, version="1.9.80", prior_commit=prior.commit)
     runtime._test_runtime_commit = current.commit
 
@@ -580,18 +737,6 @@ def test_trusted_prior_release_baseline_and_latest_blocked_high_water(tmp_path, 
     baseline_record.meta["report_payload_digest"] = _digest(baseline_original)
     runtime.store.rewrite(baseline_record)
 
-    def recall(*, query: str, scope: dict, task_context: dict, limit: int) -> RecallBundle:
-        channel = "openclaw"
-        if str(scope["workspace_id"]).endswith("::channel::codex"):
-            channel = "codex"
-        elif str(scope["workspace_id"]).endswith("::channel::hermes"):
-            channel = "hermes"
-        return RecallBundle(
-            items=[records[channel]], rules=[], reflections=[], confidence=1.0,
-            next_action_hint="", explanation={"fusion": {"policy_version": "rrf-page-pool.v1"}},
-        )
-
-    monkeypatch.setattr(runtime.memory, "recall", recall)
     accepted = run_production_recall_eval(runtime, dataset, seed=False, persist_report=True)
     assert accepted["accepted"] is True
     verified = verify_current_production_recall_gate(runtime, scope=BASE_SCOPE)
@@ -637,6 +782,18 @@ def test_trusted_prior_release_baseline_and_latest_blocked_high_water(tmp_path, 
     assert invalidated["record_id"] == persisted_blocked["persisted_record_id"]
     assert invalidated["record_id"] != persisted_blocked["report_id"]
 
+    next_release = _receipt(runtime, commit="d" * 40, version="1.9.81", prior_commit=current.commit)
+    rejected_old_accept, old_accept_reason = real_query_gate._resolve_trusted_baseline(
+        runtime,
+        scope=ScopeRef.from_dict(BASE_SCOPE),
+        report_id=accepted["persisted_record_id"],
+        dataset_digest=freeze_production_recall_dataset(dataset)["dataset_digest"],
+        current_release=next_release,
+        dataset_evidence=freeze_production_recall_dataset(dataset)["secure_dataset_evidence"],
+    )
+    assert rejected_old_accept is None
+    assert old_accept_reason == "baseline_report_not_latest_prior_high_water"
+
     run_production_recall_eval(
         runtime,
         {"name": "diagnostic", "scope": BASE_SCOPE, "cases": []},
@@ -648,12 +805,14 @@ def test_trusted_prior_release_baseline_and_latest_blocked_high_water(tmp_path, 
 
     synthetic = deepcopy(dataset)
     synthetic["dataset_kind"] = "synthetic"
+    _refresh_dataset_evidence(synthetic)
     synthetic_report = run_production_recall_eval(runtime, synthetic, seed=False, persist_report=True)
     assert synthetic_report["persisted"] is False
     assert verify_current_production_recall_gate(runtime, scope=BASE_SCOPE)["record_id"] == persisted_blocked["persisted_record_id"]
 
     broken_production = deepcopy(dataset)
     broken_production["cases"] = broken_production["cases"][:2]
+    _refresh_dataset_evidence(broken_production)
     broken = run_production_recall_eval(runtime, broken_production, seed=False, persist_report=True)
     assert broken["gate_status"] == "not_run"
     assert broken["persisted"] is True
@@ -681,8 +840,7 @@ def test_strict_bootstrap_capture_enables_next_release_and_rejects_predeploy_or_
         channel: _record(f"bootstrap-{channel}", channel, f"source-{channel}")
         for channel in ("openclaw", "codex", "hermes")
     }
-    for record in records.values():
-        runtime.store.append(record)
+    _append_records_and_label_evidence(runtime, records)
     dataset = _dataset({channel: record.record_id for channel, record in records.items()})
 
     def recall(*, query: str, scope: dict, task_context: dict, limit: int) -> RecallBundle:
@@ -699,22 +857,78 @@ def test_strict_bootstrap_capture_enables_next_release_and_rejects_predeploy_or_
     monkeypatch.setattr(runtime.memory, "recall", recall)
     prior = _receipt(runtime, commit="b" * 40, version="1.9.79", prior_commit="c" * 40)
     runtime._test_runtime_commit = prior.commit
+    monkeypatch.setattr(
+        real_query_gate,
+        "_verified_live_prior_release",
+        lambda *_args, **_kwargs: (prior, ""),
+    )
     bootstrap_dataset = deepcopy(dataset)
     bootstrap_dataset["baseline_report_id"] = ""
-    bootstrap = run_production_recall_eval(runtime, bootstrap_dataset, seed=False, persist_report=True)
+    _refresh_dataset_evidence(bootstrap_dataset)
+    ordinary = run_production_recall_eval(runtime, bootstrap_dataset, seed=False, persist_report=True)
+    assert ordinary["baseline_capture"] is False
+    bootstrap = bootstrap_production_recall_baseline(
+        runtime,
+        bootstrap_dataset,
+        candidate_commit="a" * 40,
+        prior_commit=prior.commit,
+        persist_report=True,
+    )
     assert bootstrap["accepted"] is False
     assert bootstrap["gate_status"] == "not_run"
-    assert bootstrap["blocked_reason"] == "baseline_report_id_missing"
+    assert bootstrap["blocked_reason"] == "pre_switch_bootstrap_anchor"
     assert bootstrap["baseline_capture"] is True
+    assert bootstrap["bootstrap_status"] == "anchor_ready"
+    repeated = bootstrap_production_recall_baseline(
+        runtime,
+        bootstrap_dataset,
+        candidate_commit="a" * 40,
+        prior_commit=prior.commit,
+        persist_report=True,
+    )
+    assert repeated["persisted_record_id"] == bootstrap["persisted_record_id"]
 
     current = _receipt(runtime, commit="a" * 40, version="1.9.80", prior_commit=prior.commit)
     runtime._test_runtime_commit = current.commit
     dataset["baseline_report_id"] = bootstrap["persisted_record_id"]
+    _refresh_dataset_evidence(dataset)
     accepted = run_production_recall_eval(runtime, dataset, seed=False, persist_report=True)
     assert accepted["accepted"] is True, accepted
     assert accepted["baseline_identity"]["persisted_record_id"] == bootstrap["persisted_record_id"]
     assert accepted["baseline_identity"]["logical_report_id"] == bootstrap["report_id"]
     assert verify_current_production_recall_gate(runtime, scope=BASE_SCOPE)["ok"] is True
+
+    engine = runtime.memory.recall_engine
+    original_identity = engine.effective_identity()
+    changed_identity = {key: value for key, value in original_identity.items() if key != "identity_digest"}
+    changed_identity["policy_version"] = "drifted-policy.v9"
+    changed_identity["identity_digest"] = real_query_gate._engine_identity_digest(changed_identity)
+    with monkeypatch.context() as identity_patch:
+        identity_patch.setattr(type(engine), "effective_identity", lambda _self: dict(changed_identity))
+        drift = verify_current_production_recall_gate(runtime, scope=BASE_SCOPE)
+    assert drift["ok"] is False
+    assert drift["reason"] == "retrieval_identity_mismatch"
+
+    original_latest = runtime.store.latest_record_by_meta_value_exact_scope
+    release_reads = 0
+
+    def changing_latest(**kwargs):
+        nonlocal release_reads
+        record = original_latest(**kwargs)
+        if kwargs.get("meta_key") == "release_high_water_key" and record is not None:
+            release_reads += 1
+            if release_reads % 2 == 0:
+                changed = deepcopy(record)
+                changed.record_id = f"changed-high-water-{release_reads}"
+                return changed
+        return record
+
+    with monkeypatch.context() as high_water_patch:
+        high_water_patch.setattr(runtime.store, "latest_record_by_meta_value_exact_scope", changing_latest)
+        changed = verify_current_production_recall_gate(runtime, scope=BASE_SCOPE)
+    assert changed["ok"] is False
+    assert changed["reason"] == "production_recall_high_water_changed"
+    assert release_reads == 4
 
     accepted_record = runtime.store.get_by_id(accepted["persisted_record_id"], scope=BASE_SCOPE)
     assert accepted_record is not None
@@ -731,7 +945,7 @@ def test_strict_bootstrap_capture_enables_next_release_and_rejects_predeploy_or_
     runtime._test_runtime_commit = newer.commit
     stale = verify_current_production_recall_gate(runtime, scope=BASE_SCOPE)
     assert stale["ok"] is False
-    assert stale["reason"] == "latest_production_recall_report_release_mismatch"
+    assert stale["reason"] == "current_release_production_recall_report_missing"
     runtime.close()
 
 
@@ -818,6 +1032,7 @@ def _ready_l5_payload() -> dict:
             "manifest_rejection_reasons": {},
         },
         "production_recall_gate": {"ok": True, "status": "accepted"},
+        "storage_migrations": {"ok": True, "status": "ready", "pending": []},
     }
 
 
@@ -832,7 +1047,7 @@ def test_l5_v2_independently_requires_accepted_production_recall_gate() -> None:
         {"ok": True, "status": "diagnostic"},
     ):
         assert readiness_gate_status({**ready, "production_recall_gate": bad}) == ""
-    assert readiness_gate_status({**ready, "schema_version": "l5_readiness.v1", "production_recall_gate": {}}) == ""
+    assert readiness_gate_status({**ready, "schema_version": "l5_readiness.v1"}) == ""
 
 
 def test_l5_report_surfaces_independent_real_query_evidence_lookup(tmp_path, monkeypatch) -> None:
@@ -847,10 +1062,54 @@ def test_l5_report_surfaces_independent_real_query_evidence_lookup(tmp_path, mon
         "eimemory.evaluation.production_recall.verify_current_production_recall_gate",
         lambda *_args, **_kwargs: dict(expected),
     )
+    monkeypatch.setattr(
+        "eimemory.governance.l5_readiness._stage_for",
+        lambda *_args, **_kwargs: {
+            "stage": "L5",
+            "label": "would otherwise be L5",
+            "readiness_score": 1.0,
+            "reason": "all non-recall evidence passed",
+            "done_when": "keep all gates green",
+            "risk_boundary": "read-only",
+            "live_task_gate": {"ok": True, "current_deployment_verified_real_tasks": 10},
+        },
+    )
 
     report = build_l5_readiness_report(runtime, scope=BASE_SCOPE)
 
     assert report["schema_version"] == "l5_readiness.v2"
     assert report["production_recall_gate"] == expected
+    assert report["current_stage"] == "L4.5"
+    assert report["readiness_score"] <= 0.8
+    assert any("production recall" in action.lower() for action in report["next_actions"])
+    assert readiness_gate_status(report) == ""
+    runtime.close()
+
+
+def test_l5_report_cannot_claim_l5_while_deferred_storage_migrations_are_pending(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    monkeypatch.setattr(
+        "eimemory.evaluation.production_recall.verify_current_production_recall_gate",
+        lambda *_args, **_kwargs: {"ok": True, "status": "accepted", "record_id": "recall-gate"},
+    )
+    monkeypatch.setattr(runtime.store.sqlite, "pending_storage_migrations", lambda: ["records.payload_archive.v1"])
+    monkeypatch.setattr(
+        "eimemory.governance.l5_readiness._stage_for",
+        lambda *_args, **_kwargs: {
+            "stage": "L5",
+            "label": "otherwise ready",
+            "readiness_score": 1.0,
+            "reason": "ready",
+            "done_when": "keep green",
+            "risk_boundary": "read-only",
+            "live_task_gate": {"ok": True},
+        },
+    )
+
+    report = build_l5_readiness_report(runtime, scope=BASE_SCOPE)
+
+    assert report["current_stage"] == "L4.5"
+    assert report["readiness_score"] <= 0.8
+    assert report["storage_migrations"]["pending"] == ["records.payload_archive.v1"]
     assert readiness_gate_status(report) == ""
     runtime.close()

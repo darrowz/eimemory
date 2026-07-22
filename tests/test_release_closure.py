@@ -126,6 +126,11 @@ class FakeRuntime:
         self.live_acceptance = live_acceptance or _successful_live_acceptance()
         self.rehearsal = rehearsal or _successful_rehearsal()
         self.readiness = readiness or _successful_readiness()
+        self.store = type(
+            "FakeStore",
+            (),
+            {"sqlite": type("FakeSQLite", (), {"pending_storage_migrations": lambda _self: []})()},
+        )()
 
     @classmethod
     def successful(cls) -> "FakeRuntime":
@@ -215,6 +220,18 @@ def test_release_closure_runs_all_stages_in_order() -> None:
     }
 
 
+def test_release_closure_blocks_before_recall_while_storage_migrations_are_pending() -> None:
+    runtime = FakeRuntime.successful()
+    runtime.store.sqlite.pending_storage_migrations = lambda: ["records.payload_archive.v1"]
+
+    report = _run(runtime)
+
+    assert report["ok"] is False
+    assert report["blocked_stage"] == "storage_migrations"
+    assert report["storage_migrations"]["pending"] == ["records.payload_archive.v1"]
+    assert runtime.calls == ["deployment_receipt"]
+
+
 class ProductionGateRuntime(FakeRuntime):
     def __init__(self, *, accepted: bool = True) -> None:
         super().__init__()
@@ -275,8 +292,44 @@ def test_release_closure_fails_closed_before_replay_when_production_dataset_not_
     assert report["blocked_reason"] == "eligible_dataset_missing"
 
 
+def test_release_closure_allows_only_verified_bootstrap_data_pending_and_keeps_l5_downgraded(monkeypatch) -> None:
+    runtime = ProductionGateRuntime(accepted=False)
+    runtime.readiness = {
+        **runtime.readiness,
+        "schema_version": "l5_readiness.v2",
+        "current_stage": "L4.5",
+        "readiness_score": 0.8,
+    }
+    monkeypatch.setattr(
+        "eimemory.evaluation.real_query_gate.verify_current_bootstrap_data_pending",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "status": "bootstrap_data_pending",
+            "reason": "production_dataset_not_ready",
+            "record_id": "bootstrap-pending-current",
+            "progress": {"case_count": 2, "required_case_count": 15},
+        },
+    )
+
+    report = _run(runtime)
+
+    assert report["ok"] is True
+    assert report["closure_complete"] is False
+    assert report["data_accumulating"] is True
+    assert report["production_recall_gate"]["status"] == "data_accumulating"
+    assert report["record_ids"]["production_recall_bootstrap"] == "bootstrap-pending-current"
+    assert "production_recall_verify" not in runtime.calls
+    assert runtime.calls[-1] == "readiness"
+
+
 def test_release_closure_fails_closed_when_production_gate_runner_is_unavailable() -> None:
     class ReceiptOnly:
+        store = type(
+            "FakeStore",
+            (),
+            {"sqlite": type("FakeSQLite", (), {"pending_storage_migrations": lambda _self: []})()},
+        )()
+
         def verify_and_record_deployment(self, **_kwargs) -> dict:
             return _successful_receipt()
 
@@ -361,8 +414,8 @@ def test_release_closure_requires_every_final_readiness_gate(readiness_patch: di
 def test_release_closure_reports_data_accumulation_without_claiming_l5_complete() -> None:
     readiness = {
         **_successful_readiness(),
-        "current_stage": "data_accumulating",
-        "readiness_score": 0.9,
+        "current_stage": "L4.5",
+        "readiness_score": 0.8,
         "live_task_gate": {
             "ok": False,
             "sample_deficit": 10,
@@ -383,8 +436,8 @@ def test_release_closure_reports_data_accumulation_without_claiming_l5_complete(
 def test_release_closure_accepts_data_accumulating_rehearsal_before_final_readiness() -> None:
     readiness = {
         **_successful_readiness(),
-        "current_stage": "data_accumulating",
-        "readiness_score": 0.9,
+        "current_stage": "L4.5",
+        "readiness_score": 0.8,
         "live_task_gate": {
             "ok": False,
             "sample_deficit": 10,
@@ -410,8 +463,8 @@ def test_release_closure_accepts_data_accumulating_rehearsal_before_final_readin
 def test_release_closure_treats_task_type_only_deficit_as_data_accumulation() -> None:
     readiness = {
         **_successful_readiness(),
-        "current_stage": "data_accumulating",
-        "readiness_score": 0.9,
+        "current_stage": "L4.5",
+        "readiness_score": 0.8,
         "live_task_gate": {
             "ok": False,
             "sample_deficit": 0,
@@ -502,7 +555,9 @@ def _successful_rehearsal() -> dict:
 def _successful_readiness() -> dict:
     return {
         "ok": True,
+        "schema_version": "l5_readiness.v2",
         "production_recall_gate": {"ok": True, "status": "accepted"},
+        "storage_migrations": {"ok": True, "status": "ready", "pending": []},
         "capability_gaps": [],
         "current_stage": "L5",
         "readiness_score": 1.0,
