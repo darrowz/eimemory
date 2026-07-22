@@ -273,7 +273,6 @@ STORAGE_WRITER_UNITS=(
   openclaw-loop-watch.service
   openclaw-loop-compact.service
   openclaw-stuck-watchdog.service
-  openclaw-feishu-reply-watchdog.service
   openclaw-gateway.service
   eimemory-rpc.service
 )
@@ -1036,7 +1035,8 @@ _restart_current_services() {
   fi
   _user_systemctl daemon-reload
   _user_systemctl restart eimemory-rpc.service
-  _user_systemctl restart openclaw-feishu-reply-watchdog.service
+  # Feishu reply watchdog permanently removed: dual-path delivery caused double sends.
+  # Keep unit masked; do not install/enable/restart it on deploy.
   _user_systemctl restart openclaw-gateway.service
 }
 
@@ -1055,15 +1055,13 @@ _install_candidate_runtime_metadata() {
       "$RELEASE_DIR/deploy/systemd/openclaw-stuck-watchdog.service" "$USER_SYSTEMD_DIR/openclaw-stuck-watchdog.service"
     _install_as_service_user 0644 \
       "$RELEASE_DIR/deploy/systemd/openclaw-stuck-watchdog.timer" "$USER_SYSTEMD_DIR/openclaw-stuck-watchdog.timer"
-    _install_as_service_user 0644 \
-      "$RELEASE_DIR/deploy/systemd/openclaw-feishu-reply-watchdog.service" "$USER_SYSTEMD_DIR/openclaw-feishu-reply-watchdog.service"
+    # openclaw-feishu-reply-watchdog intentionally not installed/enabled.
     _refresh_openclaw_gateway_metadata "$RELEASE_DIR" "$COMMIT"
     _install_current_runtime_metadata "$RELEASE_DIR" "$COMMIT" "$REPO_DIR"
     _user_systemctl enable eimemory-rpc.service
     _user_systemctl enable openclaw-loop-watch.timer
     _user_systemctl enable openclaw-loop-compact.timer
     _user_systemctl enable openclaw-stuck-watchdog.timer
-    _user_systemctl enable openclaw-feishu-reply-watchdog.service
     _user_systemctl daemon-reload
   fi
   _install_openclaw_loop_compat_script "$RELEASE_DIR"

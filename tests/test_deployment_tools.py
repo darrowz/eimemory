@@ -988,16 +988,17 @@ def test_immutable_release_installer_manages_stuck_watchdog_timer() -> None:
     assert "_user_systemctl enable --now openclaw-stuck-watchdog.timer" not in script
 
 
-def test_immutable_release_installer_manages_feishu_reply_watchdog() -> None:
+def test_immutable_release_installer_does_not_manage_feishu_reply_watchdog() -> None:
+    """Feishu reply watchdog dual-path delivery caused double sends; keep it purged."""
     script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
-    unit = Path("deploy/systemd/openclaw-feishu-reply-watchdog.service").read_text(encoding="utf-8")
 
-    assert '"$RELEASE_DIR/deploy/systemd/openclaw-feishu-reply-watchdog.service"' in script
-    assert '"$USER_SYSTEMD_DIR/openclaw-feishu-reply-watchdog.service"' in script
-    assert "_user_systemctl enable openclaw-feishu-reply-watchdog.service" in script
-    assert "_user_systemctl restart openclaw-feishu-reply-watchdog.service" in script
-    assert "/home/darrow/.local/bin" in unit
-    assert "/home/darrow/n/bin" in unit
+    assert '"$RELEASE_DIR/deploy/systemd/openclaw-feishu-reply-watchdog.service"' not in script
+    assert '"$USER_SYSTEMD_DIR/openclaw-feishu-reply-watchdog.service"' not in script
+    assert "_user_systemctl enable openclaw-feishu-reply-watchdog.service" not in script
+    assert "_user_systemctl restart openclaw-feishu-reply-watchdog.service" not in script
+    # Keep purge comments so future deploys do not silently revive it.
+    assert "Feishu reply watchdog permanently removed" in script
+    assert "feishu-reply-watchdog intentionally not installed/enabled" in script
 
 
 def test_managed_systemd_dropin_installer_uses_posix_directory_fds() -> None:
