@@ -52,6 +52,16 @@ def test_l5_closure_rehearsal_opens_success_skill_and_rollback_metrics(tmp_path,
         "eimemory.evaluation.production_recall.verify_current_production_recall_gate",
         lambda *_args, **_kwargs: {"ok": True, "status": "accepted", "record_id": "prg-test"},
     )
+    monkeypatch.setattr(
+        "eimemory.evaluation.production_recall.verify_current_production_recall_strict_state",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "status": "strict_activated",
+            "record_id": "strict-test",
+            "candidate_commit": "a" * 40,
+            "gate_record_id": "prg-test",
+        },
+    )
     try:
         _seed_executed_deployment(runtime)
         before = runtime.build_capability_dashboard_metrics(scope=SCOPE, persist=False)
@@ -120,11 +130,21 @@ def test_l5_closure_rehearsal_opens_success_skill_and_rollback_metrics(tmp_path,
         runtime.close()
 
 
-def test_l5_closure_rehearsal_allows_only_verified_real_task_data_to_accumulate(tmp_path, monkeypatch) -> None:
+def test_l5_closure_rehearsal_blocks_data_accumulating_as_incomplete(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path)
     monkeypatch.setattr(
         "eimemory.evaluation.production_recall.verify_current_production_recall_gate",
         lambda *_args, **_kwargs: {"ok": True, "status": "accepted", "record_id": "prg-test"},
+    )
+    monkeypatch.setattr(
+        "eimemory.evaluation.production_recall.verify_current_production_recall_strict_state",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "status": "strict_activated",
+            "record_id": "strict-test",
+            "candidate_commit": "a" * 40,
+            "gate_record_id": "prg-test",
+        },
     )
     real_readiness = runtime.build_l5_readiness_report
 
@@ -153,17 +173,21 @@ def test_l5_closure_rehearsal_allows_only_verified_real_task_data_to_accumulate(
     finally:
         runtime.close()
 
-    assert report["ok"] is True
+    assert report["ok"] is False
     assert report["closure_complete"] is False
-    assert report["data_accumulating"] is True
-    assert report["blocked_reasons"] == []
+    assert report["data_accumulating"] is False
+    assert report["blocked_reasons"] == ["l5_readiness_not_l5"]
     assert report["l5_observation"]["assessment"]["complete"] is True
     assert report["l5_observation"]["assessment"]["level"] == "L5"
     assert report["l5_readiness"]["current_stage"] == "data_accumulating"
     assert report["l5_readiness"]["readiness_score"] == 0.9
     assert report["l5_readiness"]["live_task_gate"]["sample_deficit"] > 0
     assert report["l5_readiness"]["verified_replay"]["weak_capabilities_missing"] == []
-    assert report["outcome_trace"]["outcome"]["rehearsal"] is True
+    assert report["outcome_trace"] == {
+        "ok": False,
+        "status": "not_run",
+        "reason": "upstream_gate_not_run",
+    }
     assert report["change_policy"] == {
         "decision": "finish_closure_first",
         "closure_required": True,

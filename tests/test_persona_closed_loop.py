@@ -115,6 +115,30 @@ def test_openclaw_before_prompt_build_is_idempotent_for_persona_trace_and_prompt
     assert len(traces) == 1
     assert len(audits) == 1
     assert first["persona_trace"]["stored"]["record_id"] == second["persona_trace"]["stored"]["record_id"]
+    assert audits[0].content["task_context"]["fields_filtered"] is True
+    assert audits[0].content["persona_guidance"]["text_sha256"]
+
+    stable_content = dict(audits[0].content)
+    stable_id = hooks._prompt_audit_record_id(scope=scope, content=stable_content)
+    volatile_content = {
+        **stable_content,
+        "task_context_sha256": "different-runtime-context-digest",
+        "persona_guidance_sha256": "different-runtime-guidance-digest",
+    }
+    assert hooks._prompt_audit_record_id(scope=scope, content=volatile_content) == stable_id
+    semantic_context = {
+        **stable_content,
+        "task_context": {**stable_content["task_context"], "goal": "different business goal"},
+    }
+    assert hooks._prompt_audit_record_id(scope=scope, content=semantic_context) != stable_id
+    semantic_persona = {
+        **stable_content,
+        "persona_guidance": {
+            **stable_content["persona_guidance"],
+            "text_sha256": "different-persona-text-digest",
+        },
+    }
+    assert hooks._prompt_audit_record_id(scope=scope, content=semantic_persona) != stable_id
 
 
 def test_openclaw_before_prompt_build_does_not_record_disabled_persona_trace(tmp_path, monkeypatch) -> None:

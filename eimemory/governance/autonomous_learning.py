@@ -526,7 +526,10 @@ def run_autonomous_learning_cycle(
             },
         )
         retention_report = compact_learning_records(runtime, scope=scope_ref, loop_id=loop_id, dry_run=not bool(apply), max_records=1000)
-        ledger = build_capability_ledger(runtime, scope=scope_ref)
+        # This cycle already records a measured score only after all gates pass.
+        # Keep the report read-only here so synthetic replay outcomes generated
+        # by a failed cycle cannot supersede the last verified capability score.
+        ledger = build_capability_ledger(runtime, scope=scope_ref, attribute_outcomes=False)
         capability_dashboard = build_capability_dashboard_metrics(runtime, scope=scope_ref, persist=True, loop_id=loop_id)
         mark_step(
             runtime,

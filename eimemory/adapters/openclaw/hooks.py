@@ -983,7 +983,11 @@ class OpenClawMemoryHooks:
                 "query": str(content.get("query") or ""),
                 "raw_query": str(content.get("raw_query") or ""),
                 "raw_query_sha256": str(content.get("raw_query_sha256") or ""),
-                "task_context_sha256": str(content.get("task_context_sha256") or ""),
+                "task_context": (
+                    dict(content.get("task_context") or {})
+                    if isinstance(content.get("task_context"), dict)
+                    else {}
+                ),
                 "injection_plan_sha256": str(content.get("injection_plan_sha256") or ""),
                 "injected": bool(content.get("injected")),
                 "injected_record_ids": self._coerce_string_list(content.get("injected_record_ids")),
@@ -997,7 +1001,6 @@ class OpenClawMemoryHooks:
                 "persona_scene": str(persona_guidance.get("scene") or ""),
                 "persona_guidance_length": len(str(persona_guidance.get("text") or "")),
                 "persona_guidance_sha256": str(persona_guidance.get("text_sha256") or ""),
-                "persona_guidance_full_sha256": str(content.get("persona_guidance_sha256") or ""),
             }
         )[:24]
 
