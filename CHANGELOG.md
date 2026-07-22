@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Planned
 - Multi-agent memory coordination
 
+## [1.9.83] - 2026-07-22
+
+### Fixed
+- Allow an immutable release to complete in an explicitly non-L5 data-accumulation state only when the current deployment receipt and bootstrap-pending evidence bind to the same commit, version, receipt, session, and scope, while every non-dataset L5 gate remains complete.
+- Reject recall execution failures, leakage findings, blocking metrics, unrelated live-task deficits, stale bootstrap evidence, and incomplete release identities instead of masking them as production-query data accumulation.
+- Make the deployment summary exit nonzero unless receipt, replay, live acceptance, rehearsal, readiness, and all bootstrap credentials form one consistent strict-L5 or release-bound data-accumulation contract.
+
 ## [1.9.82] - 2026-07-22
 
 ### Fixed
