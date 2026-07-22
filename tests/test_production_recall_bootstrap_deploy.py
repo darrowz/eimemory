@@ -599,6 +599,43 @@ def test_snapshot_loader_uses_root_anchored_openat_only_for_secure_path_decision
     assert ".lstat()" not in loader
 
 
+@pytest.mark.parametrize("failure", ["fstat", "stat"])
+def test_snapshot_directory_chain_closes_unregistered_fd_on_validation_error(monkeypatch, failure: str) -> None:
+    install_root = Path("C:/trusted/install") if os.name == "nt" else Path("/trusted/install")
+    opened: list[int] = []
+    closed: list[int] = []
+    descriptors = iter((10, 11, 12))
+    directory = SimpleNamespace(st_mode=stat.S_IFDIR | 0o755, st_dev=1, st_ino=10)
+    monkeypatch.setattr(bootstrap_deploy, "_directory_openat_available", lambda: True)
+
+    def open_directory(*_args, **_kwargs):
+        descriptor = next(descriptors)
+        opened.append(descriptor)
+        return descriptor
+
+    def inspect_descriptor(descriptor: int):
+        if failure == "fstat" and descriptor == 11:
+            raise OSError("injected fstat failure")
+        return SimpleNamespace(**{**directory.__dict__, "st_ino": descriptor})
+
+    def inspect_entry(*_args, **_kwargs):
+        if failure == "stat":
+            raise OSError("injected stat failure")
+        return SimpleNamespace(**{**directory.__dict__, "st_ino": 11})
+
+    monkeypatch.setattr(bootstrap_deploy.os, "open", open_directory)
+    monkeypatch.setattr(bootstrap_deploy.os, "fstat", inspect_descriptor)
+    monkeypatch.setattr(bootstrap_deploy.os, "stat", inspect_entry)
+    monkeypatch.setattr(bootstrap_deploy.os, "close", lambda descriptor: closed.append(descriptor))
+
+    with pytest.raises(ValueError, match="invalid prior health snapshot"):
+        with bootstrap_deploy._open_snapshot_directory_chain(install_root):
+            raise AssertionError("validation failure must prevent yield")
+
+    assert opened == [10, 11]
+    assert sorted(closed) == sorted(opened)
+
+
 @pytest.mark.skipif(os.name != "posix", reason="openat ancestor race is a Linux deployment contract")
 def test_snapshot_loader_rejects_ancestor_replacement_after_openat_chain_is_held(tmp_path, monkeypatch) -> None:
     commit = "a" * 40

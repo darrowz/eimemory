@@ -138,6 +138,7 @@ def _open_snapshot_directory_chain(install_root: Path):
         for component in install_root.parts[1:]:
             parent_fd = entries[-1][2]
             descriptor = os.open(component, directory_flags, dir_fd=parent_fd)
+            entries.append((parent_fd, component, descriptor))
             descriptor_metadata = os.fstat(descriptor)
             entry_metadata = os.stat(component, dir_fd=parent_fd, follow_symlinks=False)
             if (
@@ -146,9 +147,7 @@ def _open_snapshot_directory_chain(install_root: Path):
                 or not stat.S_ISDIR(entry_metadata.st_mode)
                 or not _same_file_identity(descriptor_metadata, entry_metadata)
             ):
-                os.close(descriptor)
                 raise ValueError("invalid prior health snapshot")
-            entries.append((parent_fd, component, descriptor))
         _assert_snapshot_directory_chain(entries)
         yield entries
     except (OSError, ValueError) as exc:
