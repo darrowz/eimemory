@@ -857,6 +857,40 @@ def test_completed_storage_schema_initialization_is_read_only_on_restart(tmp_pat
         store.close()
 
 
+def test_completed_storage_restart_repairs_missing_lightweight_event_index(
+    tmp_path, monkeypatch
+) -> None:
+    store = RuntimeStore(root=tmp_path)
+    store.sqlite.conn.execute("DROP INDEX idx_events_scope_type")
+    store.sqlite.conn.commit()
+    store.close()
+
+    monkeypatch.setattr(
+        sqlite_store_module.SqliteRecordStore,
+        "_payload_dict_from_json",
+        lambda _self, _payload: (_ for _ in ()).throw(
+            AssertionError("startup decoded a historical payload")
+        ),
+    )
+    restarted = RuntimeStore(root=tmp_path)
+    columns = [
+        str(row[2])
+        for row in restarted.sqlite.conn.execute(
+            "PRAGMA index_info(idx_events_scope_type)"
+        ).fetchall()
+    ]
+    restarted.close()
+
+    assert columns == [
+        "tenant_id",
+        "agent_id",
+        "workspace_id",
+        "user_id",
+        "event_type",
+        "timestamp",
+    ]
+
+
 def test_completed_storage_schema_restart_restores_missing_default_pattern(tmp_path) -> None:
     store = RuntimeStore(root=tmp_path)
     row = store.sqlite.conn.execute(

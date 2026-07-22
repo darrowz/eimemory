@@ -208,6 +208,7 @@ class SqliteRecordStore:
         self._prepare_deferred_recall_schema()
         self._create_recall_index_tables(create_indexes=False)
         self._create_recall_alias_table_only()
+        self._restore_vector_sync_alias_triggers_if_configured()
         self._create_memory_edge_tables()
         self._create_event_memory_tables()
         self.conn.commit()
@@ -237,14 +238,52 @@ class SqliteRecordStore:
             "replay_manifest_sequences",
             "replay_manifest_evidence",
         }
+        required_indexes = {
+            "idx_memory_edges_scope_type": [
+                "tenant_id", "agent_id", "workspace_id", "user_id", "edge_type", "updated_at",
+            ],
+            "idx_memory_edges_from": ["from_id", "edge_type"],
+            "idx_memory_edges_to": ["to_id", "edge_type"],
+            "idx_events_scope_type": [
+                "tenant_id", "agent_id", "workspace_id", "user_id", "event_type", "timestamp",
+            ],
+            "idx_intent_patterns_scope_type": [
+                "tenant_id", "agent_id", "workspace_id", "user_id", "default_event_type",
+            ],
+            "idx_event_outcomes_event": ["event_id"],
+            "idx_policy_rollout_scope_date": [
+                "tenant_id", "agent_id", "workspace_id", "user_id", "action_type", "record_date", "created_at",
+            ],
+            "idx_export_outbox_pending": ["state", "created_at", "operation_id"],
+            "idx_replay_manifest_evidence_high_water": [
+                "scope_key", "capability", "manifest_sequence",
+            ],
+        }
         try:
+            placeholders = ",".join("?" for _ in required_tables)
             present = {
                 str(row[0])
                 for row in self.conn.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table'"
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name IN ("
+                    + placeholders
+                    + ")",
+                    tuple(sorted(required_tables)),
                 ).fetchall()
             }
             if not required_tables.issubset(present):
+                return False
+            for index_name, expected_columns in required_indexes.items():
+                columns = [
+                    str(row[2])
+                    for row in self.conn.execute(
+                        f"PRAGMA index_info({index_name})"
+                    ).fetchall()
+                ]
+                if columns != expected_columns:
+                    return False
+            if not self._recall_fts_projection_ready():
+                return False
+            if not self._vector_sync_alias_triggers_ready():
                 return False
             if not self._schema_migration_applied(_STORAGE_SCHEMA_MIGRATION):
                 return False
@@ -262,6 +301,66 @@ class SqliteRecordStore:
             return True
         except sqlite3.OperationalError:
             return False
+
+    def _fts5_available(self) -> bool:
+        if self._has_fts_table():
+            return True
+        try:
+            row = self.conn.execute(
+                "SELECT sqlite_compileoption_used('ENABLE_FTS5')"
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return False
+        return bool(row and int(row[0]))
+
+    def _recall_fts_projection_ready(self) -> bool:
+        if not self._fts5_available():
+            return True
+        if not self._has_fts_table():
+            return False
+        try:
+            indexed = self.conn.execute(
+                "SELECT 1 FROM recall_index LIMIT 1"
+            ).fetchone()
+            searchable = self.conn.execute(
+                "SELECT 1 FROM recall_index_fts LIMIT 1"
+            ).fetchone()
+        except sqlite3.DatabaseError:
+            return False
+        return (indexed is None) == (searchable is None)
+
+    def _vector_sync_alias_triggers_ready(self) -> bool:
+        tables = {
+            str(row[0])
+            for row in self.conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name IN ('vector_sync_revision','vector_sync_alias_guard')"
+            ).fetchall()
+        }
+        if tables != {"vector_sync_revision", "vector_sync_alias_guard"}:
+            return True
+        expected = {
+            f"trg_recall_alias_vector_sync_{operation.lower()}": operation.lower()
+            for operation in ("INSERT", "UPDATE", "DELETE")
+        }
+        placeholders = ",".join("?" for _ in expected)
+        rows = self.conn.execute(
+            "SELECT name,sql FROM sqlite_master WHERE type='trigger' AND name IN ("
+            + placeholders
+            + ")",
+            tuple(sorted(expected)),
+        ).fetchall()
+        definitions = {
+            str(row["name"]): " ".join(str(row["sql"] or "").lower().split())
+            for row in rows
+        }
+        return all(
+            name in definitions
+            and f"after {operation} on recall_alias_index" in definitions[name]
+            and "vector_sync_alias_guard" in definitions[name]
+            and "update vector_sync_revision set revision = revision + 1" in definitions[name]
+            for name, operation in expected.items()
+        )
 
     def _prepare_deferred_recall_schema(self) -> None:
         """Make legacy tables runtime-compatible using metadata-only changes.
@@ -2395,17 +2494,22 @@ class SqliteRecordStore:
         return next(iter(normalized)) if len(normalized) == 1 else DEFAULT_SOURCE_ID
 
     def _apply_recall_identity_batch(self, *, batch_size: int, offline: bool) -> int:
-        if self._recall_projection_schema_rebuild_required():
-            if not offline:
-                raise RuntimeError("offline recall projection schema rebuild required")
-            self._reset_recall_projection_schema_for_offline_migration()
-            return 0
         progress = self.conn.execute(
             "SELECT phase,cursor FROM schema_migration_progress WHERE migration_id=?",
             (_RECALL_IDENTITY_MIGRATION,),
         ).fetchone()
         phase = str(progress["phase"] or "titles") if progress is not None else "titles"
         cursor = str(progress["cursor"] or "") if progress is not None else ""
+        if self._recall_projection_schema_rebuild_required():
+            if not offline:
+                raise RuntimeError("offline recall projection schema rebuild required")
+            self._reset_recall_projection_schema_for_offline_migration()
+            return 0
+        if phase != "fts_rebuild" and not self._recall_fts_projection_ready():
+            if not offline:
+                return 0
+            self._reset_fts_projection_for_offline_migration()
+            return 0
         placeholders = ",".join("?" for _ in _IDENTITY_PAYLOAD_KINDS)
         if phase == "titles":
             rows = self.conn.execute(
@@ -2428,6 +2532,12 @@ class SqliteRecordStore:
                 "SELECT storage_key,payload_json,payload_pointer_json,payload_digest,"
                 "source_id,content_text FROM records WHERE storage_key>? "
                 "ORDER BY storage_key LIMIT ?",
+                (cursor, batch_size),
+            ).fetchall()
+        elif phase == "fts_rebuild":
+            rows = self.conn.execute(
+                "SELECT storage_key,title_text,body_text,anchor_terms FROM recall_index "
+                "WHERE storage_key>? ORDER BY storage_key LIMIT ?",
                 (cursor, batch_size),
             ).fetchall()
         else:
@@ -2453,6 +2563,20 @@ class SqliteRecordStore:
                             content_text=str(row["content_text"] or ""),
                             suppress_alias_revision=False,
                         )
+            elif phase == "fts_rebuild":
+                self.conn.executemany(
+                    "INSERT INTO recall_index_fts(storage_key,title_text,body_text,anchor_terms) "
+                    "VALUES(?,?,?,?)",
+                    [
+                        (
+                            str(row["storage_key"]),
+                            str(row["title_text"] or ""),
+                            str(row["body_text"] or ""),
+                            str(row["anchor_terms"] or ""),
+                        )
+                        for row in rows
+                    ],
+                )
             if rows:
                 self._save_migration_cursor(
                     _RECALL_IDENTITY_MIGRATION,
@@ -2488,7 +2612,10 @@ class SqliteRecordStore:
         alias_table = self.conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='recall_alias_index'"
         ).fetchone()
-        return alias_table is None or not self._recall_alias_table_ready()
+        return (
+            alias_table is None
+            or not self._recall_alias_table_ready()
+        )
 
     def _reset_recall_projection_schema_for_offline_migration(self) -> None:
         """Recreate corrupt derived tables before bounded authoritative backfill."""
@@ -2503,6 +2630,21 @@ class SqliteRecordStore:
             self._restore_vector_sync_alias_triggers_if_configured()
             self._save_migration_cursor(
                 _RECALL_IDENTITY_MIGRATION, "", phase="projection_rebuild"
+            )
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    def _reset_fts_projection_for_offline_migration(self) -> None:
+        """Reset only the derived FTS table; backfill uses recall_index columns."""
+
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            self.conn.execute("DROP TABLE IF EXISTS recall_index_fts")
+            self._create_recall_index_tables(create_indexes=False)
+            self._save_migration_cursor(
+                _RECALL_IDENTITY_MIGRATION, "", phase="fts_rebuild"
             )
             self.conn.commit()
         except Exception:
@@ -2622,6 +2764,11 @@ class SqliteRecordStore:
 
     def _recall_identity_physical_ready(self) -> bool:
         try:
+            if self.conn.execute(
+                "SELECT 1 FROM schema_migration_progress WHERE migration_id=?",
+                (_RECALL_IDENTITY_MIGRATION,),
+            ).fetchone() is not None:
+                return False
             columns = {row["name"]: row for row in self.conn.execute("PRAGMA table_info(recall_index)")}
             alias_table = self.conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='recall_alias_index'"
@@ -2640,6 +2787,8 @@ class SqliteRecordStore:
             ):
                 return False
             if not self._recall_alias_table_ready():
+                return False
+            if not self._recall_fts_projection_ready():
                 return False
             expected = {
                 "idx_recall_index_storage_key": ["storage_key"],

@@ -16,7 +16,9 @@ from eimemory.retrieval.fusion import (
 )
 from eimemory.retrieval.contracts import CandidateBatch, CandidateHit, CandidateRef, ExactScope
 from eimemory.retrieval.engine import GovernedRecallEngine
+from eimemory.retrieval.postgres_sync import SQLiteProjectionReader
 from eimemory.storage.runtime_store import RuntimeStore
+from eimemory.storage.sqlite_store import SqliteRecordStore
 
 
 SCOPE = ScopeRef(
@@ -432,6 +434,68 @@ def test_markered_identity_migration_repairs_physical_schema_and_backfills(tmp_p
     repaired.close()
     reopened = RuntimeStore(root)
     assert reopened.sqlite._recall_identity_physical_ready() is True
+
+
+def test_restart_recreates_missing_fts_without_startup_payload_scan_then_defers_backfill(
+    tmp_path, monkeypatch
+) -> None:
+    root = tmp_path / "missing-fts"
+    store = RuntimeStore(root)
+    record = store.append(_record("fts restart sentinel"))
+    store.close()
+    connection = sqlite3.connect(root / "state" / "eimemory.sqlite")
+    connection.execute("DROP TABLE recall_index_fts")
+    connection.commit()
+    connection.close()
+
+    monkeypatch.setattr(
+        SqliteRecordStore,
+        "_payload_dict_from_json",
+        lambda _self, _payload: (_ for _ in ()).throw(
+            AssertionError("startup decoded a historical payload")
+        ),
+    )
+    reopened = RuntimeStore(root)
+
+    assert reopened.sqlite._has_fts_table() is True
+    assert "recall.identity_index.v1" in reopened.sqlite.pending_storage_migrations()
+    assert reopened.sqlite.conn.execute(
+        "SELECT 1 FROM recall_index_fts LIMIT 1"
+    ).fetchone() is None
+    monkeypatch.undo()
+    _apply_all_storage_migrations(reopened)
+    assert reopened.sqlite.conn.execute(
+        "SELECT storage_key FROM recall_index_fts WHERE recall_index_fts MATCH ?",
+        ('"fts"',),
+    ).fetchone()[0] == reopened.sqlite._storage_key(record)
+    reopened.close()
+
+
+def test_restart_restores_missing_vector_alias_trigger_without_payload_scan(
+    tmp_path, monkeypatch
+) -> None:
+    root = tmp_path / "missing-vector-trigger"
+    store = RuntimeStore(root)
+    SQLiteProjectionReader(store).snapshot_token()
+    store.sqlite.conn.execute("DROP TRIGGER trg_recall_alias_vector_sync_insert")
+    store.sqlite.conn.commit()
+    store.close()
+
+    monkeypatch.setattr(
+        SqliteRecordStore,
+        "_payload_dict_from_json",
+        lambda _self, _payload: (_ for _ in ()).throw(
+            AssertionError("startup decoded a historical payload")
+        ),
+    )
+    reopened = RuntimeStore(root)
+    trigger = reopened.sqlite.conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='trigger' "
+        "AND name='trg_recall_alias_vector_sync_insert'"
+    ).fetchone()
+    reopened.close()
+
+    assert trigger is not None
     reopened.close()
 
 
