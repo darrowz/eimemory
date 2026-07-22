@@ -484,6 +484,66 @@ def test_query_features_reject_high_confidence_phone_shapes(phone_value: str) ->
     assert real_query_gate._looks_like_secret(phone_value) is True
 
 
+@pytest.mark.parametrize(
+    ("enabled", "configured", "postgres", "expected_valid"),
+    [
+        (
+            True,
+            False,
+            {"state": "not_configured", "circuit": "closed", "index_verified": False, "query_valid": False},
+            False,
+        ),
+        (
+            True,
+            True,
+            {"state": "bypassed", "circuit": "open", "index_verified": False, "query_valid": False},
+            False,
+        ),
+        (
+            True,
+            True,
+            {"state": "available", "circuit": "closed", "index_verified": True, "query_valid": True},
+            True,
+        ),
+        (
+            False,
+            False,
+            {"state": "disabled", "circuit": "closed", "index_verified": False, "query_valid": False},
+            True,
+        ),
+    ],
+)
+def test_real_query_identity_blocks_enabled_postgres_bypass_without_blocking_disabled_optional_backend(
+    tmp_path, monkeypatch, enabled: bool, configured: bool, postgres: dict, expected_valid: bool
+) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    engine = runtime.memory.recall_engine
+    engine_identity = {
+        "engine_type": "GovernedRecallEngine",
+        "name": "governed",
+        "policy_version": "governed-recall.v1",
+        "fusion_version": "governed-rrf.v1",
+        "candidate_source": {
+            "candidate_source_type": "PostgresVectorCandidateSource",
+            "name": "postgres-vector",
+            "policy_version": "postgres-vector-candidates.v1",
+            "sqlite_authority": True,
+            "authority_revision": "1",
+            "enabled": enabled,
+            "configured": configured,
+            "postgres": dict(postgres),
+        },
+    }
+    engine_identity["identity_digest"] = real_query_gate._engine_identity_digest(engine_identity)
+    monkeypatch.setattr(engine, "effective_identity", lambda: dict(engine_identity))
+
+    retrieval_identity = real_query_gate._retrieval_identity(runtime, samples=[])
+
+    assert retrieval_identity["engine_identity_valid"] is expected_valid
+    assert bool(retrieval_identity["engine_digest"]) is expected_valid
+    runtime.close()
+
+
 def test_conflicting_accepted_label_grade_fails_eligibility_and_same_grade_duplicate_normalizes() -> None:
     dataset = _dataset({channel: f"record-{channel}" for channel in ("openclaw", "codex", "hermes")})
     original = deepcopy(dataset["cases"][0]["labels"][0])

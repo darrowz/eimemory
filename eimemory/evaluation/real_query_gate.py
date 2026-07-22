@@ -1578,6 +1578,7 @@ def _retrieval_identity(runtime: Any, *, samples: list[dict[str, Any]]) -> dict[
         engine_payload
         and all(str(engine_payload.get(key) or "").strip() for key in ("engine_type", "name", "policy_version", "fusion_version"))
         and isinstance(engine_payload.get("candidate_source"), dict)
+        and _candidate_source_identity_valid(engine_payload.get("candidate_source"))
         and len(provided_digest) == 64
         and provided_digest == _engine_identity_digest(engine_payload)
     )
@@ -1607,6 +1608,36 @@ def _retrieval_identity(runtime: Any, *, samples: list[dict[str, Any]]) -> dict[
         "fusion_digest": _stable_digest(fusion_payload),
         "policy_digest": _stable_digest(policy_payload),
     }
+
+
+def _candidate_source_identity_valid(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    if (
+        value.get("sqlite_authority") is not True
+        or not str(value.get("authority_revision") or "").isdigit()
+        or not str(value.get("name") or "").strip()
+        or not str(value.get("policy_version") or "").strip()
+    ):
+        return False
+    source_type = str(value.get("candidate_source_type") or "")
+    if source_type == "SQLiteCandidateSource":
+        return True
+    if source_type != "PostgresVectorCandidateSource":
+        return False
+    postgres = value.get("postgres")
+    if not isinstance(postgres, dict):
+        return False
+    if value.get("enabled") is not True:
+        return value.get("configured") is False and postgres.get("state") == "disabled"
+    return bool(
+        value.get("configured") is True
+        and postgres.get("state") == "available"
+        and postgres.get("circuit") == "closed"
+        and postgres.get("index_verified") is True
+        and postgres.get("query_valid") is True
+        and not str(postgres.get("bypass_reason") or "")
+    )
 
 
 def _production_proactive_metrics(runtime: Any, cases: list[dict[str, Any]]) -> dict[str, int]:
