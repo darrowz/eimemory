@@ -441,8 +441,13 @@ def test_bootstrap_cli_loads_a_bounded_snapshot_and_passes_it_to_the_gate(tmp_pa
     }
     snapshot_path = tmp_path / f".prior-health-{'a' * 40}-Ab12Cd34.json"
     snapshot_path.write_text(json.dumps(snapshot), encoding="utf-8")
-    _configure_snapshot_file_security(monkeypatch, snapshot_path)
-    monkeypatch.setattr(bootstrap_deploy, "DEFAULT_DEPLOYMENT_CURRENT_LINK", str(tmp_path / "current"))
+    loaded: list[tuple[str, str]] = []
+
+    def load_snapshot(path_value: str, *, candidate_commit: str):
+        loaded.append((path_value, candidate_commit))
+        return snapshot
+
+    monkeypatch.setattr(bootstrap_deploy, "_load_prior_health_snapshot", load_snapshot)
     args = _bootstrap_args(tmp_path) + ["--prior-health-snapshot", str(snapshot_path)]
 
     exit_code = bootstrap_deploy.main(args)
@@ -451,6 +456,7 @@ def test_bootstrap_cli_loads_a_bounded_snapshot_and_passes_it_to_the_gate(tmp_pa
     assert exit_code == 0
     assert calls["gate"] == []
     assert captured[0]["prior_health_snapshot"] == snapshot
+    assert loaded == [(str(snapshot_path), "a" * 40)]
     assert runtime.closed is True
 
 
@@ -553,6 +559,69 @@ def test_snapshot_loader_rejects_symlinked_install_root_ancestor(tmp_path, monke
     with pytest.raises(ValueError, match="invalid prior health snapshot"):
         bootstrap_deploy._load_prior_health_snapshot(
             str(linked_snapshot),
+            candidate_commit=commit,
+        )
+
+
+def test_snapshot_directory_chain_revalidation_rejects_replaced_ancestor_entry(monkeypatch) -> None:
+    directories = {
+        10: SimpleNamespace(st_mode=stat.S_IFDIR | 0o755, st_dev=1, st_ino=10),
+        11: SimpleNamespace(st_mode=stat.S_IFDIR | 0o755, st_dev=1, st_ino=11),
+        12: SimpleNamespace(st_mode=stat.S_IFDIR | 0o755, st_dev=1, st_ino=12),
+    }
+    entries = [(None, "/", 10), (10, "opt", 11), (11, "eimemory", 12)]
+    monkeypatch.setattr(bootstrap_deploy.os, "fstat", lambda descriptor: directories[descriptor])
+
+    def replaced_entry(name, *, dir_fd, follow_symlinks):
+        assert follow_symlinks is False
+        if (dir_fd, name) == (10, "opt"):
+            return SimpleNamespace(st_mode=stat.S_IFLNK | 0o777, st_dev=1, st_ino=99)
+        return directories[12]
+
+    monkeypatch.setattr(bootstrap_deploy.os, "stat", replaced_entry)
+
+    with pytest.raises(ValueError, match="invalid prior health snapshot"):
+        bootstrap_deploy._assert_snapshot_directory_chain(entries)
+
+
+def test_snapshot_loader_uses_root_anchored_openat_only_for_secure_path_decisions() -> None:
+    source = Path("deploy/bootstrap_production_recall.py").read_text(encoding="utf-8")
+    chain = source.split("def _open_snapshot_directory_chain", 1)[1].split(
+        "def _read_bounded_snapshot", 1
+    )[0]
+    loader = source.split("def _load_prior_health_snapshot", 1)[1].split("def main", 1)[0]
+
+    assert "os.open(install_root.anchor, directory_flags)" in chain
+    assert "os.open(component, directory_flags, dir_fd=parent_fd)" in chain
+    assert "yield entries" in chain
+    assert "os.open(path.name, flags, dir_fd=parent_fd)" in loader
+    assert "os.open(path, flags)" not in loader
+    assert ".lstat()" not in loader
+
+
+@pytest.mark.skipif(os.name != "posix", reason="openat ancestor race is a Linux deployment contract")
+def test_snapshot_loader_rejects_ancestor_replacement_after_openat_chain_is_held(tmp_path, monkeypatch) -> None:
+    commit = "a" * 40
+    trusted_parent = tmp_path / "trusted"
+    install_root = trusted_parent / "install"
+    install_root.mkdir(parents=True)
+    snapshot = install_root / f".prior-health-{commit}-Ab12Cd34.json"
+    snapshot.write_text("{}", encoding="utf-8")
+    os.chmod(snapshot, 0o600)
+    monkeypatch.setattr(bootstrap_deploy, "DEFAULT_DEPLOYMENT_CURRENT_LINK", str(install_root / "current"))
+    original_read = bootstrap_deploy._read_bounded_snapshot
+
+    def replace_ancestor_after_leaf_open(descriptor: int) -> bytes:
+        relocated = tmp_path / "relocated"
+        trusted_parent.rename(relocated)
+        trusted_parent.symlink_to(relocated, target_is_directory=True)
+        return original_read(descriptor)
+
+    monkeypatch.setattr(bootstrap_deploy, "_read_bounded_snapshot", replace_ancestor_after_leaf_open)
+
+    with pytest.raises(ValueError, match="invalid prior health snapshot"):
+        bootstrap_deploy._load_prior_health_snapshot(
+            str(snapshot),
             candidate_commit=commit,
         )
 

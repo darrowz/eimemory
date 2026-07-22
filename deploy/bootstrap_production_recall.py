@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -65,24 +66,6 @@ def _is_link_or_reparse(metadata: os.stat_result) -> bool:
     )
 
 
-def _validate_snapshot_ancestor_chain(install_root: Path) -> os.stat_result:
-    current = install_root
-    immediate: os.stat_result | None = None
-    while True:
-        metadata = current.lstat()
-        if immediate is None:
-            immediate = metadata
-        if _is_link_or_reparse(metadata) or not stat.S_ISDIR(metadata.st_mode):
-            raise ValueError("invalid prior health snapshot")
-        ancestor = current.parent
-        if ancestor == current:
-            break
-        current = ancestor
-    if immediate is None:  # pragma: no cover - absolute paths always have a root
-        raise ValueError("invalid prior health snapshot")
-    return immediate
-
-
 def _prior_health_snapshot_metadata_error(metadata: Any, *, expected_euid: int) -> str:
     if not stat.S_ISREG(int(metadata.st_mode)):
         return "regular"
@@ -100,6 +83,79 @@ def _prior_health_snapshot_metadata_error(metadata: Any, *, expected_euid: int) 
 
 def _same_file_identity(left: Any, right: Any) -> bool:
     return (int(left.st_dev), int(left.st_ino)) == (int(right.st_dev), int(right.st_ino))
+
+
+def _directory_openat_available() -> bool:
+    return bool(
+        os.open in getattr(os, "supports_dir_fd", set())
+        and os.stat in getattr(os, "supports_dir_fd", set())
+        and int(getattr(os, "O_DIRECTORY", 0))
+        and int(getattr(os, "O_NOFOLLOW", 0))
+    )
+
+
+def _assert_snapshot_directory_chain(entries: list[tuple[int | None, str, int]]) -> None:
+    if not entries:
+        raise ValueError("invalid prior health snapshot")
+    root_metadata = os.fstat(entries[0][2])
+    if not stat.S_ISDIR(root_metadata.st_mode):
+        raise ValueError("invalid prior health snapshot")
+    for parent_fd, name, descriptor in entries[1:]:
+        if parent_fd is None:
+            raise ValueError("invalid prior health snapshot")
+        descriptor_metadata = os.fstat(descriptor)
+        entry_metadata = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        if (
+            not stat.S_ISDIR(descriptor_metadata.st_mode)
+            or _is_link_or_reparse(entry_metadata)
+            or not stat.S_ISDIR(entry_metadata.st_mode)
+            or not _same_file_identity(descriptor_metadata, entry_metadata)
+        ):
+            raise ValueError("invalid prior health snapshot")
+
+
+@contextmanager
+def _open_snapshot_directory_chain(install_root: Path):
+    if (
+        not install_root.is_absolute()
+        or ".." in install_root.parts
+        or not install_root.anchor
+        or not _directory_openat_available()
+    ):
+        raise ValueError("invalid prior health snapshot")
+    directory_flags = (
+        os.O_RDONLY
+        | int(getattr(os, "O_CLOEXEC", 0))
+        | int(getattr(os, "O_DIRECTORY", 0))
+        | int(getattr(os, "O_NOFOLLOW", 0))
+    )
+    entries: list[tuple[int | None, str, int]] = []
+    try:
+        root_descriptor = os.open(install_root.anchor, directory_flags)
+        entries.append((None, install_root.anchor, root_descriptor))
+        if not stat.S_ISDIR(os.fstat(root_descriptor).st_mode):
+            raise ValueError("invalid prior health snapshot")
+        for component in install_root.parts[1:]:
+            parent_fd = entries[-1][2]
+            descriptor = os.open(component, directory_flags, dir_fd=parent_fd)
+            descriptor_metadata = os.fstat(descriptor)
+            entry_metadata = os.stat(component, dir_fd=parent_fd, follow_symlinks=False)
+            if (
+                not stat.S_ISDIR(descriptor_metadata.st_mode)
+                or _is_link_or_reparse(entry_metadata)
+                or not stat.S_ISDIR(entry_metadata.st_mode)
+                or not _same_file_identity(descriptor_metadata, entry_metadata)
+            ):
+                os.close(descriptor)
+                raise ValueError("invalid prior health snapshot")
+            entries.append((parent_fd, component, descriptor))
+        _assert_snapshot_directory_chain(entries)
+        yield entries
+    except (OSError, ValueError) as exc:
+        raise ValueError("invalid prior health snapshot") from exc
+    finally:
+        for _parent_fd, _name, descriptor in reversed(entries):
+            os.close(descriptor)
 
 
 def _read_bounded_snapshot(descriptor: int) -> bytes:
@@ -148,54 +204,36 @@ def _load_prior_health_snapshot(
     if expected_euid is None:
         raise ValueError("invalid prior health snapshot")
     flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
-    descriptor = -1
-    parent_descriptor = -1
     try:
-        parent_before = _validate_snapshot_ancestor_chain(install_root)
-        path_before = path.lstat()
-        if _is_link_or_reparse(path_before):
-            raise ValueError("invalid prior health snapshot")
-        if os.open in getattr(os, "supports_dir_fd", set()):
-            parent_descriptor = os.open(
-                install_root,
-                os.O_RDONLY
-                | getattr(os, "O_CLOEXEC", 0)
-                | getattr(os, "O_DIRECTORY", 0)
-                | getattr(os, "O_NOFOLLOW", 0),
-            )
-            if not _same_file_identity(os.fstat(parent_descriptor), parent_before):
-                raise ValueError("invalid prior health snapshot")
-            descriptor = os.open(path.name, flags, dir_fd=parent_descriptor)
-        else:
-            descriptor = os.open(path, flags)
-        metadata = os.fstat(descriptor)
-        if _prior_health_snapshot_metadata_error(metadata, expected_euid=expected_euid):
-            raise ValueError("invalid prior health snapshot")
-        if not _same_file_identity(metadata, path_before):
-            raise ValueError("invalid prior health snapshot")
-        raw = _read_bounded_snapshot(descriptor)
-        after_read = os.fstat(descriptor)
-        path_after = path.lstat()
-        if (
-            not _same_file_identity(metadata, after_read)
-            or not _same_file_identity(metadata, path_after)
-            or _is_link_or_reparse(path_after)
-            or int(after_read.st_size) != len(raw)
-        ):
-            raise ValueError("invalid prior health snapshot")
-        if parent_descriptor >= 0:
-            if not _same_file_identity(os.fstat(parent_descriptor), parent_before):
-                raise ValueError("invalid prior health snapshot")
-        elif not _same_file_identity(install_root.lstat(), parent_before):
-            raise ValueError("invalid prior health snapshot")
+        with _open_snapshot_directory_chain(install_root) as entries:
+            parent_fd = entries[-1][2]
+            descriptor = os.open(path.name, flags, dir_fd=parent_fd)
+            try:
+                metadata = os.fstat(descriptor)
+                entry_before = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+                if (
+                    _is_link_or_reparse(entry_before)
+                    or not _same_file_identity(metadata, entry_before)
+                    or _prior_health_snapshot_metadata_error(metadata, expected_euid=expected_euid)
+                ):
+                    raise ValueError("invalid prior health snapshot")
+                raw = _read_bounded_snapshot(descriptor)
+                after_read = os.fstat(descriptor)
+                entry_after = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+                if (
+                    _is_link_or_reparse(entry_after)
+                    or not _same_file_identity(metadata, after_read)
+                    or not _same_file_identity(metadata, entry_after)
+                    or _prior_health_snapshot_metadata_error(after_read, expected_euid=expected_euid)
+                    or int(after_read.st_size) != len(raw)
+                ):
+                    raise ValueError("invalid prior health snapshot")
+                _assert_snapshot_directory_chain(entries)
+            finally:
+                os.close(descriptor)
         payload = json.loads(raw.decode("utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
         raise ValueError("invalid prior health snapshot") from exc
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
-        if parent_descriptor >= 0:
-            os.close(parent_descriptor)
     if not isinstance(payload, dict):
         raise ValueError("invalid prior health snapshot")
     return payload
