@@ -606,7 +606,22 @@ def _bound_journal_path(value: Any, *, parent: Path, label: str) -> Path:
         raise StorageMaintenanceError(f"{label} escapes storage state")
     if path.is_symlink():
         raise StorageMaintenanceError(f"{label} must not be a symlink")
+    if path.exists():
+        metadata = path.stat(follow_symlinks=False)
+        attributes = int(getattr(metadata, "st_file_attributes", 0) or 0)
+        if attributes & int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)):
+            raise StorageMaintenanceError(f"{label} must not be a reparse point")
     return path
+
+
+def _validate_restore_backup(path: Path, *, directory: bool) -> None:
+    if directory:
+        metadata = path.stat(follow_symlinks=False)
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise StorageMaintenanceError("storage restore directory backup is invalid")
+        _tree_files(path)
+        return
+    _validate_regular(path)
 
 
 def recover_storage_restore(
@@ -654,16 +669,39 @@ def recover_storage_restore(
             seen.add(live)
             validated.append((live, backup, bool(raw_entry.get("existed")), state))
 
+        status = str(journal.get("status") or "")
+        if status not in {"in_progress", "rolled_back_after_failure", "complete"}:
+            raise StorageMaintenanceError("storage restore journal status is invalid")
+        if status == "complete":
+            if not database.is_file() or database.is_symlink():
+                raise StorageMaintenanceError("completed storage restore has no live database")
+            _validate_sqlite_database(database)
+            if not segments.is_dir() or segments.is_symlink():
+                raise StorageMaintenanceError("completed storage restore has no payload segments")
+            _validate_live_payload_pointers(database, segments)
+            for live, backup, _existed, _state in validated:
+                if not backup.exists():
+                    continue
+                _validate_restore_backup(backup, directory=live == segments)
+                _remove_path(backup)
+            journal_path.unlink()
+            _fsync_directory(database.parent)
+            return {
+                "schema": "storage_restore_recovery.v1",
+                "ok": True,
+                "recovered": "complete",
+            }
+
         for live, backup, existed, state in reversed(validated):
             if backup.exists():
-                _validate_regular(backup) if backup.is_file() else None
+                _validate_restore_backup(backup, directory=live == segments)
                 if live.exists() or live.is_symlink():
                     _remove_path(live)
                 os.replace(backup, live)
                 continue
             if existed:
                 if not live.exists() or state in {"old_moved", "installing", "installed"}:
-                    if str(journal.get("status") or "") != "rolled_back_after_failure":
+                    if status != "rolled_back_after_failure":
                         raise StorageMaintenanceError(
                             "storage restore journal is missing an original backup"
                         )
@@ -895,6 +933,8 @@ def restore_storage_snapshot(
             _fsync_directory(database.parent)
             _validate_sqlite_database(database)
             _validate_live_payload_pointers(database, segments)
+            journal["status"] = "complete"
+            atomic_write_json(journal_path, journal)
         except Exception as exc:
             try:
                 if mutation_started:

@@ -174,6 +174,52 @@ def test_fresh_process_recovers_partial_restore_from_journal(tmp_path) -> None:
     assert not journal_path.exists()
 
 
+def test_fresh_process_finishes_interrupted_completed_restore_cleanup(tmp_path) -> None:
+    db_path = tmp_path / "state" / "eimemory.sqlite"
+    store = SqliteRecordStore(db_path)
+    record = _large_score()
+    store.upsert(record)
+    store.close()
+    installed_digest = _digest(db_path)
+    segments = db_path.parent / "payload_segments"
+    segments.mkdir(exist_ok=True)
+    token = "d" * 32
+    segment_backup = db_path.parent / f".{segments.name}.restore-old-{token}"
+    segment_backup.mkdir()
+    (segment_backup / "already-restored.segment").write_bytes(b"old")
+    journal_path = db_path.parent / ".storage-restore-journal.json"
+    atomic_write_json(
+        journal_path,
+        {
+            "schema": "storage_restore_journal.v1",
+            "snapshot_dir": str(tmp_path / "snapshot"),
+            "status": "complete",
+            "mutation_started": True,
+            "entries": [
+                {
+                    "live": str(db_path),
+                    "backup": str(db_path.parent / f".{db_path.name}.restore-old-{token}"),
+                    "existed": True,
+                    "state": "installed",
+                },
+                {
+                    "live": str(segments),
+                    "backup": str(segment_backup),
+                    "existed": True,
+                    "state": "installed",
+                },
+            ],
+        },
+    )
+
+    report = maintenance.recover_storage_restore(db_path=db_path, segment_root=segments)
+
+    assert report["recovered"] == "complete"
+    assert _digest(db_path) == installed_digest
+    assert not segment_backup.exists()
+    assert not journal_path.exists()
+
+
 def test_restore_automatically_recovers_stale_journal_before_retry(tmp_path) -> None:
     db_path = tmp_path / "state" / "eimemory.sqlite"
     store = SqliteRecordStore(db_path)
