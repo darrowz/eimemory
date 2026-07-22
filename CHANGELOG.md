@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Planned
 - Multi-agent memory coordination
 
+## [1.9.82] - 2026-07-22
+
+### Fixed
+- Capture and bind the verified prior-release health envelope before storage writers are quiesced, so protected production-recall bootstrap can complete without weakening deployment receipt, current-link, URL, commit, version, or release-path checks.
+- Read the pre-quiesce health snapshot only from the trusted immutable-install boundary using root-anchored component-by-component `openat` validation, strict owner/mode/link/size checks, and post-read directory-chain revalidation; fail closed on unsafe platforms or path-replacement races.
+- Remove protected snapshot files on every capture, permission, ownership, bootstrap, and process-exit path while preserving automatic storage rollback and writer restart before an immutable release is switched.
+
 ## [1.9.81] - 2026-07-22
 
 ### Added
