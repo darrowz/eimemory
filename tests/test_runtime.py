@@ -1708,6 +1708,7 @@ def test_runtime_recall_explains_quality_aware_scoring(tmp_path) -> None:
             }
         },
     )
+    high_quality.record_id = "core"
     low_quality = RecordEnvelope.create(
         kind="memory",
         title="Weak OpenClaw note",
@@ -1725,6 +1726,7 @@ def test_runtime_recall_explains_quality_aware_scoring(tmp_path) -> None:
             }
         },
     )
+    low_quality.record_id = "weak"
     runtime.store.append(high_quality)
     runtime.store.append(low_quality)
 

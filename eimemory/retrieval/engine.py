@@ -957,6 +957,9 @@ class GovernedRecallEngine:
                 eligible=lambda item: self._keyword_component_eligible(
                     component_hints_by_ref.get(self._record_key(item)) or {}
                 ),
+                tie_break=lambda item: self._keyword_component_tie_key(
+                    component_hints_by_ref.get(self._record_key(item)) or {}
+                ),
             )
             vector = self._rank_component(
                 group_records,
@@ -1171,9 +1174,14 @@ class GovernedRecallEngine:
         matched_terms = set(signal.token_hits) | set(signal.entity_hits) | set(signal.version_hits)
         return bool(required_terms) and required_terms.issubset(matched_terms)
 
-    def _rank_component(self, items, *, score, eligible) -> list[str]:
+    def _rank_component(self, items, *, score, eligible, tie_break=None) -> list[str]:
         ranked = [item for item in items if eligible(item)]
-        ranked.sort(key=lambda item: (-self._safe_float(score(item)), self._fusion_record_token(item)))
+
+        def rank_key(item) -> tuple[object, ...]:
+            semantic_tie_break = tuple(tie_break(item)) if tie_break is not None else ()
+            return (-self._safe_float(score(item)), *semantic_tie_break, self._fusion_record_token(item))
+
+        ranked.sort(key=rank_key)
         return [self._fusion_record_token(item) for item in ranked]
 
     def _living_component_key(self, item: RecordEnvelope, hints: dict[str, Any]) -> tuple[float, float, float, str]:
@@ -1203,6 +1211,14 @@ class GovernedRecallEngine:
             return lexical_score
         provider_rank = self._safe_int(hints.get("_provider_rank"), default=0)
         return (1.0 / provider_rank) if self._keyword_component_eligible(hints) and provider_rank else 0.0
+
+    def _keyword_component_tie_key(self, hints: dict[str, Any]) -> tuple[float, float, int]:
+        provider_rank = self._safe_int(hints.get("_provider_rank"), default=0)
+        return (
+            -self._safe_float(hints.get("final_score")),
+            -self._safe_float(hints.get("quality_score")),
+            provider_rank if provider_rank > 0 else 2**31 - 1,
+        )
 
     def _keyword_component_eligible(self, hints: dict[str, Any]) -> bool:
         if self._safe_float(hints.get("lexical_score")) > 0:
