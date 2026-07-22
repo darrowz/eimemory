@@ -112,13 +112,12 @@ _ACCESS_CREDENTIAL_RE = re.compile(
     r"\b(?:ghp|github_pat|sk)-[A-Za-z0-9_-]{8,}\b)"
 )
 _PERSON_PLACEHOLDER_RE = re.compile(r"(?i)^(?:person_ref:[a-z0-9][a-z0-9._-]{2,63}|\[person(?::[a-z0-9._-]{1,48})?\]|<person>)$")
-_HONORIFIC_PERSON_RE = re.compile(r"^(?:Mr|Mrs|Ms|Miss|Dr|Prof)\.?\s+[A-Z][a-z]{1,30}(?:\s+[A-Z][a-z]{1,30}){0,2}$")
-_CJK_TITLED_PERSON_RE = re.compile(r"^[\u3400-\u9fff]{2,4}(?:先生|女士|博士|老师)$")
 _HONORIFIC_PERSON_IN_TEXT_RE = re.compile(
     r"(?<![A-Za-z])(?:Mr|Mrs|Ms|Miss|Dr|Prof)\.?\s+[A-Z][a-z]{1,30}"
     r"(?:\s+[A-Z][a-z]{1,30}){0,2}(?![A-Za-z])"
 )
-_CJK_TITLED_PERSON_IN_TEXT_RE = re.compile(r"[\u3400-\u9fff]{2,4}(?:先生|女士|博士|老师)")
+_CJK_TITLED_PERSON_IN_TEXT_RE = re.compile(r"[\u3400-\u9fff]{2,4}\s*(?:先生|女士|博士|老师)")
+_KNOWN_NON_PERSON_ENTITY_RE = re.compile(r"(?i)(?<![A-Za-z])Dr\.?\s+Pepper(?![A-Za-z])")
 
 
 def freeze_production_recall_dataset(dataset: dict[str, Any]) -> dict[str, Any]:
@@ -506,22 +505,11 @@ def _looks_like_date_time_candidate(value: str) -> bool:
     return False
 
 
-def _looks_like_person_entity(value: str) -> bool:
-    """Reject only constrained high-confidence person shapes, not arbitrary names."""
-
-    text = " ".join(str(value or "").strip().split())
-    if not text or _PERSON_PLACEHOLDER_RE.fullmatch(text):
-        return False
-    return bool(
-        _HONORIFIC_PERSON_RE.fullmatch(text)
-        or _CJK_TITLED_PERSON_RE.fullmatch(text)
-    )
-
-
 def _contains_person_entity(value: str) -> bool:
     text = " ".join(str(value or "").strip().split())
     if not text or _PERSON_PLACEHOLDER_RE.fullmatch(text):
         return False
+    text = _KNOWN_NON_PERSON_ENTITY_RE.sub("", text)
     return bool(
         _HONORIFIC_PERSON_IN_TEXT_RE.search(text)
         or _CJK_TITLED_PERSON_IN_TEXT_RE.search(text)

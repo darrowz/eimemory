@@ -423,6 +423,11 @@ def test_query_features_reject_high_confidence_pii_secret_and_person_entities(un
             "entities": [],
             "intent": "release verification",
         },
+        {
+            "terms": ["find", "张三", "先生"],
+            "entities": [],
+            "intent": "release verification",
+        },
     ],
 )
 def test_query_features_reject_person_pii_hidden_in_intent_or_split_terms(query_features: dict) -> None:
@@ -443,6 +448,20 @@ def test_query_features_allow_function_terms_and_constrained_person_placeholders
 
     assert reason == ""
     assert features["entities"] == ["OpenAI", "person_ref:operator-17"]
+
+
+def test_query_features_allow_known_honorific_product_entity() -> None:
+    features, reason = real_query_gate._bounded_query_features(
+        {
+            "terms": ["product", "catalog"],
+            "entities": ["Dr. Pepper"],
+            "intent": "lookup product",
+            "language": "en",
+        }
+    )
+
+    assert reason == ""
+    assert features["entities"] == ["Dr. Pepper"]
 
 
 def test_query_features_allow_title_case_product_place_entity_and_iso_date() -> None:
