@@ -285,6 +285,11 @@ class SqliteRecordStore:
                 return False
             if not self._vector_sync_alias_triggers_ready():
                 return False
+            if (
+                self._json1_available()
+                and not self._replay_pack_uniqueness_index_ready()
+            ):
+                return False
             if not self._schema_migration_applied(_STORAGE_SCHEMA_MIGRATION):
                 return False
             if not self._schema_migration_applied(_INTENT_PATTERN_STATUS_MIGRATION):
@@ -360,6 +365,50 @@ class SqliteRecordStore:
             and "vector_sync_alias_guard" in definitions[name]
             and "update vector_sync_revision set revision = revision + 1" in definitions[name]
             for name, operation in expected.items()
+        )
+
+    def _json1_available(self) -> bool:
+        try:
+            self.conn.execute("SELECT json_extract('{}', '$.probe')").fetchone()
+        except sqlite3.OperationalError:
+            return False
+        return True
+
+    def _replay_pack_uniqueness_index_ready(self) -> bool:
+        rows = [
+            row
+            for row in self.conn.execute("PRAGMA index_list(records)").fetchall()
+            if str(row["name"]) == "idx_replay_pack_scope_sequence_case"
+        ]
+        if len(rows) != 1 or int(rows[0]["unique"]) != 1 or int(rows[0]["partial"]) != 1:
+            return False
+        key_rows = [
+            row
+            for row in self.conn.execute(
+                "PRAGMA index_xinfo(idx_replay_pack_scope_sequence_case)"
+            ).fetchall()
+            if int(row["key"])
+        ]
+        if [str(row["name"]) for row in key_rows[:4]] != [
+            "tenant_id",
+            "agent_id",
+            "workspace_id",
+            "user_id",
+        ]:
+            return False
+        if len(key_rows) != 7 or any(int(row["cid"]) != -2 for row in key_rows[4:]):
+            return False
+        sql_row = self.conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='index' "
+            "AND name='idx_replay_pack_scope_sequence_case'"
+        ).fetchone()
+        normalized = " ".join(str(sql_row["sql"] or "").lower().split()) if sql_row else ""
+        return (
+            "where kind = 'replay_result'" in normalized
+            and "$.report_type" in normalized
+            and "capability_replay_pack" in normalized
+            and "$.manifest_sequence" in normalized
+            and "is not null" in normalized
         )
 
     def _prepare_deferred_recall_schema(self) -> None:
@@ -1775,6 +1824,13 @@ class SqliteRecordStore:
             "CREATE INDEX IF NOT EXISTS idx_replay_manifest_evidence_high_water "
             "ON replay_manifest_evidence(scope_key, capability, manifest_sequence DESC)"
         )
+        if self._json1_available():
+            existing = self.conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='index' "
+                "AND name='idx_replay_pack_scope_sequence_case'"
+            ).fetchone()
+            if existing is not None and not self._replay_pack_uniqueness_index_ready():
+                self.conn.execute("DROP INDEX idx_replay_pack_scope_sequence_case")
         try:
             self.conn.execute(
                 """

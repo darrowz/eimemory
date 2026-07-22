@@ -891,6 +891,52 @@ def test_completed_storage_restart_repairs_missing_lightweight_event_index(
     ]
 
 
+def test_completed_storage_restart_restores_replay_pack_uniqueness_index(
+    tmp_path, monkeypatch
+) -> None:
+    store = RuntimeStore(root=tmp_path)
+    store.sqlite.conn.execute("DROP INDEX idx_replay_pack_scope_sequence_case")
+    store.sqlite.conn.commit()
+    store.close()
+
+    monkeypatch.setattr(
+        sqlite_store_module.SqliteRecordStore,
+        "_payload_dict_from_json",
+        lambda _self, _payload: (_ for _ in ()).throw(
+            AssertionError("startup decoded a historical payload")
+        ),
+    )
+    restarted = RuntimeStore(root=tmp_path)
+    index = restarted.sqlite.conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='index' "
+        "AND name='idx_replay_pack_scope_sequence_case'"
+    ).fetchone()
+    monkeypatch.undo()
+
+    assert index is not None
+    first = RecordEnvelope.create(
+        kind="replay_result",
+        title="replay pack one",
+        scope=ScopeRef(agent_id="main", workspace_id="replay-unique"),
+        meta={
+            "capability": "memory.recall",
+            "manifest_sequence": 7,
+            "case_id": "case-a",
+            "report_type": "capability_replay_pack",
+        },
+    )
+    second = RecordEnvelope.create(
+        kind="replay_result",
+        title="replay pack duplicate",
+        scope=first.scope,
+        meta=dict(first.meta),
+    )
+    restarted.sqlite.upsert(first)
+    with pytest.raises(sqlite3.IntegrityError, match="UNIQUE constraint failed"):
+        restarted.sqlite.upsert(second)
+    restarted.close()
+
+
 def test_completed_storage_schema_restart_restores_missing_default_pattern(tmp_path) -> None:
     store = RuntimeStore(root=tmp_path)
     row = store.sqlite.conn.execute(
