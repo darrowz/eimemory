@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import asdict
 from datetime import datetime, timezone
 from hashlib import sha256
+from ipaddress import IPv4Address
 import json
 from math import log2
 from pathlib import Path
@@ -90,7 +91,7 @@ _RAW_FIELD_MARKERS = frozenset(
 )
 _EMAIL_FEATURE_RE = re.compile(r"(?i)(?<![\w.+-])[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+(?![\w.-])")
 _PHONE_FEATURE_RE = re.compile(r"(?<!\w)\+?\d(?:[\s().-]*\d){7,14}(?!\w)")
-_ISO_DATE_RE = re.compile(r"\b\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])\b")
+_PHONE_CONTEXT_RE = re.compile(r"(?i)\b(?:phone|mobile|tel(?:ephone)?|contact)\s*[:=]?\s*$")
 _ACCESS_CREDENTIAL_RE = re.compile(
     r"(?i)(?:\b(?:authorization|password|passphrase|client[_-]?secret|access[_-]?token|refresh[_-]?token|"
     r"session[_-]?cookie|api[_-]?key|credential)s?\s*[:=]|\bbearer\s+|\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|"
@@ -419,16 +420,35 @@ def _looks_like_secret(value: str) -> bool:
     text = str(value or "").strip()
     if not text:
         return False
-    phone_match = _PHONE_FEATURE_RE.search(_ISO_DATE_RE.sub("", text))
-    high_confidence_phone = bool(
-        phone_match
-        and 8 <= sum(character.isdigit() for character in phone_match.group(0)) <= 15
-    )
     return bool(
         _EMAIL_FEATURE_RE.search(text)
-        or high_confidence_phone
+        or _looks_like_high_confidence_phone(text)
         or _ACCESS_CREDENTIAL_RE.search(text)
     )
+
+
+def _looks_like_high_confidence_phone(value: str) -> bool:
+    text = str(value or "").strip()
+    for match in _PHONE_FEATURE_RE.finditer(text):
+        candidate = match.group(0)
+        try:
+            IPv4Address(candidate)
+        except ValueError:
+            pass
+        else:
+            continue
+        digit_count = sum(character.isdigit() for character in candidate)
+        if not 8 <= digit_count <= 15:
+            continue
+        if candidate.startswith("+"):
+            return True
+        if digit_count >= 10 and re.search(r"\(\d{2,4}\)", candidate):
+            return True
+        if digit_count >= 10 and len(re.findall(r"[\s.-]+", candidate)) >= 2:
+            return True
+        if _PHONE_CONTEXT_RE.search(text[max(0, match.start() - 24) : match.start()]):
+            return True
+    return False
 
 
 def _looks_like_person_entity(value: str) -> bool:

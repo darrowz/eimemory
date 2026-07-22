@@ -439,6 +439,32 @@ def test_query_features_allow_title_case_product_place_entity_and_iso_date() -> 
     assert features["terms"][-1] == "2026-07-22"
 
 
+@pytest.mark.parametrize(
+    "safe_value",
+    [
+        "192.168.1.1",
+        "192.168.100.200",
+        "build 1234-5678",
+        "release 12345678",
+        "2026-07-22",
+    ],
+)
+def test_query_features_allow_non_phone_numeric_identifiers(safe_value: str) -> None:
+    assert real_query_gate._looks_like_secret(safe_value) is False
+
+
+@pytest.mark.parametrize(
+    "phone_value",
+    [
+        "+1 (415) 555-0123",
+        "415-555-0123",
+        "+44 20 7946 0958",
+    ],
+)
+def test_query_features_reject_high_confidence_phone_shapes(phone_value: str) -> None:
+    assert real_query_gate._looks_like_secret(phone_value) is True
+
+
 def test_conflicting_accepted_label_grade_fails_eligibility_and_same_grade_duplicate_normalizes() -> None:
     dataset = _dataset({channel: f"record-{channel}" for channel in ("openclaw", "codex", "hermes")})
     original = deepcopy(dataset["cases"][0]["labels"][0])

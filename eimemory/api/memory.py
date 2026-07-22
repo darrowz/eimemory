@@ -464,18 +464,22 @@ class MemoryAPI:
             "quality",
             "scoring",
             "capture_warnings",
+            "memory_type",
+            "force_capture",
         }
-        if any(
-            existing_business.get(key) != value
+        existing_request_business = {
+            key: value
+            for key, value in existing_business.items()
+            if key not in mutable_generated
+        }
+        requested_request_business = {
+            key: value
             for key, value in requested_business.items()
             if key not in mutable_generated
-        ):
+        }
+        if existing_request_business != requested_request_business:
             return False
-        existing_runtime = runtime_metadata(existing.meta)
-        return all(
-            existing_runtime.get(key) == value
-            for key, value in runtime_metadata(request_meta).items()
-        )
+        return runtime_metadata(existing.meta) == runtime_metadata(request_meta)
 
     @staticmethod
     def _ingest_request_digest(

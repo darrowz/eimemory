@@ -191,7 +191,7 @@ def test_runtime_ingest_identical_legacy_record_without_request_digest_is_idempo
         "source": "trusted.runtime",
         "source_id": "alpha",
         "force_capture": True,
-        "meta": {"capture_origin": "legacy-import"},
+        "meta": {"capture_origin": "legacy-import", "host": "node-a"},
         "content": {"format": "plain"},
         "record_id": "caller-legacy-stable-record",
     }
@@ -228,6 +228,53 @@ def test_runtime_ingest_changed_legacy_record_without_request_digest_still_confl
     try:
         with pytest.raises(ValueError, match="record_id conflict"):
             runtime.memory.ingest(**{**request, "text": "changed attacker replacement"})
+        persisted = runtime.store.get_by_id(first.record_id, scope=first.scope)
+        assert persisted is not None
+        assert persisted.to_dict() == legacy.to_dict()
+        assert runtime.store.sqlite.conn.total_changes == before_changes
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize(
+    "retry_meta",
+    [
+        {},
+        {"custom_flag": "alpha"},
+        {"custom_flag": "alpha", "host": "node-a", "extra_flag": "new"},
+        {"custom_flag": "beta", "host": "node-a"},
+        {"custom_flag": "alpha", "host": "node-b"},
+    ],
+    ids=(
+        "all-meta-omitted",
+        "runtime-meta-omitted",
+        "business-meta-added",
+        "business-meta-changed",
+        "runtime-meta-changed",
+    ),
+)
+def test_runtime_ingest_legacy_record_requires_exact_caller_metadata(
+    tmp_path,
+    retry_meta: dict,
+) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    request = {
+        "text": "legacy metadata protected memory",
+        "memory_type": "durable_fact",
+        "title": "Legacy metadata protected",
+        "scope": {"agent_id": "main", "workspace_id": "repo-x"},
+        "source": "trusted.runtime",
+        "source_id": "alpha",
+        "force_capture": True,
+        "meta": {"custom_flag": "alpha", "host": "node-a"},
+        "record_id": "caller-legacy-metadata-record",
+    }
+    first = runtime.memory.ingest(**request)
+    legacy = _remove_ingest_request_digest(runtime, first)
+    before_changes = runtime.store.sqlite.conn.total_changes
+    try:
+        with pytest.raises(ValueError, match="record_id conflict"):
+            runtime.memory.ingest(**{**request, "meta": retry_meta})
         persisted = runtime.store.get_by_id(first.record_id, scope=first.scope)
         assert persisted is not None
         assert persisted.to_dict() == legacy.to_dict()
