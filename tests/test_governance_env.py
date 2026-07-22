@@ -168,7 +168,7 @@ def test_release_closure_summary_cli_returns_nonzero_for_false_report_under_bash
     assert json.loads(result.stdout)["ok"] is False
 
 
-def test_release_closure_summary_cli_accepts_valid_data_accumulating_contract(tmp_path, capsys) -> None:
+def test_release_closure_summary_cli_rejects_minimal_forged_data_accumulating_report(tmp_path, capsys) -> None:
     report_path = tmp_path / "closure.json"
     report_path.write_text(
         json.dumps(
@@ -186,8 +186,130 @@ def test_release_closure_summary_cli_accepts_valid_data_accumulating_contract(tm
         encoding="utf-8",
     )
 
+    assert summarize_main(["--path", str(report_path)]) != 0
+    assert json.loads(capsys.readouterr().out)["data_accumulating"] is True
+
+
+def test_release_closure_summary_cli_accepts_release_bound_data_accumulating_contract(tmp_path, capsys) -> None:
+    report_path = tmp_path / "closure.json"
+    report_path.write_text(json.dumps(_release_bound_accumulating_report()), encoding="utf-8")
+
     assert summarize_main(["--path", str(report_path)]) == 0
     assert json.loads(capsys.readouterr().out)["data_accumulating"] is True
+
+
+def test_release_closure_summary_cli_keeps_strict_l5_contract(tmp_path, capsys) -> None:
+    report = _release_bound_accumulating_report()
+    report.update({"closure_complete": True, "data_accumulating": False})
+    report["production_recall_gate"] = {"ok": True, "status": "accepted"}
+    report["production_recall_strict_state"] = {
+        "ok": True,
+        "status": "strict_activated",
+        "candidate_commit": "a" * 40,
+    }
+    report["closure_rehearsal"] = {
+        "ok": True,
+        "closure_complete": True,
+        "data_accumulating": False,
+    }
+    report["readiness"].update({"current_stage": "L5", "readiness_score": 1.0})
+    report_path = tmp_path / "closure.json"
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+
+    assert summarize_main(["--path", str(report_path)]) == 0
+    assert json.loads(capsys.readouterr().out)["closure_complete"] is True
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        (("deployment", "commit"), "short"),
+        (("deployment", "promotion_request_id"), ""),
+        (("production_recall_gate", "status"), "accepted"),
+        (("bootstrap_pending_verification", "ok"), False),
+        (("bootstrap_pending_verification", "record_id"), ""),
+        (("production_recall_gate", "bootstrap", "record_id"), "other-pending"),
+        (("replay_bootstrap", "ok"), False),
+        (("live_acceptance", "pass_count"), 9),
+        (("readiness", "readiness_score"), 0.9),
+        (("readiness", "release_identity", "release_commit"), "b" * 40),
+        (("closure_rehearsal", "data_accumulating"), False),
+    ],
+)
+def test_release_closure_summary_cli_rejects_incomplete_accumulating_contract(
+    tmp_path,
+    capsys,
+    path: tuple[str, ...],
+    value,
+) -> None:
+    report = _release_bound_accumulating_report()
+    target = report
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = value
+    report_path = tmp_path / "closure.json"
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+
+    assert summarize_main(["--path", str(report_path)]) != 0
+    capsys.readouterr()
+
+
+def _release_bound_accumulating_report() -> dict:
+    commit = "a" * 40
+    receipt_id = "receipt-1"
+    pending_id = "bootstrap-pending-current"
+    pending = {
+        "ok": True,
+        "status": "bootstrap_data_pending",
+        "record_id": pending_id,
+    }
+    return {
+        "ok": True,
+        "closure_complete": False,
+        "data_accumulating": True,
+        "deployment": {
+            "commit": commit,
+            "version": "1.9.82",
+            "promotion_request_id": receipt_id,
+        },
+        "production_recall_gate": {
+            "ok": False,
+            "status": "data_accumulating",
+            "bootstrap": dict(pending),
+        },
+        "bootstrap_pending_verification": dict(pending),
+        "replay_bootstrap": {"ok": True},
+        "live_acceptance": {
+            "ok": True,
+            "pass_count": 10,
+            "case_count": 10,
+            "fail_count": 0,
+            "distinct_task_types": 10,
+            "deployment": {
+                "commit": commit,
+                "version": "1.9.82",
+                "promotion_request_id": receipt_id,
+            },
+        },
+        "closure_rehearsal": {
+            "ok": True,
+            "closure_complete": False,
+            "data_accumulating": True,
+            "bootstrap_pending_verification": dict(pending),
+        },
+        "readiness": {
+            "ok": True,
+            "schema_version": "l5_readiness.v2",
+            "current_stage": "L4.5",
+            "readiness_score": 0.8,
+            "release_identity": {
+                "release_commit": commit,
+                "release_version": "1.9.82",
+                "deployment_receipt_id": receipt_id,
+                "release_session_id": receipt_id,
+            },
+        },
+    }
 
 
 def _bash_path(path: Path) -> str:

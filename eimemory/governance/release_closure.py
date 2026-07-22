@@ -9,6 +9,16 @@ from eimemory.governance.closure_rehearsal import verify_bootstrap_pending_readi
 from eimemory.models.records import ScopeRef
 
 
+_BOOTSTRAP_PENDING_RECALL_REASONS = frozenset(
+    {
+        "eligible_dataset_missing",
+        "production_dataset_not_ready",
+        "production_recall_dataset_empty",
+        "production_recall_dataset_unconfigured",
+    }
+)
+
+
 def run_release_closure(
     runtime: Any,
     *,
@@ -74,6 +84,12 @@ def run_release_closure(
     report["production_recall_gate"] = executed_recall_gate
     bootstrap_pending: dict[str, Any] | None = None
     if executed_recall_gate.get("accepted") is not True:
+        if not _recall_result_allows_bootstrap_pending(executed_recall_gate):
+            return _blocked(
+                report,
+                "production_recall_gate",
+                _failure_reason(executed_recall_gate, "production_recall_gate_failed"),
+            )
         from eimemory.evaluation.real_query_gate import verify_current_bootstrap_data_pending
 
         bootstrap_pending = verify_current_bootstrap_data_pending(
@@ -201,11 +217,6 @@ def run_release_closure(
         report["closure_complete"] = False
         report["data_accumulating"] = True
         return report
-    if _readiness_data_accumulating(readiness):
-        report["ok"] = True
-        report["closure_complete"] = False
-        report["data_accumulating"] = True
-        return report
     if readiness_status != "L5":
         return _blocked(report, "readiness", "readiness_not_l5")
 
@@ -262,19 +273,21 @@ def _rehearsal_gate_ok(rehearsal: dict[str, Any]) -> bool:
     return bool(rehearsal.get("ok") is True and complete != accumulating)
 
 
-def _readiness_data_accumulating(readiness: dict[str, Any]) -> bool:
-    live = readiness.get("live_task_gate") if isinstance(readiness.get("live_task_gate"), dict) else {}
-    recall = readiness.get("production_recall_gate") if isinstance(readiness.get("production_recall_gate"), dict) else {}
-    score = readiness.get("readiness_score")
+def _recall_result_allows_bootstrap_pending(report: dict[str, Any]) -> bool:
+    threshold = report.get("threshold_gate") if isinstance(report.get("threshold_gate"), dict) else {}
+    blocking_metrics = threshold.get("blocking_metrics")
+    cross_channel_leakage = report.get("cross_channel_leakage_count")
+    source_filter_leakage = report.get("source_filter_leakage_count")
     return bool(
-        readiness.get("schema_version") == "l5_readiness.v2"
-        and readiness.get("current_stage") == "L4.5"
-        and isinstance(score, (int, float))
-        and not isinstance(score, bool)
-        and float(score) <= 0.8
-        and recall.get("ok") is True
-        and recall.get("status") == "accepted"
-        and live.get("ok") is False
-        and int(live.get("current_deployment_operational_probes") or 0) >= 10
-        and (int(live.get("sample_deficit") or 0) > 0 or int(live.get("task_type_deficit") or 0) > 0)
+        report.get("ok") is False
+        and report.get("accepted") is False
+        and report.get("gate_status") == "not_run"
+        and str(report.get("blocked_reason") or "") in _BOOTSTRAP_PENDING_RECALL_REASONS
+        and _zero_or_missing(cross_channel_leakage)
+        and _zero_or_missing(source_filter_leakage)
+        and (blocking_metrics is None or blocking_metrics == {})
     )
+
+
+def _zero_or_missing(value: Any) -> bool:
+    return value is None or type(value) is int and value == 0

@@ -119,6 +119,7 @@ class FakeRuntime:
         live_acceptance: dict | None = None,
         rehearsal: dict | None = None,
         readiness: dict | None = None,
+        expect_bootstrap_pending: bool = False,
     ) -> None:
         self.calls: list[str] = []
         self.receipt = receipt or _successful_receipt()
@@ -126,6 +127,7 @@ class FakeRuntime:
         self.live_acceptance = live_acceptance or _successful_live_acceptance()
         self.rehearsal = rehearsal or _successful_rehearsal()
         self.readiness = readiness or _successful_readiness()
+        self.expect_bootstrap_pending = expect_bootstrap_pending
         self.store = type(
             "FakeStore",
             (),
@@ -189,6 +191,9 @@ class FakeRuntime:
             "persist": True,
             "replay_bootstrap": self.replay_bootstrap,
         }
+        if self.expect_bootstrap_pending:
+            assert "bootstrap_pending" in kwargs
+            assert "release_identity" in kwargs
         if "bootstrap_pending" in kwargs or "release_identity" in kwargs:
             pending = kwargs.pop("bootstrap_pending")
             identity = kwargs.pop("release_identity")
@@ -340,8 +345,40 @@ def test_release_closure_fails_closed_before_replay_when_production_dataset_not_
     assert report["blocked_reason"] == "eligible_dataset_missing"
 
 
+def test_release_closure_never_masks_cross_channel_leakage_with_bootstrap_pending(monkeypatch) -> None:
+    runtime = ProductionGateRuntime(accepted=False)
+    runtime.run_configured_production_recall_gate = lambda **_kwargs: {
+        "ok": False,
+        "accepted": False,
+        "gate_status": "blocked",
+        "blocked_reason": "production_recall_gate_failed",
+        "cross_channel_leakage_count": 1,
+        "threshold_gate": {
+            "ok": False,
+            "blocked_reason": "production_recall_gate_failed",
+            "blocking_metrics": {
+                "cross_channel_leakage_count": {"actual": 1, "threshold": 0, "operator": "=="}
+            },
+        },
+    }
+    monkeypatch.setattr(
+        "eimemory.evaluation.real_query_gate.verify_current_bootstrap_data_pending",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("security failures must not enter the pending verifier")
+        ),
+    )
+
+    report = _run(runtime)
+
+    assert report["ok"] is False
+    assert report["blocked_stage"] == "production_recall_gate"
+    assert report["blocked_reason"] == "production_recall_gate_failed"
+    assert report["replay_bootstrap"]["status"] == "not_run"
+
+
 def test_release_closure_allows_only_verified_bootstrap_data_pending_and_keeps_l5_downgraded(monkeypatch) -> None:
     runtime = ProductionGateRuntime(accepted=False)
+    runtime.expect_bootstrap_pending = True
     runtime.rehearsal = {
         **runtime.rehearsal,
         "closure_complete": False,
@@ -492,7 +529,7 @@ def test_release_closure_requires_every_final_readiness_gate(readiness_patch: di
     assert report["blocked_reason"] == "readiness_not_l5"
 
 
-def test_release_closure_reports_data_accumulation_without_claiming_l5_complete() -> None:
+def test_release_closure_rejects_live_deficit_without_release_bound_bootstrap() -> None:
     readiness = {
         **_successful_readiness(),
         "current_stage": "L4.5",
@@ -508,13 +545,14 @@ def test_release_closure_reports_data_accumulation_without_claiming_l5_complete(
 
     report = _run(FakeRuntime(readiness=readiness))
 
-    assert report["ok"] is True
+    assert report["ok"] is False
     assert report["closure_complete"] is False
-    assert report["data_accumulating"] is True
-    assert report["blocked_stage"] == ""
+    assert report["data_accumulating"] is False
+    assert report["blocked_stage"] == "readiness"
+    assert report["blocked_reason"] == "readiness_not_l5"
 
 
-def test_release_closure_accepts_data_accumulating_rehearsal_before_final_readiness() -> None:
+def test_release_closure_rejects_unbound_accumulating_rehearsal_before_final_readiness() -> None:
     readiness = {
         **_successful_readiness(),
         "current_stage": "L4.5",
@@ -535,13 +573,14 @@ def test_release_closure_accepts_data_accumulating_rehearsal_before_final_readin
 
     report = _run(FakeRuntime(rehearsal=rehearsal, readiness=readiness))
 
-    assert report["ok"] is True
+    assert report["ok"] is False
     assert report["closure_complete"] is False
-    assert report["data_accumulating"] is True
-    assert report["blocked_stage"] == ""
+    assert report["data_accumulating"] is False
+    assert report["blocked_stage"] == "readiness"
+    assert report["blocked_reason"] == "readiness_not_l5"
 
 
-def test_release_closure_treats_task_type_only_deficit_as_data_accumulation() -> None:
+def test_release_closure_rejects_task_type_only_deficit_without_bootstrap() -> None:
     readiness = {
         **_successful_readiness(),
         "current_stage": "L4.5",
@@ -557,9 +596,11 @@ def test_release_closure_treats_task_type_only_deficit_as_data_accumulation() ->
 
     report = _run(FakeRuntime(readiness=readiness))
 
-    assert report["ok"] is True
+    assert report["ok"] is False
     assert report["closure_complete"] is False
-    assert report["data_accumulating"] is True
+    assert report["data_accumulating"] is False
+    assert report["blocked_stage"] == "readiness"
+    assert report["blocked_reason"] == "readiness_not_l5"
 
 
 def _run(runtime: FakeRuntime) -> dict:
