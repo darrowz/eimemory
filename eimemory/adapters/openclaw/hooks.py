@@ -2612,21 +2612,13 @@ class OpenClawMemoryHooks:
             return {}
         scope = self._scope_from_event(event)
         scope_ref = ScopeRef.from_dict(scope)
-        audits = None
-        lookup = getattr(self.runtime.store, "list_records_by_meta_value", None)
-        if callable(lookup):
-            try:
-                audits = lookup(
-                    kinds=["recall_view"],
-                    scope=scope_ref,
-                    meta_key="session_id",
-                    meta_value=session_id,
-                    limit=10,
-                )
-            except Exception:
-                audits = None
-        if audits is None:
-            audits = self.runtime.store.list_records(kinds=["recall_view"], scope=scope_ref, limit=500)
+        lookup = getattr(self.runtime.store, "list_recall_views_compact_by_session", None)
+        if not callable(lookup):
+            return {}
+        try:
+            audits = lookup(scope=scope_ref, session_id=session_id, limit=10)
+        except Exception:
+            return {}
         for audit in audits:
             if audit.scope == scope_ref and str(audit.content.get("session_id") or "") == session_id:
                 return self._normalize_policy_attribution(audit.content)

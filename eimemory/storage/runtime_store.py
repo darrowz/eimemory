@@ -781,6 +781,36 @@ class RuntimeStore:
                 until=until,
             )
 
+    def list_recall_views_compact_by_session(
+        self,
+        *,
+        scope: ScopeRef | dict,
+        session_id: str,
+        limit: int = 10,
+    ) -> list[RecordEnvelope]:
+        with self._lock:
+            scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+            return self.sqlite.list_recall_views_compact_by_session(
+                scope=scope_ref,
+                session_id=session_id,
+                limit=limit,
+            )
+
+    def list_recall_audits_compact_by_session(
+        self,
+        *,
+        scope: ScopeRef | dict,
+        session_id: str,
+        limit: int = 10,
+    ) -> list[RecordEnvelope]:
+        with self._lock:
+            scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+            return self.sqlite.list_recall_audits_compact_by_session(
+                scope=scope_ref,
+                session_id=session_id,
+                limit=limit,
+            )
+
     def count_records_by_meta_value(
         self,
         *,
@@ -899,6 +929,14 @@ class RuntimeStore:
                 record_ids=record_ids,
                 limit=limit,
             )
+
+    def storage_footprint(self) -> dict:
+        with self._lock:
+            return self.sqlite.storage_footprint()
+
+    def payload_segment_maintenance_report(self) -> dict:
+        with self._lock:
+            return self.sqlite.payload_segment_maintenance_report()
 
     def close(self) -> None:
         with self._lock:

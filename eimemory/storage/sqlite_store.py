@@ -47,6 +47,11 @@ from eimemory.governance.policy_rollout import (
 from eimemory.scoring import ScoreContext, evaluate_recall_score, extract_memory_score, score_from_legacy_quality
 from eimemory.metadata import business_metadata
 from eimemory.storage.jsonl import canonical_payload_json, payload_digest
+from eimemory.storage.payload_segments import (
+    DEFAULT_MAX_PAYLOAD_BYTES,
+    PayloadSegmentError,
+    PayloadSegmentStore,
+)
 
 
 MAX_QUERY_LIMIT = 1000
@@ -60,6 +65,9 @@ _SOURCE_PARTITION_MIGRATION = "records.source_partition.v1"
 _RECALL_IDENTITY_MIGRATION = "recall.identity_index.v1"
 _PROACTIVE_TEXT_FREE_MIGRATION = "proactive.storage_text_free.v1"
 _BOUNDED_COUNT_INDEX_MIGRATION = "records.bounded_count_index.v1"
+_PAYLOAD_ARCHIVE_MIGRATION = "records.payload_archive.v1"
+_PAYLOAD_ARCHIVE_KINDS = ("capability_score", "recall_view")
+_DEFAULT_PAYLOAD_INLINE_BYTES = 16 * 1024
 _IDENTITY_PAYLOAD_KINDS = (
     "memory",
     "knowledge_page",
@@ -94,13 +102,29 @@ _RECALL_LANE_MEMORY_TYPE_ALIASES = {
 
 
 class SqliteRecordStore:
-    def __init__(self, path: Path, *, auxiliary_log_dir: Path | None = None) -> None:
+    def __init__(
+        self,
+        path: Path,
+        *,
+        auxiliary_log_dir: Path | None = None,
+        archive_writes: bool = True,
+        payload_archive_inline_bytes: int = _DEFAULT_PAYLOAD_INLINE_BYTES,
+        payload_max_bytes: int = DEFAULT_MAX_PAYLOAD_BYTES,
+    ) -> None:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.auxiliary_log_dir = Path(auxiliary_log_dir) if auxiliary_log_dir is not None else None
         self.suppress_auxiliary_logging = False
         self.source_partition_migration_diagnostics: dict[str, int] = {}
         self.recall_identity_migration_diagnostics: dict[str, int] = {}
+        self.archive_writes = bool(archive_writes)
+        self.payload_archive_inline_bytes = max(256, int(payload_archive_inline_bytes))
+        self.payload_segments = PayloadSegmentStore(
+            self.path.parent / "payload_segments",
+            max_payload_bytes=payload_max_bytes,
+        )
+        self._payload_segment_failure_count = 0
+        self._payload_segment_last_error = ""
         self.conn = sqlite3.connect(self.path, timeout=30, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA busy_timeout = 30000")
@@ -151,6 +175,7 @@ class SqliteRecordStore:
             self._mark_schema_migration(_STORAGE_SCHEMA_MIGRATION)
             self._mark_schema_migration(_SOURCE_PARTITION_MIGRATION)
             self._mark_schema_migration(_RECALL_IDENTITY_MIGRATION)
+            self._mark_schema_migration(_PAYLOAD_ARCHIVE_MIGRATION)
             self.conn.commit()
             return
         columns = {
@@ -169,6 +194,14 @@ class SqliteRecordStore:
             self.conn.execute("ALTER TABLE records ADD COLUMN idempotency_key TEXT NOT NULL DEFAULT ''")
         if "semantic_key" not in columns:
             self.conn.execute("ALTER TABLE records ADD COLUMN semantic_key TEXT NOT NULL DEFAULT ''")
+        if "payload_pointer_json" not in columns:
+            self.conn.execute(
+                "ALTER TABLE records ADD COLUMN payload_pointer_json TEXT NOT NULL DEFAULT ''"
+            )
+        if "payload_digest" not in columns:
+            self.conn.execute(
+                "ALTER TABLE records ADD COLUMN payload_digest TEXT NOT NULL DEFAULT ''"
+            )
         self._create_schema_migrations_table()
         self._prepare_deferred_recall_schema()
         self._create_recall_index_tables(create_indexes=False)
@@ -235,6 +268,8 @@ class SqliteRecordStore:
                 semantic_key TEXT NOT NULL DEFAULT '',
                 meta_json TEXT NOT NULL,
                 payload_json TEXT NOT NULL,
+                payload_pointer_json TEXT NOT NULL DEFAULT '',
+                payload_digest TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )
@@ -1994,6 +2029,7 @@ class SqliteRecordStore:
             _SOURCE_PARTITION_MIGRATION,
             _RECALL_IDENTITY_MIGRATION,
             _PROACTIVE_TEXT_FREE_MIGRATION,
+            _PAYLOAD_ARCHIVE_MIGRATION,
             _BOUNDED_COUNT_INDEX_MIGRATION,
         ):
             if not self._schema_migration_applied(migration_id):
@@ -2052,6 +2088,16 @@ class SqliteRecordStore:
         if not self._schema_migration_applied(_PROACTIVE_TEXT_FREE_MIGRATION):
             processed = self._apply_proactive_text_free_batch(batch_size=bounded)
             if not self._schema_migration_applied(_PROACTIVE_TEXT_FREE_MIGRATION):
+                return {
+                    "ok": True,
+                    "processed": processed,
+                    "index_created": False,
+                    "pending": self.pending_storage_migrations(),
+                }
+        if not self._schema_migration_applied(_PAYLOAD_ARCHIVE_MIGRATION):
+            archive_report = self.apply_payload_archival_batch(batch_size=bounded)
+            processed = int(archive_report["processed"])
+            if not self._schema_migration_applied(_PAYLOAD_ARCHIVE_MIGRATION):
                 return {
                     "ok": True,
                     "processed": processed,
@@ -2518,6 +2564,9 @@ class SqliteRecordStore:
             content=record.content,
         )
         payload = record.to_dict()
+        stored_payload, stored_meta, payload_pointer, full_payload_digest = (
+            self._payload_storage_values(record, payload)
+        )
         raw_index_parts = []
         if record.kind == "raw_chunk":
             raw_index_parts = [
@@ -2553,7 +2602,8 @@ class SqliteRecordStore:
                 storage_key, record_id, kind, status, title, summary, detail, content_text,
                 source, source_id, agent_id, workspace_id, user_id, tenant_id,
                 embedding_json, idempotency_key, semantic_key, meta_json, payload_json, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                , payload_pointer_json, payload_digest
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(storage_key) DO UPDATE SET
                 kind=excluded.kind,
                 status=excluded.status,
@@ -2572,6 +2622,8 @@ class SqliteRecordStore:
                 semantic_key=excluded.semantic_key,
                 meta_json=excluded.meta_json,
                 payload_json=excluded.payload_json,
+                payload_pointer_json=excluded.payload_pointer_json,
+                payload_digest=excluded.payload_digest,
                 updated_at=excluded.updated_at
             """,
             (
@@ -2592,16 +2644,185 @@ class SqliteRecordStore:
                 embedding,
                 idempotency_key,
                 semantic_key,
-                json.dumps(record.meta, ensure_ascii=False),
-                json.dumps(payload, ensure_ascii=False),
+                json.dumps(stored_meta, ensure_ascii=False, sort_keys=True),
+                json.dumps(stored_payload, ensure_ascii=False, sort_keys=True),
                 record.time.created_at,
                 record.time.updated_at,
+                json.dumps(payload_pointer, ensure_ascii=True, sort_keys=True) if payload_pointer else "",
+                full_payload_digest,
             ),
         )
+        if record.kind in _PAYLOAD_ARCHIVE_KINDS and not self.archive_writes:
+            self.conn.execute(
+                "DELETE FROM schema_migrations WHERE migration_id=?",
+                (_PAYLOAD_ARCHIVE_MIGRATION,),
+            )
         self._upsert_recall_index(record=record, storage_key=storage_key, content_text=content_text)
         self._upsert_replay_manifest_evidence(record)
         if commit:
             self.conn.commit()
+
+    def _payload_storage_values(
+        self,
+        record: RecordEnvelope,
+        payload: dict[str, Any],
+        *,
+        force_archive: bool = False,
+    ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any] | None, str]:
+        canonical = canonical_payload_json(payload).encode("utf-8")
+        digest = sha256(canonical).hexdigest()
+        if record.kind not in _PAYLOAD_ARCHIVE_KINDS:
+            return payload, dict(record.meta), None, digest
+        if len(canonical) > self.payload_segments.max_payload_bytes:
+            raise PayloadSegmentError("payload exceeds hard limit")
+        if not force_archive and (
+            not self.archive_writes or len(canonical) <= self.payload_archive_inline_bytes
+        ):
+            return payload, dict(record.meta), None, digest
+        pointer = self.payload_segments.append(canonical)
+        compact = self._compact_record_payload(payload, digest=digest, raw_size=len(canonical))
+        compact_meta = dict(compact.get("meta") or {})
+        return compact, compact_meta, pointer, digest
+
+    def _compact_record_payload(
+        self,
+        payload: dict[str, Any],
+        *,
+        digest: str,
+        raw_size: int,
+    ) -> dict[str, Any]:
+        compact = dict(payload)
+        kind = str(payload.get("kind") or "")
+        compact["title"] = str(compact.get("title") or "")[:1_000]
+        compact["summary"] = str(compact.get("summary") or "")[:2_000]
+        compact["detail"] = str(compact.get("detail") or "")[:2_000]
+        if kind == "recall_view":
+            compact["content"] = self._compact_recall_view_content(payload.get("content"))
+            compact["provenance"] = {}
+            compact["tags"] = [str(item)[:128] for item in list(payload.get("tags") or [])[:32]]
+            compact["links"] = []
+            compact["aliases"] = [str(item)[:256] for item in list(payload.get("aliases") or [])[:32]]
+        else:
+            compact["content"] = self._compact_payload_value(compact.get("content"), depth=0)
+            compact["provenance"] = self._compact_payload_value(compact.get("provenance"), depth=0)
+        compact["evidence"] = [str(item)[:256] for item in list(compact.get("evidence") or [])[:64]]
+        meta = (
+            self._compact_recall_view_meta(payload.get("meta"))
+            if kind == "recall_view"
+            else self._compact_payload_value(compact.get("meta"), depth=0)
+        )
+        if not isinstance(meta, dict):
+            meta = {}
+        meta["_payload_archive"] = {
+            "schema": "payload_archive.v1",
+            "digest": digest,
+            "raw_size": int(raw_size),
+        }
+        compact["meta"] = meta
+        encoded = canonical_payload_json(compact).encode("utf-8")
+        if len(encoded) > 64 * 1024:
+            if kind == "recall_view":
+                raise PayloadSegmentError("recall-view compact projection exceeds hard limit")
+            compact["content"] = {
+                key: value
+                for key, value in dict(compact.get("content") or {}).items()
+                if key in {
+                    "capability", "score", "score_sequence", "regression_count",
+                    "evidence_record_ids", "evidence_tiers", "evidence_sources",
+                    "report_type", "schema_version", "query_digest", "result_digest",
+                    "sample_count", "pass_count", "fail_count", "pass_rate",
+                }
+            }
+        return compact
+
+    @staticmethod
+    def _bounded_compact_strings(value: Any, *, limit: int, text_limit: int) -> list[str]:
+        if not isinstance(value, (list, tuple, set)):
+            value = [value]
+        result: list[str] = []
+        for item in value:
+            text = str(item or "").strip()[:text_limit]
+            if text and text not in result:
+                result.append(text)
+            if len(result) >= limit:
+                break
+        return result
+
+    def _compact_recall_view_content(self, value: Any) -> dict[str, Any]:
+        content = value if isinstance(value, dict) else {}
+        selected: list[dict[str, str]] = []
+        selected_bytes = 0
+        allowed = (
+            "record_id", "kind", "title", "source", "recall_lane",
+            "projection_type", "source_record_id",
+        )
+        for item in list(content.get("selected_records") or [])[:32]:
+            if not isinstance(item, dict):
+                continue
+            projected = {
+                key: str(item.get(key) or "")[:256]
+                for key in allowed
+                if str(item.get(key) or "").strip()
+            }
+            encoded_size = len(canonical_payload_json(projected).encode("utf-8"))
+            if selected_bytes + encoded_size > 40 * 1024:
+                break
+            selected.append(projected)
+            selected_bytes += encoded_size
+        return {
+            "session_id": str(content.get("session_id") or "")[:512],
+            "policy_suggestion_ids": self._bounded_compact_strings(
+                content.get("policy_suggestion_ids"), limit=32, text_limit=256
+            ),
+            "policy_sources": self._bounded_compact_strings(
+                content.get("policy_sources"), limit=32, text_limit=256
+            ),
+            "matched_event_type": str(content.get("matched_event_type") or "")[:256],
+            "selected_records": selected,
+        }
+
+    def _compact_recall_view_meta(self, value: Any) -> dict[str, Any]:
+        meta = value if isinstance(value, dict) else {}
+        return {
+            "session_id": str(meta.get("session_id") or "")[:512],
+            "policy_suggestion_ids": self._bounded_compact_strings(
+                meta.get("policy_suggestion_ids"), limit=32, text_limit=256
+            ),
+            "policy_sources": self._bounded_compact_strings(
+                meta.get("policy_sources"), limit=32, text_limit=256
+            ),
+            "matched_event_type": str(meta.get("matched_event_type") or "")[:256],
+        }
+
+    def _compact_payload_value(self, value: Any, *, depth: int) -> Any:
+        if depth >= 4:
+            return None
+        if value is None or isinstance(value, (bool, int, float)):
+            return value
+        if isinstance(value, str):
+            return value[:1_000]
+        if isinstance(value, list):
+            return [self._compact_payload_value(item, depth=depth + 1) for item in value[:64]]
+        if isinstance(value, dict):
+            result: dict[str, Any] = {}
+            for key, item in list(value.items())[:128]:
+                name = str(key)[:120]
+                if name in {
+                    "samples", "evidence_items", "selected_records", "scored_items",
+                    "report", "details", "raw_results", "cases", "trace",
+                }:
+                    raw = canonical_payload_json(item) if isinstance(item, dict) else json.dumps(
+                        item, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+                    )
+                    result[name] = {
+                        "_omitted": True,
+                        "digest": sha256(raw.encode("utf-8")).hexdigest(),
+                        "count": len(item) if isinstance(item, (dict, list)) else 1,
+                    }
+                else:
+                    result[name] = self._compact_payload_value(item, depth=depth + 1)
+            return result
+        return str(value)[:1_000]
 
     def _upsert_replay_manifest_evidence(self, record: RecordEnvelope) -> None:
         content = record.content if isinstance(record.content, dict) else {}
@@ -2766,6 +2987,232 @@ class SqliteRecordStore:
 
     def _record_from_payload_json(self, payload_json: Any) -> RecordEnvelope | None:
         return self._record_from_payload_dict(self._payload_dict_from_json(payload_json))
+
+    def _record_from_storage_row(
+        self,
+        row: sqlite3.Row,
+        *,
+        hydrate: bool,
+    ) -> RecordEnvelope | None:
+        payload_json: Any = row["payload_json"]
+        keys = set(row.keys())
+        pointer_json = str(row["payload_pointer_json"] or "") if "payload_pointer_json" in keys else ""
+        if hydrate and pointer_json:
+            try:
+                pointer = json.loads(pointer_json)
+                if not isinstance(pointer, dict):
+                    raise PayloadSegmentError("invalid payload segment pointer JSON")
+                raw = self.payload_segments.read(pointer)
+                expected = str(row["payload_digest"] or "") if "payload_digest" in keys else ""
+                if not expected or sha256(raw).hexdigest() != expected:
+                    raise PayloadSegmentError("payload segment row digest mismatch")
+                payload_json = raw.decode("utf-8")
+            except (OSError, UnicodeError, json.JSONDecodeError, PayloadSegmentError) as exc:
+                self._payload_segment_failure_count += 1
+                self._payload_segment_last_error = type(exc).__name__
+                if isinstance(exc, PayloadSegmentError):
+                    raise
+                raise PayloadSegmentError("payload segment hydration failed") from exc
+        return self._record_from_payload_json(payload_json)
+
+    def payload_segment_health(self) -> dict[str, Any]:
+        return {
+            **self.payload_segments.quick_stats(),
+            "failure_count": int(self._payload_segment_failure_count),
+            "last_error": str(self._payload_segment_last_error),
+        }
+
+    def payload_segment_maintenance_report(self) -> dict[str, Any]:
+        """Run an explicit unbounded inventory; never call from request health."""
+
+        referenced = {
+            str(row["payload_digest"] or "")
+            for row in self.conn.execute(
+                "SELECT payload_digest FROM records WHERE payload_pointer_json!=''"
+            )
+            if str(row["payload_digest"] or "")
+        }
+        return {
+            "schema": "payload_segment_maintenance.v1",
+            **self.payload_segments.archive_stats(),
+            **self.payload_segments.orphan_report(referenced),
+        }
+
+    def storage_footprint(self) -> dict[str, Any]:
+        """Return filesystem/PRAGMA counters without scanning record rows."""
+
+        def file_size(path: Path) -> int:
+            try:
+                return int(path.stat(follow_symlinks=False).st_size)
+            except FileNotFoundError:
+                return 0
+
+        page_size = int(self.conn.execute("PRAGMA page_size").fetchone()[0])
+        page_count = int(self.conn.execute("PRAGMA page_count").fetchone()[0])
+        freelist_count = int(self.conn.execute("PRAGMA freelist_count").fetchone()[0])
+        return {
+            "schema": "storage_footprint.v1",
+            "sqlite_bytes": file_size(self.path),
+            "wal_bytes": file_size(self.path.with_name(self.path.name + "-wal")),
+            "shm_bytes": file_size(self.path.with_name(self.path.name + "-shm")),
+            "page_size": page_size,
+            "page_count": page_count,
+            "freelist_count": freelist_count,
+            "logical_page_bytes": page_size * page_count,
+            "reclaimable_page_bytes": page_size * freelist_count,
+            "payload_segments": self.payload_segment_health(),
+        }
+
+    def plan_payload_archival(self, *, hot_window: int = 64) -> dict[str, Any]:
+        """Describe historical cold-body work without decoding payload JSON."""
+
+        bounded_hot_window = max(0, min(10_000, int(hot_window)))
+        eligible_count = 0
+        eligible_inline_bytes = 0
+        by_kind: dict[str, dict[str, int]] = {}
+        for kind in _PAYLOAD_ARCHIVE_KINDS:
+            row = self.conn.execute(
+                "SELECT COUNT(*),COALESCE(SUM(LENGTH(CAST(payload_json AS BLOB))),0) FROM records "
+                "WHERE kind=? AND payload_pointer_json='' "
+                "AND LENGTH(CAST(payload_json AS BLOB))>? "
+                "AND storage_key NOT IN ("
+                "SELECT storage_key FROM records WHERE kind=? "
+                "ORDER BY updated_at DESC,record_id DESC LIMIT ?)",
+                (kind, self.payload_archive_inline_bytes, kind, bounded_hot_window),
+            ).fetchone()
+            count = int(row[0]) if row is not None else 0
+            inline_bytes = int(row[1]) if row is not None else 0
+            by_kind[kind] = {"eligible_count": count, "eligible_inline_bytes": inline_bytes}
+            eligible_count += count
+            eligible_inline_bytes += inline_bytes
+        return {
+            "schema": "payload_archive_plan.v1",
+            "eligible_count": eligible_count,
+            "eligible_inline_bytes": eligible_inline_bytes,
+            "hot_window": bounded_hot_window,
+            "kinds": by_kind,
+        }
+
+    def payload_archival_complete(self) -> bool:
+        return self._schema_migration_applied(_PAYLOAD_ARCHIVE_MIGRATION)
+
+    def apply_payload_archival_batch(
+        self,
+        *,
+        batch_size: int = 50,
+        hot_window: int = 64,
+    ) -> dict[str, Any]:
+        """Archive one keyset page; segment bytes are durable before DB pointers."""
+
+        bounded = max(1, min(500, int(batch_size)))
+        bounded_hot_window = max(0, min(10_000, int(hot_window)))
+        if self.payload_archival_complete():
+            return {
+                "schema": "payload_archive_batch.v1",
+                "processed": 0,
+                "complete": True,
+                "has_more": False,
+            }
+        progress = self.conn.execute(
+            "SELECT phase,cursor FROM schema_migration_progress WHERE migration_id=?",
+            (_PAYLOAD_ARCHIVE_MIGRATION,),
+        ).fetchone()
+        phase = str(progress["phase"] or _PAYLOAD_ARCHIVE_KINDS[0]) if progress else _PAYLOAD_ARCHIVE_KINDS[0]
+        cursor = str(progress["cursor"] or "") if progress else ""
+        if phase not in _PAYLOAD_ARCHIVE_KINDS:
+            raise PayloadSegmentError("invalid payload archive migration phase")
+        rows = self.conn.execute(
+            "SELECT storage_key,kind,payload_json FROM records "
+            "WHERE kind=? AND payload_pointer_json='' AND storage_key>? "
+            "AND LENGTH(CAST(payload_json AS BLOB))>? "
+            "AND storage_key NOT IN ("
+            "SELECT storage_key FROM records WHERE kind=? "
+            "ORDER BY updated_at DESC,record_id DESC LIMIT ?) "
+            "ORDER BY storage_key LIMIT ?",
+            (
+                phase,
+                cursor,
+                self.payload_archive_inline_bytes,
+                phase,
+                bounded_hot_window,
+                bounded,
+            ),
+        ).fetchall()
+        prepared: list[tuple[str, str, str, str, str, str]] = []
+        for row in rows:
+            storage_key = str(row["storage_key"])
+            payload_json = str(row["payload_json"])
+            payload = self._payload_dict_from_json(payload_json)
+            if payload is None or str(payload.get("kind") or "") != phase:
+                raise PayloadSegmentError("historical payload is invalid or kind-mismatched")
+            canonical = canonical_payload_json(payload).encode("utf-8")
+            if len(canonical) > self.payload_segments.max_payload_bytes:
+                raise PayloadSegmentError("historical payload exceeds hard limit")
+            digest = sha256(canonical).hexdigest()
+            pointer = self.payload_segments.append(canonical)
+            compact = self._compact_record_payload(
+                payload,
+                digest=digest,
+                raw_size=len(canonical),
+            )
+            compact_meta = dict(compact.get("meta") or {})
+            prepared.append(
+                (
+                    json.dumps(compact, ensure_ascii=False, sort_keys=True),
+                    json.dumps(compact_meta, ensure_ascii=False, sort_keys=True),
+                    json.dumps(pointer, ensure_ascii=True, sort_keys=True),
+                    digest,
+                    storage_key,
+                    payload_json,
+                )
+            )
+        processed = 0
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            for compact_json, compact_meta_json, pointer_json, digest, storage_key, original in prepared:
+                update = self.conn.execute(
+                    "UPDATE records SET payload_json=?,meta_json=?,payload_pointer_json=?,payload_digest=? "
+                    "WHERE storage_key=? AND payload_pointer_json='' AND payload_json=?",
+                    (
+                        compact_json,
+                        compact_meta_json,
+                        pointer_json,
+                        digest,
+                        storage_key,
+                        original,
+                    ),
+                )
+                if int(update.rowcount) != 1:
+                    raise PayloadSegmentError(
+                        "historical payload was concurrently rewritten; migration cursor unchanged"
+                    )
+                processed += 1
+            if rows:
+                self._save_migration_cursor(
+                    _PAYLOAD_ARCHIVE_MIGRATION,
+                    str(rows[-1]["storage_key"]),
+                    phase=phase,
+                )
+            else:
+                phase_index = _PAYLOAD_ARCHIVE_KINDS.index(phase)
+                if phase_index + 1 < len(_PAYLOAD_ARCHIVE_KINDS):
+                    self._save_migration_cursor(
+                        _PAYLOAD_ARCHIVE_MIGRATION,
+                        "",
+                        phase=_PAYLOAD_ARCHIVE_KINDS[phase_index + 1],
+                    )
+                else:
+                    self._complete_deferred_migration(_PAYLOAD_ARCHIVE_MIGRATION)
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+        return {
+            "schema": "payload_archive_batch.v1",
+            "processed": processed,
+            "complete": self.payload_archival_complete(),
+            "has_more": not self.payload_archival_complete(),
+        }
 
     def _has_fts_table(self) -> bool:
         return bool(
@@ -3616,14 +4063,14 @@ class SqliteRecordStore:
         if scope is not None:
             self._apply_scope_filters(where, params, scope)
         row = self.conn.execute(
-            "SELECT payload_json FROM records WHERE "
+            "SELECT payload_json, payload_pointer_json, payload_digest FROM records WHERE "
             + " AND ".join(where)
             + " ORDER BY updated_at DESC LIMIT 1",
             params,
         ).fetchone()
         if not row:
             return None
-        return self._record_from_payload_json(row["payload_json"])
+        return self._record_from_storage_row(row, hydrate=True)
 
     def get_by_exact_ref(
         self,
@@ -3637,7 +4084,8 @@ class SqliteRecordStore:
         normalized_source_id = normalize_source_id(source_id)
         row = self.conn.execute(
             """
-            SELECT record_id, kind, status, tenant_id, agent_id, workspace_id, user_id, source_id, payload_json
+            SELECT record_id, kind, status, tenant_id, agent_id, workspace_id, user_id, source_id,
+                   payload_json, payload_pointer_json, payload_digest
             FROM records
             WHERE record_id = ?
               AND tenant_id = ?
@@ -3658,7 +4106,7 @@ class SqliteRecordStore:
         ).fetchone()
         if row is None:
             return None
-        record = self._record_from_payload_json(row["payload_json"])
+        record = self._record_from_storage_row(row, hydrate=True)
         if record is None or not self._record_matches_projection_row(record, row):
             return None
         return record
@@ -3693,13 +4141,14 @@ class SqliteRecordStore:
             where.append(f"source_id IN ({','.join('?' for _ in allowed_source_ids)})")
             params.extend(allowed_source_ids)
         rows = self.conn.execute(
-            "SELECT record_id, kind, status, tenant_id, agent_id, workspace_id, user_id, source_id, payload_json "
+            "SELECT record_id, kind, status, tenant_id, agent_id, workspace_id, user_id, source_id, "
+            "payload_json, payload_pointer_json, payload_digest "
             "FROM records WHERE " + " AND ".join(where) + " ORDER BY updated_at DESC",
             params,
         ).fetchall()
         records: list[RecordEnvelope] = []
         for row in rows:
-            record = self._record_from_payload_json(row["payload_json"])
+            record = self._record_from_storage_row(row, hydrate=True)
             if record is None or not self._record_matches_projection_row(record, row):
                 continue
             records.append(record)
@@ -3761,7 +4210,7 @@ class SqliteRecordStore:
             order_prefix = "CASE WHEN user_id = ? THEN 1 ELSE 0 END DESC, "
         row = self.conn.execute(
             f"""
-            SELECT payload_json
+            SELECT payload_json, payload_pointer_json, payload_digest
             FROM records
             WHERE kind IN ({placeholders})
               AND tenant_id = ?
@@ -3784,7 +4233,7 @@ class SqliteRecordStore:
         ).fetchone()
         if not row:
             return None
-        return self._record_from_payload_json(row["payload_json"])
+        return self._record_from_storage_row(row, hydrate=True)
 
     def list_records(
         self,
@@ -3829,7 +4278,8 @@ class SqliteRecordStore:
             "SELECT storage_key, updated_at, record_id FROM records WHERE "
             + " AND ".join(where)
             + " ORDER BY updated_at DESC, record_id DESC LIMIT ? OFFSET ?"
-            + ") SELECT selected_records.storage_key, records.payload_json "
+            + ") SELECT selected_records.storage_key, records.payload_json, "
+            + "records.payload_pointer_json, records.payload_digest "
             + "FROM selected_records JOIN records USING (storage_key) "
             + "ORDER BY selected_records.updated_at DESC, selected_records.record_id DESC",
             [*params, limit, offset],
@@ -3840,7 +4290,7 @@ class SqliteRecordStore:
         return [
             record
             for row in rows
-            if (record := self._record_from_payload_json(row["payload_json"])) is not None
+            if (record := self._record_from_storage_row(row, hydrate=True)) is not None
         ]
 
     def latest_record_by_meta_value_exact_scope(
@@ -3858,7 +4308,8 @@ class SqliteRecordStore:
         if not str(meta_key or "").replace("_", "").isalnum():
             raise ValueError("meta_key must be a simple identifier")
         row = self.conn.execute(
-            "SELECT payload_json FROM records WHERE kind=? AND source=? AND status=? "
+            "SELECT payload_json, payload_pointer_json, payload_digest "
+            "FROM records WHERE kind=? AND source=? AND status=? "
             "AND tenant_id=? AND agent_id=? AND workspace_id=? AND user_id=? "
             f"AND CAST(json_extract(meta_json, '$.{meta_key}') AS TEXT)=? "
             "ORDER BY rowid DESC LIMIT 1",
@@ -3867,7 +4318,7 @@ class SqliteRecordStore:
                 scope.workspace_id, scope.user_id, str(meta_value),
             ),
         ).fetchone()
-        return None if row is None else self._record_from_payload_json(row["payload_json"])
+        return None if row is None else self._record_from_storage_row(row, hydrate=True)
 
     def count_records(
         self,
@@ -4117,6 +4568,63 @@ class SqliteRecordStore:
             )
         return records
 
+    def list_recall_views_compact_by_session(
+        self,
+        *,
+        scope: ScopeRef,
+        session_id: str,
+        limit: int = 10,
+    ) -> list[RecordEnvelope]:
+        """Read bounded policy-attribution fields without opening cold segments."""
+
+        return [
+            record
+            for record in self.list_recall_audits_compact_by_session(
+                scope=scope,
+                session_id=session_id,
+                limit=limit,
+            )
+            if record.kind == "recall_view"
+        ]
+
+    def list_recall_audits_compact_by_session(
+        self,
+        *,
+        scope: ScopeRef,
+        session_id: str,
+        limit: int = 10,
+    ) -> list[RecordEnvelope]:
+        """Read recall-view projections plus inline legacy reflection audits."""
+
+        bounded = self._normalize_limit(limit)
+        rows = self.conn.execute(
+            "WITH selected_records AS ("
+            "SELECT storage_key,updated_at,record_id FROM records "
+            "WHERE kind IN ('recall_view','reflection') AND tenant_id=? AND agent_id=? "
+            "AND workspace_id=? AND user_id=? "
+            "AND CAST(json_extract(meta_json,'$.session_id') AS TEXT)=? "
+            "ORDER BY updated_at DESC,record_id DESC LIMIT ?) "
+            "SELECT r.record_id,r.kind,r.status,r.tenant_id,r.agent_id,r.workspace_id,"
+            "r.user_id,r.source_id,r.payload_json,r.payload_pointer_json,r.payload_digest "
+            "FROM selected_records JOIN records AS r USING(storage_key) "
+            "ORDER BY selected_records.updated_at DESC,selected_records.record_id DESC",
+            (
+                scope.tenant_id or "default",
+                scope.agent_id,
+                scope.workspace_id,
+                scope.user_id,
+                str(session_id or ""),
+                bounded,
+            ),
+        ).fetchall()
+        records: list[RecordEnvelope] = []
+        for row in rows:
+            record = self._record_from_storage_row(row, hydrate=False)
+            if record is None or not self._record_matches_projection_row(record, row):
+                continue
+            records.append(record)
+        return records
+
     def count_records_by_meta_value(
         self,
         *,
@@ -4187,7 +4695,8 @@ class SqliteRecordStore:
                 "SELECT storage_key, updated_at, record_id FROM records WHERE "
                 + " AND ".join(where)
                 + " ORDER BY updated_at DESC, record_id DESC LIMIT ?"
-                + ") SELECT selected_records.storage_key, records.payload_json "
+                + ") SELECT selected_records.storage_key, records.payload_json, "
+                + "records.payload_pointer_json, records.payload_digest "
                 + "FROM selected_records JOIN records USING (storage_key) "
                 + "ORDER BY selected_records.updated_at DESC, selected_records.record_id DESC",
                 [*params, limit],
@@ -4197,7 +4706,7 @@ class SqliteRecordStore:
         return [
             record
             for row in rows
-            if (record := self._record_from_payload_json(row["payload_json"])) is not None
+            if (record := self._record_from_storage_row(row, hydrate=True)) is not None
         ]
 
     def upsert_memory_edge(self, edge: MemoryEdge, *, commit: bool = True) -> MemoryEdge:
