@@ -25,6 +25,7 @@ from eimemory.evaluation.real_query_gate import (
     freeze_production_recall_dataset,
     bootstrap_production_recall_baseline,
     run_real_query_gate as _run_real_query_gate,
+    verify_current_production_recall_strict_state,
     verify_current_production_recall_gate,
 )
 from eimemory.metadata import business_metadata

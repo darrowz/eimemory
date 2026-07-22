@@ -160,6 +160,19 @@ class FakeRuntime:
         assert identity.receipt_id == "receipt-1"
         return {"ok": True, "status": "accepted", "record_id": "prg-current", "report_id": "prg-current"}
 
+    def activate_production_recall_strict_state(self, **kwargs) -> dict:
+        self.calls.append("production_recall_activate")
+        identity = kwargs.pop("release_identity")
+        assert kwargs == {"scope": SCOPE, "gate_record_id": "prg-current"}
+        assert identity.commit == CURRENT_COMMIT
+        return {
+            "ok": True,
+            "status": "strict_activated",
+            "record_id": "prbs-strict-current",
+            "candidate_commit": identity.commit,
+            "gate_record_id": "prg-current",
+        }
+
     def run_weak_capability_replay_gate(self, **kwargs) -> dict:
         self.calls.append("replay_bootstrap")
         assert kwargs == {
@@ -198,6 +211,7 @@ def test_release_closure_runs_all_stages_in_order() -> None:
         "deployment_receipt",
         "production_recall_run",
         "production_recall_verify",
+        "production_recall_activate",
         "replay_bootstrap",
         "live_acceptance",
         "closure_rehearsal",
@@ -216,6 +230,7 @@ def test_release_closure_runs_all_stages_in_order() -> None:
     assert report["record_ids"] == {
         "deployment_receipt": "receipt-1",
         "production_recall_gate": "prg-current",
+        "production_recall_strict_state": "prbs-strict-current",
         "readiness": "readiness-1",
     }
 
@@ -272,6 +287,7 @@ def test_release_closure_runs_production_recall_after_receipt_before_replay() ->
         "deployment_receipt",
         "production_recall_run",
         "production_recall_verify",
+        "production_recall_activate",
         "replay_bootstrap",
         "live_acceptance",
         "closure_rehearsal",
@@ -279,6 +295,30 @@ def test_release_closure_runs_production_recall_after_receipt_before_replay() ->
     ]
     assert report["production_recall_gate"]["ok"] is True
     assert report["record_ids"]["production_recall_gate"] == "prg-current"
+    assert report["production_recall_strict_state"]["status"] == "strict_activated"
+    assert report["record_ids"]["production_recall_strict_state"] == "prbs-strict-current"
+
+
+def test_release_closure_fails_closed_before_replay_when_strict_activation_fails() -> None:
+    runtime = ProductionGateRuntime()
+    runtime.activate_production_recall_strict_state = lambda **_kwargs: {
+        "ok": False,
+        "status": "blocked",
+        "reason": "strict_gate_record_mismatch",
+        "record_id": "",
+    }
+
+    report = _run(runtime)
+
+    assert runtime.calls == [
+        "deployment_receipt",
+        "production_recall_run",
+        "production_recall_verify",
+    ]
+    assert report["ok"] is False
+    assert report["blocked_stage"] == "production_recall_strict_state"
+    assert report["blocked_reason"] == "strict_gate_record_mismatch"
+    assert report["replay_bootstrap"]["status"] == "not_run"
 
 
 def test_release_closure_fails_closed_before_replay_when_production_dataset_not_run() -> None:
@@ -352,25 +392,25 @@ def test_release_closure_fails_closed_when_production_gate_runner_is_unavailable
         (
             "replay_bootstrap",
             {"replay_bootstrap": {"ok": False, "blocked_reasons": ["weak_capability_replay_failed"]}},
-            ["deployment_receipt", "production_recall_run", "production_recall_verify", "replay_bootstrap"],
+            ["deployment_receipt", "production_recall_run", "production_recall_verify", "production_recall_activate", "replay_bootstrap"],
             "weak_capability_replay_failed",
         ),
         (
             "live_acceptance",
             {"live_acceptance": {"ok": False, "error": "acceptance_case_failed"}},
-            ["deployment_receipt", "production_recall_run", "production_recall_verify", "replay_bootstrap", "live_acceptance"],
+            ["deployment_receipt", "production_recall_run", "production_recall_verify", "production_recall_activate", "replay_bootstrap", "live_acceptance"],
             "acceptance_case_failed",
         ),
         (
             "closure_rehearsal",
             {"rehearsal": {"ok": False, "closure_complete": False, "blocked_reasons": ["replay_failed"]}},
-            ["deployment_receipt", "production_recall_run", "production_recall_verify", "replay_bootstrap", "live_acceptance", "closure_rehearsal"],
+            ["deployment_receipt", "production_recall_run", "production_recall_verify", "production_recall_activate", "replay_bootstrap", "live_acceptance", "closure_rehearsal"],
             "replay_failed",
         ),
         (
             "readiness",
             {"readiness_score": 0.9},
-            ["deployment_receipt", "production_recall_run", "production_recall_verify", "replay_bootstrap", "live_acceptance", "closure_rehearsal", "readiness"],
+            ["deployment_receipt", "production_recall_run", "production_recall_verify", "production_recall_activate", "replay_bootstrap", "live_acceptance", "closure_rehearsal", "readiness"],
             "readiness_not_l5",
         ),
     ],
@@ -556,7 +596,14 @@ def _successful_readiness() -> dict:
     return {
         "ok": True,
         "schema_version": "l5_readiness.v2",
+        "release_identity": {"release_commit": CURRENT_COMMIT},
         "production_recall_gate": {"ok": True, "status": "accepted"},
+        "production_recall_strict_state": {
+            "ok": True,
+            "status": "strict_activated",
+            "candidate_commit": CURRENT_COMMIT,
+            "record_id": "prbs-strict-current",
+        },
         "storage_migrations": {"ok": True, "status": "ready", "pending": []},
         "capability_gaps": [],
         "current_stage": "L5",

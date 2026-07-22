@@ -164,6 +164,144 @@ def test_bootstrap_state_uses_full_record_identity_not_fuzzy_reflection_title(tm
     assert {record.record_id for record in stored} == {first.record_id, second.record_id}
 
 
+def test_strict_activation_is_idempotent_for_current_commit_and_bound_gate(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = ScopeRef.from_dict(SCOPE)
+    prior = ReleaseIdentity("b" * 40, "1.9.79", "receipt-prior", "session-prior")
+    current = ReleaseIdentity("a" * 40, "1.9.80", "receipt-current", "session-current")
+    real_query_gate._persist_bootstrap_state(
+        runtime,
+        scope=scope,
+        state="anchor_ready",
+        candidate_commit=current.commit,
+        prior_release=prior,
+        reason="pre_switch_bootstrap_anchor",
+        progress={"baseline_record_id": "baseline-current"},
+    )
+    monkeypatch.setattr(
+        real_query_gate,
+        "verify_current_production_recall_gate",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "status": "accepted",
+            "record_id": "prg-current",
+        },
+    )
+
+    first = real_query_gate.activate_production_recall_strict_state(
+        runtime,
+        scope=scope,
+        release=current,
+        gate_record_id="prg-current",
+    )
+    second = real_query_gate.activate_production_recall_strict_state(
+        runtime,
+        scope=scope,
+        release=current,
+        gate_record_id="prg-current",
+    )
+    monkeypatch.setattr(
+        real_query_gate,
+        "verify_current_production_recall_gate",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "status": "accepted",
+            "record_id": "prg-replacement",
+        },
+    )
+    rebound = real_query_gate.activate_production_recall_strict_state(
+        runtime,
+        scope=scope,
+        release=current,
+        gate_record_id="prg-replacement",
+    )
+    verified = real_query_gate.verify_current_production_recall_strict_state(
+        runtime,
+        scope=scope,
+        release=current,
+        gate_record_id="prg-current",
+    )
+    runtime.close()
+
+    assert first["ok"] is True and first["status"] == "strict_activated"
+    assert second == first
+    assert verified == first
+    assert rebound["ok"] is False
+    assert rebound["reason"] == "strict_gate_record_mismatch"
+
+
+def test_strict_state_verifier_rejects_missing_and_cross_commit_state(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = ScopeRef.from_dict(SCOPE)
+    current = ReleaseIdentity("a" * 40, "1.9.80", "receipt-current", "session-current")
+    missing = real_query_gate.verify_current_production_recall_strict_state(
+        runtime,
+        scope=scope,
+        release=current,
+        gate_record_id="prg-current",
+    )
+    prior = ReleaseIdentity("b" * 40, "1.9.79", "receipt-prior", "session-prior")
+    real_query_gate._persist_bootstrap_state(
+        runtime,
+        scope=scope,
+        state="strict_activated",
+        candidate_commit="c" * 40,
+        prior_release=prior,
+        reason="strict_gate_accepted",
+        progress={"gate_record_id": "prg-old"},
+    )
+    cross_commit = real_query_gate.verify_current_production_recall_strict_state(
+        runtime,
+        scope=scope,
+        release=current,
+        gate_record_id="prg-current",
+    )
+    runtime.close()
+
+    assert missing["ok"] is False
+    assert missing["reason"] == "strict_state_missing"
+    assert cross_commit["ok"] is False
+    assert cross_commit["reason"] == "strict_state_commit_mismatch"
+
+
+def test_strict_state_verifier_rejects_broken_previous_state_chain(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = ScopeRef.from_dict(SCOPE)
+    current = ReleaseIdentity("a" * 40, "1.9.80", "receipt-current", "session-current")
+    prior = ReleaseIdentity("b" * 40, "1.9.79", "receipt-prior", "session-prior")
+    forged = real_query_gate._bootstrap_state_record(
+        {
+            "schema": real_query_gate.PRODUCTION_RECALL_BOOTSTRAP_STATE_SCHEMA,
+            "state": "strict_activated",
+            "candidate_commit": current.commit,
+            "prior_release": {
+                "release_commit": prior.commit,
+                "release_version": prior.version,
+                "deployment_receipt_id": prior.receipt_id,
+                "release_session_id": prior.session_id,
+            },
+            "scope": SCOPE,
+            "reason": "strict_gate_accepted",
+            "progress": {"gate_record_id": "prg-current"},
+            "previous_record_id": "missing-anchor",
+            "generated_at": "2026-07-22T00:00:00+00:00",
+        },
+        scope=scope,
+    )
+    runtime.store.append(forged)
+
+    verified = real_query_gate.verify_current_production_recall_strict_state(
+        runtime,
+        scope=scope,
+        release=current,
+        gate_record_id="prg-current",
+    )
+    runtime.close()
+
+    assert verified["ok"] is False
+    assert verified["reason"] == "strict_state_chain_invalid"
+
+
 def test_bootstrap_pending_can_follow_patch_lineage_but_cannot_regress_after_anchor(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path)
     prior = _receipt(runtime, commit="b" * 40, prior_commit="c" * 40)

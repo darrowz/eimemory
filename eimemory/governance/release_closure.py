@@ -31,6 +31,7 @@ def run_release_closure(
         "record_ids": {},
         "deployment_receipt": dict(not_run),
         "production_recall_gate": dict(not_run),
+        "production_recall_strict_state": dict(not_run),
         "storage_migrations": dict(not_run),
         "replay_bootstrap": dict(not_run),
         "live_acceptance": dict(not_run),
@@ -108,6 +109,26 @@ def run_release_closure(
                 "production_recall_gate",
                 _failure_reason(recall_gate, "production_recall_gate_failed"),
             )
+        activate_strict = getattr(runtime, "activate_production_recall_strict_state", None)
+        if not callable(activate_strict):
+            return _blocked(
+                report,
+                "production_recall_strict_state",
+                "production_recall_strict_activator_unavailable",
+            )
+        strict_state = activate_strict(
+            scope=scope_payload,
+            release_identity=receipt_identity,
+            gate_record_id=str(recall_gate.get("record_id") or ""),
+        )
+        report["production_recall_strict_state"] = strict_state
+        report["record_ids"]["production_recall_strict_state"] = str(strict_state.get("record_id") or "")
+        if strict_state.get("ok") is not True or strict_state.get("status") != "strict_activated":
+            return _blocked(
+                report,
+                "production_recall_strict_state",
+                _failure_reason(strict_state, "production_recall_strict_activation_failed"),
+            )
 
     replay_bootstrap = runtime.run_weak_capability_replay_gate(
         scope=scope_payload,
@@ -174,7 +195,12 @@ def _blocked(report: dict[str, Any], stage: str, reason: str) -> dict[str, Any]:
 
 
 def _failure_reason(stage_report: dict[str, Any], fallback: str) -> str:
-    error = str(stage_report.get("error") or stage_report.get("blocked_reason") or "").strip()
+    error = str(
+        stage_report.get("error")
+        or stage_report.get("blocked_reason")
+        or stage_report.get("reason")
+        or ""
+    ).strip()
     if error:
         return error
     blocked = [str(item).strip() for item in stage_report.get("blocked_reasons") or [] if str(item).strip()]

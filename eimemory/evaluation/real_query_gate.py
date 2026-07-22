@@ -850,9 +850,24 @@ def activate_production_recall_strict_state(
         return {"ok": False, "status": "blocked", "reason": "strict_gate_not_verified", "record_id": ""}
     latest = _latest_bootstrap_state(runtime, scope=scope_ref)
     if latest is not None and latest.get("state") == "strict_activated":
-        if str(latest.get("candidate_commit") or "") == release.commit:
-            return {"ok": True, "status": "strict_activated", "reason": "", "record_id": str(latest.get("record_id") or "")}
-        return {"ok": False, "status": "blocked", "reason": "strict_state_commit_mismatch", "record_id": str(latest.get("record_id") or "")}
+        if str(latest.get("candidate_commit") or "") != release.commit:
+            return {"ok": False, "status": "blocked", "reason": "strict_state_commit_mismatch", "record_id": str(latest.get("record_id") or "")}
+        existing_gate_id = str((latest.get("progress") or {}).get("gate_record_id") or "")
+        if existing_gate_id == str(gate_record_id or ""):
+            return {
+                "ok": True,
+                "status": "strict_activated",
+                "reason": "",
+                "record_id": str(latest.get("record_id") or ""),
+                "candidate_commit": release.commit,
+                "gate_record_id": existing_gate_id,
+            }
+        return {
+            "ok": False,
+            "status": "blocked",
+            "reason": "strict_gate_record_mismatch",
+            "record_id": str(latest.get("record_id") or ""),
+        }
     if latest is None or latest.get("state") != "anchor_ready" or str(latest.get("candidate_commit") or "") != release.commit:
         return {"ok": False, "status": "blocked", "reason": "pre_switch_anchor_state_missing", "record_id": ""}
     prior = _release_from_payload(latest.get("prior_release"))
@@ -867,24 +882,76 @@ def activate_production_recall_strict_state(
         reason="strict_gate_accepted",
         progress={"gate_record_id": str(gate_record_id)},
     )
-    return {"ok": True, "status": "strict_activated", "reason": "", "record_id": state_record.record_id}
+    return {
+        "ok": True,
+        "status": "strict_activated",
+        "reason": "",
+        "record_id": state_record.record_id,
+        "candidate_commit": release.commit,
+        "gate_record_id": str(gate_record_id),
+    }
+
+
+def verify_current_production_recall_strict_state(
+    runtime: Any,
+    *,
+    scope: dict[str, Any] | ScopeRef | None,
+    release: ReleaseIdentity | None,
+    gate_record_id: str,
+) -> dict[str, Any]:
+    scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+    latest = _latest_bootstrap_state(runtime, scope=scope_ref)
+    if latest is None:
+        return {"ok": False, "status": "not_run", "reason": "strict_state_missing", "record_id": ""}
+    record_id = str(latest.get("record_id") or "")
+    if latest.get("state") == "invalid":
+        return {"ok": False, "status": "blocked", "reason": "strict_state_invalid", "record_id": record_id}
+    if latest.get("state") != "strict_activated":
+        return {"ok": False, "status": "not_run", "reason": "strict_state_missing", "record_id": record_id}
+    if release is None or not release.complete or str(latest.get("candidate_commit") or "") != release.commit:
+        return {"ok": False, "status": "blocked", "reason": "strict_state_commit_mismatch", "record_id": record_id}
+    bound_gate_id = str((latest.get("progress") or {}).get("gate_record_id") or "")
+    if not bound_gate_id or bound_gate_id != str(gate_record_id or ""):
+        return {"ok": False, "status": "blocked", "reason": "strict_gate_record_mismatch", "record_id": record_id}
+    previous_id = str(latest.get("previous_record_id") or "")
+    previous_record = runtime.store.get_by_id(previous_id, scope=scope_ref) if previous_id else None
+    previous = _validated_bootstrap_state_record(previous_record, scope=scope_ref)
+    if not (
+        previous is not None
+        and previous.get("state") == "anchor_ready"
+        and str(previous.get("candidate_commit") or "") == release.commit
+        and previous.get("prior_release") == latest.get("prior_release")
+    ):
+        return {"ok": False, "status": "blocked", "reason": "strict_state_chain_invalid", "record_id": record_id}
+    return {
+        "ok": True,
+        "status": "strict_activated",
+        "reason": "",
+        "record_id": record_id,
+        "candidate_commit": release.commit,
+        "gate_record_id": bound_gate_id,
+    }
 
 
 def _bootstrap_state_key(scope: ScopeRef) -> str:
     return _stable_digest({"schema": PRODUCTION_RECALL_BOOTSTRAP_STATE_SCHEMA, "scope": asdict(scope)})
 
 
-def _bootstrap_state_record(payload: dict[str, Any], *, scope: ScopeRef) -> RecordEnvelope:
+def _bootstrap_state_record_id(payload: dict[str, Any], *, scope: ScopeRef) -> str:
     bounded = _bounded_safe_value(payload)
-    previous = str(bounded.get("previous_record_id") or "")
-    record_id = "prbs_" + _stable_digest(
+    return "prbs_" + _stable_digest(
         {
             "state_key": _bootstrap_state_key(scope),
             "candidate_commit": bounded.get("candidate_commit"),
             "state": bounded.get("state"),
-            "previous_record_id": previous,
+            "previous_record_id": str(bounded.get("previous_record_id") or ""),
         }
     )[:32]
+
+
+def _bootstrap_state_record(payload: dict[str, Any], *, scope: ScopeRef) -> RecordEnvelope:
+    bounded = _bounded_safe_value(payload)
+    record_id = _bootstrap_state_record_id(bounded, scope=scope)
     record = RecordEnvelope.create(
         kind="reflection",
         title=f"Production recall bootstrap {bounded.get('state')} {str(bounded.get('candidate_commit') or '')[:12]}",
@@ -949,17 +1016,44 @@ def _latest_bootstrap_state(runtime: Any, *, scope: ScopeRef) -> dict[str, Any] 
         meta_key="bootstrap_state_key",
         meta_value=_bootstrap_state_key(scope),
     )
-    if record is None or not same_scope(record.scope, scope):
+    if record is None:
         return None
-    payload = record.content.get("state") if isinstance(record.content, dict) and isinstance(record.content.get("state"), dict) else {}
+    payload = _validated_bootstrap_state_record(record, scope=scope)
+    if payload is None:
+        return {"state": "invalid", "record_id": record.record_id}
+    return {**payload, "record_id": record.record_id}
+
+
+def _validated_bootstrap_state_record(
+    record: RecordEnvelope | None,
+    *,
+    scope: ScopeRef,
+) -> dict[str, Any] | None:
+    if not (
+        record is not None
+        and record.kind == "reflection"
+        and record.status == "active"
+        and record.source == "eimemory.evaluation.production_recall.bootstrap"
+        and same_scope(record.scope, scope)
+        and str(record.meta.get("report_type") or "") == "production_recall_bootstrap_state"
+        and str(record.meta.get("bootstrap_state_key") or "") == _bootstrap_state_key(scope)
+    ):
+        return None
+    payload = (
+        record.content.get("state")
+        if isinstance(record.content, dict) and isinstance(record.content.get("state"), dict)
+        else {}
+    )
     if (
         payload.get("schema") != PRODUCTION_RECALL_BOOTSTRAP_STATE_SCHEMA
+        or ScopeRef.from_dict(payload.get("scope") or {}) != scope
         or str(record.meta.get("state_payload_digest") or "") != _stable_digest(payload)
         or str(record.meta.get("state") or "") != str(payload.get("state") or "")
         or str(record.meta.get("candidate_commit") or "") != str(payload.get("candidate_commit") or "")
+        or record.record_id != _bootstrap_state_record_id(payload, scope=scope)
     ):
-        return {"state": "invalid", "record_id": record.record_id}
-    return {**payload, "record_id": record.record_id}
+        return None
+    return payload
 
 
 def _hydrate_real_query_labels(

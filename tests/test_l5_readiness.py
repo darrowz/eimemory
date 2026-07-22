@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import datetime, timedelta
 import json
+
+import pytest
 
 from eimemory.api.runtime import Runtime
 from eimemory.cli.main import main as cli_main
@@ -34,7 +37,14 @@ def test_readiness_gate_status_allows_only_l5_and_keeps_accumulation_out_of_stag
     common = {
         "ok": True,
         "schema_version": "l5_readiness.v2",
+        "release_identity": {"release_commit": "f" * 40},
         "production_recall_gate": {"ok": True, "status": "accepted"},
+        "production_recall_strict_state": {
+            "ok": True,
+            "status": "strict_activated",
+            "candidate_commit": "f" * 40,
+            "record_id": "strict-current",
+        },
         "storage_migrations": {"ok": True, "status": "ready", "pending": []},
         "capability_gaps": [],
         "latest_l5_assessment": {"trusted": True, "complete": True, "level": "L5"},
@@ -69,6 +79,16 @@ def test_readiness_gate_status_allows_only_l5_and_keeps_accumulation_out_of_stag
     }
 
     assert readiness_gate_status(full) == "L5"
+    assert readiness_gate_status({key: value for key, value in full.items() if key != "production_recall_strict_state"}) == ""
+    assert readiness_gate_status(
+        {
+            **full,
+            "production_recall_strict_state": {
+                **full["production_recall_strict_state"],
+                "candidate_commit": "e" * 40,
+            },
+        }
+    ) == ""
     assert readiness_gate_status(accumulating) == ""
     assert (
         readiness_gate_status(
@@ -491,6 +511,16 @@ def test_l5_readiness_reaches_l5_only_with_attributed_weak_outcomes_and_patch_sa
         "eimemory.evaluation.production_recall.verify_current_production_recall_gate",
         lambda *_args, **_kwargs: {"ok": True, "status": "accepted", "record_id": "recall-gate"},
     )
+    monkeypatch.setattr(
+        "eimemory.evaluation.production_recall.verify_current_production_recall_strict_state",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "status": "strict_activated",
+            "candidate_commit": "f" * 40,
+            "record_id": "strict-current",
+            "gate_record_id": "recall-gate",
+        },
+    )
     runtime = Runtime.create(root=tmp_path)
     try:
         _seed_l5_prerequisites(
@@ -514,6 +544,61 @@ def test_l5_readiness_reaches_l5_only_with_attributed_weak_outcomes_and_patch_sa
     assert report["verified_replay"]["weak_capabilities_missing"] == []
     assert all(item["distinct_evidence_count"] == 3 for item in report["verified_replay"]["by_capability"].values())
     assert report["latest_l5_assessment"]["complete"] is True
+
+
+@pytest.mark.parametrize(
+    ("strict_state", "reason"),
+    [
+        (
+            {"ok": False, "status": "not_run", "reason": "strict_state_missing", "record_id": ""},
+            "strict_state_missing",
+        ),
+        (
+            {
+                "ok": True,
+                "status": "strict_activated",
+                "candidate_commit": "e" * 40,
+                "record_id": "strict-other-release",
+                "gate_record_id": "recall-gate",
+            },
+            "strict_state_commit_mismatch",
+        ),
+    ],
+)
+def test_l5_readiness_downgrades_when_current_release_strict_state_is_invalid(
+    tmp_path,
+    monkeypatch,
+    strict_state: dict,
+    reason: str,
+) -> None:
+    monkeypatch.setattr(
+        "eimemory.evaluation.production_recall.verify_current_production_recall_gate",
+        lambda *_args, **_kwargs: {"ok": True, "status": "accepted", "record_id": "recall-gate"},
+    )
+    monkeypatch.setattr(
+        "eimemory.evaluation.production_recall.verify_current_production_recall_strict_state",
+        lambda *_args, **_kwargs: deepcopy(strict_state),
+    )
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        _seed_l5_prerequisites(
+            runtime,
+            scope=SCOPE,
+            weak_outcomes=True,
+            patch_samples=10,
+            execute_weak_replays=True,
+            assessment_complete=True,
+            verified_patch_evidence=True,
+        )
+        report = runtime.build_l5_readiness_report(scope=SCOPE)
+    finally:
+        runtime.close()
+
+    assert report["current_stage"] == "L4.5"
+    assert report["readiness_score"] == 0.8
+    if strict_state.get("candidate_commit") != "f" * 40:
+        assert report["production_recall_strict_state"]["reason"] == reason
+    assert readiness_gate_status(report) == ""
 
 
 def test_l5_readiness_reports_data_accumulating_without_current_release_real_tasks(tmp_path, monkeypatch) -> None:
@@ -574,6 +659,16 @@ def test_l5_readiness_uses_latest_execution_batch_instead_of_legacy_case_ids(tmp
     monkeypatch.setattr(
         "eimemory.evaluation.production_recall.verify_current_production_recall_gate",
         lambda *_args, **_kwargs: {"ok": True, "status": "accepted", "record_id": "recall-gate"},
+    )
+    monkeypatch.setattr(
+        "eimemory.evaluation.production_recall.verify_current_production_recall_strict_state",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "status": "strict_activated",
+            "candidate_commit": "f" * 40,
+            "record_id": "strict-current",
+            "gate_record_id": "recall-gate",
+        },
     )
     runtime = Runtime.create(root=tmp_path)
     scope_ref = ScopeRef.from_dict(SCOPE)

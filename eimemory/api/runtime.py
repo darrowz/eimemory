@@ -1383,6 +1383,22 @@ class Runtime:
             limit=limit,
         )
 
+    def activate_production_recall_strict_state(
+        self,
+        *,
+        scope: dict | None = None,
+        release_identity=None,
+        gate_record_id: str,
+    ) -> dict:
+        from eimemory.evaluation.real_query_gate import activate_production_recall_strict_state
+
+        return activate_production_recall_strict_state(
+            self,
+            scope=scope,
+            release=release_identity,
+            gate_record_id=gate_record_id,
+        )
+
     def run_configured_production_recall_gate(self, *, scope: dict | None = None) -> dict:
         """Run only the configured production-redacted dataset for a release."""
 

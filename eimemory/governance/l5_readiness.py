@@ -57,6 +57,12 @@ def readiness_gate_status(readiness: dict[str, Any]) -> str:
         else {}
     )
     live_gate = readiness.get("live_task_gate") if isinstance(readiness.get("live_task_gate"), dict) else {}
+    release_identity = readiness.get("release_identity") if isinstance(readiness.get("release_identity"), dict) else {}
+    strict_state = (
+        readiness.get("production_recall_strict_state")
+        if isinstance(readiness.get("production_recall_strict_state"), dict)
+        else {}
+    )
     replay = readiness.get("verified_replay") if isinstance(readiness.get("verified_replay"), dict) else {}
     core_replay = (
         readiness.get("verified_core_replay")
@@ -88,6 +94,11 @@ def readiness_gate_status(readiness: dict[str, Any]) -> str:
         and isinstance(readiness.get("production_recall_gate"), dict)
         and readiness["production_recall_gate"].get("ok") is True
         and readiness["production_recall_gate"].get("status") == "accepted"
+        and strict_state.get("ok") is True
+        and strict_state.get("status") == "strict_activated"
+        and bool(str(release_identity.get("release_commit") or ""))
+        and str(strict_state.get("candidate_commit") or "")
+        == str(release_identity.get("release_commit") or "")
         and isinstance(readiness.get("storage_migrations"), dict)
         and readiness["storage_migrations"].get("ok") is True
         and readiness["storage_migrations"].get("pending") == []
@@ -139,9 +150,11 @@ def build_l5_readiness_report(
         release=release,
     )
     latest_l5_assessment = _latest_l5_assessment(runtime, scope=scope_ref, release=release)
+    from eimemory.evaluation.production_recall import (
+        verify_current_production_recall_gate,
+        verify_current_production_recall_strict_state,
+    )
     try:
-        from eimemory.evaluation.production_recall import verify_current_production_recall_gate
-
         production_recall_gate = verify_current_production_recall_gate(
             runtime,
             scope=scope_ref,
@@ -155,6 +168,41 @@ def build_l5_readiness_report(
             "reason": f"production_recall_gate_error:{type(exc).__name__}",
             "record_id": "",
         }
+    try:
+        production_recall_strict_state = verify_current_production_recall_strict_state(
+            runtime,
+            scope=scope_ref,
+            release=release,
+            gate_record_id=str(production_recall_gate.get("record_id") or ""),
+        )
+    except Exception as exc:
+        production_recall_strict_state = {
+            "ok": False,
+            "status": "not_run",
+            "reason": f"production_recall_strict_state_error:{type(exc).__name__}",
+            "record_id": "",
+        }
+    if (
+        production_recall_strict_state.get("ok") is True
+        and production_recall_strict_state.get("status") == "strict_activated"
+    ):
+        strict_commit = str(production_recall_strict_state.get("candidate_commit") or "")
+        gate_record_id = str(production_recall_gate.get("record_id") or "")
+        strict_gate_record_id = str(production_recall_strict_state.get("gate_record_id") or "")
+        if release is None or strict_commit != release.commit:
+            production_recall_strict_state = {
+                **production_recall_strict_state,
+                "ok": False,
+                "status": "blocked",
+                "reason": "strict_state_commit_mismatch",
+            }
+        elif not gate_record_id or strict_gate_record_id != gate_record_id:
+            production_recall_strict_state = {
+                **production_recall_strict_state,
+                "ok": False,
+                "status": "blocked",
+                "reason": "strict_gate_record_mismatch",
+            }
     storage_migrations = _storage_migration_status(runtime)
     weak_outcome_evidence = _weak_outcome_evidence(runtime, scope=scope_ref, limit=limit)
     capability_gaps = _capability_gaps(ledger, weak_outcome_evidence=weak_outcome_evidence)
@@ -169,6 +217,7 @@ def build_l5_readiness_report(
         latest_l5_assessment,
     )
     stage = _apply_production_recall_gate(stage, production_recall_gate)
+    stage = _apply_production_recall_strict_state_gate(stage, production_recall_strict_state)
     stage = _apply_storage_migration_gate(stage, storage_migrations)
     next_actions = _next_actions(
         stage,
@@ -177,6 +226,7 @@ def build_l5_readiness_report(
         verified_replay=verified_replay,
         latest_l5_assessment=latest_l5_assessment,
         production_recall_gate=production_recall_gate,
+        production_recall_strict_state=production_recall_strict_state,
     )
     if storage_migrations.get("pending"):
         next_actions = [
@@ -189,6 +239,7 @@ def build_l5_readiness_report(
         "schema_version": "l5_readiness.v2",
         "generated_at": now_iso(),
         "scope": asdict(scope_ref),
+        "release_identity": release_identity_payload(release) if release is not None else {},
         "current_stage": stage["stage"],
         "stage_label": stage["label"],
         "readiness_score": stage["readiness_score"],
@@ -204,6 +255,7 @@ def build_l5_readiness_report(
         "verified_core_replay": verified_core_replay,
         "latest_l5_assessment": latest_l5_assessment,
         "production_recall_gate": production_recall_gate,
+        "production_recall_strict_state": production_recall_strict_state,
         "storage_migrations": storage_migrations,
         "weak_outcome_evidence": weak_outcome_evidence,
         "capability_gaps": capability_gaps,
@@ -247,6 +299,26 @@ def _apply_production_recall_gate(stage: dict[str, Any], gate: dict[str, Any]) -
                 "label": "L5 evidence present; production recall gate incomplete",
                 "reason": "The production real-query recall gate is not independently accepted for the current release.",
                 "done_when": "Collect and label the required real queries, then pass the release-bound production recall gate.",
+            }
+        )
+    return downgraded
+
+
+def _apply_production_recall_strict_state_gate(
+    stage: dict[str, Any],
+    strict_state: dict[str, Any],
+) -> dict[str, Any]:
+    if strict_state.get("ok") is True and strict_state.get("status") == "strict_activated":
+        return stage
+    downgraded = dict(stage)
+    downgraded["readiness_score"] = min(float(stage.get("readiness_score") or 0.0), 0.8)
+    if str(stage.get("stage") or "") == "L5":
+        downgraded.update(
+            {
+                "stage": "L4.5",
+                "label": "L5 evidence present; production recall strict state missing",
+                "reason": "The accepted production recall gate is not activated for the current release.",
+                "done_when": "Activate and verify the accepted recall gate for the current release commit.",
             }
         )
     return downgraded
@@ -1203,12 +1275,21 @@ def _next_actions(
     verified_replay: dict[str, Any],
     latest_l5_assessment: dict[str, Any],
     production_recall_gate: dict[str, Any],
+    production_recall_strict_state: dict[str, Any],
 ) -> list[str]:
     actions = []
     if production_recall_gate.get("ok") is not True or production_recall_gate.get("status") != "accepted":
         reason = str(production_recall_gate.get("reason") or production_recall_gate.get("blocked_reason") or "not accepted")
         actions.append(
             f"Complete the production recall real-query gate ({reason}); L5 remains downgraded until independent verification accepts it."
+        )
+    if (
+        production_recall_strict_state.get("ok") is not True
+        or production_recall_strict_state.get("status") != "strict_activated"
+    ):
+        reason = str(production_recall_strict_state.get("reason") or "strict state missing")
+        actions.append(
+            f"Activate the accepted production recall gate for the current release ({reason}); L5 remains downgraded."
         )
     live_task_gate = stage.get("live_task_gate") if isinstance(stage.get("live_task_gate"), dict) else {}
     if not live_task_gate.get("ok"):
