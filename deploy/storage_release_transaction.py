@@ -4,12 +4,15 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
 import re
+import stat
 import tempfile
+import threading
 from typing import Any
 
 
@@ -31,6 +34,23 @@ _PHASES = {
     "rollback_link_restored",
     "rollback_metadata_ready",
 }
+_PRIOR_CURRENT_PHASES = {
+    "writers_captured",
+    "writers_stopped",
+    "snapshot_ready",
+    "storage_destructive",
+    "storage_migrated",
+    "vacuum_complete",
+    "rollback_link_restored",
+    "rollback_storage_restored",
+    "rollback_metadata_ready",
+}
+_CANDIDATE_CURRENT_PHASES = {
+    "current_switched",
+    "metadata_ready",
+    "rollback_started",
+}
+_PROCESS_MARKER_LOCK = threading.RLock()
 
 
 class StorageReleaseTransactionError(RuntimeError):
@@ -45,6 +65,54 @@ def _fsync_directory(path: Path) -> None:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+
+
+def _durably_sync_path_posix(path: Path, *, boundary: Path) -> None:
+    path = Path(path)
+    boundary = Path(boundary)
+    if not path.is_absolute() or not boundary.is_absolute():
+        raise StorageReleaseTransactionError("durable sync paths must be absolute")
+    resolved_boundary = boundary.resolve(strict=True)
+    resolved_path = path.resolve(strict=True)
+    if resolved_boundary != Path(os.path.abspath(boundary)) or resolved_path != Path(
+        os.path.abspath(path)
+    ):
+        raise StorageReleaseTransactionError("durable sync path must not traverse symlinks")
+    try:
+        resolved_path.relative_to(resolved_boundary)
+    except ValueError as exc:
+        raise StorageReleaseTransactionError("durable sync path escapes its boundary") from exc
+    nofollow = int(getattr(os, "O_NOFOLLOW", 0))
+    directory = int(getattr(os, "O_DIRECTORY", 0))
+    if path.is_file():
+        descriptor = os.open(path, os.O_RDONLY | nofollow)
+        try:
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                raise StorageReleaseTransactionError("durable sync target is not a regular file")
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        current = path.parent
+    elif path.is_dir():
+        current = path
+    else:
+        raise StorageReleaseTransactionError("durable sync target is not a file or directory")
+    while True:
+        descriptor = os.open(current, os.O_RDONLY | directory | nofollow)
+        try:
+            if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
+                raise StorageReleaseTransactionError("durable sync ancestor is not a directory")
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        if current == boundary:
+            break
+        current = current.parent
+
+
+def durably_sync_path(path: str | Path, *, boundary: str | Path) -> None:
+    if os.name == "posix":
+        _durably_sync_path_posix(Path(path), boundary=Path(boundary))
 
 
 def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -115,15 +183,94 @@ def _validated_transaction(payload: Any) -> dict[str, Any]:
     return dict(payload)
 
 
-def load_storage_release_transaction(marker_path: str | Path) -> dict[str, Any]:
-    marker = Path(marker_path)
+@contextmanager
+def _marker_lock(marker: Path):
+    lock_path = marker.with_name(f".{marker.name}.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        if lock_path.parent.resolve(strict=True) != Path(os.path.abspath(lock_path.parent)):
+            raise StorageReleaseTransactionError(
+                "storage release transaction lock parent traverses a symlink"
+            )
+    except OSError as exc:
+        raise StorageReleaseTransactionError(
+            "storage release transaction lock parent is invalid"
+        ) from exc
+    if lock_path.is_symlink():
+        raise StorageReleaseTransactionError("storage release transaction lock is a symlink")
+    descriptor = os.open(
+        lock_path,
+        os.O_RDWR | os.O_CREAT | int(getattr(os, "O_NOFOLLOW", 0)),
+        0o600,
+    )
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            int(getattr(metadata, "st_file_attributes", 0) or 0)
+            & int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+            or not stat.S_ISREG(metadata.st_mode)
+            or int(getattr(metadata, "st_nlink", 1)) != 1
+        ):
+            raise StorageReleaseTransactionError("storage release transaction lock is unsafe")
+        if metadata.st_size == 0:
+            os.write(descriptor, b"0")
+            os.fsync(descriptor)
+        with _PROCESS_MARKER_LOCK:
+            if os.name == "posix":
+                import fcntl
+
+                fcntl.flock(descriptor, fcntl.LOCK_EX)
+            elif os.name == "nt":
+                import msvcrt
+
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                msvcrt.locking(descriptor, msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                if os.name == "posix":
+                    import fcntl
+
+                    fcntl.flock(descriptor, fcntl.LOCK_UN)
+                elif os.name == "nt":
+                    import msvcrt
+
+                    os.lseek(descriptor, 0, os.SEEK_SET)
+                    msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+    finally:
+        os.close(descriptor)
+
+
+def _load_storage_release_transaction_unlocked(marker: Path) -> dict[str, Any]:
+    marker = Path(marker)
     if marker.is_symlink():
         raise StorageReleaseTransactionError("storage release transaction marker is invalid")
     try:
-        payload = json.loads(marker.read_text(encoding="utf-8"))
+        descriptor = os.open(marker, os.O_RDONLY | int(getattr(os, "O_NOFOLLOW", 0)))
+        try:
+            metadata = os.fstat(descriptor)
+            if (
+                int(getattr(metadata, "st_file_attributes", 0) or 0)
+                & int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+                or not stat.S_ISREG(metadata.st_mode)
+                or int(getattr(metadata, "st_nlink", 1)) != 1
+            ):
+                raise StorageReleaseTransactionError(
+                    "storage release transaction marker is invalid"
+                )
+            with os.fdopen(descriptor, "r", encoding="utf-8", closefd=False) as handle:
+                payload = json.load(handle)
+        finally:
+            os.close(descriptor)
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise StorageReleaseTransactionError("storage release transaction marker is invalid") from exc
     return _validated_transaction(payload)
+
+
+def load_storage_release_transaction(marker_path: str | Path) -> dict[str, Any]:
+    marker = Path(marker_path)
+    with _marker_lock(marker):
+        return _load_storage_release_transaction_unlocked(marker)
 
 
 def begin_storage_release_transaction(
@@ -137,11 +284,11 @@ def begin_storage_release_transaction(
     active_writer_units: list[str],
 ) -> dict[str, Any]:
     marker = Path(marker_path)
-    if marker.exists() or marker.is_symlink():
-        raise StorageReleaseTransactionError("storage release transaction already exists")
-    now = datetime.now(timezone.utc).isoformat()
-    payload = _validated_transaction(
-        {
+    with _marker_lock(marker):
+        if marker.exists() or marker.is_symlink():
+            raise StorageReleaseTransactionError("storage release transaction already exists")
+        now = datetime.now(timezone.utc).isoformat()
+        payload = _validated_transaction({
             "schema": SCHEMA,
             "status": "in_progress",
             "phase": "writers_captured",
@@ -156,9 +303,8 @@ def begin_storage_release_transaction(
             "vacuum_backup_path": "",
             "created_at": now,
             "updated_at": now,
-        }
-    )
-    _atomic_write_json(marker, payload)
+        })
+        _atomic_write_json(marker, payload)
     return payload
 
 
@@ -172,19 +318,20 @@ def update_storage_release_transaction(
     vacuum_backup_path: str | None = None,
 ) -> dict[str, Any]:
     marker = Path(marker_path)
-    payload = load_storage_release_transaction(marker)
-    if payload["attempt_id"] != str(expected_attempt_id):
-        raise StorageReleaseTransactionError("storage release transaction attempt mismatch")
-    payload["phase"] = str(phase)
-    if snapshot_manifest_sha256 is not None:
-        payload["snapshot_manifest_sha256"] = str(snapshot_manifest_sha256)
-    if storage_destructive is not None:
-        payload["storage_destructive"] = bool(storage_destructive)
-    if vacuum_backup_path is not None:
-        payload["vacuum_backup_path"] = str(vacuum_backup_path)
-    payload["updated_at"] = datetime.now(timezone.utc).isoformat()
-    payload = _validated_transaction(payload)
-    _atomic_write_json(marker, payload)
+    with _marker_lock(marker):
+        payload = _load_storage_release_transaction_unlocked(marker)
+        if payload["attempt_id"] != str(expected_attempt_id):
+            raise StorageReleaseTransactionError("storage release transaction attempt mismatch")
+        payload["phase"] = str(phase)
+        if snapshot_manifest_sha256 is not None:
+            payload["snapshot_manifest_sha256"] = str(snapshot_manifest_sha256)
+        if storage_destructive is not None:
+            payload["storage_destructive"] = bool(storage_destructive)
+        if vacuum_backup_path is not None:
+            payload["vacuum_backup_path"] = str(vacuum_backup_path)
+        payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+        payload = _validated_transaction(payload)
+        _atomic_write_json(marker, payload)
     return payload
 
 
@@ -194,11 +341,12 @@ def clear_storage_release_transaction(
     expected_attempt_id: str,
 ) -> None:
     marker = Path(marker_path)
-    payload = load_storage_release_transaction(marker)
-    if payload["attempt_id"] != str(expected_attempt_id):
-        raise StorageReleaseTransactionError("storage release transaction attempt mismatch")
-    marker.unlink()
-    _fsync_directory(marker.parent)
+    with _marker_lock(marker):
+        payload = _load_storage_release_transaction_unlocked(marker)
+        if payload["attempt_id"] != str(expected_attempt_id):
+            raise StorageReleaseTransactionError("storage release transaction attempt mismatch")
+        marker.unlink()
+        _fsync_directory(marker.parent)
 
 
 def guard_allows_start(marker_path: str | Path) -> bool:
@@ -212,6 +360,16 @@ def guard_allows_start(marker_path: str | Path) -> bool:
     except StorageReleaseTransactionError:
         return False
     return False
+
+
+def storage_release_abort_is_safe(transaction: dict[str, Any]) -> bool:
+    """Only pre-snapshot, non-destructive phases may be cleared on ordinary failure."""
+
+    payload = _validated_transaction(transaction)
+    return (
+        payload["phase"] in {"writers_captured", "writers_stopped"}
+        and payload["storage_destructive"] is False
+    )
 
 
 def classify_storage_release_reconcile(
@@ -237,10 +395,38 @@ def classify_storage_release_reconcile(
     )
 
 
+def expected_current_commit_for_reconcile(transaction: dict[str, Any]) -> str:
+    """Return the one release bound to a missing current link by journal phase."""
+
+    payload = _validated_transaction(transaction)
+    phase = str(payload["phase"])
+    if phase in _PRIOR_CURRENT_PHASES:
+        return str(payload["prior_commit"])
+    if phase in _CANDIDATE_CURRENT_PHASES:
+        return str(payload["candidate_commit"])
+    raise StorageReleaseTransactionError(
+        "storage release transaction phase has no unambiguous current release"
+    )
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=("begin", "update", "show", "active-units", "guard", "clear", "classify"))
-    parser.add_argument("--marker", required=True)
+    parser.add_argument(
+        "action",
+        choices=(
+            "begin",
+            "update",
+            "show",
+            "active-units",
+            "guard",
+            "clear",
+            "classify",
+            "expected-current",
+            "abort-safe",
+            "fsync-path",
+        ),
+    )
+    parser.add_argument("--marker", default="")
     parser.add_argument("--prior-commit", default="")
     parser.add_argument("--candidate-commit", default="")
     parser.add_argument("--current-link", default="")
@@ -253,6 +439,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--vacuum-backup-path")
     parser.add_argument("--active-unit", action="append", default=[])
     parser.add_argument("--migrations-complete", choices=("0", "1"), default="0")
+    parser.add_argument("--path", default="")
+    parser.add_argument("--boundary", default="")
     return parser
 
 
@@ -260,6 +448,11 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     marker = Path(args.marker)
     try:
+        if args.action == "fsync-path":
+            durably_sync_path(args.path, boundary=args.boundary)
+            return 0
+        if not args.marker:
+            raise StorageReleaseTransactionError("storage release transaction marker is required")
         if args.action == "guard":
             if guard_allows_start(marker):
                 return 0
@@ -304,6 +497,11 @@ def main(argv: list[str] | None = None) -> int:
                     )
                 )
                 return 0
+            if args.action == "expected-current":
+                print(expected_current_commit_for_reconcile(payload))
+                return 0
+            if args.action == "abort-safe":
+                return 0 if storage_release_abort_is_safe(payload) else 75
         print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
         return 0
     except StorageReleaseTransactionError as exc:

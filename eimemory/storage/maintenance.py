@@ -42,6 +42,14 @@ def _file_digest(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _is_reparse(path: Path) -> bool:
+    metadata = path.stat(follow_symlinks=False)
+    return bool(
+        int(getattr(metadata, "st_file_attributes", 0) or 0)
+        & int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+    )
+
+
 def _manifest_file_size(entry: dict[str, Any]) -> int:
     value = entry.get("size", -1)
     if isinstance(value, bool):
@@ -128,8 +136,7 @@ def _validate_regular(path: Path) -> os.stat_result:
     if path.is_symlink():
         raise StorageMaintenanceError(f"storage maintenance rejects symlink: {path}")
     metadata = path.stat(follow_symlinks=False)
-    attributes = int(getattr(metadata, "st_file_attributes", 0) or 0)
-    if attributes & int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)):
+    if _is_reparse(path):
         raise StorageMaintenanceError(f"storage maintenance rejects reparse point: {path}")
     if not stat.S_ISREG(metadata.st_mode) or int(getattr(metadata, "st_nlink", 1)) != 1:
         raise StorageMaintenanceError(f"storage maintenance requires one regular file: {path}")
@@ -139,13 +146,15 @@ def _validate_regular(path: Path) -> os.stat_result:
 def _tree_files(root: Path) -> list[Path]:
     if not root.exists():
         return []
-    if root.is_symlink():
-        raise StorageMaintenanceError(f"storage maintenance rejects symlink root: {root}")
+    if root.is_symlink() or _is_reparse(root):
+        raise StorageMaintenanceError(f"storage maintenance rejects symlink or reparse root: {root}")
     files: list[Path] = []
     for path in root.rglob("*"):
         if path.is_dir():
-            if path.is_symlink():
-                raise StorageMaintenanceError(f"storage maintenance rejects symlink directory: {path}")
+            if path.is_symlink() or _is_reparse(path):
+                raise StorageMaintenanceError(
+                    f"storage maintenance rejects symlink or reparse directory: {path}"
+                )
             continue
         _validate_regular(path)
         files.append(path)
@@ -276,14 +285,35 @@ def _copy_file(source: Path, target: Path) -> None:
 
 
 def _copy_tree(source: Path, target: Path) -> None:
+    if not source.is_dir() or source.is_symlink() or _is_reparse(source):
+        raise StorageMaintenanceError(
+            "storage maintenance rejects symlink or reparse tree root"
+        )
     target.mkdir(parents=True, exist_ok=False)
     try:
         os.chmod(target, 0o700)
     except OSError:
         pass
+    source_directories = sorted(
+        (path for path in source.rglob("*") if path.is_dir()),
+        key=lambda path: (len(path.parts), path.as_posix()),
+    )
+    for directory in source_directories:
+        if directory.is_symlink() or _is_reparse(directory):
+            raise StorageMaintenanceError(
+                "storage maintenance rejects symlink or reparse directory"
+            )
+        (target / directory.relative_to(source)).mkdir(mode=0o700, exist_ok=True)
     for path in _tree_files(source):
         relative = path.relative_to(source)
         _copy_file(path, target / relative)
+    target_directories = [target, *(path for path in target.rglob("*") if path.is_dir())]
+    for directory in sorted(
+        target_directories,
+        key=lambda path: (-len(path.parts), path.as_posix()),
+    ):
+        _fsync_directory(directory)
+    _fsync_directory(target.parent)
 
 
 def _snapshot_file_manifest(root: Path) -> list[dict[str, Any]]:
@@ -335,7 +365,10 @@ def create_consistent_storage_snapshot(
     if not preflight["ok"]:
         raise StorageMaintenanceError("insufficient free disk for snapshot, migration, and vacuum")
     snapshot.parent.mkdir(parents=True, exist_ok=True)
-    staging = snapshot.parent / f".{snapshot.name}.stage-{uuid4().hex}"
+    # Keep the staging name independent of the externally supplied attempt ID.
+    # Besides bounding the path length on Windows, the random token still makes
+    # concurrent staging directories collision-resistant.
+    staging = snapshot.parent / f".snapshot-stage-{uuid4().hex}"
     lock_path = database.parent / ".storage-maintenance.lock"
     with _exclusive_maintenance_lock(lock_path):
         connection = _checkpoint_and_exclusive_connection(database)
@@ -592,9 +625,24 @@ def _remove_path(path: Path) -> None:
 
 def _read_storage_journal(path: Path, *, schema: str) -> dict[str, Any]:
     try:
-        journal = read_json_strict(path, dict)
-    except (OSError, ValueError) as exc:
+        descriptor = os.open(path, os.O_RDONLY | int(getattr(os, "O_NOFOLLOW", 0)))
+        try:
+            metadata = os.fstat(descriptor)
+            attributes = int(getattr(metadata, "st_file_attributes", 0) or 0)
+            if (
+                attributes & int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+                or not stat.S_ISREG(metadata.st_mode)
+                or int(getattr(metadata, "st_nlink", 1)) != 1
+            ):
+                raise StorageMaintenanceError(f"{schema} is unsafe")
+            with os.fdopen(descriptor, "r", encoding="utf-8", closefd=False) as handle:
+                journal = json.load(handle)
+        finally:
+            os.close(descriptor)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
         raise StorageMaintenanceError(f"{schema} is invalid") from exc
+    if not isinstance(journal, dict):
+        raise StorageMaintenanceError(f"{schema} is invalid")
     if str(journal.get("schema") or "") != schema:
         raise StorageMaintenanceError(f"{schema} is invalid")
     return journal

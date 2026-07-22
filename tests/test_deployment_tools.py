@@ -905,7 +905,7 @@ def test_immutable_release_installer_deploys_gateway_runtime_override() -> None:
     script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
 
     assert 'install_managed_systemd_dropin.py' in script
-    assert '_run_as_service_user mkdir -p "$USER_SYSTEMD_DIR/openclaw-gateway.service.d"' in script
+    assert '_run_as_service_user mkdir -p "$USER_SYSTEMD_DIR/openclaw-gateway.service.d"' not in script
     assert '_refresh_openclaw_gateway_metadata "$RELEASE_DIR" "$COMMIT"' in script
     assert '"$metadata_release/deploy/systemd/openclaw-gateway-eimemory.conf"' in script
     assert '"$USER_SYSTEMD_DIR/openclaw-gateway.service.d/90-eimemory-runtime.conf"' in script
@@ -1166,6 +1166,51 @@ def test_managed_systemd_dropin_installer_rejects_ancestor_symlink(tmp_path) -> 
 
     with pytest.raises(helper.ManagedDropinError, match="without symlink components"):
         helper.install_managed_dropin(source=source, target=target, root=linked_root)
+
+
+def test_managed_systemd_dropin_installer_rejects_source_ancestor_symlink(tmp_path) -> None:
+    helper = _load_managed_systemd_dropin_installer()
+    real_source_dir = tmp_path / "real-source"
+    real_source_dir.mkdir()
+    real_source = real_source_dir / "source.conf"
+    real_source.write_text(f"{helper.MANAGED_MARKER}\n[Service]\n", encoding="utf-8")
+    linked_source_dir = tmp_path / "linked-source"
+    try:
+        linked_source_dir.symlink_to(real_source_dir, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlinks require additional Windows privileges")
+    root = tmp_path / "systemd"
+    target = root / "example.service.d" / "90-runtime.conf"
+    target.parent.mkdir(parents=True)
+
+    with pytest.raises(helper.ManagedDropinError, match="source path.*symlink"):
+        helper.install_managed_dropin(
+            source=linked_source_dir / "source.conf", target=target, root=root
+        )
+
+
+def test_managed_systemd_dropin_portable_path_syncs_file_and_parent_chain(
+    tmp_path, monkeypatch
+) -> None:
+    helper = _load_managed_systemd_dropin_installer()
+    root = tmp_path / "systemd"
+    root.mkdir()
+    target = root / "example.service.d" / "90-runtime.conf"
+    calls: list[tuple[Path, bool]] = []
+    monkeypatch.setattr(
+        helper,
+        "_fsync_portable_if_supported",
+        lambda path, *, directory: calls.append((Path(path), directory)),
+    )
+
+    helper._install_portable(
+        payload=f"{helper.MANAGED_MARKER}\n[Service]\n".encode(),
+        target=target,
+        root=root,
+        allowed_owners={root.stat().st_uid},
+    )
+
+    assert calls == [(target, False), (target.parent, True), (root, True)]
 
 
 def test_release_bytecode_cleaner_cleans_only_source_bytecode(tmp_path) -> None:
@@ -1614,7 +1659,8 @@ def test_immutable_release_installer_normalizes_service_ownership() -> None:
     assert "_user_systemctl enable eimemory-rpc.service" in script
     assert re.search(r"^\s*systemctl enable eimemory-rpc\.service", script, re.MULTILINE) is None
     assert "_retire_system_rpc_unit" in script
-    assert "systemctl disable --now eimemory-rpc.service" in script
+    assert "systemctl stop eimemory-rpc.service" in script
+    assert "systemctl disable eimemory-rpc.service" in script
     assert "retired-by-eimemory-user-systemd" in script
 
 

@@ -91,6 +91,38 @@ def test_zero_size_manifest_members_verify_and_restore_copy(tmp_path) -> None:
     maintenance._verify_staged_snapshot_copy(staging, snapshot)
 
 
+def test_copy_tree_fsyncs_nested_directories_before_their_parents(
+    tmp_path, monkeypatch
+) -> None:
+    source = tmp_path / "source"
+    nested = source / "payload" / "index"
+    nested.mkdir(parents=True)
+    (nested / "part.bin").write_bytes(b"durable")
+    target = tmp_path / "staging" / "payload_segments"
+    synced: list[Path] = []
+    monkeypatch.setattr(maintenance, "_fsync_directory", lambda path: synced.append(Path(path)))
+
+    maintenance._copy_tree(source, target)
+
+    assert synced == [
+        target / "payload" / "index",
+        target / "payload",
+        target,
+        target.parent,
+    ]
+
+
+def test_copy_tree_rejects_nested_reparse_directory(tmp_path, monkeypatch) -> None:
+    source = tmp_path / "source"
+    nested = source / "junction"
+    nested.mkdir(parents=True)
+    target = tmp_path / "target"
+    monkeypatch.setattr(maintenance, "_is_reparse", lambda path: Path(path) == nested)
+
+    with pytest.raises(StorageMaintenanceError, match="reparse"):
+        maintenance._copy_tree(source, target)
+
+
 def test_fresh_process_recovers_vacuum_after_live_database_was_moved(tmp_path) -> None:
     db_path = tmp_path / "state" / "eimemory.sqlite"
     store = SqliteRecordStore(db_path)
@@ -130,47 +162,70 @@ def test_fresh_process_recovers_partial_restore_from_journal(tmp_path) -> None:
     store = SqliteRecordStore(db_path)
     store.upsert(_large_score())
     store.close()
-    original_digest = _digest(db_path)
-    token = "b" * 32
-    backup = db_path.parent / f".{db_path.name}.restore-old-{token}"
-    os.replace(db_path, backup)
-    replacement = SqliteRecordStore(db_path)
-    replacement.upsert(RecordEnvelope.create(kind="memory", title="partial restore", scope=SCOPE))
-    replacement.close()
+    snapshot = tmp_path / "snapshot"
     segments = db_path.parent / "payload_segments"
-    journal_path = db_path.parent / ".storage-restore-journal.json"
-    atomic_write_json(
-        journal_path,
-        {
-            "schema": "storage_restore_journal.v1",
-            "snapshot_dir": str(tmp_path / "snapshot"),
-            "status": "in_progress",
-            "mutation_started": True,
-            "entries": [
-                {
-                    "live": str(db_path),
-                    "backup": str(backup),
-                    "existed": True,
-                    "state": "installed",
-                },
-                {
-                    "live": str(segments),
-                    "backup": str(db_path.parent / f".{segments.name}.restore-old-{token}"),
-                    "existed": True,
-                    "state": "planned",
-                },
-            ],
-        },
-    )
-
-    report = maintenance.recover_storage_restore(
+    create_consistent_storage_snapshot(
         db_path=db_path,
         segment_root=segments,
+        snapshot_dir=snapshot,
+        offline=True,
+    )
+    replacement = SqliteRecordStore(db_path)
+    replacement.upsert(RecordEnvelope.create(kind="memory", title="live after snapshot", scope=SCOPE))
+    replacement.close()
+    live_digest = _digest(db_path)
+    crash_code = r"""
+import os
+from pathlib import Path
+import sys
+import eimemory.storage.maintenance as maintenance
+
+database = Path(sys.argv[1])
+snapshot = Path(sys.argv[2])
+segments = Path(sys.argv[3])
+real_replace = maintenance.os.replace
+
+def replace_then_crash(source, target):
+    real_replace(source, target)
+    if Path(source) == database and ".restore-old-" in Path(target).name:
+        os._exit(92)
+
+maintenance.os.replace = replace_then_crash
+maintenance.restore_storage_snapshot(
+    snapshot_dir=snapshot,
+    db_path=database,
+    segment_root=segments,
+    offline=True,
+)
+"""
+    crashed = subprocess.run(
+        [sys.executable, "-c", crash_code, str(db_path), str(snapshot), str(segments)],
+        cwd=Path.cwd(),
+        check=False,
+    )
+    assert crashed.returncode == 92
+    assert not db_path.exists()
+    journal_path = db_path.parent / ".storage-restore-journal.json"
+    assert read_json_strict(journal_path, dict)["status"] == "in_progress"
+    recover_code = r"""
+import json
+from pathlib import Path
+import sys
+from eimemory.storage.maintenance import recover_storage_restore
+
+print(json.dumps(recover_storage_restore(db_path=Path(sys.argv[1]), segment_root=Path(sys.argv[2]))))
+"""
+    recovered = subprocess.run(
+        [sys.executable, "-c", recover_code, str(db_path), str(segments)],
+        cwd=Path.cwd(),
+        check=False,
+        capture_output=True,
+        text=True,
     )
 
-    assert report["ok"] is True
-    assert report["recovered"] == "rolled_back"
-    assert _digest(db_path) == original_digest
+    assert recovered.returncode == 0, recovered.stderr
+    assert json.loads(recovered.stdout)["recovered"] == "rolled_back"
+    assert _digest(db_path) == live_digest
     assert not journal_path.exists()
 
 
@@ -180,44 +235,250 @@ def test_fresh_process_finishes_interrupted_completed_restore_cleanup(tmp_path) 
     record = _large_score()
     store.upsert(record)
     store.close()
-    installed_digest = _digest(db_path)
+    snapshot = tmp_path / "snapshot"
     segments = db_path.parent / "payload_segments"
     segments.mkdir(exist_ok=True)
-    token = "d" * 32
-    segment_backup = db_path.parent / f".{segments.name}.restore-old-{token}"
-    segment_backup.mkdir()
-    (segment_backup / "already-restored.segment").write_bytes(b"old")
+    create_consistent_storage_snapshot(
+        db_path=db_path,
+        segment_root=segments,
+        snapshot_dir=snapshot,
+        offline=True,
+    )
+    snapshot_digest = _digest(snapshot / db_path.name)
+    changed = SqliteRecordStore(db_path)
+    changed.upsert(RecordEnvelope.create(kind="memory", title="must be restored", scope=SCOPE))
+    changed.close()
+    crash_code = r"""
+import os
+from pathlib import Path
+import sys
+import eimemory.storage.maintenance as maintenance
+
+database = Path(sys.argv[1])
+snapshot = Path(sys.argv[2])
+segments = Path(sys.argv[3])
+real_unlink = Path.unlink
+
+def unlink_then_crash(self, *args, **kwargs):
+    result = real_unlink(self, *args, **kwargs)
+    if self.name.startswith(f".{database.name}.restore-old-"):
+        os._exit(94)
+    return result
+
+Path.unlink = unlink_then_crash
+maintenance.restore_storage_snapshot(
+    snapshot_dir=snapshot,
+    db_path=database,
+    segment_root=segments,
+    offline=True,
+)
+"""
+    crashed = subprocess.run(
+        [sys.executable, "-c", crash_code, str(db_path), str(snapshot), str(segments)],
+        cwd=Path.cwd(),
+        check=False,
+    )
+    assert crashed.returncode == 94
     journal_path = db_path.parent / ".storage-restore-journal.json"
-    atomic_write_json(
-        journal_path,
-        {
-            "schema": "storage_restore_journal.v1",
-            "snapshot_dir": str(tmp_path / "snapshot"),
-            "status": "complete",
-            "mutation_started": True,
-            "entries": [
-                {
-                    "live": str(db_path),
-                    "backup": str(db_path.parent / f".{db_path.name}.restore-old-{token}"),
-                    "existed": True,
-                    "state": "installed",
-                },
-                {
-                    "live": str(segments),
-                    "backup": str(segment_backup),
-                    "existed": True,
-                    "state": "installed",
-                },
-            ],
-        },
+    journal = read_json_strict(journal_path, dict)
+    assert journal["status"] == "complete"
+    remaining = [Path(entry["backup"]) for entry in journal["entries"] if Path(entry["backup"]).exists()]
+    assert len(remaining) == 1
+    recover_code = r"""
+import json
+from pathlib import Path
+import sys
+from eimemory.storage.maintenance import recover_storage_restore
+
+print(json.dumps(recover_storage_restore(db_path=Path(sys.argv[1]), segment_root=Path(sys.argv[2]))))
+"""
+    recovered = subprocess.run(
+        [sys.executable, "-c", recover_code, str(db_path), str(segments)],
+        cwd=Path.cwd(),
+        check=False,
+        capture_output=True,
+        text=True,
     )
 
-    report = maintenance.recover_storage_restore(db_path=db_path, segment_root=segments)
-
-    assert report["recovered"] == "complete"
-    assert _digest(db_path) == installed_digest
-    assert not segment_backup.exists()
+    assert recovered.returncode == 0, recovered.stderr
+    assert json.loads(recovered.stdout)["recovered"] == "complete"
+    assert _digest(db_path) == snapshot_digest
+    assert not remaining[0].exists()
     assert not journal_path.exists()
+
+
+def test_restore_os_exit_after_planned_journal_is_recovered_by_fresh_process(tmp_path) -> None:
+    db_path = tmp_path / "state" / "eimemory.sqlite"
+    store = SqliteRecordStore(db_path)
+    store.upsert(_large_score())
+    store.close()
+    segments = db_path.parent / "payload_segments"
+    snapshot = tmp_path / "snapshot"
+    create_consistent_storage_snapshot(
+        db_path=db_path,
+        segment_root=segments,
+        snapshot_dir=snapshot,
+        offline=True,
+    )
+    live_digest = _digest(db_path)
+    crash_code = r"""
+import os
+from pathlib import Path
+import sys
+import eimemory.storage.maintenance as maintenance
+
+database = Path(sys.argv[1])
+snapshot = Path(sys.argv[2])
+segments = Path(sys.argv[3])
+real_write = maintenance.atomic_write_json
+
+def write_then_crash(path, payload):
+    real_write(path, payload)
+    if path.name == ".storage-restore-journal.json" and all(
+        entry.get("state") == "planned" for entry in payload.get("entries", [])
+    ):
+        os._exit(93)
+
+maintenance.atomic_write_json = write_then_crash
+maintenance.restore_storage_snapshot(
+    snapshot_dir=snapshot, db_path=database, segment_root=segments, offline=True
+)
+"""
+    crashed = subprocess.run(
+        [sys.executable, "-c", crash_code, str(db_path), str(snapshot), str(segments)],
+        cwd=Path.cwd(),
+        check=False,
+    )
+    assert crashed.returncode == 93
+    assert _digest(db_path) == live_digest
+    journal_path = db_path.parent / ".storage-restore-journal.json"
+    assert read_json_strict(journal_path, dict)["status"] == "in_progress"
+    recover_code = r"""
+from pathlib import Path
+import sys
+from eimemory.storage.maintenance import recover_storage_restore
+recover_storage_restore(db_path=Path(sys.argv[1]), segment_root=Path(sys.argv[2]))
+"""
+    recovered = subprocess.run(
+        [sys.executable, "-c", recover_code, str(db_path), str(segments)],
+        cwd=Path.cwd(),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert recovered.returncode == 0, recovered.stderr
+    assert _digest(db_path) == live_digest
+    assert not journal_path.exists()
+
+
+def test_nested_directory_fsync_crash_allows_fresh_process_restore_retry(tmp_path) -> None:
+    db_path = tmp_path / "state" / "eimemory.sqlite"
+    store = SqliteRecordStore(db_path)
+    store.upsert(_large_score())
+    store.close()
+    segments = db_path.parent / "payload_segments"
+    nested = segments / "payload" / "index"
+    nested.mkdir(parents=True, exist_ok=True)
+    (nested / "durability.bin").write_bytes(b"nested")
+    snapshot = tmp_path / "snapshot"
+    create_consistent_storage_snapshot(
+        db_path=db_path,
+        segment_root=segments,
+        snapshot_dir=snapshot,
+        offline=True,
+    )
+    changed = SqliteRecordStore(db_path)
+    changed.upsert(RecordEnvelope.create(kind="memory", title="live remains", scope=SCOPE))
+    changed.close()
+    live_digest = _digest(db_path)
+    crash_code = r"""
+import os
+from pathlib import Path
+import sys
+import eimemory.storage.maintenance as maintenance
+
+database = Path(sys.argv[1])
+snapshot = Path(sys.argv[2])
+segments = Path(sys.argv[3])
+real_fsync = maintenance._fsync_directory
+
+def fsync_then_crash(path):
+    real_fsync(path)
+    value = Path(path)
+    if value.name == "index" and any(part.startswith(".storage-restore-") for part in value.parts):
+        os._exit(95)
+
+maintenance._fsync_directory = fsync_then_crash
+maintenance.restore_storage_snapshot(
+    snapshot_dir=snapshot, db_path=database, segment_root=segments, offline=True
+)
+"""
+    crashed = subprocess.run(
+        [sys.executable, "-c", crash_code, str(db_path), str(snapshot), str(segments)],
+        cwd=Path.cwd(),
+        check=False,
+    )
+    assert crashed.returncode == 95
+    assert _digest(db_path) == live_digest
+    assert not (db_path.parent / ".storage-restore-journal.json").exists()
+    retry_code = r"""
+from pathlib import Path
+import sys
+from eimemory.storage.maintenance import restore_storage_snapshot
+restore_storage_snapshot(
+    snapshot_dir=Path(sys.argv[2]),
+    db_path=Path(sys.argv[1]),
+    segment_root=Path(sys.argv[3]),
+    offline=True,
+)
+"""
+    retried = subprocess.run(
+        [sys.executable, "-c", retry_code, str(db_path), str(snapshot), str(segments)],
+        cwd=Path.cwd(),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert retried.returncode == 0, retried.stderr
+    assert _digest(db_path) == _digest(snapshot / db_path.name)
+
+
+def test_protected_bootstrap_failure_restores_database_and_segments_without_migration(
+    tmp_path,
+) -> None:
+    db_path = tmp_path / "state" / "eimemory.sqlite"
+    store = SqliteRecordStore(db_path)
+    store.upsert(_large_score())
+    store.close()
+    segments = db_path.parent / "payload_segments"
+    nested = segments / "bootstrap" / "index"
+    nested.mkdir(parents=True, exist_ok=True)
+    protected_file = nested / "baseline.json"
+    protected_file.write_text("prior", encoding="utf-8")
+    snapshot = tmp_path / "snapshot"
+    create_consistent_storage_snapshot(
+        db_path=db_path,
+        segment_root=segments,
+        snapshot_dir=snapshot,
+        offline=True,
+    )
+    snapshot_digest = _digest(snapshot / db_path.name)
+
+    bootstrap = SqliteRecordStore(db_path)
+    bootstrap.upsert(RecordEnvelope.create(kind="memory", title="bootstrap write", scope=SCOPE))
+    bootstrap.close()
+    protected_file.write_text("candidate", encoding="utf-8")
+
+    report = restore_storage_snapshot(
+        snapshot_dir=snapshot,
+        db_path=db_path,
+        segment_root=segments,
+        offline=True,
+    )
+
+    assert report["ok"] is True
+    assert _digest(db_path) == snapshot_digest
+    assert protected_file.read_text(encoding="utf-8") == "prior"
 
 
 def test_restore_automatically_recovers_stale_journal_before_retry(tmp_path) -> None:

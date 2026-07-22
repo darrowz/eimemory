@@ -16,10 +16,12 @@ EVIDENCE_RECEIPT_ENV_FILE="${EIMEMORY_EVIDENCE_RECEIPT_ENV_FILE:-$EIMEMORY_CONFI
 USER_SYSTEMD_ENABLE_SERVICE="${USER_SYSTEMD_ENABLE_SERVICE:-1}"
 USER_SYSTEMD_DIR="${USER_SYSTEMD_DIR:-$SERVICE_HOME/.config/systemd/user}"
 SYSTEM_RPC_UNIT_PATH="${SYSTEM_RPC_UNIT_PATH:-/etc/systemd/system/eimemory-rpc.service}"
+SYSTEM_SYSTEMD_DIR="${SYSTEM_SYSTEMD_DIR:-$(dirname "$SYSTEM_RPC_UNIT_PATH")}"
+SYSTEM_RPC_DROPIN_DIR="${SYSTEM_RPC_DROPIN_DIR:-$SYSTEM_SYSTEMD_DIR/eimemory-rpc.service.d}"
 OPENCLAW_LOOP_DEPLOY_VERIFY="${OPENCLAW_LOOP_DEPLOY_VERIFY:-1}"
 OPENCLAW_LOOP_DEPLOY_LIVE_CHECKS="${OPENCLAW_LOOP_DEPLOY_LIVE_CHECKS:-0}"
 OPENCLAW_LOOP_CONFIG_PATH="${OPENCLAW_LOOP_CONFIG_PATH:-$SERVICE_HOME/.openclaw/openclaw.json}"
-OPENCLAW_LOOP_COMPAT_SCRIPT="${OPENCLAW_LOOP_COMPAT_SCRIPT-$SERVICE_HOME/.openclaw/workspace/scripts/openclaw_loop.py}"
+OPENCLAW_LOOP_COMPAT_SCRIPT="${OPENCLAW_LOOP_COMPAT_SCRIPT:-$SERVICE_HOME/.openclaw/workspace/scripts/openclaw_loop.py}"
 OPENCLAW_BIN="${OPENCLAW_BIN:-$SERVICE_HOME/n/bin/openclaw}"
 EIMEMORY_POST_SWITCH_GATES="${EIMEMORY_POST_SWITCH_GATES:-1}"
 EIMEMORY_HEALTH_URL="${EIMEMORY_HEALTH_URL:-http://127.0.0.1:8091/health}"
@@ -36,6 +38,7 @@ EIMEMORY_DEPLOY_FAIL_STORAGE_STOP_UNIT="${EIMEMORY_DEPLOY_FAIL_STORAGE_STOP_UNIT
 STORAGE_TRANSACTION_MARKER="${EIMEMORY_STORAGE_TRANSACTION_MARKER:-$EIMEMORY_ROOT/state/storage-release-transaction.json}"
 STORAGE_TRANSACTION_LIBEXEC="${EIMEMORY_STORAGE_TRANSACTION_LIBEXEC:-$INSTALL_ROOT/libexec}"
 STORAGE_TRANSACTION_HELPER="$STORAGE_TRANSACTION_LIBEXEC/storage-release-transaction.py"
+STORAGE_DEPLOY_LOCK_PATH="${EIMEMORY_STORAGE_DEPLOY_LOCK_PATH:-$INSTALL_ROOT/.storage-release-install.lock}"
 
 _require_nonblank_deploy_scope() {
   case "$1" in
@@ -56,9 +59,6 @@ EIMEMORY_DEPLOY_FAIL_STAGE="${EIMEMORY_DEPLOY_FAIL_STAGE:-}"
 COMMIT="${1:-$(git -C "$REPO_DIR" rev-parse HEAD)}"
 RELEASE_DIR="$INSTALL_ROOT/releases/$COMMIT"
 CURRENT_LINK="$INSTALL_ROOT/current"
-STORAGE_ATTEMPT_ID="${EIMEMORY_STORAGE_ATTEMPT_ID:-${COMMIT}-$(date -u +%Y%m%dT%H%M%SZ)-$$-${RANDOM:-0}}"
-STORAGE_SNAPSHOT_DIR="$EIMEMORY_STORAGE_SNAPSHOT_ROOT/$STORAGE_ATTEMPT_ID"
-
 if [[ "$PYTHON_BIN" != /* ]]; then
   echo "PYTHON_BIN must be an absolute trusted interpreter path" >&2
   exit 2
@@ -67,6 +67,16 @@ if ! PYTHON_BIN="$(realpath -e -- "$PYTHON_BIN")" || [ ! -x "$PYTHON_BIN" ]; the
   echo "Unable to resolve trusted Python interpreter: $PYTHON_BIN" >&2
   exit 2
 fi
+if [ "$(id -u)" -eq 0 ] && ! id "$SERVICE_USER" >/dev/null 2>&1; then
+  echo "service_user=failed missing user=$SERVICE_USER" >&2
+  exit 2
+fi
+if [ -n "${EIMEMORY_STORAGE_ATTEMPT_ID:-}" ]; then
+  STORAGE_ATTEMPT_ID="$EIMEMORY_STORAGE_ATTEMPT_ID"
+else
+  STORAGE_ATTEMPT_ID="${COMMIT}-$($PYTHON_BIN -I -B -c 'import uuid; print(uuid.uuid4().hex)')"
+fi
+STORAGE_SNAPSHOT_DIR="$EIMEMORY_STORAGE_SNAPSHOT_ROOT/$STORAGE_ATTEMPT_ID"
 
 _ensure_runtime_dir() {
   local path="$1"
@@ -125,16 +135,63 @@ _clean_existing_release_and_validate_source() {
 }
 
 _retire_system_rpc_unit() {
-  if [ "$(id -u)" -ne 0 ] || ! command -v systemctl >/dev/null 2>&1; then
+  if ! command -v systemctl >/dev/null 2>&1; then
+    if [ -e "$SYSTEM_RPC_UNIT_PATH" ] || [ -L "$SYSTEM_RPC_UNIT_PATH" ]; then
+      echo "legacy_system_rpc=state_failed systemd_unavailable" >&2
+      return 2
+    fi
     return
   fi
-  systemctl disable --now eimemory-rpc.service >/dev/null 2>&1 || true
+  local state was_active=0 unit_present=0
+  if [ -e "$SYSTEM_RPC_UNIT_PATH" ] || [ -L "$SYSTEM_RPC_UNIT_PATH" ]; then
+    unit_present=1
+  fi
+  if systemctl is-active --quiet eimemory-rpc.service; then
+    state=0
+  else
+    state=$?
+  fi
+  case "$state" in
+    0) was_active=1 ;;
+    3|4) ;;
+    *)
+      echo "legacy_system_rpc=state_failed status=$state" >&2
+      return 2
+      ;;
+  esac
+  if [ "$unit_present" = "1" ] || [ "$was_active" = "1" ]; then
+    if [ "$(id -u)" -ne 0 ]; then
+      echo "legacy_system_rpc=stop_failed root_required" >&2
+      return 2
+    fi
+    if [ "$was_active" = "1" ] && ! systemctl stop eimemory-rpc.service; then
+      echo "legacy_system_rpc=stop_failed" >&2
+      return 2
+    fi
+    if systemctl is-active --quiet eimemory-rpc.service; then
+      echo "legacy_system_rpc=stop_failed still_active" >&2
+      return 2
+    else
+      state=$?
+      if [ "$state" != "3" ] && [ "$state" != "4" ]; then
+        echo "legacy_system_rpc=stop_failed verify_status=$state" >&2
+        return 2
+      fi
+    fi
+    if ! systemctl disable eimemory-rpc.service; then
+      echo "legacy_system_rpc=disable_failed" >&2
+      return 2
+    fi
+  fi
   if [ -e "$SYSTEM_RPC_UNIT_PATH" ] || [ -L "$SYSTEM_RPC_UNIT_PATH" ]; then
     local retired_path="$SYSTEM_RPC_UNIT_PATH.retired-by-eimemory-user-systemd"
     mv -f "$SYSTEM_RPC_UNIT_PATH" "$retired_path"
     echo "retired_systemd_unit=$retired_path"
+    if ! systemctl daemon-reload; then
+      echo "legacy_system_rpc=daemon_reload_failed" >&2
+      return 2
+    fi
   fi
-  systemctl daemon-reload >/dev/null 2>&1 || true
 }
 
 _run_openclaw_loop_deploy_verify() {
@@ -244,7 +301,10 @@ _stop_storage_writers() {
     echo "storage_writer_stop=failed systemd_unavailable" >&2
     return 2
   fi
-  _capture_storage_writers
+  if ! _capture_storage_writers; then
+    echo "storage_writer_capture=failed" >&2
+    return 2
+  fi
   # Set this before the first stop so cleanup restarts the captured set after a
   # partial stop failure.
   STORAGE_WRITERS_STOPPED=1
@@ -289,8 +349,10 @@ _capture_storage_writers() {
     return 2
   fi
   if [ "$STORAGE_WRITERS_CAPTURED" != "1" ]; then
-    ACTIVE_STORAGE_WRITER_UNITS=()
     local candidate state
+    if [ "$STORAGE_WRITERS_RELOADED" != "1" ]; then
+      ACTIVE_STORAGE_WRITER_UNITS=()
+    fi
     for candidate in "${STORAGE_WRITER_UNITS[@]}"; do
       if _storage_unit_is_active "$candidate"; then
         state=0
@@ -298,12 +360,17 @@ _capture_storage_writers() {
         state=$?
       fi
       case "$state" in
-        0) ACTIVE_STORAGE_WRITER_UNITS+=("$candidate") ;;
+        0)
+          if [ "$STORAGE_WRITERS_RELOADED" != "1" ]; then
+            ACTIVE_STORAGE_WRITER_UNITS+=("$candidate")
+          fi
+          ;;
         1) ;;
         *) return 2 ;;
       esac
     done
     STORAGE_WRITERS_CAPTURED=1
+    STORAGE_WRITERS_RELOADED=0
   fi
   echo "storage_writer_capture=complete captured=${#ACTIVE_STORAGE_WRITER_UNITS[@]}"
 }
@@ -328,24 +395,106 @@ _restart_storage_writers() {
 }
 
 _install_storage_release_transaction_helper() {
-  if [ ! -f "$REPO_DIR/deploy/storage_release_transaction.py" ]; then
+  local helper_source="$REPO_DIR/deploy/storage_release_transaction.py"
+  if [ ! -f "$helper_source" ] || [ -L "$helper_source" ]; then
     echo "storage_release_transaction=failed helper_source_missing" >&2
     return 2
   fi
+  "$PYTHON_BIN" -I -B - "$REPO_DIR" "$helper_source" "$INSTALL_ROOT" \
+    "$STORAGE_TRANSACTION_LIBEXEC" <<'PY'
+from pathlib import Path
+import os
+import sys
+
+repo, source, install_root, libexec = map(Path, sys.argv[1:])
+for label, path in (("repository", repo), ("install root", install_root)):
+    if path.resolve(True) != Path(os.path.abspath(path)):
+        raise SystemExit(f"storage release transaction {label} traverses a symlink")
+if source.resolve(True) != Path(os.path.abspath(source)) or source.parent != repo / "deploy":
+    raise SystemExit("storage release transaction helper source is not trusted")
+try:
+    libexec.relative_to(install_root)
+except ValueError as exc:
+    raise SystemExit("storage release transaction libexec escapes install root") from exc
+if not libexec.parent.is_dir() or libexec.parent.resolve(True) != Path(os.path.abspath(libexec.parent)):
+    raise SystemExit("storage release transaction libexec parent is not trusted")
+libexec.mkdir(mode=0o755, exist_ok=True)
+if not libexec.is_dir() or libexec.resolve(True) != Path(os.path.abspath(libexec)):
+    raise SystemExit("storage release transaction libexec traverses a symlink")
+PY
   mkdir -p "$STORAGE_TRANSACTION_LIBEXEC"
   chmod 0755 "$STORAGE_TRANSACTION_LIBEXEC"
-  install -m 0755 \
-    "$REPO_DIR/deploy/storage_release_transaction.py" "$STORAGE_TRANSACTION_HELPER"
+  local staged_helper
+  staged_helper="$(mktemp "$STORAGE_TRANSACTION_LIBEXEC/.storage-release-transaction-XXXXXXXX")"
+  if ! install -m 0755 "$helper_source" "$staged_helper"; then
+    rm -f "$staged_helper"
+    return 2
+  fi
+  if [ -L "$STORAGE_TRANSACTION_HELPER" ]; then
+    rm -f "$staged_helper"
+    echo "storage_release_transaction=failed helper_target_symlink" >&2
+    return 2
+  fi
+  mv -Tf "$staged_helper" "$STORAGE_TRANSACTION_HELPER"
+  "$PYTHON_BIN" -I -B "$STORAGE_TRANSACTION_HELPER" fsync-path \
+    --path "$STORAGE_TRANSACTION_HELPER" --boundary "$INSTALL_ROOT"
+}
+
+_acquire_storage_deploy_lock() {
+  case "$(uname -s 2>/dev/null || true)" in
+    MINGW*|MSYS*)
+      echo "storage_deploy_lock=skipped non_posix_test_runtime" >&2
+      return
+      ;;
+  esac
+  if ! command -v flock >/dev/null 2>&1; then
+    echo "storage_deploy_lock=failed flock_unavailable" >&2
+    return 2
+  fi
+  if [ -L "$STORAGE_DEPLOY_LOCK_PATH" ]; then
+    echo "storage_deploy_lock=failed symlink" >&2
+    return 2
+  fi
+  if ! exec {STORAGE_DEPLOY_LOCK_FD}<>"$STORAGE_DEPLOY_LOCK_PATH"; then
+    echo "storage_deploy_lock=failed open" >&2
+    return 2
+  fi
+  if [ -L "$STORAGE_DEPLOY_LOCK_PATH" ] || [ ! -f "$STORAGE_DEPLOY_LOCK_PATH" ] || \
+     [ "$(stat -c %h "$STORAGE_DEPLOY_LOCK_PATH")" != "1" ]; then
+    echo "storage_deploy_lock=failed unsafe_file" >&2
+    return 2
+  fi
+  if ! flock -n "$STORAGE_DEPLOY_LOCK_FD"; then
+    echo "storage_deploy_lock=contended" >&2
+    return 73
+  fi
+  echo "storage_deploy_lock=acquired"
 }
 
 _install_storage_release_guards() {
   _install_storage_release_transaction_helper
-  if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ] || ! command -v systemctl >/dev/null 2>&1; then
+  if ! command -v systemctl >/dev/null 2>&1; then
+    return
+  fi
+  if [ "$(id -u)" -eq 0 ]; then
+    "$PYTHON_BIN" -I -B "$REPO_DIR/deploy/install_managed_systemd_dropin.py" \
+      --source "$REPO_DIR/deploy/systemd/eimemory-storage-release-guard.conf" \
+      --target "$SYSTEM_RPC_DROPIN_DIR/05-eimemory-storage-release-guard.conf" \
+      --root "$SYSTEM_SYSTEMD_DIR" --owner-uid 0 \
+      --render-storage-transaction-python "$PYTHON_BIN" \
+      --render-storage-transaction-helper "$STORAGE_TRANSACTION_HELPER" \
+      --render-storage-transaction-marker "$STORAGE_TRANSACTION_MARKER"
+    "$PYTHON_BIN" -I -B "$STORAGE_TRANSACTION_HELPER" fsync-path \
+      --path "$SYSTEM_RPC_DROPIN_DIR/05-eimemory-storage-release-guard.conf" \
+      --boundary "$SYSTEM_SYSTEMD_DIR"
+    systemctl daemon-reload
+  fi
+  if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ]; then
     return
   fi
   _run_as_service_user mkdir -p "$USER_SYSTEMD_DIR"
   local service_uid unit
-  service_uid="$(id -u "$SERVICE_USER" 2>/dev/null || id -u)"
+  service_uid="$(id -u "$SERVICE_USER")"
   local discovered_output=""
   if ! discovered_output="$(_run_as_service_user bash -s -- "$USER_SYSTEMD_DIR" < "$REPO_DIR/deploy/discover_python_runtime_units.sh")"; then
     echo "Unable to discover storage runtime systemd units" >&2
@@ -363,7 +512,6 @@ _install_storage_release_guards() {
     fi
   done
   for unit in "${!guard_units[@]}"; do
-    _run_as_service_user mkdir -p "$USER_SYSTEMD_DIR/$unit.d"
     "$PYTHON_BIN" -I -B "$REPO_DIR/deploy/install_managed_systemd_dropin.py" \
       --source "$REPO_DIR/deploy/systemd/eimemory-storage-release-guard.conf" \
       --target "$USER_SYSTEMD_DIR/$unit.d/05-eimemory-storage-release-guard.conf" \
@@ -371,6 +519,9 @@ _install_storage_release_guards() {
       --render-storage-transaction-python "$PYTHON_BIN" \
       --render-storage-transaction-helper "$STORAGE_TRANSACTION_HELPER" \
       --render-storage-transaction-marker "$STORAGE_TRANSACTION_MARKER"
+    "$PYTHON_BIN" -I -B "$STORAGE_TRANSACTION_HELPER" fsync-path \
+      --path "$USER_SYSTEMD_DIR/$unit.d/05-eimemory-storage-release-guard.conf" \
+      --boundary "$SERVICE_HOME"
   done
   _user_systemctl daemon-reload
   echo "storage_release_guard=installed units=${#guard_units[@]}"
@@ -436,8 +587,9 @@ _load_storage_release_transaction() {
     "$PYTHON_BIN" -I -B "$STORAGE_TRANSACTION_HELPER" active-units \
       --marker "$STORAGE_TRANSACTION_MARKER"
   )
-  STORAGE_WRITERS_CAPTURED=1
-  STORAGE_WRITERS_STOPPED=1
+  STORAGE_WRITERS_CAPTURED=0
+  STORAGE_WRITERS_RELOADED=1
+  STORAGE_WRITERS_STOPPED=0
   STORAGE_TRANSACTION_ACTIVE=1
 }
 
@@ -464,6 +616,7 @@ _reset_storage_transaction_state() {
   STORAGE_VACUUM_BACKUP=""
   STORAGE_WRITERS_CAPTURED=0
   STORAGE_WRITERS_STOPPED=0
+  STORAGE_WRITERS_RELOADED=0
   ACTIVE_STORAGE_WRITER_UNITS=()
 }
 
@@ -482,12 +635,36 @@ _reconcile_interrupted_storage_release() {
     return 2
   fi
   local current_target current_commit migrations_complete=0 action status_report
-  if ! current_target="$(realpath -e -- "$CURRENT_LINK" 2>/dev/null)"; then
-    echo "storage_release_reconcile=failed current_unresolvable" >&2
+  local expected_commit expected_release
+  _retire_system_rpc_unit
+  _stop_storage_writers
+  if current_target="$(realpath -e -- "$CURRENT_LINK" 2>/dev/null)"; then
+    current_commit="$(basename "$current_target")"
+  elif [ ! -e "$CURRENT_LINK" ] && [ ! -L "$CURRENT_LINK" ] && [ ! -d "$CURRENT_LINK" ]; then
+    expected_commit="$("$PYTHON_BIN" -I -B "$STORAGE_TRANSACTION_HELPER" expected-current \
+      --marker "$STORAGE_TRANSACTION_MARKER")"
+    if [ "$expected_commit" = "$STORAGE_TRANSACTION_CANDIDATE_COMMIT" ]; then
+      expected_release="$RELEASE_DIR"
+    elif [ "$expected_commit" = "$STORAGE_TRANSACTION_PRIOR_COMMIT" ]; then
+      expected_release="$INSTALL_ROOT/releases/$STORAGE_TRANSACTION_PRIOR_COMMIT"
+    else
+      echo "storage_release_reconcile=failed expected_current_unbound" >&2
+      return 2
+    fi
+    if [ ! -d "$expected_release" ] || [ -L "$expected_release" ]; then
+      echo "storage_release_reconcile=failed expected_release_missing" >&2
+      return 2
+    fi
+    ln -sfn "$expected_release" "$CURRENT_LINK.next"
+    mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"
+    _fsync_install_root
+    current_target="$expected_release"
+    current_commit="$expected_commit"
+    echo "storage_release_reconcile=recreated_missing_current commit=$current_commit"
+  else
+    echo "storage_release_reconcile=failed current_dangling_or_ambiguous" >&2
     return 2
   fi
-  current_commit="$(basename "$current_target")"
-  _stop_storage_writers
   if [ "$current_commit" = "$STORAGE_TRANSACTION_CANDIDATE_COMMIT" ] && \
      [[ "$STORAGE_TRANSACTION_PHASE" == rollback_* ]]; then
     migrations_complete=1
@@ -570,6 +747,10 @@ _reconcile_interrupted_storage_release() {
 _storage_release_action() {
   local action="$1"
   shift
+  if [ ! -x "$RELEASE_DIR/.venv/bin/python" ]; then
+    echo "storage_release_action=failed candidate_python_unavailable" >&2
+    return 2
+  fi
   _run_as_service_user env EIMEMORY_ROOT="$EIMEMORY_ROOT" \
     "$RELEASE_DIR/.venv/bin/python" -I -B \
       "$RELEASE_DIR/deploy/migrate_storage_release.py" "$action" \
@@ -587,10 +768,14 @@ _storage_release_action() {
 
 _prepare_storage_for_release() {
   if [ ! -f "$EIMEMORY_ROOT/state/eimemory.sqlite" ]; then
+    if [ "$EIMEMORY_POST_SWITCH_GATES" = "1" ] && [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ]; then
+      echo "storage_release_migration=failed protected_bootstrap_requires_database" >&2
+      return 2
+    fi
     echo "storage_release_migration=skipped database_missing"
     return
   fi
-  local needs_report storage_needed
+  local needs_report storage_needed bootstrap_needed=0 protected_write_needed=0
   needs_report="$(_storage_release_action needs)"
   printf '%s\n' "$needs_report"
   if [ ! -d "$EIMEMORY_STORAGE_SNAPSHOT_ROOT" ] || [ -L "$EIMEMORY_STORAGE_SNAPSHOT_ROOT" ]; then
@@ -600,22 +785,32 @@ _prepare_storage_for_release() {
   storage_needed="$(printf '%s' "$needs_report" | \
     "$RELEASE_DIR/.venv/bin/python" -I -B -c \
       'import json,sys; print("1" if json.load(sys.stdin).get("needed") is True else "0")')"
+  if [ "$EIMEMORY_POST_SWITCH_GATES" = "1" ] && [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ]; then
+    bootstrap_needed=1
+  fi
   if [ "$EIMEMORY_STORAGE_MIGRATION" != "1" ]; then
     if [ "$storage_needed" = "1" ]; then
       echo "storage_release_migration=blocked disabled_with_pending_migrations" >&2
       return 2
     fi
     echo "storage_release_migration=skipped disabled_no_pending_migrations"
-    return
+    storage_needed=0
   fi
-  if [ "$storage_needed" != "1" ]; then
+  if [ "$storage_needed" = "1" ] || [ "$bootstrap_needed" = "1" ]; then
+    protected_write_needed=1
+  fi
+  if [ "$protected_write_needed" != "1" ]; then
     STORAGE_MIGRATION_REQUIRED=0
     echo "storage_release_migration=skipped no_pending_migrations"
     return
   fi
-  STORAGE_MIGRATION_REQUIRED=1
-  _capture_storage_writers
+  STORAGE_MIGRATION_REQUIRED="$storage_needed"
+  if ! _capture_storage_writers; then
+    echo "storage_writer_capture=failed before_transaction" >&2
+    return 2
+  fi
   _begin_storage_release_transaction
+  _retire_system_rpc_unit
   _stop_storage_writers
   _update_storage_release_transaction writers_stopped
   _maybe_fail_stage storage_writer_stop
@@ -633,6 +828,14 @@ _prepare_storage_for_release() {
   _update_storage_release_transaction snapshot_ready
   _maybe_fail_stage storage_snapshot
   _update_storage_release_transaction storage_destructive 1
+  if [ "$bootstrap_needed" = "1" ]; then
+    _run_pre_switch_production_recall_bootstrap
+    _maybe_fail_stage pre_switch_recall_bootstrap
+  fi
+  if [ "$storage_needed" != "1" ]; then
+    echo "storage_release_migration=skipped no_pending_migrations_after_protected_bootstrap"
+    return
+  fi
   _storage_release_action migrate
   _update_storage_release_transaction storage_migrated 1
   _maybe_fail_stage storage_migrate
@@ -720,14 +923,13 @@ _install_current_runtime_metadata() {
     return
   fi
   _run_as_service_user mkdir -p "$USER_SYSTEMD_DIR"
-  SERVICE_UID="$(id -u "$SERVICE_USER" 2>/dev/null || id -u)"
+  SERVICE_UID="$(id -u "$SERVICE_USER")"
   if ! PYTHON_RUNTIME_UNIT_OUTPUT="$(_run_as_service_user bash -s -- "$USER_SYSTEMD_DIR" < "$target_release/deploy/discover_python_runtime_units.sh")"; then
     echo "Unable to discover Python runtime systemd units" >&2
     return 2
   fi
   mapfile -t PYTHON_RUNTIME_UNITS <<< "$PYTHON_RUNTIME_UNIT_OUTPUT"
   for runtime_unit in "${PYTHON_RUNTIME_UNITS[@]}"; do
-    _run_as_service_user mkdir -p "$USER_SYSTEMD_DIR/$runtime_unit.d"
     "$PYTHON_BIN" -I -B "$metadata_release/deploy/install_managed_systemd_dropin.py" \
       --source "$metadata_release/deploy/systemd/eimemory-python-runtime.conf" \
       --target "$USER_SYSTEMD_DIR/$runtime_unit.d/90-eimemory-python-runtime.conf" \
@@ -754,9 +956,8 @@ _refresh_openclaw_gateway_metadata() {
   if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ] || ! command -v systemctl >/dev/null 2>&1; then
     return
   fi
-  _run_as_service_user mkdir -p "$USER_SYSTEMD_DIR/openclaw-gateway.service.d"
   local service_uid
-  service_uid="$(id -u "$SERVICE_USER" 2>/dev/null || id -u)"
+  service_uid="$(id -u "$SERVICE_USER")"
   "$PYTHON_BIN" -I -B "$metadata_release/deploy/install_managed_systemd_dropin.py" \
     --source "$metadata_release/deploy/systemd/openclaw-gateway-eimemory.conf" \
     --target "$USER_SYSTEMD_DIR/openclaw-gateway.service.d/90-eimemory-runtime.conf" \
@@ -795,7 +996,6 @@ _restart_current_services() {
 _install_candidate_runtime_metadata() {
   if [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ] && command -v systemctl >/dev/null 2>&1; then
     _run_as_service_user mkdir -p "$USER_SYSTEMD_DIR"
-    _run_as_service_user mkdir -p "$USER_SYSTEMD_DIR/openclaw-gateway.service.d"
     _install_as_service_user 0644 \
       "$RELEASE_DIR/deploy/systemd/openclaw-loop-watch.service" "$USER_SYSTEMD_DIR/openclaw-loop-watch.service"
     _install_as_service_user 0644 \
@@ -1056,6 +1256,7 @@ if [ "$(stat -c %u "$INSTALL_ROOT/releases")" != "$(id -u)" ]; then
   exit 2
 fi
 chmod 0700 "$INSTALL_ROOT/releases"
+_acquire_storage_deploy_lock
 
 PREVIOUS_CURRENT=""
 PREVIOUS_COMMIT=""
@@ -1079,6 +1280,7 @@ STORAGE_SNAPSHOT_MANIFEST_SHA256=""
 STORAGE_VACUUM_BACKUP=""
 STORAGE_WRITERS_CAPTURED=0
 STORAGE_WRITERS_STOPPED=0
+STORAGE_WRITERS_RELOADED=0
 STORAGE_MIGRATION_REQUIRED=0
 STORAGE_TRANSACTION_ACTIVE=0
 
@@ -1143,6 +1345,19 @@ cleanup_stage() {
       ROLLBACK_RESTORED=1
     else
       echo "rollback_preserved_failed_release=$RELEASE_DIR" >&2
+    fi
+  elif [ "$COMMITTED" != "1" ] && [ "$STORAGE_TRANSACTION_ACTIVE" = "1" ]; then
+    if "$PYTHON_BIN" -I -B "$STORAGE_TRANSACTION_HELPER" abort-safe \
+      --marker "$STORAGE_TRANSACTION_MARKER"; then
+      if _clear_storage_release_transaction; then
+        if ! _restart_storage_writers; then
+          echo "rollback_step=partial_stop_restart status=failed" >&2
+        fi
+      else
+        echo "storage_release_transaction=pre_destructive_abort_failed_closed clear_failed" >&2
+      fi
+    else
+      echo "storage_release_transaction=pre_destructive_abort_failed_closed unsafe_marker" >&2
     fi
   elif [ "$COMMITTED" != "1" ] && [ "$STORAGE_WRITERS_STOPPED" = "1" ]; then
     if ! _restart_storage_writers; then
@@ -1231,13 +1446,9 @@ if [ -x "$OPENCLAW_BIN" ]; then
   "$PYTHON_BIN" -I -B "$RELEASE_DIR/deploy/ensure_openclaw_bridge_config.py" \
     --path "$OPENCLAW_LOOP_CONFIG_PATH"
 fi
-_retire_system_rpc_unit
 
-# The previous release is still live here.  Capture/bind the predecessor
-# baseline (or an explicit data-accumulation state) before changing current.
-_run_pre_switch_production_recall_bootstrap
-_maybe_fail_stage pre_switch_recall_bootstrap
 _prepare_storage_for_release
+_retire_system_rpc_unit
 
 ln -sfn "$RELEASE_DIR" "$CURRENT_LINK.next"
 mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"

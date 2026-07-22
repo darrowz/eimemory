@@ -45,6 +45,11 @@ def install_managed_dropin(
     root = Path(root)
     if source.is_symlink() or not source.is_file():
         raise ManagedDropinError("source must be a regular non-symlink file")
+    try:
+        if source.resolve(strict=True) != Path(os.path.abspath(source)):
+            raise ManagedDropinError("source path must not traverse symlink components")
+    except OSError as exc:
+        raise ManagedDropinError("source path must resolve to a regular file") from exc
     payload = source.read_bytes()
     if not _is_managed(payload):
         raise ManagedDropinError("source is missing the managed marker")
@@ -132,9 +137,12 @@ def _install_with_directory_fds(
             raise ManagedDropinError("systemd root has an unexpected owner")
         parent_name = target.parent.name
         try:
+            parent_created = False
             parent_fd = os.open(parent_name, DIRECTORY_FLAGS, dir_fd=root_fd)
         except FileNotFoundError:
             os.mkdir(parent_name, mode=0o755, dir_fd=root_fd)
+            os.fsync(root_fd)
+            parent_created = True
             parent_fd = os.open(parent_name, DIRECTORY_FLAGS, dir_fd=root_fd)
         except OSError as exc:
             raise ManagedDropinError("drop-in directory must not be a symlink") from exc
@@ -143,6 +151,8 @@ def _install_with_directory_fds(
                 raise ManagedDropinError("drop-in directory has an unexpected owner")
             _validate_existing_target_at(parent_fd=parent_fd, target_name=target.name)
             _atomic_write_at(parent_fd=parent_fd, target_name=target.name, payload=payload)
+            if parent_created:
+                os.fsync(root_fd)
         finally:
             os.close(parent_fd)
     finally:
@@ -226,6 +236,7 @@ def _install_portable(
         raise ManagedDropinError("systemd root must not traverse symlinks")
     if root.stat().st_uid not in allowed_owners:
         raise ManagedDropinError("systemd root has an unexpected owner")
+    parent_created = not target.parent.exists()
     target.parent.mkdir(mode=0o755, exist_ok=True)
     if target.parent.is_symlink() or not target.parent.is_dir():
         raise ManagedDropinError("drop-in directory must not be a symlink")
@@ -248,8 +259,29 @@ def _install_portable(
             os.fsync(handle.fileno())
         os.chmod(temp_path, 0o644)
         os.replace(temp_path, target)
+        _fsync_portable_if_supported(target, directory=False)
+        _fsync_portable_if_supported(target.parent, directory=True)
+        if parent_created:
+            _fsync_portable_if_supported(root, directory=True)
     finally:
         temp_path.unlink(missing_ok=True)
+
+
+def _fsync_portable_if_supported(path: Path, *, directory: bool) -> None:
+    flags = os.O_RDONLY
+    if directory:
+        flags |= int(getattr(os, "O_DIRECTORY", 0))
+    try:
+        descriptor = os.open(path, flags)
+    except (AttributeError, NotImplementedError, OSError):
+        return
+    try:
+        try:
+            os.fsync(descriptor)
+        except (AttributeError, NotImplementedError, OSError):
+            return
+    finally:
+        os.close(descriptor)
 
 
 def main(argv: list[str] | None = None) -> int:
