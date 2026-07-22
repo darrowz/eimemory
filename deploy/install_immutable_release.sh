@@ -1120,22 +1120,29 @@ _capture_prior_health_snapshot() {
     echo "prior_health_capture=failed" >&2
     return 2
   fi
-  chmod 0600 "$snapshot_file"
+  PRIOR_HEALTH_SNAPSHOT_FILE="$snapshot_file"
+  if ! chmod 0600 "$snapshot_file"; then
+    rm -f -- "$PRIOR_HEALTH_SNAPSHOT_FILE"
+    PRIOR_HEALTH_SNAPSHOT_FILE=""
+    echo "prior_health_capture=failed" >&2
+    return 2
+  fi
   if ! "$RELEASE_DIR/.venv/bin/python" -I -B \
       "$RELEASE_DIR/deploy/capture_prior_health_snapshot.py" \
       --health-url "$EIMEMORY_HEALTH_URL" >"$snapshot_file"; then
-    rm -f -- "$snapshot_file"
+    rm -f -- "$PRIOR_HEALTH_SNAPSHOT_FILE"
+    PRIOR_HEALTH_SNAPSHOT_FILE=""
     echo "prior_health_capture=failed" >&2
     return 2
   fi
   if [ "$(id -u)" -eq 0 ]; then
     if ! chown "$SERVICE_USER:$SERVICE_GROUP" "$snapshot_file"; then
-      rm -f -- "$snapshot_file"
+      rm -f -- "$PRIOR_HEALTH_SNAPSHOT_FILE"
+      PRIOR_HEALTH_SNAPSHOT_FILE=""
       echo "prior_health_capture=failed" >&2
       return 2
     fi
   fi
-  PRIOR_HEALTH_SNAPSHOT_FILE="$snapshot_file"
 }
 
 _run_pre_switch_production_recall_bootstrap() {

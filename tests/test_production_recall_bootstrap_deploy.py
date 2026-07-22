@@ -2,11 +2,15 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import json
+import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+import shutil
+import stat
 import subprocess
 import sys
 from threading import Thread
+from types import SimpleNamespace
 
 import pytest
 
@@ -98,6 +102,24 @@ def _link(link: Path, target: Path) -> None:
         link.symlink_to(target, target_is_directory=True)
     except OSError:
         subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)], check=True, capture_output=True)
+
+
+def _configure_snapshot_file_security(monkeypatch, snapshot: Path) -> None:
+    os.chmod(snapshot, 0o600)
+    monkeypatch.setattr(bootstrap_deploy, "_effective_euid", lambda: snapshot.stat().st_uid)
+    if os.name == "nt":
+        original = bootstrap_deploy._prior_health_snapshot_metadata_error
+
+        def windows_mode_contract(metadata, *, expected_euid):
+            mapped = SimpleNamespace(
+                st_mode=(int(metadata.st_mode) & ~0o777) | 0o600,
+                st_uid=metadata.st_uid,
+                st_nlink=metadata.st_nlink,
+                st_size=metadata.st_size,
+            )
+            return original(mapped, expected_euid=expected_euid)
+
+        monkeypatch.setattr(bootstrap_deploy, "_prior_health_snapshot_metadata_error", windows_mode_contract)
 
 
 @contextmanager
@@ -417,8 +439,10 @@ def test_bootstrap_cli_loads_a_bounded_snapshot_and_passes_it_to_the_gate(tmp_pa
         "health_url": "http://127.0.0.1:1/health",
         "health": {"ok": True},
     }
-    snapshot_path = tmp_path / "prior-health.json"
+    snapshot_path = tmp_path / f".prior-health-{'a' * 40}-Ab12Cd34.json"
     snapshot_path.write_text(json.dumps(snapshot), encoding="utf-8")
+    _configure_snapshot_file_security(monkeypatch, snapshot_path)
+    monkeypatch.setattr(bootstrap_deploy, "DEFAULT_DEPLOYMENT_CURRENT_LINK", str(tmp_path / "current"))
     args = _bootstrap_args(tmp_path) + ["--prior-health-snapshot", str(snapshot_path)]
 
     exit_code = bootstrap_deploy.main(args)
@@ -473,8 +497,10 @@ def test_bootstrap_cli_rejects_non_dict_or_oversized_snapshot_before_opening_run
     capsys,
     payload: str,
 ) -> None:
-    snapshot_path = tmp_path / "prior-health.json"
+    snapshot_path = tmp_path / f".prior-health-{'a' * 40}-Ab12Cd34.json"
     snapshot_path.write_text(payload, encoding="utf-8")
+    _configure_snapshot_file_security(monkeypatch, snapshot_path)
+    monkeypatch.setattr(bootstrap_deploy, "DEFAULT_DEPLOYMENT_CURRENT_LINK", str(tmp_path / "current"))
     monkeypatch.setattr(
         bootstrap_deploy.Runtime,
         "create",
@@ -488,6 +514,125 @@ def test_bootstrap_cli_rejects_non_dict_or_oversized_snapshot_before_opening_run
 
     assert exit_code == 2
     assert report == {"ok": False, "reason": "prior_health_snapshot_invalid", "status": "blocked"}
+
+
+def test_snapshot_loader_rejects_paths_outside_trusted_install_root_or_wrong_name(tmp_path, monkeypatch) -> None:
+    commit = "a" * 40
+    install_root = tmp_path / "install"
+    install_root.mkdir()
+    outside = tmp_path / f".prior-health-{commit}-Ab12Cd34.json"
+    outside.write_text("{}", encoding="utf-8")
+    wrong_name = install_root / "prior-health.json"
+    wrong_name.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(bootstrap_deploy, "DEFAULT_DEPLOYMENT_CURRENT_LINK", str(install_root / "current"))
+
+    for candidate in (outside, wrong_name):
+        with pytest.raises(ValueError, match="invalid prior health snapshot"):
+            bootstrap_deploy._load_prior_health_snapshot(
+                str(candidate),
+                candidate_commit=commit,
+            )
+
+
+def test_snapshot_loader_rejects_symlinked_install_root_ancestor(tmp_path, monkeypatch) -> None:
+    commit = "a" * 40
+    real_parent = tmp_path / "real-parent"
+    install_root = real_parent / "install"
+    install_root.mkdir(parents=True)
+    snapshot = install_root / f".prior-health-{commit}-Ab12Cd34.json"
+    snapshot.write_text("{}", encoding="utf-8")
+    linked_parent = tmp_path / "linked-parent"
+    _link(linked_parent, real_parent)
+    linked_snapshot = linked_parent / "install" / snapshot.name
+    monkeypatch.setattr(
+        bootstrap_deploy,
+        "DEFAULT_DEPLOYMENT_CURRENT_LINK",
+        str(linked_parent / "install" / "current"),
+    )
+
+    with pytest.raises(ValueError, match="invalid prior health snapshot"):
+        bootstrap_deploy._load_prior_health_snapshot(
+            str(linked_snapshot),
+            candidate_commit=commit,
+        )
+
+
+@pytest.mark.parametrize(
+    ("changes", "expected"),
+    [
+        ({"st_uid": 1001}, "owner"),
+        ({"st_mode": stat.S_IFREG | 0o620}, "mode"),
+        ({"st_mode": stat.S_IFREG | 0o606}, "mode"),
+        ({"st_nlink": 2}, "link"),
+        ({"st_mode": stat.S_IFDIR | 0o600}, "regular"),
+        ({"st_size": 65537}, "size"),
+    ],
+)
+def test_snapshot_open_metadata_contract_fails_closed(changes: dict, expected: str) -> None:
+    values = {
+        "st_mode": stat.S_IFREG | 0o600,
+        "st_uid": 1000,
+        "st_nlink": 1,
+        "st_size": 10,
+    }
+    values.update(changes)
+
+    assert bootstrap_deploy._prior_health_snapshot_metadata_error(
+        SimpleNamespace(**values),
+        expected_euid=1000,
+    ) == expected
+
+
+def test_snapshot_loader_rejects_hardlinked_snapshot(tmp_path, monkeypatch) -> None:
+    if not hasattr(os, "link"):
+        pytest.skip("hard links are unavailable")
+    commit = "a" * 40
+    install_root = tmp_path / "install"
+    install_root.mkdir()
+    snapshot = install_root / f".prior-health-{commit}-Ab12Cd34.json"
+    snapshot.write_text("{}", encoding="utf-8")
+    _configure_snapshot_file_security(monkeypatch, snapshot)
+    monkeypatch.setattr(bootstrap_deploy, "DEFAULT_DEPLOYMENT_CURRENT_LINK", str(install_root / "current"))
+    hardlink = tmp_path / "snapshot-hardlink.json"
+    try:
+        os.link(snapshot, hardlink)
+    except OSError:
+        pytest.skip("hard links are unavailable")
+    with pytest.raises(ValueError, match="invalid prior health snapshot"):
+        bootstrap_deploy._load_prior_health_snapshot(
+            str(snapshot),
+            candidate_commit=commit,
+        )
+
+
+def test_capture_chmod_failure_removes_bound_temporary_snapshot(tmp_path) -> None:
+    bash = Path(r"C:\Program Files\Git\bin\bash.exe") if os.name == "nt" else Path(shutil.which("bash") or "")
+    if not bash.is_file():
+        pytest.skip("bash is unavailable")
+    installer = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
+    body = installer.split("_capture_prior_health_snapshot() {", 1)[1].split("\n}", 1)[0]
+    harness = f'''#!/usr/bin/env bash
+set -euo pipefail
+_capture_prior_health_snapshot() {{{body}
+}}
+INSTALL_ROOT="$1"
+COMMIT="{'a' * 40}"
+EIMEMORY_POST_SWITCH_GATES=1
+USER_SYSTEMD_ENABLE_SERVICE=1
+PRIOR_HEALTH_SNAPSHOT_FILE=""
+chmod() {{ return 23; }}
+_capture_prior_health_snapshot
+'''
+
+    result = subprocess.run(
+        [str(bash), "-c", harness, "snapshot-chmod", tmp_path.as_posix()],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert list(tmp_path.glob(".prior-health-*.json")) == []
 
 
 def test_installer_runs_candidate_bootstrap_before_atomic_current_switch() -> None:
