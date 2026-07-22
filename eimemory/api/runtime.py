@@ -1421,13 +1421,25 @@ class Runtime:
                 "blocked_reason": skipped_reason or "production_recall_dataset_unconfigured",
                 "dataset_source": dataset_source,
             }
+        preload_report = self.run_production_recall_eval(
+            dataset,
+            seed=False,
+            scope=exact_scope,
+            persist_report=False,
+        )
+        preload = {
+            "ok": preload_report.get("ok") is True,
+            "gate_ok": preload_report.get("gate_ok") is True,
+            "sample_count": int(preload_report.get("sample_count") or 0),
+            "latency_ms_p95": float(preload_report.get("latency_ms_p95") or 0.0),
+        }
         report = self.run_production_recall_eval(
             dataset,
             seed=False,
             scope=exact_scope,
             persist_report=True,
         )
-        return {**report, "dataset_source": dataset_source}
+        return {**report, "dataset_source": dataset_source, "preload": preload}
 
     def run_real_task_replay(
         self,

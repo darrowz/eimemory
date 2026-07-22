@@ -129,6 +129,24 @@ def test_release_closure_summary_marks_data_accumulating_rehearsal_as_gate_succe
     assert summary["readiness_stage"] == "data_accumulating"
 
 
+def test_release_closure_summary_does_not_misreport_execution_ok_as_quality_ok() -> None:
+    summary = summarize_release_closure(
+        {
+            "ok": False,
+            "production_recall_gate": {
+                "ok": True,
+                "gate_ok": False,
+                "gate_status": "diagnostic",
+                "blocked_reason": "recall_quality_gate_failed",
+            },
+        }
+    )
+
+    assert summary["production_recall_gate_ok"] is False
+    assert summary["production_recall_gate_status"] == "diagnostic"
+    assert summary["production_recall_gate_reason"] == "recall_quality_gate_failed"
+
+
 def test_release_closure_summary_cli_returns_nonzero_for_false_report_under_bash(tmp_path) -> None:
     report_path = tmp_path / "closure.json"
     report_path.write_text(

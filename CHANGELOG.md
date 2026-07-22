@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Planned
 - Multi-agent memory coordination
 
+## [1.9.86] - 2026-07-23
+
+### Fixed
+- Prewarm the configured recall workload without persisting evidence before the measured production quality gate, eliminating release-only cold-cache latency failures while retaining the measured threshold contract.
+- Report diagnostic recall quality from the actual gate result instead of conflating evaluator execution success with threshold success, including the effective status, blocker, and persisted evidence identifier.
+
 ## [1.9.85] - 2026-07-22
 
 ### Fixed

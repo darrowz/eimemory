@@ -21,6 +21,17 @@ def summarize_release_closure(report: object) -> dict[str, Any]:
     deployment = report.get("deployment") if isinstance(report.get("deployment"), dict) else {}
     replay = report.get("replay_bootstrap") if isinstance(report.get("replay_bootstrap"), dict) else {}
     recall_gate = report.get("production_recall_gate") if isinstance(report.get("production_recall_gate"), dict) else {}
+    recall_threshold = (
+        recall_gate.get("threshold_gate")
+        if isinstance(recall_gate.get("threshold_gate"), dict)
+        else {}
+    )
+    if "gate_ok" in recall_gate:
+        recall_gate_ok = recall_gate.get("gate_ok") is True
+    elif recall_threshold:
+        recall_gate_ok = recall_threshold.get("ok") is True
+    else:
+        recall_gate_ok = recall_gate.get("ok") is True
     live = report.get("live_acceptance") if isinstance(report.get("live_acceptance"), dict) else {}
     rehearsal = report.get("closure_rehearsal") if isinstance(report.get("closure_rehearsal"), dict) else {}
     readiness = report.get("readiness") if isinstance(report.get("readiness"), dict) else {}
@@ -35,10 +46,19 @@ def summarize_release_closure(report: object) -> dict[str, Any]:
         "commit": str(deployment.get("commit") or ""),
         "version": str(deployment.get("version") or ""),
         "receipt_id": str(deployment.get("promotion_request_id") or ""),
-        "production_recall_gate_ok": recall_gate.get("ok") is True,
-        "production_recall_gate_status": str(recall_gate.get("status") or ""),
-        "production_recall_gate_report_id": str(recall_gate.get("report_id") or ""),
-        "production_recall_gate_reason": str(recall_gate.get("reason") or ""),
+        "production_recall_gate_ok": recall_gate_ok,
+        "production_recall_gate_status": str(
+            recall_gate.get("status") or recall_gate.get("gate_status") or ""
+        ),
+        "production_recall_gate_report_id": str(
+            recall_gate.get("report_id")
+            or recall_gate.get("record_id")
+            or recall_gate.get("persisted_record_id")
+            or ""
+        ),
+        "production_recall_gate_reason": str(
+            recall_gate.get("reason") or recall_gate.get("blocked_reason") or ""
+        ),
         "replay_ok": replay.get("ok") is True,
         "live_acceptance_ok": live.get("ok") is True,
         "live_pass_count": int(live.get("pass_count") or 0),

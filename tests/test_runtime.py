@@ -1807,3 +1807,55 @@ def test_runtime_recall_returns_empty_bundle_for_blank_query(tmp_path) -> None:
         limit=10,
     )
     assert unknowns == []
+
+
+def test_configured_production_recall_gate_prewarms_before_measured_run(
+    tmp_path, monkeypatch
+) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    dataset = {
+        "name": "generated-smoke",
+        "scope": {"agent_id": "main", "workspace_id": "repo-x"},
+        "cases": [{"case_id": "one", "query": "alpha"}],
+    }
+    monkeypatch.setattr(
+        "eimemory.scheduler.jobs._production_recall_dataset",
+        lambda _runtime, *, scope: (dataset, True, "generated_records", ""),
+    )
+    calls = []
+
+    def fake_run(_dataset, *, seed, scope, persist_report):
+        calls.append({"seed": seed, "scope": scope, "persist_report": persist_report})
+        if not persist_report:
+            return {
+                "ok": True,
+                "gate_ok": False,
+                "sample_count": 1,
+                "latency_ms_p95": 2400.0,
+            }
+        return {
+            "ok": True,
+            "gate_ok": True,
+            "accepted": False,
+            "gate_status": "diagnostic",
+            "sample_count": 1,
+            "latency_ms_p95": 1200.0,
+        }
+
+    runtime.run_production_recall_eval = fake_run
+    try:
+        report = runtime.run_configured_production_recall_gate(
+            scope={"agent_id": "main", "workspace_id": "repo-x"}
+        )
+    finally:
+        runtime.close()
+
+    assert [call["persist_report"] for call in calls] == [False, True]
+    assert report["gate_ok"] is True
+    assert report["latency_ms_p95"] == 1200.0
+    assert report["preload"] == {
+        "ok": True,
+        "gate_ok": False,
+        "sample_count": 1,
+        "latency_ms_p95": 2400.0,
+    }
