@@ -794,6 +794,10 @@ class GovernedRecallEngine:
             allow_operational_recall=operational_recall_allowed,
         )
         blocked_counts.update(reflection_online_gate_counts)
+        reported_online_gate_counts = Counter()
+        reported_online_gate_counts.update(rule_online_gate_counts)
+        reported_online_gate_counts.update(online_gate_counts)
+        reported_online_gate_counts.update(reflection_online_gate_counts)
         if blocked_counts:
             recall_filters["blocked_counts"] = dict(sorted(blocked_counts.items()))
         event_graph_summary = memory._event_graph_summary(items, graph_edge_refs)
@@ -844,7 +848,7 @@ class GovernedRecallEngine:
                 "online_recall_gate": {
                     "ok": True,
                     "mode": "bypassed" if operational_recall_allowed else "enforced",
-                    "blocked_counts": dict(sorted(online_gate_counts.items())),
+                    "blocked_counts": dict(sorted(reported_online_gate_counts.items())),
                 },
                 "scoring": memory._scoring_for_items(
                     items,

@@ -36,6 +36,9 @@ def install_managed_dropin(
     owner_uid: int | None = None,
     render_commit: str = "",
     render_evidence_receipt_env_file: str = "",
+    render_storage_transaction_python: str = "",
+    render_storage_transaction_helper: str = "",
+    render_storage_transaction_marker: str = "",
 ) -> None:
     source = Path(source)
     target = Path(target)
@@ -66,6 +69,42 @@ def install_managed_dropin(
         token = b"@EIMEMORY_EVIDENCE_RECEIPT_ENV_FILE@"
         if token not in payload:
             raise ManagedDropinError("managed source is missing the evidence receipt env file token")
+        payload = payload.replace(token, os.fsencode(rendered_path))
+    storage_tokens = (
+        (
+            b"@EIMEMORY_STORAGE_TRANSACTION_PYTHON@",
+            render_storage_transaction_python,
+            "storage transaction Python",
+        ),
+        (
+            b"@EIMEMORY_STORAGE_TRANSACTION_HELPER@",
+            render_storage_transaction_helper,
+            "storage transaction helper",
+        ),
+        (
+            b"@EIMEMORY_STORAGE_TRANSACTION_MARKER@",
+            render_storage_transaction_marker,
+            "storage transaction marker",
+        ),
+    )
+    supplied_storage_paths = [value for _token, value, _label in storage_tokens if value]
+    if supplied_storage_paths and len(supplied_storage_paths) != len(storage_tokens):
+        raise ManagedDropinError("all storage transaction guard paths must be rendered together")
+    for token, value, label in storage_tokens:
+        if not value:
+            continue
+        rendered_path = Path(value)
+        if (
+            not rendered_path.is_absolute()
+            or ".." in rendered_path.parts
+            or any(character in value for character in "\r\n\0")
+        ):
+            raise ManagedDropinError(f"{label} must be an absolute normalized path")
+        safe_path_pattern = r"[A-Za-z0-9_./:-]+" if os.name == "posix" else r"[A-Za-z0-9_./:\\-]+"
+        if not re.fullmatch(safe_path_pattern, str(rendered_path)):
+            raise ManagedDropinError(f"{label} path must be systemd-safe")
+        if token not in payload:
+            raise ManagedDropinError(f"managed source is missing the {label} token")
         payload = payload.replace(token, os.fsencode(rendered_path))
 
     if target.parent.parent != root or not target.parent.name.endswith(".service.d"):
@@ -221,6 +260,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--owner-uid", type=int)
     parser.add_argument("--render-commit", default="")
     parser.add_argument("--render-evidence-receipt-env-file", default="")
+    parser.add_argument("--render-storage-transaction-python", default="")
+    parser.add_argument("--render-storage-transaction-helper", default="")
+    parser.add_argument("--render-storage-transaction-marker", default="")
     args = parser.parse_args(argv)
     try:
         install_managed_dropin(
@@ -230,6 +272,9 @@ def main(argv: list[str] | None = None) -> int:
             owner_uid=args.owner_uid,
             render_commit=args.render_commit,
             render_evidence_receipt_env_file=args.render_evidence_receipt_env_file,
+            render_storage_transaction_python=args.render_storage_transaction_python,
+            render_storage_transaction_helper=args.render_storage_transaction_helper,
+            render_storage_transaction_marker=args.render_storage_transaction_marker,
         )
     except (ManagedDropinError, OSError) as exc:
         parser.exit(2, f"managed drop-in install failed: {exc}\n")

@@ -42,6 +42,19 @@ def _file_digest(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _manifest_file_size(entry: dict[str, Any]) -> int:
+    value = entry.get("size", -1)
+    if isinstance(value, bool):
+        raise StorageMaintenanceError("storage snapshot file size is invalid")
+    try:
+        size = int(value)
+    except (TypeError, ValueError) as exc:
+        raise StorageMaintenanceError("storage snapshot file size is invalid") from exc
+    if size < 0:
+        raise StorageMaintenanceError("storage snapshot file size is invalid")
+    return size
+
+
 def _fsync_file(path: Path) -> None:
     descriptor = os.open(path, os.O_RDWR | getattr(os, "O_BINARY", 0))
     try:
@@ -427,7 +440,7 @@ def verify_sealed_snapshot_identity(
         raise StorageMaintenanceError("sealed storage snapshot file set mismatch")
     sealed_paths = [manifest_path, *actual_paths.values()]
     for relative, path in actual_paths.items():
-        if int(path.stat(follow_symlinks=False).st_size) != int(expected[relative].get("size") or -1):
+        if int(path.stat(follow_symlinks=False).st_size) != _manifest_file_size(expected[relative]):
             raise StorageMaintenanceError("sealed storage snapshot file size mismatch")
     for path in sealed_paths:
         if int(path.stat(follow_symlinks=False).st_mode) & 0o222:
@@ -498,7 +511,7 @@ def verify_storage_snapshot(snapshot_dir: str | Path) -> dict[str, Any]:
         raise StorageMaintenanceError("storage snapshot file set mismatch")
     for relative, path in actual_paths.items():
         entry = expected[relative]
-        if int(entry.get("size") or -1) != int(path.stat().st_size):
+        if _manifest_file_size(entry) != int(path.stat().st_size):
             raise StorageMaintenanceError("storage snapshot file size mismatch")
         if str(entry.get("sha256") or "") != _file_digest(path):
             raise StorageMaintenanceError("storage snapshot file digest mismatch")
@@ -564,7 +577,7 @@ def _verify_staged_snapshot_copy(staging: Path, snapshot: Path) -> None:
             raise StorageMaintenanceError("storage snapshot file manifest is invalid")
         relative = Path(str(entry.get("path") or ""))
         target = staging / relative
-        if not target.exists() or int(target.stat().st_size) != int(entry.get("size") or -1):
+        if not target.exists() or int(target.stat().st_size) != _manifest_file_size(entry):
             raise StorageMaintenanceError("staged restore file size mismatch")
         if _file_digest(target) != str(entry.get("sha256") or ""):
             raise StorageMaintenanceError("staged restore file digest mismatch")
@@ -575,6 +588,189 @@ def _remove_path(path: Path) -> None:
         shutil.rmtree(path)
     else:
         path.unlink(missing_ok=True)
+
+
+def _read_storage_journal(path: Path, *, schema: str) -> dict[str, Any]:
+    try:
+        journal = read_json_strict(path, dict)
+    except (OSError, ValueError) as exc:
+        raise StorageMaintenanceError(f"{schema} is invalid") from exc
+    if str(journal.get("schema") or "") != schema:
+        raise StorageMaintenanceError(f"{schema} is invalid")
+    return journal
+
+
+def _bound_journal_path(value: Any, *, parent: Path, label: str) -> Path:
+    path = Path(str(value or ""))
+    if not path.is_absolute() or path.parent != parent or path.name in {"", ".", ".."}:
+        raise StorageMaintenanceError(f"{label} escapes storage state")
+    if path.is_symlink():
+        raise StorageMaintenanceError(f"{label} must not be a symlink")
+    return path
+
+
+def recover_storage_restore(
+    *,
+    db_path: str | Path,
+    segment_root: str | Path,
+) -> dict[str, Any]:
+    """Rollback an interrupted snapshot restore using its durable journal."""
+
+    database = Path(db_path)
+    segments = Path(segment_root)
+    journal_path = database.parent / ".storage-restore-journal.json"
+    if not journal_path.exists():
+        return {
+            "schema": "storage_restore_recovery.v1",
+            "ok": True,
+            "recovered": "none",
+        }
+    lock_path = database.parent / ".storage-maintenance.lock"
+    with _exclusive_maintenance_lock(lock_path):
+        journal = _read_storage_journal(journal_path, schema="storage_restore_journal.v1")
+        entries = journal.get("entries")
+        if not isinstance(entries, list) or not entries:
+            raise StorageMaintenanceError("storage restore journal entries are invalid")
+        allowed_live = {Path(str(database) + suffix) for suffix in _DB_SIDECAR_SUFFIXES}
+        allowed_live.add(segments)
+        seen: set[Path] = set()
+        validated: list[tuple[Path, Path, bool, str]] = []
+        for raw_entry in entries:
+            if not isinstance(raw_entry, dict):
+                raise StorageMaintenanceError("storage restore journal entry is invalid")
+            live = _bound_journal_path(
+                raw_entry.get("live"), parent=database.parent, label="restore live path"
+            )
+            backup = _bound_journal_path(
+                raw_entry.get("backup"), parent=database.parent, label="restore backup path"
+            )
+            if live not in allowed_live or live in seen:
+                raise StorageMaintenanceError("storage restore journal live path is invalid")
+            if not backup.name.startswith(f".{live.name}.restore-old-"):
+                raise StorageMaintenanceError("storage restore journal backup path is invalid")
+            state = str(raw_entry.get("state") or "")
+            if state not in {"planned", "moving_old", "old_moved", "installing", "installed"}:
+                raise StorageMaintenanceError("storage restore journal state is invalid")
+            seen.add(live)
+            validated.append((live, backup, bool(raw_entry.get("existed")), state))
+
+        for live, backup, existed, state in reversed(validated):
+            if backup.exists():
+                _validate_regular(backup) if backup.is_file() else None
+                if live.exists() or live.is_symlink():
+                    _remove_path(live)
+                os.replace(backup, live)
+                continue
+            if existed:
+                if not live.exists() or state in {"old_moved", "installing", "installed"}:
+                    if str(journal.get("status") or "") != "rolled_back_after_failure":
+                        raise StorageMaintenanceError(
+                            "storage restore journal is missing an original backup"
+                        )
+                continue
+            if state in {"installing", "installed"} and (live.exists() or live.is_symlink()):
+                _remove_path(live)
+
+        _fsync_directory(database.parent)
+        if not database.is_file():
+            raise StorageMaintenanceError("storage restore recovery left database missing")
+        _validate_sqlite_database(database)
+        if segments.exists():
+            _validate_live_payload_pointers(database, segments)
+        journal_path.unlink()
+        _fsync_directory(database.parent)
+    return {
+        "schema": "storage_restore_recovery.v1",
+        "ok": True,
+        "recovered": "rolled_back",
+    }
+
+
+def _validated_vacuum_journal(
+    database: Path,
+    journal_path: Path,
+) -> tuple[dict[str, Any], Path, Path]:
+    journal = _read_storage_journal(journal_path, schema="storage_vacuum_journal.v1")
+    if Path(str(journal.get("database") or "")) != database:
+        raise StorageMaintenanceError("storage vacuum journal database binding mismatch")
+    temporary = _bound_journal_path(
+        journal.get("temporary"), parent=database.parent, label="vacuum temporary path"
+    )
+    backup = _bound_journal_path(
+        journal.get("backup"), parent=database.parent, label="vacuum backup path"
+    )
+    if not temporary.name.startswith(f".{database.name}.vacuum-"):
+        raise StorageMaintenanceError("storage vacuum journal temporary path is invalid")
+    if not backup.name.startswith(f".{database.name}.pre-vacuum-") or not backup.name.endswith(
+        ".bak"
+    ):
+        raise StorageMaintenanceError("storage vacuum journal backup path is invalid")
+    phase = str(journal.get("phase") or "")
+    if phase not in {
+        "prepared",
+        "moving_live",
+        "live_moved",
+        "installing_candidate",
+        "candidate_installed",
+        "complete",
+    }:
+        raise StorageMaintenanceError("storage vacuum journal phase is invalid")
+    return journal, temporary, backup
+
+
+def _recover_vacuum_journal_locked(database: Path, journal_path: Path) -> dict[str, Any]:
+    journal, temporary, backup = _validated_vacuum_journal(database, journal_path)
+    if str(journal.get("status") or "") == "complete":
+        if not database.is_file():
+            raise StorageMaintenanceError("completed vacuum journal has no live database")
+        _validate_sqlite_database(database)
+        return {
+            "schema": "storage_vacuum_recovery.v1",
+            "ok": True,
+            "recovered": "complete",
+            "backup_path": str(backup),
+            "before_sha256": str(journal.get("before_sha256") or ""),
+            "after_sha256": _file_digest(database),
+        }
+    if str(journal.get("status") or "") != "in_progress":
+        raise StorageMaintenanceError("storage vacuum journal status is invalid")
+    if backup.exists():
+        _validate_regular(backup)
+        if database.exists() or database.is_symlink():
+            _remove_path(database)
+        os.replace(backup, database)
+    elif not database.is_file():
+        raise StorageMaintenanceError("storage vacuum recovery has no live database or backup")
+    temporary.unlink(missing_ok=True)
+    _fsync_file(database)
+    _fsync_directory(database.parent)
+    _validate_sqlite_database(database)
+    expected = str(journal.get("before_sha256") or "")
+    if expected and _file_digest(database) != expected:
+        raise StorageMaintenanceError("storage vacuum recovery database digest mismatch")
+    journal_path.unlink()
+    _fsync_directory(database.parent)
+    return {
+        "schema": "storage_vacuum_recovery.v1",
+        "ok": True,
+        "recovered": "rolled_back",
+    }
+
+
+def recover_vacuum_journal(db_path: str | Path) -> dict[str, Any]:
+    """Recover an interrupted VACUUM swap without opening a missing database."""
+
+    database = Path(db_path)
+    journal_path = database.parent / ".storage-vacuum-journal.json"
+    if not journal_path.exists():
+        return {
+            "schema": "storage_vacuum_recovery.v1",
+            "ok": True,
+            "recovered": "none",
+        }
+    lock_path = database.parent / ".storage-maintenance.lock"
+    with _exclusive_maintenance_lock(lock_path):
+        return _recover_vacuum_journal_locked(database, journal_path)
 
 
 def restore_storage_snapshot(
@@ -588,6 +784,11 @@ def restore_storage_snapshot(
 ) -> dict[str, Any]:
     if not offline:
         raise StorageMaintenanceError("storage restore requires offline writer stop")
+    database = Path(db_path)
+    segments = Path(segment_root)
+    journal_path = database.parent / ".storage-restore-journal.json"
+    if journal_path.exists():
+        recover_storage_restore(db_path=database, segment_root=segments)
     snapshot = Path(snapshot_dir)
     verification = verify_storage_snapshot(snapshot)
     if expected_binding is not None and verification["binding"] != dict(expected_binding):
@@ -597,8 +798,6 @@ def restore_storage_snapshot(
         and verification["manifest_sha256"] != str(expected_manifest_sha256)
     ):
         raise StorageMaintenanceError("storage snapshot manifest identity mismatch")
-    database = Path(db_path)
-    segments = Path(segment_root)
     token = uuid4().hex
     staging = database.parent / f".storage-restore-{token}"
     backups: list[tuple[Path, Path]] = []
@@ -606,9 +805,6 @@ def restore_storage_snapshot(
     mutation_started = False
     journal: dict[str, Any] | None = None
     lock_path = database.parent / ".storage-maintenance.lock"
-    journal_path = database.parent / ".storage-restore-journal.json"
-    if journal_path.exists():
-        raise StorageMaintenanceError("unfinished storage restore journal requires recovery")
     with _exclusive_maintenance_lock(lock_path):
         try:
             guard = _checkpoint_and_exclusive_connection(database)
@@ -729,6 +925,7 @@ def restore_storage_snapshot(
             else:
                 backup.unlink(missing_ok=True)
         journal_path.unlink(missing_ok=True)
+        _fsync_directory(database.parent)
     return {
         "schema": "storage_snapshot_restore.v1",
         "ok": True,
@@ -837,6 +1034,19 @@ def vacuum_into_atomic(
     apply: bool = False,
 ) -> dict[str, Any]:
     database = Path(db_path)
+    journal_path = database.parent / ".storage-vacuum-journal.json"
+    if journal_path.exists():
+        recovery = recover_vacuum_journal(database)
+        if recovery["recovered"] == "complete":
+            return {
+                "schema": "storage_vacuum.v1",
+                "ok": True,
+                "applied": True,
+                "recovered": "complete",
+                "backup_path": recovery["backup_path"],
+                "before_sha256": recovery["before_sha256"],
+                "after_sha256": recovery["after_sha256"],
+            }
     preflight = preflight_storage_maintenance(
         db_path=database,
         segment_root=database.parent / "payload_segments",
@@ -876,9 +1086,30 @@ def vacuum_into_atomic(
         if candidate["schema"] != original["schema"] or candidate["table_counts"] != original["table_counts"]:
             temporary.unlink(missing_ok=True)
             raise StorageMaintenanceError("VACUUM candidate schema or row counts differ")
+        journal = {
+            "schema": "storage_vacuum_journal.v1",
+            "status": "in_progress",
+            "phase": "prepared",
+            "database": str(database),
+            "temporary": str(temporary),
+            "backup": str(backup),
+            "before_sha256": before_digest,
+            "candidate_sha256": _file_digest(temporary),
+        }
+        atomic_write_json(journal_path, journal)
+        journal["phase"] = "moving_live"
+        atomic_write_json(journal_path, journal)
         os.replace(database, backup)
+        _fsync_directory(database.parent)
+        journal["phase"] = "live_moved"
+        atomic_write_json(journal_path, journal)
         try:
+            journal["phase"] = "installing_candidate"
+            atomic_write_json(journal_path, journal)
             os.replace(temporary, database)
+            _fsync_directory(database.parent)
+            journal["phase"] = "candidate_installed"
+            atomic_write_json(journal_path, journal)
             Path(str(database) + "-wal").unlink(missing_ok=True)
             Path(str(database) + "-shm").unlink(missing_ok=True)
             _fsync_file(database)
@@ -889,7 +1120,13 @@ def vacuum_into_atomic(
             os.replace(backup, database)
             _fsync_file(database)
             _fsync_directory(database.parent)
+            journal_path.unlink(missing_ok=True)
+            _fsync_directory(database.parent)
             raise
+        journal["status"] = "complete"
+        journal["phase"] = "complete"
+        journal["after_sha256"] = _file_digest(database)
+        atomic_write_json(journal_path, journal)
     return {
         **report,
         "ok": True,

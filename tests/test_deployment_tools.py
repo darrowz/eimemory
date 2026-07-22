@@ -637,7 +637,11 @@ def test_immutable_installer_enforces_and_inspects_openclaw_bridge_compatibility
     assert 'local verifier_release="${2:-$target_release}"' in script
     assert '"$verifier_release/deploy/verify_openclaw_plugin_runtime.py"' in script
     assert '_inspect_openclaw_plugin_runtime "$PREVIOUS_CURRENT" "$RELEASE_DIR" "1"' in script
-    assert script.index("deploy/ensure_openclaw_bridge_config.py") < script.rindex("_user_systemctl restart openclaw-gateway.service")
+    switch = script.rindex('mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"')
+    ensure = script.index("deploy/ensure_openclaw_bridge_config.py", switch - 2000)
+    metadata = script.index("_install_candidate_runtime_metadata", switch)
+    restart = script.index("_restart_current_services", metadata)
+    assert ensure < switch < metadata < restart
 
 
 def test_immutable_installer_always_records_release_identity_when_services_are_enabled() -> None:
@@ -681,7 +685,10 @@ def test_rollback_renders_runtime_metadata_with_current_trusted_deploy_code() ->
     rollback = script.split("_rollback_current_release() {", 1)[1].split("\n}", 1)[0]
 
     assert '_refresh_openclaw_gateway_metadata "$REPO_DIR" "$PREVIOUS_COMMIT"' in rollback
-    assert '_refresh_current_runtime_metadata "$PREVIOUS_CURRENT" "$PREVIOUS_COMMIT" "$REPO_DIR"' in rollback
+    assert '_install_current_runtime_metadata "$PREVIOUS_CURRENT" "$PREVIOUS_COMMIT" "$REPO_DIR"' in rollback
+    assert rollback.index("_install_current_runtime_metadata") < rollback.index(
+        "_clear_storage_release_transaction"
+    )
     assert "rollback_current_release=unavailable_no_previous" in rollback
     assert 'rm -f "$CURRENT_LINK"' not in rollback
 
@@ -902,8 +909,9 @@ def test_immutable_release_installer_deploys_gateway_runtime_override() -> None:
     assert '_refresh_openclaw_gateway_metadata "$RELEASE_DIR" "$COMMIT"' in script
     assert '"$metadata_release/deploy/systemd/openclaw-gateway-eimemory.conf"' in script
     assert '"$USER_SYSTEMD_DIR/openclaw-gateway.service.d/90-eimemory-runtime.conf"' in script
-    assert script.index("install_managed_systemd_dropin.py") < script.index(
-        '"$RELEASE_DIR/deploy/systemd/eimemory-rpc.service"'
+    metadata = script.split("_install_candidate_runtime_metadata() {", 1)[1].split("\n}", 1)[0]
+    assert metadata.index("_refresh_openclaw_gateway_metadata") < metadata.index(
+        "_install_current_runtime_metadata"
     )
 
 
@@ -928,7 +936,7 @@ def test_immutable_release_installer_deploys_python_runtime_protection_dropins()
 
     assert 'eimemory-python-runtime.conf' in script
     assert '90-eimemory-python-runtime.conf' in script
-    assert script.count("--render-commit") == 3
+    assert script.count("--render-commit") == 2
     assert '--render-commit "$target_commit"' in script
     assert 'bash -s -- "$USER_SYSTEMD_DIR"' in script
     assert "Unable to discover Python runtime systemd units" in script
@@ -946,7 +954,8 @@ def test_immutable_release_installer_manages_truthful_loop_watchdog_unit() -> No
 
     assert "openclaw-loop-watch.service" in script
     assert "openclaw-loop-watch.timer" in script
-    assert "_user_systemctl enable --now openclaw-loop-watch.timer" in script
+    assert "_user_systemctl enable openclaw-loop-watch.timer" in script
+    assert "_user_systemctl enable --now openclaw-loop-watch.timer" not in script
     assert "openclaw_loop.py watch" in service
     assert "|| true" not in service
     assert "OnUnitActiveSec=5min" in timer
@@ -961,7 +970,8 @@ def test_immutable_release_installer_manages_user_level_loop_compaction_timer() 
     assert '"$USER_SYSTEMD_DIR/openclaw-loop-compact.service"' in script
     assert '"$RELEASE_DIR/deploy/systemd/openclaw-loop-compact.timer"' in script
     assert '"$USER_SYSTEMD_DIR/openclaw-loop-compact.timer"' in script
-    assert "_user_systemctl enable --now openclaw-loop-compact.timer" in script
+    assert "_user_systemctl enable openclaw-loop-compact.timer" in script
+    assert "_user_systemctl enable --now openclaw-loop-compact.timer" not in script
     assert "openclaw_loop.py compact --terminal-retention-days 7" in service
     assert "OnCalendar=*-*-* 04:10:00" in timer
 
@@ -973,7 +983,8 @@ def test_immutable_release_installer_manages_stuck_watchdog_timer() -> None:
     assert '"$USER_SYSTEMD_DIR/openclaw-stuck-watchdog.service"' in script
     assert '"$RELEASE_DIR/deploy/systemd/openclaw-stuck-watchdog.timer"' in script
     assert '"$USER_SYSTEMD_DIR/openclaw-stuck-watchdog.timer"' in script
-    assert "_user_systemctl enable --now openclaw-stuck-watchdog.timer" in script
+    assert "_user_systemctl enable openclaw-stuck-watchdog.timer" in script
+    assert "_user_systemctl enable --now openclaw-stuck-watchdog.timer" not in script
 
 
 def test_immutable_release_installer_manages_feishu_reply_watchdog() -> None:
@@ -1078,6 +1089,30 @@ def test_managed_systemd_dropin_installer_renders_private_receipt_env_path(tmp_p
                 root=root,
                 render_evidence_receipt_env_file=unsafe_path,
             )
+
+
+def test_managed_systemd_dropin_installer_renders_stable_storage_guard_paths(tmp_path) -> None:
+    helper = _load_managed_systemd_dropin_installer()
+    source = Path("deploy/systemd/eimemory-storage-release-guard.conf")
+    root = tmp_path / "systemd"
+    target = root / "example.service.d" / "05-storage-release-guard.conf"
+    target.parent.mkdir(parents=True)
+    python_path = (tmp_path / "python3").resolve()
+    guard_path = (tmp_path / "libexec" / "storage-release-transaction.py").resolve()
+    marker_path = (tmp_path / "state" / "storage-release-transaction.json").resolve()
+
+    helper.install_managed_dropin(
+        source=source,
+        target=target,
+        root=root,
+        render_storage_transaction_python=str(python_path),
+        render_storage_transaction_helper=str(guard_path),
+        render_storage_transaction_marker=str(marker_path),
+    )
+
+    rendered = target.read_text(encoding="utf-8")
+    assert f"ExecCondition={python_path} {guard_path} guard --marker {marker_path}" in rendered
+    assert "@EIMEMORY_STORAGE_TRANSACTION_" not in rendered
 
 
 def test_managed_systemd_dropin_installer_rejects_unmanaged_target(tmp_path) -> None:
@@ -1574,7 +1609,7 @@ def test_immutable_release_installer_normalizes_service_ownership() -> None:
     assert 'id "$SERVICE_USER" >/dev/null 2>&1' in script
     assert 'chown -R "$SERVICE_USER:$SERVICE_GROUP"' in script
     assert '_install_as_service_user 0644' in script
-    assert '"$RELEASE_DIR/deploy/systemd/eimemory-rpc.service" "$USER_SYSTEMD_DIR/eimemory-rpc.service"' in script
+    assert '"$target_release/deploy/systemd/eimemory-rpc.service" "$USER_SYSTEMD_DIR/eimemory-rpc.service"' in script
     assert "_user_systemctl daemon-reload" in script
     assert "_user_systemctl enable eimemory-rpc.service" in script
     assert re.search(r"^\s*systemctl enable eimemory-rpc\.service", script, re.MULTILINE) is None
@@ -1586,17 +1621,18 @@ def test_immutable_release_installer_normalizes_service_ownership() -> None:
 def test_immutable_release_installer_restarts_runtimes_after_current_switch() -> None:
     script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
 
-    current_switch = script.index('mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"')
-    rpc_restart = script.rindex("_user_systemctl restart eimemory-rpc.service")
-    gateway_restart = script.rindex("_user_systemctl restart openclaw-gateway.service")
+    current_switch = script.rindex('mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"')
+    metadata = script.index("_install_candidate_runtime_metadata", current_switch)
+    captured_restart = script.index("_restart_storage_writers", metadata)
+    default_restart = script.index("_restart_current_services", metadata)
 
-    assert current_switch < rpc_restart < gateway_restart
+    assert current_switch < metadata < captured_restart < default_restart
 
 
 def test_immutable_release_installer_commits_only_after_post_switch_gates() -> None:
     script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
 
-    switch = script.index('mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"')
+    switch = script.rindex('mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"')
     receipt = script.index("_record_deployment_receipt", switch)
     closure = script.index("_run_post_switch_closure", switch)
     committed = script.index("COMMITTED=1", switch)
@@ -1844,13 +1880,17 @@ def test_installer_does_not_claim_success_or_delete_candidate_when_rollback_fail
 def test_immutable_release_installer_refreshes_openclaw_registry_before_gateway_restart() -> None:
     script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
 
-    current_switch = script.index('mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"')
-    registry_refresh = script.rindex("\n_refresh_openclaw_plugin_registry\n")
-    gateway_restart = script.rindex("_user_systemctl restart openclaw-gateway.service")
+    current_switch = script.rindex('mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"')
+    metadata_body = script.split("_install_candidate_runtime_metadata() {", 1)[1].split("\n}", 1)[0]
+    registry_refresh = metadata_body.index("_refresh_openclaw_plugin_registry")
+    runtime_metadata = metadata_body.index("_install_current_runtime_metadata")
+    main_metadata = script.index("_install_candidate_runtime_metadata", current_switch)
+    main_restart = script.index("_restart_current_services", main_metadata)
 
     assert 'OPENCLAW_BIN="${OPENCLAW_BIN:-$SERVICE_HOME/n/bin/openclaw}"' in script
     assert 'plugins registry --refresh --json' in script
-    assert current_switch < registry_refresh < gateway_restart
+    assert runtime_metadata < registry_refresh
+    assert current_switch < main_metadata < main_restart
 
 
 def test_python_runtime_unit_discovery_is_dynamic_deduplicated_and_regular_file_only(tmp_path) -> None:

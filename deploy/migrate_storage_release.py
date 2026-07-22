@@ -14,6 +14,8 @@ from eimemory.storage.maintenance import (
     create_consistent_storage_snapshot,
     inspect_storage_migration_need,
     preflight_storage_maintenance,
+    recover_storage_restore,
+    recover_vacuum_journal,
     restore_storage_snapshot,
     run_storage_migrations,
     vacuum_into_atomic,
@@ -127,18 +129,24 @@ def _cleanup_vacuum_backup(db_path: Path, value: str) -> dict[str, Any]:
         or not expected_name.fullmatch(backup.name)
     ):
         raise StorageMaintenanceError("vacuum backup path is outside the storage transaction")
-    if not backup.exists():
-        return {"schema": "storage_vacuum_cleanup.v1", "ok": True, "removed": False}
-    if backup.is_symlink() or _is_reparse(backup) or not backup.is_file():
-        raise StorageMaintenanceError("vacuum backup is not one regular file")
-    backup.unlink()
+    journal_path = db_path.parent / ".storage-vacuum-journal.json"
+    if journal_path.exists() or journal_path.is_symlink():
+        recovery = recover_vacuum_journal(db_path)
+        if recovery.get("recovered") != "complete" or recovery.get("backup_path") != str(backup):
+            raise StorageMaintenanceError("vacuum cleanup does not match the completed journal")
+    removed = backup.exists()
+    if removed:
+        if backup.is_symlink() or _is_reparse(backup) or not backup.is_file():
+            raise StorageMaintenanceError("vacuum backup is not one regular file")
+        backup.unlink()
+    journal_path.unlink(missing_ok=True)
     if os.name == "posix":
         descriptor = os.open(db_path.parent, os.O_RDONLY | os.O_DIRECTORY)
         try:
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
-    return {"schema": "storage_vacuum_cleanup.v1", "ok": True, "removed": True}
+    return {"schema": "storage_vacuum_cleanup.v1", "ok": True, "removed": removed}
 
 
 def _snapshot_manifest_for_prune(path: Path) -> dict[str, Any] | None:
@@ -250,6 +258,16 @@ def _prune_snapshots(
 
 def run_action(args: argparse.Namespace) -> dict[str, Any]:
     _root, db_path, segment_root, snapshot = _release_paths(args)
+    if args.action == "recover-vacuum":
+        report = recover_vacuum_journal(db_path)
+        if not db_path.is_file():
+            raise StorageMaintenanceError("vacuum recovery left runtime SQLite database missing")
+        return report
+    if args.action == "recover-restore":
+        report = recover_storage_restore(db_path=db_path, segment_root=segment_root)
+        if not db_path.is_file():
+            raise StorageMaintenanceError("restore recovery left runtime SQLite database missing")
+        return report
     if not db_path.is_file() or db_path.is_symlink() or _is_reparse(db_path):
         raise StorageMaintenanceError("runtime SQLite database is missing or unsafe")
     if args.action == "needs":
@@ -329,6 +347,8 @@ def build_parser() -> argparse.ArgumentParser:
             "migrate",
             "vacuum",
             "restore",
+            "recover-vacuum",
+            "recover-restore",
             "cleanup-vacuum",
             "status",
             "prune-snapshots",

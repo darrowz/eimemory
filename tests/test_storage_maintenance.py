@@ -2,8 +2,12 @@ from __future__ import annotations
 
 from hashlib import sha256
 import json
+import os
 from pathlib import Path
+import shutil
 import sqlite3
+import subprocess
+import sys
 
 import pytest
 
@@ -19,6 +23,7 @@ from eimemory.storage.maintenance import (
     verify_storage_snapshot,
 )
 from eimemory.storage.sqlite_store import SqliteRecordStore
+from eimemory.storage.atomic_file import atomic_write_json, read_json_strict
 
 
 SCOPE = ScopeRef(tenant_id="tenant", agent_id="agent", workspace_id="workspace", user_id="user")
@@ -42,6 +47,246 @@ def _large_score(index: int = 0) -> RecordEnvelope:
 
 def _digest(path: Path) -> str:
     return sha256(path.read_bytes()).hexdigest()
+
+
+def _snapshot_with_empty_manifest_member(tmp_path: Path) -> tuple[Path, str]:
+    db_path = tmp_path / "state" / "eimemory.sqlite"
+    store = SqliteRecordStore(db_path)
+    store.close()
+    snapshot = tmp_path / "snapshot"
+    create_consistent_storage_snapshot(
+        db_path=db_path,
+        segment_root=db_path.parent / "payload_segments",
+        snapshot_dir=snapshot,
+        offline=True,
+    )
+    empty = snapshot / "payload_segments" / "empty-member.bin"
+    empty.write_bytes(b"")
+    manifest_path = snapshot / "storage-snapshot.json"
+    manifest = read_json_strict(manifest_path, dict)
+    manifest["immutability"] = {"policy": "readonly_tree_v1"}
+    manifest["files"].append(
+        {
+            "path": empty.relative_to(snapshot).as_posix(),
+            "size": 0,
+            "sha256": sha256(b"").hexdigest(),
+        }
+    )
+    atomic_write_json(manifest_path, manifest)
+    maintenance._seal_snapshot_tree(snapshot)
+    return snapshot, _digest(manifest_path)
+
+
+def test_zero_size_manifest_members_verify_and_restore_copy(tmp_path) -> None:
+    snapshot, manifest_digest = _snapshot_with_empty_manifest_member(tmp_path)
+
+    assert verify_storage_snapshot(snapshot)["ok"] is True
+    assert maintenance.verify_sealed_snapshot_identity(
+        snapshot,
+        expected_manifest_sha256=manifest_digest,
+    )["ok"] is True
+
+    staging = tmp_path / "staging"
+    shutil.copytree(snapshot, staging)
+    maintenance._verify_staged_snapshot_copy(staging, snapshot)
+
+
+def test_fresh_process_recovers_vacuum_after_live_database_was_moved(tmp_path) -> None:
+    db_path = tmp_path / "state" / "eimemory.sqlite"
+    store = SqliteRecordStore(db_path)
+    store.upsert(_large_score())
+    store.close()
+    original_digest = _digest(db_path)
+    temporary = db_path.parent / f".{db_path.name}.vacuum-{'a' * 32}"
+    backup = db_path.parent / f".{db_path.name}.pre-vacuum-{'a' * 32}.bak"
+    shutil.copy2(db_path, temporary)
+    os.replace(db_path, backup)
+    journal_path = db_path.parent / ".storage-vacuum-journal.json"
+    atomic_write_json(
+        journal_path,
+        {
+            "schema": "storage_vacuum_journal.v1",
+            "status": "in_progress",
+            "phase": "live_moved",
+            "database": str(db_path),
+            "temporary": str(temporary),
+            "backup": str(backup),
+            "before_sha256": original_digest,
+        },
+    )
+    assert not db_path.exists()
+
+    report = maintenance.recover_vacuum_journal(db_path)
+
+    assert report["ok"] is True
+    assert report["recovered"] == "rolled_back"
+    assert _digest(db_path) == original_digest
+    assert not journal_path.exists()
+    assert not temporary.exists()
+
+
+def test_fresh_process_recovers_partial_restore_from_journal(tmp_path) -> None:
+    db_path = tmp_path / "state" / "eimemory.sqlite"
+    store = SqliteRecordStore(db_path)
+    store.upsert(_large_score())
+    store.close()
+    original_digest = _digest(db_path)
+    token = "b" * 32
+    backup = db_path.parent / f".{db_path.name}.restore-old-{token}"
+    os.replace(db_path, backup)
+    replacement = SqliteRecordStore(db_path)
+    replacement.upsert(RecordEnvelope.create(kind="memory", title="partial restore", scope=SCOPE))
+    replacement.close()
+    segments = db_path.parent / "payload_segments"
+    journal_path = db_path.parent / ".storage-restore-journal.json"
+    atomic_write_json(
+        journal_path,
+        {
+            "schema": "storage_restore_journal.v1",
+            "snapshot_dir": str(tmp_path / "snapshot"),
+            "status": "in_progress",
+            "mutation_started": True,
+            "entries": [
+                {
+                    "live": str(db_path),
+                    "backup": str(backup),
+                    "existed": True,
+                    "state": "installed",
+                },
+                {
+                    "live": str(segments),
+                    "backup": str(db_path.parent / f".{segments.name}.restore-old-{token}"),
+                    "existed": True,
+                    "state": "planned",
+                },
+            ],
+        },
+    )
+
+    report = maintenance.recover_storage_restore(
+        db_path=db_path,
+        segment_root=segments,
+    )
+
+    assert report["ok"] is True
+    assert report["recovered"] == "rolled_back"
+    assert _digest(db_path) == original_digest
+    assert not journal_path.exists()
+
+
+def test_restore_automatically_recovers_stale_journal_before_retry(tmp_path) -> None:
+    db_path = tmp_path / "state" / "eimemory.sqlite"
+    store = SqliteRecordStore(db_path)
+    original = _large_score()
+    store.upsert(original)
+    store.close()
+    snapshot = tmp_path / "snapshot"
+    create_consistent_storage_snapshot(
+        db_path=db_path,
+        segment_root=db_path.parent / "payload_segments",
+        snapshot_dir=snapshot,
+        offline=True,
+    )
+    journal_path = db_path.parent / ".storage-restore-journal.json"
+    token = "c" * 32
+    atomic_write_json(
+        journal_path,
+        {
+            "schema": "storage_restore_journal.v1",
+            "snapshot_dir": str(snapshot),
+            "status": "rolled_back_after_failure",
+            "mutation_started": True,
+            "entries": [
+                {
+                    "live": str(db_path),
+                    "backup": str(db_path.parent / f".{db_path.name}.restore-old-{token}"),
+                    "existed": True,
+                    "state": "installed",
+                }
+            ],
+        },
+    )
+
+    report = restore_storage_snapshot(
+        snapshot_dir=snapshot,
+        db_path=db_path,
+        segment_root=db_path.parent / "payload_segments",
+        offline=True,
+    )
+
+    assert report["ok"] is True
+    assert not journal_path.exists()
+
+
+def test_vacuum_persists_completed_swap_journal_until_cleanup(tmp_path) -> None:
+    db_path = tmp_path / "state" / "eimemory.sqlite"
+    store = SqliteRecordStore(db_path)
+    store.upsert(_large_score())
+    store.close()
+
+    report = vacuum_into_atomic(db_path=db_path, offline=True, apply=True)
+
+    journal_path = db_path.parent / ".storage-vacuum-journal.json"
+    journal = read_json_strict(journal_path, dict)
+    assert journal["schema"] == "storage_vacuum_journal.v1"
+    assert journal["status"] == "complete"
+    assert journal["phase"] == "complete"
+    assert Path(report["backup_path"]).is_file()
+    recovered = maintenance.recover_vacuum_journal(db_path)
+    assert recovered["recovered"] == "complete"
+    assert recovered["backup_path"] == report["backup_path"]
+
+
+def test_vacuum_os_exit_after_live_move_is_recovered_by_fresh_process(tmp_path) -> None:
+    db_path = tmp_path / "state" / "eimemory.sqlite"
+    store = SqliteRecordStore(db_path)
+    store.upsert(_large_score())
+    store.close()
+    original_digest = _digest(db_path)
+    crash_code = r"""
+import os
+from pathlib import Path
+import sys
+import eimemory.storage.maintenance as maintenance
+
+database = Path(sys.argv[1])
+real_replace = maintenance.os.replace
+
+def replace_then_crash(source, target):
+    real_replace(source, target)
+    if Path(source) == database and ".pre-vacuum-" in Path(target).name:
+        os._exit(91)
+
+maintenance.os.replace = replace_then_crash
+maintenance.vacuum_into_atomic(db_path=database, offline=True, apply=True)
+"""
+    crashed = subprocess.run(
+        [sys.executable, "-c", crash_code, str(db_path)],
+        cwd=Path.cwd(),
+        check=False,
+    )
+    assert crashed.returncode == 91
+    assert not db_path.exists()
+    assert (db_path.parent / ".storage-vacuum-journal.json").is_file()
+
+    recover_code = r"""
+import json
+from pathlib import Path
+import sys
+from eimemory.storage.maintenance import recover_vacuum_journal
+
+print(json.dumps(recover_vacuum_journal(Path(sys.argv[1]))))
+"""
+    recovered = subprocess.run(
+        [sys.executable, "-c", recover_code, str(db_path)],
+        cwd=Path.cwd(),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert recovered.returncode == 0, recovered.stderr
+    assert json.loads(recovered.stdout)["recovered"] == "rolled_back"
+    assert _digest(db_path) == original_digest
 
 
 def test_low_disk_preflight_fails_closed_before_snapshot_or_vacuum(tmp_path, monkeypatch) -> None:

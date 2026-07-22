@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+from hashlib import sha256
 import json
 import os
 from pathlib import Path
 import sqlite3
+import subprocess
+import sys
 from types import SimpleNamespace
+
+import pytest
 
 import deploy.migrate_storage_release as storage_release
 from deploy.migrate_storage_release import main as storage_release_main
@@ -194,7 +199,40 @@ def test_vacuum_backup_is_kept_until_explicit_release_cleanup(tmp_path, capsys) 
     cleanup = json.loads(capsys.readouterr().out)
     assert cleanup["removed"] is True
     assert not backup.exists()
+    assert not (root / "state" / ".storage-vacuum-journal.json").exists()
     assert snapshot.is_dir()
+
+
+def test_release_helper_recovers_missing_live_database_before_safety_check(tmp_path, capsys) -> None:
+    root = tmp_path / "runtime"
+    db_path = root / "state" / "eimemory.sqlite"
+    store = SqliteRecordStore(db_path)
+    store.close()
+    original = db_path.read_bytes()
+    snapshot_root = root / "state" / "release-snapshots"
+    snapshot = snapshot_root / ATTEMPT
+    snapshot_root.mkdir(parents=True)
+    temporary = db_path.parent / f".{db_path.name}.vacuum-{'d' * 32}"
+    backup = db_path.parent / f".{db_path.name}.pre-vacuum-{'d' * 32}.bak"
+    temporary.write_bytes(original)
+    os.replace(db_path, backup)
+    maintenance.atomic_write_json(
+        db_path.parent / ".storage-vacuum-journal.json",
+        {
+            "schema": "storage_vacuum_journal.v1",
+            "status": "in_progress",
+            "phase": "live_moved",
+            "database": str(db_path),
+            "temporary": str(temporary),
+            "backup": str(backup),
+            "before_sha256": sha256(original).hexdigest(),
+        },
+    )
+
+    assert storage_release_main(_args("recover-vacuum", root, snapshot_root, snapshot)) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["recovered"] == "rolled_back"
+    assert db_path.read_bytes() == original
 
 
 def test_needs_is_read_only_and_does_not_create_snapshot_when_nothing_is_pending(
@@ -464,11 +502,232 @@ def test_installer_storage_transaction_order_and_writer_stop_contract() -> None:
     ]
     assert rollback.index("_stop_storage_writers") < rollback.index("_restore_storage_snapshot")
     assert rollback.index("_restore_storage_snapshot") < rollback.index(
-        "_refresh_current_runtime_metadata"
+        "_install_current_runtime_metadata"
     )
+    assert rollback.index("_install_current_runtime_metadata") < rollback.index(
+        "_clear_storage_release_transaction"
+    ) < rollback.index("_restart_storage_writers")
 
     restart_background = script.index("_restart_storage_writers\n", switch)
     acceptance = script.index("_run_post_switch_closure\n", restart_background)
     cleanup_backup = script.index("_cleanup_storage_vacuum_backup\n", acceptance)
     prune_snapshots = script.index("_prune_storage_snapshots\n", cleanup_backup)
     assert switch < restart_background < acceptance < cleanup_backup < prune_snapshots
+
+
+def test_storage_release_transaction_marker_fails_closed_and_clears_atomically(tmp_path) -> None:
+    from deploy.storage_release_transaction import (
+        StorageReleaseTransactionError,
+        begin_storage_release_transaction,
+        clear_storage_release_transaction,
+        guard_allows_start,
+        load_storage_release_transaction,
+        update_storage_release_transaction,
+    )
+
+    marker = tmp_path / "state" / "storage-release-transaction.json"
+    transaction = begin_storage_release_transaction(
+        marker,
+        prior_commit="1" * 40,
+        candidate_commit="2" * 40,
+        current_link=tmp_path / "install" / "current",
+        attempt_id="attempt-1",
+        snapshot_dir=tmp_path / "state" / "release-snapshots" / "attempt-1",
+        active_writer_units=["eimemory-rpc.service", "eimemory-nightly.timer"],
+    )
+    assert transaction["phase"] == "writers_captured"
+    assert transaction["storage_destructive"] is False
+    assert transaction["active_writer_units"] == [
+        "eimemory-rpc.service",
+        "eimemory-nightly.timer",
+    ]
+    assert guard_allows_start(marker) is False
+    assert not list(marker.parent.glob(f".{marker.name}.*"))
+
+    updated = update_storage_release_transaction(
+        marker,
+        expected_attempt_id="attempt-1",
+        phase="storage_destructive",
+        snapshot_manifest_sha256="a" * 64,
+        storage_destructive=True,
+    )
+    assert updated["storage_destructive"] is True
+    assert updated["snapshot_manifest_sha256"] == "a" * 64
+
+    clear_storage_release_transaction(marker, expected_attempt_id="attempt-1")
+    assert guard_allows_start(marker) is True
+    assert not marker.exists()
+
+    marker.write_text("{broken", encoding="utf-8")
+    assert guard_allows_start(marker) is False
+    with pytest.raises(StorageReleaseTransactionError, match="invalid"):
+        load_storage_release_transaction(marker)
+
+
+def test_storage_release_guard_blocks_fresh_process_start_on_valid_or_corrupt_marker(
+    tmp_path,
+) -> None:
+    from deploy.storage_release_transaction import begin_storage_release_transaction
+
+    marker = tmp_path / "state" / "storage-release-transaction.json"
+    helper = Path("deploy/storage_release_transaction.py").resolve()
+    begin_storage_release_transaction(
+        marker,
+        prior_commit="1" * 40,
+        candidate_commit="2" * 40,
+        current_link=tmp_path / "install" / "current",
+        attempt_id="attempt-guard",
+        snapshot_dir=tmp_path / "state" / "snapshot",
+        active_writer_units=["eimemory-rpc.service"],
+    )
+
+    blocked = subprocess.run(
+        [sys.executable, str(helper), "guard", "--marker", str(marker)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert blocked.returncode == 75
+    assert "blocked" in blocked.stderr
+
+    marker.write_text("[]", encoding="utf-8")
+    corrupt = subprocess.run(
+        [sys.executable, str(helper), "guard", "--marker", str(marker)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert corrupt.returncode == 75
+
+    marker.unlink()
+    allowed = subprocess.run(
+        [sys.executable, str(helper), "guard", "--marker", str(marker)],
+        check=False,
+    )
+    assert allowed.returncode == 0
+
+
+def test_storage_release_reconcile_classifies_prior_and_candidate_paths(tmp_path) -> None:
+    from deploy.storage_release_transaction import (
+        StorageReleaseTransactionError,
+        begin_storage_release_transaction,
+        classify_storage_release_reconcile,
+        update_storage_release_transaction,
+    )
+
+    marker = tmp_path / "storage-release-transaction.json"
+    transaction = begin_storage_release_transaction(
+        marker,
+        prior_commit="1" * 40,
+        candidate_commit="2" * 40,
+        current_link=tmp_path / "current",
+        attempt_id="attempt-2",
+        snapshot_dir=tmp_path / "snapshot",
+        active_writer_units=["eimemory-rpc.service"],
+    )
+    assert (
+        classify_storage_release_reconcile(
+            transaction,
+            current_commit="1" * 40,
+            migrations_complete=False,
+        )
+        == "clear_prior"
+    )
+    transaction = update_storage_release_transaction(
+        marker,
+        expected_attempt_id="attempt-2",
+        phase="storage_destructive",
+        snapshot_manifest_sha256="b" * 64,
+        storage_destructive=True,
+    )
+    assert (
+        classify_storage_release_reconcile(
+            transaction,
+            current_commit="1" * 40,
+            migrations_complete=False,
+        )
+        == "restore_prior"
+    )
+    assert (
+        classify_storage_release_reconcile(
+            transaction,
+            current_commit="2" * 40,
+            migrations_complete=True,
+        )
+        == "finalize_candidate"
+    )
+    with pytest.raises(StorageReleaseTransactionError, match="inconsistent"):
+        classify_storage_release_reconcile(
+            transaction,
+            current_commit="3" * 40,
+            migrations_complete=True,
+        )
+    transaction = update_storage_release_transaction(
+        marker,
+        expected_attempt_id="attempt-2",
+        phase="rollback_started",
+        storage_destructive=True,
+    )
+    assert (
+        classify_storage_release_reconcile(
+            transaction,
+            current_commit="2" * 40,
+            migrations_complete=True,
+        )
+        == "resume_rollback"
+    )
+
+
+def test_installer_installs_stable_guard_before_marker_and_delays_candidate_metadata() -> None:
+    script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
+    main_start = script.index('STORAGE_TRANSACTION_ACTIVE=0\n\n_ensure_runtime_dir')
+    guard_install = script.index("_install_storage_release_guards\n", main_start)
+    prepare_call = script.rindex("_prepare_storage_for_release\n")
+    switch = script.index('mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"', prepare_call)
+    metadata_call = script.index("_install_candidate_runtime_metadata\n", switch)
+    marker_clear = script.index("_clear_storage_release_transaction\n", metadata_call)
+    prepare_body = script[
+        script.index("_prepare_storage_for_release() {") : script.index(
+            "_restore_storage_snapshot() {"
+        )
+    ]
+    marker_begin = prepare_body.index("_begin_storage_release_transaction\n")
+    migrate = prepare_body.index("_storage_release_action migrate")
+    metadata_body = script[
+        script.index("_install_candidate_runtime_metadata() {") : script.index(
+            "_verify_release_health() {"
+        )
+    ]
+
+    assert guard_install < prepare_call < switch < metadata_call < marker_clear
+    assert marker_begin < migrate
+    assert "_install_openclaw_loop_compat_script" in metadata_body
+    assert "_fsync_install_root" in script[switch:metadata_call]
+    assert "STORAGE_TRANSACTION_MARKER" in script
+    assert "STORAGE_TRANSACTION_HELPER" in script
+
+    guard = Path("deploy/systemd/eimemory-storage-release-guard.conf").read_text(
+        encoding="utf-8"
+    )
+    assert "ExecCondition=" in guard
+    assert "/opt/eimemory/current" not in guard
+    assert "@EIMEMORY_STORAGE_TRANSACTION_HELPER@" in guard
+
+
+def test_installer_rollback_is_guarded_until_prior_storage_link_and_metadata_match() -> None:
+    script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
+    rollback = script[
+        script.index("_rollback_current_release() {") : script.index(
+            'if [[ ! "$COMMIT" =~', script.index("_rollback_current_release() {")
+        )
+    ]
+    marker_begin = rollback.index("_begin_storage_release_transaction")
+    marker_rollback = rollback.index("rollback_started", marker_begin)
+    stop = rollback.index("_stop_storage_writers", marker_rollback)
+    restore = rollback.index("_restore_storage_snapshot", stop)
+    metadata = rollback.index("_install_current_runtime_metadata", restore)
+    marker_clear = rollback.index("_clear_storage_release_transaction", metadata)
+    restart = rollback.index("_restart_storage_writers", marker_clear)
+
+    assert marker_begin < marker_rollback < stop < restore < metadata < marker_clear < restart
+    assert "_refresh_current_runtime_metadata" not in rollback
