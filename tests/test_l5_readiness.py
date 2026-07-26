@@ -6,6 +6,7 @@ import json
 
 import pytest
 
+import eimemory.governance.l5_readiness as l5_readiness_module
 from eimemory.api.runtime import Runtime
 from eimemory.cli.main import main as cli_main
 from eimemory.experience import record_outcome_trace
@@ -14,7 +15,11 @@ from eimemory.governance.capability_acceptance import (
     CORE_CAPABILITY_ACCEPTANCE_CASE_IDS,
     capability_acceptance_case,
 )
-from eimemory.governance.evidence_contract import current_release_identity, release_identity_payload
+from eimemory.governance.evidence_contract import (
+    ReleaseIdentity,
+    current_release_identity,
+    release_identity_payload,
+)
 from eimemory.governance.capability_replay_packs import (
     CORE_REPLAY_CAPABILITIES,
     MANIFEST_REPORT_TYPE,
@@ -31,6 +36,207 @@ from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
 SCOPE = {"agent_id": "agent-l5-readiness", "workspace_id": "l5-readiness", "user_id": "darrow"}
+
+
+def test_l5_readiness_requires_exact_current_receipt_before_lineage_resolution(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    monkeypatch.setattr(
+        l5_readiness_module,
+        "current_release_lineage",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("lineage must not substitute for a missing current receipt")
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        runtime,
+        "current_release_lineage",
+        lambda **kwargs: l5_readiness_module.current_release_lineage(runtime, **kwargs),
+    )
+    try:
+        report = runtime.build_l5_readiness_report(scope=SCOPE, persist=False)
+    finally:
+        runtime.close()
+
+    assert report["release_identity"] == {}
+    assert report["release_lineage"] == {
+        "ok": False,
+        "error": "current_release_receipt_invalid",
+    }
+    assert report["current_stage"] != "L5"
+
+
+def test_l5_readiness_validates_inherited_recall_against_ancestor_receipt(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    current = _seed_current_release(runtime, scope=SCOPE)
+    ancestor = ReleaseIdentity(
+        commit="e" * 40,
+        version="1.9.69",
+        receipt_id="ancestor-receipt",
+        session_id="ancestor-session",
+    )
+    resolved_domains: list[str] = []
+    replay_releases: list[ReleaseIdentity | None] = []
+    assessment_releases: list[ReleaseIdentity | None] = []
+
+    monkeypatch.setattr(
+        l5_readiness_module,
+        "current_release_lineage",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "validated": True,
+            "compatible": True,
+            "record_id": "lineage-current",
+            "schema_version": "release_lineage.v1",
+            "current_release": {
+                "commit": current.commit,
+                "version": current.version,
+                "receipt_id": current.receipt_id,
+                "session_id": current.session_id,
+            },
+        },
+        raising=False,
+    )
+    monkeypatch.setattr(
+        runtime,
+        "current_release_lineage",
+        lambda **kwargs: l5_readiness_module.current_release_lineage(runtime, **kwargs),
+    )
+
+    def resolve_domain(*_args, domain: str, **_kwargs) -> ReleaseIdentity:
+        resolved_domains.append(domain)
+        return ancestor
+
+    monkeypatch.setattr(
+        l5_readiness_module,
+        "evidence_release_for_domain",
+        resolve_domain,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        l5_readiness_module,
+        "_verified_replay_summary",
+        lambda *_args, release=None, **_kwargs: (
+            replay_releases.append(release)
+            or {
+                "executed_count": 15,
+                "pass_count": 15,
+                "fail_count": 0,
+                "not_run_count": 0,
+                "pass_rate": 1.0,
+                "weak_capabilities_missing": [],
+                "core_capabilities_missing": [],
+                "manifest_rejection_reasons": {},
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        l5_readiness_module,
+        "_latest_l5_assessment",
+        lambda *_args, release=None, **_kwargs: (
+            assessment_releases.append(release)
+            or {
+                "present": True,
+                "trusted": True,
+                "complete": True,
+                "level": "L5",
+                "missing_evidence": [],
+                "record_id": "assessment-ancestor",
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        l5_readiness_module,
+        "_safe_hard_metrics",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "metrics": {},
+            "metric_quality": {},
+            "sample_counts": {},
+            "real_task_evidence": {
+                "ok": True,
+                "success_rate": 1.0,
+                "sample_count": 10,
+                "distinct_task_types": 5,
+                "evidence_mode": "lineage_inherited",
+                "evidence_release_commit": ancestor.commit,
+                "current_release_commit": current.commit,
+            },
+        },
+    )
+    monkeypatch.setattr(l5_readiness_module, "_capability_gaps", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        l5_readiness_module,
+        "_stage_for",
+        lambda *_args, **_kwargs: {
+            "stage": "L5",
+            "label": "lineage continuity",
+            "readiness_score": 1.0,
+            "reason": "compatible inherited evidence",
+            "done_when": "maintain continuity",
+            "risk_boundary": "read-only",
+            "live_task_gate": {
+                "ok": True,
+                "current_deployment_verified_real_tasks": 10,
+            },
+        },
+    )
+    monkeypatch.setattr(
+        l5_readiness_module,
+        "_storage_migration_status",
+        lambda *_args, **_kwargs: {"ok": True, "status": "ready", "pending": []},
+    )
+    monkeypatch.setattr(
+        "eimemory.evaluation.production_recall.verify_current_production_recall_gate",
+        lambda *_args, release=None, **_kwargs: {
+            "ok": release == ancestor,
+            "status": "accepted",
+            "record_id": "recall-ancestor",
+        },
+    )
+    monkeypatch.setattr(
+        "eimemory.evaluation.production_recall.verify_current_production_recall_strict_state",
+        lambda *_args, release=None, **_kwargs: {
+            "ok": release == ancestor,
+            "status": "strict_activated",
+            "candidate_commit": ancestor.commit,
+            "record_id": "strict-ancestor",
+            "gate_record_id": "recall-ancestor",
+        },
+    )
+    try:
+        report = l5_readiness_module.build_l5_readiness_report(
+            runtime,
+            scope=SCOPE,
+            persist=False,
+            repo_root=tmp_path,
+        )
+        gate_status = readiness_gate_status(
+            report,
+            runtime=runtime,
+            scope=SCOPE,
+            repo_root=tmp_path,
+        )
+    finally:
+        runtime.close()
+
+    assert report["release_identity"]["release_commit"] == current.commit
+    assert report["release_lineage"]["ok"] is True
+    assert resolved_domains == ["channel.openclaw", "memory.governance", "memory.recall"]
+    assert replay_releases == [ancestor, ancestor]
+    assert assessment_releases == [ancestor]
+    assert report["production_recall_gate"]["evidence_mode"] == "lineage_inherited"
+    assert report["production_recall_gate"]["evidence_release_commit"] == ancestor.commit
+    assert report["production_recall_strict_state"]["candidate_commit"] == ancestor.commit
+    assert report["production_recall_strict_state"]["current_release_commit"] == current.commit
+    assert report["current_stage"] == "L5"
+    assert gate_status == "L5"
 
 
 def test_readiness_gate_status_allows_only_l5_and_keeps_accumulation_out_of_stage_vocabulary() -> None:
@@ -78,7 +284,7 @@ def test_readiness_gate_status_allows_only_l5_and_keeps_accumulation_out_of_stag
         },
     }
 
-    assert readiness_gate_status(full) == "L5"
+    assert readiness_gate_status(full) == ""
     assert readiness_gate_status({key: value for key, value in full.items() if key != "production_recall_strict_state"}) == ""
     assert readiness_gate_status(
         {
@@ -507,6 +713,7 @@ def test_l5_readiness_rejects_status_only_patch_samples(tmp_path) -> None:
 
 
 def test_l5_readiness_reaches_l5_only_with_attributed_weak_outcomes_and_patch_samples(tmp_path, monkeypatch) -> None:
+    _mock_current_release_lineage(monkeypatch)
     monkeypatch.setattr(
         "eimemory.evaluation.production_recall.verify_current_production_recall_gate",
         lambda *_args, **_kwargs: {"ok": True, "status": "accepted", "record_id": "recall-gate"},
@@ -656,6 +863,7 @@ def test_l5_readiness_does_not_report_data_accumulating_with_a_core_capability_g
 
 
 def test_l5_readiness_uses_latest_execution_batch_instead_of_legacy_case_ids(tmp_path, monkeypatch) -> None:
+    _mock_current_release_lineage(monkeypatch)
     monkeypatch.setattr(
         "eimemory.evaluation.production_recall.verify_current_production_recall_gate",
         lambda *_args, **_kwargs: {"ok": True, "status": "accepted", "record_id": "recall-gate"},
@@ -1668,3 +1876,27 @@ def _seed_current_release(runtime: Runtime, *, scope: dict):
     release = current_release_identity(runtime, scope_ref)
     assert release is not None and release.receipt_id == receipt.record_id
     return release
+
+
+def _mock_current_release_lineage(monkeypatch) -> None:
+    def lineage(*_args, current_release: ReleaseIdentity, **_kwargs) -> dict:
+        return {
+            "ok": True,
+            "validated": True,
+            "compatible": True,
+            "record_id": "lineage-current-test",
+            "schema_version": "release_lineage.v1",
+            "current_release": {
+                "commit": current_release.commit,
+                "version": current_release.version,
+                "receipt_id": current_release.receipt_id,
+                "session_id": current_release.session_id,
+            },
+        }
+
+    monkeypatch.setattr(l5_readiness_module, "current_release_lineage", lineage)
+    monkeypatch.setattr(
+        l5_readiness_module,
+        "evidence_release_for_domain",
+        lambda *_args, current_release, **_kwargs: current_release,
+    )

@@ -6,6 +6,7 @@ from typing import Any
 from eimemory.governance.l5_readiness import readiness_gate_status
 from eimemory.governance.evidence_contract import ReleaseIdentity
 from eimemory.governance.closure_rehearsal import verify_bootstrap_pending_readiness_contract
+from eimemory.governance.live_task_acceptance import LIVE_ACCEPTANCE_CASE_IDS
 from eimemory.models.records import ScopeRef
 
 
@@ -46,6 +47,7 @@ def run_release_closure(
         "storage_migrations": dict(not_run),
         "replay_bootstrap": dict(not_run),
         "live_acceptance": dict(not_run),
+        "release_lineage": dict(not_run),
         "closure_rehearsal": dict(not_run),
         "readiness": dict(not_run),
         "bootstrap_pending_verification": dict(not_run),
@@ -170,7 +172,29 @@ def run_release_closure(
         "scope": scope_payload,
         "persist": True,
         "replay_bootstrap": replay_bootstrap,
+        "repo_root": repo_root,
     }
+    lineage_finalizer_enabled = bool(
+        callable(getattr(runtime, "record_release_lineage", None))
+        and callable(getattr(runtime, "current_release_lineage", None))
+    )
+    if lineage_finalizer_enabled:
+        rehearsal_kwargs["release_lineage_finalizer"] = (
+            lambda core_replay: _finalize_release_lineage(
+                runtime,
+                scope=scope_payload,
+                repo_root=repo_root,
+                current_release=receipt_identity,
+                receipt_record_id=str(receipt.get("promotion_request_id") or ""),
+                recall_gate_record_id=str(report["record_ids"].get("production_recall_gate") or ""),
+                strict_state_record_id=str(
+                    report["record_ids"].get("production_recall_strict_state") or ""
+                ),
+                weak_replay=replay_bootstrap,
+                core_replay=core_replay,
+                live_acceptance=live_acceptance,
+            )
+        )
     if bootstrap_pending is not None:
         rehearsal_kwargs.update(
             {
@@ -180,6 +204,16 @@ def run_release_closure(
         )
     rehearsal = runtime.run_l5_closure_rehearsal(**rehearsal_kwargs)
     report["closure_rehearsal"] = rehearsal
+    rehearsal_lineage = (
+        rehearsal.get("release_lineage")
+        if isinstance(rehearsal.get("release_lineage"), dict)
+        else {}
+    )
+    if rehearsal_lineage:
+        report["release_lineage"] = rehearsal_lineage
+        report["record_ids"]["release_lineage"] = str(
+            rehearsal_lineage.get("record_id") or ""
+        )
     if not _rehearsal_gate_ok(rehearsal):
         return _blocked(report, "closure_rehearsal", _failure_reason(rehearsal, "closure_rehearsal_failed"))
     if bootstrap_pending is not None and not (
@@ -189,15 +223,26 @@ def run_release_closure(
     ):
         return _blocked(report, "closure_rehearsal", "bootstrap_pending_rehearsal_state_invalid")
 
-    readiness = runtime.build_l5_readiness_report(
-        scope=scope_payload,
-        persist=True,
-        limit=1000,
-        loop_id="release_closure",
+    readiness = (
+        rehearsal.get("l5_readiness")
+        if isinstance(rehearsal.get("l5_readiness"), dict)
+        and rehearsal["l5_readiness"].get("schema_version") == "l5_readiness.v2"
+        else runtime.build_l5_readiness_report(
+            scope=scope_payload,
+            persist=True,
+            limit=1000,
+            loop_id="release_closure",
+            **({"repo_root": repo_root} if lineage_finalizer_enabled else {}),
+        )
     )
     report["readiness"] = readiness
     report["record_ids"]["readiness"] = str(readiness.get("persisted_record_id") or "")
-    readiness_status = readiness_gate_status(readiness)
+    readiness_status = readiness_gate_status(
+        readiness,
+        runtime=runtime,
+        scope=scope_payload,
+        repo_root=repo_root,
+    )
     if bootstrap_pending is not None:
         pending_verification = verify_bootstrap_pending_readiness_contract(
             runtime,
@@ -205,6 +250,7 @@ def run_release_closure(
             bootstrap_pending=bootstrap_pending,
             release=receipt_identity,
             readiness=readiness,
+            repo_root=repo_root,
         )
         report["bootstrap_pending_verification"] = pending_verification
         if pending_verification.get("ok") is not True:
@@ -223,6 +269,111 @@ def run_release_closure(
     report["ok"] = True
     report["closure_complete"] = True
     return report
+
+
+def _finalize_release_lineage(
+    runtime: Any,
+    *,
+    scope: dict[str, Any],
+    repo_root: str,
+    current_release: ReleaseIdentity,
+    receipt_record_id: str,
+    recall_gate_record_id: str,
+    strict_state_record_id: str,
+    weak_replay: dict[str, Any],
+    core_replay: dict[str, Any],
+    live_acceptance: dict[str, Any],
+) -> dict[str, Any]:
+    weak = (
+        weak_replay.get("weak_capability_replay")
+        if isinstance(weak_replay.get("weak_capability_replay"), dict)
+        else {}
+    )
+    weak_manifest = str(weak.get("manifest_record_id") or "").strip()
+    core_manifest = str(core_replay.get("manifest_record_id") or "").strip()
+    live_record_ids = _canonical_live_case_record_ids(live_acceptance)
+    if (
+        not receipt_record_id
+        or receipt_record_id != current_release.receipt_id
+        or not weak_manifest
+        or not core_manifest
+        or live_record_ids is None
+        or bool(recall_gate_record_id) != bool(strict_state_record_id)
+    ):
+        return {
+            "ok": False,
+            "validated": False,
+            "compatible": False,
+            "error": "release_lineage_gate_references_incomplete",
+        }
+    recall_references = (
+        [recall_gate_record_id, strict_state_record_id]
+        if recall_gate_record_id and strict_state_record_id
+        else []
+    )
+    gate_evidence = {
+        "memory.recall": recall_references,
+        "memory.governance": [weak_manifest, core_manifest],
+        "channel.openclaw": live_record_ids,
+        "storage.integrity": live_record_ids,
+        "deployment.runtime": [receipt_record_id],
+    }
+    recorded = runtime.record_release_lineage(
+        scope=scope,
+        repo_root=repo_root,
+        current_release=current_release,
+        gate_evidence=gate_evidence,
+    )
+    if not isinstance(recorded, dict) or recorded.get("ok") is not True:
+        return (
+            recorded
+            if isinstance(recorded, dict)
+            else {
+                "ok": False,
+                "validated": False,
+                "compatible": False,
+                "error": "release_lineage_record_failed",
+            }
+        )
+    resolved = runtime.current_release_lineage(
+        scope=scope,
+        repo_root=repo_root,
+        current_release=current_release,
+    )
+    if (
+        not isinstance(resolved, dict)
+        or resolved.get("ok") is not True
+        or resolved.get("validated") is not True
+        or str(resolved.get("record_id") or "") != str(recorded.get("record_id") or "")
+    ):
+        return {
+            "ok": False,
+            "validated": False,
+            "compatible": False,
+            "error": "release_lineage_revalidation_failed",
+        }
+    return resolved
+
+
+def _canonical_live_case_record_ids(
+    live_acceptance: dict[str, Any],
+) -> list[str] | None:
+    cases = live_acceptance.get("cases")
+    if not isinstance(cases, list):
+        return None
+    by_case: dict[str, str] = {}
+    for item in cases:
+        if not isinstance(item, dict):
+            return None
+        case_id = str(item.get("case_id") or "").strip()
+        record_id = str(item.get("record_id") or "").strip()
+        if not case_id or not record_id or case_id in by_case:
+            return None
+        by_case[case_id] = record_id
+    if set(by_case) != set(LIVE_ACCEPTANCE_CASE_IDS):
+        return None
+    ordered = [by_case[case_id] for case_id in LIVE_ACCEPTANCE_CASE_IDS]
+    return ordered if len(set(ordered)) == len(ordered) else None
 
 
 def _blocked(report: dict[str, Any], stage: str, reason: str) -> dict[str, Any]:

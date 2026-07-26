@@ -9,6 +9,7 @@ from eimemory.cli.main import main as cli_main
 from eimemory.evaluation.production_recall import run_production_recall_eval
 from eimemory.governance import closure_rehearsal as closure_rehearsal_module
 from eimemory.governance import release_closure as release_closure_module
+from eimemory.governance.evidence_contract import ReleaseIdentity
 from eimemory.governance.release_closure import (
     _recall_result_allows_bootstrap_pending,
     run_release_closure,
@@ -194,6 +195,7 @@ class FakeRuntime:
             "scope": SCOPE,
             "persist": True,
             "replay_bootstrap": self.replay_bootstrap,
+            "repo_root": REPO_ROOT,
         }
         if self.expect_bootstrap_pending:
             assert "bootstrap_pending" in kwargs
@@ -207,6 +209,18 @@ class FakeRuntime:
             assert identity.receipt_id == "receipt-1"
         assert kwargs == expected
         return deepcopy(self.rehearsal)
+
+    def current_release_identity(self, **kwargs) -> ReleaseIdentity:
+        assert kwargs == {"scope": SCOPE, "limit": 500}
+        return ReleaseIdentity(CURRENT_COMMIT, "1.9.51", "receipt-1", "receipt-1")
+
+    def current_release_lineage(self, **kwargs) -> dict:
+        assert kwargs["scope"] == SCOPE
+        assert kwargs["current_release"] == self.current_release_identity(
+            scope=SCOPE,
+            limit=500,
+        )
+        return deepcopy(self.readiness["release_lineage"])
 
     def build_l5_readiness_report(self, **kwargs) -> dict:
         self.calls.append("readiness")
@@ -250,6 +264,95 @@ def test_release_closure_runs_all_stages_in_order() -> None:
         "production_recall_strict_state": "prbs-strict-current",
         "readiness": "readiness-1",
     }
+
+
+def test_release_closure_finalizes_exact_lineage_inside_single_rehearsal(
+    monkeypatch,
+) -> None:
+    runtime = FakeRuntime.successful()
+    runtime.live_acceptance["cases"] = [
+        {"case_id": case_id, "record_id": f"live-case-{index}"}
+        for index, case_id in enumerate(release_closure_module.LIVE_ACCEPTANCE_CASE_IDS)
+    ]
+    captured: dict = {}
+
+    def record_release_lineage(**kwargs) -> dict:
+        runtime.calls.append("record_release_lineage")
+        captured.update(kwargs)
+        return {
+            "ok": True,
+            "validated": True,
+            "compatible": True,
+            "record_id": "lineage-final",
+        }
+
+    def current_release_lineage(**kwargs) -> dict:
+        runtime.calls.append("current_release_lineage")
+        assert kwargs["repo_root"] == REPO_ROOT
+        return {
+            "ok": True,
+            "validated": True,
+            "compatible": True,
+            "record_id": "lineage-final",
+        }
+
+    def run_rehearsal(**kwargs) -> dict:
+        runtime.calls.append("closure_rehearsal")
+        finalizer = kwargs.pop("release_lineage_finalizer")
+        assert kwargs == {
+            "scope": SCOPE,
+            "persist": True,
+            "replay_bootstrap": runtime.replay_bootstrap,
+            "repo_root": REPO_ROOT,
+        }
+        lineage = finalizer({"ok": True, "manifest_record_id": "core-manifest"})
+        return {
+            **runtime.rehearsal,
+            "release_lineage": lineage,
+            "l5_readiness": runtime.readiness,
+        }
+
+    runtime.record_release_lineage = record_release_lineage
+    runtime.current_release_lineage = current_release_lineage
+    runtime.run_l5_closure_rehearsal = run_rehearsal
+    monkeypatch.setattr(
+        release_closure_module,
+        "readiness_gate_status",
+        lambda _report, **kwargs: (
+            "L5"
+            if kwargs
+            == {
+                "runtime": runtime,
+                "scope": SCOPE,
+                "repo_root": REPO_ROOT,
+            }
+            else ""
+        ),
+    )
+
+    report = _run(runtime)
+
+    assert report["ok"] is True
+    assert runtime.calls == [
+        "deployment_receipt",
+        "production_recall_run",
+        "production_recall_verify",
+        "production_recall_activate",
+        "replay_bootstrap",
+        "live_acceptance",
+        "closure_rehearsal",
+        "record_release_lineage",
+        "current_release_lineage",
+    ]
+    assert captured["gate_evidence"] == {
+        "memory.recall": ["prg-current", "prbs-strict-current"],
+        "memory.governance": ["manifest-1", "core-manifest"],
+        "channel.openclaw": [f"live-case-{index}" for index in range(10)],
+        "storage.integrity": [f"live-case-{index}" for index in range(10)],
+        "deployment.runtime": ["receipt-1"],
+    }
+    assert report["readiness"] == runtime.readiness
+    assert report["record_ids"]["release_lineage"] == "lineage-final"
 
 
 def test_release_closure_blocks_before_recall_while_storage_migrations_are_pending() -> None:
@@ -802,10 +905,29 @@ def _successful_rehearsal() -> dict:
 
 
 def _successful_readiness() -> dict:
+    lineage = {
+        "ok": True,
+        "validated": True,
+        "compatible": True,
+        "record_id": "lineage-current",
+        "schema_version": "release_lineage.v1",
+        "current_release": {
+            "commit": CURRENT_COMMIT,
+            "version": "1.9.51",
+            "receipt_id": "receipt-1",
+            "session_id": "receipt-1",
+        },
+    }
     return {
         "ok": True,
         "schema_version": "l5_readiness.v2",
-        "release_identity": {"release_commit": CURRENT_COMMIT},
+        "release_identity": {
+            "release_commit": CURRENT_COMMIT,
+            "release_version": "1.9.51",
+            "deployment_receipt_id": "receipt-1",
+            "release_session_id": "receipt-1",
+        },
+        "release_lineage": lineage,
         "production_recall_gate": {"ok": True, "status": "accepted"},
         "production_recall_strict_state": {
             "ok": True,

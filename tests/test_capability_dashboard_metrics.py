@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import pytest
 
+import eimemory.governance.capability_dashboard as capability_dashboard_module
 from eimemory.api.runtime import Runtime
 from eimemory.governance.capability_dashboard import VERIFIED_REAL_TASK_METHODS, _verified_code_patch_promotion
+from eimemory.governance.evidence_contract import ReleaseIdentity
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
@@ -485,6 +487,79 @@ def test_dashboard_counts_verified_openclaw_tasks_and_failure_blame_separately(t
     assert report["sample_counts"]["verified_real_task_types"] == 2
     assert report["sample_counts"]["current_deployment_acceptance"] == 0
     assert report["failure_blame_layers"] == {"memory": 1}
+
+
+def test_dashboard_lineage_view_preserves_current_metrics_and_excludes_non_openclaw(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    current = ReleaseIdentity("f" * 40, "1.9.70", "receipt-current", "session-current")
+    ancestor = ReleaseIdentity("e" * 40, "1.9.69", "receipt-ancestor", "session-ancestor")
+    outcomes = [
+        {
+            "record_id": f"ancestor-openclaw-{index}",
+            "task_type": f"type-{index % 5}",
+            "method": "openclaw.agent_end",
+            "release_identity": ancestor,
+            "success": True,
+            "blame_layer": "",
+        }
+        for index in range(10)
+    ]
+    outcomes.extend(
+        {
+            "record_id": f"ancestor-codex-{index}",
+            "task_type": f"type-{index % 5}",
+            "method": "codex.stop",
+            "release_identity": ancestor,
+            "success": True,
+            "blame_layer": "",
+        }
+        for index in range(10)
+    )
+    outcomes.append(
+        {
+            "record_id": "current-openclaw-failure",
+            "task_type": "type-current",
+            "method": "openclaw.agent_end",
+            "release_identity": current,
+            "success": False,
+            "blame_layer": "runtime",
+        }
+    )
+    monkeypatch.setattr(
+        capability_dashboard_module,
+        "_current_release_identity_for_scope",
+        lambda *_args, **_kwargs: current,
+    )
+    monkeypatch.setattr(
+        capability_dashboard_module,
+        "_verified_real_task_outcomes",
+        lambda *_args, **_kwargs: outcomes,
+    )
+    try:
+        report = runtime.build_capability_dashboard_metrics(
+            scope=SCOPE,
+            persist=False,
+            real_task_evidence_release=ancestor,
+        )
+    finally:
+        runtime.close()
+
+    assert report["sample_counts"]["verified_real_tasks"] == 21
+    assert report["sample_counts"]["current_deployment_verified_real_tasks"] == 1
+    assert report["metrics"]["current_deployment_verified_real_task_success_rate"] == 0.0
+    assert report["real_task_evidence"] == {
+        "ok": True,
+        "success_rate": 1.0,
+        "sample_count": 10,
+        "distinct_task_types": 5,
+        "sufficient": True,
+        "evidence_mode": "lineage_inherited",
+        "evidence_release_commit": ancestor.commit,
+        "current_release_commit": current.commit,
+    }
 
 
 def test_dashboard_explicit_failure_overrides_success_signal(tmp_path) -> None:

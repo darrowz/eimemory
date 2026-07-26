@@ -26,6 +26,10 @@ from eimemory.governance.evidence_contract import (
     same_scope,
 )
 from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
+from eimemory.governance.release_lineage import (
+    current_release_lineage,
+    evidence_release_for_domain,
+)
 from eimemory.governance.rollout_lifecycle import is_executed_rollback_ledger_record
 from eimemory.models.records import ScopeRef
 
@@ -46,10 +50,57 @@ STRONG_CAPABILITIES = {"memory.recall", "tool.routing", "knowledge.intake", "saf
 WEAK_CAPABILITIES = {"search.discovery", "research.synthesis", "operations.uumit", "device.control"}
 
 
-def readiness_gate_status(readiness: dict[str, Any]) -> str:
+def readiness_gate_status(
+    readiness: dict[str, Any],
+    *,
+    runtime: Any | None = None,
+    scope: dict[str, Any] | ScopeRef | None = None,
+    repo_root: str = "/dev-project/eimemory",
+) -> str:
     """Return the only release-gate states backed by complete L5 evidence."""
 
-    if readiness.get("schema_version") != "l5_readiness.v2":
+    if readiness.get("schema_version") != "l5_readiness.v2" or runtime is None:
+        return ""
+    scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(
+        scope if scope is not None else readiness.get("scope")
+    )
+    exact_provider = getattr(runtime, "current_release_identity", None)
+    exact_release = (
+        exact_provider(scope=asdict(scope_ref), limit=500)
+        if callable(exact_provider)
+        else current_release_identity(runtime, scope_ref)
+    )
+    if exact_release is None:
+        return ""
+    release_identity = readiness.get("release_identity") if isinstance(readiness.get("release_identity"), dict) else {}
+    if release_identity != release_identity_payload(exact_release):
+        return ""
+    reported_lineage = (
+        readiness.get("release_lineage")
+        if isinstance(readiness.get("release_lineage"), dict)
+        else {}
+    )
+    lineage_provider = getattr(runtime, "current_release_lineage", None)
+    verified_lineage = (
+        lineage_provider(
+            scope=asdict(scope_ref),
+            current_release=exact_release,
+            repo_root=repo_root,
+        )
+        if callable(lineage_provider)
+        else current_release_lineage(
+            runtime,
+            scope=scope_ref,
+            current_release=exact_release,
+            repo_root=repo_root,
+        )
+    )
+    if (
+        verified_lineage.get("ok") is not True
+        or verified_lineage.get("validated") is not True
+        or verified_lineage.get("compatible") is not True
+        or reported_lineage != verified_lineage
+    ):
         return ""
     assessment = (
         readiness.get("latest_l5_assessment")
@@ -57,7 +108,11 @@ def readiness_gate_status(readiness: dict[str, Any]) -> str:
         else {}
     )
     live_gate = readiness.get("live_task_gate") if isinstance(readiness.get("live_task_gate"), dict) else {}
-    release_identity = readiness.get("release_identity") if isinstance(readiness.get("release_identity"), dict) else {}
+    recall_gate = (
+        readiness.get("production_recall_gate")
+        if isinstance(readiness.get("production_recall_gate"), dict)
+        else {}
+    )
     strict_state = (
         readiness.get("production_recall_strict_state")
         if isinstance(readiness.get("production_recall_strict_state"), dict)
@@ -98,7 +153,11 @@ def readiness_gate_status(readiness: dict[str, Any]) -> str:
         and strict_state.get("status") == "strict_activated"
         and bool(str(release_identity.get("release_commit") or ""))
         and str(strict_state.get("candidate_commit") or "")
-        == str(release_identity.get("release_commit") or "")
+        == str(
+            recall_gate.get("evidence_release_commit")
+            or release_identity.get("release_commit")
+            or ""
+        )
         and isinstance(readiness.get("storage_migrations"), dict)
         and readiness["storage_migrations"].get("ok") is True
         and readiness["storage_migrations"].get("pending") == []
@@ -125,13 +184,28 @@ def build_l5_readiness_report(
     persist: bool = False,
     limit: int = 500,
     loop_id: str = "l5_readiness",
+    repo_root: str = "/dev-project/eimemory",
 ) -> dict[str, Any]:
     """Build a read-only L5 readiness report from existing governance evidence."""
 
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
     release = current_release_identity(runtime, scope_ref, limit=limit)
+    release_lineage, evidence_releases = _resolve_readiness_release_lineage(
+        runtime,
+        scope=scope_ref,
+        current_release=release,
+        repo_root=repo_root,
+    )
+    channel_release = evidence_releases["channel.openclaw"]
+    governance_release = evidence_releases["memory.governance"]
+    recall_release = evidence_releases["memory.recall"]
     ledger = build_capability_ledger(runtime, scope=scope_ref, limit=limit, attribute_outcomes=False)
-    hard_metrics = _safe_hard_metrics(runtime, scope=scope_ref, limit=limit)
+    hard_metrics = _safe_hard_metrics(
+        runtime,
+        scope=scope_ref,
+        limit=limit,
+        real_task_evidence_release=channel_release,
+    )
     evidence_counts = _evidence_counts(runtime, scope=scope_ref, limit=limit)
     verified_replay = _verified_replay_summary(
         runtime,
@@ -139,7 +213,7 @@ def build_l5_readiness_report(
         limit=limit,
         capabilities=WEAK_CAPABILITIES,
         missing_field="weak_capabilities_missing",
-        release=release,
+        release=governance_release,
     )
     verified_core_replay = _verified_replay_summary(
         runtime,
@@ -147,9 +221,13 @@ def build_l5_readiness_report(
         limit=limit,
         capabilities=set(CORE_REPLAY_CAPABILITIES),
         missing_field="core_capabilities_missing",
-        release=release,
+        release=governance_release,
     )
-    latest_l5_assessment = _latest_l5_assessment(runtime, scope=scope_ref, release=release)
+    latest_l5_assessment = _annotate_release_evidence(
+        _latest_l5_assessment(runtime, scope=scope_ref, release=governance_release),
+        evidence_release=governance_release,
+        current_release=release,
+    )
     from eimemory.evaluation.production_recall import (
         verify_current_production_recall_gate,
         verify_current_production_recall_strict_state,
@@ -158,7 +236,7 @@ def build_l5_readiness_report(
         production_recall_gate = verify_current_production_recall_gate(
             runtime,
             scope=scope_ref,
-            release=release,
+            release=recall_release,
             limit=limit,
         )
     except Exception as exc:
@@ -172,7 +250,7 @@ def build_l5_readiness_report(
         production_recall_strict_state = verify_current_production_recall_strict_state(
             runtime,
             scope=scope_ref,
-            release=release,
+            release=recall_release,
             gate_record_id=str(production_recall_gate.get("record_id") or ""),
         )
     except Exception as exc:
@@ -189,7 +267,7 @@ def build_l5_readiness_report(
         strict_commit = str(production_recall_strict_state.get("candidate_commit") or "")
         gate_record_id = str(production_recall_gate.get("record_id") or "")
         strict_gate_record_id = str(production_recall_strict_state.get("gate_record_id") or "")
-        if release is None or strict_commit != release.commit:
+        if recall_release is None or strict_commit != recall_release.commit:
             production_recall_strict_state = {
                 **production_recall_strict_state,
                 "ok": False,
@@ -203,6 +281,26 @@ def build_l5_readiness_report(
                 "status": "blocked",
                 "reason": "strict_gate_record_mismatch",
             }
+    production_recall_gate = _annotate_release_evidence(
+        production_recall_gate,
+        evidence_release=recall_release,
+        current_release=release,
+    )
+    production_recall_strict_state = _annotate_release_evidence(
+        production_recall_strict_state,
+        evidence_release=recall_release,
+        current_release=release,
+    )
+    verified_replay = _annotate_release_evidence(
+        verified_replay,
+        evidence_release=governance_release,
+        current_release=release,
+    )
+    verified_core_replay = _annotate_release_evidence(
+        verified_core_replay,
+        evidence_release=governance_release,
+        current_release=release,
+    )
     storage_migrations = _storage_migration_status(runtime)
     weak_outcome_evidence = _weak_outcome_evidence(runtime, scope=scope_ref, limit=limit)
     capability_gaps = _capability_gaps(ledger, weak_outcome_evidence=weak_outcome_evidence)
@@ -219,6 +317,11 @@ def build_l5_readiness_report(
     stage = _apply_production_recall_gate(stage, production_recall_gate)
     stage = _apply_production_recall_strict_state_gate(stage, production_recall_strict_state)
     stage = _apply_storage_migration_gate(stage, storage_migrations)
+    stage = _apply_release_lineage_gate(
+        stage,
+        release_lineage=release_lineage,
+        current_release=release,
+    )
     next_actions = _next_actions(
         stage,
         capability_gaps,
@@ -240,6 +343,7 @@ def build_l5_readiness_report(
         "generated_at": now_iso(),
         "scope": asdict(scope_ref),
         "release_identity": release_identity_payload(release) if release is not None else {},
+        "release_lineage": release_lineage,
         "current_stage": stage["stage"],
         "stage_label": stage["label"],
         "readiness_score": stage["readiness_score"],
@@ -285,6 +389,78 @@ def build_l5_readiness_report(
         )
         report["persisted_record_id"] = record.record_id
     return report
+
+
+def _resolve_readiness_release_lineage(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    current_release: ReleaseIdentity | None,
+    repo_root: str,
+) -> tuple[dict[str, Any], dict[str, ReleaseIdentity | None]]:
+    domains = ("channel.openclaw", "memory.governance", "memory.recall")
+    releases = {domain: current_release for domain in domains}
+    if current_release is None:
+        return {"ok": False, "error": "current_release_receipt_invalid"}, releases
+    lineage = current_release_lineage(
+        runtime,
+        scope=scope,
+        current_release=current_release,
+        repo_root=repo_root,
+    )
+    if (
+        not isinstance(lineage, dict)
+        or lineage.get("ok") is not True
+        or lineage.get("validated") is not True
+        or lineage.get("compatible") is not True
+    ):
+        return (
+            lineage
+            if isinstance(lineage, dict)
+            else {"ok": False, "error": "current_release_lineage_invalid"},
+            releases,
+        )
+    for domain in domains:
+        try:
+            releases[domain] = evidence_release_for_domain(
+                runtime,
+                scope=scope,
+                repo_root=repo_root,
+                domain=domain,
+                current_release=current_release,
+                expected_record_id=str(lineage.get("record_id") or ""),
+            )
+        except (OSError, TypeError, ValueError) as exc:
+            return {
+                **lineage,
+                "ok": False,
+                "validated": False,
+                "compatible": False,
+                "error": "lineage_evidence_resolution_failed",
+                "domain": domain,
+                "detail": str(exc),
+            }, {name: current_release for name in domains}
+    return lineage, releases
+
+
+def _annotate_release_evidence(
+    report: dict[str, Any],
+    *,
+    evidence_release: ReleaseIdentity | None,
+    current_release: ReleaseIdentity | None,
+) -> dict[str, Any]:
+    evidence_commit = evidence_release.commit if evidence_release is not None else ""
+    current_commit = current_release.commit if current_release is not None else ""
+    return {
+        **report,
+        "evidence_mode": (
+            "lineage_inherited"
+            if evidence_commit and current_commit and evidence_commit != current_commit
+            else "current_release"
+        ),
+        "evidence_release_commit": evidence_commit,
+        "current_release_commit": current_commit,
+    }
 
 
 def _apply_production_recall_gate(stage: dict[str, Any], gate: dict[str, Any]) -> dict[str, Any]:
@@ -354,11 +530,60 @@ def _apply_storage_migration_gate(stage: dict[str, Any], migration: dict[str, An
     return downgraded
 
 
-def _safe_hard_metrics(runtime: Any, *, scope: ScopeRef, limit: int) -> dict[str, Any]:
+def _apply_release_lineage_gate(
+    stage: dict[str, Any],
+    *,
+    release_lineage: dict[str, Any],
+    current_release: ReleaseIdentity | None,
+) -> dict[str, Any]:
+    lineage_current = (
+        release_lineage.get("current_release")
+        if isinstance(release_lineage.get("current_release"), dict)
+        else {}
+    )
+    lineage_valid = bool(
+        current_release is not None
+        and release_lineage.get("ok") is True
+        and release_lineage.get("validated") is True
+        and release_lineage.get("compatible") is True
+        and str(lineage_current.get("commit") or "") == current_release.commit
+        and str(lineage_current.get("version") or "") == current_release.version
+        and str(lineage_current.get("receipt_id") or "") == current_release.receipt_id
+        and str(lineage_current.get("session_id") or "") == current_release.session_id
+    )
+    if lineage_valid:
+        return stage
+    downgraded = dict(stage)
+    downgraded["readiness_score"] = min(float(stage.get("readiness_score") or 0.0), 0.8)
+    if str(stage.get("stage") or "") == "L5":
+        downgraded.update(
+            {
+                "stage": "L4.5",
+                "label": "L5 evidence present; release lineage incomplete",
+                "reason": "The exact current release does not have a valid compatible runtime-recomputed lineage.",
+                "done_when": "Record and revalidate authoritative gates for every changed production domain.",
+            }
+        )
+    return downgraded
+
+
+def _safe_hard_metrics(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    limit: int,
+    real_task_evidence_release: ReleaseIdentity | None = None,
+) -> dict[str, Any]:
     try:
         from eimemory.governance.capability_dashboard import build_capability_dashboard_metrics
 
-        return build_capability_dashboard_metrics(runtime, scope=scope, persist=False, limit=limit)
+        return build_capability_dashboard_metrics(
+            runtime,
+            scope=scope,
+            persist=False,
+            limit=limit,
+            real_task_evidence_release=real_task_evidence_release,
+        )
     except Exception as exc:
         return {"ok": False, "error": type(exc).__name__, "detail": str(exc), "metrics": {}, "sample_counts": {}}
 
@@ -1115,11 +1340,22 @@ def _stage_for(
     patch_quality_ok = bool(
         (metric_quality.get("patch_promotion_success_rate") or metric_quality.get("auto_patch_success_rate") or {}).get("sufficient")
     )
-    verified_live_success = float(metrics.get("current_deployment_verified_real_task_success_rate") or 0.0)
-    verified_live_quality = metric_quality.get("current_deployment_verified_real_task_success_rate") or {}
     sample_counts = hard_metrics.get("sample_counts") if isinstance(hard_metrics.get("sample_counts"), dict) else {}
-    verified_live_samples = int(sample_counts.get("current_deployment_verified_real_tasks") or 0)
-    verified_live_task_types = int(sample_counts.get("current_deployment_verified_real_task_types") or 0)
+    real_task_evidence = (
+        hard_metrics.get("real_task_evidence")
+        if isinstance(hard_metrics.get("real_task_evidence"), dict)
+        else {}
+    )
+    if real_task_evidence:
+        verified_live_success = float(real_task_evidence.get("success_rate") or 0.0)
+        verified_live_quality = {"sufficient": real_task_evidence.get("sufficient") is True}
+        verified_live_samples = int(real_task_evidence.get("sample_count") or 0)
+        verified_live_task_types = int(real_task_evidence.get("distinct_task_types") or 0)
+    else:
+        verified_live_success = float(metrics.get("current_deployment_verified_real_task_success_rate") or 0.0)
+        verified_live_quality = metric_quality.get("current_deployment_verified_real_task_success_rate") or {}
+        verified_live_samples = int(sample_counts.get("current_deployment_verified_real_tasks") or 0)
+        verified_live_task_types = int(sample_counts.get("current_deployment_verified_real_task_types") or 0)
     operational_probes = int(sample_counts.get("current_deployment_operational_probes") or 0)
     live_task_gate = {
         "ok": bool(
@@ -1137,6 +1373,9 @@ def _stage_for(
         "task_type_deficit": max(0, 5 - verified_live_task_types),
         "current_deployment_verified_real_tasks": verified_live_samples,
         "current_deployment_operational_probes": operational_probes,
+        "evidence_mode": str(real_task_evidence.get("evidence_mode") or "current_release"),
+        "evidence_release_commit": str(real_task_evidence.get("evidence_release_commit") or ""),
+        "current_release_commit": str(real_task_evidence.get("current_release_commit") or ""),
     }
     weak_outcome_ok = not weak_outcome_evidence.get("missing")
     weak_missing = verified_replay.get("weak_capabilities_missing")

@@ -91,6 +91,7 @@ def build_capability_dashboard_metrics(
     persist: bool = False,
     limit: int = 500,
     loop_id: str = "capability_dashboard_1_6_9",
+    real_task_evidence_release: ReleaseIdentity | None = None,
 ) -> dict[str, Any]:
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
     recall_replays = _records(runtime, scope_ref, ["replay_result"], limit)
@@ -152,6 +153,42 @@ def build_capability_dashboard_metrics(
     current_deployment_real_success = sum(1 for item in current_deployment_real_tasks if item["success"] is True)
     current_deployment_real_task_types = {
         str(item.get("task_type") or "") for item in current_deployment_real_tasks
+    }
+    evidence_release = (
+        real_task_evidence_release
+        if isinstance(real_task_evidence_release, ReleaseIdentity)
+        and real_task_evidence_release.complete
+        else current_release
+    )
+    release_evidence_real_tasks = [
+        item
+        for item in verified_real_tasks
+        if evidence_release is not None
+        and item.get("release_identity") == evidence_release
+        and str(item.get("method") or "").startswith("openclaw.")
+    ]
+    release_evidence_success = sum(
+        1 for item in release_evidence_real_tasks if item["success"] is True
+    )
+    release_evidence_task_types = {
+        str(item.get("task_type") or "") for item in release_evidence_real_tasks
+    }
+    release_evidence_quality = _quality(len(release_evidence_real_tasks))
+    real_task_evidence = {
+        "ok": evidence_release is not None,
+        "success_rate": _rate(release_evidence_success, len(release_evidence_real_tasks)),
+        "sample_count": len(release_evidence_real_tasks),
+        "distinct_task_types": len(release_evidence_task_types),
+        "sufficient": release_evidence_quality["sufficient"],
+        "evidence_mode": (
+            "lineage_inherited"
+            if evidence_release is not None
+            and current_release is not None
+            and evidence_release.commit != current_release.commit
+            else "current_release"
+        ),
+        "evidence_release_commit": evidence_release.commit if evidence_release is not None else "",
+        "current_release_commit": current_release.commit if current_release is not None else "",
     }
 
     promotions = _records(runtime, scope_ref, ["promotion_request"], limit)
@@ -240,6 +277,7 @@ def build_capability_dashboard_metrics(
         "metrics": metrics,
         "metric_quality": metric_quality,
         "failure_blame_layers": failure_blame_layers,
+        "real_task_evidence": real_task_evidence,
         "persisted_record_id": record_id,
         "sample_counts": {
             "recall": recall_total,
@@ -442,6 +480,7 @@ def _verified_real_task_outcomes(
                 "task_type": task_type,
                 "evidence_class": "verified_real_task",
                 "release_identity": release_identity,
+                "method": method,
                 "success": outcome.get("success") is True and verifier.get("passed") is True,
                 "blame_layer": str(_field(record, "blame_layer") or "unknown"),
             }

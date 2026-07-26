@@ -4,12 +4,17 @@ import json
 
 import pytest
 
+import eimemory.governance.l5_readiness as l5_readiness_module
 from eimemory.api.runtime import Runtime
 from eimemory.cli.main import main as cli_main
-from eimemory.governance.capability_acceptance import CORE_CAPABILITY_ACCEPTANCE_CASE_IDS
+from eimemory.governance.capability_acceptance import (
+    CORE_CAPABILITY_ACCEPTANCE_CASE_IDS,
+    WEAK_CAPABILITY_ACCEPTANCE_CASE_IDS,
+)
 from eimemory.governance.capability_replay_packs import CORE_REPLAY_CAPABILITIES
 from eimemory.governance.closure_rehearsal import (
     _weak_replay_gate,
+    run_l5_closure_rehearsal,
     verify_bootstrap_pending_readiness_contract,
 )
 from eimemory.evaluation.real_query_gate import (
@@ -59,6 +64,97 @@ class _PassingPromptSafetyExecutor:
         }
 
 
+def test_closure_rehearsal_finalizes_lineage_immediately_after_core_replay() -> None:
+    class RuntimeUntilLineage:
+        correction_called = False
+
+        def run_capability_acceptance(self, **_kwargs) -> dict:
+            return {
+                "ok": True,
+                "all_passed": True,
+                "case_count": len(CORE_CAPABILITY_ACCEPTANCE_CASE_IDS),
+                "pass_count": len(CORE_CAPABILITY_ACCEPTANCE_CASE_IDS),
+                "distinct_probe_sources": True,
+                "distinct_trace_ids": True,
+                "execution_id": "core-acceptance",
+                "results": [
+                    {
+                        "case_id": case_id,
+                        "probe_record_id": f"probe-{index}",
+                    }
+                    for index, case_id in enumerate(CORE_CAPABILITY_ACCEPTANCE_CASE_IDS)
+                ],
+            }
+
+        def build_capability_replay_packs(self, **_kwargs) -> dict:
+            return {
+                "ok": True,
+                "manifest_record_id": "core-manifest",
+                "packs": [
+                    {
+                        "capability": capability,
+                        "cases": [{"threshold": 0.8}],
+                        "pass_rate": 1.0,
+                        "case_results": [
+                            {
+                                "verdict": "pass",
+                                "evidence_source_id": f"core-source-{index}",
+                            }
+                        ],
+                    }
+                    for index, capability in enumerate(CORE_REPLAY_CAPABILITIES)
+                ],
+            }
+
+        def record_user_correction_replay(self, *_args, **_kwargs) -> dict:
+            self.correction_called = True
+            raise AssertionError("lineage must finalize before later rehearsal stages")
+
+    runtime = RuntimeUntilLineage()
+    weak_acceptance = {
+        "ok": True,
+        "all_passed": True,
+        "case_count": len(WEAK_CAPABILITY_ACCEPTANCE_CASE_IDS),
+        "pass_count": len(WEAK_CAPABILITY_ACCEPTANCE_CASE_IDS),
+        "distinct_probe_sources": True,
+        "distinct_trace_ids": True,
+    }
+    bootstrap = {
+        "ok": True,
+        "capability_acceptance": weak_acceptance,
+        "weak_capability_replay": {"ok": True, "manifest_record_id": "weak-manifest"},
+        "replay_gate": {"ok": True, "blocked_reasons": []},
+    }
+    finalized: list[dict] = []
+
+    report = run_l5_closure_rehearsal(
+        runtime,
+        scope=SCOPE,
+        persist=True,
+        replay_bootstrap=bootstrap,
+        release_lineage_finalizer=lambda core: (
+            finalized.append(core)
+            or {
+                "ok": False,
+                "validated": False,
+                "compatible": False,
+                "error": "changed_domain_unverified",
+            }
+        ),
+    )
+
+    assert [item["manifest_record_id"] for item in finalized] == ["core-manifest"]
+    assert report["sequence"] == [
+        "acceptance",
+        "replay",
+        "core_acceptance",
+        "core_replay",
+        "release_lineage",
+    ]
+    assert report["blocked_reasons"] == ["changed_domain_unverified"]
+    assert runtime.correction_called is False
+
+
 def test_l5_closure_rehearsal_opens_success_skill_and_rollback_metrics(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path)
     monkeypatch.setattr(
@@ -76,14 +172,19 @@ def test_l5_closure_rehearsal_opens_success_skill_and_rollback_metrics(tmp_path,
         },
     )
     try:
-        _seed_executed_deployment(runtime)
+        release = _seed_executed_deployment(runtime)
+        lineage = _mock_current_release_lineage(monkeypatch, runtime, release)
         before = runtime.build_capability_dashboard_metrics(scope=SCOPE, persist=False)
         assert before["metrics"]["task_success_rate"] == 0.0
         assert before["metrics"]["skill_reuse_count"] == 0
         assert before["metrics"]["rollback_count"] == 0
         _seed_verified_live_tasks(runtime)
 
-        report = runtime.run_l5_closure_rehearsal(scope=SCOPE, persist=True)
+        report = runtime.run_l5_closure_rehearsal(
+            scope=SCOPE,
+            persist=True,
+            release_lineage_finalizer=lambda _core: lineage,
+        )
 
         assert report["ok"] is True
         assert report["closure_complete"] is True
@@ -93,6 +194,7 @@ def test_l5_closure_rehearsal_opens_success_skill_and_rollback_metrics(tmp_path,
             "replay",
             "core_acceptance",
             "core_replay",
+            "release_lineage",
             "skill_rollback",
             "l5_observation_assessment",
             "dashboard",
@@ -208,7 +310,10 @@ def test_l5_closure_rehearsal_blocks_data_accumulating_as_incomplete(tmp_path, m
     }
 
 
-def test_release_bound_bootstrap_pending_rehearsal_keeps_complete_runtime_at_l45(tmp_path) -> None:
+def test_release_bound_bootstrap_pending_rehearsal_keeps_complete_runtime_at_l45(
+    tmp_path,
+    monkeypatch,
+) -> None:
     runtime = Runtime.create(root=tmp_path)
     try:
         release = _seed_executed_deployment(runtime)
@@ -225,12 +330,14 @@ def test_release_bound_bootstrap_pending_rehearsal_keeps_complete_runtime_at_l45
         pending = verify_current_bootstrap_data_pending(runtime, scope=SCOPE, release=release)
         assert pending["ok"] is True
         _seed_verified_live_tasks(runtime)
+        lineage = _mock_current_release_lineage(monkeypatch, runtime, release)
 
         report = runtime.run_l5_closure_rehearsal(
             scope=SCOPE,
             persist=True,
             bootstrap_pending=pending,
             release_identity=release,
+            release_lineage_finalizer=lambda _core: lineage,
         )
     finally:
         runtime.close()
@@ -718,3 +825,39 @@ def _seed_verified_live_tasks(runtime: Runtime) -> None:
             scope=SCOPE,
         )
         assert result["ok"] is True
+
+
+def _mock_current_release_lineage(
+    monkeypatch,
+    runtime: Runtime,
+    release: ReleaseIdentity,
+) -> dict:
+    lineage = {
+        "ok": True,
+        "validated": True,
+        "compatible": True,
+        "record_id": "lineage-current-test",
+        "schema_version": "release_lineage.v1",
+        "current_release": {
+            "commit": release.commit,
+            "version": release.version,
+            "receipt_id": release.receipt_id,
+            "session_id": release.session_id,
+        },
+    }
+    monkeypatch.setattr(
+        l5_readiness_module,
+        "current_release_lineage",
+        lambda *_args, **_kwargs: lineage,
+    )
+    monkeypatch.setattr(
+        l5_readiness_module,
+        "evidence_release_for_domain",
+        lambda *_args, **_kwargs: release,
+    )
+    monkeypatch.setattr(
+        runtime,
+        "current_release_lineage",
+        lambda **_kwargs: lineage,
+    )
+    return lineage

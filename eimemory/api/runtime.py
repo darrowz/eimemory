@@ -877,10 +877,18 @@ class Runtime:
         persist: bool = False,
         limit: int = 500,
         loop_id: str = "l5_readiness",
+        repo_root: str = "/dev-project/eimemory",
     ) -> dict:
         from eimemory.governance.l5_readiness import build_l5_readiness_report
 
-        return build_l5_readiness_report(self, scope=scope, persist=persist, limit=limit, loop_id=loop_id)
+        return build_l5_readiness_report(
+            self,
+            scope=scope,
+            persist=persist,
+            limit=limit,
+            loop_id=loop_id,
+            repo_root=repo_root,
+        )
 
     def run_l5_closure_rehearsal(
         self,
@@ -890,6 +898,8 @@ class Runtime:
         replay_bootstrap: dict | None = None,
         bootstrap_pending: dict | None = None,
         release_identity: Any | None = None,
+        release_lineage_finalizer: Any | None = None,
+        repo_root: str = "/dev-project/eimemory",
     ) -> dict:
         from eimemory.governance.closure_rehearsal import run_l5_closure_rehearsal
 
@@ -900,6 +910,8 @@ class Runtime:
             replay_bootstrap=replay_bootstrap,
             bootstrap_pending=bootstrap_pending,
             release_identity=release_identity,
+            release_lineage_finalizer=release_lineage_finalizer,
+            repo_root=repo_root,
         )
 
     def run_weak_capability_replay_gate(
@@ -1056,10 +1068,18 @@ class Runtime:
         persist: bool = False,
         limit: int = 500,
         loop_id: str = "capability_dashboard_1_6_9",
+        real_task_evidence_release: Any | None = None,
     ) -> dict:
         from eimemory.governance.capability_dashboard import build_capability_dashboard_metrics
 
-        return build_capability_dashboard_metrics(self, scope=scope, persist=persist, limit=limit, loop_id=loop_id)
+        return build_capability_dashboard_metrics(
+            self,
+            scope=scope,
+            persist=persist,
+            limit=limit,
+            loop_id=loop_id,
+            real_task_evidence_release=real_task_evidence_release,
+        )
 
     def verify_and_record_deployment(
         self,
@@ -1100,6 +1120,16 @@ class Runtime:
             current_release=current_release,
             gate_evidence=gate_evidence,
         )
+
+    def current_release_identity(
+        self,
+        *,
+        scope: dict | None = None,
+        limit: int = 500,
+    ) -> Any:
+        from eimemory.governance.evidence_contract import current_release_identity
+
+        return current_release_identity(self, ScopeRef.from_dict(scope), limit=limit)
 
     def current_release_lineage(
         self,

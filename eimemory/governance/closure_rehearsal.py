@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from hashlib import sha256
+from collections.abc import Callable
 from typing import Any
 
 from eimemory.governance.capability_acceptance import (
@@ -38,6 +39,8 @@ def run_l5_closure_rehearsal(
     replay_bootstrap: dict[str, Any] | None = None,
     bootstrap_pending: dict[str, Any] | None = None,
     release_identity: ReleaseIdentity | None = None,
+    release_lineage_finalizer: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+    repo_root: str = "/dev-project/eimemory",
 ) -> dict[str, Any]:
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
     report = _initial_closure_report(scope_ref)
@@ -112,6 +115,31 @@ def run_l5_closure_rehearsal(
             report,
             *(core_replay_gate.get("blocked_reasons") or ["core_capability_replay_invalid"]),
         )
+    if release_lineage_finalizer is not None:
+        try:
+            release_lineage = release_lineage_finalizer(core_capability_replay)
+        except Exception as exc:
+            release_lineage = {
+                "ok": False,
+                "validated": False,
+                "compatible": False,
+                "error": f"release_lineage_finalization_error:{type(exc).__name__}",
+            }
+        report["release_lineage"] = release_lineage
+        report["sequence"].append("release_lineage")
+        if not (
+            isinstance(release_lineage, dict)
+            and release_lineage.get("ok") is True
+            and release_lineage.get("validated") is True
+            and release_lineage.get("compatible") is True
+        ):
+            return _blocked_closure(
+                report,
+                str(
+                    (release_lineage if isinstance(release_lineage, dict) else {}).get("error")
+                    or "release_lineage_not_compatible"
+                ),
+            )
 
     correction_replay = runtime.record_user_correction_replay(
         {
@@ -192,20 +220,29 @@ def run_l5_closure_rehearsal(
         return _blocked_closure(report, "capability_dashboard_failed")
 
     l5_readiness = runtime.build_l5_readiness_report(
-        scope=asdict(scope_ref), persist=persist, loop_id=LOOP_ID
+        scope=asdict(scope_ref),
+        persist=persist,
+        loop_id=LOOP_ID,
+        repo_root=repo_root,
     )
     report["l5_readiness"] = l5_readiness
     report["sequence"].append("readiness")
-    readiness_status = readiness_gate_status(l5_readiness)
-    if not readiness_status:
-        if bootstrap_pending is None and release_identity is None:
-            return _blocked_closure(report, "l5_readiness_not_l5")
+    readiness_status = readiness_gate_status(
+        l5_readiness,
+        runtime=runtime,
+        scope=scope_ref,
+        repo_root=repo_root,
+    )
+    if bootstrap_pending is not None:
+        if readiness_status:
+            return _blocked_closure(report, "bootstrap_pending_readiness_must_remain_l45")
         pending_verification = verify_bootstrap_pending_readiness_contract(
             runtime,
             scope=scope_ref,
             bootstrap_pending=bootstrap_pending,
             release=release_identity,
             readiness=l5_readiness,
+            repo_root=repo_root,
         )
         report["bootstrap_pending_verification"] = pending_verification
         if pending_verification.get("ok") is not True:
@@ -213,6 +250,10 @@ def run_l5_closure_rehearsal(
                 report,
                 str(pending_verification.get("reason") or "bootstrap_pending_contract_invalid"),
             )
+    elif not readiness_status:
+        if release_identity is None:
+            return _blocked_closure(report, "l5_readiness_not_l5")
+        return _blocked_closure(report, "l5_readiness_not_l5")
     report["outcome_trace"] = _record_successful_task_outcome(runtime, scope=scope_ref, persist=persist)
     report["ok"] = True
     report["closure_complete"] = readiness_status == "L5"
@@ -232,6 +273,7 @@ def verify_bootstrap_pending_readiness_contract(
     bootstrap_pending: dict[str, Any] | None,
     release: ReleaseIdentity | None,
     readiness: dict[str, Any],
+    repo_root: str = "/dev-project/eimemory",
 ) -> dict[str, Any]:
     """Verify the one release-bound L4.5 state allowed inside release closure."""
 
@@ -268,9 +310,12 @@ def verify_bootstrap_pending_readiness_contract(
             "reverified": reverified,
         }
     evidence_reason = _bootstrap_pending_readiness_evidence_reason(
+        runtime,
         readiness,
+        scope=scope,
         release=release,
         pending_record_id=str(reverified.get("record_id") or ""),
+        repo_root=repo_root,
     )
     if evidence_reason:
         return {
@@ -291,10 +336,13 @@ def verify_bootstrap_pending_readiness_contract(
 
 
 def _bootstrap_pending_readiness_evidence_reason(
+    runtime: Any,
     readiness: dict[str, Any],
     *,
+    scope: dict[str, Any] | ScopeRef | None,
     release: ReleaseIdentity,
     pending_record_id: str,
+    repo_root: str,
 ) -> str:
     if not isinstance(readiness, dict) or readiness.get("schema_version") != "l5_readiness.v2":
         return "bootstrap_pending_readiness_schema_invalid"
@@ -350,7 +398,12 @@ def _bootstrap_pending_readiness_evidence_reason(
             "candidate_commit": release.commit,
         },
     }
-    if readiness_gate_status(shadow) != "L5":
+    if readiness_gate_status(
+        shadow,
+        runtime=runtime,
+        scope=scope,
+        repo_root=repo_root,
+    ) != "L5":
         return "bootstrap_pending_non_recall_l5_evidence_incomplete"
     return ""
 
@@ -437,6 +490,7 @@ def _initial_closure_report(scope: ScopeRef) -> dict[str, Any]:
         "core_capability_acceptance": dict(not_run),
         "core_capability_replay": dict(not_run),
         "core_replay_gate": {**not_run, "blocked_reasons": []},
+        "release_lineage": dict(not_run),
         "change_policy": decide_change_policy(event="code_change", closure_complete=False),
         "skill_promotion": {**not_run, "skills": []},
         "skill_call": dict(not_run),
