@@ -224,6 +224,7 @@ def run_l5_closure_rehearsal(
         persist=persist,
         loop_id=LOOP_ID,
         repo_root=repo_root,
+        require_current_recall_evidence=bootstrap_pending is not None,
     )
     report["l5_readiness"] = l5_readiness
     report["sequence"].append("readiness")

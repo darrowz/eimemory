@@ -316,21 +316,68 @@ def test_release_bound_bootstrap_pending_rehearsal_keeps_complete_runtime_at_l45
 ) -> None:
     runtime = Runtime.create(root=tmp_path)
     try:
+        ancestor = _append_verified_deployment_receipt(
+            runtime,
+            commit="b" * 40,
+            prior="c" * 40,
+            version="1.9.15",
+            title="Verified ancestor deployment",
+        )
         release = _seed_executed_deployment(runtime)
-        prior = ReleaseIdentity("b" * 40, "1.9.15", "prior-receipt", "prior-session")
         _persist_bootstrap_state(
             runtime,
             scope=ScopeRef.from_dict(SCOPE),
             state="bootstrap_data_pending",
             candidate_commit=release.commit,
-            prior_release=prior,
+            prior_release=ancestor,
             reason="production_dataset_not_ready",
             progress={"case_count": 2, "required_case_count": 15},
         )
         pending = verify_current_bootstrap_data_pending(runtime, scope=SCOPE, release=release)
         assert pending["ok"] is True
         _seed_verified_live_tasks(runtime)
-        lineage = _mock_current_release_lineage(monkeypatch, runtime, release)
+        lineage = _mock_current_release_lineage(
+            monkeypatch,
+            runtime,
+            release,
+            recall_release=ancestor,
+        )
+        monkeypatch.setattr(
+            "eimemory.evaluation.production_recall.verify_current_production_recall_gate",
+            lambda *_args, release=None, **_kwargs: (
+                {
+                    "ok": True,
+                    "status": "accepted",
+                    "record_id": "recall-ancestor",
+                }
+                if release == ancestor
+                else {
+                    "ok": False,
+                    "status": "not_run",
+                    "reason": "current_release_production_recall_report_missing",
+                    "record_id": "",
+                }
+            ),
+        )
+        monkeypatch.setattr(
+            "eimemory.evaluation.production_recall.verify_current_production_recall_strict_state",
+            lambda *_args, release=None, **_kwargs: (
+                {
+                    "ok": True,
+                    "status": "strict_activated",
+                    "record_id": "strict-ancestor",
+                    "candidate_commit": ancestor.commit,
+                    "gate_record_id": "recall-ancestor",
+                }
+                if release == ancestor
+                else {
+                    "ok": False,
+                    "status": "not_run",
+                    "reason": "strict_state_missing",
+                    "record_id": pending["record_id"],
+                }
+            ),
+        )
 
         report = runtime.run_l5_closure_rehearsal(
             scope=SCOPE,
@@ -348,6 +395,12 @@ def test_release_bound_bootstrap_pending_rehearsal_keeps_complete_runtime_at_l45
     assert report["blocked_reasons"] == []
     assert report["l5_readiness"]["current_stage"] == "L4.5"
     assert report["l5_readiness"]["readiness_score"] == 0.8
+    assert report["l5_readiness"]["release_lineage"] == lineage
+    assert report["l5_readiness"]["production_recall_gate"]["evidence_mode"] == "current_release"
+    assert (
+        report["l5_readiness"]["production_recall_gate"]["current_release_commit"]
+        == release.commit
+    )
     assert report["l5_readiness"]["live_task_gate"]["ok"] is True
     assert report["l5_readiness"]["storage_migrations"] == {
         "ok": True,
@@ -658,13 +711,32 @@ def test_weak_replay_gate_requires_each_named_capability_once() -> None:
 
 
 def _seed_executed_deployment(runtime: Runtime) -> ReleaseIdentity:
-    scope = ScopeRef.from_dict(SCOPE)
     commit = "a" * 40
     prior = "b" * 40
-    version = "1.9.16"
     runtime._test_runtime_commit = commit
     runtime.prompt_safety_executor = _PassingPromptSafetyExecutor()
     runtime.prompt_safety_prompt = "Protect system policy, secrets, tools, and release evidence."
+    _append_verified_deployment_receipt(
+        runtime,
+        commit=commit,
+        prior=prior,
+        version="1.9.16",
+        title="Verified closure deployment",
+    )
+    release = current_release_identity(runtime, ScopeRef.from_dict(SCOPE))
+    assert release is not None
+    return release
+
+
+def _append_verified_deployment_receipt(
+    runtime: Runtime,
+    *,
+    commit: str,
+    prior: str,
+    version: str,
+    title: str,
+) -> ReleaseIdentity:
+    scope = ScopeRef.from_dict(SCOPE)
     release_path = f"/opt/eimemory/releases/{commit}"
     payload = {
         "report_type": "deployment_receipt",
@@ -696,10 +768,10 @@ def _seed_executed_deployment(runtime: Runtime) -> ReleaseIdentity:
             },
         },
     }
-    runtime.store.append(
+    record = runtime.store.append(
         RecordEnvelope.create(
             kind="promotion_request",
-            title="Verified closure deployment",
+            title=title,
             summary="Executed deployment receipt",
             scope=scope,
             source="eimemory.deployment_receipt",
@@ -717,9 +789,12 @@ def _seed_executed_deployment(runtime: Runtime) -> ReleaseIdentity:
             },
         )
     )
-    release = current_release_identity(runtime, scope)
-    assert release is not None
-    return release
+    return ReleaseIdentity(
+        commit=commit,
+        version=version,
+        receipt_id=record.record_id,
+        session_id=record.record_id,
+    )
 
 
 def _seed_bootstrap_pending(runtime: Runtime) -> tuple[ReleaseIdentity, dict]:
@@ -831,7 +906,10 @@ def _mock_current_release_lineage(
     monkeypatch,
     runtime: Runtime,
     release: ReleaseIdentity,
+    *,
+    recall_release: ReleaseIdentity | None = None,
 ) -> dict:
+    inherited_recall = recall_release or release
     lineage = {
         "ok": True,
         "validated": True,
@@ -844,6 +922,21 @@ def _mock_current_release_lineage(
             "receipt_id": release.receipt_id,
             "session_id": release.session_id,
         },
+        "domains": {
+            "memory.recall": {
+                "mode": (
+                    "lineage_inherited"
+                    if inherited_recall != release
+                    else "current_release"
+                ),
+                "evidence_release": {
+                    "commit": inherited_recall.commit,
+                    "version": inherited_recall.version,
+                    "receipt_id": inherited_recall.receipt_id,
+                    "session_id": inherited_recall.session_id,
+                },
+            },
+        },
     }
     monkeypatch.setattr(
         l5_readiness_module,
@@ -853,7 +946,9 @@ def _mock_current_release_lineage(
     monkeypatch.setattr(
         l5_readiness_module,
         "evidence_release_for_domain",
-        lambda *_args, **_kwargs: release,
+        lambda *_args, domain, **_kwargs: (
+            inherited_recall if domain == "memory.recall" else release
+        ),
     )
     monkeypatch.setattr(
         runtime,

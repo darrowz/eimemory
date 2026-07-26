@@ -1256,9 +1256,9 @@ def _ready_l5_payload() -> dict:
     }
 
 
-def test_l5_v2_independently_requires_accepted_production_recall_gate() -> None:
+def test_l5_v2_readiness_gate_status_without_runtime_fails_closed() -> None:
     ready = _ready_l5_payload()
-    assert readiness_gate_status(ready) == "L5"
+    assert readiness_gate_status(ready) == ""
 
     for bad in (
         {},
@@ -1298,7 +1298,11 @@ def test_l5_report_surfaces_independent_real_query_evidence_lookup(tmp_path, mon
     report = build_l5_readiness_report(runtime, scope=BASE_SCOPE)
 
     assert report["schema_version"] == "l5_readiness.v2"
-    assert report["production_recall_gate"] == expected
+    for field, value in expected.items():
+        assert report["production_recall_gate"][field] == value
+    assert report["production_recall_gate"]["evidence_mode"] == "current_release"
+    assert report["production_recall_gate"]["evidence_release_commit"] == ""
+    assert report["production_recall_gate"]["current_release_commit"] == ""
     assert report["current_stage"] == "L4.5"
     assert report["readiness_score"] <= 0.8
     assert any("production recall" in action.lower() for action in report["next_actions"])
