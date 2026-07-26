@@ -801,6 +801,47 @@ _storage_release_action() {
       "$@"
 }
 
+_recall_domain_changed() {
+  if [ -z "$PREVIOUS_COMMIT" ]; then
+    printf '1\n'
+    return
+  fi
+  local changed
+  if ! changed="$(
+    _run_as_service_user env EIMEMORY_ROOT="$EIMEMORY_ROOT" \
+      "$RELEASE_DIR/.venv/bin/python" -I -B -c '
+from pathlib import Path
+import sys
+
+from eimemory.governance.release_lineage import _domain_change_summary
+
+report = _domain_change_summary(
+    Path(sys.argv[1]).resolve(),
+    domain="memory.recall",
+    ancestor=sys.argv[2],
+    current=sys.argv[3],
+)
+print(
+    "1"
+    if report is None
+    or report.get("ancestor_digest") != report.get("current_digest")
+    else "0"
+)
+' "$REPO_DIR" "$PREVIOUS_COMMIT" "$COMMIT"
+  )"; then
+    echo "recall_domain_change=failed treating_as_changed" >&2
+    printf '1\n'
+    return
+  fi
+  case "$changed" in
+    0|1) printf '%s\n' "$changed" ;;
+    *)
+      echo "recall_domain_change=invalid treating_as_changed" >&2
+      printf '1\n'
+      ;;
+  esac
+}
+
 _prepare_storage_for_release() {
   if [ ! -f "$EIMEMORY_ROOT/state/eimemory.sqlite" ]; then
     if [ "$EIMEMORY_POST_SWITCH_GATES" = "1" ] && [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ]; then
@@ -810,18 +851,20 @@ _prepare_storage_for_release() {
     echo "storage_release_migration=skipped database_missing"
     return
   fi
-  local needs_report storage_needed bootstrap_needed=0 protected_write_needed=0
+  local needs_report storage_needed recall_domain_changed=0 bootstrap_needed=0 protected_write_needed=0
   needs_report="$(_storage_release_action needs)"
   printf '%s\n' "$needs_report"
-  if [ ! -d "$EIMEMORY_STORAGE_SNAPSHOT_ROOT" ] || [ -L "$EIMEMORY_STORAGE_SNAPSHOT_ROOT" ]; then
-    echo "storage_release_migration=failed unsafe_snapshot_root" >&2
-    return 2
-  fi
   storage_needed="$(printf '%s' "$needs_report" | \
     "$RELEASE_DIR/.venv/bin/python" -I -B -c \
       'import json,sys; print("1" if json.load(sys.stdin).get("needed") is True else "0")')"
   if [ "$EIMEMORY_POST_SWITCH_GATES" = "1" ] && [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ]; then
-    bootstrap_needed=1
+    recall_domain_changed="$(_recall_domain_changed)"
+    if [ "$recall_domain_changed" = "1" ]; then
+      bootstrap_needed=1
+      echo "recall_domain_change=changed protected_bootstrap=required"
+    else
+      echo "recall_domain_change=unchanged protected_bootstrap=skipped"
+    fi
   fi
   if [ "$EIMEMORY_STORAGE_MIGRATION" != "1" ]; then
     if [ "$storage_needed" = "1" ]; then
@@ -838,6 +881,10 @@ _prepare_storage_for_release() {
     STORAGE_MIGRATION_REQUIRED=0
     echo "storage_release_migration=skipped no_pending_migrations"
     return
+  fi
+  if [ ! -d "$EIMEMORY_STORAGE_SNAPSHOT_ROOT" ] || [ -L "$EIMEMORY_STORAGE_SNAPSHOT_ROOT" ]; then
+    echo "storage_release_migration=failed unsafe_snapshot_root" >&2
+    return 2
   fi
   STORAGE_MIGRATION_REQUIRED="$storage_needed"
   if [ "$bootstrap_needed" = "1" ]; then

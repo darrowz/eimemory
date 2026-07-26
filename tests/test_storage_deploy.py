@@ -180,6 +180,97 @@ exit $?
     return result, events
 
 
+def _run_prepare_storage_harness(
+    tmp_path: Path,
+    *,
+    storage_needed: bool,
+    recall_domain_changed: bool,
+    create_snapshot_root: bool = True,
+) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+    installer = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
+    body = installer.split("_prepare_storage_for_release() {", 1)[1].split("\n}", 1)[0]
+    release_dir = tmp_path / "release"
+    python_wrapper = release_dir / ".venv" / "bin" / "python"
+    python_wrapper.parent.mkdir(parents=True)
+    python_wrapper.write_text(
+        "#!/usr/bin/env bash\n"
+        f'exec "{Path(sys.executable).as_posix()}" "$@"\n',
+        encoding="utf-8",
+    )
+    python_wrapper.chmod(python_wrapper.stat().st_mode | stat.S_IXUSR)
+    root = tmp_path / "root"
+    (root / "state").mkdir(parents=True)
+    (root / "state" / "eimemory.sqlite").touch()
+    snapshot_root = tmp_path / "snapshots"
+    if create_snapshot_root:
+        snapshot_root.mkdir()
+    trace = tmp_path / "prepare.trace"
+    harness = f"""#!/usr/bin/env bash
+set -u
+_prepare_storage_for_release() {{{body}
+}}
+RELEASE_DIR="$1"
+EIMEMORY_ROOT="$2"
+EIMEMORY_STORAGE_SNAPSHOT_ROOT="$3"
+TRACE_PATH="$4"
+STORAGE_NEEDED="$5"
+RECALL_DOMAIN_CHANGED="$6"
+EIMEMORY_POST_SWITCH_GATES=1
+USER_SYSTEMD_ENABLE_SERVICE=1
+EIMEMORY_STORAGE_MIGRATION=1
+STORAGE_MIGRATION_REQUIRED=0
+STORAGE_SNAPSHOT_MANIFEST_SHA256=""
+STORAGE_SNAPSHOT_READY=0
+STORAGE_VACUUM_BACKUP=""
+trace() {{ printf '%s\\n' "$1" >>"$TRACE_PATH"; }}
+_storage_release_action() {{
+  trace "storage:$1"
+  case "$1" in
+    needs) printf '{{"needed":%s}}\\n' "$STORAGE_NEEDED" ;;
+    snapshot) printf '{{"manifest_sha256":"%s"}}\\n' "{'a' * 64}" ;;
+    vacuum) printf '{{"backup_path":""}}\\n' ;;
+    *) printf '{{"ok":true}}\\n' ;;
+  esac
+}}
+_recall_domain_changed() {{
+  trace recall-domain
+  printf '%s\\n' "$RECALL_DOMAIN_CHANGED"
+}}
+_capture_prior_health_snapshot() {{ trace prior-health; }}
+_capture_storage_writers() {{ trace capture-writers; }}
+_retire_system_rpc_unit() {{ trace retire-system-rpc; }}
+_begin_storage_release_transaction() {{ trace begin-transaction; }}
+_stop_storage_writers() {{ trace stop-writers; }}
+_update_storage_release_transaction() {{ trace "update:$1"; }}
+_maybe_fail_stage() {{ trace "stage:$1"; }}
+_run_pre_switch_production_recall_bootstrap() {{ trace recall-bootstrap; }}
+set +e
+_prepare_storage_for_release
+status=$?
+printf 'migration_required=%s\\n' "$STORAGE_MIGRATION_REQUIRED"
+exit "$status"
+"""
+    result = subprocess.run(
+        [
+            _bash_executable(),
+            "-c",
+            harness,
+            "prepare-storage",
+            release_dir.as_posix(),
+            root.as_posix(),
+            snapshot_root.as_posix(),
+            trace.as_posix(),
+            "true" if storage_needed else "false",
+            "1" if recall_domain_changed else "0",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    events = trace.read_text(encoding="utf-8").splitlines() if trace.exists() else []
+    return result, events
+
+
 def _legacy_record() -> RecordEnvelope:
     return RecordEnvelope.create(
         kind="capability_score",
@@ -718,6 +809,22 @@ def test_installer_storage_transaction_order_and_writer_stop_contract() -> None:
     cleanup_backup = script.index("_cleanup_storage_vacuum_backup\n", acceptance)
     prune_snapshots = script.index("_prune_storage_snapshots\n", cleanup_backup)
     assert switch < restart_background < acceptance < cleanup_backup < prune_snapshots
+
+
+def test_code_only_release_skips_protected_storage_transaction_when_recall_domain_is_unchanged(
+    tmp_path: Path,
+) -> None:
+    result, events = _run_prepare_storage_harness(
+        tmp_path,
+        storage_needed=False,
+        recall_domain_changed=False,
+        create_snapshot_root=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert events == ["storage:needs", "recall-domain"]
+    assert "storage_release_migration=skipped no_pending_migrations" in result.stdout
+    assert "migration_required=0" in result.stdout
 
 
 @pytest.mark.parametrize(
