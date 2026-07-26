@@ -842,6 +842,87 @@ print(
   esac
 }
 
+_ensure_prior_deployment_receipt() {
+  if [ "$EIMEMORY_POST_SWITCH_GATES" != "1" ] || [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ]; then
+    return
+  fi
+  if [[ ! "$PREVIOUS_COMMIT" =~ ^[0-9a-fA-F]{40}$ ]]; then
+    echo "prior_deployment_receipt=failed invalid_previous_commit" >&2
+    return 2
+  fi
+  if _run_as_service_user env \
+    EIMEMORY_ROOT="$EIMEMORY_ROOT" \
+    EIMEMORY_CONFIG_DIR="$EIMEMORY_CONFIG_DIR" \
+    EIMEMORY_EVIDENCE_RECEIPT_ENV_FILE="$EVIDENCE_RECEIPT_ENV_FILE" \
+    "$RELEASE_DIR/.venv/bin/python" -I -B -c '
+from pathlib import Path
+import sys
+
+from eimemory.api.runtime import Runtime
+from eimemory.governance.evidence_contract import verified_deployment_receipt_identity
+
+runtime = Runtime.create(root=Path(sys.argv[1]))
+try:
+    records = runtime.store.list_records(
+        kinds=["promotion_request"],
+        scope={
+            "agent_id": sys.argv[2],
+            "workspace_id": sys.argv[3],
+            "user_id": sys.argv[4],
+        },
+        limit=500,
+    )
+    found = any(
+        identity is not None and identity.commit == sys.argv[5]
+        for record in records
+        if (identity := verified_deployment_receipt_identity(record)) is not None
+    )
+finally:
+    runtime.close()
+raise SystemExit(0 if found else 1)
+' "$EIMEMORY_ROOT" \
+      "$EIMEMORY_DEPLOY_SCOPE_AGENT" "$EIMEMORY_DEPLOY_SCOPE_WORKSPACE" \
+      "$EIMEMORY_DEPLOY_SCOPE_USER" "$PREVIOUS_COMMIT"; then
+    echo "prior_deployment_receipt=verified commit=$PREVIOUS_COMMIT"
+    return
+  fi
+
+  local prior_rollback_commit receipt_report
+  prior_rollback_commit="$(_find_prior_release_commit_for "$PREVIOUS_COMMIT")"
+  if [[ ! "$prior_rollback_commit" =~ ^[0-9a-fA-F]{40}$ ]]; then
+    echo "prior_deployment_receipt=failed repair_ancestor_unavailable" >&2
+    return 2
+  fi
+  if ! receipt_report="$(
+    _run_as_service_user env \
+      EIMEMORY_ROOT="$EIMEMORY_ROOT" \
+      EIMEMORY_CONFIG_DIR="$EIMEMORY_CONFIG_DIR" \
+      EIMEMORY_EVIDENCE_RECEIPT_ENV_FILE="$EVIDENCE_RECEIPT_ENV_FILE" \
+      EIMEMORY_RUNTIME_COMMIT="$PREVIOUS_COMMIT" \
+      "$RELEASE_DIR/.venv/bin/python" -I -B \
+        "$RELEASE_DIR/deploy/record_deployment_receipt.py" \
+        --repo-root "$REPO_DIR" --current-link "$CURRENT_LINK" \
+        --health-url "$EIMEMORY_HEALTH_URL" \
+        --prior-commit "$prior_rollback_commit" \
+        --deployed-commit "$PREVIOUS_COMMIT" \
+        --scope-agent "$EIMEMORY_DEPLOY_SCOPE_AGENT" \
+        --scope-workspace "$EIMEMORY_DEPLOY_SCOPE_WORKSPACE" \
+        --scope-user "$EIMEMORY_DEPLOY_SCOPE_USER" --json
+  )"; then
+    echo "prior_deployment_receipt=failed repair_command" >&2
+    return 2
+  fi
+  printf '%s\n' "$receipt_report"
+  if ! printf '%s' "$receipt_report" | \
+    "$RELEASE_DIR/.venv/bin/python" -I -B -c \
+      'import json,sys; value=json.load(sys.stdin); raise SystemExit(0 if value.get("ok") is True and value.get("commit") == sys.argv[1] else 2)' \
+      "$PREVIOUS_COMMIT"; then
+    echo "prior_deployment_receipt=failed repair_identity" >&2
+    return 2
+  fi
+  echo "prior_deployment_receipt=repaired commit=$PREVIOUS_COMMIT"
+}
+
 _prepare_storage_for_release() {
   if [ ! -f "$EIMEMORY_ROOT/state/eimemory.sqlite" ]; then
     if [ "$EIMEMORY_POST_SWITCH_GATES" = "1" ] && [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ]; then
@@ -873,6 +954,10 @@ _prepare_storage_for_release() {
     fi
     echo "storage_release_migration=skipped disabled_no_pending_migrations"
     storage_needed=0
+  fi
+  if [ "$bootstrap_needed" = "1" ] && ! _ensure_prior_deployment_receipt; then
+    echo "prior_deployment_receipt=failed before_bootstrap" >&2
+    return 2
   fi
   if [ "$storage_needed" = "1" ] || [ "$recall_domain_changed" = "1" ]; then
     protected_write_needed=1
@@ -1074,15 +1159,20 @@ _provision_evidence_receipt_key() {
     --group "$SERVICE_GROUP"
 }
 
-_find_prior_release_commit() {
+_find_prior_release_commit_for() {
+  local deployed_commit="$1"
   "$PYTHON_BIN" -I -B "$REPO_DIR/deploy/find_prior_immutable_release.py" \
     --releases-root "$INSTALL_ROOT/releases" \
     --repo-root "$REPO_DIR" \
-    --deployed-commit "$COMMIT" \
+    --deployed-commit "$deployed_commit" \
     --runtime-root "$EIMEMORY_ROOT" \
     --scope-agent "$EIMEMORY_DEPLOY_SCOPE_AGENT" \
     --scope-workspace "$EIMEMORY_DEPLOY_SCOPE_WORKSPACE" \
     --scope-user "$EIMEMORY_DEPLOY_SCOPE_USER"
+}
+
+_find_prior_release_commit() {
+  _find_prior_release_commit_for "$COMMIT"
 }
 
 _restart_current_services() {

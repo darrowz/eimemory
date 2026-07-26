@@ -186,6 +186,7 @@ def _run_prepare_storage_harness(
     storage_needed: bool,
     recall_domain_changed: bool,
     create_snapshot_root: bool = True,
+    prior_receipt_ok: bool = True,
 ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
     installer = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
     body = installer.split("_prepare_storage_for_release() {", 1)[1].split("\n}", 1)[0]
@@ -215,6 +216,7 @@ EIMEMORY_STORAGE_SNAPSHOT_ROOT="$3"
 TRACE_PATH="$4"
 STORAGE_NEEDED="$5"
 RECALL_DOMAIN_CHANGED="$6"
+PRIOR_RECEIPT_OK="$7"
 EIMEMORY_POST_SWITCH_GATES=1
 USER_SYSTEMD_ENABLE_SERVICE=1
 EIMEMORY_STORAGE_MIGRATION=1
@@ -235,6 +237,10 @@ _storage_release_action() {{
 _recall_domain_changed() {{
   trace recall-domain
   printf '%s\\n' "$RECALL_DOMAIN_CHANGED"
+}}
+_ensure_prior_deployment_receipt() {{
+  trace prior-receipt
+  [ "$PRIOR_RECEIPT_OK" = "1" ]
 }}
 _capture_prior_health_snapshot() {{ trace prior-health; }}
 _capture_storage_writers() {{ trace capture-writers; }}
@@ -262,6 +268,7 @@ exit "$status"
             trace.as_posix(),
             "true" if storage_needed else "false",
             "1" if recall_domain_changed else "0",
+            "1" if prior_receipt_ok else "0",
         ],
         check=False,
         capture_output=True,
@@ -825,6 +832,7 @@ def test_code_only_release_runs_bootstrap_without_storage_transaction_when_recal
     assert events == [
         "storage:needs",
         "recall-domain",
+        "prior-receipt",
         "prior-health",
         "recall-bootstrap",
         "stage:pre_switch_recall_bootstrap",
@@ -832,6 +840,22 @@ def test_code_only_release_runs_bootstrap_without_storage_transaction_when_recal
     assert "production_recall_bootstrap=online_non_destructive" in result.stdout
     assert "storage_release_migration=skipped no_pending_migrations" in result.stdout
     assert "migration_required=0" in result.stdout
+
+
+def test_code_only_release_stops_before_bootstrap_when_prior_receipt_is_unavailable(
+    tmp_path: Path,
+) -> None:
+    result, events = _run_prepare_storage_harness(
+        tmp_path,
+        storage_needed=False,
+        recall_domain_changed=False,
+        create_snapshot_root=False,
+        prior_receipt_ok=False,
+    )
+
+    assert result.returncode != 0
+    assert events == ["storage:needs", "recall-domain", "prior-receipt"]
+    assert "prior_deployment_receipt=failed before_bootstrap" in result.stderr
 
 
 @pytest.mark.parametrize(
