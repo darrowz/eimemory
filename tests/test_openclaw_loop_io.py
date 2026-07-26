@@ -191,3 +191,30 @@ def test_watch_closes_interrupted_repair_after_its_target_is_already_reconciled(
     assert result["repair"]["created"] is False
     assert result["repair"]["reconciled_count"] == 0
     assert openclaw_loop.get_task(interrupted["task_id"])["status"] == "done"
+
+
+def test_watch_closes_each_interrupted_repair_without_counting_other_repair_controls(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("OPENCLAW_LOOP_HOME", str(tmp_path))
+    repairs = [
+        openclaw_loop.create_task(
+            title="OpenClaw loop watchdog stale-task repair",
+            objective="reconcile stale OpenClaw loop work and verify the remaining count",
+            source="openclaw.loop_watch.repair",
+            dedupe_key=f"interrupted-repair-{index}",
+        )
+        for index in range(2)
+    ]
+    for repair in repairs:
+        openclaw_loop.update_task(repair["task_id"], lease_expires_at=1)
+
+    result = openclaw_loop.run_watch(run_live_checks=False, reconcile_grace_seconds=0)
+
+    verifications = [
+        verification
+        for verification in openclaw_loop.read_jsonl("verifications.jsonl")
+        if verification["verifier"] == "openclaw_loop_watch_repair"
+    ]
+    assert result["ok"] is True
+    assert all(openclaw_loop.get_task(repair["task_id"])["status"] == "done" for repair in repairs)
+    assert len(verifications) == 2
+    assert all(verification["passed"] is True for verification in verifications)

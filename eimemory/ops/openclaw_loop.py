@@ -1171,7 +1171,7 @@ def _run_watch_repair(
         result=f"eligible={len(eligible)};reason_classes={len(reason_counts)}",
     )
     reconciled_count = len(_reconcile_stale_items(eligible))
-    remaining = [item for item in find_stale_tasks() if str(item.get("task_id") or "") != task_id]
+    remaining = _stale_work_items(find_stale_tasks())
     remaining_summary = _stale_summary(remaining)
     passed = remaining_summary["count"] == 0
     record_verification(
