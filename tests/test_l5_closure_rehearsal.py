@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+import eimemory.governance.closure_rehearsal as closure_rehearsal_module
 import eimemory.governance.l5_readiness as l5_readiness_module
 from eimemory.api.runtime import Runtime
 from eimemory.cli.main import main as cli_main
@@ -461,6 +462,167 @@ def test_bootstrap_pending_contract_rejects_every_non_dataset_l45_gap(
 
     assert result["ok"] is False
     assert result["reason"] == reason
+
+
+def test_bootstrap_pending_allows_real_task_accumulation_after_compatible_operational_revalidation(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        release, pending = _seed_bootstrap_pending(runtime)
+        readiness = _complete_bootstrap_pending_readiness(
+            release,
+            pending["record_id"],
+        )
+        readiness["live_task_gate"] = {
+            "ok": False,
+            "success_rate": 0.0,
+            "sample_count": 0,
+            "distinct_task_types": 0,
+            "current_deployment_verified_real_tasks": 0,
+            "current_deployment_operational_probes": 10,
+            "evidence_mode": "current_release",
+            "evidence_release_commit": release.commit,
+            "current_release_commit": release.commit,
+        }
+        readiness["hard_metrics"] = {
+            "verified_real_task_success_rate": 0.979,
+            "current_deployment_live_task_success_rate": 1.0,
+        }
+        readiness["hard_metric_quality"] = {
+            "verified_real_task_success_rate": {
+                "sample_count": 47,
+                "minimum": 10,
+                "sufficient": True,
+            },
+            "current_deployment_live_task_success_rate": {
+                "sample_count": 10,
+                "minimum": 10,
+                "sufficient": True,
+            },
+        }
+        readiness["hard_metric_samples"] = {
+            "verified_real_tasks": 47,
+            "verified_real_task_types": 4,
+            "current_deployment_operational_probes": 10,
+            "current_deployment_live_task_types": 10,
+        }
+        readiness["release_lineage"] = {
+            "ok": True,
+            "validated": True,
+            "compatible": True,
+            "current_release": {
+                "commit": release.commit,
+                "version": release.version,
+                "receipt_id": release.receipt_id,
+                "session_id": release.session_id,
+            },
+            "domains": {
+                "channel.openclaw": {
+                    "mode": "current",
+                    "changed": False,
+                    "gate_errors": {},
+                }
+            },
+        }
+
+        def shadow_gate(shadow, **_kwargs):
+            live = shadow["live_task_gate"]
+            assert live["ok"] is True
+            assert live["current_deployment_verified_real_tasks"] == 10
+            return "L5"
+
+        monkeypatch.setattr(
+            closure_rehearsal_module,
+            "readiness_gate_status",
+            shadow_gate,
+        )
+
+        reason = closure_rehearsal_module._bootstrap_pending_readiness_evidence_reason(
+            runtime,
+            readiness,
+            scope=SCOPE,
+            release=release,
+            pending_record_id=pending["record_id"],
+            repo_root="/dev-project/eimemory",
+        )
+    finally:
+        runtime.close()
+
+    assert reason == ""
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        (("hard_metrics", "verified_real_task_success_rate"), 0.79),
+        (("hard_metric_samples", "current_deployment_operational_probes"), 9),
+        (("release_lineage", "domains", "channel.openclaw", "changed"), True),
+    ],
+)
+def test_bootstrap_pending_rejects_untrusted_real_task_continuity(
+    path: tuple[str, ...],
+    value,
+) -> None:
+    release = ReleaseIdentity("a" * 40, "1.9.93", "receipt", "session")
+    readiness = {
+        "live_task_gate": {
+            "ok": False,
+            "success_rate": 0.0,
+            "sample_count": 0,
+            "distinct_task_types": 0,
+            "current_deployment_verified_real_tasks": 0,
+            "current_deployment_operational_probes": 10,
+            "evidence_mode": "current_release",
+            "evidence_release_commit": release.commit,
+            "current_release_commit": release.commit,
+        },
+        "hard_metrics": {
+            "verified_real_task_success_rate": 0.979,
+            "current_deployment_live_task_success_rate": 1.0,
+        },
+        "hard_metric_quality": {
+            "verified_real_task_success_rate": {"sample_count": 47, "sufficient": True},
+            "current_deployment_live_task_success_rate": {"sample_count": 10, "sufficient": True},
+        },
+        "hard_metric_samples": {
+            "verified_real_tasks": 47,
+            "verified_real_task_types": 4,
+            "current_deployment_operational_probes": 10,
+            "current_deployment_live_task_types": 10,
+        },
+        "release_lineage": {
+            "ok": True,
+            "validated": True,
+            "compatible": True,
+            "current_release": {
+                "commit": release.commit,
+                "version": release.version,
+                "receipt_id": release.receipt_id,
+                "session_id": release.session_id,
+            },
+            "domains": {
+                "channel.openclaw": {
+                    "mode": "current",
+                    "changed": False,
+                    "gate_errors": {},
+                }
+            },
+        },
+    }
+    target = readiness
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = value
+
+    assert (
+        closure_rehearsal_module._compatible_live_task_accumulation(
+            readiness,
+            release=release,
+        )
+        is False
+    )
 
 
 def test_bootstrap_pending_contract_rejects_forged_stale_and_receipt_mismatched_credentials(tmp_path) -> None:

@@ -387,10 +387,31 @@ def _bootstrap_pending_readiness_evidence_reason(
     )
     if not _replay_summary_consistent(weak) or not _replay_summary_consistent(core):
         return "bootstrap_pending_replay_evidence_inconsistent"
+    live_gate = (
+        readiness.get("live_task_gate")
+        if isinstance(readiness.get("live_task_gate"), dict)
+        else {}
+    )
+    live_task_accumulating = live_gate.get("ok") is not True
+    if live_task_accumulating and not _compatible_live_task_accumulation(
+        readiness,
+        release=release,
+    ):
+        return "bootstrap_pending_non_recall_l5_evidence_incomplete"
+    shadow_live_gate = (
+        {
+            **live_gate,
+            "ok": True,
+            "current_deployment_verified_real_tasks": 10,
+        }
+        if live_task_accumulating
+        else live_gate
+    )
     shadow = {
         **readiness,
         "current_stage": "L5",
         "readiness_score": 1.0,
+        "live_task_gate": shadow_live_gate,
         "production_recall_gate": {"ok": True, "status": "accepted"},
         "production_recall_strict_state": {
             "ok": True,
@@ -406,6 +427,128 @@ def _bootstrap_pending_readiness_evidence_reason(
     ) != "L5":
         return "bootstrap_pending_non_recall_l5_evidence_incomplete"
     return ""
+
+
+def _compatible_live_task_accumulation(
+    readiness: dict[str, Any],
+    *,
+    release: ReleaseIdentity,
+) -> bool:
+    live = (
+        readiness.get("live_task_gate")
+        if isinstance(readiness.get("live_task_gate"), dict)
+        else {}
+    )
+    metrics = (
+        readiness.get("hard_metrics")
+        if isinstance(readiness.get("hard_metrics"), dict)
+        else {}
+    )
+    quality = (
+        readiness.get("hard_metric_quality")
+        if isinstance(readiness.get("hard_metric_quality"), dict)
+        else {}
+    )
+    samples = (
+        readiness.get("hard_metric_samples")
+        if isinstance(readiness.get("hard_metric_samples"), dict)
+        else {}
+    )
+    lineage = (
+        readiness.get("release_lineage")
+        if isinstance(readiness.get("release_lineage"), dict)
+        else {}
+    )
+    lineage_current = (
+        lineage.get("current_release")
+        if isinstance(lineage.get("current_release"), dict)
+        else {}
+    )
+    channel = (
+        lineage.get("domains", {}).get("channel.openclaw")
+        if isinstance(lineage.get("domains"), dict)
+        and isinstance(lineage.get("domains", {}).get("channel.openclaw"), dict)
+        else {}
+    )
+    verified_real_quality = (
+        quality.get("verified_real_task_success_rate")
+        if isinstance(quality.get("verified_real_task_success_rate"), dict)
+        else {}
+    )
+    current_live_quality = (
+        quality.get("current_deployment_live_task_success_rate")
+        if isinstance(quality.get("current_deployment_live_task_success_rate"), dict)
+        else {}
+    )
+    current_real_raw = (
+        live.get("current_deployment_verified_real_tasks")
+        if live.get("current_deployment_verified_real_tasks") is not None
+        else live.get("sample_count")
+    )
+    numeric_values = (
+        current_real_raw,
+        live.get("sample_count"),
+        live.get("distinct_task_types"),
+        live.get("success_rate"),
+        samples.get("verified_real_tasks"),
+        samples.get("verified_real_task_types"),
+        samples.get("current_deployment_operational_probes"),
+        samples.get("current_deployment_live_task_types"),
+        metrics.get("verified_real_task_success_rate"),
+        metrics.get("current_deployment_live_task_success_rate"),
+        verified_real_quality.get("sample_count"),
+        current_live_quality.get("sample_count"),
+    )
+    if any(
+        isinstance(value, bool) or not isinstance(value, (int, float))
+        for value in numeric_values
+    ):
+        return False
+    try:
+        current_real_tasks = int(current_real_raw)
+        current_success_rate = float(live.get("success_rate"))
+        verified_real_tasks = int(samples.get("verified_real_tasks"))
+        verified_real_task_types = int(samples.get("verified_real_task_types"))
+        operational_probes = int(samples.get("current_deployment_operational_probes"))
+        current_live_task_types = int(samples.get("current_deployment_live_task_types"))
+        verified_real_success = float(metrics.get("verified_real_task_success_rate"))
+        current_live_success = float(metrics.get("current_deployment_live_task_success_rate"))
+        verified_real_quality_samples = int(verified_real_quality.get("sample_count"))
+        current_live_quality_samples = int(current_live_quality.get("sample_count"))
+    except (TypeError, ValueError):
+        return False
+    return bool(
+        live.get("ok") is False
+        and live.get("evidence_mode") == "current_release"
+        and str(live.get("evidence_release_commit") or "") == release.commit
+        and str(live.get("current_release_commit") or "") == release.commit
+        and int(live.get("sample_count")) == current_real_tasks
+        and current_real_tasks < 10
+        and 0.0 <= current_success_rate <= 1.0
+        and (current_real_tasks == 0 or current_success_rate >= 0.8)
+        and verified_real_tasks >= 10
+        and verified_real_task_types >= 4
+        and 0.8 <= verified_real_success <= 1.0
+        and verified_real_quality.get("sufficient") is True
+        and verified_real_quality_samples == verified_real_tasks
+        and operational_probes >= 10
+        and int(live.get("current_deployment_operational_probes") or 0)
+        == operational_probes
+        and current_live_task_types >= 5
+        and 0.8 <= current_live_success <= 1.0
+        and current_live_quality.get("sufficient") is True
+        and current_live_quality_samples == operational_probes
+        and lineage.get("ok") is True
+        and lineage.get("validated") is True
+        and lineage.get("compatible") is True
+        and str(lineage_current.get("commit") or "") == release.commit
+        and str(lineage_current.get("version") or "") == release.version
+        and str(lineage_current.get("receipt_id") or "") == release.receipt_id
+        and str(lineage_current.get("session_id") or "") == release.session_id
+        and channel.get("mode") in {"current", "inherited"}
+        and channel.get("changed") is False
+        and channel.get("gate_errors") == {}
+    )
 
 
 def _replay_summary_consistent(summary: dict[str, Any]) -> bool:

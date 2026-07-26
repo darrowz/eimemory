@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Planned
 - Multi-agent memory coordination
 
+## [1.9.94] - 2026-07-27
+
+### Fixed
+- Keep compatible releases deployed in L4.5 while current-release real user-task evidence accumulates, instead of rolling back a healthy release solely because a version bump resets the per-release sample counter.
+- Require exact compatible channel lineage, unchanged OpenClaw behavior, ten successful current-release operational probes across at least five task types, and trustworthy historical verified real-task evidence before allowing that accumulation state.
+- Continue to block channel changes, insufficient or failing operational probes, low verified real-task success, replay or assessment gaps, storage migrations, and every non-accumulation readiness failure.
+
 ## [1.9.93] - 2026-07-27
 
 ### Fixed
