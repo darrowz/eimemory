@@ -363,6 +363,9 @@ def _run_l5_observation_gate(
     readiness_command_failure: bool = False,
     timer_monitor_failure: bool = False,
     failed_service: bool = False,
+    failed_units_command_failure: bool = False,
+    disable_failure: bool = False,
+    runs: int = 1,
 ) -> tuple[subprocess.CompletedProcess[str], Path, Path, Path, Path]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -389,9 +392,13 @@ def _run_l5_observation_gate(
         "#!/usr/bin/env bash\n"
         "printf '%s\\n' \"$*\" >> \"$SYSTEMCTL_ACTION_LOG\"\n"
         "if [ \"${1:-}\" = \"--user\" ] && [ \"${2:-}\" = \"--failed\" ]; then\n"
+        "  if [ \"${FAILED_UNITS_COMMAND_FAILURE:-0}\" = \"1\" ]; then exit 20; fi\n"
         "  if [ \"${FAILED_SERVICE:-0}\" = \"1\" ]; then\n"
         "    printf '%s\\n' 'eimemory-rpc.service loaded failed failed'\n"
         "  fi\n"
+        "fi\n"
+        "if [ \"${1:-}\" = \"--user\" ] && [ \"${2:-}\" = \"disable\" ]; then\n"
+        "  if [ \"${DISABLE_FAILURE:-0}\" = \"1\" ]; then exit 21; fi\n"
         "fi\n"
         "exit 0\n",
         encoding="utf-8",
@@ -438,15 +445,22 @@ def _run_l5_observation_gate(
         "READINESS_COMMAND_FAILURE": "1" if readiness_command_failure else "0",
         "TIMER_MONITOR_FAILURE": "1" if timer_monitor_failure else "0",
         "FAILED_SERVICE": "1" if failed_service else "0",
+        "FAILED_UNITS_COMMAND_FAILURE": "1" if failed_units_command_failure else "0",
+        "DISABLE_FAILURE": "1" if disable_failure else "0",
     }
-    result = subprocess.run(
-        [_bash_binary(), "deploy/systemd/eimemory-l5-observation-gate.sh"],
-        cwd=Path.cwd(),
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = None
+    for _ in range(runs):
+        result = subprocess.run(
+            [_bash_binary(), "deploy/systemd/eimemory-l5-observation-gate.sh"],
+            cwd=Path.cwd(),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            break
+    assert result is not None
     return result, nightly_unit, openclaw_config, gateway_dropin, action_log
 
 
@@ -506,6 +520,69 @@ def test_l5_observation_gate_mutates_and_disables_timer_only_at_exact_l5(
     assert "disable --now eimemory-l5-observation-gate.timer" in action_log.read_text(
         encoding="utf-8"
     )
+
+
+def test_l5_observation_gate_exact_l5_is_idempotent_with_shell_operators(
+    tmp_path: Path,
+) -> None:
+    result, nightly_unit, *_ = _run_l5_observation_gate(
+        tmp_path,
+        readiness_payload=json.dumps(
+            {"ok": True, "current_stage": "L5", "readiness_score": 1.0}
+        ),
+        runs=2,
+    )
+
+    assert result.returncode == 0, result.stderr
+    unit_text = nightly_unit.read_text(encoding="utf-8")
+    assert unit_text.count("Environment=EIMEMORY_AUTONOMOUS_CODE_DEPLOY=") == 1
+    assert unit_text.count("Environment=\"EIMEMORY_AUTONOMOUS_CODE_DEPLOY_COMMAND=") == 1
+    assert " && bash ./deploy/install_immutable_release.sh " in unit_text
+    assert " && systemctl --user restart eimemory-rpc.service" in unit_text
+
+
+def test_l5_observation_gate_rejects_failed_service_query(
+    tmp_path: Path,
+) -> None:
+    result, *_ = _run_l5_observation_gate(
+        tmp_path,
+        readiness_payload=json.dumps(
+            {"ok": True, "current_stage": "L4.5", "readiness_score": 0.8}
+        ),
+        failed_units_command_failure=True,
+    )
+
+    assert result.returncode != 0
+    assert "status=observation_pending" not in result.stdout
+
+
+def test_l5_observation_gate_rejects_unknown_readiness_stage(
+    tmp_path: Path,
+) -> None:
+    result, *_ = _run_l5_observation_gate(
+        tmp_path,
+        readiness_payload=json.dumps(
+            {"ok": True, "current_stage": "L4.75", "readiness_score": 0.8}
+        ),
+    )
+
+    assert result.returncode != 0
+    assert "status=observation_pending" not in result.stdout
+
+
+def test_l5_observation_gate_does_not_report_success_when_timer_disable_fails(
+    tmp_path: Path,
+) -> None:
+    result, *_ = _run_l5_observation_gate(
+        tmp_path,
+        readiness_payload=json.dumps(
+            {"ok": True, "current_stage": "L5", "readiness_score": 1.0}
+        ),
+        disable_failure=True,
+    )
+
+    assert result.returncode != 0
+    assert "status=l5_enabled" not in result.stdout
 
 
 @pytest.mark.parametrize(

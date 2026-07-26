@@ -24,12 +24,27 @@ require_file() {
 ensure_env() {
   local key="$1"
   local line="$2"
-  if grep -q "^Environment=$key=" "$NIGHTLY_UNIT" || grep -q "^Environment=\"$key=" "$NIGHTLY_UNIT"; then
-    sed -i "s|^Environment=$key=.*|$line|" "$NIGHTLY_UNIT"
-    sed -i "s|^Environment=\"$key=.*|$line|" "$NIGHTLY_UNIT"
-  else
-    printf '%s\n' "$line" >> "$NIGHTLY_UNIT"
-  fi
+  "$EIMEMORY_PYTHON_BIN" - "$NIGHTLY_UNIT" "$key" "$line" <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+key = sys.argv[2]
+replacement = sys.argv[3]
+prefixes = (f"Environment={key}=", f'Environment="{key}=')
+output = []
+replaced = False
+for existing in path.read_text(encoding="utf-8").splitlines():
+    if existing.startswith(prefixes):
+        if not replaced:
+            output.append(replacement)
+            replaced = True
+        continue
+    output.append(existing)
+if not replaced:
+    output.append(replacement)
+path.write_text("\n".join(output) + "\n", encoding="utf-8")
+PY
 }
 
 enable_openclaw_memory_behavior() {
@@ -78,8 +93,8 @@ stage = value.get("current_stage")
 score = value.get("readiness_score")
 if not isinstance(ok, bool):
     raise ValueError("readiness ok must be a boolean")
-if not isinstance(stage, str) or not stage.strip() or any(ch in stage for ch in "\t\r\n"):
-    raise ValueError("readiness current_stage must be a non-empty scalar")
+if stage not in {"L3.5", "L4", "L4.5", "L5"}:
+    raise ValueError("readiness current_stage is unsupported")
 if isinstance(score, bool) or not isinstance(score, (int, float)):
     raise ValueError("readiness_score must be numeric")
 if not math.isfinite(float(score)) or not 0.0 <= float(score) <= 1.0:
@@ -95,8 +110,12 @@ fi
 
 "$EIMEMORY_BIN" ops timer-monitor --stale-after-minutes 90 >/tmp/eimemory-l5-observation-gate-timer-monitor.json
 
-if systemctl --user --failed --no-legend 'eimemory*' | grep -q .; then
-  systemctl --user --failed --no-legend 'eimemory*' >&2
+if ! failed_units="$(systemctl --user --failed --no-legend 'eimemory*' 2>&1)"; then
+  printf '%s\n' "$failed_units" >&2
+  exit 4
+fi
+if [ -n "$failed_units" ]; then
+  printf '%s\n' "$failed_units" >&2
   exit 4
 fi
 
@@ -117,7 +136,7 @@ ensure_env "EIMEMORY_AUTONOMOUS_CODE_HEALTH_COMMAND" 'Environment="EIMEMORY_AUTO
 enable_openclaw_memory_behavior
 
 systemctl --user daemon-reload
-systemctl --user disable --now "$GATE_TIMER" >/dev/null 2>&1 || true
+systemctl --user disable --now "$GATE_TIMER" >/dev/null
 
 echo "ok=l5_observation_gate"
 echo "status=l5_enabled"
