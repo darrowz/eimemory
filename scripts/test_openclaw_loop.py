@@ -243,6 +243,81 @@ class OpenClawLoopTests(unittest.TestCase):
             self.assertEqual(task["status"], "failed")
             self.assertEqual(task["failure_class"], "lease_expired_reconciled")
 
+    def test_reconcile_stale_skips_snapshot_refreshed_by_new_heartbeat(self):
+        task = loop.create_task(title="stale-race", objective="keep working", owner="worker-a")
+        loop.record_heartbeat(
+            task["task_id"],
+            lease_seconds=1,
+            progress="old progress",
+            source="worker-a",
+        )
+        loop_impl._TEST_NOW = loop.now_epoch() + 2
+        stale_snapshot = loop.find_stale_tasks()
+        self.assertEqual(len(stale_snapshot), 1)
+
+        refreshed = loop.record_heartbeat(
+            task["task_id"],
+            lease_seconds=300,
+            progress="new progress",
+            source="worker-a",
+        )
+        reconciled = loop_impl._reconcile_stale_items(stale_snapshot)
+
+        latest = loop.get_task(task["task_id"])
+        self.assertEqual(reconciled, [])
+        self.assertEqual(latest["status"], "running")
+        self.assertEqual(latest["heartbeat_at"], refreshed["heartbeat_at"])
+        self.assertEqual(latest["lease_expires_at"], refreshed["lease_expires_at"])
+        self.assertNotIn("failure_class", latest)
+
+    def test_reconcile_stale_skips_identical_heartbeat_written_after_snapshot(self):
+        task = loop.create_task(title="heartbeat-race", objective="keep working", owner="worker-a")
+        original_now = 1_800_000_000.0
+        loop_impl._TEST_NOW = original_now
+        first = loop.record_heartbeat(
+            task["task_id"],
+            lease_seconds=1,
+            progress="same progress",
+            source="worker-a",
+        )
+        loop_impl._TEST_NOW = original_now + 2
+        stale_snapshot = loop.find_stale_tasks()
+        self.assertEqual(len(stale_snapshot), 1)
+
+        loop_impl._TEST_NOW = original_now
+        second = loop.record_heartbeat(
+            task["task_id"],
+            lease_seconds=1,
+            progress="same progress",
+            source="worker-a",
+        )
+        self.assertEqual(first["lease_expires_at"], second["lease_expires_at"])
+        self.assertEqual(first["heartbeat_at"], second["heartbeat_at"])
+        loop_impl._TEST_NOW = original_now + 2
+
+        reconciled = loop_impl._reconcile_stale_items(stale_snapshot)
+
+        self.assertEqual(reconciled, [])
+        self.assertEqual(loop.get_task(task["task_id"])["status"], "running")
+
+    def test_reconcile_stale_skips_snapshot_when_owner_or_state_changed(self):
+        owner_task = loop.create_task(title="owner-race", objective="handoff", owner="worker-a")
+        state_task = loop.create_task(title="state-race", objective="pause", owner="worker-a")
+        for task in (owner_task, state_task):
+            loop.record_heartbeat(task["task_id"], lease_seconds=1, source="worker-a")
+        loop_impl._TEST_NOW = loop.now_epoch() + 2
+        stale_snapshot = loop.find_stale_tasks()
+        self.assertEqual(len(stale_snapshot), 2)
+
+        loop.update_task(owner_task["task_id"], owner="worker-b")
+        loop.update_task(state_task["task_id"], status="done")
+        reconciled = loop_impl._reconcile_stale_items(stale_snapshot)
+
+        self.assertEqual(reconciled, [])
+        self.assertEqual(loop.get_task(owner_task["task_id"])["owner"], "worker-b")
+        self.assertEqual(loop.get_task(owner_task["task_id"])["status"], "running")
+        self.assertEqual(loop.get_task(state_task["task_id"])["status"], "done")
+
     def test_compact_ledgers_archives_original_and_bounds_oversized_checks(self):
         task = loop.create_task(title="large", objective="compact")
         loop.update_task(task["task_id"], status="running")

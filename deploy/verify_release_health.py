@@ -42,6 +42,10 @@ def verify_health_payload(
         "runtime_identity": isinstance(health_checks, dict)
         and health_checks.get("runtime_identity") is True,
         "commit": str(payload.get("commit") or "").strip().lower() == expected_commit,
+        "configured_runtime_commit": str(
+            payload.get("configured_runtime_commit") or ""
+        ).strip().lower()
+        == expected_commit,
         "version": str(payload.get("version") or "").strip() == expected_version,
         "import_root": _resolved_equals(payload.get("import_root"), import_root),
         "release_path": _resolved_equals((payload.get("paths") or {}).get("release"), release),

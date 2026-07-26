@@ -85,6 +85,36 @@ def test_health_allows_unconfigured_local_runtime_identity(
     assert payload["checks"]["ready"] is True
 
 
+def test_health_fails_closed_when_production_runtime_commit_is_unconfigured(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    commit = "a" * 40
+    monkeypatch.delenv("EIMEMORY_RUNTIME_COMMIT", raising=False)
+    monkeypatch.setattr(rpc_server, "_current_commit", lambda: commit)
+    monkeypatch.setattr(
+        rpc_server,
+        "_release_path",
+        lambda: Path("/opt/eimemory/releases") / commit,
+    )
+
+    try:
+        payload = rpc_server._compact_health_payload(
+            runtime,
+            ready=True,
+            listen_host="100.105.189.120",
+            listen_port=8091,
+        )
+    finally:
+        runtime.close()
+
+    assert payload["configured_runtime_commit"] == ""
+    assert payload["ok"] is False
+    assert payload["checks"]["runtime_identity"] is False
+    assert payload["checks"]["ready"] is False
+
+
 def test_health_accepts_exact_configured_runtime_commit(
     tmp_path: Path,
     monkeypatch,

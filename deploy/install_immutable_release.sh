@@ -1038,6 +1038,7 @@ _restart_current_services() {
   # Feishu reply watchdog permanently removed: dual-path delivery caused double sends.
   # Keep unit masked; do not install/enable/restart it on deploy.
   _user_systemctl restart openclaw-gateway.service
+  _user_systemctl restart openclaw-loop-watch.service
 }
 
 _verify_effective_runtime_metadata() {
@@ -1046,11 +1047,16 @@ _verify_effective_runtime_metadata() {
     return
   fi
   local unit effective_commit
-  for unit in eimemory-rpc.service openclaw-gateway.service; do
-    if ! _user_systemctl is-active --quiet "$unit"; then
-      echo "runtime_identity=failed unit=$unit reason=inactive" >&2
-      return 2
-    fi
+  for unit in eimemory-rpc.service openclaw-gateway.service openclaw-loop-watch.service; do
+    case "$unit" in
+      openclaw-loop-watch.service) ;;
+      *)
+        if ! _user_systemctl is-active --quiet "$unit"; then
+          echo "runtime_identity=failed unit=$unit reason=inactive" >&2
+          return 2
+        fi
+        ;;
+    esac
     if ! effective_commit="$(
       _user_systemctl show "$unit" --property=Environment --value |
         "$PYTHON_BIN" -I -B -c '
@@ -1080,7 +1086,7 @@ print(values[0])
       return 2
     fi
   done
-  echo "runtime_identity=verified units=2"
+  echo "runtime_identity=verified units=3"
 }
 
 _install_candidate_runtime_metadata() {

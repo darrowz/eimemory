@@ -135,12 +135,16 @@ def _append_lock(name: str):
 
 def append_jsonl(name: str, record: dict[str, Any]) -> None:
     record = {"schema_version": SCHEMA_VERSION, "writer_version": "1", **record}
-    line = json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n"
     with _append_lock(name):
-        path = path_for(name)
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(line)
-        _append_cached_jsonl_row(path, record)
+        _append_jsonl_unlocked(name, record)
+
+
+def _append_jsonl_unlocked(name: str, record: dict[str, Any]) -> None:
+    line = json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n"
+    path = path_for(name)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(line)
+    _append_cached_jsonl_row(path, record)
 
 
 def _append_cached_jsonl_row(path: Path, record: dict[str, Any]) -> None:
@@ -343,6 +347,7 @@ def create_task(
         "idempotency_key": dedupe_key or "",
         "lease_expires_at": 0,
         "heartbeat_at": "",
+        "heartbeat_id": "",
         "heartbeat_source": "",
         "last_progress_hash": "",
     }
@@ -366,6 +371,7 @@ def record_heartbeat(task_id: str, *, lease_seconds: int = 300, progress: str = 
         task_id,
         status="running",
         heartbeat_at=iso_ts(),
+        heartbeat_id=new_id("heartbeat"),
         heartbeat_source=source,
         lease_expires_at=now_epoch() + lease_seconds,
         next_check_at=iso_ts(now_epoch() + max(1, lease_seconds // 2)),
@@ -615,29 +621,89 @@ def find_stale_tasks(*, now: float | None = None, older_than_seconds: int = 1200
     return stale
 
 
-def _reconcile_stale_items(items: list[dict[str, Any]]) -> list[str]:
+def _stale_reason_for_task(
+    task: dict[str, Any],
+    *,
+    now: float,
+    older_than_seconds: int,
+) -> str:
+    if task.get("status") not in ACTIVE_STATUSES:
+        return ""
+    lease = float(task.get("lease_expires_at") or 0)
+    if lease and lease < now:
+        return "lease_expired"
+    updated_epoch = _updated_epoch(task)
+    if updated_epoch and now - updated_epoch > older_than_seconds:
+        return "updated_too_old"
+    return ""
+
+
+def _stale_snapshot_still_matches(
+    snapshot: dict[str, Any],
+    latest: dict[str, Any],
+    *,
+    now: float,
+    older_than_seconds: int,
+) -> bool:
+    expected_reason = str(snapshot.get("stale_reason") or "")
+    if _stale_reason_for_task(
+        latest,
+        now=now,
+        older_than_seconds=older_than_seconds,
+    ) != expected_reason:
+        return False
+    guarded_fields = (
+        "status",
+        "owner",
+        "lease_expires_at",
+        "heartbeat_at",
+        "heartbeat_id",
+        "heartbeat_source",
+        "last_progress_hash",
+    )
+    if expected_reason == "updated_too_old":
+        guarded_fields += ("updated_at",)
+    return all(latest.get(field) == snapshot.get(field) for field in guarded_fields)
+
+
+def _reconcile_stale_items(
+    items: list[dict[str, Any]],
+    *,
+    older_than_seconds: int = 1200,
+) -> list[str]:
     reconciled: list[str] = []
     for item in items:
         task_id = str(item.get("task_id") or "")
         if not task_id:
             continue
-        stale_reason = str(item.get("stale_reason") or "unknown")
-        reconciled_task = dict(item)
-        reconciled_task.pop("stale_reason", None)
-        reconciled_task.update(
-            {
-                "status": "failed",
-                "current_step": "failed",
-                "last_action": "stale task reconciled",
-                "failure_class": f"{stale_reason}_reconciled",
-                "blocker": "",
-                "lease_expires_at": 0,
-                "next_check_at": "",
-                "result_summary": f"stale task reconciled after {stale_reason}",
-                "updated_at": iso_ts(),
-            }
-        )
-        append_jsonl("tasks.jsonl", reconciled_task)
+        with _append_lock("tasks.jsonl"):
+            latest = latest_by_id("tasks.jsonl", "task_id").get(task_id)
+            if latest is None or not _stale_snapshot_still_matches(
+                item,
+                latest,
+                now=now_epoch(),
+                older_than_seconds=older_than_seconds,
+            ):
+                continue
+            stale_reason = str(item.get("stale_reason") or "unknown")
+            reconciled_task = dict(latest)
+            reconciled_task.update(
+                {
+                    "status": "failed",
+                    "current_step": "failed",
+                    "last_action": "stale task reconciled",
+                    "failure_class": f"{stale_reason}_reconciled",
+                    "blocker": "",
+                    "lease_expires_at": 0,
+                    "next_check_at": "",
+                    "result_summary": f"stale task reconciled after {stale_reason}",
+                    "updated_at": iso_ts(),
+                }
+            )
+            _append_jsonl_unlocked(
+                "tasks.jsonl",
+                {"schema_version": SCHEMA_VERSION, "writer_version": "1", **reconciled_task},
+            )
         reconciled.append(task_id)
     return reconciled
 
@@ -646,7 +712,11 @@ def reconcile_stale_tasks(*, apply: bool = False, limit: int | None = None) -> d
     stale = sorted(find_stale_tasks(), key=lambda item: str(item.get("task_id") or ""))
     selected = stale if limit is None else stale[: max(0, int(limit))]
     summary = _stale_summary(stale)
-    reconciled = _reconcile_stale_items(selected) if apply else []
+    reconciled = (
+        _reconcile_stale_items(selected, older_than_seconds=1200)
+        if apply
+        else []
+    )
     return {
         "ok": True,
         "applied": bool(apply),

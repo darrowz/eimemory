@@ -383,9 +383,18 @@ def _compact_health_payload(
     except Exception:
         pending_migrations = ["storage.migration_status_unavailable"]
     import_root = package_import_root()
+    release_path = _release_path()
     current_commit = _current_commit()
     configured_commit = os.environ.get("EIMEMORY_RUNTIME_COMMIT", "").strip()
-    runtime_identity_ok = not configured_commit or configured_commit == current_commit
+    runtime_identity_required = _production_runtime_identity_required(
+        store_root=store_root,
+        release_path=release_path,
+    )
+    runtime_identity_ok = (
+        configured_commit == current_commit
+        if configured_commit
+        else not runtime_identity_required
+    )
     payload: EIMemoryRPCResponse = {
         "ok": bool(store_ready and runtime_identity_ok),
         "service": "eimemory-rpc",
@@ -397,7 +406,7 @@ def _compact_health_payload(
         "package_tree_digest": runtime_package_tree_digest(),
         "paths": {
             "current": str(_current_path()),
-            "release": str(_release_path()),
+            "release": str(release_path),
         },
         "listen_host": listen_host,
         "listen_port": int(listen_port),
@@ -420,6 +429,18 @@ def _compact_health_payload(
     if candidate_health is not None:
         payload["retrieval"] = {"candidate_source": candidate_health}
     return payload
+
+
+def _production_runtime_identity_required(
+    *,
+    store_root: Path | None,
+    release_path: Path,
+) -> bool:
+    if store_root is not None and store_root.as_posix().rstrip("/") == "/var/lib/eimemory":
+        return True
+    parts = tuple(str(part).lower() for part in release_path.parts)
+    marker = ("opt", "eimemory", "releases")
+    return any(parts[index : index + len(marker)] == marker for index in range(len(parts)))
 
 
 def _candidate_source_health(runtime: Runtime) -> dict[str, object] | None:
