@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Planned
 - Multi-agent memory coordination
 
+## [1.9.91] - 2026-07-27
+
+### Fixed
+- Preserve the release-bound recall data-accumulation credential through an online, append-only bootstrap while still skipping writer quiescence, storage snapshots, and migrations for compatible code-only releases.
+- Classify release health, governance facade, RPC identity, OpenClaw watchdog, test-support, and version-only integration metadata so known support changes no longer taint unchanged recall lineage; unknown production paths remain fail-closed.
+
 ## [1.9.90] - 2026-07-27
 
 ### Fixed
