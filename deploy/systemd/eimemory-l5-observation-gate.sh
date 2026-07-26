@@ -7,6 +7,8 @@ export PYTHONPYCACHEPREFIX="/var/lib/eimemory/.pycache/$release_id"
 EIMEMORY_BIN="${EIMEMORY_BIN:-/opt/eimemory/current/.venv/bin/eimemory}"
 EIMEMORY_PYTHON_BIN="${EIMEMORY_PYTHON_BIN:-/opt/eimemory/current/.venv/bin/python}"
 EIMEMORY_CURL_BIN="${EIMEMORY_CURL_BIN:-curl}"
+EIMEMORY_FLOCK_BIN="${EIMEMORY_FLOCK_BIN:-flock}"
+STORAGE_DEPLOY_LOCK_PATH="${EIMEMORY_STORAGE_DEPLOY_LOCK_PATH:-/opt/eimemory/.storage-release-install.lock}"
 NIGHTLY_UNIT="${EIMEMORY_NIGHTLY_UNIT_PATH:-$HOME/.config/systemd/user/eimemory-nightly.service}"
 OPENCLAW_CONFIG="${OPENCLAW_CONFIG_PATH:-$HOME/.openclaw/openclaw.json}"
 OPENCLAW_GATEWAY_DROPIN_DIR="${OPENCLAW_GATEWAY_DROPIN_DIR:-$HOME/.config/systemd/user/openclaw-gateway.service.d}"
@@ -78,11 +80,12 @@ require_file "$EIMEMORY_BIN"
 require_file "$EIMEMORY_PYTHON_BIN"
 require_file "$NIGHTLY_UNIT"
 
-readiness_json="$("$EIMEMORY_BIN" learn l5-readiness --persist --json)"
-readiness_fields="$(
-  printf '%s' "$readiness_json" | "$EIMEMORY_PYTHON_BIN" -c '
+parse_readiness_json() {
+  printf '%s' "$1" | "$EIMEMORY_PYTHON_BIN" -c '
+import hashlib
 import json
 import math
+import re
 import sys
 
 value = json.load(sys.stdin)
@@ -99,12 +102,35 @@ if isinstance(score, bool) or not isinstance(score, (int, float)):
     raise ValueError("readiness_score must be numeric")
 if not math.isfinite(float(score)) or not 0.0 <= float(score) <= 1.0:
     raise ValueError("readiness_score must be finite and between zero and one")
+identity_digest = ""
 if stage == "L5" and float(score) != 1.0:
     raise ValueError("L5 readiness_score must equal one")
-print(f"{str(ok).lower()}\t{stage}\t{score}")
+if stage == "L5":
+    identity = value.get("release_identity")
+    lineage = value.get("release_lineage")
+    if not isinstance(identity, dict) or not isinstance(lineage, dict):
+        raise ValueError("L5 release identity and lineage are required")
+    required = {
+        "release_commit": identity.get("release_commit"),
+        "release_version": identity.get("release_version"),
+        "deployment_receipt_id": identity.get("deployment_receipt_id"),
+        "release_session_id": identity.get("release_session_id"),
+        "lineage_record_id": lineage.get("record_id"),
+    }
+    if not re.fullmatch(r"[0-9a-f]{40}", str(required["release_commit"] or "")):
+        raise ValueError("L5 release commit is invalid")
+    if any(not str(value or "").strip() for value in required.values()):
+        raise ValueError("L5 release identity is incomplete")
+    identity_digest = hashlib.sha256(
+        json.dumps(required, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+print(f"{str(ok).lower()}\t{stage}\t{score}\t{identity_digest}")
 '
-)"
-IFS=$'\t' read -r readiness_ok stage readiness_score <<<"$readiness_fields"
+}
+
+readiness_json="$("$EIMEMORY_BIN" learn l5-readiness --persist --json)"
+readiness_fields="$(parse_readiness_json "$readiness_json")"
+IFS=$'\t' read -r readiness_ok stage readiness_score release_identity_digest <<<"$readiness_fields"
 if [ "$readiness_ok" != "true" ]; then
   echo "readiness_ok=false" >&2
   exit 3
@@ -128,6 +154,22 @@ if [ "$stage" != "L5" ]; then
   exit 0
 fi
 
+if ! command -v "$EIMEMORY_FLOCK_BIN" >/dev/null 2>&1; then
+  echo "deployment_lock=flock_unavailable" >&2
+  exit 5
+fi
+exec {GATE_LOCK_FD}>>"$STORAGE_DEPLOY_LOCK_PATH"
+if ! "$EIMEMORY_FLOCK_BIN" -n "$GATE_LOCK_FD"; then
+  echo "deployment_lock=contended" >&2
+  exit 5
+fi
+confirmed_readiness_json="$("$EIMEMORY_BIN" learn l5-readiness --json)"
+confirmed_readiness_fields="$(parse_readiness_json "$confirmed_readiness_json")"
+if [ "$confirmed_readiness_fields" != "$readiness_fields" ]; then
+  echo "readiness_identity=changed_before_activation" >&2
+  exit 5
+fi
+
 require_file "$OPENCLAW_CONFIG"
 activation_backup_dir="$(mktemp -d)"
 cp -p -- "$NIGHTLY_UNIT" "$activation_backup_dir/nightly.service"
@@ -138,9 +180,8 @@ if [ -f "$OPENCLAW_GATEWAY_DROPIN" ]; then
   dropin_existed=1
 fi
 
+activation_committed=0
 rollback_l5_activation() {
-  local exit_code=$?
-  trap - ERR
   set +e
   cp -p -- "$activation_backup_dir/nightly.service" "$NIGHTLY_UNIT"
   cp -p -- "$activation_backup_dir/openclaw.json" "$OPENCLAW_CONFIG"
@@ -154,9 +195,18 @@ rollback_l5_activation() {
   systemctl --user restart "$OPENCLAW_GATEWAY_UNIT" >/dev/null 2>&1
   systemctl --user enable --now "$GATE_TIMER" >/dev/null 2>&1
   rm -rf -- "$activation_backup_dir"
+}
+finish_l5_activation() {
+  local exit_code=$?
+  trap - EXIT INT TERM
+  if [ "$activation_committed" != "1" ]; then
+    rollback_l5_activation
+  fi
   exit "$exit_code"
 }
-trap rollback_l5_activation ERR
+trap finish_l5_activation EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 systemctl --user disable --now "$GATE_TIMER" >/dev/null
 ensure_env "EIMEMORY_AUTONOMOUS_LEARNING_APPLY" "Environment=EIMEMORY_AUTONOMOUS_LEARNING_APPLY=1"
@@ -169,7 +219,14 @@ ensure_env "EIMEMORY_AUTONOMOUS_CODE_HEALTH_COMMAND" 'Environment="EIMEMORY_AUTO
 enable_openclaw_memory_behavior
 
 systemctl --user daemon-reload
-trap - ERR
+final_readiness_json="$("$EIMEMORY_BIN" learn l5-readiness --json)"
+final_readiness_fields="$(parse_readiness_json "$final_readiness_json")"
+if [ "$final_readiness_fields" != "$readiness_fields" ]; then
+  echo "readiness_identity=changed_during_activation" >&2
+  exit 5
+fi
+activation_committed=1
+trap - EXIT INT TERM
 rm -rf -- "$activation_backup_dir"
 
 echo "ok=l5_observation_gate"

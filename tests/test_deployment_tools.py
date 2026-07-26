@@ -356,6 +356,27 @@ def test_l5_observation_gate_requires_exact_l5_stage_before_apply() -> None:
     assert "L4|L4.5|L5" not in script_text
 
 
+def _l5_observation_readiness_payload(
+    *,
+    score: float = 1.0,
+    commit: str = "a" * 40,
+) -> str:
+    return json.dumps(
+        {
+            "ok": True,
+            "current_stage": "L5",
+            "readiness_score": score,
+            "release_identity": {
+                "release_commit": commit,
+                "release_version": "1.9.89",
+                "deployment_receipt_id": f"receipt-{commit[:8]}",
+                "release_session_id": f"session-{commit[:8]}",
+            },
+            "release_lineage": {"record_id": f"lineage-{commit[:8]}"},
+        }
+    )
+
+
 def _run_l5_observation_gate(
     tmp_path: Path,
     *,
@@ -368,6 +389,8 @@ def _run_l5_observation_gate(
     daemon_reload_failure: bool = False,
     gateway_restart_failure: bool = False,
     curl_failure: bool = False,
+    signal_after_disable: bool = False,
+    second_readiness_payload: str = "",
     runs: int = 1,
 ) -> tuple[subprocess.CompletedProcess[str], Path, Path, Path, Path]:
     bin_dir = tmp_path / "bin"
@@ -378,7 +401,14 @@ def _run_l5_observation_gate(
         "#!/usr/bin/env bash\n"
         "if [ \"${1:-}\" = \"learn\" ] && [ \"${2:-}\" = \"l5-readiness\" ]; then\n"
         "  if [ \"${READINESS_COMMAND_FAILURE:-0}\" = \"1\" ]; then exit 17; fi\n"
-        "  printf '%s\\n' \"$READINESS_PAYLOAD\"\n"
+        "  count=0\n"
+        "  if [ -f \"$READINESS_COUNTER_FILE\" ]; then count=\"$(cat \"$READINESS_COUNTER_FILE\")\"; fi\n"
+        "  if [ \"$count\" -gt 0 ] && [ -n \"${SECOND_READINESS_PAYLOAD:-}\" ]; then\n"
+        "    printf '%s\\n' \"$SECOND_READINESS_PAYLOAD\"\n"
+        "  else\n"
+        "    printf '%s\\n' \"$READINESS_PAYLOAD\"\n"
+        "  fi\n"
+        "  printf '%s\\n' \"$((count + 1))\" > \"$READINESS_COUNTER_FILE\"\n"
         "  exit 0\n"
         "fi\n"
         "if [ \"${1:-}\" = \"ops\" ] && [ \"${2:-}\" = \"timer-monitor\" ]; then\n"
@@ -402,6 +432,7 @@ def _run_l5_observation_gate(
         "fi\n"
         "if [ \"${1:-}\" = \"--user\" ] && [ \"${2:-}\" = \"disable\" ]; then\n"
         "  if [ \"${DISABLE_FAILURE:-0}\" = \"1\" ]; then exit 21; fi\n"
+        "  if [ \"${SIGNAL_AFTER_DISABLE:-0}\" = \"1\" ]; then kill -TERM \"$PPID\"; fi\n"
         "fi\n"
         "if [ \"${1:-}\" = \"--user\" ] && [ \"${2:-}\" = \"daemon-reload\" ]; then\n"
         "  if [ \"${DAEMON_RELOAD_FAILURE:-0}\" = \"1\" ]; then exit 22; fi\n"
@@ -421,6 +452,9 @@ def _run_l5_observation_gate(
         encoding="utf-8",
     )
     curl.chmod(0o755)
+    flock = bin_dir / "flock"
+    flock.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    flock.chmod(0o755)
 
     nightly_unit = tmp_path / "eimemory-nightly.service"
     nightly_unit.write_text("[Service]\nEnvironment=UNCHANGED=1\n", encoding="utf-8")
@@ -450,12 +484,16 @@ def _run_l5_observation_gate(
         "EIMEMORY_BIN": _bash_path(eimemory_bin),
         "EIMEMORY_PYTHON_BIN": _bash_path(Path(sys.executable)),
         "EIMEMORY_CURL_BIN": _bash_path(curl),
+        "EIMEMORY_FLOCK_BIN": _bash_path(flock),
+        "EIMEMORY_STORAGE_DEPLOY_LOCK_PATH": _bash_path(tmp_path / "deploy.lock"),
         "EIMEMORY_NIGHTLY_UNIT_PATH": _bash_path(nightly_unit),
         "OPENCLAW_CONFIG_PATH": _bash_path(openclaw_config),
         "OPENCLAW_GATEWAY_DROPIN": _bash_path(gateway_dropin),
         "OPENCLAW_GATEWAY_DROPIN_DIR": _bash_path(gateway_dropin.parent),
         "SYSTEMCTL_ACTION_LOG": _bash_path(action_log),
         "READINESS_PAYLOAD": readiness_payload,
+        "SECOND_READINESS_PAYLOAD": second_readiness_payload,
+        "READINESS_COUNTER_FILE": _bash_path(tmp_path / "readiness.count"),
         "READINESS_COMMAND_FAILURE": "1" if readiness_command_failure else "0",
         "TIMER_MONITOR_FAILURE": "1" if timer_monitor_failure else "0",
         "FAILED_SERVICE": "1" if failed_service else "0",
@@ -464,6 +502,7 @@ def _run_l5_observation_gate(
         "DAEMON_RELOAD_FAILURE": "1" if daemon_reload_failure else "0",
         "GATEWAY_RESTART_FAILURE": "1" if gateway_restart_failure else "0",
         "CURL_FAILURE": "1" if curl_failure else "0",
+        "SIGNAL_AFTER_DISABLE": "1" if signal_after_disable else "0",
     }
     result = None
     for _ in range(runs):
@@ -516,9 +555,7 @@ def test_l5_observation_gate_mutates_and_disables_timer_only_at_exact_l5(
     result, nightly_unit, openclaw_config, gateway_dropin, action_log = (
         _run_l5_observation_gate(
             tmp_path,
-            readiness_payload=json.dumps(
-                {"ok": True, "current_stage": "L5", "readiness_score": 1.0}
-            ),
+            readiness_payload=_l5_observation_readiness_payload(),
         )
     )
 
@@ -544,9 +581,7 @@ def test_l5_observation_gate_exact_l5_is_idempotent_with_shell_operators(
 ) -> None:
     result, nightly_unit, *_ = _run_l5_observation_gate(
         tmp_path,
-        readiness_payload=json.dumps(
-            {"ok": True, "current_stage": "L5", "readiness_score": 1.0}
-        ),
+        readiness_payload=_l5_observation_readiness_payload(),
         runs=2,
     )
 
@@ -592,9 +627,7 @@ def test_l5_observation_gate_does_not_report_success_when_timer_disable_fails(
 ) -> None:
     result, nightly_unit, openclaw_config, gateway_dropin, action_log = _run_l5_observation_gate(
         tmp_path,
-        readiness_payload=json.dumps(
-            {"ok": True, "current_stage": "L5", "readiness_score": 1.0}
-        ),
+        readiness_payload=_l5_observation_readiness_payload(),
         disable_failure=True,
     )
 
@@ -629,9 +662,7 @@ def test_l5_observation_gate_rolls_back_partial_activation_on_post_disable_failu
     result, nightly_unit, openclaw_config, gateway_dropin, action_log = (
         _run_l5_observation_gate(
             tmp_path,
-            readiness_payload=json.dumps(
-                {"ok": True, "current_stage": "L5", "readiness_score": 1.0}
-            ),
+            readiness_payload=_l5_observation_readiness_payload(),
             daemon_reload_failure=daemon_reload_failure,
             gateway_restart_failure=gateway_restart_failure,
             curl_failure=curl_failure,
@@ -660,9 +691,7 @@ def test_l5_observation_gate_rejects_l5_with_non_final_score(
     result, nightly_unit, openclaw_config, gateway_dropin, action_log = (
         _run_l5_observation_gate(
             tmp_path,
-            readiness_payload=json.dumps(
-                {"ok": True, "current_stage": "L5", "readiness_score": 0.8}
-            ),
+            readiness_payload=_l5_observation_readiness_payload(score=0.8),
         )
     )
 
@@ -675,6 +704,55 @@ def test_l5_observation_gate_rejects_l5_with_non_final_score(
     ]["hooks"]["allowPromptInjection"] is False
     assert not gateway_dropin.exists()
     assert not action_log.exists()
+
+
+def test_l5_observation_gate_rejects_release_change_after_lock(
+    tmp_path: Path,
+) -> None:
+    result, nightly_unit, openclaw_config, gateway_dropin, action_log = (
+        _run_l5_observation_gate(
+            tmp_path,
+            readiness_payload=_l5_observation_readiness_payload(commit="a" * 40),
+            second_readiness_payload=_l5_observation_readiness_payload(commit="b" * 40),
+        )
+    )
+
+    assert result.returncode != 0
+    assert "readiness_identity=changed_before_activation" in result.stderr
+    assert nightly_unit.read_text(encoding="utf-8") == (
+        "[Service]\nEnvironment=UNCHANGED=1\n"
+    )
+    assert json.loads(openclaw_config.read_text(encoding="utf-8"))["plugins"]["entries"][
+        "eimemory-bridge"
+    ]["hooks"]["allowPromptInjection"] is False
+    assert not gateway_dropin.exists()
+    actions = action_log.read_text(encoding="utf-8")
+    assert "--failed" in actions
+    assert "disable --now" not in actions
+
+
+def test_l5_observation_gate_rolls_back_on_term_after_timer_disable(
+    tmp_path: Path,
+) -> None:
+    result, nightly_unit, openclaw_config, gateway_dropin, action_log = (
+        _run_l5_observation_gate(
+            tmp_path,
+            readiness_payload=_l5_observation_readiness_payload(),
+            signal_after_disable=True,
+        )
+    )
+
+    assert result.returncode != 0
+    assert nightly_unit.read_text(encoding="utf-8") == (
+        "[Service]\nEnvironment=UNCHANGED=1\n"
+    )
+    assert json.loads(openclaw_config.read_text(encoding="utf-8"))["plugins"]["entries"][
+        "eimemory-bridge"
+    ]["hooks"]["allowPromptInjection"] is False
+    assert not gateway_dropin.exists()
+    assert "enable --now eimemory-l5-observation-gate.timer" in action_log.read_text(
+        encoding="utf-8"
+    )
 
 
 @pytest.mark.parametrize(
@@ -2314,6 +2392,7 @@ def test_release_health_verifier_requires_exact_runtime_identity(tmp_path) -> No
         "ok": True,
         "service": "eimemory-rpc",
         "commit": "a" * 40,
+        "configured_runtime_commit": "a" * 40,
         "version": "1.9.70",
         "import_root": str(package),
         "package_tree_digest": package_tree_digest(package),
@@ -2367,6 +2446,31 @@ def test_release_health_verifier_requires_exact_runtime_identity(tmp_path) -> No
     assert report["ok"] is False
     assert "runtime_identity" in report["failed_checks"]
 
+    wrong_configured_commit = {
+        **payload,
+        "configured_runtime_commit": "b" * 40,
+        "checks": {"runtime_identity": True},
+    }
+    report = module.verify_health_payload(
+        wrong_configured_commit,
+        commit="a" * 40,
+        version="1.9.70",
+        release_dir=release,
+    )
+    assert report["ok"] is False
+    assert "configured_runtime_commit" in report["failed_checks"]
+
+    missing_configured_commit = dict(payload)
+    missing_configured_commit.pop("configured_runtime_commit")
+    report = module.verify_health_payload(
+        missing_configured_commit,
+        commit="a" * 40,
+        version="1.9.70",
+        release_dir=release,
+    )
+    assert report["ok"] is False
+    assert "configured_runtime_commit" in report["failed_checks"]
+
     missing_runtime_check = {**payload, "checks": {}}
     report = module.verify_health_payload(
         missing_runtime_check,
@@ -2378,14 +2482,18 @@ def test_release_health_verifier_requires_exact_runtime_identity(tmp_path) -> No
     assert "runtime_identity" in report["failed_checks"]
 
 
-def test_immutable_release_installer_verifies_both_effective_runtime_commits_before_receipt() -> None:
+def test_immutable_release_installer_verifies_all_effective_runtime_commits_before_receipt() -> None:
     script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
     verifier_body = script.split(
         "_verify_effective_runtime_metadata() {", 1
     )[1].split("\n}", 1)[0]
+    restart_body = script.split(
+        "_restart_current_services() {", 1
+    )[1].split("\n}", 1)[0]
 
     assert 'eimemory-rpc.service' in verifier_body
     assert 'openclaw-gateway.service' in verifier_body
+    assert 'openclaw-loop-watch.service' in verifier_body
     assert '--property=Environment --value' in verifier_body
     assert 'EIMEMORY_RUNTIME_COMMIT' in verifier_body
     assert 'item.partition("=")[0] == name' in verifier_body
@@ -2395,6 +2503,14 @@ def test_immutable_release_installer_verifies_both_effective_runtime_commits_bef
     assert verifier_body.index(
         '_user_systemctl is-active --quiet "$unit"'
     ) < verifier_body.index('--property=Environment --value')
+    assert "runtime_identity=verified units=3" in verifier_body
+    assert restart_body.index(
+        "_user_systemctl restart eimemory-rpc.service"
+    ) < restart_body.index(
+        "_user_systemctl restart openclaw-gateway.service"
+    ) < restart_body.index(
+        "_user_systemctl restart openclaw-loop-watch.service"
+    )
 
     already_current = script.split("already_current=1", 1)[0].rsplit(
         'if { [ -e "$CURRENT_LINK" ]', 1
