@@ -205,9 +205,13 @@ def current_release_lineage(
 ) -> dict[str, Any]: ...
 
 def evidence_release_for_domain(
-    lineage: dict[str, Any],
+    runtime: Any,
+    *,
+    scope: ScopeRef | dict | None,
+    repo_root: str | Path,
     domain: str,
     current_release: ReleaseIdentity,
+    expected_record_id: str = "",
 ) -> ReleaseIdentity: ...
 ```
 
@@ -221,7 +225,14 @@ def test_unchanged_domain_inherits_verified_ancestor_release(tmp_path):
     resolved = current_release_lineage(...)
     assert resolved["ok"] is True
     assert resolved["domains"]["memory.recall"]["mode"] == "inherited"
-    assert evidence_release_for_domain(resolved, "memory.recall", current) == prior
+    assert evidence_release_for_domain(
+        runtime,
+        scope=scope,
+        repo_root=repo,
+        domain="memory.recall",
+        current_release=current,
+        expected_record_id=resolved["record_id"],
+    ) == prior
 ```
 
 Also prove changed domains require current gate evidence, unknown production
