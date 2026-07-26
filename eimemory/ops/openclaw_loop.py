@@ -31,6 +31,7 @@ TERMINAL_STATUSES = {"done", "failed", "rolled_back"}
 ACTIVE_STATUSES = {"planned", "running", "waiting", "verifying"}
 WATCH_STALE_SAMPLE_LIMIT = 20
 WATCH_AUTO_RECONCILE_GRACE_SECONDS = 900
+WATCH_REPAIR_SOURCE = "openclaw.loop_watch.repair"
 MAX_LEDGER_TEXT_CHARS = 4096
 DEFAULT_TERMINAL_RETENTION_DAYS = 7
 MAX_JSONL_CACHE_BYTES = 8 * 1024 * 1024
@@ -1095,56 +1096,72 @@ def run_deploy_verify(
     }
 
 
-def _repair_summary(stale: list[dict[str, Any]], *, created: bool = False, eligible_count: int = 0, reconciled_count: int = 0) -> dict[str, Any]:
-    summary = _stale_summary(stale)
+def _repair_summary(
+    initial_stale: list[dict[str, Any]],
+    *,
+    remaining_stale: list[dict[str, Any]] | None = None,
+    created: bool = False,
+    eligible_count: int = 0,
+    reconciled_count: int = 0,
+) -> dict[str, Any]:
+    initial_summary = _stale_summary(initial_stale)
+    remaining_summary = _stale_summary(initial_stale if remaining_stale is None else remaining_stale)
     return {
         "created": created,
-        "initial_stale_count": summary["count"],
-        "initial_reason_counts": summary["reason_counts"],
+        "initial_stale_count": initial_summary["count"],
+        "initial_reason_counts": initial_summary["reason_counts"],
         "eligible_count": eligible_count,
         "reconciled_count": reconciled_count,
-        "remaining_stale_count": summary["count"],
-        "remaining_reason_counts": summary["reason_counts"],
+        "remaining_stale_count": remaining_summary["count"],
+        "remaining_reason_counts": remaining_summary["reason_counts"],
     }
+
+
+def _active_watch_repair_tasks() -> list[dict[str, Any]]:
+    return sorted(
+        [
+            task
+            for task in load_tasks()
+            if task.get("source") == WATCH_REPAIR_SOURCE and task.get("status") in ACTIVE_STATUSES
+        ],
+        key=lambda task: str(task.get("task_id") or ""),
+    )
+
+
+def _stale_work_items(stale: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [item for item in stale if item.get("source") != WATCH_REPAIR_SOURCE]
 
 
 def _run_watch_repair(
     stale: list[dict[str, Any]],
     *,
     grace_seconds: int,
+    existing_task: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Create an auditable repair task, reconcile eligible work, and recheck."""
     now = now_epoch()
     grace = max(0, int(grace_seconds))
     eligible = [item for item in stale if _stale_age_seconds(item, now=now) >= grace]
     repair = _repair_summary(stale, eligible_count=len(eligible))
-    if not eligible:
-        repair["_remaining_stale"] = stale
+    if not eligible and existing_task is None:
         return repair
 
     reason_counts = _stale_summary(eligible)["reason_counts"]
-    dedupe = "loop-watch-repair:" + hashlib.sha256(
-        "|".join(sorted(str(item.get("task_id") or "") for item in eligible)).encode("utf-8")
-    ).hexdigest()[:16]
-    task = create_task(
-        title="OpenClaw loop watchdog stale-task repair",
-        objective="reconcile stale OpenClaw loop work and verify the remaining count",
-        source="openclaw.loop_watch.repair",
-        owner="system",
-        risk_level="medium",
-        report_policy="on_blocked",
-        dedupe_key=dedupe,
-    )
-    if task.get("reused"):
-        remaining = find_stale_tasks()
-        repair = _repair_summary(
-            remaining,
-            created=False,
-            eligible_count=len(eligible),
-            reconciled_count=0,
+    if existing_task is None:
+        dedupe = "loop-watch-repair:" + hashlib.sha256(
+            "|".join(sorted(str(item.get("task_id") or "") for item in eligible)).encode("utf-8")
+        ).hexdigest()[:16]
+        task = create_task(
+            title="OpenClaw loop watchdog stale-task repair",
+            objective="reconcile stale OpenClaw loop work and verify the remaining count",
+            source=WATCH_REPAIR_SOURCE,
+            owner="system",
+            risk_level="medium",
+            report_policy="on_blocked",
+            dedupe_key=dedupe,
         )
-        repair["_remaining_stale"] = remaining
-        return repair
+    else:
+        task = dict(existing_task)
 
     task_id = str(task["task_id"])
     action = record_action(
@@ -1154,7 +1171,7 @@ def _run_watch_repair(
         result=f"eligible={len(eligible)};reason_classes={len(reason_counts)}",
     )
     reconciled_count = len(_reconcile_stale_items(eligible))
-    remaining = find_stale_tasks()
+    remaining = [item for item in find_stale_tasks() if str(item.get("task_id") or "") != task_id]
     remaining_summary = _stale_summary(remaining)
     passed = remaining_summary["count"] == 0
     record_verification(
@@ -1177,14 +1194,12 @@ def _run_watch_repair(
         summary="stale-task repair verified" if passed else "stale-task repair left remaining stale work",
     )
     repair = _repair_summary(
-        remaining,
-        created=True,
+        stale,
+        remaining_stale=remaining,
+        created=existing_task is None and not task.get("reused"),
         eligible_count=len(eligible),
         reconciled_count=reconciled_count,
     )
-    repair["initial_stale_count"] = len(stale)
-    repair["initial_reason_counts"] = _stale_summary(stale)["reason_counts"]
-    repair["_remaining_stale"] = remaining
     return repair
 
 
@@ -1197,10 +1212,14 @@ def run_watch(
 ) -> dict[str, Any]:
     drift = check_config_drift(config_path=config_path, run_live_checks=run_live_checks)
     stale = find_stale_tasks()
-    repair = _repair_summary(stale)
-    if stale and auto_reconcile:
-        repair = _run_watch_repair(stale, grace_seconds=reconcile_grace_seconds)
-        stale = repair.pop("_remaining_stale")
+    stale_work = _stale_work_items(stale)
+    repair = _repair_summary(stale_work)
+    if auto_reconcile:
+        if stale_work:
+            repair = _run_watch_repair(stale_work, grace_seconds=reconcile_grace_seconds)
+        for task in _active_watch_repair_tasks():
+            repair = _run_watch_repair([], grace_seconds=reconcile_grace_seconds, existing_task=task)
+        stale = find_stale_tasks()
     stale_summary = _stale_summary(stale)
     ok = bool(drift.get("ok")) and not stale
     watch = {

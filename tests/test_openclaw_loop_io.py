@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -142,3 +143,51 @@ def test_watch_repair_is_idempotent_and_records_only_bounded_audit_data(tmp_path
     assert stale["task_id"] not in json.dumps(repair_verification["checks"])
     assert repair_verification["checks"]["reconciled_count"] == 1
     assert repair_verification["checks"]["remaining"]["count"] == 0
+
+
+def test_watch_resumes_interrupted_repair_without_reconciling_the_repair_task(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("OPENCLAW_LOOP_HOME", str(tmp_path))
+    stale = openclaw_loop.create_task(title="old", objective="old", source="test")
+    openclaw_loop.update_task(stale["task_id"], lease_expires_at=1)
+    dedupe = "loop-watch-repair:" + hashlib.sha256(stale["task_id"].encode("utf-8")).hexdigest()[:16]
+    interrupted = openclaw_loop.create_task(
+        title="OpenClaw loop watchdog stale-task repair",
+        objective="reconcile stale OpenClaw loop work and verify the remaining count",
+        source="openclaw.loop_watch.repair",
+        dedupe_key=dedupe,
+    )
+    openclaw_loop.update_task(interrupted["task_id"], lease_expires_at=1)
+
+    result = openclaw_loop.run_watch(run_live_checks=False, reconcile_grace_seconds=0)
+
+    repair_tasks = [task for task in openclaw_loop.load_tasks() if task["source"] == "openclaw.loop_watch.repair"]
+    repair_verification = openclaw_loop.read_jsonl("verifications.jsonl")[-1]
+    assert result["ok"] is True
+    assert result["repair"]["created"] is False
+    assert result["repair"]["reconciled_count"] == 1
+    assert openclaw_loop.get_task(stale["task_id"])["status"] == "failed"
+    assert openclaw_loop.get_task(interrupted["task_id"])["status"] == "done"
+    assert len(repair_tasks) == 1
+    assert stale["task_id"] not in json.dumps(repair_verification["checks"])
+    assert interrupted["task_id"] not in json.dumps(repair_verification["checks"])
+
+
+def test_watch_closes_interrupted_repair_after_its_target_is_already_reconciled(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("OPENCLAW_LOOP_HOME", str(tmp_path))
+    stale = openclaw_loop.create_task(title="old", objective="old", source="test")
+    openclaw_loop.update_task(stale["task_id"], lease_expires_at=1)
+    openclaw_loop.reconcile_stale_tasks(apply=True)
+    interrupted = openclaw_loop.create_task(
+        title="OpenClaw loop watchdog stale-task repair",
+        objective="reconcile stale OpenClaw loop work and verify the remaining count",
+        source="openclaw.loop_watch.repair",
+        dedupe_key="interrupted-repair",
+    )
+    openclaw_loop.update_task(interrupted["task_id"], lease_expires_at=1)
+
+    result = openclaw_loop.run_watch(run_live_checks=False, reconcile_grace_seconds=0)
+
+    assert result["ok"] is True
+    assert result["repair"]["created"] is False
+    assert result["repair"]["reconciled_count"] == 0
+    assert openclaw_loop.get_task(interrupted["task_id"])["status"] == "done"
