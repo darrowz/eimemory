@@ -1047,6 +1047,59 @@ def test_known_release_support_surfaces_do_not_taint_memory_recall(
     assert report["unknown_production_paths"] == []
 
 
+def test_test_named_future_runtime_script_remains_unknown(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    prior_commit = _commit(repo, "docs/prior.md", "prior\n", "prior")
+    current_commit = _commit(
+        repo,
+        "scripts/test_future_runtime.py",
+        "RUNTIME_BEHAVIOR = True\n",
+        "current",
+    )
+
+    report = release_lineage._domain_change_summary(
+        repo,
+        domain="memory.recall",
+        ancestor=prior_commit,
+        current=current_commit,
+    )
+
+    assert report is not None
+    assert report["changed"] is True
+    assert report["unknown_production_paths"] == [
+        "scripts/test_future_runtime.py"
+    ]
+
+
+def test_hermes_nested_runtime_version_change_remains_unknown(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    prior_commit = _commit(
+        repo,
+        "integrations/hermes/eimemory/plugin.yaml",
+        "name: eimemory\nversion: 1.0.0\nruntime:\n  version: 1\n",
+        "prior",
+    )
+    current_commit = _commit(
+        repo,
+        "integrations/hermes/eimemory/plugin.yaml",
+        "name: eimemory\nversion: 1.0.1\nruntime:\n  version: 2\n",
+        "current",
+    )
+
+    report = release_lineage._domain_change_summary(
+        repo,
+        domain="memory.recall",
+        ancestor=prior_commit,
+        current=current_commit,
+    )
+
+    assert report is not None
+    assert report["changed"] is True
+    assert report["unknown_production_paths"] == [
+        "integrations/hermes/eimemory/plugin.yaml"
+    ]
+
+
 def test_non_ancestor_receipt_is_rejected(tmp_path: Path) -> None:
     repo = _repo(tmp_path)
     current_commit = _commit(repo, "docs/current.md", "current\n", "current")

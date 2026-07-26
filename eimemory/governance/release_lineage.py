@@ -86,10 +86,11 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         "eimemory/runtime_identity.py",
     ),
 }
-IGNORED_PATH_PREFIXES = ("docs/", "tests/", ".github/", "scripts/test_")
+IGNORED_PATH_PREFIXES = ("docs/", "tests/", ".github/")
 IGNORED_PATHS = {
     "CHANGELOG.md",
     "deploy/systemd/README.md",
+    "scripts/test_openclaw_loop.py",
 }
 INTEGRATION_VERSION_PATHS = {
     "integrations/codex/eimemory/.codex-plugin/plugin.json",
@@ -975,7 +976,7 @@ def _integration_version_only_change(
             before_payload.pop("version", None)
             after_payload.pop("version", None)
             return before_payload == after_payload
-        version_line = re.compile(r"^\s*version\s*:")
+        version_line = re.compile(r"^version\s*:")
 
         def normalized_lines(raw: bytes) -> tuple[str, ...]:
             return tuple(
