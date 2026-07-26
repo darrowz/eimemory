@@ -332,6 +332,7 @@ def test_l5_observation_gate_enables_autonomous_code_after_48_hours() -> None:
     assert "48-hour observation gate" in unit_text
     assert "ExecStart=%h/.config/systemd/user/eimemory-l5-observation-gate.sh" in unit_text
     assert "OnActiveSec=48h" in timer_text
+    assert "OnUnitActiveSec=6h" in timer_text
     assert "Persistent=true" in timer_text
     assert "EIMEMORY_AUTONOMOUS_LEARNING_APPLY=1" in script_text
     assert "EIMEMORY_AUTONOMOUS_CODE_COMMIT=1" in script_text
@@ -353,6 +354,186 @@ def test_l5_observation_gate_requires_exact_l5_stage_before_apply() -> None:
 
     assert 'if [ "$stage" != "L5" ]; then' in script_text
     assert "L4|L4.5|L5" not in script_text
+
+
+def _run_l5_observation_gate(
+    tmp_path: Path,
+    *,
+    readiness_payload: str,
+    readiness_command_failure: bool = False,
+    timer_monitor_failure: bool = False,
+    failed_service: bool = False,
+) -> tuple[subprocess.CompletedProcess[str], Path, Path, Path, Path]:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    action_log = tmp_path / "systemctl.log"
+    eimemory_bin = bin_dir / "eimemory"
+    eimemory_bin.write_text(
+        "#!/usr/bin/env bash\n"
+        "if [ \"${1:-}\" = \"learn\" ] && [ \"${2:-}\" = \"l5-readiness\" ]; then\n"
+        "  if [ \"${READINESS_COMMAND_FAILURE:-0}\" = \"1\" ]; then exit 17; fi\n"
+        "  printf '%s\\n' \"$READINESS_PAYLOAD\"\n"
+        "  exit 0\n"
+        "fi\n"
+        "if [ \"${1:-}\" = \"ops\" ] && [ \"${2:-}\" = \"timer-monitor\" ]; then\n"
+        "  if [ \"${TIMER_MONITOR_FAILURE:-0}\" = \"1\" ]; then exit 18; fi\n"
+        "  printf '%s\\n' '{\"ok\":true}'\n"
+        "  exit 0\n"
+        "fi\n"
+        "exit 19\n",
+        encoding="utf-8",
+    )
+    eimemory_bin.chmod(0o755)
+    systemctl = bin_dir / "systemctl"
+    systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\n' \"$*\" >> \"$SYSTEMCTL_ACTION_LOG\"\n"
+        "if [ \"${1:-}\" = \"--user\" ] && [ \"${2:-}\" = \"--failed\" ]; then\n"
+        "  if [ \"${FAILED_SERVICE:-0}\" = \"1\" ]; then\n"
+        "    printf '%s\\n' 'eimemory-rpc.service loaded failed failed'\n"
+        "  fi\n"
+        "fi\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    systemctl.chmod(0o755)
+    curl = bin_dir / "curl"
+    curl.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    curl.chmod(0o755)
+
+    nightly_unit = tmp_path / "eimemory-nightly.service"
+    nightly_unit.write_text("[Service]\nEnvironment=UNCHANGED=1\n", encoding="utf-8")
+    openclaw_config = tmp_path / "openclaw.json"
+    openclaw_config.write_text(
+        json.dumps(
+            {
+                "plugins": {
+                    "entries": {
+                        "eimemory-bridge": {
+                            "hooks": {
+                                "allowPromptInjection": False,
+                                "allowConversationAccess": False,
+                            }
+                        }
+                    }
+                }
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    gateway_dropin = tmp_path / "gateway" / "eimemory-prompt-injection.conf"
+    env = {
+        **os.environ,
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+        "EIMEMORY_BIN": _bash_path(eimemory_bin),
+        "EIMEMORY_PYTHON_BIN": _bash_path(Path(sys.executable)),
+        "EIMEMORY_CURL_BIN": _bash_path(curl),
+        "EIMEMORY_NIGHTLY_UNIT_PATH": _bash_path(nightly_unit),
+        "OPENCLAW_CONFIG_PATH": _bash_path(openclaw_config),
+        "OPENCLAW_GATEWAY_DROPIN": _bash_path(gateway_dropin),
+        "OPENCLAW_GATEWAY_DROPIN_DIR": _bash_path(gateway_dropin.parent),
+        "SYSTEMCTL_ACTION_LOG": _bash_path(action_log),
+        "READINESS_PAYLOAD": readiness_payload,
+        "READINESS_COMMAND_FAILURE": "1" if readiness_command_failure else "0",
+        "TIMER_MONITOR_FAILURE": "1" if timer_monitor_failure else "0",
+        "FAILED_SERVICE": "1" if failed_service else "0",
+    }
+    result = subprocess.run(
+        [_bash_binary(), "deploy/systemd/eimemory-l5-observation-gate.sh"],
+        cwd=Path.cwd(),
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result, nightly_unit, openclaw_config, gateway_dropin, action_log
+
+
+def test_l5_observation_gate_reports_valid_below_l5_as_pending_without_mutation(
+    tmp_path: Path,
+) -> None:
+    result, nightly_unit, openclaw_config, gateway_dropin, action_log = (
+        _run_l5_observation_gate(
+            tmp_path,
+            readiness_payload=json.dumps(
+                {"ok": True, "current_stage": "L4.5", "readiness_score": 0.8}
+            ),
+        )
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "status=observation_pending" in result.stdout
+    assert "stage=L4.5" in result.stdout
+    assert "readiness_score=0.8" in result.stdout
+    assert nightly_unit.read_text(encoding="utf-8") == (
+        "[Service]\nEnvironment=UNCHANGED=1\n"
+    )
+    assert json.loads(openclaw_config.read_text(encoding="utf-8"))["plugins"]["entries"][
+        "eimemory-bridge"
+    ]["hooks"] == {
+        "allowPromptInjection": False,
+        "allowConversationAccess": False,
+    }
+    assert not gateway_dropin.exists()
+    assert "disable --now" not in action_log.read_text(encoding="utf-8")
+
+
+def test_l5_observation_gate_mutates_and_disables_timer_only_at_exact_l5(
+    tmp_path: Path,
+) -> None:
+    result, nightly_unit, openclaw_config, gateway_dropin, action_log = (
+        _run_l5_observation_gate(
+            tmp_path,
+            readiness_payload=json.dumps(
+                {"ok": True, "current_stage": "L5", "readiness_score": 1.0}
+            ),
+        )
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "status=l5_enabled" in result.stdout
+    assert "EIMEMORY_AUTONOMOUS_LEARNING_APPLY=1" in nightly_unit.read_text(
+        encoding="utf-8"
+    )
+    assert json.loads(openclaw_config.read_text(encoding="utf-8"))["plugins"]["entries"][
+        "eimemory-bridge"
+    ]["hooks"] == {
+        "allowPromptInjection": True,
+        "allowConversationAccess": True,
+    }
+    assert gateway_dropin.is_file()
+    assert "disable --now eimemory-l5-observation-gate.timer" in action_log.read_text(
+        encoding="utf-8"
+    )
+
+
+@pytest.mark.parametrize(
+    ("readiness_payload", "readiness_command_failure", "timer_monitor_failure", "failed_service"),
+    [
+        ("not-json", False, False, False),
+        (json.dumps({"ok": False, "current_stage": "L4.5", "readiness_score": 0.8}), False, False, False),
+        (json.dumps({"ok": True, "current_stage": "L4.5", "readiness_score": 0.8}), True, False, False),
+        (json.dumps({"ok": True, "current_stage": "L4.5", "readiness_score": 0.8}), False, True, False),
+        (json.dumps({"ok": True, "current_stage": "L4.5", "readiness_score": 0.8}), False, False, True),
+    ],
+)
+def test_l5_observation_gate_keeps_operational_errors_nonzero(
+    tmp_path: Path,
+    readiness_payload: str,
+    readiness_command_failure: bool,
+    timer_monitor_failure: bool,
+    failed_service: bool,
+) -> None:
+    result, *_ = _run_l5_observation_gate(
+        tmp_path,
+        readiness_payload=readiness_payload,
+        readiness_command_failure=readiness_command_failure,
+        timer_monitor_failure=timer_monitor_failure,
+        failed_service=failed_service,
+    )
+
+    assert result.returncode != 0
 
 
 def test_nightly_systemd_unit_sets_autonomous_learning_promotion_budget() -> None:

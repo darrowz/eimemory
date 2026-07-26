@@ -120,7 +120,7 @@ is the single governance orchestrator.
 - `eimemory-learn-watch.timer`: every 15 minutes, capture lightweight local/outcome/world signals.
 - `eimemory-learn-think.timer`: hourly, turn signals and long-term goals into persisted thoughts.
 - `eimemory-learn-dashboard.timer`: daily at 03:45 local time, summarize learned/applied/blocked/next items.
-- `eimemory-l5-observation-gate.timer`: once after 48 hours of observation, persist L5 readiness and enable autonomous code commits plus guarded deploy if health checks pass.
+- `eimemory-l5-observation-gate.timer`: first evaluate after 48 hours, then recheck every 6 hours while verified readiness remains below exact L5. A valid below-L5 report exits successfully with `status=observation_pending` and does not change autonomous apply/deploy settings or OpenClaw prompt injection. Command, JSON, monitor, and service failures remain failed runs. Exact L5 alone enables autonomous code commits plus guarded deploy and disables this timer.
 - `eimemory-timer-monitor.timer`: every 5 minutes, alert when watch/think/nightly timers are masked, stale, inactive, or failed.
 
 Run one of these manually only when debugging that path:

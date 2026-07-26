@@ -5,6 +5,8 @@ release_id="$(basename "$(readlink -f /opt/eimemory/current)")"
 export PYTHONPYCACHEPREFIX="/var/lib/eimemory/.pycache/$release_id"
 
 EIMEMORY_BIN="${EIMEMORY_BIN:-/opt/eimemory/current/.venv/bin/eimemory}"
+EIMEMORY_PYTHON_BIN="${EIMEMORY_PYTHON_BIN:-/opt/eimemory/current/.venv/bin/python}"
+EIMEMORY_CURL_BIN="${EIMEMORY_CURL_BIN:-curl}"
 NIGHTLY_UNIT="${EIMEMORY_NIGHTLY_UNIT_PATH:-$HOME/.config/systemd/user/eimemory-nightly.service}"
 OPENCLAW_CONFIG="${OPENCLAW_CONFIG_PATH:-$HOME/.openclaw/openclaw.json}"
 OPENCLAW_GATEWAY_DROPIN_DIR="${OPENCLAW_GATEWAY_DROPIN_DIR:-$HOME/.config/systemd/user/openclaw-gateway.service.d}"
@@ -32,7 +34,7 @@ ensure_env() {
 
 enable_openclaw_memory_behavior() {
   require_file "$OPENCLAW_CONFIG"
-  /opt/eimemory/current/.venv/bin/python - "$OPENCLAW_CONFIG" <<'PY'
+  "$EIMEMORY_PYTHON_BIN" - "$OPENCLAW_CONFIG" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -54,16 +56,40 @@ Environment=EIMEMORY_ENABLE_PROMPT_INJECTION=true
 EOF
   systemctl --user daemon-reload
   systemctl --user restart "$OPENCLAW_GATEWAY_UNIT"
-  curl -fsS http://127.0.0.1:18789/readyz >/dev/null
+  "$EIMEMORY_CURL_BIN" -fsS http://127.0.0.1:18789/readyz >/dev/null
 }
 
 require_file "$EIMEMORY_BIN"
+require_file "$EIMEMORY_PYTHON_BIN"
 require_file "$NIGHTLY_UNIT"
 
 readiness_json="$("$EIMEMORY_BIN" learn l5-readiness --persist --json)"
-stage="$(printf '%s' "$readiness_json" | /opt/eimemory/current/.venv/bin/python -c 'import json,sys; print(json.load(sys.stdin).get("current_stage",""))')"
-if [ "$stage" != "L5" ]; then
-  echo "blocked_stage=$stage" >&2
+readiness_fields="$(
+  printf '%s' "$readiness_json" | "$EIMEMORY_PYTHON_BIN" -c '
+import json
+import math
+import sys
+
+value = json.load(sys.stdin)
+if not isinstance(value, dict):
+    raise ValueError("readiness report must be an object")
+ok = value.get("ok")
+stage = value.get("current_stage")
+score = value.get("readiness_score")
+if not isinstance(ok, bool):
+    raise ValueError("readiness ok must be a boolean")
+if not isinstance(stage, str) or not stage.strip() or any(ch in stage for ch in "\t\r\n"):
+    raise ValueError("readiness current_stage must be a non-empty scalar")
+if isinstance(score, bool) or not isinstance(score, (int, float)):
+    raise ValueError("readiness_score must be numeric")
+if not math.isfinite(float(score)) or not 0.0 <= float(score) <= 1.0:
+    raise ValueError("readiness_score must be finite and between zero and one")
+print(f"{str(ok).lower()}\t{stage}\t{score}")
+'
+)"
+IFS=$'\t' read -r readiness_ok stage readiness_score <<<"$readiness_fields"
+if [ "$readiness_ok" != "true" ]; then
+  echo "readiness_ok=false" >&2
   exit 3
 fi
 
@@ -72,6 +98,13 @@ fi
 if systemctl --user --failed --no-legend 'eimemory*' | grep -q .; then
   systemctl --user --failed --no-legend 'eimemory*' >&2
   exit 4
+fi
+
+if [ "$stage" != "L5" ]; then
+  echo "status=observation_pending"
+  echo "stage=$stage"
+  echo "readiness_score=$readiness_score"
+  exit 0
 fi
 
 ensure_env "EIMEMORY_AUTONOMOUS_LEARNING_APPLY" "Environment=EIMEMORY_AUTONOMOUS_LEARNING_APPLY=1"
@@ -87,7 +120,9 @@ systemctl --user daemon-reload
 systemctl --user disable --now "$GATE_TIMER" >/dev/null 2>&1 || true
 
 echo "ok=l5_observation_gate"
+echo "status=l5_enabled"
 echo "stage=$stage"
+echo "readiness_score=$readiness_score"
 echo "autonomous_learning_apply=1"
 echo "autonomous_code_commit=1"
 echo "autonomous_code_deploy=1"
