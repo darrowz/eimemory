@@ -90,3 +90,55 @@ def test_large_ledger_is_not_retained_in_process_cache(tmp_path, monkeypatch) ->
 
     assert len(openclaw_loop.read_jsonl("tasks.jsonl")) == 3
     assert openclaw_loop._JSONL_CACHE == {}
+
+
+def test_watch_creates_repair_task_reconciles_old_stale_work_and_rechecks(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("OPENCLAW_LOOP_HOME", str(tmp_path))
+    stale = openclaw_loop.create_task(title="old", objective="old", source="test")
+    openclaw_loop.update_task(stale["task_id"], lease_expires_at=1, updated_at="2026-01-01T00:00:00Z")
+
+    result = openclaw_loop.run_watch(
+        run_live_checks=False,
+        auto_reconcile=True,
+        reconcile_grace_seconds=0,
+    )
+
+    assert result["ok"] is True
+    assert result["repair"]["created"] is True
+    assert result["repair"]["reconciled_count"] == 1
+    assert result["repair"]["remaining_stale_count"] == 0
+    assert openclaw_loop.get_task(stale["task_id"])["status"] == "failed"
+
+
+def test_watch_leaves_stale_task_inside_reconcile_grace_period_active(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("OPENCLAW_LOOP_HOME", str(tmp_path))
+    stale = openclaw_loop.create_task(title="recent", objective="recent", source="test")
+    openclaw_loop.update_task(stale["task_id"], lease_expires_at=openclaw_loop.now_epoch() - 1)
+
+    result = openclaw_loop.run_watch(run_live_checks=False)
+
+    assert result["ok"] is False
+    assert result["repair"]["created"] is False
+    assert result["repair"]["eligible_count"] == 0
+    assert result["repair"]["remaining_stale_count"] == 1
+    assert openclaw_loop.get_task(stale["task_id"])["status"] == "planned"
+
+
+def test_watch_repair_is_idempotent_and_records_only_bounded_audit_data(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("OPENCLAW_LOOP_HOME", str(tmp_path))
+    stale = openclaw_loop.create_task(title="old", objective="old", source="test")
+    openclaw_loop.update_task(stale["task_id"], lease_expires_at=1)
+
+    first = openclaw_loop.run_watch(run_live_checks=False, reconcile_grace_seconds=0)
+    second = openclaw_loop.run_watch(run_live_checks=False, reconcile_grace_seconds=0)
+
+    repair_tasks = [task for task in openclaw_loop.load_tasks() if task["source"] == "openclaw.loop_watch.repair"]
+    repair_verification = openclaw_loop.read_jsonl("verifications.jsonl")[-1]
+
+    assert first["repair"]["created"] is True
+    assert second["repair"]["created"] is False
+    assert len(repair_tasks) == 1
+    assert repair_tasks[0]["status"] == "done"
+    assert stale["task_id"] not in json.dumps(repair_verification["checks"])
+    assert repair_verification["checks"]["reconciled_count"] == 1
+    assert repair_verification["checks"]["remaining"]["count"] == 0

@@ -3,6 +3,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+from eimemory.ops import openclaw_loop
 from eimemory.ops import openclaw_watchdog as watchdog_module
 from eimemory.ops.openclaw_watchdog import (
     collect_hook_pressure,
@@ -196,3 +197,17 @@ def test_watchdog_external_reads_fail_open_on_timeout() -> None:
         "5 minutes ago",
         run=timeout_run,
     ) == ""
+
+
+def test_watch_keeps_nonzero_result_when_post_repair_stale_check_fails(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("OPENCLAW_LOOP_HOME", str(tmp_path))
+    stale = openclaw_loop.create_task(title="old", objective="old", source="test")
+    openclaw_loop.update_task(stale["task_id"], lease_expires_at=1)
+    monkeypatch.setattr(openclaw_loop, "_reconcile_stale_items", lambda _items: [])
+
+    result = openclaw_loop.run_watch(run_live_checks=False, reconcile_grace_seconds=0)
+
+    repair_task = next(task for task in openclaw_loop.load_tasks() if task["source"] == "openclaw.loop_watch.repair")
+    assert result["ok"] is False
+    assert result["repair"]["remaining_stale_count"] == 1
+    assert repair_task["status"] == "blocked"

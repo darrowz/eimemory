@@ -30,6 +30,7 @@ SCHEMA_VERSION = "openclaw.loop.v1"
 TERMINAL_STATUSES = {"done", "failed", "rolled_back"}
 ACTIVE_STATUSES = {"planned", "running", "waiting", "verifying"}
 WATCH_STALE_SAMPLE_LIMIT = 20
+WATCH_AUTO_RECONCILE_GRACE_SECONDS = 900
 MAX_LEDGER_TEXT_CHARS = 4096
 DEFAULT_TERMINAL_RETENTION_DAYS = 7
 MAX_JSONL_CACHE_BYTES = 8 * 1024 * 1024
@@ -579,6 +580,21 @@ def finish_task(task_id: str, *, status: str = "done", summary: str = "", force:
     return task
 
 
+def _updated_epoch(item: dict[str, Any]) -> float:
+    updated = item.get("updated_at") or item.get("started_at")
+    try:
+        return float(calendar.timegm(time.strptime(str(updated), "%Y-%m-%dT%H:%M:%SZ")))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _stale_age_seconds(item: dict[str, Any], *, now: float) -> float:
+    lease = float(item.get("lease_expires_at") or 0)
+    if lease:
+        return max(0.0, now - lease)
+    return max(0.0, now - _updated_epoch(item))
+
+
 def find_stale_tasks(*, now: float | None = None, older_than_seconds: int = 1200) -> list[dict[str, Any]]:
     current = now_epoch() if now is None else now
     stale: list[dict[str, Any]] = []
@@ -591,45 +607,45 @@ def find_stale_tasks(*, now: float | None = None, older_than_seconds: int = 1200
             item["stale_reason"] = "lease_expired"
             stale.append(item)
             continue
-        updated = task.get("updated_at") or task.get("started_at")
-        try:
-            updated_epoch = calendar.timegm(time.strptime(str(updated), "%Y-%m-%dT%H:%M:%SZ"))
-        except (TypeError, ValueError):
-            updated_epoch = 0
+        updated_epoch = _updated_epoch(task)
         if updated_epoch and current - updated_epoch > older_than_seconds:
             item["stale_reason"] = "updated_too_old"
             stale.append(item)
     return stale
 
 
+def _reconcile_stale_items(items: list[dict[str, Any]]) -> list[str]:
+    reconciled: list[str] = []
+    for item in items:
+        task_id = str(item.get("task_id") or "")
+        if not task_id:
+            continue
+        stale_reason = str(item.get("stale_reason") or "unknown")
+        reconciled_task = dict(item)
+        reconciled_task.pop("stale_reason", None)
+        reconciled_task.update(
+            {
+                "status": "failed",
+                "current_step": "failed",
+                "last_action": "stale task reconciled",
+                "failure_class": f"{stale_reason}_reconciled",
+                "blocker": "",
+                "lease_expires_at": 0,
+                "next_check_at": "",
+                "result_summary": f"stale task reconciled after {stale_reason}",
+                "updated_at": iso_ts(),
+            }
+        )
+        append_jsonl("tasks.jsonl", reconciled_task)
+        reconciled.append(task_id)
+    return reconciled
+
+
 def reconcile_stale_tasks(*, apply: bool = False, limit: int | None = None) -> dict[str, Any]:
     stale = sorted(find_stale_tasks(), key=lambda item: str(item.get("task_id") or ""))
     selected = stale if limit is None else stale[: max(0, int(limit))]
     summary = _stale_summary(stale)
-    reconciled: list[str] = []
-    if apply:
-        for item in selected:
-            task_id = str(item.get("task_id") or "")
-            if not task_id:
-                continue
-            stale_reason = str(item.get("stale_reason") or "unknown")
-            reconciled_task = dict(item)
-            reconciled_task.pop("stale_reason", None)
-            reconciled_task.update(
-                {
-                    "status": "failed",
-                    "current_step": "failed",
-                    "last_action": "stale task reconciled",
-                    "failure_class": f"{stale_reason}_reconciled",
-                    "blocker": "",
-                    "lease_expires_at": 0,
-                    "next_check_at": "",
-                    "result_summary": f"stale task reconciled after {stale_reason}",
-                    "updated_at": iso_ts(),
-                }
-            )
-            append_jsonl("tasks.jsonl", reconciled_task)
-            reconciled.append(task_id)
+    reconciled = _reconcile_stale_items(selected) if apply else []
     return {
         "ok": True,
         "applied": bool(apply),
@@ -1079,10 +1095,112 @@ def run_deploy_verify(
     }
 
 
+def _repair_summary(stale: list[dict[str, Any]], *, created: bool = False, eligible_count: int = 0, reconciled_count: int = 0) -> dict[str, Any]:
+    summary = _stale_summary(stale)
+    return {
+        "created": created,
+        "initial_stale_count": summary["count"],
+        "initial_reason_counts": summary["reason_counts"],
+        "eligible_count": eligible_count,
+        "reconciled_count": reconciled_count,
+        "remaining_stale_count": summary["count"],
+        "remaining_reason_counts": summary["reason_counts"],
+    }
 
-def run_watch(*, config_path: str | Path | None = None, run_live_checks: bool = True) -> dict[str, Any]:
+
+def _run_watch_repair(
+    stale: list[dict[str, Any]],
+    *,
+    grace_seconds: int,
+) -> dict[str, Any]:
+    """Create an auditable repair task, reconcile eligible work, and recheck."""
+    now = now_epoch()
+    grace = max(0, int(grace_seconds))
+    eligible = [item for item in stale if _stale_age_seconds(item, now=now) >= grace]
+    repair = _repair_summary(stale, eligible_count=len(eligible))
+    if not eligible:
+        repair["_remaining_stale"] = stale
+        return repair
+
+    reason_counts = _stale_summary(eligible)["reason_counts"]
+    dedupe = "loop-watch-repair:" + hashlib.sha256(
+        "|".join(sorted(str(item.get("task_id") or "") for item in eligible)).encode("utf-8")
+    ).hexdigest()[:16]
+    task = create_task(
+        title="OpenClaw loop watchdog stale-task repair",
+        objective="reconcile stale OpenClaw loop work and verify the remaining count",
+        source="openclaw.loop_watch.repair",
+        owner="system",
+        risk_level="medium",
+        report_policy="on_blocked",
+        dedupe_key=dedupe,
+    )
+    if task.get("reused"):
+        remaining = find_stale_tasks()
+        repair = _repair_summary(
+            remaining,
+            created=False,
+            eligible_count=len(eligible),
+            reconciled_count=0,
+        )
+        repair["_remaining_stale"] = remaining
+        return repair
+
+    task_id = str(task["task_id"])
+    action = record_action(
+        task_id,
+        action_type="reconcile",
+        command_or_tool="openclaw_loop.reconcile_stale_tasks",
+        result=f"eligible={len(eligible)};reason_classes={len(reason_counts)}",
+    )
+    reconciled_count = len(_reconcile_stale_items(eligible))
+    remaining = find_stale_tasks()
+    remaining_summary = _stale_summary(remaining)
+    passed = remaining_summary["count"] == 0
+    record_verification(
+        task_id,
+        verifier="openclaw_loop_watch_repair",
+        checks={
+            "initial": {"count": len(stale), "reason_counts": _stale_summary(stale)["reason_counts"]},
+            "eligible_count": len(eligible),
+            "reconciled_count": reconciled_count,
+            "remaining": {"count": remaining_summary["count"], "reason_counts": remaining_summary["reason_counts"]},
+        },
+        passed=passed,
+        evidence_refs=[f"action:{action['action_id']}"],
+        failure_reason="remaining_stale_tasks" if not passed else "",
+        next_action="report_done" if passed else "replan",
+    )
+    finish_task(
+        task_id,
+        status="done" if passed else "blocked",
+        summary="stale-task repair verified" if passed else "stale-task repair left remaining stale work",
+    )
+    repair = _repair_summary(
+        remaining,
+        created=True,
+        eligible_count=len(eligible),
+        reconciled_count=reconciled_count,
+    )
+    repair["initial_stale_count"] = len(stale)
+    repair["initial_reason_counts"] = _stale_summary(stale)["reason_counts"]
+    repair["_remaining_stale"] = remaining
+    return repair
+
+
+def run_watch(
+    *,
+    config_path: str | Path | None = None,
+    run_live_checks: bool = True,
+    auto_reconcile: bool = True,
+    reconcile_grace_seconds: int = WATCH_AUTO_RECONCILE_GRACE_SECONDS,
+) -> dict[str, Any]:
     drift = check_config_drift(config_path=config_path, run_live_checks=run_live_checks)
     stale = find_stale_tasks()
+    repair = _repair_summary(stale)
+    if stale and auto_reconcile:
+        repair = _run_watch_repair(stale, grace_seconds=reconcile_grace_seconds)
+        stale = repair.pop("_remaining_stale")
     stale_summary = _stale_summary(stale)
     ok = bool(drift.get("ok")) and not stale
     watch = {
@@ -1094,10 +1212,18 @@ def run_watch(*, config_path: str | Path | None = None, run_live_checks: bool = 
         "stale_reason_counts": stale_summary["reason_counts"],
         "stale_task_ids": stale_summary["sample_task_ids"],
         "stale_sample_truncated": stale_summary["sample_truncated"],
+        "repair": repair,
     }
     append_jsonl("watch.jsonl", watch)
     if ok:
-        return {"ok": True, "watch_id": watch["watch_id"], "tasks_created": 0, "drift": drift, "stale_count": 0}
+        return {
+            "ok": True,
+            "watch_id": watch["watch_id"],
+            "tasks_created": 1 if repair["created"] else 0,
+            "drift": drift,
+            "stale_count": 0,
+            "repair": repair,
+        }
 
     codes = list(
         dict.fromkeys(
@@ -1120,14 +1246,23 @@ def run_watch(*, config_path: str | Path | None = None, run_live_checks: bool = 
     record_verification(
         task_id,
         verifier="openclaw_loop_watch",
-        checks={"drift": drift, "stale_summary": stale_summary},
+        checks={"drift": drift, "stale_summary": stale_summary, "repair": repair},
         passed=False,
         evidence_refs=[f"watch:{watch['watch_id']}"],
         failure_reason=",".join(codes),
         next_action="replan",
     )
     finish_task(task_id, status="blocked", summary="loop watch found: " + ",".join(codes))
-    return {"ok": False, "watch_id": watch["watch_id"], "tasks_created": 1 if not task.get("reused") else 0, "task_id": task_id, "codes": codes, "drift": drift, "stale_count": len(stale)}
+    return {
+        "ok": False,
+        "watch_id": watch["watch_id"],
+        "tasks_created": (1 if repair["created"] else 0) + (1 if not task.get("reused") else 0),
+        "task_id": task_id,
+        "codes": codes,
+        "drift": drift,
+        "stale_count": len(stale),
+        "repair": repair,
+    }
 
 def emit(payload: Any) -> int:
     print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
