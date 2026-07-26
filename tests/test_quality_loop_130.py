@@ -85,7 +85,7 @@ def test_recall_quality_report_counts_quality_and_persists(tmp_path) -> None:
     assert stored.content["report"]["hit_at_5"] == 1.0
 
 
-def test_default_recall_reports_blocked_operational_counts(tmp_path) -> None:
+def test_diagnostic_recall_reports_blocked_operational_counts(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     scope = {"agent_id": "hongtu", "workspace_id": "quality-loop", "user_id": "darrow"}
     scope_ref = ScopeRef.from_dict(scope)
@@ -110,7 +110,12 @@ def test_default_recall_reports_blocked_operational_counts(tmp_path) -> None:
         )
     )
 
-    bundle = runtime.memory.recall(query="UUMit 交付规则 审计", scope=scope, task_context={}, limit=5)
+    bundle = runtime.memory.recall(
+        query="UUMit 交付规则 审计",
+        scope=scope,
+        task_context={"recall_diagnostics": True},
+        limit=5,
+    )
 
     assert all(item.kind != "reflection" for item in bundle.items)
     blocked_counts = bundle.explanation["recall_filters"]["blocked_counts"]
