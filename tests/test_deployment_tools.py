@@ -671,6 +671,19 @@ def test_deployment_receipt_uses_current_trusted_code_and_already_current_repair
     assert 'git -C "$REPO_DIR" status --porcelain --untracked-files=all' in script
 
 
+def test_installer_records_lineage_after_exact_receipt_and_fails_closed() -> None:
+    script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
+    lineage_body = script.split("_record_release_lineage() {", 1)[1].split("\n}", 1)[0]
+    main_receipt = script.rindex("_record_deployment_receipt")
+    main_lineage = script.rindex("_record_release_lineage")
+
+    assert '"$RELEASE_DIR/deploy/record_release_lineage.py"' in lineage_body
+    assert '--current-commit "$COMMIT"' in lineage_body
+    assert "EIMEMORY_RUNTIME_COMMIT=\"$COMMIT\"" in lineage_body
+    assert main_receipt < main_lineage < script.rindex("_run_post_switch_closure")
+    assert "_record_release_lineage ||" not in script
+
+
 def test_installer_provisions_private_tool_receipt_key_for_gateway() -> None:
     script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
     dropin = Path("deploy/systemd/openclaw-gateway-eimemory.conf").read_text(encoding="utf-8")
@@ -1868,7 +1881,7 @@ def test_immutable_release_installer_commits_only_after_post_switch_gates() -> N
     assert 'EIMEMORY_DEPLOY_SCOPE_USER="${EIMEMORY_DEPLOY_SCOPE_USER:-darrow}"' in script
     assert 'EIMEMORY_DEPLOY_SCOPE_USER="${EIMEMORY_DEPLOY_SCOPE_USER:-$SERVICE_USER}"' not in script
     assert "_require_nonblank_deploy_scope" in script
-    assert script.count('--scope-user "$EIMEMORY_DEPLOY_SCOPE_USER"') == 3
+    assert script.count('--scope-user "$EIMEMORY_DEPLOY_SCOPE_USER"') == 4
     assert "rollback_current_release=failed" in script
     assert "rollback_preserved_failed_release=" in script
 

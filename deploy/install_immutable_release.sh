@@ -1152,6 +1152,21 @@ _record_deployment_receipt() {
       --scope-user "$EIMEMORY_DEPLOY_SCOPE_USER" --json
 }
 
+_record_release_lineage() {
+  if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ]; then
+    return
+  fi
+  env EIMEMORY_ROOT="$EIMEMORY_ROOT" EIMEMORY_CONFIG_DIR="$EIMEMORY_CONFIG_DIR" \
+    EIMEMORY_EVIDENCE_RECEIPT_ENV_FILE="$EVIDENCE_RECEIPT_ENV_FILE" \
+    EIMEMORY_RUNTIME_COMMIT="$COMMIT" \
+    "$RELEASE_DIR/.venv/bin/python" -I -B \
+      "$RELEASE_DIR/deploy/record_release_lineage.py" \
+      --repo-root "$REPO_DIR" --current-commit "$COMMIT" \
+      --scope-agent "$EIMEMORY_DEPLOY_SCOPE_AGENT" \
+      --scope-workspace "$EIMEMORY_DEPLOY_SCOPE_WORKSPACE" \
+      --scope-user "$EIMEMORY_DEPLOY_SCOPE_USER"
+}
+
 _capture_prior_health_snapshot() {
   if [ "$EIMEMORY_POST_SWITCH_GATES" != "1" ] || [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ]; then
     return
@@ -1482,6 +1497,7 @@ if { [ -e "$CURRENT_LINK" ] || [ -L "$CURRENT_LINK" ] || [ -d "$CURRENT_LINK" ];
   _verify_effective_runtime_metadata "$COMMIT"
   _verify_release_health "$RELEASE_DIR" "$COMMIT"
   _record_deployment_receipt
+  _record_release_lineage
   _run_post_switch_closure
   echo "release=$RELEASE_DIR"
   echo "current=$CURRENT_LINK"
@@ -1650,6 +1666,8 @@ _verify_release_health "$RELEASE_DIR" "$COMMIT"
 _maybe_fail_stage final_health
 _record_deployment_receipt
 _maybe_fail_stage receipt
+_record_release_lineage
+_maybe_fail_stage lineage
 _run_post_switch_closure
 _maybe_fail_stage acceptance
 _cleanup_storage_vacuum_backup

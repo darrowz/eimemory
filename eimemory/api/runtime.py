@@ -1083,6 +1083,40 @@ class Runtime:
             deployed_commit=deployed_commit,
         )
 
+    def record_release_lineage(
+        self,
+        *,
+        scope: dict | None = None,
+        repo_root: str,
+        current_release: Any,
+        gate_evidence: dict[str, list[str]] | None = None,
+    ) -> dict:
+        from eimemory.governance.release_lineage import record_release_lineage
+
+        return record_release_lineage(
+            self,
+            scope=scope,
+            repo_root=repo_root,
+            current_release=current_release,
+            gate_evidence=gate_evidence,
+        )
+
+    def current_release_lineage(
+        self,
+        *,
+        scope: dict | None = None,
+        current_release: Any,
+        repo_root: str = "/dev-project/eimemory",
+    ) -> dict:
+        from eimemory.governance.release_lineage import current_release_lineage
+
+        return current_release_lineage(
+            self,
+            scope=scope,
+            current_release=current_release,
+            repo_root=repo_root,
+        )
+
     def ensure_capability_seeded(self, *, scope: dict | None = None) -> dict:
         from eimemory.governance.capability_seeding import ensure_all_seeded
 
