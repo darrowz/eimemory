@@ -32,14 +32,175 @@ SCOPE = ScopeRef(
 )
 
 
-def test_unchanged_domain_inherits_newest_verified_ancestor_release(tmp_path: Path) -> None:
+def test_current_authoritative_gate_wins_when_domain_is_unchanged(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     repo = _repo(tmp_path)
+    bootstrap_commit = _commit(repo, "docs/bootstrap.md", "bootstrap\n", "bootstrap")
+    prior_commit = _commit(repo, "eimemory/retrieval/engine.py", "prior\n", "prior")
+    current_commit = _commit(repo, "docs/current.md", "current\n", "current")
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    try:
+        _receipt(runtime, SCOPE, bootstrap_commit, "0.9.9")
+        prior = _receipt(runtime, SCOPE, prior_commit, "1.0.0")
+        runtime._test_runtime_commit = prior.commit
+        prior_gate, prior_strict = _recall_gate_pair(runtime, SCOPE, prior)
+        current_refs: dict[str, dict[str, str]] = {
+            prior.commit: {
+                "gate": prior_gate.record_id,
+                "strict": prior_strict.record_id,
+            }
+        }
+        _mock_recall_verifiers(monkeypatch, current_refs)
+        prior_lineage = record_release_lineage(
+            runtime,
+            scope=SCOPE,
+            repo_root=repo,
+            current_release=prior,
+            gate_evidence={"memory.recall": [prior_gate.record_id, prior_strict.record_id]},
+        )
+        assert prior_lineage["domains"]["memory.recall"]["mode"] == "current"
+
+        current = _receipt(runtime, SCOPE, current_commit, "1.0.1")
+        runtime._test_runtime_commit = current.commit
+        current_gate, current_strict = _recall_gate_pair(runtime, SCOPE, current)
+        current_refs[current.commit] = {
+            "gate": current_gate.record_id,
+            "strict": current_strict.record_id,
+        }
+
+        recorded = record_release_lineage(
+            runtime,
+            scope=SCOPE,
+            repo_root=repo,
+            current_release=current,
+            gate_evidence={"memory.recall": [current_gate.record_id, current_strict.record_id]},
+        )
+
+        assert recorded["domains"]["memory.recall"]["changed"] is False
+        assert recorded["domains"]["memory.recall"]["mode"] == "current"
+        assert (
+            evidence_release_for_domain(
+                runtime,
+                scope=SCOPE,
+                repo_root=repo,
+                domain="memory.recall",
+                current_release=current,
+                expected_record_id=recorded["record_id"],
+            )
+            == current
+        )
+    finally:
+        runtime.close()
+
+
+def test_unattested_intermediate_receipt_does_not_shadow_older_domain_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _repo(tmp_path)
+    bootstrap_commit = _commit(repo, "docs/bootstrap.md", "bootstrap\n", "bootstrap")
+    evidence_commit = _commit(repo, "eimemory/retrieval/engine.py", "evidence\n", "evidence")
+    intermediate_commit = _commit(repo, "docs/intermediate.md", "middle\n", "intermediate")
+    current_commit = _commit(repo, "CHANGELOG.md", "current\n", "current")
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    try:
+        _receipt(runtime, SCOPE, bootstrap_commit, "0.9.9")
+        evidence_release = _receipt(runtime, SCOPE, evidence_commit, "1.0.0")
+        runtime._test_runtime_commit = evidence_release.commit
+        gate, strict = _recall_gate_pair(runtime, SCOPE, evidence_release)
+        _mock_recall_verifiers(
+            monkeypatch,
+            {
+                evidence_release.commit: {
+                    "gate": gate.record_id,
+                    "strict": strict.record_id,
+                }
+            },
+        )
+        evidence_lineage = record_release_lineage(
+            runtime,
+            scope=SCOPE,
+            repo_root=repo,
+            current_release=evidence_release,
+            gate_evidence={"memory.recall": [gate.record_id, strict.record_id]},
+        )
+        assert evidence_lineage["domains"]["memory.recall"]["mode"] == "current"
+
+        intermediate = _receipt(runtime, SCOPE, intermediate_commit, "1.0.1")
+        runtime._test_runtime_commit = intermediate.commit
+        intermediate_lineage = record_release_lineage(
+            runtime,
+            scope=SCOPE,
+            repo_root=repo,
+            current_release=intermediate,
+        )
+        assert intermediate_lineage["domains"]["memory.recall"]["mode"] == "inherited"
+        assert (
+            intermediate_lineage["domains"]["memory.recall"]["evidence_release"]["commit"]
+            == evidence_release.commit
+        )
+
+        current = _receipt(runtime, SCOPE, current_commit, "1.0.2")
+        runtime._test_runtime_commit = current.commit
+        recorded = record_release_lineage(
+            runtime,
+            scope=SCOPE,
+            repo_root=repo,
+            current_release=current,
+        )
+
+        assert recorded["ancestor_release"]["commit"] == intermediate.commit
+        assert recorded["domains"]["memory.recall"]["mode"] == "inherited"
+        assert (
+            evidence_release_for_domain(
+                runtime,
+                scope=SCOPE,
+                repo_root=repo,
+                domain="memory.recall",
+                current_release=current,
+                expected_record_id=recorded["record_id"],
+            )
+            == evidence_release
+        )
+    finally:
+        runtime.close()
+
+
+def test_unchanged_domain_inherits_verified_ancestor_domain_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _repo(tmp_path)
+    bootstrap_commit = _commit(repo, "docs/bootstrap.md", "bootstrap\n", "bootstrap")
     prior_commit = _commit(repo, "eimemory/retrieval/engine.py", "prior\n", "prior")
     intermediate = _commit(repo, "docs/note.md", "unreceipted\n", "intermediate")
     current_commit = _commit(repo, "CHANGELOG.md", "current\n", "current")
     runtime = Runtime.create(root=tmp_path / "runtime")
     try:
+        _receipt(runtime, SCOPE, bootstrap_commit, "0.9.9")
         prior = _receipt(runtime, SCOPE, prior_commit, "1.0.0")
+        runtime._test_runtime_commit = prior.commit
+        gate, strict = _recall_gate_pair(runtime, SCOPE, prior)
+        _mock_recall_verifiers(
+            monkeypatch,
+            {
+                prior.commit: {
+                    "gate": gate.record_id,
+                    "strict": strict.record_id,
+                }
+            },
+        )
+        prior_lineage = record_release_lineage(
+            runtime,
+            scope=SCOPE,
+            repo_root=repo,
+            current_release=prior,
+            gate_evidence={"memory.recall": [gate.record_id, strict.record_id]},
+        )
+        assert prior_lineage["domains"]["memory.recall"]["mode"] == "current"
+
         _receipt(runtime, SCOPE, intermediate, "1.0.1", forged=True)
         current = _receipt(runtime, SCOPE, current_commit, "1.0.2")
         runtime._test_runtime_commit = current.commit
@@ -61,7 +222,6 @@ def test_unchanged_domain_inherits_newest_verified_ancestor_release(tmp_path: Pa
         assert recorded["ancestor_release"]["commit"] == prior.commit
         assert resolved["ok"] is True
         assert resolved["domains"]["memory.recall"]["mode"] == "inherited"
-        resolved["domains"]["memory.recall"]["mode"] = "current"
         assert (
             evidence_release_for_domain(
                 runtime,
@@ -227,7 +387,9 @@ def test_openclaw_deploy_surface_marks_channel_domain_changed(tmp_path: Path) ->
         runtime.close()
 
 
-def test_version_only_project_metadata_remains_inheritable(tmp_path: Path) -> None:
+def test_version_only_project_metadata_leaves_capability_domains_unchanged(
+    tmp_path: Path,
+) -> None:
     repo = _repo(tmp_path)
     prior_commit = _commit(
         repo,
@@ -254,20 +416,23 @@ def test_version_only_project_metadata_remains_inheritable(tmp_path: Path) -> No
             current_release=current,
         )
 
-        assert {state["mode"] for state in report["domains"].values()} == {"inherited"}
+        assert all(state["changed"] is False for state in report["domains"].values())
+        assert {state["mode"] for state in report["domains"].values()} == {
+            "changed_unverified"
+        }
         assert report["unknown_production_paths"] == []
     finally:
         runtime.close()
 
 
 @pytest.mark.parametrize(
-    ("prior", "current", "expected_mode"),
+    ("prior", "current", "expected_changed"),
     [
-        ('__version__ = "1.0.0"\n', '__version__ = "1.0.1"\n', "inherited"),
+        ('__version__ = "1.0.0"\n', '__version__ = "1.0.1"\n', False),
         (
             '__version__ = "1.0.0"\nCHANNEL = "stable"\n',
             '__version__ = "1.0.1"\nCHANNEL = "preview"\n',
-            "changed_unverified",
+            True,
         ),
     ],
 )
@@ -275,7 +440,7 @@ def test_version_module_only_ignores_the_release_literal(
     tmp_path: Path,
     prior: str,
     current: str,
-    expected_mode: str,
+    expected_changed: bool,
 ) -> None:
     repo = _repo(tmp_path)
     prior_commit = _commit(repo, "eimemory/version.py", prior, "prior")
@@ -293,7 +458,12 @@ def test_version_module_only_ignores_the_release_literal(
             current_release=release,
         )
 
-        assert {state["mode"] for state in report["domains"].values()} == {expected_mode}
+        assert {
+            state["changed"] for state in report["domains"].values()
+        } == {expected_changed}
+        assert {state["mode"] for state in report["domains"].values()} == {
+            "changed_unverified"
+        }
     finally:
         runtime.close()
 
@@ -1033,6 +1203,61 @@ def _gate(
             },
             meta={"report_type": "test_gate"},
         )
+    )
+
+
+def _recall_gate_pair(
+    runtime: Runtime,
+    scope: ScopeRef,
+    release: ReleaseIdentity,
+) -> tuple[RecordEnvelope, RecordEnvelope]:
+    return (
+        _gate(
+            runtime,
+            scope,
+            release,
+            source="eimemory.evaluation.production_recall",
+        ),
+        _gate(
+            runtime,
+            scope,
+            release,
+            source="eimemory.evaluation.production_recall.bootstrap",
+        ),
+    )
+
+
+def _mock_recall_verifiers(
+    monkeypatch: pytest.MonkeyPatch,
+    evidence: dict[str, dict[str, str]],
+) -> None:
+    def verify_gate(*args, **kwargs):
+        release = kwargs["release"]
+        refs = evidence.get(release.commit)
+        return {
+            "ok": refs is not None,
+            "status": "accepted" if refs is not None else "missing",
+            "reason": "" if refs is not None else "production_recall_gate_missing",
+            "record_id": "" if refs is None else refs["gate"],
+        }
+
+    def verify_strict(*args, **kwargs):
+        release = kwargs["release"]
+        refs = evidence.get(release.commit)
+        return {
+            "ok": refs is not None,
+            "status": "strict_activated" if refs is not None else "missing",
+            "reason": "" if refs is not None else "production_recall_strict_state_missing",
+            "record_id": "" if refs is None else refs["strict"],
+            "candidate_commit": release.commit if refs is not None else "",
+            "gate_record_id": "" if refs is None else refs["gate"],
+        }
+
+    monkeypatch.setattr(real_query_gate, "verify_current_production_recall_gate", verify_gate)
+    monkeypatch.setattr(
+        real_query_gate,
+        "verify_current_production_recall_strict_state",
+        verify_strict,
     )
 
 

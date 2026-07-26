@@ -156,15 +156,7 @@ def record_release_lineage(
             "ancestor_commit": ancestor.commit,
             "compatible": bool(lineage["compatible"]),
         },
-        evidence=[
-            current_release.receipt_id,
-            ancestor.receipt_id,
-            *[
-                reference
-                for references in lineage["gate_evidence"].values()
-                for reference in references
-            ],
-        ],
+        evidence=_lineage_evidence_references(lineage),
         source=SOURCE,
     )
     return _public_report(lineage, record_id=record.record_id)
@@ -205,10 +197,6 @@ def current_release_lineage(
         stored_current = _identity_from_payload(stored.get("current_release"))
         if stored_current != current_release:
             continue
-        stored_ancestor = _identity_from_payload(stored.get("ancestor_release"))
-        if stored_ancestor is None:
-            mismatch_seen = True
-            continue
         if not selected_ancestor_loaded:
             selected_ancestor = _newest_verified_ancestor(
                 runtime,
@@ -217,6 +205,10 @@ def current_release_lineage(
                 current_release=current_release,
             )
             selected_ancestor_loaded = True
+        stored_ancestor = _identity_from_payload(stored.get("ancestor_release"))
+        if stored_ancestor is None:
+            mismatch_seen = True
+            continue
         if selected_ancestor != stored_ancestor:
             mismatch_seen = True
             continue
@@ -268,13 +260,21 @@ def evidence_release_for_domain(
     if not isinstance(state, dict) or state.get("mode") not in {"inherited", "current"}:
         raise ValueError(f"domain is not inheritable: {domain_name}")
     identity = _identity_from_payload(state.get("evidence_release"))
-    expected = (
-        _identity_from_payload(lineage.get("ancestor_release"))
-        if state["mode"] == "inherited"
-        else current_release
-    )
-    if identity is None or identity != expected:
+    if identity is None:
         raise ValueError(f"domain evidence release is invalid: {domain_name}")
+    if state["mode"] == "current":
+        if identity != current_release:
+            raise ValueError(f"domain evidence release is invalid: {domain_name}")
+    else:
+        scope_ref = _scope_ref(scope)
+        repo = Path(repo_root).expanduser().resolve()
+        distances = _ancestor_distances(repo, current_release.commit)
+        if (
+            _receipt_identity(runtime, scope_ref, identity) is None
+            or distances is None
+            or int(distances.get(identity.commit, 0)) <= 0
+        ):
+            raise ValueError(f"domain evidence release is invalid: {domain_name}")
     return identity
 
 
@@ -289,29 +289,14 @@ def _compute_lineage(
 ) -> dict[str, Any]:
     if _receipt_identity(runtime, scope, ancestor_release) is None:
         return {"ok": False, "error": "ancestor_release_receipt_invalid"}
-    changed_paths = _changed_paths(repo, ancestor_release.commit, current_release.commit)
-    if changed_paths is None:
-        return {"ok": False, "error": "release_diff_unavailable"}
-    classified = {
-        path: _domains_for_change(
-            repo,
-            path=path,
-            ancestor=ancestor_release.commit,
-            current=current_release.commit,
-        )
-        for path in changed_paths
-    }
-    unknown = sorted(
-        path
-        for path, domains in classified.items()
-        if not domains
-        and not _ignored_change(
-            repo,
-            path=path,
-            ancestor=ancestor_release.commit,
-            current=current_release.commit,
-        )
+    change = _release_change_summary(
+        repo,
+        ancestor=ancestor_release.commit,
+        current=current_release.commit,
     )
+    if change is None:
+        return {"ok": False, "error": "release_diff_unavailable"}
+    changed_paths, classified, unknown = change
     normalized_gates = _normalized_gate_evidence(gate_evidence)
     domains: dict[str, dict[str, Any]] = {}
     for domain in DOMAINS:
@@ -322,28 +307,46 @@ def _compute_lineage(
         domain_changed_paths = sorted(
             path for path, affected in classified.items() if domain in affected
         )
-        changed = bool(unknown or domain_changed_paths or ancestor_digest != current_digest)
-        references = normalized_gates[domain]
-        gate_errors = (
+        changed = bool(
+            unknown
+            or domain_changed_paths
+            or ancestor_digest != current_digest
+        )
+        current_references = normalized_gates[domain]
+        current_gate_errors = (
             _gate_errors(
                 runtime,
                 scope=scope,
                 domain=domain,
                 current_release=current_release,
-                references=references,
+                references=current_references,
             )
-            if changed
+            if current_references
             else {}
         )
-        if not changed:
-            mode = "inherited"
-            evidence_release = ancestor_release
-        elif references and not gate_errors:
+        if current_references and not current_gate_errors:
             mode = "current"
             evidence_release = current_release
+            evidence_references = current_references
+        elif not changed:
+            inherited = _nearest_verified_domain_evidence(
+                runtime,
+                scope=scope,
+                repo=repo,
+                domain=domain,
+                current_release=current_release,
+            )
+            if inherited is not None:
+                mode = "inherited"
+                evidence_release, evidence_references = inherited
+            else:
+                mode = "changed_unverified"
+                evidence_release = None
+                evidence_references = current_references
         else:
             mode = "changed_unverified"
             evidence_release = None
+            evidence_references = current_references
         domains[domain] = {
             "mode": mode,
             "changed": changed,
@@ -351,8 +354,9 @@ def _compute_lineage(
             "changed_paths": domain_changed_paths,
             "ancestor_digest": ancestor_digest,
             "current_digest": current_digest,
-            "gate_evidence": references,
-            "gate_errors": gate_errors,
+            "gate_evidence": evidence_references,
+            "current_gate_evidence": current_references,
+            "gate_errors": current_gate_errors,
             "evidence_release": (
                 _identity_payload(evidence_release) if evidence_release is not None else {}
             ),
@@ -405,6 +409,178 @@ def _receipt_identity(
         return None
     actual = verified_deployment_receipt_identity(record)
     return actual if actual == expected else None
+
+
+def _nearest_verified_domain_evidence(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    repo: Path,
+    domain: str,
+    current_release: ReleaseIdentity,
+) -> tuple[ReleaseIdentity, list[str]] | None:
+    current_receipt = runtime.store.get_by_id(current_release.receipt_id, scope=scope)
+    current_rowid = (
+        _record_rowid(runtime, record=current_receipt, scope=scope)
+        if current_receipt is not None
+        else None
+    )
+    distances = _ancestor_distances(repo, current_release.commit)
+    if current_receipt is None or current_rowid is None or distances is None:
+        return None
+    candidates: list[tuple[int, str, ReleaseIdentity, list[str]]] = []
+    records = _release_lineage_records(
+        runtime,
+        scope=scope,
+        before_rowid=current_rowid,
+    )
+    for record in records:
+        if (
+            not same_scope(record.scope, scope)
+            or str(record.meta.get("report_type") or "") != "release_lineage"
+        ):
+            continue
+        stored = record.content.get("lineage") if isinstance(record.content, dict) else None
+        if (
+            not isinstance(stored, dict)
+            or stored.get("schema_version") != SCHEMA_VERSION
+            or stored.get("source") != SOURCE
+            or stored.get("scope") != asdict(scope)
+        ):
+            continue
+        candidate = _identity_from_payload(stored.get("current_release"))
+        state = (
+            stored.get("domains", {}).get(domain)
+            if isinstance(stored.get("domains"), dict)
+            else None
+        )
+        if (
+            candidate is None
+            or candidate == current_release
+            or not isinstance(state, dict)
+            or state.get("mode") != "current"
+            or _identity_from_payload(state.get("evidence_release")) != candidate
+            or _receipt_identity(runtime, scope, candidate) is None
+            or int(distances.get(candidate.commit, 0)) <= 0
+        ):
+            continue
+        candidate_receipt = runtime.store.get_by_id(candidate.receipt_id, scope=scope)
+        if (
+            candidate_receipt is None
+            or not _record_precedes(
+                runtime,
+                earlier=candidate_receipt,
+                later=current_receipt,
+                scope=scope,
+            )
+        ):
+            continue
+        references = _normalized_gate_evidence(stored.get("gate_evidence"))[domain]
+        if (
+            not references
+            or state.get("gate_evidence") != references
+            or (
+                isinstance(state.get("current_gate_evidence"), list)
+                and state.get("current_gate_evidence") != references
+            )
+            or _gate_errors(
+                runtime,
+                scope=scope,
+                domain=domain,
+                current_release=candidate,
+                references=references,
+            )
+        ):
+            continue
+        evidence_records = [
+            runtime.store.get_by_id(reference, scope=scope) for reference in references
+        ]
+        if any(
+            evidence_record is None
+            or not _record_precedes(
+                runtime,
+                earlier=evidence_record,
+                later=record,
+                scope=scope,
+            )
+            for evidence_record in evidence_records
+        ):
+            continue
+        continuity = _domain_change_summary(
+            repo,
+            domain=domain,
+            ancestor=candidate.commit,
+            current=current_release.commit,
+        )
+        if continuity is None or continuity["changed"]:
+            continue
+        candidates.append(
+            (
+                int(distances[candidate.commit]),
+                candidate.receipt_id,
+                candidate,
+                references,
+            )
+        )
+    if not candidates:
+        return None
+    _distance, _receipt_id, release, references = min(candidates)
+    return release, references
+
+
+def _release_lineage_records(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    before_rowid: int,
+) -> Iterator[Any]:
+    sqlite = getattr(getattr(runtime, "store", None), "sqlite", None)
+    conn = getattr(sqlite, "conn", None)
+    if conn is None:
+        return
+    cursor = before_rowid
+    while True:
+        rows = conn.execute(
+            """
+            SELECT rowid, record_id, source_id
+            FROM records
+            WHERE kind = ?
+              AND source = ?
+              AND status = ?
+              AND tenant_id = ?
+              AND agent_id = ?
+              AND workspace_id = ?
+              AND user_id = ?
+              AND rowid < ?
+            ORDER BY rowid DESC
+            LIMIT ?
+            """,
+            (
+                "l5_self_continuity",
+                SOURCE,
+                "active",
+                scope.tenant_id,
+                scope.agent_id,
+                scope.workspace_id,
+                scope.user_id,
+                cursor,
+                RECEIPT_PAGE_SIZE,
+            ),
+        ).fetchall()
+        if not rows:
+            break
+        for row in rows:
+            record = runtime.store.get_by_exact_ref(
+                str(row["record_id"]),
+                scope=scope,
+                source_id=str(row["source_id"]),
+            )
+            if record is not None:
+                yield record
+        next_cursor = min(int(row["rowid"]) for row in rows)
+        if next_cursor >= cursor:
+            break
+        cursor = next_cursor
 
 
 def _newest_verified_ancestor(
@@ -618,6 +794,70 @@ def _changed_paths(repo: Path, ancestor: str, current: str) -> list[str] | None:
         for path in raw.split(b"\0")
         if path
     )
+
+
+def _release_change_summary(
+    repo: Path,
+    *,
+    ancestor: str,
+    current: str,
+) -> tuple[list[str], dict[str, set[str]], list[str]] | None:
+    changed_paths = _changed_paths(repo, ancestor, current)
+    if changed_paths is None:
+        return None
+    classified = {
+        path: _domains_for_change(
+            repo,
+            path=path,
+            ancestor=ancestor,
+            current=current,
+        )
+        for path in changed_paths
+    }
+    unknown = sorted(
+        path
+        for path, domains in classified.items()
+        if not domains
+        and not _ignored_change(
+            repo,
+            path=path,
+            ancestor=ancestor,
+            current=current,
+        )
+    )
+    return changed_paths, classified, unknown
+
+
+def _domain_change_summary(
+    repo: Path,
+    *,
+    domain: str,
+    ancestor: str,
+    current: str,
+) -> dict[str, Any] | None:
+    change = _release_change_summary(repo, ancestor=ancestor, current=current)
+    if change is None:
+        return None
+    changed_paths, classified, unknown = change
+    ancestor_digest = _domain_digest(repo, ancestor, DOMAIN_PATHS[domain])
+    current_digest = _domain_digest(repo, current, DOMAIN_PATHS[domain])
+    if ancestor_digest is None or current_digest is None:
+        return None
+    domain_changed_paths = sorted(
+        path for path, affected in classified.items() if domain in affected
+    )
+    return {
+        "changed": bool(
+            unknown
+            or domain_changed_paths
+            or ancestor_digest != current_digest
+        ),
+        "changed_paths": changed_paths,
+        "domain_changed_paths": domain_changed_paths,
+        "unknown_production_paths": unknown,
+        "ancestor_digest": ancestor_digest,
+        "current_digest": current_digest,
+    }
 
 
 def _domains_for_change(
@@ -1014,6 +1254,44 @@ def _identity_from_payload(value: Any) -> ReleaseIdentity | None:
         session_id=str(payload.get("session_id") or "").strip(),
     )
     return identity if identity.complete and COMMIT_RE.fullmatch(identity.commit) else None
+
+
+def _lineage_evidence_references(lineage: Mapping[str, Any]) -> list[str]:
+    references = [
+        str(
+            (
+                lineage.get("current_release")
+                if isinstance(lineage.get("current_release"), Mapping)
+                else {}
+            ).get("receipt_id")
+            or ""
+        )
+    ]
+    ancestor = (
+        lineage.get("ancestor_release")
+        if isinstance(lineage.get("ancestor_release"), Mapping)
+        else {}
+    )
+    references.append(str(ancestor.get("receipt_id") or ""))
+    domains = lineage.get("domains") if isinstance(lineage.get("domains"), Mapping) else {}
+    for state in domains.values():
+        if not isinstance(state, Mapping):
+            continue
+        evidence_release = (
+            state.get("evidence_release")
+            if isinstance(state.get("evidence_release"), Mapping)
+            else {}
+        )
+        references.append(str(evidence_release.get("receipt_id") or ""))
+        references.extend(
+            str(reference or "")
+            for reference in (
+                state.get("gate_evidence")
+                if isinstance(state.get("gate_evidence"), list)
+                else []
+            )
+        )
+    return list(dict.fromkeys(reference for reference in references if reference))
 
 
 def _public_report(lineage: dict[str, Any], *, record_id: str) -> dict[str, Any]:
