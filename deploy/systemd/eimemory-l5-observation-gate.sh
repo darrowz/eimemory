@@ -158,7 +158,7 @@ if ! command -v "$EIMEMORY_FLOCK_BIN" >/dev/null 2>&1; then
   echo "deployment_lock=flock_unavailable" >&2
   exit 5
 fi
-exec {GATE_LOCK_FD}>>"$STORAGE_DEPLOY_LOCK_PATH"
+exec {GATE_LOCK_FD}<"$STORAGE_DEPLOY_LOCK_PATH"
 if ! "$EIMEMORY_FLOCK_BIN" -n "$GATE_LOCK_FD"; then
   echo "deployment_lock=contended" >&2
   exit 5

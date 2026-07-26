@@ -1038,7 +1038,6 @@ _restart_current_services() {
   # Feishu reply watchdog permanently removed: dual-path delivery caused double sends.
   # Keep unit masked; do not install/enable/restart it on deploy.
   _user_systemctl restart openclaw-gateway.service
-  _user_systemctl restart openclaw-loop-watch.service
 }
 
 _verify_effective_runtime_metadata() {

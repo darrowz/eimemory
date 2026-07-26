@@ -478,6 +478,8 @@ def _run_l5_observation_gate(
         encoding="utf-8",
     )
     gateway_dropin = tmp_path / "gateway" / "eimemory-prompt-injection.conf"
+    deploy_lock = tmp_path / "deploy.lock"
+    deploy_lock.write_text("", encoding="utf-8")
     env = {
         **os.environ,
         "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
@@ -485,7 +487,7 @@ def _run_l5_observation_gate(
         "EIMEMORY_PYTHON_BIN": _bash_path(Path(sys.executable)),
         "EIMEMORY_CURL_BIN": _bash_path(curl),
         "EIMEMORY_FLOCK_BIN": _bash_path(flock),
-        "EIMEMORY_STORAGE_DEPLOY_LOCK_PATH": _bash_path(tmp_path / "deploy.lock"),
+        "EIMEMORY_STORAGE_DEPLOY_LOCK_PATH": _bash_path(deploy_lock),
         "EIMEMORY_NIGHTLY_UNIT_PATH": _bash_path(nightly_unit),
         "OPENCLAW_CONFIG_PATH": _bash_path(openclaw_config),
         "OPENCLAW_GATEWAY_DROPIN": _bash_path(gateway_dropin),
@@ -2508,9 +2510,8 @@ def test_immutable_release_installer_verifies_all_effective_runtime_commits_befo
         "_user_systemctl restart eimemory-rpc.service"
     ) < restart_body.index(
         "_user_systemctl restart openclaw-gateway.service"
-    ) < restart_body.index(
-        "_user_systemctl restart openclaw-loop-watch.service"
     )
+    assert "_user_systemctl restart openclaw-loop-watch.service" not in restart_body
 
     already_current = script.split("already_current=1", 1)[0].rsplit(
         'if { [ -e "$CURRENT_LINK" ]', 1
