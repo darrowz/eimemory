@@ -988,6 +988,65 @@ def test_unknown_production_path_marks_every_domain_changed(tmp_path: Path) -> N
         runtime.close()
 
 
+def test_known_release_support_surfaces_do_not_taint_memory_recall(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    files = {
+        "deploy/systemd/README.md": "prior docs\n",
+        "deploy/verify_release_health.py": "PRIOR = True\n",
+        "eimemory/adapters/eibrain/rpc_server.py": "HEALTH = 'prior'\n",
+        "eimemory/api/runtime.py": "GOVERNANCE = 'prior'\n",
+        "eimemory/ops/openclaw_feishu_reply_watchdog.py": "WATCHDOG = 'prior'\n",
+        "integrations/codex/eimemory/.codex-plugin/plugin.json": (
+            '{"name":"eimemory","version":"1.0.0"}\n'
+        ),
+        "integrations/hermes/eimemory/plugin.yaml": (
+            "name: eimemory\nversion: 1.0.0\ndescription: memory\n"
+        ),
+        "scripts/test_openclaw_loop.py": "PRIOR = True\n",
+    }
+    for relative_path, content in files.items():
+        path = repo / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "prior")
+    prior_commit = _git(repo, "rev-parse", "HEAD").stdout.strip().lower()
+
+    updates = {
+        "deploy/systemd/README.md": "current docs\n",
+        "deploy/verify_release_health.py": "CURRENT = True\n",
+        "eimemory/adapters/eibrain/rpc_server.py": "HEALTH = 'current'\n",
+        "eimemory/api/runtime.py": "GOVERNANCE = 'current'\n",
+        "eimemory/ops/openclaw_feishu_reply_watchdog.py": "WATCHDOG = 'current'\n",
+        "integrations/codex/eimemory/.codex-plugin/plugin.json": (
+            '{"name":"eimemory","version":"1.0.1"}\n'
+        ),
+        "integrations/hermes/eimemory/plugin.yaml": (
+            "name: eimemory\nversion: 1.0.1\ndescription: memory\n"
+        ),
+        "scripts/test_openclaw_loop.py": "CURRENT = True\n",
+    }
+    for relative_path, content in updates.items():
+        (repo / relative_path).write_text(content, encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "current")
+    current_commit = _git(repo, "rev-parse", "HEAD").stdout.strip().lower()
+
+    report = release_lineage._domain_change_summary(
+        repo,
+        domain="memory.recall",
+        ancestor=prior_commit,
+        current=current_commit,
+    )
+
+    assert report is not None
+    assert report["changed"] is False
+    assert report["domain_changed_paths"] == []
+    assert report["unknown_production_paths"] == []
+
+
 def test_non_ancestor_receipt_is_rejected(tmp_path: Path) -> None:
     repo = _repo(tmp_path)
     current_commit = _commit(repo, "docs/current.md", "current\n", "current")

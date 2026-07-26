@@ -858,12 +858,12 @@ _prepare_storage_for_release() {
     "$RELEASE_DIR/.venv/bin/python" -I -B -c \
       'import json,sys; print("1" if json.load(sys.stdin).get("needed") is True else "0")')"
   if [ "$EIMEMORY_POST_SWITCH_GATES" = "1" ] && [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ]; then
+    bootstrap_needed=1
     recall_domain_changed="$(_recall_domain_changed)"
     if [ "$recall_domain_changed" = "1" ]; then
-      bootstrap_needed=1
       echo "recall_domain_change=changed protected_bootstrap=required"
     else
-      echo "recall_domain_change=unchanged protected_bootstrap=skipped"
+      echo "recall_domain_change=unchanged protected_storage_transaction=skipped"
     fi
   fi
   if [ "$EIMEMORY_STORAGE_MIGRATION" != "1" ]; then
@@ -874,11 +874,20 @@ _prepare_storage_for_release() {
     echo "storage_release_migration=skipped disabled_no_pending_migrations"
     storage_needed=0
   fi
-  if [ "$storage_needed" = "1" ] || [ "$bootstrap_needed" = "1" ]; then
+  if [ "$storage_needed" = "1" ] || [ "$recall_domain_changed" = "1" ]; then
     protected_write_needed=1
   fi
   if [ "$protected_write_needed" != "1" ]; then
     STORAGE_MIGRATION_REQUIRED=0
+    if [ "$bootstrap_needed" = "1" ]; then
+      if ! _capture_prior_health_snapshot; then
+        echo "prior_health_capture=failed before_online_bootstrap" >&2
+        return 2
+      fi
+      _run_pre_switch_production_recall_bootstrap
+      _maybe_fail_stage pre_switch_recall_bootstrap
+      echo "production_recall_bootstrap=online_non_destructive"
+    fi
     echo "storage_release_migration=skipped no_pending_migrations"
     return
   fi

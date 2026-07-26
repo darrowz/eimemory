@@ -45,6 +45,7 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         "eimemory/storage/sqlite_store.py",
     ),
     "memory.governance": (
+        "eimemory/api/runtime.py",
         "eimemory/evaluation",
         "eimemory/experience",
         "eimemory/governance",
@@ -59,6 +60,7 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         "eimemory/adapters/openclaw",
         "eimemory/adapters/runtime",
         "eimemory/ei_bridge",
+        "eimemory/ops/openclaw_feishu_reply_watchdog.py",
         "eimemory/ops/openclaw_loop.py",
         "integrations/openclaw",
     ),
@@ -78,14 +80,20 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         "deploy/record_deployment_receipt.py",
         "deploy/record_release_lineage.py",
         "deploy/systemd/eimemory-",
-        "deploy/verify_release_health",
+        "deploy/verify_release_health.py",
+        "eimemory/adapters/eibrain/rpc_server.py",
         "eimemory/governance/deployment_receipt.py",
         "eimemory/runtime_identity.py",
     ),
 }
-IGNORED_PATH_PREFIXES = ("docs/", "tests/", ".github/")
+IGNORED_PATH_PREFIXES = ("docs/", "tests/", ".github/", "scripts/test_")
 IGNORED_PATHS = {
     "CHANGELOG.md",
+    "deploy/systemd/README.md",
+}
+INTEGRATION_VERSION_PATHS = {
+    "integrations/codex/eimemory/.codex-plugin/plugin.json",
+    "integrations/hermes/eimemory/plugin.yaml",
 }
 COMMIT_RE = re.compile(r"[0-9a-f]{40}")
 RECEIPT_PAGE_SIZE = 200
@@ -910,6 +918,15 @@ def _ignored_change(
                 current=current,
             )
         )
+        or (
+            path in INTEGRATION_VERSION_PATHS
+            and _integration_version_only_change(
+                repo,
+                path=path,
+                ancestor=ancestor,
+                current=current,
+            )
+        )
     )
 
 
@@ -935,6 +952,40 @@ def _version_metadata_only_change(
             return before_payload == after_payload
         return _normalized_version_module(before) == _normalized_version_module(after)
     except (SyntaxError, UnicodeError, ValueError, TypeError):
+        return False
+
+
+def _integration_version_only_change(
+    repo: Path,
+    *,
+    path: str,
+    ancestor: str,
+    current: str,
+) -> bool:
+    before = _git_bytes(repo, "show", f"{ancestor}:{path}")
+    after = _git_bytes(repo, "show", f"{current}:{path}")
+    if before is None or after is None:
+        return False
+    try:
+        if path.endswith(".json"):
+            before_payload = json.loads(before.decode("utf-8"))
+            after_payload = json.loads(after.decode("utf-8"))
+            if not isinstance(before_payload, dict) or not isinstance(after_payload, dict):
+                return False
+            before_payload.pop("version", None)
+            after_payload.pop("version", None)
+            return before_payload == after_payload
+        version_line = re.compile(r"^\s*version\s*:")
+
+        def normalized_lines(raw: bytes) -> tuple[str, ...]:
+            return tuple(
+                line.rstrip()
+                for line in raw.decode("utf-8").splitlines()
+                if version_line.match(line) is None
+            )
+
+        return normalized_lines(before) == normalized_lines(after)
+    except (UnicodeError, ValueError, TypeError):
         return False
 
 

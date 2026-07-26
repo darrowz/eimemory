@@ -811,7 +811,7 @@ def test_installer_storage_transaction_order_and_writer_stop_contract() -> None:
     assert switch < restart_background < acceptance < cleanup_backup < prune_snapshots
 
 
-def test_code_only_release_skips_protected_storage_transaction_when_recall_domain_is_unchanged(
+def test_code_only_release_runs_bootstrap_without_storage_transaction_when_recall_domain_is_unchanged(
     tmp_path: Path,
 ) -> None:
     result, events = _run_prepare_storage_harness(
@@ -822,7 +822,14 @@ def test_code_only_release_skips_protected_storage_transaction_when_recall_domai
     )
 
     assert result.returncode == 0, result.stderr
-    assert events == ["storage:needs", "recall-domain"]
+    assert events == [
+        "storage:needs",
+        "recall-domain",
+        "prior-health",
+        "recall-bootstrap",
+        "stage:pre_switch_recall_bootstrap",
+    ]
+    assert "production_recall_bootstrap=online_non_destructive" in result.stdout
     assert "storage_release_migration=skipped no_pending_migrations" in result.stdout
     assert "migration_required=0" in result.stdout
 
