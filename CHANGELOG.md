@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Planned
 - Multi-agent memory coordination
 
+## [1.9.90] - 2026-07-27
+
+### Fixed
+- Skip writer quiescence, storage snapshots, and pre-switch recall bootstrap for code-only releases when no storage migration is pending and the recall implementation digest is unchanged.
+- Retain the protected snapshot transaction for real storage migrations, recall implementation changes, or uncertain domain detection.
+
 ## [1.9.89] - 2026-07-27
 
 ### Fixed
