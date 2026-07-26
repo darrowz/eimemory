@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 export PYTHONDONTWRITEBYTECODE=1
 release_id="$(basename "$(readlink -f /opt/eimemory/current)")"
 export PYTHONPYCACHEPREFIX="/var/lib/eimemory/.pycache/$release_id"
@@ -99,6 +99,8 @@ if isinstance(score, bool) or not isinstance(score, (int, float)):
     raise ValueError("readiness_score must be numeric")
 if not math.isfinite(float(score)) or not 0.0 <= float(score) <= 1.0:
     raise ValueError("readiness_score must be finite and between zero and one")
+if stage == "L5" and float(score) != 1.0:
+    raise ValueError("L5 readiness_score must equal one")
 print(f"{str(ok).lower()}\t{stage}\t{score}")
 '
 )"
@@ -126,6 +128,37 @@ if [ "$stage" != "L5" ]; then
   exit 0
 fi
 
+require_file "$OPENCLAW_CONFIG"
+activation_backup_dir="$(mktemp -d)"
+cp -p -- "$NIGHTLY_UNIT" "$activation_backup_dir/nightly.service"
+cp -p -- "$OPENCLAW_CONFIG" "$activation_backup_dir/openclaw.json"
+dropin_existed=0
+if [ -f "$OPENCLAW_GATEWAY_DROPIN" ]; then
+  cp -p -- "$OPENCLAW_GATEWAY_DROPIN" "$activation_backup_dir/gateway-dropin.conf"
+  dropin_existed=1
+fi
+
+rollback_l5_activation() {
+  local exit_code=$?
+  trap - ERR
+  set +e
+  cp -p -- "$activation_backup_dir/nightly.service" "$NIGHTLY_UNIT"
+  cp -p -- "$activation_backup_dir/openclaw.json" "$OPENCLAW_CONFIG"
+  if [ "$dropin_existed" = "1" ]; then
+    mkdir -p "$OPENCLAW_GATEWAY_DROPIN_DIR"
+    cp -p -- "$activation_backup_dir/gateway-dropin.conf" "$OPENCLAW_GATEWAY_DROPIN"
+  else
+    rm -f -- "$OPENCLAW_GATEWAY_DROPIN"
+  fi
+  systemctl --user daemon-reload >/dev/null 2>&1
+  systemctl --user restart "$OPENCLAW_GATEWAY_UNIT" >/dev/null 2>&1
+  systemctl --user enable --now "$GATE_TIMER" >/dev/null 2>&1
+  rm -rf -- "$activation_backup_dir"
+  exit "$exit_code"
+}
+trap rollback_l5_activation ERR
+
+systemctl --user disable --now "$GATE_TIMER" >/dev/null
 ensure_env "EIMEMORY_AUTONOMOUS_LEARNING_APPLY" "Environment=EIMEMORY_AUTONOMOUS_LEARNING_APPLY=1"
 ensure_env "EIMEMORY_AUTONOMOUS_CODE_REPO" "Environment=EIMEMORY_AUTONOMOUS_CODE_REPO=/dev-project/eimemory"
 ensure_env "EIMEMORY_AUTONOMOUS_CODE_COMMIT" "Environment=EIMEMORY_AUTONOMOUS_CODE_COMMIT=1"
@@ -136,7 +169,8 @@ ensure_env "EIMEMORY_AUTONOMOUS_CODE_HEALTH_COMMAND" 'Environment="EIMEMORY_AUTO
 enable_openclaw_memory_behavior
 
 systemctl --user daemon-reload
-systemctl --user disable --now "$GATE_TIMER" >/dev/null
+trap - ERR
+rm -rf -- "$activation_backup_dir"
 
 echo "ok=l5_observation_gate"
 echo "status=l5_enabled"

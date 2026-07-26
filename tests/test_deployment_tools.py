@@ -365,6 +365,9 @@ def _run_l5_observation_gate(
     failed_service: bool = False,
     failed_units_command_failure: bool = False,
     disable_failure: bool = False,
+    daemon_reload_failure: bool = False,
+    gateway_restart_failure: bool = False,
+    curl_failure: bool = False,
     runs: int = 1,
 ) -> tuple[subprocess.CompletedProcess[str], Path, Path, Path, Path]:
     bin_dir = tmp_path / "bin"
@@ -400,12 +403,23 @@ def _run_l5_observation_gate(
         "if [ \"${1:-}\" = \"--user\" ] && [ \"${2:-}\" = \"disable\" ]; then\n"
         "  if [ \"${DISABLE_FAILURE:-0}\" = \"1\" ]; then exit 21; fi\n"
         "fi\n"
+        "if [ \"${1:-}\" = \"--user\" ] && [ \"${2:-}\" = \"daemon-reload\" ]; then\n"
+        "  if [ \"${DAEMON_RELOAD_FAILURE:-0}\" = \"1\" ]; then exit 22; fi\n"
+        "fi\n"
+        "if [ \"${1:-}\" = \"--user\" ] && [ \"${2:-}\" = \"restart\" ]; then\n"
+        "  if [ \"${GATEWAY_RESTART_FAILURE:-0}\" = \"1\" ]; then exit 23; fi\n"
+        "fi\n"
         "exit 0\n",
         encoding="utf-8",
     )
     systemctl.chmod(0o755)
     curl = bin_dir / "curl"
-    curl.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    curl.write_text(
+        "#!/usr/bin/env bash\n"
+        "if [ \"${CURL_FAILURE:-0}\" = \"1\" ]; then exit 24; fi\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
     curl.chmod(0o755)
 
     nightly_unit = tmp_path / "eimemory-nightly.service"
@@ -447,6 +461,9 @@ def _run_l5_observation_gate(
         "FAILED_SERVICE": "1" if failed_service else "0",
         "FAILED_UNITS_COMMAND_FAILURE": "1" if failed_units_command_failure else "0",
         "DISABLE_FAILURE": "1" if disable_failure else "0",
+        "DAEMON_RELOAD_FAILURE": "1" if daemon_reload_failure else "0",
+        "GATEWAY_RESTART_FAILURE": "1" if gateway_restart_failure else "0",
+        "CURL_FAILURE": "1" if curl_failure else "0",
     }
     result = None
     for _ in range(runs):
@@ -573,7 +590,7 @@ def test_l5_observation_gate_rejects_unknown_readiness_stage(
 def test_l5_observation_gate_does_not_report_success_when_timer_disable_fails(
     tmp_path: Path,
 ) -> None:
-    result, *_ = _run_l5_observation_gate(
+    result, nightly_unit, openclaw_config, gateway_dropin, action_log = _run_l5_observation_gate(
         tmp_path,
         readiness_payload=json.dumps(
             {"ok": True, "current_stage": "L5", "readiness_score": 1.0}
@@ -583,6 +600,81 @@ def test_l5_observation_gate_does_not_report_success_when_timer_disable_fails(
 
     assert result.returncode != 0
     assert "status=l5_enabled" not in result.stdout
+    assert nightly_unit.read_text(encoding="utf-8") == (
+        "[Service]\nEnvironment=UNCHANGED=1\n"
+    )
+    assert json.loads(openclaw_config.read_text(encoding="utf-8"))["plugins"]["entries"][
+        "eimemory-bridge"
+    ]["hooks"]["allowPromptInjection"] is False
+    assert not gateway_dropin.exists()
+    assert "enable --now eimemory-l5-observation-gate.timer" in action_log.read_text(
+        encoding="utf-8"
+    )
+
+
+@pytest.mark.parametrize(
+    ("daemon_reload_failure", "gateway_restart_failure", "curl_failure"),
+    [
+        (True, False, False),
+        (False, True, False),
+        (False, False, True),
+    ],
+)
+def test_l5_observation_gate_rolls_back_partial_activation_on_post_disable_failure(
+    tmp_path: Path,
+    daemon_reload_failure: bool,
+    gateway_restart_failure: bool,
+    curl_failure: bool,
+) -> None:
+    result, nightly_unit, openclaw_config, gateway_dropin, action_log = (
+        _run_l5_observation_gate(
+            tmp_path,
+            readiness_payload=json.dumps(
+                {"ok": True, "current_stage": "L5", "readiness_score": 1.0}
+            ),
+            daemon_reload_failure=daemon_reload_failure,
+            gateway_restart_failure=gateway_restart_failure,
+            curl_failure=curl_failure,
+        )
+    )
+
+    assert result.returncode != 0
+    assert "status=l5_enabled" not in result.stdout
+    assert nightly_unit.read_text(encoding="utf-8") == (
+        "[Service]\nEnvironment=UNCHANGED=1\n"
+    )
+    hooks = json.loads(openclaw_config.read_text(encoding="utf-8"))["plugins"]["entries"][
+        "eimemory-bridge"
+    ]["hooks"]
+    assert hooks["allowPromptInjection"] is False
+    assert hooks["allowConversationAccess"] is False
+    assert not gateway_dropin.exists()
+    assert "enable --now eimemory-l5-observation-gate.timer" in action_log.read_text(
+        encoding="utf-8"
+    )
+
+
+def test_l5_observation_gate_rejects_l5_with_non_final_score(
+    tmp_path: Path,
+) -> None:
+    result, nightly_unit, openclaw_config, gateway_dropin, action_log = (
+        _run_l5_observation_gate(
+            tmp_path,
+            readiness_payload=json.dumps(
+                {"ok": True, "current_stage": "L5", "readiness_score": 0.8}
+            ),
+        )
+    )
+
+    assert result.returncode != 0
+    assert nightly_unit.read_text(encoding="utf-8") == (
+        "[Service]\nEnvironment=UNCHANGED=1\n"
+    )
+    assert json.loads(openclaw_config.read_text(encoding="utf-8"))["plugins"]["entries"][
+        "eimemory-bridge"
+    ]["hooks"]["allowPromptInjection"] is False
+    assert not gateway_dropin.exists()
+    assert not action_log.exists()
 
 
 @pytest.mark.parametrize(
