@@ -1047,6 +1047,10 @@ _verify_effective_runtime_metadata() {
   fi
   local unit effective_commit
   for unit in eimemory-rpc.service openclaw-gateway.service; do
+    if ! _user_systemctl is-active --quiet "$unit"; then
+      echo "runtime_identity=failed unit=$unit reason=inactive" >&2
+      return 2
+    fi
     if ! effective_commit="$(
       _user_systemctl show "$unit" --property=Environment --value |
         "$PYTHON_BIN" -I -B -c '
@@ -1631,9 +1635,8 @@ fi
 _maybe_fail_stage registry
 if [ "$STORAGE_WRITERS_STOPPED" = "1" ]; then
   _restart_storage_writers
-else
-  _restart_current_services
 fi
+_restart_current_services
 _verify_effective_runtime_metadata "$COMMIT"
 _maybe_fail_stage rpc_restart
 if [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ] && command -v systemctl >/dev/null 2>&1; then

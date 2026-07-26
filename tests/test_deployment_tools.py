@@ -2028,6 +2028,10 @@ def test_immutable_release_installer_verifies_both_effective_runtime_commits_bef
     assert 'item.partition("=")[0] == name' in verifier_body
     assert "len(values) != 1" in verifier_body
     assert '"$effective_commit" != "$target_commit"' in verifier_body
+    assert '_user_systemctl is-active --quiet "$unit"' in verifier_body
+    assert verifier_body.index(
+        '_user_systemctl is-active --quiet "$unit"'
+    ) < verifier_body.index('--property=Environment --value')
 
     already_current = script.split("already_current=1", 1)[0].rsplit(
         'if { [ -e "$CURRENT_LINK" ]', 1
@@ -2044,6 +2048,20 @@ def test_immutable_release_installer_verifies_both_effective_runtime_commits_bef
 
     current_switch = script.rindex('mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"')
     main_transaction = script[current_switch:]
+    restore_writers = main_transaction.index("_restart_storage_writers")
+    storage_branch_end = main_transaction.index("\nfi", restore_writers)
+    restart_identity_services = main_transaction.index(
+        "_restart_current_services", restore_writers
+    )
+    verify_metadata = main_transaction.index(
+        '_verify_effective_runtime_metadata "$COMMIT"'
+    )
+    assert (
+        restore_writers
+        < storage_branch_end
+        < restart_identity_services
+        < verify_metadata
+    )
     assert main_transaction.index(
         '_verify_effective_runtime_metadata "$COMMIT"'
     ) < main_transaction.index('_verify_release_health "$RELEASE_DIR" "$COMMIT"')
