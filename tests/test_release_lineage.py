@@ -6,6 +6,8 @@ import subprocess
 
 import pytest
 
+import eimemory.evaluation.real_query_gate as real_query_gate
+import eimemory.governance.l5_readiness as l5_readiness
 from eimemory.api.runtime import Runtime
 from eimemory.governance.evidence_contract import (
     ReleaseIdentity,
@@ -16,7 +18,9 @@ from eimemory.governance.release_lineage import (
     evidence_release_for_domain,
     record_release_lineage,
 )
+from eimemory.governance.live_task_acceptance import LIVE_ACCEPTANCE_CASE_IDS
 from eimemory.models.records import RecordEnvelope, ScopeRef
+from eimemory.runtime_identity import runtime_package_tree_digest
 
 
 SCOPE = ScopeRef(
@@ -54,9 +58,13 @@ def test_unchanged_domain_inherits_newest_verified_ancestor_release(tmp_path: Pa
 
         assert recorded["ok"] is True
         assert recorded["ancestor_release"]["commit"] == prior.commit
+        with pytest.raises(ValueError, match="validated current-release attestation"):
+            evidence_release_for_domain(recorded, "memory.recall", current)
         assert resolved["ok"] is True
         assert resolved["domains"]["memory.recall"]["mode"] == "inherited"
         assert evidence_release_for_domain(resolved, "memory.recall", current) == prior
+        with pytest.raises(ValueError, match="validated current-release attestation"):
+            evidence_release_for_domain(dict(resolved), "memory.recall", current)
     finally:
         runtime.close()
 
@@ -80,19 +88,533 @@ def test_changed_domain_requires_exact_current_gate_evidence(tmp_path: Path) -> 
         assert missing["ok"] is True
         assert missing["compatible"] is False
         assert missing["domains"]["memory.recall"]["mode"] == "changed_unverified"
-        with pytest.raises(ValueError, match="not inheritable"):
-            evidence_release_for_domain(missing, "memory.recall", current)
-
-        gate = _gate(runtime, SCOPE, current, source="eimemory.evaluation.production_recall")
-        refreshed = record_release_lineage(
+        resolved_missing = current_release_lineage(
             runtime,
             scope=SCOPE,
             repo_root=repo,
             current_release=current,
-            gate_evidence={"memory.recall": [gate.record_id]},
         )
-        assert refreshed["domains"]["memory.recall"]["mode"] == "current"
-        assert evidence_release_for_domain(refreshed, "memory.recall", current) == current
+        with pytest.raises(ValueError, match="not inheritable"):
+            evidence_release_for_domain(resolved_missing, "memory.recall", current)
+
+        forged_gate = _gate(
+            runtime,
+            SCOPE,
+            current,
+            source="eimemory.evaluation.production_recall",
+        )
+        bypass = record_release_lineage(
+            runtime,
+            scope=SCOPE,
+            repo_root=repo,
+            current_release=current,
+            gate_evidence={"memory.recall": [forged_gate.record_id]},
+        )
+        assert bypass["domains"]["memory.recall"]["mode"] == "changed_unverified"
+        assert bypass["domains"]["memory.recall"]["gate_errors"]
+    finally:
+        runtime.close()
+
+
+def test_backfilled_ancestor_receipt_cannot_rewrite_release_history(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    prior_commit = _commit(repo, "eimemory/retrieval/engine.py", "prior\n", "prior")
+    current_commit = _commit(repo, "docs/current.md", "current\n", "current")
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    try:
+        current = _receipt(runtime, SCOPE, current_commit, "1.0.1")
+        _receipt(runtime, SCOPE, prior_commit, "1.0.0")
+        runtime._test_runtime_commit = current.commit
+
+        report = record_release_lineage(
+            runtime,
+            scope=SCOPE,
+            repo_root=repo,
+            current_release=current,
+        )
+
+        assert report == {"ok": False, "error": "verified_ancestor_receipt_not_found"}
+    finally:
+        runtime.close()
+
+
+def test_pyproject_dependency_change_marks_every_domain_changed(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    prior_commit = _commit(
+        repo,
+        "pyproject.toml",
+        '[project]\nname = "eimemory"\nversion = "1.0.0"\ndependencies = ["a"]\n',
+        "prior",
+    )
+    current_commit = _commit(
+        repo,
+        "pyproject.toml",
+        '[project]\nname = "eimemory"\nversion = "1.0.1"\ndependencies = ["a", "b"]\n',
+        "current",
+    )
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    try:
+        _receipt(runtime, SCOPE, prior_commit, "1.0.0")
+        current = _receipt(runtime, SCOPE, current_commit, "1.0.1")
+        runtime._test_runtime_commit = current.commit
+
+        report = record_release_lineage(
+            runtime,
+            scope=SCOPE,
+            repo_root=repo,
+            current_release=current,
+        )
+
+        assert {state["mode"] for state in report["domains"].values()} == {
+            "changed_unverified"
+        }
+        assert report["unknown_production_paths"] == []
+    finally:
+        runtime.close()
+
+
+def test_openclaw_deploy_surface_marks_channel_domain_changed(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    prior_commit = _commit(repo, "deploy/systemd/openclaw-loop.service", "prior\n", "prior")
+    current_commit = _commit(
+        repo,
+        "deploy/systemd/openclaw-loop.service",
+        "changed\n",
+        "current",
+    )
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    try:
+        _receipt(runtime, SCOPE, prior_commit, "1.0.0")
+        current = _receipt(runtime, SCOPE, current_commit, "1.0.1")
+        runtime._test_runtime_commit = current.commit
+
+        report = record_release_lineage(
+            runtime,
+            scope=SCOPE,
+            repo_root=repo,
+            current_release=current,
+        )
+
+        assert report["domains"]["channel.openclaw"]["mode"] == "changed_unverified"
+        assert report["domains"]["channel.openclaw"]["changed_paths"] == [
+            "deploy/systemd/openclaw-loop.service"
+        ]
+    finally:
+        runtime.close()
+
+
+def test_version_only_project_metadata_remains_inheritable(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    prior_commit = _commit(
+        repo,
+        "pyproject.toml",
+        '[project]\nname = "eimemory"\nversion = "1.0.0"\ndependencies = ["a"]\n',
+        "prior",
+    )
+    current_commit = _commit(
+        repo,
+        "pyproject.toml",
+        '[project]\nname = "eimemory"\nversion = "1.0.1"\ndependencies = ["a"]\n',
+        "current",
+    )
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    try:
+        _receipt(runtime, SCOPE, prior_commit, "1.0.0")
+        current = _receipt(runtime, SCOPE, current_commit, "1.0.1")
+        runtime._test_runtime_commit = current.commit
+
+        report = record_release_lineage(
+            runtime,
+            scope=SCOPE,
+            repo_root=repo,
+            current_release=current,
+        )
+
+        assert {state["mode"] for state in report["domains"].values()} == {"inherited"}
+        assert report["unknown_production_paths"] == []
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize(
+    ("prior", "current", "expected_mode"),
+    [
+        ('__version__ = "1.0.0"\n', '__version__ = "1.0.1"\n', "inherited"),
+        (
+            '__version__ = "1.0.0"\nCHANNEL = "stable"\n',
+            '__version__ = "1.0.1"\nCHANNEL = "preview"\n',
+            "changed_unverified",
+        ),
+    ],
+)
+def test_version_module_only_ignores_the_release_literal(
+    tmp_path: Path,
+    prior: str,
+    current: str,
+    expected_mode: str,
+) -> None:
+    repo = _repo(tmp_path)
+    prior_commit = _commit(repo, "eimemory/version.py", prior, "prior")
+    current_commit = _commit(repo, "eimemory/version.py", current, "current")
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    try:
+        _receipt(runtime, SCOPE, prior_commit, "1.0.0")
+        release = _receipt(runtime, SCOPE, current_commit, "1.0.1")
+        runtime._test_runtime_commit = release.commit
+
+        report = record_release_lineage(
+            runtime,
+            scope=SCOPE,
+            repo_root=repo,
+            current_release=release,
+        )
+
+        assert {state["mode"] for state in report["domains"].values()} == {expected_mode}
+    finally:
+        runtime.close()
+
+
+def test_storage_deploy_surface_marks_storage_domain_changed(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    prior_commit = _commit(repo, "deploy/migrate_storage_release.py", "prior\n", "prior")
+    current_commit = _commit(repo, "deploy/migrate_storage_release.py", "changed\n", "current")
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    try:
+        _receipt(runtime, SCOPE, prior_commit, "1.0.0")
+        current = _receipt(runtime, SCOPE, current_commit, "1.0.1")
+        runtime._test_runtime_commit = current.commit
+
+        report = record_release_lineage(
+            runtime,
+            scope=SCOPE,
+            repo_root=repo,
+            current_release=current,
+        )
+
+        assert report["domains"]["storage.integrity"]["mode"] == "changed_unverified"
+        assert report["domains"]["storage.integrity"]["changed_paths"] == [
+            "deploy/migrate_storage_release.py"
+        ]
+    finally:
+        runtime.close()
+
+
+def test_recall_requires_authoritative_gate_and_strict_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _repo(tmp_path)
+    prior_commit = _commit(repo, "eimemory/retrieval/engine.py", "prior\n", "prior")
+    current_commit = _commit(repo, "eimemory/retrieval/engine.py", "changed\n", "current")
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    try:
+        _receipt(runtime, SCOPE, prior_commit, "1.0.0")
+        current = _receipt(runtime, SCOPE, current_commit, "1.0.1")
+        runtime._test_runtime_commit = current.commit
+        gate = _gate(
+            runtime,
+            SCOPE,
+            current,
+            source="eimemory.evaluation.production_recall",
+        )
+        strict = _gate(
+            runtime,
+            SCOPE,
+            current,
+            source="eimemory.evaluation.production_recall.bootstrap",
+        )
+        monkeypatch.setattr(
+            real_query_gate,
+            "verify_current_production_recall_gate",
+            lambda *args, **kwargs: {
+                "ok": True,
+                "status": "accepted",
+                "reason": "",
+                "record_id": gate.record_id,
+            },
+        )
+        monkeypatch.setattr(
+            real_query_gate,
+            "verify_current_production_recall_strict_state",
+            lambda *args, **kwargs: {
+                "ok": True,
+                "status": "strict_activated",
+                "reason": "",
+                "record_id": strict.record_id,
+                "candidate_commit": current.commit,
+                "gate_record_id": gate.record_id,
+            },
+        )
+
+        report = record_release_lineage(
+            runtime,
+            scope=SCOPE,
+            repo_root=repo,
+            current_release=current,
+            gate_evidence={"memory.recall": [gate.record_id, strict.record_id]},
+        )
+        resolved = current_release_lineage(
+            runtime,
+            scope=SCOPE,
+            repo_root=repo,
+            current_release=current,
+        )
+
+        assert report["domains"]["memory.recall"]["mode"] == "current"
+        assert evidence_release_for_domain(resolved, "memory.recall", current) == current
+    finally:
+        runtime.close()
+
+
+def test_recall_gate_records_must_follow_current_receipt_insertion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _repo(tmp_path)
+    prior_commit = _commit(repo, "eimemory/retrieval/engine.py", "prior\n", "prior")
+    current_commit = _commit(repo, "eimemory/retrieval/engine.py", "changed\n", "current")
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    try:
+        _receipt(runtime, SCOPE, prior_commit, "1.0.0")
+        current_record = _deployment_receipt_record(
+            SCOPE,
+            current_commit,
+            "1.0.1",
+        )
+        anticipated = ReleaseIdentity(
+            commit=current_commit,
+            version="1.0.1",
+            receipt_id=current_record.record_id,
+            session_id=current_record.record_id,
+        )
+        gate = _gate(
+            runtime,
+            SCOPE,
+            anticipated,
+            source="eimemory.evaluation.production_recall",
+        )
+        strict = _gate(
+            runtime,
+            SCOPE,
+            anticipated,
+            source="eimemory.evaluation.production_recall.bootstrap",
+        )
+        runtime.store.append(current_record)
+        current = verified_deployment_receipt_identity(current_record)
+        assert current == anticipated
+        runtime._test_runtime_commit = current.commit
+        monkeypatch.setattr(
+            real_query_gate,
+            "verify_current_production_recall_gate",
+            lambda *args, **kwargs: {
+                "ok": True,
+                "status": "accepted",
+                "reason": "",
+                "record_id": gate.record_id,
+            },
+        )
+        monkeypatch.setattr(
+            real_query_gate,
+            "verify_current_production_recall_strict_state",
+            lambda *args, **kwargs: {
+                "ok": True,
+                "status": "strict_activated",
+                "reason": "",
+                "record_id": strict.record_id,
+                "candidate_commit": current.commit,
+                "gate_record_id": gate.record_id,
+            },
+        )
+
+        report = record_release_lineage(
+            runtime,
+            scope=SCOPE,
+            repo_root=repo,
+            current_release=current,
+            gate_evidence={"memory.recall": [gate.record_id, strict.record_id]},
+        )
+
+        assert report["domains"]["memory.recall"]["mode"] == "changed_unverified"
+        assert set(report["domains"]["memory.recall"]["gate_errors"].values()) == {
+            "gate_not_after_current_receipt"
+        }
+    finally:
+        runtime.close()
+
+
+def test_deployment_domain_accepts_only_exact_current_verified_receipt(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    prior_commit = _commit(repo, "deploy/record_deployment_receipt.py", "prior\n", "prior")
+    current_commit = _commit(repo, "deploy/record_deployment_receipt.py", "changed\n", "current")
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    try:
+        prior = _receipt(runtime, SCOPE, prior_commit, "1.0.0")
+        current = _receipt(runtime, SCOPE, current_commit, "1.0.1")
+        runtime._test_runtime_commit = current.commit
+
+        stale = record_release_lineage(
+            runtime,
+            scope=SCOPE,
+            repo_root=repo,
+            current_release=current,
+            gate_evidence={"deployment.runtime": [prior.receipt_id]},
+        )
+        exact = record_release_lineage(
+            runtime,
+            scope=SCOPE,
+            repo_root=repo,
+            current_release=current,
+            gate_evidence={"deployment.runtime": [current.receipt_id]},
+        )
+
+        assert stale["domains"]["deployment.runtime"]["mode"] == "changed_unverified"
+        assert exact["domains"]["deployment.runtime"]["mode"] == "current"
+    finally:
+        runtime.close()
+
+
+def test_openclaw_requires_complete_canonical_live_acceptance_set(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    prior_commit = _commit(repo, "integrations/openclaw/index.ts", "prior\n", "prior")
+    current_commit = _commit(repo, "integrations/openclaw/index.ts", "changed\n", "current")
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    try:
+        _receipt(runtime, SCOPE, prior_commit, "1.0.0")
+        current = _receipt(runtime, SCOPE, current_commit, "1.0.1")
+        runtime._test_runtime_commit = current.commit
+        case_records = [
+            _live_case(runtime, SCOPE, current, case_id=case_id, index=index)
+            for index, case_id in enumerate(LIVE_ACCEPTANCE_CASE_IDS)
+        ]
+
+        partial = record_release_lineage(
+            runtime,
+            scope=SCOPE,
+            repo_root=repo,
+            current_release=current,
+            gate_evidence={"channel.openclaw": [case_records[0].record_id]},
+        )
+        complete = record_release_lineage(
+            runtime,
+            scope=SCOPE,
+            repo_root=repo,
+            current_release=current,
+            gate_evidence={
+                "channel.openclaw": [record.record_id for record in case_records]
+            },
+        )
+        resolved = current_release_lineage(
+            runtime,
+            scope=SCOPE,
+            repo_root=repo,
+            current_release=current,
+        )
+
+        assert partial["domains"]["channel.openclaw"]["mode"] == "changed_unverified"
+        assert complete["domains"]["channel.openclaw"]["mode"] == "current"
+        assert evidence_release_for_domain(resolved, "channel.openclaw", current) == current
+    finally:
+        runtime.close()
+
+
+def test_governance_requires_complete_weak_and_core_manifest_contracts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _repo(tmp_path)
+    prior_commit = _commit(repo, "eimemory/governance/policy.py", "prior\n", "prior")
+    current_commit = _commit(repo, "eimemory/governance/policy.py", "changed\n", "current")
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    try:
+        _receipt(runtime, SCOPE, prior_commit, "1.0.0")
+        current = _receipt(runtime, SCOPE, current_commit, "1.0.1")
+        runtime._test_runtime_commit = current.commit
+        forged = _gate(
+            runtime,
+            SCOPE,
+            current,
+            source="eimemory.capability_replay",
+        )
+        bypass = record_release_lineage(
+            runtime,
+            scope=SCOPE,
+            repo_root=repo,
+            current_release=current,
+            gate_evidence={"memory.governance": [forged.record_id]},
+        )
+        assert bypass["domains"]["memory.governance"]["mode"] == "changed_unverified"
+
+        weak_manifest = _manifest(runtime, SCOPE, title="weak")
+        core_manifest = _manifest(runtime, SCOPE, title="core")
+
+        def verified_summary(*args, **kwargs):
+            missing_field = kwargs["missing_field"]
+            weak = missing_field.startswith("weak_")
+            capabilities = set(kwargs["capabilities"])
+            record_id = weak_manifest.record_id if weak else core_manifest.record_id
+            return {
+                "executed_count": len(capabilities) * 3,
+                "pass_count": len(capabilities) * 3,
+                "fail_count": 0,
+                "not_run_count": 0,
+                "minimum_executed": len(capabilities) * 3,
+                missing_field: [],
+                "rejection_reasons": {},
+                "manifest_record_ids": {
+                    capability: record_id for capability in capabilities
+                },
+                "manifest_rejection_reasons": {},
+            }
+
+        monkeypatch.setattr(l5_readiness, "_verified_replay_summary", verified_summary)
+        report = record_release_lineage(
+            runtime,
+            scope=SCOPE,
+            repo_root=repo,
+            current_release=current,
+            gate_evidence={
+                "memory.governance": [
+                    weak_manifest.record_id,
+                    core_manifest.record_id,
+                ]
+            },
+        )
+
+        assert report["domains"]["memory.governance"]["mode"] == "current"
+    finally:
+        runtime.close()
+
+
+def test_ancestor_lookup_uses_bounded_source_filtered_pages(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _repo(tmp_path)
+    prior_commit = _commit(repo, "eimemory/retrieval/engine.py", "prior\n", "prior")
+    current_commit = _commit(repo, "docs/current.md", "current\n", "current")
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    try:
+        _receipt(runtime, SCOPE, prior_commit, "1.0.0")
+        current = _receipt(runtime, SCOPE, current_commit, "1.0.1")
+        runtime._test_runtime_commit = current.commit
+        original = runtime.store.list_records
+
+        def reject_broad_scan(*args, **kwargs):
+            if kwargs.get("kinds") == ["promotion_request"] and kwargs.get("limit") == 1000:
+                raise AssertionError("broad unbounded receipt scan")
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(runtime.store, "list_records", reject_broad_scan)
+
+        report = record_release_lineage(
+            runtime,
+            scope=SCOPE,
+            repo_root=repo,
+            current_release=current,
+        )
+
+        assert report["ok"] is True
+        assert report["ancestor_release"]["commit"] == prior_commit
     finally:
         runtime.close()
 
@@ -249,8 +771,25 @@ def _receipt(
     *,
     forged: bool = False,
 ) -> ReleaseIdentity:
+    record = _deployment_receipt_record(scope, commit, version, forged=forged)
+    record = runtime.store.append(record)
+    identity = verified_deployment_receipt_identity(record)
+    if forged:
+        assert identity is None
+        return ReleaseIdentity(commit=commit, version=version, receipt_id=record.record_id, session_id=record.record_id)
+    assert identity is not None
+    return identity
+
+
+def _deployment_receipt_record(
+    scope: ScopeRef,
+    commit: str,
+    version: str,
+    *,
+    forged: bool = False,
+) -> RecordEnvelope:
     release_path = f"/opt/eimemory/releases/{commit}"
-    record = RecordEnvelope.create(
+    return RecordEnvelope.create(
         kind="promotion_request",
         title="Deployment receipt",
         scope=scope,
@@ -273,6 +812,9 @@ def _receipt(
                     "commit": commit,
                     "version": version,
                     "release_path": release_path,
+                    "import_root": f"{release_path}/eimemory",
+                    "package_tree_digest": runtime_package_tree_digest(),
+                    "checks": {"ready": True},
                 },
                 "commit": {"commit_sha": commit},
                 "release": {"version": version, "release_path": release_path},
@@ -284,13 +826,6 @@ def _receipt(
         },
         meta={"report_type": "deployment_receipt"},
     )
-    record = runtime.store.append(record)
-    identity = verified_deployment_receipt_identity(record)
-    if forged:
-        assert identity is None
-        return ReleaseIdentity(commit=commit, version=version, receipt_id=record.record_id, session_id=record.record_id)
-    assert identity is not None
-    return identity
 
 
 def _gate(
@@ -316,5 +851,73 @@ def _gate(
                 "release_session_id": release.session_id,
             },
             meta={"report_type": "test_gate"},
+        )
+    )
+
+
+def _live_case(
+    runtime: Runtime,
+    scope: ScopeRef,
+    release: ReleaseIdentity,
+    *,
+    case_id: str,
+    index: int,
+) -> RecordEnvelope:
+    observation_digest = f"{index + 1:064x}"
+    task_type = f"live.acceptance.{case_id}"
+    trace_id = (
+        f"live-acceptance:{release.commit}:{case_id}:{observation_digest[:12]}"
+    )
+    return runtime.store.append(
+        RecordEnvelope.create(
+            kind="learning_eval",
+            title=f"Live acceptance {case_id}",
+            scope=scope,
+            source="eimemory.live_task_acceptance",
+            status="active",
+            content={
+                "report_type": "live_task_acceptance_case",
+                "schema_version": "live_task_acceptance.v1",
+                "evidence_class": "operational_probe",
+                "case_id": case_id,
+                "task_type": task_type,
+                "trace_id": trace_id,
+                "passed": True,
+                "deployment_commit": release.commit,
+                "deployment_version": release.version,
+                "release_path": f"/opt/eimemory/releases/{release.commit}",
+                "promotion_request_id": release.receipt_id,
+                "release_session_id": release.session_id,
+                "observation_digest": observation_digest,
+            },
+            meta={
+                "report_type": "live_task_acceptance_case",
+                "case_id": case_id,
+                "task_type": task_type,
+                "trace_id": trace_id,
+                "passed": True,
+            },
+        )
+    )
+
+
+def _manifest(
+    runtime: Runtime,
+    scope: ScopeRef,
+    *,
+    title: str,
+) -> RecordEnvelope:
+    return runtime.store.append(
+        RecordEnvelope.create(
+            kind="replay_result",
+            title=f"{title} replay manifest",
+            scope=scope,
+            source="eimemory.capability_replay",
+            status="active",
+            content={
+                "report_type": "capability_replay_manifest",
+                "schema_version": "capability_replay_manifest.v1",
+            },
+            meta={"report_type": "capability_replay_manifest"},
         )
     )

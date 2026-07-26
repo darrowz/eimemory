@@ -1,20 +1,24 @@
 from __future__ import annotations
 
+import ast
+from copy import deepcopy
 from dataclasses import asdict
+from datetime import datetime
 from hashlib import sha256
 import json
 from pathlib import Path
 import re
 import subprocess
+import tomllib
 from typing import Any, Mapping
 
 from eimemory.governance.evidence_contract import (
     ReleaseIdentity,
     current_release_identity,
-    release_identity_from_record,
     same_scope,
     verified_deployment_receipt_identity,
 )
+from eimemory.governance.capability_replay_packs import CORE_REPLAY_CAPABILITIES
 from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.models.records import ScopeRef
 
@@ -44,6 +48,11 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         "eimemory/governance",
     ),
     "channel.openclaw": (
+        "deploy/openclaw",
+        "deploy/ensure_openclaw",
+        "deploy/patch_openclaw",
+        "deploy/systemd/openclaw-",
+        "deploy/verify_openclaw",
         "eimemory/adapters/openclaw",
         "eimemory/adapters/runtime",
         "eimemory/ei_bridge",
@@ -51,42 +60,39 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         "integrations/openclaw",
     ),
     "storage.integrity": (
+        "deploy/migrate_storage_release.py",
+        "deploy/storage",
         "deploy/storage_release_transaction.py",
         "deploy/systemd/eimemory-storage",
+        "deploy/verify_storage_release.py",
         "eimemory/storage",
     ),
     "deployment.runtime": (
-        "deploy",
+        "deploy/capture_prior_health",
+        "deploy/ensure_evidence_receipt",
+        "deploy/install_immutable_release.sh",
+        "deploy/record_deployment_receipt.py",
+        "deploy/record_release_lineage.py",
+        "deploy/systemd/eimemory-",
+        "deploy/verify_release_health",
         "eimemory/governance/deployment_receipt.py",
         "eimemory/runtime_identity.py",
     ),
 }
-DOMAIN_GATE_SOURCES: dict[str, frozenset[str]] = {
-    "memory.recall": frozenset(
-        {
-            "eimemory.evaluation.production_recall",
-            "eimemory.evaluation.production_recall.bootstrap",
-        }
-    ),
-    "memory.governance": frozenset(
-        {
-            "eimemory.capability_replay",
-            "eimemory.l5_loop",
-            "eimemory.l5_readiness",
-            "eimemory.prompt_safety",
-        }
-    ),
-    "channel.openclaw": frozenset({"eimemory.live_task_acceptance"}),
-    "storage.integrity": frozenset({"eimemory.live_task_acceptance"}),
-    "deployment.runtime": frozenset({"eimemory.deployment_receipt"}),
-}
 IGNORED_PATH_PREFIXES = ("docs/", "tests/", ".github/")
 IGNORED_PATHS = {
     "CHANGELOG.md",
-    "eimemory/version.py",
-    "pyproject.toml",
 }
 COMMIT_RE = re.compile(r"[0-9a-f]{40}")
+RECEIPT_PAGE_SIZE = 200
+MAX_RECEIPT_PAGES = 20
+WEAK_REPLAY_CAPABILITIES = frozenset(
+    {"search.discovery", "research.synthesis", "operations.uumit", "device.control"}
+)
+
+
+class _ValidatedLineage(dict[str, Any]):
+    """Process-local proof that the report was recomputed from persisted evidence."""
 
 
 def record_release_lineage(
@@ -222,7 +228,7 @@ def current_release_lineage(
         if recomputed != stored:
             mismatch_seen = True
             continue
-        return _public_report(recomputed, record_id=record.record_id)
+        return _ValidatedLineage(_public_report(recomputed, record_id=record.record_id))
     if mismatch_seen:
         return {"ok": False, "error": "lineage_attestation_mismatch"}
     return {"ok": False, "error": "current_release_lineage_not_found"}
@@ -234,7 +240,7 @@ def evidence_release_for_domain(
     current_release: ReleaseIdentity,
 ) -> ReleaseIdentity:
     if (
-        not isinstance(lineage, dict)
+        not isinstance(lineage, _ValidatedLineage)
         or lineage.get("ok") is not True
         or lineage.get("validated") is not True
         or lineage.get("schema_version") != SCHEMA_VERSION
@@ -272,11 +278,25 @@ def _compute_lineage(
     changed_paths = _changed_paths(repo, ancestor_release.commit, current_release.commit)
     if changed_paths is None:
         return {"ok": False, "error": "release_diff_unavailable"}
-    classified = {path: _domains_for_path(path) for path in changed_paths}
+    classified = {
+        path: _domains_for_change(
+            repo,
+            path=path,
+            ancestor=ancestor_release.commit,
+            current=current_release.commit,
+        )
+        for path in changed_paths
+    }
     unknown = sorted(
         path
         for path, domains in classified.items()
-        if not domains and not _ignored_path(path)
+        if not domains
+        and not _ignored_change(
+            repo,
+            path=path,
+            ancestor=ancestor_release.commit,
+            current=current_release.commit,
+        )
     )
     normalized_gates = _normalized_gate_evidence(gate_evidence)
     domains: dict[str, dict[str, Any]] = {}
@@ -288,7 +308,7 @@ def _compute_lineage(
         domain_changed_paths = sorted(
             path for path, affected in classified.items() if domain in affected
         )
-        changed = bool(unknown or ancestor_digest != current_digest)
+        changed = bool(unknown or domain_changed_paths or ancestor_digest != current_digest)
         references = normalized_gates[domain]
         gate_errors = (
             _gate_errors(
@@ -380,18 +400,22 @@ def _newest_verified_ancestor(
     repo: Path,
     current_release: ReleaseIdentity,
 ) -> ReleaseIdentity | None:
-    candidates: list[tuple[int, ReleaseIdentity]] = []
-    records = runtime.store.list_records(
-        kinds=["promotion_request"],
-        scope=scope,
-        limit=1000,
-    )
-    for record in records:
-        if not same_scope(record.scope, scope):
-            continue
+    current_record = runtime.store.get_by_id(current_release.receipt_id, scope=scope)
+    if current_record is None:
+        return None
+    verified: list[ReleaseIdentity] = []
+    for record in _deployment_receipt_records(runtime, scope=scope):
         identity = verified_deployment_receipt_identity(record)
-        if identity is None or identity == current_release:
+        if (
+            identity is None
+            or identity == current_release
+            or not _record_precedes(runtime, earlier=record, later=current_record, scope=scope)
+        ):
             continue
+        verified.append(identity)
+
+    candidates: list[tuple[int, ReleaseIdentity]] = []
+    for identity in verified:
         if not _is_ancestor(repo, identity.commit, current_release.commit):
             continue
         distance = _git_text(
@@ -405,6 +429,125 @@ def _newest_verified_ancestor(
         except (TypeError, ValueError):
             continue
     return min(candidates, key=lambda item: item[0])[1] if candidates else None
+
+
+def _deployment_receipt_records(runtime: Any, *, scope: ScopeRef) -> list[Any]:
+    sqlite = getattr(getattr(runtime, "store", None), "sqlite", None)
+    conn = getattr(sqlite, "conn", None)
+    if conn is not None:
+        records: list[Any] = []
+        for page in range(MAX_RECEIPT_PAGES):
+            rows = conn.execute(
+                """
+                SELECT record_id, source_id
+                FROM records
+                WHERE kind = ?
+                  AND source = ?
+                  AND status = ?
+                  AND tenant_id = ?
+                  AND agent_id = ?
+                  AND workspace_id = ?
+                  AND user_id = ?
+                ORDER BY rowid DESC
+                LIMIT ? OFFSET ?
+                """,
+                (
+                    "promotion_request",
+                    "eimemory.deployment_receipt",
+                    "deployed",
+                    scope.tenant_id,
+                    scope.agent_id,
+                    scope.workspace_id,
+                    scope.user_id,
+                    RECEIPT_PAGE_SIZE,
+                    page * RECEIPT_PAGE_SIZE,
+                ),
+            ).fetchall()
+            for row in rows:
+                record = runtime.store.get_by_exact_ref(
+                    str(row["record_id"]),
+                    scope=scope,
+                    source_id=str(row["source_id"]),
+                )
+                if record is not None:
+                    records.append(record)
+            if len(rows) < RECEIPT_PAGE_SIZE:
+                break
+        return records
+
+    records = []
+    for page in range(MAX_RECEIPT_PAGES):
+        batch = runtime.store.list_records(
+            kinds=["promotion_request"],
+            scope=scope,
+            status="deployed",
+            limit=RECEIPT_PAGE_SIZE,
+            offset=page * RECEIPT_PAGE_SIZE,
+        )
+        records.extend(
+            record
+            for record in batch
+            if same_scope(record.scope, scope)
+            and record.source == "eimemory.deployment_receipt"
+        )
+        if len(batch) < RECEIPT_PAGE_SIZE:
+            break
+    return records
+
+
+def _record_precedes(runtime: Any, *, earlier: Any, later: Any, scope: ScopeRef) -> bool:
+    earlier_rowid = _record_rowid(runtime, record=earlier, scope=scope)
+    later_rowid = _record_rowid(runtime, record=later, scope=scope)
+    if earlier_rowid is not None and later_rowid is not None:
+        return earlier_rowid < later_rowid
+    earlier_time = _strict_record_time(earlier)
+    later_time = _strict_record_time(later)
+    return bool(
+        earlier_time is not None
+        and later_time is not None
+        and earlier_time < later_time
+    )
+
+
+def _record_rowid(runtime: Any, *, record: Any, scope: ScopeRef) -> int | None:
+    sqlite = getattr(getattr(runtime, "store", None), "sqlite", None)
+    conn = getattr(sqlite, "conn", None)
+    if conn is None:
+        return None
+    row = conn.execute(
+        """
+        SELECT rowid
+        FROM records
+        WHERE record_id = ?
+          AND source = ?
+          AND tenant_id = ?
+          AND agent_id = ?
+          AND workspace_id = ?
+          AND user_id = ?
+        ORDER BY rowid DESC
+        LIMIT 1
+        """,
+        (
+            str(getattr(record, "record_id", "") or ""),
+            str(getattr(record, "source", "") or ""),
+            scope.tenant_id,
+            scope.agent_id,
+            scope.workspace_id,
+            scope.user_id,
+        ),
+    ).fetchone()
+    return None if row is None else int(row["rowid"])
+
+
+def _strict_record_time(record: Any) -> datetime | None:
+    raw = str(getattr(getattr(record, "time", None), "created_at", "") or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else None
 
 
 def _domain_digest(repo: Path, commit: str, paths: tuple[str, ...]) -> str | None:
@@ -438,21 +581,92 @@ def _changed_paths(repo: Path, ancestor: str, current: str) -> list[str] | None:
     )
 
 
-def _domains_for_path(path: str) -> set[str]:
+def _domains_for_change(
+    repo: Path,
+    *,
+    path: str,
+    ancestor: str,
+    current: str,
+) -> set[str]:
+    if path in {"pyproject.toml", "eimemory/version.py"}:
+        return set() if _version_metadata_only_change(
+            repo,
+            path=path,
+            ancestor=ancestor,
+            current=current,
+        ) else set(DOMAINS)
     return {
         domain
         for domain, rules in DOMAIN_PATHS.items()
-        if any(path == rule or path.startswith(rule.rstrip("/") + "/") for rule in rules)
+        if any(_path_matches_rule(path, rule) for rule in rules)
     }
 
 
-def _ignored_path(path: str) -> bool:
+def _path_matches_rule(path: str, rule: str) -> bool:
+    return bool(
+        path == rule
+        or path.startswith(rule.rstrip("/") + "/")
+        or (rule.endswith(("-", "_")) and path.startswith(rule))
+    )
+
+
+def _ignored_change(
+    repo: Path,
+    *,
+    path: str,
+    ancestor: str,
+    current: str,
+) -> bool:
     return (
         path in IGNORED_PATHS
         or path.startswith(IGNORED_PATH_PREFIXES)
         or path.startswith("README")
         or path.startswith("CHANGELOG")
+        or (
+            path in {"pyproject.toml", "eimemory/version.py"}
+            and _version_metadata_only_change(
+                repo,
+                path=path,
+                ancestor=ancestor,
+                current=current,
+            )
+        )
     )
+
+
+def _version_metadata_only_change(
+    repo: Path,
+    *,
+    path: str,
+    ancestor: str,
+    current: str,
+) -> bool:
+    before = _git_bytes(repo, "show", f"{ancestor}:{path}")
+    after = _git_bytes(repo, "show", f"{current}:{path}")
+    if before is None or after is None:
+        return False
+    try:
+        if path == "pyproject.toml":
+            before_payload = deepcopy(tomllib.loads(before.decode("utf-8")))
+            after_payload = deepcopy(tomllib.loads(after.decode("utf-8")))
+            for payload in (before_payload, after_payload):
+                project = payload.get("project")
+                if isinstance(project, dict):
+                    project.pop("version", None)
+            return before_payload == after_payload
+        return _normalized_version_module(before) == _normalized_version_module(after)
+    except (SyntaxError, UnicodeError, ValueError, TypeError):
+        return False
+
+
+def _normalized_version_module(raw: bytes) -> str:
+    tree = ast.parse(raw.decode("utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if any(isinstance(target, ast.Name) and target.id == "__version__" for target in targets):
+                node.value = ast.Constant(value="<release-version>")
+    return ast.dump(tree, include_attributes=False)
 
 
 def _normalized_gate_evidence(value: Mapping[str, Any] | None) -> dict[str, list[str]]:
@@ -481,7 +695,21 @@ def _gate_errors(
     current_release: ReleaseIdentity,
     references: list[str],
 ) -> dict[str, str]:
+    authorized_sources = {
+        "memory.recall": {
+            "eimemory.evaluation.production_recall",
+            "eimemory.evaluation.production_recall.bootstrap",
+        },
+        "memory.governance": {"eimemory.capability_replay"},
+        "channel.openclaw": {"eimemory.live_task_acceptance"},
+        "storage.integrity": {"eimemory.live_task_acceptance"},
+        "deployment.runtime": {"eimemory.deployment_receipt"},
+    }
     errors: dict[str, str] = {}
+    records: dict[str, Any] = {}
+    current_receipt = runtime.store.get_by_id(current_release.receipt_id, scope=scope)
+    if current_receipt is None:
+        return {"__contract__": "current_deployment_receipt_missing"}
     for reference in references:
         record = runtime.store.get_by_id(reference, scope=scope)
         if record is None:
@@ -490,29 +718,224 @@ def _gate_errors(
         if not same_scope(record.scope, scope):
             errors[reference] = "scope_mismatch"
             continue
-        if record.source not in DOMAIN_GATE_SOURCES[domain]:
+        if record.source not in authorized_sources[domain]:
             errors[reference] = "source_not_authorized_for_domain"
             continue
-        if record.source == "eimemory.deployment_receipt":
-            valid_release = verified_deployment_receipt_identity(record)
-        else:
-            valid_release = release_identity_from_record(record)
-        if valid_release != current_release:
-            errors[reference] = "release_mismatch"
+        if _explicit_failure(record):
+            errors[reference] = "explicit_failure"
             continue
-        if record.source != "eimemory.deployment_receipt" and not _gate_passed(record):
-            errors[reference] = "gate_not_passed"
+        if domain == "deployment.runtime":
+            if reference != current_release.receipt_id:
+                errors[reference] = "not_current_deployment_receipt"
+                continue
+        elif not _record_precedes(
+            runtime,
+            earlier=current_receipt,
+            later=record,
+            scope=scope,
+        ):
+            errors[reference] = "gate_not_after_current_receipt"
+            continue
+        records[reference] = record
+    if errors:
+        return errors
+
+    if domain == "memory.recall":
+        contract_error = _recall_gate_contract_error(
+            runtime,
+            scope=scope,
+            current_release=current_release,
+            references=references,
+        )
+    elif domain == "memory.governance":
+        contract_error = _governance_gate_contract_error(
+            runtime,
+            scope=scope,
+            current_release=current_release,
+            references=references,
+        )
+    elif domain in {"channel.openclaw", "storage.integrity"}:
+        contract_error = _live_acceptance_contract_error(
+            runtime,
+            scope=scope,
+            current_release=current_release,
+            references=references,
+            records=records,
+        )
+    else:
+        contract_error = (
+            ""
+            if references == [current_release.receipt_id]
+            and verified_deployment_receipt_identity(current_receipt) == current_release
+            else "exact_current_deployment_receipt_required"
+        )
+    if contract_error:
+        errors["__contract__"] = contract_error
     return errors
 
 
-def _gate_passed(record: Any) -> bool:
+def _explicit_failure(record: Any) -> bool:
     content = record.content if isinstance(getattr(record, "content", None), dict) else {}
     meta = record.meta if isinstance(getattr(record, "meta", None), dict) else {}
+    verdict = str(content.get("verdict") or meta.get("verdict") or "").strip().lower()
     return bool(
-        content.get("passed") is True
-        or content.get("ok") is True
-        or content.get("accepted") is True
-        or str(content.get("verdict") or meta.get("verdict") or "").lower() in {"pass", "passed"}
+        any(content.get(key) is False for key in ("passed", "ok", "accepted", "complete"))
+        or verdict in {"fail", "failed", "blocked", "rejected"}
+    )
+
+
+def _recall_gate_contract_error(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    current_release: ReleaseIdentity,
+    references: list[str],
+) -> str:
+    from eimemory.evaluation.real_query_gate import (
+        verify_current_production_recall_gate,
+        verify_current_production_recall_strict_state,
+    )
+
+    gate = verify_current_production_recall_gate(
+        runtime,
+        scope=scope,
+        release=current_release,
+        limit=500,
+    )
+    gate_id = str(gate.get("record_id") or "")
+    if gate.get("ok") is not True or gate.get("status") != "accepted" or not gate_id:
+        return str(gate.get("reason") or "current_production_recall_gate_invalid")
+    strict = verify_current_production_recall_strict_state(
+        runtime,
+        scope=scope,
+        release=current_release,
+        gate_record_id=gate_id,
+    )
+    strict_id = str(strict.get("record_id") or "")
+    if (
+        strict.get("ok") is not True
+        or strict.get("status") != "strict_activated"
+        or str(strict.get("candidate_commit") or "") != current_release.commit
+        or str(strict.get("gate_record_id") or "") != gate_id
+        or not strict_id
+    ):
+        return str(strict.get("reason") or "current_production_recall_strict_state_invalid")
+    return "" if set(references) == {gate_id, strict_id} and len(references) == 2 else (
+        "exact_recall_gate_and_strict_state_required"
+    )
+
+
+def _governance_gate_contract_error(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    current_release: ReleaseIdentity,
+    references: list[str],
+) -> str:
+    from eimemory.governance.l5_readiness import _verified_replay_summary
+
+    checks = (
+        (
+            _verified_replay_summary(
+                runtime,
+                scope=scope,
+                limit=2000,
+                capabilities=set(WEAK_REPLAY_CAPABILITIES),
+                missing_field="weak_replay_capabilities_missing",
+                release=current_release,
+            ),
+            "weak_replay_capabilities_missing",
+        ),
+        (
+            _verified_replay_summary(
+                runtime,
+                scope=scope,
+                limit=2000,
+                capabilities=set(CORE_REPLAY_CAPABILITIES),
+                missing_field="core_replay_capabilities_missing",
+                release=current_release,
+            ),
+            "core_replay_capabilities_missing",
+        ),
+    )
+    expected: set[str] = set()
+    for summary, missing_field in checks:
+        expected.update(
+            str(record_id or "")
+            for record_id in dict(summary.get("manifest_record_ids") or {}).values()
+            if str(record_id or "")
+        )
+        if (
+            summary.get(missing_field)
+            or summary.get("manifest_rejection_reasons")
+            or summary.get("rejection_reasons")
+            or int(summary.get("fail_count") or 0) != 0
+            or int(summary.get("not_run_count") or 0) != 0
+            or int(summary.get("executed_count") or 0)
+            < int(summary.get("minimum_executed") or 1)
+            or int(summary.get("pass_count") or 0)
+            != int(summary.get("executed_count") or 0)
+        ):
+            return "current_release_replay_manifests_incomplete"
+    return "" if expected and set(references) == expected and len(references) == len(expected) else (
+        "exact_current_release_replay_manifests_required"
+    )
+
+
+def _live_acceptance_contract_error(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    current_release: ReleaseIdentity,
+    references: list[str],
+    records: dict[str, Any],
+) -> str:
+    from eimemory.governance.live_task_acceptance import (
+        LIVE_ACCEPTANCE_CASE_IDS,
+        live_acceptance_task_type,
+        validate_live_acceptance_case,
+    )
+
+    receipt = runtime.store.get_by_id(current_release.receipt_id, scope=scope)
+    content = receipt.content if receipt is not None and isinstance(receipt.content, dict) else {}
+    side_effect = content.get("side_effect") if isinstance(content.get("side_effect"), dict) else {}
+    release = side_effect.get("release") if isinstance(side_effect.get("release"), dict) else {}
+    identity = {
+        "commit": current_release.commit,
+        "version": current_release.version,
+        "release_path": str(release.get("release_path") or ""),
+        "promotion_request_id": current_release.receipt_id,
+        "release_session_id": current_release.session_id,
+    }
+    expected_ids = set(LIVE_ACCEPTANCE_CASE_IDS)
+    by_case: dict[str, Any] = {}
+    for reference in references:
+        record = records.get(reference)
+        payload = record.content if record is not None and isinstance(record.content, dict) else {}
+        case_id = str(payload.get("case_id") or "")
+        task_type = str(payload.get("task_type") or "")
+        trace_id = str(payload.get("trace_id") or "")
+        passed = payload.get("passed")
+        if (
+            case_id in by_case
+            or passed is not True
+            or not validate_live_acceptance_case(
+                runtime,
+                scope=scope,
+                evidence=record,
+                case_id=case_id,
+                task_type=task_type,
+                trace_id=trace_id,
+                deployment_commit=current_release.commit,
+                passed=True,
+                identity=identity,
+            )
+            or task_type != live_acceptance_task_type(case_id)
+        ):
+            return "live_acceptance_case_invalid"
+        by_case[case_id] = record
+    return "" if set(by_case) == expected_ids and len(references) == len(expected_ids) else (
+        "complete_canonical_live_acceptance_set_required"
     )
 
 
