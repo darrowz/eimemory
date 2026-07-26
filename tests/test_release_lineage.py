@@ -8,6 +8,7 @@ import pytest
 
 import eimemory.evaluation.real_query_gate as real_query_gate
 import eimemory.governance.l5_readiness as l5_readiness
+import eimemory.governance.release_lineage as release_lineage
 from eimemory.api.runtime import Runtime
 from eimemory.governance.evidence_contract import (
     ReleaseIdentity,
@@ -58,13 +59,29 @@ def test_unchanged_domain_inherits_newest_verified_ancestor_release(tmp_path: Pa
 
         assert recorded["ok"] is True
         assert recorded["ancestor_release"]["commit"] == prior.commit
-        with pytest.raises(ValueError, match="validated current-release attestation"):
-            evidence_release_for_domain(recorded, "memory.recall", current)
         assert resolved["ok"] is True
         assert resolved["domains"]["memory.recall"]["mode"] == "inherited"
-        assert evidence_release_for_domain(resolved, "memory.recall", current) == prior
-        with pytest.raises(ValueError, match="validated current-release attestation"):
-            evidence_release_for_domain(dict(resolved), "memory.recall", current)
+        resolved["domains"]["memory.recall"]["mode"] = "current"
+        assert (
+            evidence_release_for_domain(
+                runtime,
+                scope=SCOPE,
+                repo_root=repo,
+                domain="memory.recall",
+                current_release=current,
+                expected_record_id=recorded["record_id"],
+            )
+            == prior
+        )
+        with pytest.raises(ValueError, match="lineage record mismatch"):
+            evidence_release_for_domain(
+                runtime,
+                scope=SCOPE,
+                repo_root=repo,
+                domain="memory.recall",
+                current_release=current,
+                expected_record_id="forged-lineage-record",
+            )
     finally:
         runtime.close()
 
@@ -95,7 +112,14 @@ def test_changed_domain_requires_exact_current_gate_evidence(tmp_path: Path) -> 
             current_release=current,
         )
         with pytest.raises(ValueError, match="not inheritable"):
-            evidence_release_for_domain(resolved_missing, "memory.recall", current)
+            evidence_release_for_domain(
+                runtime,
+                scope=SCOPE,
+                repo_root=repo,
+                domain="memory.recall",
+                current_release=current,
+                expected_record_id=resolved_missing["record_id"],
+            )
 
         forged_gate = _gate(
             runtime,
@@ -361,7 +385,17 @@ def test_recall_requires_authoritative_gate_and_strict_state(
         )
 
         assert report["domains"]["memory.recall"]["mode"] == "current"
-        assert evidence_release_for_domain(resolved, "memory.recall", current) == current
+        assert (
+            evidence_release_for_domain(
+                runtime,
+                scope=SCOPE,
+                repo_root=repo,
+                domain="memory.recall",
+                current_release=current,
+                expected_record_id=resolved["record_id"],
+            )
+            == current
+        )
     finally:
         runtime.close()
 
@@ -473,6 +507,43 @@ def test_deployment_domain_accepts_only_exact_current_verified_receipt(tmp_path:
         runtime.close()
 
 
+def test_immutable_installer_affects_runtime_openclaw_and_storage_domains(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    prior_commit = _commit(repo, "deploy/install_immutable_release.sh", "prior\n", "prior")
+    current_commit = _commit(
+        repo,
+        "deploy/install_immutable_release.sh",
+        "changed\n",
+        "current",
+    )
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    try:
+        _receipt(runtime, SCOPE, prior_commit, "1.0.0")
+        current = _receipt(runtime, SCOPE, current_commit, "1.0.1")
+        runtime._test_runtime_commit = current.commit
+
+        report = record_release_lineage(
+            runtime,
+            scope=SCOPE,
+            repo_root=repo,
+            current_release=current,
+        )
+
+        assert {
+            domain
+            for domain, state in report["domains"].items()
+            if state["changed"] is True
+        } == {
+            "channel.openclaw",
+            "storage.integrity",
+            "deployment.runtime",
+        }
+    finally:
+        runtime.close()
+
+
 def test_openclaw_requires_complete_canonical_live_acceptance_set(tmp_path: Path) -> None:
     repo = _repo(tmp_path)
     prior_commit = _commit(repo, "integrations/openclaw/index.ts", "prior\n", "prior")
@@ -512,7 +583,17 @@ def test_openclaw_requires_complete_canonical_live_acceptance_set(tmp_path: Path
 
         assert partial["domains"]["channel.openclaw"]["mode"] == "changed_unverified"
         assert complete["domains"]["channel.openclaw"]["mode"] == "current"
-        assert evidence_release_for_domain(resolved, "channel.openclaw", current) == current
+        assert (
+            evidence_release_for_domain(
+                runtime,
+                scope=SCOPE,
+                repo_root=repo,
+                domain="channel.openclaw",
+                current_release=current,
+                expected_record_id=resolved["record_id"],
+            )
+            == current
+        )
     finally:
         runtime.close()
 
@@ -617,6 +698,64 @@ def test_ancestor_lookup_uses_bounded_source_filtered_pages(
         assert report["ancestor_release"]["commit"] == prior_commit
     finally:
         runtime.close()
+
+
+def test_ancestor_lookup_keysets_past_old_cap_with_one_git_graph_walk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ancestor_commit = "a" * 40
+    current_commit = "b" * 40
+    ancestor_record = _deployment_receipt_record(SCOPE, ancestor_commit, "1.0.0")
+    ancestor = verified_deployment_receipt_identity(ancestor_record)
+    current_record = _deployment_receipt_record(SCOPE, current_commit, "1.0.1")
+    current = verified_deployment_receipt_identity(current_record)
+    assert ancestor is not None and current is not None
+
+    row_records: list[tuple[int, RecordEnvelope]] = []
+    for rowid in range(22, 1, -1):
+        forged = _deployment_receipt_record(
+            SCOPE,
+            f"{rowid:040x}",
+            f"0.0.{rowid}",
+            forged=True,
+        )
+        row_records.append((rowid, forged))
+    row_records.append((1, ancestor_record))
+    connection = _KeysetReceiptConnection(
+        current_rowid=23,
+        current_record=current_record,
+        row_records=row_records,
+    )
+    runtime = _KeysetReceiptRuntime(connection, current_record, row_records)
+    git_calls: list[tuple[str, ...]] = []
+
+    def git_graph(_repo: Path, *args: str) -> bytes | None:
+        git_calls.append(args)
+        if args == ("rev-list", "--parents", current_commit):
+            return (
+                f"{current_commit} {ancestor_commit}\n"
+                f"{ancestor_commit}\n"
+            ).encode()
+        raise AssertionError(f"unexpected git invocation: {args}")
+
+    monkeypatch.setattr(release_lineage, "_git_bytes", git_graph)
+
+    selected = release_lineage._newest_verified_ancestor(
+        runtime,
+        scope=SCOPE,
+        repo=Path("unused"),
+        current_release=current,
+    )
+
+    assert selected == ancestor
+    keyset_queries = [
+        sql
+        for sql in connection.queries
+        if "SELECT rowid, record_id, source_id" in sql
+    ]
+    assert len(keyset_queries) > 20
+    assert all("rowid < ?" in sql and "OFFSET" not in sql for sql in keyset_queries)
+    assert git_calls == [("rev-list", "--parents", current_commit)]
 
 
 def test_unknown_production_path_marks_every_domain_changed(tmp_path: Path) -> None:
@@ -921,3 +1060,118 @@ def _manifest(
             meta={"report_type": "capability_replay_manifest"},
         )
     )
+
+
+class _QueryRows:
+    def __init__(self, rows: list[dict[str, object]]) -> None:
+        self._rows = rows
+
+    def fetchall(self) -> list[dict[str, object]]:
+        return list(self._rows)
+
+    def fetchone(self) -> dict[str, object] | None:
+        return self._rows[0] if self._rows else None
+
+
+class _KeysetReceiptConnection:
+    def __init__(
+        self,
+        *,
+        current_rowid: int,
+        current_record: RecordEnvelope,
+        row_records: list[tuple[int, RecordEnvelope]],
+    ) -> None:
+        self.current_rowid = current_rowid
+        self.current_record = current_record
+        self.row_records = row_records
+        self.queries: list[str] = []
+        self.rowid_by_record = {
+            current_record.record_id: current_rowid,
+            **{record.record_id: rowid for rowid, record in row_records},
+        }
+
+    def execute(
+        self,
+        sql: str,
+        params: tuple[object, ...],
+    ) -> _QueryRows:
+        self.queries.append(sql)
+        if "SELECT rowid" in sql and "SELECT rowid," not in sql:
+            rowid = self.rowid_by_record.get(str(params[0]))
+            return _QueryRows([] if rowid is None else [{"rowid": rowid}])
+        if "rowid < ?" in sql:
+            cursor = int(params[-2])
+            rows = [
+                {
+                    "rowid": rowid,
+                    "record_id": record.record_id,
+                    "source_id": record.source_id,
+                }
+                for rowid, record in self.row_records
+                if rowid < cursor
+            ][:1]
+            return _QueryRows(rows)
+        if "OFFSET" in sql:
+            rowid, record = self.row_records[0]
+            return _QueryRows(
+                [
+                    {
+                        "rowid": rowid,
+                        "record_id": record.record_id,
+                        "source_id": record.source_id,
+                    }
+                ]
+            )
+        raise AssertionError(f"unexpected SQL: {sql}")
+
+
+class _KeysetReceiptStore:
+    def __init__(
+        self,
+        connection: _KeysetReceiptConnection,
+        current_record: RecordEnvelope,
+        row_records: list[tuple[int, RecordEnvelope]],
+    ) -> None:
+        self.sqlite = type("_SQLite", (), {"conn": connection})()
+        self.records = {
+            current_record.record_id: current_record,
+            **{record.record_id: record for _, record in row_records},
+        }
+
+    def get_by_id(
+        self,
+        record_id: str,
+        *,
+        scope: ScopeRef,
+    ) -> RecordEnvelope | None:
+        return self.records.get(record_id)
+
+    def get_by_exact_ref(
+        self,
+        record_id: str,
+        *,
+        scope: ScopeRef,
+        source_id: str,
+    ) -> RecordEnvelope | None:
+        record = self.records.get(record_id)
+        return (
+            record
+            if record is not None
+            and record.scope == scope
+            and record.source_id == source_id
+            else None
+        )
+
+
+class _KeysetReceiptRuntime:
+    def __init__(
+        self,
+        connection: _KeysetReceiptConnection,
+        current_record: RecordEnvelope,
+        row_records: list[tuple[int, RecordEnvelope]],
+    ) -> None:
+        self.store = _KeysetReceiptStore(
+            connection,
+            current_record,
+            row_records,
+        )

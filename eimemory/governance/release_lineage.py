@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import ast
+from collections import deque
+from collections.abc import Iterator
 from copy import deepcopy
 from dataclasses import asdict
 from datetime import datetime
@@ -50,6 +52,7 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
     "channel.openclaw": (
         "deploy/openclaw",
         "deploy/ensure_openclaw",
+        "deploy/install_immutable_release.sh",
         "deploy/patch_openclaw",
         "deploy/systemd/openclaw-",
         "deploy/verify_openclaw",
@@ -61,6 +64,7 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
     ),
     "storage.integrity": (
         "deploy/migrate_storage_release.py",
+        "deploy/install_immutable_release.sh",
         "deploy/storage",
         "deploy/storage_release_transaction.py",
         "deploy/systemd/eimemory-storage",
@@ -85,14 +89,9 @@ IGNORED_PATHS = {
 }
 COMMIT_RE = re.compile(r"[0-9a-f]{40}")
 RECEIPT_PAGE_SIZE = 200
-MAX_RECEIPT_PAGES = 20
 WEAK_REPLAY_CAPABILITIES = frozenset(
     {"search.discovery", "research.synthesis", "operations.uumit", "device.control"}
 )
-
-
-class _ValidatedLineage(dict[str, Any]):
-    """Process-local proof that the report was recomputed from persisted evidence."""
 
 
 def record_release_lineage(
@@ -184,6 +183,8 @@ def current_release_lineage(
     if current_error:
         return current_error
     mismatch_seen = False
+    selected_ancestor: ReleaseIdentity | None = None
+    selected_ancestor_loaded = False
     records = runtime.store.list_records(
         kinds=["l5_self_continuity"],
         scope=scope_ref,
@@ -208,12 +209,14 @@ def current_release_lineage(
         if stored_ancestor is None:
             mismatch_seen = True
             continue
-        selected_ancestor = _newest_verified_ancestor(
-            runtime,
-            scope=scope_ref,
-            repo=repo,
-            current_release=current_release,
-        )
+        if not selected_ancestor_loaded:
+            selected_ancestor = _newest_verified_ancestor(
+                runtime,
+                scope=scope_ref,
+                repo=repo,
+                current_release=current_release,
+            )
+            selected_ancestor_loaded = True
         if selected_ancestor != stored_ancestor:
             mismatch_seen = True
             continue
@@ -228,25 +231,38 @@ def current_release_lineage(
         if recomputed != stored:
             mismatch_seen = True
             continue
-        return _ValidatedLineage(_public_report(recomputed, record_id=record.record_id))
+        return _public_report(recomputed, record_id=record.record_id)
     if mismatch_seen:
         return {"ok": False, "error": "lineage_attestation_mismatch"}
     return {"ok": False, "error": "current_release_lineage_not_found"}
 
 
 def evidence_release_for_domain(
-    lineage: dict[str, Any],
+    runtime: Any,
+    *,
+    scope: ScopeRef | dict | None,
+    repo_root: str | Path,
     domain: str,
     current_release: ReleaseIdentity,
+    expected_record_id: str = "",
 ) -> ReleaseIdentity:
+    lineage = current_release_lineage(
+        runtime,
+        scope=scope,
+        repo_root=repo_root,
+        current_release=current_release,
+    )
     if (
-        not isinstance(lineage, _ValidatedLineage)
+        not isinstance(lineage, dict)
         or lineage.get("ok") is not True
         or lineage.get("validated") is not True
         or lineage.get("schema_version") != SCHEMA_VERSION
         or _identity_from_payload(lineage.get("current_release")) != current_release
     ):
         raise ValueError("lineage is not a validated current-release attestation")
+    expected_id = str(expected_record_id or "").strip()
+    if expected_id and str(lineage.get("record_id") or "") != expected_id:
+        raise ValueError("lineage record mismatch")
     domain_name = str(domain or "")
     state = lineage.get("domains", {}).get(domain_name)
     if not isinstance(state, dict) or state.get("mode") not in {"inherited", "current"}:
@@ -273,8 +289,6 @@ def _compute_lineage(
 ) -> dict[str, Any]:
     if _receipt_identity(runtime, scope, ancestor_release) is None:
         return {"ok": False, "error": "ancestor_release_receipt_invalid"}
-    if not _is_ancestor(repo, ancestor_release.commit, current_release.commit):
-        return {"ok": False, "error": "ancestor_release_not_ancestor"}
     changed_paths = _changed_paths(repo, ancestor_release.commit, current_release.commit)
     if changed_paths is None:
         return {"ok": False, "error": "release_diff_unavailable"}
@@ -403,43 +417,65 @@ def _newest_verified_ancestor(
     current_record = runtime.store.get_by_id(current_release.receipt_id, scope=scope)
     if current_record is None:
         return None
-    verified: list[ReleaseIdentity] = []
-    for record in _deployment_receipt_records(runtime, scope=scope):
+    current_rowid = _record_rowid(runtime, record=current_record, scope=scope)
+    verified: list[tuple[int, ReleaseIdentity]] = []
+    for sequence, record in enumerate(
+        _deployment_receipt_records(
+            runtime,
+            scope=scope,
+            before_rowid=current_rowid,
+        )
+    ):
         identity = verified_deployment_receipt_identity(record)
         if (
             identity is None
             or identity == current_release
-            or not _record_precedes(runtime, earlier=record, later=current_record, scope=scope)
+            or (
+                current_rowid is None
+                and not _record_precedes(
+                    runtime,
+                    earlier=record,
+                    later=current_record,
+                    scope=scope,
+                )
+            )
         ):
             continue
-        verified.append(identity)
+        verified.append((sequence, identity))
 
-    candidates: list[tuple[int, ReleaseIdentity]] = []
-    for identity in verified:
-        if not _is_ancestor(repo, identity.commit, current_release.commit):
-            continue
-        distance = _git_text(
-            repo,
-            "rev-list",
-            "--count",
-            f"{identity.commit}..{current_release.commit}",
+    if not verified:
+        return None
+    distances = _ancestor_distances(repo, current_release.commit)
+    if distances is None:
+        return None
+    candidates = [
+        (
+            distances[identity.commit],
+            sequence,
+            identity.commit,
+            identity.receipt_id,
+            identity,
         )
-        try:
-            candidates.append((int(distance), identity))
-        except (TypeError, ValueError):
-            continue
-    return min(candidates, key=lambda item: item[0])[1] if candidates else None
+        for sequence, identity in verified
+        if identity.commit in distances and distances[identity.commit] > 0
+    ]
+    return min(candidates)[4] if candidates else None
 
 
-def _deployment_receipt_records(runtime: Any, *, scope: ScopeRef) -> list[Any]:
+def _deployment_receipt_records(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    before_rowid: int | None,
+) -> Iterator[Any]:
     sqlite = getattr(getattr(runtime, "store", None), "sqlite", None)
     conn = getattr(sqlite, "conn", None)
-    if conn is not None:
-        records: list[Any] = []
-        for page in range(MAX_RECEIPT_PAGES):
+    if conn is not None and before_rowid is not None:
+        cursor = before_rowid
+        while True:
             rows = conn.execute(
                 """
-                SELECT record_id, source_id
+                SELECT rowid, record_id, source_id
                 FROM records
                 WHERE kind = ?
                   AND source = ?
@@ -448,8 +484,9 @@ def _deployment_receipt_records(runtime: Any, *, scope: ScopeRef) -> list[Any]:
                   AND agent_id = ?
                   AND workspace_id = ?
                   AND user_id = ?
+                  AND rowid < ?
                 ORDER BY rowid DESC
-                LIMIT ? OFFSET ?
+                LIMIT ?
                 """,
                 (
                     "promotion_request",
@@ -459,10 +496,12 @@ def _deployment_receipt_records(runtime: Any, *, scope: ScopeRef) -> list[Any]:
                     scope.agent_id,
                     scope.workspace_id,
                     scope.user_id,
+                    cursor,
                     RECEIPT_PAGE_SIZE,
-                    page * RECEIPT_PAGE_SIZE,
                 ),
             ).fetchall()
+            if not rows:
+                break
             for row in rows:
                 record = runtime.store.get_by_exact_ref(
                     str(row["record_id"]),
@@ -470,29 +509,55 @@ def _deployment_receipt_records(runtime: Any, *, scope: ScopeRef) -> list[Any]:
                     source_id=str(row["source_id"]),
                 )
                 if record is not None:
-                    records.append(record)
-            if len(rows) < RECEIPT_PAGE_SIZE:
+                    yield record
+            next_cursor = min(int(row["rowid"]) for row in rows)
+            if next_cursor >= cursor:
                 break
-        return records
+            cursor = next_cursor
+        return
 
-    records = []
-    for page in range(MAX_RECEIPT_PAGES):
+    offset = 0
+    while True:
         batch = runtime.store.list_records(
             kinds=["promotion_request"],
             scope=scope,
             status="deployed",
             limit=RECEIPT_PAGE_SIZE,
-            offset=page * RECEIPT_PAGE_SIZE,
+            offset=offset,
         )
-        records.extend(
-            record
-            for record in batch
-            if same_scope(record.scope, scope)
-            and record.source == "eimemory.deployment_receipt"
-        )
-        if len(batch) < RECEIPT_PAGE_SIZE:
+        if not batch:
             break
-    return records
+        for record in batch:
+            if (
+                same_scope(record.scope, scope)
+                and record.source == "eimemory.deployment_receipt"
+            ):
+                yield record
+        offset += len(batch)
+
+
+def _ancestor_distances(repo: Path, current: str) -> dict[str, int] | None:
+    raw = _git_bytes(repo, "rev-list", "--parents", current)
+    if raw is None:
+        return None
+    parents: dict[str, tuple[str, ...]] = {}
+    for raw_line in raw.decode("ascii", errors="strict").splitlines():
+        values = tuple(raw_line.strip().lower().split())
+        if not values or not all(COMMIT_RE.fullmatch(value) for value in values):
+            return None
+        parents[values[0]] = values[1:]
+    if current not in parents:
+        return None
+    distances = {current: 0}
+    queue = deque([current])
+    while queue:
+        commit = queue.popleft()
+        next_distance = distances[commit] + 1
+        for parent in parents.get(commit, ()):
+            if parent not in distances or next_distance < distances[parent]:
+                distances[parent] = next_distance
+                queue.append(parent)
+    return distances
 
 
 def _record_precedes(runtime: Any, *, earlier: Any, later: Any, scope: ScopeRef) -> bool:
@@ -937,26 +1002,6 @@ def _live_acceptance_contract_error(
     return "" if set(by_case) == expected_ids and len(references) == len(expected_ids) else (
         "complete_canonical_live_acceptance_set_required"
     )
-
-
-def _is_ancestor(repo: Path, ancestor: str, current: str) -> bool:
-    try:
-        result = subprocess.run(
-            ["git", "-C", str(repo), "merge-base", "--is-ancestor", ancestor, current],
-            check=False,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=10,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return result.returncode == 0
-
-
-def _git_text(repo: Path, *args: str) -> str:
-    raw = _git_bytes(repo, *args)
-    return "" if raw is None else raw.decode("utf-8", errors="replace").strip()
 
 
 def _git_bytes(repo: Path, *args: str) -> bytes | None:
