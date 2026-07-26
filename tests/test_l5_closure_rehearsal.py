@@ -386,6 +386,10 @@ def test_release_bound_bootstrap_pending_rehearsal_keeps_complete_runtime_at_l45
             release_identity=release,
             release_lineage_finalizer=lambda _core: lineage,
         )
+        direct_readiness = runtime.build_l5_readiness_report(
+            scope=SCOPE,
+            persist=False,
+        )
     finally:
         runtime.close()
 
@@ -408,6 +412,13 @@ def test_release_bound_bootstrap_pending_rehearsal_keeps_complete_runtime_at_l45
         "pending": [],
     }
     assert report["bootstrap_pending_verification"]["ok"] is True
+    assert direct_readiness["current_stage"] == "L4.5"
+    assert direct_readiness["readiness_score"] == 0.8
+    assert direct_readiness["production_recall_gate"]["evidence_mode"] == "current_release"
+    assert (
+        direct_readiness["production_recall_gate"]["evidence_release_commit"]
+        == release.commit
+    )
     assert report["outcome_trace"]["outcome"]["rehearsal"] is True
 
 

@@ -878,7 +878,6 @@ class Runtime:
         limit: int = 500,
         loop_id: str = "l5_readiness",
         repo_root: str = "/dev-project/eimemory",
-        require_current_recall_evidence: bool = False,
     ) -> dict:
         from eimemory.governance.l5_readiness import build_l5_readiness_report
 
@@ -889,7 +888,6 @@ class Runtime:
             limit=limit,
             loop_id=loop_id,
             repo_root=repo_root,
-            require_current_recall_evidence=require_current_recall_evidence,
         )
 
     def run_l5_closure_rehearsal(

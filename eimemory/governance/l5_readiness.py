@@ -185,7 +185,6 @@ def build_l5_readiness_report(
     limit: int = 500,
     loop_id: str = "l5_readiness",
     repo_root: str = "/dev-project/eimemory",
-    require_current_recall_evidence: bool = False,
 ) -> dict[str, Any]:
     """Build a read-only L5 readiness report from existing governance evidence."""
 
@@ -199,9 +198,22 @@ def build_l5_readiness_report(
     )
     channel_release = evidence_releases["channel.openclaw"]
     governance_release = evidence_releases["memory.governance"]
+    bootstrap_pending = {"ok": False, "status": "not_run"}
+    if release is not None:
+        from eimemory.evaluation.real_query_gate import verify_current_bootstrap_data_pending
+
+        try:
+            bootstrap_pending = verify_current_bootstrap_data_pending(
+                runtime,
+                scope=scope_ref,
+                release=release,
+            )
+        except Exception:
+            bootstrap_pending = {"ok": False, "status": "not_run"}
     recall_release = (
         release
-        if require_current_recall_evidence and release is not None
+        if bootstrap_pending.get("ok") is True
+        and bootstrap_pending.get("status") == "bootstrap_data_pending"
         else evidence_releases["memory.recall"]
     )
     ledger = build_capability_ledger(runtime, scope=scope_ref, limit=limit, attribute_outcomes=False)
