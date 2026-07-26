@@ -383,11 +383,15 @@ def _compact_health_payload(
     except Exception:
         pending_migrations = ["storage.migration_status_unavailable"]
     import_root = package_import_root()
+    current_commit = _current_commit()
+    configured_commit = os.environ.get("EIMEMORY_RUNTIME_COMMIT", "").strip()
+    runtime_identity_ok = not configured_commit or configured_commit == current_commit
     payload: EIMemoryRPCResponse = {
-        "ok": store_ready,
+        "ok": bool(store_ready and runtime_identity_ok),
         "service": "eimemory-rpc",
         "version": __version__,
-        "commit": _current_commit(),
+        "commit": current_commit,
+        "configured_runtime_commit": configured_commit,
         "contract_version": EIMEMORY_RPC_CONTRACT_VERSION,
         "import_root": str(import_root),
         "package_tree_digest": runtime_package_tree_digest(),
@@ -406,7 +410,8 @@ def _compact_health_payload(
         "checks": {
             "process": True,
             "store": store_ready,
-            "ready": bool(ready and store_ready),
+            "runtime_identity": runtime_identity_ok,
+            "ready": bool(ready and store_ready and runtime_identity_ok),
         },
     }
     if loopback_health:

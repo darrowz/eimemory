@@ -9,6 +9,7 @@ from copy import deepcopy
 
 import pytest
 
+from eimemory.adapters.eibrain import rpc_server
 from eimemory.adapters.eibrain.rpc import EIBrainRPCBridge
 from eimemory.adapters.eibrain.rpc_server import EIBrainRPCServer
 from eimemory.adapters.hermes.provider_core import HermesMemoryProviderCore
@@ -34,6 +35,78 @@ TEST_RELEASE = {
     "deployment_receipt_id": "test-receipt",
     "release_session_id": "test-release-session",
 }
+
+
+def test_health_fails_closed_when_configured_runtime_commit_differs_from_release(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    monkeypatch.setenv("EIMEMORY_RUNTIME_COMMIT", "b" * 40)
+    monkeypatch.setattr(rpc_server, "_current_commit", lambda: "a" * 40)
+
+    try:
+        payload = rpc_server._compact_health_payload(
+            runtime,
+            ready=True,
+            listen_host="127.0.0.1",
+            listen_port=8091,
+        )
+    finally:
+        runtime.close()
+
+    assert payload["configured_runtime_commit"] == "b" * 40
+    assert payload["ok"] is False
+    assert payload["checks"]["runtime_identity"] is False
+    assert payload["checks"]["ready"] is False
+
+
+def test_health_allows_unconfigured_local_runtime_identity(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    monkeypatch.delenv("EIMEMORY_RUNTIME_COMMIT", raising=False)
+    monkeypatch.setattr(rpc_server, "_current_commit", lambda: "a" * 40)
+
+    try:
+        payload = rpc_server._compact_health_payload(
+            runtime,
+            ready=True,
+            listen_host="127.0.0.1",
+            listen_port=8091,
+        )
+    finally:
+        runtime.close()
+
+    assert payload["configured_runtime_commit"] == ""
+    assert payload["ok"] is True
+    assert payload["checks"]["runtime_identity"] is True
+    assert payload["checks"]["ready"] is True
+
+
+def test_health_accepts_exact_configured_runtime_commit(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    monkeypatch.setenv("EIMEMORY_RUNTIME_COMMIT", "a" * 40)
+    monkeypatch.setattr(rpc_server, "_current_commit", lambda: "a" * 40)
+
+    try:
+        payload = rpc_server._compact_health_payload(
+            runtime,
+            ready=True,
+            listen_host="127.0.0.1",
+            listen_port=8091,
+        )
+    finally:
+        runtime.close()
+
+    assert payload["configured_runtime_commit"] == "a" * 40
+    assert payload["ok"] is True
+    assert payload["checks"]["runtime_identity"] is True
+    assert payload["checks"]["ready"] is True
 
 
 def _hermes_mutation_params(**overrides: object) -> dict:

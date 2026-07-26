@@ -1040,6 +1040,45 @@ _restart_current_services() {
   _user_systemctl restart openclaw-gateway.service
 }
 
+_verify_effective_runtime_metadata() {
+  local target_commit="$1"
+  if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ] || ! command -v systemctl >/dev/null 2>&1; then
+    return
+  fi
+  local unit effective_commit
+  for unit in eimemory-rpc.service openclaw-gateway.service; do
+    if ! effective_commit="$(
+      _user_systemctl show "$unit" --property=Environment --value |
+        "$PYTHON_BIN" -I -B -c '
+import shlex
+import sys
+
+name = "EIMEMORY_RUNTIME_COMMIT"
+try:
+    assignments = shlex.split(sys.stdin.read(), posix=True)
+except ValueError:
+    raise SystemExit(2)
+values = [
+    item.split("=", 1)[1]
+    for item in assignments
+    if item.partition("=")[0] == name and "=" in item
+]
+if len(values) != 1:
+    raise SystemExit(2)
+print(values[0])
+'
+    )"; then
+      echo "runtime_identity=failed unit=$unit reason=environment_unavailable" >&2
+      return 2
+    fi
+    if [ "$effective_commit" != "$target_commit" ]; then
+      echo "runtime_identity=failed unit=$unit reason=commit_mismatch" >&2
+      return 2
+    fi
+  done
+  echo "runtime_identity=verified units=2"
+}
+
 _install_candidate_runtime_metadata() {
   if [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ] && command -v systemctl >/dev/null 2>&1; then
     _run_as_service_user mkdir -p "$USER_SYSTEMD_DIR"
@@ -1436,6 +1475,7 @@ if { [ -e "$CURRENT_LINK" ] || [ -L "$CURRENT_LINK" ] || [ -d "$CURRENT_LINK" ];
   _refresh_openclaw_gateway_metadata "$REPO_DIR" "$COMMIT"
   _refresh_current_runtime_metadata "$RELEASE_DIR" "$COMMIT" "$REPO_DIR"
   _restart_current_services
+  _verify_effective_runtime_metadata "$COMMIT"
   _verify_release_health "$RELEASE_DIR" "$COMMIT"
   _record_deployment_receipt
   _run_post_switch_closure
@@ -1594,6 +1634,7 @@ if [ "$STORAGE_WRITERS_STOPPED" = "1" ]; then
 else
   _restart_current_services
 fi
+_verify_effective_runtime_metadata "$COMMIT"
 _maybe_fail_stage rpc_restart
 if [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ] && command -v systemctl >/dev/null 2>&1; then
   _inspect_openclaw_plugin_runtime

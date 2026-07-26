@@ -35,9 +35,12 @@ def verify_health_payload(
     if not isinstance(payload, dict):
         return {"ok": False, "error": "health_payload_not_object"}
     observed_digest = str(payload.get("package_tree_digest") or "").strip().lower()
+    health_checks = payload.get("checks")
     checks = {
         "service_ok": payload.get("ok") is True,
         "service_identity": str(payload.get("service") or "") == "eimemory-rpc",
+        "runtime_identity": isinstance(health_checks, dict)
+        and health_checks.get("runtime_identity") is True,
         "commit": str(payload.get("commit") or "").strip().lower() == expected_commit,
         "version": str(payload.get("version") or "").strip() == expected_version,
         "import_root": _resolved_equals(payload.get("import_root"), import_root),

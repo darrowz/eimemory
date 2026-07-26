@@ -1955,6 +1955,7 @@ def test_release_health_verifier_requires_exact_runtime_identity(tmp_path) -> No
         "import_root": str(package),
         "package_tree_digest": package_tree_digest(package),
         "paths": {"release": str(release)},
+        "checks": {"runtime_identity": True},
     }
 
     assert module.verify_health_payload(
@@ -1992,6 +1993,63 @@ def test_release_health_verifier_requires_exact_runtime_identity(tmp_path) -> No
     )
     assert report["ok"] is False
     assert "service_identity" in report["failed_checks"]
+
+    stale_runtime = {**payload, "checks": {"runtime_identity": False}}
+    report = module.verify_health_payload(
+        stale_runtime,
+        commit="a" * 40,
+        version="1.9.70",
+        release_dir=release,
+    )
+    assert report["ok"] is False
+    assert "runtime_identity" in report["failed_checks"]
+
+    missing_runtime_check = {**payload, "checks": {}}
+    report = module.verify_health_payload(
+        missing_runtime_check,
+        commit="a" * 40,
+        version="1.9.70",
+        release_dir=release,
+    )
+    assert report["ok"] is False
+    assert "runtime_identity" in report["failed_checks"]
+
+
+def test_immutable_release_installer_verifies_both_effective_runtime_commits_before_receipt() -> None:
+    script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
+    verifier_body = script.split(
+        "_verify_effective_runtime_metadata() {", 1
+    )[1].split("\n}", 1)[0]
+
+    assert 'eimemory-rpc.service' in verifier_body
+    assert 'openclaw-gateway.service' in verifier_body
+    assert '--property=Environment --value' in verifier_body
+    assert 'EIMEMORY_RUNTIME_COMMIT' in verifier_body
+    assert 'item.partition("=")[0] == name' in verifier_body
+    assert "len(values) != 1" in verifier_body
+    assert '"$effective_commit" != "$target_commit"' in verifier_body
+
+    already_current = script.split("already_current=1", 1)[0].rsplit(
+        'if { [ -e "$CURRENT_LINK" ]', 1
+    )[1]
+    assert already_current.index("_restart_current_services") < already_current.index(
+        '_verify_effective_runtime_metadata "$COMMIT"'
+    )
+    assert already_current.index(
+        '_verify_effective_runtime_metadata "$COMMIT"'
+    ) < already_current.index('_verify_release_health "$RELEASE_DIR" "$COMMIT"')
+    assert already_current.index(
+        '_verify_effective_runtime_metadata "$COMMIT"'
+    ) < already_current.index("_record_deployment_receipt")
+
+    current_switch = script.rindex('mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"')
+    main_transaction = script[current_switch:]
+    assert main_transaction.index(
+        '_verify_effective_runtime_metadata "$COMMIT"'
+    ) < main_transaction.index('_verify_release_health "$RELEASE_DIR" "$COMMIT"')
+    assert main_transaction.index(
+        '_verify_effective_runtime_metadata "$COMMIT"'
+    ) < main_transaction.index("_record_deployment_receipt")
 
 
 @pytest.mark.parametrize(
