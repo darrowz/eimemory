@@ -418,6 +418,8 @@ def _newest_verified_ancestor(
     if current_record is None:
         return None
     current_rowid = _record_rowid(runtime, record=current_record, scope=scope)
+    if current_rowid is None:
+        return None
     verified: list[tuple[int, ReleaseIdentity]] = []
     for sequence, record in enumerate(
         _deployment_receipt_records(
@@ -430,15 +432,6 @@ def _newest_verified_ancestor(
         if (
             identity is None
             or identity == current_release
-            or (
-                current_rowid is None
-                and not _record_precedes(
-                    runtime,
-                    earlier=record,
-                    later=current_record,
-                    scope=scope,
-                )
-            )
         ):
             continue
         verified.append((sequence, identity))
@@ -470,70 +463,51 @@ def _deployment_receipt_records(
 ) -> Iterator[Any]:
     sqlite = getattr(getattr(runtime, "store", None), "sqlite", None)
     conn = getattr(sqlite, "conn", None)
-    if conn is not None and before_rowid is not None:
-        cursor = before_rowid
-        while True:
-            rows = conn.execute(
-                """
-                SELECT rowid, record_id, source_id
-                FROM records
-                WHERE kind = ?
-                  AND source = ?
-                  AND status = ?
-                  AND tenant_id = ?
-                  AND agent_id = ?
-                  AND workspace_id = ?
-                  AND user_id = ?
-                  AND rowid < ?
-                ORDER BY rowid DESC
-                LIMIT ?
-                """,
-                (
-                    "promotion_request",
-                    "eimemory.deployment_receipt",
-                    "deployed",
-                    scope.tenant_id,
-                    scope.agent_id,
-                    scope.workspace_id,
-                    scope.user_id,
-                    cursor,
-                    RECEIPT_PAGE_SIZE,
-                ),
-            ).fetchall()
-            if not rows:
-                break
-            for row in rows:
-                record = runtime.store.get_by_exact_ref(
-                    str(row["record_id"]),
-                    scope=scope,
-                    source_id=str(row["source_id"]),
-                )
-                if record is not None:
-                    yield record
-            next_cursor = min(int(row["rowid"]) for row in rows)
-            if next_cursor >= cursor:
-                break
-            cursor = next_cursor
+    if conn is None or before_rowid is None:
         return
-
-    offset = 0
+    cursor = before_rowid
     while True:
-        batch = runtime.store.list_records(
-            kinds=["promotion_request"],
-            scope=scope,
-            status="deployed",
-            limit=RECEIPT_PAGE_SIZE,
-            offset=offset,
-        )
-        if not batch:
+        rows = conn.execute(
+            """
+            SELECT rowid, record_id, source_id
+            FROM records
+            WHERE kind = ?
+              AND source = ?
+              AND status = ?
+              AND tenant_id = ?
+              AND agent_id = ?
+              AND workspace_id = ?
+              AND user_id = ?
+              AND rowid < ?
+            ORDER BY rowid DESC
+            LIMIT ?
+            """,
+            (
+                "promotion_request",
+                "eimemory.deployment_receipt",
+                "deployed",
+                scope.tenant_id,
+                scope.agent_id,
+                scope.workspace_id,
+                scope.user_id,
+                cursor,
+                RECEIPT_PAGE_SIZE,
+            ),
+        ).fetchall()
+        if not rows:
             break
-        for record in batch:
-            if (
-                same_scope(record.scope, scope)
-                and record.source == "eimemory.deployment_receipt"
-            ):
+        for row in rows:
+            record = runtime.store.get_by_exact_ref(
+                str(row["record_id"]),
+                scope=scope,
+                source_id=str(row["source_id"]),
+            )
+            if record is not None:
                 yield record
-        offset += len(batch)
+        next_cursor = min(int(row["rowid"]) for row in rows)
+        if next_cursor >= cursor:
+            break
+        cursor = next_cursor
 
 
 def _ancestor_distances(repo: Path, current: str) -> dict[str, int] | None:

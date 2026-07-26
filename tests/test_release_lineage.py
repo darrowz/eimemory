@@ -758,6 +758,48 @@ def test_ancestor_lookup_keysets_past_old_cap_with_one_git_graph_walk(
     assert git_calls == [("rev-list", "--parents", current_commit)]
 
 
+@pytest.mark.parametrize("sqlite_mode", ["missing", "current_row_missing"])
+def test_ancestor_lookup_fails_closed_without_sqlite_insertion_order(
+    sqlite_mode: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ancestor_commit = "a" * 40
+    current_commit = "b" * 40
+    ancestor_record = _deployment_receipt_record(SCOPE, ancestor_commit, "1.0.0")
+    current_record = _deployment_receipt_record(SCOPE, current_commit, "1.0.1")
+    ancestor_record.time.created_at = "2026-01-01T00:00:00+00:00"
+    current_record.time.created_at = "2026-01-01T00:00:01+00:00"
+    current = verified_deployment_receipt_identity(current_record)
+    assert current is not None
+    runtime = _UnavailableOrderingRuntime(
+        sqlite_mode=sqlite_mode,
+        current_record=current_record,
+        fallback_records=[ancestor_record],
+    )
+    git_calls: list[tuple[str, ...]] = []
+
+    def git_graph(_repo: Path, *args: str) -> bytes | None:
+        git_calls.append(args)
+        return (
+            f"{current_commit} {ancestor_commit}\n"
+            f"{ancestor_commit}\n"
+        ).encode()
+
+    monkeypatch.setattr(release_lineage, "_git_bytes", git_graph)
+
+    selected = release_lineage._newest_verified_ancestor(
+        runtime,
+        scope=SCOPE,
+        repo=Path("unused"),
+        current_release=current,
+    )
+
+    assert selected is None
+    assert runtime.store.list_calls == 0
+    assert git_calls == []
+    assert all("OFFSET" not in query for query in runtime.store.queries)
+
+
 def test_unknown_production_path_marks_every_domain_changed(tmp_path: Path) -> None:
     repo = _repo(tmp_path)
     prior_commit = _commit(repo, "eimemory/retrieval/engine.py", "prior\n", "prior")
@@ -1174,4 +1216,68 @@ class _KeysetReceiptRuntime:
             connection,
             current_record,
             row_records,
+        )
+
+
+class _MissingCurrentRowConnection:
+    def __init__(self) -> None:
+        self.queries: list[str] = []
+
+    def execute(
+        self,
+        sql: str,
+        params: tuple[object, ...],
+    ) -> _QueryRows:
+        self.queries.append(sql)
+        return _QueryRows([])
+
+
+class _UnavailableOrderingStore:
+    def __init__(
+        self,
+        *,
+        sqlite_mode: str,
+        current_record: RecordEnvelope,
+        fallback_records: list[RecordEnvelope],
+    ) -> None:
+        connection = (
+            None
+            if sqlite_mode == "missing"
+            else _MissingCurrentRowConnection()
+        )
+        self.sqlite = None if connection is None else type(
+            "_SQLite",
+            (),
+            {"conn": connection},
+        )()
+        self.current_record = current_record
+        self.fallback_records = fallback_records
+        self.list_calls = 0
+        self.queries = [] if connection is None else connection.queries
+
+    def get_by_id(
+        self,
+        record_id: str,
+        *,
+        scope: ScopeRef,
+    ) -> RecordEnvelope | None:
+        return self.current_record if record_id == self.current_record.record_id else None
+
+    def list_records(self, **kwargs) -> list[RecordEnvelope]:
+        self.list_calls += 1
+        return list(self.fallback_records) if self.list_calls == 1 else []
+
+
+class _UnavailableOrderingRuntime:
+    def __init__(
+        self,
+        *,
+        sqlite_mode: str,
+        current_record: RecordEnvelope,
+        fallback_records: list[RecordEnvelope],
+    ) -> None:
+        self.store = _UnavailableOrderingStore(
+            sqlite_mode=sqlite_mode,
+            current_record=current_record,
+            fallback_records=fallback_records,
         )
