@@ -18,6 +18,7 @@ _BOOTSTRAP_PENDING_RECALL_REASONS = frozenset(
         "production_recall_dataset_unconfigured",
     }
 )
+_BOOTSTRAP_DIAGNOSTIC_LATENCY_MULTIPLIER = 1.05
 
 
 def run_release_closure(
@@ -190,6 +191,9 @@ def run_release_closure(
                 strict_state_record_id=str(
                     report["record_ids"].get("production_recall_strict_state") or ""
                 ),
+                bootstrap_pending_record_id=str(
+                    report["record_ids"].get("production_recall_bootstrap") or ""
+                ),
                 weak_replay=replay_bootstrap,
                 core_replay=core_replay,
                 live_acceptance=live_acceptance,
@@ -280,6 +284,7 @@ def _finalize_release_lineage(
     receipt_record_id: str,
     recall_gate_record_id: str,
     strict_state_record_id: str,
+    bootstrap_pending_record_id: str,
     weak_replay: dict[str, Any],
     core_replay: dict[str, Any],
     live_acceptance: dict[str, Any],
@@ -299,6 +304,8 @@ def _finalize_release_lineage(
         or not core_manifest
         or live_record_ids is None
         or bool(recall_gate_record_id) != bool(strict_state_record_id)
+        or bool(bootstrap_pending_record_id)
+        == bool(recall_gate_record_id and strict_state_record_id)
     ):
         return {
             "ok": False,
@@ -307,9 +314,9 @@ def _finalize_release_lineage(
             "error": "release_lineage_gate_references_incomplete",
         }
     recall_references = (
-        [recall_gate_record_id, strict_state_record_id]
-        if recall_gate_record_id and strict_state_record_id
-        else []
+        [bootstrap_pending_record_id, core_manifest]
+        if bootstrap_pending_record_id
+        else [recall_gate_record_id, strict_state_record_id]
     )
     gate_evidence = {
         "memory.recall": recall_references,
@@ -425,7 +432,11 @@ def _rehearsal_gate_ok(rehearsal: dict[str, Any]) -> bool:
 
 
 def _recall_result_allows_bootstrap_pending(report: dict[str, Any]) -> bool:
-    return _missing_dataset_recall_result(report) or _passing_diagnostic_recall_result(report)
+    return bool(
+        _missing_dataset_recall_result(report)
+        or _passing_diagnostic_recall_result(report)
+        or _bounded_latency_only_diagnostic_recall_result(report)
+    )
 
 
 def _missing_dataset_recall_result(report: dict[str, Any]) -> bool:
@@ -457,6 +468,57 @@ def _passing_diagnostic_recall_result(report: dict[str, Any]) -> bool:
         and quality.get("ok") is True
         and quality.get("blocked_reason") == ""
         and quality.get("blocking_metrics") == {}
+        and report.get("errors") == []
+        and type(report.get("seed_error_count")) is int
+        and report.get("seed_error_count") == 0
+        and type(report.get("sample_count")) is int
+        and int(report.get("sample_count")) > 0
+        and _exact_zero_number(report.get("false_recall_rate"))
+        and _exact_zero_number(report.get("forbidden_hit_rate"))
+        and _exact_zero_int(report.get("cross_channel_leakage_count"))
+        and _exact_zero_int(report.get("source_filter_leakage_count"))
+    )
+
+
+def _bounded_latency_only_diagnostic_recall_result(report: dict[str, Any]) -> bool:
+    quality = report.get("quality_gate") if isinstance(report.get("quality_gate"), dict) else {}
+    blocking = (
+        quality.get("blocking_metrics")
+        if isinstance(quality.get("blocking_metrics"), dict)
+        else {}
+    )
+    latency = blocking.get("latency_ms_p95") if len(blocking) == 1 else None
+    latency = latency if isinstance(latency, dict) else {}
+    thresholds = quality.get("thresholds") if isinstance(quality.get("thresholds"), dict) else {}
+    actual = latency.get("actual")
+    threshold = latency.get("threshold")
+    numeric = (
+        isinstance(actual, (int, float))
+        and not isinstance(actual, bool)
+        and isinstance(threshold, (int, float))
+        and not isinstance(threshold, bool)
+    )
+    bounded_latency = bool(
+        numeric
+        and float(threshold) > 0.0
+        and float(actual) > float(threshold)
+        and float(actual)
+        <= float(threshold) * _BOOTSTRAP_DIAGNOSTIC_LATENCY_MULTIPLIER
+        and latency.get("operator") == "<="
+        and report.get("latency_ms_p95") == actual
+        and thresholds.get("latency_ms_p95") == threshold
+    )
+    return bool(
+        report.get("ok") is False
+        and report.get("accepted") is False
+        and report.get("gate_status") == "diagnostic"
+        and report.get("dataset_kind") == "diagnostic"
+        and report.get("gate_ok") is False
+        and report.get("passed_threshold") is False
+        and report.get("blocked_reason") == "recall_quality_gate_failed"
+        and quality.get("ok") is False
+        and quality.get("blocked_reason") == "recall_quality_gate_failed"
+        and bounded_latency
         and report.get("errors") == []
         and type(report.get("seed_error_count")) is int
         and report.get("seed_error_count") == 0

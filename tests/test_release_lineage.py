@@ -570,6 +570,164 @@ def test_recall_requires_authoritative_gate_and_strict_state(
         runtime.close()
 
 
+def test_unchanged_recall_accepts_current_bootstrap_pending_and_core_replay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _repo(tmp_path)
+    prior_commit = _commit(repo, "eimemory/retrieval/engine.py", "prior\n", "prior")
+    current_commit = _commit(repo, "docs/current.md", "current\n", "current")
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    try:
+        _receipt(runtime, SCOPE, prior_commit, "1.0.0")
+        current_record = _deployment_receipt_record(
+            SCOPE,
+            current_commit,
+            "1.0.1",
+        )
+        anticipated = ReleaseIdentity(
+            commit=current_commit,
+            version="1.0.1",
+            receipt_id=current_record.record_id,
+            session_id=current_record.record_id,
+        )
+        pending = _gate(
+            runtime,
+            SCOPE,
+            anticipated,
+            source="eimemory.evaluation.production_recall.bootstrap",
+        )
+        runtime.store.append(current_record)
+        current = verified_deployment_receipt_identity(current_record)
+        assert current == anticipated
+        runtime._test_runtime_commit = current.commit
+        core_manifest = _manifest(runtime, SCOPE, title="core")
+        _mock_pending_recall_verifiers(
+            monkeypatch,
+            release=current,
+            pending_record_id=pending.record_id,
+            core_manifest_record_id=core_manifest.record_id,
+        )
+
+        report = record_release_lineage(
+            runtime,
+            scope=SCOPE,
+            repo_root=repo,
+            current_release=current,
+            gate_evidence={
+                "memory.recall": [pending.record_id, core_manifest.record_id]
+            },
+        )
+
+        domain = report["domains"]["memory.recall"]
+        assert domain["changed"] is False
+        assert domain["mode"] == "current"
+        assert domain["gate_errors"] == {}
+        assert domain["gate_evidence"] == [
+            pending.record_id,
+            core_manifest.record_id,
+        ]
+    finally:
+        runtime.close()
+
+
+def test_bootstrap_pending_cannot_authorize_changed_recall_domain(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _repo(tmp_path)
+    prior_commit = _commit(repo, "eimemory/retrieval/engine.py", "prior\n", "prior")
+    current_commit = _commit(
+        repo,
+        "eimemory/retrieval/engine.py",
+        "changed\n",
+        "current",
+    )
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    try:
+        _receipt(runtime, SCOPE, prior_commit, "1.0.0")
+        current = _receipt(runtime, SCOPE, current_commit, "1.0.1")
+        runtime._test_runtime_commit = current.commit
+        pending = _gate(
+            runtime,
+            SCOPE,
+            current,
+            source="eimemory.evaluation.production_recall.bootstrap",
+        )
+        core_manifest = _manifest(runtime, SCOPE, title="core")
+        _mock_pending_recall_verifiers(
+            monkeypatch,
+            release=current,
+            pending_record_id=pending.record_id,
+            core_manifest_record_id=core_manifest.record_id,
+        )
+
+        report = record_release_lineage(
+            runtime,
+            scope=SCOPE,
+            repo_root=repo,
+            current_release=current,
+            gate_evidence={
+                "memory.recall": [pending.record_id, core_manifest.record_id]
+            },
+        )
+
+        domain = report["domains"]["memory.recall"]
+        assert domain["changed"] is True
+        assert domain["mode"] == "changed_unverified"
+        assert domain["gate_errors"] == {
+            "__contract__": "bootstrap_pending_requires_unchanged_recall_domain"
+        }
+    finally:
+        runtime.close()
+
+
+def test_bootstrap_pending_requires_exact_current_recall_replay_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _repo(tmp_path)
+    prior_commit = _commit(repo, "eimemory/retrieval/engine.py", "prior\n", "prior")
+    current_commit = _commit(repo, "docs/current.md", "current\n", "current")
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    try:
+        _receipt(runtime, SCOPE, prior_commit, "1.0.0")
+        current = _receipt(runtime, SCOPE, current_commit, "1.0.1")
+        runtime._test_runtime_commit = current.commit
+        pending = _gate(
+            runtime,
+            SCOPE,
+            current,
+            source="eimemory.evaluation.production_recall.bootstrap",
+        )
+        supplied_manifest = _manifest(runtime, SCOPE, title="supplied")
+        verified_manifest = _manifest(runtime, SCOPE, title="verified")
+        _mock_pending_recall_verifiers(
+            monkeypatch,
+            release=current,
+            pending_record_id=pending.record_id,
+            core_manifest_record_id=verified_manifest.record_id,
+        )
+
+        report = record_release_lineage(
+            runtime,
+            scope=SCOPE,
+            repo_root=repo,
+            current_release=current,
+            gate_evidence={
+                "memory.recall": [pending.record_id, supplied_manifest.record_id]
+            },
+        )
+
+        domain = report["domains"]["memory.recall"]
+        assert domain["mode"] == "changed_unverified"
+        assert domain["gate_errors"] == {
+            "__contract__": "exact_bootstrap_pending_and_recall_replay_required"
+        }
+    finally:
+        runtime.close()
+
+
 def test_recall_gate_records_must_follow_current_receipt_insertion(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1370,6 +1528,56 @@ def _mock_recall_verifiers(
         real_query_gate,
         "verify_current_production_recall_strict_state",
         verify_strict,
+    )
+
+
+def _mock_pending_recall_verifiers(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    release: ReleaseIdentity,
+    pending_record_id: str,
+    core_manifest_record_id: str,
+) -> None:
+    monkeypatch.setattr(
+        real_query_gate,
+        "verify_current_bootstrap_data_pending",
+        lambda *args, **kwargs: {
+            "ok": kwargs.get("release") == release,
+            "status": "bootstrap_data_pending",
+            "reason": "production_dataset_not_ready",
+            "record_id": pending_record_id,
+            "release_identity": {
+                "release_commit": release.commit,
+                "release_version": release.version,
+                "deployment_receipt_id": release.receipt_id,
+                "release_session_id": release.session_id,
+            },
+        },
+    )
+
+    def verified_replay_summary(*_args, **kwargs):
+        assert kwargs["scope"] == SCOPE
+        assert kwargs["capabilities"] == {"memory.recall"}
+        assert kwargs["release"] == release
+        missing_field = kwargs["missing_field"]
+        return {
+            "executed_count": 3,
+            "pass_count": 3,
+            "fail_count": 0,
+            "not_run_count": 0,
+            "minimum_executed": 3,
+            "manifest_record_ids": {
+                "memory.recall": core_manifest_record_id,
+            },
+            "manifest_rejection_reasons": {},
+            "rejection_reasons": {},
+            missing_field: [],
+        }
+
+    monkeypatch.setattr(
+        l5_readiness,
+        "_verified_replay_summary",
+        verified_replay_summary,
     )
 
 

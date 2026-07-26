@@ -355,6 +355,61 @@ def test_release_closure_finalizes_exact_lineage_inside_single_rehearsal(
     assert report["record_ids"]["release_lineage"] == "lineage-final"
 
 
+def test_release_closure_finalizes_pending_recall_lineage_with_bootstrap_and_core_manifest() -> None:
+    captured: dict = {}
+
+    class PendingLineageRuntime:
+        def record_release_lineage(self, **kwargs) -> dict:
+            captured.update(kwargs)
+            return {
+                "ok": True,
+                "validated": True,
+                "compatible": True,
+                "record_id": "lineage-pending",
+            }
+
+        def current_release_lineage(self, **_kwargs) -> dict:
+            return {
+                "ok": True,
+                "validated": True,
+                "compatible": True,
+                "record_id": "lineage-pending",
+            }
+
+    release = ReleaseIdentity(
+        commit=CURRENT_COMMIT,
+        version="1.9.51",
+        receipt_id="receipt-1",
+        session_id="receipt-1",
+    )
+    live_acceptance = {
+        "cases": [
+            {"case_id": case_id, "record_id": f"live-case-{index}"}
+            for index, case_id in enumerate(release_closure_module.LIVE_ACCEPTANCE_CASE_IDS)
+        ]
+    }
+
+    report = release_closure_module._finalize_release_lineage(
+        PendingLineageRuntime(),
+        scope=SCOPE,
+        repo_root=REPO_ROOT,
+        current_release=release,
+        receipt_record_id="receipt-1",
+        recall_gate_record_id="",
+        strict_state_record_id="",
+        bootstrap_pending_record_id="bootstrap-pending-current",
+        weak_replay={"weak_capability_replay": {"manifest_record_id": "weak-manifest"}},
+        core_replay={"manifest_record_id": "core-manifest"},
+        live_acceptance=live_acceptance,
+    )
+
+    assert report["ok"] is True
+    assert captured["gate_evidence"]["memory.recall"] == [
+        "bootstrap-pending-current",
+        "core-manifest",
+    ]
+
+
 def test_release_closure_blocks_before_recall_while_storage_migrations_are_pending() -> None:
     runtime = FakeRuntime.successful()
     runtime.store.sqlite.pending_storage_migrations = lambda: ["records.payload_archive.v1"]
@@ -494,6 +549,58 @@ def test_release_closure_allows_real_passing_diagnostic_only_as_bootstrap_input(
     assert report["cross_channel_leakage_count"] == 0
     assert report["source_filter_leakage_count"] == 0
     assert _recall_result_allows_bootstrap_pending(report) is True
+
+
+def test_release_closure_allows_bounded_latency_only_diagnostic_as_bootstrap_input(
+    tmp_path,
+) -> None:
+    report = _latency_only_diagnostic_recall_report(
+        tmp_path,
+        actual=1520.126,
+        threshold=1500.0,
+    )
+
+    assert report["ok"] is False
+    assert report["quality_gate"]["blocking_metrics"] == {
+        "latency_ms_p95": {
+            "actual": 1520.126,
+            "threshold": 1500.0,
+            "operator": "<=",
+        }
+    }
+    assert _recall_result_allows_bootstrap_pending(report) is True
+
+
+@pytest.mark.parametrize(
+    ("mutation_path", "value"),
+    [
+        (("latency_ms_p95",), 1575.001),
+        (
+            ("quality_gate", "blocking_metrics", "hit_at_1"),
+            {"actual": 0.0, "threshold": 0.7, "operator": ">="},
+        ),
+        (("quality_gate", "blocking_metrics", "latency_ms_p95", "operator"), ">="),
+        (("cross_channel_leakage_count",), 1),
+        (("source_filter_leakage_count",), 1),
+        (("errors",), [{"error": "seed_failed"}]),
+    ],
+)
+def test_release_closure_rejects_unsafe_or_unbounded_latency_diagnostic(
+    tmp_path,
+    mutation_path: tuple[str, ...],
+    value,
+) -> None:
+    report = _latency_only_diagnostic_recall_report(
+        tmp_path,
+        actual=1520.126,
+        threshold=1500.0,
+    )
+    target = report
+    for key in mutation_path[:-1]:
+        target = target[key]
+    target[mutation_path[-1]] = value
+
+    assert _recall_result_allows_bootstrap_pending(report) is False
 
 
 def test_release_closure_routes_real_passing_diagnostic_to_release_bound_pending_verifier(
@@ -841,6 +948,39 @@ def _passing_diagnostic_recall_report(tmp_path) -> dict:
         return run_production_recall_eval(runtime, dataset)
     finally:
         runtime.close()
+
+
+def _latency_only_diagnostic_recall_report(
+    tmp_path,
+    *,
+    actual: float,
+    threshold: float,
+) -> dict:
+    report = _passing_diagnostic_recall_report(tmp_path)
+    report.update(
+        {
+            "ok": False,
+            "gate_ok": False,
+            "passed_threshold": False,
+            "blocked_reason": "recall_quality_gate_failed",
+            "latency_ms_p95": actual,
+        }
+    )
+    report["quality_gate"].update(
+        {
+            "ok": False,
+            "blocked_reason": "recall_quality_gate_failed",
+            "blocking_metrics": {
+                "latency_ms_p95": {
+                    "actual": actual,
+                    "threshold": threshold,
+                    "operator": "<=",
+                }
+            },
+        }
+    )
+    report["quality_gate"]["thresholds"]["latency_ms_p95"] = threshold
+    return report
 
 
 def _identity_kwargs() -> dict:

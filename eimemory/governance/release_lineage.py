@@ -329,6 +329,7 @@ def _compute_lineage(
                 domain=domain,
                 current_release=current_release,
                 references=current_references,
+                domain_changed=changed,
             )
             if current_references
             else {}
@@ -1025,9 +1026,11 @@ def _gate_errors(
     domain: str,
     current_release: ReleaseIdentity,
     references: list[str],
+    domain_changed: bool = False,
 ) -> dict[str, str]:
     authorized_sources = {
         "memory.recall": {
+            "eimemory.capability_replay",
             "eimemory.evaluation.production_recall",
             "eimemory.evaluation.production_recall.bootstrap",
         },
@@ -1041,8 +1044,25 @@ def _gate_errors(
     current_receipt = runtime.store.get_by_id(current_release.receipt_id, scope=scope)
     if current_receipt is None:
         return {"__contract__": "current_deployment_receipt_missing"}
+    candidate_records = {
+        reference: runtime.store.get_by_id(reference, scope=scope)
+        for reference in references
+    }
+    candidate_sources = {
+        str(record.source or "")
+        for record in candidate_records.values()
+        if record is not None
+    }
+    pending_recall_contract = bool(
+        domain == "memory.recall"
+        and candidate_sources
+        == {
+            "eimemory.capability_replay",
+            "eimemory.evaluation.production_recall.bootstrap",
+        }
+    )
     for reference in references:
-        record = runtime.store.get_by_id(reference, scope=scope)
+        record = candidate_records[reference]
         if record is None:
             errors[reference] = "record_not_found"
             continue
@@ -1059,6 +1079,11 @@ def _gate_errors(
             if reference != current_release.receipt_id:
                 errors[reference] = "not_current_deployment_receipt"
                 continue
+        elif (
+            pending_recall_contract
+            and record.source == "eimemory.evaluation.production_recall.bootstrap"
+        ):
+            pass
         elif not _record_precedes(
             runtime,
             earlier=current_receipt,
@@ -1077,6 +1102,8 @@ def _gate_errors(
             scope=scope,
             current_release=current_release,
             references=references,
+            records=records,
+            domain_changed=domain_changed,
         )
     elif domain == "memory.governance":
         contract_error = _governance_gate_contract_error(
@@ -1121,7 +1148,28 @@ def _recall_gate_contract_error(
     scope: ScopeRef,
     current_release: ReleaseIdentity,
     references: list[str],
+    records: dict[str, Any],
+    domain_changed: bool,
 ) -> str:
+    sources = {str(record.source or "") for record in records.values()}
+    if sources == {
+        "eimemory.capability_replay",
+        "eimemory.evaluation.production_recall.bootstrap",
+    }:
+        return _pending_recall_gate_contract_error(
+            runtime,
+            scope=scope,
+            current_release=current_release,
+            references=references,
+            records=records,
+            domain_changed=domain_changed,
+        )
+    if sources != {
+        "eimemory.evaluation.production_recall",
+        "eimemory.evaluation.production_recall.bootstrap",
+    }:
+        return "recall_gate_evidence_contract_unrecognized"
+
     from eimemory.evaluation.real_query_gate import (
         verify_current_production_recall_gate,
         verify_current_production_recall_strict_state,
@@ -1154,6 +1202,81 @@ def _recall_gate_contract_error(
     return "" if set(references) == {gate_id, strict_id} and len(references) == 2 else (
         "exact_recall_gate_and_strict_state_required"
     )
+
+
+def _pending_recall_gate_contract_error(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    current_release: ReleaseIdentity,
+    references: list[str],
+    records: dict[str, Any],
+    domain_changed: bool,
+) -> str:
+    if domain_changed:
+        return "bootstrap_pending_requires_unchanged_recall_domain"
+
+    from eimemory.evaluation.real_query_gate import (
+        verify_current_bootstrap_data_pending,
+    )
+    from eimemory.governance.l5_readiness import _verified_replay_summary
+
+    pending = verify_current_bootstrap_data_pending(
+        runtime,
+        scope=scope,
+        release=current_release,
+    )
+    pending_id = str(pending.get("record_id") or "")
+    if (
+        pending.get("ok") is not True
+        or pending.get("status") != "bootstrap_data_pending"
+        or not pending_id
+    ):
+        return str(pending.get("reason") or "current_bootstrap_pending_invalid")
+
+    missing_field = "core_replay_capabilities_missing"
+    replay = _verified_replay_summary(
+        runtime,
+        scope=scope,
+        limit=2000,
+        capabilities={"memory.recall"},
+        missing_field=missing_field,
+        release=current_release,
+    )
+    manifest_ids = {
+        str(record_id or "")
+        for record_id in dict(replay.get("manifest_record_ids") or {}).values()
+        if str(record_id or "")
+    }
+    if (
+        replay.get(missing_field)
+        or replay.get("manifest_rejection_reasons")
+        or replay.get("rejection_reasons")
+        or int(replay.get("fail_count") or 0) != 0
+        or int(replay.get("not_run_count") or 0) != 0
+        or int(replay.get("executed_count") or 0)
+        < int(replay.get("minimum_executed") or 1)
+        or int(replay.get("pass_count") or 0)
+        != int(replay.get("executed_count") or 0)
+        or len(manifest_ids) != 1
+    ):
+        return "current_release_recall_replay_incomplete"
+    core_manifest_id = next(iter(manifest_ids))
+    if (
+        set(references) != {pending_id, core_manifest_id}
+        or len(references) != 2
+        or pending_id not in records
+        or core_manifest_id not in records
+    ):
+        return "exact_bootstrap_pending_and_recall_replay_required"
+    if not _record_precedes(
+        runtime,
+        earlier=records[pending_id],
+        later=records[core_manifest_id],
+        scope=scope,
+    ):
+        return "bootstrap_pending_must_precede_recall_replay"
+    return ""
 
 
 def _governance_gate_contract_error(

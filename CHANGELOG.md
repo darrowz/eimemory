@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Planned
 - Multi-agent memory coordination
 
+## [1.9.93] - 2026-07-27
+
+### Fixed
+- Keep compatible releases running in honest L4.5 data-accumulation mode when the diagnostic recall gate has only a bounded p95 latency fluctuation of at most five percent; correctness, leakage, evaluator, and multi-metric failures remain blocking.
+- Establish current-release recall lineage from the exact release-bound bootstrap pending record plus the verified current-release `memory.recall` replay manifest, only when the recall implementation is unchanged.
+- Preserve fail-closed release behavior for changed recall code, stale or mismatched bootstrap evidence, incomplete replay manifests, and invalid evidence ordering.
+
 ## [1.9.92] - 2026-07-27
 
 ### Fixed
