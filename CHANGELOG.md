@@ -10,6 +10,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Planned
 - Multi-agent memory coordination
 
+## [1.9.89] - 2026-07-27
+
+### Fixed
+- Reconcile grace-eligible stale OpenClaw task leases through a durable watchdog repair task, resume interrupted repairs, and keep repair controls out of business-stale accounting.
+- Enforce exact deployed runtime identity across RPC health, systemd services, immutable installation, and release verification before recording deployment evidence.
+- Preserve verified L5 capability evidence across compatible release lineage by domain while keeping the current deployment receipt exact, recomputing lineage at runtime, and failing closed for changed or unverified domains.
+- Keep bootstrap-pending recall evidence bound to the current release, finalize lineage once after canonical replay evidence exists, and prevent version-only evolution from erasing compatible L5 capability evidence.
+- Treat valid below-L5 observation as pending with six-hour rechecks, while failing closed on malformed readiness, service-query errors, timer-disable failures, and repeated L5 activation.
+
 ## [1.9.86] - 2026-07-23
 
 ### Fixed
