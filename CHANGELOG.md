@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Planned
 - Multi-agent memory coordination
 
+## [1.9.92] - 2026-07-27
+
+### Fixed
+- Repair a missing receipt for the currently healthy prior immutable release before recall bootstrap, using exact scope, commit, release-tree, runtime-health, and trusted-related-release verification.
+- Keep receipt repair idempotent and fail before bootstrap, writer quiescence, storage transactions, or release switching when trustworthy prior evidence cannot be established.
+
 ## [1.9.91] - 2026-07-27
 
 ### Fixed
