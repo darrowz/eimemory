@@ -2143,6 +2143,13 @@ def _verify_current_production_recall_gate_once(
     if _release_from_payload(report.get("release_identity")) != current:
         return {"ok": False, "status": "not_run", "reason": "latest_production_recall_report_release_mismatch", "record_id": record.record_id}
     if not _validate_persisted_real_query_report(report, expected_release=current):
+        if _validate_low_signal_not_run_report(report, expected_release=current):
+            return {
+                "ok": False,
+                "status": "not_run",
+                "reason": "query_features_low_signal",
+                "record_id": record.record_id,
+            }
         return {"ok": False, "status": str(report.get("gate_status") or "blocked"), "reason": "production_recall_report_contract_invalid", "record_id": record.record_id}
     receipt = runtime.store.get_by_id(current.receipt_id, scope=scope_ref)
     if receipt is None or verified_deployment_receipt_identity(receipt) != current:
@@ -2351,6 +2358,35 @@ def _validate_persisted_real_query_report(report: dict[str, Any], *, expected_re
         and thresholds == PRODUCTION_REAL_QUERY_THRESHOLDS
         and int(report.get("cross_channel_leakage_count") or 0) == 0
         and int(report.get("source_filter_leakage_count") or 0) == 0
+    )
+
+
+def _validate_low_signal_not_run_report(report: dict[str, Any], *, expected_release: ReleaseIdentity) -> bool:
+    gate = report.get("threshold_gate") if isinstance(report.get("threshold_gate"), dict) else {}
+    thresholds = gate.get("thresholds") if isinstance(gate.get("thresholds"), dict) else {}
+    evidence = report.get("secure_dataset_evidence") if isinstance(report.get("secure_dataset_evidence"), dict) else {}
+    return bool(
+        report.get("schema") == PRODUCTION_REAL_QUERY_REPORT_SCHEMA
+        and report.get("report_type") == "production_recall_gate"
+        and report.get("dataset_kind") == "production"
+        and _release_from_payload(report.get("release_identity")) == expected_release
+        and str(report.get("deployment_receipt_id") or "") == expected_release.receipt_id
+        and report.get("accepted") is False
+        and report.get("gate_status") == "not_run"
+        and report.get("blocked_reason") == "query_features_low_signal"
+        and gate.get("schema") == PRODUCTION_REAL_QUERY_POLICY
+        and gate.get("ok") is False
+        and gate.get("blocked_reason") == "query_features_low_signal"
+        and thresholds == PRODUCTION_REAL_QUERY_THRESHOLDS
+        and gate.get("blocking_metrics") == {}
+        and int(report.get("sample_count") or 0) == 0
+        and report.get("samples") == []
+        and report.get("result_refs") == {}
+        and str(report.get("result_digest") or "") == _stable_digest({})
+        and int(report.get("cross_channel_leakage_count") or 0) == 0
+        and int(report.get("source_filter_leakage_count") or 0) == 0
+        and _secure_dataset_evidence(evidence)[1] == ""
+        and str(evidence.get("canonical_digest") or "") == str(report.get("dataset_digest") or "")
     )
 
 

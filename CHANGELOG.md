@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Planned
 - Multi-agent memory coordination
 
+## [1.9.104] - 2026-07-27
+
+### Fixed
+- Preserve the original `query_features_low_signal` reason when verifying release-bound production recall high-water reports, so L5 readiness treats quarantined low-signal datasets as bootstrap data accumulation instead of generic report contract corruption.
+
 ## [1.9.103] - 2026-07-27
 
 ### Fixed
