@@ -360,12 +360,7 @@ def _bootstrap_pending_readiness_evidence_reason(
     ):
         return "bootstrap_pending_readiness_not_exact_l45"
     recall = readiness.get("production_recall_gate") if isinstance(readiness.get("production_recall_gate"), dict) else {}
-    if not (
-        recall.get("ok") is False
-        and recall.get("status") == "not_run"
-        and recall.get("reason") == "current_release_production_recall_report_missing"
-        and not str(recall.get("record_id") or "")
-    ):
+    if not _bootstrap_pending_recall_gap_is_dataset_only(recall):
         return "bootstrap_pending_recall_gap_not_dataset_only"
     strict = (
         readiness.get("production_recall_strict_state")
@@ -427,6 +422,18 @@ def _bootstrap_pending_readiness_evidence_reason(
     ) != "L5":
         return "bootstrap_pending_non_recall_l5_evidence_incomplete"
     return ""
+
+
+def _bootstrap_pending_recall_gap_is_dataset_only(recall: dict[str, Any]) -> bool:
+    if not (recall.get("ok") is False and recall.get("status") == "not_run"):
+        return False
+    reason = str(recall.get("reason") or "")
+    record_id = str(recall.get("record_id") or "")
+    if reason == "current_release_production_recall_report_missing":
+        return record_id == ""
+    if reason == "query_features_low_signal":
+        return True
+    return False
 
 
 def _compatible_live_task_accumulation(

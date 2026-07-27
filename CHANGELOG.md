@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Planned
 - Multi-agent memory coordination
 
+## [1.9.101] - 2026-07-27
+
+### Fixed
+- Allow L5 closure rehearsal to treat low-signal production recall reports as dataset-only bootstrap gaps when all non-recall release evidence is complete, so quarantine of unusable real-query samples does not roll back otherwise compatible self-evolution releases.
+
 ## [1.9.100] - 2026-07-27
 
 ### Fixed

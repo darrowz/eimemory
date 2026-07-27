@@ -464,6 +464,37 @@ def test_bootstrap_pending_contract_rejects_every_non_dataset_l45_gap(
     assert result["reason"] == reason
 
 
+def test_bootstrap_pending_contract_allows_low_signal_recall_report_as_dataset_gap(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        release, pending = _seed_bootstrap_pending(runtime)
+        lineage = _mock_current_release_lineage(monkeypatch, runtime, release)
+        readiness = _complete_bootstrap_pending_readiness(release, pending["record_id"])
+        readiness["release_lineage"] = lineage
+        readiness["production_recall_gate"] = {
+            "ok": False,
+            "status": "not_run",
+            "reason": "query_features_low_signal",
+            "record_id": "prg-low-signal",
+        }
+
+        result = verify_bootstrap_pending_readiness_contract(
+            runtime,
+            scope=SCOPE,
+            bootstrap_pending=pending,
+            release=release,
+            readiness=readiness,
+        )
+    finally:
+        runtime.close()
+
+    assert result["ok"] is True, result
+    assert result["status"] == "bootstrap_data_pending"
+
+
 def test_bootstrap_pending_allows_real_task_accumulation_after_compatible_operational_revalidation(
     tmp_path,
     monkeypatch,
