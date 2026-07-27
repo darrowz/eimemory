@@ -113,6 +113,121 @@ def test_real_audit_collection_operator_acceptance_and_immutable_dataset_build(t
     runtime.close()
 
 
+def test_dataset_build_is_ready_for_single_active_production_channel(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    expected: dict[int, RecordEnvelope] = {}
+    for index in range(5):
+        expected[index] = _seed_decision(runtime, channel="openclaw", index=index)
+
+    collected = collect_pending_production_queries(runtime, scope=BASE_SCOPE)
+    assert collected["created"] == 5
+
+    for pending_id in collected["pending_record_ids"]:
+        pending = runtime.store.get_by_id(pending_id)
+        assert pending is not None
+        index = int(str(pending.content["capture_ref"]).rsplit("-", 1)[1])
+        accepted = accept_pending_production_query(
+            runtime,
+            pending_record_id=pending_id,
+            query_features={"terms": ["openclaw", "verified", "release", f"case-{index}"], "intent": "memory recall"},
+            labels=[{"record_ref": expected[index].record_id, "grade": 3}],
+            labeler="operator",
+            operator_scope=BASE_SCOPE,
+            label_packet_evidence=LABEL_PACKET_EVIDENCE,
+        )
+        assert accepted["ok"] is True
+
+    dataset = build_production_query_dataset(runtime, scope=BASE_SCOPE)
+
+    assert dataset["ready"] is True
+    assert dataset["progress"]["accepted_case_count"] == 5
+    assert dataset["progress"]["active_channels"] == ["openclaw"]
+    assert dataset["progress"]["required_case_count"] == 5
+    assert dataset["progress"]["per_channel_accepted"] == {"codex": 0, "hermes": 0, "openclaw": 5}
+    output = tmp_path / "production-redacted.json"
+    written = write_production_query_dataset(dataset["dataset"], output)
+    loaded, evidence = load_json_dataset_with_evidence(str(output))
+    frozen = freeze_production_recall_dataset({**loaded, "_secure_dataset_evidence": evidence})
+    assert written["ok"] is True
+    assert frozen["eligibility"]["ok"] is True
+    assert frozen["eligibility"]["active_channels"] == ["openclaw"]
+    runtime.close()
+
+
+def test_dataset_build_blocks_active_channel_until_minimum_cases(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    expected: dict[int, RecordEnvelope] = {}
+    for index in range(4):
+        expected[index] = _seed_decision(runtime, channel="openclaw", index=index)
+
+    collected = collect_pending_production_queries(runtime, scope=BASE_SCOPE)
+    assert collected["created"] == 4
+
+    for pending_id in collected["pending_record_ids"]:
+        pending = runtime.store.get_by_id(pending_id)
+        assert pending is not None
+        index = int(str(pending.content["capture_ref"]).rsplit("-", 1)[1])
+        accept_pending_production_query(
+            runtime,
+            pending_record_id=pending_id,
+            query_features={"terms": ["openclaw", "verified", "release", f"case-{index}"], "intent": "memory recall"},
+            labels=[{"record_ref": expected[index].record_id, "grade": 3}],
+            labeler="operator",
+            operator_scope=BASE_SCOPE,
+            label_packet_evidence=LABEL_PACKET_EVIDENCE,
+        )
+
+    dataset = build_production_query_dataset(runtime, scope=BASE_SCOPE)
+    output = tmp_path / "production-redacted-mixed.json"
+    write_production_query_dataset(dataset["dataset"], output)
+    loaded, evidence = load_json_dataset_with_evidence(str(output))
+    frozen = freeze_production_recall_dataset({**loaded, "_secure_dataset_evidence": evidence})
+
+    assert dataset["ready"] is False
+    assert dataset["progress"]["active_channels"] == ["openclaw"]
+    assert dataset["progress"]["required_case_count"] == 5
+    assert "minimum_case_count_missing" in frozen["eligibility"]["blocked_reasons"]
+    runtime.close()
+
+
+def test_dataset_build_uses_overall_minimum_across_active_channels(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    expected: dict[tuple[str, int], RecordEnvelope] = {}
+    for channel, total in (("openclaw", 3), ("codex", 2)):
+        for index in range(total):
+            expected[(channel, index)] = _seed_decision(runtime, channel=channel, index=index)
+
+    collected = collect_pending_production_queries(runtime, scope=BASE_SCOPE)
+    assert collected["created"] == 5
+
+    for pending_id in collected["pending_record_ids"]:
+        pending = runtime.store.get_by_id(pending_id)
+        assert pending is not None
+        channel = str(pending.content["channel"])
+        index = int(str(pending.content["capture_ref"]).rsplit("-", 1)[1])
+        accept_pending_production_query(
+            runtime,
+            pending_record_id=pending_id,
+            query_features={"terms": [channel, "verified", "release", f"case-{index}"], "intent": "memory recall"},
+            labels=[{"record_ref": expected[(channel, index)].record_id, "grade": 3}],
+            labeler="operator",
+            operator_scope=BASE_SCOPE,
+            label_packet_evidence=LABEL_PACKET_EVIDENCE,
+        )
+
+    dataset = build_production_query_dataset(runtime, scope=BASE_SCOPE)
+    output = tmp_path / "production-redacted-overall.json"
+    write_production_query_dataset(dataset["dataset"], output)
+    loaded, evidence = load_json_dataset_with_evidence(str(output))
+    frozen = freeze_production_recall_dataset({**loaded, "_secure_dataset_evidence": evidence})
+
+    assert dataset["ready"] is True
+    assert dataset["progress"]["accepted_case_count"] == 5
+    assert dataset["progress"]["active_channels"] == ["codex", "openclaw"]
+    assert frozen["eligibility"]["ok"] is True
+    runtime.close()
+
+
 def test_operator_cannot_label_across_channel_or_source_boundary(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     correct = _seed_decision(runtime, channel="codex", index=0)

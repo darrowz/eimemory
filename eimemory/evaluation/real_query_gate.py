@@ -63,9 +63,9 @@ PRODUCTION_REAL_QUERY_THRESHOLDS: dict[str, float] = {
     "latency_ms_p95": 3000.0,
     "peak_memory_bytes": 67_108_864.0,
 }
-_REAL_QUERY_MIN_CASES = 15
-_REAL_QUERY_MIN_LABELS = 15
-_REAL_QUERY_MIN_CASES_PER_CHANNEL = 5
+_REAL_QUERY_MIN_ACTIVE_CHANNELS = 1
+_REAL_QUERY_MIN_CASES = 5
+_REAL_QUERY_MIN_LABELS = 5
 _MAX_QUERY_TERMS = 16
 _MAX_QUERY_TERM_CHARS = 64
 _MAX_QUERY_FEATURE_CHARS = 512
@@ -153,7 +153,7 @@ def freeze_production_recall_dataset(dataset: dict[str, Any]) -> dict[str, Any]:
     frozen_cases: list[dict[str, Any]] = []
     seen_case_ids: set[str] = set()
     channels: set[str] = set()
-    channel_counts = {channel: 0 for channel in PRODUCTION_REAL_QUERY_REQUIRED_CHANNELS}
+    channel_counts = {channel: 0 for channel in SUPPORTED_RUNTIME_CHANNELS}
     accepted_label_count = 0
     raw_cases = list(raw.get("cases") or [])
     if len(raw_cases) > 500:
@@ -177,14 +177,11 @@ def freeze_production_recall_dataset(dataset: dict[str, Any]) -> dict[str, Any]:
         accepted_label_count += len(case["labels"])
         frozen_cases.append(case)
 
-    if len(frozen_cases) < _REAL_QUERY_MIN_CASES:
-        blocked.append("minimum_case_count_missing")
-    if accepted_label_count < _REAL_QUERY_MIN_LABELS:
+    active_contract = production_real_query_active_channel_contract(channel_counts)
+    if not active_contract["ok"]:
+        blocked.extend(str(reason) for reason in active_contract["blocked_reasons"])
+    if accepted_label_count < active_contract["required_label_count"]:
         blocked.append("minimum_label_count_missing")
-    if not PRODUCTION_REAL_QUERY_REQUIRED_CHANNELS.issubset(channels):
-        blocked.append("required_channel_coverage_missing")
-    if any(count < _REAL_QUERY_MIN_CASES_PER_CHANNEL for count in channel_counts.values()):
-        blocked.append("required_channel_minimum_missing")
     frozen = {
         "schema": PRODUCTION_REAL_QUERY_SCHEMA,
         "name": str(raw.get("name") or "production-real-query")[:120],
@@ -212,8 +209,43 @@ def freeze_production_recall_dataset(dataset: dict[str, Any]) -> dict[str, Any]:
             "accepted_label_count": accepted_label_count,
             "channel_coverage": sorted(channels),
             "per_channel_case_count": dict(sorted(channel_counts.items())),
+            "active_channels": list(active_contract["active_channels"]),
+            "required_case_count": int(active_contract["required_case_count"]),
+            "required_label_count": int(active_contract["required_label_count"]),
+            "required_per_active_channel": 0,
         },
     }
+
+
+def production_real_query_active_channel_contract(channel_counts: dict[str, int]) -> dict[str, Any]:
+    counts = {channel: int(channel_counts.get(channel) or 0) for channel in sorted(SUPPORTED_RUNTIME_CHANNELS)}
+    active_channels = [channel for channel, count in counts.items() if count > 0]
+    total_count = sum(counts[channel] for channel in active_channels)
+    blocked: list[str] = []
+    if len(active_channels) < _REAL_QUERY_MIN_ACTIVE_CHANNELS:
+        blocked.append("active_channel_coverage_missing")
+    if total_count < _REAL_QUERY_MIN_CASES:
+        blocked.append("minimum_case_count_missing")
+    return {
+        "ok": not blocked,
+        "active_channels": active_channels,
+        "per_channel_case_count": counts,
+        "required_case_count": _REAL_QUERY_MIN_CASES,
+        "required_label_count": _REAL_QUERY_MIN_LABELS,
+        "required_per_active_channel": 0,
+        "blocked_reasons": list(dict.fromkeys(blocked)),
+    }
+
+
+def _sample_channel_counts(samples: list[Any]) -> dict[str, int]:
+    counts = {channel: 0 for channel in SUPPORTED_RUNTIME_CHANNELS}
+    for sample in samples:
+        if not isinstance(sample, dict):
+            continue
+        channel = str(sample.get("channel") or "")
+        if channel in counts:
+            counts[channel] += 1
+    return counts
 
 
 def _freeze_real_query_case(
@@ -1361,7 +1393,9 @@ def _resolve_trusted_baseline(
             or str(baseline_evidence.get("canonical_digest") or "") != dataset_digest
         ):
             return None, "baseline_dataset_fingerprint_mismatch"
-    if int(report.get("sample_count") or 0) < _REAL_QUERY_MIN_CASES or not isinstance(report.get("samples"), list):
+    samples = report.get("samples") if isinstance(report.get("samples"), list) else []
+    sample_contract = production_real_query_active_channel_contract(_sample_channel_counts(samples))
+    if int(report.get("sample_count") or 0) != len(samples) or not sample_contract["ok"]:
         return None, "baseline_samples_missing"
     if bootstrap_baseline:
         if not _independent_real_query_metrics_valid(report, baseline=None):
@@ -2109,10 +2143,8 @@ def _independent_real_query_metrics_valid(
     memory_measurement_ok = _memory_measurement_valid(report, samples=samples)
     if not memory_measurement_ok:
         return False
-    if len(samples) < _REAL_QUERY_MIN_CASES:
-        return False
     channels: set[str] = set()
-    channel_counts = {channel: 0 for channel in PRODUCTION_REAL_QUERY_REQUIRED_CHANNELS}
+    channel_counts = {channel: 0 for channel in SUPPORTED_RUNTIME_CHANNELS}
     recalculated: list[dict[str, float]] = []
     result_refs: dict[str, list[str]] = {}
     cross_leakage = 0
@@ -2161,9 +2193,8 @@ def _independent_real_query_metrics_valid(
         source_leakage += int(sample.get("source_filter_leakage_count") or 0)
         latencies.append(float(sample.get("latency_ms") or 0.0))
         recalculated.append(ranking)
-    if not PRODUCTION_REAL_QUERY_REQUIRED_CHANNELS.issubset(channels):
-        return False
-    if any(count < _REAL_QUERY_MIN_CASES_PER_CHANNEL for count in channel_counts.values()):
+    active_contract = production_real_query_active_channel_contract(channel_counts)
+    if not active_contract["ok"]:
         return False
     if result_refs != report.get("result_refs") or _stable_digest(result_refs) != str(report.get("result_digest") or ""):
         return False

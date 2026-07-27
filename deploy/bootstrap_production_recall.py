@@ -15,7 +15,6 @@ from typing import Any
 from eimemory.api.runtime import Runtime
 from eimemory.evaluation.real_query_gate import (
     _REAL_QUERY_MIN_CASES,
-    _REAL_QUERY_MIN_CASES_PER_CHANNEL,
     bootstrap_production_recall_baseline,
     freeze_production_recall_dataset,
     record_production_recall_bootstrap_pending,
@@ -40,8 +39,10 @@ def _progress(frozen: dict[str, Any]) -> dict[str, Any]:
         "case_count": int(eligibility.get("case_count") or 0),
         "accepted_label_count": int(eligibility.get("accepted_label_count") or 0),
         "per_channel_case_count": dict(eligibility.get("per_channel_case_count") or {}),
-        "required_case_count": _REAL_QUERY_MIN_CASES,
-        "required_per_channel": _REAL_QUERY_MIN_CASES_PER_CHANNEL,
+        "active_channels": list(eligibility.get("active_channels") or []),
+        "required_case_count": int(eligibility.get("required_case_count") or _REAL_QUERY_MIN_CASES),
+        "required_per_channel": int(eligibility.get("required_per_active_channel") or 0),
+        "required_label_count": int(eligibility.get("required_label_count") or _REAL_QUERY_MIN_CASES),
         "blocked_reasons": list(eligibility.get("blocked_reasons") or []),
     }
 

@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Planned
 - Multi-agent memory coordination
 
+## [1.9.98] - 2026-07-27
+
+### Fixed
+- Change the production real-query recall gate from fixed per-channel coverage to an overall active-channel contract: any current production channel mix is valid once total trusted cases and labels reach the minimum, while empty channels no longer downgrade release readiness.
+- Report the dynamic active-channel production recall contract in deployment bootstrap progress so source, release, and L5 readiness do not drift on unused runtime channels.
+
 ## [1.9.97] - 2026-07-27
 
 ### Fixed

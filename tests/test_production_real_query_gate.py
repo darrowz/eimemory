@@ -368,8 +368,11 @@ def test_trusted_capacity_uses_exact_scope_source_index_without_offset(tmp_path,
     [
         (lambda data: data.update({"dataset_kind": "synthetic"}), "dataset_not_production"),
         (
-            lambda data: data.update({"cases": [case for case in data["cases"] if case["channel"] != "hermes"]}),
-            "required_channel_coverage_missing",
+            lambda data: (
+                data.update({"cases": [case for case in data["cases"] if case["channel"] == "openclaw"][:4]}),
+                _refresh_dataset_evidence(data),
+            ),
+            "minimum_case_count_missing",
         ),
         (lambda data: data["cases"][0].update({"labels": []}), "accepted_labels_missing"),
         (lambda data: data["cases"][0].update({"source_id": "*"}), "exact_source_required"),

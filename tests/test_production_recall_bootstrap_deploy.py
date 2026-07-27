@@ -228,17 +228,33 @@ def test_early_pending_report_has_the_same_collection_shape(tmp_path, monkeypatc
 
 def test_progress_thresholds_use_real_query_gate_constants(monkeypatch) -> None:
     monkeypatch.setattr(bootstrap_deploy, "_REAL_QUERY_MIN_CASES", 27, raising=False)
-    monkeypatch.setattr(
-        bootstrap_deploy,
-        "_REAL_QUERY_MIN_CASES_PER_CHANNEL",
-        9,
-        raising=False,
-    )
 
     progress = bootstrap_deploy._progress({"eligibility": {}})
 
     assert progress["required_case_count"] == 27
-    assert progress["required_per_channel"] == 9
+    assert progress["required_label_count"] == 27
+    assert progress["required_per_channel"] == 0
+
+
+def test_progress_reports_dynamic_active_channel_contract() -> None:
+    progress = bootstrap_deploy._progress(
+        {
+            "eligibility": {
+                "case_count": 5,
+                "accepted_label_count": 5,
+                "active_channels": ["openclaw"],
+                "required_case_count": 5,
+                "required_label_count": 5,
+                "required_per_active_channel": 0,
+                "per_channel_case_count": {"openclaw": 5, "codex": 0, "hermes": 0},
+            }
+        }
+    )
+
+    assert progress["active_channels"] == ["openclaw"]
+    assert progress["required_case_count"] == 5
+    assert progress["required_label_count"] == 5
+    assert progress["required_per_channel"] == 0
 
 
 def _receipt(runtime: Runtime, *, commit: str, prior_commit: str) -> ReleaseIdentity:

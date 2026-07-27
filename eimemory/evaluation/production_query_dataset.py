@@ -17,6 +17,7 @@ from eimemory.evaluation.real_query_gate import (
     PRODUCTION_REAL_QUERY_SCHEMA,
     PRODUCTION_REAL_QUERY_TRUSTED_LABELERS,
     _bounded_query_features,
+    production_real_query_active_channel_contract,
     _stable_digest,
 )
 from eimemory.governance.evidence_contract import same_scope
@@ -301,7 +302,8 @@ def build_production_query_dataset(
             cases.append(dict(case))
             counts[channel] = counts.get(channel, 0) + 1
     counts = {channel: counts.get(channel, 0) for channel in sorted(SUPPORTED_RUNTIME_CHANNELS)}
-    ready = all(count >= 5 for count in counts.values())
+    active_contract = production_real_query_active_channel_contract(counts)
+    ready = bool(active_contract["ok"])
     dataset = {
         "schema": PRODUCTION_REAL_QUERY_SCHEMA,
         "name": "production-redacted-real-query",
@@ -315,8 +317,10 @@ def build_production_query_dataset(
         "ready": ready,
         "progress": {
             "accepted_case_count": len(cases),
-            "required_case_count": 15,
-            "required_per_channel": 5,
+            "required_case_count": int(active_contract["required_case_count"]),
+            "required_per_channel": int(active_contract["required_per_active_channel"]),
+            "active_channels": list(active_contract["active_channels"]),
+            "blocked_reasons": list(active_contract["blocked_reasons"]),
             "per_channel_accepted": counts,
         },
         "dataset": dataset,
