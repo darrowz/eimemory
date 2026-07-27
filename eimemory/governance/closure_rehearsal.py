@@ -425,13 +425,14 @@ def _bootstrap_pending_readiness_evidence_reason(
 
 
 def _bootstrap_pending_recall_gap_is_dataset_only(recall: dict[str, Any]) -> bool:
-    if not (recall.get("ok") is False and recall.get("status") == "not_run"):
+    if recall.get("ok") is not False:
         return False
+    status = str(recall.get("status") or "")
     reason = str(recall.get("reason") or "")
     record_id = str(recall.get("record_id") or "")
-    if reason == "current_release_production_recall_report_missing":
+    if status == "not_run" and reason == "current_release_production_recall_report_missing":
         return record_id == ""
-    if reason == "query_features_low_signal":
+    if status in {"not_run", "data_accumulating"} and reason == "query_features_low_signal":
         return True
     return False
 

@@ -464,9 +464,11 @@ def test_bootstrap_pending_contract_rejects_every_non_dataset_l45_gap(
     assert result["reason"] == reason
 
 
+@pytest.mark.parametrize("recall_status", ["not_run", "data_accumulating"])
 def test_bootstrap_pending_contract_allows_low_signal_recall_report_as_dataset_gap(
     tmp_path,
     monkeypatch,
+    recall_status: str,
 ) -> None:
     runtime = Runtime.create(root=tmp_path)
     try:
@@ -476,7 +478,7 @@ def test_bootstrap_pending_contract_allows_low_signal_recall_report_as_dataset_g
         readiness["release_lineage"] = lineage
         readiness["production_recall_gate"] = {
             "ok": False,
-            "status": "not_run",
+            "status": recall_status,
             "reason": "query_features_low_signal",
             "record_id": "prg-low-signal",
         }

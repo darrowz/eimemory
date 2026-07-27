@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Planned
 - Multi-agent memory coordination
 
+## [1.9.102] - 2026-07-27
+
+### Fixed
+- Treat production recall `data_accumulating` reports with low-signal real-query samples as dataset-only bootstrap gaps during L5 closure rehearsal, matching the real deploy gate shape while preserving hard blocks for non-recall evidence gaps.
+
 ## [1.9.101] - 2026-07-27
 
 ### Fixed
