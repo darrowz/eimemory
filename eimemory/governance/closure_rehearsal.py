@@ -432,7 +432,7 @@ def _bootstrap_pending_recall_gap_is_dataset_only(recall: dict[str, Any]) -> boo
     record_id = str(recall.get("record_id") or "")
     if status == "not_run" and reason == "current_release_production_recall_report_missing":
         return record_id == ""
-    if status in {"not_run", "data_accumulating"} and reason == "query_features_low_signal":
+    if status in {"not_run", "data_accumulating", "blocked"} and reason == "query_features_low_signal":
         return True
     return False
 

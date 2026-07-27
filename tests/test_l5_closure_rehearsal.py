@@ -464,7 +464,7 @@ def test_bootstrap_pending_contract_rejects_every_non_dataset_l45_gap(
     assert result["reason"] == reason
 
 
-@pytest.mark.parametrize("recall_status", ["not_run", "data_accumulating"])
+@pytest.mark.parametrize("recall_status", ["not_run", "data_accumulating", "blocked"])
 def test_bootstrap_pending_contract_allows_low_signal_recall_report_as_dataset_gap(
     tmp_path,
     monkeypatch,

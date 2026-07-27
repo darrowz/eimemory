@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Planned
 - Multi-agent memory coordination
 
+## [1.9.103] - 2026-07-27
+
+### Fixed
+- Accept persisted production recall reports whose raw gate status is blocked solely because real-query features are low-signal as release-bound bootstrap dataset gaps, preventing L5 closure rehearsal from rolling back compatible releases while unusable labels are quarantined.
+
 ## [1.9.102] - 2026-07-27
 
 ### Fixed
