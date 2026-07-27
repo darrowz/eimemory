@@ -1102,6 +1102,22 @@ _inspect_openclaw_plugin_runtime() {
       "${legacy_arg[@]}"
 }
 
+_install_l5_observation_gate() {
+  local target_release="${1:-$RELEASE_DIR}"
+  _install_as_service_user 0755 \
+    "$target_release/deploy/systemd/eimemory-l5-observation-gate.sh" \
+    "$USER_SYSTEMD_DIR/eimemory-l5-observation-gate.sh"
+  _install_as_service_user 0644 \
+    "$target_release/deploy/systemd/eimemory-l5-observation-gate.service" \
+    "$USER_SYSTEMD_DIR/eimemory-l5-observation-gate.service"
+  _install_as_service_user 0644 \
+    "$target_release/deploy/systemd/eimemory-l5-observation-gate.timer" \
+    "$USER_SYSTEMD_DIR/eimemory-l5-observation-gate.timer"
+  _user_systemctl daemon-reload
+  _user_systemctl enable --now eimemory-l5-observation-gate.timer
+  _user_systemctl restart eimemory-l5-observation-gate.timer
+}
+
 _install_current_runtime_metadata() {
   local target_release="${1:-$RELEASE_DIR}"
   local target_commit="${2:-$COMMIT}"
@@ -1125,6 +1141,7 @@ _install_current_runtime_metadata() {
   done
   _install_as_service_user 0644 \
     "$target_release/deploy/systemd/eimemory-rpc.service" "$USER_SYSTEMD_DIR/eimemory-rpc.service"
+  _install_l5_observation_gate "$target_release"
   _user_systemctl daemon-reload
   _user_systemctl enable eimemory-rpc.service
 }

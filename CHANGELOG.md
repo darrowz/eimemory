@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Planned
 - Multi-agent memory coordination
 
+## [1.9.95] - 2026-07-27
+
+### Fixed
+- Install and refresh the packaged L5 observation gate script, service, and timer during every immutable deployment so stale user-systemd copies cannot survive a release switch or rollback.
+- Reload the user systemd manager and enable the canonical 48-hour observation timer with its six-hour recheck schedule from the active immutable release.
+
 ## [1.9.94] - 2026-07-27
 
 ### Fixed

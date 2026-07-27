@@ -2747,3 +2747,32 @@ def test_learn_watch_timer_is_not_five_minute_heavy_polling() -> None:
 
     assert "OnCalendar=*:00/15" in timer
     assert "OnCalendar=*:00/5" not in timer
+
+
+def test_immutable_installer_refreshes_l5_observation_gate_from_release() -> None:
+    script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
+
+    helper = script[
+        script.index("_install_l5_observation_gate() {") :
+        script.index("\n}", script.index("_install_l5_observation_gate() {"))
+    ]
+    assert '"$target_release/deploy/systemd/eimemory-l5-observation-gate.sh"' in helper
+    assert '"$USER_SYSTEMD_DIR/eimemory-l5-observation-gate.sh"' in helper
+    assert "_install_as_service_user 0755" in helper
+    for suffix in ("service", "timer"):
+        assert (
+            f'"$target_release/deploy/systemd/eimemory-l5-observation-gate.{suffix}"'
+            in helper
+        )
+        assert (
+            f'"$USER_SYSTEMD_DIR/eimemory-l5-observation-gate.{suffix}"'
+            in helper
+        )
+    assert "_user_systemctl daemon-reload" in helper
+    assert "_user_systemctl enable --now eimemory-l5-observation-gate.timer" in helper
+    assert "_user_systemctl restart eimemory-l5-observation-gate.timer" in helper
+    metadata = script[
+        script.index("_install_current_runtime_metadata() {") :
+        script.index("_refresh_current_runtime_metadata() {")
+    ]
+    assert '_install_l5_observation_gate "$target_release"' in metadata
