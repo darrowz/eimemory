@@ -5,6 +5,8 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from eimemory.ops import openclaw_loop
 from eimemory.ops import openclaw_watchdog as watchdog_module
 from eimemory.ops.openclaw_watchdog import (
@@ -37,6 +39,12 @@ def test_parse_stuck_sessions_preserves_session_identity() -> None:
     logs = "[diagnostic] stuck session: sessionId=abc state=processing age=150s"
 
     assert parse_stuck_sessions(logs) == [StuckSession(session_id="abc", age_s=150)]
+
+
+def test_parse_stuck_session_ages_preserves_legacy_records_without_session_id() -> None:
+    logs = "[diagnostic] stalled session: state=processing age=150s"
+
+    assert parse_stuck_session_ages(logs) == [150]
 
 
 def test_hook_pressure_trips_at_inclusive_limit() -> None:
@@ -117,6 +125,64 @@ def test_write_recovery_quarantine_targets_all_previous_lifecycle_without_sessio
     assert quarantine["session_ids"] == []
 
 
+@pytest.mark.skipif(os.name == "nt", reason="directory fsync is POSIX-only")
+def test_write_recovery_quarantine_fsyncs_parent_after_replace(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "openclaw_recovery_quarantine.json"
+    actions: list[str] = []
+    real_open = os.open
+    real_fsync = os.fsync
+    real_close = os.close
+    real_replace = os.replace
+    directory_fds: set[int] = set()
+
+    def open_directory(
+        name: str | Path,
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        descriptor = (
+            real_open(name, flags, mode)
+            if dir_fd is None
+            else real_open(name, flags, mode, dir_fd=dir_fd)
+        )
+        if Path(name) == tmp_path:
+            directory_fds.add(descriptor)
+            actions.append("open_parent")
+        return descriptor
+
+    def fsync_descriptor(descriptor: int) -> None:
+        real_fsync(descriptor)
+        if descriptor in directory_fds:
+            actions.append("fsync_parent")
+
+    def close_descriptor(descriptor: int) -> None:
+        if descriptor in directory_fds:
+            actions.append("close_parent")
+        real_close(descriptor)
+
+    def replace_path(source: str | Path, destination: str | Path) -> None:
+        actions.append("replace")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(watchdog_module.os, "open", open_directory)
+    monkeypatch.setattr(watchdog_module.os, "fsync", fsync_descriptor)
+    monkeypatch.setattr(watchdog_module.os, "close", close_descriptor)
+    monkeypatch.setattr(watchdog_module.os, "replace", replace_path)
+
+    write_recovery_quarantine(
+        path,
+        trigger="stuck_session",
+        now_ts=1_000.0,
+        ttl_s=300,
+        sessions=[StuckSession(session_id="abc", age_s=150)],
+    )
+
+    replace_index = actions.index("replace")
+    assert actions[replace_index:] == ["replace", "open_parent", "fsync_parent", "close_parent"]
+
+
 def test_main_persists_quarantine_before_restart(tmp_path: Path, monkeypatch) -> None:
     actions: list[str] = []
     monkeypatch.setattr(
@@ -175,6 +241,146 @@ def test_main_refuses_restart_when_quarantine_write_fails(tmp_path: Path, monkey
         ]
     ) == 2
     assert actions == []
+
+
+def test_main_restarts_legacy_stuck_record_with_all_lifecycle_quarantine(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    actions: list[str] = []
+    quarantine_path = tmp_path / "openclaw_recovery_quarantine.json"
+    monkeypatch.setattr(
+        watchdog_module,
+        "read_unit_journal",
+        lambda *args, **kwargs: "[diagnostic] stuck session: state=processing age=150s",
+    )
+    monkeypatch.setattr(watchdog_module, "resolve_unit_control_group", lambda *args, **kwargs: "")
+    monkeypatch.setattr(
+        watchdog_module.subprocess,
+        "run",
+        lambda *args, **kwargs: actions.append("restart"),
+    )
+
+    assert watchdog_module.main(
+        [
+            "--state-path",
+            str(tmp_path / "state.json"),
+            "--quarantine-path",
+            str(quarantine_path),
+        ]
+    ) == 0
+    assert actions == ["restart"]
+    assert json.loads(quarantine_path.read_text(encoding="utf-8"))["mode"] == "all_previous_lifecycle"
+
+
+def test_main_refuses_restart_when_parent_directory_sync_fails(tmp_path: Path, monkeypatch) -> None:
+    actions: list[str] = []
+    monkeypatch.setattr(
+        watchdog_module,
+        "read_unit_journal",
+        lambda *args, **kwargs: "[diagnostic] stuck session: sessionId=abc state=processing age=150s",
+    )
+    monkeypatch.setattr(watchdog_module, "resolve_unit_control_group", lambda *args, **kwargs: "")
+    monkeypatch.setattr(
+        watchdog_module,
+        "_fsync_parent_directory",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("directory sync failed")),
+    )
+    monkeypatch.setattr(
+        watchdog_module.subprocess,
+        "run",
+        lambda *args, **kwargs: actions.append("restart"),
+    )
+
+    assert watchdog_module.main(
+        [
+            "--state-path",
+            str(tmp_path / "state.json"),
+            "--quarantine-path",
+            str(tmp_path / "openclaw_recovery_quarantine.json"),
+        ]
+    ) == 2
+    assert actions == []
+
+
+def test_main_records_cgroup_trigger_when_hook_pressure_is_below_sample_minimum(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    quarantines: list[dict] = []
+    monkeypatch.setattr(watchdog_module, "read_unit_journal", lambda *args, **kwargs: "")
+    monkeypatch.setattr(
+        watchdog_module,
+        "resolve_unit_control_group",
+        lambda *args, **kwargs: "/user.slice/openclaw-gateway.service",
+    )
+    monkeypatch.setattr(
+        watchdog_module,
+        "collect_cgroup_pressure",
+        lambda *args, **kwargs: CgroupPressure(
+            memory_current_bytes=90,
+            memory_high_bytes=100,
+        ),
+    )
+    monkeypatch.setattr(
+        watchdog_module,
+        "collect_hook_pressure",
+        lambda *args, **kwargs: (5, 100),
+    )
+    monkeypatch.setattr(
+        watchdog_module,
+        "write_recovery_quarantine",
+        lambda *args, **kwargs: quarantines.append(kwargs) or {},
+    )
+    monkeypatch.setattr(watchdog_module.subprocess, "run", lambda *args, **kwargs: None)
+
+    assert watchdog_module.main(
+        [
+            "--state-path",
+            str(tmp_path / "state.json"),
+            "--min-hook-pressure-samples",
+            "2",
+            "--max-hook-processes",
+            "5",
+        ]
+    ) == 0
+    assert quarantines[0]["trigger"] == "cgroup_pressure"
+
+
+def test_main_records_stuck_trigger_when_hook_pressure_is_below_sample_minimum(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    quarantines: list[dict] = []
+    monkeypatch.setattr(
+        watchdog_module,
+        "read_unit_journal",
+        lambda *args, **kwargs: "[diagnostic] stuck session: sessionId=abc state=processing age=150s",
+    )
+    monkeypatch.setattr(watchdog_module, "resolve_unit_control_group", lambda *args, **kwargs: "")
+    monkeypatch.setattr(
+        watchdog_module,
+        "collect_hook_pressure",
+        lambda *args, **kwargs: (5, 100),
+    )
+    monkeypatch.setattr(
+        watchdog_module,
+        "write_recovery_quarantine",
+        lambda *args, **kwargs: quarantines.append(kwargs) or {},
+    )
+    monkeypatch.setattr(watchdog_module.subprocess, "run", lambda *args, **kwargs: None)
+
+    assert watchdog_module.main(
+        [
+            "--state-path",
+            str(tmp_path / "state.json"),
+            "--min-hook-pressure-samples",
+            "2",
+            "--max-hook-processes",
+            "5",
+        ]
+    ) == 0
+    assert quarantines[0]["trigger"] == "stuck_session"
 
 
 def test_watchdog_restarts_only_after_threshold_and_cooldown() -> None:
