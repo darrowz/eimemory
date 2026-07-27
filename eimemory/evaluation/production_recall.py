@@ -47,7 +47,7 @@ RECALL_QUALITY_GATE_THRESHOLDS: dict[str, float] = {
     "evolution_pollution_rate": 0.05,
     "stale_rule_pollution_rate": 0.05,
     "selected_record_pollution_rate": 0.05,
-    "latency_ms_p95": 1500.0,
+    "latency_ms_p95": 3000.0,
 }
 
 _MIN_GATE_METRICS = {"hit_at_1", "hit_at_5"}

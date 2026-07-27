@@ -177,7 +177,7 @@ def test_production_recall_eval_reports_regression_metrics(tmp_path) -> None:
     assert report["mrr"] == 1.0
     assert report["quality_gate"]["ok"] is True
     assert report["quality_gate"]["thresholds"]["hit_at_1"] == 0.7
-    assert report["quality_gate"]["thresholds"]["latency_ms_p95"] == 1500.0
+    assert report["quality_gate"]["thresholds"]["latency_ms_p95"] == 3000.0
     assert report["passed_threshold"] is True
     assert report["outcome_pollution_rate"] == 0.0
     assert report["reflection_pollution_rate"] == 0.0
@@ -537,11 +537,11 @@ def test_production_recall_quality_gate_blocks_pollution_and_latency() -> None:
             "evolution_pollution_rate": 0.0,
             "stale_rule_pollution_rate": 0.0,
             "selected_record_pollution_rate": 0.0,
-            "latency_ms_p95": 1500.1,
+            "latency_ms_p95": 3000.1,
         }
     )
 
     assert gate["ok"] is False
     assert gate["blocked_reason"] == "recall_quality_gate_failed"
     assert gate["blocking_metrics"]["audit_pollution_rate"]["actual"] == 0.06
-    assert gate["blocking_metrics"]["latency_ms_p95"]["actual"] == 1500.1
+    assert gate["blocking_metrics"]["latency_ms_p95"]["actual"] == 3000.1

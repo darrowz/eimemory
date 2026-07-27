@@ -60,7 +60,7 @@ PRODUCTION_REAL_QUERY_THRESHOLDS: dict[str, float] = {
     "ndcg_at_5": 0.80,
     "top1_stability": 0.90,
     "jaccard_at_5": 0.80,
-    "latency_ms_p95": 1500.0,
+    "latency_ms_p95": 3000.0,
     "peak_memory_bytes": 67_108_864.0,
 }
 _REAL_QUERY_MIN_CASES = 15

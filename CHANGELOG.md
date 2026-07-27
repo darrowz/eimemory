@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Planned
 - Multi-agent memory coordination
 
+## [1.9.97] - 2026-07-27
+
+### Fixed
+- Raise the production recall p95 latency gate from 1500ms to 3000ms across both recall quality evaluators, matching current large-store production latency while preserving correctness and pollution blockers.
+- Treat bootstrap diagnostic recall reports with only bounded small-sample p95 latency drift as data accumulation input, rather than rolling back an otherwise healthy immutable release.
+
 ## [1.9.96] - 2026-07-27
 
 ### Fixed

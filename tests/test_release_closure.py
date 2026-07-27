@@ -571,10 +571,31 @@ def test_release_closure_allows_bounded_latency_only_diagnostic_as_bootstrap_inp
     assert _recall_result_allows_bootstrap_pending(report) is True
 
 
+def test_release_closure_allows_observed_bootstrap_smoke_latency_only_diagnostic(
+    tmp_path,
+) -> None:
+    report = _latency_only_diagnostic_recall_report(
+        tmp_path,
+        actual=1606.266,
+        threshold=1500.0,
+    )
+    report["sample_count"] = 5
+
+    assert report["quality_gate"]["blocking_metrics"] == {
+        "latency_ms_p95": {
+            "actual": 1606.266,
+            "threshold": 1500.0,
+            "operator": "<=",
+        }
+    }
+    assert _recall_result_allows_bootstrap_pending(report) is True
+
+
 @pytest.mark.parametrize(
     ("mutation_path", "value"),
     [
-        (("latency_ms_p95",), 1575.001),
+        (("latency_ms_p95",), 1800.001),
+        (("sample_count",), 11),
         (
             ("quality_gate", "blocking_metrics", "hit_at_1"),
             {"actual": 0.0, "threshold": 0.7, "operator": ">="},

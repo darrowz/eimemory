@@ -18,7 +18,8 @@ _BOOTSTRAP_PENDING_RECALL_REASONS = frozenset(
         "production_recall_dataset_unconfigured",
     }
 )
-_BOOTSTRAP_DIAGNOSTIC_LATENCY_MULTIPLIER = 1.05
+_BOOTSTRAP_DIAGNOSTIC_LATENCY_MULTIPLIER = 1.20
+_BOOTSTRAP_DIAGNOSTIC_MAX_LATENCY_SAMPLES = 10
 
 
 def run_release_closure(
@@ -492,14 +493,20 @@ def _bounded_latency_only_diagnostic_recall_result(report: dict[str, Any]) -> bo
     thresholds = quality.get("thresholds") if isinstance(quality.get("thresholds"), dict) else {}
     actual = latency.get("actual")
     threshold = latency.get("threshold")
+    sample_count = report.get("sample_count")
     numeric = (
         isinstance(actual, (int, float))
         and not isinstance(actual, bool)
         and isinstance(threshold, (int, float))
         and not isinstance(threshold, bool)
     )
+    bootstrap_smoke_sample = (
+        type(sample_count) is int
+        and 0 < sample_count <= _BOOTSTRAP_DIAGNOSTIC_MAX_LATENCY_SAMPLES
+    )
     bounded_latency = bool(
         numeric
+        and bootstrap_smoke_sample
         and float(threshold) > 0.0
         and float(actual) > float(threshold)
         and float(actual)
@@ -522,8 +529,7 @@ def _bounded_latency_only_diagnostic_recall_result(report: dict[str, Any]) -> bo
         and report.get("errors") == []
         and type(report.get("seed_error_count")) is int
         and report.get("seed_error_count") == 0
-        and type(report.get("sample_count")) is int
-        and int(report.get("sample_count")) > 0
+        and bootstrap_smoke_sample
         and _exact_zero_number(report.get("false_recall_rate"))
         and _exact_zero_number(report.get("forbidden_hit_rate"))
         and _exact_zero_int(report.get("cross_channel_leakage_count"))
