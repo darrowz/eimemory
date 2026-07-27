@@ -16,6 +16,7 @@ _BOOTSTRAP_PENDING_RECALL_REASONS = frozenset(
         "production_dataset_not_ready",
         "production_recall_dataset_empty",
         "production_recall_dataset_unconfigured",
+        "query_features_low_signal",
     }
 )
 _BOOTSTRAP_DIAGNOSTIC_LATENCY_MULTIPLIER = 1.20

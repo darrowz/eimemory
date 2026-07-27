@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Planned
 - Multi-agent memory coordination
 
+## [1.9.100] - 2026-07-27
+
+### Fixed
+- Allow release closure to treat low-signal production real-query labels as verified bootstrap data accumulation, keeping healthy self-evolution releases at L4.5 instead of rolling back solely because unusable accepted samples were quarantined.
+
 ## [1.9.99] - 2026-07-27
 
 ### Fixed

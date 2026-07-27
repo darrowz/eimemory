@@ -591,6 +591,23 @@ def test_release_closure_allows_observed_bootstrap_smoke_latency_only_diagnostic
     assert _recall_result_allows_bootstrap_pending(report) is True
 
 
+def test_release_closure_allows_low_signal_real_query_data_as_bootstrap_pending() -> None:
+    report = {
+        "ok": False,
+        "accepted": False,
+        "gate_status": "not_run",
+        "blocked_reason": "query_features_low_signal",
+        "threshold_gate": {
+            "ok": False,
+            "blocking_metrics": {},
+        },
+        "cross_channel_leakage_count": 0,
+        "source_filter_leakage_count": 0,
+    }
+
+    assert _recall_result_allows_bootstrap_pending(report) is True
+
+
 @pytest.mark.parametrize(
     ("mutation_path", "value"),
     [
