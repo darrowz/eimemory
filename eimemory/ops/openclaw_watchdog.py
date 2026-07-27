@@ -5,18 +5,44 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 import time
 import urllib.request
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 
-STUCK_SESSION_PATTERN = re.compile(r"(?:stuck|stalled) session: .*?\bage=(\d+)s\b")
+STUCK_SESSION_PATTERN = re.compile(
+    r"(?:stuck|stalled) session: .*?\bsessionId=([^\s]+).*?\bage=(\d+)s\b"
+)
 PROC_RSS_PATTERN = re.compile(r"^VmRSS:\s+(\d+)\s+kB$", re.MULTILINE)
 
 
+@dataclass(frozen=True)
+class StuckSession:
+    session_id: str
+    age_s: int
+
+
+@dataclass(frozen=True)
+class CgroupPressure:
+    memory_current_bytes: int = 0
+    memory_high_bytes: int = 0
+    memory_max_bytes: int = 0
+    pids_current: int = 0
+    pids_max: int = 0
+
+
+def parse_stuck_sessions(log_text: str) -> list[StuckSession]:
+    return [
+        StuckSession(session_id=match.group(1), age_s=int(match.group(2)))
+        for match in STUCK_SESSION_PATTERN.finditer(log_text)
+    ]
+
+
 def parse_stuck_session_ages(log_text: str) -> list[int]:
-    return [int(match.group(1)) for match in STUCK_SESSION_PATTERN.finditer(log_text)]
+    return [session.age_s for session in parse_stuck_sessions(log_text)]
 
 
 def should_restart_gateway(
@@ -33,6 +59,9 @@ def should_restart_gateway(
     max_hook_rss_kib: int = 0,
     hook_pressure_streak: int = 1,
     min_hook_pressure_samples: int = 1,
+    cgroup_pressure: CgroupPressure | None = None,
+    max_memory_high_ratio: float = 1.0,
+    max_pids_ratio: float = 1.0,
 ) -> bool:
     if now_ts - last_restart_ts < min_restart_interval_s:
         return False
@@ -43,6 +72,12 @@ def should_restart_gateway(
         max_hook_rss_kib=max_hook_rss_kib,
     )
     if hook_pressure and hook_pressure_streak >= max(1, min_hook_pressure_samples):
+        return True
+    if cgroup_pressure and has_cgroup_pressure(
+        cgroup_pressure,
+        max_memory_high_ratio=max_memory_high_ratio,
+        max_pids_ratio=max_pids_ratio,
+    ):
         return True
     if health_checks and any(health_checks):
         return False
@@ -57,9 +92,91 @@ def has_hook_pressure(
     max_hook_rss_kib: int,
 ) -> bool:
     return (
-        (max_hook_processes > 0 and hook_count > max_hook_processes)
-        or (max_hook_rss_kib > 0 and hook_rss_kib > max_hook_rss_kib)
+        (max_hook_processes > 0 and hook_count >= max_hook_processes)
+        or (max_hook_rss_kib > 0 and hook_rss_kib >= max_hook_rss_kib)
     )
+
+
+def _read_cgroup_scalar(path: Path) -> int:
+    try:
+        value = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return 0
+    if value == "max":
+        return 0
+    try:
+        return int(value)
+    except ValueError:
+        return 0
+
+
+def collect_cgroup_pressure(
+    control_group: str,
+    *,
+    cgroup_root: Path = Path("/sys/fs/cgroup"),
+) -> CgroupPressure:
+    if not control_group:
+        return CgroupPressure()
+    cgroup_path = cgroup_root / control_group.lstrip("/")
+    return CgroupPressure(
+        memory_current_bytes=_read_cgroup_scalar(cgroup_path / "memory.current"),
+        memory_high_bytes=_read_cgroup_scalar(cgroup_path / "memory.high"),
+        memory_max_bytes=_read_cgroup_scalar(cgroup_path / "memory.max"),
+        pids_current=_read_cgroup_scalar(cgroup_path / "pids.current"),
+        pids_max=_read_cgroup_scalar(cgroup_path / "pids.max"),
+    )
+
+
+def has_cgroup_pressure(
+    pressure: CgroupPressure,
+    *,
+    max_memory_high_ratio: float,
+    max_pids_ratio: float,
+) -> bool:
+    memory_limit = pressure.memory_high_bytes or pressure.memory_max_bytes
+    return (
+        (
+            memory_limit > 0
+            and pressure.memory_current_bytes >= memory_limit * max_memory_high_ratio
+        )
+        or (
+            pressure.pids_max > 0
+            and pressure.pids_current >= pressure.pids_max * max_pids_ratio
+        )
+    )
+
+
+def write_recovery_quarantine(
+    path: Path,
+    *,
+    trigger: str,
+    now_ts: float,
+    ttl_s: int,
+    sessions: list[StuckSession],
+) -> dict:
+    session_ids = [session.session_id for session in sessions]
+    quarantine = {
+        "schema": "openclaw_recovery_quarantine.v1",
+        "trigger": trigger,
+        "created_at_ts": now_ts,
+        "expires_at_ts": now_ts + ttl_s,
+        "mode": "targeted" if session_ids else "all_previous_lifecycle",
+        "session_ids": session_ids,
+        "consumed": False,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_path = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        os.chmod(temp_path, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(quarantine, handle, sort_keys=True)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+    finally:
+        if os.path.exists(temp_path):
+            os.unlink(temp_path)
+    return quarantine
 
 
 def next_hook_pressure_streak(
@@ -260,11 +377,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--min-hook-age-s", type=float, default=10.0)
     parser.add_argument("--min-hook-pressure-samples", type=int, default=1)
     parser.add_argument("--hook-pressure-sample-window-s", type=float, default=180.0)
+    parser.add_argument("--max-memory-high-ratio", type=float, default=0.85)
+    parser.add_argument("--max-pids-ratio", type=float, default=0.70)
+    parser.add_argument(
+        "--quarantine-path",
+        default="/var/lib/eimemory/openclaw_recovery_quarantine.json",
+    )
+    parser.add_argument("--quarantine-ttl-s", type=int, default=300)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
 
     journal_text = read_unit_journal(args.unit, args.since)
-    stuck_ages = parse_stuck_session_ages(journal_text)
+    stuck_sessions = parse_stuck_sessions(journal_text)
+    stuck_ages = [session.age_s for session in stuck_sessions]
     now_ts = time.time()
     state_path = Path(args.state_path)
     watchdog_state = load_watchdog_state(state_path)
@@ -279,6 +404,7 @@ def main(argv: list[str] | None = None) -> int:
     ]
     health_checks = [probe_health_url(url, timeout_s=float(args.health_timeout_s)) for url in health_urls]
     control_group = resolve_unit_control_group(args.unit)
+    cgroup_pressure = collect_cgroup_pressure(control_group)
     hook_count, hook_rss_kib = collect_hook_pressure(
         control_group,
         min_age_s=max(0.0, float(args.min_hook_age_s)),
@@ -322,6 +448,9 @@ def main(argv: list[str] | None = None) -> int:
         max_hook_rss_kib=max_hook_rss_kib,
         hook_pressure_streak=hook_pressure_streak,
         min_hook_pressure_samples=args.min_hook_pressure_samples,
+        cgroup_pressure=cgroup_pressure,
+        max_memory_high_ratio=args.max_memory_high_ratio,
+        max_pids_ratio=args.max_pids_ratio,
     ):
         if not args.dry_run:
             try:
@@ -352,13 +481,35 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     max_age = max(stuck_ages, default=0)
-    trigger = "hook_pressure" if hook_pressure else "stuck_session"
+    cgroup_is_pressured = has_cgroup_pressure(
+        cgroup_pressure,
+        max_memory_high_ratio=args.max_memory_high_ratio,
+        max_pids_ratio=args.max_pids_ratio,
+    )
+    trigger = (
+        "hook_pressure"
+        if hook_pressure
+        else "cgroup_pressure"
+        if cgroup_is_pressured
+        else "stuck_session"
+    )
     print(
         f"openclaw_watchdog action=restart unit={args.unit} trigger={trigger} "
         f"max_stuck_age_s={max_age} hook_count={hook_count} hook_rss_kib={hook_rss_kib}"
         f" hook_pressure_streak={hook_pressure_streak}"
     )
     if not args.dry_run:
+        try:
+            write_recovery_quarantine(
+                Path(args.quarantine_path),
+                trigger=trigger,
+                now_ts=now_ts,
+                ttl_s=args.quarantine_ttl_s,
+                sessions=stuck_sessions,
+            )
+        except OSError as error:
+            print(f"openclaw_watchdog action=quarantine_failed error={error}")
+            return 2
         subprocess.run(["systemctl", "--user", "restart", args.unit], check=True)
         save_restart_state(state_path, restarted_at_ts=now_ts, max_stuck_age_s=max_age)
     return 0

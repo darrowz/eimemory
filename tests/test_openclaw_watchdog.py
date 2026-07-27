@@ -1,16 +1,25 @@
 from __future__ import annotations
 
+import json
+import os
 import subprocess
 from pathlib import Path
 
 from eimemory.ops import openclaw_loop
 from eimemory.ops import openclaw_watchdog as watchdog_module
 from eimemory.ops.openclaw_watchdog import (
+    CgroupPressure,
+    StuckSession,
+    collect_cgroup_pressure,
     collect_hook_pressure,
+    has_cgroup_pressure,
+    has_hook_pressure,
     next_hook_pressure_streak,
+    parse_stuck_sessions,
     parse_stuck_session_ages,
     resolve_unit_control_group,
     should_restart_gateway,
+    write_recovery_quarantine,
 )
 
 
@@ -22,6 +31,150 @@ def test_parse_stuck_session_ages_from_gateway_logs() -> None:
 """
 
     assert parse_stuck_session_ages(logs) == [150, 210, 125]
+
+
+def test_parse_stuck_sessions_preserves_session_identity() -> None:
+    logs = "[diagnostic] stuck session: sessionId=abc state=processing age=150s"
+
+    assert parse_stuck_sessions(logs) == [StuckSession(session_id="abc", age_s=150)]
+
+
+def test_hook_pressure_trips_at_inclusive_limit() -> None:
+    assert has_hook_pressure(
+        hook_count=5,
+        hook_rss_kib=100,
+        max_hook_processes=5,
+        max_hook_rss_kib=1_638_400,
+    )
+
+
+def test_cgroup_pressure_trips_before_hard_limit() -> None:
+    pressure = CgroupPressure(
+        memory_current_bytes=2_800_000_000,
+        memory_high_bytes=3_221_225_472,
+        memory_max_bytes=4_294_967_296,
+        pids_current=70,
+        pids_max=96,
+    )
+
+    assert has_cgroup_pressure(
+        pressure,
+        max_memory_high_ratio=0.85,
+        max_pids_ratio=0.70,
+    )
+
+
+def test_collect_cgroup_pressure_treats_max_as_unbounded(tmp_path: Path) -> None:
+    control_group = "/user.slice/openclaw-gateway.service"
+    cgroup_path = tmp_path / control_group.lstrip("/")
+    cgroup_path.mkdir(parents=True)
+    (cgroup_path / "memory.current").write_text("2800000000\n", encoding="utf-8")
+    (cgroup_path / "memory.high").write_text("3221225472\n", encoding="utf-8")
+    (cgroup_path / "memory.max").write_text("max\n", encoding="utf-8")
+    (cgroup_path / "pids.current").write_text("70\n", encoding="utf-8")
+    (cgroup_path / "pids.max").write_text("max\n", encoding="utf-8")
+
+    assert collect_cgroup_pressure(control_group, cgroup_root=tmp_path) == CgroupPressure(
+        memory_current_bytes=2_800_000_000,
+        memory_high_bytes=3_221_225_472,
+        memory_max_bytes=0,
+        pids_current=70,
+        pids_max=0,
+    )
+
+
+def test_write_recovery_quarantine_records_targeted_session_ids(tmp_path: Path) -> None:
+    path = tmp_path / "openclaw_recovery_quarantine.json"
+
+    quarantine = write_recovery_quarantine(
+        path,
+        trigger="stuck_session",
+        now_ts=1_000.0,
+        ttl_s=300,
+        sessions=[StuckSession(session_id="abc", age_s=150)],
+    )
+
+    assert quarantine["schema"] == "openclaw_recovery_quarantine.v1"
+    assert quarantine["mode"] == "targeted"
+    assert quarantine["session_ids"] == ["abc"]
+    assert json.loads(path.read_text(encoding="utf-8")) == quarantine
+    if os.name != "nt":
+        assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_write_recovery_quarantine_targets_all_previous_lifecycle_without_sessions(
+    tmp_path: Path,
+) -> None:
+    quarantine = write_recovery_quarantine(
+        tmp_path / "openclaw_recovery_quarantine.json",
+        trigger="hook_pressure",
+        now_ts=1_000.0,
+        ttl_s=300,
+        sessions=[],
+    )
+
+    assert quarantine["mode"] == "all_previous_lifecycle"
+    assert quarantine["session_ids"] == []
+
+
+def test_main_persists_quarantine_before_restart(tmp_path: Path, monkeypatch) -> None:
+    actions: list[str] = []
+    monkeypatch.setattr(
+        watchdog_module,
+        "read_unit_journal",
+        lambda *args, **kwargs: "[diagnostic] stuck session: sessionId=abc state=processing age=150s",
+    )
+    monkeypatch.setattr(watchdog_module, "resolve_unit_control_group", lambda *args, **kwargs: "")
+    monkeypatch.setattr(
+        watchdog_module,
+        "write_recovery_quarantine",
+        lambda *args, **kwargs: actions.append("quarantine") or {},
+    )
+    monkeypatch.setattr(
+        watchdog_module.subprocess,
+        "run",
+        lambda *args, **kwargs: actions.append("restart"),
+    )
+
+    assert watchdog_module.main(
+        [
+            "--state-path",
+            str(tmp_path / "state.json"),
+            "--quarantine-path",
+            str(tmp_path / "openclaw_recovery_quarantine.json"),
+        ]
+    ) == 0
+    assert actions == ["quarantine", "restart"]
+
+
+def test_main_refuses_restart_when_quarantine_write_fails(tmp_path: Path, monkeypatch) -> None:
+    actions: list[str] = []
+    monkeypatch.setattr(
+        watchdog_module,
+        "read_unit_journal",
+        lambda *args, **kwargs: "[diagnostic] stuck session: sessionId=abc state=processing age=150s",
+    )
+    monkeypatch.setattr(watchdog_module, "resolve_unit_control_group", lambda *args, **kwargs: "")
+    monkeypatch.setattr(
+        watchdog_module,
+        "write_recovery_quarantine",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("disk full")),
+    )
+    monkeypatch.setattr(
+        watchdog_module.subprocess,
+        "run",
+        lambda *args, **kwargs: actions.append("restart"),
+    )
+
+    assert watchdog_module.main(
+        [
+            "--state-path",
+            str(tmp_path / "state.json"),
+            "--quarantine-path",
+            str(tmp_path / "openclaw_recovery_quarantine.json"),
+        ]
+    ) == 2
+    assert actions == []
 
 
 def test_watchdog_restarts_only_after_threshold_and_cooldown() -> None:
