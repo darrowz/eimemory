@@ -381,6 +381,7 @@ def _run_l5_observation_gate(
     tmp_path: Path,
     *,
     readiness_payload: str,
+    systemd_259_strict: bool = False,
     readiness_command_failure: bool = False,
     timer_monitor_failure: bool = False,
     failed_service: bool = False,
@@ -424,6 +425,18 @@ def _run_l5_observation_gate(
     systemctl.write_text(
         "#!/usr/bin/env bash\n"
         "printf '%s\\n' \"$*\" >> \"$SYSTEMCTL_ACTION_LOG\"\n"
+        "if [ \"${SYSTEMD_259_STRICT:-0}\" = \"1\" ]"
+        " && [ \"${1:-}\" = \"--user\" ] && [ \"${2:-}\" = \"--failed\" ]; then\n"
+        "  printf '%s\\n' \"Unknown command verb '${5:-}'.\" >&2\n"
+        "  exit 64\n"
+        "fi\n"
+        "if [ \"${1:-}\" = \"--user\" ] && [ \"${2:-}\" = \"list-units\" ]"
+        " && [ \"${3:-}\" = \"--failed\" ]; then\n"
+        "  if [ \"${FAILED_UNITS_COMMAND_FAILURE:-0}\" = \"1\" ]; then exit 20; fi\n"
+        "  if [ \"${FAILED_SERVICE:-0}\" = \"1\" ]; then\n"
+        "    printf '%s\\n' 'eimemory-rpc.service loaded failed failed'\n"
+        "  fi\n"
+        "fi\n"
         "if [ \"${1:-}\" = \"--user\" ] && [ \"${2:-}\" = \"--failed\" ]; then\n"
         "  if [ \"${FAILED_UNITS_COMMAND_FAILURE:-0}\" = \"1\" ]; then exit 20; fi\n"
         "  if [ \"${FAILED_SERVICE:-0}\" = \"1\" ]; then\n"
@@ -495,6 +508,7 @@ def _run_l5_observation_gate(
         "SYSTEMCTL_ACTION_LOG": _bash_path(action_log),
         "READINESS_PAYLOAD": readiness_payload,
         "SECOND_READINESS_PAYLOAD": second_readiness_payload,
+        "SYSTEMD_259_STRICT": "1" if systemd_259_strict else "0",
         "READINESS_COUNTER_FILE": _bash_path(tmp_path / "readiness.count"),
         "READINESS_COMMAND_FAILURE": "1" if readiness_command_failure else "0",
         "TIMER_MONITOR_FAILURE": "1" if timer_monitor_failure else "0",
@@ -520,6 +534,25 @@ def _run_l5_observation_gate(
             break
     assert result is not None
     return result, nightly_unit, openclaw_config, gateway_dropin, action_log
+
+
+def test_l5_observation_gate_uses_systemd_259_compatible_failed_unit_query(
+    tmp_path: Path,
+) -> None:
+    result, *_, action_log = _run_l5_observation_gate(
+        tmp_path,
+        readiness_payload=json.dumps(
+            {"ok": True, "current_stage": "L4.5", "readiness_score": 0.8}
+        ),
+        systemd_259_strict=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Unknown command verb" not in result.stderr
+    assert (
+        "--user list-units --failed --no-legend eimemory*"
+        in action_log.read_text(encoding="utf-8").splitlines()
+    )
 
 
 def test_l5_observation_gate_reports_valid_below_l5_as_pending_without_mutation(

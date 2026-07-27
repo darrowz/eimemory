@@ -138,7 +138,7 @@ fi
 
 "$EIMEMORY_BIN" ops timer-monitor --stale-after-minutes 90 >/tmp/eimemory-l5-observation-gate-timer-monitor.json
 
-if ! failed_units="$(systemctl --user --failed --no-legend 'eimemory*' 2>&1)"; then
+if ! failed_units="$(systemctl --user list-units --failed --no-legend 'eimemory*' 2>&1)"; then
   printf '%s\n' "$failed_units" >&2
   exit 4
 fi

@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Planned
 - Multi-agent memory coordination
 
+## [1.9.96] - 2026-07-27
+
+### Fixed
+- Query failed eimemory user units with the explicit `systemctl list-units` verb so the L5 observation gate remains compatible with systemd 259 instead of treating the unit glob as an unknown command verb.
+
 ## [1.9.95] - 2026-07-27
 
 ### Fixed
