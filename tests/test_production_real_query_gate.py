@@ -175,6 +175,28 @@ def _record(record_id: str, channel: str, source_id: str) -> RecordEnvelope:
     return record
 
 
+def _rule_record(record_id: str, channel: str, source_id: str, *, index: int = 0) -> RecordEnvelope:
+    scope = dict(BASE_SCOPE)
+    if channel != "openclaw":
+        scope["workspace_id"] += f"::channel::{channel}"
+    record = RecordEnvelope.create(
+        kind="rule",
+        title=f"{channel} ground truth behavior {index}",
+        summary="When capability is missing, create a concrete plan, replay gate, and rollback boundary.",
+        content={
+            "trigger_condition": "不要说做不到，要补能力解决",
+            "expected_behavior": "build the missing capability path with replay and rollback",
+        },
+        source="eimemory.correction_replay",
+        source_id=source_id,
+        scope=ScopeRef.from_dict(scope),
+        status="active",
+        meta={"force_capture": True, "report_type": "ground_truth_behavior_rule"},
+    )
+    record.record_id = record_id
+    return record
+
+
 def _label_evidence(channel: str) -> RecordEnvelope:
     scope = dict(BASE_SCOPE)
     if channel != "openclaw":
@@ -353,10 +375,11 @@ def test_trusted_capacity_uses_exact_scope_source_index_without_offset(tmp_path,
         scope=ScopeRef.from_dict(BASE_SCOPE),
         source_id="alpha",
     ) == 5
+    kind_placeholders = ",".join("?" for _ in real_query_gate._RECALL_CORPUS_KINDS)
     plan = runtime.store.sqlite.conn.execute(
         "EXPLAIN QUERY PLAN SELECT COUNT(*) FROM (SELECT 1 FROM records WHERE "
         "tenant_id=? AND agent_id=? AND workspace_id=? AND user_id=? AND source_id IN (?) "
-        "AND status=? AND kind IN (?,?,?,?) LIMIT ?)",
+        f"AND status=? AND kind IN ({kind_placeholders}) LIMIT ?)",
         ("default", "main", "production", "darrow", "alpha", "active", *real_query_gate._RECALL_CORPUS_KINDS, 5),
     ).fetchall()
     assert any("idx_records_scope_source_status_kind" in str(row[3]) for row in plan)
@@ -758,6 +781,73 @@ def test_real_query_gate_is_bound_sanitized_and_deterministic(tmp_path, monkeypa
     verification = verify_current_production_recall_gate(runtime, scope=BASE_SCOPE, release=RELEASE)
     assert verification["ok"] is False
     assert verification["reason"] == "current_deployment_receipt_invalid"
+    runtime.close()
+
+
+def test_real_query_gate_scores_rule_labels_against_policy_rule_lane(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    rules = {
+        f"openclaw-{index}": _rule_record(f"rule-openclaw-{index}", "openclaw", "source-openclaw", index=index)
+        for index in range(5)
+    }
+    dataset = {
+        "schema": PRODUCTION_REAL_QUERY_SCHEMA,
+        "name": "production-redacted-rule-lane",
+        "dataset_kind": "production",
+        "scope": BASE_SCOPE,
+        "cases": [
+            _case(
+                "openclaw",
+                "source-openclaw",
+                rule.record_id,
+                index=index,
+            )
+            for index, rule in enumerate(rules.values())
+        ],
+        "baseline_report_id": "prg_baseline_previous_release",
+    }
+    for index, case in enumerate(dataset["cases"]):
+        features = {
+            "terms": ["missing", "capability", "replay", "rollback", f"case-{index}"],
+            "intent": "living_posture",
+        }
+        case["query_features"] = features
+        case["query_digest"] = _digest(features)
+    _refresh_dataset_evidence(dataset)
+    for rule in rules.values():
+        runtime.store.append(rule)
+    runtime.store.append(_label_evidence("openclaw"))
+    requested: list[dict] = []
+
+    def recall(*, query: str, scope: dict, task_context: dict, limit: int) -> RecallBundle:
+        requested.append(dict(task_context))
+        index = next((number for number in range(5) if f"case-{number}" in query), 0)
+        return RecallBundle(
+            items=[],
+            rules=[rules[f"openclaw-{index}"]],
+            reflections=[],
+            confidence=1.0,
+            next_action_hint="",
+            explanation={"fusion": {"policy_version": "rrf-page-pool.v1"}},
+        )
+
+    monkeypatch.setattr(runtime.memory, "recall", recall)
+    monkeypatch.setattr(real_query_gate, "current_release_identity", lambda *_args, **_kwargs: RELEASE)
+    baseline = _trusted_baseline(dataset)
+    baseline["metrics"] = {**baseline["metrics"], "precision_at_5": 0.2}
+    monkeypatch.setattr(
+        real_query_gate,
+        "_resolve_trusted_baseline",
+        lambda *_args, **_kwargs: (baseline, ""),
+    )
+
+    report = run_production_recall_eval(runtime, dataset, seed=False, persist_report=True)
+
+    assert report["accepted"] is True, report
+    assert all(sample["returned_refs"][0].startswith("rule-openclaw-") for sample in report["samples"])
+    assert all(call["recall_profile"] == "precision" for call in requested)
+    assert all(call["candidate_limit"] <= 24 for call in requested)
+    assert all(call["intent"] == "living_posture" for call in requested)
     runtime.close()
 
 

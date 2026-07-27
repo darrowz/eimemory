@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Planned
 - Multi-agent memory coordination
 
+## [1.9.99] - 2026-07-27
+
+### Fixed
+- Reject low-signal production real-query labels whose query features are only collector/channel metadata, so legacy accepted packets cannot freeze an unusable strict recall dataset.
+- Score production rule labels through the policy/rule recall lane with a precision recall profile, preventing false recall-gate failures when self-evolution rules are available to prompt injection outside the normal memory item lane.
+
 ## [1.9.98] - 2026-07-27
 
 ### Fixed

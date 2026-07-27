@@ -17,6 +17,7 @@ from eimemory.evaluation.real_query_gate import (
     PRODUCTION_REAL_QUERY_SCHEMA,
     PRODUCTION_REAL_QUERY_TRUSTED_LABELERS,
     _bounded_query_features,
+    production_real_query_feature_quality_reasons,
     production_real_query_active_channel_contract,
     _stable_digest,
 )
@@ -167,6 +168,9 @@ def accept_pending_production_query(
     bounded_features, reason = _bounded_query_features(query_features)
     if reason:
         raise ValueError(reason)
+    quality_reasons = production_real_query_feature_quality_reasons(bounded_features)
+    if quality_reasons:
+        raise ValueError(str(quality_reasons[0]))
     source_id = str(payload.get("source_id") or "")
     channel = str(payload.get("channel") or "")
     exact_scope = ScopeRef.from_dict(payload.get("scope") or {})
@@ -288,6 +292,7 @@ def build_production_query_dataset(
     cases: list[dict[str, Any]] = []
     counts: dict[str, int] = {}
     seen: set[str] = set()
+    skipped_low_signal = 0
     for channel in sorted(SUPPORTED_RUNTIME_CHANNELS):
         exact = ScopeRef.from_dict(resolve_channel_scope(channel, asdict(base)))
         records = runtime.store.list_records(kinds=["evaluation_packet"], scope=exact, status="active", limit=max(1, min(500, int(limit))))
@@ -297,6 +302,11 @@ def build_production_query_dataset(
             case = record.content.get("case") if isinstance(record.content, dict) and isinstance(record.content.get("case"), dict) else {}
             case_id = str(case.get("case_id") or "")
             if case_id in seen or str(case.get("channel") or "") != channel:
+                continue
+            quality_reasons = production_real_query_feature_quality_reasons(case.get("query_features"))
+            if quality_reasons:
+                if "query_features_low_signal" in quality_reasons:
+                    skipped_low_signal += 1
                 continue
             seen.add(case_id)
             cases.append(dict(case))
@@ -321,6 +331,7 @@ def build_production_query_dataset(
             "required_per_channel": int(active_contract["required_per_active_channel"]),
             "active_channels": list(active_contract["active_channels"]),
             "blocked_reasons": list(active_contract["blocked_reasons"]),
+            "skipped_low_signal": skipped_low_signal,
             "per_channel_accepted": counts,
         },
         "dataset": dataset,

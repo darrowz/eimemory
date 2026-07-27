@@ -71,7 +71,30 @@ _MAX_QUERY_TERM_CHARS = 64
 _MAX_QUERY_FEATURE_CHARS = 512
 _MAX_BASELINE_CHAIN_DEPTH = 8
 _MAX_PRIOR_HEALTH_SNAPSHOT_BYTES = 64 * 1024
-_RECALL_CORPUS_KINDS = ("memory", "claim_card", "knowledge_page", "reflection")
+_RECALL_CORPUS_KINDS = ("memory", "claim_card", "knowledge_page", "reflection", "rule")
+_LOW_SIGNAL_QUERY_TOKENS = frozenset(
+    {
+        "audit",
+        "capture",
+        "case",
+        "collector",
+        "codex",
+        "default",
+        "eimemory",
+        "ground",
+        "hermes",
+        "memory",
+        "openclaw",
+        "production",
+        "proactive",
+        "query",
+        "recall",
+        "source",
+        "truth",
+        "when",
+        "behavior",
+    }
+)
 _DIGEST_KEYS = frozenset(
     {"dataset_digest", "engine_digest", "fusion_digest", "policy_digest", "result_digest"}
 )
@@ -290,6 +313,8 @@ def _freeze_real_query_case(
     features, feature_reason = _bounded_query_features(case.get("query_features"))
     if feature_reason:
         reasons.append(feature_reason)
+    else:
+        reasons.extend(production_real_query_feature_quality_reasons(features))
     query_digest = str(case.get("query_digest") or "").strip().lower()
     if query_digest != _stable_digest(features):
         reasons.append("query_digest_mismatch")
@@ -468,6 +493,34 @@ def _bounded_query_features(value: object) -> tuple[dict[str, Any], str]:
     if language:
         frozen["language"] = language[:16]
     return frozen, "query_features_not_redacted" if unsafe else ""
+
+
+def production_real_query_feature_quality_reasons(value: object) -> list[str]:
+    features, reason = _bounded_query_features(value)
+    if reason:
+        return [reason]
+    terms: list[str] = []
+    for key in ("terms", "entities"):
+        for item in list(features.get(key) or []):
+            terms.extend(_query_feature_tokens(str(item)))
+    terms.extend(_query_feature_tokens(str(features.get("intent") or "")))
+    informative = [
+        term
+        for term in terms
+        if term not in _LOW_SIGNAL_QUERY_TOKENS
+        and not term.isdigit()
+        and not term.startswith(("prqp", "prqa", "prle", "pd"))
+    ]
+    if len(set(informative)) < 2:
+        return ["query_features_low_signal"]
+    return []
+
+
+def _query_feature_tokens(value: str) -> list[str]:
+    normalized = normalize_unicode("NFKC", str(value or "")).strip().casefold()
+    if not normalized:
+        return []
+    return re.findall(r"[a-z0-9]+|[\u4e00-\u9fff]{2,}", normalized)
 
 
 def _looks_like_secret(value: str) -> bool:
@@ -1494,7 +1547,11 @@ def _evaluate_real_query_candidate(
                 "target_source_id": str(case["source_id"]),
                 "runtime_channel": str(case["channel"]),
                 "evaluation_policy": PRODUCTION_REAL_QUERY_POLICY,
+                "recall_profile": "precision",
+                "candidate_limit": 24,
             }
+            if str(features.get("intent") or "").strip():
+                task_context["intent"] = str(features.get("intent") or "").strip()
             start = perf_counter()
             bundle = runtime.memory.recall(
                 query=query,
@@ -1503,9 +1560,11 @@ def _evaluate_real_query_candidate(
                 limit=5,
             )
             latency_ms = (perf_counter() - start) * 1000.0
+            label_kinds = _label_kinds_for_case(runtime, case)
             returned: list[RecordEnvelope] = []
             returned_ids: set[str] = set()
-            for item in bundle.items:
+            candidate_records = _candidate_records_for_case(bundle, label_kinds=label_kinds)
+            for item in candidate_records:
                 record_id = str(item.record_id or "")
                 if not record_id or record_id in returned_ids:
                     continue
@@ -1643,6 +1702,24 @@ def _evaluate_real_query_candidate(
         "persisted": False,
         "persisted_record_id": "",
     }
+
+
+def _label_kinds_for_case(runtime: Any, case: dict[str, Any]) -> set[str]:
+    kinds: set[str] = set()
+    scope = ScopeRef.from_dict(case.get("scope") or {})
+    for label in list(case.get("labels") or []):
+        record = runtime.store.get_by_id(str(label.get("record_ref") or ""), scope=scope)
+        if record is not None and str(record.kind or "").strip():
+            kinds.add(str(record.kind))
+    return kinds
+
+
+def _candidate_records_for_case(bundle: Any, *, label_kinds: set[str]) -> list[RecordEnvelope]:
+    items = list(getattr(bundle, "items", []) or [])
+    rules = list(getattr(bundle, "rules", []) or [])
+    if "rule" in label_kinds:
+        return [*rules, *items]
+    return items
 
 
 def _retrieval_identity(runtime: Any, *, samples: list[dict[str, Any]]) -> dict[str, Any]:

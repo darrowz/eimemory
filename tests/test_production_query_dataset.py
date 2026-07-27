@@ -9,12 +9,14 @@ from eimemory.api.runtime import Runtime
 from eimemory.adapters.runtime.channel import resolve_channel_scope
 from eimemory.cli.main import main as cli_main
 from eimemory.evaluation.production_query_dataset import (
+    ACCEPTED_QUERY_SCHEMA,
+    ACCEPTED_SOURCE,
     accept_pending_production_query,
     build_production_query_dataset,
     collect_pending_production_queries,
     write_production_query_dataset,
 )
-from eimemory.evaluation.real_query_gate import freeze_production_recall_dataset
+from eimemory.evaluation.real_query_gate import _stable_digest, freeze_production_recall_dataset
 from eimemory.models.records import RecordEnvelope, ScopeRef
 from eimemory.scheduler.jobs import load_json_dataset_with_evidence
 
@@ -71,6 +73,61 @@ def _seed_decision(runtime: Runtime, *, channel: str, index: int) -> RecordEnvel
         [],
     )
     return record
+
+
+def _append_legacy_low_signal_accepted_case(runtime: Runtime, *, channel: str, index: int, record: RecordEnvelope) -> None:
+    scope = resolve_channel_scope(channel, BASE_SCOPE)
+    features = {
+        "terms": [
+            channel,
+            "default",
+            "proactive_audit_capture",
+            "Ground",
+            "truth",
+            "behavior",
+            "When",
+        ],
+        "intent": "production recall",
+    }
+    case = {
+        "case_id": f"real-low-signal-{channel}-{index}",
+        "collection_window": {
+            "started_at": "2026-07-20T00:00:00+00:00",
+            "ended_at": "2026-07-21T00:00:00+00:00",
+        },
+        "channel": channel,
+        "source_id": record.source_id,
+        "scope": scope,
+        "query_features": features,
+        "query_digest": _stable_digest(features),
+        "labels": [
+            {
+                "record_ref": record.record_id,
+                "grade": 3,
+                "accepted": True,
+                "provenance": {
+                    "labeler": "operator",
+                    "labelled_at": "2026-07-20T12:00:00+00:00",
+                    "evidence_ref": f"legacy-label-{channel}-{index}",
+                },
+            }
+        ],
+        "provenance": {"collector": "proactive_audit_capture", "capture_ref": f"legacy-{channel}-{index}"},
+    }
+    accepted = RecordEnvelope.create(
+        kind="evaluation_packet",
+        title=f"Accepted low signal production recall case {channel}",
+        summary="Legacy human-labelled production recall case with collector-only query features.",
+        content={"schema": ACCEPTED_QUERY_SCHEMA, "case": case},
+        source=ACCEPTED_SOURCE,
+        source_id=record.source_id,
+        scope=ScopeRef.from_dict(scope),
+        status="active",
+        evidence=[record.record_id],
+        meta={"report_type": "production_recall_accepted_case", "schema": ACCEPTED_QUERY_SCHEMA, "channel": channel},
+    )
+    accepted.record_id = f"legacy-low-signal-{channel}-{index}"
+    runtime.store.append(accepted)
 
 
 def test_real_audit_collection_operator_acceptance_and_immutable_dataset_build(tmp_path) -> None:
@@ -228,6 +285,50 @@ def test_dataset_build_uses_overall_minimum_across_active_channels(tmp_path) -> 
     runtime.close()
 
 
+def test_operator_cannot_accept_low_signal_production_query_features(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    expected = _seed_decision(runtime, channel="openclaw", index=0)
+    pending_id = collect_pending_production_queries(runtime, scope=BASE_SCOPE)["pending_record_ids"][0]
+
+    with pytest.raises(ValueError, match="query_features_low_signal"):
+        accept_pending_production_query(
+            runtime,
+            pending_record_id=pending_id,
+            query_features={
+                "terms": [
+                    "openclaw",
+                    "default",
+                    "proactive_audit_capture",
+                    "Ground",
+                    "truth",
+                    "behavior",
+                    "When",
+                ],
+                "intent": "production recall",
+            },
+            labels=[{"record_ref": expected.record_id, "grade": 3}],
+            labeler="operator",
+            operator_scope=BASE_SCOPE,
+            label_packet_evidence=LABEL_PACKET_EVIDENCE,
+        )
+    runtime.close()
+
+
+def test_dataset_build_ignores_legacy_low_signal_accepted_cases(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    records = [_seed_decision(runtime, channel="openclaw", index=index) for index in range(5)]
+    for index, record in enumerate(records):
+        _append_legacy_low_signal_accepted_case(runtime, channel="openclaw", index=index, record=record)
+
+    dataset = build_production_query_dataset(runtime, scope=BASE_SCOPE)
+
+    assert dataset["ready"] is False
+    assert dataset["progress"]["accepted_case_count"] == 0
+    assert dataset["progress"]["skipped_low_signal"] == 5
+    assert "minimum_case_count_missing" in dataset["progress"]["blocked_reasons"]
+    runtime.close()
+
+
 def test_operator_cannot_label_across_channel_or_source_boundary(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     correct = _seed_decision(runtime, channel="codex", index=0)
@@ -243,7 +344,7 @@ def test_operator_cannot_label_across_channel_or_source_boundary(tmp_path) -> No
         accept_pending_production_query(
             runtime,
             pending_record_id=pending_id,
-            query_features={"terms": ["codex", "memory"]},
+            query_features={"terms": ["codex", "verified", "release"]},
             labels=[{"record_ref": wrong.record_id, "grade": 3}],
             labeler="operator",
             operator_scope=BASE_SCOPE,
@@ -253,7 +354,7 @@ def test_operator_cannot_label_across_channel_or_source_boundary(tmp_path) -> No
         accept_pending_production_query(
             runtime,
             pending_record_id=pending_id,
-            query_features={"terms": ["codex", "memory"]},
+            query_features={"terms": ["codex", "verified", "release"]},
             labels=[{"record_ref": correct.record_id, "grade": 3}],
             labeler="operator",
             operator_scope={**BASE_SCOPE, "tenant_id": "other-tenant"},
