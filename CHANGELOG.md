@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Planned
 - Multi-agent memory coordination
 
+## [1.9.111] - 2026-07-29
+
+### Fixed
+- Supersede only a prior release's resumable closure checkpoint when a newer commit becomes authoritative, preventing stale path failures without resetting or version-binding L5 evidence.
+
 ## [1.9.110] - 2026-07-29
 
 ### Fixed

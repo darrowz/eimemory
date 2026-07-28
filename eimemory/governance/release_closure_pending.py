@@ -127,6 +127,50 @@ def clear_release_closure_pending(
     return True
 
 
+def supersede_release_closure_pending(
+    *,
+    current_commit: str,
+    pending_path: str | Path | None = None,
+) -> dict[str, Any]:
+    current = str(current_commit or "").strip().lower()
+    if _COMMIT_RE.fullmatch(current) is None:
+        return {
+            "ok": False,
+            "status": "invalid",
+            "error": "current_commit_invalid",
+        }
+    try:
+        with _release_closure_reconcile_lock(pending_path):
+            checkpoint = read_release_closure_pending(path=pending_path)
+            if checkpoint is None:
+                return {"ok": True, "status": "no_pending"}
+            pending_commit = checkpoint["current_commit"]
+            if pending_commit == current:
+                return {"ok": True, "status": "current"}
+            cleared = clear_release_closure_pending(
+                path=pending_path,
+                expected_commit=pending_commit,
+            )
+            return {
+                "ok": cleared,
+                "status": "superseded" if cleared else "clear_failed",
+                **({} if cleared else {"error": "superseded_checkpoint_clear_failed"}),
+            }
+    except _ReleaseClosureReconcileBusy:
+        return {
+            "ok": False,
+            "status": "busy",
+            "error": "release_closure_reconcile_busy",
+        }
+    except (OSError, ValueError) as exc:
+        return {
+            "ok": False,
+            "status": "invalid",
+            "error": "release_closure_pending_invalid",
+            "detail": str(exc),
+        }
+
+
 def reconcile_release_closure_pending(
     runtime: Any,
     *,

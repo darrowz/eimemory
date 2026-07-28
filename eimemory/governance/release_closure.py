@@ -84,6 +84,24 @@ def run_release_closure(
         receipt_id=str(receipt.get("promotion_request_id") or ""),
         session_id=str(receipt.get("release_session_id") or receipt.get("promotion_request_id") or ""),
     )
+    from eimemory.governance.release_closure_pending import (
+        supersede_release_closure_pending,
+    )
+
+    pending_checkpoint = supersede_release_closure_pending(
+        current_commit=receipt_identity.commit,
+        pending_path=pending_path,
+    )
+    report["pending_checkpoint"] = pending_checkpoint
+    if pending_checkpoint.get("ok") is not True:
+        return _blocked(
+            report,
+            "pending_checkpoint",
+            str(
+                pending_checkpoint.get("error")
+                or "release_closure_pending_supersede_failed"
+            ),
+        )
 
     run_recall = getattr(runtime, "run_configured_production_recall_gate", None)
     if not callable(run_recall):

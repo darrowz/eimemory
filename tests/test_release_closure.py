@@ -1061,6 +1061,39 @@ def test_release_closure_does_not_arm_checkpoint_for_unrelated_failure(
     assert not pending_path.exists()
 
 
+def test_new_release_discards_superseded_checkpoint_before_early_gate_failure(
+    tmp_path: Path,
+) -> None:
+    pending_path = tmp_path / "state" / "release-closure-pending.json"
+    waiting_runtime = FakeRuntime(
+        channel_acceptance={
+            "ok": False,
+            "error": "current_release_channel_receipt_not_found",
+        }
+    )
+    run_release_closure(
+        waiting_runtime,
+        **_identity_kwargs(),
+        pending_path=pending_path,
+    )
+    pending = json.loads(pending_path.read_text(encoding="utf-8"))
+    pending["current_commit"] = "c" * 40
+    pending_path.write_text(json.dumps(pending), encoding="utf-8")
+    next_runtime = FakeRuntime(
+        live_acceptance={"ok": False, "error": "acceptance_case_failed"}
+    )
+
+    report = run_release_closure(
+        next_runtime,
+        **_identity_kwargs(),
+        pending_path=pending_path,
+    )
+
+    assert report["blocked_stage"] == "live_acceptance"
+    assert report["pending_checkpoint"] == {"ok": True, "status": "superseded"}
+    assert not pending_path.exists()
+
+
 def test_release_closure_reconcile_rejects_stale_commit(
     tmp_path: Path,
 ) -> None:
