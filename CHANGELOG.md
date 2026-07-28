@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Planned
 - Multi-agent memory coordination
 
+## [1.9.105] - 2026-07-28
+
+### Fixed
+- Require sustained OpenClaw cgroup pressure before watchdog restarts, preventing a single healthy model or hook memory spike from interrupting an active Feishu reply.
+- Record cgroup memory, PID, and pressure-streak evidence in watchdog output for deterministic restart diagnosis.
+
 ## [1.9.104] - 2026-07-27
 
 ### Fixed

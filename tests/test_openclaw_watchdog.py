@@ -303,7 +303,7 @@ def test_main_refuses_restart_when_parent_directory_sync_fails(tmp_path: Path, m
     assert actions == []
 
 
-def test_main_records_cgroup_trigger_when_hook_pressure_is_below_sample_minimum(
+def test_main_requires_consecutive_cgroup_pressure_before_restart(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -325,7 +325,7 @@ def test_main_records_cgroup_trigger_when_hook_pressure_is_below_sample_minimum(
     monkeypatch.setattr(
         watchdog_module,
         "collect_hook_pressure",
-        lambda *args, **kwargs: (5, 100),
+        lambda *args, **kwargs: (4, 100),
     )
     monkeypatch.setattr(
         watchdog_module,
@@ -334,17 +334,41 @@ def test_main_records_cgroup_trigger_when_hook_pressure_is_below_sample_minimum(
     )
     monkeypatch.setattr(watchdog_module.subprocess, "run", lambda *args, **kwargs: None)
 
-    assert watchdog_module.main(
-        [
-            "--state-path",
-            str(tmp_path / "state.json"),
-            "--min-hook-pressure-samples",
-            "2",
-            "--max-hook-processes",
-            "5",
-        ]
-    ) == 0
+    args = [
+        "--state-path",
+        str(tmp_path / "state.json"),
+        "--min-hook-pressure-samples",
+        "2",
+        "--min-cgroup-pressure-samples",
+        "2",
+        "--max-hook-processes",
+        "5",
+    ]
+
+    assert watchdog_module.main(args) == 0
+    assert quarantines == []
+    assert watchdog_module.main(args) == 0
     assert quarantines[0]["trigger"] == "cgroup_pressure"
+
+
+def test_watchdog_requires_consecutive_cgroup_pressure_samples() -> None:
+    base = {
+        "stuck_ages": [],
+        "threshold_s": 120,
+        "last_restart_ts": 1000.0,
+        "now_ts": 1401.0,
+        "min_restart_interval_s": 300,
+        "health_checks": [True],
+        "cgroup_pressure": CgroupPressure(
+            memory_current_bytes=90,
+            memory_high_bytes=100,
+        ),
+        "max_memory_high_ratio": 0.85,
+        "min_cgroup_pressure_samples": 2,
+    }
+
+    assert not should_restart_gateway(**base, cgroup_pressure_streak=1)
+    assert should_restart_gateway(**base, cgroup_pressure_streak=2)
 
 
 def test_main_records_stuck_trigger_when_hook_pressure_is_below_sample_minimum(

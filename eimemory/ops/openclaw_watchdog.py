@@ -60,6 +60,8 @@ def restart_trigger(
     cgroup_pressure: CgroupPressure | None,
     max_memory_high_ratio: float,
     max_pids_ratio: float,
+    cgroup_pressure_streak: int = 1,
+    min_cgroup_pressure_samples: int = 1,
 ) -> str | None:
     hook_pressure = has_hook_pressure(
         hook_count=hook_count,
@@ -69,12 +71,17 @@ def restart_trigger(
     )
     if hook_pressure and hook_pressure_streak >= max(1, min_hook_pressure_samples):
         return "hook_pressure"
-    if cgroup_pressure and has_cgroup_pressure(
-        cgroup_pressure,
-        max_memory_high_ratio=max_memory_high_ratio,
-        max_pids_ratio=max_pids_ratio,
-    ):
-        return "cgroup_pressure"
+    if cgroup_pressure:
+        cgroup_pressure_active = has_cgroup_pressure(
+            cgroup_pressure,
+            max_memory_high_ratio=max_memory_high_ratio,
+            max_pids_ratio=max_pids_ratio,
+        )
+        if (
+            cgroup_pressure_active
+            and cgroup_pressure_streak >= max(1, min_cgroup_pressure_samples)
+        ):
+            return "cgroup_pressure"
     if health_checks and any(health_checks):
         return None
     if stuck_ages and max(stuck_ages) >= threshold_s:
@@ -99,6 +106,8 @@ def should_restart_gateway(
     cgroup_pressure: CgroupPressure | None = None,
     max_memory_high_ratio: float = 1.0,
     max_pids_ratio: float = 1.0,
+    cgroup_pressure_streak: int = 1,
+    min_cgroup_pressure_samples: int = 1,
 ) -> bool:
     if now_ts - last_restart_ts < min_restart_interval_s:
         return False
@@ -115,6 +124,8 @@ def should_restart_gateway(
         cgroup_pressure=cgroup_pressure,
         max_memory_high_ratio=max_memory_high_ratio,
         max_pids_ratio=max_pids_ratio,
+        cgroup_pressure_streak=cgroup_pressure_streak,
+        min_cgroup_pressure_samples=min_cgroup_pressure_samples,
     ) is not None
 
 
@@ -381,6 +392,8 @@ def save_watchdog_state(
     max_stuck_age_s: int,
     hook_pressure_streak: int,
     hook_pressure_sample_ts: float,
+    cgroup_pressure_streak: int,
+    cgroup_pressure_sample_ts: float,
 ) -> None:
     state_path.parent.mkdir(parents=True, exist_ok=True)
     state_path.write_text(
@@ -390,6 +403,8 @@ def save_watchdog_state(
                 "max_stuck_age_s": max_stuck_age_s,
                 "hook_pressure_streak": hook_pressure_streak,
                 "hook_pressure_sample_ts": hook_pressure_sample_ts,
+                "cgroup_pressure_streak": cgroup_pressure_streak,
+                "cgroup_pressure_sample_ts": cgroup_pressure_sample_ts,
             },
             sort_keys=True,
         ),
@@ -404,6 +419,8 @@ def save_restart_state(state_path: Path, *, restarted_at_ts: float, max_stuck_ag
         max_stuck_age_s=max_stuck_age_s,
         hook_pressure_streak=0,
         hook_pressure_sample_ts=0.0,
+        cgroup_pressure_streak=0,
+        cgroup_pressure_sample_ts=0.0,
     )
 
 
@@ -435,6 +452,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--hook-pressure-sample-window-s", type=float, default=180.0)
     parser.add_argument("--max-memory-high-ratio", type=float, default=0.85)
     parser.add_argument("--max-pids-ratio", type=float, default=0.70)
+    parser.add_argument("--min-cgroup-pressure-samples", type=int, default=2)
+    parser.add_argument("--cgroup-pressure-sample-window-s", type=float, default=180.0)
     parser.add_argument(
         "--quarantine-path",
         default="/var/lib/eimemory/openclaw_recovery_quarantine.json",
@@ -461,6 +480,11 @@ def main(argv: list[str] | None = None) -> int:
     health_checks = [probe_health_url(url, timeout_s=float(args.health_timeout_s)) for url in health_urls]
     control_group = resolve_unit_control_group(args.unit)
     cgroup_pressure = collect_cgroup_pressure(control_group)
+    cgroup_pressure_active = has_cgroup_pressure(
+        cgroup_pressure,
+        max_memory_high_ratio=args.max_memory_high_ratio,
+        max_pids_ratio=args.max_pids_ratio,
+    )
     hook_count, hook_rss_kib = collect_hook_pressure(
         control_group,
         min_age_s=max(0.0, float(args.min_hook_age_s)),
@@ -491,6 +515,25 @@ def main(argv: list[str] | None = None) -> int:
         now_ts=now_ts,
         sample_window_s=float(args.hook_pressure_sample_window_s),
     )
+    try:
+        previous_cgroup_pressure_streak = int(
+            watchdog_state.get("cgroup_pressure_streak") or 0
+        )
+    except (TypeError, ValueError):
+        previous_cgroup_pressure_streak = 0
+    try:
+        previous_cgroup_pressure_sample_ts = float(
+            watchdog_state.get("cgroup_pressure_sample_ts") or 0.0
+        )
+    except (TypeError, ValueError):
+        previous_cgroup_pressure_sample_ts = 0.0
+    cgroup_pressure_streak = next_hook_pressure_streak(
+        pressure=cgroup_pressure_active,
+        previous_streak=previous_cgroup_pressure_streak,
+        previous_sample_ts=previous_cgroup_pressure_sample_ts,
+        now_ts=now_ts,
+        sample_window_s=float(args.cgroup_pressure_sample_window_s),
+    )
     if not should_restart_gateway(
         stuck_ages=stuck_ages,
         threshold_s=args.threshold_s,
@@ -507,6 +550,8 @@ def main(argv: list[str] | None = None) -> int:
         cgroup_pressure=cgroup_pressure,
         max_memory_high_ratio=args.max_memory_high_ratio,
         max_pids_ratio=args.max_pids_ratio,
+        cgroup_pressure_streak=cgroup_pressure_streak,
+        min_cgroup_pressure_samples=args.min_cgroup_pressure_samples,
     ):
         if not args.dry_run:
             try:
@@ -521,18 +566,35 @@ def main(argv: list[str] | None = None) -> int:
                 max_stuck_age_s=previous_max_stuck_age_s,
                 hook_pressure_streak=hook_pressure_streak,
                 hook_pressure_sample_ts=now_ts if hook_pressure else 0.0,
+                cgroup_pressure_streak=cgroup_pressure_streak,
+                cgroup_pressure_sample_ts=now_ts if cgroup_pressure_active else 0.0,
             )
         action = (
             "defer"
-            if hook_pressure
-            and hook_pressure_streak < max(1, args.min_hook_pressure_samples)
+            if (
+                hook_pressure
+                and hook_pressure_streak < max(1, args.min_hook_pressure_samples)
+            )
+            or (
+                cgroup_pressure_active
+                and cgroup_pressure_streak
+                < max(1, args.min_cgroup_pressure_samples)
+            )
             else "none"
+        )
+        memory_limit_bytes = (
+            cgroup_pressure.memory_high_bytes or cgroup_pressure.memory_max_bytes
         )
         print(
             f"openclaw_watchdog action={action} "
             f"stuck_ages={stuck_ages} health_checks={health_checks} "
             f"hook_count={hook_count} hook_rss_kib={hook_rss_kib} "
-            f"hook_pressure_streak={hook_pressure_streak}"
+            f"hook_pressure_streak={hook_pressure_streak} "
+            f"cgroup_pressure_streak={cgroup_pressure_streak} "
+            f"memory_current_bytes={cgroup_pressure.memory_current_bytes} "
+            f"memory_limit_bytes={memory_limit_bytes} "
+            f"pids_current={cgroup_pressure.pids_current} "
+            f"pids_max={cgroup_pressure.pids_max}"
         )
         return 0
 
@@ -550,12 +612,20 @@ def main(argv: list[str] | None = None) -> int:
         cgroup_pressure=cgroup_pressure,
         max_memory_high_ratio=args.max_memory_high_ratio,
         max_pids_ratio=args.max_pids_ratio,
+        cgroup_pressure_streak=cgroup_pressure_streak,
+        min_cgroup_pressure_samples=args.min_cgroup_pressure_samples,
     )
     assert trigger is not None
     print(
         f"openclaw_watchdog action=restart unit={args.unit} trigger={trigger} "
         f"max_stuck_age_s={max_age} hook_count={hook_count} hook_rss_kib={hook_rss_kib}"
         f" hook_pressure_streak={hook_pressure_streak}"
+        f" cgroup_pressure_streak={cgroup_pressure_streak}"
+        f" memory_current_bytes={cgroup_pressure.memory_current_bytes}"
+        f" memory_limit_bytes="
+        f"{cgroup_pressure.memory_high_bytes or cgroup_pressure.memory_max_bytes}"
+        f" pids_current={cgroup_pressure.pids_current}"
+        f" pids_max={cgroup_pressure.pids_max}"
     )
     if not args.dry_run:
         try:
