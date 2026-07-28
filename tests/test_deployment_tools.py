@@ -20,6 +20,254 @@ from deploy.rotate_console_token import rotate_token
 pytestmark = pytest.mark.linux_deployment
 
 
+def test_openclaw_feishu_message_sent_patch_emits_real_api_receipts_once(
+    tmp_path: Path,
+) -> None:
+    openclaw_root = tmp_path / "openclaw"
+    dist = openclaw_root / "dist"
+    (dist / "plugins").mkdir(parents=True)
+    (dist / "plugin-sdk").mkdir()
+    (openclaw_root / "package.json").write_text(
+        json.dumps({"version": "2026.7.1-2", "type": "module"}),
+        encoding="utf-8",
+    )
+    (dist / "plugins" / "hook-runner-global.js").write_text(
+        "export function getGlobalHookRunner() { return globalThis.__runner; }\n",
+        encoding="utf-8",
+    )
+    (dist / "plugin-sdk" / "hook-runtime.js").write_text(
+        "\n".join(
+            [
+                "export function buildCanonicalSentMessageHookContext(value) { return value; }",
+                "export function toPluginMessageSentEvent(value) { return value; }",
+                "export function toPluginMessageContext(value) {",
+                "  return {",
+                "    channelId: value.channelId,",
+                "    accountId: value.accountId,",
+                "    conversationId: value.conversationId,",
+                "    sessionKey: value.sessionKey,",
+                "  };",
+                "}",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    runtime = dist / "monitor.account-test.js"
+    runtime.write_text(
+        """
+async function sendMessageFeishu(params) {
+    return { messageId: params.messageId || "om_direct" };
+}
+async function sendStructuredCardFeishu(params) {
+    return { messageId: params.messageId || "om_card" };
+}
+function createFeishuReplyDispatcher(params) {
+    const { chatId, sendTarget, accountId } = params;
+    let streaming = null;
+    let streamText = "";
+    const startStreaming = async () => {
+        streaming = {
+            state: { messageId: "om_stream" },
+            async start() {},
+            isActive() { return true; },
+            async close() { return true; },
+        };
+        await streaming.start(sendTarget, "chat_id", {});
+    };
+    const closeStreaming = async (options) => {
+        if (streaming?.isActive()) {
+            const text = streamText;
+            const contentVisible = await streaming.close(text, { note: "" });
+            if (contentVisible) streamText = text;
+        }
+    };
+    const sendChunkedTextReply = async (paramsLocal) => {
+        for (const [index, chunk] of [paramsLocal.text].entries()) {
+            await paramsLocal.sendChunk({ chunk, isFirst: index === 0 });
+        }
+        if (paramsLocal.infoKind === "final") streamText = paramsLocal.text;
+    };
+    const sendDirect = async (text) => sendChunkedTextReply({
+        text,
+        infoKind: "final",
+        sendChunk: async ({ chunk }) => {
+            await sendMessageFeishu({
+                text: chunk,
+                messageId: params.directMessageId,
+            });
+        },
+    });
+    const sendCard = async (text) => sendChunkedTextReply({
+        text,
+        infoKind: "final",
+        sendChunk: async ({ chunk }) => {
+            await sendStructuredCardFeishu({
+                text: chunk,
+                messageId: params.cardMessageId,
+            });
+        },
+    });
+    return {
+        sendDirect,
+        sendCard,
+        startStreaming,
+        closeStreaming,
+        setStreamText(text) { streamText = text; },
+    };
+}
+export { createFeishuReplyDispatcher };
+//#endregion
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    script = Path("deploy/patch_openclaw_feishu_message_sent.py")
+
+    first = subprocess.run(
+        [sys.executable, str(script), "--openclaw-root", str(openclaw_root)],
+        cwd=Path.cwd(),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    second = subprocess.run(
+        [sys.executable, str(script), "--openclaw-root", str(openclaw_root)],
+        cwd=Path.cwd(),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+
+    assert first.returncode == 0, first.stderr
+    assert json.loads(first.stdout)["status"] == "patched"
+    assert second.returncode == 0, second.stderr
+    assert json.loads(second.stdout)["status"] == "already_patched"
+    probe = tmp_path / "probe.mjs"
+    probe.write_text(
+        """
+globalThis.__events = [];
+globalThis.__runner = {
+  hasHooks(name) { return name === "message_sent"; },
+  async runMessageSent(event, context) {
+    globalThis.__events.push({ event, context });
+  },
+};
+const { createFeishuReplyDispatcher } = await import(
+  "./openclaw/dist/monitor.account-test.js"
+);
+const direct = createFeishuReplyDispatcher({
+  chatId: "oc_direct",
+  sendTarget: "feishu:oc_direct",
+  accountId: "default",
+  sessionKey: "agent:main:feishu:direct:ou_user",
+  directMessageId: "om_direct",
+  cardMessageId: "om_card",
+});
+await direct.sendDirect("direct final");
+await direct.sendCard("card final");
+await direct.startStreaming();
+direct.setStreamText("stream final");
+await direct.closeStreaming();
+process.stdout.write(JSON.stringify(globalThis.__events));
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    executed = subprocess.run(
+        ["node", str(probe)],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+
+    assert executed.returncode == 0, executed.stderr
+    events = json.loads(executed.stdout)
+    assert [
+        (item["event"]["content"], item["event"]["messageId"])
+        for item in events
+    ] == [
+        ("direct final", "om_direct"),
+        ("card final", "om_card"),
+        ("stream final", "om_stream"),
+    ]
+    assert all(
+        item["context"]["sessionKey"] == "agent:main:feishu:direct:ou_user"
+        for item in events
+    )
+
+
+def test_openclaw_feishu_message_sent_patch_does_not_accept_missing_message_id(
+    tmp_path: Path,
+) -> None:
+    openclaw_root = tmp_path / "openclaw"
+    dist = openclaw_root / "dist"
+    dist.mkdir(parents=True)
+    (openclaw_root / "package.json").write_text(
+        json.dumps({"version": "2026.7.1-2"}),
+        encoding="utf-8",
+    )
+    runtime = dist / "monitor.account-test.js"
+    runtime.write_text(
+        """
+async function sendMessageFeishu() { return {}; }
+async function sendStructuredCardFeishu() { return {}; }
+function createFeishuReplyDispatcher(params) {
+    const { chatId, sendTarget, accountId } = params;
+    let streaming = null;
+    let streamText = "";
+    const closeStreaming = async (options) => {
+        if (streaming?.isActive()) {
+            const text = streamText;
+            const contentVisible = await streaming.close(text, { note: "" });
+            if (contentVisible) streamText = text;
+        }
+    };
+    const sendChunkedTextReply = async (paramsLocal) => {
+        for (const [index, chunk] of [paramsLocal.text].entries()) {
+            await paramsLocal.sendChunk({ chunk, isFirst: index === 0 });
+        }
+        if (paramsLocal.infoKind === "final") streamText = paramsLocal.text;
+    };
+    const sendDirect = async (text) => sendChunkedTextReply({
+        text,
+        infoKind: "final",
+        sendChunk: async ({ chunk }) => {
+            await sendMessageFeishu({ text: chunk });
+        },
+    });
+    return { closeStreaming, sendChunkedTextReply, sendDirect };
+}
+//#endregion
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "deploy/patch_openclaw_feishu_message_sent.py",
+            "--openclaw-root",
+            str(openclaw_root),
+        ],
+        cwd=Path.cwd(),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    patched = runtime.read_text(encoding="utf-8")
+    assert "if (!messageId) return;" in patched
+    assert "success: true" in patched
+
+
 @pytest.mark.parametrize("openclaw_version", ["2026.7.1-beta.2", "2026.7.1-2"])
 def test_openclaw_restart_recovery_scope_patch_is_managed_and_idempotent(
     tmp_path, openclaw_version: str
