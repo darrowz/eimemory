@@ -9,6 +9,7 @@ import time
 import pytest
 
 from deploy.patch_openclaw_restart_recovery_scope import PatchError, patch_openclaw
+from eimemory.ops import openclaw_watchdog as watchdog_module
 
 
 RECOVERY_RUNTIME = """
@@ -18,14 +19,41 @@ import path from "node:path";
 const actions = [];
 const stores = JSON.parse(process.env.EIMEMORY_TEST_STORES || "{}");
 const quarantinePath = process.env.EIMEMORY_OPENCLAW_RECOVERY_QUARANTINE_PATH;
+const claimedPath = `${quarantinePath}.in-progress`;
+const terminalStatePath = process.env.EIMEMORY_TEST_TERMINAL_STATE_PATH;
+const actionLogPath = process.env.EIMEMORY_TEST_ACTION_LOG_PATH;
+const crashPhase = process.env.EIMEMORY_TEST_CRASH_PHASE;
+const routableStorePaths = JSON.parse(
+  process.env.EIMEMORY_TEST_ROUTABLE_STORE_PATHS || "{}"
+);
 const log = { warn() {} };
 const observation = {
   liveMarkerExistsAtLoad: null,
-  consumedMarkerCountAtLoad: null,
+  claimedMarkerExistsAtLoad: null,
 };
+let loadedStoreCount = 0;
+
+function recordAction(action) {
+  actions.push(action);
+  if (actionLogPath) {
+    fs.appendFileSync(actionLogPath, `${JSON.stringify(action)}\n`);
+  }
+}
+
+function readTerminalSessionKeys() {
+  if (!terminalStatePath || !fs.existsSync(terminalStatePath)) return new Set();
+  return new Set(JSON.parse(fs.readFileSync(terminalStatePath, "utf8")));
+}
+
+function persistTerminalSessionKey(sessionKey) {
+  if (!terminalStatePath) return;
+  const terminal = readTerminalSessionKeys();
+  terminal.add(sessionKey);
+  fs.writeFileSync(terminalStatePath, JSON.stringify([...terminal].toSorted()));
+}
 
 async function callGateway(params) {
-  actions.push({
+  recordAction({
     kind: "gateway",
     method: params.method,
     sessionKey: params.params?.sessionKey,
@@ -33,19 +61,26 @@ async function callGateway(params) {
 }
 
 function loadSessionStore(storePath) {
+  if (crashPhase === "before_second_store" && loadedStoreCount === 1) {
+    throw new Error("simulated crash before second store");
+  }
+  loadedStoreCount++;
   if (observation.liveMarkerExistsAtLoad === null) {
     observation.liveMarkerExistsAtLoad = fs.existsSync(quarantinePath);
-    observation.consumedMarkerCountAtLoad = fs
-      .readdirSync(path.dirname(quarantinePath))
-      .filter((name) =>
-        name.startsWith(`${path.basename(quarantinePath)}.consumed.`)
-      ).length;
+    observation.claimedMarkerExistsAtLoad = fs.existsSync(claimedPath);
   }
-  return stores[storePath];
+  const terminal = readTerminalSessionKeys();
+  return Object.fromEntries(
+    Object.entries(stores[storePath]).map(([sessionKey, entry]) => [
+      sessionKey,
+      terminal.has(sessionKey) ? { ...entry, status: "failed" } : { ...entry },
+    ])
+  );
 }
 
 async function markSessionFailed(params) {
-  actions.push({
+  persistTerminalSessionKey(params.sessionKey);
+  recordAction({
     kind: "mark_failed",
     reason: params.reason,
     sessionKey: params.sessionKey,
@@ -67,17 +102,69 @@ async function resumeMainSession({ entry, sessionKey }) {
   return entry.resumeSucceeds !== false;
 }
 
+function shouldSkipMainRecovery(entry) {
+  return entry.skipRecovery === true;
+}
+
+function isRoutableRecoveryStore(params) {
+  return routableStorePaths[params.sessionKey] === undefined
+    || routableStorePaths[params.sessionKey] === params.storePath;
+}
+
+function hasCurrentProcessOwner(params) {
+  return params.entry.currentOwner === true;
+}
+
 async function recoverStore(params) {
   const result = { recovered: 0, failed: 0, skipped: 0 };
   const store = loadSessionStore(params.storePath);
   for (const [sessionKey, entry] of Object.entries(store)) {
     if (!entry || entry.status !== "running" || entry.abortedLastRun !== true) continue;
-    if (await resumeMainSession({ entry, sessionKey })) result.recovered++;
+    if (shouldSkipMainRecovery(entry, sessionKey)) {
+      result.skipped++;
+      continue;
+    }
+    if (!isRoutableRecoveryStore({
+      cfg: params.cfg,
+      sessionKey,
+      storePath: params.storePath
+    })) {
+      result.skipped++;
+      continue;
+    }
+    if (hasCurrentProcessOwner({
+      activeSessionIds: new Set(),
+      activeSessionKeys: new Set(),
+      entry,
+      sessionKey
+    })) {
+      result.skipped++;
+      continue;
+    }
+    const resumeDedupeKey = sessionKey;
+    if (params.resumedSessionKeys.has(resumeDedupeKey)) {
+      result.skipped++;
+      continue;
+    }
+    if (entry.pendingFinalDelivery === true && entry.pendingFinalDeliveryText) {
+      if (await resumeMainSession({ entry, sessionKey })) {
+        params.resumedSessionKeys.add(resumeDedupeKey);
+        result.recovered++;
+      } else result.failed++;
+      continue;
+    }
+    if (await resumeMainSession({ entry, sessionKey })) {
+      params.resumedSessionKeys.add(resumeDedupeKey);
+      result.recovered++;
+    } else result.failed++;
   }
   return result;
 }
 
 async function resolveRestartRecoveryStorePaths() {
+  if (crashPhase === "after_claim") {
+    throw new Error("simulated crash after quarantine claim");
+  }
   return Object.keys(stores);
 }
 
@@ -91,6 +178,10 @@ async function recoverRestartAbortedMainSessions(params = {}) {
     result.skipped += storeResult.skipped;
   }
   return result;
+}
+
+async function recoverStartupOrphanedMainSessions(params = {}) {
+  return recoverRestartAbortedMainSessions(params);
 }
 
 const result = await recoverRestartAbortedMainSessions();
@@ -213,14 +304,27 @@ def _run_runtime(
     quarantine_path: Path,
     *,
     stores: dict,
-) -> dict:
+    action_log_path: Path | None = None,
+    crash_phase: str = "",
+    expect_success: bool = True,
+    routable_store_paths: dict[str, str] | None = None,
+    terminal_state_path: Path | None = None,
+) -> dict | subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env.update(
         {
             "EIMEMORY_OPENCLAW_RECOVERY_QUARANTINE_PATH": str(quarantine_path),
             "EIMEMORY_TEST_STORES": json.dumps(stores),
+            "EIMEMORY_TEST_CRASH_PHASE": crash_phase,
+            "EIMEMORY_TEST_ROUTABLE_STORE_PATHS": json.dumps(
+                routable_store_paths or {}
+            ),
         }
     )
+    if action_log_path is not None:
+        env["EIMEMORY_TEST_ACTION_LOG_PATH"] = str(action_log_path)
+    if terminal_state_path is not None:
+        env["EIMEMORY_TEST_TERMINAL_STATE_PATH"] = str(terminal_state_path)
     completed = subprocess.run(
         ["node", str(runtime)],
         capture_output=True,
@@ -229,8 +333,21 @@ def _run_runtime(
         env=env,
         check=False,
     )
+    if not expect_success:
+        assert completed.returncode != 0
+        return completed
     assert completed.returncode == 0, completed.stderr
     return json.loads(completed.stdout)
+
+
+def _read_action_log(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
+    return [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line
+    ]
 
 
 def _patch_fixture(tmp_path: Path) -> tuple[Path, Path]:
@@ -238,6 +355,261 @@ def _patch_fixture(tmp_path: Path) -> tuple[Path, Path]:
     report = patch_openclaw(root)
     assert report["status"] == "patched"
     return root, runtime
+
+
+def test_claimed_quarantine_replays_after_crash_immediately_after_rename(
+    tmp_path: Path,
+) -> None:
+    _, runtime = _patch_fixture(tmp_path)
+    marker = tmp_path / "openclaw_recovery_quarantine.json"
+    claimed = tmp_path / "openclaw_recovery_quarantine.json.in-progress"
+    terminal_state = tmp_path / "terminal.json"
+    action_log = tmp_path / "actions.jsonl"
+    marker.write_text(
+        json.dumps(_quarantine(mode="all_previous_lifecycle", session_ids=[])),
+        encoding="utf-8",
+    )
+    stores = {
+        "store-a": {
+            "agent:main:one": {
+                "status": "running",
+                "abortedLastRun": True,
+                "sessionId": "session-one",
+            }
+        }
+    }
+
+    _run_runtime(
+        runtime,
+        marker,
+        stores=stores,
+        action_log_path=action_log,
+        crash_phase="after_claim",
+        expect_success=False,
+        terminal_state_path=terminal_state,
+    )
+
+    assert not marker.exists()
+    assert claimed.exists()
+    claimed_state = json.loads(claimed.read_text(encoding="utf-8"))
+    claimed_state["expires_at_ts"] = time.time() - 1
+    claimed.write_text(json.dumps(claimed_state), encoding="utf-8")
+
+    payload = _run_runtime(
+        runtime,
+        marker,
+        stores=stores,
+        action_log_path=action_log,
+        terminal_state_path=terminal_state,
+    )
+
+    assert payload["result"] == {"recovered": 0, "failed": 1, "skipped": 0}
+    assert not claimed.exists()
+    assert not [
+        action
+        for action in _read_action_log(action_log)
+        if action.get("method") == "agent"
+    ]
+
+
+def test_claimed_quarantine_replays_remaining_store_after_crash(
+    tmp_path: Path,
+) -> None:
+    _, runtime = _patch_fixture(tmp_path)
+    marker = tmp_path / "openclaw_recovery_quarantine.json"
+    claimed = tmp_path / "openclaw_recovery_quarantine.json.in-progress"
+    terminal_state = tmp_path / "terminal.json"
+    action_log = tmp_path / "actions.jsonl"
+    marker.write_text(
+        json.dumps(_quarantine(mode="all_previous_lifecycle", session_ids=[])),
+        encoding="utf-8",
+    )
+    stores = {
+        "store-a": {
+            "agent:main:one": {
+                "status": "running",
+                "abortedLastRun": True,
+                "sessionId": "session-one",
+            }
+        },
+        "store-b": {
+            "agent:main:two": {
+                "status": "running",
+                "abortedLastRun": True,
+                "sessionId": "session-two",
+            }
+        },
+    }
+
+    _run_runtime(
+        runtime,
+        marker,
+        stores=stores,
+        action_log_path=action_log,
+        crash_phase="before_second_store",
+        expect_success=False,
+        terminal_state_path=terminal_state,
+    )
+
+    assert claimed.exists()
+    assert json.loads(terminal_state.read_text(encoding="utf-8")) == [
+        "agent:main:one"
+    ]
+    first_actions = _read_action_log(action_log)
+    assert [action["kind"] for action in first_actions] == [
+        "mark_failed",
+        "gateway",
+    ]
+
+    payload = _run_runtime(
+        runtime,
+        marker,
+        stores=stores,
+        action_log_path=action_log,
+        terminal_state_path=terminal_state,
+    )
+
+    assert payload["result"] == {"recovered": 0, "failed": 1, "skipped": 0}
+    assert not claimed.exists()
+    assert json.loads(terminal_state.read_text(encoding="utf-8")) == [
+        "agent:main:one",
+        "agent:main:two",
+    ]
+    assert not [
+        action
+        for action in _read_action_log(action_log)
+        if action.get("method") == "agent"
+    ]
+
+
+def test_quarantine_respects_recovery_gates_and_deduplicates_eligible_copies(
+    tmp_path: Path,
+) -> None:
+    _, runtime = _patch_fixture(tmp_path)
+    marker = tmp_path / "openclaw_recovery_quarantine.json"
+    marker.write_text(
+        json.dumps(_quarantine(mode="all_previous_lifecycle", session_ids=[])),
+        encoding="utf-8",
+    )
+
+    payload = _run_runtime(
+        runtime,
+        marker,
+        stores={
+            "store-a": {
+                "agent:main:skip": {
+                    "status": "running",
+                    "abortedLastRun": True,
+                    "sessionId": "session-skip",
+                    "skipRecovery": True,
+                },
+                "agent:main:owned": {
+                    "status": "running",
+                    "abortedLastRun": True,
+                    "sessionId": "session-owned",
+                    "currentOwner": True,
+                },
+                "agent:main:routed": {
+                    "status": "running",
+                    "abortedLastRun": True,
+                    "sessionId": "session-routed",
+                },
+            },
+            "store-b": {
+                "agent:main:routed": {
+                    "status": "running",
+                    "abortedLastRun": True,
+                    "sessionId": "session-routed",
+                },
+                "agent:main:duplicate": {
+                    "status": "running",
+                    "abortedLastRun": True,
+                    "sessionId": "session-duplicate",
+                    "pendingFinalDelivery": True,
+                    "pendingFinalDeliveryText": "captured",
+                },
+            },
+            "store-c": {
+                "agent:main:duplicate": {
+                    "status": "running",
+                    "abortedLastRun": True,
+                    "sessionId": "session-duplicate",
+                }
+            },
+        },
+        routable_store_paths={"agent:main:routed": "store-b"},
+    )
+
+    assert payload["result"] == {"recovered": 0, "failed": 2, "skipped": 4}
+    assert [
+        (action["kind"], action["sessionKey"]) for action in payload["actions"]
+    ] == [
+        ("mark_failed", "agent:main:routed"),
+        ("gateway", "agent:main:routed"),
+        ("mark_failed", "agent:main:duplicate"),
+        ("gateway", "agent:main:duplicate"),
+    ]
+    assert all(
+        action.get("method") != "agent" for action in payload["actions"]
+    )
+
+
+def test_failed_watchdog_restart_clears_marker_before_manual_startup(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _, runtime = _patch_fixture(tmp_path)
+    marker = tmp_path / "openclaw_recovery_quarantine.json"
+    with monkeypatch.context() as scoped:
+        scoped.setattr(
+            watchdog_module,
+            "read_unit_journal",
+            lambda *args, **kwargs: (
+                "[diagnostic] stuck session: "
+                "sessionId=session-target state=processing age=150s"
+            ),
+        )
+        scoped.setattr(
+            watchdog_module,
+            "resolve_unit_control_group",
+            lambda *args, **kwargs: "",
+        )
+        scoped.setattr(
+            watchdog_module.subprocess,
+            "run",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                subprocess.CalledProcessError(1, args[0])
+            ),
+        )
+
+        result = watchdog_module.main(
+            [
+                "--state-path",
+                str(tmp_path / "watchdog-state.json"),
+                "--quarantine-path",
+                str(marker),
+            ]
+        )
+
+    assert result == 2
+    assert not marker.exists()
+
+    payload = _run_runtime(
+        runtime,
+        marker,
+        stores={
+            "store-a": {
+                "agent:main:manual": {
+                    "status": "running",
+                    "abortedLastRun": True,
+                    "sessionId": "session-target",
+                }
+            }
+        },
+    )
+
+    assert payload["result"] == {"recovered": 1, "failed": 0, "skipped": 0}
+    assert payload["actions"][-1]["method"] == "agent"
 
 
 def test_patch_applies_once_and_second_application_is_idempotent(tmp_path: Path) -> None:
@@ -293,7 +665,7 @@ async function recoverStore(params) {
     ) == 1
 
 
-def test_targeted_quarantine_suppresses_only_exact_session_and_consumes_first(
+def test_targeted_quarantine_suppresses_only_exact_session_and_claims_first(
     tmp_path: Path,
 ) -> None:
     _, runtime = _patch_fixture(tmp_path)
@@ -322,17 +694,17 @@ def test_targeted_quarantine_suppresses_only_exact_session_and_consumes_first(
     assert payload["result"] == {"recovered": 1, "failed": 1, "skipped": 0}
     assert payload["observation"] == {
         "liveMarkerExistsAtLoad": False,
-        "consumedMarkerCountAtLoad": 1,
+        "claimedMarkerExistsAtLoad": True,
     }
     assert not marker.exists()
     assert [
         (action["kind"], action["sessionKey"]) for action in payload["actions"]
     ] == [
-        ("gateway", "agent:main:target"),
         ("mark_failed", "agent:main:target"),
+        ("gateway", "agent:main:target"),
         ("gateway", "agent:main:other"),
     ]
-    assert payload["actions"][0]["method"] == "message.action"
+    assert payload["actions"][1]["method"] == "message.action"
     assert payload["actions"][2]["method"] == "agent"
 
 
@@ -500,6 +872,123 @@ def test_patch_fails_closed_when_current_recovery_anchor_does_not_match(
         patch_openclaw(root)
 
     assert runtime.read_text(encoding="utf-8") == mismatched
+
+
+def test_patch_fails_closed_when_affected_runtime_has_no_recovery_entrypoints(
+    tmp_path: Path,
+) -> None:
+    root, runtime = _write_openclaw_fixture(tmp_path)
+    mismatched = runtime.read_text(encoding="utf-8").replace(
+        "recoverStore",
+        "changedRecoverStore",
+    ).replace(
+        "recoverRestartAbortedMainSessions",
+        "changedRecoverRestartAbortedMainSessions",
+    )
+    runtime.write_text(mismatched, encoding="utf-8")
+
+    with pytest.raises(PatchError, match="recovery entrypoint anchors"):
+        patch_openclaw(root)
+
+    assert runtime.read_text(encoding="utf-8") == mismatched
+
+
+def test_patch_does_not_use_same_shaped_loop_from_wrong_function(
+    tmp_path: Path,
+) -> None:
+    root, runtime = _write_openclaw_fixture(tmp_path)
+    text = runtime.read_text(encoding="utf-8")
+    outer_start = text.index("async function recoverRestartAbortedMainSessions")
+    outer_end = text.index("async function recoverStartupOrphanedMainSessions", outer_start)
+    replacement = """
+async function decoyRestartRecovery(params = {}) {
+  const result = { recovered: 0, failed: 0, skipped: 0 };
+  const resumedSessionKeys = new Set();
+  for (const storePath of await resolveRestartRecoveryStorePaths(params)) {
+    const storeResult = await recoverStore({ storePath, resumedSessionKeys });
+    result.recovered += storeResult.recovered;
+    result.failed += storeResult.failed;
+    result.skipped += storeResult.skipped;
+  }
+  return result;
+}
+
+async function recoverRestartAbortedMainSessions(params = {}) {
+  const changedResult = { recovered: 0, failed: 0, skipped: 0 };
+  for (const storePath of await resolveChangedStorePaths(params)) {
+    const changedStoreResult = await changedRecoverStore({ storePath });
+    changedResult.recovered += changedStoreResult.recovered;
+  }
+  return changedResult;
+}
+
+""".lstrip()
+    mismatched = text[:outer_start] + replacement + text[outer_end:]
+    runtime.write_text(mismatched, encoding="utf-8")
+
+    with pytest.raises(PatchError, match="recovery store loop anchor"):
+        patch_openclaw(root)
+
+    assert runtime.read_text(encoding="utf-8") == mismatched
+
+
+@pytest.mark.parametrize(
+    ("original", "replacement"),
+    [
+        (
+            "return quarantine.session_ids.includes(entry.sessionId) "
+            "|| quarantine.session_ids.includes(sessionKey);",
+            "return false;",
+        ),
+        (
+            'quarantine?.schema === "openclaw_recovery_quarantine.v1"',
+            'quarantine?.schema === "openclaw_recovery_quarantine.v2"',
+        ),
+        (
+            "fs.renameSync(EIMEMORY_RECOVERY_QUARANTINE_PATH, "
+            "EIMEMORY_RECOVERY_QUARANTINE_CLAIM_PATH);",
+            "void EIMEMORY_RECOVERY_QUARANTINE_CLAIM_PATH;",
+        ),
+        (
+            "await markSessionFailed({",
+            "await Promise.resolve({",
+        ),
+        (
+            "await sendUnresumableSessionNotice({",
+            "await Promise.resolve({",
+        ),
+        (
+            "const resumeDedupeKey = sessionKey;",
+            "const changedResumeDedupeKey = sessionKey;",
+        ),
+    ],
+    ids=[
+        "matcher",
+        "schema",
+        "atomic_claim",
+        "failure_write",
+        "notice",
+        "dedupe_gate",
+    ],
+)
+def test_patch_fails_closed_for_partial_existing_quarantine_patch(
+    tmp_path: Path,
+    original: str,
+    replacement: str,
+) -> None:
+    root, runtime = _write_openclaw_fixture(tmp_path)
+    assert patch_openclaw(root)["status"] == "patched"
+    partial = runtime.read_text(encoding="utf-8").replace(
+        original,
+        replacement,
+        1,
+    )
+    runtime.write_text(partial, encoding="utf-8")
+
+    with pytest.raises(PatchError, match="incomplete recovery quarantine patch"):
+        patch_openclaw(root)
+
+    assert runtime.read_text(encoding="utf-8") == partial
 
 
 def test_managed_gateway_environment_sets_recovery_quarantine_path() -> None:

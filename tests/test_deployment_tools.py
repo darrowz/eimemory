@@ -43,6 +43,41 @@ async function resumeMainSession() {
         params: {},
     });
 }
+async function recoverStore(params) {
+    const result = { recovered: 0, failed: 0, skipped: 0 };
+    const store = loadSessionStore(params.storePath);
+    for (const [sessionKey, entry] of Object.entries(store)) {
+        if (!entry || entry.status !== "running" || entry.abortedLastRun !== true) continue;
+        if (shouldSkipMainRecovery(entry, sessionKey)) continue;
+        if (!isRoutableRecoveryStore({ sessionKey, storePath: params.storePath })) continue;
+        if (hasCurrentProcessOwner({ entry, sessionKey })) continue;
+        const resumeDedupeKey = sessionKey;
+        if (params.resumedSessionKeys.has(resumeDedupeKey)) continue;
+        if (entry.pendingFinalDelivery === true && entry.pendingFinalDeliveryText) {
+            await resumeMainSession({ entry, sessionKey });
+            continue;
+        }
+        await resumeMainSession({ entry, sessionKey });
+    }
+    return result;
+}
+async function resolveRestartRecoveryStorePaths(params) {
+    return params.storePaths;
+}
+async function recoverRestartAbortedMainSessions(params = {}) {
+    const result = { recovered: 0, failed: 0, skipped: 0 };
+    const resumedSessionKeys = new Set();
+    for (const storePath of await resolveRestartRecoveryStorePaths(params)) {
+        const storeResult = await recoverStore({ storePath, resumedSessionKeys });
+        result.recovered += storeResult.recovered;
+        result.failed += storeResult.failed;
+        result.skipped += storeResult.skipped;
+    }
+    return result;
+}
+async function recoverStartupOrphanedMainSessions(params = {}) {
+    return recoverRestartAbortedMainSessions(params);
+}
 """.strip()
         + "\n",
         encoding="utf-8",

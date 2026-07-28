@@ -214,6 +214,16 @@ def write_recovery_quarantine(
     return quarantine
 
 
+def invalidate_recovery_quarantine(path: Path) -> Path | None:
+    invalid_path = path.with_name(f"{path.name}.restart-failed")
+    try:
+        os.replace(path, invalid_path)
+    except FileNotFoundError:
+        return None
+    _fsync_parent_directory(path.parent)
+    return invalid_path
+
+
 def _fsync_parent_directory(path: Path) -> None:
     if os.name == "nt":
         return
@@ -559,7 +569,19 @@ def main(argv: list[str] | None = None) -> int:
         except OSError as error:
             print(f"openclaw_watchdog action=quarantine_failed error={error}")
             return 2
-        subprocess.run(["systemctl", "--user", "restart", args.unit], check=True)
+        try:
+            subprocess.run(["systemctl", "--user", "restart", args.unit], check=True)
+        except (OSError, subprocess.CalledProcessError) as error:
+            try:
+                invalidate_recovery_quarantine(Path(args.quarantine_path))
+            except OSError as cleanup_error:
+                print(
+                    "openclaw_watchdog action=quarantine_cleanup_failed "
+                    f"restart_error={error} cleanup_error={cleanup_error}"
+                )
+                return 2
+            print(f"openclaw_watchdog action=restart_failed error={error}")
+            return 2
         save_restart_state(state_path, restarted_at_ts=now_ts, max_stuck_age_s=max_age)
     return 0
 

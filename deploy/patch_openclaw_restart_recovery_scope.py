@@ -85,6 +85,9 @@ RECOVERY_QUARANTINE_BRANCH_MARKER = (
 RECOVERY_QUARANTINE_LOAD_MARKER = (
     "const recoveryQuarantine = takeEimemoryRecoveryQuarantine();"
 )
+RECOVERY_QUARANTINE_FINALIZE_MARKER = (
+    "finalizeEimemoryRecoveryQuarantine(recoveryQuarantine);"
+)
 
 
 class PatchError(RuntimeError):
@@ -152,52 +155,160 @@ def _patch_runtime(path: Path) -> bool:
     return changed
 
 
+def _recovery_function_regions(
+    text: str,
+    path: Path,
+) -> tuple[tuple[int, int], tuple[int, int]]:
+    store_start_marker = "async function recoverStore(params) {"
+    store_end_marker = "async function resolveRestartRecoveryStorePaths("
+    outer_start_marker = "async function recoverRestartAbortedMainSessions(params = {}) {"
+    outer_end_marker = "async function recoverStartupOrphanedMainSessions(params = {}) {"
+    markers = (
+        store_start_marker,
+        store_end_marker,
+        outer_start_marker,
+        outer_end_marker,
+    )
+    if any(text.count(marker) != 1 for marker in markers):
+        raise PatchError(f"expected recovery entrypoint anchors in {path.name}")
+
+    store_start = text.index(store_start_marker)
+    store_end = text.index(store_end_marker)
+    outer_start = text.index(outer_start_marker)
+    outer_end = text.index(outer_end_marker)
+    if not store_start < store_end <= outer_start < outer_end:
+        raise PatchError(f"unexpected recovery entrypoint ordering in {path.name}")
+    return (store_start, store_end), (outer_start, outer_end)
+
+
+def _validate_recovery_quarantine_patch(text: str, path: Path) -> None:
+    store_region, outer_region = _recovery_function_regions(text, path)
+    store_body = text[slice(*store_region)]
+    outer_body = text[slice(*outer_region)]
+    helper_markers = (
+        RECOVERY_QUARANTINE_HELPER_MARKER,
+        "function isValidEimemoryRecoveryQuarantine(quarantine, requireCurrent) {",
+        'quarantine?.schema === "openclaw_recovery_quarantine.v1"',
+        'claimedText = fs.readFileSync(EIMEMORY_RECOVERY_QUARANTINE_CLAIM_PATH, "utf8");',
+        "if (!isValidEimemoryRecoveryQuarantine(claimed, false)) {",
+        "if (!isValidEimemoryRecoveryQuarantine(quarantine, true)) {",
+        "fs.renameSync(EIMEMORY_RECOVERY_QUARANTINE_PATH, EIMEMORY_RECOVERY_QUARANTINE_CLAIM_PATH);",
+        "function finalizeEimemoryRecoveryQuarantine(quarantine) {",
+        "fs.unlinkSync(quarantine[EIMEMORY_RECOVERY_QUARANTINE_CLAIM_PROPERTY]);",
+        "function shouldQuarantineRestartRecovery(quarantine, entry, sessionKey) {",
+        "return quarantine.session_ids.includes(entry.sessionId) || quarantine.session_ids.includes(sessionKey);",
+    )
+    if any(text.count(marker) != 1 for marker in helper_markers):
+        raise PatchError(f"incomplete recovery quarantine patch in {path.name}")
+
+    branch_start_marker = f"if ({RECOVERY_QUARANTINE_BRANCH_MARKER}) {{"
+    resume_marker = (
+        "if (entry.pendingFinalDelivery === true && "
+        "entry.pendingFinalDeliveryText) {"
+    )
+    if store_body.count(branch_start_marker) != 1 or store_body.count(resume_marker) != 1:
+        raise PatchError(f"incomplete recovery quarantine patch in {path.name}")
+    branch_start = store_body.index(branch_start_marker)
+    resume_start = store_body.index(resume_marker, branch_start)
+    gate_markers = (
+        'if (!entry || entry.status !== "running" || entry.abortedLastRun !== true) continue;',
+        "if (shouldSkipMainRecovery(entry, sessionKey))",
+        "if (!isRoutableRecoveryStore(",
+        "if (hasCurrentProcessOwner(",
+        "const resumeDedupeKey = sessionKey;",
+        "if (params.resumedSessionKeys.has(resumeDedupeKey))",
+    )
+    if any(store_body.count(marker) != 1 for marker in gate_markers):
+        raise PatchError(f"incomplete recovery quarantine patch in {path.name}")
+    gate_positions = [store_body.index(marker) for marker in gate_markers]
+    if gate_positions != sorted(gate_positions) or not gate_positions[-1] < branch_start:
+        raise PatchError(f"incomplete recovery quarantine patch in {path.name}")
+    branch_body = store_body[branch_start:resume_start]
+    ordered_branch_markers = (
+        "await markSessionFailed({",
+        "params.resumedSessionKeys.add(resumeDedupeKey);",
+        "result.failed++;",
+        "await sendUnresumableSessionNotice({",
+        "continue;",
+    )
+    positions = [branch_body.find(marker) for marker in ordered_branch_markers]
+    if any(position < 0 for position in positions) or positions != sorted(positions):
+        raise PatchError(f"incomplete recovery quarantine patch in {path.name}")
+
+    store_pass = re.compile(
+        r"const storeResult = await recoverStore\(\{\s*recoveryQuarantine,",
+    )
+    if (
+        outer_body.count(RECOVERY_QUARANTINE_LOAD_MARKER) != 1
+        or outer_body.count(RECOVERY_QUARANTINE_FINALIZE_MARKER) != 1
+        or len(store_pass.findall(outer_body)) != 1
+    ):
+        raise PatchError(f"incomplete recovery quarantine patch in {path.name}")
+    load_position = outer_body.index(RECOVERY_QUARANTINE_LOAD_MARKER)
+    store_position = store_pass.search(outer_body)
+    finalize_position = outer_body.index(RECOVERY_QUARANTINE_FINALIZE_MARKER)
+    if (
+        store_position is None
+        or not load_position < store_position.start() < finalize_position
+    ):
+        raise PatchError(f"incomplete recovery quarantine patch in {path.name}")
+
+
 def _patch_recovery_quarantine(path: Path) -> bool:
     text = path.read_text(encoding="utf-8")
     newline = "\r\n" if "\r\n" in text else "\n"
+    store_region, outer_region = _recovery_function_regions(text, path)
     helper_count = text.count(RECOVERY_QUARANTINE_HELPER_MARKER)
     if helper_count == 1:
-        store_pass = re.compile(
-            r"const storeResult = await recoverStore\(\{\s*recoveryQuarantine,",
-        )
-        if (
-            text.count(RECOVERY_QUARANTINE_BRANCH_MARKER) != 1
-            or text.count(RECOVERY_QUARANTINE_LOAD_MARKER) != 1
-            or len(store_pass.findall(text)) != 1
-        ):
-            raise PatchError(f"incomplete recovery quarantine patch in {path.name}")
+        _validate_recovery_quarantine_patch(text, path)
         return False
     if helper_count != 0:
-        raise PatchError(f"expected one recovery quarantine helper in {path.name}")
-
-    recovery_entrypoint_count = sum(
+        raise PatchError(f"incomplete recovery quarantine patch in {path.name}")
+    if any(
         marker in text
         for marker in (
-            "async function recoverStore(",
-            "async function recoverRestartAbortedMainSessions(",
+            RECOVERY_QUARANTINE_BRANCH_MARKER,
+            RECOVERY_QUARANTINE_LOAD_MARKER,
+            RECOVERY_QUARANTINE_FINALIZE_MARKER,
         )
-    )
-    if recovery_entrypoint_count == 0:
-        return False
-    if recovery_entrypoint_count != 2:
-        raise PatchError(f"expected both recovery entrypoint anchors in {path.name}")
+    ):
+        raise PatchError(f"incomplete recovery quarantine patch in {path.name}")
 
-    recover_store_anchor = re.compile(
-        r"^async function recoverStore\(params\) \{$",
-        re.MULTILINE,
-    )
-    recover_store_matches = list(recover_store_anchor.finditer(text))
-    if len(recover_store_matches) != 1:
-        raise PatchError(f"expected one recoverStore anchor in {path.name}")
-
+    store_body = text[slice(*store_region)]
+    outer_body = text[slice(*outer_region)]
     guard_anchor = re.compile(
         r'^(?P<indent>[ \t]+)if \(!entry \|\| entry\.status !== "running" \|\| '
         r'entry\.abortedLastRun !== true\) continue;$',
         re.MULTILINE,
     )
-    guard_matches = list(guard_anchor.finditer(text))
+    guard_matches = list(guard_anchor.finditer(store_body))
     if len(guard_matches) != 1:
         raise PatchError(f"expected one recovery guard anchor in {path.name}")
+
+    resume_anchor = re.compile(
+        r'^(?P<indent>[ \t]+)if \(entry\.pendingFinalDelivery === true && '
+        r"entry\.pendingFinalDeliveryText\) \{$",
+        re.MULTILINE,
+    )
+    resume_matches = list(resume_anchor.finditer(store_body))
+    if len(resume_matches) != 1:
+        raise PatchError(f"expected one first recovery resume anchor in {path.name}")
+    gate_markers = (
+        "if (shouldSkipMainRecovery(entry, sessionKey))",
+        "if (!isRoutableRecoveryStore(",
+        "if (hasCurrentProcessOwner(",
+        "const resumeDedupeKey = sessionKey;",
+        "if (params.resumedSessionKeys.has(resumeDedupeKey))",
+    )
+    if any(store_body.count(marker) != 1 for marker in gate_markers):
+        raise PatchError(f"expected recovery gate anchors in {path.name}")
+    gate_positions = [store_body.index(marker) for marker in gate_markers]
+    if (
+        gate_positions != sorted(gate_positions)
+        or not guard_matches[0].start() < gate_positions[0]
+        or not gate_positions[-1] < resume_matches[0].start()
+    ):
+        raise PatchError(f"unexpected recovery gate ordering in {path.name}")
 
     store_loop_anchor = re.compile(
         r"^(?P<indent>[ \t]+)for \(const storePath of await "
@@ -205,7 +316,7 @@ def _patch_recovery_quarantine(path: Path) -> bool:
         r"(?=\r?\n(?P=indent)[ \t]+const storeResult = await recoverStore\(\{)",
         re.MULTILINE,
     )
-    store_loop_matches = list(store_loop_anchor.finditer(text))
+    store_loop_matches = list(store_loop_anchor.finditer(outer_body))
     if len(store_loop_matches) != 1:
         raise PatchError(f"expected one recovery store loop anchor in {path.name}")
 
@@ -214,48 +325,94 @@ def _patch_recovery_quarantine(path: Path) -> bool:
         r"(?P<tail>[^\r\n]*)$",
         re.MULTILINE,
     )
-    store_call_matches = list(store_call_anchor.finditer(text))
+    store_call_matches = list(store_call_anchor.finditer(outer_body))
     if len(store_call_matches) != 1:
         raise PatchError(f"expected one recoverStore call anchor in {path.name}")
+
+    finalize_anchor = re.compile(
+        r"^(?P<item_indent>[ \t]+)result\.skipped \+= storeResult\.skipped;"
+        r"\r?\n(?P<loop_indent>[ \t]+)\}$",
+        re.MULTILINE,
+    )
+    finalize_matches = list(finalize_anchor.finditer(outer_body))
+    if len(finalize_matches) != 1:
+        raise PatchError(f"expected one recovery finalization anchor in {path.name}")
 
     helpers = newline.join(
         (
             "const EIMEMORY_RECOVERY_QUARANTINE_PATH =",
             "  process.env.EIMEMORY_OPENCLAW_RECOVERY_QUARANTINE_PATH",
             '  || "/var/lib/eimemory/openclaw_recovery_quarantine.json";',
+            "const EIMEMORY_RECOVERY_QUARANTINE_CLAIM_PATH =",
+            '  `${EIMEMORY_RECOVERY_QUARANTINE_PATH}.in-progress`;',
             'const EIMEMORY_RECOVERY_QUARANTINE_REASON = "quarantined by eimemory recovery circuit breaker";',
+            'const EIMEMORY_RECOVERY_QUARANTINE_CLAIM_PROPERTY = "__eimemoryRecoveryQuarantineClaimPath";',
             "function isEimemoryRecoveryQuarantineStringArray(value) {",
             '  return Array.isArray(value) && value.every((item) => typeof item === "string" && item.length > 0);',
             "}",
-            "function takeEimemoryRecoveryQuarantine() {",
-            "  let quarantine;",
-            "  try {",
-            "    quarantine = JSON.parse(fs.readFileSync(EIMEMORY_RECOVERY_QUARANTINE_PATH, \"utf8\"));",
-            "  } catch (err) {",
-            '    if (err?.code !== "ENOENT") log.warn(`ignored unreadable eimemory recovery quarantine: ${String(err)}`);',
-            "    return void 0;",
-            "  }",
+            "function isValidEimemoryRecoveryQuarantine(quarantine, requireCurrent) {",
             "  const nowTs = Date.now() / 1e3;",
-            "  const valid =",
-            '    quarantine?.schema === "openclaw_recovery_quarantine.v1" &&',
+            "  return quarantine?.schema === \"openclaw_recovery_quarantine.v1\" &&",
             '    typeof quarantine.trigger === "string" && quarantine.trigger.length > 0 &&',
             "    Number.isFinite(quarantine.created_at_ts) &&",
             "    Number.isFinite(quarantine.expires_at_ts) &&",
-            "    quarantine.created_at_ts <= nowTs &&",
             "    quarantine.created_at_ts < quarantine.expires_at_ts &&",
-            "    nowTs < quarantine.expires_at_ts &&",
             '    (quarantine.mode === "targeted" || quarantine.mode === "all_previous_lifecycle") &&',
             "    isEimemoryRecoveryQuarantineStringArray(quarantine.session_ids) &&",
             "    quarantine.consumed === false &&",
             '    (quarantine.mode !== "targeted" || quarantine.session_ids.length > 0) &&',
-            '    (quarantine.mode !== "all_previous_lifecycle" || quarantine.session_ids.length === 0);',
-            "  if (!valid) {",
+            '    (quarantine.mode !== "all_previous_lifecycle" || quarantine.session_ids.length === 0) &&',
+            "    (!requireCurrent || (quarantine.created_at_ts <= nowTs && nowTs < quarantine.expires_at_ts));",
+            "}",
+            "function attachEimemoryRecoveryQuarantineClaim(quarantine) {",
+            "  Object.defineProperty(quarantine, EIMEMORY_RECOVERY_QUARANTINE_CLAIM_PROPERTY, {",
+            "    value: EIMEMORY_RECOVERY_QUARANTINE_CLAIM_PATH",
+            "  });",
+            "  return quarantine;",
+            "}",
+            "function takeEimemoryRecoveryQuarantine() {",
+            "  let claimedText;",
+            "  try {",
+            '    claimedText = fs.readFileSync(EIMEMORY_RECOVERY_QUARANTINE_CLAIM_PATH, "utf8");',
+            "  } catch (err) {",
+            '    if (err?.code !== "ENOENT") throw err;',
+            "  }",
+            "  if (claimedText !== void 0) {",
+            "    let claimed;",
+            "    try {",
+            "      claimed = JSON.parse(claimedText);",
+            "    } catch (err) {",
+            '      throw new Error(`invalid claimed eimemory recovery quarantine: ${String(err)}`);',
+            "    }",
+            "    if (!isValidEimemoryRecoveryQuarantine(claimed, false)) {",
+            '      throw new Error("invalid claimed eimemory recovery quarantine state");',
+            "    }",
+            "    return attachEimemoryRecoveryQuarantineClaim(claimed);",
+            "  }",
+            "  let liveText;",
+            "  try {",
+            '    liveText = fs.readFileSync(EIMEMORY_RECOVERY_QUARANTINE_PATH, "utf8");',
+            "  } catch (err) {",
+            '    if (err?.code === "ENOENT") return void 0;',
+            "    throw err;",
+            "  }",
+            "  let quarantine;",
+            "  try {",
+            "    quarantine = JSON.parse(liveText);",
+            "  } catch (err) {",
+            '    log.warn(`ignored malformed eimemory recovery quarantine: ${String(err)}`);',
+            "    return void 0;",
+            "  }",
+            "  if (!isValidEimemoryRecoveryQuarantine(quarantine, true)) {",
             '    log.warn("ignored invalid or expired eimemory recovery quarantine");',
             "    return void 0;",
             "  }",
-            "  const consumedPath = `${EIMEMORY_RECOVERY_QUARANTINE_PATH}.consumed.${Date.now()}.${process.pid}`;",
-            "  fs.renameSync(EIMEMORY_RECOVERY_QUARANTINE_PATH, consumedPath);",
-            "  return quarantine;",
+            "  fs.renameSync(EIMEMORY_RECOVERY_QUARANTINE_PATH, EIMEMORY_RECOVERY_QUARANTINE_CLAIM_PATH);",
+            "  return attachEimemoryRecoveryQuarantineClaim(quarantine);",
+            "}",
+            "function finalizeEimemoryRecoveryQuarantine(quarantine) {",
+            "  if (!quarantine) return;",
+            "  fs.unlinkSync(quarantine[EIMEMORY_RECOVERY_QUARANTINE_CLAIM_PROPERTY]);",
             "}",
             "function shouldQuarantineRestartRecovery(quarantine, entry, sessionKey) {",
             "  if (!quarantine) return false;",
@@ -265,45 +422,44 @@ def _patch_recovery_quarantine(path: Path) -> bool:
             "",
         )
     )
-    recover_store_start = recover_store_matches[0].start()
-    text = text[:recover_store_start] + helpers + text[recover_store_start:]
-
-    guard_match = list(guard_anchor.finditer(text))[0]
-    indent = guard_match.group("indent")
+    resume_match = resume_matches[0]
+    indent = resume_match.group("indent")
     indent_unit = "\t" if "\t" in indent else "  "
     child_indent = indent + indent_unit
     branch = newline.join(
         (
-            guard_match.group(0),
             f"{indent}if ({RECOVERY_QUARANTINE_BRANCH_MARKER}) {{",
+            f"{child_indent}await markSessionFailed({{",
+            f"{child_indent}{indent_unit}storePath: params.storePath,",
+            f"{child_indent}{indent_unit}sessionKey,",
+            f"{child_indent}{indent_unit}reason: EIMEMORY_RECOVERY_QUARANTINE_REASON",
+            f"{child_indent}}});",
+            f"{child_indent}params.resumedSessionKeys.add(resumeDedupeKey);",
+            f"{child_indent}result.failed++;",
             f"{child_indent}await sendUnresumableSessionNotice({{",
             f"{child_indent}{indent_unit}cfg: params.cfg,",
             f"{child_indent}{indent_unit}entry,",
             f"{child_indent}{indent_unit}sessionKey,",
             f"{child_indent}{indent_unit}reason: EIMEMORY_RECOVERY_QUARANTINE_REASON",
             f"{child_indent}}});",
-            f"{child_indent}await markSessionFailed({{",
-            f"{child_indent}{indent_unit}storePath: params.storePath,",
-            f"{child_indent}{indent_unit}sessionKey,",
-            f"{child_indent}{indent_unit}reason: EIMEMORY_RECOVERY_QUARANTINE_REASON",
-            f"{child_indent}}});",
-            f"{child_indent}result.failed++;",
             f"{child_indent}continue;",
             f"{indent}}}",
+            resume_match.group(0),
         )
     )
-    text = guard_anchor.sub(branch, text, count=1)
+    patched_store_body = resume_anchor.sub(branch, store_body, count=1)
+    text = text[: store_region[0]] + helpers + patched_store_body + text[store_region[1] :]
 
-    store_loop_match = list(store_loop_anchor.finditer(text))[0]
+    store_loop_match = store_loop_matches[0]
     store_loop = newline.join(
         (
             f"{store_loop_match.group('indent')}{RECOVERY_QUARANTINE_LOAD_MARKER}",
             store_loop_match.group(0),
         )
     )
-    text = store_loop_anchor.sub(store_loop, text, count=1)
+    patched_outer_body = store_loop_anchor.sub(store_loop, outer_body, count=1)
 
-    store_call_match = list(store_call_anchor.finditer(text))[0]
+    store_call_match = store_call_matches[0]
     call_indent = store_call_match.group("indent")
     call_tail = store_call_match.group("tail")
     if call_tail:
@@ -319,7 +475,23 @@ def _patch_recovery_quarantine(path: Path) -> bool:
                 f"{call_indent}{call_indent_unit}recoveryQuarantine,",
             )
         )
-    text = store_call_anchor.sub(store_call, text, count=1)
+    patched_outer_body = store_call_anchor.sub(store_call, patched_outer_body, count=1)
+
+    finalize_match = finalize_matches[0]
+    finalization = newline.join(
+        (
+            finalize_match.group(0),
+            f"{finalize_match.group('loop_indent')}{RECOVERY_QUARANTINE_FINALIZE_MARKER}",
+        )
+    )
+    patched_outer_body = finalize_anchor.sub(finalization, patched_outer_body, count=1)
+    _, updated_outer_region = _recovery_function_regions(text, path)
+    text = (
+        text[: updated_outer_region[0]]
+        + patched_outer_body
+        + text[updated_outer_region[1] :]
+    )
+    _validate_recovery_quarantine_patch(text, path)
     _atomic_write(path, text)
     return True
 
