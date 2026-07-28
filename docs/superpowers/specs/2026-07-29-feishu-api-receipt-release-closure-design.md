@@ -110,13 +110,21 @@ channel acceptance and is blocked only by
     "replay_bootstrap": "...",
     "live_acceptance": ["..."]
   },
+  "passed_gate_reports": {
+    "replay_bootstrap": {},
+    "live_acceptance": {},
+    "bootstrap_pending": {}
+  },
   "created_at": "<ISO-8601>"
 }
 ```
 
 The checkpoint contains no semantic version. It is written only for the one
 expected channel-evidence gap; any other blocked stage remains a normal failed
-closure and does not arm automatic resumption.
+closure and does not arm automatic resumption. The bounded stage reports retain
+the exact inputs needed by the post-channel rehearsal so resumption never
+reruns weak replay or live acceptance. Empty `bootstrap_pending` means the
+production recall gate was already strict.
 
 Checkpoint writes use a same-directory temporary file, fsync, and atomic
 replace. A current-commit completion removes the checkpoint atomically.
