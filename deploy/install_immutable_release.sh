@@ -1296,11 +1296,14 @@ _rollback_current_release() {
       fi
     fi
   fi
-  # This must complete before any metadata refresh or old service start. The
-  # previous release (including 1.9.80) relies on full payload_json rows.
-  if ! _restore_storage_snapshot; then
-    echo "rollback_step=storage_snapshot status=failed" >&2
-    return 1
+  if [ "$STORAGE_SNAPSHOT_READY" = "1" ]; then
+    # When a migration ran, storage restoration must complete before any
+    # metadata refresh or old service start. A code-only release never enters
+    # this path or touches storage during rollback.
+    if ! _restore_storage_snapshot; then
+      echo "rollback_step=storage_snapshot status=failed" >&2
+      return 1
+    fi
   fi
   if [ "$STORAGE_TRANSACTION_ACTIVE" = "1" ]; then
     if ! _update_storage_release_transaction rollback_storage_restored \

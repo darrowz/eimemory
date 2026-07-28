@@ -148,6 +148,7 @@
 - [x] Keep recovery-file fsync injection isolated from directory fsync.
 - [x] Make Linux installer tests use the actual runner user and group.
 - [x] Account for the installer lock acquisition receipt before the harness-ready line.
+- [x] Skip storage restoration during rollback when the deployment performed no storage migration.
 
 ### Task 8: Single verification and production closure
 

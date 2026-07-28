@@ -96,7 +96,7 @@ set -u
 _acquire_storage_deploy_lock() {{{body}
 }}
 STORAGE_DEPLOY_LOCK_PATH="$1"
-_acquire_storage_deploy_lock
+_acquire_storage_deploy_lock || exit $?
 printf 'ready\\n'
 IFS= read -r _release_lock
 """
