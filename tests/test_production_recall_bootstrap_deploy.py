@@ -404,8 +404,16 @@ def test_prior_health_snapshot_rejects_non_dict_mismatched_or_oversized_payloads
     assert reason == "prior_health_snapshot_invalid"
 
 
-@pytest.mark.parametrize("field", ["commit", "version", "release"])
-def test_prior_health_snapshot_cannot_forge_release_identity(tmp_path, monkeypatch, field: str) -> None:
+@pytest.mark.parametrize(
+    ("field", "accepted"),
+    [("commit", False), ("version", True), ("release", False)],
+)
+def test_prior_health_snapshot_authority_ignores_version_but_rejects_commit_or_path(
+    tmp_path,
+    monkeypatch,
+    field: str,
+    accepted: bool,
+) -> None:
     runtime = Runtime.create(root=tmp_path / "runtime")
     prior = _receipt(runtime, commit="b" * 40, prior_commit="c" * 40)
     release = tmp_path / "releases" / prior.commit
@@ -441,8 +449,12 @@ def test_prior_health_snapshot_cannot_forge_release_identity(tmp_path, monkeypat
     )
     runtime.close()
 
-    assert resolved is None
-    assert reason == "prior_health_identity_mismatch"
+    if accepted:
+        assert resolved == prior
+        assert reason == ""
+    else:
+        assert resolved is None
+        assert reason == "prior_health_identity_mismatch"
 
 
 def test_bootstrap_cli_loads_a_bounded_snapshot_and_passes_it_to_the_gate(tmp_path, monkeypatch, capsys) -> None:
