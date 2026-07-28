@@ -1332,14 +1332,14 @@ _rollback_current_release() {
       echo "rollback_step=runtime_metadata status=failed" >&2
       rollback_failed=1
     fi
-  fi
-  if ! _install_openclaw_loop_compat_script "$PREVIOUS_CURRENT"; then
-    echo "rollback_step=compat_script status=failed" >&2
-    rollback_failed=1
-  fi
-  if ! _refresh_openclaw_plugin_registry; then
-    echo "rollback_step=plugin_registry status=failed" >&2
-    rollback_failed=1
+    if ! _install_openclaw_loop_compat_script "$PREVIOUS_CURRENT"; then
+      echo "rollback_step=compat_script status=failed" >&2
+      rollback_failed=1
+    fi
+    if ! _refresh_openclaw_plugin_registry; then
+      echo "rollback_step=plugin_registry status=failed" >&2
+      rollback_failed=1
+    fi
   fi
   if [ "$STORAGE_TRANSACTION_ACTIVE" = "1" ]; then
     if ! _update_storage_release_transaction rollback_metadata_ready \
