@@ -1836,6 +1836,33 @@ def test_immutable_release_installer_manages_user_level_loop_compaction_timer() 
     assert "OnCalendar=*-*-* 04:10:00" in timer
 
 
+def test_release_closure_uses_channel_ledger_path_without_polling() -> None:
+    script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
+    path_unit = Path("deploy/systemd/eimemory-release-closure.path").read_text(
+        encoding="utf-8"
+    )
+    service = Path("deploy/systemd/eimemory-release-closure.service").read_text(
+        encoding="utf-8"
+    )
+
+    assert "PathChanged=/var/lib/eimemory/openclaw_reply_delivery_state.json" in path_unit
+    assert "Unit=eimemory-release-closure.service" in path_unit
+    assert "OnUnitActiveSec=" not in path_unit
+    assert "OnCalendar=" not in path_unit
+    assert "learn release-closure-reconcile --json" in service
+    assert "openclaw-feishu-reply-watchdog" not in service
+    assert '"$RELEASE_DIR/deploy/systemd/eimemory-release-closure.path"' in script
+    assert '"$RELEASE_DIR/deploy/systemd/eimemory-release-closure.service"' in script
+    assert "_user_systemctl enable eimemory-release-closure.path" in script
+    assert "_user_systemctl start eimemory-release-closure.path" in script
+    assert "eimemory-release-closure.path" in script[
+        script.index("STORAGE_WRITER_UNITS=(") : script.index("ACTIVE_STORAGE_WRITER_UNITS=()")
+    ]
+    assert "eimemory-release-closure.service" in script[
+        script.index("STORAGE_WRITER_UNITS=(") : script.index("ACTIVE_STORAGE_WRITER_UNITS=()")
+    ]
+
+
 def test_immutable_release_installer_permanently_removes_stuck_watchdog() -> None:
     script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
 

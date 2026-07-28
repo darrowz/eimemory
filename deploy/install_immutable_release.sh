@@ -251,6 +251,7 @@ _user_systemctl() {
 }
 
 STORAGE_WRITER_UNITS=(
+  eimemory-release-closure.path
   eimemory-nightly.timer
   eimemory-learn-watch.timer
   eimemory-learn-think.timer
@@ -260,6 +261,7 @@ STORAGE_WRITER_UNITS=(
   eimemory-experience-autopromote.timer
   openclaw-loop-watch.timer
   openclaw-loop-compact.timer
+  eimemory-release-closure.service
   eimemory-nightly.service
   eimemory-learn-watch.service
   eimemory-learn-think.service
@@ -1081,6 +1083,7 @@ _restart_current_services() {
   # current release and gateway are active so deployment cannot leave them idle.
   _user_systemctl start openclaw-loop-watch.timer
   _user_systemctl start openclaw-loop-compact.timer
+  _user_systemctl start eimemory-release-closure.path
 }
 
 _verify_effective_runtime_metadata() {
@@ -1153,12 +1156,17 @@ _install_candidate_runtime_metadata() {
       "$RELEASE_DIR/deploy/systemd/openclaw-loop-compact.service" "$USER_SYSTEMD_DIR/openclaw-loop-compact.service"
     _install_as_service_user 0644 \
       "$RELEASE_DIR/deploy/systemd/openclaw-loop-compact.timer" "$USER_SYSTEMD_DIR/openclaw-loop-compact.timer"
+    _install_as_service_user 0644 \
+      "$RELEASE_DIR/deploy/systemd/eimemory-release-closure.service" "$USER_SYSTEMD_DIR/eimemory-release-closure.service"
+    _install_as_service_user 0644 \
+      "$RELEASE_DIR/deploy/systemd/eimemory-release-closure.path" "$USER_SYSTEMD_DIR/eimemory-release-closure.path"
     # openclaw-feishu-reply-watchdog intentionally not installed/enabled.
     _refresh_openclaw_gateway_metadata "$RELEASE_DIR" "$COMMIT"
     _install_current_runtime_metadata "$RELEASE_DIR" "$COMMIT" "$REPO_DIR"
     _user_systemctl enable eimemory-rpc.service
     _user_systemctl enable openclaw-loop-watch.timer
     _user_systemctl enable openclaw-loop-compact.timer
+    _user_systemctl enable eimemory-release-closure.path
     _user_systemctl daemon-reload
   fi
   _install_openclaw_loop_compat_script "$RELEASE_DIR"

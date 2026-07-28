@@ -68,6 +68,16 @@ systemctl --user enable --now eimemory-rpc.service
 /opt/eimemory/current/deploy/check_user_systemd_owner.sh
 ```
 
+Release closure waits for a real Feishu API receipt without polling. The
+installer enables `eimemory-release-closure.path`, which watches the canonical
+channel delivery ledger and starts the one-shot reconciler only when that file
+changes and a release-closure checkpoint exists:
+
+```bash
+systemctl --user status eimemory-release-closure.path
+systemctl --user status eimemory-release-closure.service
+```
+
 Runtime configuration is loaded from `/etc/eimemory/settings.json` when
 `EIMEMORY_CONFIG_DIR=/etc/eimemory` is set. `EIMEMORY_CONFIG_PATH` can still
 point at a specific settings file, and `EIMEMORY_ROOT` overrides the configured

@@ -1,0 +1,12 @@
+[Unit]
+Description=Reconcile pending eimemory release closure
+After=eimemory-rpc.service openclaw-gateway.service
+Wants=eimemory-rpc.service openclaw-gateway.service
+ConditionPathExists=/var/lib/eimemory/state/release-closure-pending.json
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/eimemory/current
+Environment=EIMEMORY_ROOT=/var/lib/eimemory
+Environment=EIMEMORY_CONFIG_DIR=/etc/eimemory
+ExecStart=/opt/eimemory/current/.venv/bin/eimemory learn release-closure-reconcile --json
