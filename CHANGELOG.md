@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Planned
 - Multi-agent memory coordination
 
+## [1.9.109] - 2026-07-29
+
+### Fixed
+- Emit canonical `message_sent` hook receipts for automatic Feishu replies only after the Feishu API returns a platform message ID, including streaming-card replies.
+- Persist release-closure progress when only current-release channel acceptance is pending, then resume from that checkpoint without rerunning passed gates or binding L5 maturity to the package version.
+- Reconcile pending release closure from a systemd path event when the channel ledger changes, without polling or restoring the removed reply watchdog.
+
 ## [1.9.108] - 2026-07-29
 
 ### Fixed
