@@ -50,6 +50,7 @@ def run_release_closure(
         "storage_migrations": dict(not_run),
         "replay_bootstrap": dict(not_run),
         "live_acceptance": dict(not_run),
+        "channel_acceptance": dict(not_run),
         "release_lineage": dict(not_run),
         "closure_rehearsal": dict(not_run),
         "readiness": dict(not_run),
@@ -171,6 +172,33 @@ def run_release_closure(
     if not _live_acceptance_ok(live_acceptance, receipt=receipt):
         return _blocked(report, "live_acceptance", _failure_reason(live_acceptance, "live_acceptance_failed"))
 
+    record_channel_acceptance = getattr(
+        runtime, "record_openclaw_channel_acceptance", None
+    )
+    if not callable(record_channel_acceptance):
+        return _blocked(
+            report,
+            "channel_acceptance",
+            "openclaw_channel_acceptance_recorder_unavailable",
+        )
+    channel_acceptance = record_channel_acceptance(
+        scope=scope_payload,
+        current_release=receipt_identity,
+    )
+    report["channel_acceptance"] = channel_acceptance
+    report["record_ids"]["channel_acceptance"] = str(
+        channel_acceptance.get("record_id") or ""
+    )
+    if channel_acceptance.get("ok") is not True:
+        return _blocked(
+            report,
+            "channel_acceptance",
+            _failure_reason(
+                channel_acceptance,
+                "current_release_channel_acceptance_missing",
+            ),
+        )
+
     rehearsal_kwargs: dict[str, Any] = {
         "scope": scope_payload,
         "persist": True,
@@ -195,6 +223,9 @@ def run_release_closure(
                 ),
                 bootstrap_pending_record_id=str(
                     report["record_ids"].get("production_recall_bootstrap") or ""
+                ),
+                channel_acceptance_record_id=str(
+                    report["record_ids"].get("channel_acceptance") or ""
                 ),
                 weak_replay=replay_bootstrap,
                 core_replay=core_replay,
@@ -287,6 +318,7 @@ def _finalize_release_lineage(
     recall_gate_record_id: str,
     strict_state_record_id: str,
     bootstrap_pending_record_id: str,
+    channel_acceptance_record_id: str,
     weak_replay: dict[str, Any],
     core_replay: dict[str, Any],
     live_acceptance: dict[str, Any],
@@ -304,6 +336,7 @@ def _finalize_release_lineage(
         or receipt_record_id != current_release.receipt_id
         or not weak_manifest
         or not core_manifest
+        or not channel_acceptance_record_id
         or live_record_ids is None
         or bool(recall_gate_record_id) != bool(strict_state_record_id)
         or bool(bootstrap_pending_record_id)
@@ -323,7 +356,7 @@ def _finalize_release_lineage(
     gate_evidence = {
         "memory.recall": recall_references,
         "memory.governance": [weak_manifest, core_manifest],
-        "channel.openclaw": live_record_ids,
+        "channel.openclaw": [channel_acceptance_record_id],
         "storage.integrity": live_record_ids,
         "deployment.runtime": [receipt_record_id],
     }

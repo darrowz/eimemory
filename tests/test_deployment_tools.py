@@ -17,6 +17,9 @@ from deploy.rotate_console_token import main as rotate_main
 from deploy.rotate_console_token import rotate_token
 
 
+pytestmark = pytest.mark.linux_deployment
+
+
 @pytest.mark.parametrize("openclaw_version", ["2026.7.1-beta.2", "2026.7.1-2"])
 def test_openclaw_restart_recovery_scope_patch_is_managed_and_idempotent(
     tmp_path, openclaw_version: str
@@ -1143,7 +1146,7 @@ def test_immutable_installer_enforces_and_inspects_openclaw_bridge_compatibility
     assert ensure < switch < metadata < restart
 
 
-def test_immutable_installer_always_records_release_identity_when_services_are_enabled() -> None:
+def test_immutable_installer_records_release_identity_after_technical_commit() -> None:
     script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
     receipt_body = script.split("_record_deployment_receipt() {", 1)[1].split("\n}", 1)[0]
 
@@ -1152,11 +1155,17 @@ def test_immutable_installer_always_records_release_identity_when_services_are_e
     assert '--deployed-commit "$COMMIT"' in receipt_body
     health_body = script.split("_verify_release_health() {", 1)[1].split("\n}", 1)[0]
     assert "EIMEMORY_POST_SWITCH_GATES" not in health_body
-    assert script.rindex('_verify_release_health "$RELEASE_DIR" "$COMMIT"') < script.rindex("_record_deployment_receipt")
-    assert script.index("_record_deployment_receipt") < script.index("_run_post_switch_closure")
+    validation = script.split("_run_post_deploy_validation() {", 1)[1].split("\n}", 1)[0]
+    assert validation.index("_record_deployment_receipt") < validation.index(
+        "_run_post_switch_closure"
+    )
+    main = script[script.rindex('mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"') :]
+    assert main.index('_verify_release_health "$RELEASE_DIR" "$COMMIT"') < main.index(
+        "COMMITTED=1"
+    ) < main.index("_run_post_deploy_validation")
 
 
-def test_deployment_receipt_uses_current_trusted_code_and_already_current_repairs_receipt() -> None:
+def test_deployment_receipt_uses_current_trusted_code_and_already_current_is_cheap() -> None:
     script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
     receipt_body = script.split("_record_deployment_receipt() {", 1)[1].split("\n}", 1)[0]
     branch_start = script.index("already_current=1")
@@ -1164,12 +1173,14 @@ def test_deployment_receipt_uses_current_trusted_code_and_already_current_repair
 
     assert '"$REPO_DIR/deploy/record_deployment_receipt.py"' in receipt_body
     assert '"$RELEASE_DIR/.venv/bin/eimemory" learn deployment-receipt' not in receipt_body
-    assert "_record_deployment_receipt" in branch
-    assert branch.index("_record_deployment_receipt") < branch.index("already_current=1")
-    assert 'git -C "$REPO_DIR" status --porcelain --untracked-files=all' in script
+    assert "_record_deployment_receipt" not in branch
+    assert "_restart_current_services" not in branch
+    assert "_run_post_switch_closure" not in branch
+    assert '_verify_release_health "$RELEASE_DIR" "$COMMIT"' in branch
+    assert 'git -C "$REPO_DIR" diff --quiet "$COMMIT" -- deploy' in script
 
 
-def test_installer_records_lineage_after_exact_receipt_and_fails_closed() -> None:
+def test_installer_records_lineage_after_receipt_without_rolling_back_runtime() -> None:
     script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
     lineage_body = script.split("_record_release_lineage() {", 1)[1].split("\n}", 1)[0]
     main_receipt = script.rindex("_record_deployment_receipt")
@@ -1179,7 +1190,8 @@ def test_installer_records_lineage_after_exact_receipt_and_fails_closed() -> Non
     assert '--current-commit "$COMMIT"' in lineage_body
     assert "EIMEMORY_RUNTIME_COMMIT=\"$COMMIT\"" in lineage_body
     assert main_receipt < main_lineage < script.rindex("_run_post_switch_closure")
-    assert "_record_release_lineage ||" not in script
+    validation = script.split("_run_post_deploy_validation() {", 1)[1].split("\n}", 1)[0]
+    assert "warning: post-deploy release lineage is pending retry" in validation
 
 
 def test_installer_provisions_private_tool_receipt_key_for_gateway() -> None:
@@ -2011,7 +2023,8 @@ def test_immutable_release_installer_runs_fd_safe_cleanup_before_switch() -> Non
     assert 'git -C "$REPO_DIR" rev-parse HEAD' in script
     assert "rev-parse --short HEAD" not in script
     assert '[[ ! "$COMMIT" =~ ^[0-9a-fA-F]{40}$ ]]' in script
-    assert '"$REPO_DIR/deploy/clean_release_bytecode.py"' in script
+    assert '"$STAGE_DIR/deploy/clean_release_bytecode.py"' in script
+    assert '"$RELEASE_DIR/deploy/clean_release_bytecode.py"' in script
     assert "--validate-source" in script
     assert "--relocate-venv" in script
     assert '--from-stage "$OLD_STAGE_PATH"' in script
@@ -2021,15 +2034,19 @@ def test_immutable_release_installer_runs_fd_safe_cleanup_before_switch() -> Non
     assert '--release-dir "$RELEASE_DIR"' in script
     assert '--releases-root "$INSTALL_ROOT/releases"' in script
     install_at = script.index('pip install "$STAGE_DIR"')
+    check_at = script.index("-m pip check", install_at)
+    compile_at = script.index("-m compileall", check_at)
+    switch_at = script.rindex('mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"')
     verify_at = script.rindex("\n_run_openclaw_loop_deploy_verify ")
     stage_at = script.index('STAGE_DIR="$(mktemp')
+    assert "pip install --upgrade pip" not in script
+    assert stage_at < install_at < check_at < compile_at < switch_at < verify_at
     stage_python_at = script.rindex('"$STAGE_DIR/.venv/bin/python"')
     cleanup_at = script.index("--allow-stage --release-dir", install_at)
     relocate_at = script.index("--relocate-venv")
     switch_at = script.index('\nln -sfn "$RELEASE_DIR"')
     assert stage_at < stage_python_at
-    assert install_at < verify_at < cleanup_at < switch_at
-    assert cleanup_at < relocate_at < switch_at
+    assert install_at < cleanup_at < relocate_at < switch_at < verify_at
     assert '_ensure_runtime_dir "$INSTALL_ROOT"' not in script
 
 
@@ -2147,15 +2164,17 @@ def test_immutable_release_installer_does_not_rebuild_active_existing_release(tm
     assert current_link.resolve() == release_dir.resolve()
 
 
-def test_immutable_release_installer_refreshes_runtime_metadata_when_release_is_already_current() -> None:
+def test_immutable_release_installer_only_checks_identity_and_health_when_already_current() -> None:
     script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
 
     branch_start = script.index('if { [ -e "$CURRENT_LINK" ]')
     branch_end = script.index("\nfi", branch_start)
     already_current_branch = script[branch_start:branch_end]
 
-    assert "_refresh_current_runtime_metadata" in already_current_branch
-    assert already_current_branch.index("_refresh_current_runtime_metadata") < already_current_branch.index("exit 0")
+    assert "_refresh_current_runtime_metadata" not in already_current_branch
+    assert "_restart_current_services" not in already_current_branch
+    assert '_verify_effective_runtime_metadata "$COMMIT"' in already_current_branch
+    assert '_verify_release_health "$RELEASE_DIR" "$COMMIT"' in already_current_branch
 
 
 @pytest.mark.parametrize("current_is_target", [True, False], ids=["already-current", "rollback"])
@@ -2342,18 +2361,18 @@ def test_immutable_release_installer_restarts_runtimes_after_current_switch() ->
     assert current_switch < metadata < captured_restart < default_restart
 
 
-def test_immutable_release_installer_commits_only_after_post_switch_gates() -> None:
+def test_immutable_release_installer_commits_after_technical_health_before_business_validation() -> None:
     script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
 
     switch = script.rindex('mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"')
-    receipt = script.index("_record_deployment_receipt", switch)
-    closure = script.index("_run_post_switch_closure", switch)
+    health = script.index('_verify_release_health "$RELEASE_DIR" "$COMMIT"', switch)
     committed = script.index("COMMITTED=1", switch)
+    validation = script.index("_run_post_deploy_validation", committed)
 
     assert "PREVIOUS_CURRENT" in script
     assert "_rollback_current_release" in script
     assert "verify_release_health.py" in script
-    assert switch < receipt < closure < committed
+    assert switch < health < committed < validation
     assert "learn release-closure" in script
     assert "learn live-acceptance" not in script
     assert 'GOVERNANCE_ENV_FILE="${EIMEMORY_GOVERNANCE_ENV_FILE:-$EIMEMORY_CONFIG_DIR/governance.env}"' in script
@@ -2365,7 +2384,13 @@ def test_immutable_release_installer_commits_only_after_post_switch_gates() -> N
     assert 'EIMEMORY_DEPLOY_SCOPE_USER="${EIMEMORY_DEPLOY_SCOPE_USER:-darrow}"' in script
     assert 'EIMEMORY_DEPLOY_SCOPE_USER="${EIMEMORY_DEPLOY_SCOPE_USER:-$SERVICE_USER}"' not in script
     assert "_require_nonblank_deploy_scope" in script
-    assert script.count('--scope-user "$EIMEMORY_DEPLOY_SCOPE_USER"') == 4
+    for function_name in (
+        "_record_deployment_receipt",
+        "_record_release_lineage",
+        "_run_post_switch_closure",
+    ):
+        body = script.split(f"{function_name}() {{", 1)[1].split("\n}", 1)[0]
+        assert '--scope-user "$EIMEMORY_DEPLOY_SCOPE_USER"' in body
     assert "rollback_current_release=failed" in script
     assert "rollback_preserved_failed_release=" in script
 
@@ -2570,15 +2595,11 @@ def test_immutable_release_installer_verifies_all_effective_runtime_commits_befo
     already_current = script.split("already_current=1", 1)[0].rsplit(
         'if { [ -e "$CURRENT_LINK" ]', 1
     )[1]
-    assert already_current.index("_restart_current_services") < already_current.index(
-        '_verify_effective_runtime_metadata "$COMMIT"'
-    )
     assert already_current.index(
         '_verify_effective_runtime_metadata "$COMMIT"'
     ) < already_current.index('_verify_release_health "$RELEASE_DIR" "$COMMIT"')
-    assert already_current.index(
-        '_verify_effective_runtime_metadata "$COMMIT"'
-    ) < already_current.index("_record_deployment_receipt")
+    assert "_restart_current_services" not in already_current
+    assert "_record_deployment_receipt" not in already_current
 
     current_switch = script.rindex('mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"')
     main_transaction = script[current_switch:]
@@ -2601,12 +2622,12 @@ def test_immutable_release_installer_verifies_all_effective_runtime_commits_befo
     ) < main_transaction.index('_verify_release_health "$RELEASE_DIR" "$COMMIT"')
     assert main_transaction.index(
         '_verify_effective_runtime_metadata "$COMMIT"'
-    ) < main_transaction.index("_record_deployment_receipt")
+    ) < main_transaction.index("COMMITTED=1")
 
 
 @pytest.mark.parametrize(
     "fail_stage",
-    ["registry", "rpc_restart", "gateway_restart", "health", "receipt", "acceptance"],
+    ["registry", "rpc_restart", "gateway_restart", "health"],
 )
 def test_installer_restores_previous_release_after_post_switch_failure(tmp_path, fail_stage) -> None:
     if os.name != "posix":

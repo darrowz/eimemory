@@ -122,6 +122,7 @@ class FakeRuntime:
         receipt: dict | None = None,
         replay_bootstrap: dict | None = None,
         live_acceptance: dict | None = None,
+        channel_acceptance: dict | None = None,
         rehearsal: dict | None = None,
         readiness: dict | None = None,
         expect_bootstrap_pending: bool = False,
@@ -130,6 +131,10 @@ class FakeRuntime:
         self.receipt = receipt or _successful_receipt()
         self.replay_bootstrap = replay_bootstrap or _successful_replay_bootstrap()
         self.live_acceptance = live_acceptance or _successful_live_acceptance()
+        self.channel_acceptance = channel_acceptance or {
+            "ok": True,
+            "record_id": "channel-current",
+        }
         self.rehearsal = rehearsal or _successful_rehearsal()
         self.readiness = readiness or _successful_readiness()
         self.expect_bootstrap_pending = expect_bootstrap_pending
@@ -152,6 +157,17 @@ class FakeRuntime:
         self.calls.append("live_acceptance")
         assert kwargs == _identity_kwargs()
         return deepcopy(self.live_acceptance)
+
+    def record_openclaw_channel_acceptance(self, **kwargs) -> dict:
+        self.calls.append("channel_acceptance")
+        assert kwargs == {
+            "scope": SCOPE,
+            "current_release": self.current_release_identity(
+                scope=SCOPE,
+                limit=500,
+            ),
+        }
+        return deepcopy(self.channel_acceptance)
 
     def run_configured_production_recall_gate(self, **kwargs) -> dict:
         self.calls.append("production_recall_run")
@@ -245,6 +261,7 @@ def test_release_closure_runs_all_stages_in_order() -> None:
         "production_recall_activate",
         "replay_bootstrap",
         "live_acceptance",
+        "channel_acceptance",
         "closure_rehearsal",
         "readiness",
     ]
@@ -262,6 +279,7 @@ def test_release_closure_runs_all_stages_in_order() -> None:
         "deployment_receipt": "receipt-1",
         "production_recall_gate": "prg-current",
         "production_recall_strict_state": "prbs-strict-current",
+        "channel_acceptance": "channel-current",
         "readiness": "readiness-1",
     }
 
@@ -340,6 +358,7 @@ def test_release_closure_finalizes_exact_lineage_inside_single_rehearsal(
         "production_recall_activate",
         "replay_bootstrap",
         "live_acceptance",
+        "channel_acceptance",
         "closure_rehearsal",
         "record_release_lineage",
         "current_release_lineage",
@@ -347,7 +366,7 @@ def test_release_closure_finalizes_exact_lineage_inside_single_rehearsal(
     assert captured["gate_evidence"] == {
         "memory.recall": ["prg-current", "prbs-strict-current"],
         "memory.governance": ["manifest-1", "core-manifest"],
-        "channel.openclaw": [f"live-case-{index}" for index in range(10)],
+        "channel.openclaw": ["channel-current"],
         "storage.integrity": [f"live-case-{index}" for index in range(10)],
         "deployment.runtime": ["receipt-1"],
     }
@@ -398,6 +417,7 @@ def test_release_closure_finalizes_pending_recall_lineage_with_bootstrap_and_cor
         recall_gate_record_id="",
         strict_state_record_id="",
         bootstrap_pending_record_id="bootstrap-pending-current",
+        channel_acceptance_record_id="channel-current",
         weak_replay={"weak_capability_replay": {"manifest_record_id": "weak-manifest"}},
         core_replay={"manifest_record_id": "core-manifest"},
         live_acceptance=live_acceptance,
@@ -465,6 +485,7 @@ def test_release_closure_runs_production_recall_after_receipt_before_replay() ->
         "production_recall_activate",
         "replay_bootstrap",
         "live_acceptance",
+        "channel_acceptance",
         "closure_rehearsal",
         "readiness",
     ]
@@ -823,15 +844,34 @@ def test_release_closure_fails_closed_when_production_gate_runner_is_unavailable
             "acceptance_case_failed",
         ),
         (
+            "channel_acceptance",
+            {
+                "channel_acceptance": {
+                    "ok": False,
+                    "error": "current_release_channel_receipt_not_found",
+                }
+            },
+            [
+                "deployment_receipt",
+                "production_recall_run",
+                "production_recall_verify",
+                "production_recall_activate",
+                "replay_bootstrap",
+                "live_acceptance",
+                "channel_acceptance",
+            ],
+            "current_release_channel_receipt_not_found",
+        ),
+        (
             "closure_rehearsal",
             {"rehearsal": {"ok": False, "closure_complete": False, "blocked_reasons": ["replay_failed"]}},
-            ["deployment_receipt", "production_recall_run", "production_recall_verify", "production_recall_activate", "replay_bootstrap", "live_acceptance", "closure_rehearsal"],
+            ["deployment_receipt", "production_recall_run", "production_recall_verify", "production_recall_activate", "replay_bootstrap", "live_acceptance", "channel_acceptance", "closure_rehearsal"],
             "replay_failed",
         ),
         (
             "readiness",
             {"readiness_score": 0.9},
-            ["deployment_receipt", "production_recall_run", "production_recall_verify", "production_recall_activate", "replay_bootstrap", "live_acceptance", "closure_rehearsal", "readiness"],
+            ["deployment_receipt", "production_recall_run", "production_recall_verify", "production_recall_activate", "replay_bootstrap", "live_acceptance", "channel_acceptance", "closure_rehearsal", "readiness"],
             "readiness_not_l5",
         ),
     ],

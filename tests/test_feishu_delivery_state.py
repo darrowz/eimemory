@@ -28,12 +28,14 @@ def test_prepare_delivery_persists_sending_before_caller_can_send(
         idempotency_key="stable-key",
         payload_digest="digest",
         now_ms=1_000,
+        runtime_commit="a" * 40,
     )
 
     assert decision["send"] is True
     entry = json.loads(state_path.read_text(encoding="utf-8"))["entries"]["om_1"]
     assert entry["state"] == "sending"
     assert entry["attempt_count"] == 1
+    assert entry["runtime_commit"] == "a" * 40
 
 
 def test_prepare_delivery_never_reopens_ambiguous_intent(tmp_path: Path) -> None:

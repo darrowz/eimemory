@@ -33,6 +33,11 @@ def summarize_release_closure(report: object) -> dict[str, Any]:
     else:
         recall_gate_ok = recall_gate.get("ok") is True
     live = report.get("live_acceptance") if isinstance(report.get("live_acceptance"), dict) else {}
+    channel = (
+        report.get("channel_acceptance")
+        if isinstance(report.get("channel_acceptance"), dict)
+        else {}
+    )
     rehearsal = report.get("closure_rehearsal") if isinstance(report.get("closure_rehearsal"), dict) else {}
     readiness = report.get("readiness") if isinstance(report.get("readiness"), dict) else {}
     rehearsal_complete = rehearsal.get("closure_complete") is True
@@ -63,6 +68,8 @@ def summarize_release_closure(report: object) -> dict[str, Any]:
         "live_acceptance_ok": live.get("ok") is True,
         "live_pass_count": int(live.get("pass_count") or 0),
         "live_case_count": int(live.get("case_count") or 0),
+        "channel_acceptance_ok": channel.get("ok") is True,
+        "channel_acceptance_record_id": str(channel.get("record_id") or ""),
         "rehearsal_ok": rehearsal.get("ok") is True and rehearsal_complete != rehearsal_accumulating,
         "readiness_stage": str(readiness.get("current_stage") or readiness.get("status") or ""),
         "readiness_score": readiness.get("readiness_score"),
@@ -114,6 +121,11 @@ def _release_closure_summary_contract_ok(report: object, summary: dict[str, Any]
     }
     replay = report.get("replay_bootstrap") if isinstance(report.get("replay_bootstrap"), dict) else {}
     live = report.get("live_acceptance") if isinstance(report.get("live_acceptance"), dict) else {}
+    channel = (
+        report.get("channel_acceptance")
+        if isinstance(report.get("channel_acceptance"), dict)
+        else {}
+    )
     rehearsal = report.get("closure_rehearsal") if isinstance(report.get("closure_rehearsal"), dict) else {}
     readiness = report.get("readiness") if isinstance(report.get("readiness"), dict) else {}
     recall = report.get("production_recall_gate") if isinstance(report.get("production_recall_gate"), dict) else {}
@@ -139,6 +151,9 @@ def _release_closure_summary_contract_ok(report: object, summary: dict[str, Any]
         and _exact_int(live.get("pass_count"), 10)
         and _exact_int(live.get("fail_count"), 0)
         and _exact_int(live.get("distinct_task_types"), 10)
+        and channel.get("ok") is True
+        and channel.get("evidence_class") == "external_channel_receipt"
+        and str(channel.get("record_id") or "")
         and _deployment_identity_matches(live_deployment, commit=commit, version=version, receipt_id=receipt_id)
         and readiness.get("ok") is True
         and readiness.get("schema_version") == "l5_readiness.v2"

@@ -21,6 +21,9 @@ from eimemory.governance.evidence_contract import ReleaseIdentity
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
+pytestmark = pytest.mark.linux_deployment
+
+
 SCOPE = {"tenant_id": "default", "agent_id": "main", "workspace_id": "production", "user_id": "darrow"}
 
 
@@ -725,69 +728,6 @@ def test_snapshot_loader_rejects_hardlinked_snapshot(tmp_path, monkeypatch) -> N
             str(snapshot),
             candidate_commit=commit,
         )
-
-
-def test_capture_chmod_failure_removes_bound_temporary_snapshot(tmp_path) -> None:
-    bash = Path(r"C:\Program Files\Git\bin\bash.exe") if os.name == "nt" else Path(shutil.which("bash") or "")
-    if not bash.is_file():
-        pytest.skip("bash is unavailable")
-    installer = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
-    body = installer.split("_capture_prior_health_snapshot() {", 1)[1].split("\n}", 1)[0]
-    harness = f'''#!/usr/bin/env bash
-set -euo pipefail
-_capture_prior_health_snapshot() {{{body}
-}}
-INSTALL_ROOT="$1"
-COMMIT="{'a' * 40}"
-EIMEMORY_POST_SWITCH_GATES=1
-USER_SYSTEMD_ENABLE_SERVICE=1
-PRIOR_HEALTH_SNAPSHOT_FILE=""
-chmod() {{ return 23; }}
-_capture_prior_health_snapshot
-'''
-
-    result = subprocess.run(
-        [str(bash), "-c", harness, "snapshot-chmod", tmp_path.as_posix()],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-
-    assert result.returncode != 0
-    assert list(tmp_path.glob(".prior-health-*.json")) == []
-
-
-def test_installer_runs_candidate_bootstrap_before_atomic_current_switch() -> None:
-    installer = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
-    invocation = installer.index("_run_pre_switch_production_recall_bootstrap\n")
-    switch = installer.index('ln -sfn "$RELEASE_DIR" "$CURRENT_LINK.next"')
-    assert invocation < switch
-    function_start = installer.index("_run_pre_switch_production_recall_bootstrap()")
-    function_end = installer.index("\n}", function_start)
-    function = installer[function_start:function_end]
-    assert '"$RELEASE_DIR/.venv/bin/python"' in function
-    assert '--candidate-commit "$COMMIT" --prior-commit "$PREVIOUS_COMMIT"' in function
-    bootstrap = Path("deploy/bootstrap_production_recall.py").read_text(encoding="utf-8")
-    assert "current_release_identity" not in bootstrap
-
-
-def test_installer_captures_prior_health_before_quiesce_and_bootstrap_consumes_snapshot() -> None:
-    installer = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
-    prepare = installer.split("_prepare_storage_for_release() {", 1)[1].split("\n}", 1)[0]
-    capture = prepare.index("if ! _capture_prior_health_snapshot; then")
-    writer_capture = prepare.index("_capture_storage_writers", capture)
-    retire = prepare.index("_retire_system_rpc_unit", writer_capture)
-    marker = prepare.index("_begin_storage_release_transaction", retire)
-    stop = prepare.index("_stop_storage_writers", marker)
-    snapshot_ready = prepare.index("STORAGE_SNAPSHOT_READY=1", stop)
-    bootstrap = prepare.index("_run_pre_switch_production_recall_bootstrap", snapshot_ready)
-
-    assert capture < writer_capture < retire < marker < stop < snapshot_ready < bootstrap
-    assert "prior_health_capture=failed before_transaction" in prepare[capture:writer_capture]
-    assert "return 2" in prepare[capture:writer_capture]
-    runner = installer.split("_run_pre_switch_production_recall_bootstrap() {", 1)[1].split("\n}", 1)[0]
-    assert 'if [ -z "$PRIOR_HEALTH_SNAPSHOT_FILE" ] || [ ! -f "$PRIOR_HEALTH_SNAPSHOT_FILE" ] ||' in runner
-    assert '--prior-health-snapshot "$PRIOR_HEALTH_SNAPSHOT_FILE"' in runner
 
 
 def test_bootstrap_state_uses_full_record_identity_not_fuzzy_reflection_title(tmp_path) -> None:

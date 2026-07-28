@@ -41,3 +41,6 @@ state/autonomous_learning/rolled_back/*
 !state/autonomous_learning/active/.gitkeep
 !state/autonomous_learning/canary/.gitkeep
 !state/autonomous_learning/rolled_back/.gitkeep
+# Added by code-review-graph
+.code-review-graph/
+.worktrees/

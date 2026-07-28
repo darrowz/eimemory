@@ -2175,63 +2175,70 @@ class SqliteRecordStore:
             self.upsert_intent_pattern(pattern, scope=scope, commit=False)
 
     def _migrate_to_scoped_storage_key(self, columns: set[str]) -> None:
-        self.conn.execute("ALTER TABLE records RENAME TO records_legacy")
-        self._create_records_table()
-        select_columns = [
-            "record_id", "kind", "status", "title", "summary", "detail",
-            "content_text", "source", "agent_id", "workspace_id", "user_id",
-            "tenant_id", "meta_json", "payload_json", "created_at", "updated_at",
-        ]
-        if "embedding_json" in columns:
-            select_columns.insert(12, "embedding_json")
-        cursor = self.conn.execute(f"SELECT {', '.join(select_columns)} FROM records_legacy")
-        while True:
-            rows = cursor.fetchmany(500)
-            if not rows:
-                break
-            for row in rows:
-                row_data = dict(row)
-                idempotency_key, semantic_key = _record_meta_keys_from_json(row_data["meta_json"])
-                storage_key = self._storage_key_from_values(
-                    record_id=str(row_data["record_id"]),
-                    tenant_id=str(row_data.get("tenant_id") or "default"),
-                    agent_id=str(row_data.get("agent_id") or ""),
-                    workspace_id=str(row_data.get("workspace_id") or ""),
-                    user_id=str(row_data.get("user_id") or ""),
-                )
-                self.conn.execute(
-                    """
-                    INSERT OR REPLACE INTO records (
-                        storage_key, record_id, kind, status, title, summary, detail,
-                        content_text, source, agent_id, workspace_id, user_id, tenant_id,
-                        embedding_json, idempotency_key, semantic_key, meta_json, payload_json, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        storage_key,
-                        row_data["record_id"],
-                        row_data["kind"],
-                        row_data["status"],
-                        row_data["title"],
-                        row_data["summary"],
-                        row_data["detail"],
-                        row_data["content_text"],
-                        row_data["source"],
-                        row_data["agent_id"],
-                        row_data["workspace_id"],
-                        row_data["user_id"],
-                        row_data["tenant_id"],
-                        row_data.get("embedding_json", "[]"),
-                        idempotency_key,
-                        semantic_key,
-                        row_data["meta_json"],
-                        row_data["payload_json"],
-                        row_data["created_at"],
-                        row_data["updated_at"],
-                    ),
-                )
-        self.conn.execute("DROP TABLE records_legacy")
-        self.conn.commit()
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            self.conn.execute("ALTER TABLE records RENAME TO records_legacy")
+            self._create_records_table()
+            select_columns = [
+                "record_id", "kind", "status", "title", "summary", "detail",
+                "content_text", "source", "agent_id", "workspace_id", "user_id",
+                "tenant_id", "meta_json", "payload_json", "created_at", "updated_at",
+            ]
+            if "embedding_json" in columns:
+                select_columns.insert(12, "embedding_json")
+            cursor = self.conn.execute(f"SELECT {', '.join(select_columns)} FROM records_legacy")
+            while True:
+                rows = cursor.fetchmany(500)
+                if not rows:
+                    break
+                for row in rows:
+                    row_data = dict(row)
+                    idempotency_key, semantic_key = _record_meta_keys_from_json(
+                        row_data["meta_json"]
+                    )
+                    storage_key = self._storage_key_from_values(
+                        record_id=str(row_data["record_id"]),
+                        tenant_id=str(row_data.get("tenant_id") or "default"),
+                        agent_id=str(row_data.get("agent_id") or ""),
+                        workspace_id=str(row_data.get("workspace_id") or ""),
+                        user_id=str(row_data.get("user_id") or ""),
+                    )
+                    self.conn.execute(
+                        """
+                        INSERT OR REPLACE INTO records (
+                            storage_key, record_id, kind, status, title, summary, detail,
+                            content_text, source, agent_id, workspace_id, user_id, tenant_id,
+                            embedding_json, idempotency_key, semantic_key, meta_json, payload_json, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            storage_key,
+                            row_data["record_id"],
+                            row_data["kind"],
+                            row_data["status"],
+                            row_data["title"],
+                            row_data["summary"],
+                            row_data["detail"],
+                            row_data["content_text"],
+                            row_data["source"],
+                            row_data["agent_id"],
+                            row_data["workspace_id"],
+                            row_data["user_id"],
+                            row_data["tenant_id"],
+                            row_data.get("embedding_json", "[]"),
+                            idempotency_key,
+                            semantic_key,
+                            row_data["meta_json"],
+                            row_data["payload_json"],
+                            row_data["created_at"],
+                            row_data["updated_at"],
+                        ),
+                    )
+            self.conn.execute("DROP TABLE records_legacy")
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
 
     def _create_schema_migrations_table(self) -> None:
         self.conn.execute(

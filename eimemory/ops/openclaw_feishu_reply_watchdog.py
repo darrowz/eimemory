@@ -38,6 +38,11 @@ STALLED_NOTICE = "这条消息处理链路异常，系统正在恢复。无需�
 GATEWAY_AUTH_ENV_NAMES = ("OPENCLAW_GATEWAY_TOKEN", "OPENCLAW_GATEWAY_PASSWORD")
 
 
+def _runtime_commit() -> str:
+    value = str(os.environ.get("EIMEMORY_RUNTIME_COMMIT") or "").strip().lower()
+    return value if re.fullmatch(r"[0-9a-f]{40}", value) else ""
+
+
 def _delivery_idempotency_key(inbound_id: str, delivery_kind: str) -> str:
     digest = hashlib.sha256(inbound_id.encode("utf-8")).hexdigest()[:32]
     return f"ei-{delivery_kind}-{digest}"
@@ -369,6 +374,7 @@ def scan_once(
                         ).encode("utf-8")
                     ).hexdigest(),
                     now_ms=now_ms,
+                    runtime_commit=_runtime_commit(),
                 )
                 if decision.get("send") is True or str(
                     (decision.get("entry") or {}).get("state") or ""
@@ -503,6 +509,7 @@ def scan_once(
                             json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
                         ).hexdigest(),
                         now_ms=now_ms,
+                        runtime_commit=_runtime_commit(),
                     )
                     if decision.get("send") is True:
                         recorded = complete_delivery(
@@ -538,6 +545,7 @@ def scan_once(
                     json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
                 ).hexdigest(),
                 now_ms=now_ms,
+                runtime_commit=_runtime_commit(),
             )
         except (OSError, ValueError):
             failed += 1

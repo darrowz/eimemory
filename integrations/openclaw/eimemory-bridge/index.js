@@ -1493,6 +1493,9 @@ function reconcileWatchdogReceipts(state) {
     }
     entry.status = 'platform_accepted';
     entry.delivery_message_id = messageId;
+    entry.runtime_commit = String(
+      attempt?.runtime_commit || entry.runtime_commit || ''
+    ).trim().toLowerCase();
     entry.platform_accepted_at_ms = Number(
       attempt?.platform_accepted_at_ms || attempt?.attempted_at_ms || Date.now()
     );
@@ -1584,6 +1587,11 @@ function canonicalReplyText(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
 }
 
+function currentRuntimeCommit() {
+  const value = String(process.env.EIMEMORY_RUNTIME_COMMIT || '').trim().toLowerCase();
+  return /^[0-9a-f]{40}$/.test(value) ? value : '';
+}
+
 function resolveFeishuConversationId(event, context) {
   const candidates = [
     context?.chatId,
@@ -1634,6 +1642,7 @@ function trackReplyInbound(event, context) {
       delivery_message_id: '',
       run_id: String(event?.runId || event?.run_id || context?.runId || context?.run_id || ''),
       suppress_stalled_notice: false,
+      runtime_commit: currentRuntimeCommit(),
     };
     compactReplyDeliveryState(state);
   });
@@ -1692,6 +1701,7 @@ function trackReplyAgentEnd(event, context) {
     entry.status = sentMatched ? 'platform_accepted' : 'final_ready';
     if (entry.status === 'platform_accepted') {
       entry.delivery_message_id = entry.last_sent_message_id || '';
+      entry.runtime_commit = currentRuntimeCommit();
       entry.platform_accepted_at_ms = entry.last_sent_at_ms || Date.now();
       entry.delivered_at_ms = entry.platform_accepted_at_ms;
     }
@@ -1734,6 +1744,7 @@ function trackReplyMessageSent(event, context) {
       if (matched) {
         entry.status = 'platform_accepted';
         entry.delivery_message_id = messageId;
+        entry.runtime_commit = currentRuntimeCommit();
         entry.platform_accepted_at_ms = entry.last_sent_at_ms;
         entry.delivered_at_ms = entry.last_sent_at_ms;
       }

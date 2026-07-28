@@ -1035,7 +1035,7 @@ def _gate_errors(
             "eimemory.evaluation.production_recall.bootstrap",
         },
         "memory.governance": {"eimemory.capability_replay"},
-        "channel.openclaw": {"eimemory.live_task_acceptance"},
+        "channel.openclaw": {"eimemory.openclaw.channel_acceptance"},
         "storage.integrity": {"eimemory.live_task_acceptance"},
         "deployment.runtime": {"eimemory.deployment_receipt"},
     }
@@ -1112,7 +1112,13 @@ def _gate_errors(
             current_release=current_release,
             references=references,
         )
-    elif domain in {"channel.openclaw", "storage.integrity"}:
+    elif domain == "channel.openclaw":
+        contract_error = _channel_acceptance_contract_error(
+            current_release=current_release,
+            references=references,
+            records=records,
+        )
+    elif domain == "storage.integrity":
         contract_error = _live_acceptance_contract_error(
             runtime,
             scope=scope,
@@ -1333,6 +1339,29 @@ def _governance_gate_contract_error(
             return "current_release_replay_manifests_incomplete"
     return "" if expected and set(references) == expected and len(references) == len(expected) else (
         "exact_current_release_replay_manifests_required"
+    )
+
+
+def _channel_acceptance_contract_error(
+    *,
+    current_release: ReleaseIdentity,
+    references: list[str],
+    records: dict[str, Any],
+) -> str:
+    from eimemory.governance.openclaw_channel_acceptance import (
+        validate_openclaw_channel_acceptance,
+    )
+
+    if len(references) != 1 or set(references) != set(records):
+        return "exact_current_channel_acceptance_required"
+    record = records.get(references[0])
+    return (
+        ""
+        if validate_openclaw_channel_acceptance(
+            record,
+            current_release=current_release,
+        )
+        else "current_channel_acceptance_invalid"
     )
 
 

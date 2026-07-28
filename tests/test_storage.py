@@ -815,6 +815,127 @@ def test_applied_meta_key_migration_does_not_open_a_write_transaction_when_check
     assert report["pending"] == []
 
 
+def test_scoped_storage_key_migration_rolls_back_every_ddl_and_row_on_failure(
+    tmp_path, monkeypatch
+) -> None:
+    database = tmp_path / "legacy.sqlite"
+    connection = sqlite3.connect(database)
+    connection.execute(
+        """
+        CREATE TABLE records (
+            record_id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL,
+            status TEXT NOT NULL,
+            title TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            detail TEXT NOT NULL,
+            content_text TEXT NOT NULL,
+            source TEXT NOT NULL,
+            agent_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            tenant_id TEXT NOT NULL,
+            meta_json TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    rows = [
+        (
+            f"legacy-{index}",
+            "memory",
+            "active",
+            f"Legacy {index}",
+            "summary",
+            "",
+            "content",
+            "legacy",
+            "main",
+            "workspace",
+            "user",
+            "default",
+            json.dumps({"idempotency_key": f"idem-{index}"}),
+            "{}",
+            "2026-01-01T00:00:00+00:00",
+            "2026-01-01T00:00:00+00:00",
+        )
+        for index in range(2)
+    ]
+    connection.executemany(
+        "INSERT INTO records VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        rows,
+    )
+    connection.commit()
+    connection.close()
+
+    original = sqlite_store_module._record_meta_keys_from_json
+    calls = 0
+
+    def fail_on_second_row(meta_json: str) -> tuple[str, str]:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("injected migration interruption")
+        return original(meta_json)
+
+    monkeypatch.setattr(
+        sqlite_store_module,
+        "_record_meta_keys_from_json",
+        fail_on_second_row,
+    )
+    with pytest.raises(RuntimeError, match="injected migration interruption"):
+        sqlite_store_module.SqliteRecordStore(database)
+
+    inspection = sqlite3.connect(database)
+    try:
+        tables = {
+            str(row[0])
+            for row in inspection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        columns = {
+            str(row[1]) for row in inspection.execute("PRAGMA table_info(records)")
+        }
+        record_ids = [
+            str(row[0])
+            for row in inspection.execute(
+                "SELECT record_id FROM records ORDER BY record_id"
+            )
+        ]
+    finally:
+        inspection.close()
+
+    assert "records_legacy" not in tables
+    assert "storage_key" not in columns
+    assert record_ids == ["legacy-0", "legacy-1"]
+
+    monkeypatch.setattr(
+        sqlite_store_module,
+        "_record_meta_keys_from_json",
+        original,
+    )
+    reopened = sqlite_store_module.SqliteRecordStore(database)
+    try:
+        migrated_ids = [
+            str(row[0])
+            for row in reopened.conn.execute(
+                "SELECT record_id FROM records ORDER BY record_id"
+            )
+        ]
+        migrated_columns = {
+            str(row["name"])
+            for row in reopened.conn.execute("PRAGMA table_info(records)")
+        }
+    finally:
+        reopened.close()
+
+    assert migrated_ids == ["legacy-0", "legacy-1"]
+    assert "storage_key" in migrated_columns
+
+
 def test_intent_pattern_payload_migration_is_marked_and_read_only_after_first_run(tmp_path) -> None:
     store = RuntimeStore(root=tmp_path)
     marker = store.sqlite.conn.execute(

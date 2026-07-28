@@ -92,7 +92,17 @@ def test_code_sandbox_create_worktree_is_safe_root(tmp_path, monkeypatch) -> Non
     assert report["sandbox_plan"]["branch_name"]
 
 
-def test_code_sandbox_default_runner_creates_nonempty_sandbox_copy(tmp_path) -> None:
+def test_code_sandbox_default_runner_creates_nonempty_sandbox_copy(
+    tmp_path, monkeypatch
+) -> None:
+    project = tmp_path / "project"
+    (project / "eimemory").mkdir(parents=True)
+    (project / "eimemory" / "__init__.py").write_text("", encoding="utf-8")
+    (project / "pyproject.toml").write_text("[project]\nname='sandbox-fixture'\n", encoding="utf-8")
+    (project / ".worktrees" / "recursive").mkdir(parents=True)
+    (project / ".worktrees" / "recursive" / "sentinel").write_text("ignored", encoding="utf-8")
+    (project / ".code-review-graph").mkdir()
+    monkeypatch.chdir(project)
     runtime = Runtime.create(root=tmp_path / "runtime")
     scope = hongtu_scope({})
     sandbox_root = tmp_path / "sandbox-copy-root"
@@ -115,6 +125,8 @@ def test_code_sandbox_default_runner_creates_nonempty_sandbox_copy(tmp_path) -> 
     assert (path / "pyproject.toml").exists()
     assert (path / "eimemory").is_dir()
     assert not (path / ".git").exists()
+    assert not (path / ".worktrees").exists()
+    assert not (path / ".code-review-graph").exists()
 
 
 def test_code_sandbox_cli_rejects_policy_fixable_issue(tmp_path, monkeypatch, capsys) -> None:

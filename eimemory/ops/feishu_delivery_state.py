@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from pathlib import Path
+import re
 from typing import Any
 
 from eimemory.storage.atomic_file import locked_json_update, read_json_strict
@@ -29,6 +30,7 @@ NON_SENDABLE_STATES = frozenset(
         "escalated",
     }
 )
+_COMMIT_RE = re.compile(r"[0-9a-f]{40}")
 
 
 def _empty_state() -> dict[str, Any]:
@@ -98,6 +100,7 @@ def prepare_delivery(
     idempotency_key: str,
     payload_digest: str,
     now_ms: int,
+    runtime_commit: str = "",
 ) -> dict[str, Any]:
     """Persist a send intent and return whether the caller may send once."""
 
@@ -142,6 +145,9 @@ def prepare_delivery(
             "attempt_count": attempt_count,
             "error": "",
         }
+        commit = str(runtime_commit or "").strip().lower()
+        if _COMMIT_RE.fullmatch(commit):
+            entry["runtime_commit"] = commit
         entries[key] = entry
         decision.update(send=True, state="sending", entry=deepcopy(entry))
 

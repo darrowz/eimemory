@@ -1121,6 +1121,24 @@ class Runtime:
             gate_evidence=gate_evidence,
         )
 
+    def record_openclaw_channel_acceptance(
+        self,
+        *,
+        scope: dict | None = None,
+        current_release: Any,
+        state_path: str | Path = "/var/lib/eimemory/openclaw_reply_delivery_state.json",
+    ) -> dict:
+        from eimemory.governance.openclaw_channel_acceptance import (
+            record_openclaw_channel_acceptance,
+        )
+
+        return record_openclaw_channel_acceptance(
+            self,
+            scope=scope,
+            current_release=current_release,
+            state_path=state_path,
+        )
+
     def current_release_identity(
         self,
         *,

@@ -24,4 +24,5 @@ packages = ["eimemory"]
 testpaths = ["tests"]
 markers = [
   "slow: high-volume or performance-sensitive tests",
+  "linux_deployment: Linux/POSIX deployment and filesystem security contracts",
 ]

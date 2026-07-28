@@ -13,6 +13,10 @@ def test_immutable_release_installer_runs_openclaw_loop_deploy_verify() -> None:
     assert 'local target_release="${1:-$RELEASE_DIR}"' in script
     assert '"$target_release/.venv/bin/python" "$target_release/scripts/openclaw_loop.py" deploy-verify' in script
     assert "--release-path \"$target_release\"" in script
+    switch = script.rindex('mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"')
+    restart = script.index("_restart_current_services", switch)
+    verify = script.index('_run_openclaw_loop_deploy_verify "$RELEASE_DIR"', restart)
+    assert switch < restart < verify
 
 
 def test_immutable_release_installer_refreshes_legacy_openclaw_loop_script() -> None:

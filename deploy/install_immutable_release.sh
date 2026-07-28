@@ -799,152 +799,17 @@ _storage_release_action() {
       "$@"
 }
 
-_recall_domain_changed() {
-  if [ -z "$PREVIOUS_COMMIT" ]; then
-    printf '1\n'
-    return
-  fi
-  local changed
-  if ! changed="$(
-    _run_as_service_user env EIMEMORY_ROOT="$EIMEMORY_ROOT" \
-      "$RELEASE_DIR/.venv/bin/python" -I -B -c '
-from pathlib import Path
-import sys
-
-from eimemory.governance.release_lineage import _domain_change_summary
-
-report = _domain_change_summary(
-    Path(sys.argv[1]).resolve(),
-    domain="memory.recall",
-    ancestor=sys.argv[2],
-    current=sys.argv[3],
-)
-print(
-    "1"
-    if report is None
-    or report.get("ancestor_digest") != report.get("current_digest")
-    else "0"
-)
-' "$REPO_DIR" "$PREVIOUS_COMMIT" "$COMMIT"
-  )"; then
-    echo "recall_domain_change=failed treating_as_changed" >&2
-    printf '1\n'
-    return
-  fi
-  case "$changed" in
-    0|1) printf '%s\n' "$changed" ;;
-    *)
-      echo "recall_domain_change=invalid treating_as_changed" >&2
-      printf '1\n'
-      ;;
-  esac
-}
-
-_ensure_prior_deployment_receipt() {
-  if [ "$EIMEMORY_POST_SWITCH_GATES" != "1" ] || [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ]; then
-    return
-  fi
-  if [[ ! "$PREVIOUS_COMMIT" =~ ^[0-9a-fA-F]{40}$ ]]; then
-    echo "prior_deployment_receipt=failed invalid_previous_commit" >&2
-    return 2
-  fi
-  if _run_as_service_user env \
-    EIMEMORY_ROOT="$EIMEMORY_ROOT" \
-    EIMEMORY_CONFIG_DIR="$EIMEMORY_CONFIG_DIR" \
-    EIMEMORY_EVIDENCE_RECEIPT_ENV_FILE="$EVIDENCE_RECEIPT_ENV_FILE" \
-    "$RELEASE_DIR/.venv/bin/python" -I -B -c '
-from pathlib import Path
-import sys
-
-from eimemory.api.runtime import Runtime
-from eimemory.governance.evidence_contract import verified_deployment_receipt_identity
-
-runtime = Runtime.create(root=Path(sys.argv[1]))
-try:
-    records = runtime.store.list_records(
-        kinds=["promotion_request"],
-        scope={
-            "agent_id": sys.argv[2],
-            "workspace_id": sys.argv[3],
-            "user_id": sys.argv[4],
-        },
-        limit=500,
-    )
-    found = any(
-        identity is not None and identity.commit == sys.argv[5]
-        for record in records
-        if (identity := verified_deployment_receipt_identity(record)) is not None
-    )
-finally:
-    runtime.close()
-raise SystemExit(0 if found else 1)
-' "$EIMEMORY_ROOT" \
-      "$EIMEMORY_DEPLOY_SCOPE_AGENT" "$EIMEMORY_DEPLOY_SCOPE_WORKSPACE" \
-      "$EIMEMORY_DEPLOY_SCOPE_USER" "$PREVIOUS_COMMIT"; then
-    echo "prior_deployment_receipt=verified commit=$PREVIOUS_COMMIT"
-    return
-  fi
-
-  local prior_rollback_commit receipt_report
-  prior_rollback_commit="$(_find_prior_release_commit_for "$PREVIOUS_COMMIT")"
-  if [[ ! "$prior_rollback_commit" =~ ^[0-9a-fA-F]{40}$ ]]; then
-    echo "prior_deployment_receipt=failed repair_ancestor_unavailable" >&2
-    return 2
-  fi
-  if ! receipt_report="$(
-    _run_as_service_user env \
-      EIMEMORY_ROOT="$EIMEMORY_ROOT" \
-      EIMEMORY_CONFIG_DIR="$EIMEMORY_CONFIG_DIR" \
-      EIMEMORY_EVIDENCE_RECEIPT_ENV_FILE="$EVIDENCE_RECEIPT_ENV_FILE" \
-      EIMEMORY_RUNTIME_COMMIT="$PREVIOUS_COMMIT" \
-      "$RELEASE_DIR/.venv/bin/python" -I -B \
-        "$RELEASE_DIR/deploy/record_deployment_receipt.py" \
-        --repo-root "$REPO_DIR" --current-link "$CURRENT_LINK" \
-        --health-url "$EIMEMORY_HEALTH_URL" \
-        --prior-commit "$prior_rollback_commit" \
-        --deployed-commit "$PREVIOUS_COMMIT" \
-        --scope-agent "$EIMEMORY_DEPLOY_SCOPE_AGENT" \
-        --scope-workspace "$EIMEMORY_DEPLOY_SCOPE_WORKSPACE" \
-        --scope-user "$EIMEMORY_DEPLOY_SCOPE_USER" --json
-  )"; then
-    echo "prior_deployment_receipt=failed repair_command" >&2
-    return 2
-  fi
-  printf '%s\n' "$receipt_report"
-  if ! printf '%s' "$receipt_report" | \
-    "$RELEASE_DIR/.venv/bin/python" -I -B -c \
-      'import json,sys; value=json.load(sys.stdin); raise SystemExit(0 if value.get("ok") is True and value.get("commit") == sys.argv[1] else 2)' \
-      "$PREVIOUS_COMMIT"; then
-    echo "prior_deployment_receipt=failed repair_identity" >&2
-    return 2
-  fi
-  echo "prior_deployment_receipt=repaired commit=$PREVIOUS_COMMIT"
-}
-
 _prepare_storage_for_release() {
   if [ ! -f "$EIMEMORY_ROOT/state/eimemory.sqlite" ]; then
-    if [ "$EIMEMORY_POST_SWITCH_GATES" = "1" ] && [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ]; then
-      echo "storage_release_migration=failed protected_bootstrap_requires_database" >&2
-      return 2
-    fi
     echo "storage_release_migration=skipped database_missing"
     return
   fi
-  local needs_report storage_needed recall_domain_changed=0 bootstrap_needed=0 protected_write_needed=0
+  local needs_report storage_needed
   needs_report="$(_storage_release_action needs)"
   printf '%s\n' "$needs_report"
   storage_needed="$(printf '%s' "$needs_report" | \
     "$RELEASE_DIR/.venv/bin/python" -I -B -c \
       'import json,sys; print("1" if json.load(sys.stdin).get("needed") is True else "0")')"
-  if [ "$EIMEMORY_POST_SWITCH_GATES" = "1" ] && [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ]; then
-    bootstrap_needed=1
-    recall_domain_changed="$(_recall_domain_changed)"
-    if [ "$recall_domain_changed" = "1" ]; then
-      echo "recall_domain_change=changed protected_bootstrap=required"
-    else
-      echo "recall_domain_change=unchanged protected_storage_transaction=skipped"
-    fi
-  fi
   if [ "$EIMEMORY_STORAGE_MIGRATION" != "1" ]; then
     if [ "$storage_needed" = "1" ]; then
       echo "storage_release_migration=blocked disabled_with_pending_migrations" >&2
@@ -953,24 +818,8 @@ _prepare_storage_for_release() {
     echo "storage_release_migration=skipped disabled_no_pending_migrations"
     storage_needed=0
   fi
-  if [ "$bootstrap_needed" = "1" ] && ! _ensure_prior_deployment_receipt; then
-    echo "prior_deployment_receipt=failed before_bootstrap" >&2
-    return 2
-  fi
-  if [ "$storage_needed" = "1" ] || [ "$recall_domain_changed" = "1" ]; then
-    protected_write_needed=1
-  fi
-  if [ "$protected_write_needed" != "1" ]; then
+  if [ "$storage_needed" != "1" ]; then
     STORAGE_MIGRATION_REQUIRED=0
-    if [ "$bootstrap_needed" = "1" ]; then
-      if ! _capture_prior_health_snapshot; then
-        echo "prior_health_capture=failed before_online_bootstrap" >&2
-        return 2
-      fi
-      _run_pre_switch_production_recall_bootstrap
-      _maybe_fail_stage pre_switch_recall_bootstrap
-      echo "production_recall_bootstrap=online_non_destructive"
-    fi
     echo "storage_release_migration=skipped no_pending_migrations"
     return
   fi
@@ -978,13 +827,7 @@ _prepare_storage_for_release() {
     echo "storage_release_migration=failed unsafe_snapshot_root" >&2
     return 2
   fi
-  STORAGE_MIGRATION_REQUIRED="$storage_needed"
-  if [ "$bootstrap_needed" = "1" ]; then
-    if ! _capture_prior_health_snapshot; then
-      echo "prior_health_capture=failed before_transaction" >&2
-      return 2
-    fi
-  fi
+  STORAGE_MIGRATION_REQUIRED=1
   if ! _capture_storage_writers; then
     echo "storage_writer_capture=failed before_transaction" >&2
     return 2
@@ -1013,14 +856,6 @@ _prepare_storage_for_release() {
   _update_storage_release_transaction snapshot_ready
   _maybe_fail_stage storage_snapshot
   _update_storage_release_transaction storage_destructive 1
-  if [ "$bootstrap_needed" = "1" ]; then
-    _run_pre_switch_production_recall_bootstrap
-    _maybe_fail_stage pre_switch_recall_bootstrap
-  fi
-  if [ "$storage_needed" != "1" ]; then
-    echo "storage_release_migration=skipped no_pending_migrations_after_protected_bootstrap"
-    return
-  fi
   _storage_release_action migrate
   _update_storage_release_transaction storage_migrated 1
   _maybe_fail_stage storage_migrate
@@ -1339,77 +1174,6 @@ _record_release_lineage() {
       --scope-user "$EIMEMORY_DEPLOY_SCOPE_USER"
 }
 
-_capture_prior_health_snapshot() {
-  if [ "$EIMEMORY_POST_SWITCH_GATES" != "1" ] || [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ]; then
-    return
-  fi
-  local snapshot_file
-  if ! snapshot_file="$(mktemp "$INSTALL_ROOT/.prior-health-${COMMIT}-XXXXXXXX.json")"; then
-    echo "prior_health_capture=failed" >&2
-    return 2
-  fi
-  PRIOR_HEALTH_SNAPSHOT_FILE="$snapshot_file"
-  if ! chmod 0600 "$snapshot_file"; then
-    rm -f -- "$PRIOR_HEALTH_SNAPSHOT_FILE"
-    PRIOR_HEALTH_SNAPSHOT_FILE=""
-    echo "prior_health_capture=failed" >&2
-    return 2
-  fi
-  if ! "$RELEASE_DIR/.venv/bin/python" -I -B \
-      "$RELEASE_DIR/deploy/capture_prior_health_snapshot.py" \
-      --health-url "$EIMEMORY_HEALTH_URL" >"$snapshot_file"; then
-    rm -f -- "$PRIOR_HEALTH_SNAPSHOT_FILE"
-    PRIOR_HEALTH_SNAPSHOT_FILE=""
-    echo "prior_health_capture=failed" >&2
-    return 2
-  fi
-  if [ "$(id -u)" -eq 0 ]; then
-    if ! chown "$SERVICE_USER:$SERVICE_GROUP" "$snapshot_file"; then
-      rm -f -- "$PRIOR_HEALTH_SNAPSHOT_FILE"
-      PRIOR_HEALTH_SNAPSHOT_FILE=""
-      echo "prior_health_capture=failed" >&2
-      return 2
-    fi
-  fi
-}
-
-_run_pre_switch_production_recall_bootstrap() {
-  if [ "$EIMEMORY_POST_SWITCH_GATES" != "1" ] || [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ]; then
-    return
-  fi
-  if [[ ! "$PREVIOUS_COMMIT" =~ ^[0-9a-fA-F]{40}$ ]]; then
-    echo "Production recall bootstrap requires the verified prior commit" >&2
-    return 2
-  fi
-  if [ -z "$PRIOR_HEALTH_SNAPSHOT_FILE" ] || [ ! -f "$PRIOR_HEALTH_SNAPSHOT_FILE" ] || \
-     [ -L "$PRIOR_HEALTH_SNAPSHOT_FILE" ]; then
-    echo "Production recall bootstrap requires a protected prior health snapshot" >&2
-    return 2
-  fi
-  local bootstrap_status=0
-  if _run_as_service_user env \
-    EIMEMORY_ROOT="$EIMEMORY_ROOT" \
-    EIMEMORY_CONFIG_DIR="$EIMEMORY_CONFIG_DIR" \
-    "$PYTHON_BIN" -I -B "$RELEASE_DIR/deploy/run_with_governance_env.py" \
-      --env-file "$GOVERNANCE_ENV_FILE" --optional -- \
-      "$RELEASE_DIR/.venv/bin/python" -I -B \
-        "$RELEASE_DIR/deploy/bootstrap_production_recall.py" \
-        --candidate-commit "$COMMIT" --prior-commit "$PREVIOUS_COMMIT" \
-        --current-link "$CURRENT_LINK" --health-url "$EIMEMORY_HEALTH_URL" \
-        --prior-health-snapshot "$PRIOR_HEALTH_SNAPSHOT_FILE" \
-        --root "$EIMEMORY_ROOT" \
-        --agent "$EIMEMORY_DEPLOY_SCOPE_AGENT" \
-        --workspace "$EIMEMORY_DEPLOY_SCOPE_WORKSPACE" \
-        --user "$EIMEMORY_DEPLOY_SCOPE_USER"; then
-    bootstrap_status=0
-  else
-    bootstrap_status=$?
-  fi
-  rm -f -- "$PRIOR_HEALTH_SNAPSHOT_FILE"
-  PRIOR_HEALTH_SNAPSHOT_FILE=""
-  return "$bootstrap_status"
-}
-
 _run_post_switch_closure() {
   if [ "$EIMEMORY_POST_SWITCH_GATES" != "1" ] || [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ]; then
     return
@@ -1444,6 +1208,31 @@ _run_post_switch_closure() {
     return "$summary_status"
   fi
   return "$closure_status"
+}
+
+_run_post_deploy_validation() {
+  if [ "$EIMEMORY_POST_SWITCH_GATES" != "1" ] || [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ]; then
+    echo "post_deploy_validation=skipped"
+    return
+  fi
+  local degraded=0
+  if ! _record_deployment_receipt || ! _maybe_fail_stage receipt; then
+    echo "warning: post-deploy deployment receipt is pending retry" >&2
+    degraded=1
+  fi
+  if ! _record_release_lineage || ! _maybe_fail_stage lineage; then
+    echo "warning: post-deploy release lineage is pending retry" >&2
+    degraded=1
+  fi
+  if ! _run_post_switch_closure || ! _maybe_fail_stage acceptance; then
+    echo "warning: post-deploy business closure is pending retry" >&2
+    degraded=1
+  fi
+  if [ "$degraded" = "1" ]; then
+    echo "post_deploy_validation=degraded"
+  else
+    echo "post_deploy_validation=complete"
+  fi
 }
 
 _rollback_current_release() {
@@ -1593,8 +1382,8 @@ if ! git -C "$REPO_DIR" rev-parse --verify "$COMMIT^{commit}" >/dev/null 2>&1; t
   exit 2
 fi
 if [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ] && \
-   [ -n "$(git -C "$REPO_DIR" status --porcelain --untracked-files=all)" ]; then
-  echo "Authoritative deployment repository must be clean" >&2
+   ! git -C "$REPO_DIR" diff --quiet "$COMMIT" -- deploy; then
+  echo "Tracked deployment control files must match the target commit" >&2
   exit 2
 fi
 
@@ -1634,7 +1423,6 @@ STORAGE_WRITERS_CAPTURED=0
 STORAGE_WRITERS_STOPPED=0
 STORAGE_WRITERS_RELOADED=0
 STORAGE_MIGRATION_REQUIRED=0
-PRIOR_HEALTH_SNAPSHOT_FILE=""
 STORAGE_TRANSACTION_ACTIVE=0
 
 _ensure_runtime_dir "$EIMEMORY_ROOT" 0750
@@ -1657,20 +1445,8 @@ if { [ -e "$CURRENT_LINK" ] || [ -L "$CURRENT_LINK" ] || [ -d "$CURRENT_LINK" ];
   if [ "$PREVIOUS_COMMIT" = "$COMMIT" ]; then
     PREVIOUS_COMMIT="$(_find_prior_release_commit)"
   fi
-  _ensure_runtime_dir "$EIMEMORY_CONFIG_DIR" 0750
-  _provision_evidence_receipt_key
-  if [ -x "$OPENCLAW_BIN" ]; then
-    "$PYTHON_BIN" -I -B "$REPO_DIR/deploy/ensure_openclaw_bridge_config.py" \
-      --path "$OPENCLAW_LOOP_CONFIG_PATH"
-  fi
-  _refresh_openclaw_gateway_metadata "$REPO_DIR" "$COMMIT"
-  _refresh_current_runtime_metadata "$RELEASE_DIR" "$COMMIT" "$REPO_DIR"
-  _restart_current_services
   _verify_effective_runtime_metadata "$COMMIT"
   _verify_release_health "$RELEASE_DIR" "$COMMIT"
-  _record_deployment_receipt
-  _record_release_lineage
-  _run_post_switch_closure
   echo "release=$RELEASE_DIR"
   echo "current=$CURRENT_LINK"
   echo "commit=$COMMIT"
@@ -1735,16 +1511,13 @@ cleanup_stage() {
     "$PYTHON_BIN" -I -B "$REPO_DIR/deploy/clean_release_bytecode.py" \
       --remove-stage --release-dir "$STAGE_DIR" --releases-root "$INSTALL_ROOT/releases" || true
   fi
-  if [ -n "$PRIOR_HEALTH_SNAPSHOT_FILE" ]; then
-    rm -f -- "$PRIOR_HEALTH_SNAPSHOT_FILE"
-  fi
   exit "$exit_code"
 }
 trap cleanup_stage EXIT
 
 git -C "$REPO_DIR" archive "$COMMIT" | tar -C "$STAGE_DIR" -xf -
 
-"$PYTHON_BIN" -I -B "$REPO_DIR/deploy/clean_release_bytecode.py" \
+"$PYTHON_BIN" -I -B "$STAGE_DIR/deploy/clean_release_bytecode.py" \
   --validate-source --allow-stage \
   --release-dir "$STAGE_DIR" \
   --releases-root "$INSTALL_ROOT/releases" \
@@ -1753,12 +1526,11 @@ git -C "$REPO_DIR" archive "$COMMIT" | tar -C "$STAGE_DIR" -xf -
 
 "$PYTHON_BIN" -I -B -m venv --clear "$STAGE_DIR/.venv"
 
-"$STAGE_DIR/.venv/bin/python" -I -B -m pip install --upgrade pip
 "$STAGE_DIR/.venv/bin/python" -I -B -m pip install "$STAGE_DIR"
-
-_run_openclaw_loop_deploy_verify "$STAGE_DIR"
+"$STAGE_DIR/.venv/bin/python" -I -B -m pip check
+"$STAGE_DIR/.venv/bin/python" -I -B -m compileall -q "$STAGE_DIR/eimemory"
 PYTHONDONTWRITEBYTECODE=1 \
-  "$PYTHON_BIN" -I -B "$REPO_DIR/deploy/clean_release_bytecode.py" \
+  "$PYTHON_BIN" -I -B "$STAGE_DIR/deploy/clean_release_bytecode.py" \
   --allow-stage --release-dir "$STAGE_DIR" --releases-root "$INSTALL_ROOT/releases"
 
 if [ -e "$RELEASE_DIR" ]; then
@@ -1776,7 +1548,7 @@ fi
 STAGE_DIR=""
 FINAL_REPLACED=1
 
-"$PYTHON_BIN" -I -B "$REPO_DIR/deploy/clean_release_bytecode.py" \
+"$PYTHON_BIN" -I -B "$RELEASE_DIR/deploy/clean_release_bytecode.py" \
   --relocate-venv \
   --release-dir "$RELEASE_DIR" \
   --releases-root "$INSTALL_ROOT/releases" \
@@ -1834,16 +1606,17 @@ _maybe_fail_stage gateway_restart
 _verify_release_health "$RELEASE_DIR" "$COMMIT"
 _maybe_fail_stage health
 _maybe_fail_stage storage_writer_restart
-_verify_release_health "$RELEASE_DIR" "$COMMIT"
+_run_openclaw_loop_deploy_verify "$RELEASE_DIR"
 _maybe_fail_stage final_health
-_record_deployment_receipt
-_maybe_fail_stage receipt
-_record_release_lineage
-_maybe_fail_stage lineage
-_run_post_switch_closure
-_maybe_fail_stage acceptance
-_cleanup_storage_vacuum_backup
-_prune_storage_snapshots
+COMMITTED=1
+echo "commit_complete=1"
+trap - EXIT
+if ! _cleanup_storage_vacuum_backup; then
+  echo "warning: unable to remove storage vacuum backup after commit" >&2
+fi
+if ! _prune_storage_snapshots; then
+  echo "warning: unable to prune storage snapshots after commit" >&2
+fi
 if [ -n "$BACKUP_DIR" ] && [ -e "$BACKUP_DIR" ]; then
   "$PYTHON_BIN" -I -B "$REPO_DIR/deploy/clean_release_bytecode.py" \
     --remove-stage --release-dir "$BACKUP_DIR" --releases-root "$INSTALL_ROOT/releases" || \
@@ -1853,9 +1626,7 @@ fi
 if [ "$(id -u)" -eq 0 ] && id "$SERVICE_USER" >/dev/null 2>&1; then
   chown -h "$SERVICE_USER:$SERVICE_GROUP" "$CURRENT_LINK" 2>/dev/null || true
 fi
-COMMITTED=1
-echo "commit_complete=1"
-trap - EXIT
+_run_post_deploy_validation
 
 echo "release=$RELEASE_DIR"
 echo "current=$CURRENT_LINK"

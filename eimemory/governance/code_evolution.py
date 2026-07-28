@@ -29,6 +29,8 @@ class _DefaultSandboxRunner:
             ignore=shutil.ignore_patterns(
                 ".git",
                 ".venv",
+                ".worktrees",
+                ".code-review-graph",
                 "__pycache__",
                 ".pytest_cache",
                 ".mypy_cache",

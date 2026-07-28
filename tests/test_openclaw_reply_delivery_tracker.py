@@ -13,6 +13,7 @@ def _run_node(script: str, state_path: Path) -> dict:
     env = os.environ.copy()
     env["EIMEMORY_REPLY_DELIVERY_STATE_PATH"] = str(state_path)
     env["EIMEMORY_HOOK_COMMAND"] = "/usr/bin/true"
+    env["EIMEMORY_RUNTIME_COMMIT"] = "a" * 40
     result = subprocess.run(
         ["node", "-e", script],
         cwd=ROOT,
@@ -89,6 +90,7 @@ Promise.resolve()
     assert entry["final_text"] == "这是最终答复"
     assert entry["delivery_message_id"] == "om_out_1"
     assert entry["conversation_id"] == "oc_test"
+    assert entry["runtime_commit"] == "a" * 40
 
 
 def test_tracker_accepts_real_agent_hook_feishu_context(tmp_path: Path) -> None:

@@ -22,6 +22,9 @@ from eimemory.storage.maintenance import create_consistent_storage_snapshot
 from eimemory.storage.sqlite_store import SqliteRecordStore
 
 
+pytestmark = pytest.mark.linux_deployment
+
+
 COMMIT = "a" * 40
 ATTEMPT = "aaaaaaaa-20260722T120000Z-1234"
 SCOPE = ScopeRef(agent_id="agent", workspace_id="workspace", user_id="user")
@@ -171,104 +174,6 @@ exit $?
             str(current),
             str(previous),
             str(candidate),
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    events = trace.read_text(encoding="utf-8").splitlines() if trace.exists() else []
-    return result, events
-
-
-def _run_prepare_storage_harness(
-    tmp_path: Path,
-    *,
-    storage_needed: bool,
-    recall_domain_changed: bool,
-    create_snapshot_root: bool = True,
-    prior_receipt_ok: bool = True,
-) -> tuple[subprocess.CompletedProcess[str], list[str]]:
-    installer = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
-    body = installer.split("_prepare_storage_for_release() {", 1)[1].split("\n}", 1)[0]
-    release_dir = tmp_path / "release"
-    python_wrapper = release_dir / ".venv" / "bin" / "python"
-    python_wrapper.parent.mkdir(parents=True)
-    python_wrapper.write_text(
-        "#!/usr/bin/env bash\n"
-        f'exec "{Path(sys.executable).as_posix()}" "$@"\n',
-        encoding="utf-8",
-    )
-    python_wrapper.chmod(python_wrapper.stat().st_mode | stat.S_IXUSR)
-    root = tmp_path / "root"
-    (root / "state").mkdir(parents=True)
-    (root / "state" / "eimemory.sqlite").touch()
-    snapshot_root = tmp_path / "snapshots"
-    if create_snapshot_root:
-        snapshot_root.mkdir()
-    trace = tmp_path / "prepare.trace"
-    harness = f"""#!/usr/bin/env bash
-set -u
-_prepare_storage_for_release() {{{body}
-}}
-RELEASE_DIR="$1"
-EIMEMORY_ROOT="$2"
-EIMEMORY_STORAGE_SNAPSHOT_ROOT="$3"
-TRACE_PATH="$4"
-STORAGE_NEEDED="$5"
-RECALL_DOMAIN_CHANGED="$6"
-PRIOR_RECEIPT_OK="$7"
-EIMEMORY_POST_SWITCH_GATES=1
-USER_SYSTEMD_ENABLE_SERVICE=1
-EIMEMORY_STORAGE_MIGRATION=1
-STORAGE_MIGRATION_REQUIRED=0
-STORAGE_SNAPSHOT_MANIFEST_SHA256=""
-STORAGE_SNAPSHOT_READY=0
-STORAGE_VACUUM_BACKUP=""
-trace() {{ printf '%s\\n' "$1" >>"$TRACE_PATH"; }}
-_storage_release_action() {{
-  trace "storage:$1"
-  case "$1" in
-    needs) printf '{{"needed":%s}}\\n' "$STORAGE_NEEDED" ;;
-    snapshot) printf '{{"manifest_sha256":"%s"}}\\n' "{'a' * 64}" ;;
-    vacuum) printf '{{"backup_path":""}}\\n' ;;
-    *) printf '{{"ok":true}}\\n' ;;
-  esac
-}}
-_recall_domain_changed() {{
-  trace recall-domain
-  printf '%s\\n' "$RECALL_DOMAIN_CHANGED"
-}}
-_ensure_prior_deployment_receipt() {{
-  trace prior-receipt
-  [ "$PRIOR_RECEIPT_OK" = "1" ]
-}}
-_capture_prior_health_snapshot() {{ trace prior-health; }}
-_capture_storage_writers() {{ trace capture-writers; }}
-_retire_system_rpc_unit() {{ trace retire-system-rpc; }}
-_begin_storage_release_transaction() {{ trace begin-transaction; }}
-_stop_storage_writers() {{ trace stop-writers; }}
-_update_storage_release_transaction() {{ trace "update:$1"; }}
-_maybe_fail_stage() {{ trace "stage:$1"; }}
-_run_pre_switch_production_recall_bootstrap() {{ trace recall-bootstrap; }}
-set +e
-_prepare_storage_for_release
-status=$?
-printf 'migration_required=%s\\n' "$STORAGE_MIGRATION_REQUIRED"
-exit "$status"
-"""
-    result = subprocess.run(
-        [
-            _bash_executable(),
-            "-c",
-            harness,
-            "prepare-storage",
-            release_dir.as_posix(),
-            root.as_posix(),
-            snapshot_root.as_posix(),
-            trace.as_posix(),
-            "true" if storage_needed else "false",
-            "1" if recall_domain_changed else "0",
-            "1" if prior_receipt_ok else "0",
         ],
         check=False,
         capture_output=True,
@@ -732,9 +637,8 @@ def test_release_migration_deep_verifies_once_then_uses_sealed_identity(
 
 def test_installer_storage_transaction_order_and_writer_stop_contract() -> None:
     script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
-    call_site = script.index("_run_pre_switch_production_recall_bootstrap\n")
-    switch = script.index('ln -sfn "$RELEASE_DIR" "$CURRENT_LINK.next"', call_site)
-    assert call_site < script.index("_prepare_storage_for_release\n", call_site) < switch
+    switch = script.index('ln -sfn "$RELEASE_DIR" "$CURRENT_LINK.next"')
+    assert script.rindex("_prepare_storage_for_release\n", 0, switch) < switch
     assert "eimemory-rpc.service" in script
     assert "openclaw-gateway.service" in script
     assert "eimemory-nightly.timer" in script
@@ -754,7 +658,7 @@ def test_installer_storage_transaction_order_and_writer_stop_contract() -> None:
     assert prepare.index("_storage_release_action needs") < prepare.index(
         'if [ "$EIMEMORY_STORAGE_MIGRATION" != "1" ]'
     )
-    assert prepare.index('if [ "$protected_write_needed" != "1" ]; then') < prepare.index(
+    assert prepare.index('if [ "$storage_needed" != "1" ]; then') < prepare.index(
         "_stop_storage_writers"
     )
     assert prepare.index("_storage_release_action needs") < prepare.index(
@@ -766,7 +670,7 @@ def test_installer_storage_transaction_order_and_writer_stop_contract() -> None:
     snapshot_ready = prepare.index("STORAGE_SNAPSHOT_READY=1", snapshot_action)
     migrate_action = prepare.index("_storage_release_action migrate", snapshot_action)
     assert snapshot_action < snapshot_identity < snapshot_ready < migrate_action
-    no_pending = prepare.index('if [ "$protected_write_needed" != "1" ]; then')
+    no_pending = prepare.index('if [ "$storage_needed" != "1" ]; then')
     assert no_pending < prepare.index("return", no_pending) < prepare.index(
         "_storage_release_action snapshot"
     )
@@ -812,50 +716,11 @@ def test_installer_storage_transaction_order_and_writer_stop_contract() -> None:
         "_clear_storage_release_transaction"
     ) < rollback.index("_restart_storage_writers")
     restart_background = script.index("_restart_storage_writers\n", switch)
-    acceptance = script.index("_run_post_switch_closure\n", restart_background)
-    cleanup_backup = script.index("_cleanup_storage_vacuum_backup\n", acceptance)
-    prune_snapshots = script.index("_prune_storage_snapshots\n", cleanup_backup)
-    assert switch < restart_background < acceptance < cleanup_backup < prune_snapshots
-
-
-def test_code_only_release_runs_bootstrap_without_storage_transaction_when_recall_domain_is_unchanged(
-    tmp_path: Path,
-) -> None:
-    result, events = _run_prepare_storage_harness(
-        tmp_path,
-        storage_needed=False,
-        recall_domain_changed=False,
-        create_snapshot_root=False,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert events == [
-        "storage:needs",
-        "recall-domain",
-        "prior-receipt",
-        "prior-health",
-        "recall-bootstrap",
-        "stage:pre_switch_recall_bootstrap",
-    ]
-    assert "production_recall_bootstrap=online_non_destructive" in result.stdout
-    assert "storage_release_migration=skipped no_pending_migrations" in result.stdout
-    assert "migration_required=0" in result.stdout
-
-
-def test_code_only_release_stops_before_bootstrap_when_prior_receipt_is_unavailable(
-    tmp_path: Path,
-) -> None:
-    result, events = _run_prepare_storage_harness(
-        tmp_path,
-        storage_needed=False,
-        recall_domain_changed=False,
-        create_snapshot_root=False,
-        prior_receipt_ok=False,
-    )
-
-    assert result.returncode != 0
-    assert events == ["storage:needs", "recall-domain", "prior-receipt"]
-    assert "prior_deployment_receipt=failed before_bootstrap" in result.stderr
+    committed = script.index("COMMITTED=1", restart_background)
+    cleanup_backup = script.index("_cleanup_storage_vacuum_backup; then", committed)
+    prune_snapshots = script.index("_prune_storage_snapshots; then", cleanup_backup)
+    validation = script.index("_run_post_deploy_validation\n", prune_snapshots)
+    assert switch < restart_background < committed < cleanup_backup < prune_snapshots < validation
 
 
 @pytest.mark.parametrize(
@@ -902,7 +767,6 @@ def test_legacy_system_rpc_is_quiesced_fail_closed_before_marker_and_user_writer
         "\n}", 1
     )[0]
 
-    assert "protected_bootstrap_requires_database" in prepare
     marker = prepare.index("_begin_storage_release_transaction")
     legacy = prepare.index("_retire_system_rpc_unit")
     user_writers = prepare.index("_stop_storage_writers")
@@ -913,7 +777,7 @@ def test_legacy_system_rpc_is_quiesced_fail_closed_before_marker_and_user_writer
     assert main.index("_prepare_storage_for_release") < main.index("_retire_system_rpc_unit")
 
 
-def test_production_recall_bootstrap_runs_only_after_snapshot_protects_writes() -> None:
+def test_pre_switch_storage_transaction_contains_no_business_bootstrap() -> None:
     script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
     prepare = script.split("_prepare_storage_for_release() {", 1)[1].split(
         "\n}", 1
@@ -923,14 +787,10 @@ def test_production_recall_bootstrap_runs_only_after_snapshot_protects_writes() 
     stop = prepare.index("_stop_storage_writers", marker)
     snapshot_ready = prepare.index("STORAGE_SNAPSHOT_READY=1", stop)
     destructive = prepare.index("storage_destructive 1", snapshot_ready)
-    bootstrap = prepare.index("_run_pre_switch_production_recall_bootstrap", destructive)
-    migrate = prepare.index("_storage_release_action migrate", bootstrap)
-    assert marker < stop < snapshot_ready < destructive < bootstrap < migrate
-
-    main = script[script.rindex("_prepare_storage_for_release\n") - 300 :]
-    assert "_run_pre_switch_production_recall_bootstrap\n" not in main.split(
-        "_prepare_storage_for_release\n", 1
-    )[0]
+    migrate = prepare.index("_storage_release_action migrate", destructive)
+    assert marker < stop < snapshot_ready < destructive < migrate
+    assert "_run_pre_switch_production_recall_bootstrap" not in prepare
+    assert "_ensure_prior_deployment_receipt" not in prepare
     cleanup = script.split("cleanup_stage() {", 1)[1].split("\n}", 1)[0]
     rollback_condition = cleanup[: cleanup.index("_rollback_current_release")]
     assert '"$STORAGE_SNAPSHOT_READY" = "1"' in rollback_condition

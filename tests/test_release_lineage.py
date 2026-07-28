@@ -872,7 +872,9 @@ def test_immutable_installer_affects_runtime_openclaw_and_storage_domains(
         runtime.close()
 
 
-def test_openclaw_requires_complete_canonical_live_acceptance_set(tmp_path: Path) -> None:
+def test_openclaw_requires_real_platform_channel_acceptance_not_local_probes(
+    tmp_path: Path,
+) -> None:
     repo = _repo(tmp_path)
     prior_commit = _commit(repo, "integrations/openclaw/index.ts", "prior\n", "prior")
     current_commit = _commit(repo, "integrations/openclaw/index.ts", "changed\n", "current")
@@ -881,26 +883,28 @@ def test_openclaw_requires_complete_canonical_live_acceptance_set(tmp_path: Path
         _receipt(runtime, SCOPE, prior_commit, "1.0.0")
         current = _receipt(runtime, SCOPE, current_commit, "1.0.1")
         runtime._test_runtime_commit = current.commit
-        case_records = [
-            _live_case(runtime, SCOPE, current, case_id=case_id, index=index)
-            for index, case_id in enumerate(LIVE_ACCEPTANCE_CASE_IDS)
-        ]
+        local_probe = _live_case(
+            runtime,
+            SCOPE,
+            current,
+            case_id=LIVE_ACCEPTANCE_CASE_IDS[0],
+            index=0,
+        )
+        channel_receipt = _channel_case(runtime, SCOPE, current)
 
         partial = record_release_lineage(
             runtime,
             scope=SCOPE,
             repo_root=repo,
             current_release=current,
-            gate_evidence={"channel.openclaw": [case_records[0].record_id]},
+            gate_evidence={"channel.openclaw": [local_probe.record_id]},
         )
         complete = record_release_lineage(
             runtime,
             scope=SCOPE,
             repo_root=repo,
             current_release=current,
-            gate_evidence={
-                "channel.openclaw": [record.record_id for record in case_records]
-            },
+            gate_evidence={"channel.openclaw": [channel_receipt.record_id]},
         )
         resolved = current_release_lineage(
             runtime,
@@ -1621,6 +1625,43 @@ def _live_case(
                 "case_id": case_id,
                 "task_type": task_type,
                 "trace_id": trace_id,
+                "passed": True,
+            },
+        )
+    )
+
+
+def _channel_case(
+    runtime: Runtime,
+    scope: ScopeRef,
+    release: ReleaseIdentity,
+) -> RecordEnvelope:
+    digest = "c" * 64
+    return runtime.store.append(
+        RecordEnvelope.create(
+            kind="learning_eval",
+            title="OpenClaw channel acceptance",
+            scope=scope,
+            source="eimemory.openclaw.channel_acceptance",
+            status="active",
+            content={
+                "report_type": "openclaw_channel_acceptance",
+                "schema_version": "openclaw_channel_acceptance.v1",
+                "evidence_class": "external_channel_receipt",
+                "passed": True,
+                "deployment_commit": release.commit,
+                "deployment_version": release.version,
+                "promotion_request_id": release.receipt_id,
+                "release_session_id": release.session_id,
+                "platform_accepted_at_ms": 2_000,
+                "inbound_message_digest": digest,
+                "delivery_receipt_digest": digest,
+                "channel_session_digest": digest,
+            },
+            meta={
+                "report_type": "openclaw_channel_acceptance",
+                "schema_version": "openclaw_channel_acceptance.v1",
+                "evidence_class": "external_channel_receipt",
                 "passed": True,
             },
         )
