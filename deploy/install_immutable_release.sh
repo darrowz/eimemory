@@ -1034,6 +1034,11 @@ _restart_current_services() {
   # Feishu reply watchdog permanently removed: dual-path delivery caused double sends.
   # Keep unit masked; do not install/enable/restart it on deploy.
   _user_systemctl restart openclaw-gateway.service
+  # Enablement persists intent, but an enabled timer can remain inactive after
+  # a first install or prior stop. Start managed loop timers only after the
+  # current release and gateway are active so deployment cannot leave them idle.
+  _user_systemctl start openclaw-loop-watch.timer
+  _user_systemctl start openclaw-loop-compact.timer
 }
 
 _verify_effective_runtime_metadata() {

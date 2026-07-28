@@ -1463,6 +1463,7 @@ def test_immutable_release_installer_manages_truthful_loop_watchdog_unit() -> No
     assert "openclaw-loop-watch.timer" in script
     assert "_user_systemctl enable openclaw-loop-watch.timer" in script
     assert "_user_systemctl enable --now openclaw-loop-watch.timer" not in script
+    assert "_user_systemctl start openclaw-loop-watch.timer" in script
     assert "openclaw_loop.py watch" in service
     assert "|| true" not in service
     assert "OnUnitActiveSec=5min" in timer
@@ -1479,6 +1480,7 @@ def test_immutable_release_installer_manages_user_level_loop_compaction_timer() 
     assert '"$USER_SYSTEMD_DIR/openclaw-loop-compact.timer"' in script
     assert "_user_systemctl enable openclaw-loop-compact.timer" in script
     assert "_user_systemctl enable --now openclaw-loop-compact.timer" not in script
+    assert "_user_systemctl start openclaw-loop-compact.timer" in script
     assert "openclaw_loop.py compact --terminal-retention-days 7" in service
     assert "OnCalendar=*-*-* 04:10:00" in timer
 
