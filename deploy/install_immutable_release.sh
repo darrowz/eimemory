@@ -261,7 +261,6 @@ STORAGE_WRITER_UNITS=(
   eimemory-experience-autopromote.timer
   openclaw-loop-watch.timer
   openclaw-loop-compact.timer
-  openclaw-stuck-watchdog.timer
   eimemory-nightly.service
   eimemory-learn-watch.service
   eimemory-learn-think.service
@@ -272,7 +271,6 @@ STORAGE_WRITER_UNITS=(
   eimemory-experience-autopromote.service
   openclaw-loop-watch.service
   openclaw-loop-compact.service
-  openclaw-stuck-watchdog.service
   openclaw-gateway.service
   eimemory-rpc.service
 )
@@ -1254,6 +1252,17 @@ print(values[0])
 _install_candidate_runtime_metadata() {
   if [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ] && command -v systemctl >/dev/null 2>&1; then
     _run_as_service_user mkdir -p "$USER_SYSTEMD_DIR"
+    # OpenClaw restart watchdog permanently removed: pressure must not restart the gateway.
+    _user_systemctl disable --now openclaw-stuck-watchdog.timer >/dev/null 2>&1 || true
+    _user_systemctl stop openclaw-stuck-watchdog.service >/dev/null 2>&1 || true
+    _run_as_service_user rm -f "$USER_SYSTEMD_DIR/openclaw-stuck-watchdog.service"
+    _run_as_service_user rm -f "$USER_SYSTEMD_DIR/openclaw-stuck-watchdog.timer"
+    _run_as_service_user rm -f \
+      "$USER_SYSTEMD_DIR/openclaw-stuck-watchdog.service.d/05-eimemory-storage-release-guard.conf" \
+      "$USER_SYSTEMD_DIR/openclaw-stuck-watchdog.service.d/90-eimemory-python-runtime.conf"
+    _run_as_service_user rmdir "$USER_SYSTEMD_DIR/openclaw-stuck-watchdog.service.d" \
+      >/dev/null 2>&1 || true
+    _user_systemctl daemon-reload
     _install_as_service_user 0644 \
       "$RELEASE_DIR/deploy/systemd/openclaw-loop-watch.service" "$USER_SYSTEMD_DIR/openclaw-loop-watch.service"
     _install_as_service_user 0644 \
@@ -1262,17 +1271,12 @@ _install_candidate_runtime_metadata() {
       "$RELEASE_DIR/deploy/systemd/openclaw-loop-compact.service" "$USER_SYSTEMD_DIR/openclaw-loop-compact.service"
     _install_as_service_user 0644 \
       "$RELEASE_DIR/deploy/systemd/openclaw-loop-compact.timer" "$USER_SYSTEMD_DIR/openclaw-loop-compact.timer"
-    _install_as_service_user 0644 \
-      "$RELEASE_DIR/deploy/systemd/openclaw-stuck-watchdog.service" "$USER_SYSTEMD_DIR/openclaw-stuck-watchdog.service"
-    _install_as_service_user 0644 \
-      "$RELEASE_DIR/deploy/systemd/openclaw-stuck-watchdog.timer" "$USER_SYSTEMD_DIR/openclaw-stuck-watchdog.timer"
     # openclaw-feishu-reply-watchdog intentionally not installed/enabled.
     _refresh_openclaw_gateway_metadata "$RELEASE_DIR" "$COMMIT"
     _install_current_runtime_metadata "$RELEASE_DIR" "$COMMIT" "$REPO_DIR"
     _user_systemctl enable eimemory-rpc.service
     _user_systemctl enable openclaw-loop-watch.timer
     _user_systemctl enable openclaw-loop-compact.timer
-    _user_systemctl enable openclaw-stuck-watchdog.timer
     _user_systemctl daemon-reload
   fi
   _install_openclaw_loop_compat_script "$RELEASE_DIR"

@@ -15,7 +15,6 @@ BASE_UNITS=(
   eimemory-timer-monitor.service
   openclaw-loop-watch.service
   openclaw-loop-compact.service
-  openclaw-stuck-watchdog.service
 )
 
 declare -A SEEN=()

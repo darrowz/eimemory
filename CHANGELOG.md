@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Planned
 - Multi-agent memory coordination
 
+## [1.9.106] - 2026-07-28
+
+### Fixed
+- Permanently remove the OpenClaw restart watchdog from deployment and purge legacy user units, so resource pressure can no longer terminate an active Feishu reply.
+
 ## [1.9.105] - 2026-07-28
 
 ### Fixed

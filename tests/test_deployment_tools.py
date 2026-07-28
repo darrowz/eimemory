@@ -1286,30 +1286,12 @@ def test_eimemory_rpc_cleanup_script_kills_only_matching_port_listeners() -> Non
     assert "kill -KILL" in script
 
 
-def test_openclaw_watchdog_systemd_limits_stuck_and_hook_pressure() -> None:
-    unit_text = Path("deploy/systemd/openclaw-stuck-watchdog.service").read_text(encoding="utf-8")
-
-    assert "--threshold-s 120" in unit_text
-    assert "--min-restart-interval-s 900" in unit_text
-    assert "--max-hook-processes 8" in unit_text
-    assert "--max-hook-rss-mib 3072" in unit_text
-    assert "--min-hook-pressure-samples 2" in unit_text
-    assert "--hook-pressure-sample-window-s 180" in unit_text
-    assert "--min-cgroup-pressure-samples 2" in unit_text
-    assert "--cgroup-pressure-sample-window-s 180" in unit_text
-    assert "--min-hook-age-s 10" in unit_text
-    assert "--health-url" not in unit_text
-    assert "--loopback-health-url" not in unit_text
-    assert "TimeoutStartSec=30" in unit_text
-
-
 def test_systemd_units_use_immutable_current_release() -> None:
     for unit_path in Path("deploy/systemd").glob("*.service"):
         unit_text = unit_path.read_text(encoding="utf-8")
         assert "/opt/eimemory/venv" not in unit_text
         assert "/dev-project/eimemory" not in unit_text
-        if unit_path.name != "openclaw-stuck-watchdog.service":
-            assert "WorkingDirectory=/opt/eimemory/current" in unit_text
+        assert "WorkingDirectory=/opt/eimemory/current" in unit_text
 
 
 def test_openclaw_gateway_override_uses_production_eimemory_runtime() -> None:
@@ -1445,7 +1427,6 @@ def test_immutable_release_installer_deploys_python_runtime_protection_dropins()
         "eimemory-timer-monitor.service",
         "openclaw-loop-watch.service",
         "openclaw-loop-compact.service",
-        "openclaw-stuck-watchdog.service",
     }
 
     assert 'eimemory-python-runtime.conf' in script
@@ -1490,15 +1471,18 @@ def test_immutable_release_installer_manages_user_level_loop_compaction_timer() 
     assert "OnCalendar=*-*-* 04:10:00" in timer
 
 
-def test_immutable_release_installer_manages_stuck_watchdog_timer() -> None:
+def test_immutable_release_installer_permanently_removes_stuck_watchdog() -> None:
     script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
 
-    assert '"$RELEASE_DIR/deploy/systemd/openclaw-stuck-watchdog.service"' in script
-    assert '"$USER_SYSTEMD_DIR/openclaw-stuck-watchdog.service"' in script
-    assert '"$RELEASE_DIR/deploy/systemd/openclaw-stuck-watchdog.timer"' in script
-    assert '"$USER_SYSTEMD_DIR/openclaw-stuck-watchdog.timer"' in script
-    assert "_user_systemctl enable openclaw-stuck-watchdog.timer" in script
-    assert "_user_systemctl enable --now openclaw-stuck-watchdog.timer" not in script
+    assert not Path("deploy/systemd/openclaw-stuck-watchdog.service").exists()
+    assert not Path("deploy/systemd/openclaw-stuck-watchdog.timer").exists()
+    assert '"$RELEASE_DIR/deploy/systemd/openclaw-stuck-watchdog.service"' not in script
+    assert '"$RELEASE_DIR/deploy/systemd/openclaw-stuck-watchdog.timer"' not in script
+    assert "_user_systemctl enable openclaw-stuck-watchdog.timer" not in script
+    assert "_user_systemctl disable --now openclaw-stuck-watchdog.timer" in script
+    assert "OpenClaw restart watchdog permanently removed" in script
+    assert 'rm -f "$USER_SYSTEMD_DIR/openclaw-stuck-watchdog.service"' in script
+    assert 'rm -f "$USER_SYSTEMD_DIR/openclaw-stuck-watchdog.timer"' in script
 
 
 def test_immutable_release_installer_does_not_manage_feishu_reply_watchdog() -> None:
