@@ -1313,9 +1313,11 @@ _rollback_current_release() {
       return 1
     fi
   fi
-  if ! _cleanup_storage_vacuum_backup; then
-    echo "rollback_step=vacuum_backup_cleanup status=failed" >&2
-    rollback_failed=1
+  if [ "$STORAGE_SNAPSHOT_READY" = "1" ] && [ -n "$STORAGE_VACUUM_BACKUP" ]; then
+    if ! _cleanup_storage_vacuum_backup; then
+      echo "rollback_step=vacuum_backup_cleanup status=failed" >&2
+      rollback_failed=1
+    fi
   fi
   if [ "$link_restored" != "1" ]; then
     echo "rollback_current_release=failed" >&2
