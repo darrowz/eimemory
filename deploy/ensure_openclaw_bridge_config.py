@@ -163,6 +163,19 @@ def _ensure_openclaw_bridge_config_locked(target: Path) -> dict[str, object]:
     bridge["enabled"] = True
     hooks["allowPromptInjection"] = True
     hooks["allowConversationAccess"] = True
+    channels_value = config.get("channels")
+    if channels_value is not None:
+        channels = _object(channels_value, "channels")
+        feishu_value = channels.get("feishu")
+        if feishu_value is not None:
+            feishu = _object(feishu_value, "channels.feishu")
+            # Long Chinese responses can exceed the effective Feishu payload
+            # budget before a final reply becomes visible. Flush completed
+            # blocks in bounded newline-aware chunks so a long answer cannot
+            # collapse into the generic no-visible-reply fallback.
+            feishu["blockStreaming"] = True
+            feishu["textChunkLimit"] = 800
+            feishu["chunkMode"] = "newline"
     after = json.dumps(config, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     changed = before != after
     if changed:

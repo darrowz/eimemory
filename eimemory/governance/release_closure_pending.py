@@ -139,7 +139,11 @@ def reconcile_release_closure_pending(
                 pending_path=pending_path,
             )
     except _ReleaseClosureReconcileBusy:
-        return {"ok": True, "status": "busy"}
+        return {
+            "ok": False,
+            "status": "busy",
+            "error": "release_closure_reconcile_busy",
+        }
 
 
 def _reconcile_release_closure_pending_unlocked(

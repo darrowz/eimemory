@@ -1490,6 +1490,41 @@ def test_openclaw_bridge_config_creates_missing_allow_policy(tmp_path) -> None:
     assert json.loads(path.read_text(encoding="utf-8"))["plugins"]["allow"] == ["eimemory-bridge"]
 
 
+def test_openclaw_bridge_config_chunks_large_feishu_replies_before_final(
+    tmp_path,
+) -> None:
+    from deploy.ensure_openclaw_bridge_config import ensure_openclaw_bridge_config
+
+    path = tmp_path / "openclaw.json"
+    path.write_text(
+        json.dumps(
+            {
+                "plugins": {"entries": {}},
+                "channels": {
+                    "feishu": {
+                        "enabled": True,
+                        "streaming": False,
+                        "blockStreaming": False,
+                        "textChunkLimit": 4000,
+                        "chunkMode": "length",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    ensure_openclaw_bridge_config(path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    feishu = payload["channels"]["feishu"]
+
+    assert feishu["blockStreaming"] is True
+    assert feishu["textChunkLimit"] == 800
+    assert feishu["chunkMode"] == "newline"
+    assert feishu["streaming"] is False
+    assert feishu["enabled"] is True
+
+
 def test_openclaw_bridge_config_serializes_concurrent_updates(tmp_path) -> None:
     from deploy.ensure_openclaw_bridge_config import ensure_openclaw_bridge_config
 

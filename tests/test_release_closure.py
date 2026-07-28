@@ -1130,7 +1130,11 @@ def test_release_closure_reconcile_skips_when_lock_is_held(
             pending_path=pending_path,
         )
 
-    assert report == {"ok": True, "status": "busy"}
+    assert report == {
+        "ok": False,
+        "status": "busy",
+        "error": "release_closure_reconcile_busy",
+    }
     assert runtime.calls == []
     assert pending_path.exists()
 
