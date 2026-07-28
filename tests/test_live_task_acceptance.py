@@ -213,6 +213,53 @@ def test_live_task_acceptance_fails_when_outcome_trace_is_not_persisted(tmp_path
     assert all(case["trace_persisted"] is False for case in report["cases"])
 
 
+def test_live_acceptance_runtime_identity_does_not_bind_package_version(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    commit = "a" * 40
+    release_path = tmp_path / "releases" / commit
+    import_root = release_path / "eimemory"
+    import_root.mkdir(parents=True)
+    monkeypatch.setattr(live_task_acceptance, "package_import_root", lambda: import_root)
+    monkeypatch.setenv("EIMEMORY_RUNTIME_COMMIT", commit)
+
+    assert live_task_acceptance._runtime_matches_identity(
+        {
+            "commit": commit,
+            "version": "9.9.999",
+            "release_path": str(release_path),
+        }
+    )
+
+
+def test_live_acceptance_deployment_case_treats_version_as_metadata(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope_ref = ScopeRef.from_dict(SCOPE)
+    commit = "a" * 40
+    try:
+        definitions = live_task_acceptance._case_definitions(
+            runtime,
+            scope=scope_ref,
+            identity={
+                "commit": commit,
+                "version": "",
+                "release_path": f"/opt/eimemory/releases/{commit}",
+            },
+        )
+        check = next(
+            item["check"]
+            for item in definitions
+            if item["case_id"] == "deployment.identity"
+        )
+        observation = check()
+    finally:
+        runtime.close()
+
+    assert observation["passed"] is True
+    assert observation["version_present"] is False
+
+
 def test_readiness_pure_read_ignores_concurrent_external_records(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path)
     concurrent_runtime = Runtime.create(root=tmp_path)

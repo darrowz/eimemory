@@ -37,7 +37,7 @@
 - Consumes: existing `ReleaseIdentity`, evidence resolution, deployment receipts, release lineage, live/channel acceptance, recall gate, and immutable installer.
 - Produces: regression expectations for `same_release_authority(...)` and optional pre-switch baseline behavior.
 
-- [ ] **Step 1: Add version-neutral authority tests**
+- [x] **Step 1: Add version-neutral authority tests**
 
 Add literal authority fixtures whose commit, receipt, and session match while versions differ:
 
@@ -67,7 +67,7 @@ Exercise real consumers rather than asserting source text:
 - OpenClaw channel acceptance verifies commit/receipt/session and ignores `deployment_version` drift.
 - live task acceptance, release lineage, closure rehearsal, real-query verification, and L5 readiness remain valid when only serialized version metadata differs.
 
-- [ ] **Step 2: Add installer behavior harness**
+- [x] **Step 2: Add installer behavior harness**
 
 Run the real `_capture_prior_health_snapshot` and `_run_pre_switch_production_recall_bootstrap` function bodies in a temporary Bash harness with stubbed health capture, service-user execution, and bootstrap exit statuses.
 
@@ -83,7 +83,7 @@ assert not snapshot_path.exists()
 
 Run a temporary full-installer fixture with no pending storage migration and verify the current link still switches when the L5 bootstrap exits `1` or `2`.
 
-- [ ] **Step 3: Run one combined RED batch**
+- [x] **Step 3: Run one combined RED batch**
 
 Run:
 
@@ -115,7 +115,7 @@ Expected: only the newly added tests fail, specifically because version is still
   - `same_release_authority(left: ReleaseIdentity | None, right: ReleaseIdentity | None) -> bool`
   - `ReleaseIdentity.complete` independent from `version`
 
-- [ ] **Step 1: Add the authority-key helpers**
+- [x] **Step 1: Add the authority-key helpers**
 
 Implement:
 
@@ -143,7 +143,7 @@ def same_release_authority(
 
 Change `ReleaseIdentity.complete` to require a 40-character commit, receipt, and session, but not `version`.
 
-- [ ] **Step 2: Apply authority semantics at the shared boundary**
+- [x] **Step 2: Apply authority semantics at the shared boundary**
 
 In `resolve_evidence`, replace dataclass equality with `same_release_authority(actual, release)`.
 
@@ -162,12 +162,18 @@ Keep `_verified_receipt_identity`'s internal deployment-health version consisten
 - Modify: `eimemory/governance/release_lineage.py`
 - Modify: `eimemory/governance/l5_readiness.py`
 - Modify: `eimemory/governance/closure_rehearsal.py`
+- Modify: `deploy/summarize_release_closure.py`
+- Modify: `eimemory/adapters/runtime/service.py`
+- Modify: `eimemory/governance/capability_dashboard.py`
+- Modify: `eimemory/governance/release_closure.py`
+- Modify: `eimemory/retrieval/proactive.py`
+- Modify: `eimemory/storage/runtime_store.py`
 
 **Interfaces:**
 - Consumes: `same_release_authority(...)` from Task 2.
 - Produces: L5 recall, channel, live-task, lineage, rehearsal, and readiness decisions keyed only by commit/receipt/session.
 
-- [ ] **Step 1: Replace L5 identity equality**
+- [x] **Step 1: Replace L5 identity equality**
 
 Import `same_release_authority` and replace direct `ReleaseIdentity` equality in:
 
@@ -178,7 +184,7 @@ Import `same_release_authority` and replace direct `ReleaseIdentity` equality in
 
 Version fields remain in JSON payloads for observability but are not compared.
 
-- [ ] **Step 2: Remove version gates from channel and live acceptance**
+- [x] **Step 2: Remove version gates from channel and live acceptance**
 
 For OpenClaw channel acceptance, require:
 
@@ -190,7 +196,7 @@ Do not require `deployment_version == current_release.version`.
 
 For live task acceptance, derive authority from the verified deployment receipt and require commit, receipt, session, release path, and post-deployment time ordering. Keep the reported version as metadata, but remove `version == __version__` and version-present conditions from L5 pass/fail.
 
-- [ ] **Step 3: Keep core deployment checks intact**
+- [x] **Step 3: Keep core deployment checks intact**
 
 Do not change:
 
@@ -215,7 +221,7 @@ This preserves core release integrity while preventing those fields from becomin
   - existing `PREVIOUS_COMMIT`, `CURRENT_LINK`, candidate `RELEASE_DIR`, and governance scope variables
 - Produces: best-effort predecessor baseline evidence and bounded L5 status markers.
 
-- [ ] **Step 1: Restore protected snapshot lifecycle**
+- [x] **Step 1: Restore protected snapshot lifecycle**
 
 Add `PRIOR_HEALTH_SNAPSHOT_FILE=""` to installer state and restore `_capture_prior_health_snapshot()` using:
 
@@ -229,7 +235,7 @@ chmod 0600 "$snapshot_file"
 
 Apply existing service-user ownership rules and remove the file from `cleanup_stage()` on every exit path.
 
-- [ ] **Step 2: Restore bootstrap invocation as an L5-only observer**
+- [x] **Step 2: Restore bootstrap invocation as an L5-only observer**
 
 Call the existing helper as the service user with candidate commit, predecessor commit, protected health snapshot, root, and exact governance scope.
 
@@ -247,7 +253,7 @@ return 0
 If health snapshot capture itself fails, emit
 `l5_pre_switch_bootstrap=error stage=prior_health_capture` and continue without a snapshot.
 
-- [ ] **Step 3: Place the observer outside the storage transaction**
+- [x] **Step 3: Place the observer outside the storage transaction**
 
 Invoke capture/bootstrap after candidate construction and configuration provisioning, before `_prepare_storage_for_release` and before the current symlink switch.
 
@@ -264,13 +270,17 @@ This ensures the predecessor RPC is still live, works for code-only deployments,
 - Consumes: Tasks 1-4.
 - Produces: local verification evidence, pushed commit, and mandatory Ubuntu CI evidence.
 
-- [ ] **Step 1: Run the focused GREEN batch once**
+- [x] **Step 1: Run the focused GREEN batch once**
 
 Run the same eight test files from Task 1 with RTK.
 
 Expected: zero failures. Record the exact passed/skipped counts.
 
-- [ ] **Step 2: Run static verification**
+Recorded: new regression batch `16 passed`; expanded affected-area batch
+`412 passed, 1 skipped` after removing one obsolete version-binding
+expectation; governance summary rerun `37 passed, 1 skipped`.
+
+- [x] **Step 2: Run static verification**
 
 Run:
 
@@ -281,6 +291,9 @@ python -m compileall -q eimemory deploy
 ```
 
 Expected: all commands exit `0`.
+
+Recorded: Bash syntax, repository Python AST parsing, and `git diff --check`
+all exited `0`.
 
 - [ ] **Step 3: Commit and push only scoped files**
 

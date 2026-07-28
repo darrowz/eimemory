@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from eimemory.api.runtime import Runtime
+from eimemory.governance import evidence_contract
 from eimemory.governance.evidence_contract import (
     EvidenceRequirement,
     ReleaseIdentity,
@@ -27,13 +28,20 @@ REQUIREMENT = EvidenceRequirement(
 )
 
 
-def _evidence(*, scope: ScopeRef, commit: str = RELEASE.commit) -> RecordEnvelope:
+def _evidence(
+    *,
+    scope: ScopeRef,
+    commit: str = RELEASE.commit,
+    version: str = RELEASE.version,
+    receipt_id: str = RELEASE.receipt_id,
+    session_id: str = RELEASE.session_id,
+) -> RecordEnvelope:
     payload = {
         "evidence_class": "structural",
         "release_commit": commit,
-        "release_version": RELEASE.version,
-        "deployment_receipt_id": RELEASE.receipt_id,
-        "release_session_id": RELEASE.session_id,
+        "release_version": version,
+        "deployment_receipt_id": receipt_id,
+        "release_session_id": session_id,
     }
     return RecordEnvelope.create(
         kind="l5_world_model",
@@ -70,6 +78,72 @@ def test_evidence_resolver_accepts_only_exact_contract(tmp_path) -> None:
     assert result.reason == "ok"
     assert result.record_id == evidence.record_id
     assert result.record is not None
+
+
+def test_l5_evidence_authority_ignores_version_but_not_commit_receipt_or_session(
+    tmp_path,
+) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    descriptive_version_drift = runtime.store.append(
+        _evidence(scope=SCOPE, version="9.9.999")
+    )
+    wrong_receipt = runtime.store.append(
+        _evidence(scope=SCOPE, receipt_id="receipt-other")
+    )
+    wrong_session = runtime.store.append(
+        _evidence(scope=SCOPE, session_id="session-other")
+    )
+    versionless = ReleaseIdentity(
+        commit=RELEASE.commit,
+        version="",
+        receipt_id=RELEASE.receipt_id,
+        session_id=RELEASE.session_id,
+    )
+    try:
+        accepted = resolve_evidence(
+            runtime,
+            descriptive_version_drift.record_id,
+            REQUIREMENT,
+            SCOPE,
+            versionless,
+        )
+        rejected_receipt = resolve_evidence(
+            runtime, wrong_receipt.record_id, REQUIREMENT, SCOPE, RELEASE
+        )
+        rejected_session = resolve_evidence(
+            runtime, wrong_session.record_id, REQUIREMENT, SCOPE, RELEASE
+        )
+    finally:
+        runtime.close()
+
+    assert versionless.complete is True
+    assert accepted.ok is True
+    assert rejected_receipt.reason == "release_mismatch"
+    assert rejected_session.reason == "release_mismatch"
+
+
+def test_current_l5_release_selection_does_not_bind_imported_package_version(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    receipt = runtime.store.append(_deployment_receipt())
+    monkeypatch.setattr(
+        evidence_contract,
+        "_runtime_commit",
+        lambda _runtime: RELEASE.commit,
+    )
+    try:
+        release = current_release_identity(runtime, SCOPE)
+    finally:
+        runtime.close()
+
+    assert release == ReleaseIdentity(
+        commit=RELEASE.commit,
+        version=RELEASE.version,
+        receipt_id=receipt.record_id,
+        session_id=receipt.record_id,
+    )
 
 
 def test_verified_real_task_release_identity_is_server_bound_and_current(tmp_path) -> None:

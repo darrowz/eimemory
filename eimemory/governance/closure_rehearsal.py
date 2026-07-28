@@ -14,6 +14,7 @@ from eimemory.governance.change_policy import decide_change_policy
 from eimemory.governance.evidence_contract import (
     ReleaseIdentity,
     release_identity_payload,
+    same_release_authority,
 )
 from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.governance.l5_readiness import readiness_gate_status
@@ -349,7 +350,15 @@ def _bootstrap_pending_readiness_evidence_reason(
     if readiness.get("ok") is not True:
         return "bootstrap_pending_readiness_not_ok"
     identity = readiness.get("release_identity") if isinstance(readiness.get("release_identity"), dict) else {}
-    if any(identity.get(key) != value for key, value in release_identity_payload(release).items()):
+    if not same_release_authority(
+        ReleaseIdentity(
+            commit=str(identity.get("release_commit") or ""),
+            version=str(identity.get("release_version") or ""),
+            receipt_id=str(identity.get("deployment_receipt_id") or ""),
+            session_id=str(identity.get("release_session_id") or ""),
+        ),
+        release,
+    ):
         return "bootstrap_pending_readiness_release_mismatch"
     score = readiness.get("readiness_score")
     if (
@@ -549,10 +558,15 @@ def _compatible_live_task_accumulation(
         and lineage.get("ok") is True
         and lineage.get("validated") is True
         and lineage.get("compatible") is True
-        and str(lineage_current.get("commit") or "") == release.commit
-        and str(lineage_current.get("version") or "") == release.version
-        and str(lineage_current.get("receipt_id") or "") == release.receipt_id
-        and str(lineage_current.get("session_id") or "") == release.session_id
+        and same_release_authority(
+            ReleaseIdentity(
+                commit=str(lineage_current.get("commit") or ""),
+                version=str(lineage_current.get("version") or ""),
+                receipt_id=str(lineage_current.get("receipt_id") or ""),
+                session_id=str(lineage_current.get("session_id") or ""),
+            ),
+            release,
+        )
         and channel.get("mode") in {"current", "inherited"}
         and channel.get("changed") is False
         and channel.get("gate_errors") == {}

@@ -14,10 +14,14 @@ from eimemory.governance.deployment_receipt import (
     DEFAULT_DEPLOYMENT_REPO_ROOT,
     valid_deployment_rollback_evidence,
 )
+from eimemory.governance.evidence_contract import (
+    ReleaseIdentity,
+    same_release_authority,
+    verified_deployment_receipt_identity,
+)
 from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.models.records import ScopeRef
 from eimemory.runtime_identity import package_import_root, runtime_package_tree_digest
-from eimemory.version import __version__
 
 
 REPORT_TYPE = "live_task_acceptance"
@@ -58,14 +62,12 @@ def validate_live_acceptance_case(
 ) -> bool:
     payload = _record_payload(evidence)
     digest = str(payload.get("observation_digest") or "")
-    deployment_version = str(payload.get("deployment_version") or "")
     release_path = str(payload.get("release_path") or "")
     promotion_request_id = str(payload.get("promotion_request_id") or "")
     release_session_id = str(payload.get("release_session_id") or "")
     receipt = runtime.store.get_by_id(promotion_request_id, scope=scope) if promotion_request_id else None
     if identity is not None and (
         deployment_commit != str(identity.get("commit") or "")
-        or deployment_version != str(identity.get("version") or "")
         or not _same_path(release_path, identity.get("release_path"))
         or promotion_request_id != str(identity.get("promotion_request_id") or "")
         or release_session_id
@@ -91,14 +93,33 @@ def validate_live_acceptance_case(
         and _valid_deployment_receipt(
             receipt,
             commit=deployment_commit,
-            version=deployment_version,
+            receipt_id=promotion_request_id,
+            session_id=release_session_id,
             release_path=release_path,
         )
     )
 
 
-def _valid_deployment_receipt(receipt: Any, *, commit: str, version: str, release_path: str) -> bool:
+def _valid_deployment_receipt(
+    receipt: Any,
+    *,
+    commit: str,
+    receipt_id: str,
+    session_id: str,
+    release_path: str,
+) -> bool:
     if receipt is None:
+        return False
+    expected_identity = ReleaseIdentity(
+        commit=commit,
+        version="",
+        receipt_id=receipt_id,
+        session_id=session_id,
+    )
+    if not same_release_authority(
+        verified_deployment_receipt_identity(receipt),
+        expected_identity,
+    ):
         return False
     content = receipt.content if isinstance(getattr(receipt, "content", None), dict) else {}
     meta = receipt.meta if isinstance(getattr(receipt, "meta", None), dict) else {}
@@ -132,11 +153,9 @@ def _valid_deployment_receipt(receipt: Any, *, commit: str, version: str, releas
         and health.get("skipped") is not True
         and health_checks.get("ready") is True
         and str(commit_payload.get("commit_sha") or "") == commit
-        and str(release.get("version") or "") == version
         and _same_path(release.get("release_path"), release_path)
         and _same_path(deployment.get("release_path"), release_path)
         and str(health.get("commit") or "") == commit
-        and str(health.get("version") or "") == version
         and _same_path(health.get("release_path"), release_path)
         and _same_path(health.get("import_root"), expected_import_root)
         and str(health.get("package_tree_digest") or "") == runtime_package_tree_digest()
@@ -260,7 +279,12 @@ def _verified_deployment_identity(
     if not _valid_deployment_receipt(
         receipt,
         commit=str(identity.get("commit") or ""),
-        version=str(identity.get("version") or ""),
+        receipt_id=str(identity.get("promotion_request_id") or ""),
+        session_id=str(
+            identity.get("release_session_id")
+            or identity.get("promotion_request_id")
+            or ""
+        ),
         release_path=str(identity.get("release_path") or ""),
     ):
         return {"ok": False, "error": "acceptance_deployment_receipt_invalid"}
@@ -269,7 +293,6 @@ def _verified_deployment_identity(
 
 def _runtime_matches_identity(identity: dict[str, Any]) -> bool:
     commit = str(identity.get("commit") or "").strip().lower()
-    version = str(identity.get("version") or "").strip()
     configured_commit = str(os.environ.get("EIMEMORY_RUNTIME_COMMIT") or "").strip().lower()
     try:
         release_path = Path(str(identity.get("release_path") or "")).resolve(strict=True)
@@ -280,7 +303,6 @@ def _runtime_matches_identity(identity: dict[str, Any]) -> bool:
         re.fullmatch(r"[0-9a-f]{40}", commit)
         and release_path.name.lower() == commit
         and import_root.is_relative_to(release_path)
-        and version == __version__
         and (not configured_commit or configured_commit == commit)
     )
 
@@ -351,7 +373,7 @@ def _case_definitions(runtime: Any, *, scope: ScopeRef, identity: dict[str, Any]
         version = str(identity.get("version") or "")
         release_path = str(identity.get("release_path") or "")
         return {
-            "passed": len(commit) == 40 and bool(version) and release_path.rstrip("/").endswith("/" + commit),
+            "passed": len(commit) == 40 and release_path.rstrip("/").endswith("/" + commit),
             "commit_present": len(commit) == 40,
             "version_present": bool(version),
             "release_bound": release_path.rstrip("/").endswith("/" + commit),

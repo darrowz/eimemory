@@ -69,6 +69,41 @@ def test_l5_readiness_requires_exact_current_receipt_before_lineage_resolution(
     assert report["current_stage"] != "L5"
 
 
+def test_l5_release_lineage_gate_ignores_descriptive_version_drift() -> None:
+    current = ReleaseIdentity(
+        commit="a" * 40,
+        version="1.9.106",
+        receipt_id="receipt-current",
+        session_id="session-current",
+    )
+    stage = {
+        "stage": "L5",
+        "label": "ready",
+        "reason": "",
+        "readiness_score": 1.0,
+    }
+    lineage = {
+        "ok": True,
+        "validated": True,
+        "compatible": True,
+        "current_release": {
+            "commit": current.commit,
+            "version": "9.9.999",
+            "receipt_id": current.receipt_id,
+            "session_id": current.session_id,
+        },
+    }
+
+    assert (
+        l5_readiness_module._apply_release_lineage_gate(
+            stage,
+            release_lineage=lineage,
+            current_release=current,
+        )
+        == stage
+    )
+
+
 def test_l5_readiness_validates_inherited_recall_against_ancestor_receipt(
     tmp_path,
     monkeypatch,

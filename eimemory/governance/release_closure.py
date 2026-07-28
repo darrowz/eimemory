@@ -450,13 +450,17 @@ def _deployment_identity(receipt: dict[str, Any]) -> dict[str, str]:
 
 def _live_acceptance_ok(report: dict[str, Any], *, receipt: dict[str, Any]) -> bool:
     deployment = report.get("deployment") if isinstance(report.get("deployment"), dict) else {}
+    expected = _deployment_identity(receipt)
     return bool(
         report.get("ok") is True
         and int(report.get("case_count") or 0) == 10
         and int(report.get("pass_count") or 0) == 10
         and int(report.get("fail_count") or 0) == 0
         and int(report.get("distinct_task_types") or 0) == 10
-        and deployment == _deployment_identity(receipt)
+        and str(deployment.get("commit") or "") == expected["commit"]
+        and str(deployment.get("release_path") or "") == expected["release_path"]
+        and str(deployment.get("promotion_request_id") or "")
+        == expected["promotion_request_id"]
     )
 
 

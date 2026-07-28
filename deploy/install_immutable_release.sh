@@ -1174,6 +1174,111 @@ _record_release_lineage() {
       --scope-user "$EIMEMORY_DEPLOY_SCOPE_USER"
 }
 
+_capture_prior_health_snapshot() {
+  if [ "$EIMEMORY_POST_SWITCH_GATES" != "1" ] || [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ]; then
+    return
+  fi
+  if [[ ! "${COMMIT:-}" =~ ^[0-9a-fA-F]{40}$ ]]; then
+    echo "prior_health_capture=failed invalid_candidate_commit" >&2
+    return 2
+  fi
+  local snapshot_file
+  if ! snapshot_file="$(mktemp "$INSTALL_ROOT/.prior-health-${COMMIT}-XXXXXXXX.json")"; then
+    echo "prior_health_capture=failed" >&2
+    return 2
+  fi
+  PRIOR_HEALTH_SNAPSHOT_FILE="$snapshot_file"
+  if ! chmod 0600 "$snapshot_file"; then
+    rm -f -- "$PRIOR_HEALTH_SNAPSHOT_FILE"
+    PRIOR_HEALTH_SNAPSHOT_FILE=""
+    echo "prior_health_capture=failed" >&2
+    return 2
+  fi
+  if ! "$RELEASE_DIR/.venv/bin/python" -I -B \
+      "$RELEASE_DIR/deploy/capture_prior_health_snapshot.py" \
+      --health-url "$EIMEMORY_HEALTH_URL" >"$snapshot_file"; then
+    rm -f -- "$PRIOR_HEALTH_SNAPSHOT_FILE"
+    PRIOR_HEALTH_SNAPSHOT_FILE=""
+    echo "prior_health_capture=failed" >&2
+    return 2
+  fi
+  if [ "$(id -u)" -eq 0 ]; then
+    if ! chown "$SERVICE_USER:$SERVICE_GROUP" "$snapshot_file"; then
+      rm -f -- "$PRIOR_HEALTH_SNAPSHOT_FILE"
+      PRIOR_HEALTH_SNAPSHOT_FILE=""
+      echo "prior_health_capture=failed" >&2
+      return 2
+    fi
+  fi
+}
+
+_run_pre_switch_production_recall_bootstrap() {
+  if [ "$EIMEMORY_POST_SWITCH_GATES" != "1" ] || [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ]; then
+    return
+  fi
+  if [[ ! "${PREVIOUS_COMMIT:-}" =~ ^[0-9a-fA-F]{40}$ ]]; then
+    echo "Production recall bootstrap requires the verified prior commit" >&2
+    return 2
+  fi
+  if [ -z "${PRIOR_HEALTH_SNAPSHOT_FILE:-}" ] || \
+     [ ! -f "$PRIOR_HEALTH_SNAPSHOT_FILE" ] || \
+     [ -L "$PRIOR_HEALTH_SNAPSHOT_FILE" ]; then
+    echo "Production recall bootstrap requires a protected prior health snapshot" >&2
+    return 2
+  fi
+  local bootstrap_status=0
+  if _run_as_service_user env \
+    EIMEMORY_ROOT="$EIMEMORY_ROOT" \
+    EIMEMORY_CONFIG_DIR="$EIMEMORY_CONFIG_DIR" \
+    "$PYTHON_BIN" -I -B "$RELEASE_DIR/deploy/run_with_governance_env.py" \
+      --env-file "$GOVERNANCE_ENV_FILE" --optional -- \
+      "$RELEASE_DIR/.venv/bin/python" -I -B \
+        "$RELEASE_DIR/deploy/bootstrap_production_recall.py" \
+        --candidate-commit "$COMMIT" --prior-commit "$PREVIOUS_COMMIT" \
+        --current-link "$CURRENT_LINK" --health-url "$EIMEMORY_HEALTH_URL" \
+        --prior-health-snapshot "$PRIOR_HEALTH_SNAPSHOT_FILE" \
+        --root "$EIMEMORY_ROOT" \
+        --agent "$EIMEMORY_DEPLOY_SCOPE_AGENT" \
+        --workspace "$EIMEMORY_DEPLOY_SCOPE_WORKSPACE" \
+        --user "$EIMEMORY_DEPLOY_SCOPE_USER"; then
+    bootstrap_status=0
+  else
+    bootstrap_status=$?
+  fi
+  rm -f -- "$PRIOR_HEALTH_SNAPSHOT_FILE"
+  PRIOR_HEALTH_SNAPSHOT_FILE=""
+  return "$bootstrap_status"
+}
+
+_observe_pre_switch_l5() {
+  if [ "${EIMEMORY_POST_SWITCH_GATES:-0}" != "1" ] || \
+     [ "${USER_SYSTEMD_ENABLE_SERVICE:-0}" != "1" ]; then
+    return 0
+  fi
+  if ! _capture_prior_health_snapshot; then
+    echo "l5_pre_switch_bootstrap=error stage=prior_health_capture" >&2
+    return 0
+  fi
+  if [[ ! "${PREVIOUS_COMMIT:-}" =~ ^[0-9a-fA-F]{40}$ ]]; then
+    rm -f -- "${PRIOR_HEALTH_SNAPSHOT_FILE:-}"
+    PRIOR_HEALTH_SNAPSHOT_FILE=""
+    echo "l5_pre_switch_bootstrap=degraded reason=prior_commit_unavailable" >&2
+    return 0
+  fi
+  local bootstrap_status=0
+  if _run_pre_switch_production_recall_bootstrap; then
+    bootstrap_status=0
+  else
+    bootstrap_status=$?
+  fi
+  case "$bootstrap_status" in
+    0) echo "l5_pre_switch_bootstrap=ready" ;;
+    1) echo "l5_pre_switch_bootstrap=degraded exit_status=1" >&2 ;;
+    *) echo "l5_pre_switch_bootstrap=error exit_status=$bootstrap_status" >&2 ;;
+  esac
+  return 0
+}
+
 _run_post_switch_closure() {
   if [ "$EIMEMORY_POST_SWITCH_GATES" != "1" ] || [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ]; then
     return
@@ -1430,6 +1535,7 @@ STORAGE_WRITERS_CAPTURED=0
 STORAGE_WRITERS_STOPPED=0
 STORAGE_WRITERS_RELOADED=0
 STORAGE_MIGRATION_REQUIRED=0
+PRIOR_HEALTH_SNAPSHOT_FILE=""
 STORAGE_TRANSACTION_ACTIVE=0
 
 _ensure_runtime_dir "$EIMEMORY_ROOT" 0750
@@ -1518,6 +1624,9 @@ cleanup_stage() {
     "$PYTHON_BIN" -I -B "$REPO_DIR/deploy/clean_release_bytecode.py" \
       --remove-stage --release-dir "$STAGE_DIR" --releases-root "$INSTALL_ROOT/releases" || true
   fi
+  if [ -n "${PRIOR_HEALTH_SNAPSHOT_FILE:-}" ]; then
+    rm -f -- "$PRIOR_HEALTH_SNAPSHOT_FILE"
+  fi
   exit "$exit_code"
 }
 trap cleanup_stage EXIT
@@ -1584,6 +1693,7 @@ if [ -x "$OPENCLAW_BIN" ]; then
     --path "$OPENCLAW_LOOP_CONFIG_PATH"
 fi
 
+_observe_pre_switch_l5
 _prepare_storage_for_release
 _retire_system_rpc_unit
 

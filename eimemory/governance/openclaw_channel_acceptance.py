@@ -9,6 +9,7 @@ from typing import Any, Mapping
 
 from eimemory.governance.evidence_contract import (
     ReleaseIdentity,
+    same_release_authority,
     verified_deployment_receipt_identity,
 )
 from eimemory.governance.learning_state import (
@@ -40,7 +41,10 @@ def record_openclaw_channel_acceptance(
 ) -> dict[str, Any]:
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
     receipt = runtime.store.get_by_id(current_release.receipt_id, scope=scope_ref)
-    if verified_deployment_receipt_identity(receipt) != current_release:
+    if not same_release_authority(
+        verified_deployment_receipt_identity(receipt),
+        current_release,
+    ):
         return {"ok": False, "error": "current_deployment_receipt_invalid"}
     receipt_recorded_at_ms = _iso_timestamp_ms(
         getattr(getattr(receipt, "time", None), "created_at", "")
@@ -151,6 +155,12 @@ def validate_openclaw_channel_acceptance(
         if isinstance(getattr(evidence, "content", None), Mapping)
         else {}
     )
+    recorded_release = ReleaseIdentity(
+        commit=str(content.get("deployment_commit") or ""),
+        version=str(content.get("deployment_version") or ""),
+        receipt_id=str(content.get("promotion_request_id") or ""),
+        session_id=str(content.get("release_session_id") or ""),
+    )
     return bool(
         getattr(evidence, "kind", "") == "learning_eval"
         and str(getattr(evidence, "source", "") or "") == SOURCE
@@ -158,11 +168,7 @@ def validate_openclaw_channel_acceptance(
         and str(content.get("schema_version") or "") == SCHEMA_VERSION
         and str(content.get("evidence_class") or "") == EVIDENCE_CLASS
         and content.get("passed") is True
-        and str(content.get("deployment_commit") or "") == current_release.commit
-        and str(content.get("deployment_version") or "") == current_release.version
-        and str(content.get("promotion_request_id") or "")
-        == current_release.receipt_id
-        and str(content.get("release_session_id") or "") == current_release.session_id
+        and same_release_authority(recorded_release, current_release)
         and _positive_int(content.get("platform_accepted_at_ms")) > 0
         and all(
             _DIGEST_RE.fullmatch(str(content.get(field) or "")) is not None

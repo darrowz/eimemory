@@ -32,6 +32,37 @@ SCOPE = ScopeRef(
 )
 
 
+def test_release_lineage_current_authority_does_not_bind_version(tmp_path: Path) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    commit = "a" * 40
+    current = _receipt(runtime, SCOPE, commit, "1.0.0")
+    runtime._test_runtime_commit = commit
+    descriptive_version_drift = ReleaseIdentity(
+        commit=current.commit,
+        version="9.9.999",
+        receipt_id=current.receipt_id,
+        session_id=current.session_id,
+    )
+    try:
+        error = release_lineage._current_release_error(
+            runtime,
+            SCOPE,
+            descriptive_version_drift,
+        )
+        resolved = release_lineage._receipt_identity(
+            runtime,
+            SCOPE,
+            descriptive_version_drift,
+        )
+    finally:
+        runtime.close()
+
+    assert error == {}
+    assert resolved is not None
+    assert resolved.commit == commit
+    assert resolved.version == "1.0.0"
+
+
 def test_current_authoritative_gate_wins_when_domain_is_unchanged(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

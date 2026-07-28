@@ -9,7 +9,6 @@ from typing import Any, Mapping
 from eimemory.governance.deployment_receipt import valid_deployment_rollback_evidence
 from eimemory.models.records import RecordEnvelope, ScopeRef
 from eimemory.runtime_identity import package_import_root
-from eimemory.version import __version__
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,7 +22,6 @@ class ReleaseIdentity:
     def complete(self) -> bool:
         return bool(
             len(self.commit) == 40
-            and self.version
             and self.receipt_id
             and self.session_id
         )
@@ -44,6 +42,27 @@ class EvidenceResolution:
     record_id: str
     reason: str
     record: RecordEnvelope | None
+
+
+def release_authority_key(release: ReleaseIdentity) -> tuple[str, str, str]:
+    return (
+        str(release.commit or "").strip().lower(),
+        str(release.receipt_id or "").strip(),
+        str(release.session_id or "").strip(),
+    )
+
+
+def same_release_authority(
+    left: ReleaseIdentity | None,
+    right: ReleaseIdentity | None,
+) -> bool:
+    return bool(
+        isinstance(left, ReleaseIdentity)
+        and isinstance(right, ReleaseIdentity)
+        and left.complete
+        and right.complete
+        and release_authority_key(left) == release_authority_key(right)
+    )
 
 
 def resolve_evidence(
@@ -78,7 +97,7 @@ def resolve_evidence(
         return _rejected(record_id, "evidence_class_mismatch")
     if requirement.release_bound:
         actual = release_identity_from_record(record)
-        if not release.complete or actual != release:
+        if not same_release_authority(actual, release):
             return _rejected(record_id, "release_mismatch")
     return EvidenceResolution(ok=True, record_id=record_id, reason="ok", record=record)
 
@@ -126,7 +145,7 @@ def current_release_identity(
     """Return the server-verified immutable release identity for this runtime."""
 
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(dict(scope or {}))
-    commit, production_runtime, test_override = _runtime_commit(runtime)
+    commit = _runtime_commit(runtime)
     if not commit:
         return None
     records = runtime.store.list_records(
@@ -139,8 +158,6 @@ def current_release_identity(
             continue
         identity = _verified_receipt_identity(record)
         if identity is None or identity.commit != commit:
-            continue
-        if production_runtime and not test_override and identity.version != __version__:
             continue
         return identity
     return None
@@ -169,7 +186,7 @@ def _payload_value(record: Any, key: str) -> Any:
     return None
 
 
-def _runtime_commit(runtime: Any) -> tuple[str, bool, bool]:
+def _runtime_commit(runtime: Any) -> str:
     configured = str(os.environ.get("EIMEMORY_RUNTIME_COMMIT") or "").strip().lower()
     root = package_import_root()
     root_commit = ""
@@ -180,19 +197,15 @@ def _runtime_commit(runtime: Any) -> tuple[str, bool, bool]:
         ):
             root_commit = release.name.lower()
             break
-    try:
-        production_runtime = root.is_relative_to(Path("/opt/eimemory"))
-    except (OSError, ValueError):
-        production_runtime = False
     if re.fullmatch(r"[0-9a-f]{40}", configured) and root_commit and configured != root_commit:
-        return "", True, False
+        return ""
     if root_commit:
-        return root_commit, True, False
+        return root_commit
     if os.environ.get("PYTEST_CURRENT_TEST"):
         test_commit = str(getattr(runtime, "_test_runtime_commit", "") or "").strip().lower()
         if re.fullmatch(r"[0-9a-f]{40}", test_commit):
-            return test_commit, False, True
-    return "", production_runtime, False
+            return test_commit
+    return ""
 
 
 def _verified_receipt_identity(record: Any) -> ReleaseIdentity | None:

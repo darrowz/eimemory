@@ -17,6 +17,7 @@ from typing import Any, Mapping
 from eimemory.governance.evidence_contract import (
     ReleaseIdentity,
     current_release_identity,
+    same_release_authority,
     same_scope,
     verified_deployment_receipt_identity,
 )
@@ -204,7 +205,7 @@ def current_release_lineage(
             mismatch_seen = True
             continue
         stored_current = _identity_from_payload(stored.get("current_release"))
-        if stored_current != current_release:
+        if not same_release_authority(stored_current, current_release):
             continue
         if not selected_ancestor_loaded:
             selected_ancestor = _newest_verified_ancestor(
@@ -258,7 +259,10 @@ def evidence_release_for_domain(
         or lineage.get("ok") is not True
         or lineage.get("validated") is not True
         or lineage.get("schema_version") != SCHEMA_VERSION
-        or _identity_from_payload(lineage.get("current_release")) != current_release
+        or not same_release_authority(
+            _identity_from_payload(lineage.get("current_release")),
+            current_release,
+        )
     ):
         raise ValueError("lineage is not a validated current-release attestation")
     expected_id = str(expected_record_id or "").strip()
@@ -272,7 +276,7 @@ def evidence_release_for_domain(
     if identity is None:
         raise ValueError(f"domain evidence release is invalid: {domain_name}")
     if state["mode"] == "current":
-        if identity != current_release:
+        if not same_release_authority(identity, current_release):
             raise ValueError(f"domain evidence release is invalid: {domain_name}")
     else:
         scope_ref = _scope_ref(scope)
@@ -403,7 +407,10 @@ def _current_release_error(
         or not release.complete
         or not COMMIT_RE.fullmatch(release.commit)
         or _receipt_identity(runtime, scope, release) is None
-        or current_release_identity(runtime, scope) != release
+        or not same_release_authority(
+            current_release_identity(runtime, scope),
+            release,
+        )
     ):
         return {"ok": False, "error": "current_release_receipt_invalid"}
     return {}
@@ -418,7 +425,7 @@ def _receipt_identity(
     if record is None or not same_scope(record.scope, scope):
         return None
     actual = verified_deployment_receipt_identity(record)
-    return actual if actual == expected else None
+    return actual if same_release_authority(actual, expected) else None
 
 
 def _nearest_verified_domain_evidence(
@@ -466,10 +473,13 @@ def _nearest_verified_domain_evidence(
         )
         if (
             candidate is None
-            or candidate == current_release
+            or same_release_authority(candidate, current_release)
             or not isinstance(state, dict)
             or state.get("mode") != "current"
-            or _identity_from_payload(state.get("evidence_release")) != candidate
+            or not same_release_authority(
+                _identity_from_payload(state.get("evidence_release")),
+                candidate,
+            )
             or _receipt_identity(runtime, scope, candidate) is None
             or int(distances.get(candidate.commit, 0)) <= 0
         ):
@@ -617,7 +627,7 @@ def _newest_verified_ancestor(
         identity = verified_deployment_receipt_identity(record)
         if (
             identity is None
-            or identity == current_release
+            or same_release_authority(identity, current_release)
         ):
             continue
         verified.append((sequence, identity))
@@ -1130,7 +1140,10 @@ def _gate_errors(
         contract_error = (
             ""
             if references == [current_release.receipt_id]
-            and verified_deployment_receipt_identity(current_receipt) == current_release
+            and same_release_authority(
+                verified_deployment_receipt_identity(current_receipt),
+                current_release,
+            )
             else "exact_current_deployment_receipt_required"
         )
     if contract_error:

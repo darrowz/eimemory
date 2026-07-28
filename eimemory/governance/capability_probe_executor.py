@@ -19,7 +19,7 @@ def _memory_contract(input_data: dict[str, Any], fixture: dict[str, Any], _runti
         from eimemory.runtime_identity import package_import_root, runtime_package_tree_digest
         from eimemory.version import __version__
 
-        commit, _production_runtime, _test_override = _runtime_commit(_runtime)
+        commit = _runtime_commit(_runtime)
         source_identity = commit or runtime_package_tree_digest()[:40]
         return {
             "version": __version__,

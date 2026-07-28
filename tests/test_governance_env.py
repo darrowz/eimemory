@@ -219,6 +219,24 @@ def test_release_closure_summary_cli_accepts_release_bound_data_accumulating_con
     assert json.loads(capsys.readouterr().out)["data_accumulating"] is True
 
 
+def test_release_closure_summary_authority_does_not_bind_version(tmp_path, capsys) -> None:
+    report = _release_bound_accumulating_report()
+    report["deployment"]["version"] = "1.0.0"
+    report["deployment_receipt"]["version"] = "2.0.0"
+    report["live_acceptance"]["deployment"]["version"] = "3.0.0"
+    report["readiness"]["release_identity"]["release_version"] = "4.0.0"
+    report["bootstrap_pending_verification"]["release_identity"]["release_version"] = "5.0.0"
+    report["production_recall_gate"]["bootstrap"]["release_identity"]["release_version"] = "6.0.0"
+    report["closure_rehearsal"]["bootstrap_pending_verification"]["release_identity"][
+        "release_version"
+    ] = "7.0.0"
+    report_path = tmp_path / "closure-version-metadata.json"
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+
+    assert summarize_main(["--path", str(report_path)]) == 0
+    assert json.loads(capsys.readouterr().out)["data_accumulating"] is True
+
+
 def test_release_closure_summary_cli_keeps_strict_l5_contract(tmp_path, capsys) -> None:
     report = _release_bound_accumulating_report()
     report.update({"closure_complete": True, "data_accumulating": False})
@@ -263,7 +281,6 @@ def test_release_bound_accumulating_fixture_keeps_three_pending_identities_indep
         (("deployment_receipt",), {}),
         (("deployment_receipt", "ok"), False),
         (("deployment_receipt", "commit"), "b" * 40),
-        (("deployment_receipt", "version"), "1.9.81"),
         (("deployment_receipt", "promotion_request_id"), "other-receipt"),
         (("deployment_receipt", "release_session_id"), "other-session"),
         (("production_recall_gate", "status"), "accepted"),

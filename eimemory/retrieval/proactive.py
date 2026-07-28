@@ -1367,7 +1367,10 @@ class ProactiveRecallService:
             and sources == state.source_ids
             and normalized_session == state.session_id
             and _bounded_text(turn_id, 500) == state.turn_id
-            and self._normalize_release(release_identity) == state.release_identity
+            and self._release_authority(
+                self._normalize_release(release_identity)
+            )
+            == self._release_authority(state.release_identity)
         )
 
     def _session(self, key: tuple[Any, ...]) -> _SessionState:
@@ -1409,6 +1412,14 @@ class ProactiveRecallService:
             for key in ("release_commit", "release_version", "deployment_receipt_id", "release_session_id")
         }
 
+    @staticmethod
+    def _release_authority(value: Mapping[str, Any]) -> tuple[str, str, str]:
+        return (
+            str(value.get("release_commit") or "").strip().lower(),
+            str(value.get("deployment_receipt_id") or "").strip(),
+            str(value.get("release_session_id") or "").strip(),
+        )
+
     def _policy_version(self) -> str:
         engine = getattr(self.runtime.memory, "recall_engine", None)
         engine_version = str(getattr(engine, "policy_version", "governed-recall.unknown"))
@@ -1420,7 +1431,7 @@ class ProactiveRecallService:
         policy_version: str, release: Mapping[str, str],
     ) -> str:
         payload = [channel, *_scope_tuple(scope), *source_ids, query_digest, policy_version]
-        payload.extend(str(release.get(key) or "") for key in sorted(release))
+        payload.extend(ProactiveRecallService._release_authority(release))
         return "pc:" + sha256("\x1f".join(payload).encode("utf-8")).hexdigest()
 
     def _recall_with_timeout(

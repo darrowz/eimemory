@@ -83,6 +83,16 @@ def test_channel_acceptance_requires_current_commit_platform_receipt_and_redacts
         record,
         current_release=release,
     )
+    descriptive_version_drift = ReleaseIdentity(
+        commit=release.commit,
+        version="9.9.999",
+        receipt_id=release.receipt_id,
+        session_id=release.session_id,
+    )
+    assert channel_acceptance.validate_openclaw_channel_acceptance(
+        record,
+        current_release=descriptive_version_drift,
+    )
     serialized = json.dumps(record.to_dict(), ensure_ascii=False)
     assert "om_raw_inbound" not in serialized
     assert "om_raw_platform_receipt" not in serialized

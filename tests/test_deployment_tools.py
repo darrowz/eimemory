@@ -2380,6 +2380,8 @@ def test_immutable_release_installer_commits_after_technical_health_before_busin
     script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
 
     switch = script.rindex('mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"')
+    l5_observer = script.rindex("_observe_pre_switch_l5\n", 0, switch)
+    storage_prepare = script.rindex("_prepare_storage_for_release\n", 0, switch)
     health = script.index('_verify_release_health "$RELEASE_DIR" "$COMMIT"', switch)
     committed = script.index("COMMITTED=1", switch)
     validation = script.index("_run_post_deploy_validation", committed)
@@ -2387,7 +2389,7 @@ def test_immutable_release_installer_commits_after_technical_health_before_busin
     assert "PREVIOUS_CURRENT" in script
     assert "_rollback_current_release" in script
     assert "verify_release_health.py" in script
-    assert switch < health < committed < validation
+    assert l5_observer < storage_prepare < switch < health < committed < validation
     assert "learn release-closure" in script
     assert "learn live-acceptance" not in script
     assert 'GOVERNANCE_ENV_FILE="${EIMEMORY_GOVERNANCE_ENV_FILE:-$EIMEMORY_CONFIG_DIR/governance.env}"' in script
@@ -2408,6 +2410,118 @@ def test_immutable_release_installer_commits_after_technical_health_before_busin
         assert '--scope-user "$EIMEMORY_DEPLOY_SCOPE_USER"' in body
     assert "rollback_current_release=failed" in script
     assert "rollback_preserved_failed_release=" in script
+
+
+@pytest.mark.parametrize(
+    ("bootstrap_status", "expected_marker"),
+    [
+        (0, "l5_pre_switch_bootstrap=ready"),
+        (1, "l5_pre_switch_bootstrap=degraded exit_status=1"),
+        (2, "l5_pre_switch_bootstrap=error exit_status=2"),
+    ],
+)
+def test_optional_pre_switch_l5_bootstrap_never_blocks_core_deployment(
+    tmp_path,
+    bootstrap_status,
+    expected_marker,
+) -> None:
+    installer = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
+    for function_name in (
+        "_run_pre_switch_production_recall_bootstrap",
+        "_observe_pre_switch_l5",
+    ):
+        assert f"{function_name}() {{" in installer
+    function_source = "\n".join(
+        installer.split(f"{function_name}() {{", 1)[1].split("\n}", 1)[0].join(
+            (f"{function_name}() {{", "\n}")
+        )
+        for function_name in (
+            "_run_pre_switch_production_recall_bootstrap",
+            "_observe_pre_switch_l5",
+        )
+    )
+    snapshot = tmp_path / "prior-health.json"
+    core_switch = tmp_path / "core-switch"
+    harness = f"""
+set -u
+{function_source}
+EIMEMORY_POST_SWITCH_GATES=1
+USER_SYSTEMD_ENABLE_SERVICE=1
+PREVIOUS_COMMIT={'b' * 40}
+COMMIT={'a' * 40}
+INSTALL_ROOT={_bash_path(tmp_path)}
+RELEASE_DIR={_bash_path(tmp_path / 'release')}
+CURRENT_LINK={_bash_path(tmp_path / 'current')}
+EIMEMORY_HEALTH_URL=http://127.0.0.1:8091/health
+EIMEMORY_ROOT={_bash_path(tmp_path / 'runtime')}
+EIMEMORY_CONFIG_DIR={_bash_path(tmp_path / 'config')}
+GOVERNANCE_ENV_FILE={_bash_path(tmp_path / 'config' / 'governance.env')}
+PYTHON_BIN=python
+EIMEMORY_DEPLOY_SCOPE_AGENT=hongtu
+EIMEMORY_DEPLOY_SCOPE_WORKSPACE=embodied
+EIMEMORY_DEPLOY_SCOPE_USER=darrow
+PRIOR_HEALTH_SNAPSHOT_FILE=
+BOOTSTRAP_STATUS={bootstrap_status}
+_capture_prior_health_snapshot() {{
+  PRIOR_HEALTH_SNAPSHOT_FILE={_bash_path(snapshot)}
+  printf '{{}}' >"$PRIOR_HEALTH_SNAPSHOT_FILE"
+}}
+_run_as_service_user() {{
+  return "$BOOTSTRAP_STATUS"
+}}
+_observe_pre_switch_l5
+touch {_bash_path(core_switch)}
+"""
+
+    result = subprocess.run(
+        [_bash_binary(), "-c", harness],
+        cwd=Path.cwd(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert expected_marker in result.stdout + result.stderr
+    assert core_switch.is_file()
+    assert not snapshot.exists()
+
+
+def test_optional_pre_switch_l5_health_capture_failure_is_non_blocking(tmp_path) -> None:
+    installer = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
+    function_name = "_observe_pre_switch_l5"
+    assert f"{function_name}() {{" in installer
+    function_source = installer.split(f"{function_name}() {{", 1)[1].split(
+        "\n}", 1
+    )[0]
+    core_switch = tmp_path / "core-switch"
+    harness = f"""
+set -u
+{function_name}() {{{function_source}
+}}
+EIMEMORY_POST_SWITCH_GATES=1
+USER_SYSTEMD_ENABLE_SERVICE=1
+_capture_prior_health_snapshot() {{ return 2; }}
+_run_pre_switch_production_recall_bootstrap() {{
+  echo unexpected-bootstrap >&2
+  return 9
+}}
+_observe_pre_switch_l5
+touch {_bash_path(core_switch)}
+"""
+
+    result = subprocess.run(
+        [_bash_binary(), "-c", harness],
+        cwd=Path.cwd(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "l5_pre_switch_bootstrap=error stage=prior_health_capture" in result.stderr
+    assert "unexpected-bootstrap" not in result.stderr
+    assert core_switch.is_file()
 
 
 @pytest.mark.parametrize(

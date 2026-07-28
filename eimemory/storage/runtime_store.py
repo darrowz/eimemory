@@ -1432,14 +1432,13 @@ def _deterministic_insert_once(record: RecordEnvelope) -> bool:
     )
 
 
-def _record_release_identity(record: RecordEnvelope) -> tuple[str, str, str, str] | None:
+def _record_release_identity(record: RecordEnvelope) -> tuple[str, str, str] | None:
     meta = business_metadata(record.meta)
     content = record.content if isinstance(record.content, dict) else {}
     identity = tuple(
         str(meta.get(key) or content.get(key) or "").strip()
         for key in (
             "release_commit",
-            "release_version",
             "deployment_receipt_id",
             "release_session_id",
         )

@@ -30,6 +30,26 @@ RELEASE = {
 }
 
 
+def test_proactive_release_cache_authority_does_not_bind_version() -> None:
+    changed_version = {**RELEASE, "release_version": "9.9.999"}
+
+    assert ProactiveRecallService._cache_key(
+        "codex",
+        BASE_SCOPE,
+        ("alpha",),
+        "query-digest",
+        "policy-version",
+        RELEASE,
+    ) == ProactiveRecallService._cache_key(
+        "codex",
+        BASE_SCOPE,
+        ("alpha",),
+        "query-digest",
+        "policy-version",
+        changed_version,
+    )
+
+
 class FixedRecallEngine:
     policy_version = "governed-recall.test"
 

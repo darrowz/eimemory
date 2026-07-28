@@ -32,6 +32,7 @@ from eimemory.governance.evidence_contract import (
     ReleaseIdentity,
     current_release_identity,
     release_identity_payload,
+    same_release_authority,
     same_scope,
     verified_deployment_receipt_identity,
 )
@@ -927,7 +928,6 @@ def _verified_live_prior_release(
     if not (
         health.get("ok") is True
         and str(health.get("commit") or "").strip().lower() == commit
-        and str(health.get("version") or "").strip() == identity.version
         and health_release_path == release_path
     ):
         return None, "prior_health_identity_mismatch"
@@ -1052,7 +1052,7 @@ def verify_current_bootstrap_data_pending(
     verification = side_effect.get("verification") if isinstance(side_effect, dict) and isinstance(side_effect.get("verification"), dict) else {}
     if not (
         release.complete
-        and receipt_identity == release
+        and same_release_authority(receipt_identity, release)
         and prior is not None
         and str(latest.get("candidate_commit") or "") == release.commit
         and str(verification.get("prior_commit") or "").strip().lower() == prior.commit
@@ -1156,7 +1156,10 @@ def verify_current_production_recall_strict_state(
         previous is not None
         and previous.get("state") == "anchor_ready"
         and str(previous.get("candidate_commit") or "") == release.commit
-        and previous.get("prior_release") == latest.get("prior_release")
+        and same_release_authority(
+            _release_from_payload(previous.get("prior_release")),
+            _release_from_payload(latest.get("prior_release")),
+        )
     ):
         return {"ok": False, "status": "blocked", "reason": "strict_state_chain_invalid", "record_id": record_id}
     return {
@@ -1371,7 +1374,10 @@ def _resolve_trusted_baseline(
     if _depth > _MAX_BASELINE_CHAIN_DEPTH:
         return None, "baseline_chain_depth_exceeded"
     current_receipt = runtime.store.get_by_id(current_release.receipt_id, scope=scope)
-    if current_receipt is None or verified_deployment_receipt_identity(current_receipt) != current_release:
+    if current_receipt is None or not same_release_authority(
+        verified_deployment_receipt_identity(current_receipt),
+        current_release,
+    ):
         return None, "current_deployment_receipt_invalid"
     side_effect = current_receipt.content.get("side_effect") if isinstance(current_receipt.content, dict) else {}
     verification = side_effect.get("verification") if isinstance(side_effect, dict) and isinstance(side_effect.get("verification"), dict) else {}
@@ -1408,7 +1414,10 @@ def _resolve_trusted_baseline(
     if identity is None or identity.commit != prior_commit or identity.commit == current_release.commit:
         return None, "baseline_release_not_verified_predecessor"
     receipt = runtime.store.get_by_id(identity.receipt_id, scope=scope)
-    if receipt is None or verified_deployment_receipt_identity(receipt) != identity:
+    if receipt is None or not same_release_authority(
+        verified_deployment_receipt_identity(receipt),
+        identity,
+    ):
         return None, "baseline_deployment_receipt_invalid"
     if not _validate_persisted_real_query_report(report, expected_release=identity):
         return None, "baseline_report_contract_invalid"
@@ -2140,7 +2149,10 @@ def _verify_current_production_recall_gate_once(
         return {"ok": False, "status": str(report.get("gate_status") or "blocked"), "reason": "production_recall_report_payload_tampered", "record_id": record.record_id}
     if str(report.get("attempt_id") or "") != record.record_id:
         return {"ok": False, "status": str(report.get("gate_status") or "blocked"), "reason": "production_recall_attempt_identity_invalid", "record_id": record.record_id}
-    if _release_from_payload(report.get("release_identity")) != current:
+    if not same_release_authority(
+        _release_from_payload(report.get("release_identity")),
+        current,
+    ):
         return {"ok": False, "status": "not_run", "reason": "latest_production_recall_report_release_mismatch", "record_id": record.record_id}
     if not _validate_persisted_real_query_report(report, expected_release=current):
         if _validate_low_signal_not_run_report(report, expected_release=current):
@@ -2152,7 +2164,10 @@ def _verify_current_production_recall_gate_once(
             }
         return {"ok": False, "status": str(report.get("gate_status") or "blocked"), "reason": "production_recall_report_contract_invalid", "record_id": record.record_id}
     receipt = runtime.store.get_by_id(current.receipt_id, scope=scope_ref)
-    if receipt is None or verified_deployment_receipt_identity(receipt) != current:
+    if receipt is None or not same_release_authority(
+        verified_deployment_receipt_identity(receipt),
+        current,
+    ):
         return {"ok": False, "status": "not_run", "reason": "current_deployment_receipt_invalid", "record_id": record.record_id}
     if str(record.time.created_at or "") < str(receipt.time.created_at or ""):
         return {"ok": False, "status": "not_run", "reason": "production_recall_report_predeploy", "record_id": record.record_id}
@@ -2338,7 +2353,10 @@ def _validate_persisted_real_query_report(report: dict[str, Any], *, expected_re
         report.get("schema") == PRODUCTION_REAL_QUERY_REPORT_SCHEMA
         and report.get("report_type") == "production_recall_gate"
         and report.get("dataset_kind") == "production"
-        and _release_from_payload(report.get("release_identity")) == expected_release
+        and same_release_authority(
+            _release_from_payload(report.get("release_identity")),
+            expected_release,
+        )
         and str(report.get("deployment_receipt_id") or "") == expected_release.receipt_id
         and len(str(report.get("evaluator_commit") or "")) == 40
         and _secure_dataset_evidence(report.get("secure_dataset_evidence"))[1] == ""
@@ -2369,7 +2387,10 @@ def _validate_low_signal_not_run_report(report: dict[str, Any], *, expected_rele
         report.get("schema") == PRODUCTION_REAL_QUERY_REPORT_SCHEMA
         and report.get("report_type") == "production_recall_gate"
         and report.get("dataset_kind") == "production"
-        and _release_from_payload(report.get("release_identity")) == expected_release
+        and same_release_authority(
+            _release_from_payload(report.get("release_identity")),
+            expected_release,
+        )
         and str(report.get("deployment_receipt_id") or "") == expected_release.receipt_id
         and report.get("accepted") is False
         and report.get("gate_status") == "not_run"

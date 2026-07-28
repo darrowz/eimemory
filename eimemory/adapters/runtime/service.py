@@ -20,6 +20,7 @@ from eimemory.governance.evidence_contract import (
     current_release_identity,
     release_identity_from_record,
     release_identity_payload,
+    same_release_authority,
 )
 from eimemory.governance.tool_receipts import (
     ATTESTATION_PRODUCERS,
@@ -961,7 +962,13 @@ class AgentRuntimeMemoryService:
                         session_id=normalized_session_id,
                         run_id=normalized_event_id,
                     )
-                    and (release is None or release_identity_from_record(receipt) == release)
+                    and (
+                        release is None
+                        or same_release_authority(
+                            release_identity_from_record(receipt),
+                            release,
+                        )
+                    )
                 )
                 if trusted:
                     verified_receipts.append(

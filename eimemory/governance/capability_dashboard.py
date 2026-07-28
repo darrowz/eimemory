@@ -13,6 +13,7 @@ from eimemory.governance.evidence_contract import (
     ReleaseIdentity,
     current_release_identity,
     release_identity_from_record,
+    same_release_authority,
 )
 from eimemory.governance.live_task_acceptance import validate_live_acceptance_case
 from eimemory.governance.tool_receipts import (
@@ -141,14 +142,15 @@ def build_capability_dashboard_metrics(
         for item in verified_live_tasks
         if item.get("evidence_class") == "operational_probe"
         and current_release is not None
-        and item.get("release_identity") == current_release
+        and same_release_authority(item.get("release_identity"), current_release)
     ]
     current_deployment_success = sum(1 for item in current_deployment_tasks if item["success"] is True)
     current_deployment_task_types = {str(item.get("task_type") or "") for item in current_deployment_tasks}
     current_deployment_real_tasks = [
         item
         for item in verified_real_tasks
-        if current_release is not None and item.get("release_identity") == current_release
+        if current_release is not None
+        and same_release_authority(item.get("release_identity"), current_release)
     ]
     current_deployment_real_success = sum(1 for item in current_deployment_real_tasks if item["success"] is True)
     current_deployment_real_task_types = {
@@ -164,7 +166,7 @@ def build_capability_dashboard_metrics(
         item
         for item in verified_real_tasks
         if evidence_release is not None
-        and item.get("release_identity") == evidence_release
+        and same_release_authority(item.get("release_identity"), evidence_release)
         and str(item.get("method") or "").startswith("openclaw.")
     ]
     release_evidence_success = sum(
@@ -591,7 +593,10 @@ def _valid_runtime_task_evidence(
                 and receipt.get("source") == receipt_source
                 and receipt.get("verification_policy_id") in TRUSTED_TEST_POLICY_IDS
                 and receipt.get("passed") is True
-                and release_identity_from_record(receipt) == release
+                and same_release_authority(
+                    release_identity_from_record(receipt),
+                    release,
+                )
                 and verify_tool_receipt(
                     receipt,
                     session_id=str(event.get("session_id") or ""),
@@ -621,7 +626,10 @@ def _valid_runtime_task_evidence(
             )
         ):
             return False
-    if release.complete and release_identity_from_record(event) != release:
+    if release.complete and not same_release_authority(
+        release_identity_from_record(event),
+        release,
+    ):
         return False
     outcome_row = conn.execute(
         """

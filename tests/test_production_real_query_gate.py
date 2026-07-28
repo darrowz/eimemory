@@ -1238,6 +1238,17 @@ def test_strict_bootstrap_capture_enables_next_release_and_rejects_predeploy_or_
     assert accepted["baseline_identity"]["persisted_record_id"] == bootstrap["persisted_record_id"]
     assert accepted["baseline_identity"]["logical_report_id"] == bootstrap["report_id"]
     assert verify_current_production_recall_gate(runtime, scope=BASE_SCOPE)["ok"] is True
+    descriptive_version_drift = ReleaseIdentity(
+        commit=current.commit,
+        version="9.9.999",
+        receipt_id=current.receipt_id,
+        session_id=current.session_id,
+    )
+    assert verify_current_production_recall_gate(
+        runtime,
+        scope=BASE_SCOPE,
+        release=descriptive_version_drift,
+    )["ok"] is True
 
     engine = runtime.memory.recall_engine
     original_identity = engine.effective_identity()

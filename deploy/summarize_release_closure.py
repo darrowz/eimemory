@@ -135,12 +135,10 @@ def _release_closure_summary_contract_ok(report: object, summary: dict[str, Any]
     live_deployment = live.get("deployment") if isinstance(live.get("deployment"), dict) else {}
     common = bool(
         re.fullmatch(r"[0-9a-f]{40}", commit)
-        and version
         and receipt_id
         and session_id
         and receipt.get("ok") is True
         and receipt.get("commit") == commit
-        and receipt.get("version") == version
         and receipt.get("promotion_request_id") == receipt_id
         and receipt.get("release_session_id") == session_id
         and not str(report.get("blocked_stage") or "")
@@ -154,10 +152,14 @@ def _release_closure_summary_contract_ok(report: object, summary: dict[str, Any]
         and channel.get("ok") is True
         and channel.get("evidence_class") == "external_channel_receipt"
         and str(channel.get("record_id") or "")
-        and _deployment_identity_matches(live_deployment, commit=commit, version=version, receipt_id=receipt_id)
+        and _deployment_identity_matches(
+            live_deployment,
+            commit=commit,
+            receipt_id=receipt_id,
+        )
         and readiness.get("ok") is True
         and readiness.get("schema_version") == "l5_readiness.v2"
-        and readiness_identity == release_identity
+        and _release_authority_matches(readiness_identity, release_identity)
     )
     if not common:
         return False
@@ -185,7 +187,10 @@ def _release_closure_summary_contract_ok(report: object, summary: dict[str, Any]
                 item.get("ok") is True
                 and item.get("status") == "bootstrap_data_pending"
                 and str(item.get("record_id") or "") == pending_record_id
-                and item.get("release_identity") == release_identity
+                and _release_authority_matches(
+                    item.get("release_identity"),
+                    release_identity,
+                )
                 for item in (pending, recall_pending, rehearsal_pending)
             )
             and pending_record_id
@@ -223,13 +228,28 @@ def _deployment_identity_matches(
     deployment: dict[str, Any],
     *,
     commit: str,
-    version: str,
     receipt_id: str,
 ) -> bool:
     return bool(
         deployment.get("commit") == commit
-        and deployment.get("version") == version
         and deployment.get("promotion_request_id") == receipt_id
+    )
+
+
+def _release_authority_matches(left: object, right: object) -> bool:
+    if not isinstance(left, dict) or not isinstance(right, dict):
+        return False
+    keys = (
+        "release_commit",
+        "deployment_receipt_id",
+        "release_session_id",
+    )
+    return bool(
+        all(str(left.get(key) or "").strip() for key in keys)
+        and all(
+            str(left.get(key) or "").strip() == str(right.get(key) or "").strip()
+            for key in keys
+        )
     )
 
 

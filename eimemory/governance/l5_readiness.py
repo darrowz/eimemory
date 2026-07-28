@@ -21,8 +21,10 @@ from eimemory.governance.evidence_contract import (
     EvidenceRequirement,
     ReleaseIdentity,
     current_release_identity,
+    release_identity_from_record,
     release_identity_payload,
     resolve_evidence,
+    same_release_authority,
     same_scope,
 )
 from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
@@ -73,7 +75,10 @@ def readiness_gate_status(
     if exact_release is None:
         return ""
     release_identity = readiness.get("release_identity") if isinstance(readiness.get("release_identity"), dict) else {}
-    if release_identity != release_identity_payload(exact_release):
+    if not same_release_authority(
+        release_identity_from_record(release_identity),
+        exact_release,
+    ):
         return ""
     reported_lineage = (
         readiness.get("release_lineage")
@@ -563,10 +568,15 @@ def _apply_release_lineage_gate(
         and release_lineage.get("ok") is True
         and release_lineage.get("validated") is True
         and release_lineage.get("compatible") is True
-        and str(lineage_current.get("commit") or "") == current_release.commit
-        and str(lineage_current.get("version") or "") == current_release.version
-        and str(lineage_current.get("receipt_id") or "") == current_release.receipt_id
-        and str(lineage_current.get("session_id") or "") == current_release.session_id
+        and same_release_authority(
+            ReleaseIdentity(
+                commit=str(lineage_current.get("commit") or ""),
+                version=str(lineage_current.get("version") or ""),
+                receipt_id=str(lineage_current.get("receipt_id") or ""),
+                session_id=str(lineage_current.get("session_id") or ""),
+            ),
+            current_release,
+        )
     )
     if lineage_valid:
         return stage
@@ -1011,11 +1021,12 @@ def _validated_manifest_members(
         return [], "manifest_incomplete"
     if release is None:
         return [], "manifest_release_identity_mismatch"
-    expected_release = release_identity_payload(release)
     if any(
-        str(container.get(key) or "").strip() != value
+        not same_release_authority(
+            release_identity_from_record(container),
+            release,
+        )
         for container in (content, meta, provenance)
-        for key, value in expected_release.items()
     ):
         return [], "manifest_release_identity_mismatch"
 

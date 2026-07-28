@@ -508,6 +508,7 @@ def test_bootstrap_pending_allows_real_task_accumulation_after_compatible_operat
             release,
             pending["record_id"],
         )
+        readiness["release_identity"]["release_version"] = "9.9.998"
         readiness["live_task_gate"] = {
             "ok": False,
             "success_rate": 0.0,
@@ -547,7 +548,7 @@ def test_bootstrap_pending_allows_real_task_accumulation_after_compatible_operat
             "compatible": True,
             "current_release": {
                 "commit": release.commit,
-                "version": release.version,
+                "version": "9.9.999",
                 "receipt_id": release.receipt_id,
                 "session_id": release.session_id,
             },
