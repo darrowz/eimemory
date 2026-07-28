@@ -18,8 +18,8 @@ dataset is otherwise eligible.
 
 - Capture predecessor recall evidence while the predecessor is still running.
 - Keep technical deployment fast and independent from business-data maturity.
-- Block deployment on technical bootstrap failures, not on missing or weak
-  business evidence.
+- Keep L5 evidence collection and readiness independent from RPC, storage,
+  recall, OpenClaw, and immutable-release availability.
 - Preserve strict anti-self-blessing rules in the production recall gate.
 - Leave post-switch business validation non-rollback and independently
   retryable.
@@ -56,11 +56,32 @@ The existing bootstrap helper exit contract is retained:
 - Exit `1`: business evidence is not ready or does not pass its business gate.
   Emit a degraded/pending marker and continue technical deployment.
 - Exit `2` or another unexpected nonzero status: protected snapshot,
-  configuration, invocation, or code execution failed. Treat this as a
-  technical deployment error and stop before switching the current release.
+  configuration, invocation, or L5 bootstrap code execution failed. Emit a
+  bounded L5 bootstrap error and continue technical deployment.
 
-The installer must not translate exit `1` into technical success silently; it
-must print a bounded marker that post-switch closure can report.
+The installer must not translate any degraded result into L5 success silently;
+it must print a bounded marker that post-switch closure can report. It also must
+not translate an L5-only failure into a core deployment failure.
+
+### L5 isolation boundary
+
+L5 is an observational evidence and promotion subsystem. It is not a
+prerequisite for the product runtime.
+
+- Core deployment blockers are limited to release construction, dependency
+  integrity, source and runtime identity, storage migration safety, service
+  restart, and health verification.
+- Production recall baseline, weak-capability replay, live acceptance, channel
+  acceptance, closure rehearsal, and readiness may independently report
+  `pending`, `degraded`, or `blocked`.
+- L5 state must not change `/health` process or store readiness, invalidate a
+  committed deployment receipt, stop RPC or OpenClaw, or trigger rollback.
+- Improvements to core memory, recall, deployment, or channel functionality are
+  accepted by their own contracts even when the formal L5 evidence dataset is
+  incomplete.
+- A separate strict L5 verification command may return nonzero for automation
+  that explicitly requests L5 promotion. That exit status is not reused as the
+  immutable installer exit status.
 
 ### Post-switch phase
 
@@ -102,9 +123,14 @@ Add installer contract tests that prove:
 - the bootstrap runs even when no storage migration is pending;
 - exit `0` continues normally;
 - exit `1` records degraded business evidence and continues;
-- exit `2` stops before the current symlink switch;
+- exit `2` records an L5 bootstrap error and still allows a technically healthy
+  current symlink switch;
 - service-disabled/test deployments skip the online bootstrap;
 - protected prior-health snapshots are removed on all exit paths.
+
+Add decoupling tests that prove an L5 bootstrap, closure, or readiness failure
+does not alter core health, deployment receipt validity, RPC availability, or
+the installer success status after technical commit.
 
 Run the focused deployment test files once after all code edits, followed by
 Shell syntax, `git diff --check`, and the mandatory Ubuntu deployment-contract
@@ -112,12 +138,13 @@ workflow. Do not rerun the full local suite already completed for this release.
 
 ## Acceptance criteria
 
-- The repaired installer cannot switch a candidate after a technical bootstrap
-  error.
-- Missing business evidence cannot prevent a technically healthy deployment.
+- Missing business evidence or an L5-only execution error cannot prevent a
+  technically healthy deployment.
 - A ready dataset produces a predecessor high-water baseline before switching.
 - Production health reports the final candidate commit and immutable path.
 - Release closure advances past `production_recall_gate`.
 - Replay, live acceptance, channel acceptance, closure rehearsal, and
   deployment-bound readiness report their actual final states without
   overstating L5.
+- RPC, storage, recall, OpenClaw, and deployment health remain independently
+  usable when the final L5 state is below L5.
