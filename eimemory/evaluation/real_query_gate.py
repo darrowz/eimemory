@@ -804,16 +804,6 @@ def bootstrap_production_recall_baseline(
         if (
             _record_payload_digest_valid(latest, latest_report)
             and str(latest_report.get("attempt_id") or "") == latest.record_id
-            and latest_report.get("accepted") is True
-            and latest_report.get("gate_status") == "accepted"
-        ):
-            return {
-                **_api_report_from_persisted(latest_report, record_id=latest.record_id),
-                "bootstrap_status": "baseline_ready",
-            }
-        if (
-            _record_payload_digest_valid(latest, latest_report)
-            and str(latest_report.get("attempt_id") or "") == latest.record_id
             and latest_report.get("baseline_capture") is True
             and latest_report.get("blocked_reason") == "pre_switch_bootstrap_anchor"
             and str(latest_report.get("evaluator_commit") or "") == candidate

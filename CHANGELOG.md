@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Planned
 - Multi-agent memory coordination
 
+## [1.9.108] - 2026-07-29
+
+### Fixed
+- Always execute and persist a candidate-bound pre-switch production recall anchor even when the running release already has an accepted baseline, so forward upgrades can activate strict state and complete live business validation without resetting L5 maturity.
+
 ## [1.9.107] - 2026-07-28
 
 ### Fixed

@@ -1293,6 +1293,29 @@ def test_strict_bootstrap_capture_enables_next_release_and_rejects_predeploy_or_
     accepted_record.time.created_at = accepted_created_at
     runtime.store.rewrite(accepted_record)
 
+    monkeypatch.setattr(
+        real_query_gate,
+        "_verified_live_prior_release",
+        lambda *_args, **_kwargs: (current, ""),
+    )
+    next_bootstrap = bootstrap_production_recall_baseline(
+        runtime,
+        dataset,
+        candidate_commit="d" * 40,
+        prior_commit=current.commit,
+        persist_report=True,
+    )
+    assert next_bootstrap["bootstrap_status"] == "anchor_ready"
+    assert next_bootstrap["baseline_capture"] is True
+    assert next_bootstrap["evaluator_commit"] == "d" * 40
+    next_state = real_query_gate._latest_bootstrap_state(
+        runtime,
+        scope=ScopeRef.from_dict(BASE_SCOPE),
+    )
+    assert next_state is not None
+    assert next_state["state"] == "anchor_ready"
+    assert next_state["candidate_commit"] == "d" * 40
+
     newer = _receipt(runtime, commit="d" * 40, version="1.9.81", prior_commit=current.commit)
     runtime._test_runtime_commit = newer.commit
     stale = verify_current_production_recall_gate(runtime, scope=BASE_SCOPE)
