@@ -1030,6 +1030,12 @@ def _complete_bootstrap_pending_readiness(release: ReleaseIdentity, pending_reco
         "capability_gaps": [],
         "latest_l5_assessment": {"trusted": True, "complete": True, "level": "L5"},
         "live_task_gate": {"ok": True, "current_deployment_verified_real_tasks": 10},
+        "real_business_gate": {
+            "ok": True,
+            "accepted_path": "live_tasks",
+            "live_tasks": {"ok": True, "current_deployment_verified_real_tasks": 10},
+            "real_replay": {"ok": False},
+        },
         "verified_replay": {
             "executed_count": 12,
             "pass_count": 12,

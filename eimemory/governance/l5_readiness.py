@@ -28,6 +28,8 @@ from eimemory.governance.evidence_contract import (
     same_scope,
 )
 from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
+from eimemory.governance.l5_maturity import apply_monotonic_maturity
+from eimemory.governance.real_replay_gate import build_verified_real_replay_summary
 from eimemory.governance.release_lineage import (
     current_release_lineage,
     evidence_release_for_domain,
@@ -113,6 +115,39 @@ def readiness_gate_status(
         else {}
     )
     live_gate = readiness.get("live_task_gate") if isinstance(readiness.get("live_task_gate"), dict) else {}
+    reported_real_business_gate = (
+        readiness.get("real_business_gate")
+        if isinstance(readiness.get("real_business_gate"), dict)
+        else {}
+    )
+    reported_real_replay = (
+        reported_real_business_gate.get("real_replay")
+        if isinstance(reported_real_business_gate.get("real_replay"), dict)
+        else readiness.get("verified_real_replay")
+        if isinstance(readiness.get("verified_real_replay"), dict)
+        else {}
+    )
+    live_only_gate = _real_business_gate(live_gate, {})
+    if live_only_gate.get("ok") is not True:
+        replay_loader = getattr(
+            getattr(runtime, "store", None),
+            "latest_record_by_meta_value_exact_scope",
+            None,
+        )
+        if not callable(replay_loader):
+            return ""
+        reported_real_replay = build_verified_real_replay_summary(
+            runtime,
+            scope=scope_ref,
+            limit=500,
+        )
+    real_business_gate = _real_business_gate(live_gate, reported_real_replay)
+    if reported_real_business_gate and (
+        reported_real_business_gate.get("ok") is not real_business_gate.get("ok")
+        or str(reported_real_business_gate.get("accepted_path") or "")
+        != str(real_business_gate.get("accepted_path") or "")
+    ):
+        return ""
     recall_gate = (
         readiness.get("production_recall_gate")
         if isinstance(readiness.get("production_recall_gate"), dict)
@@ -169,14 +204,15 @@ def readiness_gate_status(
     )
     if not common_verified:
         return ""
-    score = readiness.get("readiness_score")
+    score = readiness.get("observed_score", readiness.get("readiness_score"))
+    observed_stage = readiness.get("observed_stage", readiness.get("current_stage"))
     if (
-        readiness.get("current_stage") == "L5"
+        observed_stage == "L5"
+        and readiness.get("current_stage") == "L5"
         and isinstance(score, (int, float))
         and not isinstance(score, bool)
         and float(score) == 1.0
-        and live_gate.get("ok") is True
-        and int(live_gate.get("current_deployment_verified_real_tasks") or 0) >= 10
+        and real_business_gate.get("ok") is True
     ):
         return "L5"
     return ""
@@ -244,6 +280,11 @@ def build_l5_readiness_report(
         capabilities=set(CORE_REPLAY_CAPABILITIES),
         missing_field="core_capabilities_missing",
         release=governance_release,
+    )
+    verified_real_replay = build_verified_real_replay_summary(
+        runtime,
+        scope=scope_ref,
+        limit=limit,
     )
     latest_l5_assessment = _annotate_release_evidence(
         _latest_l5_assessment(runtime, scope=scope_ref, release=governance_release),
@@ -335,6 +376,7 @@ def build_l5_readiness_report(
         verified_replay,
         verified_core_replay,
         latest_l5_assessment,
+        verified_real_replay,
     )
     stage = _apply_production_recall_gate(stage, production_recall_gate)
     stage = _apply_production_recall_strict_state_gate(stage, production_recall_strict_state)
@@ -343,6 +385,26 @@ def build_l5_readiness_report(
         stage,
         release_lineage=release_lineage,
         current_release=release,
+    )
+    if not isinstance(stage.get("real_business_gate"), dict):
+        stage = {
+            **stage,
+            "real_business_gate": _real_business_gate(
+                stage.get("live_task_gate")
+                if isinstance(stage.get("live_task_gate"), dict)
+                else {},
+                verified_real_replay,
+            ),
+        }
+    observed_stage = str(stage["stage"])
+    observed_score = float(stage["readiness_score"])
+    maturity = apply_monotonic_maturity(
+        runtime,
+        scope=scope_ref,
+        observed_stage=observed_stage,
+        observed_score=observed_score,
+        persist=persist,
+        loop_id=loop_id,
     )
     next_actions = _next_actions(
         stage,
@@ -366,9 +428,11 @@ def build_l5_readiness_report(
         "scope": asdict(scope_ref),
         "release_identity": release_identity_payload(release) if release is not None else {},
         "release_lineage": release_lineage,
-        "current_stage": stage["stage"],
+        "observed_stage": observed_stage,
+        "observed_score": observed_score,
+        "current_stage": maturity["current_stage"],
         "stage_label": stage["label"],
-        "readiness_score": stage["readiness_score"],
+        "readiness_score": maturity["readiness_score"],
         "stage_reason": stage["reason"],
         "done_when": stage["done_when"],
         "risk_boundary": stage["risk_boundary"],
@@ -377,6 +441,8 @@ def build_l5_readiness_report(
         "hard_metric_quality": hard_metrics.get("metric_quality", {}),
         "hard_metric_samples": hard_metrics.get("sample_counts", {}),
         "live_task_gate": stage["live_task_gate"],
+        "verified_real_replay": verified_real_replay,
+        "real_business_gate": stage["real_business_gate"],
         "verified_replay": verified_replay,
         "verified_core_replay": verified_core_replay,
         "latest_l5_assessment": latest_l5_assessment,
@@ -386,6 +452,17 @@ def build_l5_readiness_report(
         "weak_outcome_evidence": weak_outcome_evidence,
         "capability_gaps": capability_gaps,
         "next_actions": next_actions,
+        "release_validation": _release_validation(
+            release=release,
+            release_lineage=release_lineage,
+            production_recall_gate=production_recall_gate,
+            production_recall_strict_state=production_recall_strict_state,
+            storage_migrations=storage_migrations,
+        ),
+        "maturity_transition": maturity["maturity_transition"],
+        "maturity_checkpoint_record_id": maturity["maturity_checkpoint_record_id"],
+        "downgrade_incident_id": maturity["downgrade_incident_id"],
+        "regression_warning": maturity["regression_warning"],
         "ledger": ledger,
         "persisted_record_id": "",
     }
@@ -394,18 +471,26 @@ def build_l5_readiness_report(
             runtime,
             kind="reflection",
             title="L5 readiness report",
-            summary=f"{stage['stage']} readiness score {stage['readiness_score']}",
+            summary=f"{maturity['current_stage']} readiness score {maturity['readiness_score']}",
             scope=scope_ref,
             loop_id=loop_id,
             step_name="l5_readiness",
-            semantic_key=stable_semantic_key("l5_readiness", scope_ref, stage["stage"], evidence_counts, capability_gaps),
+            semantic_key=stable_semantic_key(
+                "l5_readiness",
+                scope_ref,
+                observed_stage,
+                maturity["current_stage"],
+                evidence_counts,
+                capability_gaps,
+            ),
             authority_tier="L0",
             status="active",
             content=report,
             meta={
                 "report_type": "l5_readiness_report",
-                "stage": stage["stage"],
-                "readiness_score": stage["readiness_score"],
+                "stage": maturity["current_stage"],
+                "observed_stage": observed_stage,
+                "readiness_score": maturity["readiness_score"],
             },
             source="eimemory.l5_readiness",
         )
@@ -1350,6 +1435,7 @@ def _stage_for(
     verified_replay: dict[str, Any],
     verified_core_replay: dict[str, Any],
     latest_l5_assessment: dict[str, Any],
+    verified_real_replay: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     metrics = dict(hard_metrics.get("metrics") or {})
     metric_quality = dict(hard_metrics.get("metric_quality") or {})
@@ -1405,6 +1491,10 @@ def _stage_for(
         "evidence_release_commit": str(real_task_evidence.get("evidence_release_commit") or ""),
         "current_release_commit": str(real_task_evidence.get("current_release_commit") or ""),
     }
+    real_business_gate = _real_business_gate(
+        live_task_gate,
+        verified_real_replay if isinstance(verified_real_replay, dict) else {},
+    )
     weak_outcome_ok = not weak_outcome_evidence.get("missing")
     weak_missing = verified_replay.get("weak_capabilities_missing")
     weak_manifest_rejections = verified_replay.get("manifest_rejection_reasons")
@@ -1431,12 +1521,13 @@ def _stage_for(
         or core_missing
         or core_manifest_rejections
         or not latest_l5_assessment.get("complete")
-        or not live_task_gate["ok"]
+        or not real_business_gate["ok"]
     ):
         readiness_score = min(readiness_score, 0.8)
     common = {
         "readiness_score": readiness_score,
         "live_task_gate": live_task_gate,
+        "real_business_gate": real_business_gate,
         "risk_boundary": "read-only reporting; no autonomous apply, deployment, external send, spend, deletion, or credential use.",
     }
     structural_ready = bool(
@@ -1457,14 +1548,14 @@ def _stage_for(
         and patch_quality_ok
         and patch_success >= 0.8
     )
-    if structural_ready and live_task_gate["ok"]:
+    if structural_ready and real_business_gate["ok"]:
         return {
             **common,
             "readiness_score": 1.0,
             "stage": "L5",
             "label": "evidence-bound co-growth loop",
-            "reason": "world model, roadmap, assessment, replay, promotion, rollback, and verified live task evidence are all present.",
-            "done_when": "Maintain zero missing L5 assessment evidence and keep verified live task success at or above 0.8.",
+            "reason": "world model, roadmap, assessment, replay, promotion, rollback, and verified real-business evidence are all present.",
+            "done_when": "Maintain zero missing L5 assessment evidence and keep either verified live-task or verified real-replay evidence above its threshold.",
         }
     if structural_ready:
         return {
@@ -1472,8 +1563,8 @@ def _stage_for(
             "readiness_score": 0.8,
             "stage": "L4.5",
             "label": "release structure complete; real-task evidence accumulating",
-            "reason": "All structural and safety gates pass, but the current release has not accumulated ten verified real tasks across five task types.",
-            "done_when": "Accumulate the remaining current-release verified real tasks; operational probes do not count as user-task evidence.",
+            "reason": "All structural and safety gates pass, but neither verified live tasks nor current-code replay of verified real tasks closes the business gate.",
+            "done_when": "Accumulate verified real tasks or replay at least ten unique real sources across five task types with pass rate >=0.8.",
         }
     if l5_artifacts >= 2 and replay_count >= 5 and weak_gap_count <= 2:
         return {
@@ -1481,7 +1572,7 @@ def _stage_for(
             "stage": "L4.5",
             "label": "self-growth reporting with most weak gaps closing",
             "reason": "L5 rehearsal artifacts exist, but one or more production evidence gates remain incomplete.",
-            "done_when": "Complete replay, reversible promotion, and at least ten current-deployment verified live tasks across five task types.",
+            "done_when": "Complete replay, reversible promotion, and either verified live-task or verified real-replay business evidence.",
         }
     if strong_ready_count >= 3 and observed_replay_count >= 3 and (task_success > 0 or recall_hit > 0):
         return {
@@ -1497,6 +1588,70 @@ def _stage_for(
         "label": "early autonomous evolution with evidence gaps",
         "reason": "learning and candidate records may exist, but repeatable replay, L5 artifacts, and weak capability evidence are not yet enough.",
         "done_when": "Add readiness report, replay packs, and hard metrics for weak capabilities without changing production behavior.",
+    }
+
+
+def _real_business_gate(
+    live_task_gate: dict[str, Any],
+    verified_real_replay: dict[str, Any],
+) -> dict[str, Any]:
+    live_sample_count = int(
+        live_task_gate.get("current_deployment_verified_real_tasks")
+        or live_task_gate.get("sample_count")
+        or 0
+    )
+    live_ok = bool(
+        live_task_gate.get("ok") is True
+        and live_sample_count >= 10
+    )
+    replay_ok = bool(
+        verified_real_replay.get("ok") is True
+        and int(verified_real_replay.get("sample_count") or 0) >= 10
+        and int(verified_real_replay.get("distinct_task_types") or 0) >= 5
+        and float(verified_real_replay.get("pass_rate") or 0.0) >= 0.8
+        and str(verified_real_replay.get("provenance_contract") or "")
+        == "verified_real_replay.v1"
+    )
+    return {
+        "ok": bool(live_ok or replay_ok),
+        "accepted_path": "live_tasks" if live_ok else "real_replay" if replay_ok else "",
+        "live_tasks": dict(live_task_gate),
+        "real_replay": dict(verified_real_replay),
+    }
+
+
+def _release_validation(
+    *,
+    release: ReleaseIdentity | None,
+    release_lineage: dict[str, Any],
+    production_recall_gate: dict[str, Any],
+    production_recall_strict_state: dict[str, Any],
+    storage_migrations: dict[str, Any],
+) -> dict[str, Any]:
+    checks = {
+        "release_identity": release is not None,
+        "release_lineage": bool(
+            release_lineage.get("ok") is True
+            and release_lineage.get("validated") is True
+            and release_lineage.get("compatible") is True
+        ),
+        "production_recall": bool(
+            production_recall_gate.get("ok") is True
+            and production_recall_gate.get("status") == "accepted"
+        ),
+        "production_recall_strict_state": bool(
+            production_recall_strict_state.get("ok") is True
+            and production_recall_strict_state.get("status") == "strict_activated"
+        ),
+        "storage_migrations": bool(
+            storage_migrations.get("ok") is True
+            and storage_migrations.get("pending") == []
+        ),
+    }
+    return {
+        "status": "verified" if all(checks.values()) else "unverified",
+        "ok": all(checks.values()),
+        "checks": checks,
     }
 
 
@@ -1558,10 +1713,14 @@ def _next_actions(
         actions.append(
             f"Activate the accepted production recall gate for the current release ({reason}); L5 remains downgraded."
         )
-    live_task_gate = stage.get("live_task_gate") if isinstance(stage.get("live_task_gate"), dict) else {}
-    if not live_task_gate.get("ok"):
+    real_business_gate = (
+        stage.get("real_business_gate")
+        if isinstance(stage.get("real_business_gate"), dict)
+        else {}
+    )
+    if not real_business_gate.get("ok"):
         actions.append(
-            "Accumulate current-release real user tasks; L5 requires ten verified non-rehearsal outcomes across five task types with success rate >=0.8, and operational probes do not count."
+            "Accumulate verified real user tasks or run a current-code replay of ten unique verified real sources across five task types with pass rate >=0.8; operational probes do not count."
         )
     if int(verified_replay.get("executed_count") or 0) < 5:
         actions.append("Execute replay packs from existing outcome traces before promoting new behavior; not_run records do not count.")

@@ -1168,6 +1168,15 @@ def _successful_readiness() -> dict:
             "current_deployment_verified_real_tasks": 10,
             "current_deployment_operational_probes": 10,
         },
+        "real_business_gate": {
+            "ok": True,
+            "accepted_path": "live_tasks",
+            "live_tasks": {
+                "ok": True,
+                "current_deployment_verified_real_tasks": 10,
+            },
+            "real_replay": {"ok": False},
+        },
         "verified_replay": {
             "weak_capabilities_missing": [],
             "manifest_rejection_reasons": {},
@@ -1182,3 +1191,50 @@ def _successful_readiness() -> dict:
         },
         "persisted_record_id": "readiness-1",
     }
+
+
+def test_release_closure_accepts_verified_real_replay_without_new_live_task_accumulation() -> None:
+    readiness = _successful_readiness()
+    readiness["live_task_gate"] = {
+        "ok": False,
+        "current_deployment_verified_real_tasks": 0,
+        "sample_deficit": 10,
+        "task_type_deficit": 5,
+    }
+    readiness["real_business_gate"] = {
+        "ok": True,
+        "accepted_path": "real_replay",
+        "live_tasks": readiness["live_task_gate"],
+        "real_replay": {
+            "ok": True,
+            "sample_count": 10,
+            "distinct_task_types": 5,
+            "pass_rate": 0.8,
+            "minimum_samples": 10,
+            "minimum_task_types": 5,
+            "minimum_pass_rate": 0.8,
+            "provenance_contract": "verified_real_replay.v1",
+        },
+    }
+
+    report = _run(FakeRuntime(readiness=readiness))
+
+    assert report["ok"] is False
+    assert report["closure_complete"] is False
+    assert report["blocked_stage"] == "readiness"
+
+
+def test_release_closure_respects_fatal_maturity_checkpoint_below_observed_l5() -> None:
+    readiness = _successful_readiness()
+    readiness["observed_stage"] = "L5"
+    readiness["observed_score"] = 1.0
+    readiness["current_stage"] = "L4.5"
+    readiness["readiness_score"] = 0.8
+    readiness["maturity_transition"] = "fatal_downgrade"
+    readiness["downgrade_incident_id"] = "incident-fatal"
+
+    report = _run(FakeRuntime(readiness=readiness))
+
+    assert report["ok"] is False
+    assert report["closure_complete"] is False
+    assert report["blocked_stage"] == "readiness"

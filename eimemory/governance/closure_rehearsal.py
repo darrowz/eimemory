@@ -17,7 +17,7 @@ from eimemory.governance.evidence_contract import (
     same_release_authority,
 )
 from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
-from eimemory.governance.l5_readiness import readiness_gate_status
+from eimemory.governance.l5_readiness import _real_business_gate, readiness_gate_status
 from eimemory.models.records import ScopeRef
 
 
@@ -360,9 +360,9 @@ def _bootstrap_pending_readiness_evidence_reason(
         release,
     ):
         return "bootstrap_pending_readiness_release_mismatch"
-    score = readiness.get("readiness_score")
+    score = readiness.get("observed_score", readiness.get("readiness_score"))
     if (
-        readiness.get("current_stage") != "L4.5"
+        readiness.get("observed_stage", readiness.get("current_stage")) != "L4.5"
         or not isinstance(score, (int, float))
         or isinstance(score, bool)
         or float(score) != 0.8
@@ -396,7 +396,13 @@ def _bootstrap_pending_readiness_evidence_reason(
         if isinstance(readiness.get("live_task_gate"), dict)
         else {}
     )
-    live_task_accumulating = live_gate.get("ok") is not True
+    replay_gate = (
+        readiness.get("verified_real_replay")
+        if isinstance(readiness.get("verified_real_replay"), dict)
+        else {}
+    )
+    real_business_gate = _real_business_gate(live_gate, replay_gate)
+    live_task_accumulating = real_business_gate.get("ok") is not True
     if live_task_accumulating and not _compatible_live_task_accumulation(
         readiness,
         release=release,
@@ -414,8 +420,11 @@ def _bootstrap_pending_readiness_evidence_reason(
     shadow = {
         **readiness,
         "current_stage": "L5",
+        "observed_stage": "L5",
         "readiness_score": 1.0,
+        "observed_score": 1.0,
         "live_task_gate": shadow_live_gate,
+        "real_business_gate": _real_business_gate(shadow_live_gate, replay_gate),
         "production_recall_gate": {"ok": True, "status": "accepted"},
         "production_recall_strict_state": {
             "ok": True,

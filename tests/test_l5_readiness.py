@@ -29,6 +29,7 @@ from eimemory.governance.capability_replay_packs import (
 from eimemory.governance.l5_readiness import (
     _evidence_counts,
     _latest_manifest_high_water,
+    _real_business_gate,
     _stage_for,
     readiness_gate_status,
 )
@@ -36,6 +37,37 @@ from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
 SCOPE = {"agent_id": "agent-l5-readiness", "workspace_id": "l5-readiness", "user_id": "darrow"}
+
+
+def test_real_business_gate_accepts_live_or_verified_real_replay_independently() -> None:
+    live_closed = {
+        "ok": True,
+        "sample_count": 10,
+        "distinct_task_types": 5,
+        "success_rate": 0.8,
+    }
+    replay_closed = {
+        "ok": True,
+        "sample_count": 10,
+        "distinct_task_types": 5,
+        "pass_rate": 0.8,
+        "provenance_contract": "verified_real_replay.v1",
+    }
+    live_only = _real_business_gate(live_closed, {**replay_closed, "ok": False})
+    replay_only = _real_business_gate({**live_closed, "ok": False}, replay_closed)
+    blocked = _real_business_gate(
+        {**live_closed, "ok": False, "sample_deficit": 2},
+        {**replay_closed, "ok": False, "task_type_deficit": 1},
+    )
+
+    assert live_only["ok"] is True
+    assert live_only["accepted_path"] == "live_tasks"
+    assert replay_only["ok"] is True
+    assert replay_only["accepted_path"] == "real_replay"
+    assert blocked["ok"] is False
+    assert blocked["accepted_path"] == ""
+    assert blocked["live_tasks"]["sample_deficit"] == 2
+    assert blocked["real_replay"]["task_type_deficit"] == 1
 
 
 def test_l5_readiness_requires_exact_current_receipt_before_lineage_resolution(
