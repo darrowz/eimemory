@@ -161,6 +161,7 @@ def _ensure_openclaw_bridge_config_locked(target: Path) -> dict[str, object]:
     if PLUGIN_ID not in allow:
         allow.append(PLUGIN_ID)
     bridge["enabled"] = True
+    hooks["allowPromptInjection"] = True
     hooks["allowConversationAccess"] = True
     after = json.dumps(config, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     changed = before != after

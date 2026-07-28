@@ -10,6 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Planned
 - Multi-agent memory coordination
 
+## [1.9.107] - 2026-07-28
+
+### Fixed
+- Start the managed learn watch, think, dashboard, and L5 accumulation timers during immutable deployment instead of leaving production data collection disabled.
+- Enable prompt injection and the OpenClaw prompt bridge through managed configuration, replacing the temporary runtime override.
+- Run L5 evaluation against live production data immediately with automatic promotion disabled, retire the obsolete activation gate, and schedule one read-only effect review after 48 hours without binding or resetting accumulated L5 maturity to the release version.
+- Keep default storage status and vacuum inspection on a read-only path so repeated checks cannot checkpoint runtime initialization writes into the SQLite database.
+
 ## [1.9.106] - 2026-07-28
 
 ### Fixed

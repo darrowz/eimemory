@@ -284,6 +284,8 @@ async function callGateway(opts) {
     dropin = Path("deploy/systemd/openclaw-gateway-eimemory.conf").read_text(encoding="utf-8")
     assert "ExecStartPre=" in dropin
     assert "patch_openclaw_restart_recovery_scope.py" in dropin
+    assert "Environment=EIMEMORY_ENABLE_PROMPT_INJECTION=1" in dropin
+    assert "Environment=EIMEMORY_ENABLE_PROMPT_BRIDGE=1" in dropin
 
 
 def test_rotate_console_token_updates_unit_file(tmp_path) -> None:
@@ -360,6 +362,97 @@ def test_learning_dashboard_timer_runs_daily_after_nightly() -> None:
     assert "daily autonomous learning dashboard" in timer_text
     assert "OnCalendar=*-*-* 03:45:00" in timer_text
     assert "Mon *-*-* 09:00:00" not in timer_text
+
+
+def test_l5_effect_review_captures_readiness_without_persist_or_promotion(tmp_path: Path) -> None:
+    fake_command = tmp_path / "learn"
+    fake_command.write_text(
+        "\n".join(
+            [
+                "import json",
+                "import sys",
+                "assert sys.argv[1:] == ['l5-readiness', '--json']",
+                "print(json.dumps({'ok': True, 'report_type': 'l5_readiness_report', 'current_stage': 'L5'}))",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    report_path = tmp_path / "reports" / "l5-48h-effect.json"
+    env = {
+        **os.environ,
+        "EIMEMORY_BIN": _bash_path(Path(sys.executable)),
+        "EIMEMORY_PYTHON_BIN": _bash_path(Path(sys.executable)),
+        "EIMEMORY_REPORT_PATH": _bash_path(report_path),
+    }
+
+    script_path = _bash_path(
+        Path.cwd() / "deploy" / "systemd" / "eimemory-l5-effect-review.sh"
+    )
+    result = subprocess.run(
+        [_bash_binary(), script_path],
+        cwd=tmp_path,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(report_path.read_text(encoding="utf-8")) == {
+        "ok": True,
+        "report_type": "l5_readiness_report",
+        "current_stage": "L5",
+    }
+
+
+def test_l5_effect_review_does_not_replace_last_good_report_with_invalid_output(
+    tmp_path: Path,
+) -> None:
+    fake_command = tmp_path / "learn"
+    fake_command.write_text("print('{}')\n", encoding="utf-8")
+    report_path = tmp_path / "reports" / "l5-48h-effect.json"
+    report_path.parent.mkdir(parents=True)
+    report_path.write_text('{"sentinel":"last-good"}\n', encoding="utf-8")
+    env = {
+        **os.environ,
+        "EIMEMORY_BIN": _bash_path(Path(sys.executable)),
+        "EIMEMORY_PYTHON_BIN": _bash_path(Path(sys.executable)),
+        "EIMEMORY_REPORT_PATH": _bash_path(report_path),
+    }
+
+    script_path = _bash_path(
+        Path.cwd() / "deploy" / "systemd" / "eimemory-l5-effect-review.sh"
+    )
+    result = subprocess.run(
+        [_bash_binary(), script_path],
+        cwd=tmp_path,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "invalid L5 readiness report" in result.stderr
+    assert json.loads(report_path.read_text(encoding="utf-8")) == {
+        "sentinel": "last-good"
+    }
+
+
+def test_l5_effect_review_timer_is_read_only_and_one_shot() -> None:
+    service_text = Path(
+        "deploy/systemd/eimemory-l5-effect-review.service"
+    ).read_text(encoding="utf-8")
+    timer_text = Path("deploy/systemd/eimemory-l5-effect-review.timer").read_text(
+        encoding="utf-8"
+    )
+
+    assert "ExecStart=%h/.config/systemd/user/eimemory-l5-effect-review.sh" in service_text
+    assert "OnActiveSec=48h" in timer_text
+    assert "OnUnitActiveSec" not in timer_text
+    assert "Persistent=true" in timer_text
+    assert "eimemory-l5-observation-gate" not in service_text
 
 
 def test_l5_observation_gate_enables_autonomous_code_after_48_hours() -> None:
@@ -858,10 +951,19 @@ def test_l5_observation_gate_keeps_operational_errors_nonzero(
 
 def test_nightly_systemd_unit_sets_autonomous_learning_promotion_budget() -> None:
     unit_text = Path("deploy/systemd/eimemory-nightly.service").read_text(encoding="utf-8")
+    policy_text = Path(
+        "deploy/systemd/eimemory-learning-runtime.conf"
+    ).read_text(encoding="utf-8")
 
     assert "Environment=EIMEMORY_AUTONOMOUS_LEARNING_MAX_GOALS=3" in unit_text
-    assert "Environment=EIMEMORY_AUTONOMOUS_LEARNING_MAX_PROMOTIONS=3" in unit_text
+    assert "Environment=EIMEMORY_AUTONOMOUS_LEARNING_MAX_PROMOTIONS=0" in unit_text
+    assert "Environment=EIMEMORY_L5_LOOP_APPLY=1" in unit_text
+    assert "Environment=EIMEMORY_L5_MAX_PROMOTIONS=0" in unit_text
     assert "Environment=EIMEMORY_AUTONOMOUS_LEARNING_NETWORK=1" in unit_text
+    assert "Environment=EIMEMORY_AUTONOMOUS_LEARNING_MAX_PROMOTIONS=0" in policy_text
+    assert "Environment=EIMEMORY_L5_LOOP_ENABLED=1" in policy_text
+    assert "Environment=EIMEMORY_L5_LOOP_APPLY=1" in policy_text
+    assert "Environment=EIMEMORY_L5_MAX_PROMOTIONS=0" in policy_text
 
 
 def test_production_systemd_has_single_autonomous_scheduler_owner() -> None:
@@ -877,14 +979,14 @@ def test_production_systemd_has_single_autonomous_scheduler_owner() -> None:
         assert "karpathy_loop_cron" not in unit_text
 
 
-def test_systemd_readme_recommends_only_nightly_timer_for_production() -> None:
+def test_systemd_readme_documents_managed_learning_and_effect_review_timers() -> None:
     readme = Path("deploy/systemd/README.md").read_text(encoding="utf-8")
 
     assert "systemctl --user enable --now eimemory-nightly.timer" in readme
-    assert "enable --now eimemory-learn-watch.timer" not in readme
-    assert "enable --now eimemory-learn-think.timer" not in readme
-    assert "enable --now eimemory-learn-dashboard.timer" not in readme
-    assert "Legacy / Manual Timers" in readme
+    assert "enable --now eimemory-learn-watch.timer" in readme
+    assert "eimemory-l5-effect-review.timer" in readme
+    assert "eimemory-l5-observation-gate.timer" in readme
+    assert "disabled" in readme
 
 
 def test_eimemory_rpc_systemd_unit_uses_honxin_tailscale_endpoint() -> None:
@@ -1076,7 +1178,7 @@ def test_openclaw_bridge_config_enables_required_conversation_access_atomically(
     assert payload["plugins"]["entries"]["eimemory-bridge"]["enabled"] is True
     assert payload["plugins"]["entries"]["eimemory-bridge"]["config"] == {}
     assert payload["plugins"]["entries"]["eimemory-bridge"]["hooks"] == {
-        "allowPromptInjection": False,
+        "allowPromptInjection": True,
         "allowConversationAccess": True,
     }
     assert payload["unrelated"] == {"preserved": True}
@@ -1417,6 +1519,7 @@ def test_immutable_release_installer_deploys_gateway_runtime_override() -> None:
     assert '_refresh_openclaw_gateway_metadata "$RELEASE_DIR" "$COMMIT"' in script
     assert '"$metadata_release/deploy/systemd/openclaw-gateway-eimemory.conf"' in script
     assert '"$USER_SYSTEMD_DIR/openclaw-gateway.service.d/90-eimemory-runtime.conf"' in script
+    assert '"$USER_SYSTEMD_DIR/openclaw-gateway.service.d/40-eimemory-prompt-bridge.conf"' in script
     metadata = script.split("_install_candidate_runtime_metadata() {", 1)[1].split("\n}", 1)[0]
     assert metadata.index("_refresh_openclaw_gateway_metadata") < metadata.index(
         "_install_current_runtime_metadata"
@@ -2957,30 +3060,53 @@ def test_learn_watch_timer_is_not_five_minute_heavy_polling() -> None:
     assert "OnCalendar=*:00/5" not in timer
 
 
-def test_immutable_installer_refreshes_l5_observation_gate_from_release() -> None:
+def test_immutable_installer_applies_managed_learning_runtime_policy() -> None:
     script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
 
     helper = script[
-        script.index("_install_l5_observation_gate() {") :
-        script.index("\n}", script.index("_install_l5_observation_gate() {"))
+        script.index("_install_learning_runtime_policy() {") :
+        script.index("\n}", script.index("_install_learning_runtime_policy() {"))
     ]
-    assert '"$target_release/deploy/systemd/eimemory-l5-observation-gate.sh"' in helper
-    assert '"$USER_SYSTEMD_DIR/eimemory-l5-observation-gate.sh"' in helper
-    assert "_install_as_service_user 0755" in helper
-    for suffix in ("service", "timer"):
+    for name in (
+        "eimemory-nightly.service",
+        "eimemory-nightly.timer",
+        "eimemory-learn-watch.service",
+        "eimemory-learn-watch.timer",
+        "eimemory-learn-think.service",
+        "eimemory-learn-think.timer",
+        "eimemory-learn-dashboard.service",
+        "eimemory-learn-dashboard.timer",
+        "eimemory-l5-effect-review.service",
+        "eimemory-l5-effect-review.timer",
+    ):
         assert (
-            f'"$target_release/deploy/systemd/eimemory-l5-observation-gate.{suffix}"'
-            in helper
+            f'"$target_release/deploy/systemd/{name}"' in helper
         )
         assert (
-            f'"$USER_SYSTEMD_DIR/eimemory-l5-observation-gate.{suffix}"'
-            in helper
+            f'"$USER_SYSTEMD_DIR/{name}"' in helper
         )
+    assert '"$target_release/deploy/systemd/eimemory-l5-effect-review.sh"' in helper
+    assert '"$USER_SYSTEMD_DIR/eimemory-l5-effect-review.sh"' in helper
+    assert '"$target_release/deploy/systemd/eimemory-learning-runtime.conf"' in helper
+    assert (
+        '"$USER_SYSTEMD_DIR/eimemory-nightly.service.d/'
+        'zz-eimemory-learning-runtime.conf"'
+        in helper
+    )
+    assert "l5-auto-apply.conf" in helper
+    assert "zz-disable-auto-promotion.conf" in helper
+    assert "zz-l5-start-now.conf" in helper
     assert "_user_systemctl daemon-reload" in helper
-    assert "_user_systemctl enable --now eimemory-l5-observation-gate.timer" in helper
-    assert "_user_systemctl restart eimemory-l5-observation-gate.timer" in helper
+    assert "_user_systemctl disable --now eimemory-l5-observation-gate.timer" in helper
+    assert "_user_systemctl enable --now eimemory-nightly.timer" in helper
+    assert "_user_systemctl enable --now eimemory-learn-watch.timer" in helper
+    assert "_user_systemctl enable --now eimemory-learn-think.timer" in helper
+    assert "_user_systemctl enable --now eimemory-learn-dashboard.timer" in helper
+    assert "_user_systemctl enable --now eimemory-l5-effect-review.timer" in helper
+    assert "_user_systemctl enable --now eimemory-l5-observation-gate.timer" not in helper
     metadata = script[
         script.index("_install_current_runtime_metadata() {") :
         script.index("_refresh_current_runtime_metadata() {")
     ]
-    assert '_install_l5_observation_gate "$target_release"' in metadata
+    assert '_install_learning_runtime_policy "$metadata_release"' in metadata
+    assert '_install_learning_runtime_policy "$target_release"' not in metadata

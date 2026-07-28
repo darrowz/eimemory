@@ -81,16 +81,19 @@ timers unless a deployment document explicitly says otherwise:
 | Timer | Purpose |
 | --- | --- |
 | `eimemory-nightly.timer` | Daily intake, governance, evaluation summaries, autonomous evolution, autonomous learning, and dashboards. |
+| `eimemory-learn-watch.timer` | Capture real local/outcome/world signals every 15 minutes. |
+| `eimemory-learn-think.timer` | Persist proactive thinking once per hour. |
+| `eimemory-learn-dashboard.timer` | Refresh the operator dashboard daily at 03:45. |
+| `eimemory-l5-effect-review.timer` | Capture one production-bound L5 readiness report after 48 hours. |
 
 Do not install a standalone Karpathy-loop timer in production. The reusable
 experiment helpers under `eimemory.autonomous` feed into the governance path;
 they are not a second state owner.
 
 The standard nightly schedule runs active knowledge intake and governance once
-per day at 03:30 in the server's local timezone. The template enables
-autonomous learning in apply mode with bounded goal count, promotion budget,
-timeout, dashboard output, promotion gates, network evidence, and rollback
-metadata.
+per day at 03:30 in the server's local timezone. L5 runs in apply mode so it
+can persist world-model, roadmap, goal, assessment, and reward evidence.
+Automatic candidate promotion remains disabled with a zero promotion budget.
 
 Install as a user service for the OpenClaw/eimemory operator:
 
@@ -98,8 +101,15 @@ Install as a user service for the OpenClaw/eimemory operator:
 mkdir -p ~/.config/systemd/user
 cp /dev-project/eimemory/deploy/systemd/eimemory-nightly.service ~/.config/systemd/user/
 cp /dev-project/eimemory/deploy/systemd/eimemory-nightly.timer ~/.config/systemd/user/
+cp /dev-project/eimemory/deploy/systemd/eimemory-learn-*.service ~/.config/systemd/user/
+cp /dev-project/eimemory/deploy/systemd/eimemory-learn-*.timer ~/.config/systemd/user/
+cp /dev-project/eimemory/deploy/systemd/eimemory-l5-effect-review.service ~/.config/systemd/user/
+cp /dev-project/eimemory/deploy/systemd/eimemory-l5-effect-review.timer ~/.config/systemd/user/
+cp /dev-project/eimemory/deploy/systemd/eimemory-l5-effect-review.sh ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now eimemory-nightly.timer
+systemctl --user enable --now eimemory-learn-watch.timer eimemory-learn-think.timer eimemory-learn-dashboard.timer
+systemctl --user enable --now eimemory-l5-effect-review.timer
 systemctl --user list-timers eimemory-nightly.timer
 ```
 
@@ -110,20 +120,21 @@ systemctl --user start eimemory-nightly.service
 journalctl --user -u eimemory-nightly.service -n 100 --no-pager
 ```
 
-## Legacy / Manual Timers
+## Managed Learning Timers
 
-The 1.0.0 proactive learning layer used several companion timers. They remain
-packaged for manual diagnostics, migrations, and incident drills, but they are
-not part of the default production schedule because `eimemory-nightly.timer`
-is the single governance orchestrator.
+The immutable installer manages the lightweight observers alongside the single
+nightly governance owner:
 
 - `eimemory-learn-watch.timer`: every 15 minutes, capture lightweight local/outcome/world signals.
 - `eimemory-learn-think.timer`: hourly, turn signals and long-term goals into persisted thoughts.
 - `eimemory-learn-dashboard.timer`: daily at 03:45 local time, summarize learned/applied/blocked/next items.
-- `eimemory-l5-observation-gate.timer`: first evaluate after 48 hours, then recheck every 6 hours while verified readiness remains below exact L5. A valid below-L5 report exits successfully with `status=observation_pending` and does not change autonomous apply/deploy settings or OpenClaw prompt injection. Command, JSON, monitor, and service failures remain failed runs. Exact L5 alone enables autonomous code commits plus guarded deploy and disables this timer.
+- `eimemory-l5-effect-review.timer`: write one read-only, production-bound report to `~/.openclaw/reports/l5-48h-effect.json` after 48 hours.
 - `eimemory-timer-monitor.timer`: every 5 minutes, alert when watch/think/nightly timers are masked, stale, inactive, or failed.
 
-Run one of these manually only when debugging that path:
+`eimemory-l5-observation-gate.timer` is a retired activation gate and is
+disabled by deployment. It must not re-enable automatic commit/deploy behavior.
+
+Run a helper manually only when debugging that path:
 
 ```bash
 /opt/eimemory/current/.venv/bin/eimemory learn watch --persist

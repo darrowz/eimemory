@@ -289,6 +289,64 @@ def inspect_storage_migration_need(db_path: str | Path) -> dict[str, Any]:
     }
 
 
+def inspect_storage_status(
+    *,
+    db_path: str | Path,
+    segment_root: str | Path,
+) -> dict[str, Any]:
+    """Inspect storage without initializing the write-capable runtime."""
+
+    database = Path(db_path)
+    segments = Path(segment_root)
+    _validate_regular(database)
+    connection = sqlite3.connect(f"file:{database.as_posix()}?mode=ro", uri=True)
+    connection.row_factory = sqlite3.Row
+    try:
+        probe = object.__new__(SqliteRecordStore)
+        probe.conn = connection
+        try:
+            pending = SqliteRecordStore.pending_storage_migrations(probe)
+        except sqlite3.OperationalError:
+            pending = ["storage.schema_inspection_required"]
+        page_size = int(connection.execute("PRAGMA page_size").fetchone()[0])
+        page_count = int(connection.execute("PRAGMA page_count").fetchone()[0])
+        freelist_count = int(connection.execute("PRAGMA freelist_count").fetchone()[0])
+    finally:
+        connection.close()
+
+    def file_size(path: Path) -> int:
+        try:
+            return int(path.stat(follow_symlinks=False).st_size)
+        except FileNotFoundError:
+            return 0
+
+    try:
+        segment_stats = PayloadSegmentStore(segments, read_only=True).quick_stats()
+        segment_health = {
+            **segment_stats,
+            "failure_count": 0,
+            "last_error": "",
+        }
+    except PayloadSegmentError as exc:
+        raise StorageMaintenanceError("payload segment stats are unavailable") from exc
+    return {
+        "ok": True,
+        "pending": pending,
+        "footprint": {
+            "schema": "storage_footprint.v1",
+            "sqlite_bytes": file_size(database),
+            "wal_bytes": file_size(database.with_name(f"{database.name}-wal")),
+            "shm_bytes": file_size(database.with_name(f"{database.name}-shm")),
+            "page_size": page_size,
+            "page_count": page_count,
+            "freelist_count": freelist_count,
+            "logical_page_bytes": page_size * page_count,
+            "reclaimable_page_bytes": page_size * freelist_count,
+            "payload_segments": segment_health,
+        },
+    }
+
+
 def _checkpoint_and_exclusive_connection(db_path: Path) -> sqlite3.Connection:
     connection = sqlite3.connect(db_path, timeout=0.1, isolation_level=None)
     try:

@@ -1,0 +1,10 @@
+[Unit]
+Description=Review eimemory L5 effect after 48 hours
+
+[Timer]
+OnActiveSec=48h
+Persistent=true
+Unit=eimemory-l5-effect-review.service
+
+[Install]
+WantedBy=timers.target

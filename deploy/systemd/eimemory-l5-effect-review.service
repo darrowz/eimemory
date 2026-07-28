@@ -1,0 +1,13 @@
+[Unit]
+Description=Capture eimemory L5 effect after 48 hours
+After=eimemory-rpc.service openclaw-gateway.service
+Wants=eimemory-rpc.service openclaw-gateway.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/eimemory/current
+Environment=EIMEMORY_ROOT=/var/lib/eimemory
+Environment=EIMEMORY_CONFIG_DIR=/etc/eimemory
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONPYCACHEPREFIX=/var/lib/eimemory/.pycache/runtime
+ExecStart=%h/.config/systemd/user/eimemory-l5-effect-review.sh

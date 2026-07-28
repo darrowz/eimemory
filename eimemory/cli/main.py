@@ -1013,6 +1013,40 @@ def main(argv: list[str] | None = None) -> int:
         settings = load_settings()
     except (FileNotFoundError, json.JSONDecodeError, ValueError) as exc:
         return _print_error("invalid_config", exc)
+    if parsed.command == "storage" and (
+        (parsed.storage_command == "status" and not bool(parsed.deep))
+        or (parsed.storage_command == "vacuum" and not bool(parsed.apply))
+    ):
+        from eimemory.storage.maintenance import (
+            StorageMaintenanceError,
+            inspect_storage_status,
+            vacuum_into_atomic,
+        )
+
+        db_path = settings.root / "state" / "eimemory.sqlite"
+        segment_root = settings.root / "state" / "payload_segments"
+        try:
+            if parsed.storage_command == "status":
+                report = inspect_storage_status(
+                    db_path=db_path,
+                    segment_root=segment_root,
+                )
+            else:
+                report = vacuum_into_atomic(
+                    db_path=db_path,
+                    offline=bool(parsed.offline),
+                    apply=False,
+                )
+        except StorageMaintenanceError as exc:
+            print(
+                json.dumps(
+                    {"ok": False, "error": "storage_maintenance_failed", "detail": str(exc)},
+                    ensure_ascii=False,
+                )
+            )
+            return 2
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") is True else 1
     runtime = Runtime.create(root=settings.root)
     scope = hongtu_scope(
         {

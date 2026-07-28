@@ -40,10 +40,17 @@ def test_storage_status_and_vacuum_default_are_read_only(tmp_path, monkeypatch, 
     status = json.loads(capsys.readouterr().out)
     assert "records.payload_archive.v1" in status["pending"]
     assert status["footprint"]["sqlite_bytes"] > 0
+    assert sha256(db_path.read_bytes()).hexdigest() == before
 
     assert cli_main(["storage", "vacuum"]) == 0
     vacuum = json.loads(capsys.readouterr().out)
     assert vacuum["applied"] is False
+    assert sha256(db_path.read_bytes()).hexdigest() == before
+
+    assert cli_main(["storage", "status"]) == 0
+    capsys.readouterr()
+    assert cli_main(["storage", "vacuum"]) == 0
+    capsys.readouterr()
     assert sha256(db_path.read_bytes()).hexdigest() == before
 
 

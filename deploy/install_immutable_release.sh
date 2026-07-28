@@ -255,7 +255,6 @@ STORAGE_WRITER_UNITS=(
   eimemory-learn-watch.timer
   eimemory-learn-think.timer
   eimemory-learn-dashboard.timer
-  eimemory-l5-observation-gate.timer
   eimemory-audit-verify.timer
   eimemory-timer-monitor.timer
   eimemory-experience-autopromote.timer
@@ -265,7 +264,6 @@ STORAGE_WRITER_UNITS=(
   eimemory-learn-watch.service
   eimemory-learn-think.service
   eimemory-learn-dashboard.service
-  eimemory-l5-observation-gate.service
   eimemory-audit-verify.service
   eimemory-timer-monitor.service
   eimemory-experience-autopromote.service
@@ -935,20 +933,62 @@ _inspect_openclaw_plugin_runtime() {
       "${legacy_arg[@]}"
 }
 
-_install_l5_observation_gate() {
+_install_learning_runtime_policy() {
   local target_release="${1:-$RELEASE_DIR}"
-  _install_as_service_user 0755 \
-    "$target_release/deploy/systemd/eimemory-l5-observation-gate.sh" \
-    "$USER_SYSTEMD_DIR/eimemory-l5-observation-gate.sh"
-  _install_as_service_user 0644 \
-    "$target_release/deploy/systemd/eimemory-l5-observation-gate.service" \
-    "$USER_SYSTEMD_DIR/eimemory-l5-observation-gate.service"
-  _install_as_service_user 0644 \
-    "$target_release/deploy/systemd/eimemory-l5-observation-gate.timer" \
+  _user_systemctl disable --now eimemory-l5-observation-gate.timer >/dev/null 2>&1 || true
+  _user_systemctl stop eimemory-l5-observation-gate.service >/dev/null 2>&1 || true
+  _run_as_service_user rm -f \
+    "$USER_SYSTEMD_DIR/eimemory-l5-observation-gate.sh" \
+    "$USER_SYSTEMD_DIR/eimemory-l5-observation-gate.service" \
     "$USER_SYSTEMD_DIR/eimemory-l5-observation-gate.timer"
+  _run_as_service_user mkdir -p "$USER_SYSTEMD_DIR/eimemory-nightly.service.d"
+  _run_as_service_user rm -f \
+    "$USER_SYSTEMD_DIR/eimemory-nightly.service.d/l5-auto-apply.conf" \
+    "$USER_SYSTEMD_DIR/eimemory-nightly.service.d/99-disable-auto-promotion.conf" \
+    "$USER_SYSTEMD_DIR/eimemory-nightly.service.d/zz-disable-auto-promotion.conf" \
+    "$USER_SYSTEMD_DIR/eimemory-nightly.service.d/zz-l5-start-now.conf"
+  _install_as_service_user 0644 \
+    "$target_release/deploy/systemd/eimemory-nightly.service" \
+    "$USER_SYSTEMD_DIR/eimemory-nightly.service"
+  _install_as_service_user 0644 \
+    "$target_release/deploy/systemd/eimemory-nightly.timer" \
+    "$USER_SYSTEMD_DIR/eimemory-nightly.timer"
+  _install_as_service_user 0644 \
+    "$target_release/deploy/systemd/eimemory-learn-watch.service" \
+    "$USER_SYSTEMD_DIR/eimemory-learn-watch.service"
+  _install_as_service_user 0644 \
+    "$target_release/deploy/systemd/eimemory-learn-watch.timer" \
+    "$USER_SYSTEMD_DIR/eimemory-learn-watch.timer"
+  _install_as_service_user 0644 \
+    "$target_release/deploy/systemd/eimemory-learn-think.service" \
+    "$USER_SYSTEMD_DIR/eimemory-learn-think.service"
+  _install_as_service_user 0644 \
+    "$target_release/deploy/systemd/eimemory-learn-think.timer" \
+    "$USER_SYSTEMD_DIR/eimemory-learn-think.timer"
+  _install_as_service_user 0644 \
+    "$target_release/deploy/systemd/eimemory-learn-dashboard.service" \
+    "$USER_SYSTEMD_DIR/eimemory-learn-dashboard.service"
+  _install_as_service_user 0644 \
+    "$target_release/deploy/systemd/eimemory-learn-dashboard.timer" \
+    "$USER_SYSTEMD_DIR/eimemory-learn-dashboard.timer"
+  _install_as_service_user 0755 \
+    "$target_release/deploy/systemd/eimemory-l5-effect-review.sh" \
+    "$USER_SYSTEMD_DIR/eimemory-l5-effect-review.sh"
+  _install_as_service_user 0644 \
+    "$target_release/deploy/systemd/eimemory-l5-effect-review.service" \
+    "$USER_SYSTEMD_DIR/eimemory-l5-effect-review.service"
+  _install_as_service_user 0644 \
+    "$target_release/deploy/systemd/eimemory-l5-effect-review.timer" \
+    "$USER_SYSTEMD_DIR/eimemory-l5-effect-review.timer"
+  _install_as_service_user 0644 \
+    "$target_release/deploy/systemd/eimemory-learning-runtime.conf" \
+    "$USER_SYSTEMD_DIR/eimemory-nightly.service.d/zz-eimemory-learning-runtime.conf"
   _user_systemctl daemon-reload
-  _user_systemctl enable --now eimemory-l5-observation-gate.timer
-  _user_systemctl restart eimemory-l5-observation-gate.timer
+  _user_systemctl enable --now eimemory-nightly.timer
+  _user_systemctl enable --now eimemory-learn-watch.timer
+  _user_systemctl enable --now eimemory-learn-think.timer
+  _user_systemctl enable --now eimemory-learn-dashboard.timer
+  _user_systemctl enable --now eimemory-l5-effect-review.timer
 }
 
 _install_current_runtime_metadata() {
@@ -974,7 +1014,7 @@ _install_current_runtime_metadata() {
   done
   _install_as_service_user 0644 \
     "$target_release/deploy/systemd/eimemory-rpc.service" "$USER_SYSTEMD_DIR/eimemory-rpc.service"
-  _install_l5_observation_gate "$target_release"
+  _install_learning_runtime_policy "$metadata_release"
   _user_systemctl daemon-reload
   _user_systemctl enable eimemory-rpc.service
 }
@@ -1000,6 +1040,8 @@ _refresh_openclaw_gateway_metadata() {
     --target "$USER_SYSTEMD_DIR/openclaw-gateway.service.d/90-eimemory-runtime.conf" \
     --root "$USER_SYSTEMD_DIR" --owner-uid "$service_uid" --render-commit "$target_commit" \
     --render-evidence-receipt-env-file "$EVIDENCE_RECEIPT_ENV_FILE"
+  _run_as_service_user rm -f \
+    "$USER_SYSTEMD_DIR/openclaw-gateway.service.d/40-eimemory-prompt-bridge.conf"
 }
 
 _provision_evidence_receipt_key() {

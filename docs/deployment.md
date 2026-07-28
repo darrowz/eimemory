@@ -138,18 +138,19 @@ apply the new local 03:30 schedule automatically.
 
 ## Autonomous Learning Companions
 
-The daily `eimemory-nightly.timer` is the only production governance owner. It
-may call autonomous evolution and autonomous learning internally, with gates and
-rollback evidence. The companion timers are lightweight helpers:
+The daily `eimemory-nightly.timer` remains the only production governance
+owner. L5 apply persists evidence immediately, while automatic promotion stays
+at zero. The immutable installer also enables these lightweight helpers:
 
 | Unit | Purpose |
 | --- | --- |
 | `eimemory-learn-watch.timer` | Capture local/outcome/world signals every 15 minutes. |
 | `eimemory-learn-think.timer` | Turn signals, corrections, and stale goals into persisted thoughts hourly. |
 | `eimemory-learn-dashboard.timer` | Write the operator dashboard after nightly at 03:45. |
+| `eimemory-l5-effect-review.timer` | Write a production-bound readiness report once after 48 hours. |
 | `eimemory-timer-monitor.timer` | Check user timers for masked, stale, inactive, or failed states and alert through Feishu/webhook when configured. |
 
-Install them only when the host should run proactive learning:
+For a manual installation:
 
 ```bash
 mkdir -p ~/.config/systemd/user
@@ -157,9 +158,17 @@ cp /dev-project/eimemory/deploy/systemd/eimemory-learn-*.service ~/.config/syste
 cp /dev-project/eimemory/deploy/systemd/eimemory-learn-*.timer ~/.config/systemd/user/
 cp /dev-project/eimemory/deploy/systemd/eimemory-timer-monitor.service ~/.config/systemd/user/
 cp /dev-project/eimemory/deploy/systemd/eimemory-timer-monitor.timer ~/.config/systemd/user/
+cp /dev-project/eimemory/deploy/systemd/eimemory-l5-effect-review.service ~/.config/systemd/user/
+cp /dev-project/eimemory/deploy/systemd/eimemory-l5-effect-review.timer ~/.config/systemd/user/
+cp /dev-project/eimemory/deploy/systemd/eimemory-l5-effect-review.sh ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now eimemory-learn-watch.timer eimemory-learn-think.timer eimemory-learn-dashboard.timer eimemory-timer-monitor.timer
+systemctl --user enable --now eimemory-l5-effect-review.timer
 ```
+
+The immutable installer disables the retired
+`eimemory-l5-observation-gate.timer`; that legacy gate opened autonomous
+commit/deploy switches and is no longer the L5 start condition.
 
 Do not install a separate Karpathy-loop timer in production. Experimental
 autonomy helpers under `eimemory.autonomous` are reusable mechanisms, not a
