@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from pathlib import Path
 from typing import Any
 
 from eimemory.governance.l5_readiness import readiness_gate_status
@@ -31,6 +32,7 @@ def run_release_closure(
     current_link: str,
     health_url: str,
     prior_commit: str,
+    pending_path: str | Path | None = None,
 ) -> dict[str, Any]:
     scope_payload = asdict(scope) if isinstance(scope, ScopeRef) else dict(scope or {})
     not_run = {"ok": False, "status": "not_run", "reason": "upstream_gate_not_run"}
@@ -190,7 +192,7 @@ def run_release_closure(
         channel_acceptance.get("record_id") or ""
     )
     if channel_acceptance.get("ok") is not True:
-        return _blocked(
+        blocked = _blocked(
             report,
             "channel_acceptance",
             _failure_reason(
@@ -198,7 +200,54 @@ def run_release_closure(
                 "current_release_channel_acceptance_missing",
             ),
         )
+        if blocked["blocked_reason"] == "current_release_channel_receipt_not_found":
+            from eimemory.governance.release_closure_pending import (
+                build_release_closure_pending,
+                write_release_closure_pending,
+            )
 
+            checkpoint = build_release_closure_pending(
+                scope=scope_payload,
+                repo_root=repo_root,
+                current_link=current_link,
+                health_url=health_url,
+                prior_commit=prior_commit,
+                current_release=receipt_identity,
+                release_path=str(receipt.get("release_path") or ""),
+                record_ids=report["record_ids"],
+                replay_bootstrap=replay_bootstrap,
+                live_acceptance=live_acceptance,
+                bootstrap_pending=bootstrap_pending,
+            )
+            blocked["pending_checkpoint"] = write_release_closure_pending(
+                checkpoint,
+                path=pending_path,
+            )
+        return blocked
+
+    return _continue_release_closure(
+        runtime,
+        report=report,
+        scope_payload=scope_payload,
+        repo_root=repo_root,
+        current_release=receipt_identity,
+        replay_bootstrap=replay_bootstrap,
+        live_acceptance=live_acceptance,
+        bootstrap_pending=bootstrap_pending,
+    )
+
+
+def _continue_release_closure(
+    runtime: Any,
+    *,
+    report: dict[str, Any],
+    scope_payload: dict[str, Any],
+    repo_root: str,
+    current_release: ReleaseIdentity,
+    replay_bootstrap: dict[str, Any],
+    live_acceptance: dict[str, Any],
+    bootstrap_pending: dict[str, Any] | None,
+) -> dict[str, Any]:
     rehearsal_kwargs: dict[str, Any] = {
         "scope": scope_payload,
         "persist": True,
@@ -215,8 +264,8 @@ def run_release_closure(
                 runtime,
                 scope=scope_payload,
                 repo_root=repo_root,
-                current_release=receipt_identity,
-                receipt_record_id=str(receipt.get("promotion_request_id") or ""),
+                current_release=current_release,
+                receipt_record_id=current_release.receipt_id,
                 recall_gate_record_id=str(report["record_ids"].get("production_recall_gate") or ""),
                 strict_state_record_id=str(
                     report["record_ids"].get("production_recall_strict_state") or ""
@@ -236,7 +285,7 @@ def run_release_closure(
         rehearsal_kwargs.update(
             {
                 "bootstrap_pending": bootstrap_pending,
-                "release_identity": receipt_identity,
+                "release_identity": current_release,
             }
         )
     rehearsal = runtime.run_l5_closure_rehearsal(**rehearsal_kwargs)
@@ -285,7 +334,7 @@ def run_release_closure(
             runtime,
             scope=scope_payload,
             bootstrap_pending=bootstrap_pending,
-            release=receipt_identity,
+            release=current_release,
             readiness=readiness,
             repo_root=repo_root,
         )
@@ -306,6 +355,68 @@ def run_release_closure(
     report["ok"] = True
     report["closure_complete"] = True
     return report
+
+
+def resume_release_closure(
+    runtime: Any,
+    *,
+    checkpoint: dict[str, Any],
+    current_release: ReleaseIdentity,
+    channel_acceptance: dict[str, Any],
+) -> dict[str, Any]:
+    scope_payload = dict(checkpoint.get("scope") or {})
+    inputs = dict(checkpoint.get("inputs") or {})
+    record_ids = dict(checkpoint.get("passed_gate_record_ids") or {})
+    reports = dict(checkpoint.get("passed_gate_reports") or {})
+    replay_bootstrap = dict(reports.get("replay_bootstrap") or {})
+    live_acceptance = dict(reports.get("live_acceptance") or {})
+    bootstrap_pending_raw = dict(reports.get("bootstrap_pending") or {})
+    bootstrap_pending = bootstrap_pending_raw or None
+    not_run = {"ok": False, "status": "not_run", "reason": "upstream_gate_not_run"}
+    report: dict[str, Any] = {
+        "ok": False,
+        "closure_complete": False,
+        "data_accumulating": False,
+        "report_type": "l5_release_closure",
+        "scope": scope_payload,
+        "blocked_stage": "",
+        "blocked_reason": "",
+        "deployment": {
+            "commit": current_release.commit,
+            "version": current_release.version,
+            "release_path": str(checkpoint.get("release_path") or ""),
+            "promotion_request_id": current_release.receipt_id,
+        },
+        "record_ids": record_ids,
+        "deployment_receipt": {
+            "ok": True,
+            "status": "checkpointed",
+            "promotion_request_id": current_release.receipt_id,
+        },
+        "production_recall_gate": {"ok": True, "status": "checkpointed"},
+        "production_recall_strict_state": {"ok": True, "status": "checkpointed"},
+        "storage_migrations": {"ok": True, "status": "checkpointed"},
+        "replay_bootstrap": replay_bootstrap,
+        "live_acceptance": live_acceptance,
+        "channel_acceptance": dict(channel_acceptance),
+        "release_lineage": dict(not_run),
+        "closure_rehearsal": dict(not_run),
+        "readiness": dict(not_run),
+        "bootstrap_pending_verification": dict(not_run),
+    }
+    report["record_ids"]["channel_acceptance"] = str(
+        channel_acceptance.get("record_id") or ""
+    )
+    return _continue_release_closure(
+        runtime,
+        report=report,
+        scope_payload=scope_payload,
+        repo_root=str(inputs.get("repo_root") or ""),
+        current_release=current_release,
+        replay_bootstrap=replay_bootstrap,
+        live_acceptance=live_acceptance,
+        bootstrap_pending=bootstrap_pending,
+    )
 
 
 def _finalize_release_lineage(

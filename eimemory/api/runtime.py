@@ -970,6 +970,20 @@ class Runtime:
             prior_commit=prior_commit,
         )
 
+    def reconcile_release_closure(
+        self,
+        *,
+        pending_path: str | None = None,
+    ) -> dict:
+        from eimemory.governance.release_closure_pending import (
+            reconcile_release_closure_pending,
+        )
+
+        kwargs: dict = {}
+        if pending_path is not None:
+            kwargs["pending_path"] = pending_path
+        return reconcile_release_closure_pending(self, **kwargs)
+
     def run_capability_acceptance(
         self,
         *,

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import json
+from pathlib import Path
 
 import pytest
 
@@ -9,10 +11,14 @@ from eimemory.cli.main import main as cli_main
 from eimemory.evaluation.production_recall import run_production_recall_eval
 from eimemory.governance import closure_rehearsal as closure_rehearsal_module
 from eimemory.governance import release_closure as release_closure_module
+from eimemory.governance import release_closure_pending as pending_module
 from eimemory.governance.evidence_contract import ReleaseIdentity
 from eimemory.governance.release_closure import (
     _recall_result_allows_bootstrap_pending,
     run_release_closure,
+)
+from eimemory.governance.release_closure_pending import (
+    reconcile_release_closure_pending,
 )
 
 
@@ -45,6 +51,54 @@ def test_runtime_exposes_release_closure(tmp_path, monkeypatch) -> None:
 
     assert report["ok"] is True
     assert calls == [(runtime, _identity_kwargs())]
+
+
+def test_runtime_exposes_release_closure_reconcile(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    calls: list[object] = []
+
+    def fake_reconcile(runtime_arg):
+        calls.append(runtime_arg)
+        return {"ok": True, "status": "no_pending"}
+
+    monkeypatch.setattr(
+        pending_module,
+        "reconcile_release_closure_pending",
+        fake_reconcile,
+    )
+    try:
+        report = runtime.reconcile_release_closure()
+    finally:
+        runtime.close()
+
+    assert report == {"ok": True, "status": "no_pending"}
+    assert calls == [runtime]
+
+
+def test_release_closure_reconcile_cli_dispatches_runtime(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path))
+    calls: list[object] = []
+
+    def fake_reconcile(runtime_arg):
+        calls.append(runtime_arg)
+        return {"ok": True, "status": "waiting_for_channel_acceptance"}
+
+    monkeypatch.setattr(
+        pending_module,
+        "reconcile_release_closure_pending",
+        fake_reconcile,
+    )
+
+    exit_code = cli_main(["learn", "release-closure-reconcile"])
+    output = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert output == {"ok": True, "status": "waiting_for_channel_acceptance"}
+    assert len(calls) == 1
 
 
 def test_runtime_exposes_weak_capability_replay_gate(tmp_path, monkeypatch) -> None:
@@ -892,6 +946,140 @@ def test_release_closure_stops_at_first_failed_stage(
     assert report["closure_complete"] is False
     assert report["blocked_stage"] == stage
     assert report["blocked_reason"] == reason
+
+
+def test_release_closure_missing_channel_persists_resumable_checkpoint(
+    tmp_path: Path,
+) -> None:
+    pending_path = tmp_path / "state" / "release-closure-pending.json"
+    runtime = FakeRuntime(
+        channel_acceptance={
+            "ok": False,
+            "error": "current_release_channel_receipt_not_found",
+        }
+    )
+
+    report = run_release_closure(
+        runtime,
+        **_identity_kwargs(),
+        pending_path=pending_path,
+    )
+
+    assert report["blocked_stage"] == "channel_acceptance"
+    pending = json.loads(pending_path.read_text(encoding="utf-8"))
+    assert pending["schema_version"] == "release_closure_pending.v1"
+    assert pending["status"] == "waiting_for_channel_acceptance"
+    assert pending["current_commit"] == CURRENT_COMMIT
+    assert pending["prior_commit"] == PRIOR_COMMIT
+    assert pending["deployment_receipt_id"] == "receipt-1"
+    assert "version" not in pending
+    assert "version" not in pending["passed_gate_reports"]["live_acceptance"].get(
+        "deployment", {}
+    )
+    assert pending["passed_gate_reports"]["replay_bootstrap"]["ok"] is True
+    assert pending["passed_gate_reports"]["live_acceptance"]["case_count"] == 10
+
+
+def test_release_closure_resume_uses_checkpoint_without_rerunning_pre_channel_gates(
+    tmp_path: Path,
+) -> None:
+    pending_path = tmp_path / "state" / "release-closure-pending.json"
+    runtime = FakeRuntime(
+        channel_acceptance={
+            "ok": False,
+            "error": "current_release_channel_receipt_not_found",
+        }
+    )
+    blocked = run_release_closure(
+        runtime,
+        **_identity_kwargs(),
+        pending_path=pending_path,
+    )
+    assert blocked["ok"] is False
+    runtime.calls.clear()
+    runtime.channel_acceptance = {"ok": True, "record_id": "channel-resumed"}
+
+    resumed = reconcile_release_closure_pending(
+        runtime,
+        pending_path=pending_path,
+    )
+
+    assert resumed["ok"] is True
+    assert resumed["closure_complete"] is True
+    assert runtime.calls == [
+        "channel_acceptance",
+        "closure_rehearsal",
+        "readiness",
+    ]
+    assert not pending_path.exists()
+
+
+def test_release_closure_does_not_arm_checkpoint_for_unrelated_failure(
+    tmp_path: Path,
+) -> None:
+    pending_path = tmp_path / "state" / "release-closure-pending.json"
+    runtime = FakeRuntime(
+        live_acceptance={"ok": False, "error": "acceptance_case_failed"}
+    )
+
+    report = run_release_closure(
+        runtime,
+        **_identity_kwargs(),
+        pending_path=pending_path,
+    )
+
+    assert report["blocked_stage"] == "live_acceptance"
+    assert not pending_path.exists()
+
+
+def test_release_closure_reconcile_rejects_stale_commit(
+    tmp_path: Path,
+) -> None:
+    pending_path = tmp_path / "state" / "release-closure-pending.json"
+    runtime = FakeRuntime(
+        channel_acceptance={
+            "ok": False,
+            "error": "current_release_channel_receipt_not_found",
+        }
+    )
+    run_release_closure(runtime, **_identity_kwargs(), pending_path=pending_path)
+    pending = json.loads(pending_path.read_text(encoding="utf-8"))
+    pending["current_commit"] = "c" * 40
+    pending_path.write_text(json.dumps(pending), encoding="utf-8")
+    runtime.calls.clear()
+
+    report = reconcile_release_closure_pending(
+        runtime,
+        pending_path=pending_path,
+    )
+
+    assert report == {
+        "ok": False,
+        "status": "stale",
+        "error": "pending_release_authority_mismatch",
+    }
+    assert runtime.calls == []
+    assert pending_path.exists()
+
+
+def test_release_closure_reconcile_rejects_malformed_checkpoint(
+    tmp_path: Path,
+) -> None:
+    pending_path = tmp_path / "state" / "release-closure-pending.json"
+    pending_path.parent.mkdir(parents=True)
+    pending_path.write_text('{"schema_version":"release_closure_pending.v1"}\n')
+    runtime = FakeRuntime()
+
+    report = reconcile_release_closure_pending(
+        runtime,
+        pending_path=pending_path,
+    )
+
+    assert report["ok"] is False
+    assert report["status"] == "invalid"
+    assert report["error"] == "release_closure_pending_invalid"
+    assert runtime.calls == []
+    assert pending_path.exists()
 
 
 @pytest.mark.parametrize(
