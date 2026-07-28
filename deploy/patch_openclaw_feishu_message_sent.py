@@ -11,6 +11,7 @@ import stat
 
 AFFECTED_VERSION = re.compile(r"^2026\.7\.1-2$")
 PATCH_MARKER = "async function emitEimemoryFeishuMessageSent(params)"
+PATCH_VERSION_MARKER = "// eimemory-feishu-message-sent-patch:v2"
 DISPATCHER_MARKER = "function createFeishuReplyDispatcher(params) {"
 DISPATCHER_END_MARKER = "\n//#endregion"
 
@@ -34,6 +35,7 @@ def _atomic_write(path: Path, text: str) -> None:
 
 def _helper_source(newline: str) -> str:
     lines = [
+        PATCH_VERSION_MARKER,
         "async function emitEimemoryFeishuMessageSent(params) {",
         '\tconst messageId = String(params.messageId || "").trim();',
         "\tif (!messageId) return;",
@@ -73,7 +75,7 @@ def _dispatcher_receipt_source(indent: str, newline: str) -> str:
         f'{indent}let eimemoryFeishuReceiptMessageId = "";',
         f"{indent}const rememberEimemoryFeishuReceipt = (result) => {{",
         f'{inner}const messageId = String(result?.messageId || "").trim();',
-        f"{inner}if (messageId && !eimemoryFeishuReceiptMessageId) "
+        f"{inner}if (messageId) "
         "eimemoryFeishuReceiptMessageId = messageId;",
         f"{inner}return result;",
         f"{indent}}};",
@@ -107,8 +109,10 @@ def _dispatcher_receipt_source(indent: str, newline: str) -> str:
 
 
 def _patch_dispatcher(text: str, path: Path) -> tuple[str, bool]:
-    if PATCH_MARKER in text:
+    if PATCH_VERSION_MARKER in text:
         return text, False
+    if PATCH_MARKER in text:
+        return _upgrade_legacy_patch(text, path), True
     if text.count(DISPATCHER_MARKER) != 1:
         raise PatchError(f"expected one Feishu reply dispatcher in {path.name}")
     start = text.index(DISPATCHER_MARKER)
@@ -145,6 +149,27 @@ def _patch_dispatcher(text: str, path: Path) -> tuple[str, bool]:
         + newline
         + _dispatcher_receipt_source(indent, newline)
         + region[insertion + (1 if region[insertion : insertion + 1] == "\n" else 0) :]
+    )
+
+    chunk_anchor = re.compile(
+        r"^(?P<indent>[ \t]+)const sendChunkedTextReply = async "
+        r"\(paramsLocal\) => \{\r?$",
+        re.MULTILINE,
+    )
+    chunk_matches = list(chunk_anchor.finditer(region))
+    if len(chunk_matches) != 1:
+        raise PatchError(f"expected one chunked reply anchor in {path.name}")
+    chunk_match = chunk_matches[0]
+    chunk_insertion = chunk_match.end()
+    chunk_indent = chunk_match.group("indent")
+    region = (
+        region[:chunk_insertion]
+        + newline
+        + f'{chunk_indent}\teimemoryFeishuReceiptMessageId = "";'
+        + region[
+            chunk_insertion
+            + (1 if region[chunk_insertion : chunk_insertion + 1] == "\n" else 0) :
+        ]
     )
 
     final_anchor = re.compile(
@@ -193,6 +218,45 @@ def _patch_dispatcher(text: str, path: Path) -> tuple[str, bool]:
     helper = _helper_source(newline)
     patched = text[:start] + helper + region + text[end:]
     return patched, True
+
+
+def _upgrade_legacy_patch(text: str, path: Path) -> str:
+    newline = "\r\n" if "\r\n" in text else "\n"
+    legacy_assignment = (
+        "if (messageId && !eimemoryFeishuReceiptMessageId) "
+        "eimemoryFeishuReceiptMessageId = messageId;"
+    )
+    if text.count(legacy_assignment) != 1:
+        raise PatchError(f"legacy Feishu receipt assignment mismatch in {path.name}")
+    upgraded = text.replace(
+        legacy_assignment,
+        "if (messageId) eimemoryFeishuReceiptMessageId = messageId;",
+        1,
+    )
+    chunk_anchor = re.compile(
+        r"^(?P<indent>[ \t]+)const sendChunkedTextReply = async "
+        r"\(paramsLocal\) => \{\r?$",
+        re.MULTILINE,
+    )
+    chunk_matches = list(chunk_anchor.finditer(upgraded))
+    if len(chunk_matches) != 1:
+        raise PatchError(f"legacy chunked reply anchor mismatch in {path.name}")
+    match = chunk_matches[0]
+    insertion = match.end()
+    indent = match.group("indent")
+    upgraded = (
+        upgraded[:insertion]
+        + newline
+        + f'{indent}\teimemoryFeishuReceiptMessageId = "";'
+        + upgraded[
+            insertion + (1 if upgraded[insertion : insertion + 1] == "\n" else 0) :
+        ]
+    )
+    return upgraded.replace(
+        PATCH_MARKER,
+        PATCH_VERSION_MARKER + newline + PATCH_MARKER,
+        1,
+    )
 
 
 def patch_openclaw_feishu_message_sent(openclaw_root: Path) -> dict[str, object]:

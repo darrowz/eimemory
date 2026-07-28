@@ -980,6 +980,35 @@ def test_release_closure_missing_channel_persists_resumable_checkpoint(
     assert pending["passed_gate_reports"]["live_acceptance"]["case_count"] == 10
 
 
+def test_release_closure_rechecks_channel_after_arming_checkpoint(
+    tmp_path: Path,
+) -> None:
+    pending_path = tmp_path / "state" / "release-closure-pending.json"
+
+    class ReceiptRaceRuntime(FakeRuntime):
+        def record_openclaw_channel_acceptance(self, **kwargs) -> dict:
+            super().record_openclaw_channel_acceptance(**kwargs)
+            if self.calls.count("channel_acceptance") == 1:
+                return {
+                    "ok": False,
+                    "error": "current_release_channel_receipt_not_found",
+                }
+            return {"ok": True, "record_id": "channel-race-winner"}
+
+    runtime = ReceiptRaceRuntime()
+
+    report = run_release_closure(
+        runtime,
+        **_identity_kwargs(),
+        pending_path=pending_path,
+    )
+
+    assert report["ok"] is True
+    assert report["closure_complete"] is True
+    assert runtime.calls.count("channel_acceptance") == 2
+    assert not pending_path.exists()
+
+
 def test_release_closure_resume_uses_checkpoint_without_rerunning_pre_channel_gates(
     tmp_path: Path,
 ) -> None:
@@ -1078,6 +1107,30 @@ def test_release_closure_reconcile_rejects_malformed_checkpoint(
     assert report["ok"] is False
     assert report["status"] == "invalid"
     assert report["error"] == "release_closure_pending_invalid"
+    assert runtime.calls == []
+    assert pending_path.exists()
+
+
+def test_release_closure_reconcile_skips_when_lock_is_held(
+    tmp_path: Path,
+) -> None:
+    pending_path = tmp_path / "state" / "release-closure-pending.json"
+    runtime = FakeRuntime(
+        channel_acceptance={
+            "ok": False,
+            "error": "current_release_channel_receipt_not_found",
+        }
+    )
+    run_release_closure(runtime, **_identity_kwargs(), pending_path=pending_path)
+    runtime.calls.clear()
+
+    with pending_module._release_closure_reconcile_lock(pending_path):
+        report = reconcile_release_closure_pending(
+            runtime,
+            pending_path=pending_path,
+        )
+
+    assert report == {"ok": True, "status": "busy"}
     assert runtime.calls == []
     assert pending_path.exists()
 

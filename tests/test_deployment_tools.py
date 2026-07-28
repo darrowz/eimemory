@@ -15,6 +15,7 @@ import pytest
 
 from deploy.rotate_console_token import main as rotate_main
 from deploy.rotate_console_token import rotate_token
+from deploy.patch_openclaw_feishu_message_sent import _patch_dispatcher
 
 
 pytestmark = pytest.mark.linux_deployment
@@ -98,6 +99,16 @@ function createFeishuReplyDispatcher(params) {
             });
         },
     });
+    const sendBlock = async (text) => sendChunkedTextReply({
+        text,
+        infoKind: "block",
+        sendChunk: async ({ chunk }) => {
+            await sendMessageFeishu({
+                text: chunk,
+                messageId: params.blockMessageId,
+            });
+        },
+    });
     const sendCard = async (text) => sendChunkedTextReply({
         text,
         infoKind: "final",
@@ -110,6 +121,7 @@ function createFeishuReplyDispatcher(params) {
     });
     return {
         sendDirect,
+        sendBlock,
         sendCard,
         startStreaming,
         closeStreaming,
@@ -164,8 +176,10 @@ const direct = createFeishuReplyDispatcher({
   accountId: "default",
   sessionKey: "agent:main:feishu:direct:ou_user",
   directMessageId: "om_direct",
+  blockMessageId: "om_block",
   cardMessageId: "om_card",
 });
+await direct.sendBlock("intermediate block");
 await direct.sendDirect("direct final");
 await direct.sendCard("card final");
 await direct.startStreaming();
@@ -266,6 +280,39 @@ function createFeishuReplyDispatcher(params) {
     patched = runtime.read_text(encoding="utf-8")
     assert "if (!messageId) return;" in patched
     assert "success: true" in patched
+
+
+def test_openclaw_feishu_message_sent_patch_upgrades_installed_v1_patch(
+    tmp_path: Path,
+) -> None:
+    runtime = tmp_path / "monitor.account-legacy.js"
+    legacy = """
+async function emitEimemoryFeishuMessageSent(params) {}
+function createFeishuReplyDispatcher(params) {
+    const { chatId, sendTarget, accountId } = params;
+    let eimemoryFeishuReceiptMessageId = "";
+    const rememberEimemoryFeishuReceipt = (result) => {
+        const messageId = String(result?.messageId || "").trim();
+        if (messageId && !eimemoryFeishuReceiptMessageId) eimemoryFeishuReceiptMessageId = messageId;
+        return result;
+    };
+    const sendChunkedTextReply = async (paramsLocal) => {
+        await paramsLocal.sendChunk();
+    };
+}
+//#endregion
+""".strip() + "\n"
+
+    upgraded, changed = _patch_dispatcher(legacy, runtime)
+
+    assert changed is True
+    assert "// eimemory-feishu-message-sent-patch:v2" in upgraded
+    assert "if (messageId) eimemoryFeishuReceiptMessageId = messageId;" in upgraded
+    assert "messageId && !eimemoryFeishuReceiptMessageId" not in upgraded
+    assert upgraded.count('eimemoryFeishuReceiptMessageId = "";') == 2
+    second, changed_again = _patch_dispatcher(upgraded, runtime)
+    assert changed_again is False
+    assert second == upgraded
 
 
 @pytest.mark.parametrize("openclaw_version", ["2026.7.1-beta.2", "2026.7.1-2"])
@@ -1850,6 +1897,9 @@ def test_release_closure_uses_channel_ledger_path_without_polling() -> None:
     assert "OnUnitActiveSec=" not in path_unit
     assert "OnCalendar=" not in path_unit
     assert "learn release-closure-reconcile --json" in service
+    assert "Restart=on-failure" in service
+    assert "RestartSec=2s" in service
+    assert "StartLimitBurst=3" in service
     assert "openclaw-feishu-reply-watchdog" not in service
     assert '"$RELEASE_DIR/deploy/systemd/eimemory-release-closure.path"' in script
     assert '"$RELEASE_DIR/deploy/systemd/eimemory-release-closure.service"' in script

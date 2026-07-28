@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Planned
 - Multi-agent memory coordination
 
+## [1.9.110] - 2026-07-29
+
+### Fixed
+- Reset and replace automatic Feishu reply receipts at logical response boundaries so a final reply cannot inherit an earlier block message ID, including in-place upgrade of the deployed receipt patch.
+- Recheck channel acceptance immediately after arming a release-closure checkpoint, eliminating the ledger-event race.
+- Serialize release-closure reconciliation and add bounded systemd failure retries without introducing polling.
+
 ## [1.9.109] - 2026-07-29
 
 ### Fixed

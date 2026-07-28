@@ -223,6 +223,18 @@ def run_release_closure(
                 checkpoint,
                 path=pending_path,
             )
+            if blocked["pending_checkpoint"].get("ok") is True:
+                from eimemory.governance.release_closure_pending import (
+                    reconcile_release_closure_pending,
+                )
+
+                reconciled = reconcile_release_closure_pending(
+                    runtime,
+                    pending_path=pending_path,
+                )
+                if reconciled.get("report_type") == "l5_release_closure":
+                    return reconciled
+                blocked["post_write_reconcile"] = reconciled
         return blocked
 
     return _continue_release_closure(

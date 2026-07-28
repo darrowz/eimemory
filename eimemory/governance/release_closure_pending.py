@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
 import re
-from typing import Any, Mapping
+import threading
+from typing import Any, Iterator, Mapping
 
 from eimemory.governance.evidence_contract import (
     ReleaseIdentity,
@@ -18,6 +20,12 @@ SCHEMA_VERSION = "release_closure_pending.v1"
 WAITING_STATUS = "waiting_for_channel_acceptance"
 _COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 _VERSION_KEYS = frozenset({"version", "release_version", "deployment_version"})
+_LOCAL_LOCKS: dict[str, threading.Lock] = {}
+_LOCAL_LOCKS_GUARD = threading.Lock()
+
+
+class _ReleaseClosureReconcileBusy(RuntimeError):
+    pass
 
 
 def default_release_closure_pending_path() -> Path | None:
@@ -125,6 +133,21 @@ def reconcile_release_closure_pending(
     pending_path: str | Path | None = None,
 ) -> dict[str, Any]:
     try:
+        with _release_closure_reconcile_lock(pending_path):
+            return _reconcile_release_closure_pending_unlocked(
+                runtime,
+                pending_path=pending_path,
+            )
+    except _ReleaseClosureReconcileBusy:
+        return {"ok": True, "status": "busy"}
+
+
+def _reconcile_release_closure_pending_unlocked(
+    runtime: Any,
+    *,
+    pending_path: str | Path | None = None,
+) -> dict[str, Any]:
+    try:
         checkpoint = read_release_closure_pending(path=pending_path)
     except (OSError, ValueError) as exc:
         return {
@@ -184,6 +207,65 @@ def reconcile_release_closure_pending(
             expected_commit=current.commit,
         )
     return report
+
+
+@contextmanager
+def _release_closure_reconcile_lock(
+    pending_path: str | Path | None,
+) -> Iterator[None]:
+    target = _resolve_path(pending_path)
+    if target is None:
+        yield
+        return
+    lock_path = target.with_name(f".{target.name}.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    if lock_path.is_symlink():
+        raise ValueError("release closure reconcile lock must not be a symlink")
+    key = str(lock_path.resolve())
+    with _LOCAL_LOCKS_GUARD:
+        local = _LOCAL_LOCKS.setdefault(key, threading.Lock())
+    if not local.acquire(blocking=False):
+        raise _ReleaseClosureReconcileBusy
+    descriptor = -1
+    acquired = False
+    try:
+        flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(lock_path, flags, 0o600)
+        if os.fstat(descriptor).st_size == 0:
+            os.write(descriptor, b"\0")
+            os.fsync(descriptor)
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            acquired = True
+        except OSError as exc:
+            raise _ReleaseClosureReconcileBusy from exc
+        yield
+    finally:
+        if descriptor >= 0:
+            if acquired:
+                try:
+                    os.lseek(descriptor, 0, os.SEEK_SET)
+                    if os.name == "nt":
+                        import msvcrt
+
+                        msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+                    else:
+                        import fcntl
+
+                        fcntl.flock(descriptor, fcntl.LOCK_UN)
+                except OSError:
+                    pass
+            os.close(descriptor)
+        local.release()
 
 
 def _validate_checkpoint(checkpoint: dict[str, Any]) -> dict[str, Any]:
