@@ -131,7 +131,25 @@
 - [x] Add no-store, no-referrer, nosniff, frame, and content-security headers.
 - [x] Cover missing, incorrect, and exact-token access.
 
-### Task 7: Single verification and production closure
+### Task 7: Linux deployment transaction closure
+
+**Files:**
+- Modify: `deploy/storage_release_transaction.py`
+- Modify: `tests/test_storage_deploy.py`
+- Modify: `tests/test_deployment_tools.py`
+
+**Interfaces:**
+- Consumes: concurrent POSIX transaction starts, durable-clear failures, and symlinked lock attacks.
+- Produces: one transaction winner, fail-closed durable credentials, normalized security errors, and environment-independent installer harnesses.
+
+- [x] Tolerate a peer creating the marker parent while preserving fd/inode validation.
+- [x] Normalize `O_NOFOLLOW` symlink failures into the storage transaction security contract.
+- [x] Exercise the real parent-sync abstraction for clear durability failure injection.
+- [x] Keep recovery-file fsync injection isolated from directory fsync.
+- [x] Make Linux installer tests use the actual runner user and group.
+- [x] Account for the installer lock acquisition receipt before the harness-ready line.
+
+### Task 8: Single verification and production closure
 
 **Files:**
 - Verify all modified files.

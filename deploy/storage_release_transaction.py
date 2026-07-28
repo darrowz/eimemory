@@ -124,8 +124,14 @@ def _open_directory_fds(path: Path, *, create: bool = False):
             except FileNotFoundError:
                 if not create:
                     raise
-                os.mkdir(component, mode=0o700, dir_fd=parent_fd)
-                created = True
+                try:
+                    os.mkdir(component, mode=0o700, dir_fd=parent_fd)
+                    created = True
+                except FileExistsError:
+                    # A peer beginning the same transaction can create this
+                    # component between open and mkdir. Re-open with
+                    # O_NOFOLLOW and validate the inode below.
+                    created = True
                 descriptor = os.open(component, flags, dir_fd=parent_fd)
             metadata = os.fstat(descriptor)
             if not stat.S_ISDIR(metadata.st_mode):
@@ -359,23 +365,47 @@ def _marker_lock(marker: Path):
         parent_context = _portable_marker_parent_context()
     with parent_context as parent_entries:
         parent_fd = parent_entries[-1][2] if parent_entries else None
-        if parent_fd is not None:
-            descriptor = os.open(
-                lock_path.name,
-                os.O_RDWR | os.O_CREAT | int(getattr(os, "O_NOFOLLOW", 0)),
-                0o600,
-                dir_fd=parent_fd,
-            )
-        else:
-            if lock_path.is_symlink():
-                raise StorageReleaseTransactionError(
-                    "storage release transaction lock is a symlink"
+        try:
+            if parent_fd is not None:
+                descriptor = os.open(
+                    lock_path.name,
+                    os.O_RDWR | os.O_CREAT | int(getattr(os, "O_NOFOLLOW", 0)),
+                    0o600,
+                    dir_fd=parent_fd,
                 )
-            descriptor = os.open(
-                lock_path,
-                os.O_RDWR | os.O_CREAT | int(getattr(os, "O_NOFOLLOW", 0)),
-                0o600,
+            else:
+                if lock_path.is_symlink():
+                    raise StorageReleaseTransactionError(
+                        "storage release transaction lock is a symlink"
+                    )
+                descriptor = os.open(
+                    lock_path,
+                    os.O_RDWR | os.O_CREAT | int(getattr(os, "O_NOFOLLOW", 0)),
+                    0o600,
+                )
+        except StorageReleaseTransactionError:
+            raise
+        except OSError as exc:
+            is_symlink = False
+            try:
+                if parent_fd is not None:
+                    is_symlink = stat.S_ISLNK(
+                        os.stat(
+                            lock_path.name,
+                            dir_fd=parent_fd,
+                            follow_symlinks=False,
+                        ).st_mode
+                    )
+                else:
+                    is_symlink = lock_path.is_symlink()
+            except OSError:
+                pass
+            message = (
+                "storage release transaction lock is a symlink"
+                if is_symlink
+                else "storage release transaction lock is invalid"
             )
+            raise StorageReleaseTransactionError(message) from exc
         try:
             metadata = os.fstat(descriptor)
             if (

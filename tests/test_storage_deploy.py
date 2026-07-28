@@ -875,13 +875,17 @@ def test_storage_release_clear_fsync_failure_preserves_a_blocking_credential(
     )
     calls = 0
 
-    def fail_selected_parent_sync(_path: Path) -> None:
+    def fail_selected_parent_sync(
+        _path: Path,
+        *,
+        parent_fd: int | None,
+    ) -> None:
         nonlocal calls
         calls += 1
         if calls == failure_call:
             raise OSError(errno.EIO, "injected parent fsync failure")
 
-    monkeypatch.setattr(transaction, "_fsync_directory", fail_selected_parent_sync)
+    monkeypatch.setattr(transaction, "_sync_marker_parent", fail_selected_parent_sync)
 
     with pytest.raises(transaction.StorageReleaseTransactionError):
         transaction.clear_storage_release_transaction(
@@ -1268,11 +1272,12 @@ def test_storage_release_clear_recovery_file_fsync_failure_keeps_tombstone(
         active_writer_units=[],
     )
     real_fsync = transaction.os.fsync
-    monkeypatch.setattr(
-        transaction.os,
-        "fsync",
-        lambda _fd: (_ for _ in ()).throw(OSError(errno.EIO, "injected blocker fsync")),
-    )
+    def fail_recovery_file_fsync(descriptor: int) -> None:
+        if stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise OSError(errno.EIO, "injected blocker fsync")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(transaction.os, "fsync", fail_recovery_file_fsync)
 
     with pytest.raises(
         transaction.StorageReleaseTransactionError,
@@ -1887,6 +1892,7 @@ def test_two_installer_processes_cannot_hold_the_storage_deploy_lock(tmp_path: P
     )
     try:
         assert first.stdout is not None
+        assert first.stdout.readline().strip() == "storage_deploy_lock=acquired"
         assert first.stdout.readline().strip() == "ready"
         second = subprocess.run(
             [_bash_executable(), "-c", harness, "lock-two", str(lock_path)],

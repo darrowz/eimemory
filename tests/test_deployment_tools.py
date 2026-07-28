@@ -2096,6 +2096,7 @@ def test_immutable_release_installer_never_executes_linked_release_python(tmp_pa
             "USER_SYSTEMD_ENABLE_SERVICE": "0",
             "OPENCLAW_LOOP_DEPLOY_VERIFY": "0",
             "OPENCLAW_LOOP_COMPAT_SCRIPT": "",
+            **_installer_test_service_env(tmp_path),
         }
     )
 
@@ -2146,6 +2147,7 @@ def test_immutable_release_installer_does_not_rebuild_active_existing_release(tm
             "USER_SYSTEMD_ENABLE_SERVICE": "0",
             "OPENCLAW_LOOP_DEPLOY_VERIFY": "0",
             "OPENCLAW_LOOP_COMPAT_SCRIPT": "",
+            **_installer_test_service_env(tmp_path),
         }
     )
 
@@ -2226,6 +2228,7 @@ def test_immutable_release_installer_cleans_existing_release_before_strict_valid
             "USER_SYSTEMD_ENABLE_SERVICE": "0",
             "OPENCLAW_LOOP_DEPLOY_VERIFY": "0",
             "OPENCLAW_LOOP_COMPAT_SCRIPT": "",
+            **_installer_test_service_env(tmp_path),
         }
     )
 
@@ -2281,6 +2284,18 @@ def _bash_path(path: Path) -> str:
     if os.name == "nt" and len(value) > 2 and value[1] == ":":
         return f"/{value[0].lower()}{value[2:]}"
     return value
+
+
+def _installer_test_service_env(tmp_path: Path) -> dict[str, str]:
+    if os.name != "posix":
+        return {}
+    user = subprocess.check_output(["id", "-un"], text=True).strip()
+    group = subprocess.check_output(["id", "-gn"], text=True).strip()
+    return {
+        "SERVICE_USER": user,
+        "SERVICE_GROUP": group,
+        "SERVICE_HOME": (tmp_path / "service-home").as_posix(),
+    }
 
 
 def _create_directory_link(link: Path, target: Path) -> None:
@@ -2656,6 +2671,7 @@ def test_installer_restores_previous_release_after_post_switch_failure(tmp_path,
             "OPENCLAW_LOOP_DEPLOY_VERIFY": "0",
             "OPENCLAW_LOOP_COMPAT_SCRIPT": "",
             "OPENCLAW_BIN": (tmp_path / "missing-openclaw").as_posix(),
+            **_installer_test_service_env(tmp_path),
         }
     )
 
@@ -2703,6 +2719,7 @@ def test_installer_does_not_claim_success_or_delete_candidate_when_rollback_fail
             "EIMEMORY_DEPLOY_FAIL_ROLLBACK_STAGE": "link",
             "OPENCLAW_LOOP_DEPLOY_VERIFY": "0",
             "OPENCLAW_LOOP_COMPAT_SCRIPT": "",
+            **_installer_test_service_env(tmp_path),
         }
     )
 
