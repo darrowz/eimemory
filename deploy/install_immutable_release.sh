@@ -1323,13 +1323,15 @@ _rollback_current_release() {
     echo "rollback_current_release=failed" >&2
     return 1
   fi
-  if ! _refresh_openclaw_gateway_metadata "$REPO_DIR" "$PREVIOUS_COMMIT"; then
-    echo "rollback_step=gateway_metadata status=failed" >&2
-    rollback_failed=1
-  fi
-  if ! _install_current_runtime_metadata "$PREVIOUS_CURRENT" "$PREVIOUS_COMMIT" "$REPO_DIR"; then
-    echo "rollback_step=runtime_metadata status=failed" >&2
-    rollback_failed=1
+  if [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ] && command -v systemctl >/dev/null 2>&1; then
+    if ! _refresh_openclaw_gateway_metadata "$REPO_DIR" "$PREVIOUS_COMMIT"; then
+      echo "rollback_step=gateway_metadata status=failed" >&2
+      rollback_failed=1
+    fi
+    if ! _install_current_runtime_metadata "$PREVIOUS_CURRENT" "$PREVIOUS_COMMIT" "$REPO_DIR"; then
+      echo "rollback_step=runtime_metadata status=failed" >&2
+      rollback_failed=1
+    fi
   fi
   if ! _install_openclaw_loop_compat_script "$PREVIOUS_CURRENT"; then
     echo "rollback_step=compat_script status=failed" >&2
