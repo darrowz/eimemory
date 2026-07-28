@@ -20,6 +20,7 @@ dataset is otherwise eligible.
 - Keep technical deployment fast and independent from business-data maturity.
 - Keep L5 evidence collection and readiness independent from RPC, storage,
   recall, OpenClaw, and immutable-release availability.
+- Make L5 evidence authority independent from the package version number.
 - Preserve strict anti-self-blessing rules in the production recall gate.
 - Leave post-switch business validation non-rollback and independently
   retryable.
@@ -76,6 +77,12 @@ prerequisite for the product runtime.
   `pending`, `degraded`, or `blocked`.
 - L5 state must not change `/health` process or store readiness, invalidate a
   committed deployment receipt, stop RPC or OpenClaw, or trigger rollback.
+- L5 evidence authority is keyed by deployed commit, deployment receipt, and
+  release session. Package version remains descriptive metadata and is not part
+  of L5 equality, freshness, inheritance, or promotion decisions.
+- Two commits with the same package version are distinct L5 evidence
+  authorities. Changing only the package version does not create fresh L5
+  evidence, and retrying or improving L5 never requires a version bump.
 - Improvements to core memory, recall, deployment, or channel functionality are
   accepted by their own contracts even when the formal L5 evidence dataset is
   incomplete.
@@ -132,6 +139,18 @@ Add decoupling tests that prove an L5 bootstrap, closure, or readiness failure
 does not alter core health, deployment receipt validity, RPC availability, or
 the installer success status after technical commit.
 
+Add evidence-authority tests that prove:
+
+- changing only `release_version` does not invalidate otherwise identical L5
+  evidence;
+- changing commit, receipt, or release session still invalidates the evidence;
+- current L5 evidence is selected by runtime commit and verified receipt, not by
+  `eimemory.__version__`;
+- channel acceptance, release lineage, closure rehearsal, and readiness do not
+  require version equality;
+- core deployment health may still verify that its reported package version is
+  internally consistent, without exporting that comparison as an L5 gate.
+
 Run the focused deployment test files once after all code edits, followed by
 Shell syntax, `git diff --check`, and the mandatory Ubuntu deployment-contract
 workflow. Do not rerun the full local suite already completed for this release.
@@ -148,3 +167,5 @@ workflow. Do not rerun the full local suite already completed for this release.
   overstating L5.
 - RPC, storage, recall, OpenClaw, and deployment health remain independently
   usable when the final L5 state is below L5.
+- L5 can be retried and advanced across commits that retain the same package
+  version, without a version bump or version-equality gate.
