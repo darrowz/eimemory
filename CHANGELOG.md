@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Planned
 - Multi-agent memory coordination
 
+## [1.9.121] - 2026-07-30
+
+### Fixed
+- Persist successful Feishu API receipts through an atomic filesystem spool so channel and plugin Node isolates no longer depend on shared `globalThis` state.
+- Drain spooled receipts transactionally before `agent_end` final matching, deleting a receipt only after the reply ledger write commits.
+
 ## [1.9.120] - 2026-07-30
 
 ### Fixed

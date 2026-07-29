@@ -3,15 +3,23 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import time
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def _run_node(script: str, state_path: Path) -> dict:
+def _run_node(
+    script: str,
+    state_path: Path,
+    *,
+    spool_dir: Path | None = None,
+) -> dict:
     env = os.environ.copy()
     env["EIMEMORY_REPLY_DELIVERY_STATE_PATH"] = str(state_path)
+    if spool_dir is not None:
+        env["EIMEMORY_FEISHU_API_RECEIPT_SPOOL_DIR"] = str(spool_dir)
     env["EIMEMORY_HOOK_COMMAND"] = "/usr/bin/true"
     env["EIMEMORY_RUNTIME_COMMIT"] = "a" * 40
     result = subprocess.run(
@@ -432,6 +440,58 @@ Promise.resolve()
     entry = state["entries"]["om_api_early"]
     assert entry["status"] == "platform_accepted"
     assert entry["delivery_message_id"] == "om_api_early_out"
+
+
+def test_tracker_drains_cross_isolate_feishu_api_receipt_before_agent_end(
+    tmp_path: Path,
+) -> None:
+    spool_dir = tmp_path / "feishu-api-receipts"
+    spool_dir.mkdir()
+    accepted_at_ms = int(time.time() * 1000)
+    (spool_dir / f"{accepted_at_ms}-test-receipt.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "eimemory.feishu_api_receipt.v1",
+                "content": "cross-isolate final",
+                "success": True,
+                "messageId": "om_spooled_out",
+                "conversationId": "oc_spooled_chat",
+                "sessionKey": "agent:main:feishu:direct:ou_test",
+                "acceptedAtMs": accepted_at_ms,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    state = _run_node(
+        """
+const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
+const handlers = {};
+plugin.register({ on(name, handler) { handlers[name] = handler; } });
+const ctx = {
+  channelId: 'feishu',
+  conversationId: 'user:ou_test',
+  sessionKey: 'agent:main:feishu:direct:ou_test'
+};
+Promise.resolve()
+  .then(() => handlers.message_received({
+    from: 'ou_test', messageId: 'om_spooled_in', runId: 'run-spooled'
+  }, ctx))
+  .then(() => handlers.agent_end({
+    success: true,
+    runId: 'run-spooled',
+    messages: [{ role: 'assistant', content: 'cross-isolate final' }]
+  }, ctx));
+""",
+        tmp_path / "reply-state.json",
+        spool_dir=spool_dir,
+    )
+
+    entry = state["entries"]["om_spooled_in"]
+    assert entry["status"] == "platform_accepted"
+    assert entry["delivery_message_id"] == "om_spooled_out"
+    assert entry["conversation_id"] == "oc_spooled_chat"
+    assert list(spool_dir.iterdir()) == []
 
 
 def test_tracker_does_not_close_final_from_nonmatching_api_receipt(

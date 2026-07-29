@@ -202,6 +202,10 @@ export { createFeishuReplyDispatcher };
     probe = tmp_path / "probe.mjs"
     probe.write_text(
         """
+import fs from "node:fs";
+import { fileURLToPath } from "node:url";
+const spoolDir = fileURLToPath(new URL("./feishu-api-receipts", import.meta.url));
+process.env.EIMEMORY_FEISHU_API_RECEIPT_SPOOL_DIR = spoolDir;
 globalThis.__events = [];
 globalThis[Symbol.for("eimemory.feishu.apiAccepted.v1")] = async (receipt) => {
   globalThis.__events.push(receipt);
@@ -224,7 +228,10 @@ await direct.sendCard("card final");
 await direct.startStreaming();
 direct.setStreamText("stream final");
 await direct.closeStreaming();
-process.stdout.write(JSON.stringify(globalThis.__events));
+const spooled = fs.readdirSync(spoolDir)
+  .filter((name) => name.endsWith(".json"))
+  .map((name) => JSON.parse(fs.readFileSync(`${spoolDir}/${name}`, "utf8")));
+process.stdout.write(JSON.stringify({ events: globalThis.__events, spooled }));
 """.strip()
         + "\n",
         encoding="utf-8",
@@ -239,7 +246,8 @@ process.stdout.write(JSON.stringify(globalThis.__events));
     )
 
     assert executed.returncode == 0, executed.stderr
-    events = json.loads(executed.stdout)
+    output = json.loads(executed.stdout)
+    events = output["events"]
     assert [
         (item["content"], item["messageId"])
         for item in events
@@ -253,6 +261,15 @@ process.stdout.write(JSON.stringify(globalThis.__events));
         item["sessionKey"] == "agent:main:feishu:direct:ou_user"
         for item in events
     )
+    assert {
+        (item["content"], item["messageId"])
+        for item in output["spooled"]
+    } == {
+        ("intermediate block", "om_block"),
+        ("direct final", "om_direct"),
+        ("card final", "om_card"),
+        ("stream final", "om_stream"),
+    }
 
 
 def test_openclaw_feishu_patch_repairs_v2_dispatcher_still_calling_message_sent(
@@ -283,10 +300,50 @@ function createFeishuReplyDispatcher(params) {
     upgraded, changed = _patch_dispatcher(broken_v2, runtime)
 
     assert changed is True
-    assert "// eimemory-feishu-api-receipt-patch:v3" in upgraded
+    assert "// eimemory-feishu-api-receipt-patch:v4" in upgraded
     assert "// eimemory-feishu-api-receipt-patch:v2" not in upgraded
     assert "emitEimemoryFeishuMessageSent(" not in upgraded
     assert upgraded.count("emitEimemoryFeishuApiAccepted(") == 2
+    second, changed_again = _patch_dispatcher(upgraded, runtime)
+    assert changed_again is False
+    assert second == upgraded
+
+
+def test_openclaw_feishu_patch_upgrades_v3_global_sink_to_receipt_spool(
+    tmp_path: Path,
+) -> None:
+    runtime = tmp_path / "monitor.account-v3.js"
+    v3 = """
+// eimemory-feishu-api-receipt-patch:v3
+async function emitEimemoryFeishuApiAccepted(params) {
+    const sink = globalThis[Symbol.for("eimemory.feishu.apiAccepted.v1")];
+    if (typeof sink === "function") await sink(params);
+}
+function createFeishuReplyDispatcher(params) {
+    const { chatId, sendTarget, accountId } = params;
+    const emitRememberedEimemoryFeishuReceipt = async (content, messageId) => {
+        await emitEimemoryFeishuApiAccepted({
+            content,
+            messageId,
+            sessionKey: params.sessionKey,
+        });
+    };
+    const sendChunkedTextReply = async (paramsLocal) => {
+        await paramsLocal.sendChunk();
+        await emitRememberedEimemoryFeishuReceipt(paramsLocal.text);
+        if (paramsLocal.infoKind === "final") return;
+    };
+}
+//#endregion
+""".strip() + "\n"
+
+    upgraded, changed = _patch_dispatcher(v3, runtime)
+
+    assert changed is True
+    assert "// eimemory-feishu-api-receipt-patch:v4" in upgraded
+    assert "// eimemory-feishu-api-receipt-patch:v3" not in upgraded
+    assert "persistEimemoryFeishuApiAccepted" in upgraded
+    assert "EIMEMORY_FEISHU_API_RECEIPT_SPOOL_DIR" in upgraded
     second, changed_again = _patch_dispatcher(upgraded, runtime)
     assert changed_again is False
     assert second == upgraded
@@ -401,7 +458,7 @@ function shouldSendNoVisibleReplyFallback(dispatchResult) {
     upgraded, changed = _patch_dispatcher(legacy, runtime)
 
     assert changed is True
-    assert "// eimemory-feishu-api-receipt-patch:v3" in upgraded
+    assert "// eimemory-feishu-api-receipt-patch:v4" in upgraded
     assert "emitEimemoryFeishuApiAccepted" in upgraded
     assert "runMessageSent" not in upgraded
     assert "if (messageId) eimemoryFeishuReceiptMessageId = messageId;" in upgraded
@@ -466,7 +523,7 @@ export { shouldSendNoVisibleReplyFallback };
 
     assert result.returncode == 0, result.stderr
     patched = runtime.read_text(encoding="utf-8")
-    assert "// eimemory-feishu-api-receipt-patch:v3" in patched
+    assert "// eimemory-feishu-api-receipt-patch:v4" in patched
     assert "emitEimemoryFeishuApiAccepted" in patched
     assert "runMessageSent" not in patched
     assert (

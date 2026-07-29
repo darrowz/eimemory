@@ -12,7 +12,8 @@ import stat
 AFFECTED_VERSION = re.compile(r"^2026\.7\.1-2$")
 PATCH_MARKER = "async function emitEimemoryFeishuApiAccepted(params)"
 LEGACY_PATCH_MARKER = "async function emitEimemoryFeishuMessageSent(params)"
-PATCH_VERSION_MARKER = "// eimemory-feishu-api-receipt-patch:v3"
+PATCH_VERSION_MARKER = "// eimemory-feishu-api-receipt-patch:v4"
+LEGACY_API_V3_PATCH_VERSION_MARKER = "// eimemory-feishu-api-receipt-patch:v3"
 LEGACY_API_V2_PATCH_VERSION_MARKER = "// eimemory-feishu-api-receipt-patch:v2"
 LEGACY_API_V1_PATCH_VERSION_MARKER = "// eimemory-feishu-api-receipt-patch:v1"
 LEGACY_V3_PATCH_VERSION_MARKER = "// eimemory-feishu-message-sent-patch:v3"
@@ -41,9 +42,55 @@ def _atomic_write(path: Path, text: str) -> None:
 def _helper_source(newline: str) -> str:
     lines = [
         PATCH_VERSION_MARKER,
+        "function persistEimemoryFeishuApiAccepted(params) {",
+        '\tconst fsApi = process.getBuiltinModule("node:fs");',
+        '\tconst pathApi = process.getBuiltinModule("node:path");',
+        '\tconst cryptoApi = process.getBuiltinModule("node:crypto");',
+        "\tconst spoolDir = String(",
+        "\t\tprocess.env.EIMEMORY_FEISHU_API_RECEIPT_SPOOL_DIR",
+        '\t\t|| "/var/lib/eimemory/feishu-api-receipts"',
+        "\t).trim();",
+        '\tif (!pathApi.isAbsolute(spoolDir)) throw new Error("receipt spool path must be absolute");',
+        "\tfsApi.mkdirSync(spoolDir, { recursive: true, mode: 0o700 });",
+        "\tconst spoolStat = fsApi.lstatSync(spoolDir);",
+        "\tif (!spoolStat.isDirectory() || spoolStat.isSymbolicLink()) {",
+        '\t\tthrow new Error("receipt spool must be a real directory");',
+        "\t}",
+        "\tconst acceptedAtMs = Date.now();",
+        "\tconst token = `${acceptedAtMs}-${process.pid}-${cryptoApi.randomUUID()}`;",
+        "\tconst finalPath = pathApi.join(spoolDir, `${token}.json`);",
+        "\tconst temporaryPath = pathApi.join(spoolDir, `.${token}.tmp`);",
+        "\tconst payload = {",
+        '\t\tschema_version: "eimemory.feishu_api_receipt.v1",',
+        "\t\tto: params.to,",
+        "\t\tcontent: params.content,",
+        "\t\tsuccess: true,",
+        "\t\taccountId: params.accountId,",
+        "\t\tconversationId: params.conversationId,",
+        "\t\tsessionKey: params.sessionKey,",
+        "\t\tmessageId: params.messageId,",
+        "\t\tacceptedAtMs,",
+        '\t\truntimeCommit: String(process.env.EIMEMORY_RUNTIME_COMMIT || "")',
+        "\t};",
+        "\ttry {",
+        "\t\tfsApi.writeFileSync(temporaryPath, `${JSON.stringify(payload)}\\n`, {",
+        '\t\t\tencoding: "utf8", mode: 0o600, flag: "wx"',
+        "\t\t});",
+        "\t\tfsApi.renameSync(temporaryPath, finalPath);",
+        "\t} catch (error) {",
+        "\t\ttry { fsApi.unlinkSync(temporaryPath); } catch {}",
+        "\t\tthrow error;",
+        "\t}",
+        "\treturn acceptedAtMs;",
+        "}",
         "async function emitEimemoryFeishuApiAccepted(params) {",
         '\tconst messageId = String(params.messageId || "").trim();',
         "\tif (!messageId) return;",
+        "\ttry {",
+        "\t\tpersistEimemoryFeishuApiAccepted({ ...params, messageId });",
+        "\t} catch (error) {",
+        "\t\tparams.log?.(`eimemory Feishu API receipt spool failed: ${String(error)}`);",
+        "\t}",
         "\ttry {",
         '\t\tconst sink = globalThis[Symbol.for("eimemory.feishu.apiAccepted.v1")];',
         '\t\tif (typeof sink !== "function") {',
@@ -114,6 +161,12 @@ def _patch_dispatcher(text: str, path: Path) -> tuple[str, bool]:
         if text.count("emitEimemoryFeishuApiAccepted(") < 2:
             raise PatchError(f"current Feishu API receipt sink call is missing in {path.name}")
         return text, False
+    if LEGACY_API_V3_PATCH_VERSION_MARKER in text:
+        return _upgrade_api_patch(
+            text,
+            path,
+            marker=LEGACY_API_V3_PATCH_VERSION_MARKER,
+        ), True
     if LEGACY_API_V2_PATCH_VERSION_MARKER in text:
         return _upgrade_api_patch(
             text,
@@ -313,7 +366,15 @@ def _upgrade_api_patch(text: str, path: Path, *, marker: str) -> str:
         )
     if upgraded.count("emitEimemoryFeishuApiAccepted(") < 2:
         raise PatchError(f"Feishu API receipt sink call is missing in {path.name}")
-    return _upgrade_api_receipt_emission(upgraded, path)
+    upgraded = _upgrade_api_receipt_emission(upgraded, path)
+    newline = "\r\n" if "\r\n" in upgraded else "\n"
+    helper_start = upgraded.index(PATCH_MARKER)
+    dispatcher_start = upgraded.index(DISPATCHER_MARKER, helper_start)
+    return (
+        upgraded[:helper_start]
+        + _helper_source(newline)
+        + upgraded[dispatcher_start:]
+    )
 
 
 def _replace_legacy_sink_call(text: str, path: Path) -> str:
