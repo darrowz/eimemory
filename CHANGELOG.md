@@ -10,6 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Planned
 - Multi-agent memory coordination
 
+## [1.9.116] - 2026-07-30
+
+### Fixed
+- Remove the retired OpenClaw restart watchdog, recovery quarantine injection, installer and CI baggage, and its managed runtime environment.
+- Bound prompt bridge and memory-hook work under one absolute deadline that includes queue wait, preventing serial 25-second hook overruns.
+- Route the eibrain monitor to the honjia tailnet endpoint and normalize both legacy and current supervisor health payloads.
+- Reconcile pending release closure on a bounded 30-second timer, migrating away from reply-ledger path storms and clearing prior start-limit state.
+
 ## [1.9.115] - 2026-07-29
 
 ### Fixed
