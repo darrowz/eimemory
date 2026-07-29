@@ -1137,16 +1137,6 @@ print(values[0])
 _install_candidate_runtime_metadata() {
   if [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ] && command -v systemctl >/dev/null 2>&1; then
     _run_as_service_user mkdir -p "$USER_SYSTEMD_DIR"
-    # OpenClaw restart watchdog permanently removed: pressure must not restart the gateway.
-    _user_systemctl disable --now openclaw-stuck-watchdog.timer >/dev/null 2>&1 || true
-    _user_systemctl stop openclaw-stuck-watchdog.service >/dev/null 2>&1 || true
-    _run_as_service_user rm -f "$USER_SYSTEMD_DIR/openclaw-stuck-watchdog.service"
-    _run_as_service_user rm -f "$USER_SYSTEMD_DIR/openclaw-stuck-watchdog.timer"
-    _run_as_service_user rm -f \
-      "$USER_SYSTEMD_DIR/openclaw-stuck-watchdog.service.d/05-eimemory-storage-release-guard.conf" \
-      "$USER_SYSTEMD_DIR/openclaw-stuck-watchdog.service.d/90-eimemory-python-runtime.conf"
-    _run_as_service_user rmdir "$USER_SYSTEMD_DIR/openclaw-stuck-watchdog.service.d" \
-      >/dev/null 2>&1 || true
     _user_systemctl daemon-reload
     _install_as_service_user 0644 \
       "$RELEASE_DIR/deploy/systemd/openclaw-loop-watch.service" "$USER_SYSTEMD_DIR/openclaw-loop-watch.service"

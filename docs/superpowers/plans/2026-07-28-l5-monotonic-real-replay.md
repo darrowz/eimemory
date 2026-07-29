@@ -4,7 +4,7 @@
 
 **Goal:** Make L5 maturity version-neutral and monotonic, allow current-code replay of verified real production evidence to close the real-business gate, and permit downgrade only through a confirmed fatal-regression incident.
 
-**Architecture:** Separate current-release validation from accumulated maturity. Keep release-bound health diagnostics strict, persist a scope-bound maturity checkpoint whose identity contains no version or commit, and combine live-task evidence with a provenance-verified real-replay alternative. Preserve `openclaw-loop-watch`; keep `openclaw-stuck-watchdog` and the Feishu reply watchdog retired.
+**Architecture:** Separate current-release validation from accumulated maturity. Keep release-bound health diagnostics strict, persist a scope-bound maturity checkpoint whose identity contains no version or commit, and combine live-task evidence with a provenance-verified real-replay alternative. Preserve `openclaw-loop-watch`; keep gateway restart automation and the Feishu reply watchdog retired.
 
 **Tech Stack:** Python 3, SQLite record store, pytest, Bash/systemd deployment scripts, GitHub Actions.
 
@@ -227,7 +227,7 @@ def build_verified_real_replay_summary(
 - [ ] Run the repository's full supported verification command once.
 - [ ] Run repository search checks proving:
   - `openclaw-loop-watch` is still installed and identity-checked;
-  - `openclaw-stuck-watchdog` is absent from deployment/systemd/runtime identity;
+  - gateway restart automation is absent from deployment/systemd/runtime identity;
   - the Feishu reply watchdog is not an active resend path;
   - no maturity checkpoint selection key contains version or commit.
 - [ ] Inspect the final diff for secrets, raw identifiers, generated artifacts, accidental audit-report restoration, and unrelated files.

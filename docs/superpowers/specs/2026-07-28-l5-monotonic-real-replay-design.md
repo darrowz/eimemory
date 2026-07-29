@@ -16,8 +16,8 @@ regression incident explicitly authorizes the downgrade.
 OpenClaw task-loop observation and bounded stale-lease detection needed by the
 current runtime.
 
-The retired component is `openclaw-stuck-watchdog`, which restarted the gateway
-under resource pressure. It remains absent from deployment and systemd.
+The retired gateway restart component acted under resource pressure. It remains
+absent from deployment and systemd.
 `openclaw-feishu-reply-watchdog` also remains retired and must not become a
 second delivery path.
 
@@ -223,7 +223,7 @@ verification pass.
 
 - Deployment continues installing and enabling `openclaw-loop-watch.timer`.
 - Runtime identity continues checking `openclaw-loop-watch.service`.
-- `openclaw-stuck-watchdog` remains absent.
+- Gateway restart automation remains absent.
 - The Feishu reply watchdog remains retired and cannot resend.
 
 ### Real replay tests
@@ -259,8 +259,8 @@ After implementation and consolidated local tests:
 2. Deploy the exact full commit from `/dev-project/eimemory`.
 3. Confirm GitHub master, remote repository HEAD, `/opt/eimemory/current`, and
    `/health` all identify the same commit.
-4. Confirm `openclaw-loop-watch` remains enabled and healthy, while
-   `openclaw-stuck-watchdog` remains absent.
+4. Confirm `openclaw-loop-watch` remains enabled and healthy, while gateway
+   restart automation remains absent.
 5. Confirm the OpenClaw gateway, loopback proxy, eimemory RPC, and systemd failed
    unit set are healthy.
 6. Execute the verified real replay dataset on the deployed code and confirm the

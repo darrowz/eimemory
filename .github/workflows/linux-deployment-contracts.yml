@@ -31,7 +31,6 @@ jobs:
           python -m pytest -q --strict-markers
           tests/test_deployment_tools.py
           tests/test_governance_env.py
-          tests/test_openclaw_watchdog.py
           tests/test_payload_segments.py
           tests/test_production_recall_bootstrap_deploy.py
           tests/test_safe_dataset_loader.py

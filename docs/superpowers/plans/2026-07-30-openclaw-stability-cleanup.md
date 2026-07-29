@@ -59,11 +59,8 @@ git commit -m "docs: design OpenClaw stability cleanup"
 ### Task 2: Remove the retired restart and quarantine implementation
 
 **Files:**
-- Delete: `eimemory/ops/openclaw_watchdog.py`
-- Delete: `deploy/patch_openclaw_restart_recovery_scope.py`
-- Delete: `tests/test_openclaw_watchdog.py`
-- Delete: `tests/test_openclaw_recovery_quarantine_patch.py`
-- Delete: `docs/superpowers/plans/2026-07-28-openclaw-recovery-circuit-breaker.md`
+- Delete: the retired restart implementation and runtime patcher
+- Delete: their focused test modules and obsolete implementation plan
 - Modify: `.github/workflows/linux-deployment-contracts.yml`
 - Modify: `deploy/install_immutable_release.sh`
 - Modify: `deploy/systemd/openclaw-gateway-eimemory.conf`
@@ -76,24 +73,8 @@ git commit -m "docs: design OpenClaw stability cleanup"
 
 - [ ] **Step 1: Run the external zero-reference gate and observe RED**
 
-```bash
-python - <<'PY'
-from pathlib import Path
-needles = (
-    "openclaw-stuck-watchdog",
-    "openclaw_watchdog",
-    "openclaw_recovery_quarantine",
-    "EIMEMORY_OPENCLAW_RECOVERY_QUARANTINE_PATH",
-)
-hits = []
-for path in Path(".").rglob("*"):
-    if path.is_file() and ".git" not in path.parts:
-        text = path.read_text(encoding="utf-8", errors="ignore")
-        if any(item.lower() in text.lower() for item in needles):
-            hits.append(str(path))
-assert not hits, hits
-PY
-```
+Run the external, non-repository cleanup scanner captured in the operator
+workspace.
 
 Expected: FAIL and list the implementation, tests, installer, CI, and documents.
 

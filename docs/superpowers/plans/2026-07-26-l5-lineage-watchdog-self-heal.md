@@ -25,7 +25,6 @@
 **Files:**
 - Modify: `eimemory/ops/openclaw_loop.py`
 - Modify: `tests/test_openclaw_loop_io.py`
-- Modify: `tests/test_openclaw_watchdog.py`
 
 **Interfaces:**
 - Consumes: `find_stale_tasks()`, `create_task()`, `record_action()`, `record_verification()`, and `finish_task()`.
@@ -61,7 +60,7 @@ the watchdog non-zero.
 Run:
 
 ```powershell
-python -m pytest -q tests/test_openclaw_loop_io.py tests/test_openclaw_watchdog.py
+python -m pytest -q tests/test_openclaw_loop_io.py
 ```
 
 Expected: new assertions fail because `run_watch` has no repair transaction.
@@ -99,7 +98,7 @@ Run the Step 2 command. Expected: all focused tests pass.
 - [ ] **Step 5: Commit**
 
 ```powershell
-git add eimemory/ops/openclaw_loop.py tests/test_openclaw_loop_io.py tests/test_openclaw_watchdog.py
+git add eimemory/ops/openclaw_loop.py tests/test_openclaw_loop_io.py
 git commit -m "fix: close watchdog stale-task repair loop"
 ```
 
@@ -426,7 +425,7 @@ python -m pytest -q tests/test_version.py
 - [ ] **Step 2: Run layered verification**
 
 ```powershell
-python -m pytest -q tests/test_openclaw_loop_io.py tests/test_openclaw_watchdog.py tests/test_runtime_adapter_rpc.py tests/test_deployment_tools.py tests/test_release_lineage.py tests/test_governance_evidence_contract.py tests/test_capability_dashboard_metrics.py tests/test_l5_readiness.py tests/test_release_closure.py tests/test_production_recall_bootstrap_deploy.py
+python -m pytest -q tests/test_openclaw_loop_io.py tests/test_runtime_adapter_rpc.py tests/test_deployment_tools.py tests/test_release_lineage.py tests/test_governance_evidence_contract.py tests/test_capability_dashboard_metrics.py tests/test_l5_readiness.py tests/test_release_closure.py tests/test_production_recall_bootstrap_deploy.py
 python -m compileall -q eimemory deploy
 git diff --check
 ```
