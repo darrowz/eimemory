@@ -187,10 +187,10 @@ def current_release_lineage(
     mismatch_seen = False
     selected_ancestor: ReleaseIdentity | None = None
     selected_ancestor_loaded = False
-    records = runtime.store.list_records(
-        kinds=["l5_self_continuity"],
+    records = _release_lineage_records(
+        runtime,
         scope=scope_ref,
-        limit=500,
+        before_rowid=None,
     )
     for record in records:
         if (
@@ -552,7 +552,7 @@ def _release_lineage_records(
     runtime: Any,
     *,
     scope: ScopeRef,
-    before_rowid: int,
+    before_rowid: int | None,
 ) -> Iterator[Any]:
     sqlite = getattr(getattr(runtime, "store", None), "sqlite", None)
     conn = getattr(sqlite, "conn", None)
@@ -560,8 +560,20 @@ def _release_lineage_records(
         return
     cursor = before_rowid
     while True:
+        rowid_clause = "" if cursor is None else "AND rowid < ?"
+        params: tuple[Any, ...] = (
+            "l5_self_continuity",
+            SOURCE,
+            "active",
+            scope.tenant_id,
+            scope.agent_id,
+            scope.workspace_id,
+            scope.user_id,
+        )
+        if cursor is not None:
+            params = (*params, cursor)
         rows = conn.execute(
-            """
+            f"""
             SELECT rowid, record_id, source_id
             FROM records
             WHERE kind = ?
@@ -571,21 +583,11 @@ def _release_lineage_records(
               AND agent_id = ?
               AND workspace_id = ?
               AND user_id = ?
-              AND rowid < ?
+              {rowid_clause}
             ORDER BY rowid DESC
             LIMIT ?
             """,
-            (
-                "l5_self_continuity",
-                SOURCE,
-                "active",
-                scope.tenant_id,
-                scope.agent_id,
-                scope.workspace_id,
-                scope.user_id,
-                cursor,
-                RECEIPT_PAGE_SIZE,
-            ),
+            (*params, RECEIPT_PAGE_SIZE),
         ).fetchall()
         if not rows:
             break
@@ -598,7 +600,7 @@ def _release_lineage_records(
             if record is not None:
                 yield record
         next_cursor = min(int(row["rowid"]) for row in rows)
-        if next_cursor >= cursor:
+        if cursor is not None and next_cursor >= cursor:
             break
         cursor = next_cursor
 

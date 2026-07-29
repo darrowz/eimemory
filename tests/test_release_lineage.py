@@ -9,6 +9,7 @@ import pytest
 import eimemory.evaluation.real_query_gate as real_query_gate
 import eimemory.governance.l5_readiness as l5_readiness
 import eimemory.governance.release_lineage as release_lineage
+import eimemory.models.records as record_models
 from eimemory.api.runtime import Runtime
 from eimemory.governance.evidence_contract import (
     ReleaseIdentity,
@@ -20,7 +21,7 @@ from eimemory.governance.release_lineage import (
     record_release_lineage,
 )
 from eimemory.governance.live_task_acceptance import LIVE_ACCEPTANCE_CASE_IDS
-from eimemory.models.records import RecordEnvelope, ScopeRef
+from eimemory.models.records import RecordEnvelope, ScopeRef, TimeRef
 from eimemory.runtime_identity import runtime_package_tree_digest
 
 
@@ -959,6 +960,135 @@ def test_openclaw_requires_real_platform_channel_acceptance_not_local_probes(
         )
     finally:
         runtime.close()
+
+
+def test_current_lineage_uses_sqlite_insertion_order_for_equal_timestamps(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _repo(tmp_path)
+    prior_commit = _commit(repo, "integrations/openclaw/index.ts", "prior\n", "prior")
+    current_commit = _commit(repo, "integrations/openclaw/index.ts", "changed\n", "current")
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    try:
+        _receipt(runtime, SCOPE, prior_commit, "1.0.0")
+        current = _receipt(runtime, SCOPE, current_commit, "1.0.1")
+        runtime._test_runtime_commit = current.commit
+        local_probe = _live_case(
+            runtime,
+            SCOPE,
+            current,
+            case_id=LIVE_ACCEPTANCE_CASE_IDS[0],
+            index=0,
+        )
+        channel_receipt = _channel_case(runtime, SCOPE, current)
+        lineage_ids = iter(("rec_ffffffffffff", "rec_000000000000"))
+        original_generate_record_id = record_models.generate_record_id
+
+        def deterministic_lineage_id(kind: str) -> str:
+            if kind == "l5_self_continuity":
+                return next(lineage_ids)
+            return original_generate_record_id(kind)
+
+        monkeypatch.setattr(
+            record_models,
+            "generate_record_id",
+            deterministic_lineage_id,
+        )
+        monkeypatch.setattr(
+            TimeRef,
+            "now",
+            classmethod(
+                lambda cls: cls(
+                    created_at="2026-07-29T18:20:56+08:00",
+                    updated_at="2026-07-29T18:20:56+08:00",
+                    occurred_at="2026-07-29T18:20:56+08:00",
+                )
+            ),
+        )
+
+        partial = record_release_lineage(
+            runtime,
+            scope=SCOPE,
+            repo_root=repo,
+            current_release=current,
+            gate_evidence={"channel.openclaw": [local_probe.record_id]},
+        )
+        complete = record_release_lineage(
+            runtime,
+            scope=SCOPE,
+            repo_root=repo,
+            current_release=current,
+            gate_evidence={"channel.openclaw": [channel_receipt.record_id]},
+        )
+        resolved = current_release_lineage(
+            runtime,
+            scope=SCOPE,
+            repo_root=repo,
+            current_release=current,
+        )
+
+        assert partial["record_id"] == "rec_ffffffffffff"
+        assert complete["record_id"] == "rec_000000000000"
+        assert partial["domains"]["channel.openclaw"]["mode"] == "changed_unverified"
+        assert complete["domains"]["channel.openclaw"]["mode"] == "current"
+        assert resolved["record_id"] == complete["record_id"]
+        assert (
+            evidence_release_for_domain(
+                runtime,
+                scope=SCOPE,
+                repo_root=repo,
+                domain="channel.openclaw",
+                current_release=current,
+                expected_record_id=complete["record_id"],
+            )
+            == current
+        )
+    finally:
+        runtime.close()
+
+
+def test_current_lineage_fails_closed_without_sqlite_insertion_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    current = _receipt(runtime, SCOPE, "a" * 40, "1.0.1")
+    runtime._test_runtime_commit = current.commit
+    receipt = runtime.store.get_by_id(current.receipt_id, scope=SCOPE)
+    assert receipt is not None
+    lineage_scan_calls = 0
+
+    def controlled_list_records(*, kinds, **_kwargs):
+        nonlocal lineage_scan_calls
+        if kinds == ["promotion_request"]:
+            return [receipt]
+        if kinds == ["l5_self_continuity"]:
+            lineage_scan_calls += 1
+            raise AssertionError("generic lineage ordering must not be used")
+        return []
+
+    monkeypatch.setattr(runtime.store, "list_records", controlled_list_records)
+    monkeypatch.setattr(
+        runtime.store,
+        "get_by_id",
+        lambda record_id, **_kwargs: receipt
+        if record_id == receipt.record_id
+        else None,
+    )
+    monkeypatch.setattr(runtime.store, "sqlite", None)
+    try:
+        report = current_release_lineage(
+            runtime,
+            scope=SCOPE,
+            current_release=current,
+        )
+    finally:
+        monkeypatch.undo()
+        runtime.close()
+
+    assert report == {"ok": False, "error": "current_release_lineage_not_found"}
+    assert lineage_scan_calls == 0
 
 
 def test_governance_requires_complete_weak_and_core_manifest_contracts(
