@@ -1618,17 +1618,34 @@ function feishuApiReceiptSpoolDir() {
 function applyFeishuApiReceipt(state, receipt) {
   const messageId = String(receipt?.messageId || receipt?.message_id || '').trim();
   const sessionKey = String(receipt?.sessionKey || receipt?.session_key || '').trim();
-  if (receipt?.success !== true || !messageId || !sessionKey) {
+  if (receipt?.success !== true || !messageId) {
     return false;
   }
   const sentContent = String(receipt?.content || '');
-  const entry = latestPendingReplyEntry(state, sessionKey, '', sentContent);
-  if (!entry) {
-    return false;
-  }
   const conversationId = String(
     receipt?.conversationId || receipt?.conversation_id || ''
   ).trim();
+  let entry = sessionKey
+    ? latestPendingReplyEntry(state, sessionKey, '', sentContent)
+    : undefined;
+  if (!entry && !sessionKey && conversationId.startsWith('oc_')) {
+    const candidates = Object.values(state.entries || {})
+      .filter((candidate) => (
+        candidate?.conversation_id === conversationId
+        && !TERMINAL_REPLY_DELIVERY_STATUSES.has(candidate?.status)
+      ));
+    const wanted = canonicalReplyText(sentContent);
+    entry = candidates.find((candidate) => (
+      wanted
+      && canonicalReplyText(candidate?.final_text) === wanted
+    )) || candidates
+      .sort((left, right) => (
+        Number(right.received_at_ms || 0) - Number(left.received_at_ms || 0)
+      ))[0];
+  }
+  if (!entry) {
+    return false;
+  }
   if (conversationId.startsWith('oc_')) {
     entry.conversation_id = conversationId;
   }

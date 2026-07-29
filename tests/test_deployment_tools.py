@@ -22,6 +22,22 @@ from deploy.extract_feishu_message_id import extract_feishu_message_id
 pytestmark = pytest.mark.linux_deployment
 
 
+def _write_feishu_send_result_runtime(dist: Path) -> Path:
+    runtime = dist / "send-result-test.js"
+    runtime.write_text(
+        """
+function toFeishuSendResult(response, chatId, kind) {
+    const messageId = response.data?.message_id ?? "unknown";
+    return { messageId, chatId, kind };
+}
+export { toFeishuSendResult };
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    return runtime
+
+
 @pytest.mark.parametrize(
     ("payload", "expected"),
     [
@@ -90,6 +106,7 @@ def test_openclaw_feishu_patch_delivers_api_receipts_without_message_sent(
         encoding="utf-8",
     )
     runtime = dist / "monitor.account-test.js"
+    send_result_runtime = _write_feishu_send_result_runtime(dist)
     runtime.write_text(
         """
 async function sendMessageFeishu(params) {
@@ -213,6 +230,9 @@ globalThis[Symbol.for("eimemory.feishu.apiAccepted.v1")] = async (receipt) => {
 const { createFeishuReplyDispatcher } = await import(
   "./openclaw/dist/monitor.account-test.js"
 );
+const { toFeishuSendResult } = await import(
+  "./openclaw/dist/send-result-test.js"
+);
 const direct = createFeishuReplyDispatcher({
   chatId: "oc_direct",
   sendTarget: "feishu:oc_direct",
@@ -228,6 +248,19 @@ await direct.sendCard("card final");
 await direct.startStreaming();
 direct.setStreamText("stream final");
 await direct.closeStreaming();
+toFeishuSendResult({
+  code: 0,
+  data: {
+    message_id: "om_api_result",
+    chat_id: "oc_direct",
+    msg_type: "post",
+    body: {
+      content: JSON.stringify({
+        zh_cn: { content: [[{ tag: "md", text: "api result final" }]] },
+      }),
+    },
+  },
+}, "oc_direct", "text");
 const spooled = fs.readdirSync(spoolDir)
   .filter((name) => name.endsWith(".json"))
   .map((name) => JSON.parse(fs.readFileSync(`${spoolDir}/${name}`, "utf8")));
@@ -269,7 +302,11 @@ process.stdout.write(JSON.stringify({ events: globalThis.__events, spooled }));
         ("direct final", "om_direct"),
         ("card final", "om_card"),
         ("stream final", "om_stream"),
+        ("api result final", "om_api_result"),
     }
+    assert "// eimemory-feishu-api-result-receipt-patch:v1" in (
+        send_result_runtime.read_text(encoding="utf-8")
+    )
 
 
 def test_openclaw_feishu_patch_repairs_v2_dispatcher_still_calling_message_sent(
@@ -389,6 +426,7 @@ def test_openclaw_feishu_message_sent_patch_does_not_accept_missing_message_id(
         encoding="utf-8",
     )
     runtime = dist / "monitor.account-test.js"
+    _write_feishu_send_result_runtime(dist)
     runtime.write_text(
         """
 async function sendMessageFeishu() { return {}; }
@@ -509,6 +547,7 @@ def test_openclaw_feishu_patch_recovers_settled_queued_final_without_reply(
         encoding="utf-8",
     )
     runtime = dist / "monitor.account-test.js"
+    _write_feishu_send_result_runtime(dist)
     runtime.write_text(
         """
 // eimemory-feishu-message-sent-patch:v2

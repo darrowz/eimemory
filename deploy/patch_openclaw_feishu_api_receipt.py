@@ -20,6 +20,15 @@ LEGACY_V3_PATCH_VERSION_MARKER = "// eimemory-feishu-message-sent-patch:v3"
 LEGACY_V2_PATCH_VERSION_MARKER = "// eimemory-feishu-message-sent-patch:v2"
 DISPATCHER_MARKER = "function createFeishuReplyDispatcher(params) {"
 DISPATCHER_END_MARKER = "\n//#endregion"
+API_RESULT_PATCH_VERSION_MARKER = (
+    "// eimemory-feishu-api-result-receipt-patch:v1"
+)
+API_RESULT_FUNCTION_MARKER = (
+    "function toFeishuSendResult(response, chatId, kind) {"
+)
+API_RESULT_MESSAGE_ID_MARKER = (
+    'const messageId = response.data?.message_id ?? "unknown";'
+)
 
 
 class PatchError(RuntimeError):
@@ -112,6 +121,123 @@ def _helper_source(newline: str) -> str:
         "}",
     ]
     return newline.join(lines) + newline
+
+
+def _api_result_helper_source(newline: str) -> str:
+    lines = [
+        API_RESULT_PATCH_VERSION_MARKER,
+        "function extractEimemoryFeishuApiResultContent(response) {",
+        "\tconst raw = response?.data?.body?.content ?? response?.data?.content;",
+        "\tif (raw === undefined || raw === null) return \"\";",
+        "\tlet decoded = raw;",
+        "\tif (typeof raw === \"string\") {",
+        "\t\ttry { decoded = JSON.parse(raw); } catch { return raw.trim(); }",
+        "\t}",
+        "\tconst fragments = [];",
+        "\tconst visit = (value) => {",
+        "\t\tif (typeof value === \"string\") {",
+        "\t\t\tif (value.trim()) fragments.push(value);",
+        "\t\t\treturn;",
+        "\t\t}",
+        "\t\tif (Array.isArray(value)) {",
+        "\t\t\tfor (const item of value) visit(item);",
+        "\t\t\treturn;",
+        "\t\t}",
+        "\t\tif (!value || typeof value !== \"object\") return;",
+        "\t\tif (typeof value.text === \"string\") {",
+        "\t\t\tvisit(value.text);",
+        "\t\t\treturn;",
+        "\t\t}",
+        "\t\tfor (const key of [\"zh_cn\", \"en_us\", \"content\", \"content_v2\", \"elements\"]) {",
+        "\t\t\tif (value[key] !== undefined) visit(value[key]);",
+        "\t\t}",
+        "\t};",
+        "\tvisit(decoded);",
+        "\treturn fragments.filter((value, index) => (",
+        "\t\tindex === 0 || value !== fragments[index - 1]",
+        "\t)).join(\"\\n\").trim();",
+        "}",
+        "function persistEimemoryFeishuApiResult(response, chatId, kind, messageId) {",
+        "\tif (kind !== \"text\") return;",
+        "\tconst normalizedMessageId = String(messageId || \"\").trim();",
+        "\tif (!normalizedMessageId || normalizedMessageId === \"unknown\") return;",
+        "\tconst content = extractEimemoryFeishuApiResultContent(response);",
+        "\tconst conversationId = String(response?.data?.chat_id || chatId || \"\").trim();",
+        "\tif (!content || !conversationId.startsWith(\"oc_\")) return;",
+        '\tconst fsApi = process.getBuiltinModule("node:fs");',
+        '\tconst pathApi = process.getBuiltinModule("node:path");',
+        '\tconst cryptoApi = process.getBuiltinModule("node:crypto");',
+        "\tconst spoolDir = String(",
+        "\t\tprocess.env.EIMEMORY_FEISHU_API_RECEIPT_SPOOL_DIR",
+        '\t\t|| "/var/lib/eimemory/feishu-api-receipts"',
+        "\t).trim();",
+        '\tif (!pathApi.isAbsolute(spoolDir)) throw new Error("receipt spool path must be absolute");',
+        "\tfsApi.mkdirSync(spoolDir, { recursive: true, mode: 0o700 });",
+        "\tconst spoolStat = fsApi.lstatSync(spoolDir);",
+        "\tif (!spoolStat.isDirectory() || spoolStat.isSymbolicLink()) {",
+        '\t\tthrow new Error("receipt spool must be a real directory");',
+        "\t}",
+        "\tconst acceptedAtMs = Date.now();",
+        "\tconst token = `${acceptedAtMs}-${process.pid}-${cryptoApi.randomUUID()}`;",
+        "\tconst finalPath = pathApi.join(spoolDir, `${token}.json`);",
+        "\tconst temporaryPath = pathApi.join(spoolDir, `.${token}.tmp`);",
+        "\tconst payload = {",
+        '\t\tschema_version: "eimemory.feishu_api_receipt.v1",',
+        "\t\tcontent,",
+        "\t\tsuccess: true,",
+        "\t\tmessageId: normalizedMessageId,",
+        "\t\tconversationId,",
+        "\t\tacceptedAtMs,",
+        '\t\truntimeCommit: String(process.env.EIMEMORY_RUNTIME_COMMIT || ""),',
+        '\t\tsource: "api_result"',
+        "\t};",
+        "\ttry {",
+        "\t\tfsApi.writeFileSync(temporaryPath, `${JSON.stringify(payload)}\\n`, {",
+        '\t\t\tencoding: "utf8", mode: 0o600, flag: "wx"',
+        "\t\t});",
+        "\t\tfsApi.renameSync(temporaryPath, finalPath);",
+        "\t} catch (error) {",
+        "\t\ttry { fsApi.unlinkSync(temporaryPath); } catch {}",
+        "\t\tthrow error;",
+        "\t}",
+        "}",
+    ]
+    return newline.join(lines) + newline
+
+
+def _patch_api_result(text: str, path: Path) -> tuple[str, bool]:
+    if API_RESULT_PATCH_VERSION_MARKER in text:
+        if text.count(API_RESULT_PATCH_VERSION_MARKER) != 1:
+            raise PatchError(
+                f"current Feishu API result receipt marker mismatch in {path.name}"
+            )
+        if text.count("persistEimemoryFeishuApiResult(") != 2:
+            raise PatchError(
+                f"current Feishu API result receipt call is missing in {path.name}"
+            )
+        return text, False
+    if text.count(API_RESULT_FUNCTION_MARKER) != 1:
+        raise PatchError(f"expected one Feishu send result function in {path.name}")
+    if text.count(API_RESULT_MESSAGE_ID_MARKER) != 1:
+        raise PatchError(f"expected one Feishu result message id in {path.name}")
+    newline = "\r\n" if "\r\n" in text else "\n"
+    function_start = text.index(API_RESULT_FUNCTION_MARKER)
+    patched = (
+        text[:function_start]
+        + _api_result_helper_source(newline)
+        + text[function_start:]
+    )
+    call = newline.join(
+        [
+            API_RESULT_MESSAGE_ID_MARKER,
+            "\ttry {",
+            "\t\tpersistEimemoryFeishuApiResult(response, chatId, kind, messageId);",
+            "\t} catch (error) {",
+            "\t\tconsole.warn(`eimemory Feishu API result receipt spool failed: ${String(error)}`);",
+            "\t}",
+        ]
+    )
+    return patched.replace(API_RESULT_MESSAGE_ID_MARKER, call, 1), True
 
 
 def _dispatcher_receipt_source(indent: str, newline: str) -> str:
@@ -496,14 +622,30 @@ def patch_openclaw_feishu_api_receipt(openclaw_root: Path) -> dict[str, object]:
     if path.is_symlink() or not path.is_file():
         raise PatchError("Feishu monitor runtime must be a regular file")
     text = path.read_text(encoding="utf-8")
-    patched, changed = _patch_dispatcher(text, path)
-    if changed:
+    patched, dispatcher_changed = _patch_dispatcher(text, path)
+    result_candidates = [
+        candidate
+        for candidate in sorted(dist.glob("send-result-*.js"))
+        if API_RESULT_FUNCTION_MARKER in candidate.read_text(encoding="utf-8")
+    ]
+    if len(result_candidates) != 1:
+        raise PatchError("expected exactly one Feishu send result runtime")
+    result_path = result_candidates[0]
+    if result_path.is_symlink() or not result_path.is_file():
+        raise PatchError("Feishu send result runtime must be a regular file")
+    result_text = result_path.read_text(encoding="utf-8")
+    patched_result, result_changed = _patch_api_result(result_text, result_path)
+    if dispatcher_changed:
         _atomic_write(path, patched)
+    if result_changed:
+        _atomic_write(result_path, patched_result)
+    changed = dispatcher_changed or result_changed
     return {
         "ok": True,
         "status": "patched" if changed else "already_patched",
         "version": version,
         "runtime": path.name,
+        "send_result_runtime": result_path.name,
     }
 
 

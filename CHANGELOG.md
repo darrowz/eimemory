@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Planned
 - Multi-agent memory coordination
 
+## [1.9.123] - 2026-07-30
+
+### Fixed
+- Capture successful Feishu sends at OpenClaw's shared API-result normalization boundary, including the platform message id, chat id, and exact response body content.
+- Correlate lower-level API receipts without a session key through the real `oc_*` chat id while preserving exact final-content matching.
+
 ## [1.9.122] - 2026-07-30
 
 ### Fixed

@@ -494,6 +494,58 @@ Promise.resolve()
     assert list(spool_dir.iterdir()) == []
 
 
+def test_tracker_correlates_lower_api_receipt_by_chat_without_session_key(
+    tmp_path: Path,
+) -> None:
+    spool_dir = tmp_path / "feishu-api-receipts"
+    spool_dir.mkdir()
+    accepted_at_ms = int(time.time() * 1000)
+    (spool_dir / f"{accepted_at_ms}-api-result.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "eimemory.feishu_api_receipt.v1",
+                "content": "lower API final",
+                "success": True,
+                "messageId": "om_lower_api_out",
+                "conversationId": "oc_lower_api_chat",
+                "acceptedAtMs": accepted_at_ms,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    state = _run_node(
+        """
+const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
+const handlers = {};
+plugin.register({ on(name, handler) { handlers[name] = handler; } });
+const ctx = {
+  channelId: 'feishu',
+  conversationId: 'user:ou_test',
+  chatId: 'oc_lower_api_chat',
+  sessionKey: 'agent:main:feishu:direct:ou_test'
+};
+Promise.resolve()
+  .then(() => handlers.message_received({
+    from: 'ou_test', messageId: 'om_lower_api_in', runId: 'run-lower-api'
+  }, ctx))
+  .then(() => handlers.agent_end({
+    success: true,
+    runId: 'run-lower-api',
+    messages: [{ role: 'assistant', content: 'lower API final' }]
+  }, ctx));
+""",
+        tmp_path / "reply-state.json",
+        spool_dir=spool_dir,
+    )
+
+    entry = state["entries"]["om_lower_api_in"]
+    assert entry["status"] == "platform_accepted"
+    assert entry["delivery_message_id"] == "om_lower_api_out"
+    assert entry["conversation_id"] == "oc_lower_api_chat"
+    assert list(spool_dir.iterdir()) == []
+
+
 def test_tracker_does_not_close_final_from_nonmatching_api_receipt(
     tmp_path: Path,
 ) -> None:
