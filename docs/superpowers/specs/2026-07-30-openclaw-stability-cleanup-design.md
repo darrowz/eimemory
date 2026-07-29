@@ -39,7 +39,7 @@ current `message_sent` receipt patch is still losing every send.
 ### Monitor topology and payload contract drifted
 
 The gateway points to loopback port 18080, where no monitor runs. The monitor is
-reachable on the tailnet at `http://honjia:18080/status.json`. Its current
+reachable on the tailnet at `http://100.81.78.119:18080/status.json`. Its current
 payload exposes `ok`, `status`, `checks`, and `body_runtime`; the eimemory
 adapter only understands the older `system_health`, `visual_diagnostics`, and
 `dialogue_diagnostics` shape.
@@ -81,7 +81,8 @@ of reply progress volume.
 ### Remote monitor compatibility
 
 The managed gateway environment uses
-`http://honjia:18080/status.json`. The transport accepts both the legacy status
+`http://100.81.78.119:18080/status.json`. The numeric tailnet address is used
+because MagicDNS resolution is not enabled on honxin. The transport accepts both the legacy status
 shape and the current honjia supervisor shape. `health.status` maps `ok=true` to
 healthy and a non-OK/degraded status to degraded while retaining legacy visual
 and dialogue fields when present. Vision remains explicitly unavailable when

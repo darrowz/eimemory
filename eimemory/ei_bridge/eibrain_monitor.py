@@ -7,7 +7,7 @@ from urllib import request
 
 from .protocol import BridgeCommand
 
-DEFAULT_MONITOR_URL = "http://honjia:18080/status.json"
+DEFAULT_MONITOR_URL = "http://100.81.78.119:18080/status.json"
 
 
 class EIBrainMonitorTransport:

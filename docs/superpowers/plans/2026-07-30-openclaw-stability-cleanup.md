@@ -217,7 +217,7 @@ Normalize `system_health` from the legacy field when present; otherwise map
 `ok is True` to `healthy`, `ok is False` to `degraded`, and use the nonempty
 `status` value as a fallback. Preserve existing legacy visual/dialogue mapping.
 Set the default and managed production URL to
-`http://honjia:18080/status.json`.
+`http://100.81.78.119:18080/status.json`.
 
 - [ ] **Step 3: Verify GREEN**
 

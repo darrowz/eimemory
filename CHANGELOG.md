@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Planned
 - Multi-agent memory coordination
 
+## [1.9.117] - 2026-07-30
+
+### Fixed
+- Use honjia's verified numeric tailnet address for the eibrain monitor because MagicDNS hostname resolution is unavailable on honxin.
+
 ## [1.9.116] - 2026-07-30
 
 ### Fixed
