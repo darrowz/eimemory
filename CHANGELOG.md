@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Planned
 - Multi-agent memory coordination
 
+## [1.9.112] - 2026-07-29
+
+### Fixed
+- Score semantically identical ground-truth behavior rules through a stable digest identity so immutable lesson/replay record-ID drift no longer creates false MRR, NDCG, top-1, or Jaccard regressions.
+- Preserve exact operator-labelled and returned record IDs alongside semantic ranking evidence without merging historical rules, expanding labels, or inferring missing verified-real outcome provenance.
+- Keep verified-real replay fail-closed when exact trusted `source_record_id` evidence is unavailable; semantic ranking does not manufacture or backfill that evidence deficit.
+
 ## [1.9.111] - 2026-07-29
 
 ### Fixed

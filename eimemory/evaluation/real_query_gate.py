@@ -52,6 +52,7 @@ PRODUCTION_REAL_QUERY_REQUIRED_CHANNELS = frozenset({"openclaw", "codex", "herme
 PRODUCTION_REAL_QUERY_DATASET_EVIDENCE_SCHEMA = "secure_dataset_fingerprint.v1"
 PRODUCTION_RECALL_BOOTSTRAP_STATE_SCHEMA = "production_recall_bootstrap_state.v1"
 PRIOR_HEALTH_SNAPSHOT_SCHEMA = "prior_health_snapshot.v1"
+GROUND_TRUTH_RANKING_IDENTITY_SCHEMA = "ground_truth_behavior_semantic.v1"
 PRODUCTION_REAL_QUERY_TRUSTED_LABELERS = frozenset({"operator", "release_operator"})
 PRODUCTION_REAL_QUERY_TRUSTED_COLLECTORS = frozenset({"production_capture", "proactive_audit_capture"})
 PRODUCTION_REAL_QUERY_THRESHOLDS: dict[str, float] = {
@@ -1409,7 +1410,11 @@ def _resolve_trusted_baseline(
         identity,
     ):
         return None, "baseline_deployment_receipt_invalid"
-    if not _validate_persisted_real_query_report(report, expected_release=identity):
+    if not _validate_persisted_real_query_report(
+        report,
+        expected_release=identity,
+        allow_legacy_exact_ranking=True,
+    ):
         return None, "baseline_report_contract_invalid"
     baseline_gate = report.get("threshold_gate") if isinstance(report.get("threshold_gate"), dict) else {}
     baseline_blocks = baseline_gate.get("blocking_metrics") if isinstance(baseline_gate.get("blocking_metrics"), dict) else {}
@@ -1535,6 +1540,7 @@ def _evaluate_real_query_candidate(
         tracemalloc.start()
     samples: list[dict[str, Any]] = []
     result_refs: dict[str, list[str]] = {}
+    ranking_result_refs: dict[str, list[str]] = {}
     cross_channel_leakage = 0
     source_filter_leakage = 0
     try:
@@ -1573,6 +1579,11 @@ def _evaluate_real_query_candidate(
                     break
             refs = [str(item.record_id) for item in returned]
             result_refs[str(case["case_id"])] = refs
+            returned_ranking_refs = _stable_unique_refs(
+                [_record_ranking_ref(item) for item in returned],
+                limit=5,
+            )
+            ranking_result_refs[str(case["case_id"])] = returned_ranking_refs
             case_cross = sum(
                 1 for item in returned if _record_runtime_channel(item) != str(case["channel"])
             )
@@ -1580,11 +1591,17 @@ def _evaluate_real_query_candidate(
             cross_channel_leakage += case_cross
             source_filter_leakage += case_source
             baseline_refs = list((baseline or {}).get("result_refs", {}).get(str(case["case_id"]), []))
+            baseline_ranking_refs = _ranking_refs_for_record_ids(
+                runtime,
+                baseline_refs,
+                scope=ScopeRef.from_dict(case["scope"]),
+            )
+            ranking_labels = _ranking_labels_for_case(runtime, case)
             ranking = evaluate_labeled_ranking_at_5(
-                candidate_refs=refs,
-                labels=list(case["labels"]),
+                candidate_refs=returned_ranking_refs,
+                labels=ranking_labels,
                 corpus_result_capacity=int(capacities[str(case["case_id"])]),
-                baseline_refs=baseline_refs,
+                baseline_refs=baseline_ranking_refs,
             )
             samples.append(
                 {
@@ -1594,7 +1611,15 @@ def _evaluate_real_query_candidate(
                     "query_digest": str(case["query_digest"]),
                     "label_refs": [str(label["record_ref"]) for label in case["labels"]],
                     "label_grades": [int(label["grade"]) for label in case["labels"]],
+                    "label_ranking_refs": [
+                        str(label["record_ref"]) for label in ranking_labels
+                    ],
+                    "label_ranking_grades": [
+                        int(label["grade"]) for label in ranking_labels
+                    ],
                     "returned_refs": refs,
+                    "returned_ranking_refs": returned_ranking_refs,
+                    "baseline_ranking_refs": baseline_ranking_refs,
                     "corpus_result_capacity": int(capacities[str(case["case_id"])]),
                     "latency_ms": round(latency_ms, 3),
                     "cross_channel_leakage_count": case_cross,
@@ -1649,6 +1674,7 @@ def _evaluate_real_query_candidate(
     release_payload = release_identity_payload(release)
     effective_evaluator_commit = str(evaluator_commit or release.commit).strip().lower()
     result_digest = _stable_digest(result_refs)
+    ranking_result_digest = _stable_digest(ranking_result_refs)
     report_seed = {
         "schema": PRODUCTION_REAL_QUERY_REPORT_SCHEMA,
         "release_identity": release_payload,
@@ -1657,6 +1683,7 @@ def _evaluate_real_query_candidate(
         "secure_dataset_evidence": dict(frozen.get("secure_dataset_evidence") or {}),
         **retrieval_identity,
         "result_digest": result_digest,
+        "ranking_result_digest": ranking_result_digest,
         "policy_schema": PRODUCTION_REAL_QUERY_POLICY,
         "gate_outcome": "accepted" if gate["ok"] and baseline is not None else "blocked",
         "blocking_metrics": sorted((gate.get("blocking_metrics") or {}).keys()),
@@ -1685,6 +1712,9 @@ def _evaluate_real_query_candidate(
         "policy_schema": PRODUCTION_REAL_QUERY_POLICY,
         "result_digest": result_digest,
         "result_refs": result_refs,
+        "ranking_identity_schema": GROUND_TRUTH_RANKING_IDENTITY_SCHEMA,
+        "ranking_result_digest": ranking_result_digest,
+        "ranking_result_refs": ranking_result_refs,
         "baseline_identity": {
             key: value for key, value in dict(baseline or {}).items() if key != "result_refs" and key != "metrics"
         },
@@ -1701,6 +1731,81 @@ def _evaluate_real_query_candidate(
         "persisted": False,
         "persisted_record_id": "",
     }
+
+
+def _ranking_labels_for_case(
+    runtime: Any,
+    case: dict[str, Any],
+) -> list[dict[str, Any]]:
+    scope = ScopeRef.from_dict(case.get("scope") or {})
+    grades: dict[str, int] = {}
+    ordered_refs: list[str] = []
+    for label in list(case.get("labels") or []):
+        record = runtime.store.get_by_id(
+            str(label.get("record_ref") or ""),
+            scope=scope,
+        )
+        if record is None:
+            continue
+        ranking_ref = _record_ranking_ref(record)
+        if ranking_ref not in grades:
+            ordered_refs.append(ranking_ref)
+        grades[ranking_ref] = max(
+            grades.get(ranking_ref, 0),
+            int(label.get("grade") or 0),
+        )
+    return [
+        {"record_ref": ranking_ref, "grade": grades[ranking_ref]}
+        for ranking_ref in ordered_refs
+    ]
+
+
+def _ranking_refs_for_record_ids(
+    runtime: Any,
+    record_ids: list[str],
+    *,
+    scope: ScopeRef,
+) -> list[str]:
+    refs: list[str] = []
+    for record_id in record_ids:
+        exact_ref = str(record_id or "")
+        if not exact_ref:
+            continue
+        record = runtime.store.get_by_id(exact_ref, scope=scope)
+        refs.append(_record_ranking_ref(record) if record is not None else exact_ref)
+    return _stable_unique_refs(refs, limit=5)
+
+
+def _record_ranking_ref(record: RecordEnvelope) -> str:
+    content = record.content if isinstance(record.content, dict) else {}
+    meta = record.meta if isinstance(record.meta, dict) else {}
+    business_meta = meta.get("business_meta") if isinstance(meta.get("business_meta"), dict) else {}
+    report_type = str(
+        content.get("report_type")
+        or business_meta.get("report_type")
+        or meta.get("report_type")
+        or ""
+    ).strip()
+    if record.kind != "rule" or report_type != "ground_truth_behavior_rule":
+        return str(record.record_id)
+    semantic_content = {
+        str(key): value
+        for key, value in content.items()
+        if str(key) not in {"lesson_record_id", "replay_record_id"}
+    }
+    digest = _stable_digest(
+        {
+            "schema": GROUND_TRUTH_RANKING_IDENTITY_SCHEMA,
+            "kind": record.kind,
+            "source": record.source,
+            "source_id": record.source_id,
+            "title": record.title,
+            "summary": record.summary,
+            "detail": record.detail,
+            "content": semantic_content,
+        }
+    )
+    return f"gtr_{digest}"
 
 
 def _label_kinds_for_case(runtime: Any, case: dict[str, Any]) -> set[str]:
@@ -2065,7 +2170,9 @@ def _sanitized_real_query_report(report: dict[str, Any]) -> dict[str, Any]:
         "dataset_digest", "secure_dataset_evidence", "engine_digest", "engine_identity",
         "engine_identity_valid", "fusion_digest", "policy_digest", "policy_schema",
         "evaluator_commit",
-        "result_digest", "result_refs", "baseline_identity", "sample_count", "metrics",
+        "result_digest", "result_refs", "ranking_identity_schema",
+        "ranking_result_digest", "ranking_result_refs", "baseline_identity",
+        "sample_count", "metrics",
         "cross_channel_leakage_count", "source_filter_leakage_count", "proactive_metrics",
         "threshold_gate", "eligibility", "samples", "baseline_capture", "memory_measurement", "attempt_id",
         "previous_attempt_id",
@@ -2236,6 +2343,29 @@ def _independent_real_query_metrics_valid(
     channel_counts = {channel: 0 for channel in SUPPORTED_RUNTIME_CHANNELS}
     recalculated: list[dict[str, float]] = []
     result_refs: dict[str, list[str]] = {}
+    ranking_result_refs: dict[str, list[str]] = {}
+    ranking_schema = str(report.get("ranking_identity_schema") or "")
+    semantic_ranking = ranking_schema == GROUND_TRUTH_RANKING_IDENTITY_SCHEMA
+    ranking_report_fields = {
+        "ranking_identity_schema",
+        "ranking_result_digest",
+        "ranking_result_refs",
+    }
+    ranking_sample_fields = {
+        "label_ranking_refs",
+        "label_ranking_grades",
+        "returned_ranking_refs",
+        "baseline_ranking_refs",
+    }
+    legacy_exact_ranking = not ranking_schema and not any(
+        key in report for key in ranking_report_fields
+    ) and all(
+        not any(key in sample for key in ranking_sample_fields)
+        for sample in samples
+        if isinstance(sample, dict)
+    )
+    if not semantic_ranking and not legacy_exact_ranking:
+        return False
     cross_leakage = 0
     source_leakage = 0
     latencies: list[float] = []
@@ -2249,6 +2379,20 @@ def _independent_real_query_metrics_valid(
         refs = _stable_unique_refs(raw_refs, limit=5)
         label_refs = [str(item) for item in list(sample.get("label_refs") or [])]
         label_grades = list(sample.get("label_grades") or [])
+        raw_ranking_refs = [
+            str(item)
+            for item in list(sample.get("returned_ranking_refs") or [])
+        ]
+        candidate_ranking_refs = _stable_unique_refs(raw_ranking_refs, limit=5)
+        label_ranking_refs = [
+            str(item)
+            for item in list(sample.get("label_ranking_refs") or [])
+        ]
+        label_ranking_grades = list(sample.get("label_ranking_grades") or [])
+        baseline_ranking_refs = [
+            str(item)
+            for item in list(sample.get("baseline_ranking_refs") or [])
+        ]
         if (
             not case_id
             or channel not in SUPPORTED_RUNTIME_CHANNELS
@@ -2257,20 +2401,40 @@ def _independent_real_query_metrics_valid(
             or len(label_refs) != len(label_grades)
             or not label_refs
             or len(set(label_refs)) != len(label_refs)
+            or (
+                semantic_ranking
+                and (
+                    raw_ranking_refs != candidate_ranking_refs
+                    or len(label_ranking_refs) != len(label_ranking_grades)
+                    or not label_ranking_refs
+                    or len(set(label_ranking_refs)) != len(label_ranking_refs)
+                    or baseline_ranking_refs
+                    != _stable_unique_refs(baseline_ranking_refs, limit=5)
+                )
+            )
         ):
             return False
         labels = []
-        for ref, grade in zip(label_refs, label_grades):
+        metric_label_refs = label_ranking_refs if semantic_ranking else label_refs
+        metric_label_grades = (
+            label_ranking_grades if semantic_ranking else label_grades
+        )
+        for ref, grade in zip(metric_label_refs, metric_label_grades):
             if isinstance(grade, bool) or not isinstance(grade, int) or not 1 <= grade <= 3:
                 return False
             labels.append({"record_ref": ref, "grade": grade})
         capacity = int(sample.get("corpus_result_capacity") or 0)
-        baseline_refs = list((baseline or {}).get("result_refs", {}).get(case_id, []))
+        metric_candidate_refs = candidate_ranking_refs if semantic_ranking else refs
+        metric_baseline_refs = (
+            baseline_ranking_refs
+            if semantic_ranking
+            else list((baseline or {}).get("result_refs", {}).get(case_id, []))
+        )
         ranking = evaluate_labeled_ranking_at_5(
-            candidate_refs=refs,
+            candidate_refs=metric_candidate_refs,
             labels=labels,
             corpus_result_capacity=capacity,
-            baseline_refs=baseline_refs,
+            baseline_refs=metric_baseline_refs,
         )
         for key, expected in ranking.items():
             if abs(float(sample.get(key) or 0.0) - round(float(expected), 6)) > 1e-6:
@@ -2278,6 +2442,8 @@ def _independent_real_query_metrics_valid(
         channels.add(channel)
         channel_counts[channel] += 1
         result_refs[case_id] = refs
+        if semantic_ranking:
+            ranking_result_refs[case_id] = candidate_ranking_refs
         cross_leakage += int(sample.get("cross_channel_leakage_count") or 0)
         source_leakage += int(sample.get("source_filter_leakage_count") or 0)
         latencies.append(float(sample.get("latency_ms") or 0.0))
@@ -2286,6 +2452,12 @@ def _independent_real_query_metrics_valid(
     if not active_contract["ok"]:
         return False
     if result_refs != report.get("result_refs") or _stable_digest(result_refs) != str(report.get("result_digest") or ""):
+        return False
+    if semantic_ranking and (
+        ranking_result_refs != report.get("ranking_result_refs")
+        or _stable_digest(ranking_result_refs)
+        != str(report.get("ranking_result_digest") or "")
+    ):
         return False
     metric_fields = {
         "recall_at_5": "recall_at_5", "precision_at_5": "precision_at_5", "mrr": "mrr",
@@ -2335,10 +2507,48 @@ def _independent_real_query_metrics_valid(
     )
 
 
-def _validate_persisted_real_query_report(report: dict[str, Any], *, expected_release: ReleaseIdentity) -> bool:
+def _validate_persisted_real_query_report(
+    report: dict[str, Any],
+    *,
+    expected_release: ReleaseIdentity,
+    allow_legacy_exact_ranking: bool = False,
+) -> bool:
     gate = report.get("threshold_gate") if isinstance(report.get("threshold_gate"), dict) else {}
     thresholds = gate.get("thresholds") if isinstance(gate.get("thresholds"), dict) else {}
     results = report.get("result_refs") if isinstance(report.get("result_refs"), dict) else {}
+    ranking_results = (
+        report.get("ranking_result_refs")
+        if isinstance(report.get("ranking_result_refs"), dict)
+        else {}
+    )
+    semantic_ranking_identity_valid = bool(
+        report.get("ranking_identity_schema")
+        == GROUND_TRUTH_RANKING_IDENTITY_SCHEMA
+        and len(str(report.get("ranking_result_digest") or "")) == 64
+        and str(report.get("ranking_result_digest") or "")
+        == _stable_digest(ranking_results)
+    )
+    ranking_report_fields = {
+        "ranking_identity_schema",
+        "ranking_result_digest",
+        "ranking_result_refs",
+    }
+    samples = report.get("samples") if isinstance(report.get("samples"), list) else []
+    ranking_sample_fields = {
+        "label_ranking_refs",
+        "label_ranking_grades",
+        "returned_ranking_refs",
+        "baseline_ranking_refs",
+    }
+    legacy_exact_ranking_valid = bool(
+        allow_legacy_exact_ranking
+        and not any(key in report for key in ranking_report_fields)
+        and all(
+            isinstance(sample, dict)
+            and not any(key in sample for key in ranking_sample_fields)
+            for sample in samples
+        )
+    )
     return bool(
         report.get("schema") == PRODUCTION_REAL_QUERY_REPORT_SCHEMA
         and report.get("report_type") == "production_recall_gate"
@@ -2362,6 +2572,7 @@ def _validate_persisted_real_query_report(report: dict[str, Any], *, expected_re
             samples=report.get("samples") if isinstance(report.get("samples"), list) else [],
         )
         and str(report.get("result_digest") or "") == _stable_digest(results)
+        and (semantic_ranking_identity_valid or legacy_exact_ranking_valid)
         and gate.get("schema") == PRODUCTION_REAL_QUERY_POLICY
         and thresholds == PRODUCTION_REAL_QUERY_THRESHOLDS
         and int(report.get("cross_channel_leakage_count") or 0) == 0

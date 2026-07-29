@@ -778,6 +778,45 @@ def test_real_query_gate_is_bound_sanitized_and_deterministic(tmp_path, monkeypa
     serialized = json.dumps(stored.to_dict(), ensure_ascii=False)
     for forbidden in ("hunter2", "top-secret", "raw result body", "returned_text", "raw_query", "conversation"):
         assert forbidden not in serialized
+    historical_exact_report = deepcopy(stored.content["report"])
+    for key in (
+        "ranking_identity_schema",
+        "ranking_result_digest",
+        "ranking_result_refs",
+    ):
+        historical_exact_report.pop(key, None)
+    for sample in historical_exact_report["samples"]:
+        for key in (
+            "label_ranking_refs",
+            "label_ranking_grades",
+            "returned_ranking_refs",
+            "baseline_ranking_refs",
+        ):
+            sample.pop(key, None)
+    assert real_query_gate._validate_persisted_real_query_report(
+        historical_exact_report,
+        expected_release=RELEASE,
+        allow_legacy_exact_ranking=True,
+    )
+    assert not real_query_gate._validate_persisted_real_query_report(
+        historical_exact_report,
+        expected_release=RELEASE,
+    )
+    assert real_query_gate._independent_real_query_metrics_valid(
+        historical_exact_report,
+        baseline=_trusted_baseline(dataset),
+    )
+    malformed_ranking_report = deepcopy(historical_exact_report)
+    malformed_ranking_report["ranking_identity_schema"] = "unknown-ranking.v1"
+    assert not real_query_gate._validate_persisted_real_query_report(
+        malformed_ranking_report,
+        expected_release=RELEASE,
+        allow_legacy_exact_ranking=True,
+    )
+    assert not real_query_gate._independent_real_query_metrics_valid(
+        malformed_ranking_report,
+        baseline=_trusted_baseline(dataset),
+    )
     verification = verify_current_production_recall_gate(runtime, scope=BASE_SCOPE, release=RELEASE)
     assert verification["ok"] is False
     assert verification["reason"] == "current_deployment_receipt_invalid"
@@ -848,6 +887,200 @@ def test_real_query_gate_scores_rule_labels_against_policy_rule_lane(tmp_path, m
     assert all(call["recall_profile"] == "precision" for call in requested)
     assert all(call["candidate_limit"] <= 24 for call in requested)
     assert all(call["intent"] == "living_posture" for call in requested)
+    runtime.close()
+
+
+def test_real_query_gate_semantic_duplicate_uses_shared_ground_truth_ranking_identity(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    labelled = _rule_record(
+        "rule-labelled",
+        "openclaw",
+        "source-openclaw",
+        index=0,
+    )
+    returned = _rule_record(
+        "rule-returned",
+        "openclaw",
+        "source-openclaw",
+        index=0,
+    )
+    labelled.content.update(
+        {
+            "lesson_record_id": "lesson-labelled",
+            "replay_record_id": "replay-labelled",
+        }
+    )
+    returned.content.update(
+        {
+            "lesson_record_id": "lesson-returned",
+            "replay_record_id": "replay-returned",
+        }
+    )
+    dataset = {
+        "schema": PRODUCTION_REAL_QUERY_SCHEMA,
+        "name": "production-redacted-semantic-rule-ranking",
+        "dataset_kind": "production",
+        "scope": BASE_SCOPE,
+        "cases": [
+            _case(
+                "openclaw",
+                "source-openclaw",
+                labelled.record_id,
+                index=index,
+            )
+            for index in range(5)
+        ],
+        "baseline_report_id": "prg_baseline_previous_release",
+    }
+    for index, case in enumerate(dataset["cases"]):
+        features = {
+            "terms": ["missing", "capability", "replay", "rollback", f"case-{index}"],
+            "intent": "living_posture",
+        }
+        case["query_features"] = features
+        case["query_digest"] = _digest(features)
+    _refresh_dataset_evidence(dataset)
+    runtime.store.append(labelled)
+    runtime.store.append(returned)
+    runtime.store.append(_label_evidence("openclaw"))
+    monkeypatch.setattr(
+        runtime.memory,
+        "recall",
+        lambda **_kwargs: RecallBundle(
+            items=[],
+            rules=[returned],
+            reflections=[],
+            confidence=1.0,
+            next_action_hint="",
+            explanation={"fusion": {"policy_version": "rrf-page-pool.v1"}},
+        ),
+    )
+    monkeypatch.setattr(
+        real_query_gate,
+        "current_release_identity",
+        lambda *_args, **_kwargs: RELEASE,
+    )
+    baseline = _trusted_baseline(dataset)
+    baseline["metrics"] = {**baseline["metrics"], "precision_at_5": 0.2}
+    monkeypatch.setattr(
+        real_query_gate,
+        "_resolve_trusted_baseline",
+        lambda *_args, **_kwargs: (baseline, ""),
+    )
+
+    report = run_production_recall_eval(
+        runtime,
+        dataset,
+        seed=False,
+        persist_report=True,
+    )
+
+    assert report["accepted"] is True, report
+    assert report["ranking_identity_schema"] == "ground_truth_behavior_semantic.v1"
+    assert all(sample["label_refs"] == [labelled.record_id] for sample in report["samples"])
+    assert all(sample["returned_refs"] == [returned.record_id] for sample in report["samples"])
+    assert all(sample.get("label_ranking_refs") for sample in report["samples"])
+    assert all(
+        sample["label_ranking_refs"] == sample["returned_ranking_refs"]
+        for sample in report["samples"]
+    )
+    assert report["mrr"] == 1.0
+    assert report["ndcg_at_5"] == 1.0
+    assert report["top1_stability"] == 1.0
+    assert report["jaccard_at_5"] == 1.0
+    runtime.close()
+
+
+def test_real_query_gate_semantic_behavior_change_remains_distinct(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    labelled = _rule_record(
+        "rule-labelled",
+        "openclaw",
+        "source-openclaw",
+        index=0,
+    )
+    returned = _rule_record(
+        "rule-distinct",
+        "openclaw",
+        "source-openclaw",
+        index=0,
+    )
+    labelled.content["lesson_record_id"] = "lesson-labelled"
+    returned.content["lesson_record_id"] = "lesson-returned"
+    returned.content["expected_behavior"] = "claim the capability exists without replay"
+    dataset = {
+        "schema": PRODUCTION_REAL_QUERY_SCHEMA,
+        "name": "production-redacted-distinct-rule-ranking",
+        "dataset_kind": "production",
+        "scope": BASE_SCOPE,
+        "cases": [
+            _case(
+                "openclaw",
+                "source-openclaw",
+                labelled.record_id,
+                index=index,
+            )
+            for index in range(5)
+        ],
+        "baseline_report_id": "prg_baseline_previous_release",
+    }
+    for index, case in enumerate(dataset["cases"]):
+        features = {
+            "terms": ["missing", "capability", "replay", "rollback", f"case-{index}"],
+            "intent": "living_posture",
+        }
+        case["query_features"] = features
+        case["query_digest"] = _digest(features)
+    _refresh_dataset_evidence(dataset)
+    runtime.store.append(labelled)
+    runtime.store.append(returned)
+    runtime.store.append(_label_evidence("openclaw"))
+    monkeypatch.setattr(
+        runtime.memory,
+        "recall",
+        lambda **_kwargs: RecallBundle(
+            items=[],
+            rules=[returned],
+            reflections=[],
+            confidence=1.0,
+            next_action_hint="",
+            explanation={"fusion": {"policy_version": "rrf-page-pool.v1"}},
+        ),
+    )
+    monkeypatch.setattr(
+        real_query_gate,
+        "current_release_identity",
+        lambda *_args, **_kwargs: RELEASE,
+    )
+    baseline = _trusted_baseline(dataset)
+    baseline["metrics"] = {**baseline["metrics"], "precision_at_5": 0.2}
+    monkeypatch.setattr(
+        real_query_gate,
+        "_resolve_trusted_baseline",
+        lambda *_args, **_kwargs: (baseline, ""),
+    )
+
+    report = run_production_recall_eval(
+        runtime,
+        dataset,
+        seed=False,
+        persist_report=True,
+    )
+
+    assert report["accepted"] is False
+    assert all(sample.get("label_ranking_refs") for sample in report["samples"])
+    assert all(
+        sample["label_ranking_refs"] != sample["returned_ranking_refs"]
+        for sample in report["samples"]
+    )
+    assert report["mrr"] == 0.0
+    assert report["top1_stability"] == 0.0
     runtime.close()
 
 
