@@ -156,6 +156,16 @@ def _dispatcher_receipt_source(indent: str, newline: str) -> str:
 
 def _patch_dispatcher(text: str, path: Path) -> tuple[str, bool]:
     if PATCH_VERSION_MARKER in text:
+        marker_count = text.count(PATCH_VERSION_MARKER)
+        if marker_count == 2:
+            newline = "\r\n" if "\r\n" in text else "\n"
+            duplicated = PATCH_VERSION_MARKER + newline + PATCH_VERSION_MARKER
+            if text.count(duplicated) != 1:
+                raise PatchError(f"current Feishu API receipt markers are malformed in {path.name}")
+            repaired = text.replace(duplicated, PATCH_VERSION_MARKER, 1)
+            return _patch_dispatcher(repaired, path)[0], True
+        if marker_count != 1:
+            raise PatchError(f"current Feishu API receipt marker mismatch in {path.name}")
         if "emitEimemoryFeishuMessageSent(" in text:
             raise PatchError(f"current Feishu API receipt patch calls legacy sink in {path.name}")
         if text.count("emitEimemoryFeishuApiAccepted(") < 2:
@@ -368,10 +378,10 @@ def _upgrade_api_patch(text: str, path: Path, *, marker: str) -> str:
         raise PatchError(f"Feishu API receipt sink call is missing in {path.name}")
     upgraded = _upgrade_api_receipt_emission(upgraded, path)
     newline = "\r\n" if "\r\n" in upgraded else "\n"
-    helper_start = upgraded.index(PATCH_MARKER)
-    dispatcher_start = upgraded.index(DISPATCHER_MARKER, helper_start)
+    marker_start = upgraded.index(PATCH_VERSION_MARKER)
+    dispatcher_start = upgraded.index(DISPATCHER_MARKER, marker_start)
     return (
-        upgraded[:helper_start]
+        upgraded[:marker_start]
         + _helper_source(newline)
         + upgraded[dispatcher_start:]
     )

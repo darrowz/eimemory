@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Planned
 - Multi-agent memory coordination
 
+## [1.9.122] - 2026-07-30
+
+### Fixed
+- Keep exactly one Feishu API receipt patch marker when upgrading an installed v3 runtime to the cross-isolate v4 spool implementation.
+- Repair the duplicate adjacent v4 marker produced by the earlier upgrade while preserving strict idempotency validation.
+
 ## [1.9.121] - 2026-07-30
 
 ### Fixed

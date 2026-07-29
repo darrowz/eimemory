@@ -341,12 +341,41 @@ function createFeishuReplyDispatcher(params) {
 
     assert changed is True
     assert "// eimemory-feishu-api-receipt-patch:v4" in upgraded
+    assert upgraded.count("// eimemory-feishu-api-receipt-patch:v4") == 1
     assert "// eimemory-feishu-api-receipt-patch:v3" not in upgraded
     assert "persistEimemoryFeishuApiAccepted" in upgraded
     assert "EIMEMORY_FEISHU_API_RECEIPT_SPOOL_DIR" in upgraded
     second, changed_again = _patch_dispatcher(upgraded, runtime)
     assert changed_again is False
     assert second == upgraded
+
+
+def test_openclaw_feishu_patch_repairs_duplicate_current_marker(
+    tmp_path: Path,
+) -> None:
+    runtime = tmp_path / "monitor.account-duplicate-v4.js"
+    duplicated = """
+// eimemory-feishu-api-receipt-patch:v4
+// eimemory-feishu-api-receipt-patch:v4
+function persistEimemoryFeishuApiAccepted(params) {}
+async function emitEimemoryFeishuApiAccepted(params) {
+    persistEimemoryFeishuApiAccepted(params);
+}
+function createFeishuReplyDispatcher(params) {
+    const emitRememberedEimemoryFeishuReceipt = async (content, messageId) => {
+        await emitEimemoryFeishuApiAccepted({ content, messageId });
+    };
+}
+//#endregion
+""".strip() + "\n"
+
+    repaired, changed = _patch_dispatcher(duplicated, runtime)
+
+    assert changed is True
+    assert repaired.count("// eimemory-feishu-api-receipt-patch:v4") == 1
+    second, changed_again = _patch_dispatcher(repaired, runtime)
+    assert changed_again is False
+    assert second == repaired
 
 
 def test_openclaw_feishu_message_sent_patch_does_not_accept_missing_message_id(
