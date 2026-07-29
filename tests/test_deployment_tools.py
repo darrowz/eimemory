@@ -255,6 +255,43 @@ process.stdout.write(JSON.stringify(globalThis.__events));
     )
 
 
+def test_openclaw_feishu_patch_repairs_v2_dispatcher_still_calling_message_sent(
+    tmp_path: Path,
+) -> None:
+    runtime = tmp_path / "monitor.account-broken-v2.js"
+    broken_v2 = """
+// eimemory-feishu-api-receipt-patch:v2
+async function emitEimemoryFeishuApiAccepted(params) {}
+function createFeishuReplyDispatcher(params) {
+    const { chatId, sendTarget, accountId } = params;
+    const emitRememberedEimemoryFeishuReceipt = async (content, messageId) => {
+        await emitEimemoryFeishuMessageSent({
+            content,
+            messageId,
+            sessionKey: params.sessionKey,
+        });
+    };
+    const sendChunkedTextReply = async (paramsLocal) => {
+        await paramsLocal.sendChunk();
+        await emitRememberedEimemoryFeishuReceipt(paramsLocal.text);
+        if (paramsLocal.infoKind === "final") return;
+    };
+}
+//#endregion
+""".strip() + "\n"
+
+    upgraded, changed = _patch_dispatcher(broken_v2, runtime)
+
+    assert changed is True
+    assert "// eimemory-feishu-api-receipt-patch:v3" in upgraded
+    assert "// eimemory-feishu-api-receipt-patch:v2" not in upgraded
+    assert "emitEimemoryFeishuMessageSent(" not in upgraded
+    assert upgraded.count("emitEimemoryFeishuApiAccepted(") == 2
+    second, changed_again = _patch_dispatcher(upgraded, runtime)
+    assert changed_again is False
+    assert second == upgraded
+
+
 def test_openclaw_feishu_message_sent_patch_does_not_accept_missing_message_id(
     tmp_path: Path,
 ) -> None:
@@ -338,6 +375,9 @@ async function emitEimemoryFeishuMessageSent(params) {}
 function createFeishuReplyDispatcher(params) {
     const { chatId, sendTarget, accountId } = params;
     let eimemoryFeishuReceiptMessageId = "";
+    const emitRememberedEimemoryFeishuReceipt = async (content, messageId) => {
+        await emitEimemoryFeishuMessageSent({ content, messageId });
+    };
     const rememberEimemoryFeishuReceipt = (result) => {
         const messageId = String(result?.messageId || "").trim();
         if (messageId && !eimemoryFeishuReceiptMessageId) eimemoryFeishuReceiptMessageId = messageId;
@@ -361,7 +401,7 @@ function shouldSendNoVisibleReplyFallback(dispatchResult) {
     upgraded, changed = _patch_dispatcher(legacy, runtime)
 
     assert changed is True
-    assert "// eimemory-feishu-api-receipt-patch:v2" in upgraded
+    assert "// eimemory-feishu-api-receipt-patch:v3" in upgraded
     assert "emitEimemoryFeishuApiAccepted" in upgraded
     assert "runMessageSent" not in upgraded
     assert "if (messageId) eimemoryFeishuReceiptMessageId = messageId;" in upgraded
@@ -389,6 +429,9 @@ def test_openclaw_feishu_patch_recovers_settled_queued_final_without_reply(
 async function emitEimemoryFeishuMessageSent(params) {}
 function createFeishuReplyDispatcher(params) {
     const { chatId, sendTarget, accountId } = params;
+    const emitRememberedEimemoryFeishuReceipt = async (content, messageId) => {
+        await emitEimemoryFeishuMessageSent({ content, messageId });
+    };
     const sendChunkedTextReply = async (paramsLocal) => {
         if (paramsLocal.infoKind === "final") await emitRememberedEimemoryFeishuReceipt(paramsLocal.text);
     };
@@ -423,7 +466,7 @@ export { shouldSendNoVisibleReplyFallback };
 
     assert result.returncode == 0, result.stderr
     patched = runtime.read_text(encoding="utf-8")
-    assert "// eimemory-feishu-api-receipt-patch:v2" in patched
+    assert "// eimemory-feishu-api-receipt-patch:v3" in patched
     assert "emitEimemoryFeishuApiAccepted" in patched
     assert "runMessageSent" not in patched
     assert (

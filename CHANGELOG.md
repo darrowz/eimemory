@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Planned
 - Multi-agent memory coordination
 
+## [1.9.120] - 2026-07-30
+
+### Fixed
+- Repair previously installed Feishu API receipt v2 runtimes whose dispatcher still called the legacy `message_sent` bridge despite carrying the API-receipt marker.
+- Reject current patched runtimes that retain any legacy receipt-sink call, preventing a marker-only upgrade from silently bypassing `platform_accepted`.
+
 ## [1.9.119] - 2026-07-30
 
 ### Fixed

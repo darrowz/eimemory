@@ -12,7 +12,8 @@ import stat
 AFFECTED_VERSION = re.compile(r"^2026\.7\.1-2$")
 PATCH_MARKER = "async function emitEimemoryFeishuApiAccepted(params)"
 LEGACY_PATCH_MARKER = "async function emitEimemoryFeishuMessageSent(params)"
-PATCH_VERSION_MARKER = "// eimemory-feishu-api-receipt-patch:v2"
+PATCH_VERSION_MARKER = "// eimemory-feishu-api-receipt-patch:v3"
+LEGACY_API_V2_PATCH_VERSION_MARKER = "// eimemory-feishu-api-receipt-patch:v2"
 LEGACY_API_V1_PATCH_VERSION_MARKER = "// eimemory-feishu-api-receipt-patch:v1"
 LEGACY_V3_PATCH_VERSION_MARKER = "// eimemory-feishu-message-sent-patch:v3"
 LEGACY_V2_PATCH_VERSION_MARKER = "// eimemory-feishu-message-sent-patch:v2"
@@ -108,9 +109,23 @@ def _dispatcher_receipt_source(indent: str, newline: str) -> str:
 
 def _patch_dispatcher(text: str, path: Path) -> tuple[str, bool]:
     if PATCH_VERSION_MARKER in text:
+        if "emitEimemoryFeishuMessageSent(" in text:
+            raise PatchError(f"current Feishu API receipt patch calls legacy sink in {path.name}")
+        if text.count("emitEimemoryFeishuApiAccepted(") < 2:
+            raise PatchError(f"current Feishu API receipt sink call is missing in {path.name}")
         return text, False
+    if LEGACY_API_V2_PATCH_VERSION_MARKER in text:
+        return _upgrade_api_patch(
+            text,
+            path,
+            marker=LEGACY_API_V2_PATCH_VERSION_MARKER,
+        ), True
     if LEGACY_API_V1_PATCH_VERSION_MARKER in text:
-        return _upgrade_api_v1_patch(text, path), True
+        return _upgrade_api_patch(
+            text,
+            path,
+            marker=LEGACY_API_V1_PATCH_VERSION_MARKER,
+        ), True
     if LEGACY_PATCH_MARKER in text:
         return _upgrade_legacy_patch(text, path), True
     if text.count(DISPATCHER_MARKER) != 1:
@@ -269,20 +284,47 @@ def _upgrade_api_receipt_emission(text: str, path: Path) -> str:
         "await emitRememberedEimemoryFeishuReceipt(paramsLocal.text);"
     )
     unconditional = "await emitRememberedEimemoryFeishuReceipt(paramsLocal.text);"
-    if text.count(conditional) != 1:
-        raise PatchError(f"legacy Feishu API receipt emission mismatch in {path.name}")
-    return text.replace(conditional, unconditional, 1)
+    conditional_count = text.count(conditional)
+    unconditional_count = text.count(unconditional)
+    if conditional_count == 1:
+        return text.replace(conditional, unconditional, 1)
+    if conditional_count == 0 and unconditional_count == 1:
+        return text
+    raise PatchError(f"legacy Feishu API receipt emission mismatch in {path.name}")
 
 
-def _upgrade_api_v1_patch(text: str, path: Path) -> str:
-    if text.count(LEGACY_API_V1_PATCH_VERSION_MARKER) != 1:
+def _upgrade_api_patch(text: str, path: Path, *, marker: str) -> str:
+    if text.count(marker) != 1:
         raise PatchError(f"legacy Feishu API receipt marker mismatch in {path.name}")
     upgraded = text.replace(
-        LEGACY_API_V1_PATCH_VERSION_MARKER,
+        marker,
         PATCH_VERSION_MARKER,
         1,
     )
+    legacy_call = "emitEimemoryFeishuMessageSent("
+    legacy_call_count = upgraded.count(legacy_call)
+    if legacy_call_count > 1:
+        raise PatchError(f"legacy Feishu API receipt call mismatch in {path.name}")
+    if legacy_call_count == 1:
+        upgraded = upgraded.replace(
+            legacy_call,
+            "emitEimemoryFeishuApiAccepted(",
+            1,
+        )
+    if upgraded.count("emitEimemoryFeishuApiAccepted(") < 2:
+        raise PatchError(f"Feishu API receipt sink call is missing in {path.name}")
     return _upgrade_api_receipt_emission(upgraded, path)
+
+
+def _replace_legacy_sink_call(text: str, path: Path) -> str:
+    legacy_call = "emitEimemoryFeishuMessageSent("
+    if text.count(legacy_call) != 1:
+        raise PatchError(f"legacy Feishu receipt sink call mismatch in {path.name}")
+    return text.replace(
+        legacy_call,
+        "emitEimemoryFeishuApiAccepted(",
+        1,
+    )
 
 
 def _upgrade_legacy_patch(text: str, path: Path) -> str:
@@ -308,6 +350,7 @@ def _upgrade_legacy_patch(text: str, path: Path) -> str:
             + _helper_source(newline)
             + text[dispatcher_start:]
         )
+        upgraded = _replace_legacy_sink_call(upgraded, path)
         upgraded = _upgrade_api_receipt_emission(upgraded, path)
         return _patch_no_visible_reply_fallback(upgraded, path)
     legacy_assignment = (
@@ -349,6 +392,7 @@ def _upgrade_legacy_patch(text: str, path: Path) -> str:
         + _helper_source(newline)
         + upgraded[dispatcher_start:]
     )
+    upgraded = _replace_legacy_sink_call(upgraded, path)
     upgraded = _upgrade_api_receipt_emission(upgraded, path)
     return _patch_no_visible_reply_fallback(upgraded, path)
 
