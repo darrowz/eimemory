@@ -156,6 +156,61 @@ def _trusted_baseline(dataset: dict) -> dict:
     }
 
 
+def _forge_semantic_ranking_evidence(
+    report: dict,
+    *,
+    baseline: dict,
+    ranking_ref: str,
+    grade: int,
+) -> dict:
+    forged = deepcopy(report)
+    ranking_results: dict[str, list[str]] = {}
+    rankings: list[dict[str, float]] = []
+    for sample in forged["samples"]:
+        sample["label_ranking_refs"] = [ranking_ref]
+        sample["label_ranking_grades"] = [grade]
+        sample["returned_ranking_refs"] = [ranking_ref]
+        sample["baseline_ranking_refs"] = [ranking_ref]
+        ranking = evaluate_labeled_ranking_at_5(
+            candidate_refs=[ranking_ref],
+            labels=[{"record_ref": ranking_ref, "grade": grade}],
+            corpus_result_capacity=int(sample["corpus_result_capacity"]),
+            baseline_refs=[ranking_ref],
+        )
+        sample.update(
+            {key: round(float(value), 6) for key, value in ranking.items()}
+        )
+        ranking_results[str(sample["case_id"])] = [ranking_ref]
+        rankings.append(ranking)
+    forged["ranking_result_refs"] = ranking_results
+    forged["ranking_result_digest"] = _digest(ranking_results)
+    metric_fields = {
+        "recall_at_5": "recall_at_5",
+        "precision_at_5": "precision_at_5",
+        "mrr": "mrr",
+        "ndcg_at_5": "ndcg_at_5",
+        "top1_stability": "top1_stable",
+        "jaccard_at_5": "jaccard_at_5",
+    }
+    for name, field in metric_fields.items():
+        value = round(
+            sum(float(item[field]) for item in rankings) / len(rankings),
+            6,
+        )
+        forged["metrics"][name] = value
+        forged[name] = value
+    forged["threshold_gate"] = real_query_gate._real_query_threshold_gate(
+        forged["metrics"],
+        baseline_metrics=dict(baseline["metrics"]),
+        cross_channel_leakage=int(forged["cross_channel_leakage_count"]),
+        source_filter_leakage=int(forged["source_filter_leakage_count"]),
+        has_baseline=True,
+        engine_identity_valid=forged["engine_identity_valid"] is True,
+        memory_measurement_ok=forged["memory_measurement"]["ok"] is True,
+    )
+    return forged
+
+
 def _record(record_id: str, channel: str, source_id: str) -> RecordEnvelope:
     scope = dict(BASE_SCOPE)
     if channel != "openclaw":
@@ -802,9 +857,14 @@ def test_real_query_gate_is_bound_sanitized_and_deterministic(tmp_path, monkeypa
         historical_exact_report,
         expected_release=RELEASE,
     )
+    assert not real_query_gate._independent_real_query_metrics_valid(
+        historical_exact_report,
+        baseline=_trusted_baseline(dataset),
+    )
     assert real_query_gate._independent_real_query_metrics_valid(
         historical_exact_report,
         baseline=_trusted_baseline(dataset),
+        allow_legacy_exact_ranking=True,
     )
     malformed_ranking_report = deepcopy(historical_exact_report)
     malformed_ranking_report["ranking_identity_schema"] = "unknown-ranking.v1"
@@ -991,7 +1051,72 @@ def test_real_query_gate_semantic_duplicate_uses_shared_ground_truth_ranking_ide
     assert report["ndcg_at_5"] == 1.0
     assert report["top1_stability"] == 1.0
     assert report["jaccard_at_5"] == 1.0
+    assert real_query_gate._independent_real_query_metrics_valid(
+        report,
+        baseline=baseline,
+        runtime=runtime,
+        scope=BASE_SCOPE,
+    )
+    for forged_ref in ("forged-ranking-ref", f"gtr_{'0' * 64}"):
+        forged = _forge_semantic_ranking_evidence(
+            report,
+            baseline=baseline,
+            ranking_ref=forged_ref,
+            grade=1,
+        )
+        assert not real_query_gate._independent_real_query_metrics_valid(
+            forged,
+            baseline=baseline,
+            runtime=runtime,
+            scope=BASE_SCOPE,
+        )
     runtime.close()
+
+
+@pytest.mark.parametrize(
+    ("field", "left_value", "right_value"),
+    [
+        ("priority", "T0", "T1"),
+        ("must_use", True, False),
+        ("target_capability", "safe-replay", "unsafe-replay"),
+    ],
+)
+def test_ground_truth_semantic_identity_tracks_effective_meta_behavior(
+    field,
+    left_value,
+    right_value,
+) -> None:
+    left = _rule_record("rule-left", "openclaw", "source-openclaw")
+    right = _rule_record("rule-right", "openclaw", "source-openclaw")
+    left.meta[field] = left_value
+    right.meta[field] = right_value
+
+    assert real_query_gate._record_ranking_ref(
+        left
+    ) != real_query_gate._record_ranking_ref(right)
+
+
+def test_ground_truth_semantic_identity_canonicalizes_content_meta_fallback() -> None:
+    from_meta = _rule_record("rule-meta", "openclaw", "source-openclaw")
+    from_content = _rule_record("rule-content", "openclaw", "source-openclaw")
+    from_meta.meta.update(
+        {
+            "priority": "T0",
+            "must_use": True,
+            "target_capability": "safe-replay",
+        }
+    )
+    from_content.content.update(
+        {
+            "priority": "T0",
+            "must_use": True,
+            "target_capability": "safe-replay",
+        }
+    )
+
+    assert real_query_gate._record_ranking_ref(
+        from_meta
+    ) == real_query_gate._record_ranking_ref(from_content)
 
 
 def test_real_query_gate_semantic_behavior_change_remains_distinct(
@@ -1461,6 +1586,47 @@ def test_strict_bootstrap_capture_enables_next_release_and_rejects_predeploy_or_
         persist_report=True,
     )
     assert repeated["persisted_record_id"] == bootstrap["persisted_record_id"]
+    legacy_bootstrap_record = runtime.store.get_by_id(
+        bootstrap["persisted_record_id"],
+        scope=BASE_SCOPE,
+    )
+    assert legacy_bootstrap_record is not None
+    legacy_bootstrap_report = legacy_bootstrap_record.content["report"]
+    for key in (
+        "ranking_identity_schema",
+        "ranking_result_digest",
+        "ranking_result_refs",
+    ):
+        legacy_bootstrap_report.pop(key, None)
+    for sample in legacy_bootstrap_report["samples"]:
+        for key in (
+            "label_ranking_refs",
+            "label_ranking_grades",
+            "returned_ranking_refs",
+            "baseline_ranking_refs",
+        ):
+            sample.pop(key, None)
+    legacy_bootstrap_record.meta["report_payload_digest"] = _digest(
+        legacy_bootstrap_report
+    )
+    runtime.store.rewrite(legacy_bootstrap_record)
+
+    strict_replacement = bootstrap_production_recall_baseline(
+        runtime,
+        bootstrap_dataset,
+        candidate_commit="a" * 40,
+        prior_commit=prior.commit,
+        persist_report=True,
+    )
+    assert (
+        strict_replacement["persisted_record_id"]
+        != legacy_bootstrap_record.record_id
+    )
+    assert (
+        strict_replacement["ranking_identity_schema"]
+        == "ground_truth_behavior_semantic.v1"
+    )
+    bootstrap = strict_replacement
 
     current = _receipt(runtime, commit="a" * 40, version="1.9.80", prior_commit=prior.commit)
     runtime._test_runtime_commit = current.commit

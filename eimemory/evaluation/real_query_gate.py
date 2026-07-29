@@ -53,6 +53,17 @@ PRODUCTION_REAL_QUERY_DATASET_EVIDENCE_SCHEMA = "secure_dataset_fingerprint.v1"
 PRODUCTION_RECALL_BOOTSTRAP_STATE_SCHEMA = "production_recall_bootstrap_state.v1"
 PRIOR_HEALTH_SNAPSHOT_SCHEMA = "prior_health_snapshot.v1"
 GROUND_TRUTH_RANKING_IDENTITY_SCHEMA = "ground_truth_behavior_semantic.v1"
+_GROUND_TRUTH_RANKING_REF_RE = re.compile(r"^gtr_[0-9a-f]{64}$")
+_GROUND_TRUTH_EFFECTIVE_CONTENT_KEYS = frozenset(
+    {
+        "report_type",
+        "priority",
+        "must_use",
+        "target_capability",
+        "lesson_record_id",
+        "replay_record_id",
+    }
+)
 PRODUCTION_REAL_QUERY_TRUSTED_LABELERS = frozenset({"operator", "release_operator"})
 PRODUCTION_REAL_QUERY_TRUSTED_COLLECTORS = frozenset({"production_capture", "proactive_audit_capture"})
 PRODUCTION_REAL_QUERY_THRESHOLDS: dict[str, float] = {
@@ -808,7 +819,16 @@ def bootstrap_production_recall_baseline(
             and latest_report.get("baseline_capture") is True
             and latest_report.get("blocked_reason") == "pre_switch_bootstrap_anchor"
             and str(latest_report.get("evaluator_commit") or "") == candidate
-            and _independent_real_query_metrics_valid(latest_report, baseline=None)
+            and _validate_persisted_real_query_report(
+                latest_report,
+                expected_release=release,
+            )
+            and _independent_real_query_metrics_valid(
+                latest_report,
+                baseline=None,
+                runtime=runtime,
+                scope=dataset_scope,
+            )
         ):
             return {
                 **_api_report_from_persisted(latest_report, record_id=latest.record_id),
@@ -1455,7 +1475,13 @@ def _resolve_trusted_baseline(
     if int(report.get("sample_count") or 0) != len(samples) or not sample_contract["ok"]:
         return None, "baseline_samples_missing"
     if bootstrap_baseline:
-        if not _independent_real_query_metrics_valid(report, baseline=None):
+        if not _independent_real_query_metrics_valid(
+            report,
+            baseline=None,
+            runtime=runtime,
+            scope=scope,
+            allow_legacy_exact_ranking=True,
+        ):
             return None, "baseline_metrics_invalid"
     else:
         parent_identity = report.get("baseline_identity") if isinstance(report.get("baseline_identity"), dict) else {}
@@ -1471,7 +1497,13 @@ def _resolve_trusted_baseline(
         )
         if parent is None:
             return None, f"baseline_parent_invalid:{parent_reason}"
-        if not _independent_real_query_metrics_valid(report, baseline=parent):
+        if not _independent_real_query_metrics_valid(
+            report,
+            baseline=parent,
+            runtime=runtime,
+            scope=scope,
+            allow_legacy_exact_ranking=True,
+        ):
             return None, "baseline_metrics_invalid"
     results = report.get("result_refs") if isinstance(report.get("result_refs"), dict) else {}
     if str(report.get("result_digest") or "") != _stable_digest(results):
@@ -1779,11 +1811,9 @@ def _ranking_refs_for_record_ids(
 def _record_ranking_ref(record: RecordEnvelope) -> str:
     content = record.content if isinstance(record.content, dict) else {}
     meta = record.meta if isinstance(record.meta, dict) else {}
-    business_meta = meta.get("business_meta") if isinstance(meta.get("business_meta"), dict) else {}
     report_type = str(
-        content.get("report_type")
-        or business_meta.get("report_type")
-        or meta.get("report_type")
+        meta.get("report_type")
+        or content.get("report_type")
         or ""
     ).strip()
     if record.kind != "rule" or report_type != "ground_truth_behavior_rule":
@@ -1791,7 +1821,19 @@ def _record_ranking_ref(record: RecordEnvelope) -> str:
     semantic_content = {
         str(key): value
         for key, value in content.items()
-        if str(key) not in {"lesson_record_id", "replay_record_id"}
+        if str(key) not in _GROUND_TRUTH_EFFECTIVE_CONTENT_KEYS
+    }
+    effective_behavior = {
+        "report_type": report_type,
+        "priority": str(
+            content.get("priority") or meta.get("priority") or ""
+        ).strip(),
+        "must_use": bool(content.get("must_use") or meta.get("must_use")),
+        "target_capability": str(
+            content.get("target_capability")
+            or meta.get("target_capability")
+            or ""
+        ).strip(),
     }
     digest = _stable_digest(
         {
@@ -1803,9 +1845,62 @@ def _record_ranking_ref(record: RecordEnvelope) -> str:
             "summary": record.summary,
             "detail": record.detail,
             "content": semantic_content,
+            "effective_behavior": effective_behavior,
         }
     )
     return f"gtr_{digest}"
+
+
+def _authoritative_ranking_refs(
+    runtime: Any,
+    exact_refs: list[str],
+    *,
+    scope: ScopeRef,
+) -> list[str] | None:
+    ranking_refs: list[str] = []
+    for exact_ref in exact_refs:
+        record = runtime.store.get_by_id(exact_ref, scope=scope)
+        if record is None:
+            return None
+        ranking_ref = _record_ranking_ref(record)
+        if ranking_ref != exact_ref and not _GROUND_TRUTH_RANKING_REF_RE.fullmatch(
+            ranking_ref
+        ):
+            return None
+        ranking_refs.append(ranking_ref)
+    return _stable_unique_refs(ranking_refs, limit=5)
+
+
+def _authoritative_ranking_labels(
+    runtime: Any,
+    exact_refs: list[str],
+    exact_grades: list[Any],
+    *,
+    scope: ScopeRef,
+) -> tuple[list[str], list[int]] | None:
+    if len(exact_refs) != len(exact_grades):
+        return None
+    grades: dict[str, int] = {}
+    ordered_refs: list[str] = []
+    for exact_ref, raw_grade in zip(exact_refs, exact_grades):
+        if (
+            isinstance(raw_grade, bool)
+            or not isinstance(raw_grade, int)
+            or not 1 <= raw_grade <= 3
+        ):
+            return None
+        projected = _authoritative_ranking_refs(
+            runtime,
+            [exact_ref],
+            scope=scope,
+        )
+        if projected is None or len(projected) != 1:
+            return None
+        ranking_ref = projected[0]
+        if ranking_ref not in grades:
+            ordered_refs.append(ranking_ref)
+        grades[ranking_ref] = max(grades.get(ranking_ref, 0), raw_grade)
+    return ordered_refs, [grades[ranking_ref] for ranking_ref in ordered_refs]
 
 
 def _label_kinds_for_case(runtime: Any, case: dict[str, Any]) -> set[str]:
@@ -2063,6 +2158,8 @@ def _persist_eligible_high_water(
             and isinstance(latest_report, dict)
             and str(latest_report.get("report_id") or "") == str(report.get("report_id") or "")
             and _record_payload_digest_valid(latest, latest_report)
+            and _ranking_evidence_payload(latest_report)
+            == _ranking_evidence_payload(report)
         ):
             return (
                 _api_report_from_persisted(latest_report, record_id=latest.record_id),
@@ -2107,6 +2204,33 @@ def _persist_eligible_high_water(
         )
 
     return runtime.store.mutate_records_atomically(mutation)
+
+
+def _ranking_evidence_payload(report: dict[str, Any]) -> dict[str, Any]:
+    sample_fields = (
+        "case_id",
+        "label_refs",
+        "label_grades",
+        "label_ranking_refs",
+        "label_ranking_grades",
+        "returned_refs",
+        "returned_ranking_refs",
+        "baseline_ranking_refs",
+    )
+    samples = report.get("samples") if isinstance(report.get("samples"), list) else []
+    return {
+        "ranking_identity_schema": report.get("ranking_identity_schema"),
+        "ranking_result_digest": report.get("ranking_result_digest"),
+        "ranking_result_refs": report.get("ranking_result_refs"),
+        "samples": [
+            {
+                key: sample.get(key)
+                for key in sample_fields
+            }
+            for sample in samples
+            if isinstance(sample, dict)
+        ],
+    }
 
 
 def _api_report_from_persisted(report: dict[str, Any], *, record_id: str) -> dict[str, Any]:
@@ -2288,7 +2412,12 @@ def _verify_current_production_recall_gate_once(
     expected_retrieval = _retrieval_identity(runtime, samples=[])
     if any(report.get(key) != value for key, value in expected_retrieval.items()):
         return {"ok": False, "status": "blocked", "reason": "retrieval_identity_mismatch", "record_id": record.record_id}
-    if not _independent_real_query_metrics_valid(report, baseline=baseline):
+    if not _independent_real_query_metrics_valid(
+        report,
+        baseline=baseline,
+        runtime=runtime,
+        scope=scope_ref,
+    ):
         return {"ok": False, "status": "blocked", "reason": "production_recall_metrics_invalid", "record_id": record.record_id}
     if report.get("accepted") is not True or report.get("gate_status") != "accepted":
         return {"ok": False, "status": str(report.get("gate_status") or "blocked"), "reason": str(report.get("blocked_reason") or "production_recall_gate_not_accepted"), "record_id": record.record_id}
@@ -2334,6 +2463,9 @@ def _independent_real_query_metrics_valid(
     report: dict[str, Any],
     *,
     baseline: dict[str, Any] | None,
+    runtime: Any | None = None,
+    scope: ScopeRef | dict[str, Any] | None = None,
+    allow_legacy_exact_ranking: bool = False,
 ) -> bool:
     samples = report.get("samples") if isinstance(report.get("samples"), list) else []
     memory_measurement_ok = _memory_measurement_valid(report, samples=samples)
@@ -2364,7 +2496,18 @@ def _independent_real_query_metrics_valid(
         for sample in samples
         if isinstance(sample, dict)
     )
-    if not semantic_ranking and not legacy_exact_ranking:
+    if (
+        not semantic_ranking
+        and not (allow_legacy_exact_ranking and legacy_exact_ranking)
+    ):
+        return False
+    report_scope = ScopeRef.from_dict(report.get("scope") or {})
+    validation_scope = (
+        scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+    )
+    if semantic_ranking and (
+        runtime is None or not same_scope(report_scope, validation_scope)
+    ):
         return False
     cross_leakage = 0
     source_leakage = 0
@@ -2393,6 +2536,36 @@ def _independent_real_query_metrics_valid(
             str(item)
             for item in list(sample.get("baseline_ranking_refs") or [])
         ]
+        if semantic_ranking:
+            sample_scope = ScopeRef.from_dict(
+                resolve_channel_scope(channel, validation_scope)
+            )
+            authoritative_labels = _authoritative_ranking_labels(
+                runtime,
+                label_refs,
+                label_grades,
+                scope=sample_scope,
+            )
+            authoritative_returned = _authoritative_ranking_refs(
+                runtime,
+                refs,
+                scope=sample_scope,
+            )
+            baseline_exact_refs = [
+                str(item)
+                for item in list(
+                    (baseline or {}).get("result_refs", {}).get(case_id, [])
+                )
+            ]
+            authoritative_baseline = _authoritative_ranking_refs(
+                runtime,
+                baseline_exact_refs,
+                scope=sample_scope,
+            )
+        else:
+            authoritative_labels = None
+            authoritative_returned = None
+            authoritative_baseline = None
         if (
             not case_id
             or channel not in SUPPORTED_RUNTIME_CHANNELS
@@ -2410,6 +2583,13 @@ def _independent_real_query_metrics_valid(
                     or len(set(label_ranking_refs)) != len(label_ranking_refs)
                     or baseline_ranking_refs
                     != _stable_unique_refs(baseline_ranking_refs, limit=5)
+                    or authoritative_labels is None
+                    or label_ranking_refs != authoritative_labels[0]
+                    or label_ranking_grades != authoritative_labels[1]
+                    or authoritative_returned is None
+                    or candidate_ranking_refs != authoritative_returned
+                    or authoritative_baseline is None
+                    or baseline_ranking_refs != authoritative_baseline
                 )
             )
         ):
