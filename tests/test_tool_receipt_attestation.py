@@ -71,6 +71,8 @@ def test_receipt_key_file_cache_observes_provisioning_and_rotation(monkeypatch, 
 
     assert verify_tool_receipt(_receipt(), session_id="session-1", run_id="run-1") is False
     key_file.write_text(f"{RECEIPT_KEY_ENV}={first_key}\n", encoding="utf-8")
+    if os.name == "posix":
+        key_file.chmod(0o600)
     signed_first = sign_tool_receipt(_receipt(), key=first_key)
     assert verify_tool_receipt(signed_first, session_id="session-1", run_id="run-1") is True
 
