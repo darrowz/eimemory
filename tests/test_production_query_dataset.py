@@ -392,6 +392,7 @@ def test_production_query_cli_collect_accept_and_status_without_raw_echo(tmp_pat
         ),
         encoding="utf-8",
     )
+    packet.chmod(0o600)
     assert cli_main(
         ["eval", "production-query", "accept", pending_id, "--label-json", str(packet), *scope_args]
     ) == 0
