@@ -251,6 +251,7 @@ def test_nightly_jobs_can_run_configured_production_recall_eval(tmp_path, monkey
         ),
         encoding="utf-8",
     )
+    dataset_path.chmod(0o600)
     monkeypatch.setenv("EIMEMORY_PRODUCTION_RECALL_DATASET", str(dataset_path))
 
     report = run_nightly_jobs(runtime, scope=scope)
