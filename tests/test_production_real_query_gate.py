@@ -714,6 +714,7 @@ def test_production_dataset_loader_rejects_symlink_and_oversized_file(tmp_path, 
     oversized = tmp_path / "oversized.json"
     with oversized.open("wb") as handle:
         handle.truncate(MAX_PRODUCTION_RECALL_DATASET_BYTES + 1)
+    oversized.chmod(0o600)
     with pytest.raises(ValueError, match="size limit"):
         _load_json_dataset(str(oversized))
 
