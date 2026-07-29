@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - Authoritative repository: `/dev-project/eimemory`.
-- Development branch: `fix/stuck-watchdog-closure`, based on `origin/master`.
+- Development branch: an isolated OpenClaw closure worktree based on `origin/master`.
 - Production release is installed only from a full 40-character commit.
 - Target version: `1.9.116`.
 - Preserve the Feishu receipt hook and do not reactivate timer-based reply resend.

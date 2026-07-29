@@ -23,14 +23,14 @@
 ### Task 1: Managed OpenClaw Feishu Receipt Patch
 
 **Files:**
-- Create: `deploy/patch_openclaw_feishu_message_sent.py`
+- Create: `deploy/patch_openclaw_feishu_api_receipt.py`
 - Modify: `deploy/systemd/openclaw-gateway-eimemory.conf`
 - Test: `tests/test_deployment_tools.py`
 - Test: `tests/test_openclaw_reply_delivery_tracker.py`
 
 **Interfaces:**
 - Consumes: OpenClaw `2026.7.1-2` `monitor.account-*.js`, `plugins/hook-runner-global.js`, and `plugin-sdk/hook-runtime.js`.
-- Produces: idempotent `patch_openclaw_feishu_message_sent(openclaw_root: Path) -> dict[str, object]` and canonical `message_sent` events containing `content`, `success`, `messageId`, `sessionKey`, and Feishu conversation context.
+- Produces: idempotent `patch_openclaw_feishu_api_receipt(openclaw_root: Path) -> dict[str, object]` and direct API acceptance receipts containing `content`, `success`, `messageId`, `sessionKey`, and Feishu conversation context.
 
 - [ ] **Step 1: Add failing runtime-patch tests**
 

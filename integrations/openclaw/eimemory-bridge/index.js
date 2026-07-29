@@ -62,6 +62,7 @@ const TRUE_BOUNDARY_MARKERS = [
   /(?:external|外部).{0,12}(?:state|状态|coordination|协调|权限|授权)/i,
 ];
 const REGISTRATION_STATE_KEY = Symbol.for('eimemory.bridge.registrationState');
+const FEISHU_API_ACCEPTED_RECEIPT_KEY = Symbol.for('eimemory.feishu.apiAccepted.v1');
 const VISION_BRIDGE_QUERY_MARKERS = [
   '看到了什么',
   '现在看到',
@@ -1472,7 +1473,7 @@ const TERMINAL_REPLY_DELIVERY_STATUSES = new Set([
   'escalated',
 ]);
 
-function reconcileWatchdogReceipts(state) {
+function reconcileDeliveryReceipts(state) {
   let attemptsDocument;
   try {
     attemptsDocument = JSON.parse(fs.readFileSync(replyDeliveryAttemptsPath(), 'utf8'));
@@ -1623,7 +1624,7 @@ function trackReplyInbound(event, context) {
     return;
   }
   updateReplyDeliveryState((state) => {
-    reconcileWatchdogReceipts(state);
+    reconcileDeliveryReceipts(state);
     if (state.entries[inboundMessageId]) {
       // Backfill a real Feishu chat id when later hooks carry oc_*.
       if (conversationId.startsWith('oc_') && !String(state.entries[inboundMessageId].conversation_id || '').startsWith('oc_')) {
@@ -1658,7 +1659,7 @@ function trackReplyProgress(event, context) {
     return;
   }
   updateReplyDeliveryState((state) => {
-    reconcileWatchdogReceipts(state);
+    reconcileDeliveryReceipts(state);
     const runId = String(event?.runId || event?.run_id || context?.runId || context?.run_id || '');
     const entry = latestPendingReplyEntry(state, sessionKey, runId);
     if (!entry) {
@@ -1709,7 +1710,7 @@ function trackReplyAgentEnd(event, context) {
   });
 }
 
-function trackReplyMessageSent(event, context) {
+function trackReplyPlatformAccepted(event, context) {
   if (!isDirectFeishuReplyContext(context)) {
     return;
   }
@@ -1751,6 +1752,36 @@ function trackReplyMessageSent(event, context) {
       }
     }
   });
+}
+
+function trackReplyMessageSent(event, context) {
+  trackReplyPlatformAccepted(event, context);
+}
+
+function trackReplyFeishuApiAccepted(receipt) {
+  const messageId = String(receipt?.messageId || receipt?.message_id || '').trim();
+  const sessionKey = String(receipt?.sessionKey || receipt?.session_key || '').trim();
+  if (receipt?.success !== true || !messageId || !sessionKey) {
+    return;
+  }
+  const conversationId = String(
+    receipt?.conversationId || receipt?.conversation_id || ''
+  ).trim();
+  trackReplyPlatformAccepted(
+    {
+      ...receipt,
+      messageId,
+      sessionKey,
+      success: true,
+    },
+    {
+      channelId: 'feishu',
+      accountId: String(receipt?.accountId || receipt?.account_id || '').trim(),
+      conversationId,
+      chatId: conversationId,
+      sessionKey,
+    },
+  );
 }
 
 function messageToolDeliveryReceipt(value, depth = 0) {
@@ -1811,7 +1842,7 @@ function trackReplyMessageToolResult(event, context) {
     return;
   }
   updateReplyDeliveryState((state) => {
-    reconcileWatchdogReceipts(state);
+    reconcileDeliveryReceipts(state);
     const runId = String(event?.runId || context?.runId || '');
     const entry = latestPendingReplyEntry(state, sessionKey, runId, sentContent);
     if (!entry) {
@@ -2433,6 +2464,7 @@ module.exports.default = {
     registerStatusTool(api);
     registerMemoryE2ETool(api);
     writeReplyDeliveryState(readReplyDeliveryState());
+    globalThis[FEISHU_API_ACCEPTED_RECEIPT_KEY] = trackReplyFeishuApiAccepted;
     registerTypedHookOnce(api, 'message_received', async (event, context) => {
       trackReplyInbound(event, context);
       return (await safeInvokeHook(api, 'message_received', mergeHookEventContext(event, context))) || {};

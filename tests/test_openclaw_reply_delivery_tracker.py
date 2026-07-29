@@ -313,7 +313,7 @@ Promise.resolve()
 
 
 def test_tracker_closes_gateway_final_receipt_even_if_agent_end_came_first(tmp_path: Path) -> None:
-    """Automatic Feishu finals must close receipt on message_sent to stop watchdog resend."""
+    """The compatibility hook may still close an automatic Feishu final."""
     state = _run_node(
         """
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
@@ -348,6 +348,51 @@ Promise.resolve()
     assert entry["status"] == "platform_accepted"
     assert entry["delivery_message_id"] == "om_gateway_out"
     assert entry["conversation_id"] == "oc_real_chat"
+
+
+def test_tracker_closes_feishu_api_receipt_without_message_sent_hook(
+    tmp_path: Path,
+) -> None:
+    """The Feishu API receipt is authoritative; message_sent is compatibility only."""
+    state = _run_node(
+        """
+const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
+const handlers = {};
+plugin.register({ on(name, handler) { handlers[name] = handler; } });
+const apiAccepted = globalThis[Symbol.for('eimemory.feishu.apiAccepted.v1')];
+if (typeof apiAccepted !== 'function') {
+  throw new Error('Feishu API receipt sink is not registered');
+}
+const ctx = {
+  channelId: 'feishu',
+  conversationId: 'user:ou_test',
+  chatId: 'oc_api_chat',
+  sessionKey: 'agent:main:feishu:direct:ou_test'
+};
+Promise.resolve()
+  .then(() => handlers.message_received({
+    from: 'ou_test', messageId: 'om_api_inbound', runId: 'run-api'
+  }, ctx))
+  .then(() => handlers.agent_end({
+    success: true,
+    runId: 'run-api',
+    messages: [{ role: 'assistant', content: 'API accepted final' }]
+  }, ctx))
+  .then(() => apiAccepted({
+    content: 'API accepted final',
+    success: true,
+    messageId: 'om_api_outbound',
+    conversationId: 'oc_api_chat',
+    sessionKey: ctx.sessionKey
+  }));
+""",
+        tmp_path / "reply-state.json",
+    )
+
+    entry = state["entries"]["om_api_inbound"]
+    assert entry["status"] == "platform_accepted"
+    assert entry["delivery_message_id"] == "om_api_outbound"
+    assert entry["conversation_id"] == "oc_api_chat"
 
 
 def test_tracker_requires_nonempty_platform_receipt(tmp_path: Path) -> None:

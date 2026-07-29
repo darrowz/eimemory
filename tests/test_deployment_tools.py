@@ -15,7 +15,7 @@ import pytest
 
 from deploy.rotate_console_token import main as rotate_main
 from deploy.rotate_console_token import rotate_token
-from deploy.patch_openclaw_feishu_message_sent import _patch_dispatcher
+from deploy.patch_openclaw_feishu_api_receipt import _patch_dispatcher
 from deploy.extract_feishu_message_id import extract_feishu_message_id
 
 
@@ -56,7 +56,7 @@ def test_extract_feishu_message_id_fails_closed(payload: dict[str, object]) -> N
     assert extract_feishu_message_id(payload) == ""
 
 
-def test_openclaw_feishu_message_sent_patch_emits_real_api_receipts_once(
+def test_openclaw_feishu_patch_delivers_api_receipts_without_message_sent(
     tmp_path: Path,
 ) -> None:
     openclaw_root = tmp_path / "openclaw"
@@ -163,13 +163,20 @@ function createFeishuReplyDispatcher(params) {
         setStreamText(text) { streamText = text; },
     };
 }
+function shouldSendNoVisibleReplyFallback(dispatchResult) {
+    const finalCount = dispatchResult.counts.final ?? 0;
+    const failedFinalCount = dispatchResult.failedCounts?.final ?? 0;
+    const emptyEligibleDispatch = dispatchResult.noVisibleReplyFallbackEligible === true && dispatchResult.queuedFinal !== true && finalCount === 0;
+    const queuedFinalFailed = dispatchResult.queuedFinal === true && failedFinalCount > 0;
+    return dispatchResult.sendPolicyDenied !== true && dispatchResult.sourceReplyDeliveryMode !== "message_tool_only" && (emptyEligibleDispatch || queuedFinalFailed);
+}
 export { createFeishuReplyDispatcher };
 //#endregion
 """.strip()
         + "\n",
         encoding="utf-8",
     )
-    script = Path("deploy/patch_openclaw_feishu_message_sent.py")
+    script = Path("deploy/patch_openclaw_feishu_api_receipt.py")
 
     first = subprocess.run(
         [sys.executable, str(script), "--openclaw-root", str(openclaw_root)],
@@ -196,11 +203,8 @@ export { createFeishuReplyDispatcher };
     probe.write_text(
         """
 globalThis.__events = [];
-globalThis.__runner = {
-  hasHooks(name) { return name === "message_sent"; },
-  async runMessageSent(event, context) {
-    globalThis.__events.push({ event, context });
-  },
+globalThis[Symbol.for("eimemory.feishu.apiAccepted.v1")] = async (receipt) => {
+  globalThis.__events.push(receipt);
 };
 const { createFeishuReplyDispatcher } = await import(
   "./openclaw/dist/monitor.account-test.js"
@@ -237,7 +241,7 @@ process.stdout.write(JSON.stringify(globalThis.__events));
     assert executed.returncode == 0, executed.stderr
     events = json.loads(executed.stdout)
     assert [
-        (item["event"]["content"], item["event"]["messageId"])
+        (item["content"], item["messageId"])
         for item in events
     ] == [
         ("direct final", "om_direct"),
@@ -245,7 +249,7 @@ process.stdout.write(JSON.stringify(globalThis.__events));
         ("stream final", "om_stream"),
     ]
     assert all(
-        item["context"]["sessionKey"] == "agent:main:feishu:direct:ou_user"
+        item["sessionKey"] == "agent:main:feishu:direct:ou_user"
         for item in events
     )
 
@@ -292,6 +296,13 @@ function createFeishuReplyDispatcher(params) {
     return { closeStreaming, sendChunkedTextReply, sendDirect };
 }
 //#endregion
+function shouldSendNoVisibleReplyFallback(dispatchResult) {
+    const finalCount = dispatchResult.counts.final ?? 0;
+    const failedFinalCount = dispatchResult.failedCounts?.final ?? 0;
+    const emptyEligibleDispatch = dispatchResult.noVisibleReplyFallbackEligible === true && dispatchResult.queuedFinal !== true && finalCount === 0;
+    const queuedFinalFailed = dispatchResult.queuedFinal === true && failedFinalCount > 0;
+    return dispatchResult.sendPolicyDenied !== true && dispatchResult.sourceReplyDeliveryMode !== "message_tool_only" && (emptyEligibleDispatch || queuedFinalFailed);
+}
 """.strip()
         + "\n",
         encoding="utf-8",
@@ -300,7 +311,7 @@ function createFeishuReplyDispatcher(params) {
     result = subprocess.run(
         [
             sys.executable,
-            "deploy/patch_openclaw_feishu_message_sent.py",
+                "deploy/patch_openclaw_feishu_api_receipt.py",
             "--openclaw-root",
             str(openclaw_root),
         ],
@@ -336,18 +347,124 @@ function createFeishuReplyDispatcher(params) {
     };
 }
 //#endregion
+function shouldSendNoVisibleReplyFallback(dispatchResult) {
+    const finalCount = dispatchResult.counts.final ?? 0;
+    const failedFinalCount = dispatchResult.failedCounts?.final ?? 0;
+    const emptyEligibleDispatch = dispatchResult.noVisibleReplyFallbackEligible === true && dispatchResult.queuedFinal !== true && finalCount === 0;
+    const queuedFinalFailed = dispatchResult.queuedFinal === true && failedFinalCount > 0;
+    return dispatchResult.sendPolicyDenied !== true && dispatchResult.sourceReplyDeliveryMode !== "message_tool_only" && (emptyEligibleDispatch || queuedFinalFailed);
+}
 """.strip() + "\n"
 
     upgraded, changed = _patch_dispatcher(legacy, runtime)
 
     assert changed is True
-    assert "// eimemory-feishu-message-sent-patch:v2" in upgraded
+    assert "// eimemory-feishu-api-receipt-patch:v1" in upgraded
+    assert "emitEimemoryFeishuApiAccepted" in upgraded
+    assert "runMessageSent" not in upgraded
     assert "if (messageId) eimemoryFeishuReceiptMessageId = messageId;" in upgraded
     assert "messageId && !eimemoryFeishuReceiptMessageId" not in upgraded
     assert upgraded.count('eimemoryFeishuReceiptMessageId = "";') == 2
     second, changed_again = _patch_dispatcher(upgraded, runtime)
     assert changed_again is False
     assert second == upgraded
+
+
+def test_openclaw_feishu_patch_recovers_settled_queued_final_without_reply(
+    tmp_path: Path,
+) -> None:
+    openclaw_root = tmp_path / "openclaw"
+    dist = openclaw_root / "dist"
+    dist.mkdir(parents=True)
+    (openclaw_root / "package.json").write_text(
+        json.dumps({"version": "2026.7.1-2", "type": "module"}),
+        encoding="utf-8",
+    )
+    runtime = dist / "monitor.account-test.js"
+    runtime.write_text(
+        """
+// eimemory-feishu-message-sent-patch:v2
+async function emitEimemoryFeishuMessageSent(params) {}
+function createFeishuReplyDispatcher(params) {
+    const { chatId, sendTarget, accountId } = params;
+}
+//#endregion
+function shouldSendNoVisibleReplyFallback(dispatchResult) {
+    const finalCount = dispatchResult.counts.final ?? 0;
+    const failedFinalCount = dispatchResult.failedCounts?.final ?? 0;
+    const emptyEligibleDispatch = dispatchResult.noVisibleReplyFallbackEligible === true && dispatchResult.queuedFinal !== true && finalCount === 0;
+    const queuedFinalFailed = dispatchResult.queuedFinal === true && failedFinalCount > 0;
+    return dispatchResult.sendPolicyDenied !== true && dispatchResult.sourceReplyDeliveryMode !== "message_tool_only" && (emptyEligibleDispatch || queuedFinalFailed);
+}
+export { shouldSendNoVisibleReplyFallback };
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "deploy/patch_openclaw_feishu_api_receipt.py",
+            "--openclaw-root",
+            str(openclaw_root),
+        ],
+        cwd=Path.cwd(),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    patched = runtime.read_text(encoding="utf-8")
+    assert "// eimemory-feishu-api-receipt-patch:v1" in patched
+    assert "emitEimemoryFeishuApiAccepted" in patched
+    assert "runMessageSent" not in patched
+    assert (
+        "const queuedFinalMissing = dispatchResult.queuedFinal === true "
+        "&& finalCount === 0;" in patched
+    )
+    probe = tmp_path / "fallback-probe.mjs"
+    probe.write_text(
+        """
+const { shouldSendNoVisibleReplyFallback } = await import(
+  "./openclaw/dist/monitor.account-test.js"
+);
+const cases = [
+  shouldSendNoVisibleReplyFallback({
+    queuedFinal: true,
+    counts: { final: 0 },
+    failedCounts: { final: 0 },
+  }),
+  shouldSendNoVisibleReplyFallback({
+    queuedFinal: true,
+    counts: { final: 1 },
+    failedCounts: { final: 0 },
+  }),
+  shouldSendNoVisibleReplyFallback({
+    queuedFinal: true,
+    counts: { final: 0 },
+    failedCounts: { final: 0 },
+    sourceReplyDeliveryMode: "message_tool_only",
+  }),
+];
+process.stdout.write(JSON.stringify(cases));
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    executed = subprocess.run(
+        ["node", str(probe)],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+
+    assert executed.returncode == 0, executed.stderr
+    assert json.loads(executed.stdout) == [True, False, False]
 
 
 def test_rotate_console_token_updates_unit_file(tmp_path) -> None:

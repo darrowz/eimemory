@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Planned
 - Multi-agent memory coordination
 
+## [1.9.118] - 2026-07-30
+
+### Fixed
+- Treat successful Feishu API responses and their platform message IDs as the authoritative reply-delivery receipt, without depending on the generic `message_sent` hook.
+- Recover a settled queued final that produced zero visible replies through the existing no-visible-reply fallback.
+- Rename the managed OpenClaw patch and receipt sink to reflect the API-level delivery boundary.
+
 ## [1.9.117] - 2026-07-30
 
 ### Fixed

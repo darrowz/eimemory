@@ -71,7 +71,7 @@ Expected qualifying report fragment:
 - [ ] Prove the existing `live_task_gate` remains present and diagnostic.
 - [ ] Prove release closure and closure rehearsal use the combined gate instead of requiring only current-release live-task accumulation.
 - [ ] Prove current-release safety failures remain visible under `release_validation` and can block operation without lowering accumulated maturity.
-- [ ] Prove `openclaw-loop-watch` deployment/runtime checks remain in place and no stuck-watchdog check is reintroduced.
+- [ ] Prove `openclaw-loop-watch` deployment/runtime checks remain in place and no removed recovery service is reintroduced.
 
 Combined gate shape:
 

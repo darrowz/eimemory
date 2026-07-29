@@ -10,8 +10,11 @@ import stat
 
 
 AFFECTED_VERSION = re.compile(r"^2026\.7\.1-2$")
-PATCH_MARKER = "async function emitEimemoryFeishuMessageSent(params)"
-PATCH_VERSION_MARKER = "// eimemory-feishu-message-sent-patch:v2"
+PATCH_MARKER = "async function emitEimemoryFeishuApiAccepted(params)"
+LEGACY_PATCH_MARKER = "async function emitEimemoryFeishuMessageSent(params)"
+PATCH_VERSION_MARKER = "// eimemory-feishu-api-receipt-patch:v1"
+LEGACY_V3_PATCH_VERSION_MARKER = "// eimemory-feishu-message-sent-patch:v3"
+LEGACY_V2_PATCH_VERSION_MARKER = "// eimemory-feishu-message-sent-patch:v2"
 DISPATCHER_MARKER = "function createFeishuReplyDispatcher(params) {"
 DISPATCHER_END_MARKER = "\n//#endregion"
 
@@ -36,32 +39,26 @@ def _atomic_write(path: Path, text: str) -> None:
 def _helper_source(newline: str) -> str:
     lines = [
         PATCH_VERSION_MARKER,
-        "async function emitEimemoryFeishuMessageSent(params) {",
+        "async function emitEimemoryFeishuApiAccepted(params) {",
         '\tconst messageId = String(params.messageId || "").trim();',
         "\tif (!messageId) return;",
         "\ttry {",
-        "\t\tconst [{ getGlobalHookRunner }, hooks] = await Promise.all([",
-        '\t\t\timport("./plugins/hook-runner-global.js"),',
-        '\t\t\timport("./plugin-sdk/hook-runtime.js")',
-        "\t\t]);",
-        "\t\tconst hookRunner = getGlobalHookRunner();",
-        '\t\tif (!hookRunner?.hasHooks("message_sent")) return;',
-        "\t\tconst canonical = hooks.buildCanonicalSentMessageHookContext({",
+        '\t\tconst sink = globalThis[Symbol.for("eimemory.feishu.apiAccepted.v1")];',
+        '\t\tif (typeof sink !== "function") {',
+        '\t\t\tparams.log?.("eimemory Feishu API receipt sink is unavailable");',
+        "\t\t\treturn;",
+        "\t\t}",
+        "\t\tawait sink({",
         "\t\t\tto: params.to,",
         "\t\t\tcontent: params.content,",
         "\t\t\tsuccess: true,",
-        '\t\t\tchannelId: "feishu",',
         "\t\t\taccountId: params.accountId,",
         "\t\t\tconversationId: params.conversationId,",
         "\t\t\tsessionKey: params.sessionKey,",
         "\t\t\tmessageId",
         "\t\t});",
-        "\t\tawait hookRunner.runMessageSent(",
-        "\t\t\thooks.toPluginMessageSentEvent(canonical),",
-        "\t\t\thooks.toPluginMessageContext(canonical)",
-        "\t\t);",
         "\t} catch (error) {",
-        "\t\tparams.log?.(`eimemory Feishu message_sent hook failed: ${String(error)}`);",
+        "\t\tparams.log?.(`eimemory Feishu API receipt sink failed: ${String(error)}`);",
         "\t}",
         "}",
     ]
@@ -84,7 +81,7 @@ def _dispatcher_receipt_source(indent: str, newline: str) -> str:
         f"{inner}const messageId = String("
         'explicitMessageId || eimemoryFeishuReceiptMessageId || "").trim();',
         f"{inner}if (!messageId) return;",
-        f"{inner}await emitEimemoryFeishuMessageSent({{",
+        f"{inner}await emitEimemoryFeishuApiAccepted({{",
         f"{deep}to: sendTarget,",
         f"{deep}content,",
         f"{deep}messageId,",
@@ -111,7 +108,7 @@ def _dispatcher_receipt_source(indent: str, newline: str) -> str:
 def _patch_dispatcher(text: str, path: Path) -> tuple[str, bool]:
     if PATCH_VERSION_MARKER in text:
         return text, False
-    if PATCH_MARKER in text:
+    if LEGACY_PATCH_MARKER in text:
         return _upgrade_legacy_patch(text, path), True
     if text.count(DISPATCHER_MARKER) != 1:
         raise PatchError(f"expected one Feishu reply dispatcher in {path.name}")
@@ -217,11 +214,78 @@ def _patch_dispatcher(text: str, path: Path) -> tuple[str, bool]:
 
     helper = _helper_source(newline)
     patched = text[:start] + helper + region + text[end:]
+    patched = _patch_no_visible_reply_fallback(patched, path)
     return patched, True
+
+
+def _patch_no_visible_reply_fallback(text: str, path: Path) -> str:
+    queued_missing = (
+        "const queuedFinalMissing = dispatchResult.queuedFinal === true "
+        "&& finalCount === 0;"
+    )
+    patched_predicate = (
+        "(emptyEligibleDispatch || queuedFinalFailed || queuedFinalMissing)"
+    )
+    if queued_missing in text and patched_predicate in text:
+        return text
+    if queued_missing in text or patched_predicate in text:
+        raise PatchError(f"incomplete queued-final fallback patch in {path.name}")
+    queued_failed_anchor = re.compile(
+        r'^(?P<indent>[ \t]+)const queuedFinalFailed = '
+        r'dispatchResult\.queuedFinal === true && failedFinalCount > 0;\r?$',
+        re.MULTILINE,
+    )
+    queued_failed_matches = list(queued_failed_anchor.finditer(text))
+    if len(queued_failed_matches) != 1:
+        raise PatchError(
+            f"expected one queued-final fallback anchor in {path.name}"
+        )
+    match = queued_failed_matches[0]
+    newline = "\r\n" if "\r\n" in text else "\n"
+    insertion = match.end()
+    indent = match.group("indent")
+    text = (
+        text[:insertion]
+        + newline
+        + f"{indent}const queuedFinalMissing = "
+        "dispatchResult.queuedFinal === true && finalCount === 0;"
+        + text[
+            insertion + (1 if text[insertion : insertion + 1] == "\n" else 0) :
+        ]
+    )
+    predicate = "(emptyEligibleDispatch || queuedFinalFailed)"
+    replacement = patched_predicate
+    if text.count(predicate) != 1:
+        raise PatchError(
+            f"expected one no-visible-reply predicate in {path.name}"
+        )
+    return text.replace(predicate, replacement, 1)
 
 
 def _upgrade_legacy_patch(text: str, path: Path) -> str:
     newline = "\r\n" if "\r\n" in text else "\n"
+    if (
+        LEGACY_V3_PATCH_VERSION_MARKER in text
+        or LEGACY_V2_PATCH_VERSION_MARKER in text
+    ):
+        markers = [
+            marker
+            for marker in (
+                LEGACY_V3_PATCH_VERSION_MARKER,
+                LEGACY_V2_PATCH_VERSION_MARKER,
+            )
+            if marker in text
+        ]
+        if len(markers) != 1 or text.count(LEGACY_PATCH_MARKER) != 1:
+            raise PatchError(f"legacy Feishu receipt helper mismatch in {path.name}")
+        helper_start = text.index(markers[0])
+        dispatcher_start = text.index(DISPATCHER_MARKER, helper_start)
+        upgraded = (
+            text[:helper_start]
+            + _helper_source(newline)
+            + text[dispatcher_start:]
+        )
+        return _patch_no_visible_reply_fallback(upgraded, path)
     legacy_assignment = (
         "if (messageId && !eimemoryFeishuReceiptMessageId) "
         "eimemoryFeishuReceiptMessageId = messageId;"
@@ -252,14 +316,19 @@ def _upgrade_legacy_patch(text: str, path: Path) -> str:
             insertion + (1 if upgraded[insertion : insertion + 1] == "\n" else 0) :
         ]
     )
-    return upgraded.replace(
-        PATCH_MARKER,
-        PATCH_VERSION_MARKER + newline + PATCH_MARKER,
-        1,
+    if upgraded.count(LEGACY_PATCH_MARKER) != 1:
+        raise PatchError(f"legacy Feishu receipt helper mismatch in {path.name}")
+    helper_start = upgraded.index(LEGACY_PATCH_MARKER)
+    dispatcher_start = upgraded.index(DISPATCHER_MARKER, helper_start)
+    upgraded = (
+        upgraded[:helper_start]
+        + _helper_source(newline)
+        + upgraded[dispatcher_start:]
     )
+    return _patch_no_visible_reply_fallback(upgraded, path)
 
 
-def patch_openclaw_feishu_message_sent(openclaw_root: Path) -> dict[str, object]:
+def patch_openclaw_feishu_api_receipt(openclaw_root: Path) -> dict[str, object]:
     root = Path(os.path.abspath(openclaw_root))
     if root.is_symlink() or not root.is_dir():
         raise PatchError("OpenClaw root must be a real directory")
@@ -300,12 +369,12 @@ def patch_openclaw_feishu_message_sent(openclaw_root: Path) -> dict[str, object]
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Patch OpenClaw Feishu automatic replies to emit message_sent receipts."
+        description="Patch OpenClaw Feishu replies to record API receipts directly."
     )
     parser.add_argument("--openclaw-root", required=True, type=Path)
     args = parser.parse_args(argv)
     try:
-        report = patch_openclaw_feishu_message_sent(args.openclaw_root)
+        report = patch_openclaw_feishu_api_receipt(args.openclaw_root)
     except (OSError, PatchError) as exc:
         parser.exit(2, f"OpenClaw Feishu receipt patch failed: {exc}\n")
     print(json.dumps(report, ensure_ascii=False))
