@@ -129,9 +129,10 @@ production recall gate was already strict.
 Checkpoint writes use a same-directory temporary file, fsync, and atomic
 replace. A current-commit completion removes the checkpoint atomically.
 
-## Component 3: Event-Driven Closure Resumption
+## Component 3: Bounded Closure Resumption
 
-`eimemory-release-closure.path` watches the OpenClaw reply delivery ledger.
+`eimemory-release-closure.timer` activates every 30 seconds with a small
+randomized delay.
 `eimemory-release-closure.service` is a guarded oneshot.
 
 The service:
@@ -153,9 +154,10 @@ continues from channel acceptance using persisted gate evidence. Later
 release-lineage and readiness evaluation may read current L5 evidence, but they
 cannot start learning jobs or mutate monotonic L5 progress.
 
-The path unit is independent of learn timers and OpenClaw loop timers. It has no
-poll interval. Bounded systemd restart-on-failure handles transient execution
-errors; persistent errors remain visible in the service status and journal.
+The timer is independent of learn timers and OpenClaw loop timers. Its bounded
+interval prevents reply-ledger write volume from exhausting the service start
+limit. Bounded systemd restart-on-failure handles transient execution errors;
+persistent errors remain visible in the service status and journal.
 
 ## Failure Semantics
 

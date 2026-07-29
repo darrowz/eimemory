@@ -1,9 +1,0 @@
-[Unit]
-Description=Resume eimemory release closure when the channel ledger changes
-
-[Path]
-PathChanged=/var/lib/eimemory/openclaw_reply_delivery_state.json
-Unit=eimemory-release-closure.service
-
-[Install]
-WantedBy=default.target

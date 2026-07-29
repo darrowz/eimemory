@@ -1,0 +1,12 @@
+[Unit]
+Description=Periodically reconcile pending eimemory release closure
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=30s
+AccuracySec=2s
+RandomizedDelaySec=5s
+Unit=eimemory-release-closure.service
+
+[Install]
+WantedBy=timers.target

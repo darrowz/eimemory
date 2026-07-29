@@ -1687,34 +1687,44 @@ def test_immutable_release_installer_manages_user_level_loop_compaction_timer() 
     assert "OnCalendar=*-*-* 04:10:00" in timer
 
 
-def test_release_closure_uses_channel_ledger_path_without_polling() -> None:
+def test_release_closure_timer_bounds_reconcile_frequency() -> None:
     script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
-    path_unit = Path("deploy/systemd/eimemory-release-closure.path").read_text(
+    timer = Path("deploy/systemd/eimemory-release-closure.timer").read_text(
         encoding="utf-8"
     )
     service = Path("deploy/systemd/eimemory-release-closure.service").read_text(
         encoding="utf-8"
     )
 
-    assert "PathChanged=/var/lib/eimemory/openclaw_reply_delivery_state.json" in path_unit
-    assert "Unit=eimemory-release-closure.service" in path_unit
-    assert "OnUnitActiveSec=" not in path_unit
-    assert "OnCalendar=" not in path_unit
+    assert not Path("deploy/systemd/eimemory-release-closure.path").exists()
+    assert "OnBootSec=30s" in timer
+    assert "OnUnitActiveSec=30s" in timer
+    assert "AccuracySec=2s" in timer
+    assert "RandomizedDelaySec=5s" in timer
+    assert "Unit=eimemory-release-closure.service" in timer
     assert "learn release-closure-reconcile --json" in service
     assert "Restart=on-failure" in service
     assert "RestartSec=2s" in service
     assert "StartLimitBurst=3" in service
     assert "openclaw-feishu-reply-watchdog" not in service
-    assert '"$RELEASE_DIR/deploy/systemd/eimemory-release-closure.path"' in script
+    assert '"$RELEASE_DIR/deploy/systemd/eimemory-release-closure.timer"' in script
     assert '"$RELEASE_DIR/deploy/systemd/eimemory-release-closure.service"' in script
-    assert "_user_systemctl enable eimemory-release-closure.path" in script
-    assert "_user_systemctl start eimemory-release-closure.path" in script
-    assert "eimemory-release-closure.path" in script[
-        script.index("STORAGE_WRITER_UNITS=(") : script.index("ACTIVE_STORAGE_WRITER_UNITS=()")
+    assert "_user_systemctl disable --now eimemory-release-closure.path" in script
+    assert 'rm -f "$USER_SYSTEMD_DIR/eimemory-release-closure.path"' in script
+    assert (
+        "_user_systemctl reset-failed eimemory-release-closure.service "
+        "eimemory-release-closure.timer" in script
+    )
+    assert "_user_systemctl enable eimemory-release-closure.timer" in script
+    assert "_user_systemctl start eimemory-release-closure.timer" in script
+    writer_units = script[
+        script.index("STORAGE_WRITER_UNITS=(") : script.index(
+            "ACTIVE_STORAGE_WRITER_UNITS=()"
+        )
     ]
-    assert "eimemory-release-closure.service" in script[
-        script.index("STORAGE_WRITER_UNITS=(") : script.index("ACTIVE_STORAGE_WRITER_UNITS=()")
-    ]
+    assert "eimemory-release-closure.path" not in writer_units
+    assert "eimemory-release-closure.timer" in writer_units
+    assert "eimemory-release-closure.service" in writer_units
 
 
 def test_immutable_release_installer_does_not_manage_feishu_reply_watchdog() -> None:
