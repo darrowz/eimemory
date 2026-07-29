@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Planned
 - Multi-agent memory coordination
 
+## [1.9.114] - 2026-07-29
+
+### Fixed
+- Extract deployment-notification Feishu receipts from camelCase, nested primary-platform, and API-native `data.message_id` response shapes with bounded, fail-closed parsing.
+
 ## [1.9.113] - 2026-07-29
 
 ### Fixed

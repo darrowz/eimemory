@@ -16,9 +16,43 @@ import pytest
 from deploy.rotate_console_token import main as rotate_main
 from deploy.rotate_console_token import rotate_token
 from deploy.patch_openclaw_feishu_message_sent import _patch_dispatcher
+from deploy.extract_feishu_message_id import extract_feishu_message_id
 
 
 pytestmark = pytest.mark.linux_deployment
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        ({"messageId": "om_camel_case"}, "om_camel_case"),
+        ({"payload": {"messageId": "om_nested_camel"}}, "om_nested_camel"),
+        (
+            {"payload": {"receipt": {"primaryPlatformMessageId": "om_primary"}}},
+            "om_primary",
+        ),
+        ({"data": {"message_id": "om_snake_case"}}, "om_snake_case"),
+    ],
+)
+def test_extract_feishu_message_id_accepts_supported_receipt_shapes(
+    payload: dict[str, object],
+    expected: str,
+) -> None:
+    assert extract_feishu_message_id(payload) == expected
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"ok": False, "data": {"message_id": "om_failed_receipt"}},
+        {"messageId": ""},
+        {"data": {"message_id": 123}},
+        {"payload": {"receipt": {"primaryPlatformMessageId": "not-a-message-id"}}},
+    ],
+)
+def test_extract_feishu_message_id_fails_closed(payload: dict[str, object]) -> None:
+    assert extract_feishu_message_id(payload) == ""
 
 
 def test_openclaw_feishu_message_sent_patch_emits_real_api_receipts_once(
