@@ -16,6 +16,7 @@ const DEFAULT_HOOK_CACHE_TTL_MS = 10000;
 const DEFAULT_HOOK_TIMEOUT_MS = 8000;
 const DEFAULT_TERMINAL_HOOK_TIMEOUT_MS = 30000;
 const DEFAULT_BRIDGE_TIMEOUT_MS = 8000;
+const DEFAULT_BEFORE_PROMPT_BUDGET_MS = 22000;
 const DEFAULT_MAX_CONCURRENT_COMMANDS = 2;
 const DEFAULT_MAX_QUEUED_COMMANDS = 32;
 const DEFAULT_MAX_COMMAND_OUTPUT_BYTES = 4 * 1024 * 1024;
@@ -1838,6 +1839,13 @@ function drainCommandQueue() {
   );
   while (activeCommandCount < maxConcurrent && commandQueue.length) {
     const queued = commandQueue.shift();
+    clearTimeout(queued.deadlineTimer);
+    if (queued.deadlineAtMs > 0 && queued.deadlineAtMs <= Date.now()) {
+      const error = new Error('eimemory command deadline expired while queued');
+      error.code = 'EIMEMORY_QUEUE_TIMEOUT';
+      queued.reject(error);
+      continue;
+    }
     activeCommandCount += 1;
     Promise.resolve()
       .then(queued.start)
@@ -1849,7 +1857,7 @@ function drainCommandQueue() {
   }
 }
 
-function scheduleCommand(start) {
+function scheduleCommand(start, { deadlineAtMs = 0 } = {}) {
   const maxQueued = positiveIntEnv('EIMEMORY_MAX_QUEUED_COMMANDS', DEFAULT_MAX_QUEUED_COMMANDS);
   if (commandQueue.length >= maxQueued) {
     const error = new Error(`eimemory command queue is full (${maxQueued})`);
@@ -1857,13 +1865,61 @@ function scheduleCommand(start) {
     return Promise.reject(error);
   }
   return new Promise((resolve, reject) => {
-    commandQueue.push({ start, resolve, reject });
+    const queued = {
+      start,
+      resolve,
+      reject,
+      deadlineAtMs: Number(deadlineAtMs || 0),
+      deadlineTimer: undefined,
+    };
+    if (queued.deadlineAtMs > 0) {
+      const remainingMs = queued.deadlineAtMs - Date.now();
+      if (remainingMs <= 0) {
+        const error = new Error('eimemory command deadline expired before queueing');
+        error.code = 'EIMEMORY_QUEUE_TIMEOUT';
+        reject(error);
+        return;
+      }
+      queued.deadlineTimer = setTimeout(() => {
+        const index = commandQueue.indexOf(queued);
+        if (index < 0) {
+          return;
+        }
+        commandQueue.splice(index, 1);
+        const error = new Error('eimemory command deadline expired while queued');
+        error.code = 'EIMEMORY_QUEUE_TIMEOUT';
+        reject(error);
+      }, remainingMs);
+      queued.deadlineTimer.unref?.();
+    }
+    commandQueue.push(queued);
     drainCommandQueue();
   });
 }
 
-function runCommand(command, args, { input = '', timeout = 0 } = {}) {
+function runCommand(command, args, { input = '', timeout = 0, deadlineAtMs = 0 } = {}) {
+  const configuredTimeoutMs = Number(timeout || 0);
+  const requestedDeadlineAtMs = Number(deadlineAtMs || 0);
+  const commandDeadlineAtMs = requestedDeadlineAtMs > 0
+    ? requestedDeadlineAtMs
+    : configuredTimeoutMs > 0
+      ? Date.now() + configuredTimeoutMs
+      : 0;
   return scheduleCommand(() => new Promise((resolve, reject) => {
+    const remainingBudgetMs = commandDeadlineAtMs > 0
+      ? commandDeadlineAtMs - Date.now()
+      : 0;
+    if (commandDeadlineAtMs > 0 && remainingBudgetMs <= 0) {
+      const error = new Error('eimemory command deadline expired before spawn');
+      error.code = 'EIMEMORY_QUEUE_TIMEOUT';
+      reject(error);
+      return;
+    }
+    const effectiveTimeoutMs = commandDeadlineAtMs > 0
+      ? configuredTimeoutMs > 0
+        ? Math.min(configuredTimeoutMs, remainingBudgetMs)
+        : remainingBudgetMs
+      : configuredTimeoutMs;
     const maxOutputBytes = positiveIntEnv(
       'EIMEMORY_MAX_COMMAND_OUTPUT_BYTES',
       DEFAULT_MAX_COMMAND_OUTPUT_BYTES
@@ -1921,15 +1977,15 @@ function runCommand(command, args, { input = '', timeout = 0 } = {}) {
       resolve({ status, stdout: stdoutText, stderr: stderrText });
     });
 
-    if (timeout > 0) {
+    if (effectiveTimeoutMs > 0) {
       timer = setTimeout(() => {
-        const error = new Error(`eimemory command timed out after ${timeout}ms`);
+        const error = new Error(`eimemory command timed out after ${effectiveTimeoutMs}ms`);
         error.code = 'ETIMEDOUT';
         child.kill('SIGTERM');
         const forceKill = setTimeout(() => child.kill('SIGKILL'), 250);
         forceKill.unref?.();
         fail(error);
-      }, timeout);
+      }, effectiveTimeoutMs);
       timer.unref?.();
     }
     child.stdin.on('error', (error) => {
@@ -1938,10 +1994,10 @@ function runCommand(command, args, { input = '', timeout = 0 } = {}) {
       }
     });
     child.stdin.end(input);
-  }));
+  }), { deadlineAtMs: commandDeadlineAtMs });
 }
 
-async function invokeHook(api, hook, event) {
+async function invokeHook(api, hook, event, { deadlineAtMs = 0 } = {}) {
   const payload = normalizeEventPayload(hook, event);
   const key = cacheKeyFor('hook', hook, payload);
   const cacheable = hook === 'before_prompt_build';
@@ -1956,6 +2012,7 @@ async function invokeHook(api, hook, event) {
     const result = await runCommand(command[0], [...command.slice(1), hook], {
       input: JSON.stringify(payload),
       timeout: configuredHookTimeout(api, hook, defaultHookTimeoutMs(hook)),
+      deadlineAtMs,
     });
     const parsed = JSON.parse(result.stdout || '{}');
     return parsed;
@@ -1972,7 +2029,7 @@ async function invokeHook(api, hook, event) {
   }
 }
 
-async function invokeBridge(api, event) {
+async function invokeBridge(api, event, { deadlineAtMs = 0 } = {}) {
   const key = cacheKeyFor('bridge', 'feishu', event);
   pruneHookCache();
   const cached = hookResultCache.get(key);
@@ -1988,6 +2045,7 @@ async function invokeBridge(api, event) {
     const result = await runCommand(command[0], [...command.slice(1)], {
       input: JSON.stringify(event),
       timeout: configuredBridgeTimeout(api, DEFAULT_BRIDGE_TIMEOUT_MS),
+      deadlineAtMs,
     });
     const parsed = JSON.parse(result.stdout || '{}');
     hookResultCache.set(key, { createdAt: nowMs(), value: parsed });
@@ -2011,9 +2069,9 @@ async function invokeCli(args) {
   return JSON.parse(result.stdout || '{}');
 }
 
-async function safeInvokeHook(api, hook, event) {
+async function safeInvokeHook(api, hook, event, options = {}) {
   try {
-    const result = await invokeHook(api, hook, event);
+    const result = await invokeHook(api, hook, event, options);
     api?.logger?.info?.(`eimemory-bridge: ${hook} completed`);
     return result;
   } catch (error) {
@@ -2031,9 +2089,9 @@ async function safeInvokeHook(api, hook, event) {
   }
 }
 
-async function safeInvokeBridge(api, event) {
+async function safeInvokeBridge(api, event, options = {}) {
   try {
-    const result = await invokeBridge(api, event);
+    const result = await invokeBridge(api, event, options);
     api?.logger?.info?.('eimemory-bridge: ei-bridge feishu completed');
     return result;
   } catch (error) {
@@ -2197,6 +2255,13 @@ function configuredBridgeTimeout(api, fallback) {
       ?? filePolicy?.timeouts?.bridge
       ?? filePolicy?.timeouts?.feishu_bridge,
     envTimeout
+  );
+}
+
+function configuredBeforePromptBudget() {
+  return positiveIntEnv(
+    'EIMEMORY_BEFORE_PROMPT_BUDGET_MS',
+    DEFAULT_BEFORE_PROMPT_BUDGET_MS,
   );
 }
 
@@ -2380,10 +2445,17 @@ module.exports.default = {
       if (!promptInjectionEnabled(api)) {
         return {};
       }
-      const bridgePayload = shouldInvokeBridgeBeforePrompt(api, correlatedEvent)
-        ? await safeInvokeBridge(api, normalizeEventPayload('before_prompt_build', correlatedEvent))
-        : null;
-      const payload = await safeInvokeHook(api, 'before_prompt_build', correlatedEvent);
+      const deadlineAtMs = Date.now() + configuredBeforePromptBudget();
+      const [bridgePayload, payload] = await Promise.all([
+        shouldInvokeBridgeBeforePrompt(api, correlatedEvent)
+          ? safeInvokeBridge(
+              api,
+              normalizeEventPayload('before_prompt_build', correlatedEvent),
+              { deadlineAtMs },
+            )
+          : Promise.resolve(null),
+        safeInvokeHook(api, 'before_prompt_build', correlatedEvent, { deadlineAtMs }),
+      ]);
       rememberLoopTask(correlatedEvent, payload);
       const bridgeContext = buildBridgePrependContext(bridgePayload);
       if (!payload) {
@@ -2421,7 +2493,7 @@ module.exports.default = {
           injected_citations: Array.from(
             new Set((proactiveContext.match(/pm:[0-9a-f]{20}/g) || []))
           ),
-        });
+        }, { deadlineAtMs });
       }
       return { prependContext };
     });
