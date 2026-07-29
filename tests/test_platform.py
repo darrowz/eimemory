@@ -1326,38 +1326,37 @@ Promise.all(Array.from({ length: 5 }, (_, index) => (
 def test_openclaw_before_prompt_build_starts_bridge_and_hook_under_one_deadline(
     tmp_path,
 ) -> None:
-    events_path = tmp_path / "prompt-provider-events.jsonl"
-    bridge_script = tmp_path / "delayed-bridge.js"
-    bridge_script.write_text(
-        """
-const fs = require('node:fs');
-fs.appendFileSync(process.env.PROVIDER_EVENTS, `${JSON.stringify({ provider: 'bridge', at: Date.now() })}\n`);
-process.stdin.resume();
-process.stdin.on('end', () => setTimeout(() => process.stdout.write(JSON.stringify({
-  matched: true,
-  prepend_context: 'bridge context'
-})), 250));
-""".strip(),
-        encoding="utf-8",
-    )
-    hook_script = tmp_path / "delayed-hook.js"
-    hook_script.write_text(
-        """
-const fs = require('node:fs');
-fs.appendFileSync(process.env.PROVIDER_EVENTS, `${JSON.stringify({ provider: 'hook', at: Date.now() })}\n`);
-process.stdin.resume();
-process.stdin.on('end', () => setTimeout(() => process.stdout.write(JSON.stringify({
-  memory_bundle: {
-    items: [{ id: 'memory-1', summary: 'memory context', memory_type: 'fact' }],
-    explanation: {}
-  }
-})), 250));
-""".strip(),
-        encoding="utf-8",
-    )
     script = """
 process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
 process.env.EIMEMORY_ENABLE_PROMPT_BRIDGE = 'true';
+process.env.EIMEMORY_BRIDGE_COMMAND = 'bridge-probe';
+process.env.EIMEMORY_HOOK_COMMAND = 'hook-probe';
+const childProcess = require('node:child_process');
+const { EventEmitter } = require('node:events');
+const { PassThrough } = require('node:stream');
+const starts = [];
+childProcess.spawn = (command) => {
+  starts.push({ provider: command, at: Date.now() });
+  const child = new EventEmitter();
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  child.stdin = new PassThrough();
+  child.kill = () => true;
+  child.stdin.on('finish', () => setTimeout(() => {
+    const payload = command === 'bridge-probe'
+      ? { matched: true, prepend_context: 'bridge context' }
+      : {
+          memory_bundle: {
+            items: [{ id: 'memory-1', summary: 'memory context', memory_type: 'fact' }],
+            explanation: {}
+          }
+        };
+    child.stdout.end(JSON.stringify(payload));
+    child.stderr.end();
+    child.emit('close', 0, null);
+  }, 25));
+  return child;
+};
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const handlers = {};
 plugin.register({
@@ -1365,13 +1364,10 @@ plugin.register({
   hooks: { on(name, handler) { handlers[name] = handler; } }
 });
 handlers.before_prompt_build({ sessionId: 'deadline-session', prompt: 'remember this' })
-  .then((result) => process.stdout.write(JSON.stringify(result)))
+  .then((result) => process.stdout.write(JSON.stringify({ result, starts })))
   .catch((error) => { console.error(error && error.stack ? error.stack : String(error)); process.exit(1); });
 """.strip()
     env = os.environ.copy()
-    env["EIMEMORY_BRIDGE_COMMAND"] = f'node "{bridge_script}"'
-    env["EIMEMORY_HOOK_COMMAND"] = f'node "{hook_script}"'
-    env["PROVIDER_EVENTS"] = str(events_path)
     result = subprocess.run(
         ["node", "-e", script],
         cwd=Path.cwd(),
@@ -1384,15 +1380,11 @@ handlers.before_prompt_build({ sessionId: 'deadline-session', prompt: 'remember 
 
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
-    assert "bridge context" in payload["prependContext"]
-    assert "memory context" in payload["prependContext"]
-    events = [
-        json.loads(line)
-        for line in events_path.read_text(encoding="utf-8").splitlines()
-    ]
-    assert {item["provider"] for item in events} == {"bridge", "hook"}
-    starts = {item["provider"]: item["at"] for item in events}
-    assert abs(starts["bridge"] - starts["hook"]) < 150
+    assert "bridge context" in payload["result"]["prependContext"]
+    assert "memory context" in payload["result"]["prependContext"]
+    starts = {item["provider"]: item["at"] for item in payload["starts"]}
+    assert set(starts) == {"bridge-probe", "hook-probe"}
+    assert abs(starts["bridge-probe"] - starts["hook-probe"]) < 50
 
 
 def test_openclaw_command_deadline_includes_queue_wait(tmp_path) -> None:
@@ -1562,7 +1554,9 @@ childProcess.spawn = (_command, args) => {
   return child;
 };
 global.setTimeout = (handler, timeout, ...args) => {
-  if (calls.length && timeout >= 8000) calls[calls.length - 1].timeout = timeout;
+  if (calls.length && calls[calls.length - 1].timeout === null && timeout >= 1000) {
+    calls[calls.length - 1].timeout = timeout;
+  }
   return realSetTimeout(handler, timeout, ...args);
 };
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
@@ -1587,11 +1581,15 @@ Promise.resolve()
         check=True,
     )
 
-    assert json.loads(result.stdout) == [
-        {"hook": "message_received", "timeout": 8000},
-        {"hook": "agent_end", "timeout": 30000},
-        {"hook": "session_end", "timeout": 30000},
+    calls = json.loads(result.stdout)
+    assert [call["hook"] for call in calls] == [
+        "message_received",
+        "agent_end",
+        "session_end",
     ]
+    assert 7900 <= calls[0]["timeout"] <= 8000
+    assert 29900 <= calls[1]["timeout"] <= 30000
+    assert 29900 <= calls[2]["timeout"] <= 30000
 
 
 def test_openclaw_js_bridge_preserves_missing_and_explicit_verification_states(tmp_path) -> None:
