@@ -826,7 +826,9 @@ def test_real_query_gate_is_bound_sanitized_and_deterministic(tmp_path, monkeypa
     assert set(first["proactive_metrics"]) >= {
         "volunteered", "injected", "used", "not_used", "rejected", "control"
     }
-    assert len(requested) == 30
+    assert len(requested) == 60
+    assert requested[:15] == requested[15:30]
+    assert requested[30:45] == requested[45:60]
     assert all(call[2]["source_ids"] == [call[2]["target_source_id"]] for call in requested)
 
     stored = runtime.store.get_by_id(first["persisted_record_id"], scope=BASE_SCOPE)
@@ -1274,6 +1276,48 @@ def test_external_tracemalloc_is_never_reset_or_stopped_and_cannot_accept_memory
     assert report["accepted"] is False
     assert report["memory_measurement"]["mode"] == "external_tracer_unavailable"
     assert "peak_memory_measurement" in report["threshold_gate"]["blocking_metrics"]
+    runtime.close()
+
+
+def test_latency_measurement_excludes_isolated_tracemalloc_probe_overhead(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    records = {
+        channel: _record(f"isolated-{channel}", channel, f"source-{channel}")
+        for channel in ("openclaw", "codex", "hermes")
+    }
+    _append_records_and_label_evidence(runtime, records)
+    dataset = _dataset({channel: record.record_id for channel, record in records.items()})
+    monkeypatch.setattr(real_query_gate, "current_release_identity", lambda *_args, **_kwargs: RELEASE)
+    monkeypatch.setattr(
+        real_query_gate,
+        "_resolve_trusted_baseline",
+        lambda *_args, **_kwargs: (_trusted_baseline(dataset), ""),
+    )
+    monkeypatch.setattr(
+        runtime.memory,
+        "recall",
+        lambda **kwargs: RecallBundle(
+            items=[records[str(kwargs["task_context"]["runtime_channel"])]],
+            rules=[],
+            reflections=[],
+            confidence=1.0,
+            next_action_hint="",
+            explanation={},
+        ),
+    )
+    clock = 0.0
+
+    def traced_clock() -> float:
+        nonlocal clock
+        clock += 1.0 if tracemalloc.is_tracing() else 0.001
+        return clock
+
+    monkeypatch.setattr(real_query_gate, "perf_counter", traced_clock)
+
+    report = run_production_recall_eval(runtime, dataset, seed=False, persist_report=True)
+
+    assert report["memory_measurement"]["mode"] == "isolated_tracemalloc"
+    assert report["latency_ms_p95"] == pytest.approx(1.0)
     runtime.close()
 
 

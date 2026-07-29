@@ -31,6 +31,7 @@ pytestmark = pytest.mark.linux_deployment
             {"payload": {"receipt": {"primaryPlatformMessageId": "om_primary"}}},
             "om_primary",
         ),
+        ({"primaryPlatformMessageId": "om_top_primary"}, "om_top_primary"),
         ({"data": {"message_id": "om_snake_case"}}, "om_snake_case"),
     ],
 )

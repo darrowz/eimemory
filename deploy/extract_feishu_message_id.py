@@ -30,6 +30,7 @@ def extract_feishu_message_id(payload: object) -> str:
     candidates = (
         _path(payload, "messageId"),
         _path(payload, "message_id"),
+        _path(payload, "primaryPlatformMessageId"),
         _path(payload, "payload", "messageId"),
         _path(payload, "payload", "message_id"),
         _path(payload, "payload", "receipt", "primaryPlatformMessageId"),

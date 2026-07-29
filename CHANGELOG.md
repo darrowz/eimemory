@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Planned
 - Multi-agent memory coordination
 
+## [1.9.115] - 2026-07-29
+
+### Fixed
+- Measure production-recall latency after a separate isolated memory probe, removing `tracemalloc` and cold-cache overhead from the p95 service-latency gate without changing its threshold.
+
 ## [1.9.114] - 2026-07-29
 
 ### Fixed

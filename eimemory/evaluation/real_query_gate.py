@@ -1567,103 +1567,123 @@ def _evaluate_real_query_candidate(
     capacities: dict[str, int],
     evaluator_commit: str = "",
 ) -> dict[str, Any]:
+    def recall_inputs(case: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+        features = dict(case["query_features"])
+        query = " ".join(
+            [
+                *features.get("terms", []),
+                *features.get("entities", []),
+                str(features.get("intent") or ""),
+            ]
+        ).strip()
+        task_context = {
+            "source_ids": [str(case["source_id"])],
+            "target_source_id": str(case["source_id"]),
+            "runtime_channel": str(case["channel"]),
+            "evaluation_policy": PRODUCTION_REAL_QUERY_POLICY,
+            "recall_profile": "precision",
+            "candidate_limit": 24,
+        }
+        if str(features.get("intent") or "").strip():
+            task_context["intent"] = str(features.get("intent") or "").strip()
+        return query, task_context
+
     external_tracer = tracemalloc.is_tracing()
     if not external_tracer:
         tracemalloc.start()
+        try:
+            for case in frozen["cases"]:
+                query, task_context = recall_inputs(case)
+                runtime.memory.recall(
+                    query=query,
+                    scope=dict(case["scope"]),
+                    task_context=task_context,
+                    limit=5,
+                )
+            _current, peak = tracemalloc.get_traced_memory()
+            peak_memory = int(peak)
+        finally:
+            if tracemalloc.is_tracing():
+                tracemalloc.stop()
+    else:
+        peak_memory = 0
     samples: list[dict[str, Any]] = []
     result_refs: dict[str, list[str]] = {}
     ranking_result_refs: dict[str, list[str]] = {}
     cross_channel_leakage = 0
     source_filter_leakage = 0
-    try:
-        for case in frozen["cases"]:
-            features = dict(case["query_features"])
-            query = " ".join([*features.get("terms", []), *features.get("entities", []), str(features.get("intent") or "")]).strip()
-            task_context = {
-                "source_ids": [str(case["source_id"])],
-                "target_source_id": str(case["source_id"]),
-                "runtime_channel": str(case["channel"]),
-                "evaluation_policy": PRODUCTION_REAL_QUERY_POLICY,
-                "recall_profile": "precision",
-                "candidate_limit": 24,
+    for case in frozen["cases"]:
+        query, task_context = recall_inputs(case)
+        start = perf_counter()
+        bundle = runtime.memory.recall(
+            query=query,
+            scope=dict(case["scope"]),
+            task_context=task_context,
+            limit=5,
+        )
+        latency_ms = (perf_counter() - start) * 1000.0
+        label_kinds = _label_kinds_for_case(runtime, case)
+        returned: list[RecordEnvelope] = []
+        returned_ids: set[str] = set()
+        candidate_records = _candidate_records_for_case(bundle, label_kinds=label_kinds)
+        for item in candidate_records:
+            record_id = str(item.record_id or "")
+            if not record_id or record_id in returned_ids:
+                continue
+            returned_ids.add(record_id)
+            returned.append(item)
+            if len(returned) >= 5:
+                break
+        refs = [str(item.record_id) for item in returned]
+        result_refs[str(case["case_id"])] = refs
+        returned_ranking_refs = _stable_unique_refs(
+            [_record_ranking_ref(item) for item in returned],
+            limit=5,
+        )
+        ranking_result_refs[str(case["case_id"])] = returned_ranking_refs
+        case_cross = sum(
+            1 for item in returned if _record_runtime_channel(item) != str(case["channel"])
+        )
+        case_source = sum(1 for item in returned if item.source_id != str(case["source_id"]))
+        cross_channel_leakage += case_cross
+        source_filter_leakage += case_source
+        baseline_refs = list((baseline or {}).get("result_refs", {}).get(str(case["case_id"]), []))
+        baseline_ranking_refs = _ranking_refs_for_record_ids(
+            runtime,
+            baseline_refs,
+            scope=ScopeRef.from_dict(case["scope"]),
+        )
+        ranking_labels = _ranking_labels_for_case(runtime, case)
+        ranking = evaluate_labeled_ranking_at_5(
+            candidate_refs=returned_ranking_refs,
+            labels=ranking_labels,
+            corpus_result_capacity=int(capacities[str(case["case_id"])]),
+            baseline_refs=baseline_ranking_refs,
+        )
+        samples.append(
+            {
+                "case_id": str(case["case_id"]),
+                "channel": str(case["channel"]),
+                "source_id": str(case["source_id"]),
+                "query_digest": str(case["query_digest"]),
+                "label_refs": [str(label["record_ref"]) for label in case["labels"]],
+                "label_grades": [int(label["grade"]) for label in case["labels"]],
+                "label_ranking_refs": [
+                    str(label["record_ref"]) for label in ranking_labels
+                ],
+                "label_ranking_grades": [
+                    int(label["grade"]) for label in ranking_labels
+                ],
+                "returned_refs": refs,
+                "returned_ranking_refs": returned_ranking_refs,
+                "baseline_ranking_refs": baseline_ranking_refs,
+                "corpus_result_capacity": int(capacities[str(case["case_id"])]),
+                "latency_ms": round(latency_ms, 3),
+                "cross_channel_leakage_count": case_cross,
+                "source_filter_leakage_count": case_source,
+                **{key: round(float(value), 6) for key, value in ranking.items()},
             }
-            if str(features.get("intent") or "").strip():
-                task_context["intent"] = str(features.get("intent") or "").strip()
-            start = perf_counter()
-            bundle = runtime.memory.recall(
-                query=query,
-                scope=dict(case["scope"]),
-                task_context=task_context,
-                limit=5,
-            )
-            latency_ms = (perf_counter() - start) * 1000.0
-            label_kinds = _label_kinds_for_case(runtime, case)
-            returned: list[RecordEnvelope] = []
-            returned_ids: set[str] = set()
-            candidate_records = _candidate_records_for_case(bundle, label_kinds=label_kinds)
-            for item in candidate_records:
-                record_id = str(item.record_id or "")
-                if not record_id or record_id in returned_ids:
-                    continue
-                returned_ids.add(record_id)
-                returned.append(item)
-                if len(returned) >= 5:
-                    break
-            refs = [str(item.record_id) for item in returned]
-            result_refs[str(case["case_id"])] = refs
-            returned_ranking_refs = _stable_unique_refs(
-                [_record_ranking_ref(item) for item in returned],
-                limit=5,
-            )
-            ranking_result_refs[str(case["case_id"])] = returned_ranking_refs
-            case_cross = sum(
-                1 for item in returned if _record_runtime_channel(item) != str(case["channel"])
-            )
-            case_source = sum(1 for item in returned if item.source_id != str(case["source_id"]))
-            cross_channel_leakage += case_cross
-            source_filter_leakage += case_source
-            baseline_refs = list((baseline or {}).get("result_refs", {}).get(str(case["case_id"]), []))
-            baseline_ranking_refs = _ranking_refs_for_record_ids(
-                runtime,
-                baseline_refs,
-                scope=ScopeRef.from_dict(case["scope"]),
-            )
-            ranking_labels = _ranking_labels_for_case(runtime, case)
-            ranking = evaluate_labeled_ranking_at_5(
-                candidate_refs=returned_ranking_refs,
-                labels=ranking_labels,
-                corpus_result_capacity=int(capacities[str(case["case_id"])]),
-                baseline_refs=baseline_ranking_refs,
-            )
-            samples.append(
-                {
-                    "case_id": str(case["case_id"]),
-                    "channel": str(case["channel"]),
-                    "source_id": str(case["source_id"]),
-                    "query_digest": str(case["query_digest"]),
-                    "label_refs": [str(label["record_ref"]) for label in case["labels"]],
-                    "label_grades": [int(label["grade"]) for label in case["labels"]],
-                    "label_ranking_refs": [
-                        str(label["record_ref"]) for label in ranking_labels
-                    ],
-                    "label_ranking_grades": [
-                        int(label["grade"]) for label in ranking_labels
-                    ],
-                    "returned_refs": refs,
-                    "returned_ranking_refs": returned_ranking_refs,
-                    "baseline_ranking_refs": baseline_ranking_refs,
-                    "corpus_result_capacity": int(capacities[str(case["case_id"])]),
-                    "latency_ms": round(latency_ms, 3),
-                    "cross_channel_leakage_count": case_cross,
-                    "source_filter_leakage_count": case_source,
-                    **{key: round(float(value), 6) for key, value in ranking.items()},
-                }
-            )
-        _current, peak = tracemalloc.get_traced_memory()
-        peak_memory = 0 if external_tracer else int(peak)
-    finally:
-        if not external_tracer and tracemalloc.is_tracing():
-            tracemalloc.stop()
+        )
     memory_measurement = {
         "schema": "production_recall_memory_measurement.v1",
         "ok": not external_tracer,
