@@ -22,11 +22,6 @@ const DEFAULT_MAX_QUEUED_COMMANDS = 32;
 const DEFAULT_MAX_COMMAND_OUTPUT_BYTES = 4 * 1024 * 1024;
 const DEFAULT_REPLY_DELIVERY_STATE_PATH = '/var/lib/eimemory/openclaw_reply_delivery_state.json';
 const DEFAULT_REPLY_DELIVERY_ATTEMPTS_PATH = '/var/lib/eimemory/openclaw_reply_delivery_attempts.json';
-const DEFAULT_FEISHU_API_RECEIPT_SPOOL_DIR = '/var/lib/eimemory/feishu-api-receipts';
-const FEISHU_API_RECEIPT_SCHEMA = 'eimemory.feishu_api_receipt.v1';
-const MAX_FEISHU_API_RECEIPT_BYTES = 128 * 1024;
-const MAX_FEISHU_API_RECEIPT_FILES = 512;
-const FEISHU_API_RECEIPT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const LOOP_TASK_CORRELATION_TTL_MS = 2 * 60 * 60 * 1000;
 const MAX_PENDING_LOOP_TASK_KEYS = 1024;
 const MAX_CORRELATED_QUERY_CHARS = 8192;
@@ -67,7 +62,6 @@ const TRUE_BOUNDARY_MARKERS = [
   /(?:external|外部).{0,12}(?:state|状态|coordination|协调|权限|授权)/i,
 ];
 const REGISTRATION_STATE_KEY = Symbol.for('eimemory.bridge.registrationState');
-const FEISHU_API_ACCEPTED_RECEIPT_KEY = Symbol.for('eimemory.feishu.apiAccepted.v1');
 const VISION_BRIDGE_QUERY_MARKERS = [
   '看到了什么',
   '现在看到',
@@ -1608,136 +1602,6 @@ function currentRuntimeCommit() {
   return /^[0-9a-f]{40}$/.test(value) ? value : '';
 }
 
-function feishuApiReceiptSpoolDir() {
-  return String(
-    process.env.EIMEMORY_FEISHU_API_RECEIPT_SPOOL_DIR
-    || DEFAULT_FEISHU_API_RECEIPT_SPOOL_DIR
-  ).trim();
-}
-
-function applyFeishuApiReceipt(state, receipt) {
-  const messageId = String(receipt?.messageId || receipt?.message_id || '').trim();
-  const sessionKey = String(receipt?.sessionKey || receipt?.session_key || '').trim();
-  if (receipt?.success !== true || !messageId) {
-    return false;
-  }
-  const sentContent = String(receipt?.content || '');
-  const conversationId = String(
-    receipt?.conversationId || receipt?.conversation_id || ''
-  ).trim();
-  let entry = sessionKey
-    ? latestPendingReplyEntry(state, sessionKey, '', sentContent)
-    : undefined;
-  if (!entry && !sessionKey && conversationId.startsWith('oc_')) {
-    const candidates = Object.values(state.entries || {})
-      .filter((candidate) => (
-        candidate?.conversation_id === conversationId
-        && !TERMINAL_REPLY_DELIVERY_STATUSES.has(candidate?.status)
-      ));
-    const wanted = canonicalReplyText(sentContent);
-    entry = candidates.find((candidate) => (
-      wanted
-      && canonicalReplyText(candidate?.final_text) === wanted
-    )) || candidates
-      .sort((left, right) => (
-        Number(right.received_at_ms || 0) - Number(left.received_at_ms || 0)
-      ))[0];
-  }
-  if (!entry) {
-    return false;
-  }
-  if (conversationId.startsWith('oc_')) {
-    entry.conversation_id = conversationId;
-  }
-  const acceptedAtMs = Number(receipt?.acceptedAtMs || receipt?.accepted_at_ms || Date.now());
-  const runtimeCommit = String(
-    receipt?.runtimeCommit || receipt?.runtime_commit || currentRuntimeCommit()
-  ).trim().toLowerCase();
-  const candidates = Array.isArray(entry.feishu_api_receipts)
-    ? entry.feishu_api_receipts.filter((item) => item?.message_id !== messageId)
-    : [];
-  candidates.push({
-    success: true,
-    message_id: messageId,
-    content: sentContent,
-    accepted_at_ms: acceptedAtMs,
-    runtime_commit: runtimeCommit,
-  });
-  entry.feishu_api_receipts = candidates.slice(-16);
-  if (
-    entry.final_text
-    && canonicalReplyText(entry.final_text) === canonicalReplyText(sentContent)
-  ) {
-    entry.status = 'platform_accepted';
-    entry.delivery_message_id = messageId;
-    entry.runtime_commit = runtimeCommit || currentRuntimeCommit();
-    entry.platform_accepted_at_ms = acceptedAtMs;
-    entry.delivered_at_ms = acceptedAtMs;
-  }
-  return true;
-}
-
-function drainFeishuApiReceiptSpool(state, afterCommit) {
-  const spoolDir = feishuApiReceiptSpoolDir();
-  let names;
-  try {
-    const metadata = fs.lstatSync(spoolDir);
-    if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
-      throw new Error('receipt spool must be a real directory');
-    }
-    names = fs.readdirSync(spoolDir)
-      .filter((name) => /^[0-9][A-Za-z0-9.-]*\.json$/.test(name))
-      .sort()
-      .slice(-MAX_FEISHU_API_RECEIPT_FILES);
-  } catch (error) {
-    if (error?.code !== 'ENOENT') {
-      console.warn(`eimemory Feishu API receipt spool read failed: ${String(error?.message || error)}`);
-    }
-    return;
-  }
-  const now = Date.now();
-  for (const name of names) {
-    const receiptPath = path.join(spoolDir, name);
-    let receipt;
-    try {
-      const metadata = fs.lstatSync(receiptPath);
-      if (
-        !metadata.isFile()
-        || metadata.isSymbolicLink()
-        || metadata.size <= 0
-        || metadata.size > MAX_FEISHU_API_RECEIPT_BYTES
-      ) {
-        throw new Error('receipt spool entry is unsafe');
-      }
-      receipt = JSON.parse(fs.readFileSync(receiptPath, 'utf8'));
-      const acceptedAtMs = Number(receipt?.acceptedAtMs || 0);
-      if (
-        receipt?.schema_version !== FEISHU_API_RECEIPT_SCHEMA
-        || !Number.isFinite(acceptedAtMs)
-        || acceptedAtMs <= 0
-        || acceptedAtMs > now + 5 * 60 * 1000
-      ) {
-        throw new Error('receipt spool entry is malformed');
-      }
-      if (acceptedAtMs < now - FEISHU_API_RECEIPT_MAX_AGE_MS) {
-        fs.unlinkSync(receiptPath);
-        continue;
-      }
-    } catch (error) {
-      console.warn(`eimemory Feishu API receipt spool entry rejected: ${String(error?.message || error)}`);
-      try {
-        fs.unlinkSync(receiptPath);
-      } catch (_cleanupError) {
-        // A later pass can retry cleanup.
-      }
-      continue;
-    }
-    if (applyFeishuApiReceipt(state, receipt)) {
-      afterCommit.push(() => fs.unlinkSync(receiptPath));
-    }
-  }
-}
-
 function resolveFeishuConversationId(event, context) {
   const candidates = [
     context?.chatId,
@@ -1767,7 +1631,7 @@ function trackReplyInbound(event, context) {
   if (!inboundMessageId.startsWith('om_') || (!conversationId && !senderId)) {
     return;
   }
-  updateReplyDeliveryState((state, afterCommit) => {
+  updateReplyDeliveryState((state) => {
     reconcileDeliveryReceipts(state);
     if (state.entries[inboundMessageId]) {
       // Backfill a real Feishu chat id when later hooks carry oc_*.
@@ -1790,7 +1654,6 @@ function trackReplyInbound(event, context) {
       suppress_stalled_notice: false,
       runtime_commit: currentRuntimeCommit(),
     };
-    drainFeishuApiReceiptSpool(state, afterCommit);
     compactReplyDeliveryState(state);
   });
 }
@@ -1826,8 +1689,7 @@ function trackReplyAgentEnd(event, context) {
   if (!sessionKey || !finalText || event?.success !== true) {
     return;
   }
-  updateReplyDeliveryState((state, afterCommit) => {
-    drainFeishuApiReceiptSpool(state, afterCommit);
+  updateReplyDeliveryState((state) => {
     const runId = String(event?.runId || event?.run_id || context?.runId || context?.run_id || '');
     const entry = latestPendingReplyEntry(state, sessionKey, runId);
     if (!entry) {
@@ -1843,27 +1705,14 @@ function trackReplyAgentEnd(event, context) {
     entry.final_text = finalText;
     entry.suppress_stalled_notice = false;
     entry.agent_end_at_ms = Date.now();
-    const apiReceipt = [...(Array.isArray(entry.feishu_api_receipts)
-      ? entry.feishu_api_receipts
-      : [])]
-      .reverse()
-      .find((receipt) => (
-        receipt?.success === true
-        && String(receipt?.message_id || '')
-        && canonicalReplyText(receipt?.content) === canonicalReplyText(finalText)
-      ));
     const sentMatched = entry.last_sent_success === true
       && entry.last_sent_message_id
       && canonicalReplyText(entry.last_sent_content) === canonicalReplyText(finalText);
-    entry.status = apiReceipt || sentMatched ? 'platform_accepted' : 'final_ready';
+    entry.status = sentMatched ? 'platform_accepted' : 'final_ready';
     if (entry.status === 'platform_accepted') {
-      entry.delivery_message_id = String(
-        apiReceipt?.message_id || entry.last_sent_message_id || ''
-      );
+      entry.delivery_message_id = String(entry.last_sent_message_id || '');
       entry.runtime_commit = currentRuntimeCommit();
-      entry.platform_accepted_at_ms = Number(
-        apiReceipt?.accepted_at_ms || entry.last_sent_at_ms || Date.now()
-      );
+      entry.platform_accepted_at_ms = Number(entry.last_sent_at_ms || Date.now());
       entry.delivered_at_ms = entry.platform_accepted_at_ms;
     }
   });
@@ -1915,15 +1764,6 @@ function trackReplyPlatformAccepted(event, context) {
 
 function trackReplyMessageSent(event, context) {
   trackReplyPlatformAccepted(event, context);
-}
-
-function trackReplyFeishuApiAccepted(receipt) {
-  updateReplyDeliveryState((state) => {
-    applyFeishuApiReceipt(state, {
-      ...receipt,
-      acceptedAtMs: Number(receipt?.acceptedAtMs || Date.now()),
-    });
-  });
 }
 
 function messageToolDeliveryReceipt(value, depth = 0) {
@@ -2606,7 +2446,6 @@ module.exports.default = {
     registerStatusTool(api);
     registerMemoryE2ETool(api);
     writeReplyDeliveryState(readReplyDeliveryState());
-    globalThis[FEISHU_API_ACCEPTED_RECEIPT_KEY] = trackReplyFeishuApiAccepted;
     registerTypedHookOnce(api, 'message_received', async (event, context) => {
       trackReplyInbound(event, context);
       return (await safeInvokeHook(api, 'message_received', mergeHookEventContext(event, context))) || {};

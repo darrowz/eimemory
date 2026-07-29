@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Planned
 - Multi-agent memory coordination
 
+## [1.9.124] - 2026-07-30
+
+### Removed
+- Remove every eimemory injection into OpenClaw's compiled Feishu runtime, including legacy upgrade markers, global sinks, and cross-isolate receipt spools.
+- Stop patching OpenClaw from the gateway `ExecStartPre`; production now runs the unmodified upstream OpenClaw package.
+
 ## [1.9.123] - 2026-07-30
 
 ### Fixed
