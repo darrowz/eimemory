@@ -1069,10 +1069,32 @@ _find_prior_release_commit() {
   _find_prior_release_commit_for "$COMMIT"
 }
 
+_pause_release_closure_reconcile() {
+  if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ] || ! command -v systemctl >/dev/null 2>&1; then
+    return
+  fi
+  _user_systemctl stop eimemory-release-closure.timer eimemory-release-closure.service \
+    >/dev/null 2>&1 || true
+  _user_systemctl reset-failed eimemory-release-closure.service \
+    eimemory-release-closure.timer >/dev/null 2>&1 || true
+}
+
+_resume_release_closure_reconcile() {
+  if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ] || ! command -v systemctl >/dev/null 2>&1; then
+    return
+  fi
+  _user_systemctl reset-failed eimemory-release-closure.service \
+    eimemory-release-closure.timer >/dev/null 2>&1 || true
+  _user_systemctl start eimemory-release-closure.timer
+}
+
 _restart_current_services() {
   if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ] || ! command -v systemctl >/dev/null 2>&1; then
     return
   fi
+  # The old release checkpoint must not race the new release's post-switch
+  # closure initialization. The timer is resumed after that initialization.
+  _pause_release_closure_reconcile
   _user_systemctl daemon-reload
   _user_systemctl restart eimemory-rpc.service
   # Feishu reply watchdog permanently removed: dual-path delivery caused double sends.
@@ -1083,8 +1105,6 @@ _restart_current_services() {
   # current release and gateway are active so deployment cannot leave them idle.
   _user_systemctl start openclaw-loop-watch.timer
   _user_systemctl start openclaw-loop-compact.timer
-  _user_systemctl reset-failed eimemory-release-closure.service eimemory-release-closure.timer >/dev/null 2>&1 || true
-  _user_systemctl start eimemory-release-closure.timer
 }
 
 _verify_effective_runtime_metadata() {
@@ -1794,6 +1814,7 @@ if [ "$(id -u)" -eq 0 ] && id "$SERVICE_USER" >/dev/null 2>&1; then
   chown -h "$SERVICE_USER:$SERVICE_GROUP" "$CURRENT_LINK" 2>/dev/null || true
 fi
 _run_post_deploy_validation
+_resume_release_closure_reconcile
 
 echo "release=$RELEASE_DIR"
 echo "current=$CURRENT_LINK"

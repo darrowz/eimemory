@@ -215,6 +215,18 @@ def _reconcile_release_closure_pending_unlocked(
         session_id=checkpoint["release_session_id"],
     )
     if not same_release_authority(current, expected):
+        if current.commit != expected.commit:
+            cleared = clear_release_closure_pending(
+                path=pending_path,
+                expected_commit=checkpoint["current_commit"],
+            )
+            if cleared:
+                return {"ok": True, "status": "superseded"}
+            return {
+                "ok": False,
+                "status": "clear_failed",
+                "error": "superseded_checkpoint_clear_failed",
+            }
         return {
             "ok": False,
             "status": "stale",

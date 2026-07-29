@@ -1094,7 +1094,7 @@ def test_new_release_discards_superseded_checkpoint_before_early_gate_failure(
     assert not pending_path.exists()
 
 
-def test_release_closure_reconcile_rejects_stale_commit(
+def test_release_closure_reconcile_supersedes_stale_commit(
     tmp_path: Path,
 ) -> None:
     pending_path = tmp_path / "state" / "release-closure-pending.json"
@@ -1115,13 +1115,9 @@ def test_release_closure_reconcile_rejects_stale_commit(
         pending_path=pending_path,
     )
 
-    assert report == {
-        "ok": False,
-        "status": "stale",
-        "error": "pending_release_authority_mismatch",
-    }
+    assert report == {"ok": True, "status": "superseded"}
     assert runtime.calls == []
-    assert pending_path.exists()
+    assert not pending_path.exists()
 
 
 def test_release_closure_reconcile_rejects_malformed_checkpoint(

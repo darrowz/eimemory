@@ -244,6 +244,7 @@ process.stdout.write(JSON.stringify(globalThis.__events));
         (item["content"], item["messageId"])
         for item in events
     ] == [
+        ("intermediate block", "om_block"),
         ("direct final", "om_direct"),
         ("card final", "om_card"),
         ("stream final", "om_stream"),
@@ -344,6 +345,7 @@ function createFeishuReplyDispatcher(params) {
     };
     const sendChunkedTextReply = async (paramsLocal) => {
         await paramsLocal.sendChunk();
+        if (paramsLocal.infoKind === "final") await emitRememberedEimemoryFeishuReceipt(paramsLocal.text);
     };
 }
 //#endregion
@@ -359,7 +361,7 @@ function shouldSendNoVisibleReplyFallback(dispatchResult) {
     upgraded, changed = _patch_dispatcher(legacy, runtime)
 
     assert changed is True
-    assert "// eimemory-feishu-api-receipt-patch:v1" in upgraded
+    assert "// eimemory-feishu-api-receipt-patch:v2" in upgraded
     assert "emitEimemoryFeishuApiAccepted" in upgraded
     assert "runMessageSent" not in upgraded
     assert "if (messageId) eimemoryFeishuReceiptMessageId = messageId;" in upgraded
@@ -387,6 +389,9 @@ def test_openclaw_feishu_patch_recovers_settled_queued_final_without_reply(
 async function emitEimemoryFeishuMessageSent(params) {}
 function createFeishuReplyDispatcher(params) {
     const { chatId, sendTarget, accountId } = params;
+    const sendChunkedTextReply = async (paramsLocal) => {
+        if (paramsLocal.infoKind === "final") await emitRememberedEimemoryFeishuReceipt(paramsLocal.text);
+    };
 }
 //#endregion
 function shouldSendNoVisibleReplyFallback(dispatchResult) {
@@ -418,7 +423,7 @@ export { shouldSendNoVisibleReplyFallback };
 
     assert result.returncode == 0, result.stderr
     patched = runtime.read_text(encoding="utf-8")
-    assert "// eimemory-feishu-api-receipt-patch:v1" in patched
+    assert "// eimemory-feishu-api-receipt-patch:v2" in patched
     assert "emitEimemoryFeishuApiAccepted" in patched
     assert "runMessageSent" not in patched
     assert (
@@ -1823,20 +1828,23 @@ def test_release_closure_timer_bounds_reconcile_frequency() -> None:
     assert "RandomizedDelaySec=5s" in timer
     assert "Unit=eimemory-release-closure.service" in timer
     assert "learn release-closure-reconcile --json" in service
-    assert "Restart=on-failure" in service
-    assert "RestartSec=2s" in service
-    assert "StartLimitBurst=3" in service
+    assert "Restart=" not in service
+    assert "RestartSec=" not in service
+    assert "StartLimit" not in service
     assert "openclaw-feishu-reply-watchdog" not in service
     assert '"$RELEASE_DIR/deploy/systemd/eimemory-release-closure.timer"' in script
     assert '"$RELEASE_DIR/deploy/systemd/eimemory-release-closure.service"' in script
     assert "_user_systemctl disable --now eimemory-release-closure.path" in script
     assert 'rm -f "$USER_SYSTEMD_DIR/eimemory-release-closure.path"' in script
-    assert (
-        "_user_systemctl reset-failed eimemory-release-closure.service "
-        "eimemory-release-closure.timer" in script
-    )
+    assert "_user_systemctl reset-failed eimemory-release-closure.service" in script
+    assert "eimemory-release-closure.timer >/dev/null 2>&1 || true" in script
     assert "_user_systemctl enable eimemory-release-closure.timer" in script
-    assert "_user_systemctl start eimemory-release-closure.timer" in script
+    assert "_pause_release_closure_reconcile" in script
+    assert "_resume_release_closure_reconcile" in script
+    execution = script[script.index("_observe_pre_switch_l5\n") :]
+    assert execution.index("_run_post_deploy_validation\n") < execution.index(
+        "_resume_release_closure_reconcile\n"
+    )
     writer_units = script[
         script.index("STORAGE_WRITER_UNITS=(") : script.index(
             "ACTIVE_STORAGE_WRITER_UNITS=()"

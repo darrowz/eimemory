@@ -1697,14 +1697,27 @@ function trackReplyAgentEnd(event, context) {
     entry.final_text = finalText;
     entry.suppress_stalled_notice = false;
     entry.agent_end_at_ms = Date.now();
+    const apiReceipt = [...(Array.isArray(entry.feishu_api_receipts)
+      ? entry.feishu_api_receipts
+      : [])]
+      .reverse()
+      .find((receipt) => (
+        receipt?.success === true
+        && String(receipt?.message_id || '')
+        && canonicalReplyText(receipt?.content) === canonicalReplyText(finalText)
+      ));
     const sentMatched = entry.last_sent_success === true
       && entry.last_sent_message_id
       && canonicalReplyText(entry.last_sent_content) === canonicalReplyText(finalText);
-    entry.status = sentMatched ? 'platform_accepted' : 'final_ready';
+    entry.status = apiReceipt || sentMatched ? 'platform_accepted' : 'final_ready';
     if (entry.status === 'platform_accepted') {
-      entry.delivery_message_id = entry.last_sent_message_id || '';
+      entry.delivery_message_id = String(
+        apiReceipt?.message_id || entry.last_sent_message_id || ''
+      );
       entry.runtime_commit = currentRuntimeCommit();
-      entry.platform_accepted_at_ms = entry.last_sent_at_ms || Date.now();
+      entry.platform_accepted_at_ms = Number(
+        apiReceipt?.accepted_at_ms || entry.last_sent_at_ms || Date.now()
+      );
       entry.delivered_at_ms = entry.platform_accepted_at_ms;
     }
   });
@@ -1764,24 +1777,41 @@ function trackReplyFeishuApiAccepted(receipt) {
   if (receipt?.success !== true || !messageId || !sessionKey) {
     return;
   }
-  const conversationId = String(
-    receipt?.conversationId || receipt?.conversation_id || ''
-  ).trim();
-  trackReplyPlatformAccepted(
-    {
-      ...receipt,
-      messageId,
-      sessionKey,
+  updateReplyDeliveryState((state) => {
+    const sentContent = String(receipt?.content || '');
+    const entry = latestPendingReplyEntry(state, sessionKey, '', sentContent);
+    if (!entry) {
+      return;
+    }
+    const conversationId = String(
+      receipt?.conversationId || receipt?.conversation_id || ''
+    ).trim();
+    if (conversationId.startsWith('oc_')) {
+      entry.conversation_id = conversationId;
+    }
+    const acceptedAtMs = Date.now();
+    const candidates = Array.isArray(entry.feishu_api_receipts)
+      ? entry.feishu_api_receipts.filter((item) => item?.message_id !== messageId)
+      : [];
+    candidates.push({
       success: true,
-    },
-    {
-      channelId: 'feishu',
-      accountId: String(receipt?.accountId || receipt?.account_id || '').trim(),
-      conversationId,
-      chatId: conversationId,
-      sessionKey,
-    },
-  );
+      message_id: messageId,
+      content: sentContent,
+      accepted_at_ms: acceptedAtMs,
+      runtime_commit: currentRuntimeCommit(),
+    });
+    entry.feishu_api_receipts = candidates.slice(-16);
+    if (
+      entry.final_text
+      && canonicalReplyText(entry.final_text) === canonicalReplyText(sentContent)
+    ) {
+      entry.status = 'platform_accepted';
+      entry.delivery_message_id = messageId;
+      entry.runtime_commit = currentRuntimeCommit();
+      entry.platform_accepted_at_ms = acceptedAtMs;
+      entry.delivered_at_ms = acceptedAtMs;
+    }
+  });
 }
 
 function messageToolDeliveryReceipt(value, depth = 0) {

@@ -12,7 +12,8 @@ import stat
 AFFECTED_VERSION = re.compile(r"^2026\.7\.1-2$")
 PATCH_MARKER = "async function emitEimemoryFeishuApiAccepted(params)"
 LEGACY_PATCH_MARKER = "async function emitEimemoryFeishuMessageSent(params)"
-PATCH_VERSION_MARKER = "// eimemory-feishu-api-receipt-patch:v1"
+PATCH_VERSION_MARKER = "// eimemory-feishu-api-receipt-patch:v2"
+LEGACY_API_V1_PATCH_VERSION_MARKER = "// eimemory-feishu-api-receipt-patch:v1"
 LEGACY_V3_PATCH_VERSION_MARKER = "// eimemory-feishu-message-sent-patch:v3"
 LEGACY_V2_PATCH_VERSION_MARKER = "// eimemory-feishu-message-sent-patch:v2"
 DISPATCHER_MARKER = "function createFeishuReplyDispatcher(params) {"
@@ -108,6 +109,8 @@ def _dispatcher_receipt_source(indent: str, newline: str) -> str:
 def _patch_dispatcher(text: str, path: Path) -> tuple[str, bool]:
     if PATCH_VERSION_MARKER in text:
         return text, False
+    if LEGACY_API_V1_PATCH_VERSION_MARKER in text:
+        return _upgrade_api_v1_patch(text, path), True
     if LEGACY_PATCH_MARKER in text:
         return _upgrade_legacy_patch(text, path), True
     if text.count(DISPATCHER_MARKER) != 1:
@@ -169,9 +172,7 @@ def _patch_dispatcher(text: str, path: Path) -> tuple[str, bool]:
         ]
     )
 
-    final_anchor = re.compile(
-        r'(?P<indent>[ \t]+)if \(paramsLocal\.infoKind === "final"\)',
-    )
+    final_anchor = re.compile(r'(?P<indent>[ \t]+)if \(paramsLocal\.infoKind === "final"\)')
     final_matches = list(final_anchor.finditer(region))
     if len(final_matches) != 1:
         raise PatchError(f"expected one final chunk receipt anchor in {path.name}")
@@ -179,8 +180,8 @@ def _patch_dispatcher(text: str, path: Path) -> tuple[str, bool]:
     final_indent = final_match.group("indent")
     region = (
         region[: final_match.start()]
-        + f'{final_indent}if (paramsLocal.infoKind === "final") '
-        f"await emitRememberedEimemoryFeishuReceipt(paramsLocal.text);{newline}"
+        + f"{final_indent}await emitRememberedEimemoryFeishuReceipt("
+        f"paramsLocal.text);{newline}"
         + region[final_match.start() :]
     )
 
@@ -262,6 +263,28 @@ def _patch_no_visible_reply_fallback(text: str, path: Path) -> str:
     return text.replace(predicate, replacement, 1)
 
 
+def _upgrade_api_receipt_emission(text: str, path: Path) -> str:
+    conditional = (
+        'if (paramsLocal.infoKind === "final") '
+        "await emitRememberedEimemoryFeishuReceipt(paramsLocal.text);"
+    )
+    unconditional = "await emitRememberedEimemoryFeishuReceipt(paramsLocal.text);"
+    if text.count(conditional) != 1:
+        raise PatchError(f"legacy Feishu API receipt emission mismatch in {path.name}")
+    return text.replace(conditional, unconditional, 1)
+
+
+def _upgrade_api_v1_patch(text: str, path: Path) -> str:
+    if text.count(LEGACY_API_V1_PATCH_VERSION_MARKER) != 1:
+        raise PatchError(f"legacy Feishu API receipt marker mismatch in {path.name}")
+    upgraded = text.replace(
+        LEGACY_API_V1_PATCH_VERSION_MARKER,
+        PATCH_VERSION_MARKER,
+        1,
+    )
+    return _upgrade_api_receipt_emission(upgraded, path)
+
+
 def _upgrade_legacy_patch(text: str, path: Path) -> str:
     newline = "\r\n" if "\r\n" in text else "\n"
     if (
@@ -285,6 +308,7 @@ def _upgrade_legacy_patch(text: str, path: Path) -> str:
             + _helper_source(newline)
             + text[dispatcher_start:]
         )
+        upgraded = _upgrade_api_receipt_emission(upgraded, path)
         return _patch_no_visible_reply_fallback(upgraded, path)
     legacy_assignment = (
         "if (messageId && !eimemoryFeishuReceiptMessageId) "
@@ -325,6 +349,7 @@ def _upgrade_legacy_patch(text: str, path: Path) -> str:
         + _helper_source(newline)
         + upgraded[dispatcher_start:]
     )
+    upgraded = _upgrade_api_receipt_emission(upgraded, path)
     return _patch_no_visible_reply_fallback(upgraded, path)
 
 

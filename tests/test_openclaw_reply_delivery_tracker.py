@@ -395,6 +395,84 @@ Promise.resolve()
     assert entry["conversation_id"] == "oc_api_chat"
 
 
+def test_tracker_matches_api_receipt_that_arrives_before_agent_end(
+    tmp_path: Path,
+) -> None:
+    state = _run_node(
+        """
+const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
+const handlers = {};
+plugin.register({ on(name, handler) { handlers[name] = handler; } });
+const apiAccepted = globalThis[Symbol.for('eimemory.feishu.apiAccepted.v1')];
+const ctx = {
+  channelId: 'feishu',
+  conversationId: 'user:ou_test',
+  sessionKey: 'agent:main:feishu:direct:ou_test'
+};
+Promise.resolve()
+  .then(() => handlers.message_received({
+    from: 'ou_test', messageId: 'om_api_early', runId: 'run-api-early'
+  }, ctx))
+  .then(() => apiAccepted({
+    content: 'final after API',
+    success: true,
+    messageId: 'om_api_early_out',
+    conversationId: 'oc_api_chat',
+    sessionKey: ctx.sessionKey
+  }))
+  .then(() => handlers.agent_end({
+    success: true,
+    runId: 'run-api-early',
+    messages: [{ role: 'assistant', content: 'final after API' }]
+  }, ctx));
+""",
+        tmp_path / "reply-state.json",
+    )
+
+    entry = state["entries"]["om_api_early"]
+    assert entry["status"] == "platform_accepted"
+    assert entry["delivery_message_id"] == "om_api_early_out"
+
+
+def test_tracker_does_not_close_final_from_nonmatching_api_receipt(
+    tmp_path: Path,
+) -> None:
+    state = _run_node(
+        """
+const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
+const handlers = {};
+plugin.register({ on(name, handler) { handlers[name] = handler; } });
+const apiAccepted = globalThis[Symbol.for('eimemory.feishu.apiAccepted.v1')];
+const ctx = {
+  channelId: 'feishu',
+  conversationId: 'user:ou_test',
+  sessionKey: 'agent:main:feishu:direct:ou_test'
+};
+Promise.resolve()
+  .then(() => handlers.message_received({
+    from: 'ou_test', messageId: 'om_api_mismatch', runId: 'run-api-mismatch'
+  }, ctx))
+  .then(() => apiAccepted({
+    content: 'tool warning',
+    success: true,
+    messageId: 'om_tool_warning',
+    conversationId: 'oc_api_chat',
+    sessionKey: ctx.sessionKey
+  }))
+  .then(() => handlers.agent_end({
+    success: true,
+    runId: 'run-api-mismatch',
+    messages: [{ role: 'assistant', content: 'real final' }]
+  }, ctx));
+""",
+        tmp_path / "reply-state.json",
+    )
+
+    entry = state["entries"]["om_api_mismatch"]
+    assert entry["status"] == "final_ready"
+    assert entry["delivery_message_id"] == ""
+
+
 def test_tracker_requires_nonempty_platform_receipt(tmp_path: Path) -> None:
     state = _run_node(
         """

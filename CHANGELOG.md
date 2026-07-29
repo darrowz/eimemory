@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Planned
 - Multi-agent memory coordination
 
+## [1.9.119] - 2026-07-30
+
+### Fixed
+- Buffer every successful Feishu API receipt and mark a reply accepted only when its content matches the agent final, so tool notices cannot close the final-reply ledger.
+- Report API receipts for every completed reply block instead of relying on OpenClaw's optional `infoKind` classification.
+- Remove oneshot self-restarts from release closure, supersede stale release checkpoints, and resume the periodic timer only after post-switch closure initialization.
+
 ## [1.9.118] - 2026-07-30
 
 ### Fixed
