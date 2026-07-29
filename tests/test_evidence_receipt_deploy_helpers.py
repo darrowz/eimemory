@@ -104,6 +104,13 @@ def test_prior_release_selector_uses_latest_valid_receipt_not_directory_mtime(tm
         releases_root=releases,
         repo_root=repo,
         deployed_commit=deployed,
+        receipt_commits=[first, second],
+        release_validator=lambda _repo, _release, _commit: True,
+    ) == second
+    assert find_prior_immutable_release(
+        releases_root=releases,
+        repo_root=repo,
+        deployed_commit=deployed,
         receipt_commits=[],
         release_validator=lambda _repo, _release, _commit: True,
     ) == ""

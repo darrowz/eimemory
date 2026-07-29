@@ -24,6 +24,29 @@ def _git(repo: Path, *args: str) -> bool:
     ).returncode == 0
 
 
+def _git_distance(repo: Path, left: str, right: str) -> int | None:
+    result = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "rev-list",
+            "--ancestry-path",
+            "--count",
+            f"{left}..{right}",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return None
+    try:
+        return int(result.stdout.strip())
+    except ValueError:
+        return None
+
+
 def _valid_release(repo_root: Path, release: Path, commit: str) -> bool:
     source_root = Path(__file__).resolve().parents[1]
     if str(source_root) not in sys.path:
@@ -69,7 +92,8 @@ def find_prior_immutable_release(
     if not COMMIT_RE.fullmatch(target) or releases_root.is_symlink() or not releases_root.is_dir():
         return ""
     validate = release_validator or _valid_release
-    for raw_commit in receipt_commits:
+    candidates: list[tuple[int, int, str, Path]] = []
+    for receipt_index, raw_commit in enumerate(receipt_commits):
         commit = str(raw_commit or "").strip().lower()
         child = releases_root / commit
         if (
@@ -81,10 +105,16 @@ def find_prior_immutable_release(
             continue
         if not _git(repo_root, "cat-file", "-e", f"{commit}^{{commit}}"):
             continue
-        related = _git(repo_root, "merge-base", "--is-ancestor", commit, target) or _git(
-            repo_root, "merge-base", "--is-ancestor", target, commit
-        )
-        if related and validate(repo_root, child, commit):
+        if _git(repo_root, "merge-base", "--is-ancestor", commit, target):
+            distance = _git_distance(repo_root, commit, target)
+        elif _git(repo_root, "merge-base", "--is-ancestor", target, commit):
+            distance = _git_distance(repo_root, target, commit)
+        else:
+            continue
+        if distance is not None:
+            candidates.append((distance, receipt_index, commit, child))
+    for _distance, _receipt_index, commit, child in sorted(candidates):
+        if validate(repo_root, child, commit):
             return commit
     return ""
 

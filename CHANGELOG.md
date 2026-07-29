@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Planned
 - Multi-agent memory coordination
 
+## [1.9.113] - 2026-07-29
+
+### Fixed
+- Select the nearest verified immutable predecessor by Git topology instead of trusting deployment-receipt query order, preventing production recall closure from binding to an older unrelated baseline.
+
 ## [1.9.112] - 2026-07-29
 
 ### Fixed
