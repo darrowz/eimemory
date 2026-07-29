@@ -1825,6 +1825,16 @@ def _record_ranking_ref(record: RecordEnvelope) -> str:
     }
     effective_behavior = {
         "report_type": report_type,
+        "ground_truth_eligible": bool(
+            record.kind == "rule"
+            and report_type == "ground_truth_behavior_rule"
+            and str(
+                meta.get("priority") or content.get("priority") or ""
+            ).upper()
+            == "T0"
+            and bool(meta.get("must_use") or content.get("must_use"))
+            and str(record.status or "").lower() == "active"
+        ),
         "priority": str(
             content.get("priority") or meta.get("priority") or ""
         ).strip(),

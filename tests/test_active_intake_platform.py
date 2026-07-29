@@ -634,10 +634,18 @@ def test_nightly_jobs_fetch_persist_and_promote_paper_candidates(tmp_path) -> No
     assert candidates[0].meta["promoted_to_paper_source_id"] == paper_sources[0].record_id
 
 
-def test_nightly_jobs_expand_sources_before_external_collection(tmp_path) -> None:
+def test_nightly_jobs_expand_sources_before_external_collection(
+    tmp_path,
+    monkeypatch,
+) -> None:
     from eimemory.api.runtime import Runtime
     from eimemory.models.records import RecordEnvelope, ScopeRef
 
+    monkeypatch.delenv("EIMEMORY_SOURCE_EXPANSION_LLM_COMMAND", raising=False)
+    monkeypatch.delenv("EIMEMORY_LLM_COMMAND", raising=False)
+    monkeypatch.delenv("EIMEMORY_SOURCE_EXPANSION_LLM_API_KEY", raising=False)
+    monkeypatch.delenv("EIMEMORY_LLM_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     runtime = Runtime.create(root=tmp_path / "runtime")
     scope = {"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"}
     runtime.sources.add_source(

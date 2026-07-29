@@ -14,6 +14,7 @@ import pytest
 from eimemory.api.runtime import Runtime
 from eimemory.cli.main import main as cli_main
 from eimemory.governance.evidence_contract import ReleaseIdentity
+from eimemory.governance import correction_replay
 from eimemory.governance.l5_readiness import build_l5_readiness_report, readiness_gate_status
 from eimemory.models.records import RecallBundle, RecordEnvelope, ScopeRef
 from eimemory.scheduler.jobs import MAX_PRODUCTION_RECALL_DATASET_BYTES, _load_json_dataset
@@ -1117,6 +1118,34 @@ def test_ground_truth_semantic_identity_canonicalizes_content_meta_fallback() ->
     assert real_query_gate._record_ranking_ref(
         from_meta
     ) == real_query_gate._record_ranking_ref(from_content)
+
+
+def test_ground_truth_semantic_identity_distinguishes_priority_authority_conflict() -> None:
+    meta_authoritative = _rule_record(
+        "rule-meta-authoritative",
+        "openclaw",
+        "source-openclaw",
+    )
+    content_only = _rule_record(
+        "rule-content-only",
+        "openclaw",
+        "source-openclaw",
+    )
+    for record in (meta_authoritative, content_only):
+        record.content.update({"priority": "T1", "must_use": True})
+    meta_authoritative.meta["priority"] = "T0"
+    content_only.meta["priority"] = "T1"
+
+    assert correction_replay._is_ground_truth_rule(meta_authoritative) is True
+    assert correction_replay._is_ground_truth_rule(content_only) is False
+    assert (
+        correction_replay._rule_payload(meta_authoritative)["priority"]
+        == correction_replay._rule_payload(content_only)["priority"]
+        == "T1"
+    )
+    assert real_query_gate._record_ranking_ref(
+        meta_authoritative
+    ) != real_query_gate._record_ranking_ref(content_only)
 
 
 def test_real_query_gate_semantic_behavior_change_remains_distinct(

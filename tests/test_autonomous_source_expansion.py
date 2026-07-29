@@ -112,7 +112,15 @@ def test_autonomous_source_expansion_rejects_low_score_llm_proposals_without_app
     assert audit_records[0].meta["evaluation"]["decision"] == "reject"
 
 
-def test_autonomous_source_expansion_preserves_chatpaper_uri_category_when_metadata_is_empty(tmp_path) -> None:
+def test_autonomous_source_expansion_preserves_chatpaper_uri_category_when_metadata_is_empty(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("EIMEMORY_SOURCE_EXPANSION_LLM_COMMAND", raising=False)
+    monkeypatch.delenv("EIMEMORY_LLM_COMMAND", raising=False)
+    monkeypatch.delenv("EIMEMORY_SOURCE_EXPANSION_LLM_API_KEY", raising=False)
+    monkeypatch.delenv("EIMEMORY_LLM_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     runtime = Runtime.create(root=tmp_path / "runtime")
     scope = hongtu_scope({})
     runtime.sources.add_source(
