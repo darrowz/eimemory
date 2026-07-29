@@ -1518,6 +1518,8 @@ def test_openclaw_gateway_override_uses_production_eimemory_runtime() -> None:
     assert "Environment=EIMEMORY_RUNTIME_COMMIT=@EIMEMORY_COMMIT@" in override_text
     assert 'Environment="EIMEMORY_HOOK_COMMAND=/opt/eimemory/current/.venv/bin/eimemory openclaw-hook"' in override_text
     assert 'Environment="EIMEMORY_BRIDGE_COMMAND=/opt/eimemory/current/.venv/bin/eimemory ei-bridge feishu"' in override_text
+    assert "Environment=EIMEMORY_BEFORE_PROMPT_BUDGET_MS=22000" in override_text
+    assert "Environment=EIBRAIN_MONITOR_URL=http://honjia:18080/status.json" in override_text
     assert "/dev-project/eimemory/.venv" not in override_text
     assert "PYTHONPATH=/dev-project/eimemory" not in override_text
     assert "MemoryAccounting=yes" in override_text

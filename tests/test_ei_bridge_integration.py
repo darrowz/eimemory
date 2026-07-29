@@ -4,11 +4,14 @@ import io
 import json
 import sys
 
+import pytest
+
 from eimemory.cli.main import main as cli_main
 from eimemory.ei_bridge import AgentAdapterRegistry, BridgeRouter
 from eimemory.ei_bridge.agents import EIBrainAgentAdapter
 from eimemory.ei_bridge.audit import EIMemoryAuditSink
 from eimemory.ei_bridge.channels.openclaw_feishu import format_reply, parse_event
+from eimemory.ei_bridge.eibrain_monitor import EIBrainMonitorTransport
 from eimemory.ei_bridge.protocol import BridgeCommand
 from eimemory.ops import openclaw_loop as loop
 
@@ -124,6 +127,48 @@ def test_cli_ei_bridge_feishu_health_does_not_inject_visual_context(tmp_path, mo
     assert payload["matched"] is True
     assert payload["reply"].startswith("已完成：系统健康：healthy")
     assert payload["prepend_context"] == ""
+
+
+@pytest.mark.parametrize(
+    ("ok", "status", "expected_health"),
+    [
+        (True, "ready", "healthy"),
+        (False, "degraded", "degraded"),
+    ],
+)
+def test_eibrain_monitor_normalizes_current_honjia_status_contract(
+    tmp_path,
+    ok: bool,
+    status: str,
+    expected_health: str,
+) -> None:
+    status_path = tmp_path / "honjia-status.json"
+    status_path.write_text(
+        json.dumps(
+            {
+                "ok": ok,
+                "status": status,
+                "checks": {"body_runtime_snapshot": "ok" if ok else "failed"},
+                "body_runtime": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    command = BridgeCommand.from_dict(
+        {
+            "command_id": "health-current-contract",
+            "source": {"source_id": "test", "source_type": "test"},
+            "target": {"agent_id": "eibrain", "capability": "health.status"},
+            "intent": "inspect health",
+        }
+    )
+
+    result = EIBrainMonitorTransport(status_path.as_uri())(command)
+
+    assert result["ok"] is True
+    assert result["payload"]["system_health"] == expected_health
+    assert result["payload"]["visual_data_health"] == "unknown"
+    assert result["payload"]["engagement"]["vision_status"] == ""
 
 
 def test_cli_ei_bridge_feishu_creates_and_closes_loop_task(tmp_path, monkeypatch, capsys) -> None:

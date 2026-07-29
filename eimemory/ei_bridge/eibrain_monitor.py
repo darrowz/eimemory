@@ -7,7 +7,7 @@ from urllib import request
 
 from .protocol import BridgeCommand
 
-DEFAULT_MONITOR_URL = "http://127.0.0.1:18080/status.json"
+DEFAULT_MONITOR_URL = "http://honjia:18080/status.json"
 
 
 class EIBrainMonitorTransport:
@@ -47,7 +47,7 @@ def _health_payload(status: dict[str, Any]) -> dict[str, Any]:
     visual = _mapping(status.get("visual_diagnostics"))
     dialogue = _mapping(status.get("dialogue_diagnostics"))
     return {
-        "system_health": status.get("system_health") or "unknown",
+        "system_health": _system_health(status),
         "visual_data_health": visual.get("data_health") or visual.get("detection_health") or "unknown",
         "engagement": {
             "state": "awake" if dialogue.get("conversation_active") else "listening",
@@ -70,7 +70,7 @@ def _vision_payload(status: dict[str, Any]) -> dict[str, Any]:
                 "detection_count": 0,
                 "recognized_identity": {},
             },
-            "system_health": status.get("system_health") or "unknown",
+            "system_health": _system_health(status),
             "visual_data_health": "unknown",
             "freshness": {
                 "frame_age_s": None,
@@ -98,7 +98,7 @@ def _vision_payload(status: dict[str, Any]) -> dict[str, Any]:
             "detection_count": visual.get("detection_count") or 0,
             "recognized_identity": _mapping(visual.get("recognized_identity")),
         },
-        "system_health": status.get("system_health") or "unknown",
+        "system_health": _system_health(status),
         "visual_data_health": visual.get("data_health") or "unknown",
         "freshness": {
             "frame_age_s": frame_age_s,
@@ -179,6 +179,22 @@ def _number_or_none(value: Any) -> float | None:
     if isinstance(value, (int, float)):
         return float(value)
     return None
+
+
+def _system_health(status: dict[str, Any]) -> str:
+    legacy = str(status.get("system_health") or "").strip()
+    if legacy:
+        return legacy
+    if status.get("ok") is True:
+        return "healthy"
+    if status.get("ok") is False:
+        return "degraded"
+    current = str(status.get("status") or "").strip().lower()
+    if current in {"healthy", "ok", "ready", "running"}:
+        return "healthy"
+    if current in {"degraded", "error", "failed", "unhealthy"}:
+        return "degraded"
+    return current or "unknown"
 
 
 def _mapping(value: Any) -> dict[str, Any]:
