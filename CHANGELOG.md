@@ -10,6 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Planned
 - Multi-agent memory coordination
 
+## [1.9.127] - 2026-07-30
+
+### Performance
+
+- Serve RPC and loopback health responses over HTTP/1.1 so clients can reuse connections.
+- Cache release identity briefly per channel authority scope for lightweight status checks.
+- Lower CPU, I/O, and scheduler priority for learning and nightly batch jobs while preserving gateway control-plane priority.
+
 ## [1.9.126] - 2026-07-30
 
 ### Changed

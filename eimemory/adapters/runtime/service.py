@@ -4,6 +4,7 @@ import json
 from hashlib import sha256
 from datetime import datetime, timedelta, timezone
 import re
+import time
 import unicodedata
 from typing import Any, Mapping
 
@@ -58,6 +59,7 @@ _HERMES_PROVENANCE_FIELDS = frozenset(
     }
 )
 _HERMES_LEGACY_TARGET_LOOKUP_LIMIT = 32
+_STATUS_RELEASE_CACHE_TTL_SECONDS = 5.0
 
 
 class AgentRuntimeMemoryService:
@@ -73,6 +75,9 @@ class AgentRuntimeMemoryService:
         self.max_context_chars = self._positive_limit(max_context_chars, DEFAULT_MAX_CONTEXT_CHARS)
         self.max_turn_chars = self._positive_limit(max_turn_chars, DEFAULT_MAX_TURN_CHARS)
         self.max_memory_chars = self._positive_limit(max_memory_chars, DEFAULT_MAX_MEMORY_CHARS)
+        self._status_release_cache: dict[
+            tuple[str, str, str, str, str], tuple[float, Any]
+        ] = {}
 
     def prefetch(
         self,
@@ -1232,12 +1237,25 @@ class AgentRuntimeMemoryService:
     def status(self, *, channel: str, scope: dict) -> dict[str, Any]:
         channel_id = normalize_runtime_channel(channel)
         channel_scope = resolve_channel_scope(channel_id, scope)
-        release = current_release_identity(self.runtime, ScopeRef.from_dict(channel_scope))
-        if release is None and channel_id != "openclaw":
-            release = current_release_identity(
-                self.runtime,
-                ScopeRef.from_dict(base_scope_from_channel(channel_id, channel_scope)),
-            )
+        cache_key = (
+            channel_id,
+            str(channel_scope.get("tenant_id") or ""),
+            str(channel_scope.get("agent_id") or ""),
+            str(channel_scope.get("workspace_id") or ""),
+            str(channel_scope.get("user_id") or ""),
+        )
+        now = time.monotonic()
+        cached = self._status_release_cache.get(cache_key)
+        if cached is not None and now - cached[0] < _STATUS_RELEASE_CACHE_TTL_SECONDS:
+            release = cached[1]
+        else:
+            release = current_release_identity(self.runtime, ScopeRef.from_dict(channel_scope))
+            if release is None and channel_id != "openclaw":
+                release = current_release_identity(
+                    self.runtime,
+                    ScopeRef.from_dict(base_scope_from_channel(channel_id, channel_scope)),
+                )
+            self._status_release_cache[cache_key] = (now, release)
         return {
             "ok": True,
             "adapter_contract_version": RUNTIME_ADAPTER_CONTRACT_VERSION,

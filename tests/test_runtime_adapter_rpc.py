@@ -653,6 +653,30 @@ def test_runtime_adapter_rpc_status_derives_channel_scope(tmp_path: Path) -> Non
     assert response["result"]["authority_mode"] == "per_channel"
 
 
+def test_runtime_adapter_rpc_status_caches_release_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import eimemory.adapters.runtime.service as service_module
+
+    calls = 0
+
+    def counted_release_identity(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return None
+
+    monkeypatch.setattr(service_module, "current_release_identity", counted_release_identity)
+    bridge = EIBrainRPCBridge(Runtime.create(root=tmp_path))
+    request = {"method": "adapter.status", "params": {"channel": "codex", "scope": BASE_SCOPE}}
+
+    first = bridge.handle(request)
+    second = bridge.handle(request)
+
+    assert first["ok"] is True
+    assert second["ok"] is True
+    assert calls == 2
+
+
 def test_runtime_adapter_rpc_remember_and_prefetch_stay_in_channel(tmp_path: Path) -> None:
     bridge = EIBrainRPCBridge(Runtime.create(root=tmp_path))
     remember = bridge.handle(

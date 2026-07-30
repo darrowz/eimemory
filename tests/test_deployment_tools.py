@@ -2913,6 +2913,23 @@ def test_learn_watch_timer_is_not_five_minute_heavy_polling() -> None:
     assert "OnCalendar=*:00/5" not in timer
 
 
+def test_interactive_gateway_and_batch_jobs_have_resource_priorities() -> None:
+    gateway = Path("deploy/systemd/openclaw-gateway-eimemory.conf").read_text(encoding="utf-8")
+    assert "CPUWeight=1000" in gateway
+    assert "MemoryLow=512M" in gateway
+
+    for name in (
+        "eimemory-nightly.service",
+        "eimemory-learn-watch.service",
+        "eimemory-learn-think.service",
+        "eimemory-learn-dashboard.service",
+    ):
+        unit = Path("deploy/systemd", name).read_text(encoding="utf-8")
+        assert "CPUWeight=20" in unit
+        assert "IOWeight=20" in unit
+        assert "Nice=10" in unit
+
+
 def test_immutable_installer_applies_managed_learning_runtime_policy() -> None:
     script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
 
