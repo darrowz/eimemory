@@ -139,8 +139,10 @@ apply the new local 03:30 schedule automatically.
 ## Autonomous Learning Companions
 
 The daily `eimemory-nightly.timer` remains the only production governance
-owner. L5 apply persists evidence immediately, while automatic promotion stays
-at zero. The immutable installer also enables these lightweight helpers:
+owner. Autonomous learning and L5 run in apply mode with a bounded budget of
+three automatic promotions per cycle. Existing replay, isolated-evaluator,
+safety, canary, regression-watch, and rollback gates remain mandatory. The
+immutable installer also enables these lightweight helpers:
 
 | Unit | Purpose |
 | --- | --- |

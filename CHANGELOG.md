@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Planned
 - Multi-agent memory coordination
 
+## [1.9.125] - 2026-07-30
+
+### Changed
+- Enable bounded autonomous-learning and L5 promotion in production configuration with a maximum of three promotions per cycle.
+- Preserve replay, isolated-evaluator, safety, canary, regression-watch, and rollback gates as mandatory promotion controls.
+
 ## [1.9.124] - 2026-07-30
 
 ### Removed

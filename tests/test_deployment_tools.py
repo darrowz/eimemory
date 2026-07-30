@@ -722,15 +722,17 @@ def test_nightly_systemd_unit_sets_autonomous_learning_promotion_budget() -> Non
         "deploy/systemd/eimemory-learning-runtime.conf"
     ).read_text(encoding="utf-8")
 
+    assert "Environment=EIMEMORY_AUTONOMOUS_LEARNING_APPLY=1" in unit_text
     assert "Environment=EIMEMORY_AUTONOMOUS_LEARNING_MAX_GOALS=3" in unit_text
-    assert "Environment=EIMEMORY_AUTONOMOUS_LEARNING_MAX_PROMOTIONS=0" in unit_text
+    assert "Environment=EIMEMORY_AUTONOMOUS_LEARNING_MAX_PROMOTIONS=3" in unit_text
     assert "Environment=EIMEMORY_L5_LOOP_APPLY=1" in unit_text
-    assert "Environment=EIMEMORY_L5_MAX_PROMOTIONS=0" in unit_text
+    assert "Environment=EIMEMORY_L5_MAX_PROMOTIONS=3" in unit_text
     assert "Environment=EIMEMORY_AUTONOMOUS_LEARNING_NETWORK=1" in unit_text
-    assert "Environment=EIMEMORY_AUTONOMOUS_LEARNING_MAX_PROMOTIONS=0" in policy_text
+    assert "Environment=EIMEMORY_AUTONOMOUS_LEARNING_APPLY=1" in policy_text
+    assert "Environment=EIMEMORY_AUTONOMOUS_LEARNING_MAX_PROMOTIONS=3" in policy_text
     assert "Environment=EIMEMORY_L5_LOOP_ENABLED=1" in policy_text
     assert "Environment=EIMEMORY_L5_LOOP_APPLY=1" in policy_text
-    assert "Environment=EIMEMORY_L5_MAX_PROMOTIONS=0" in policy_text
+    assert "Environment=EIMEMORY_L5_MAX_PROMOTIONS=3" in policy_text
 
 
 def test_production_systemd_has_single_autonomous_scheduler_owner() -> None:

@@ -103,7 +103,9 @@ they are not a second state owner.
 The standard nightly schedule runs active knowledge intake and governance once
 per day at 03:30 in the server's local timezone. L5 runs in apply mode so it
 can persist world-model, roadmap, goal, assessment, and reward evidence.
-Automatic candidate promotion remains disabled with a zero promotion budget.
+Autonomous learning and L5 may each apply at most three promotions per cycle;
+replay, isolated-evaluator, safety, canary, regression-watch, and rollback
+gates remain mandatory.
 
 Install as a user service for the OpenClaw/eimemory operator:
 
