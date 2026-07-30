@@ -2007,6 +2007,178 @@ handlers.before_prompt_build({ prompt: 'hello' })
     assert incidents[0]["command"][0] == "does-not-exist"
 
 
+def test_openclaw_js_bridge_uses_authenticated_rpc_hot_path_without_cli_spawn(tmp_path) -> None:
+    script = """
+const http = require('node:http');
+const childProcess = require('node:child_process');
+childProcess.spawn = () => { throw new Error('CLI spawn must not run on RPC hot path'); };
+const requests = [];
+const server = http.createServer((req, res) => {
+  let body = '';
+  req.on('data', (chunk) => { body += chunk; });
+  req.on('end', () => {
+    requests.push({ authorization: req.headers.authorization, payload: JSON.parse(body || '{}') });
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({
+      ok: true,
+      result: {
+        hook_payload: {
+          memory_bundle: {
+            items: [{ id: 'rpc-memory', summary: 'RPC hot path context', memory_type: 'fact' }],
+            explanation: {}
+          }
+        },
+        bridge_payload: { matched: true, prepend_context: 'RPC bridge context' }
+      }
+    }));
+  });
+});
+server.listen(0, '127.0.0.1', async () => {
+  const address = server.address();
+  process.env.EIMEMORY_RPC_URL = `http://127.0.0.1:${address.port}/`;
+  process.env.EIMEMORY_RPC_AUTH_TOKEN = 'rpc-test-token';
+  process.env.EIMEMORY_RPC_HOOK_TIMEOUT_MS = '500';
+  process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
+  process.env.EIMEMORY_ENABLE_PROMPT_BRIDGE = 'true';
+  const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
+  const handlers = {};
+  plugin.register({
+    config: { allowPromptInjection: true },
+    hooks: { on(name, handler) { handlers[name] = handler; } }
+  });
+  const result = await handlers.before_prompt_build({ sessionId: 'rpc-session', prompt: 'remember this' });
+  server.close(() => {
+    process.stdout.write(JSON.stringify({ requests, result }));
+  });
+});
+""".strip()
+    result = subprocess.run(
+        ["node", "-e", script],
+        cwd=Path.cwd(),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=10,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert len(payload["requests"]) == 1
+    request = payload["requests"][0]
+    assert request["authorization"] == "Bearer rpc-test-token"
+    assert request["payload"]["method"] == "openclaw.hook"
+    params = request["payload"]["params"]
+    assert params["hook"] == "before_prompt_build"
+    assert params["include_bridge"] is True
+    assert params["event"]["session_id"] == "rpc-session"
+    assert params["event"]["query"] == "remember this"
+    assert params["event"]["task_context"] == {
+        "recall_mode": "fast",
+        "recall_budget_ms": 800,
+        "candidate_limit": 24,
+    }
+    assert "RPC hot path context" in payload["result"]["prependContext"]
+    assert "RPC bridge context" in payload["result"]["prependContext"]
+
+
+def test_openclaw_js_bridge_rpc_timeout_fails_open_without_cli_fallback(tmp_path) -> None:
+    ledger_path = tmp_path / "rpc-failures.jsonl"
+    script = """
+const http = require('node:http');
+const childProcess = require('node:child_process');
+childProcess.spawn = () => { throw new Error('CLI fallback must not run after RPC timeout'); };
+const server = http.createServer((_req, _res) => {});
+server.listen(0, '127.0.0.1', async () => {
+  const address = server.address();
+  process.env.EIMEMORY_RPC_URL = `http://127.0.0.1:${address.port}/`;
+  process.env.EIMEMORY_RPC_AUTH_TOKEN = 'rpc-test-token';
+  process.env.EIMEMORY_RPC_HOOK_TIMEOUT_MS = '50';
+  process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
+  const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
+  const handlers = {};
+  plugin.register({
+    config: { allowPromptInjection: true },
+    hooks: { on(name, handler) { handlers[name] = handler; } }
+  });
+  const started = Date.now();
+  const result = await handlers.before_prompt_build({ prompt: 'fail open quickly' });
+  server.close(() => {
+    process.stdout.write(JSON.stringify({ elapsed: Date.now() - started, result }));
+  });
+});
+""".strip()
+    env = os.environ.copy()
+    env["EIMEMORY_BRIDGE_TRANSPORT_LEDGER"] = str(ledger_path)
+    result = subprocess.run(
+        ["node", "-e", script],
+        cwd=Path.cwd(),
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=5,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["result"] == {}
+    assert payload["elapsed"] < 500
+    incidents = [json.loads(line) for line in ledger_path.read_text(encoding="utf-8").splitlines()]
+    assert incidents[0]["transport"] == "rpc"
+    assert incidents[0]["hook"] == "before_prompt_build"
+
+
+def test_openclaw_message_received_does_not_wait_for_rpc_ingest() -> None:
+    script = """
+const http = require('node:http');
+const server = http.createServer((req, res) => {
+  let body = '';
+  req.on('data', (chunk) => { body += chunk; });
+  req.on('end', () => {
+    setTimeout(() => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({
+        ok: true,
+        result: { hook_payload: { ok: true }, bridge_payload: null }
+      }));
+    }, 250);
+  });
+});
+server.listen(0, '127.0.0.1', async () => {
+  const address = server.address();
+  process.env.EIMEMORY_RPC_URL = `http://127.0.0.1:${address.port}/`;
+  process.env.EIMEMORY_RPC_AUTH_TOKEN = 'rpc-test-token';
+  const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
+  const handlers = {};
+  plugin.register({
+    hooks: { on(name, handler) { handlers[name] = handler; } }
+  });
+  const started = Date.now();
+  const result = await handlers.message_received({ content: 'ingest asynchronously' });
+  const elapsed = Date.now() - started;
+  setTimeout(() => server.close(() => {
+    process.stdout.write(JSON.stringify({ elapsed, result }));
+  }), 350);
+});
+""".strip()
+    result = subprocess.run(
+        ["node", "-e", script],
+        cwd=Path.cwd(),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=5,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["result"] == {}
+    assert payload["elapsed"] < 100
+
+
 def test_openclaw_js_bridge_degrades_gracefully_on_malformed_hook_output(tmp_path) -> None:
     script = """
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;

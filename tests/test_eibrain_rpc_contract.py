@@ -1,8 +1,10 @@
 import json
+import http.client
 import urllib.request
 from pathlib import Path
 
 from eimemory.adapters.eibrain.rpc import EIBrainRPCBridge
+from eimemory.adapters.openclaw.hooks import OpenClawMemoryHooks
 from eimemory.adapters.eibrain.rpc_server import EIBrainRPCServer
 from eimemory.api.runtime import Runtime
 from eimemory.ei_bridge.protocol import EIMEMORY_RPC_CONTRACT_VERSION
@@ -102,3 +104,70 @@ def test_eibrain_rpc_bridge_errors_always_return_contract_version(tmp_path: Path
 
     assert payload["ok"] is False
     assert payload["contract_version"] == EIMEMORY_RPC_CONTRACT_VERSION
+
+
+def test_eibrain_rpc_openclaw_hook_preserves_full_hook_payload(tmp_path: Path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    bridge = EIBrainRPCBridge(runtime)
+    event = {
+        "session_id": "rpc-hot-path",
+        "agent_id": "main",
+        "workspace_id": "workspace",
+        "user_id": "darrow",
+        "query": "",
+        "task_context": {"task_type": "chat.reply"},
+    }
+
+    expected = OpenClawMemoryHooks(runtime).before_prompt_build(event)
+    payload = bridge.handle(
+        {
+            "method": "openclaw.hook",
+            "params": {
+                "hook": "before_prompt_build",
+                "event": event,
+                "include_bridge": False,
+            },
+        }
+    )
+
+    assert payload["ok"] is True
+    assert payload["result"]["hook_payload"].keys() == expected.keys()
+    assert payload["result"]["hook_payload"]["memory_bundle"]["items"] == expected["memory_bundle"]["items"]
+    assert payload["result"]["hook_payload"]["injection_plan"] == expected["injection_plan"]
+    assert payload["result"]["bridge_payload"] is None
+
+
+def test_eibrain_rpc_openclaw_hook_rejects_unknown_hook(tmp_path: Path) -> None:
+    bridge = EIBrainRPCBridge(Runtime.create(root=tmp_path))
+
+    payload = bridge.handle(
+        {
+            "method": "openclaw.hook",
+            "params": {"hook": "made_up", "event": {}},
+        }
+    )
+
+    assert payload["ok"] is False
+    assert payload["error"] == "invalid_request"
+
+
+def test_eibrain_rpc_reuses_http11_connection(tmp_path: Path) -> None:
+    server = EIBrainRPCServer(
+        Runtime.create(root=tmp_path),
+        host="127.0.0.1",
+        port=0,
+        auth_token="a-strong-rpc-token-with-many-distinct-characters-123",
+    )
+    server.start()
+    connection = http.client.HTTPConnection(*server.address, timeout=2)
+    try:
+        for _ in range(2):
+            connection.request("GET", "/health")
+            response = connection.getresponse()
+            assert response.version == 11
+            assert response.status == 200
+            response.read()
+            assert connection.sock is not None
+    finally:
+        connection.close()
+        server.stop()

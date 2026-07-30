@@ -3,6 +3,8 @@
 const { spawn } = require('node:child_process');
 const { createHash, createHmac, timingSafeEqual } = require('node:crypto');
 const fs = require('node:fs');
+const http = require('node:http');
+const https = require('node:https');
 const os = require('node:os');
 const path = require('node:path');
 
@@ -16,6 +18,7 @@ const DEFAULT_HOOK_CACHE_TTL_MS = 10000;
 const DEFAULT_HOOK_TIMEOUT_MS = 8000;
 const DEFAULT_TERMINAL_HOOK_TIMEOUT_MS = 30000;
 const DEFAULT_BRIDGE_TIMEOUT_MS = 8000;
+const DEFAULT_RPC_HOOK_TIMEOUT_MS = 1800;
 const DEFAULT_BEFORE_PROMPT_BUDGET_MS = 22000;
 const DEFAULT_MAX_CONCURRENT_COMMANDS = 2;
 const DEFAULT_MAX_QUEUED_COMMANDS = 32;
@@ -891,6 +894,119 @@ function resolveHookCommand() {
     return splitCommand(configured);
   }
   return ['eimemory', 'openclaw-hook'];
+}
+
+function resolveRpcConfiguration() {
+  return {
+    url: String(process.env.EIMEMORY_RPC_URL || '').trim(),
+    authToken: String(
+      process.env.EIMEMORY_RPC_AUTH_TOKEN
+      || process.env.EIMEMORY_RPC_TOKEN
+      || ''
+    ).trim(),
+  };
+}
+
+function rpcHotPathConfigured() {
+  const config = resolveRpcConfiguration();
+  return Boolean(config.url && config.authToken);
+}
+
+function invokeRpc(method, params, { timeout = DEFAULT_RPC_HOOK_TIMEOUT_MS, deadlineAtMs = 0 } = {}) {
+  const config = resolveRpcConfiguration();
+  if (!config.url || !config.authToken) {
+    const error = new Error('eimemory RPC hot path is not configured');
+    error.code = 'EIMEMORY_RPC_NOT_CONFIGURED';
+    return Promise.reject(error);
+  }
+  const remainingBudgetMs = deadlineAtMs > 0 ? deadlineAtMs - Date.now() : 0;
+  if (deadlineAtMs > 0 && remainingBudgetMs <= 0) {
+    const error = new Error('eimemory RPC deadline expired before request');
+    error.code = 'EIMEMORY_RPC_TIMEOUT';
+    return Promise.reject(error);
+  }
+  const effectiveTimeoutMs = deadlineAtMs > 0
+    ? Math.min(positiveIntEnv('EIMEMORY_RPC_HOOK_TIMEOUT_MS', timeout), remainingBudgetMs)
+    : positiveIntEnv('EIMEMORY_RPC_HOOK_TIMEOUT_MS', timeout);
+  const target = new URL(config.url);
+  const transport = target.protocol === 'https:' ? https : http;
+  const body = Buffer.from(JSON.stringify({ method, params }), 'utf-8');
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const fail = (error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      reject(error);
+    };
+    const request = transport.request(target, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${config.authToken}`,
+        'Content-Type': 'application/json',
+        'Content-Length': body.length,
+      },
+    }, (response) => {
+      const chunks = [];
+      let responseBytes = 0;
+      response.on('data', (chunk) => {
+        responseBytes += chunk.length;
+        if (responseBytes > DEFAULT_MAX_COMMAND_OUTPUT_BYTES) {
+          const error = new Error('eimemory RPC response exceeded byte limit');
+          error.code = 'EIMEMORY_OUTPUT_LIMIT';
+          request.destroy(error);
+          return;
+        }
+        chunks.push(chunk);
+      });
+      response.on('end', () => {
+        if (settled) {
+          return;
+        }
+        try {
+          const payload = JSON.parse(Buffer.concat(chunks).toString('utf-8') || '{}');
+          if (response.statusCode < 200 || response.statusCode >= 300 || payload?.ok !== true) {
+            const error = new Error(`eimemory RPC failed with status ${response.statusCode || 0}`);
+            error.code = 'EIMEMORY_RPC_ERROR';
+            fail(error);
+            return;
+          }
+          settled = true;
+          resolve(payload);
+        } catch (error) {
+          fail(error);
+        }
+      });
+    });
+    request.on('error', fail);
+    request.setTimeout(effectiveTimeoutMs, () => {
+      const error = new Error(`eimemory RPC timed out after ${effectiveTimeoutMs}ms`);
+      error.code = 'EIMEMORY_RPC_TIMEOUT';
+      request.destroy(error);
+    });
+    request.end(body);
+  });
+}
+
+async function invokeRpcHook(hook, event, { includeBridge = false, deadlineAtMs = 0 } = {}) {
+  const payload = normalizeEventPayload(hook, event);
+  const response = await invokeRpc(
+    'openclaw.hook',
+    {
+      hook,
+      event: payload,
+      include_bridge: Boolean(includeBridge),
+    },
+    { deadlineAtMs },
+  );
+  const result = response?.result;
+  if (!result || typeof result !== 'object' || !result.hook_payload || typeof result.hook_payload !== 'object') {
+    const error = new Error('eimemory RPC returned an invalid OpenClaw hook payload');
+    error.code = 'EIMEMORY_RPC_INVALID_RESPONSE';
+    throw error;
+  }
+  return result;
 }
 
 function resolveBridgeCommand() {
@@ -2020,8 +2136,12 @@ async function invokeHook(api, hook, event, { deadlineAtMs = 0 } = {}) {
       return await inflight;
     }
   }
-  const command = resolveHookCommand();
   const pending = (async () => {
+    if (rpcHotPathConfigured()) {
+      const result = await invokeRpcHook(hook, event, { deadlineAtMs });
+      return result.hook_payload;
+    }
+    const command = resolveHookCommand();
     const result = await runCommand(command[0], [...command.slice(1), hook], {
       input: JSON.stringify(payload),
       timeout: configuredHookTimeout(api, hook, defaultHookTimeoutMs(hook)),
@@ -2085,16 +2205,40 @@ async function invokeCli(args) {
 async function safeInvokeHook(api, hook, event, options = {}) {
   try {
     const result = await invokeHook(api, hook, event, options);
-    api?.logger?.info?.(`eimemory-bridge: ${hook} completed`);
+    const transport = rpcHotPathConfigured() ? 'rpc hot path' : 'cli';
+    api?.logger?.info?.(`eimemory-bridge: ${hook} completed via ${transport}`);
     return result;
   } catch (error) {
+    const usingRpc = rpcHotPathConfigured();
     const ledgerPath = recordTransportFailure({
-      transport: 'hook',
+      transport: usingRpc ? 'rpc' : 'hook',
       hook,
-      command: resolveHookCommand(),
+      ...(usingRpc
+        ? { endpoint: resolveRpcConfiguration().url }
+        : { command: resolveHookCommand() }),
       error: serializeTransportError(error),
     });
     api?.logger?.warn?.(`eimemory-bridge: ${hook} failed: ${error?.message || String(error)}`);
+    if (ledgerPath) {
+      api?.logger?.warn?.(`eimemory-bridge: transport failure recorded at ${ledgerPath}`);
+    }
+    return null;
+  }
+}
+
+async function safeInvokeRpcHook(api, hook, event, options = {}) {
+  try {
+    const result = await invokeRpcHook(hook, event, options);
+    api?.logger?.info?.(`eimemory-bridge: ${hook} completed via rpc hot path`);
+    return result;
+  } catch (error) {
+    const ledgerPath = recordTransportFailure({
+      transport: 'rpc',
+      hook,
+      endpoint: resolveRpcConfiguration().url,
+      error: serializeTransportError(error),
+    });
+    api?.logger?.warn?.(`eimemory-bridge: ${hook} RPC hot path failed: ${error?.message || String(error)}`);
     if (ledgerPath) {
       api?.logger?.warn?.(`eimemory-bridge: transport failure recorded at ${ledgerPath}`);
     }
@@ -2448,7 +2592,12 @@ module.exports.default = {
     writeReplyDeliveryState(readReplyDeliveryState());
     registerTypedHookOnce(api, 'message_received', async (event, context) => {
       trackReplyInbound(event, context);
-      return (await safeInvokeHook(api, 'message_received', mergeHookEventContext(event, context))) || {};
+      const contextualEvent = mergeHookEventContext(event, context);
+      if (rpcHotPathConfigured()) {
+        void safeInvokeHook(api, 'message_received', contextualEvent);
+        return {};
+      }
+      return (await safeInvokeHook(api, 'message_received', contextualEvent)) || {};
     });
     registerTypedHookOnce(api, 'before_prompt_build', async (event, context) => {
       trackReplyProgress(event, context);
@@ -2459,16 +2608,32 @@ module.exports.default = {
         return {};
       }
       const deadlineAtMs = Date.now() + configuredBeforePromptBudget();
-      const [bridgePayload, payload] = await Promise.all([
-        shouldInvokeBridgeBeforePrompt(api, correlatedEvent)
-          ? safeInvokeBridge(
-              api,
-              normalizeEventPayload('before_prompt_build', correlatedEvent),
-              { deadlineAtMs },
-            )
-          : Promise.resolve(null),
-        safeInvokeHook(api, 'before_prompt_build', correlatedEvent, { deadlineAtMs }),
-      ]);
+      let bridgePayload;
+      let payload;
+      if (rpcHotPathConfigured()) {
+        const combined = await safeInvokeRpcHook(
+          api,
+          'before_prompt_build',
+          correlatedEvent,
+          {
+            includeBridge: shouldInvokeBridgeBeforePrompt(api, correlatedEvent),
+            deadlineAtMs,
+          },
+        );
+        bridgePayload = combined?.bridge_payload || null;
+        payload = combined?.hook_payload || null;
+      } else {
+        [bridgePayload, payload] = await Promise.all([
+          shouldInvokeBridgeBeforePrompt(api, correlatedEvent)
+            ? safeInvokeBridge(
+                api,
+                normalizeEventPayload('before_prompt_build', correlatedEvent),
+                { deadlineAtMs },
+              )
+            : Promise.resolve(null),
+          safeInvokeHook(api, 'before_prompt_build', correlatedEvent, { deadlineAtMs }),
+        ]);
+      }
       rememberLoopTask(correlatedEvent, payload);
       const bridgeContext = buildBridgePrependContext(bridgePayload);
       if (!payload) {

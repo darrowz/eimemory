@@ -8,6 +8,8 @@ from eimemory.experience import record_experience_item, record_skill_trace
 from eimemory.identity import extract_user_aliases, hongtu_identity_meta, hongtu_scope
 from eimemory.models.records import LinkRef, ScopeRef
 from eimemory.adapters.runtime.service import AgentRuntimeMemoryService
+from eimemory.adapters.openclaw.hooks import OpenClawMemoryHooks
+from eimemory.ei_bridge.openclaw_runtime import handle_openclaw_feishu_event
 from eimemory.ei_bridge.protocol import (
     EIMEMORY_RPC_CONTRACT_VERSION,
     BridgeScope,
@@ -34,6 +36,49 @@ class EIBrainRPCBridge:
             params = {}
         if not isinstance(params, dict):
             return self._with_contract(self._invalid_request())
+        if method == "openclaw.hook":
+            hook = params.get("hook", "")
+            event = params.get("event", {})
+            include_bridge = params.get("include_bridge", False)
+            allowed_hooks = {
+                "message_received",
+                "before_prompt_build",
+                "proactive_injected",
+                "agent_end",
+                "task_end",
+                "session_end",
+            }
+            if (
+                not isinstance(hook, str)
+                or hook not in allowed_hooks
+                or not isinstance(event, dict)
+                or not isinstance(include_bridge, bool)
+                or (include_bridge and hook != "before_prompt_build")
+            ):
+                return self._with_contract(self._invalid_request())
+            hooks = OpenClawMemoryHooks(self.runtime)
+            if hook == "message_received":
+                hook_payload = hooks.on_message_received(event)
+            elif hook == "before_prompt_build":
+                hook_payload = hooks.before_prompt_build(event)
+            elif hook == "proactive_injected":
+                hook_payload = hooks.proactive_injected(event)
+            elif hook == "agent_end":
+                hook_payload = hooks.on_agent_end(event)
+            elif hook == "task_end":
+                hook_payload = hooks.on_task_end(event)
+            else:
+                hook_payload = hooks.on_session_end(event)
+            bridge_payload = handle_openclaw_feishu_event(event, self.runtime) if include_bridge else None
+            return self._with_contract(
+                {
+                    "ok": True,
+                    "result": {
+                        "hook_payload": hook_payload,
+                        "bridge_payload": bridge_payload,
+                    },
+                }
+            )
         if method.startswith("adapter."):
             return self._handle_runtime_adapter(method, params, attestation_producer=attestation_producer)
         if method in {"memory.recall", "memory.search"}:

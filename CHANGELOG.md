@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Planned
 - Multi-agent memory coordination
 
+## [1.9.126] - 2026-07-30
+
+### Changed
+- Route OpenClaw lifecycle hooks through the authenticated long-running eimemory RPC runtime, preserving the complete hook and Feishu bridge payloads without per-hook Python startup.
+- Fail open on a bounded RPC timeout while retaining the existing CLI transport when the RPC hot path is not configured.
+
 ## [1.9.125] - 2026-07-30
 
 ### Changed
