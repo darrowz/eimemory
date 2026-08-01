@@ -226,9 +226,9 @@ def normalize_hongtu_record(record: RecordEnvelope) -> RecordEnvelope:
     return normalized
 
 
-def build_identity_report(records: list[RecordEnvelope]) -> dict[str, Any]:
+def build_identity_report(records: Iterable[RecordEnvelope]) -> dict[str, Any]:
     report = {
-        "total_records": len(records),
+        "total_records": 0,
         "hongtu_scope_records": 0,
         "legacy_scope_records": 0,
         "hongtu_identity_records": 0,
@@ -238,6 +238,7 @@ def build_identity_report(records: list[RecordEnvelope]) -> dict[str, Any]:
         "sample_candidates": [],
     }
     for record in records:
+        report["total_records"] += 1
         if is_hongtu_scope(record.scope):
             report["hongtu_scope_records"] += 1
         if is_legacy_hongtu_scope(record.scope):

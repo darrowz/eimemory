@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import Any
 
 from eimemory.identity import (
@@ -11,26 +12,45 @@ from eimemory.models.records import RecordEnvelope
 
 
 def identity_report(runtime, *, limit: int | None = None) -> dict[str, Any]:
-    records = _list_records(runtime, limit=limit)
-    return build_identity_report(records)
+    return build_identity_report(_iter_records(runtime, limit=limit))
 
 
 def repair_hongtu_identity(runtime, *, apply: bool = False, limit: int | None = None) -> dict[str, Any]:
-    records = _list_records(runtime, limit=limit)
-    candidates = [record for record in records if needs_hongtu_identity_repair(record)]
+    if not apply:
+        report = build_identity_report(_iter_records(runtime, limit=limit))
+        report.update(
+            {
+                "ok": True,
+                "apply": False,
+                "candidate_count": report["repair_candidate_count"],
+                "repaired_count": 0,
+                "repaired_record_ids": [],
+            }
+        )
+        return report
+
+    candidate_ids: list[str] = []
+    report = build_identity_report(
+        _capture_repair_candidates(
+            _iter_records(runtime, limit=limit),
+            candidate_ids=candidate_ids,
+        )
+    )
     repaired_ids: list[str] = []
-    for record in candidates:
-        if not apply:
+    for record_id in candidate_ids:
+        record = runtime.store.get_by_id(record_id)
+        if record is None or not needs_hongtu_identity_repair(record):
             continue
         normalized = normalize_hongtu_record(record)
         runtime.store.rewrite(normalized, previous_scope=record.scope)
         repaired_ids.append(normalized.record_id)
-    report = build_identity_report(_list_records(runtime, limit=limit) if apply else records)
+    if candidate_ids:
+        report = build_identity_report(_iter_records(runtime, limit=limit))
     report.update(
         {
             "ok": True,
-            "apply": bool(apply),
-            "candidate_count": len(candidates),
+            "apply": True,
+            "candidate_count": len(candidate_ids),
             "repaired_count": len(repaired_ids),
             "repaired_record_ids": repaired_ids[:100],
         }
@@ -38,18 +58,33 @@ def repair_hongtu_identity(runtime, *, apply: bool = False, limit: int | None = 
     return report
 
 
-def _list_records(runtime, *, limit: int | None = None) -> list[RecordEnvelope]:
+def _capture_repair_candidates(
+    records: Iterator[RecordEnvelope],
+    *,
+    candidate_ids: list[str],
+) -> Iterator[RecordEnvelope]:
+    for record in records:
+        if needs_hongtu_identity_repair(record):
+            candidate_ids.append(record.record_id)
+        yield record
+
+
+def _iter_records(runtime, *, limit: int | None = None) -> Iterator[RecordEnvelope]:
     page_size = 500
     offset = 0
-    records: list[RecordEnvelope] = []
+    yielded_count = 0
     target_limit = None if limit is None or limit <= 0 else int(limit)
     while True:
-        remaining = page_size if target_limit is None else max(0, min(page_size, target_limit - len(records)))
+        remaining = page_size if target_limit is None else max(0, min(page_size, target_limit - yielded_count))
         if remaining <= 0:
             break
         page = runtime.store.list_records(limit=remaining, offset=offset)
         if not page:
             break
-        records.extend(page)
-        offset += len(page)
-    return records
+        page_count = len(page)
+        for record in page:
+            yield record
+            yielded_count += 1
+        del record
+        page.clear()
+        offset += page_count

@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Planned
 - Multi-agent memory coordination
 
+## [1.9.128] - 2026-08-02
+
+### Fixed
+
+- Stream identity audit and repair records page-by-page so nightly maintenance no longer retains the full production store in memory.
+- Emit a bounded nightly CLI summary instead of serializing the full internal supervisor report.
+
 ## [1.9.127] - 2026-07-30
 
 ### Performance
