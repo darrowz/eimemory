@@ -1237,14 +1237,39 @@ _verify_hermes_integration() {
     echo "hermes_closed_loop=skipped hermes_not_installed"
     return
   fi
-  local rpc_token
+  local rpc_token rpc_url
   rpc_token="$("$PYTHON_BIN" -I -B -c \
     'from pathlib import Path; import sys; line=Path(sys.argv[1]).read_text(encoding="utf-8").strip(); key,sep,value=line.partition("="); sys.exit(2) if key != "EIMEMORY_RPC_AUTH_TOKEN" or not sep or not value else print(value)' \
     "$EIMEMORY_CONFIG_DIR/rpc.env")"
+  rpc_url="$(_user_systemctl show hermes-gateway.service --property=Environment --value | \
+    "$PYTHON_BIN" -I -B -c '
+import shlex
+import sys
+from urllib.parse import urlsplit
+
+name = "EIMEMORY_RPC_URL"
+try:
+    assignments = shlex.split(sys.stdin.read(), posix=True)
+except ValueError:
+    raise SystemExit(2)
+values = [
+    item.split("=", 1)[1]
+    for item in assignments
+    if item.partition("=")[0] == name and "=" in item
+]
+if len(values) != 1:
+    raise SystemExit(2)
+parsed = urlsplit(values[0])
+if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+    raise SystemExit(2)
+if parsed.username or parsed.password or parsed.query or parsed.fragment:
+    raise SystemExit(2)
+print(values[0])
+')"
   _run_as_service_user env \
     HOME="$SERVICE_HOME" HERMES_HOME="$HERMES_HOME_DIR" \
     PYTHONPATH="$target_release:$HERMES_HOME_DIR/hermes-agent" \
-    EIMEMORY_RPC_URL="http://127.0.0.1:8091/" EIMEMORY_RPC_TOKEN="$rpc_token" \
+    EIMEMORY_RPC_URL="$rpc_url" EIMEMORY_RPC_TOKEN="$rpc_token" \
     EIMEMORY_ATTESTATION_HOST_PROFILE="operator-separated-v1" \
     EIMEMORY_HERMES_ATTESTATION_TOKEN_FILE="$HERMES_ATTESTATION_TOKEN_FILE" \
     EIMEMORY_ADAPTER_RECEIPT_HANDOFF_FILE="$HERMES_RECEIPT_HANDOFF_FILE" \
@@ -1255,7 +1280,7 @@ _verify_hermes_integration() {
     "$HERMES_PYTHON" -I -B "$target_release/deploy/verify_hermes_integration.py" \
       --repo-root "$target_release" --commit "$target_commit" \
       --hermes-agent-root "$HERMES_HOME_DIR/hermes-agent"
-  unset rpc_token
+  unset rpc_token rpc_url
 }
 
 _install_candidate_runtime_metadata() {
