@@ -1630,33 +1630,38 @@ def test_immutable_release_installer_manages_user_level_loop_compaction_timer() 
     assert "OnCalendar=*-*-* 04:10:00" in timer
 
 
-def test_release_closure_timer_bounds_reconcile_frequency() -> None:
+def test_release_closure_path_reconciles_only_platform_receipt_signals() -> None:
     script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
-    timer = Path("deploy/systemd/eimemory-release-closure.timer").read_text(
+    path_unit = Path("deploy/systemd/eimemory-release-closure.path").read_text(
         encoding="utf-8"
     )
     service = Path("deploy/systemd/eimemory-release-closure.service").read_text(
         encoding="utf-8"
     )
 
-    assert not Path("deploy/systemd/eimemory-release-closure.path").exists()
-    assert "OnBootSec=30s" in timer
-    assert "OnUnitActiveSec=30s" in timer
-    assert "AccuracySec=2s" in timer
-    assert "RandomizedDelaySec=5s" in timer
-    assert "Unit=eimemory-release-closure.service" in timer
+    assert not Path("deploy/systemd/eimemory-release-closure.timer").exists()
+    assert "PathChanged=/var/lib/eimemory/state/release-closure-channel-receipt.signal" in path_unit
+    assert "Unit=eimemory-release-closure.service" in path_unit
     assert "learn release-closure-reconcile --json" in service
     assert "Restart=" not in service
     assert "RestartSec=" not in service
     assert "StartLimit" not in service
     assert "openclaw-feishu-reply-watchdog" not in service
-    assert '"$RELEASE_DIR/deploy/systemd/eimemory-release-closure.timer"' in script
+    assert '"$RELEASE_DIR/deploy/systemd/eimemory-release-closure.path"' in script
     assert '"$RELEASE_DIR/deploy/systemd/eimemory-release-closure.service"' in script
-    assert "_user_systemctl disable --now eimemory-release-closure.path" in script
-    assert 'rm -f "$USER_SYSTEMD_DIR/eimemory-release-closure.path"' in script
+    assert "_user_systemctl disable --now eimemory-release-closure.timer" in script
+    assert 'rm -f "$USER_SYSTEMD_DIR/eimemory-release-closure.timer"' in script
     assert "_user_systemctl reset-failed eimemory-release-closure.service" in script
-    assert "eimemory-release-closure.timer >/dev/null 2>&1 || true" in script
-    assert "_user_systemctl enable eimemory-release-closure.timer" in script
+    assert "eimemory-release-closure.path >/dev/null 2>&1 || true" in script
+    assert "_user_systemctl enable eimemory-release-closure.path" in script
+    installed_path = script.index(
+        '"$RELEASE_DIR/deploy/systemd/eimemory-release-closure.path"'
+    )
+    reloaded_path = script.index("_user_systemctl daemon-reload", installed_path)
+    enabled_path = script.index(
+        "_user_systemctl enable eimemory-release-closure.path", reloaded_path
+    )
+    assert installed_path < reloaded_path < enabled_path
     assert "_pause_release_closure_reconcile" in script
     assert "_resume_release_closure_reconcile" in script
     execution = script[script.index("_observe_pre_switch_l5\n") :]
@@ -1669,7 +1674,7 @@ def test_release_closure_timer_bounds_reconcile_frequency() -> None:
         )
     ]
     assert "eimemory-release-closure.path" not in writer_units
-    assert "eimemory-release-closure.timer" in writer_units
+    assert "eimemory-release-closure.timer" not in writer_units
     assert "eimemory-release-closure.service" in writer_units
 
 

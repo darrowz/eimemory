@@ -1,0 +1,10 @@
+[Unit]
+Description=Reconcile eimemory release closure when a channel receipt is accepted
+After=eimemory-rpc.service openclaw-gateway.service
+
+[Path]
+PathChanged=/var/lib/eimemory/state/release-closure-channel-receipt.signal
+Unit=eimemory-release-closure.service
+
+[Install]
+WantedBy=default.target

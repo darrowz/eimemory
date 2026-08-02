@@ -25,6 +25,7 @@ const DEFAULT_MAX_QUEUED_COMMANDS = 32;
 const DEFAULT_MAX_COMMAND_OUTPUT_BYTES = 4 * 1024 * 1024;
 const DEFAULT_REPLY_DELIVERY_STATE_PATH = '/var/lib/eimemory/openclaw_reply_delivery_state.json';
 const DEFAULT_REPLY_DELIVERY_ATTEMPTS_PATH = '/var/lib/eimemory/openclaw_reply_delivery_attempts.json';
+const DEFAULT_RELEASE_CLOSURE_SIGNAL_PATH = '/var/lib/eimemory/state/release-closure-channel-receipt.signal';
 const LOOP_TASK_CORRELATION_TTL_MS = 2 * 60 * 60 * 1000;
 const MAX_PENDING_LOOP_TASK_KEYS = 1024;
 const MAX_CORRELATED_QUERY_CHARS = 8192;
@@ -1534,6 +1535,52 @@ function replyDeliveryAttemptsPath() {
   ).trim();
 }
 
+function releaseClosureSignalPath() {
+  return String(
+    process.env.EIMEMORY_RELEASE_CLOSURE_SIGNAL_PATH || DEFAULT_RELEASE_CLOSURE_SIGNAL_PATH
+  ).trim();
+}
+
+function writeReleaseClosureSignal(entry) {
+  const runtimeCommit = String(entry?.runtime_commit || '').trim().toLowerCase();
+  const acceptedAtMs = Number(entry?.platform_accepted_at_ms || 0);
+  if (!/^[0-9a-f]{40}$/.test(runtimeCommit) || acceptedAtMs <= 0) {
+    return;
+  }
+  const signalPath = releaseClosureSignalPath();
+  const tempPath = `${signalPath}.${process.pid}.tmp`;
+  try {
+    fs.mkdirSync(path.dirname(signalPath), { recursive: true });
+    fs.writeFileSync(
+      tempPath,
+      `${JSON.stringify({
+        schema_version: 'release_closure_channel_receipt_signal.v1',
+        runtime_commit: runtimeCommit,
+        platform_accepted_at_ms: acceptedAtMs,
+      })}\n`,
+      { encoding: 'utf8', mode: 0o600 },
+    );
+    fs.renameSync(tempPath, signalPath);
+  } catch (error) {
+    try {
+      fs.unlinkSync(tempPath);
+    } catch (_cleanupError) {
+      // Nothing to clean up.
+    }
+    console.warn(`eimemory release closure signal write failed: ${String(error?.message || error)}`);
+  }
+}
+
+function queueReleaseClosureSignal(afterCommit, entry, wasAccepted) {
+  if (
+    !wasAccepted
+    && entry?.status === 'platform_accepted'
+    && String(entry?.delivery_message_id || '').trim()
+  ) {
+    afterCommit.push(() => writeReleaseClosureSignal(entry));
+  }
+}
+
 function readReplyDeliveryState() {
   const statePath = replyDeliveryStatePath();
   let parsed;
@@ -1601,7 +1648,7 @@ const TERMINAL_REPLY_DELIVERY_STATUSES = new Set([
   'escalated',
 ]);
 
-function reconcileDeliveryReceipts(state) {
+function reconcileDeliveryReceipts(state, afterCommit = []) {
   let attemptsDocument;
   try {
     attemptsDocument = JSON.parse(fs.readFileSync(replyDeliveryAttemptsPath(), 'utf8'));
@@ -1621,6 +1668,8 @@ function reconcileDeliveryReceipts(state) {
     if (!entry || !accepted || !messageId) {
       continue;
     }
+    const wasAccepted = entry.status === 'platform_accepted'
+      && Boolean(String(entry.delivery_message_id || '').trim());
     entry.status = 'platform_accepted';
     entry.delivery_message_id = messageId;
     entry.runtime_commit = String(
@@ -1630,6 +1679,7 @@ function reconcileDeliveryReceipts(state) {
       attempt?.platform_accepted_at_ms || attempt?.attempted_at_ms || Date.now()
     );
     entry.delivered_at_ms = entry.platform_accepted_at_ms;
+    queueReleaseClosureSignal(afterCommit, entry, wasAccepted);
   }
 }
 
@@ -1783,8 +1833,8 @@ function trackReplyInbound(event, context) {
   if (!inboundMessageId.startsWith('om_') || (!conversationId && !senderId)) {
     return;
   }
-  updateReplyDeliveryState((state) => {
-    reconcileDeliveryReceipts(state);
+  updateReplyDeliveryState((state, afterCommit) => {
+    reconcileDeliveryReceipts(state, afterCommit);
     if (state.entries[inboundMessageId]) {
       // Backfill a real Feishu chat id when later hooks carry oc_*.
       if (conversationId.startsWith('oc_') && !String(state.entries[inboundMessageId].conversation_id || '').startsWith('oc_')) {
@@ -1818,8 +1868,8 @@ function trackReplyProgress(event, context) {
   if (!sessionKey) {
     return;
   }
-  updateReplyDeliveryState((state) => {
-    reconcileDeliveryReceipts(state);
+  updateReplyDeliveryState((state, afterCommit) => {
+    reconcileDeliveryReceipts(state, afterCommit);
     const runId = String(event?.runId || event?.run_id || context?.runId || context?.run_id || '');
     const entry = latestPendingReplyEntry(state, sessionKey, runId);
     if (!entry) {
@@ -1841,7 +1891,7 @@ function trackReplyAgentEnd(event, context) {
   if (!sessionKey || !finalText || event?.success !== true) {
     return;
   }
-  updateReplyDeliveryState((state) => {
+  updateReplyDeliveryState((state, afterCommit) => {
     const runId = String(event?.runId || event?.run_id || context?.runId || context?.run_id || '');
     const entry = latestPendingReplyEntry(state, sessionKey, runId);
     if (!entry) {
@@ -1860,6 +1910,8 @@ function trackReplyAgentEnd(event, context) {
     const sentMatched = entry.last_sent_success === true
       && entry.last_sent_message_id
       && canonicalReplyText(entry.last_sent_content) === canonicalReplyText(finalText);
+    const wasAccepted = entry.status === 'platform_accepted'
+      && Boolean(String(entry.delivery_message_id || '').trim());
     entry.status = sentMatched ? 'platform_accepted' : 'final_ready';
     if (entry.status === 'platform_accepted') {
       entry.delivery_message_id = String(entry.last_sent_message_id || '');
@@ -1867,6 +1919,7 @@ function trackReplyAgentEnd(event, context) {
       entry.platform_accepted_at_ms = Number(entry.last_sent_at_ms || Date.now());
       entry.delivered_at_ms = entry.platform_accepted_at_ms;
     }
+    queueReleaseClosureSignal(afterCommit, entry, wasAccepted);
   });
 }
 
@@ -1875,7 +1928,7 @@ function trackReplyPlatformAccepted(event, context) {
   if (!isDirectFeishuReplyContext(event, context) && channelId !== 'feishu') {
     return;
   }
-  updateReplyDeliveryState((state) => {
+  updateReplyDeliveryState((state, afterCommit) => {
     const sentContent = String(event?.content || '');
     const messageId = String(event?.messageId || event?.message_id || '').trim();
     const entry = latestPendingReplyEntryForOutbound(
@@ -1900,6 +1953,8 @@ function trackReplyPlatformAccepted(event, context) {
     // platform accepts the outbound message. Waiting for exact final_text pre-match
     // left final_ready windows that the watchdog could double-send.
     if (event?.success === true && messageId) {
+      const wasAccepted = entry.status === 'platform_accepted'
+        && Boolean(String(entry.delivery_message_id || '').trim());
       if (!entry.final_text) {
         entry.final_text = sentContent;
       }
@@ -1912,6 +1967,7 @@ function trackReplyPlatformAccepted(event, context) {
         entry.platform_accepted_at_ms = entry.last_sent_at_ms;
         entry.delivered_at_ms = entry.last_sent_at_ms;
       }
+      queueReleaseClosureSignal(afterCommit, entry, wasAccepted);
     }
   });
 }
@@ -1977,8 +2033,8 @@ function trackReplyMessageToolResult(event, context) {
   if (!sentContent || !receipt?.messageId || !sessionKey) {
     return;
   }
-  updateReplyDeliveryState((state) => {
-    reconcileDeliveryReceipts(state);
+  updateReplyDeliveryState((state, afterCommit) => {
+    reconcileDeliveryReceipts(state, afterCommit);
     const runId = String(event?.runId || context?.runId || '');
     const entry = latestPendingReplyEntry(state, sessionKey, runId, sentContent);
     if (!entry) {
@@ -1990,12 +2046,15 @@ function trackReplyMessageToolResult(event, context) {
     entry.last_sent_content = sentContent;
     entry.last_sent_message_id = receipt.messageId;
     entry.last_sent_at_ms = Date.now();
+    const wasAccepted = entry.status === 'platform_accepted'
+      && Boolean(String(entry.delivery_message_id || '').trim());
     entry.status = 'platform_accepted';
     entry.delivery_message_id = receipt.messageId;
     entry.platform_accepted_at_ms = entry.last_sent_at_ms;
     entry.delivered_at_ms = entry.platform_accepted_at_ms;
     entry.suppress_stalled_notice = false;
     compactReplyDeliveryState(state);
+    queueReleaseClosureSignal(afterCommit, entry, wasAccepted);
   });
 }
 

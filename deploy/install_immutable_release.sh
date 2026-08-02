@@ -262,7 +262,6 @@ _user_systemctl() {
 }
 
 STORAGE_WRITER_UNITS=(
-  eimemory-release-closure.timer
   eimemory-nightly.timer
   eimemory-learn-watch.timer
   eimemory-learn-think.timer
@@ -1135,10 +1134,10 @@ _pause_release_closure_reconcile() {
   if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ] || ! command -v systemctl >/dev/null 2>&1; then
     return
   fi
-  _user_systemctl stop eimemory-release-closure.timer eimemory-release-closure.service \
+  _user_systemctl stop eimemory-release-closure.path eimemory-release-closure.service \
     >/dev/null 2>&1 || true
   _user_systemctl reset-failed eimemory-release-closure.service \
-    eimemory-release-closure.timer >/dev/null 2>&1 || true
+    eimemory-release-closure.path >/dev/null 2>&1 || true
 }
 
 _resume_release_closure_reconcile() {
@@ -1146,8 +1145,8 @@ _resume_release_closure_reconcile() {
     return
   fi
   _user_systemctl reset-failed eimemory-release-closure.service \
-    eimemory-release-closure.timer >/dev/null 2>&1 || true
-  _user_systemctl start eimemory-release-closure.timer
+    eimemory-release-closure.path >/dev/null 2>&1 || true
+  _user_systemctl start eimemory-release-closure.path
 }
 
 _restart_current_services() {
@@ -1348,10 +1347,11 @@ print(f"{timeout:g}")
 _install_candidate_runtime_metadata() {
   if [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ] && command -v systemctl >/dev/null 2>&1; then
     _run_as_service_user mkdir -p "$USER_SYSTEMD_DIR"
-    # Migrate away from ledger-change activation. A busy ledger can retrigger
-    # the oneshot fast enough to exhaust StartLimitBurst.
-    _user_systemctl disable --now eimemory-release-closure.path >/dev/null 2>&1 || true
-    _run_as_service_user rm -f "$USER_SYSTEMD_DIR/eimemory-release-closure.path"
+    # Migrate away from polling. The dedicated receipt signal changes only
+    # after a real platform acceptance, so path activation cannot be driven by
+    # unrelated high-frequency reply-ledger updates.
+    _user_systemctl disable --now eimemory-release-closure.timer >/dev/null 2>&1 || true
+    _run_as_service_user rm -f "$USER_SYSTEMD_DIR/eimemory-release-closure.timer"
     _user_systemctl daemon-reload
     _install_as_service_user 0644 \
       "$RELEASE_DIR/deploy/systemd/openclaw-loop-watch.service" "$USER_SYSTEMD_DIR/openclaw-loop-watch.service"
@@ -1364,15 +1364,15 @@ _install_candidate_runtime_metadata() {
     _install_as_service_user 0644 \
       "$RELEASE_DIR/deploy/systemd/eimemory-release-closure.service" "$USER_SYSTEMD_DIR/eimemory-release-closure.service"
     _install_as_service_user 0644 \
-      "$RELEASE_DIR/deploy/systemd/eimemory-release-closure.timer" "$USER_SYSTEMD_DIR/eimemory-release-closure.timer"
+      "$RELEASE_DIR/deploy/systemd/eimemory-release-closure.path" "$USER_SYSTEMD_DIR/eimemory-release-closure.path"
     # openclaw-feishu-reply-watchdog intentionally not installed/enabled.
     _refresh_openclaw_gateway_metadata "$RELEASE_DIR" "$COMMIT"
     _install_current_runtime_metadata "$RELEASE_DIR" "$COMMIT" "$REPO_DIR"
+    _user_systemctl daemon-reload
     _user_systemctl enable eimemory-rpc.service
     _user_systemctl enable openclaw-loop-watch.timer
     _user_systemctl enable openclaw-loop-compact.timer
-    _user_systemctl enable eimemory-release-closure.timer
-    _user_systemctl daemon-reload
+    _user_systemctl enable eimemory-release-closure.path
   fi
   _install_openclaw_loop_compat_script "$RELEASE_DIR"
   _refresh_openclaw_plugin_registry

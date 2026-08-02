@@ -15,6 +15,9 @@ def _run_node(
 ) -> dict:
     env = os.environ.copy()
     env["EIMEMORY_REPLY_DELIVERY_STATE_PATH"] = str(state_path)
+    env["EIMEMORY_RELEASE_CLOSURE_SIGNAL_PATH"] = str(
+        state_path.with_name("release-closure-channel-receipt.signal")
+    )
     env["EIMEMORY_HOOK_COMMAND"] = "/usr/bin/true"
     env["EIMEMORY_RUNTIME_COMMIT"] = "a" * 40
     result = subprocess.run(
@@ -94,6 +97,14 @@ Promise.resolve()
     assert entry["delivery_message_id"] == "om_out_1"
     assert entry["conversation_id"] == "oc_test"
     assert entry["runtime_commit"] == "a" * 40
+    signal = json.loads(
+        (tmp_path / "release-closure-channel-receipt.signal").read_text(encoding="utf-8")
+    )
+    assert signal == {
+        "schema_version": "release_closure_channel_receipt_signal.v1",
+        "runtime_commit": "a" * 40,
+        "platform_accepted_at_ms": entry["platform_accepted_at_ms"],
+    }
 
 
 def test_tracker_correlates_official_sessionless_message_sent_by_destination(

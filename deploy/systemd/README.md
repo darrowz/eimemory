@@ -69,9 +69,10 @@ systemctl --user enable --now eimemory-rpc.service
 ```
 
 Release closure waits for a real Feishu API receipt without polling. The
-installer enables `eimemory-release-closure.path`, which watches the canonical
-channel delivery ledger and starts the one-shot reconciler only when that file
-changes and a release-closure checkpoint exists:
+installer enables `eimemory-release-closure.path`, which watches a dedicated
+receipt signal written only after `platform_accepted` reaches the canonical
+channel ledger. It starts the one-shot reconciler only when that low-frequency
+signal changes and a release-closure checkpoint exists:
 
 ```bash
 systemctl --user status eimemory-release-closure.path
