@@ -1189,7 +1189,22 @@ _restart_hermes_gateway() {
       main_pid="$(_user_systemctl show hermes-gateway.service --property=MainPID --value)"
       gateway_pid=""
       if [ -r "$HERMES_HOME_DIR/gateway.pid" ]; then
-        IFS= read -r gateway_pid <"$HERMES_HOME_DIR/gateway.pid" || gateway_pid=""
+        gateway_pid="$("$PYTHON_BIN" -I -B -c '
+import json
+from pathlib import Path
+import sys
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8").strip()
+try:
+    payload = json.loads(text)
+except json.JSONDecodeError:
+    value = text
+else:
+    value = payload.get("pid", "") if isinstance(payload, dict) else ""
+value = str(value).strip()
+if value.isdigit() and int(value) > 0:
+    print(value)
+' "$HERMES_HOME_DIR/gateway.pid" 2>/dev/null || true)"
       fi
       if [[ "$main_pid" =~ ^[1-9][0-9]*$ ]] && [ "$gateway_pid" = "$main_pid" ] && \
          _user_systemctl is-active --quiet hermes-gateway.service; then

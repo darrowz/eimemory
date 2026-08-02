@@ -2560,6 +2560,8 @@ def test_hermes_restart_tolerates_nonzero_graceful_stop_and_starts_fresh_process
     assert "is-active --quiet hermes-gateway.service" in body
     assert 'gateway.pid' in body
     assert 'gateway_pid" = "$main_pid' in body
+    assert 'payload.get("pid", "")' in body
+    assert "value.isdigit()" in body
     assert "managed_singleton_not_ready" in body
 
 
