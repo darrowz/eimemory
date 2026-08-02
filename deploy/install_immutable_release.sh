@@ -1078,6 +1078,9 @@ _install_hermes_integration() {
   _install_as_service_user 0644 \
     "$metadata_release/deploy/systemd/hermes-gateway-eimemory.conf" \
     "$USER_SYSTEMD_DIR/hermes-gateway.service.d/91-eimemory-hermes.conf"
+  _install_as_service_user 0755 \
+    "$metadata_release/deploy/systemd/hermes-gateway-eimemory.sh" \
+    "$USER_SYSTEMD_DIR/hermes-gateway-eimemory.sh"
 }
 
 _refresh_current_runtime_metadata() {
@@ -1181,11 +1184,22 @@ _restart_hermes_gateway() {
     _user_systemctl stop hermes-gateway.service >/dev/null 2>&1 || true
     _user_systemctl reset-failed hermes-gateway.service >/dev/null 2>&1 || true
     _user_systemctl start hermes-gateway.service
-    sleep 2
-    if ! _user_systemctl is-active --quiet hermes-gateway.service; then
-      echo "hermes_gateway_restart=failed inactive_after_start" >&2
-      return 2
-    fi
+    local attempt main_pid gateway_pid
+    for attempt in $(seq 1 60); do
+      main_pid="$(_user_systemctl show hermes-gateway.service --property=MainPID --value)"
+      gateway_pid=""
+      if [ -r "$HERMES_HOME_DIR/gateway.pid" ]; then
+        IFS= read -r gateway_pid <"$HERMES_HOME_DIR/gateway.pid" || gateway_pid=""
+      fi
+      if [[ "$main_pid" =~ ^[1-9][0-9]*$ ]] && [ "$gateway_pid" = "$main_pid" ] && \
+         _user_systemctl is-active --quiet hermes-gateway.service; then
+        echo "hermes_gateway_restart=ready managed_singleton=1"
+        return
+      fi
+      sleep 1
+    done
+    echo "hermes_gateway_restart=failed managed_singleton_not_ready" >&2
+    return 2
   fi
 }
 

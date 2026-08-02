@@ -849,6 +849,9 @@ def test_hermes_deploy_is_release_bound_enabled_and_real_replay_verified() -> No
         encoding="utf-8"
     )
     dropin = Path("deploy/systemd/hermes-gateway-eimemory.conf").read_text(encoding="utf-8")
+    gateway_wrapper = Path("deploy/systemd/hermes-gateway-eimemory.sh").read_text(
+        encoding="utf-8"
+    )
 
     for required in (
         "ensure_attestation_profile.py",
@@ -881,6 +884,11 @@ def test_hermes_deploy_is_release_bound_enabled_and_real_replay_verified() -> No
     assert "EIMEMORY_ATTESTATION_HOST_PROFILE=operator-separated-v1" in dropin
     assert "EIMEMORY_HERMES_ATTESTATION_TOKEN_FILE=/etc/eimemory/hermes-attestation.token" in dropin
     assert "PYTHONPATH=/opt/eimemory/current" in dropin
+    assert "ExecStart=%h/.config/systemd/user/hermes-gateway-eimemory.sh" in dropin
+    assert "gateway run --replace" in gateway_wrapper
+    assert "EIMEMORY_RPC_AUTH_TOKEN=*" in gateway_wrapper
+    assert 'export EIMEMORY_RPC_TOKEN="$rpc_token"' in gateway_wrapper
+    assert "hermes-gateway-eimemory.sh" in installer
 
 
 def test_hermes_deploy_replay_retries_only_transport_failures(monkeypatch) -> None:
@@ -2550,6 +2558,9 @@ def test_hermes_restart_tolerates_nonzero_graceful_stop_and_starts_fresh_process
     assert "start hermes-gateway.service" in body
     assert "restart hermes-gateway.service" not in body
     assert "is-active --quiet hermes-gateway.service" in body
+    assert 'gateway.pid' in body
+    assert 'gateway_pid" = "$main_pid' in body
+    assert "managed_singleton_not_ready" in body
 
 
 def test_immutable_release_installer_commits_after_technical_health_before_business_validation() -> None:
