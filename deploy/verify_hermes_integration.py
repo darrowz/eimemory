@@ -26,6 +26,7 @@ def verify_hermes_integration(
     commit: str,
     pytest_target: str,
     hermes_agent_root: str | Path | None = None,
+    test_python: str | Path | None = None,
 ) -> dict:
     repo = Path(repo_root).expanduser().resolve(strict=True)
     agent_root = Path(
@@ -109,15 +110,18 @@ def verify_hermes_integration(
             turn_id=turn_id,
         )
 
+        test_interpreter = Path(test_python or repo / ".venv" / "bin" / "python").resolve(
+            strict=True
+        )
         command = f"python -m pytest {pytest_target} -q"
-        test_python = repo / ".venv" / "bin" / "python"
-        if not test_python.is_file():
-            raise RuntimeError("release test interpreter is missing")
+        test_env = dict(os.environ)
+        test_env["PYTHONPATH"] = str(repo)
+        test_env["PATH"] = str(test_interpreter.parent) + os.pathsep + test_env.get("PATH", "")
         started = time.monotonic()
         completed = subprocess.run(
-            [str(test_python), "-m", "pytest", pytest_target, "-q"],
+            ["python", "-m", "pytest", pytest_target, "-q"],
             cwd=repo,
-            env=dict(os.environ),
+            env=test_env,
             text=True,
             capture_output=True,
             timeout=120,
@@ -187,12 +191,14 @@ def main() -> int:
     parser.add_argument("--commit", required=True)
     parser.add_argument("--pytest-target", default="tests/test_hermes_plugin_package.py")
     parser.add_argument("--hermes-agent-root", default="")
+    parser.add_argument("--test-python", default="")
     args = parser.parse_args()
     report = verify_hermes_integration(
         repo_root=args.repo_root,
         commit=args.commit,
         pytest_target=args.pytest_target,
         hermes_agent_root=args.hermes_agent_root or None,
+        test_python=args.test_python or None,
     )
     print(json.dumps(report, ensure_ascii=True, sort_keys=True))
     return 0

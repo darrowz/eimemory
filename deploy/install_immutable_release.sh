@@ -1300,7 +1300,8 @@ print(f"{timeout:g}")
     EIMEMORY_USER_ID="$EIMEMORY_DEPLOY_SCOPE_USER" \
     "$HERMES_PYTHON" -I -B "$target_release/deploy/verify_hermes_integration.py" \
       --repo-root "$target_release" --commit "$target_commit" \
-      --hermes-agent-root "$HERMES_HOME_DIR/hermes-agent"
+      --hermes-agent-root "$HERMES_HOME_DIR/hermes-agent" \
+      --test-python "$REPO_DIR/.venv/bin/python"
   unset rpc_token rpc_url adapter_timeout hermes_runtime_env
 }
 
