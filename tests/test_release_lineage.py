@@ -419,6 +419,57 @@ def test_openclaw_deploy_surface_marks_channel_domain_changed(tmp_path: Path) ->
         runtime.close()
 
 
+@pytest.mark.parametrize(
+    ("path", "expected_domains"),
+    [
+        (
+            "deploy/systemd/hermes-gateway-eimemory.sh",
+            {"deployment.runtime"},
+        ),
+        (
+            "integrations/hermes/eimemory/__init__.py",
+            {"memory.recall", "deployment.runtime"},
+        ),
+        (
+            "integrations/hermes/eimemory_hook/__init__.py",
+            {"memory.governance", "deployment.runtime"},
+        ),
+    ],
+)
+def test_hermes_release_surface_is_fully_classified(
+    tmp_path: Path,
+    path: str,
+    expected_domains: set[str],
+) -> None:
+    repo = _repo(tmp_path)
+    prior_commit = _commit(repo, path, "prior\n", "prior")
+    current_commit = _commit(repo, path, "changed\n", "current")
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    try:
+        _receipt(runtime, SCOPE, prior_commit, "1.0.0")
+        current = _receipt(runtime, SCOPE, current_commit, "1.0.1")
+        runtime._test_runtime_commit = current.commit
+
+        report = record_release_lineage(
+            runtime,
+            scope=SCOPE,
+            repo_root=repo,
+            current_release=current,
+        )
+
+        changed_domains = {
+            domain
+            for domain, state in report["domains"].items()
+            if state["changed"] is True
+        }
+        assert changed_domains == expected_domains
+        assert report["unknown_production_paths"] == []
+        for domain in expected_domains:
+            assert report["domains"][domain]["changed_paths"] == [path]
+    finally:
+        runtime.close()
+
+
 def test_version_only_project_metadata_leaves_capability_domains_unchanged(
     tmp_path: Path,
 ) -> None:

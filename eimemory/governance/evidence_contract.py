@@ -148,11 +148,14 @@ def current_release_identity(
     commit = _runtime_commit(runtime)
     if not commit:
         return None
+    store = getattr(runtime, "store", None)
     latest_exact = getattr(
-        getattr(runtime, "store", None),
+        store,
         "latest_record_by_meta_value_exact_scope",
         None,
     )
+    if hasattr(store, "sqlite") and getattr(store, "sqlite") is None:
+        latest_exact = None
     if callable(latest_exact):
         for meta_key, meta_value in (
             ("commit_sha", commit),

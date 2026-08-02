@@ -39,6 +39,7 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
     "memory.recall": (
         "eimemory/api/memory.py",
         "eimemory/embeddings",
+        "integrations/hermes/eimemory/__init__.py",
         "eimemory/recall",
         "eimemory/retrieval",
         "eimemory/scoring",
@@ -50,6 +51,7 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         "eimemory/evaluation",
         "eimemory/experience",
         "eimemory/governance",
+        "integrations/hermes/eimemory_hook/__init__.py",
     ),
     "channel.openclaw": (
         "deploy/openclaw",
@@ -77,14 +79,19 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
     "deployment.runtime": (
         "deploy/capture_prior_health",
         "deploy/ensure_evidence_receipt",
+        "deploy/install_hermes_integration.py",
         "deploy/install_immutable_release.sh",
         "deploy/record_deployment_receipt.py",
         "deploy/record_release_lineage.py",
         "deploy/systemd/eimemory-",
+        "deploy/systemd/hermes-",
+        "deploy/verify_hermes_integration.py",
         "deploy/verify_release_health.py",
         "eimemory/adapters/eibrain/rpc_server.py",
         "eimemory/governance/deployment_receipt.py",
         "eimemory/runtime_identity.py",
+        "integrations/hermes/eimemory/__init__.py",
+        "integrations/hermes/eimemory_hook/__init__.py",
     ),
 }
 IGNORED_PATH_PREFIXES = ("docs/", "tests/", ".github/")
