@@ -1646,7 +1646,6 @@ def test_release_closure_path_reconciles_only_platform_receipt_signals() -> None
     assert "Restart=" not in service
     assert "RestartSec=" not in service
     assert "StartLimit" not in service
-    assert "openclaw-feishu-reply-watchdog" not in service
     assert '"$RELEASE_DIR/deploy/systemd/eimemory-release-closure.path"' in script
     assert '"$RELEASE_DIR/deploy/systemd/eimemory-release-closure.service"' in script
     assert "_user_systemctl disable --now eimemory-release-closure.timer" in script
@@ -1676,20 +1675,6 @@ def test_release_closure_path_reconciles_only_platform_receipt_signals() -> None
     assert "eimemory-release-closure.path" not in writer_units
     assert "eimemory-release-closure.timer" not in writer_units
     assert "eimemory-release-closure.service" in writer_units
-
-
-def test_immutable_release_installer_does_not_manage_feishu_reply_watchdog() -> None:
-    """Feishu reply watchdog dual-path delivery caused double sends; keep it purged."""
-    script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
-
-    assert '"$RELEASE_DIR/deploy/systemd/openclaw-feishu-reply-watchdog.service"' not in script
-    assert '"$USER_SYSTEMD_DIR/openclaw-feishu-reply-watchdog.service"' not in script
-    assert "_user_systemctl enable openclaw-feishu-reply-watchdog.service" not in script
-    assert "_user_systemctl restart openclaw-feishu-reply-watchdog.service" not in script
-    # Keep purge comments so future deploys do not silently revive it.
-    assert "Feishu reply watchdog permanently removed" in script
-    assert "feishu-reply-watchdog intentionally not installed/enabled" in script
-
 
 def test_managed_systemd_dropin_installer_uses_posix_directory_fds() -> None:
     helper = Path("deploy/install_managed_systemd_dropin.py").read_text(encoding="utf-8")

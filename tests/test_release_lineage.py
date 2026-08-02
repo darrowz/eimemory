@@ -1371,7 +1371,6 @@ def test_known_release_support_surfaces_do_not_taint_memory_recall(
         "deploy/verify_release_health.py": "PRIOR = True\n",
         "eimemory/adapters/eibrain/rpc_server.py": "HEALTH = 'prior'\n",
         "eimemory/api/runtime.py": "GOVERNANCE = 'prior'\n",
-        "eimemory/ops/openclaw_feishu_reply_watchdog.py": "WATCHDOG = 'prior'\n",
         "integrations/codex/eimemory/.codex-plugin/plugin.json": (
             '{"name":"eimemory","version":"1.0.0"}\n'
         ),
@@ -1393,7 +1392,6 @@ def test_known_release_support_surfaces_do_not_taint_memory_recall(
         "deploy/verify_release_health.py": "CURRENT = True\n",
         "eimemory/adapters/eibrain/rpc_server.py": "HEALTH = 'current'\n",
         "eimemory/api/runtime.py": "GOVERNANCE = 'current'\n",
-        "eimemory/ops/openclaw_feishu_reply_watchdog.py": "WATCHDOG = 'current'\n",
         "integrations/codex/eimemory/.codex-plugin/plugin.json": (
             '{"name":"eimemory","version":"1.0.1"}\n'
         ),

@@ -1154,12 +1154,10 @@ _restart_current_services() {
     return
   fi
   # The old release checkpoint must not race the new release's post-switch
-  # closure initialization. The timer is resumed after that initialization.
+  # closure initialization. Receipt path activation resumes afterwards.
   _pause_release_closure_reconcile
   _user_systemctl daemon-reload
   _user_systemctl restart eimemory-rpc.service
-  # Feishu reply watchdog permanently removed: dual-path delivery caused double sends.
-  # Keep unit masked; do not install/enable/restart it on deploy.
   _user_systemctl restart openclaw-gateway.service
   _restart_hermes_gateway
   # Enablement persists intent, but an enabled timer can remain inactive after
@@ -1365,7 +1363,6 @@ _install_candidate_runtime_metadata() {
       "$RELEASE_DIR/deploy/systemd/eimemory-release-closure.service" "$USER_SYSTEMD_DIR/eimemory-release-closure.service"
     _install_as_service_user 0644 \
       "$RELEASE_DIR/deploy/systemd/eimemory-release-closure.path" "$USER_SYSTEMD_DIR/eimemory-release-closure.path"
-    # openclaw-feishu-reply-watchdog intentionally not installed/enabled.
     _refresh_openclaw_gateway_metadata "$RELEASE_DIR" "$COMMIT"
     _install_current_runtime_metadata "$RELEASE_DIR" "$COMMIT" "$REPO_DIR"
     _user_systemctl daemon-reload

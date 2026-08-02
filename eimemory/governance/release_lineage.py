@@ -63,7 +63,6 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         "eimemory/adapters/openclaw",
         "eimemory/adapters/runtime",
         "eimemory/ei_bridge",
-        "eimemory/ops/openclaw_feishu_reply_watchdog.py",
         "eimemory/ops/openclaw_loop.py",
         "integrations/openclaw",
     ),
