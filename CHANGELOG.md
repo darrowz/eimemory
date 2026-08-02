@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Planned
 - Multi-agent memory coordination
 
+## [1.9.129] - 2026-08-02
+
+### Changed
+
+- Reconcile the canonical source checkout with the independently released runtime and nightly maintenance work, preserving the final streamed identity implementation.
+
 ## [1.9.128] - 2026-08-02
 
 ### Fixed
