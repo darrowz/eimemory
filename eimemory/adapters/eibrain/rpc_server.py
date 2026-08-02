@@ -79,6 +79,7 @@ def _send_json_response(handler: BaseHTTPRequestHandler, status_code: int, paylo
 
 
 class _RPCHandler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
     bridge: EIBrainRPCBridge
     runtime: Runtime
     listen_host: str
@@ -207,6 +208,7 @@ class _RPCHandler(BaseHTTPRequestHandler):
 
 
 class _HealthOnlyHandler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
     runtime: Runtime
     listen_host: str
     listen_port: int

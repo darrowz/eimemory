@@ -4,6 +4,9 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
+CPUWeight=20
+IOWeight=20
+Nice=10
 Environment=PYTHONDONTWRITEBYTECODE=1
 Environment=PYTHONPYCACHEPREFIX=/var/lib/eimemory/.pycache/runtime
 Type=oneshot

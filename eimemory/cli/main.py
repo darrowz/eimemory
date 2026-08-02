@@ -87,6 +87,17 @@ def _print_report_exit(report: dict[str, Any]) -> int:
     return 0 if report.get("ok") is not False else 1
 
 
+def _nightly_cli_summary(report: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "schema": "eimemory.nightly.cli_summary.v1",
+        "ok": bool(report.get("ok")),
+        "active_rule_count": int(report.get("active_rule_count") or 0),
+        "promotion_candidate_count": int(report.get("promotion_candidate_count") or 0),
+        "memory_count": int(report.get("memory_count") or 0),
+        "supervisor_summary": dict(report.get("supervisor_summary") or {}),
+    }
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="eimemory")
     sub = parser.add_subparsers(dest="command")
@@ -1946,8 +1957,10 @@ def main(argv: list[str] | None = None) -> int:
             runtime,
             scope=scope,
         )
-        report["identity_repair"] = repair_hongtu_identity(runtime, apply=True)
-        print(json.dumps(report, ensure_ascii=False, indent=2))
+        output = _nightly_cli_summary(report)
+        del report
+        output["identity_repair"] = repair_hongtu_identity(runtime, apply=True)
+        print(json.dumps(output, ensure_ascii=False, indent=2))
         return 0
     if parsed.command == "quality":
         if parsed.quality_command == "stats":

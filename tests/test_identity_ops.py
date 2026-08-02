@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import gc
 import json
+from types import SimpleNamespace
 
 from eimemory.api.runtime import Runtime
 from eimemory.cli.main import main as cli_main
@@ -140,6 +142,79 @@ def test_cli_nightly_normalizes_default_scope_and_repairs_identity(tmp_path, mon
     assert all(record.scope.agent_id == "hongtu" for record in records)
     assert all(record.scope.workspace_id == "embodied" for record in records)
     assert all(record.meta.get("identity") == "hongtu" for record in records)
+
+
+def test_identity_repair_releases_each_page_before_loading_the_next() -> None:
+    class LightweightRecord:
+        live_count = 0
+
+        def __init__(self, index: int) -> None:
+            type(self).live_count += 1
+            self.record_id = f"record-{index}"
+            self.kind = "memory"
+            self.title = f"Record {index}"
+            self.summary = "bounded identity scan"
+            self.detail = ""
+            self.content = {}
+            self.source = "test"
+            self.scope = ScopeRef(agent_id="hongtu", workspace_id="embodied")
+            self.meta = {"identity": "hongtu"}
+
+        def __del__(self) -> None:
+            type(self).live_count -= 1
+
+    class PagingStore:
+        def __init__(self) -> None:
+            self.max_live_before_page = 0
+
+        def list_records(self, *, limit: int, offset: int) -> list[LightweightRecord]:
+            gc.collect()
+            self.max_live_before_page = max(self.max_live_before_page, LightweightRecord.live_count)
+            if offset >= 1200:
+                return []
+            return [LightweightRecord(index) for index in range(offset, min(offset + limit, 1200))]
+
+        def rewrite(self, *_args, **_kwargs) -> None:
+            raise AssertionError("canonical records must not be rewritten")
+
+    store = PagingStore()
+    report = repair_hongtu_identity(SimpleNamespace(store=store), apply=True)
+
+    assert report["total_records"] == 1200
+    assert report["repair_candidate_count"] == 0
+    assert store.max_live_before_page <= 1
+
+
+def test_cli_nightly_emits_bounded_machine_readable_summary(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path / "runtime"))
+    monkeypatch.setattr(
+        "eimemory.cli.main.run_nightly_jobs",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "active_rule_count": 3,
+            "promotion_candidate_count": 2,
+            "memory_count": 100,
+            "supervisor_summary": {"command": "nightly", "ok": True},
+            "large_internal_report": ["must-not-be-rendered"] * 10_000,
+        },
+    )
+    monkeypatch.setattr(
+        "eimemory.cli.main.repair_hongtu_identity",
+        lambda *_args, **_kwargs: {"ok": True, "candidate_count": 0, "repaired_count": 0},
+    )
+
+    assert cli_main(["nightly"]) == 0
+    output = json.loads(capsys.readouterr().out)
+
+    assert output == {
+        "schema": "eimemory.nightly.cli_summary.v1",
+        "ok": True,
+        "active_rule_count": 3,
+        "promotion_candidate_count": 2,
+        "memory_count": 100,
+        "supervisor_summary": {"command": "nightly", "ok": True},
+        "identity_repair": {"ok": True, "candidate_count": 0, "repaired_count": 0},
+    }
 
 
 def test_identity_repair_rewrites_hongtu_source_records_from_orphan_scopes(tmp_path) -> None:
