@@ -1460,7 +1460,7 @@ class AgentRuntimeMemoryService:
             has_shell_control = re.search(r"[\r\n;|`&]|\$\(", control_view) is not None
             wrapped_test_tool = not has_shell_control and re.match(
                 r"^\s*(?:"
-                r"python(?:\.exe)?\s+-m\s+pytest|pytest|cargo\s+test|npm\s+test|"
+                r"python(?:\.exe)?(?:\s+-B)?\s+-m\s+pytest|pytest|cargo\s+test|npm\s+test|"
                 r"rtk(?:\.exe)?\s+pytest|&\s+['\"][^'\"]*rtk(?:\.exe)?['\"]\s+pytest"
                 r")(?:\s|$)",
                 command,

@@ -12,7 +12,10 @@ import uuid
 
 def _rpc_result(raw: str, *, operation: str) -> dict:
     payload = json.loads(raw)
-    if payload.get("ok") is not True or not isinstance(payload.get("result"), dict):
+    if payload.get("ok") is not True:
+        failure_kind = "transport" if payload.get("bypassed") is True else "operation"
+        raise RuntimeError(f"{operation} RPC {failure_kind} failed")
+    if not isinstance(payload.get("result"), dict):
         raise RuntimeError(f"{operation} RPC transport failed")
     result = payload["result"]
     if result.get("ok") is not True:
@@ -134,14 +137,15 @@ def verify_hermes_integration(
         test_interpreter = Path(test_python or repo / ".venv" / "bin" / "python").expanduser()
         if not test_interpreter.is_file():
             raise RuntimeError("trusted pytest interpreter is missing")
-        command = f"{test_interpreter} -B -m pytest -p no:cacheprovider {pytest_target} -q"
+        command = f"python -B -m pytest -p no:cacheprovider {pytest_target} -q"
         test_env = dict(os.environ)
         test_env["PYTHONPATH"] = str(repo)
         test_env["PYTHONDONTWRITEBYTECODE"] = "1"
+        test_env["PATH"] = str(test_interpreter.parent) + os.pathsep + test_env.get("PATH", "")
         started = time.monotonic()
         completed = subprocess.run(
             [
-                str(test_interpreter),
+                "python",
                 "-B",
                 "-m",
                 "pytest",

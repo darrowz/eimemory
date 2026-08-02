@@ -874,8 +874,9 @@ def test_hermes_deploy_is_release_bound_enabled_and_real_replay_verified() -> No
     assert '--hermes-agent-root "$HERMES_HOME_DIR/hermes-agent"' in installer
     assert '--test-python "$REPO_DIR/.venv/bin/python"' in installer
     assert 'test_env["PYTHONDONTWRITEBYTECODE"] = "1"' in integration_verifier
-    assert 'str(test_interpreter),\n                "-B",' in integration_verifier
-    assert '["python", "-m", "pytest"' not in integration_verifier
+    assert 'test_env["PATH"] = str(test_interpreter.parent)' in integration_verifier
+    assert '"python",\n                "-B",' in integration_verifier
+    assert 'command = f"python -B -m pytest' in integration_verifier
     assert "-p no:cacheprovider" in integration_verifier
     assert "EIMEMORY_ATTESTATION_HOST_PROFILE=operator-separated-v1" in dropin
     assert "EIMEMORY_HERMES_ATTESTATION_TOKEN_FILE=/etc/eimemory/hermes-attestation.token" in dropin
@@ -913,6 +914,11 @@ def test_hermes_deploy_replay_retries_only_transport_failures(monkeypatch) -> No
     with pytest.raises(RuntimeError, match="RPC operation failed"):
         _rpc_tool_result(business_failure, "tool", {}, operation="test")
     assert business_failure.calls == 1
+
+    rejected_call = Provider([{"ok": False, "error": "unverified turn"}])
+    with pytest.raises(RuntimeError, match="RPC operation failed"):
+        _rpc_tool_result(rejected_call, "tool", {}, operation="test")
+    assert rejected_call.calls == 1
 
 
 def test_hermes_attestation_profile_provisioner_is_private_and_idempotent(tmp_path) -> None:

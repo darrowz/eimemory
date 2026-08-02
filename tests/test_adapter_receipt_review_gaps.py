@@ -626,6 +626,12 @@ def test_shell_wrapper_requires_an_anchored_test_command(monkeypatch, tmp_path: 
             tool_name="shell_command",
             tool_input={"command": "rtk pytest -- tests/test_unit.py -q"},
         )
+        no_bytecode = _attest(
+            service,
+            call_id="test-shell-no-bytecode",
+            tool_name="terminal",
+            tool_input={"command": "python -B -m pytest -p no:cacheprovider tests/test_unit.py -q"},
+        )
         coverage_failure = _attest(
             service,
             call_id="test-shell-coverage-failure",
@@ -649,6 +655,8 @@ def test_shell_wrapper_requires_an_anchored_test_command(monkeypatch, tmp_path: 
     assert generic["receipt"]["passed"] is False
     assert verified["receipt"]["passed"] is True
     assert verified["receipt"]["verification_policy_id"] == "test_command.exit_zero.positive_count.v1"
+    assert no_bytecode["receipt"]["passed"] is True
+    assert no_bytecode["receipt"]["verification_policy_id"] == "test_command.exit_zero.positive_count.v1"
     assert coverage_failure["receipt"]["passed"] is False
     assert plugin_error["receipt"]["passed"] is False
 
