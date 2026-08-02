@@ -882,6 +882,39 @@ def test_hermes_deploy_is_release_bound_enabled_and_real_replay_verified() -> No
     assert "PYTHONPATH=/opt/eimemory/current" in dropin
 
 
+def test_hermes_deploy_replay_retries_only_transport_failures(monkeypatch) -> None:
+    from deploy.verify_hermes_integration import _rpc_tool_result
+
+    class Provider:
+        def __init__(self, responses: list[dict]) -> None:
+            self.responses = list(responses)
+            self.calls = 0
+
+        def handle_tool_call(self, _name: str, _args: dict) -> str:
+            self.calls += 1
+            return json.dumps(self.responses.pop(0))
+
+    sleeps: list[float] = []
+    monkeypatch.setattr("deploy.verify_hermes_integration.time.sleep", sleeps.append)
+    transient = Provider(
+        [
+            {"ok": False, "bypassed": True, "result": None},
+            {"ok": True, "result": {"ok": True, "value": "accepted"}},
+        ]
+    )
+
+    result = _rpc_tool_result(transient, "tool", {}, operation="test")
+
+    assert result == {"ok": True, "value": "accepted"}
+    assert transient.calls == 2
+    assert sleeps == [0.25]
+
+    business_failure = Provider([{"ok": True, "result": {"ok": False}}])
+    with pytest.raises(RuntimeError, match="RPC operation failed"):
+        _rpc_tool_result(business_failure, "tool", {}, operation="test")
+    assert business_failure.calls == 1
+
+
 def test_hermes_attestation_profile_provisioner_is_private_and_idempotent(tmp_path) -> None:
     from deploy.ensure_attestation_profile import ensure_hermes_attestation_profile
     from eimemory.adapters.runtime.host_auth import is_strong_producer_token

@@ -20,6 +20,29 @@ def _rpc_result(raw: str, *, operation: str) -> dict:
     return result
 
 
+def _rpc_tool_result(
+    provider,
+    tool_name: str,
+    args: dict,
+    *,
+    operation: str,
+    attempts: int = 3,
+) -> dict:
+    if attempts < 1:
+        raise ValueError("attempts must be positive")
+    for attempt in range(1, attempts + 1):
+        try:
+            return _rpc_result(
+                provider.handle_tool_call(tool_name, args),
+                operation=operation,
+            )
+        except RuntimeError as exc:
+            if "RPC transport failed" not in str(exc) or attempt >= attempts:
+                raise
+            time.sleep(0.25 * attempt)
+    raise AssertionError("unreachable")
+
+
 def verify_hermes_integration(
     *,
     repo_root: str | Path,
@@ -67,32 +90,30 @@ def verify_hermes_integration(
         if get_hermes_provider(session_id) is not provider:
             raise RuntimeError("Hermes hook registry is not bound to the MemoryManager provider")
 
-        status = _rpc_result(provider.handle_tool_call("eimemory_status", {}), operation="status")
+        status = _rpc_tool_result(provider, "eimemory_status", {}, operation="status")
         if status.get("channel") != "hermes" or status.get("authority_mode") != "per_channel":
             raise RuntimeError("Hermes channel authority is not active")
         if status.get("attestation_available") is not True:
             raise RuntimeError("Hermes operator-separated attestation is unavailable")
 
         memory_text = f"Hermes release {commit[:12]} passed its official provider replay."
-        remembered = _rpc_result(
-            provider.handle_tool_call(
-                "eimemory_remember",
-                {
-                    "text": memory_text,
-                    "event_id": f"hermes-release-replay:{commit}",
-                    "memory_type": "deployment_evidence",
-                    "title": "Hermes deployment replay",
-                },
-            ),
+        remembered = _rpc_tool_result(
+            provider,
+            "eimemory_remember",
+            {
+                "text": memory_text,
+                "event_id": f"hermes-release-replay:{commit}",
+                "memory_type": "deployment_evidence",
+                "title": "Hermes deployment replay",
+            },
             operation="remember",
         )
         if remembered.get("authoritative") is not True:
             raise RuntimeError("Hermes memory write was not authoritative")
-        recalled = _rpc_result(
-            provider.handle_tool_call(
-                "eimemory_recall",
-                {"query": f"Hermes release {commit[:12]} official provider replay", "limit": 8},
-            ),
+        recalled = _rpc_tool_result(
+            provider,
+            "eimemory_recall",
+            {"query": f"Hermes release {commit[:12]} official provider replay", "limit": 8},
             operation="recall",
         )
 
@@ -158,11 +179,10 @@ def verify_hermes_integration(
             duration_ms=duration_ms,
             status="success",
         )
-        terminal = _rpc_result(
-            provider.handle_tool_call(
-                "eimemory_verify_outcome",
-                {"result": "Official Hermes deployment replay passed."},
-            ),
+        terminal = _rpc_tool_result(
+            provider,
+            "eimemory_verify_outcome",
+            {"result": "Official Hermes deployment replay passed."},
             operation="verified outcome",
         )
         invoke_hook(
