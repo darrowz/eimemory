@@ -1174,7 +1174,18 @@ _restart_hermes_gateway() {
   fi
   if _user_systemctl cat hermes-gateway.service >/dev/null 2>&1; then
     _user_systemctl daemon-reload
-    _user_systemctl restart hermes-gateway.service
+    # Hermes currently reports a successful websocket close as exit status 1
+    # during SIGTERM. A direct systemd restart can therefore finish the stop
+    # job without starting the replacement process. Treat only that deliberate
+    # stop as non-fatal, then start and verify a fresh process explicitly.
+    _user_systemctl stop hermes-gateway.service >/dev/null 2>&1 || true
+    _user_systemctl reset-failed hermes-gateway.service >/dev/null 2>&1 || true
+    _user_systemctl start hermes-gateway.service
+    sleep 2
+    if ! _user_systemctl is-active --quiet hermes-gateway.service; then
+      echo "hermes_gateway_restart=failed inactive_after_start" >&2
+      return 2
+    fi
   fi
 }
 
@@ -1783,8 +1794,11 @@ if { [ -e "$CURRENT_LINK" ] || [ -L "$CURRENT_LINK" ] || [ -d "$CURRENT_LINK" ];
   _install_hermes_integration "$RELEASE_DIR" "$COMMIT" "$RELEASE_DIR"
   _restart_hermes_gateway
   _verify_effective_runtime_metadata "$COMMIT"
-  _verify_release_health "$RELEASE_DIR" "$COMMIT"
   _verify_hermes_integration "$RELEASE_DIR" "$COMMIT"
+  # The official replay imports release-bound Hermes plugins. Verify the
+  # immutable tree afterwards so bytecode or other runtime artifacts cannot
+  # appear after the technical release check and before the receipt.
+  _verify_release_health "$RELEASE_DIR" "$COMMIT"
   echo "release=$RELEASE_DIR"
   echo "current=$CURRENT_LINK"
   echo "commit=$COMMIT"
@@ -1946,8 +1960,8 @@ if [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ] && command -v systemctl >/dev/null 2
   _inspect_openclaw_plugin_runtime
 fi
 _maybe_fail_stage gateway_restart
-_verify_release_health "$RELEASE_DIR" "$COMMIT"
 _verify_hermes_integration "$RELEASE_DIR" "$COMMIT"
+_verify_release_health "$RELEASE_DIR" "$COMMIT"
 _maybe_fail_stage health
 _maybe_fail_stage storage_writer_restart
 _run_openclaw_loop_deploy_verify "$RELEASE_DIR"

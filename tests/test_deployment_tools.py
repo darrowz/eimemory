@@ -873,8 +873,9 @@ def test_hermes_deploy_is_release_bound_enabled_and_real_replay_verified() -> No
     assert '--repo-root "$target_release"' in installer
     assert '--hermes-agent-root "$HERMES_HOME_DIR/hermes-agent"' in installer
     assert '--test-python "$REPO_DIR/.venv/bin/python"' in installer
-    assert 'test_env["PATH"] = str(test_interpreter.parent)' in integration_verifier
-    assert "executable=str(test_interpreter)" not in integration_verifier
+    assert 'test_env["PYTHONDONTWRITEBYTECODE"] = "1"' in integration_verifier
+    assert 'str(test_interpreter),\n                "-B",' in integration_verifier
+    assert '["python", "-m", "pytest"' not in integration_verifier
     assert "-p no:cacheprovider" in integration_verifier
     assert "EIMEMORY_ATTESTATION_HOST_PROFILE=operator-separated-v1" in dropin
     assert "EIMEMORY_HERMES_ATTESTATION_TOKEN_FILE=/etc/eimemory/hermes-attestation.token" in dropin
@@ -2501,20 +2502,32 @@ def test_immutable_release_installer_restarts_runtimes_after_current_switch() ->
     assert current_switch < metadata < captured_restart < default_restart
 
 
+def test_hermes_restart_tolerates_nonzero_graceful_stop_and_starts_fresh_process() -> None:
+    script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
+    body = script.split("_restart_hermes_gateway() {", 1)[1].split("\n}", 1)[0]
+
+    assert "stop hermes-gateway.service >/dev/null 2>&1 || true" in body
+    assert "reset-failed hermes-gateway.service" in body
+    assert "start hermes-gateway.service" in body
+    assert "restart hermes-gateway.service" not in body
+    assert "is-active --quiet hermes-gateway.service" in body
+
+
 def test_immutable_release_installer_commits_after_technical_health_before_business_validation() -> None:
     script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
 
     switch = script.rindex('mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"')
     l5_observer = script.rindex("_observe_pre_switch_l5\n", 0, switch)
     storage_prepare = script.rindex("_prepare_storage_for_release\n", 0, switch)
-    health = script.index('_verify_release_health "$RELEASE_DIR" "$COMMIT"', switch)
+    hermes_replay = script.index('_verify_hermes_integration "$RELEASE_DIR" "$COMMIT"', switch)
+    health = script.index('_verify_release_health "$RELEASE_DIR" "$COMMIT"', hermes_replay)
     committed = script.index("COMMITTED=1", switch)
     validation = script.index("_run_post_deploy_validation", committed)
 
     assert "PREVIOUS_CURRENT" in script
     assert "_rollback_current_release" in script
     assert "verify_release_health.py" in script
-    assert l5_observer < storage_prepare < switch < health < committed < validation
+    assert l5_observer < storage_prepare < switch < hermes_replay < health < committed < validation
     assert "learn release-closure" in script
     assert "learn live-acceptance" not in script
     assert 'GOVERNANCE_ENV_FILE="${EIMEMORY_GOVERNANCE_ENV_FILE:-$EIMEMORY_CONFIG_DIR/governance.env}"' in script
