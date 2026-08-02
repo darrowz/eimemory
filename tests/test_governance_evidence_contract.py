@@ -146,6 +146,41 @@ def test_current_l5_release_selection_does_not_bind_imported_package_version(
     )
 
 
+def test_current_release_identity_uses_exact_receipt_after_record_churn(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    receipt = runtime.store.append(_deployment_receipt())
+    runtime.store.append(
+        RecordEnvelope.create(
+            kind="promotion_request",
+            title="Newer unrelated promotion",
+            scope=SCOPE,
+            source="eimemory.governance.noise",
+            status="active",
+            content={"report_type": "unrelated"},
+            meta={"report_type": "unrelated"},
+        )
+    )
+    monkeypatch.setattr(
+        evidence_contract,
+        "_runtime_commit",
+        lambda _runtime: RELEASE.commit,
+    )
+    try:
+        release = current_release_identity(runtime, SCOPE, limit=1)
+    finally:
+        runtime.close()
+
+    assert release == ReleaseIdentity(
+        commit=RELEASE.commit,
+        version=RELEASE.version,
+        receipt_id=receipt.record_id,
+        session_id=receipt.record_id,
+    )
+
+
 def test_verified_real_task_release_identity_is_server_bound_and_current(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     runtime._test_runtime_commit = RELEASE.commit
@@ -243,5 +278,8 @@ def _deployment_receipt() -> RecordEnvelope:
         source="eimemory.deployment_receipt",
         status="deployed",
         content=payload,
-        meta={"report_type": "deployment_receipt"},
+        meta={
+            "report_type": "deployment_receipt",
+            "commit_sha": RELEASE.commit,
+        },
     )

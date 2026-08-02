@@ -1584,8 +1584,12 @@ function updateReplyDeliveryState(update) {
   }
 }
 
-function isDirectFeishuReplyContext(context) {
-  const sessionKey = String(context?.sessionKey || '');
+function replySessionKey(event, context) {
+  return String(context?.sessionKey || event?.sessionKey || '');
+}
+
+function isDirectFeishuReplyContext(event, context) {
+  const sessionKey = replySessionKey(event, context);
   return sessionKey.includes(':feishu:direct:');
 }
 
@@ -1655,6 +1659,38 @@ function latestPendingReplyEntry(state, sessionKey, runId = '', content = '') {
       return exactRun;
     }
   }
+  if (content) {
+    const wanted = canonicalReplyText(content);
+    const exactContent = candidates.find((entry) => canonicalReplyText(entry?.final_text) === wanted)
+      || candidates.find((entry) => canonicalReplyText(entry?.last_sent_content) === wanted);
+    if (exactContent) {
+      return exactContent;
+    }
+  }
+  return candidates
+    .sort((left, right) => Number(right.received_at_ms || 0) - Number(left.received_at_ms || 0))[0];
+}
+
+function latestPendingReplyEntryForOutbound(state, event, context, content = '') {
+  const sessionKey = replySessionKey(event, context);
+  if (sessionKey.includes(':feishu:direct:')) {
+    const matched = latestPendingReplyEntry(state, sessionKey, '', content);
+    if (matched) {
+      return matched;
+    }
+  }
+  const destination = resolveFeishuConversationId(event, context);
+  if (!destination) {
+    return undefined;
+  }
+  const candidates = Object.values(state.entries || {})
+    .filter((entry) => (
+      String(entry?.session_key || '').includes(':feishu:direct:')
+      && !TERMINAL_REPLY_DELIVERY_STATUSES.has(entry?.status)
+      && [entry?.conversation_id, entry?.sender_id]
+        .map((value) => String(value || '').trim())
+        .includes(destination)
+    ));
   if (content) {
     const wanted = canonicalReplyText(content);
     const exactContent = candidates.find((entry) => canonicalReplyText(entry?.final_text) === wanted)
@@ -1738,7 +1774,7 @@ function resolveFeishuConversationId(event, context) {
 }
 
 function trackReplyInbound(event, context) {
-  if (!isDirectFeishuReplyContext(context)) {
+  if (!isDirectFeishuReplyContext(event, context)) {
     return;
   }
   const inboundMessageId = String(event?.messageId || context?.messageId || '').trim();
@@ -1775,7 +1811,7 @@ function trackReplyInbound(event, context) {
 }
 
 function trackReplyProgress(event, context) {
-  if (!isDirectFeishuReplyContext(context)) {
+  if (!isDirectFeishuReplyContext(event, context)) {
     return;
   }
   const sessionKey = String(context?.sessionKey || event?.sessionKey || '');
@@ -1797,7 +1833,7 @@ function trackReplyProgress(event, context) {
 }
 
 function trackReplyAgentEnd(event, context) {
-  if (!isDirectFeishuReplyContext(context)) {
+  if (!isDirectFeishuReplyContext(event, context)) {
     return;
   }
   const sessionKey = String(context?.sessionKey || event?.sessionKey || '');
@@ -1835,17 +1871,19 @@ function trackReplyAgentEnd(event, context) {
 }
 
 function trackReplyPlatformAccepted(event, context) {
-  if (!isDirectFeishuReplyContext(context)) {
-    return;
-  }
-  const sessionKey = String(context?.sessionKey || event?.sessionKey || '');
-  if (!sessionKey) {
+  const channelId = String(context?.channelId || event?.channelId || '').trim().toLowerCase();
+  if (!isDirectFeishuReplyContext(event, context) && channelId !== 'feishu') {
     return;
   }
   updateReplyDeliveryState((state) => {
     const sentContent = String(event?.content || '');
     const messageId = String(event?.messageId || event?.message_id || '').trim();
-    const entry = latestPendingReplyEntry(state, sessionKey, '', sentContent);
+    const entry = latestPendingReplyEntryForOutbound(
+      state,
+      event,
+      context,
+      sentContent,
+    );
     if (!entry) {
       return;
     }
@@ -1926,7 +1964,7 @@ function messageToolDeliveryReceipt(value, depth = 0) {
 
 function trackReplyMessageToolResult(event, context) {
   if (
-    !isDirectFeishuReplyContext(context)
+    !isDirectFeishuReplyContext(event, context)
     || String(event?.toolName || context?.toolName || '') !== 'message'
     || String(event?.params?.action || '') !== 'send'
     || event?.error

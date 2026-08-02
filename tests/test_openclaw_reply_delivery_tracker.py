@@ -96,6 +96,49 @@ Promise.resolve()
     assert entry["runtime_commit"] == "a" * 40
 
 
+def test_tracker_correlates_official_sessionless_message_sent_by_destination(
+    tmp_path: Path,
+) -> None:
+    state = _run_node(
+        """
+const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
+const handlers = {};
+plugin.register({ on(name, handler) { handlers[name] = handler; } });
+const sessionKey = 'agent:main:feishu:direct:ou_test';
+Promise.resolve()
+  .then(() => handlers.message_received({
+    from: 'ou_test',
+    content: 'verify deployment',
+    messageId: 'om_sessionless_in',
+    sessionKey
+  }, {
+    channelId: 'feishu',
+    conversationId: 'oc_sessionless',
+    sessionKey
+  }))
+  .then(() => handlers.agent_end({
+    success: true,
+    messages: [{ role: 'assistant', content: 'deployment verified' }]
+  }, { sessionKey }))
+  .then(() => handlers.message_sent({
+    to: 'oc_sessionless',
+    content: 'deployment verified',
+    success: true,
+    messageId: 'om_sessionless_out'
+  }, {
+    channelId: 'feishu',
+    conversationId: 'oc_sessionless'
+  }));
+""",
+        tmp_path / "reply-state.json",
+    )
+
+    entry = state["entries"]["om_sessionless_in"]
+    assert entry["status"] == "platform_accepted"
+    assert entry["delivery_message_id"] == "om_sessionless_out"
+    assert entry["runtime_commit"] == "a" * 40
+
+
 def test_tracker_accepts_real_agent_hook_feishu_context(tmp_path: Path) -> None:
     state = _run_node(
         """

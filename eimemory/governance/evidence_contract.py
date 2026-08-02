@@ -148,6 +148,27 @@ def current_release_identity(
     commit = _runtime_commit(runtime)
     if not commit:
         return None
+    latest_exact = getattr(
+        getattr(runtime, "store", None),
+        "latest_record_by_meta_value_exact_scope",
+        None,
+    )
+    if callable(latest_exact):
+        for meta_key, meta_value in (
+            ("commit_sha", commit),
+            ("report_type", "deployment_receipt"),
+        ):
+            record = latest_exact(
+                kind="promotion_request",
+                source="eimemory.deployment_receipt",
+                status="deployed",
+                scope=scope_ref,
+                meta_key=meta_key,
+                meta_value=meta_value,
+            )
+            identity = _verified_receipt_identity(record)
+            if identity is not None and identity.commit == commit:
+                return identity
     records = runtime.store.list_records(
         kinds=["promotion_request"],
         scope=scope_ref,
