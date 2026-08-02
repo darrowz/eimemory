@@ -1407,12 +1407,13 @@ _record_deployment_receipt() {
   if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ]; then
     return
   fi
+  local trusted_prior="${BASELINE_PRIOR_COMMIT:-${PREVIOUS_COMMIT:-}}"
   env EIMEMORY_ROOT="$EIMEMORY_ROOT" EIMEMORY_CONFIG_DIR="$EIMEMORY_CONFIG_DIR" \
     EIMEMORY_EVIDENCE_RECEIPT_ENV_FILE="$EVIDENCE_RECEIPT_ENV_FILE" \
     EIMEMORY_RUNTIME_COMMIT="$COMMIT" \
     "$RELEASE_DIR/.venv/bin/python" -I -B "$REPO_DIR/deploy/record_deployment_receipt.py" \
       --repo-root "$REPO_DIR" --current-link "$CURRENT_LINK" \
-      --health-url "$EIMEMORY_HEALTH_URL" --prior-commit "$PREVIOUS_COMMIT" \
+      --health-url "$EIMEMORY_HEALTH_URL" --prior-commit "$trusted_prior" \
       --deployed-commit "$COMMIT" \
       --scope-agent "$EIMEMORY_DEPLOY_SCOPE_AGENT" \
       --scope-workspace "$EIMEMORY_DEPLOY_SCOPE_WORKSPACE" \
@@ -1476,7 +1477,8 @@ _run_pre_switch_production_recall_bootstrap() {
   if [ "$EIMEMORY_POST_SWITCH_GATES" != "1" ] || [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ]; then
     return
   fi
-  if [[ ! "${PREVIOUS_COMMIT:-}" =~ ^[0-9a-fA-F]{40}$ ]]; then
+  local trusted_prior="${BASELINE_PRIOR_COMMIT:-${PREVIOUS_COMMIT:-}}"
+  if [[ ! "$trusted_prior" =~ ^[0-9a-fA-F]{40}$ ]]; then
     echo "Production recall bootstrap requires the verified prior commit" >&2
     return 2
   fi
@@ -1494,7 +1496,7 @@ _run_pre_switch_production_recall_bootstrap() {
       --env-file "$GOVERNANCE_ENV_FILE" --optional -- \
       "$RELEASE_DIR/.venv/bin/python" -I -B \
         "$RELEASE_DIR/deploy/bootstrap_production_recall.py" \
-        --candidate-commit "$COMMIT" --prior-commit "$PREVIOUS_COMMIT" \
+        --candidate-commit "$COMMIT" --prior-commit "$trusted_prior" \
         --current-link "$CURRENT_LINK" --health-url "$EIMEMORY_HEALTH_URL" \
         --prior-health-snapshot "$PRIOR_HEALTH_SNAPSHOT_FILE" \
         --root "$EIMEMORY_ROOT" \
@@ -1515,16 +1517,18 @@ _observe_pre_switch_l5() {
      [ "${USER_SYSTEMD_ENABLE_SERVICE:-0}" != "1" ]; then
     return 0
   fi
+  local trusted_prior="${BASELINE_PRIOR_COMMIT:-${PREVIOUS_COMMIT:-}}"
   if ! _capture_prior_health_snapshot; then
     echo "l5_pre_switch_bootstrap=error stage=prior_health_capture" >&2
     return 0
   fi
-  if [[ ! "${PREVIOUS_COMMIT:-}" =~ ^[0-9a-fA-F]{40}$ ]]; then
+  if [[ ! "$trusted_prior" =~ ^[0-9a-fA-F]{40}$ ]]; then
     rm -f -- "${PRIOR_HEALTH_SNAPSHOT_FILE:-}"
     PRIOR_HEALTH_SNAPSHOT_FILE=""
     echo "l5_pre_switch_bootstrap=degraded reason=prior_commit_unavailable" >&2
     return 0
   fi
+  BASELINE_PRIOR_COMMIT="$trusted_prior"
   local bootstrap_status=0
   if _run_pre_switch_production_recall_bootstrap; then
     bootstrap_status=0
@@ -1544,6 +1548,7 @@ _run_post_switch_closure() {
     return
   fi
   local closure_output closure_status summary_status
+  local trusted_prior="${BASELINE_PRIOR_COMMIT:-${PREVIOUS_COMMIT:-}}"
   closure_output="$(mktemp "$INSTALL_ROOT/.release-closure-${COMMIT}-XXXXXXXX.json")"
   chmod 0600 "$closure_output"
   if env EIMEMORY_ROOT="$EIMEMORY_ROOT" EIMEMORY_CONFIG_DIR="$EIMEMORY_CONFIG_DIR" \
@@ -1553,7 +1558,7 @@ _run_post_switch_closure() {
       --env-file "$GOVERNANCE_ENV_FILE" --optional -- \
       "$RELEASE_DIR/.venv/bin/eimemory" learn release-closure \
         --repo-root "$REPO_DIR" --current-link "$CURRENT_LINK" \
-        --health-url "$EIMEMORY_HEALTH_URL" --prior-commit "$PREVIOUS_COMMIT" \
+        --health-url "$EIMEMORY_HEALTH_URL" --prior-commit "$trusted_prior" \
         --scope-agent "$EIMEMORY_DEPLOY_SCOPE_AGENT" \
         --scope-workspace "$EIMEMORY_DEPLOY_SCOPE_WORKSPACE" \
         --scope-user "$EIMEMORY_DEPLOY_SCOPE_USER" --json \
@@ -1774,6 +1779,7 @@ _acquire_storage_deploy_lock
 
 PREVIOUS_CURRENT=""
 PREVIOUS_COMMIT=""
+BASELINE_PRIOR_COMMIT=""
 if [ -e "$CURRENT_LINK" ] || [ -L "$CURRENT_LINK" ] || [ -d "$CURRENT_LINK" ]; then
   if ! PREVIOUS_CURRENT="$(realpath -e -- "$CURRENT_LINK" 2>/dev/null)"; then
     echo "Current release link is dangling or unresolvable: $CURRENT_LINK" >&2
@@ -1806,6 +1812,7 @@ if [ -e "$CURRENT_LINK" ] || [ -L "$CURRENT_LINK" ] || [ -d "$CURRENT_LINK" ]; t
   PREVIOUS_CURRENT="$(realpath -e -- "$CURRENT_LINK")"
   PREVIOUS_COMMIT="$(basename "$PREVIOUS_CURRENT")"
 fi
+BASELINE_PRIOR_COMMIT="$(_find_prior_release_commit_for "$COMMIT")"
 
 # Threat boundary: the deployment UID and its same-UID processes are trusted.
 # This transaction rejects pre-existing links, other-UID writes, and partial
@@ -1817,7 +1824,7 @@ if { [ -e "$CURRENT_LINK" ] || [ -L "$CURRENT_LINK" ] || [ -d "$CURRENT_LINK" ];
   "$CURRENT_LINK" "$RELEASE_DIR"; then
   _clean_existing_release_and_validate_source
   if [ "$PREVIOUS_COMMIT" = "$COMMIT" ]; then
-    PREVIOUS_COMMIT="$(_find_prior_release_commit)"
+    BASELINE_PRIOR_COMMIT="$(_find_prior_release_commit)"
   fi
   _provision_hermes_attestation
   _install_hermes_integration "$RELEASE_DIR" "$COMMIT" "$RELEASE_DIR"
@@ -1840,8 +1847,8 @@ if [ -e "$RELEASE_DIR" ]; then
 fi
 
 if [ "$EIMEMORY_POST_SWITCH_GATES" = "1" ] && [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ] && \
-   [[ ! "$PREVIOUS_COMMIT" =~ ^[0-9a-fA-F]{40}$ ]]; then
-  echo "Post-switch gates require a prior immutable release commit" >&2
+   [[ ! "$BASELINE_PRIOR_COMMIT" =~ ^[0-9a-fA-F]{40}$ ]]; then
+  echo "Post-switch gates require a trusted prior immutable release commit" >&2
   exit 2
 fi
 

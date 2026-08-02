@@ -2549,6 +2549,18 @@ def test_immutable_release_installer_restarts_runtimes_after_current_switch() ->
     assert current_switch < metadata < captured_restart < default_restart
 
 
+def test_immutable_release_installer_separates_rollback_and_trusted_baseline_prior() -> None:
+    script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
+
+    assert 'PREVIOUS_COMMIT=""\nBASELINE_PRIOR_COMMIT=""' in script
+    assert 'BASELINE_PRIOR_COMMIT="$(_find_prior_release_commit_for "$COMMIT")"' in script
+    assert 'local trusted_prior="${BASELINE_PRIOR_COMMIT:-${PREVIOUS_COMMIT:-}}"' in script
+    assert '--prior-commit "$trusted_prior"' in script
+    assert '--prior-commit "$PREVIOUS_COMMIT"' in script
+    assert 'rollback_current_release=restored' in script
+    assert 'Post-switch gates require a trusted prior immutable release commit' in script
+
+
 def test_hermes_restart_tolerates_nonzero_graceful_stop_and_starts_fresh_process() -> None:
     script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
     body = script.split("_restart_hermes_gateway() {", 1)[1].split("\n}", 1)[0]
