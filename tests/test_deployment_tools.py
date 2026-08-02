@@ -803,6 +803,9 @@ def test_eibrain_rpc_service_requires_protected_auth_environment() -> None:
     unit_text = Path("deploy/systemd/eimemory-rpc.service").read_text(encoding="utf-8")
 
     assert "EnvironmentFile=/etc/eimemory/rpc.env" in unit_text
+    assert "EIMEMORY_ATTESTATION_HOST_PROFILE=operator-separated-v1" in unit_text
+    assert "EIMEMORY_ATTESTATION_TOKENS_FILE=/etc/eimemory/attestation-producers.json" in unit_text
+    assert "EIMEMORY_ADAPTER_RECEIPT_HANDOFF_FILE=/var/lib/eimemory/state/adapter-receipt-handoff.sqlite3" in unit_text
     assert "EnvironmentFile=-" not in unit_text
     assert "deploy/ensure_rpc_auth.py" in Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
 
@@ -825,6 +828,8 @@ def test_agent_runtime_adapter_operations_are_reproducible_and_fail_open() -> No
         assert required in operations
     assert "codex plugin marketplace add" in operations
     assert "$HERMES_HOME/plugins/eimemory" in operations
+    assert "$HERMES_HOME/plugins/eimemory_hook" in operations
+    assert "hermes plugins enable eimemory-hook" in operations
     assert "provider: eimemory" in operations
     assert "codex plugin marketplace remove eimemory-adapters" in operations
     assert "hermes memory off" in operations
@@ -833,6 +838,153 @@ def test_agent_runtime_adapter_operations_are_reproducible_and_fail_open() -> No
     assert "EnvironmentFile=/etc/eimemory/rpc.env" in unit_text
     assert "--host 100.105.189.120 --port 8091" in unit_text
     assert "--loopback-health-host 127.0.0.1 --loopback-health-port 8091" in unit_text
+
+
+def test_hermes_deploy_is_release_bound_enabled_and_real_replay_verified() -> None:
+    installer = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
+    integration_installer = Path("deploy/install_hermes_integration.py").read_text(
+        encoding="utf-8"
+    )
+    dropin = Path("deploy/systemd/hermes-gateway-eimemory.conf").read_text(encoding="utf-8")
+
+    for required in (
+        "ensure_attestation_profile.py",
+        "install_hermes_integration.py",
+        "verify_hermes_integration.py",
+        "hermes-gateway.service",
+        "hermes-attestation.token",
+        "attestation-producers.json",
+        "adapter-receipt-handoff.sqlite3",
+    ):
+        assert required in installer
+    assert "eimemory-hook" in integration_installer
+    assert "--allow-provider-only" in integration_installer
+    assert '"$PREVIOUS_CURRENT" "$PREVIOUS_COMMIT" "$REPO_DIR" 1' in installer
+    assert '--repo-root "$target_release"' in installer
+    assert '--hermes-agent-root "$HERMES_HOME_DIR/hermes-agent"' in installer
+    assert "EIMEMORY_ATTESTATION_HOST_PROFILE=operator-separated-v1" in dropin
+    assert "EIMEMORY_HERMES_ATTESTATION_TOKEN_FILE=/etc/eimemory/hermes-attestation.token" in dropin
+    assert "PYTHONPATH=/opt/eimemory/current" in dropin
+
+
+def test_hermes_attestation_profile_provisioner_is_private_and_idempotent(tmp_path) -> None:
+    from deploy.ensure_attestation_profile import ensure_hermes_attestation_profile
+    from eimemory.adapters.runtime.host_auth import is_strong_producer_token
+
+    registry = tmp_path / "attestation-producers.json"
+    token_file = tmp_path / "hermes-attestation.token"
+    first = ensure_hermes_attestation_profile(
+        registry_path=registry,
+        hermes_token_path=token_file,
+    )
+    token = token_file.read_text(encoding="utf-8").strip()
+    second = ensure_hermes_attestation_profile(
+        registry_path=registry,
+        hermes_token_path=token_file,
+    )
+
+    assert first["created"] is True
+    assert second["created"] is False
+    assert is_strong_producer_token(token)
+    assert json.loads(registry.read_text(encoding="utf-8"))["hermes"] == token
+    assert token not in json.dumps(first)
+    if os.name == "posix":
+        assert token_file.stat().st_mode & 0o777 == 0o600
+        assert registry.stat().st_mode & 0o777 == 0o600
+
+
+def test_hermes_attestation_profile_provisioner_runs_in_isolated_mode(tmp_path) -> None:
+    registry = tmp_path / "attestation-producers.json"
+    token_file = tmp_path / "hermes-attestation.token"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            str(Path("deploy/ensure_attestation_profile.py").resolve()),
+            "--registry",
+            str(registry),
+            "--hermes-token",
+            str(token_file),
+        ],
+        cwd=Path.cwd(),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    assert report["ok"] is True
+    assert report["channel"] == "hermes"
+    assert token_file.read_text(encoding="utf-8").strip() not in result.stdout
+
+
+def test_hermes_installer_migrates_legacy_plugin_outside_discovery_and_is_idempotent(
+    tmp_path,
+) -> None:
+    if os.name != "posix":
+        pytest.skip("managed Hermes plugin links require POSIX symlink semantics")
+    import yaml
+
+    from deploy.install_hermes_integration import install_hermes_integration
+
+    hermes_home = tmp_path / "hermes"
+    legacy = hermes_home / "plugins" / "eimemory"
+    legacy.mkdir(parents=True)
+    (legacy / "__init__.py").write_text("# legacy\n", encoding="utf-8")
+    (legacy / "plugin.yaml").write_text("name: eimemory\n", encoding="utf-8")
+    (hermes_home / "config.yaml").write_text(
+        "memory:\n  provider: eimemory\nplugins:\n  enabled:\n    - eimemory\n",
+        encoding="utf-8",
+    )
+    current_link = tmp_path / "current"
+    current_link.symlink_to(Path.cwd().resolve(), target_is_directory=True)
+
+    first = install_hermes_integration(
+        release_root=Path.cwd(),
+        hermes_home=hermes_home,
+        current_root=current_link,
+    )
+    second = install_hermes_integration(
+        release_root=Path.cwd(),
+        hermes_home=hermes_home,
+        current_root=current_link,
+    )
+
+    assert first["links"] == {"eimemory": "migrated", "eimemory_hook": "installed"}
+    assert second["links"] == {"eimemory": "unchanged", "eimemory_hook": "unchanged"}
+    assert legacy.is_symlink()
+    assert (hermes_home / "plugins" / "eimemory_hook").is_symlink()
+    assert (hermes_home / ".eimemory-plugin-backups" / "eimemory.pre-managed").is_dir()
+    assert not (hermes_home / "plugins" / ".eimemory.pre-eimemory-managed").exists()
+    config = yaml.safe_load((hermes_home / "config.yaml").read_text(encoding="utf-8"))
+    assert config["memory"]["provider"] == "eimemory"
+    assert config["plugins"]["enabled"] == ["eimemory-hook"]
+
+    legacy_release = tmp_path / "legacy-release"
+    (legacy_release / "integrations" / "hermes").mkdir(parents=True)
+    shutil.copytree(
+        Path("integrations/hermes/eimemory"),
+        legacy_release / "integrations" / "hermes" / "eimemory",
+    )
+    shutil.copy2("pyproject.toml", legacy_release / "pyproject.toml")
+    current_link.unlink()
+    current_link.symlink_to(legacy_release, target_is_directory=True)
+    rolled_back = install_hermes_integration(
+        release_root=legacy_release,
+        hermes_home=hermes_home,
+        current_root=current_link,
+        allow_provider_only=True,
+    )
+
+    assert rolled_back["hook_enabled"] is False
+    assert rolled_back["links"]["eimemory_hook"] == "removed"
+    assert not (hermes_home / "plugins" / "eimemory_hook").exists()
+    rollback_config = yaml.safe_load(
+        (hermes_home / "config.yaml").read_text(encoding="utf-8")
+    )
+    assert rollback_config["plugins"]["enabled"] == []
 
 
 def test_rpc_auth_provisioner_creates_strong_private_token_and_rejects_weak_file(tmp_path) -> None:
@@ -1115,7 +1267,8 @@ def test_rollback_renders_runtime_metadata_with_current_trusted_deploy_code() ->
     rollback = script.split("_rollback_current_release() {", 1)[1].split("\n}", 1)[0]
 
     assert '_refresh_openclaw_gateway_metadata "$REPO_DIR" "$PREVIOUS_COMMIT"' in rollback
-    assert '_install_current_runtime_metadata "$PREVIOUS_CURRENT" "$PREVIOUS_COMMIT" "$REPO_DIR"' in rollback
+    assert "_install_current_runtime_metadata" in rollback
+    assert '"$PREVIOUS_CURRENT" "$PREVIOUS_COMMIT" "$REPO_DIR" 1' in rollback
     assert rollback.index("_install_current_runtime_metadata") < rollback.index(
         "_clear_storage_release_transaction"
     )
@@ -1370,7 +1523,7 @@ def test_immutable_release_installer_deploys_python_runtime_protection_dropins()
 
     assert 'eimemory-python-runtime.conf' in script
     assert '90-eimemory-python-runtime.conf' in script
-    assert script.count("--render-commit") == 2
+    assert script.count("--render-commit") == 3
     assert '--render-commit "$target_commit"' in script
     assert 'bash -s -- "$USER_SYSTEMD_DIR"' in script
     assert "Unable to discover Python runtime systemd units" in script
@@ -2671,7 +2824,8 @@ def test_immutable_release_installer_verifies_all_effective_runtime_commits_befo
     assert verifier_body.index(
         '_user_systemctl is-active --quiet "$unit"'
     ) < verifier_body.index('--property=Environment --value')
-    assert "runtime_identity=verified units=3" in verifier_body
+    assert "runtime_identity=verified units=${#runtime_units[@]}" in verifier_body
+    assert "runtime_units+=(hermes-gateway.service)" in verifier_body
     assert restart_body.index(
         "_user_systemctl restart eimemory-rpc.service"
     ) < restart_body.index(

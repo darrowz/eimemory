@@ -96,6 +96,7 @@ IGNORED_PATHS = {
 INTEGRATION_VERSION_PATHS = {
     "integrations/codex/eimemory/.codex-plugin/plugin.json",
     "integrations/hermes/eimemory/plugin.yaml",
+    "integrations/hermes/eimemory_hook/plugin.yaml",
 }
 COMMIT_RE = re.compile(r"[0-9a-f]{40}")
 RECEIPT_PAGE_SIZE = 200

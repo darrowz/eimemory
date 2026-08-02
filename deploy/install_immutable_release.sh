@@ -13,6 +13,12 @@ EIMEMORY_CONFIG_DIR="${EIMEMORY_CONFIG_DIR:-/etc/eimemory}"
 EIMEMORY_LOG_DIR="${EIMEMORY_LOG_DIR:-$SERVICE_HOME/.openclaw/logs}"
 GOVERNANCE_ENV_FILE="${EIMEMORY_GOVERNANCE_ENV_FILE:-$EIMEMORY_CONFIG_DIR/governance.env}"
 EVIDENCE_RECEIPT_ENV_FILE="${EIMEMORY_EVIDENCE_RECEIPT_ENV_FILE:-$EIMEMORY_CONFIG_DIR/evidence-receipt.env}"
+HERMES_INTEGRATION_DEPLOY="${EIMEMORY_HERMES_INTEGRATION_DEPLOY:-1}"
+HERMES_HOME_DIR="${EIMEMORY_HERMES_HOME:-$SERVICE_HOME/.hermes}"
+HERMES_PYTHON="${EIMEMORY_HERMES_PYTHON:-$HERMES_HOME_DIR/hermes-agent/venv/bin/python}"
+HERMES_ATTESTATION_REGISTRY="${EIMEMORY_ATTESTATION_TOKENS_FILE:-$EIMEMORY_CONFIG_DIR/attestation-producers.json}"
+HERMES_ATTESTATION_TOKEN_FILE="${EIMEMORY_HERMES_ATTESTATION_TOKEN_FILE:-$EIMEMORY_CONFIG_DIR/hermes-attestation.token}"
+HERMES_RECEIPT_HANDOFF_FILE="${EIMEMORY_ADAPTER_RECEIPT_HANDOFF_FILE:-$EIMEMORY_ROOT/state/adapter-receipt-handoff.sqlite3}"
 USER_SYSTEMD_ENABLE_SERVICE="${USER_SYSTEMD_ENABLE_SERVICE:-1}"
 USER_SYSTEMD_DIR="${USER_SYSTEMD_DIR:-$SERVICE_HOME/.config/systemd/user}"
 SYSTEM_RPC_UNIT_PATH="${SYSTEM_RPC_UNIT_PATH:-/etc/systemd/system/eimemory-rpc.service}"
@@ -105,6 +111,11 @@ _run_as_service_user() {
   else
     "$@"
   fi
+}
+
+_hermes_is_installed() {
+  [ "$HERMES_INTEGRATION_DEPLOY" = "1" ] && \
+    [ -x "$HERMES_PYTHON" ] && [ -d "$HERMES_HOME_DIR/hermes-agent" ]
 }
 
 _install_as_service_user() {
@@ -997,6 +1008,7 @@ _install_current_runtime_metadata() {
   local target_release="${1:-$RELEASE_DIR}"
   local target_commit="${2:-$COMMIT}"
   local metadata_release="${3:-$target_release}"
+  local allow_hermes_provider_only="${4:-0}"
   if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ] || ! command -v systemctl >/dev/null 2>&1; then
     return
   fi
@@ -1017,8 +1029,55 @@ _install_current_runtime_metadata() {
   _install_as_service_user 0644 \
     "$target_release/deploy/systemd/eimemory-rpc.service" "$USER_SYSTEMD_DIR/eimemory-rpc.service"
   _install_learning_runtime_policy "$metadata_release"
+  _install_hermes_integration \
+    "$target_release" "$target_commit" "$metadata_release" "$allow_hermes_provider_only"
   _user_systemctl daemon-reload
   _user_systemctl enable eimemory-rpc.service
+}
+
+_provision_hermes_attestation() {
+  if ! _hermes_is_installed; then
+    echo "hermes_attestation=skipped hermes_not_installed"
+    return
+  fi
+  "$PYTHON_BIN" -I -B "$RELEASE_DIR/deploy/ensure_attestation_profile.py" \
+    --registry "$HERMES_ATTESTATION_REGISTRY" \
+    --hermes-token "$HERMES_ATTESTATION_TOKEN_FILE" \
+    --user "$SERVICE_USER" --group "$SERVICE_GROUP"
+}
+
+_install_hermes_integration() {
+  local target_release="${1:-$RELEASE_DIR}"
+  local target_commit="${2:-$COMMIT}"
+  local metadata_release="${3:-$target_release}"
+  local allow_provider_only="${4:-0}"
+  if ! _hermes_is_installed; then
+    echo "hermes_integration=skipped hermes_not_installed"
+    return
+  fi
+  local helper_args=(
+    --release-root "$target_release" --hermes-home "$HERMES_HOME_DIR"
+  )
+  if [ "$allow_provider_only" = "1" ]; then
+    helper_args+=(--allow-provider-only)
+  fi
+  _run_as_service_user env HOME="$SERVICE_HOME" HERMES_HOME="$HERMES_HOME_DIR" \
+    "$HERMES_PYTHON" -I -B "$metadata_release/deploy/install_hermes_integration.py" \
+      "${helper_args[@]}"
+  if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ] || ! command -v systemctl >/dev/null 2>&1; then
+    return
+  fi
+  local service_uid
+  service_uid="$(id -u "$SERVICE_USER")"
+  _run_as_service_user mkdir -p "$USER_SYSTEMD_DIR/hermes-gateway.service.d"
+  "$PYTHON_BIN" -I -B "$metadata_release/deploy/install_managed_systemd_dropin.py" \
+    --source "$metadata_release/deploy/systemd/eimemory-python-runtime.conf" \
+    --target "$USER_SYSTEMD_DIR/hermes-gateway.service.d/90-eimemory-python-runtime.conf" \
+    --root "$USER_SYSTEMD_DIR" --owner-uid "$service_uid" --render-commit "$target_commit" \
+    --render-evidence-receipt-env-file "$EVIDENCE_RECEIPT_ENV_FILE"
+  _install_as_service_user 0644 \
+    "$metadata_release/deploy/systemd/hermes-gateway-eimemory.conf" \
+    "$USER_SYSTEMD_DIR/hermes-gateway.service.d/91-eimemory-hermes.conf"
 }
 
 _refresh_current_runtime_metadata() {
@@ -1100,11 +1159,23 @@ _restart_current_services() {
   # Feishu reply watchdog permanently removed: dual-path delivery caused double sends.
   # Keep unit masked; do not install/enable/restart it on deploy.
   _user_systemctl restart openclaw-gateway.service
+  _restart_hermes_gateway
   # Enablement persists intent, but an enabled timer can remain inactive after
   # a first install or prior stop. Start managed loop timers only after the
   # current release and gateway are active so deployment cannot leave them idle.
   _user_systemctl start openclaw-loop-watch.timer
   _user_systemctl start openclaw-loop-compact.timer
+}
+
+_restart_hermes_gateway() {
+  if ! _hermes_is_installed || [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ] || \
+     ! command -v systemctl >/dev/null 2>&1; then
+    return
+  fi
+  if _user_systemctl cat hermes-gateway.service >/dev/null 2>&1; then
+    _user_systemctl daemon-reload
+    _user_systemctl restart hermes-gateway.service
+  fi
 }
 
 _verify_effective_runtime_metadata() {
@@ -1113,7 +1184,11 @@ _verify_effective_runtime_metadata() {
     return
   fi
   local unit effective_commit
-  for unit in eimemory-rpc.service openclaw-gateway.service openclaw-loop-watch.service; do
+  local runtime_units=(eimemory-rpc.service openclaw-gateway.service openclaw-loop-watch.service)
+  if _hermes_is_installed && _user_systemctl cat hermes-gateway.service >/dev/null 2>&1; then
+    runtime_units+=(hermes-gateway.service)
+  fi
+  for unit in "${runtime_units[@]}"; do
     case "$unit" in
       openclaw-loop-watch.service) ;;
       *)
@@ -1152,7 +1227,35 @@ print(values[0])
       return 2
     fi
   done
-  echo "runtime_identity=verified units=3"
+  echo "runtime_identity=verified units=${#runtime_units[@]}"
+}
+
+_verify_hermes_integration() {
+  local target_release="${1:-$RELEASE_DIR}"
+  local target_commit="${2:-$COMMIT}"
+  if ! _hermes_is_installed; then
+    echo "hermes_closed_loop=skipped hermes_not_installed"
+    return
+  fi
+  local rpc_token
+  rpc_token="$("$PYTHON_BIN" -I -B -c \
+    'from pathlib import Path; import sys; line=Path(sys.argv[1]).read_text(encoding="utf-8").strip(); key,sep,value=line.partition("="); raise SystemExit(2) if key != "EIMEMORY_RPC_AUTH_TOKEN" or not sep or not value else print(value)' \
+    "$EIMEMORY_CONFIG_DIR/rpc.env")"
+  _run_as_service_user env \
+    HOME="$SERVICE_HOME" HERMES_HOME="$HERMES_HOME_DIR" \
+    PYTHONPATH="$target_release:$HERMES_HOME_DIR/hermes-agent" \
+    EIMEMORY_RPC_URL="http://127.0.0.1:8091/" EIMEMORY_RPC_TOKEN="$rpc_token" \
+    EIMEMORY_ATTESTATION_HOST_PROFILE="operator-separated-v1" \
+    EIMEMORY_HERMES_ATTESTATION_TOKEN_FILE="$HERMES_ATTESTATION_TOKEN_FILE" \
+    EIMEMORY_ADAPTER_RECEIPT_HANDOFF_FILE="$HERMES_RECEIPT_HANDOFF_FILE" \
+    EIMEMORY_RUNTIME_COMMIT="$target_commit" \
+    EIMEMORY_AGENT_ID="$EIMEMORY_DEPLOY_SCOPE_AGENT" \
+    EIMEMORY_WORKSPACE_ID="$EIMEMORY_DEPLOY_SCOPE_WORKSPACE" \
+    EIMEMORY_USER_ID="$EIMEMORY_DEPLOY_SCOPE_USER" \
+    "$HERMES_PYTHON" -I -B "$target_release/deploy/verify_hermes_integration.py" \
+      --repo-root "$target_release" --commit "$target_commit" \
+      --hermes-agent-root "$HERMES_HOME_DIR/hermes-agent"
+  unset rpc_token
 }
 
 _install_candidate_runtime_metadata() {
@@ -1503,7 +1606,8 @@ _rollback_current_release() {
       echo "rollback_step=gateway_metadata status=failed" >&2
       rollback_failed=1
     fi
-    if ! _install_current_runtime_metadata "$PREVIOUS_CURRENT" "$PREVIOUS_COMMIT" "$REPO_DIR"; then
+    if ! _install_current_runtime_metadata \
+      "$PREVIOUS_CURRENT" "$PREVIOUS_COMMIT" "$REPO_DIR" 1; then
       echo "rollback_step=runtime_metadata status=failed" >&2
       rollback_failed=1
     fi
@@ -1628,8 +1732,12 @@ if { [ -e "$CURRENT_LINK" ] || [ -L "$CURRENT_LINK" ] || [ -d "$CURRENT_LINK" ];
   if [ "$PREVIOUS_COMMIT" = "$COMMIT" ]; then
     PREVIOUS_COMMIT="$(_find_prior_release_commit)"
   fi
+  _provision_hermes_attestation
+  _install_hermes_integration "$RELEASE_DIR" "$COMMIT" "$RELEASE_DIR"
+  _restart_hermes_gateway
   _verify_effective_runtime_metadata "$COMMIT"
   _verify_release_health "$RELEASE_DIR" "$COMMIT"
+  _verify_hermes_integration "$RELEASE_DIR" "$COMMIT"
   echo "release=$RELEASE_DIR"
   echo "current=$CURRENT_LINK"
   echo "commit=$COMMIT"
@@ -1758,6 +1866,7 @@ _ensure_runtime_dir "$EIMEMORY_LOG_DIR" 0750
   --user "$SERVICE_USER" \
   --group "$SERVICE_GROUP"
 _provision_evidence_receipt_key
+_provision_hermes_attestation
 if [ -x "$OPENCLAW_BIN" ]; then
   "$PYTHON_BIN" -I -B "$RELEASE_DIR/deploy/ensure_openclaw_bridge_config.py" \
     --path "$OPENCLAW_LOOP_CONFIG_PATH"
@@ -1791,6 +1900,7 @@ if [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ] && command -v systemctl >/dev/null 2
 fi
 _maybe_fail_stage gateway_restart
 _verify_release_health "$RELEASE_DIR" "$COMMIT"
+_verify_hermes_integration "$RELEASE_DIR" "$COMMIT"
 _maybe_fail_stage health
 _maybe_fail_stage storage_writer_restart
 _run_openclaw_loop_deploy_verify "$RELEASE_DIR"

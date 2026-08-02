@@ -106,6 +106,8 @@ Python environment can import the matching eimemory package:
 ```bash
 mkdir -p "$HERMES_HOME/plugins/eimemory"
 cp -R integrations/hermes/eimemory/. "$HERMES_HOME/plugins/eimemory/"
+mkdir -p "$HERMES_HOME/plugins/eimemory_hook"
+cp -R integrations/hermes/eimemory_hook/. "$HERMES_HOME/plugins/eimemory_hook/"
 ```
 
 Select the provider in `$HERMES_HOME/config.yaml`:
@@ -113,14 +115,29 @@ Select the provider in `$HERMES_HOME/config.yaml`:
 ```yaml
 memory:
   provider: eimemory
+plugins:
+  enabled:
+    - eimemory-hook
+```
+
+Or enable the host callbacks explicitly:
+
+```bash
+hermes plugins enable eimemory-hook
 ```
 
 Start a new session, then call `eimemory_status` and verify `channel=hermes`,
 `authority_mode=per_channel`, `embodied::channel::hermes`, and current release
-identity. Disable the external provider with:
+identity. A production immutable deployment also provisions the separated
+Hermes producer token, restarts `hermes-gateway.service`, and runs
+`deploy/verify_hermes_integration.py`. That replay must prove the official
+loader/provider binding, all three callbacks, authoritative remember/recall,
+an actual pytest tool result, terminal receipt consumption, and completed-turn
+sync. Disable the integration with:
 
 ```bash
 hermes memory off
+hermes plugins disable eimemory-hook
 ```
 
 Hermes uses one bounded background writer and one latest-wins prefetch worker.

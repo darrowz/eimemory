@@ -284,7 +284,11 @@ deterministic scopes such as `embodied::channel::codex` and
 `embodied::channel::hermes`. Recall never crosses those scopes.
 
 Codex installs through the marketplace under `integrations/codex`; Hermes uses
-the standalone native `MemoryProvider` under `integrations/hermes/eimemory`.
+the standalone native `MemoryProvider` under `integrations/hermes/eimemory`
+plus the official host-callback plugin under `integrations/hermes/eimemory_hook`.
+The immutable installer deploys both as release-bound plugins, enables only the
+hook as a general plugin, and runs a real official-loader replay before declaring
+the deployment complete.
 Both clients require `EIMEMORY_RPC_URL` and `EIMEMORY_RPC_TOKEN`, use bounded
 inputs/caches, and are fail-open when the authenticated RPC is unavailable.
 Successful terminal events count toward L5 only when they carry explicit,

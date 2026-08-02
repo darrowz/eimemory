@@ -1170,19 +1170,83 @@ def test_hermes_official_terminal_lifecycle_binds_verified_host_turn(
     post_env = {**env, "EIMEMORY_HERMES_ATTESTATION_TOKEN_FILE": str(producer_file)}
     post_env["EIMEMORY_ATTESTATION_HOST_PROFILE"] = "operator-separated-v1"
     lifecycle_script = """
+import importlib.util
 import json
-from integrations.hermes.eimemory import register
+import os
+from pathlib import Path
+import sys
+
+root = Path.cwd()
+provider_root = root / 'integrations' / 'hermes' / 'eimemory'
+provider_spec = importlib.util.spec_from_file_location(
+    '_hermes_user_memory.eimemory', provider_root / '__init__.py',
+    submodule_search_locations=[str(provider_root)],
+)
+provider_module = importlib.util.module_from_spec(provider_spec)
+sys.modules[provider_spec.name] = provider_module
+provider_spec.loader.exec_module(provider_module)
+
+hook_root = root / 'integrations' / 'hermes' / 'eimemory_hook'
+hook_spec = importlib.util.spec_from_file_location(
+    'hermes_plugins.eimemory_hook', hook_root / '__init__.py',
+    submodule_search_locations=[str(hook_root)],
+)
+hook_module = importlib.util.module_from_spec(hook_spec)
+sys.modules[hook_spec.name] = hook_module
+hook_spec.loader.exec_module(hook_module)
 class Context:
     def register_memory_provider(self, provider): self.provider = provider
-    def register_hook(self, name, callback): self.callback = callback
+    def __init__(self):
+        self.hooks = {}
+    def register_hook(self, name, callback): self.hooks[name] = callback
 ctx = Context()
-register(ctx)
+provider_module.register(ctx)
+hook_module.register(ctx)
+assert 'EIMEMORY_HERMES_ATTESTATION_TOKEN_FILE' not in os.environ
+reloaded_hook_spec = importlib.util.spec_from_file_location(
+    'hermes_plugins.eimemory_hook', hook_root / '__init__.py',
+    submodule_search_locations=[str(hook_root)],
+)
+reloaded_hook_module = importlib.util.module_from_spec(reloaded_hook_spec)
+sys.modules[reloaded_hook_spec.name] = reloaded_hook_module
+reloaded_hook_spec.loader.exec_module(reloaded_hook_module)
+reloaded_ctx = Context()
+reloaded_hook_module.register(reloaded_ctx)
+ctx.hooks = reloaded_ctx.hooks
 ctx.provider.initialize('session-1', agent_identity='hongtu', agent_workspace='embodied', user_id='darrow')
-ctx.callback('terminal', {'command': 'python -m pytest tests/test_unit.py -q'}, json.dumps({'output':'2 passed in 0.12s','exit_code':0,'error':None}), 'task-1', 10, session_id='session-1', turn_id='turn-1', tool_call_id='call-1')
+ctx.hooks['pre_llm_call'](user_message='verify task', session_id='session-1', turn_id='turn-0')
+ctx.hooks['post_tool_call'](
+    'terminal',
+    {'command': 'python -m pytest tests/test_unit.py -q'},
+    json.dumps({'output':'2 passed in 0.12s','exit_code':0,'error':None}),
+    'task-1',
+    10,
+    session_id='session-1',
+    turn_id='turn-1',
+    tool_call_id='call-1',
+)
 good = json.loads(ctx.provider.handle_tool_call('eimemory_verify_outcome', {'result':'done'}))
 assert good['ok'] is True
-ctx.callback('terminal', {'command': 'python -m pytest tests/test_a.py -q'}, json.dumps({'output':'1 passed in 0.10s','exit_code':0,'error':None}), 'task-2', 10, session_id='session-1', turn_id='turn-2', tool_call_id='call-2')
-ctx.callback('terminal', {'command': 'python -m pytest tests/test_b.py -q'}, json.dumps({'output':'1 passed in 0.10s','exit_code':0,'error':None}), 'task-3', 10, session_id='session-1', turn_id='turn-3', tool_call_id='call-3')
+ctx.hooks['post_tool_call'](
+    'terminal',
+    {'command': 'python -m pytest tests/test_a.py -q'},
+    json.dumps({'output':'1 passed in 0.10s','exit_code':0,'error':None}),
+    'task-2',
+    10,
+    session_id='session-1',
+    turn_id='turn-2',
+    tool_call_id='call-2',
+)
+ctx.hooks['post_tool_call'](
+    'terminal',
+    {'command': 'python -m pytest tests/test_b.py -q'},
+    json.dumps({'output':'1 passed in 0.10s','exit_code':0,'error':None}),
+    'task-3',
+    10,
+    session_id='session-1',
+    turn_id='turn-3',
+    tool_call_id='call-3',
+)
 ambiguous = json.loads(ctx.provider.handle_tool_call('eimemory_verify_outcome', {'result':'done'}))
 assert ambiguous['ok'] is False
 """

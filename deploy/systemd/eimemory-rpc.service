@@ -11,6 +11,9 @@ Environment=HOME=/home/darrow
 Environment=EIMEMORY_ROOT=/var/lib/eimemory
 Environment=EIMEMORY_CONFIG_DIR=/etc/eimemory
 EnvironmentFile=/etc/eimemory/rpc.env
+Environment=EIMEMORY_ATTESTATION_HOST_PROFILE=operator-separated-v1
+Environment=EIMEMORY_ATTESTATION_TOKENS_FILE=/etc/eimemory/attestation-producers.json
+Environment=EIMEMORY_ADAPTER_RECEIPT_HANDOFF_FILE=/var/lib/eimemory/state/adapter-receipt-handoff.sqlite3
 Environment=PYTHONPATH=/opt/eimemory/current
 Environment=PYTHONDONTWRITEBYTECODE=1
 Environment=PYTHONPYCACHEPREFIX=/var/lib/eimemory/.pycache/runtime

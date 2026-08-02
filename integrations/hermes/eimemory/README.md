@@ -1,13 +1,19 @@
 # eimemory for Hermes Agent
 
 This standalone plugin implements Hermes Agent's native `MemoryProvider`
-contract. It does not patch Hermes core. Copy this directory to
-`$HERMES_HOME/plugins/eimemory`, install the matching `eimemory` Python
-package in the Hermes environment, then select it in `config.yaml`:
+contract. It does not patch Hermes core. Install this directory together with
+`integrations/hermes/eimemory_hook`. The production installer creates
+release-bound links under `$HERMES_HOME/plugins`; for a manual installation,
+copy the provider to `$HERMES_HOME/plugins/eimemory`, copy the hook to
+`$HERMES_HOME/plugins/eimemory_hook`, and install the matching `eimemory` Python package in
+the Hermes environment. Select the provider in `config.yaml`:
 
 ```yaml
 memory:
   provider: eimemory
+plugins:
+  enabled:
+    - eimemory-hook
 ```
 
 Configure the authenticated runtime in the Hermes profile environment:
@@ -44,3 +50,7 @@ only bounded receipt IDs; the protected runtime database remains authoritative
 for the exact pending set and atomic terminal claim. Without this separated
 profile, memory and recall keep working, `attestation_available` is false, and
 Hermes tasks do not count toward L5.
+
+The packaged session registry binds official host callbacks to the exact
+MemoryManager-owned provider instance without forcing one global provider
+across concurrent gateway sessions.
