@@ -860,8 +860,10 @@ def test_hermes_deploy_is_release_bound_enabled_and_real_replay_verified() -> No
     assert "eimemory-hook" in integration_installer
     assert 'sys.exit(2) if key != "EIMEMORY_RPC_AUTH_TOKEN"' in installer
     assert "raise SystemExit(2) if key" not in installer
-    assert 'name = "EIMEMORY_RPC_URL"' in installer
+    assert 'unique_value("EIMEMORY_RPC_URL")' in installer
+    assert 'unique_value("EIMEMORY_ADAPTER_TIMEOUT_SECONDS")' in installer
     assert 'EIMEMORY_RPC_URL="$rpc_url"' in installer
+    assert 'EIMEMORY_ADAPTER_TIMEOUT_SECONDS="$adapter_timeout"' in installer
     assert 'EIMEMORY_RPC_URL="http://127.0.0.1:8091/"' not in installer
     assert "--allow-provider-only" in integration_installer
     assert '"$PREVIOUS_CURRENT" "$PREVIOUS_COMMIT" "$REPO_DIR" 1' in installer
