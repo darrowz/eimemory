@@ -113,13 +113,13 @@ def verify_hermes_integration(
         test_interpreter = Path(test_python or repo / ".venv" / "bin" / "python").expanduser()
         if not test_interpreter.is_file():
             raise RuntimeError("trusted pytest interpreter is missing")
-        command = f"python -m pytest {pytest_target} -q"
+        command = f"python -m pytest -p no:cacheprovider {pytest_target} -q"
         test_env = dict(os.environ)
         test_env["PYTHONPATH"] = str(repo)
         test_env["PATH"] = str(test_interpreter.parent) + os.pathsep + test_env.get("PATH", "")
         started = time.monotonic()
         completed = subprocess.run(
-            ["python", "-m", "pytest", pytest_target, "-q"],
+            ["python", "-m", "pytest", "-p", "no:cacheprovider", pytest_target, "-q"],
             cwd=repo,
             env=test_env,
             text=True,

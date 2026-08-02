@@ -1217,7 +1217,7 @@ ctx.provider.initialize('session-1', agent_identity='hongtu', agent_workspace='e
 ctx.hooks['pre_llm_call'](user_message='verify task', session_id='session-1', turn_id='turn-0')
 ctx.hooks['post_tool_call'](
     'terminal',
-    {'command': 'python -m pytest tests/test_unit.py -q'},
+    {'command': 'python -m pytest -p no:cacheprovider tests/test_unit.py -q'},
     json.dumps({'output':'2 passed in 0.12s','exit_code':0,'error':None}),
     'task-1',
     10,
