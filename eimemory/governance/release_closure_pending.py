@@ -208,6 +208,12 @@ def _reconcile_release_closure_pending_unlocked(
         return {"ok": True, "status": "no_pending"}
     scope = checkpoint["scope"]
     current = runtime.current_release_identity(scope=scope, limit=500)
+    if current is None:
+        return {
+            "ok": False,
+            "status": "blocked",
+            "error": "current_release_identity_missing",
+        }
     expected = ReleaseIdentity(
         commit=checkpoint["current_commit"],
         version="",

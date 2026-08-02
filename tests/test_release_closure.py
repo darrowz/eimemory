@@ -1120,6 +1120,36 @@ def test_release_closure_reconcile_supersedes_stale_commit(
     assert not pending_path.exists()
 
 
+def test_release_closure_reconcile_keeps_checkpoint_when_identity_is_missing(
+    tmp_path: Path,
+) -> None:
+    pending_path = tmp_path / "state" / "release-closure-pending.json"
+    runtime = FakeRuntime(
+        channel_acceptance={
+            "ok": False,
+            "error": "current_release_channel_receipt_not_found",
+        }
+    )
+    run_release_closure(
+        runtime,
+        **_identity_kwargs(),
+        pending_path=pending_path,
+    )
+    runtime.current_release_identity = lambda **_kwargs: None  # type: ignore[method-assign]
+
+    report = reconcile_release_closure_pending(
+        runtime,
+        pending_path=pending_path,
+    )
+
+    assert report == {
+        "ok": False,
+        "status": "blocked",
+        "error": "current_release_identity_missing",
+    }
+    assert pending_path.exists()
+
+
 def test_release_closure_reconcile_rejects_malformed_checkpoint(
     tmp_path: Path,
 ) -> None:
