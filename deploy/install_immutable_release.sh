@@ -1239,7 +1239,7 @@ _verify_hermes_integration() {
   fi
   local rpc_token
   rpc_token="$("$PYTHON_BIN" -I -B -c \
-    'from pathlib import Path; import sys; line=Path(sys.argv[1]).read_text(encoding="utf-8").strip(); key,sep,value=line.partition("="); raise SystemExit(2) if key != "EIMEMORY_RPC_AUTH_TOKEN" or not sep or not value else print(value)' \
+    'from pathlib import Path; import sys; line=Path(sys.argv[1]).read_text(encoding="utf-8").strip(); key,sep,value=line.partition("="); sys.exit(2) if key != "EIMEMORY_RPC_AUTH_TOKEN" or not sep or not value else print(value)' \
     "$EIMEMORY_CONFIG_DIR/rpc.env")"
   _run_as_service_user env \
     HOME="$SERVICE_HOME" HERMES_HOME="$HERMES_HOME_DIR" \

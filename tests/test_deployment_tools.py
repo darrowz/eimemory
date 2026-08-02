@@ -858,6 +858,8 @@ def test_hermes_deploy_is_release_bound_enabled_and_real_replay_verified() -> No
     ):
         assert required in installer
     assert "eimemory-hook" in integration_installer
+    assert 'sys.exit(2) if key != "EIMEMORY_RPC_AUTH_TOKEN"' in installer
+    assert "raise SystemExit(2) if key" not in installer
     assert "--allow-provider-only" in integration_installer
     assert '"$PREVIOUS_CURRENT" "$PREVIOUS_COMMIT" "$REPO_DIR" 1' in installer
     assert '--repo-root "$target_release"' in installer
