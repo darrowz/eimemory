@@ -883,11 +883,14 @@ def test_hermes_deploy_is_release_bound_enabled_and_real_replay_verified() -> No
     assert "-p no:cacheprovider" in integration_verifier
     assert "EIMEMORY_ATTESTATION_HOST_PROFILE=operator-separated-v1" in dropin
     assert "EIMEMORY_HERMES_ATTESTATION_TOKEN_FILE=/etc/eimemory/hermes-attestation.token" in dropin
+    assert "Environment=PYTHONDONTWRITEBYTECODE=1" in dropin
     assert "PYTHONPATH=/opt/eimemory/current" in dropin
     assert "ExecStart=%h/.config/systemd/user/hermes-gateway-eimemory.sh" in dropin
     assert "gateway run --replace" in gateway_wrapper
     assert "EIMEMORY_RPC_AUTH_TOKEN=*" in gateway_wrapper
     assert 'export EIMEMORY_RPC_TOKEN="$rpc_token"' in gateway_wrapper
+    assert "export PYTHONDONTWRITEBYTECODE=1" in gateway_wrapper
+    assert 'exec "$hermes_python" -B -m hermes_cli.main gateway run --replace' in gateway_wrapper
     assert "hermes-gateway-eimemory.sh" in installer
 
 

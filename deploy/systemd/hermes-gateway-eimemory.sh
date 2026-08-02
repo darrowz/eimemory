@@ -22,5 +22,6 @@ if [ -z "$rpc_token" ]; then
 fi
 
 export EIMEMORY_RPC_TOKEN="$rpc_token"
+export PYTHONDONTWRITEBYTECODE=1
 unset EIMEMORY_RPC_AUTH_TOKEN rpc_token rpc_lines
-exec "$hermes_python" -m hermes_cli.main gateway run --replace
+exec "$hermes_python" -B -m hermes_cli.main gateway run --replace
