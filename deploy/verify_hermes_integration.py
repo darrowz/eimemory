@@ -116,10 +116,10 @@ def verify_hermes_integration(
         command = f"python -m pytest {pytest_target} -q"
         test_env = dict(os.environ)
         test_env["PYTHONPATH"] = str(repo)
+        test_env["PATH"] = str(test_interpreter.parent) + os.pathsep + test_env.get("PATH", "")
         started = time.monotonic()
         completed = subprocess.run(
             ["python", "-m", "pytest", pytest_target, "-q"],
-            executable=str(test_interpreter),
             cwd=repo,
             env=test_env,
             text=True,

@@ -873,7 +873,8 @@ def test_hermes_deploy_is_release_bound_enabled_and_real_replay_verified() -> No
     assert '--repo-root "$target_release"' in installer
     assert '--hermes-agent-root "$HERMES_HOME_DIR/hermes-agent"' in installer
     assert '--test-python "$REPO_DIR/.venv/bin/python"' in installer
-    assert 'executable=str(test_interpreter)' in integration_verifier
+    assert 'test_env["PATH"] = str(test_interpreter.parent)' in integration_verifier
+    assert "executable=str(test_interpreter)" not in integration_verifier
     assert "EIMEMORY_ATTESTATION_HOST_PROFILE=operator-separated-v1" in dropin
     assert "EIMEMORY_HERMES_ATTESTATION_TOKEN_FILE=/etc/eimemory/hermes-attestation.token" in dropin
     assert "PYTHONPATH=/opt/eimemory/current" in dropin
