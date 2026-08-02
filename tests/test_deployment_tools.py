@@ -925,7 +925,7 @@ def test_hermes_installer_migrates_legacy_plugin_outside_discovery_and_is_idempo
 ) -> None:
     if os.name != "posix":
         pytest.skip("managed Hermes plugin links require POSIX symlink semantics")
-    import yaml
+    yaml = pytest.importorskip("yaml", reason="Hermes runtime dependency is not installed")
 
     from deploy.install_hermes_integration import install_hermes_integration
 
