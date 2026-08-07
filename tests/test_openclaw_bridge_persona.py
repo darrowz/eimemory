@@ -42,6 +42,12 @@ Promise.resolve(handlers.before_prompt_build({ prompt: '实现 persona layer' })
 });
 """
     env = os.environ.copy()
+    for name in (
+        "EIMEMORY_RPC_URL",
+        "EIMEMORY_RPC_AUTH_TOKEN",
+        "EIMEMORY_RPC_TOKEN",
+    ):
+        env.pop(name, None)
     env["EIMEMORY_ENABLE_PROMPT_INJECTION"] = "true"
     env["EIMEMORY_HOOK_COMMAND"] = f"{sys.executable} {hook_script} openclaw-hook"
     env["EIMEMORY_BRIDGE_COMMAND"] = f"{sys.executable} {hook_script} ei-bridge feishu"

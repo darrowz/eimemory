@@ -9,11 +9,22 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _isolated_env() -> dict[str, str]:
+    env = os.environ.copy()
+    for name in (
+        "EIMEMORY_RPC_URL",
+        "EIMEMORY_RPC_AUTH_TOKEN",
+        "EIMEMORY_RPC_TOKEN",
+    ):
+        env.pop(name, None)
+    return env
+
+
 def _run_node(
     script: str,
     state_path: Path,
 ) -> dict:
-    env = os.environ.copy()
+    env = _isolated_env()
     env["EIMEMORY_REPLY_DELIVERY_STATE_PATH"] = str(state_path)
     env["EIMEMORY_RELEASE_CLOSURE_SIGNAL_PATH"] = str(
         state_path.with_name("release-closure-channel-receipt.signal")
@@ -520,7 +531,7 @@ Promise.resolve()
 
 
 def test_tracker_state_io_failure_does_not_break_message_hook() -> None:
-    env = os.environ.copy()
+    env = _isolated_env()
     env["EIMEMORY_REPLY_DELIVERY_STATE_PATH"] = "/root/eimemory-invalid/reply-state.json"
     env["EIMEMORY_HOOK_COMMAND"] = "/usr/bin/true"
     env["EIMEMORY_HOOK_TIMEOUT_MS"] = "100"
@@ -624,7 +635,7 @@ def test_tracker_reconciles_watchdog_receipt_as_single_state_writer(tmp_path: Pa
         ),
         encoding="utf-8",
     )
-    env = os.environ.copy()
+    env = _isolated_env()
     env["EIMEMORY_REPLY_DELIVERY_STATE_PATH"] = str(state_path)
     env["EIMEMORY_REPLY_DELIVERY_ATTEMPTS_PATH"] = str(attempts_path)
     env["EIMEMORY_HOOK_COMMAND"] = "/usr/bin/true"

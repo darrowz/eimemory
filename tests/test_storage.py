@@ -651,6 +651,46 @@ def test_runtime_store_creates_hot_path_records_indexes(tmp_path) -> None:
     assert "idx_records_meta_session_id" in index_names
 
 
+def test_recall_audit_session_lookup_forces_session_index(tmp_path) -> None:
+    store = RuntimeStore(root=tmp_path)
+    scope = ScopeRef(agent_id="hongtu", workspace_id="embodied", user_id="darrow")
+    store.append(
+        RecordEnvelope.create(
+            kind="recall_view",
+            title="Prompt audit",
+            summary="session-bound policy attribution",
+            scope=scope,
+            meta={"session_id": "session-index-probe"},
+            content={"session_id": "session-index-probe"},
+        )
+    )
+
+    plan = store.sqlite.conn.execute(
+        "EXPLAIN QUERY PLAN "
+        + sqlite_store_module._LIST_RECALL_AUDITS_COMPACT_BY_SESSION_SQL,
+        (
+            scope.tenant_id,
+            scope.agent_id,
+            scope.workspace_id,
+            scope.user_id,
+            "session-index-probe",
+            10,
+        ),
+    ).fetchall()
+    details = " ".join(str(row["detail"]) for row in plan)
+
+    assert "USING INDEX idx_records_meta_session_id" in details
+    assert "USING INDEX idx_records_scope_updated" not in details
+    assert [
+        record.record_id
+        for record in store.list_recall_audits_compact_by_session(
+            scope=scope,
+            session_id="session-index-probe",
+            limit=10,
+        )
+    ]
+
+
 def test_runtime_store_counts_exact_scope_without_loading_record_payloads(tmp_path, monkeypatch) -> None:
     store = RuntimeStore(root=tmp_path)
     exact = ScopeRef(tenant_id="tenant-a", agent_id="hongtu", workspace_id="embodied", user_id="darrow")

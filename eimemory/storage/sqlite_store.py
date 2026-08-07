@@ -68,6 +68,19 @@ _BOUNDED_COUNT_INDEX_MIGRATION = "records.bounded_count_index.v1"
 _PAYLOAD_ARCHIVE_MIGRATION = "records.payload_archive.v1"
 _PAYLOAD_ARCHIVE_KINDS = ("capability_score", "recall_view")
 _DEFAULT_PAYLOAD_INLINE_BYTES = 16 * 1024
+_LIST_RECALL_AUDITS_COMPACT_BY_SESSION_SQL = (
+    "WITH selected_records AS ("
+    "SELECT storage_key,updated_at,record_id FROM records "
+    "INDEXED BY idx_records_meta_session_id "
+    "WHERE kind IN ('recall_view','reflection') AND tenant_id=? AND agent_id=? "
+    "AND workspace_id=? AND user_id=? "
+    "AND CAST(json_extract(meta_json,'$.session_id') AS TEXT)=? "
+    "ORDER BY updated_at DESC,record_id DESC LIMIT ?) "
+    "SELECT r.record_id,r.kind,r.status,r.tenant_id,r.agent_id,r.workspace_id,"
+    "r.user_id,r.source_id,r.payload_json,r.payload_pointer_json,r.payload_digest "
+    "FROM selected_records JOIN records AS r USING(storage_key) "
+    "ORDER BY selected_records.updated_at DESC,selected_records.record_id DESC"
+)
 _IDENTITY_PAYLOAD_KINDS = (
     "memory",
     "knowledge_page",
@@ -5164,16 +5177,7 @@ class SqliteRecordStore:
 
         bounded = self._normalize_limit(limit)
         rows = self.conn.execute(
-            "WITH selected_records AS ("
-            "SELECT storage_key,updated_at,record_id FROM records "
-            "WHERE kind IN ('recall_view','reflection') AND tenant_id=? AND agent_id=? "
-            "AND workspace_id=? AND user_id=? "
-            "AND CAST(json_extract(meta_json,'$.session_id') AS TEXT)=? "
-            "ORDER BY updated_at DESC,record_id DESC LIMIT ?) "
-            "SELECT r.record_id,r.kind,r.status,r.tenant_id,r.agent_id,r.workspace_id,"
-            "r.user_id,r.source_id,r.payload_json,r.payload_pointer_json,r.payload_digest "
-            "FROM selected_records JOIN records AS r USING(storage_key) "
-            "ORDER BY selected_records.updated_at DESC,selected_records.record_id DESC",
+            _LIST_RECALL_AUDITS_COMPACT_BY_SESSION_SQL,
             (
                 scope.tenant_id or "default",
                 scope.agent_id,

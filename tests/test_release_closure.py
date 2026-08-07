@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 import json
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import pytest
 
@@ -913,6 +914,7 @@ def test_release_closure_fails_closed_when_production_gate_runner_is_unavailable
                 "replay_bootstrap",
                 "live_acceptance",
                 "channel_acceptance",
+                "channel_acceptance",
             ],
             "current_release_channel_receipt_not_found",
         ),
@@ -1290,15 +1292,58 @@ def test_release_closure_rejects_task_type_only_deficit_without_bootstrap() -> N
     assert report["blocked_reason"] == "readiness_not_l5"
 
 
-def _run(runtime: FakeRuntime) -> dict:
-    return run_release_closure(
-        runtime,
+def test_release_closure_test_helper_ignores_inherited_pending_path(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    inherited_path = tmp_path / "production" / "release-closure-pending.json"
+    checkpoint = pending_module.build_release_closure_pending(
         scope=SCOPE,
         repo_root=REPO_ROOT,
         current_link=CURRENT_LINK,
         health_url=HEALTH_URL,
         prior_commit=PRIOR_COMMIT,
+        current_release=ReleaseIdentity(
+            CURRENT_COMMIT,
+            "1.9.51",
+            "receipt-1",
+            "receipt-1",
+        ),
+        release_path=f"/opt/eimemory/releases/{CURRENT_COMMIT}",
+        record_ids={"deployment_receipt": "receipt-1"},
+        replay_bootstrap=_successful_replay_bootstrap(),
+        live_acceptance=_successful_live_acceptance(),
+        bootstrap_pending=None,
     )
+    pending_module.write_release_closure_pending(checkpoint, path=inherited_path)
+    before = inherited_path.read_text(encoding="utf-8")
+    monkeypatch.setenv(
+        "EIMEMORY_RELEASE_CLOSURE_PENDING_PATH",
+        str(inherited_path),
+    )
+    runtime = FakeRuntime(
+        channel_acceptance={
+            "ok": False,
+            "error": "current_release_channel_receipt_not_found",
+        }
+    )
+
+    _run(runtime)
+
+    assert inherited_path.read_text(encoding="utf-8") == before
+
+
+def _run(runtime: FakeRuntime) -> dict:
+    with TemporaryDirectory(prefix="eimemory-release-closure-test-") as root:
+        return run_release_closure(
+            runtime,
+            scope=SCOPE,
+            repo_root=REPO_ROOT,
+            current_link=CURRENT_LINK,
+            health_url=HEALTH_URL,
+            prior_commit=PRIOR_COMMIT,
+            pending_path=Path(root) / "release-closure-pending.json",
+        )
 
 
 def _passing_diagnostic_recall_report(tmp_path) -> dict:

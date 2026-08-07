@@ -13,6 +13,12 @@ RECEIPT_KEY = "test-openclaw-receipt-key-with-at-least-32-characters"
 
 def _bridge_env() -> dict[str, str]:
     env = os.environ.copy()
+    for name in (
+        "EIMEMORY_RPC_URL",
+        "EIMEMORY_RPC_AUTH_TOKEN",
+        "EIMEMORY_RPC_TOKEN",
+    ):
+        env.pop(name, None)
     env["EIMEMORY_EVIDENCE_RECEIPT_HMAC_KEY"] = RECEIPT_KEY
     return env
 
