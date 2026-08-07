@@ -44,3 +44,4 @@ state/autonomous_learning/rolled_back/*
 # Added by code-review-graph
 .code-review-graph/
 .worktrees/
+.bench-artifacts/
