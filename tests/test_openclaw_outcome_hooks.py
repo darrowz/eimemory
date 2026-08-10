@@ -119,6 +119,48 @@ def test_openclaw_before_prompt_build_returns_trace_context_and_policy_attributi
     assert loop.get_task(result["task_context"]["openclaw_loop_task_id"])["status"] == "running"
 
 
+def test_openclaw_before_prompt_build_passes_single_policy_search_into_recall(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("OPENCLAW_LOOP_HOME", str(tmp_path / "loop"))
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    hooks = OpenClawMemoryHooks(runtime)
+    policy_calls: list[str] = []
+    captured: dict[str, object] = {}
+
+    def fake_policy(query: str, *, scope: dict, context: dict, limit: int) -> dict:
+        policy_calls.append(query)
+        return {
+            "ok": True,
+            "matched_event_type": "chat.reply",
+            "policy_suggestions": [{"id": "policy-single", "source": "intent_pattern"}],
+        }
+
+    def fake_recall(*, query: str, scope: dict, task_context: dict, limit: int) -> RecallBundle:
+        captured.update(task_context)
+        return _build_bundle(task_context=task_context, query=query)
+
+    monkeypatch.setattr(runtime, "search_policy", fake_policy)
+    monkeypatch.setattr(runtime.memory, "recall", fake_recall)
+
+    result = hooks.before_prompt_build(
+        {
+            "session_id": "sess-policy-single",
+            "agent_id": "main",
+            "workspace_id": "repo-x",
+            "user_id": "darrow",
+            "query": "use the matching policy once",
+            "task_context": {"task_type": "chat.reply", "recall_budget_ms": 800},
+        }
+    )
+
+    assert policy_calls == ["use the matching policy once"]
+    assert captured["_precomputed_policy_search"]["matched_event_type"] == "chat.reply"
+    assert "_precomputed_policy_search" not in result["task_context"]
+    assert "_recall_deadline_monotonic" not in result["task_context"]
+
+
+
 def test_openclaw_before_prompt_build_reuses_active_loop_task_from_context(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("OPENCLAW_LOOP_HOME", str(tmp_path / "loop"))
     runtime = Runtime.create(root=tmp_path / "runtime")

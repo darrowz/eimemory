@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Planned
 - Multi-agent memory coordination
 
+## [1.9.132] - 2026-08-10
+
+### Fixed
+
+- Enforce the OpenClaw fast-recall deadline across candidate fanout and optional hot-path work, reuse the hook's policy search inside governed recall, and stop timed-out prompt work from starving terminal hooks.
+- Remove an accidentally tracked absolute release symlink so immutable release archives pass safe extraction validation.
+
 ## [1.9.131] - 2026-08-10
 
 ### Fixed

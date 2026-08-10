@@ -254,6 +254,12 @@ class GovernedRecallEngine:
         task_context = request.task_context_dict()
         source_ids = request.source_ids
         recall_mode = str(task_context.get("recall_mode") or "").strip().lower()
+        deadline_at = self._safe_float(task_context.pop("_recall_deadline_monotonic", 0.0))
+        precomputed_policy_search = task_context.pop("_precomputed_policy_search", None)
+
+        def recall_deadline_exceeded() -> bool:
+            return recall_mode == "fast" and deadline_at > 0.0 and perf_counter() >= deadline_at
+
         raw_hybrid = recall_mode == "raw_hybrid"
         scope_ref = request.scope.to_scope_ref()
         recall_scope_aliases = extract_user_aliases(task_context)
@@ -348,12 +354,16 @@ class GovernedRecallEngine:
                 scope=policy_scope_ref,
                 source_ids=source_ids,
             )
-        policy_search = self.store.search_policy(
-            normalized_query,
-            scope=policy_scope_ref,
-            context=task_context,
-            limit=5,
-            source_ids=source_ids,
+        policy_search = (
+            dict(precomputed_policy_search)
+            if isinstance(precomputed_policy_search, dict)
+            else self.store.search_policy(
+                normalized_query,
+                scope=policy_scope_ref,
+                context=task_context,
+                limit=5,
+                source_ids=source_ids,
+            )
         )
         retrieval_policy = dict(active_policy.get("retrieval_policy") or {})
         recall_profile, recall_profile_source = memory._resolve_recall_profile(
@@ -486,8 +496,12 @@ class GovernedRecallEngine:
         component_hints_by_ref: dict[tuple[str, ExactScope, str], dict[str, Any]] = {}
         identity_evidence_by_ref: dict[tuple[str, ExactScope, str], set[str]] = {}
         pending_hits: list[tuple[CandidateRequest, int, int, int, CandidateHit]] = []
+        recall_budget_exhausted = False
         for group_index, scope_group in enumerate(candidate_scope_groups):
             for scope_index, query_scope_ref in enumerate(scope_group):
+                if recall_deadline_exceeded():
+                    recall_budget_exhausted = True
+                    break
                 candidate_budget = max(
                     search_limit,
                     memory._positive_int(recall_filters.get("candidate_limit"))
@@ -517,6 +531,13 @@ class GovernedRecallEngine:
                     (source_request, group_index, scope_index, provider_index, hit)
                     for provider_index, hit in bounded_hits
                 )
+                if recall_deadline_exceeded():
+                    recall_budget_exhausted = True
+                    break
+            if recall_budget_exhausted:
+                break
+        if recall_budget_exhausted:
+            engine_drops["recall_budget_exhausted"] += 1
         pending_hits.sort(
             key=lambda entry: (
                 entry[1],
@@ -527,6 +548,9 @@ class GovernedRecallEngine:
             )
         )
         for source_request, _group_index, _scope_index, _provider_index, hit in pending_hits:
+            if recall_deadline_exceeded():
+                engine_drops["recall_budget_exhausted"] += 1
+                break
             candidate_key = (hit.ref.record_id, hit.ref.scope, hit.ref.source_id)
             component_hints = component_hints_by_ref.setdefault(candidate_key, {})
             component_hints.update(hit.component_dict())
@@ -735,7 +759,13 @@ class GovernedRecallEngine:
             allow_operational_recall=operational_recall_allowed,
         )
         blocked_counts.update(online_gate_counts)
-        memory_usage_adjustments = memory._memory_usage_adjustments(scope_ref, source_ids=source_ids)
+        memory_usage_adjustments = (
+            {}
+            if recall_deadline_exceeded()
+            else memory._memory_usage_adjustments(scope_ref, source_ids=source_ids)
+        )
+        if not memory_usage_adjustments and recall_deadline_exceeded():
+            engine_drops["recall_budget_exhausted"] += 1
         items = memory._apply_memory_usage_feedback(items, memory_usage_adjustments)
         items, fusion_state = self._fuse_and_pool_items(
             items=items,

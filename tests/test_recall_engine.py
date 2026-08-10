@@ -1721,6 +1721,47 @@ def test_user_alias_fanout_is_hard_bounded(tmp_path) -> None:
     store.close()
 
 
+def test_fast_recall_deadline_stops_scope_fanout_and_expensive_feedback(
+    tmp_path, monkeypatch
+) -> None:
+    store = RuntimeStore(tmp_path)
+    source = FakeCandidateSource(())
+    memory = MemoryAPI(
+        store,
+        recall_engine=GovernedRecallEngine(store=store, candidate_source=source),
+    )
+    clock = iter([0.0, 0.1, 0.2, 0.3, 0.4, 0.5])
+    monkeypatch.setattr("eimemory.retrieval.engine.perf_counter", lambda: next(clock, 1.0))
+    monkeypatch.setattr(
+        memory,
+        "_memory_usage_adjustments",
+        lambda *_args, **_kwargs: pytest.fail("usage feedback must not run after deadline"),
+    )
+
+    bundle = memory.recall(
+        query="bounded fast recall",
+        scope=asdict(SCOPE),
+        task_context={
+            "recall_mode": "fast",
+            "query_scope_limit": 4,
+            "user_aliases": ["alias-a", "alias-b", "alias-c"],
+            "_recall_deadline_monotonic": 0.15,
+            "_precomputed_policy_search": {
+                "ok": True,
+                "matched_event_type": "chat.reply",
+                "policy_suggestions": [],
+            },
+        },
+        limit=1,
+    )
+
+    assert len(source.requests) == 1
+    assert bundle.explanation["engine_diagnostics"]["drops"]["recall_budget_exhausted"] >= 1
+    assert "_recall_deadline_monotonic" not in bundle.explanation["task_context"]
+    assert "_precomputed_policy_search" not in bundle.explanation["task_context"]
+    store.close()
+
+
 def test_sqlite_candidate_search_rejects_projection_payload_swap(tmp_path) -> None:
     import json
 

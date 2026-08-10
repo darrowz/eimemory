@@ -109,6 +109,9 @@ class OpenClawMemoryHooks:
         start = perf_counter()
         query = self._clean_prompt_query(str(event.get("query") or event.get("raw_query") or "").strip())
         recall_context = self._resolve_recall_context(event)
+        recall_context["_recall_deadline_monotonic"] = start + (
+            float(recall_context["recall_budget_ms"]) / 1000.0
+        )
         loop_task = self._openclaw_loop_start(event=event, query=query)
         if loop_task:
             recall_context["openclaw_loop_task_id"] = loop_task.get("task_id", "")
@@ -140,6 +143,7 @@ class OpenClawMemoryHooks:
                 persona_guidance=persona_guidance,
                 injection_latency_ms=latency_ms,
             )
+            recall_context.pop("_recall_deadline_monotonic", None)
             return {
                 "memory_bundle": bundle.to_dict(),
                 "injection_plan": injection_plan,
@@ -157,6 +161,7 @@ class OpenClawMemoryHooks:
             context=recall_context,
             limit=5,
         )
+        recall_context["_precomputed_policy_search"] = policy_search
         bundle = self._run_recall_safely(
             query=query,
             scope=scope,
@@ -186,12 +191,17 @@ class OpenClawMemoryHooks:
         # Actual injection happens in the JS host after this hook returns and
         # is recorded only by proactive_injected. This legacy selection audit
         # must never claim delivery before that acknowledgement.
-        self._audit_prompt_recall(event=event, bundle=bundle, injected=False)
-        persona_trace = self._record_persona_trace(
-            event=event,
-            persona_guidance=persona_guidance,
-            injection_latency_ms=latency_ms,
-        )
+        if self._recall_deadline_exceeded(recall_context):
+            persona_trace = {}
+        else:
+            self._audit_prompt_recall(event=event, bundle=bundle, injected=False)
+            persona_trace = self._record_persona_trace(
+                event=event,
+                persona_guidance=persona_guidance,
+                injection_latency_ms=latency_ms,
+            )
+        recall_context.pop("_precomputed_policy_search", None)
+        recall_context.pop("_recall_deadline_monotonic", None)
         return {
             "memory_bundle": bundle.to_dict(),
             "injection_plan": injection_plan,
@@ -259,6 +269,13 @@ class OpenClawMemoryHooks:
             next_action_hint=bundle.next_action_hint,
             explanation=dict(bundle.explanation),
         )
+        if self._recall_deadline_exceeded(task_context):
+            fallback = self.runtime.proactive.mandatory_fallback(
+                channel="openclaw", scope=scope, source_ids=source_ids,
+                records=[*proactive_bundle.items, *proactive_bundle.rules], query_id=turn_id,
+            )
+            fallback["reason"] = "recall_budget_exhausted"
+            return fallback
         try:
             decision = self.runtime.proactive.decide(
                 channel="openclaw", scope=scope, source_ids=source_ids,
@@ -565,6 +582,14 @@ class OpenClawMemoryHooks:
             return DEFAULT_RECALL_BUDGET_MS
         return budget
 
+    @staticmethod
+    def _recall_deadline_exceeded(task_context: dict) -> bool:
+        try:
+            deadline = float(task_context.get("_recall_deadline_monotonic") or 0.0)
+        except (TypeError, ValueError):
+            return False
+        return deadline > 0.0 and perf_counter() >= deadline
+
     def _coerce_injection_token_budget(self, value: object) -> int:
         try:
             budget = int(value)
@@ -754,7 +779,11 @@ class OpenClawMemoryHooks:
         bundle.explanation["matched_event_type"] = matched_event_type
 
     def _apply_pre_answer_gates(self, *, bundle: RecallBundle, query: str, scope: dict, task_context: dict) -> None:
-        gate = self._run_ground_truth_gate_safely(query=query, scope=scope)
+        gate = (
+            {"ok": False, "skipped": "recall_budget_exhausted"}
+            if self._recall_deadline_exceeded(task_context)
+            else self._run_ground_truth_gate_safely(query=query, scope=scope)
+        )
         if gate.get("ok"):
             self._inject_ground_truth_rules(bundle=bundle, gate=gate, scope=scope)
             bundle.explanation["ground_truth_pre_answer_gate"] = gate
@@ -769,7 +798,7 @@ class OpenClawMemoryHooks:
 
     def _run_ground_truth_gate_safely(self, *, query: str, scope: dict) -> dict:
         try:
-            result = self.runtime.build_ground_truth_pre_answer_gate(query=query, scope=scope, persist=True)
+            result = self.runtime.build_ground_truth_pre_answer_gate(query=query, scope=scope, persist=False)
         except Exception:
             return {"ok": False, "error": "ground_truth_pre_answer_gate_failed"}
         return result if isinstance(result, dict) else {"ok": False, "error": "invalid_ground_truth_pre_answer_gate"}
