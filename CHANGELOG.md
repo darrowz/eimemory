@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Planned
 - Multi-agent memory coordination
 
+## [1.9.131] - 2026-08-10
+
+### Fixed
+
+- Keep accumulated maturity separate from the current release readiness stage, and reject L5 observation reports whose release commit does not match the active runtime.
+
 ## [1.9.130] - 2026-08-03
 
 ### Fixed

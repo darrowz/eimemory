@@ -85,6 +85,7 @@ parse_readiness_json() {
 import hashlib
 import json
 import math
+import os
 import re
 import sys
 
@@ -119,6 +120,11 @@ if stage == "L5":
     }
     if not re.fullmatch(r"[0-9a-f]{40}", str(required["release_commit"] or "")):
         raise ValueError("L5 release commit is invalid")
+    runtime_commit = str(os.environ.get("EIMEMORY_RUNTIME_COMMIT") or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{40}", runtime_commit):
+        raise ValueError("L5 runtime commit is invalid")
+    if required["release_commit"] != runtime_commit:
+        raise ValueError("L5 release commit does not match runtime")
     if any(not str(value or "").strip() for value in required.values()):
         raise ValueError("L5 release identity is incomplete")
     identity_digest = hashlib.sha256(

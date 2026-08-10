@@ -290,6 +290,7 @@ def _run_l5_observation_gate(
     curl_failure: bool = False,
     signal_after_disable: bool = False,
     second_readiness_payload: str = "",
+    runtime_commit: str = "a" * 40,
     runs: int = 1,
 ) -> tuple[subprocess.CompletedProcess[str], Path, Path, Path, Path]:
     bin_dir = tmp_path / "bin"
@@ -406,6 +407,7 @@ def _run_l5_observation_gate(
         "SYSTEMCTL_ACTION_LOG": _bash_path(action_log),
         "READINESS_PAYLOAD": readiness_payload,
         "SECOND_READINESS_PAYLOAD": second_readiness_payload,
+        "EIMEMORY_RUNTIME_COMMIT": runtime_commit,
         "SYSTEMD_259_STRICT": "1" if systemd_259_strict else "0",
         "READINESS_COUNTER_FILE": _bash_path(tmp_path / "readiness.count"),
         "READINESS_COMMAND_FAILURE": "1" if readiness_command_failure else "0",
@@ -505,6 +507,32 @@ def test_l5_observation_gate_mutates_and_disables_timer_only_at_exact_l5(
     }
     assert gateway_dropin.is_file()
     assert "disable --now eimemory-l5-observation-gate.timer" in action_log.read_text(
+        encoding="utf-8"
+    )
+
+
+def test_l5_observation_gate_rejects_release_identity_from_another_runtime(
+    tmp_path: Path,
+) -> None:
+    result, nightly_unit, openclaw_config, gateway_dropin, action_log = (
+        _run_l5_observation_gate(
+            tmp_path,
+            readiness_payload=_l5_observation_readiness_payload(commit="b" * 40),
+            runtime_commit="a" * 40,
+        )
+    )
+
+    assert result.returncode != 0
+    assert "L5 release commit does not match runtime" in result.stderr
+    assert "status=l5_enabled" not in result.stdout
+    assert nightly_unit.read_text(encoding="utf-8") == (
+        "[Service]\nEnvironment=UNCHANGED=1\n"
+    )
+    assert json.loads(openclaw_config.read_text(encoding="utf-8"))["plugins"]["entries"][
+        "eimemory-bridge"
+    ]["hooks"]["allowPromptInjection"] is False
+    assert not gateway_dropin.exists()
+    assert not action_log.exists() or "disable --now" not in action_log.read_text(
         encoding="utf-8"
     )
 
@@ -651,7 +679,7 @@ def test_l5_observation_gate_rejects_release_change_after_lock(
     )
 
     assert result.returncode != 0
-    assert "readiness_identity=changed_before_activation" in result.stderr
+    assert "L5 release commit does not match runtime" in result.stderr
     assert nightly_unit.read_text(encoding="utf-8") == (
         "[Service]\nEnvironment=UNCHANGED=1\n"
     )

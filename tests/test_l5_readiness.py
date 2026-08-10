@@ -101,6 +101,41 @@ def test_l5_readiness_requires_exact_current_receipt_before_lineage_resolution(
     assert report["current_stage"] != "L5"
 
 
+def test_l5_readiness_does_not_export_accumulated_l5_as_current_release_stage(
+    tmp_path,
+) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope_ref = ScopeRef.from_dict(SCOPE)
+    runtime.store.append(
+        RecordEnvelope.create(
+            kind="reflection",
+            title="Historical L5 readiness",
+            summary="accumulated maturity only",
+            scope=scope_ref,
+            source="eimemory.l5_readiness",
+            status="active",
+            content={
+                "report_type": "l5_readiness_report",
+                "schema_version": "l5_readiness.v2",
+                "current_stage": "L5",
+                "readiness_score": 1.0,
+            },
+            meta={"report_type": "l5_readiness_report", "stage": "L5"},
+        )
+    )
+    try:
+        report = runtime.build_l5_readiness_report(scope=SCOPE, persist=False)
+    finally:
+        runtime.close()
+
+    assert report["ok"] is True
+    assert report["release_validation"]["ok"] is False
+    assert report["observed_stage"] != "L5"
+    assert report["current_stage"] == report["observed_stage"]
+    assert report["readiness_score"] == report["observed_score"]
+    assert report["accumulated_maturity"]["current_stage"] == "L5"
+
+
 def test_l5_release_lineage_gate_ignores_descriptive_version_drift() -> None:
     current = ReleaseIdentity(
         commit="a" * 40,
