@@ -65,6 +65,7 @@ _SOURCE_PARTITION_MIGRATION = "records.source_partition.v1"
 _RECALL_IDENTITY_MIGRATION = "recall.identity_index.v1"
 _PROACTIVE_TEXT_FREE_MIGRATION = "proactive.storage_text_free.v1"
 _BOUNDED_COUNT_INDEX_MIGRATION = "records.bounded_count_index.v1"
+_OUTCOME_TRACE_INDEX_MIGRATION = "records.outcome_trace_index.v1"
 _PAYLOAD_ARCHIVE_MIGRATION = "records.payload_archive.v1"
 _PAYLOAD_ARCHIVE_KINDS = ("capability_score", "recall_view")
 _DEFAULT_PAYLOAD_INLINE_BYTES = 16 * 1024
@@ -1434,6 +1435,7 @@ class SqliteRecordStore:
             "CREATE INDEX IF NOT EXISTS idx_records_idempotency "
             "ON records(kind, tenant_id, agent_id, workspace_id, user_id, idempotency_key, updated_at DESC, record_id DESC)"
         )
+        self._create_outcome_trace_index()
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_records_semantic "
             "ON records(kind, tenant_id, agent_id, workspace_id, user_id, semantic_key, updated_at DESC, record_id DESC)"
@@ -1504,6 +1506,34 @@ class SqliteRecordStore:
             "status",
             "kind",
         ]
+
+    def _create_outcome_trace_index(self, *, rebuild: bool = False) -> None:
+        if rebuild:
+            self.conn.execute("DROP INDEX IF EXISTS idx_records_outcome_trace")
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_records_outcome_trace "
+            "ON records(kind, source, tenant_id, agent_id, workspace_id, user_id, "
+            "CAST(COALESCE(json_extract(meta_json, '$.trace_id'), "
+            "json_extract(meta_json, '$.business_meta.trace_id'), "
+            "json_extract(payload_json, '$.provenance.trace_id')) AS TEXT), "
+            "updated_at DESC, record_id DESC)"
+        )
+        if self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations'"
+        ).fetchone() is not None:
+            self._mark_schema_migration(_OUTCOME_TRACE_INDEX_MIGRATION)
+
+    def _outcome_trace_index_ready(self) -> bool:
+        row = self.conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_records_outcome_trace'"
+        ).fetchone()
+        normalized = " ".join(str(row["sql"] or "").lower().split()) if row else ""
+        return (
+            "on records(kind, source, tenant_id, agent_id, workspace_id, user_id" in normalized
+            and "$.trace_id" in normalized
+            and "$.business_meta.trace_id" in normalized
+            and "$.provenance.trace_id" in normalized
+        )
 
     def _create_recall_index_tables(self, *, create_indexes: bool = True) -> None:
         self.conn.execute(
@@ -2284,6 +2314,7 @@ class SqliteRecordStore:
             _PROACTIVE_TEXT_FREE_MIGRATION,
             _PAYLOAD_ARCHIVE_MIGRATION,
             _BOUNDED_COUNT_INDEX_MIGRATION,
+            _OUTCOME_TRACE_INDEX_MIGRATION,
         ):
             if not self._schema_migration_applied(migration_id):
                 pending.append(migration_id)
@@ -2302,6 +2333,11 @@ class SqliteRecordStore:
             and not self._bounded_count_index_ready()
         ):
             pending.append(_BOUNDED_COUNT_INDEX_MIGRATION)
+        if (
+            _OUTCOME_TRACE_INDEX_MIGRATION not in pending
+            and not self._outcome_trace_index_ready()
+        ):
+            pending.append(_OUTCOME_TRACE_INDEX_MIGRATION)
         return pending
 
     def apply_storage_migrations(
@@ -2374,6 +2410,23 @@ class SqliteRecordStore:
             self.conn.execute("BEGIN IMMEDIATE")
             try:
                 self._create_bounded_count_index(rebuild=True)
+                self.conn.commit()
+                index_created = True
+            except Exception:
+                self.conn.rollback()
+                raise
+        if not self._outcome_trace_index_ready():
+            if not offline:
+                return {
+                    "ok": True,
+                    "processed": processed,
+                    "index_created": index_created,
+                    "offline_required": True,
+                    "pending": self.pending_storage_migrations(),
+                }
+            self.conn.execute("BEGIN IMMEDIATE")
+            try:
+                self._create_outcome_trace_index(rebuild=True)
                 self.conn.commit()
                 index_created = True
             except Exception:
@@ -4813,6 +4866,58 @@ class SqliteRecordStore:
         if not row:
             return None
         return self._record_from_storage_row(row, hydrate=True)
+
+    def find_outcome_trace(
+        self,
+        *,
+        scope: ScopeRef,
+        idempotency_key: str,
+        trace_id: str,
+    ) -> RecordEnvelope | None:
+        """Resolve one outcome trace without hydrating unrelated reflections."""
+
+        base = (
+            "kind='reflection' AND source='eimemory.experience.outcome_trace' "
+            "AND tenant_id=? AND agent_id=? AND workspace_id=? AND user_id=? "
+            "AND CAST(COALESCE(json_extract(meta_json,'$.report_type'), "
+            "json_extract(meta_json,'$.business_meta.report_type'), "
+            "json_extract(payload_json,'$.provenance.report_type')) AS TEXT)='outcome_trace' "
+        )
+        scope_params = [scope.tenant_id, scope.agent_id, scope.workspace_id, scope.user_id]
+
+        def fetch(extra_where: str, values: list[object]) -> RecordEnvelope | None:
+            row = self.conn.execute(
+                "SELECT source_id,payload_json,payload_pointer_json,payload_digest "
+                f"FROM records WHERE {base}AND ({extra_where}) "
+                "ORDER BY updated_at DESC,record_id DESC LIMIT 1",
+                [*scope_params, *values],
+            ).fetchone()
+            return None if row is None else self._record_from_storage_row(row, hydrate=True)
+
+        key = str(idempotency_key or "").strip()
+        if key:
+            indexed = fetch("idempotency_key=?", [key])
+            if indexed is not None:
+                return indexed
+        trace = str(trace_id or "").strip()
+        if trace:
+            traced = fetch(
+                "CAST(COALESCE(json_extract(meta_json,'$.trace_id'), "
+                "json_extract(meta_json,'$.business_meta.trace_id'), "
+                "json_extract(payload_json,'$.provenance.trace_id')) AS TEXT)=?",
+                [trace],
+            )
+            if traced is not None:
+                return traced
+        if key:
+            legacy = fetch(
+                "CAST(json_extract(meta_json,'$.business_meta.idempotency_key') AS TEXT)=? "
+                "OR CAST(json_extract(payload_json,'$.provenance.idempotency_key') AS TEXT)=?",
+                [key, key],
+            )
+            if legacy is not None:
+                return legacy
+        return None
 
     def list_records(
         self,

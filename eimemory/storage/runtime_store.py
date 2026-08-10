@@ -665,6 +665,44 @@ class RuntimeStore:
             scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
             return self.sqlite.get_by_idempotency_key(kinds=kinds, scope=scope_ref, idempotency_key=idempotency_key)
 
+    def find_outcome_trace(
+        self,
+        *,
+        scope: ScopeRef | dict,
+        idempotency_key: str,
+        trace_id: str,
+    ) -> RecordEnvelope | None:
+        with self._lock:
+            scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+            return self.sqlite.find_outcome_trace(
+                scope=scope_ref,
+                idempotency_key=idempotency_key,
+                trace_id=trace_id,
+            )
+
+    def append_outcome_trace_if_absent(
+        self,
+        record: RecordEnvelope,
+        *,
+        scope: ScopeRef | dict,
+        idempotency_key: str,
+        trace_id: str,
+    ) -> tuple[RecordEnvelope, bool]:
+        scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+
+        def mutation(sqlite: SqliteRecordStore):
+            existing = sqlite.find_outcome_trace(
+                scope=scope_ref,
+                idempotency_key=idempotency_key,
+                trace_id=trace_id,
+            )
+            if existing is not None:
+                return (existing, True), [], []
+            sqlite.upsert(record, commit=False)
+            return (record, False), [record], []
+
+        return self.mutate_records_atomically(mutation)
+
     def get_many_by_ids(self, record_ids: list[str], scope: ScopeRef | dict | None = None) -> list[RecordEnvelope]:
         with self._lock:
             resolved: list[RecordEnvelope] = []

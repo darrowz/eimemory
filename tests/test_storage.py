@@ -651,6 +651,31 @@ def test_runtime_store_creates_hot_path_records_indexes(tmp_path) -> None:
     assert "idx_records_meta_session_id" in index_names
 
 
+def test_existing_store_defers_outcome_trace_index_upgrade_to_offline_migration(tmp_path) -> None:
+    store = RuntimeStore(root=tmp_path)
+    store.sqlite.conn.execute("DROP INDEX idx_records_outcome_trace")
+    store.sqlite.conn.execute(
+        "DELETE FROM schema_migrations WHERE migration_id = ?",
+        ("records.outcome_trace_index.v1",),
+    )
+    store.sqlite.conn.commit()
+    store.close()
+
+    reopened = RuntimeStore(root=tmp_path)
+    assert "records.outcome_trace_index.v1" in reopened.sqlite.pending_storage_migrations()
+
+    report = reopened.sqlite.apply_storage_migrations(offline=True)
+    index_names = {
+        str(row["name"])
+        for row in reopened.sqlite.conn.execute("PRAGMA index_list(records)").fetchall()
+    }
+    reopened.close()
+
+    assert report["pending"] == []
+    assert report["index_created"] is True
+    assert "idx_records_outcome_trace" in index_names
+
+
 def test_recall_audit_session_lookup_forces_session_index(tmp_path) -> None:
     store = RuntimeStore(root=tmp_path)
     scope = ScopeRef(agent_id="hongtu", workspace_id="embodied", user_id="darrow")

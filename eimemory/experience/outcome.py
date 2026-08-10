@@ -60,6 +60,20 @@ def record_outcome_trace(runtime: Any, payload: dict[str, Any], scope: dict | Sc
     for source_id in contract_source_ids(build.contract or {}):
         if runtime.store.get_by_id(source_id, scope=scope_ref) is None:
             return {"ok": False, "error": f"capability contract source record unavailable in scope: {source_id}"}
+    atomic_append = getattr(runtime.store, "append_outcome_trace_if_absent", None)
+    if callable(atomic_append):
+        stored, idempotent = atomic_append(
+            build.record,
+            scope=scope_ref,
+            idempotency_key=_idempotency_key(build.payload),
+            trace_id=_trace_id(build.payload),
+        )
+        return {
+            "ok": True,
+            "record_id": stored.record_id,
+            "kind": stored.kind,
+            "idempotent": idempotent,
+        }
     existing = _existing_outcome_record(runtime, build.payload, scope=scope_ref)
     if existing is not None:
         return {"ok": True, "record_id": existing.record_id, "kind": existing.kind, "idempotent": True}
@@ -215,6 +229,30 @@ def _existing_outcome_record(runtime: Any, payload: dict[str, Any], *, scope: Sc
     idempotency_key = _idempotency_key(payload)
     if not trace_id and not idempotency_key:
         return None
+    exact_lookup = getattr(runtime.store, "get_by_id", None)
+    if callable(exact_lookup):
+        record = exact_lookup(
+            _outcome_trace_record_id(
+                scope=scope,
+                trace_id=trace_id,
+                idempotency_key=idempotency_key,
+            ),
+            scope=scope,
+        )
+        if _matches_outcome_record(
+            record,
+            scope=scope,
+            trace_id=trace_id,
+            idempotency_key=idempotency_key,
+        ):
+            return record
+    qualified_lookup = getattr(runtime.store, "find_outcome_trace", None)
+    if callable(qualified_lookup):
+        return qualified_lookup(
+            scope=scope,
+            idempotency_key=idempotency_key,
+            trace_id=trace_id,
+        )
     page_size = 500
     offset = 0
     while True:
@@ -235,6 +273,28 @@ def _existing_outcome_record(runtime: Any, payload: dict[str, Any], *, scope: Sc
             break
         offset += page_size
     return None
+
+
+def _matches_outcome_record(
+    record: RecordEnvelope | None,
+    *,
+    scope: ScopeRef,
+    trace_id: str,
+    idempotency_key: str,
+) -> bool:
+    if record is None or not _same_scope(record.scope, scope):
+        return False
+    if str(record.source or "") != "eimemory.experience.outcome_trace":
+        return False
+    meta = business_metadata(record.meta)
+    if str(meta.get("report_type") or record.provenance.get("report_type") or "") != REPORT_TYPE:
+        return False
+    observed_key = str(meta.get("idempotency_key") or record.provenance.get("idempotency_key") or "")
+    observed_trace = str(meta.get("trace_id") or record.provenance.get("trace_id") or "")
+    return bool(
+        (idempotency_key and observed_key == idempotency_key)
+        or (trace_id and observed_trace == trace_id)
+    )
 
 
 def _scope_ref(scope: dict | ScopeRef | None) -> ScopeRef:

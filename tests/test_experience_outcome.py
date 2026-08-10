@@ -1,5 +1,9 @@
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
+
 import pytest
 
+import eimemory.experience.outcome as outcome_module
 from eimemory.api.runtime import Runtime
 from eimemory.experience import record_outcome_trace
 from eimemory.experience.diagnosis import diagnose_outcome
@@ -289,6 +293,180 @@ def test_record_outcome_trace_is_idempotent_by_key_and_trace_id_within_scope(tmp
     assert by_trace["record_id"] == first["record_id"]
     assert other_scope["record_id"] != first["record_id"]
     assert len(runtime.store.list_records(kinds=["reflection"], scope=scope, limit=10)) == 1
+
+
+def test_record_outcome_trace_is_atomic_for_concurrent_trace_aliases(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "eibrain", "workspace_id": "repo"}
+    barrier = Barrier(2)
+    original = outcome_module._existing_outcome_record
+
+    def synchronize_legacy_check(*args, **kwargs):
+        existing = original(*args, **kwargs)
+        barrier.wait(timeout=5)
+        return existing
+
+    monkeypatch.setattr(outcome_module, "_existing_outcome_record", synchronize_legacy_check)
+    payloads = [
+        _payload(trace_id="trace-concurrent", idempotency_key=f"idem-{index}")
+        for index in range(2)
+    ]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda payload: record_outcome_trace(runtime, payload, scope=scope), payloads))
+
+    assert len({result["record_id"] for result in results}) == 1
+    assert sorted(result["idempotent"] for result in results) == [False, True]
+    assert len(runtime.store.list_records(kinds=["reflection"], scope=scope, limit=10)) == 1
+
+
+def test_record_outcome_trace_idempotency_uses_bounded_indexed_lookups(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "eibrain", "workspace_id": "repo"}
+    first = record_outcome_trace(
+        runtime,
+        _payload(trace_id="trace-indexed", idempotency_key="idem-indexed"),
+        scope=scope,
+    )
+
+    def reject_generic_reflection_lookup(*args, **kwargs):
+        raise AssertionError("outcome trace idempotency must use its qualified storage lookup")
+
+    monkeypatch.setattr(runtime.store, "list_records", reject_generic_reflection_lookup)
+    monkeypatch.setattr(runtime.store, "get_by_idempotency_key", reject_generic_reflection_lookup)
+    monkeypatch.setattr(runtime.store, "list_records_by_meta_value", reject_generic_reflection_lookup)
+
+    by_key = record_outcome_trace(
+        runtime,
+        _payload(trace_id="trace-other", idempotency_key="idem-indexed"),
+        scope=scope,
+    )
+    by_trace = record_outcome_trace(
+        runtime,
+        _payload(trace_id="trace-indexed", idempotency_key="idem-other"),
+        scope=scope,
+    )
+
+    assert by_key["record_id"] == first["record_id"]
+    assert by_trace["record_id"] == first["record_id"]
+
+
+def test_record_outcome_trace_idempotency_ignores_newer_unrelated_reflection_with_same_key(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "eibrain", "workspace_id": "repo"}
+    first = record_outcome_trace(
+        runtime,
+        _payload(
+            trace_id="trace-original",
+            idempotency_key="openclaw.agent_end:idem-shared",
+            recorded_at="2020-01-01T00:00:00+00:00",
+        ),
+        scope=scope,
+    )
+    runtime.store.append(
+        RecordEnvelope.create(
+            kind="reflection",
+            title="Unrelated reflection",
+            summary="noise",
+            scope=ScopeRef.from_dict(scope),
+            meta={"idempotency_key": "openclaw.agent_end:idem-shared"},
+        )
+    )
+
+    duplicate = record_outcome_trace(
+        runtime,
+        _payload(
+            trace_id="trace-retry",
+            idempotency_key="openclaw.agent_end:idem-shared",
+            recorded_at="2021-01-01T00:00:00+00:00",
+        ),
+        scope=scope,
+    )
+
+    assert duplicate["idempotent"] is True
+    assert duplicate["record_id"] == first["record_id"]
+
+
+def test_record_outcome_trace_idempotency_rejects_reserved_source_without_report_type(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = ScopeRef(agent_id="eibrain", workspace_id="repo")
+    malformed = RecordEnvelope.create(
+        kind="reflection",
+        title="Malformed reserved-source record",
+        summary="not an outcome trace",
+        source="eimemory.experience.outcome_trace",
+        scope=scope,
+        meta={"trace_id": "trace-malformed", "idempotency_key": "idem-malformed"},
+    )
+    runtime.store.append(malformed)
+
+    result = record_outcome_trace(
+        runtime,
+        _payload(trace_id="trace-malformed", idempotency_key="idem-malformed"),
+        scope=scope,
+    )
+
+    assert result["idempotent"] is False
+    assert result["record_id"] != malformed.record_id
+
+
+def test_record_outcome_trace_idempotency_filters_trace_candidates_before_limit(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "eibrain", "workspace_id": "repo"}
+    first = record_outcome_trace(
+        runtime,
+        _payload(
+            trace_id="trace-shared",
+            idempotency_key="openclaw.agent_end:idem-original",
+            recorded_at="2020-01-01T00:00:00+00:00",
+        ),
+        scope=scope,
+    )
+    for index in range(11):
+        runtime.store.append(
+            RecordEnvelope.create(
+                kind="reflection",
+                title=f"Unrelated reflection {index}",
+                summary="noise",
+                scope=ScopeRef.from_dict(scope),
+                meta={"business_meta": {"trace_id": "trace-shared"}},
+            )
+        )
+
+    duplicate = record_outcome_trace(
+        runtime,
+        _payload(
+            trace_id="trace-shared",
+            idempotency_key="openclaw.agent_end:idem-retry",
+            recorded_at="2021-01-01T00:00:00+00:00",
+        ),
+        scope=scope,
+    )
+
+    assert duplicate["idempotent"] is True
+    assert duplicate["record_id"] == first["record_id"]
+
+
+def test_outcome_trace_lookup_has_dedicated_trace_index(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+
+    index_names = {
+        str(row["name"])
+        for row in runtime.store.sqlite.conn.execute("PRAGMA index_list(records)").fetchall()
+    }
+
+    assert "idx_records_outcome_trace" in index_names
+    plan = runtime.store.sqlite.conn.execute(
+        "EXPLAIN QUERY PLAN SELECT source_id FROM records "
+        "WHERE kind='reflection' AND source='eimemory.experience.outcome_trace' "
+        "AND tenant_id=? AND agent_id=? AND workspace_id=? AND user_id=? "
+        "AND CAST(COALESCE(json_extract(meta_json,'$.trace_id'), "
+        "json_extract(meta_json,'$.business_meta.trace_id'), "
+        "json_extract(payload_json,'$.provenance.trace_id')) AS TEXT)=? "
+        "ORDER BY updated_at DESC,record_id DESC LIMIT 1",
+        ["default", "eibrain", "repo", "", "missing"],
+    ).fetchall()
+
+    assert any("idx_records_outcome_trace" in str(row["detail"]) for row in plan)
 
 
 def test_record_outcome_trace_idempotency_scans_past_first_reflection_page(tmp_path) -> None:

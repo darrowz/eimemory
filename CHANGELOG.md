@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Planned
 - Multi-agent memory coordination
 
+## [1.9.133] - 2026-08-10
+
+### Fixed
+
+- Resolve outcome-trace idempotency through an offline-migrated SQLite index instead of hydrating every reflection page, and make concurrent trace alias writes atomic so verified OpenClaw `agent_end` persistence stays inside the RPC hook budget without duplicate outcomes.
+
 ## [1.9.132] - 2026-08-10
 
 ### Fixed
