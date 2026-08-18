@@ -505,7 +505,10 @@ def _build_parser() -> argparse.ArgumentParser:
     serve_rpc.add_argument("--auth-token", default=None)
 
     doctor = sub.add_parser("doctor")
-    doctor.add_argument("--json", action="store_true", default=True)
+    doctor.add_argument("--json", action="store_true", default=False)
+    doctor.add_argument("--human", action="store_true", default=True)
+    doctor.add_argument("--no-l5", action="store_true", default=False)
+    doctor.add_argument("--no-systemd", action="store_true", default=False)
     status = sub.add_parser("status")
     status.add_argument("--json", action="store_true", default=True)
 
@@ -1085,7 +1088,30 @@ def main(argv: list[str] | None = None) -> int:
         dispatch_result = dispatch(parsed.command, parsed, runtime, scope)
         if dispatch_result is not FALLTHROUGH:
             return _dispatch_exit(dispatch_result)
-    if parsed.command in {"doctor", "status"}:
+    if parsed.command == "doctor":
+        from eimemory.cli.doctor import render_human, run_doctor
+
+        report = run_doctor(
+            runtime,
+            scope=scope,
+            include_l5=not bool(getattr(parsed, "no_l5", False)),
+            include_systemd=not bool(getattr(parsed, "no_systemd", False)),
+        )
+        if bool(getattr(parsed, "human", False)):
+            # Windows consoles default to GBK which cannot encode the
+            # ⚠️ / ❌ / ✅ glyphs. Reconfigure stdout to UTF-8 just for
+            # the human block; fall back to ASCII on failure.
+            try:
+                sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
+            except Exception:
+                pass
+            print(render_human(report))
+        if bool(getattr(parsed, "json", False)):
+            if bool(getattr(parsed, "human", False)):
+                print()
+            print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+        return 0 if report.get("overall_status") in {"HEALTHY", "DEGRADED", "UNKNOWN"} else 2
+    if parsed.command == "status":
         host = settings.rpc_host
         port = int(settings.rpc_port)
         loopback_health = None
