@@ -857,7 +857,7 @@ gate evidence.
 | Work package | Status | Evidence reference | Commit |
 | --- | --- | --- | --- |
 | WP0 baseline custody | completed | `docs/audit/l5-v3-pre-refactor-baseline.md` | `dfcf7c9` |
-| WP1 ADRs/contracts | completed | `tests/test_capability_v3_contracts.py` (12 passed); compileall; independent contract and documentation reviews | pending evidence commit |
+| WP1 ADRs/contracts | completed | `tests/test_capability_v3_contracts.py` (12 passed); compileall; independent contract and documentation reviews | `07e3d37` |
 | WP2 performance baseline | pending | | |
 | WP3 Storage v2 schema | pending | | |
 | WP4 registry/profiles | pending | | |
