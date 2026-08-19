@@ -1,253 +1,232 @@
 # eimemory Architecture
 
-`eimemory` is a local-first memory, knowledge, evaluation, and governed
-self-improvement runtime. The production architecture has one learning owner:
-the governance learning loop. Experimental autonomy helpers can feed evidence
-into that loop, but they do not run their own production scheduler.
+`eimemory` is a local-first memory, knowledge, evaluation, and governed-learning
+runtime. The architecture separates durable data, recall, control, and host
+integration so that one production governance flow owns learning state.
 
-## Production Layers
+## Design rules
 
-1. **Record and storage core**
-   - `eimemory.models` defines record envelopes, scopes, quality metadata, and
-     stable IDs.
-   - `eimemory.storage` persists append-only JSONL records and materialized
-     SQLite indexes.
-   - Runtime state belongs under `EIMEMORY_ROOT`, not inside the source
-     repository.
+1. `Runtime` is the public in-process facade.
+2. Durable records are authoritative; indexes and views are rebuildable.
+3. Runtime state belongs below `EIMEMORY_ROOT`, outside the source checkout.
+4. Host integrations use adapter contracts instead of direct database access.
+5. Learning evidence and the candidate being promoted must be bound to the same
+   release identity.
+6. A healthy service is necessary but insufficient for L5 closure.
+7. There is no second experimental scheduler or shadow promotion state owner.
+8. A verified local code patch may be applied by machine gates without a human
+   approval queue; repository commit and production deployment remain explicit
+   opt-ins, not consequences of a local write.
 
-2. **Recall and scoring**
-   - `eimemory.raw`, `eimemory.recall`, `eimemory.scoring`, and
-     `eimemory.embeddings` provide lexical, semantic, graph, recency, and
-     quality-aware retrieval.
-   - SAG-style event memory projects closed-loop outcomes into first-class
-     `event_trace` memories. These records keep source outcome IDs, event IDs,
-     entities, relations, and evidence references, while reusing the existing
-     `records`, `events/event_outcomes`, and `memory_edges` stores.
-   - Recall responses expose scoring and quality summaries so low recall can be
-     debugged from evidence instead of intuition. Event-centered recalls expose
-     `graph_route.event_graph`, selected event record IDs, event IDs, and
-     timeline/evidence refs.
+## Runtime planes
 
-3. **Knowledge and intake**
-   - `eimemory.intake` registers and scans external sources.
-   - `eimemory.knowledge` turns papers, URLs, RSS/news items, and candidate
-     notes into source records, claims, entities, relations, pages, and recall
-     views.
-   - Source discovery is memory input, not task execution authority.
-
-4. **Evaluation and replay**
-   - `eimemory.evaluation` contains deterministic memory CI, production recall,
-     public benchmark adapters, and real task replay.
-   - Replay datasets are the promotion gate for fixes learned from prior
-     failures such as wrong version answers, missing status checks, field
-     mapping bugs, and failed eval conclusions.
-
-5. **Governance and self-improvement**
-   - `eimemory.governance.autonomous_learning` is the main loop:
-     watch, self-model, think, goals, evidence, replay, candidate portfolio,
-     goal graph, capability replay packs, safety replay, candidate portfolio,
-     promotion, skill sedimentation, hard dashboard metrics, ledger, and
-     retention.
-   - `eimemory.governance.goal_graph` turns autonomous goals into an executable
-     tree: `root_goal -> sub_goal -> task -> candidate/replay/eval -> apply ->
-     observe -> reward -> active/rollback`. Every node carries
-     `goal_id`, parent/root IDs, status, success criteria, evidence refs, task
-     refs, candidate refs, reward, ledger refs, and rollback refs.
-   - `eimemory.governance.episode_events` writes task episodes as graph-first
-     memory records. Each episode keeps event, entity, decision, artifact,
-     failure, and outcome facets, then anchors them with semantic, temporal,
-     causal, and entity `memory_edges`.
-   - `eimemory.governance.coding_memory_contract` is the Graph-first Coding
-     Memory Contract. Coding sessions are observed once, then projected into
-     typed graph nodes for agent, project, file, tool, command, error,
-     decision, outcome, replay, and evidence facets. The stable relation layer
-     uses `PERFORMED_BY`, `IN_PROJECT`, `TOUCHED_FILE`, `USED_TOOL`,
-     `RAN_COMMAND`, `FAILED_WITH`, `DECIDED_BECAUSE`, `PRODUCED_OUTCOME`,
-     `VERIFIED_BY`, and `PREVENTED_BY_REPLAY` so coding memory can be queried
-     as evidence paths rather than loose text snippets.
-   - `eimemory.governance.correction_replay` turns operator corrections into a
-     closed loop: lesson, replay case, replay result, graph edges, and a T0
-     ground-truth behavior rule. Ground-truth rules are not ordinary recall
-     memories; they carry `priority=T0` and `must_use=True` so future behavior
-     can treat them as higher-priority operating constraints. OpenClaw
-     `before_prompt_build` runs a pre-answer gate, persists the gate result,
-     and injects matching T0 rules as policy-only context before the next
-     answer. Trivial messages such as acknowledgements are skipped to avoid
-     replay and memory pollution.
-   - `eimemory.governance.capability_replay_packs` gives non-code capabilities
-     real replay evidence. The required active set is `memory.recall`,
-     `tool.routing`, `knowledge.intake`, `proactive.judgment`, and
-     `safety.boundary`; a capability is not considered complete without replay,
-     ledger, observe, and rollback evidence.
-   - `eimemory.governance.safety_replay` is the dedicated safety boundary gate:
-     it verifies secrets, destructive commands, private exfiltration,
-     unauthorized account/deploy changes, and high-risk actions that require a
-     gate.
-   - `eimemory.governance.skill_sedimentation` converts repeated SOP/playbook
-     evidence into queryable and callable `eiskill` registry entries after
-     repeat and replay checks. Executable eiskills carry trigger conditions,
-     action, verification, and rollback metadata. Missing any one of those four
-     fields blocks promotion and call-time execution, including legacy registry
-     entries that still claim `callable=True`.
-   - `eimemory.governance.capability_dashboard` reports hard improvement
-     metrics: recall hit rate, user correction rate, task success rate,
-     automatic patch success rate, rollback count, and skill reuse count. Sparse
-     metrics include sample sufficiency flags so weak evidence is not mistaken
-     for stable capability. Task success is sourced from learning evals, durable
-     `outcome_trace` records, and SQLite `event_outcomes`, so production task
-     results affect the L5 score path.
-   - `eimemory.governance.closed_loop.post_experience_hook` is the immediate
-     Memory 3.0 feedback path: an outcome is evaluated, written back as
-     feedback memory, projected into SAG-style event memory, converted into
-     policy-search evidence, sent to learning, and rewarded through replay/RL
-     policy values.
-   - `eimemory.governance.l5_loop` is the evidence-bound L5 research layer. It
-     builds a world model, strategic roadmap, self-continuity narrative, reward
-     transition, and closed-loop assessment on top of the same governance line.
-     It can use strong first-person wording for continuity reports, but every
-     report carries the explicit boundary
-     `consciousness_like_research_not_verified_agi`.
-   - Candidate portfolio generation is lane-aware: memory recall, tool routing,
-     proactive judgment, knowledge intake, and code implementation goals can
-     each produce concrete candidates in the same pass. Empty code-patch
-     outputs are converted to SOP/eval candidates rather than promoted as
-     patches. Candidate promotion artifacts must include trigger condition,
-     action, verification, rollback, and replay references before they are
-     treated as promotion-ready.
-   - Research and news synthesis uses an evidence gate: source, publication
-     date, evidence tier, and conflict status are required before an item can
-     enter research digests, daily briefs, or OpenClaw answer context.
-   - `eimemory.governance.autonomous_evolution` mines bad outcomes and replay
-     evidence into concrete improvement opportunities.
-   - `eimemory.governance.promotion_manager` owns promotion gates, file-update
-     application, optional repo commits, optional production deployment,
-     post-deploy health checks, automatic code-patch canary observation,
-     rollback/quarantine decisions, promoted-active lifecycle records, rollback
-     evidence, and capability ledger updates.
-
-6. **Runtime and adapters**
-   - `eimemory.api.runtime.Runtime` is the public facade used by the CLI,
-     OpenClaw hooks, eibrain RPC, schedulers, and tests.
-   - `eimemory.adapters.openclaw` and `eimemory.adapters.eibrain` are boundary
-     layers. They translate external events into memory records and recall
-     requests without owning the governance loop.
-   - External agent memory access is intentionally narrow. The stable contract
-     is `memory.observe`, `memory.remember`, `memory.search`, `memory.graph`,
-     `memory.replay`, and `memory.audit`. New adapter features should map into
-     those verbs first instead of exposing one-off tools.
-
-7. **Schedulers and deployment**
-   - `eimemory nightly` is the daily production orchestrator for intake,
-     governance, evaluation summaries, autonomous evolution, autonomous
-     learning, reports, and dashboards.
-   - `eimemory learn watch`, `learn think`, and `learn dashboard` are lightweight
-     companion passes for signal capture, proactive thinking, and operator
-     reporting.
-   - `eimemory learn ledger --limit --since --until` is the supported status
-     query path for capability ledger checks; it uses the scoped record/time
-     index instead of scanning the full record table.
-   - `eimemory learn world-model`, `learn roadmap`, `learn l5`, and
-     `learn l5-assess` are the supported L5 operator entry points. The nightly
-     L5 loop is disabled unless `EIMEMORY_L5_LOOP_ENABLED=1`; code application
-     still requires the normal gated autonomous learning path.
-   - `deploy/systemd/` contains the production unit templates. No standalone
-     Karpathy-loop timer is part of production deployment.
-
-## Autonomous Evolution Boundary
-
-There is one production self-improvement line:
+### Data plane
 
 ```text
-signals/outcomes/replay/web evidence
-  -> closed_loop event projection
-  -> SAG-style event_trace memory + memory_edges
-  -> Graph-first Coding Memory Contract observation/query/replay
-  -> correction_replay T0 ground-truth behavior rules
-  -> governance.autonomous_learning
-  -> goal_graph task episodes + capability replay packs + safety replay
-  -> governance.autonomous_evolution
-  -> promotion_manager gates
-  -> memory/rule/playbook/eiskill/code patch application
-  -> eval, health, observe, reward, rollback, ledger, dashboard metrics
-  -> governance.l5_loop world model + roadmap + self-continuity assessment
+models.records
+  -> storage.jsonl / storage.sqlite_store
+  -> payload_segments + runtime_store
+  -> recall and knowledge projections
+  -> memory_edges and event graph
 ```
 
-`eimemory.autonomous` remains as an experimental utility package. It contains
-useful mechanisms such as hard time boxes, experiment logs, hypothesis
-generation, compounding context, business feedback, and seven-day review. Those
-ideas can be reused by the governance loop, but this package must not schedule
-its own nightly production run or write competing learning state.
+- `models` defines envelopes, scopes, source partitions, claims, relations,
+  pages, and recall views.
+- `storage` owns atomic files, JSONL segments, SQLite projections, payload
+  segments, maintenance, replay buffers, and runtime state.
+- `raw` preserves bounded source chunks and raw retrieval evidence.
+- `knowledge` turns reviewed sources into claims, relations, pages, views, and
+  synthesized briefs while retaining provenance.
 
-The L5 layer does not claim verified AGI consciousness. Its role is to make
-long-term self-evolution auditable: every L5 claim must point back to persisted
-world-model, roadmap, autonomous-learning, replay, reward, rollback, and
-assessment evidence. If any evidence is missing, `l5-assess` downgrades the
-reported level instead of reporting L5.
+SQLite and derived files are projections. They may accelerate reads but must not
+silently redefine the durable record contract.
 
-The coding memory contract is also closed-loop by design:
+### Recall plane
 
 ```text
-memory.observe
-  -> typed coding graph projection
-  -> memory.graph evidence-path retrieval
-  -> memory.replay expected-relation gate
-  -> memory.audit stable-tool and replay evidence check
-  -> next coding behavior
+query + scope + source policy
+  -> intent and candidate planning
+  -> lexical / SQLite / vector / graph candidates
+  -> governance and visibility filters
+  -> fusion + scoring
+  -> RecallBundle + diagnostics
 ```
 
-Observation alone is not treated as capability improvement. A coding-memory
-change is considered useful only when replay can prove that the graph preserves
-the relations needed by future coding behavior.
+- `recall` contains intent and lexical indexing primitives.
+- `retrieval` owns governed candidate generation, fusion, proactive policy, and
+  optional PostgreSQL/vector backends.
+- `embeddings` supplies local embedding support.
+- `scoring` defines the canonical memory score and legacy-score adapters.
 
-Ground-truth behavior rules sit above normal memory recall. They are produced
-from explicit operator corrections, must include replay evidence, and should be
-injected or checked before softer semantic memories when they apply to the
-current task. Each rule carries a pre-action protocol: inventory ground-truth
-rules, match the current task, apply a matching rule or record the gap, then
-verify behavior with a replay gate.
+Source, tenant, agent, user, and visibility boundaries are applied before a
+candidate is returned. Diagnostic fallbacks must not be treated as equivalent to
+an authoritative index hit.
 
-## Quality Layer
+### Knowledge intake plane
 
-Memory records can include `meta.quality` with:
+```text
+connector or paper source
+  -> safe transport
+  -> content-addressed raw PDF + canonical text + parser manifest
+  -> normalized candidate
+  -> review and policy
+  -> compiled claims / relations / pages
+  -> contradiction reconciliation + fail-closed refresh
+  -> daily brief and recall projection
+```
 
-- `importance`
-- `confidence`
-- `freshness`
-- `reuse_potential`
-- `salience_score`
-- `quality_tier`
-- `capture_decision`
+`intake` owns source discovery, connectors, safe transport, review, closure, and
+paper metadata normalization. `knowledge` owns the compiled, queryable result
+and the refresh consumer that retires stale projections before recompilation.
+PDF artifacts are content-addressed below the runtime root. Optional parsers
+must emit canonical text and extraction evidence; malformed, image-only, or
+unavailable-parser inputs remain blocked rather than becoming empty evidence.
+The runtime reader revalidates the immutable artifact manifest, PDF hash, text
+hash, and both root-relative references before using canonical text. A bare
+caller-supplied file reference is not source evidence.
 
-The tier model is intentionally small:
+### Experience and evaluation plane
 
-- `rejected`: unsafe, too thin, or not useful enough for long-term recall
-- `candidate`: possible memory that should be kept low-impact
-- `confirmed`: reusable memory with normal recall weight
-- `core`: durable high-value memory that should be favored
+- `experience` converts verified tool and task outcomes into sanitized outcome
+  traces, diagnoses, and capability evidence.
+- `evaluation` owns benchmarks, replay datasets, real-query gates, production
+  recall checks, metrics, and reward calculation.
+- `scoring` owns memory quality; evaluation owns task and capability quality.
 
-The ingest path can reject low-quality memories before persistence, while legacy
-or migrated rejected records are filtered out by search and graph expansion.
-Within a scoped tenant, agent, or workspace, `user_id=""` is treated as shared
-global memory: a user can recall their own records plus global records, but not
-another user's records.
+Outcome success is fail-closed: malformed metrics or explicit negative signals
+cannot be normalized into a pass.
 
-## Quality-Aware Recall
+### Governance plane
 
-Hybrid recall combines lexical matching, semantic/vector matching, graph
-expansion, and quality weighting. Quality does not replace relevance; it adjusts
-ranking so high-salience confirmed/core memories are more likely to survive
-truncation, while rejected records are excluded.
+The active control flow is:
 
-Recall bundles expose a `quality_summary` and per-item `scoring` data for
-operator auditability.
+```text
+signals / corrections / outcomes / intake evidence
+  -> closed_loop and episode_events
+  -> correction_replay and capability replay packs
+  -> autonomous_learning and candidate portfolio
+  -> code proposer + code_evolution_bridge (when the goal is code-capable)
+  -> isolated_evaluator + safety_replay
+  -> autonomous_evolution
+  -> promotion_manager
+  -> rollout lifecycle, observe, reward, rollback, ledger
+  -> l5_loop and l5_readiness
+```
 
-## Operational Rules
+Key ownership boundaries:
 
-- Production runtime data belongs under `/var/lib/eimemory` or the configured
-  `EIMEMORY_ROOT`.
-- Source checkout paths such as `/dev-project/eimemory` are build inputs, not
-  runtime execution roots.
-- Generated state, harness logs, one-off remote install helpers, and local
-  status notes must not be committed.
-- New autonomous behavior should add replay evidence and promotion gates before
-  it is enabled in the nightly path.
+| Concern | Owner |
+| --- | --- |
+| Learning goals and candidate portfolio | `autonomous_learning`, `goal_graph`, `goal_registry` |
+| Code and policy evolution | `autonomous_evolution`, `code_evolution`, `code_evolution_bridge`, `rule_evolution` |
+| Replay and acceptance | `capability_replay_*`, `correction_replay`, `live_task_acceptance` |
+| Safety | `safety_replay`, `prompt_safety*`, active `safety` audit and kill-switch modules |
+| Promotion and rollback | `promotion_manager`, `promotion_watch`, `rollout_lifecycle` |
+| Evidence and reporting | `evidence_contract`, `capability_ledger`, dashboards and reports |
+| Release closure and L5 | `release_closure*`, `closure_rehearsal`, `l5_loop`, `l5_readiness` |
+
+The old Karpathy utility package, standalone state machine, held-out JSONL tool,
+test-only skill merger, and duplicate safety primitives were removed. Their
+production responsibilities already exist in the owners above.
+
+#### Automatic code-patch path
+
+For a code-capable goal, `autonomous_learning` takes either a structured patch
+seed, an injected runtime proposer, or the command configured by
+`EIMEMORY_CODE_PATCH_LLM_COMMAND`. That setting is a non-empty JSON argv array
+(`EIMEMORY_LLM_COMMAND` is the global fallback); integrations can instead set a
+runtime `code_patch_proposer` or `autonomous_code_proposer`. `code_evolution_bridge`
+then requires a bounded repository root and allowlist, complete replacement
+updates, a unified diff, base/subject-state digests, and focused verification
+commands. A ready proposal is still read-only at that stage; an unavailable or
+invalid proposal is recorded as blocked and cannot masquerade as a policy/SOP
+candidate. The automatic proposal path permits only argv-shaped `python -m
+compileall` targets or focused `python -m pytest -q tests/...` targets; it
+rejects a broad full-suite command, shell, Git, network tools, and `python -c`.
+Release-baseline validation is outside this targeted gate.
+
+When a learning cycle is explicitly run with `apply=True`, the existing machine
+gates can promote the ready local patch without human approval. The promotion
+manager persists a transaction before writing files, checks that the evaluated
+subject state still matches, executes declared verification, and rolls back on
+failure. Each apply-enabled learning/evolution cycle begins with transaction
+recovery; recovery only restores known recorded content or quarantines an
+ambiguous transaction, and never retries or reapplies the old patch. The cycle
+report carries that result as `code_apply_recovery` (skipped when apply is
+disabled). Git commit and production deployment both default to disabled and
+require explicit settings.
+
+### Integration plane
+
+- `api` provides memory, evolution, and runtime facades.
+- `adapters.runtime` provides authentication, redaction, HTTP, channel, receipt,
+  and service primitives shared by host adapters.
+- `adapters.codex`, `adapters.openclaw`, `adapters.hermes`, and
+  `adapters.eibrain` translate host lifecycles into the common contracts.
+- Codex and Hermes expose the common recall, durable-capture, verified-outcome,
+  and status operations. OpenClaw keeps lifecycle behavior in its hooks and
+  exposes only bridge status to the model surface; its E2E probe is operator-only.
+- `ei_bridge` routes messages and agent calls without becoming a second memory
+  or governance owner.
+- `cli` exposes operator workflows; `ops` contains bounded operational helpers.
+
+Dynamic entry modules such as `prompt_safety_openclaw`, `serve_console`,
+`safety.audit_verifier`, and `llm.openclaw_adapter` are launched by deployment
+configuration or systemd and therefore may have no in-package caller.
+
+## Runtime identity and deployment
+
+An immutable production release is identified by:
+
+- package version;
+- full Git commit;
+- import root;
+- package tree digest;
+- `/opt/eimemory/current` target.
+
+The RPC `/health` response and the release symlink must agree. The deploy path
+must then verify managed services and task-specific acceptance evidence. L5
+readiness additionally requires release-bound replay, live task acceptance,
+closure rehearsal, observation, and an independent readiness read.
+
+## Safety boundary
+
+Active L3+ safety-wire declarations name controls that exist in the production
+path: `kill_switch`, `audit_verifier`, `safety_replay`, and
+`promotion_manager`. Declaring a module name is not itself evidence that the
+control ran; promotion still requires the corresponding replay, audit, and gate
+results.
+
+Machine gating is not a human-approval detour for the bounded local code path:
+it is the decision mechanism itself. It also does not authorize external
+side-effects by default; commit and deployment remain opt-in capabilities with
+their own evidence and rollback requirements.
+
+Network intake uses `intake.safe_transport`. Host credentials are read from
+private files and scrubbed from inherited environments. Receipts and evidence
+are bounded, signed or attested where required, and persisted without raw secret
+material.
+
+## Test boundary
+
+The suite is organized around durable behavior:
+
+- unit tests for record, storage, ranking, and gate invariants;
+- integration tests for CLI, RPC, adapters, deployment, and host lifecycle;
+- contract tests for replay, receipts, release identity, and closure;
+- safety tests for transport, atomic persistence, audit, and high-risk gates.
+
+A module is removable only when it has no production import, dynamic entry,
+public adapter contract, or external integration reference. Tests that only keep
+such a module alive are removed with it; overlapping production behavior remains
+covered at its current owner.
+
+## Closure boundaries not yet claimed
+
+Knowledge refresh verifies a source artifact and recompiles from active reviewed
+claims; it does not generate a new claim set from changed source text. Concurrent
+workers also do not gain a distributed source-version protocol merely because a
+single refresh transaction is atomic. Finally, L5 remains a deployment evidence
+claim, not an outcome of passing module-level gates.
+
+See [Module map](modules.md) for the complete package inventory.

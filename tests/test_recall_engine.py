@@ -327,11 +327,13 @@ def test_engine_drops_cross_scope_cross_source_inactive_missing_and_corrupt_refs
     )
     other_source = store.append(_record(text="strict hydration marker other source", source_id="beta"))
     corrupt = store.append(_record(text="strict hydration marker corrupt", source_id="alpha"))
+    store.sqlite.conn.execute("PRAGMA ignore_check_constraints = ON")
     store.sqlite.conn.execute(
         "UPDATE records SET payload_json = '{bad' WHERE record_id = ? AND source_id = ?",
         (corrupt.record_id, corrupt.source_id),
     )
     store.sqlite.conn.commit()
+    store.sqlite.conn.execute("PRAGMA ignore_check_constraints = OFF")
     hits = (
         _hit(valid, rank=1),
         _hit(inactive, rank=2),

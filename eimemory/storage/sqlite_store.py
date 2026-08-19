@@ -1513,9 +1513,11 @@ class SqliteRecordStore:
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_records_outcome_trace "
             "ON records(kind, source, tenant_id, agent_id, workspace_id, user_id, "
-            "CAST(COALESCE(json_extract(meta_json, '$.trace_id'), "
-            "json_extract(meta_json, '$.business_meta.trace_id'), "
-            "json_extract(payload_json, '$.provenance.trace_id')) AS TEXT), "
+            "CAST(COALESCE("
+            "CASE WHEN json_valid(meta_json) THEN json_extract(meta_json, '$.trace_id') END, "
+            "CASE WHEN json_valid(meta_json) THEN json_extract(meta_json, '$.business_meta.trace_id') END, "
+            "CASE WHEN json_valid(payload_json) THEN json_extract(payload_json, '$.provenance.trace_id') END"
+            ") AS TEXT), "
             "updated_at DESC, record_id DESC)"
         )
         if self.conn.execute(
@@ -1533,6 +1535,8 @@ class SqliteRecordStore:
             and "$.trace_id" in normalized
             and "$.business_meta.trace_id" in normalized
             and "$.provenance.trace_id" in normalized
+            and "json_valid(meta_json)" in normalized
+            and "json_valid(payload_json)" in normalized
         )
 
     def _create_recall_index_tables(self, *, create_indexes: bool = True) -> None:

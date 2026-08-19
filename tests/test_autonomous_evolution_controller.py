@@ -1,9 +1,29 @@
 from __future__ import annotations
 
-import sys
-
 from eimemory.api.runtime import Runtime
-from eimemory.governance.autonomous_evolution import run_autonomous_evolution
+from eimemory.governance.autonomous_evolution import _safe_patch_from_opportunity, run_autonomous_evolution
+from eimemory.models.records import ScopeRef
+
+
+def test_code_opportunity_defaults_to_local_uncommitted_and_undeployed_apply() -> None:
+    patch = _safe_patch_from_opportunity(
+        {
+            "opportunity_id": "code-defaults",
+            "opportunity_type": "code_patch",
+            "source": "test",
+            "risk_level": "low",
+            "code_patch": {
+                "repo_root": "/tmp/repo",
+                "allowed_files": ["module.py"],
+                "file_updates": [{"path": "module.py", "content": "VALUE = 'fixed'\n"}],
+                "verification_commands": [["python", "-m", "compileall", "module.py"]],
+            },
+        },
+        scope=ScopeRef.from_dict({"agent_id": "tests", "workspace_id": "code"}),
+    )
+    assert patch["code_patch"]["apply_to_repo"] is True
+    assert patch["code_patch"]["deploy_to_production"] is False
+    assert patch["code_patch"]["commit_to_repo"] is False
 
 
 def test_autonomous_evolution_mines_bad_outcome_into_opportunity_and_replay(tmp_path) -> None:
@@ -43,6 +63,8 @@ def test_autonomous_evolution_mines_bad_outcome_into_opportunity_and_replay(tmp_
     assert report["opportunities"][0]["source"] == "event"
     assert report["replay_cases"][0]["query"] == "OpenClaw 又没反应"
     assert "先看日志" in " ".join(report["replay_cases"][0]["expected_text"])
+    assert "circuit_breaker" not in report
+    assert report["safety_gates"]["safe_action_gate"]["evaluated"] == len(report["experiments"])
 
 
 def test_autonomous_evolution_applies_low_risk_intent_pattern_after_replay(tmp_path) -> None:
@@ -274,13 +296,7 @@ def test_autonomous_evolution_applies_structured_code_patch_from_bad_outcome(tmp
                 "commit_to_repo": False,
                 "allowed_files": ["module.py"],
                 "file_updates": [{"path": "module.py", "content": "VALUE = 'fixed'\n"}],
-                "verification_commands": [
-                    [
-                        sys.executable,
-                        "-c",
-                        "import pathlib; ns={}; exec(pathlib.Path('module.py').read_text(encoding='utf-8'), ns); assert ns['VALUE'] == 'fixed'",
-                    ]
-                ],
+                "verification_commands": [["python", "-m", "compileall", "module.py"]],
             },
         },
         scope=scope,
@@ -289,6 +305,8 @@ def test_autonomous_evolution_applies_structured_code_patch_from_bad_outcome(tmp
     report = run_autonomous_evolution(runtime, scope=scope, apply=True, max_apply=1)
 
     assert report["ok"] is True
+    assert report["code_apply_recovery"]["skipped"] is False
+    assert report["code_apply_recovery"]["recovered_count"] == 0
     assert report["applied_count"] == 1
     assert report["applied_patches"][0]["patch_type"] == "code_patch"
     assert report["applied_patches"][0]["side_effect"]["adapter"] == "direct_repo_patch"
@@ -405,7 +423,7 @@ def test_autonomous_evolution_blocks_code_patch_when_evaluator_is_not_isolated(t
                 "commit_to_repo": False,
                 "allowed_files": ["module.py"],
                 "file_updates": [{"path": "module.py", "content": "VALUE = 'fixed'\n"}],
-                "verification_commands": [[sys.executable, "-c", "print('ok')"]],
+                "verification_commands": [["python", "-m", "compileall", "module.py"]],
             },
         },
         scope=scope,
@@ -454,8 +472,8 @@ def test_autonomous_evolution_rejects_failed_code_patch_before_repo_mutation(tmp
                 "deploy_to_production": False,
                 "commit_to_repo": False,
                 "allowed_files": ["module.py"],
-                "file_updates": [{"path": "module.py", "content": "VALUE = 'fixed'\n"}],
-                "verification_commands": [[sys.executable, "-c", "raise SystemExit(3)"]],
+                "file_updates": [{"path": "module.py", "content": "VALUE =\n"}],
+                "verification_commands": [["python", "-m", "compileall", "module.py"]],
             },
         },
         scope=scope,

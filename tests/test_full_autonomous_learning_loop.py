@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import sys
-
 from eimemory.api.runtime import Runtime
 from eimemory.governance.autonomous_learning import (
     classify_autonomous_learning_activity,
@@ -169,6 +167,17 @@ def test_autonomous_learning_cycle_distills_diverse_capability_candidates(tmp_pa
     assert {"memory.recall", "tool.routing", "knowledge.intake", "proactive.judgment"}.issubset(candidate_capabilities)
     assert "code_patch" not in promotion_targets
     assert {"memory_rule", "tool_route", "source_policy", "sop_draft"}.issubset(promotion_targets)
+    code_specs = [item for item in report["candidate_specs"] if item["promotion_target"] == "code_patch"]
+    assert code_specs == [
+        {
+            "target_capability": "code.implementation",
+            "requested_target": "code_patch",
+            "promotion_target": "code_patch",
+            "fallback_reason": "",
+            "proposal_status": "proposal_unavailable",
+            "proposal_blocked_reason": "code_proposer_unavailable",
+        }
+    ]
 
 
 def test_autonomous_learning_cycle_applies_supported_policy_adapter(tmp_path, monkeypatch) -> None:
@@ -208,13 +217,7 @@ def test_autonomous_learning_cycle_applies_code_patch_directly_to_repo(tmp_path,
             "repo_root": str(repo),
             "allowed_files": ["module.py"],
             "file_updates": [{"path": "module.py", "content": "VALUE = 'fixed'\n"}],
-            "verification_commands": [
-                [
-                    sys.executable,
-                    "-c",
-                    "from pathlib import Path; assert Path('module.py').read_text(encoding='utf-8') == \"VALUE = 'fixed'\\n\"",
-                ]
-            ],
+            "verification_commands": [["python", "-m", "compileall", "module.py"]],
             "commit_to_repo": False,
         },
     )
@@ -229,11 +232,73 @@ def test_autonomous_learning_cycle_applies_code_patch_directly_to_repo(tmp_path,
 
     assert report["ok"] is True
     assert report["promotion"]["applied"] is True
+    assert report["code_apply_recovery"]["skipped"] is False
+    assert report["code_apply_recovery"]["recovered_count"] == 0
     assert report["promotion"]["side_effect"]["adapter"] == "direct_repo_patch"
     assert report["promotion"]["side_effect"]["repo_mutated"] is True
     assert report["promotion"]["side_effect"]["production_applied"] is False
     assert target.read_text(encoding="utf-8") == "VALUE = 'fixed'\n"
     assert runtime.store.get_by_id(report["candidate_id"]).status == "promoted"
+
+
+def test_autonomous_learning_cycle_generates_and_applies_code_patch_from_injected_proposer(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = {"agent_id": "hongtu", "workspace_id": "personal"}
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    target = repo / "module.py"
+    target.write_text("VALUE = 'broken'\n", encoding="utf-8")
+    monkeypatch.setenv("EIMEMORY_AUTONOMOUS_CODE_REPO", str(repo))
+    monkeypatch.setenv("EIMEMORY_AUTONOMOUS_CODE_DEPLOY", "0")
+    _force_real_task_replay_pass(runtime, monkeypatch)
+    monkeypatch.setattr(
+        "eimemory.governance.autonomous_learning.generate_learning_goals",
+        lambda *_args, **_kwargs: [
+            {
+                "goal_type": "capability_gap",
+                "title": "Repair module value",
+                "question": "Repair the broken module value without touching other files.",
+                "success_criteria": "module.py contains the repaired value and passes its focused check.",
+                "authority_tier": "L1",
+                "priority": 0.95,
+                "target_capability": "code.implementation",
+                "semantic_key": "injected-code-proposer",
+                "repo_root": str(repo),
+                "files": ["module.py"],
+            }
+        ],
+    )
+    runtime.code_patch_proposer = lambda **_kwargs: {
+        "allowed_files": ["module.py"],
+        "file_updates": [{"path": "module.py", "content": "VALUE = 'generated-fixed'\n"}],
+        "verification_commands": [["python", "-m", "compileall", "module.py"]],
+    }
+
+    report = run_autonomous_learning_cycle(
+        runtime,
+        scope=scope,
+        apply=True,
+        force=True,
+        max_goals=1,
+        max_promotions=1,
+        allow_network=False,
+    )
+
+    assert report["ok"] is True
+    assert report["candidate_specs"] == [
+        {
+            "target_capability": "code.implementation",
+            "requested_target": "code_patch",
+            "promotion_target": "code_patch",
+            "fallback_reason": "",
+            "proposal_status": "proposal_ready",
+            "proposal_blocked_reason": "",
+        }
+    ]
+    assert report["promotion"]["applied"] is True
+    assert report["promotion"]["side_effect"]["adapter"] == "direct_repo_patch"
+    assert report["promotion"]["side_effect"]["production_applied"] is False
+    assert target.read_text(encoding="utf-8") == "VALUE = 'generated-fixed'\n"
 
 
 def test_autonomous_learning_cycle_dry_run_does_not_persist_learning_records(tmp_path) -> None:

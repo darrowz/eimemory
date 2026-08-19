@@ -183,7 +183,9 @@ def test_code_sandbox_cli_builds_code_candidate_with_verification_notes(tmp_path
     assert output["sandbox_plan"]["verification_commands"]
     assert "allowed_files" in output["sandbox_plan"]
     assert "rollback_notes" in output["sandbox_plan"]
-    assert "python -m compileall eimemory" in output["sandbox_plan"]["verification_commands"]
+    assert ["python", "-m", "compileall", "eimemory"] in output["sandbox_plan"]["verification_commands"]
+    assert ["python", "-m", "pytest", "-q", "tests/test_runtime.py"] in output["sandbox_plan"]["verification_commands"]
+    assert ["python", "-m", "pytest", "-q", "tests"] not in output["sandbox_plan"]["verification_commands"]
 
 
 def test_cli_code_sandbox_rejects_invalid_incident_json(tmp_path, monkeypatch, capsys) -> None:

@@ -136,7 +136,6 @@ def test_promote_collected_paper_candidates_promotes_safe_chatpaper_record(tmp_p
             "content_excerpt": "Memory retrieval policies improve grounded planning outcomes in embodied agents.",
             "metadata": {
                 "arxiv_id": "2601.00002",
-                "pdf_url": "https://arxiv.org/pdf/2601.00002",
                 "categories": ["cs.AI"],
                 "original_abstract": "Memory retrieval policies improve grounded planning outcomes in embodied agents.",
                 "translated_abstract": "Memory retrieval policies improve grounded planning outcomes in embodied agents.",
@@ -156,6 +155,42 @@ def test_promote_collected_paper_candidates_promotes_safe_chatpaper_record(tmp_p
     assert runtime.store.list_records(kinds=["paper_extract"], scope=scope)
     assert runtime.store.list_records(kinds=["claim_card"], scope=scope)
     assert runtime.store.list_records(kinds=["knowledge_page"], scope=scope)
+
+
+def test_promote_collected_papers_continues_after_one_candidate_error(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"tenant_id": "tenant-a", "agent_id": "agent-a"}
+    first, second = candidates_to_records(
+        [
+            _paper_candidate(),
+            {
+                **_paper_candidate(),
+                "source_id": "paper-feed-2",
+                "fingerprint": "second-fingerprint-2",
+                "title": "A second independent paper",
+                "uri": "https://arxiv.org/abs/2601.00003",
+            },
+        ],
+        scope,
+    )
+    assert first.record_id != second.record_id
+    runtime.store.append(first)
+    runtime.store.append(second)
+
+    def promote(record, *, scope=None):
+        if record.record_id == first.record_id:
+            raise RuntimeError("transient source failure")
+        return {"ok": True, "paper_source_id": "psrc_second", "record_ids": []}
+
+    monkeypatch.setattr(runtime, "promote_paper_candidate", promote)
+    report = promote_collected_paper_candidates(runtime, scope, auto=True)
+
+    assert report["scanned"] == 2
+    assert report["promoted"] == 1
+    assert report["skipped"] == 1
+    assert report["reasons"] == {"promotion_exception": 1}
+    assert report["error_count"] == 1
+    assert report["errors"] == [{"record_id": first.record_id, "error_type": "RuntimeError"}]
 
 
 def test_promote_collected_paper_candidates_includes_reviewed_records(tmp_path) -> None:

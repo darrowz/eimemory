@@ -70,7 +70,10 @@ def project_operational_knowledge(
     projected: list[RecordEnvelope] = []
     skipped: list[dict[str, str]] = []
     for source in source_records:
-        if source.record_id in existing_source_ids or store.get_by_id(stable_projection_id(source), scope=source.scope) is not None:
+        existing_projection = store.get_by_id(stable_projection_id(source), scope=source.scope)
+        if source.record_id in existing_source_ids or (
+            existing_projection is not None and existing_projection.status == "active"
+        ):
             skipped.append({"record_id": source.record_id, "reason": "already_projected"})
             continue
         candidate, skip_reason = _candidate_from_record(source)
@@ -216,6 +219,8 @@ def _existing_projected_source_ids(store: RuntimeStore, scope: ScopeRef) -> set[
     while True:
         memories = store.list_records(kinds=["memory"], scope=scope, limit=page_size, offset=offset)
         for memory in memories:
+            if memory.status != "active":
+                continue
             if memory.meta.get("projection_type") != PROJECTION_TYPE:
                 continue
             source_id = str(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from base64 import b64decode, b64encode
 from dataclasses import asdict
 import fnmatch
 from hashlib import sha256
@@ -7,11 +8,13 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
 from typing import Any
 
+from eimemory.governance.code_patch_command_policy import code_patch_verification_command_error
 from eimemory.governance.learning_eval import REGRESSION_THRESHOLD, SAFETY_THRESHOLD
 from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.governance.promotion_watch import WATCH_STATUS, initialize_promotion_watch
@@ -23,31 +26,34 @@ PLAYBOOK_TARGETS = {"eval_case", "skill_draft", "sop_draft", "source_policy"}
 CODE_ASSET_TARGETS = {"code_patch"}
 UNSUPPORTED_ACTIVE_TARGETS = {"deployment_rollout", "scheduler_policy"}
 CAPABILITY_ROLLOUT_ACTION = "capability_promotion"
+CODE_APPLY_TRANSACTION_SOURCE = "eimemory.code_apply_transaction"
+CODE_APPLY_TRANSACTION_SCHEMA_VERSION = 1
+CODE_APPLY_TRANSACTION_IN_FLIGHT = "in_flight"
+CODE_APPLY_TRANSACTION_QUARANTINED = "recovery_quarantined"
 
-# L3+ candidates must declare a safety wire to governance/safety/ modules.
-# The wire is a tuple/list of module names supplied in the candidate's content
-# under the "safety_wire" key. promotion_manager enforces presence of all
-# four modules before any state mutation runs.
-REQUIRED_SAFETY_MODULES_L3_PLUS = (
+# L3+ candidates must declare the active safety controls that participate in
+# the production governance path.  The names are supplied in the candidate's
+# ``safety_wire`` content field and checked before any state mutation runs.
+REQUIRED_SAFETY_CONTROLS_L3_PLUS = (
     "kill_switch",
-    "circuit_breaker",
-    "spend_guard",
     "audit_verifier",
+    "safety_replay",
+    "promotion_manager",
 )
 
 
 def _check_safety_wire(*, authority_tier: str, safety_wire: tuple[str, ...] | list[str]) -> None:
-    """Reject L3+ candidates whose safety_wire is missing required modules.
+    """Reject L3+ candidates whose safety wire omits active controls.
 
     Tiers below L3 (L0, L1, L2) do not require a wire and pass through.
-    L3 and L4 require every module in REQUIRED_SAFETY_MODULES_L3_PLUS.
+    L3 and L4 require every control in REQUIRED_SAFETY_CONTROLS_L3_PLUS.
     Raises ValueError when any required module is absent.
     """
     tier = str(authority_tier or "").upper()
     if tier not in {"L3", "L4"}:
         return
     wire = set(safety_wire or ())
-    missing = set(REQUIRED_SAFETY_MODULES_L3_PLUS) - wire
+    missing = set(REQUIRED_SAFETY_CONTROLS_L3_PLUS) - wire
     if missing:
         raise ValueError(
             f"safety_wire missing required modules for {tier}: {sorted(missing)}"
@@ -1006,6 +1012,482 @@ def _cleanup_code_preflight_sandbox(
     return {"ok": ok, "skipped": False, "reports": reports}
 
 
+def recover_incomplete_code_apply(
+    runtime: Any,
+    *,
+    scope: dict[str, Any] | ScopeRef | None = None,
+    limit: int = 100,
+    repo_root: Path | None = None,
+) -> dict[str, Any]:
+    """Recover interrupted direct code-apply transactions without retrying them.
+
+    A transaction is written before the first repository write.  This entry
+    point deliberately performs *only* a verified rollback (or quarantine): it
+    never replays the patch, verification, deployment, or canary steps.  If a
+    target path no longer has either the recorded old content or the exact
+    recorded patch content, the transaction is marked ``recovery_quarantined``
+    and the repository is left untouched.
+    """
+    transactions = _inflight_code_apply_transactions(
+        runtime,
+        scope=scope,
+        limit=limit,
+        repo_root=repo_root,
+    )
+    reports: list[dict[str, Any]] = []
+    recovered_count = 0
+    quarantined_count = 0
+    for transaction in transactions:
+        report = _recover_code_apply_transaction(runtime, transaction)
+        reports.append(report)
+        if report.get("recovered"):
+            recovered_count += 1
+        if report.get("recovery_quarantined"):
+            quarantined_count += 1
+    return {
+        "ok": quarantined_count == 0,
+        "skipped": False,
+        "transaction_count": len(transactions),
+        "recovered_count": recovered_count,
+        "recovery_quarantined_count": quarantined_count,
+        "retried_apply_count": 0,
+        "transactions": reports,
+    }
+
+
+def _inflight_code_apply_transactions(
+    runtime: Any,
+    *,
+    scope: dict[str, Any] | ScopeRef | None = None,
+    limit: int = 100,
+    repo_root: Path | None = None,
+    include_quarantined: bool = False,
+) -> list[RecordEnvelope]:
+    records = runtime.store.list_records(
+        kinds=["promotion_request"],
+        scope=scope,
+        limit=max(1, int(limit)),
+    )
+    expected_root = str(repo_root.resolve()) if repo_root is not None else ""
+    result: list[RecordEnvelope] = []
+    for record in records:
+        content = record.content if isinstance(record.content, dict) else {}
+        if record.source != CODE_APPLY_TRANSACTION_SOURCE:
+            continue
+        if str(content.get("transaction_type") or "") != "code_apply":
+            continue
+        statuses = {CODE_APPLY_TRANSACTION_IN_FLIGHT}
+        if include_quarantined:
+            statuses.add(CODE_APPLY_TRANSACTION_QUARANTINED)
+        if str(record.status or "") not in statuses:
+            continue
+        if expected_root and str(content.get("repo_root") or "") != expected_root:
+            continue
+        result.append(record)
+    return result
+
+
+def _begin_code_apply_transaction(
+    runtime: Any,
+    candidate: RecordEnvelope,
+    patch: dict[str, Any],
+    *,
+    scope: dict[str, Any] | ScopeRef | None,
+    loop_id: str,
+    repo_root: Path,
+    file_updates: list[dict[str, str]],
+    prepared: list[dict[str, str]],
+    backups: list[dict[str, Any]],
+    allowed_files: list[str],
+    prior_commit_sha: str,
+    subject_state_digest: str,
+    verification_commands: list[str | list[str]],
+) -> RecordEnvelope:
+    scope_ref = (
+        scope
+        if isinstance(scope, ScopeRef)
+        else (ScopeRef.from_dict(scope) if isinstance(scope, dict) else candidate.scope)
+    )
+    patch_digest = _code_patch_digest(
+        patch,
+        repo_root=repo_root,
+        subject_commit=prior_commit_sha,
+        subject_state_digest=subject_state_digest,
+        file_updates=file_updates,
+        verification_commands=verification_commands,
+    )
+    planned_files = [
+        {
+            "path": str(item["path"]),
+            "new_content_sha256": sha256(_file_update_written_bytes(str(item["content"]))).hexdigest(),
+        }
+        for item in prepared
+    ]
+    serialized_backups = _serialize_code_apply_backups(repo_root, prepared=prepared, backups=backups)
+    record = RecordEnvelope.create(
+        kind="promotion_request",
+        title=f"Code apply transaction: {candidate.title}",
+        summary=f"Durable in-flight direct code apply for {candidate.record_id}",
+        scope=scope_ref,
+        source=CODE_APPLY_TRANSACTION_SOURCE,
+        status=CODE_APPLY_TRANSACTION_IN_FLIGHT,
+        content={
+            "schema_version": CODE_APPLY_TRANSACTION_SCHEMA_VERSION,
+            "transaction_type": "code_apply",
+            "candidate_id": candidate.record_id,
+            "loop_id": str(loop_id or ""),
+            "repo_root": str(repo_root.resolve()),
+            "patch_digest": patch_digest,
+            "prior_commit_sha": str(prior_commit_sha or ""),
+            "subject_state_digest": str(subject_state_digest or ""),
+            "allowed_files": list(allowed_files),
+            "planned_files": planned_files,
+            "backups": serialized_backups,
+            "recovery_patch": {"rollback_commands": _rollback_commands(patch)},
+            "stage": "prepared",
+            "stage_history": [{"stage": "prepared"}],
+        },
+        meta={
+            "transaction_type": "code_apply",
+            "candidate_id": candidate.record_id,
+            "repo_root": str(repo_root.resolve()),
+            "patch_digest": patch_digest,
+            "stage": "prepared",
+        },
+    )
+    return runtime.store.append(record)
+
+
+def _serialize_code_apply_backups(
+    repo_root: Path,
+    *,
+    prepared: list[dict[str, str]],
+    backups: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if len(prepared) != len(backups):
+        raise ValueError("code_apply_backup_count_mismatch")
+    serialized: list[dict[str, Any]] = []
+    for item, backup in zip(prepared, backups):
+        relative_path = str(item["path"])
+        backup_path = backup.get("path")
+        if not isinstance(backup_path, Path) or _relative_backup_path(repo_root, backup) != relative_path:
+            raise ValueError("code_apply_backup_path_mismatch")
+        content = bytes(backup.get("content") or b"")
+        serialized.append(
+            {
+                "path": relative_path,
+                "existed": bool(backup.get("existed")),
+                "content_b64": b64encode(content).decode("ascii"),
+                "content_sha256": sha256(content).hexdigest(),
+            }
+        )
+    return serialized
+
+
+def _update_code_apply_transaction(
+    runtime: Any,
+    transaction: RecordEnvelope,
+    *,
+    stage: str,
+    status: str | None = None,
+    reason: str = "",
+    rollback: dict[str, Any] | None = None,
+    commit: dict[str, Any] | None = None,
+    deployment: dict[str, Any] | None = None,
+    verification: dict[str, Any] | None = None,
+    recovery: dict[str, Any] | None = None,
+) -> RecordEnvelope:
+    content = dict(transaction.content or {})
+    history = [dict(item) for item in content.get("stage_history") or [] if isinstance(item, dict)]
+    entry: dict[str, Any] = {"stage": str(stage)}
+    if reason:
+        entry["reason"] = str(reason)
+    history.append(entry)
+    content["stage"] = str(stage)
+    content["stage_history"] = history[-32:]
+    if reason:
+        content["failure_reason"] = str(reason)
+    if rollback is not None:
+        content["rollback"] = dict(rollback)
+    if commit is not None:
+        content["commit"] = dict(commit)
+    if deployment is not None:
+        content["deployment"] = dict(deployment)
+    if verification is not None:
+        content["verification"] = dict(verification)
+    if recovery is not None:
+        content["recovery"] = dict(recovery)
+    transaction.content = content
+    if status is not None:
+        transaction.status = str(status)
+    transaction.meta["stage"] = str(stage)
+    transaction.meta["transaction_status"] = str(transaction.status)
+    if reason:
+        transaction.meta["failure_reason"] = str(reason)
+    transaction.touch()
+    return runtime.store.rewrite(transaction)
+
+
+def _complete_code_apply_rollback(
+    runtime: Any,
+    transaction: RecordEnvelope,
+    *,
+    rollback: dict[str, Any],
+    reason: str,
+    verification: dict[str, Any] | None = None,
+    commit: dict[str, Any] | None = None,
+    deployment: dict[str, Any] | None = None,
+) -> RecordEnvelope:
+    success = bool(rollback.get("ok"))
+    return _update_code_apply_transaction(
+        runtime,
+        transaction,
+        stage="rollback_completed" if success else CODE_APPLY_TRANSACTION_QUARANTINED,
+        status="rolled_back" if success else CODE_APPLY_TRANSACTION_QUARANTINED,
+        reason=reason,
+        rollback=rollback,
+        verification=verification,
+        commit=commit,
+        deployment=deployment,
+    )
+
+
+def _recover_code_apply_transaction(runtime: Any, transaction: RecordEnvelope) -> dict[str, Any]:
+    content = transaction.content if isinstance(transaction.content, dict) else {}
+    transaction_id = transaction.record_id
+    repo_root, repo_error = _transaction_repo_root(content)
+    if repo_error or repo_root is None:
+        _update_code_apply_transaction(
+            runtime,
+            transaction,
+            stage=CODE_APPLY_TRANSACTION_QUARANTINED,
+            status=CODE_APPLY_TRANSACTION_QUARANTINED,
+            reason=repo_error or "code_apply_repository_unavailable",
+            recovery={"action": "quarantined", "retry_apply": False},
+        )
+        return {
+            "transaction_id": transaction_id,
+            "ok": False,
+            "recovered": False,
+            "recovery_quarantined": True,
+            "reason": repo_error or "code_apply_repository_unavailable",
+            "retried_apply": False,
+        }
+
+    backups, planned_files, file_error = _deserialize_code_apply_recovery_files(repo_root, content)
+    if file_error:
+        _update_code_apply_transaction(
+            runtime,
+            transaction,
+            stage=CODE_APPLY_TRANSACTION_QUARANTINED,
+            status=CODE_APPLY_TRANSACTION_QUARANTINED,
+            reason=file_error,
+            recovery={"action": "quarantined", "retry_apply": False},
+        )
+        return {
+            "transaction_id": transaction_id,
+            "ok": False,
+            "recovered": False,
+            "recovery_quarantined": True,
+            "reason": file_error,
+            "retried_apply": False,
+        }
+
+    unchanged, state_error = _code_apply_recovery_file_state(repo_root, backups=backups, planned_files=planned_files)
+    if state_error:
+        _update_code_apply_transaction(
+            runtime,
+            transaction,
+            stage=CODE_APPLY_TRANSACTION_QUARANTINED,
+            status=CODE_APPLY_TRANSACTION_QUARANTINED,
+            reason=state_error,
+            recovery={"action": "quarantined", "retry_apply": False},
+        )
+        return {
+            "transaction_id": transaction_id,
+            "ok": False,
+            "recovered": False,
+            "recovery_quarantined": True,
+            "reason": state_error,
+            "retried_apply": False,
+        }
+
+    prior_commit_sha = str(content.get("prior_commit_sha") or "")
+    commit = content.get("commit") if isinstance(content.get("commit"), dict) else {}
+    new_commit_sha = str(commit.get("commit_sha") or "")
+    reset_repo = False
+    if (repo_root / ".git").exists():
+        current_commit_sha = _current_commit_sha(repo_root, timeout_seconds=30)
+        if current_commit_sha == prior_commit_sha:
+            reset_repo = False
+        elif new_commit_sha and current_commit_sha == new_commit_sha and not _repo_has_dirty_worktree(repo_root):
+            reset_repo = True
+        else:
+            reason = "code_apply_recovery_git_state_ambiguous"
+            _update_code_apply_transaction(
+                runtime,
+                transaction,
+                stage=CODE_APPLY_TRANSACTION_QUARANTINED,
+                status=CODE_APPLY_TRANSACTION_QUARANTINED,
+                reason=reason,
+                recovery={
+                    "action": "quarantined",
+                    "retry_apply": False,
+                    "current_commit_sha": current_commit_sha,
+                    "prior_commit_sha": prior_commit_sha,
+                    "new_commit_sha": new_commit_sha,
+                },
+            )
+            return {
+                "transaction_id": transaction_id,
+                "ok": False,
+                "recovered": False,
+                "recovery_quarantined": True,
+                "reason": reason,
+                "retried_apply": False,
+            }
+
+    rollback_side_effect_stages = {
+        "deployment_started",
+        "deployment_completed",
+        "post_deploy_health_started",
+        "post_deploy_health_passed",
+        "canary_started",
+        "canary_completed",
+    }
+    if unchanged and not reset_repo and str(content.get("stage") or "") not in rollback_side_effect_stages:
+        _update_code_apply_transaction(
+            runtime,
+            transaction,
+            stage="recovered_noop",
+            status="rolled_back",
+            recovery={"action": "noop_already_restored", "retry_apply": False},
+        )
+        return {
+            "transaction_id": transaction_id,
+            "ok": True,
+            "recovered": True,
+            "recovery_quarantined": False,
+            "rollback": {"ok": True, "skipped": True, "reason": "already_restored"},
+            "retried_apply": False,
+        }
+
+    recovery_patch = content.get("recovery_patch") if isinstance(content.get("recovery_patch"), dict) else {}
+    rollback = _rollback_code_patch(
+        repo_root=repo_root,
+        patch=recovery_patch,
+        backups=backups,
+        timeout_seconds=30,
+        phase="crash_recovery",
+        prior_commit_sha=prior_commit_sha,
+        reset_repo=reset_repo,
+    )
+    completed = _complete_code_apply_rollback(
+        runtime,
+        transaction,
+        rollback=rollback,
+        reason="code_apply_crash_recovery",
+    )
+    return {
+        "transaction_id": transaction_id,
+        "ok": bool(rollback.get("ok")),
+        "recovered": bool(rollback.get("ok")),
+        "recovery_quarantined": completed.status == CODE_APPLY_TRANSACTION_QUARANTINED,
+        "rollback": rollback,
+        "retried_apply": False,
+    }
+
+
+def _transaction_repo_root(content: dict[str, Any]) -> tuple[Path | None, str]:
+    raw = str(content.get("repo_root") or "").strip()
+    if not raw:
+        return None, "code_apply_recovery_repo_root_missing"
+    try:
+        repo_root = Path(raw).resolve()
+        allowed_root = _allowed_code_repo_root().resolve()
+    except OSError:
+        return None, "code_apply_recovery_repo_root_invalid"
+    if repo_root != allowed_root:
+        return None, "code_apply_recovery_repo_root_not_allowed"
+    if not repo_root.exists() or not repo_root.is_dir():
+        return None, "code_apply_recovery_repo_root_not_found"
+    return repo_root, ""
+
+
+def _deserialize_code_apply_recovery_files(
+    repo_root: Path,
+    content: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, str]], str]:
+    raw_backups = content.get("backups")
+    raw_planned = content.get("planned_files")
+    if not isinstance(raw_backups, list) or not isinstance(raw_planned, list) or not raw_backups or len(raw_backups) != len(raw_planned):
+        return [], [], "code_apply_recovery_backup_invalid"
+    backups: list[dict[str, Any]] = []
+    planned_files: list[dict[str, str]] = []
+    seen_paths: set[str] = set()
+    try:
+        for backup_data, planned_data in zip(raw_backups, raw_planned):
+            if not isinstance(backup_data, dict) or not isinstance(planned_data, dict):
+                raise ValueError("code_apply_recovery_backup_invalid")
+            relative_path = _safe_repo_relative_path(str(backup_data.get("path") or ""))
+            planned_path = _safe_repo_relative_path(str(planned_data.get("path") or ""))
+            if relative_path != planned_path or relative_path in seen_paths:
+                raise ValueError("code_apply_recovery_path_invalid")
+            seen_paths.add(relative_path)
+            raw_content = b64decode(str(backup_data.get("content_b64") or "").encode("ascii"), validate=True)
+            if sha256(raw_content).hexdigest() != str(backup_data.get("content_sha256") or ""):
+                raise ValueError("code_apply_recovery_backup_digest_invalid")
+            new_digest = str(planned_data.get("new_content_sha256") or "")
+            if len(new_digest) != 64:
+                raise ValueError("code_apply_recovery_patch_digest_invalid")
+            backups.append(
+                {
+                    "path": _repo_child(repo_root, relative_path),
+                    "existed": bool(backup_data.get("existed")),
+                    "content": raw_content,
+                }
+            )
+            planned_files.append({"path": relative_path, "new_content_sha256": new_digest})
+    except Exception as exc:
+        reason = str(exc).strip()
+        return [], [], reason if reason.startswith("code_apply_") else "code_apply_recovery_backup_invalid"
+    return backups, planned_files, ""
+
+
+def _code_apply_recovery_file_state(
+    repo_root: Path,
+    *,
+    backups: list[dict[str, Any]],
+    planned_files: list[dict[str, str]],
+) -> tuple[bool, str]:
+    all_original = True
+    try:
+        for backup, planned in zip(backups, planned_files):
+            destination = backup["path"]
+            if not isinstance(destination, Path) or _relative_backup_path(repo_root, backup) != planned["path"]:
+                return False, "code_apply_recovery_path_invalid"
+            existed = bool(backup.get("existed"))
+            if not destination.exists():
+                if existed:
+                    return False, f"code_apply_recovery_target_missing:{planned['path']}"
+                continue
+            if not destination.is_file():
+                return False, f"code_apply_recovery_target_not_file:{planned['path']}"
+            digest = sha256(destination.read_bytes()).hexdigest()
+            original_digest = sha256(bytes(backup.get("content") or b"")).hexdigest()
+            if existed and digest == original_digest:
+                continue
+            if not existed and digest == original_digest:
+                return False, f"code_apply_recovery_unexpected_target:{planned['path']}"
+            if digest == planned["new_content_sha256"]:
+                all_original = False
+                continue
+            return False, f"code_apply_recovery_target_changed:{planned['path']}"
+    except Exception:
+        return False, "code_apply_recovery_target_unreadable"
+    return all_original, ""
+
+
 def _apply_code_patch_candidate(
     runtime: Any,
     candidate: RecordEnvelope,
@@ -1029,6 +1511,7 @@ def _apply_code_patch_candidate(
     contract_error = _code_patch_contract_error(patch, repo_root=repo_root, file_updates=file_updates)
     if contract_error:
         return {"ok": False, "blocked_reason": contract_error, "promotion_target": "code_patch", "repo_root": str(repo_root)}
+    recovery = recover_incomplete_code_apply(runtime, scope=scope, repo_root=repo_root)
     gate_bundle = gate.get("gate_bundle") if isinstance(gate.get("gate_bundle"), dict) else {}
     if not _code_preflight_subject_matches(gate_bundle, repo_root=repo_root):
         return {
@@ -1037,14 +1520,81 @@ def _apply_code_patch_candidate(
             "promotion_target": "code_patch",
             "repo_root": str(repo_root),
             "repo_mutated": False,
+            "code_apply_recovery": recovery,
+        }
+    unfinished_transactions = _inflight_code_apply_transactions(
+        runtime,
+        repo_root=repo_root,
+        include_quarantined=True,
+    )
+    if unfinished_transactions:
+        return {
+            "ok": False,
+            "blocked_reason": "code_patch_recovery_required",
+            "promotion_target": "code_patch",
+            "repo_root": str(repo_root),
+            "transaction_ids": [item.record_id for item in unfinished_transactions],
+            "repo_mutated": False,
+            "code_apply_recovery": recovery,
         }
     allowed_files = _allowed_files(patch, file_updates)
     timeout_seconds = _int_value(patch.get("timeout_seconds"), default=_int_value(gate_bundle.get("timeout_seconds"), default=300))
     timeout_seconds = max(1, timeout_seconds)
     prior_commit_sha = _current_commit_sha(repo_root, timeout_seconds=timeout_seconds)
-    applied, backups, error = _apply_file_updates(repo_root, file_updates, allowed_files=allowed_files)
+    subject_state_digest = _code_patch_subject_state_digest(repo_root, subject_commit=prior_commit_sha)
+    verification_commands = _normalize_commands(patch.get("verification_commands") or patch.get("verify_commands"))
+    prepared, backups, error = _prepare_file_updates(repo_root, file_updates, allowed_files=allowed_files)
+    if error:
+        return {
+            "ok": False,
+            "blocked_reason": error,
+            "promotion_target": "code_patch",
+            "repo_root": str(repo_root),
+            "applied_file_paths": [],
+        }
+    transaction = _begin_code_apply_transaction(
+        runtime,
+        candidate,
+        patch,
+        scope=scope,
+        loop_id=loop_id,
+        repo_root=repo_root,
+        file_updates=file_updates,
+        prepared=prepared,
+        backups=backups,
+        allowed_files=allowed_files,
+        prior_commit_sha=prior_commit_sha,
+        subject_state_digest=subject_state_digest,
+        verification_commands=verification_commands,
+    )
+    _update_code_apply_transaction(runtime, transaction, stage="write_started")
+    applied, error = _write_prepared_file_updates(prepared, backups)
     rollback_evidence = _rollback_evidence(repo_root=repo_root, patch=patch, applied=applied, backups=backups, prior_commit_sha=prior_commit_sha, commit={})
     if error:
+        rollback = _rollback_code_patch(
+            repo_root=repo_root,
+            patch=patch,
+            backups=backups,
+            timeout_seconds=timeout_seconds,
+            phase="write",
+            prior_commit_sha=prior_commit_sha,
+        )
+        rollback_state = _rollback_state(rollback)
+        _complete_code_apply_rollback(
+            runtime,
+            transaction,
+            rollback=rollback,
+            reason="code_patch_write_failed",
+        )
+        _record_candidate_lifecycle(
+            runtime,
+            candidate,
+            scope=scope,
+            action_type=_rollback_action_type(rollback),
+            rollback_command=_rollback_command_display(patch),
+            reason="code_patch_write_failed",
+            side_effect={"rollback": rollback, "rollback_evidence": rollback_evidence, **rollback_state},
+        )
         return {
             "ok": False,
             "blocked_reason": error,
@@ -1052,10 +1602,15 @@ def _apply_code_patch_candidate(
             "repo_root": str(repo_root),
             "applied_file_paths": [item["path"] for item in applied],
             "rollback_evidence": rollback_evidence,
+            "rollback": rollback,
+            "transaction_id": transaction.record_id,
+            **rollback_state,
         }
+    _update_code_apply_transaction(runtime, transaction, stage="files_written")
 
+    _update_code_apply_transaction(runtime, transaction, stage="verification_started")
     verification = _run_patch_commands(
-        patch.get("verification_commands") or patch.get("verify_commands") or [],
+        verification_commands,
         cwd=repo_root,
         timeout_seconds=timeout_seconds,
         phase="verify",
@@ -1063,6 +1618,13 @@ def _apply_code_patch_candidate(
     if not verification["ok"]:
         rollback = _rollback_code_patch(repo_root=repo_root, patch=patch, backups=backups, timeout_seconds=timeout_seconds, phase="verify")
         rollback_state = _rollback_state(rollback)
+        _complete_code_apply_rollback(
+            runtime,
+            transaction,
+            rollback=rollback,
+            reason="code_patch_verification_failed",
+            verification=verification,
+        )
         _record_candidate_lifecycle(runtime, candidate, scope=scope, action_type=_rollback_action_type(rollback), test_result=verification, rollback_command=_rollback_command_display(patch), reason="code_patch_verification_failed", side_effect={"rollback": rollback, "rollback_evidence": rollback_evidence, **rollback_state})
         return {
             "ok": False,
@@ -1073,9 +1635,12 @@ def _apply_code_patch_candidate(
             "verification": verification,
             "rollback_evidence": rollback_evidence,
             "rollback": rollback,
+            "transaction_id": transaction.record_id,
             **rollback_state,
         }
 
+    _update_code_apply_transaction(runtime, transaction, stage="verification_passed", verification=verification)
+    _update_code_apply_transaction(runtime, transaction, stage="commit_started", verification=verification)
     commit = _commit_repo_patch(
         repo_root,
         applied_paths=[item["path"] for item in applied],
@@ -1087,6 +1652,14 @@ def _apply_code_patch_candidate(
     if not commit["ok"]:
         rollback = _rollback_code_patch(repo_root=repo_root, patch=patch, backups=backups, timeout_seconds=timeout_seconds, phase="commit", prior_commit_sha=prior_commit_sha)
         rollback_state = _rollback_state(rollback)
+        _complete_code_apply_rollback(
+            runtime,
+            transaction,
+            rollback=rollback,
+            reason="code_patch_commit_failed",
+            verification=verification,
+            commit=commit,
+        )
         _record_candidate_lifecycle(runtime, candidate, scope=scope, action_type=_rollback_action_type(rollback), test_result=verification, rollback_command=_rollback_command_display(patch), reason="code_patch_commit_failed", side_effect={"rollback": rollback, "rollback_evidence": rollback_evidence, "commit": commit, **rollback_state})
         return {
             "ok": False,
@@ -1098,8 +1671,10 @@ def _apply_code_patch_candidate(
             "commit": commit,
             "rollback_evidence": rollback_evidence,
             "rollback": rollback,
+            "transaction_id": transaction.record_id,
             **rollback_state,
         }
+    _update_code_apply_transaction(runtime, transaction, stage="commit_completed", verification=verification, commit=commit)
     _record_candidate_lifecycle(
         runtime,
         candidate,
@@ -1115,10 +1690,19 @@ def _apply_code_patch_candidate(
     post_deploy_health: dict[str, Any] = {"ok": True, "skipped": True, "reports": []}
     production_applied = False
     if _truthy(patch.get("deploy_to_production"), default=False):
+        _update_code_apply_transaction(runtime, transaction, stage="deployment_started", verification=verification, commit=commit)
         deploy_commands = _deployment_commands(patch, repo_root)
         if not deploy_commands:
             rollback = _rollback_code_patch(repo_root=repo_root, patch=patch, backups=backups, timeout_seconds=timeout_seconds, phase="deploy", prior_commit_sha=prior_commit_sha)
             rollback_state = _rollback_state(rollback)
+            _complete_code_apply_rollback(
+                runtime,
+                transaction,
+                rollback=rollback,
+                reason="code_patch_deployment_commands_missing",
+                verification=verification,
+                commit=commit,
+            )
             _record_candidate_lifecycle(runtime, candidate, scope=scope, action_type=_rollback_action_type(rollback), test_result=verification, commit_sha=str(commit.get("commit_sha") or ""), rollback_command=_rollback_command_display(patch), reason="code_patch_deployment_commands_missing", side_effect={"rollback": rollback, "rollback_evidence": rollback_evidence, **rollback_state})
             return {
                 "ok": False,
@@ -1130,6 +1714,7 @@ def _apply_code_patch_candidate(
                 "commit": commit,
                 "rollback_evidence": rollback_evidence,
                 "rollback": rollback,
+                "transaction_id": transaction.record_id,
                 **rollback_state,
             }
         deployment = _run_patch_commands(deploy_commands, cwd=repo_root, timeout_seconds=timeout_seconds, phase="deploy")
@@ -1137,6 +1722,15 @@ def _apply_code_patch_candidate(
         if not deployment["ok"]:
             rollback = _rollback_code_patch(repo_root=repo_root, patch=patch, backups=backups, timeout_seconds=timeout_seconds, phase="deploy", prior_commit_sha=prior_commit_sha)
             rollback_state = _rollback_state(rollback)
+            _complete_code_apply_rollback(
+                runtime,
+                transaction,
+                rollback=rollback,
+                reason="code_patch_deployment_failed",
+                verification=verification,
+                commit=commit,
+                deployment=deployment,
+            )
             _record_candidate_lifecycle(runtime, candidate, scope=scope, action_type=_rollback_action_type(rollback), test_result=verification, commit_sha=str(commit.get("commit_sha") or ""), release_path=str(rollback_evidence.get("release_path") or ""), rollback_command=_rollback_command_display(patch), reason="code_patch_deployment_failed", side_effect={"rollback": rollback, "deployment": deployment, "rollback_evidence": rollback_evidence, **rollback_state})
             return {
                 "ok": False,
@@ -1149,8 +1743,10 @@ def _apply_code_patch_candidate(
                 "deployment": deployment,
                 "rollback_evidence": rollback_evidence,
                 "rollback": rollback,
+                "transaction_id": transaction.record_id,
                 **rollback_state,
             }
+        _update_code_apply_transaction(runtime, transaction, stage="deployment_completed", verification=verification, commit=commit, deployment=deployment)
         _record_candidate_lifecycle(
             runtime,
             candidate,
@@ -1162,10 +1758,20 @@ def _apply_code_patch_candidate(
             rollback_command=_rollback_command_display(patch),
             side_effect={"deployment": deployment, "rollback_evidence": rollback_evidence},
         )
+        _update_code_apply_transaction(runtime, transaction, stage="post_deploy_health_started", verification=verification, commit=commit, deployment=deployment)
         post_deploy_health = _run_patch_commands(_post_deploy_health_commands(patch), cwd=repo_root, timeout_seconds=timeout_seconds, phase="post_deploy_health")
         if not post_deploy_health["ok"] or post_deploy_health.get("skipped"):
             rollback = _rollback_code_patch(repo_root=repo_root, patch=patch, backups=backups, timeout_seconds=timeout_seconds, phase="post_deploy_health", prior_commit_sha=prior_commit_sha)
             rollback_state = _rollback_state(rollback)
+            _complete_code_apply_rollback(
+                runtime,
+                transaction,
+                rollback=rollback,
+                reason="code_patch_post_deploy_health_failed",
+                verification=verification,
+                commit=commit,
+                deployment=deployment,
+            )
             _record_candidate_lifecycle(runtime, candidate, scope=scope, action_type=_rollback_action_type(rollback), test_result=verification, health_result=post_deploy_health, commit_sha=str(commit.get("commit_sha") or ""), release_path=str(rollback_evidence.get("release_path") or ""), rollback_command=_rollback_command_display(patch), reason="code_patch_post_deploy_health_failed", side_effect={"rollback": rollback, "deployment": deployment, "post_deploy_health": post_deploy_health, "rollback_evidence": rollback_evidence, **rollback_state})
             return {
                 "ok": False,
@@ -1179,8 +1785,10 @@ def _apply_code_patch_candidate(
                 "post_deploy_health": post_deploy_health,
                 "rollback_evidence": rollback_evidence,
                 "rollback": rollback,
+                "transaction_id": transaction.record_id,
                 **rollback_state,
             }
+        _update_code_apply_transaction(runtime, transaction, stage="post_deploy_health_passed", verification=verification, commit=commit, deployment=deployment)
         _record_candidate_lifecycle(
             runtime,
             candidate,
@@ -1197,6 +1805,14 @@ def _apply_code_patch_candidate(
 
     canary: dict[str, Any] = {"ok": True, "skipped": True, "status": "not_required", "reports": []}
     if production_applied:
+        _update_code_apply_transaction(
+            runtime,
+            transaction,
+            stage="canary_started",
+            verification=verification,
+            commit=commit,
+            deployment=deployment,
+        )
         canary = _run_code_patch_canary(
             runtime,
             candidate,
@@ -1213,6 +1829,15 @@ def _apply_code_patch_candidate(
         if not canary["ok"]:
             rollback = dict(canary.get("rollback") or {})
             rollback_state = _rollback_state(rollback)
+            _complete_code_apply_rollback(
+                runtime,
+                transaction,
+                rollback=rollback,
+                reason="code_patch_canary_failed",
+                verification=verification,
+                commit=commit,
+                deployment=deployment,
+            )
             return {
                 "ok": False,
                 "blocked_reason": "code_patch_canary_failed",
@@ -1226,9 +1851,27 @@ def _apply_code_patch_candidate(
                 "canary": canary,
                 "rollback_evidence": rollback_evidence,
                 "rollback": rollback,
+                "transaction_id": transaction.record_id,
                 **rollback_state,
             }
+        _update_code_apply_transaction(
+            runtime,
+            transaction,
+            stage="canary_completed",
+            verification=verification,
+            commit=commit,
+            deployment=deployment,
+        )
 
+    _update_code_apply_transaction(
+        runtime,
+        transaction,
+        stage="completed",
+        status="completed",
+        verification=verification,
+        commit=commit,
+        deployment=deployment,
+    )
     record = append_learning_record_once(
         runtime,
         kind="learning_playbook",
@@ -1250,6 +1893,7 @@ def _apply_code_patch_candidate(
             "post_deploy_health": post_deploy_health,
             "canary": canary,
             "rollback_evidence": rollback_evidence,
+            "transaction_id": transaction.record_id,
             "eval_result": eval_result,
             "gate": gate,
             "production_applied": production_applied,
@@ -1277,6 +1921,7 @@ def _apply_code_patch_candidate(
         "post_deploy_health": post_deploy_health,
         "canary": canary,
         "rollback_evidence": rollback_evidence,
+        "transaction_id": transaction.record_id,
         "production_applied": production_applied,
         "lifecycle_actions": [
             "applied",
@@ -1562,10 +2207,23 @@ def _code_patch_contract_error(patch: dict[str, Any], *, repo_root: Path, file_u
             return "code_patch_repo_root_not_allowed"
     except OSError:
         return "code_patch_repo_root_not_allowed"
+    for update in file_updates:
+        try:
+            relative_path = _safe_repo_relative_path(str(update.get("path") or ""))
+        except ValueError as exc:
+            return str(exc)
+        if _has_symlink_component(repo_root, relative_path):
+            return f"code_patch_symlink_path_not_allowed:{relative_path}"
     if not _declared_allowed_files(patch):
         return "code_patch_requires_allowed_files"
-    if not _normalize_commands(patch.get("verification_commands") or patch.get("verify_commands")):
+    verification_commands = _normalize_commands(
+        patch.get("verification_commands") or patch.get("verify_commands")
+    )
+    if not verification_commands:
         return "code_patch_requires_verification_commands"
+    command_error = code_patch_verification_command_error(verification_commands)
+    if command_error:
+        return command_error
     if _truthy(patch.get("deploy_to_production"), default=False):
         if not _truthy(patch.get("commit_to_repo"), default=False):
             return "code_patch_requires_commit_to_repo"
@@ -1597,19 +2255,26 @@ def _declared_allowed_files(patch: dict[str, Any]) -> list[str]:
     return items
 
 
-def _apply_file_updates(
+def _prepare_file_updates(
     repo_root: Path,
     file_updates: list[dict[str, str]],
     *,
     allowed_files: list[str],
 ) -> tuple[list[dict[str, str]], list[dict[str, Any]], str]:
-    applied: list[dict[str, str]] = []
+    """Read and validate every target before any filesystem mutation."""
+    prepared: list[dict[str, str]] = []
     backups: list[dict[str, Any]] = []
+    seen_paths: set[str] = set()
     try:
         for update in file_updates:
             relative_path = _safe_repo_relative_path(update["path"])
+            if relative_path in seen_paths:
+                raise ValueError(f"code_patch_duplicate_file_update:{relative_path}")
+            seen_paths.add(relative_path)
             if not _path_allowed(relative_path, allowed_files):
                 raise ValueError(f"code_patch_path_not_allowed:{relative_path}")
+            if _has_symlink_component(repo_root, relative_path):
+                raise ValueError(f"code_patch_symlink_path_not_allowed:{relative_path}")
             destination = _repo_child(repo_root, relative_path)
             backups.append(
                 {
@@ -1618,13 +2283,58 @@ def _apply_file_updates(
                     "content": destination.read_bytes() if destination.exists() else b"",
                 }
             )
+            prepared.append(
+                {
+                    "path": relative_path,
+                    "repo_root": str(repo_root),
+                    "absolute_path": str(destination),
+                    "content": str(update["content"]),
+                }
+            )
+        return prepared, backups, ""
+    except Exception as exc:
+        return [], [], str(exc)
+
+
+def _write_prepared_file_updates(
+    prepared: list[dict[str, str]],
+    backups: list[dict[str, Any]],
+) -> tuple[list[dict[str, str]], str]:
+    """Apply prevalidated updates, restoring the captured bytes on failure."""
+    applied: list[dict[str, str]] = []
+    try:
+        for update in prepared:
+            repo_root = Path(str(update["repo_root"]))
+            relative_path = str(update["path"])
+            if _has_symlink_component(repo_root, relative_path):
+                raise ValueError(f"code_patch_symlink_path_not_allowed:{relative_path}")
+            destination = _repo_child(repo_root, relative_path)
             destination.parent.mkdir(parents=True, exist_ok=True)
-            destination.write_text(update["content"], encoding="utf-8")
-            applied.append({"path": relative_path, "absolute_path": str(destination)})
-        return applied, backups, ""
+            destination.write_bytes(_file_update_written_bytes(update["content"]))
+            applied.append({"path": str(update["path"]), "absolute_path": str(destination)})
+        return applied, ""
     except Exception as exc:
         _restore_file_updates(backups)
-        return applied, backups, str(exc)
+        return applied, str(exc)
+
+
+def _apply_file_updates(
+    repo_root: Path,
+    file_updates: list[dict[str, str]],
+    *,
+    allowed_files: list[str],
+) -> tuple[list[dict[str, str]], list[dict[str, Any]], str]:
+    """Compatibility wrapper used by isolated preflight execution."""
+    prepared, backups, error = _prepare_file_updates(repo_root, file_updates, allowed_files=allowed_files)
+    if error:
+        return [], backups, error
+    applied, error = _write_prepared_file_updates(prepared, backups)
+    return applied, backups, error
+
+
+def _file_update_written_bytes(content: str) -> bytes:
+    """Match the platform newline behavior of the prior ``write_text`` path."""
+    return str(content).replace("\n", os.linesep).encode("utf-8")
 
 
 def _restore_file_updates(backups: list[dict[str, Any]]) -> None:
@@ -1658,6 +2368,24 @@ def _repo_child(repo_root: Path, relative_path: str) -> Path:
     except ValueError as exc:
         raise ValueError(f"code_patch_path_escapes_repo:{relative_path}") from exc
     return child
+
+
+def _has_symlink_component(repo_root: Path, relative_path: str) -> bool:
+    """Reject links/reparse points before a relative update is resolved."""
+    current = repo_root.resolve()
+    for part in PurePosixPath(relative_path).parts:
+        current = current / part
+        try:
+            entry = current.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return True
+        reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+        attributes = getattr(entry, "st_file_attributes", 0)
+        if stat.S_ISLNK(entry.st_mode) or bool(reparse_flag and attributes & reparse_flag):
+            return True
+    return False
 
 
 def _repo_has_dirty_worktree(repo_root: Path) -> bool:
@@ -1699,9 +2427,14 @@ def _rollback_code_patch(
     timeout_seconds: int,
     phase: str,
     prior_commit_sha: str = "",
+    reset_repo: bool = True,
 ) -> dict[str, Any]:
     _restore_file_updates(backups)
-    repo_reset = _reset_repo_to_commit(repo_root, prior_commit_sha=prior_commit_sha, timeout_seconds=timeout_seconds)
+    repo_reset = (
+        _reset_repo_to_commit(repo_root, prior_commit_sha=prior_commit_sha, timeout_seconds=timeout_seconds)
+        if reset_repo
+        else {"ok": True, "skipped": True, "reason": "recovery_head_matches_prior"}
+    )
     commands = _rollback_commands(patch)
     command_report = _run_patch_commands(commands, cwd=repo_root, timeout_seconds=timeout_seconds, phase=f"rollback:{phase}") if commands else {"ok": True, "skipped": True, "reports": []}
     return {
@@ -1798,14 +2531,11 @@ def _run_patch_commands(commands: Any, *, cwd: Path, timeout_seconds: int, phase
         run_command = _resolve_patch_command(command)
         display = [str(part) for part in run_command]
         try:
-            completed = subprocess.run(
+            completed = _run_patch_subprocess(
                 run_command,
-                cwd=str(cwd),
-                text=True,
-                capture_output=True,
-                timeout=timeout_seconds,
-                shell=False,
-                check=False,
+                cwd=cwd,
+                timeout_seconds=timeout_seconds,
+                phase=phase,
             )
             report = {
                 "phase": phase,
@@ -1839,6 +2569,44 @@ def _run_patch_commands(commands: Any, *, cwd: Path, timeout_seconds: int, phase
         if not report["ok"]:
             return {"ok": False, "reports": reports}
     return {"ok": True, "reports": reports, "skipped": not bool(normalized)}
+
+
+def _run_patch_subprocess(
+    command: list[str],
+    *,
+    cwd: Path,
+    timeout_seconds: int,
+    phase: str,
+) -> subprocess.CompletedProcess[str]:
+    """Run a patch command while keeping verification caches out of the repo."""
+    if not str(phase or "").startswith("verify"):
+        return subprocess.run(
+            command,
+            cwd=str(cwd),
+            text=True,
+            capture_output=True,
+            timeout=timeout_seconds,
+            shell=False,
+            check=False,
+        )
+    with tempfile.TemporaryDirectory(prefix="eimemory-code-verify-") as cache_root:
+        environment = dict(os.environ)
+        environment["PYTHONPYCACHEPREFIX"] = cache_root
+        existing_pytest_opts = str(environment.get("PYTEST_ADDOPTS") or "").strip()
+        if "no:cacheprovider" not in existing_pytest_opts:
+            environment["PYTEST_ADDOPTS"] = " ".join(
+                item for item in (existing_pytest_opts, "-p no:cacheprovider") if item
+            )
+        return subprocess.run(
+            command,
+            cwd=str(cwd),
+            text=True,
+            capture_output=True,
+            timeout=timeout_seconds,
+            shell=False,
+            check=False,
+            env=environment,
+        )
 
 
 def _resolve_patch_command(command: list[str]) -> list[str]:

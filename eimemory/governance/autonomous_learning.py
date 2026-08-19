@@ -14,6 +14,7 @@ from eimemory.governance.capability_replay_packs import (
     capability_replay_case_ids,
 )
 from eimemory.governance.capability_seeding import ensure_all_seeded
+from eimemory.governance.code_evolution_bridge import propose_code_patch
 from eimemory.governance.curiosity import generate_learning_goals, persist_learning_goals
 from eimemory.governance.evidence_collector import collect
 from eimemory.governance.evidence_contract import ReleaseIdentity, current_release_identity
@@ -33,7 +34,7 @@ from eimemory.governance.learning_state import (
     stable_semantic_key,
     start_learning_loop,
 )
-from eimemory.governance.promotion_manager import promote_candidate
+from eimemory.governance.promotion_manager import promote_candidate, recover_incomplete_code_apply
 from eimemory.governance.prompt_safety import (
     prompt_injection_check,
     prompt_shadow_eval,
@@ -49,6 +50,7 @@ from eimemory.governance.signal_intake import rank_learning_signals
 from eimemory.governance.skill_sedimentation import promote_repeated_sops_to_skill_candidates
 from eimemory.governance.thoughts import generate_thoughts
 from eimemory.governance.world_watchers import collect_world_signals, default_watches
+from eimemory.llm import llm_client_from_env
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
@@ -115,6 +117,11 @@ def run_autonomous_learning_cycle(
             max_goals=max_goals,
             allow_network=network_enabled,
         )
+    code_apply_recovery = _recover_code_apply_before_cycle(
+        runtime,
+        scope=scope_ref,
+        apply=apply,
+    )
     loop = start_learning_loop(runtime, scope=scope_ref, trigger="learn_cycle", dry_run=dry_run, force=force)
     loop_id = str(loop.meta.get("loop_id") or loop.content.get("loop_id") or loop.record_id)
     try:
@@ -333,6 +340,8 @@ def run_autonomous_learning_cycle(
             max_candidates_per_goal=max_candidates_per_goal,
             replay_dataset=replay_dataset,
             evidence=evidence,
+            runtime=runtime,
+            scope=scope_ref,
         )
         candidate_kinds = [str(spec.get("promotion_target") or "") for spec in candidate_specs]
         network_research["output_gate"] = _network_output_gate(
@@ -378,17 +387,24 @@ def run_autonomous_learning_cycle(
             )
             experiment_ids.append(experiment_id)
             experiment = runtime.store.get_by_id(experiment_id, scope=scope_ref)
+            measured_eval_suite = _measured_learning_eval_suite(
+                evidence=evidence,
+                replay_gate=replay_gate,
+                safety_replay=safety_replay,
+                isolation_gate_passed=None,
+            )
+            if candidate_kind == "code_patch" and str(candidate_patch.get("proposal_status") or "") != "proposal_ready":
+                blocked_reason = str(candidate_patch.get("proposal_blocked_reason") or "invalid_code_proposal")
+                measured_eval_suite["blocked_reasons"] = [
+                    *[str(item) for item in measured_eval_suite.get("blocked_reasons") or [] if str(item)],
+                    blocked_reason,
+                ]
             eval_result = run_learning_eval(
                 runtime,
                 experiment,
                 scope=scope_ref,
                 loop_id=loop_id,
-                eval_suite=_measured_learning_eval_suite(
-                    evidence=evidence,
-                    replay_gate=replay_gate,
-                    safety_replay=safety_replay,
-                    isolation_gate_passed=None,
-                ),
+                eval_suite=measured_eval_suite,
             )
             eval_result["gate_bundle"] = _gate_bundle_for_candidate(
                 candidate_kind,
@@ -585,6 +601,7 @@ def run_autonomous_learning_cycle(
             "scope": asdict(scope_ref),
             "dry_run": bool(dry_run),
             "apply": bool(apply),
+            "code_apply_recovery": code_apply_recovery,
             "watch_signal_count": _as_int(watch_report.get("signal_count"), default=0),
             "thought_count": _as_int(thought_report.get("thought_count"), default=0),
             "goal_count": len(goals),
@@ -607,6 +624,8 @@ def run_autonomous_learning_cycle(
                     "requested_target": str(spec.get("requested_target") or ""),
                     "promotion_target": str(spec.get("promotion_target") or ""),
                     "fallback_reason": str((spec.get("patch") or {}).get("fallback_reason") or ""),
+                    "proposal_status": str((spec.get("patch") or {}).get("proposal_status") or ""),
+                    "proposal_blocked_reason": str((spec.get("patch") or {}).get("proposal_blocked_reason") or ""),
                 }
                 for spec in candidate_specs
             ],
@@ -648,6 +667,40 @@ def run_autonomous_learning_cycle(
         mark_step(runtime, loop, step_name="failed", status="failed", error=str(exc))
         complete_learning_loop(runtime, loop, status="failed", summary=str(exc))
         raise
+
+
+def _recover_code_apply_before_cycle(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    apply: bool,
+) -> dict[str, Any]:
+    """Resolve durable interrupted writes before beginning another auto-apply."""
+    if not apply:
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "apply_disabled",
+            "transaction_count": 0,
+            "recovered_count": 0,
+            "recovery_quarantined_count": 0,
+            "retried_apply_count": 0,
+            "transactions": [],
+        }
+    try:
+        return recover_incomplete_code_apply(runtime, scope=scope)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "skipped": False,
+            "reason": "code_apply_recovery_failed",
+            "error_type": type(exc).__name__,
+            "transaction_count": 0,
+            "recovered_count": 0,
+            "recovery_quarantined_count": 0,
+            "retried_apply_count": 0,
+            "transactions": [],
+        }
 
 
 def _run_real_task_replay_if_available(
@@ -1356,6 +1409,8 @@ def _candidate_specs_for_goals(
     max_candidates_per_goal: int = 1,
     replay_dataset: dict[str, Any] | None = None,
     evidence: list[dict[str, Any]] | None = None,
+    runtime: Any | None = None,
+    scope: ScopeRef | dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     specs: list[dict[str, Any]] = []
     for goal in _candidate_goal_portfolio(goals, max_goals=max_goals):
@@ -1365,6 +1420,8 @@ def _candidate_specs_for_goals(
                 evidence or [],
                 candidate_kind=requested_target,
                 replay_dataset=replay_dataset,
+                runtime=runtime,
+                scope=scope,
             )
             spec = {
                 "goal": dict(goal),
@@ -1382,6 +1439,8 @@ def _candidate_specs_for_goals(
         evidence or [],
         candidate_kind=_candidate_kind_for_goal(fallback),
         replay_dataset=replay_dataset,
+        runtime=runtime,
+        scope=scope,
     )
     return [
         {
@@ -1475,17 +1534,20 @@ def _resolved_candidate_kind_and_patch(
     *,
     candidate_kind: str | None = None,
     replay_dataset: dict[str, Any] | None = None,
+    runtime: Any | None = None,
+    scope: ScopeRef | dict[str, Any] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     requested = str(candidate_kind or _candidate_kind_for_goal(goal))
-    if requested == "code_patch" and not _structured_code_patch(goal=goal, replay_dataset=replay_dataset):
-        patch = _candidate_patch(goal, evidence, candidate_kind="sop_draft", replay_dataset=replay_dataset)
-        patch.pop("file_updates", None)
-        patch["fallback_from"] = "code_patch"
-        patch["fallback_reason"] = "code_patch_missing_file_updates"
-        patch["requested_promotion_target"] = requested
-        patch["promotion_target"] = "sop_draft"
-        patch["summary"] = _candidate_summary(goal, candidate_kind="sop_draft", patch=patch)
-        return "sop_draft", patch
+    if requested == "code_patch":
+        patch = _proposed_code_patch(
+            goal,
+            evidence,
+            replay_dataset=replay_dataset,
+            runtime=runtime,
+            scope=scope,
+        )
+        patch["promotion_target"] = "code_patch"
+        return "code_patch", patch
     patch = _candidate_patch(goal, evidence, candidate_kind=requested, replay_dataset=replay_dataset)
     patch["promotion_target"] = requested
     return requested, patch
@@ -1528,9 +1590,12 @@ def _candidate_patch(
         structured_patch = _structured_code_patch(goal=goal, replay_dataset=replay_dataset)
         verify_commands = _env_argv_commands("EIMEMORY_AUTONOMOUS_CODE_VERIFY_COMMAND")
         deploy_commands = _env_argv_commands("EIMEMORY_AUTONOMOUS_CODE_DEPLOY_COMMAND")
-        deploy_default = bool(structured_patch.get("deploy_to_production")) if "deploy_to_production" in structured_patch else True
+        # Automatic evolution may write a verified local patch when the caller
+        # opted into ``apply``.  Production deployment and repository commits
+        # remain explicit environment/patch decisions rather than defaults.
+        deploy_default = bool(structured_patch.get("deploy_to_production")) if "deploy_to_production" in structured_patch else False
         deploy_enabled = _env_truthy("EIMEMORY_AUTONOMOUS_CODE_DEPLOY", default=deploy_default)
-        commit_default = bool(structured_patch.get("commit_to_repo")) if "commit_to_repo" in structured_patch else deploy_enabled
+        commit_default = bool(structured_patch.get("commit_to_repo")) if "commit_to_repo" in structured_patch else False
         commit_enabled = _env_truthy("EIMEMORY_AUTONOMOUS_CODE_COMMIT", default=commit_default)
         return {
             **base,
@@ -1644,6 +1709,172 @@ def _candidate_artifact_label(candidate_kind: str) -> str:
         "code_patch": "code patch",
     }
     return labels.get(str(candidate_kind or ""), str(candidate_kind or "candidate").replace("_", " "))
+
+
+def _proposed_code_patch(
+    goal: dict[str, Any],
+    evidence: list[dict[str, Any]],
+    *,
+    replay_dataset: dict[str, Any] | None,
+    runtime: Any | None,
+    scope: ScopeRef | dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Create a constrained code patch instead of silently downgrading to SOP.
+
+    A missing generator is an explicit blocked code proposal.  It is never
+    represented as a successful policy/SOP candidate, which keeps the learning
+    record honest and lets a later configured proposer retry the same goal.
+    """
+
+    base = _candidate_patch(goal, evidence, candidate_kind="code_patch", replay_dataset=replay_dataset)
+    structured = _structured_code_patch(goal=goal, replay_dataset=replay_dataset)
+    repo_root = str(
+        structured.get("repo_root")
+        or goal.get("repo_root")
+        or os.environ.get("EIMEMORY_AUTONOMOUS_CODE_REPO")
+        or ""
+    ).strip()
+    proposer, proposer_reason = _resolve_code_patch_proposer(runtime=runtime, goal=goal)
+    incident = {
+        "classification": "code_fixable",
+        "incident_id": str(goal.get("semantic_key") or goal.get("goal_id") or goal.get("title") or "learning_goal"),
+        "incident_type": "code.implementation",
+        "title": str(goal.get("title") or "Autonomous code evolution"),
+        "summary": str(goal.get("question") or goal.get("success_criteria") or "Generate a constrained code patch."),
+        "detail": str(goal.get("success_criteria") or ""),
+        "files": _code_proposal_allowed_files(goal=goal, structured=structured),
+        "code_patch": dict(structured),
+        "evidence": [
+            {"ref": str(item.get("ref") or ""), "summary": str(item.get("summary") or "")[:500]}
+            for item in evidence[:10]
+            if isinstance(item, dict)
+        ],
+    }
+    proposal = propose_code_patch(
+        runtime,
+        incident=incident,
+        scope=_code_proposal_scope(scope),
+        proposer=proposer,
+        repo_root=repo_root or None,
+    )
+    status = str(proposal.get("proposal_status") or "proposal_invalid")
+    blocked_reason = str(proposal.get("blocked_reason") or "invalid_code_proposal")
+    if status == "proposal_unavailable" and not structured and proposer_reason:
+        blocked_reason = proposer_reason
+
+    common = {
+        "proposal_status": status,
+        "proposal_blocked_reason": blocked_reason if status != "proposal_ready" else "",
+        "proposal_source": str(proposal.get("proposal_source") or ""),
+        "proposal_report_type": str(proposal.get("report_type") or ""),
+        "requires_human_approval": False,
+        "approval_status": "not_required",
+        "unified_diff": str(proposal.get("unified_diff") or ""),
+        "patch_digest": str(proposal.get("patch_digest") or ""),
+        "base_commit": str(proposal.get("base_commit") or ""),
+        "subject_commit": str(proposal.get("subject_commit") or ""),
+        "subject_state_digest": str(proposal.get("subject_state_digest") or ""),
+        "file_base_digest": str(proposal.get("file_base_digest") or ""),
+    }
+    if status == "proposal_ready":
+        return {
+            **base,
+            **common,
+            "repo_root": str(proposal.get("repo_root") or repo_root),
+            "allowed_files": list(proposal.get("allowed_files") or []),
+            "file_updates": list(proposal.get("file_updates") or []),
+            "verification_commands": list(proposal.get("verification_commands") or []),
+            "apply_to_repo": True,
+            "rollback_plan": dict(base.get("rollback_plan") or {"type": "restore_files"}),
+        }
+
+    previous_blocked = [str(item) for item in base.get("blocked_reasons") or [] if str(item)]
+    if blocked_reason and blocked_reason not in previous_blocked:
+        previous_blocked.append(blocked_reason)
+    return {
+        **base,
+        **common,
+        "repo_root": repo_root,
+        "allowed_files": [],
+        "file_updates": [],
+        "verification_commands": [],
+        "promotion_ready": False,
+        "blocked_reasons": previous_blocked,
+        "apply_to_repo": True,
+    }
+
+
+def _resolve_code_patch_proposer(*, runtime: Any | None, goal: dict[str, Any]) -> tuple[object | None, str]:
+    for value in (
+        goal.get("code_patch_proposer"),
+        getattr(runtime, "code_patch_proposer", None) if runtime is not None else None,
+        getattr(runtime, "autonomous_code_proposer", None) if runtime is not None else None,
+    ):
+        if value is not None:
+            return value, ""
+    try:
+        command_client = llm_client_from_env("CODE_PATCH")
+    except (OSError, ValueError):
+        return None, "code_proposer_configuration_invalid"
+    if command_client is None:
+        return None, "code_proposer_unavailable"
+
+    def propose(**kwargs: Any) -> dict[str, Any]:
+        incident = dict(kwargs.get("incident") or {})
+        prompt = {
+            "task": "Return one safe structured code patch as JSON.",
+            "incident": incident,
+            "allowed_files": list(kwargs.get("allowed_files") or []),
+            "required_schema": {
+                "file_updates": [{"path": "relative/path.py", "content": "complete UTF-8 replacement text"}],
+                "allowed_files": ["relative/path.py"],
+                "verification_commands": [["python", "-m", "pytest", "-q", "tests/test_target.py"]],
+            },
+            "constraints": [
+                "Only edit allowed_files.",
+                "Use complete replacement content for each file update.",
+                "Do not emit a full test-suite command.",
+                "Use argv arrays for commands; do not include shell redirection, deployment, commit, push, or prose outside JSON.",
+            ],
+        }
+        result = command_client.complete(
+            system_prompt="You generate minimal, verifiable code patches for an automated but fail-closed maintenance system.",
+            user_prompt=json.dumps(prompt, ensure_ascii=False),
+            json_mode=True,
+        )
+        payload = _json_object_from_model_text(result.text)
+        payload["generator"] = {"provider_id": result.provider_id, "model_id": result.model_id}
+        return payload
+
+    return propose, ""
+
+
+def _json_object_from_model_text(text: str) -> dict[str, Any]:
+    raw = str(text or "").strip()
+    if raw.startswith("```"):
+        raw = raw.split("\n", 1)[1] if "\n" in raw else ""
+        if raw.endswith("```"):
+            raw = raw[:-3].strip()
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError("code_proposer_result_not_json") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError("code_proposer_result_not_object")
+    return dict(parsed)
+
+
+def _code_proposal_allowed_files(*, goal: dict[str, Any], structured: dict[str, Any]) -> list[str]:
+    for value in (structured.get("allowed_files"), goal.get("allowed_files"), goal.get("files"), goal.get("paths")):
+        if isinstance(value, (list, tuple, set)):
+            return [str(item) for item in value if str(item).strip()]
+    return []
+
+
+def _code_proposal_scope(scope: ScopeRef | dict[str, Any] | None) -> dict[str, Any]:
+    if isinstance(scope, ScopeRef):
+        return asdict(scope)
+    return dict(scope or {})
 
 
 def _structured_code_patch(*, goal: dict[str, Any], replay_dataset: dict[str, Any] | None) -> dict[str, Any]:

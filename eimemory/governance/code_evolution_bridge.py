@@ -1,12 +1,21 @@
 from __future__ import annotations
 
-from pathlib import Path
+import difflib
+import fnmatch
+import json
+import os
+import stat
+import subprocess
+from hashlib import sha256
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from eimemory.governance.code_evolution import run_code_sandbox
+from eimemory.governance.code_patch_command_policy import code_patch_verification_command_error
 
 
 CODE_PATCH_PROPOSAL_REPORT_TYPE = "code_patch_proposal"
+CODE_PATCH_PROPOSAL_SCHEMA_VERSION = "code_patch_proposal.v2"
 
 
 def propose_code_patch(
@@ -18,8 +27,17 @@ def propose_code_patch(
     persist_report: bool = False,
     runner: object | None = None,
     worktree_root: str | Path | None = None,
+    proposer: object | None = None,
+    file_updates: list[dict[str, Any]] | None = None,
+    repo_root: str | Path | None = None,
 ) -> dict[str, Any]:
-    """Build a sandbox-backed code patch proposal without mutating production."""
+    """Build a read-only, auditable code-change proposal.
+
+    The bridge never writes the target repository. A caller may supply an
+    already-structured ``file_updates`` payload, or inject a deterministic
+    proposer that returns one. Applying a proposal remains the responsibility
+    of the separately governed promotion path.
+    """
     sandbox_report = run_code_sandbox(
         runtime,
         incident=incident,
@@ -30,46 +48,614 @@ def propose_code_patch(
         worktree_root=worktree_root,
     )
     sandbox_plan = sandbox_report.get("sandbox_plan")
-    is_code_fixable = sandbox_report.get("incident_category") == "code_fixable" and isinstance(sandbox_plan, dict)
+    is_code_fixable = (
+        sandbox_report.get("incident_category") == "code_fixable"
+        and isinstance(sandbox_plan, dict)
+    )
 
     if not is_code_fixable:
         return _proposal(
             sandbox_report=sandbox_report,
             proposal_status="not_applicable",
+            blocked_reason="not_code_fixable",
             patch_scope=None,
             allowed_files=[],
+            sandbox_allowed_files=[],
             verification_commands=[],
             rollback_notes=[],
         )
 
-    allowed_files = _coerce_string_list(sandbox_plan.get("allowed_files"))
+    sandbox_allowed_files = _coerce_string_list(sandbox_plan.get("allowed_files"))
+    rollback_notes = _coerce_string_list(sandbox_plan.get("rollback_notes"))
+    default_verification = _coerce_commands(sandbox_plan.get("verification_commands"))
+    proposal_root = _resolve_repo_root(repo_root)
+    candidate, proposal_source, candidate_error = _proposal_candidate(
+        incident=incident,
+        sandbox_plan=sandbox_plan,
+        repo_root=proposal_root,
+        allowed_files=sandbox_allowed_files,
+        proposer=proposer,
+        file_updates=file_updates,
+    )
+    patch_scope = {"allowed_files": sandbox_allowed_files}
+    if candidate_error:
+        return _proposal(
+            sandbox_report=sandbox_report,
+            proposal_status="proposal_invalid",
+            blocked_reason=candidate_error,
+            patch_scope=patch_scope,
+            allowed_files=[],
+            sandbox_allowed_files=sandbox_allowed_files,
+            verification_commands=default_verification,
+            rollback_notes=rollback_notes,
+            proposal_source=proposal_source,
+        )
+    if candidate is None or "file_updates" not in candidate:
+        return _proposal(
+            sandbox_report=sandbox_report,
+            proposal_status="proposal_unavailable",
+            blocked_reason="file_updates_unavailable",
+            patch_scope=patch_scope,
+            allowed_files=sandbox_allowed_files,
+            sandbox_allowed_files=sandbox_allowed_files,
+            verification_commands=default_verification,
+            rollback_notes=rollback_notes,
+            proposal_source=proposal_source,
+        )
+
+    normalized_updates, update_error = _normalize_file_updates(candidate.get("file_updates"))
+    if update_error:
+        return _proposal(
+            sandbox_report=sandbox_report,
+            proposal_status="proposal_invalid",
+            blocked_reason=update_error,
+            patch_scope=patch_scope,
+            allowed_files=[],
+            sandbox_allowed_files=sandbox_allowed_files,
+            verification_commands=default_verification,
+            rollback_notes=rollback_notes,
+            proposal_source=proposal_source,
+        )
+    if not normalized_updates:
+        return _proposal(
+            sandbox_report=sandbox_report,
+            proposal_status="proposal_unavailable",
+            blocked_reason="file_updates_unavailable",
+            patch_scope=patch_scope,
+            allowed_files=sandbox_allowed_files,
+            sandbox_allowed_files=sandbox_allowed_files,
+            verification_commands=default_verification,
+            rollback_notes=rollback_notes,
+            proposal_source=proposal_source,
+        )
+
+    if proposal_root is None:
+        return _proposal(
+            sandbox_report=sandbox_report,
+            proposal_status="proposal_invalid",
+            blocked_reason="proposal_repo_root_invalid",
+            patch_scope=patch_scope,
+            allowed_files=[],
+            sandbox_allowed_files=sandbox_allowed_files,
+            verification_commands=default_verification,
+            rollback_notes=rollback_notes,
+            proposal_source=proposal_source,
+        )
+    for update in normalized_updates:
+        if not _path_allowed(update["path"], sandbox_allowed_files):
+            return _proposal(
+                sandbox_report=sandbox_report,
+                proposal_status="proposal_invalid",
+                blocked_reason="file_update_outside_sandbox_allowlist",
+                patch_scope=patch_scope,
+                allowed_files=[],
+                sandbox_allowed_files=sandbox_allowed_files,
+                verification_commands=default_verification,
+                rollback_notes=rollback_notes,
+                proposal_source=proposal_source,
+            )
+
+    declared_allowed_files, allowlist_error = _normalize_allowlist(
+        candidate.get("allowed_files") or candidate.get("allowlist")
+    )
+    if allowlist_error:
+        return _proposal(
+            sandbox_report=sandbox_report,
+            proposal_status="proposal_invalid",
+            blocked_reason=allowlist_error,
+            patch_scope=patch_scope,
+            allowed_files=[],
+            sandbox_allowed_files=sandbox_allowed_files,
+            verification_commands=default_verification,
+            rollback_notes=rollback_notes,
+            proposal_source=proposal_source,
+        )
+    if declared_allowed_files:
+        if any(
+            not _path_allowed(pattern, sandbox_allowed_files)
+            for pattern in declared_allowed_files
+        ):
+            return _proposal(
+                sandbox_report=sandbox_report,
+                proposal_status="proposal_invalid",
+                blocked_reason="declared_allowlist_outside_sandbox_allowlist",
+                patch_scope=patch_scope,
+                allowed_files=[],
+                sandbox_allowed_files=sandbox_allowed_files,
+                verification_commands=default_verification,
+                rollback_notes=rollback_notes,
+                proposal_source=proposal_source,
+            )
+        if any(
+            not _path_allowed(update["path"], declared_allowed_files)
+            for update in normalized_updates
+        ):
+            return _proposal(
+                sandbox_report=sandbox_report,
+                proposal_status="proposal_invalid",
+                blocked_reason="file_update_outside_declared_allowlist",
+                patch_scope=patch_scope,
+                allowed_files=[],
+                sandbox_allowed_files=sandbox_allowed_files,
+                verification_commands=default_verification,
+                rollback_notes=rollback_notes,
+                proposal_source=proposal_source,
+            )
+
+    verification_commands = _coerce_commands(
+        candidate.get("verification_commands") or candidate.get("verify_commands")
+    ) or default_verification
+    if _contains_full_test_suite(verification_commands):
+        return _proposal(
+            sandbox_report=sandbox_report,
+            proposal_status="proposal_invalid",
+            blocked_reason="full_test_suite_verification_not_allowed",
+            patch_scope=patch_scope,
+            allowed_files=[],
+            sandbox_allowed_files=sandbox_allowed_files,
+            verification_commands=verification_commands,
+            rollback_notes=rollback_notes,
+            proposal_source=proposal_source,
+        )
+    command_error = code_patch_verification_command_error(verification_commands)
+    if command_error:
+        return _proposal(
+            sandbox_report=sandbox_report,
+            proposal_status="proposal_invalid",
+            blocked_reason=command_error,
+            patch_scope=patch_scope,
+            allowed_files=[],
+            sandbox_allowed_files=sandbox_allowed_files,
+            verification_commands=verification_commands,
+            rollback_notes=rollback_notes,
+            proposal_source=proposal_source,
+        )
+
+    file_diffs, file_base_digest, diff_error = _file_diffs_and_base_digest(
+        proposal_root, normalized_updates
+    )
+    if diff_error:
+        return _proposal(
+            sandbox_report=sandbox_report,
+            proposal_status="proposal_invalid",
+            blocked_reason=diff_error,
+            patch_scope=patch_scope,
+            allowed_files=[],
+            sandbox_allowed_files=sandbox_allowed_files,
+            verification_commands=verification_commands,
+            rollback_notes=rollback_notes,
+            proposal_source=proposal_source,
+        )
+    unified_diff = "".join(file_diffs)
+    if not unified_diff:
+        return _proposal(
+            sandbox_report=sandbox_report,
+            proposal_status="proposal_invalid",
+            blocked_reason="no_effective_file_updates",
+            patch_scope=patch_scope,
+            allowed_files=[],
+            sandbox_allowed_files=sandbox_allowed_files,
+            verification_commands=verification_commands,
+            rollback_notes=rollback_notes,
+            proposal_source=proposal_source,
+        )
+
+    allowed_files = [update["path"] for update in normalized_updates]
+    subject_commit = _base_commit(proposal_root)
+    subject_state_digest = _subject_state_digest(
+        proposal_root, subject_commit=subject_commit
+    )
+    if not subject_state_digest:
+        return _proposal(
+            sandbox_report=sandbox_report,
+            proposal_status="proposal_invalid",
+            blocked_reason="subject_state_unavailable",
+            patch_scope=patch_scope,
+            allowed_files=[],
+            sandbox_allowed_files=sandbox_allowed_files,
+            verification_commands=verification_commands,
+            rollback_notes=rollback_notes,
+            proposal_source=proposal_source,
+            file_base_digest=file_base_digest,
+        )
+    patch_digest = _patch_digest(
+        repo_root=proposal_root,
+        subject_commit=subject_commit,
+        subject_state_digest=subject_state_digest,
+        allowed_files=allowed_files,
+        file_updates=normalized_updates,
+        verification_commands=verification_commands,
+    )
     return _proposal(
         sandbox_report=sandbox_report,
-        proposal_status="sandbox_ready",
-        patch_scope={"allowed_files": allowed_files},
+        proposal_status="proposal_ready",
+        blocked_reason="",
+        patch_scope={"repo_root": str(proposal_root), "allowed_files": allowed_files},
         allowed_files=allowed_files,
-        verification_commands=_coerce_string_list(sandbox_plan.get("verification_commands")),
-        rollback_notes=_coerce_string_list(sandbox_plan.get("rollback_notes")),
+        sandbox_allowed_files=sandbox_allowed_files,
+        verification_commands=verification_commands,
+        rollback_notes=rollback_notes,
+        proposal_source=proposal_source,
+        file_updates=normalized_updates,
+        unified_diff=unified_diff,
+        patch_digest=patch_digest,
+        base_commit=subject_commit,
+        subject_commit=subject_commit,
+        subject_state_digest=subject_state_digest,
+        file_base_digest=file_base_digest,
     )
+
+
+def _proposal_candidate(
+    *,
+    incident: dict[str, Any],
+    sandbox_plan: dict[str, Any],
+    repo_root: Path | None,
+    allowed_files: list[str],
+    proposer: object | None,
+    file_updates: list[dict[str, Any]] | None,
+) -> tuple[dict[str, Any] | None, str, str]:
+    if file_updates is not None:
+        payload = _incident_candidate_payload(incident)
+        payload["file_updates"] = file_updates
+        return payload, "explicit_file_updates", ""
+
+    payload = _incident_candidate_payload(incident)
+    if "file_updates" in payload:
+        return payload, "incident_file_updates", ""
+
+    injected = proposer if proposer is not None else incident.get("proposer")
+    if injected is None:
+        return None, "", ""
+    target = injected if callable(injected) else getattr(injected, "propose", None)
+    if not callable(target):
+        return None, "proposer", "proposer_invalid"
+    try:
+        result = target(
+            incident=dict(incident),
+            sandbox_plan=dict(sandbox_plan),
+            repo_root=repo_root,
+            allowed_files=list(allowed_files),
+        )
+    except Exception:
+        return None, "proposer", "proposer_failed"
+    if result is None:
+        return None, "proposer", ""
+    if isinstance(result, list):
+        return {"file_updates": result}, "proposer", ""
+    if isinstance(result, dict):
+        return dict(result), "proposer", ""
+    return None, "proposer", "proposer_result_invalid"
+
+
+def _incident_candidate_payload(incident: dict[str, Any]) -> dict[str, Any]:
+    for key in ("code_patch", "candidate_patch", "patch", "proposal"):
+        value = incident.get(key)
+        if isinstance(value, dict):
+            return dict(value)
+    payload: dict[str, Any] = {}
+    for key in (
+        "file_updates",
+        "allowed_files",
+        "allowlist",
+        "verification_commands",
+        "verify_commands",
+    ):
+        if key in incident:
+            payload[key] = incident[key]
+    return payload
+
+
+def _normalize_file_updates(value: Any) -> tuple[list[dict[str, str]], str]:
+    if not isinstance(value, list):
+        return [], "file_updates_not_list"
+    normalized: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, dict):
+            return [], "invalid_file_update"
+        path = _safe_relative_path(item.get("path") or item.get("file"))
+        content = item.get("content")
+        if not path:
+            return [], "unsafe_file_update_path"
+        if not isinstance(content, str):
+            return [], "file_update_content_not_text"
+        if path in seen:
+            return [], "duplicate_file_update_path"
+        seen.add(path)
+        normalized.append({"path": path, "content": content})
+    return normalized, ""
+
+
+def _normalize_allowlist(value: Any) -> tuple[list[str], str]:
+    if value is None:
+        return [], ""
+    raw_items = _coerce_string_list(value)
+    if not raw_items:
+        return [], ""
+    normalized: list[str] = []
+    for item in raw_items:
+        pattern = _safe_relative_path(item, allow_glob=True)
+        if not pattern:
+            return [], "unsafe_declared_allowlist"
+        if pattern not in normalized:
+            normalized.append(pattern)
+    return normalized, ""
+
+
+def _safe_relative_path(value: Any, *, allow_glob: bool = False) -> str:
+    raw = str(value or "").strip().replace("\\", "/")
+    if not raw:
+        return ""
+    path = PurePosixPath(raw)
+    first = path.parts[0] if path.parts else ""
+    if path.is_absolute() or raw.startswith("//") or ":" in first:
+        return ""
+    if any(part in {"", ".", ".."} for part in path.parts):
+        return ""
+    if not allow_glob and any(token in raw for token in ("*", "?", "[", "]")):
+        return ""
+    return "/".join(path.parts)
+
+
+def _path_allowed(path: str, patterns: list[str]) -> bool:
+    for raw_pattern in patterns:
+        pattern = _safe_relative_path(raw_pattern, allow_glob=True)
+        if not pattern:
+            continue
+        candidates = {pattern}
+        while "**/" in pattern:
+            pattern = pattern.replace("**/", "")
+            candidates.add(pattern)
+        if any(fnmatch.fnmatchcase(path, candidate) for candidate in candidates):
+            return True
+    return False
+
+
+def _coerce_commands(value: Any) -> list[str | list[str]]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value.strip()] if value.strip() else []
+    if not isinstance(value, list):
+        return []
+    commands: list[str | list[str]] = []
+    for item in value:
+        if isinstance(item, str):
+            command = item.strip()
+            if not command:
+                return []
+            commands.append(command)
+            continue
+        if isinstance(item, (list, tuple)) and item and all(not isinstance(part, (dict, list, tuple)) for part in item):
+            command = [str(part) for part in item]
+            if not any(part.strip() for part in command):
+                return []
+            commands.append(command)
+            continue
+        else:
+            return []
+    return commands
+
+
+def _contains_full_test_suite(commands: list[str | list[str]]) -> bool:
+    for command in commands:
+        raw = command if isinstance(command, str) else " ".join(command)
+        normalized = " ".join(str(raw).replace("\\", "/").lower().split())
+        if "pytest" not in normalized:
+            continue
+        if any(token.rstrip("/") == "tests" for token in normalized.split(" ")):
+            return True
+    return False
+
+
+def _resolve_repo_root(value: str | Path | None) -> Path | None:
+    candidate = Path(value) if value is not None else Path.cwd()
+    try:
+        resolved = candidate.resolve()
+    except OSError:
+        return None
+    return resolved if resolved.is_dir() else None
+
+
+def _file_diffs_and_base_digest(
+    repo_root: Path,
+    updates: list[dict[str, str]],
+) -> tuple[list[str], str, str]:
+    digest = sha256()
+    diffs: list[str] = []
+    for update in updates:
+        path = update["path"]
+        if _has_symlink_component(repo_root, path):
+            return [], "", "file_update_symlink_not_allowed"
+        try:
+            destination = (repo_root / Path(*PurePosixPath(path).parts)).resolve()
+            destination.relative_to(repo_root)
+        except (OSError, ValueError):
+            return [], "", "file_update_path_escapes_repo"
+        if destination.is_symlink() or (destination.exists() and not destination.is_file()):
+            return [], "", "file_update_target_not_regular_file"
+        try:
+            old_bytes = destination.read_bytes() if destination.exists() else b""
+            old_content = old_bytes.decode("utf-8") if destination.exists() else ""
+        except UnicodeDecodeError:
+            return [], "", "file_update_target_not_utf8"
+        except OSError:
+            return [], "", "file_update_target_unreadable"
+        digest.update(f"path:{path}\0".encode("utf-8"))
+        digest.update(b"exists:1\0" if destination.exists() else b"exists:0\0")
+        digest.update(old_bytes)
+        digest.update(b"\0")
+        diffs.extend(
+            difflib.unified_diff(
+                old_content.splitlines(keepends=True),
+                update["content"].splitlines(keepends=True),
+                fromfile=f"a/{path}",
+                tofile=f"b/{path}",
+            )
+        )
+    return diffs, digest.hexdigest(), ""
+
+
+def _has_symlink_component(repo_root: Path, relative_path: str) -> bool:
+    """Reject links/reparse points before resolving a proposal path."""
+    current = repo_root
+    for part in PurePosixPath(relative_path).parts:
+        current = current / part
+        try:
+            entry = current.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return True
+        reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+        attributes = getattr(entry, "st_file_attributes", 0)
+        if stat.S_ISLNK(entry.st_mode) or bool(reparse_flag and attributes & reparse_flag):
+            return True
+    return False
+
+
+def _base_commit(repo_root: Path) -> str:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
+            text=True,
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def _subject_state_digest(repo_root: Path, *, subject_commit: str) -> str:
+    """Mirror the downstream preflight subject-state contract exactly."""
+    if not repo_root.exists() or not repo_root.is_dir():
+        return ""
+    if subject_commit:
+        return sha256(f"git:{subject_commit}".encode("utf-8")).hexdigest()
+    ignored_parts = {
+        ".git",
+        ".venv",
+        "__pycache__",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+    }
+    digest = sha256()
+    try:
+        paths = sorted(
+            (
+                path
+                for path in repo_root.rglob("*")
+                if not any(part in ignored_parts for part in path.relative_to(repo_root).parts)
+            ),
+            key=lambda path: path.relative_to(repo_root).as_posix(),
+        )
+        for path in paths:
+            relative = path.relative_to(repo_root).as_posix()
+            if path.is_symlink():
+                digest.update(f"link:{relative}\0{os.readlink(path)}\0".encode("utf-8"))
+                continue
+            if not path.is_file():
+                continue
+            digest.update(f"file:{relative}\0".encode("utf-8"))
+            with path.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            digest.update(b"\0")
+    except Exception:
+        return ""
+    return digest.hexdigest()
+
+
+def _patch_digest(
+    *,
+    repo_root: Path,
+    subject_commit: str,
+    subject_state_digest: str,
+    allowed_files: list[str],
+    file_updates: list[dict[str, str]],
+    verification_commands: list[str | list[str]],
+) -> str:
+    payload = {
+        "repo_root": str(repo_root.resolve()),
+        "subject_commit": subject_commit,
+        "subject_state_digest": subject_state_digest,
+        "allowed_files": sorted(allowed_files),
+        "file_updates": sorted(file_updates, key=lambda item: (item["path"], item["content"])),
+        "verification_commands": verification_commands,
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def _proposal(
     *,
     sandbox_report: dict[str, Any],
     proposal_status: str,
+    blocked_reason: str,
     patch_scope: dict[str, Any] | None,
     allowed_files: list[str],
-    verification_commands: list[str],
+    sandbox_allowed_files: list[str],
+    verification_commands: list[str | list[str]],
     rollback_notes: list[str],
+    proposal_source: str = "",
+    file_updates: list[dict[str, str]] | None = None,
+    unified_diff: str = "",
+    patch_digest: str = "",
+    base_commit: str = "",
+    subject_commit: str = "",
+    subject_state_digest: str = "",
+    file_base_digest: str = "",
 ) -> dict[str, Any]:
+    ready = proposal_status == "proposal_ready"
     return {
         "ok": bool(sandbox_report.get("ok")),
         "report_type": CODE_PATCH_PROPOSAL_REPORT_TYPE,
+        "schema_version": CODE_PATCH_PROPOSAL_SCHEMA_VERSION,
         "source_sandbox_report_type": str(sandbox_report.get("report_type") or ""),
         "proposal_status": proposal_status,
+        "proposal_source": proposal_source,
+        "blocked": not ready,
+        "blocked_reason": blocked_reason,
+        "read_only": True,
+        "mutates_repository": False,
+        "requires_human_approval": False,
+        "approval_status": "not_required",
         "incident_category": str(sandbox_report.get("incident_category") or "unknown"),
         "patch_scope": patch_scope,
         "allowed_files": allowed_files,
+        "sandbox_allowed_files": sandbox_allowed_files,
+        "file_updates": list(file_updates or []),
+        "unified_diff": unified_diff,
+        "patch_digest": patch_digest,
+        "repo_root": str(patch_scope.get("repo_root") or "") if patch_scope else "",
+        "base_commit": base_commit,
+        "subject_commit": subject_commit,
+        "subject_state_digest": subject_state_digest,
+        "file_base_digest": file_base_digest,
         "verification_commands": verification_commands,
         "rollback_notes": rollback_notes,
         "sandbox_plan": sandbox_report.get("sandbox_plan"),
@@ -78,6 +664,8 @@ def _proposal(
 
 
 def _coerce_string_list(value: Any) -> list[str]:
-    if not isinstance(value, list):
+    if isinstance(value, str):
+        return [value.strip()] if value.strip() else []
+    if not isinstance(value, (list, tuple, set)):
         return []
-    return [str(item) for item in value if str(item)]
+    return [str(item).strip() for item in value if str(item).strip()]

@@ -288,7 +288,7 @@ def test_openclaw_plugin_manifest_points_to_bridge_plugin() -> None:
         "before_tool_call",
         "after_tool_call",
     ]
-    assert payload["contracts"]["tools"] == ["eimemory_bridge_status", "memory_e2e_check"]
+    assert payload["contracts"]["tools"] == ["eimemory_bridge_status"]
     assert payload["configSchema"]["type"] == "object"
     assert payload["configSchema"]["additionalProperties"] is False
     assert "main" not in payload
@@ -420,6 +420,9 @@ def test_nightly_jobs_include_knowledge_evolution_summary(tmp_path) -> None:
 
     assert report["knowledge"]["claim_card_count"] == 2
     assert report["knowledge"]["contradiction_count"] >= 1
+    assert report["knowledge"]["marked_for_refresh_count"] == 0
+    assert report["knowledge"]["recompiled_page_count"] == 0
+    assert "refreshed_page_count" not in report["knowledge"]
 
 
 def test_memory_quality_report_summarizes_distribution_salience_and_sources(tmp_path) -> None:

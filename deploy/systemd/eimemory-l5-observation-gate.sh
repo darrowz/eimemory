@@ -49,6 +49,24 @@ path.write_text("\n".join(output) + "\n", encoding="utf-8")
 PY
 }
 
+remove_env() {
+  local key="$1"
+  "$EIMEMORY_PYTHON_BIN" - "$NIGHTLY_UNIT" "$key" <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+key = sys.argv[2]
+prefixes = (f"Environment={key}=", f'Environment="{key}=')
+output = [
+    existing
+    for existing in path.read_text(encoding="utf-8").splitlines()
+    if not existing.startswith(prefixes)
+]
+path.write_text("\n".join(output) + "\n", encoding="utf-8")
+PY
+}
+
 enable_openclaw_memory_behavior() {
   require_file "$OPENCLAW_CONFIG"
   "$EIMEMORY_PYTHON_BIN" - "$OPENCLAW_CONFIG" <<'PY'
@@ -217,11 +235,13 @@ trap 'exit 143' TERM
 systemctl --user disable --now "$GATE_TIMER" >/dev/null
 ensure_env "EIMEMORY_AUTONOMOUS_LEARNING_APPLY" "Environment=EIMEMORY_AUTONOMOUS_LEARNING_APPLY=1"
 ensure_env "EIMEMORY_AUTONOMOUS_CODE_REPO" "Environment=EIMEMORY_AUTONOMOUS_CODE_REPO=/dev-project/eimemory"
-ensure_env "EIMEMORY_AUTONOMOUS_CODE_COMMIT" "Environment=EIMEMORY_AUTONOMOUS_CODE_COMMIT=1"
-ensure_env "EIMEMORY_AUTONOMOUS_CODE_DEPLOY" "Environment=EIMEMORY_AUTONOMOUS_CODE_DEPLOY=1"
+ensure_env "EIMEMORY_AUTONOMOUS_CODE_COMMIT" "Environment=EIMEMORY_AUTONOMOUS_CODE_COMMIT=0"
+ensure_env "EIMEMORY_AUTONOMOUS_CODE_DEPLOY" "Environment=EIMEMORY_AUTONOMOUS_CODE_DEPLOY=0"
 ensure_env "EIMEMORY_AUTONOMOUS_CODE_VERIFY_COMMAND" 'Environment="EIMEMORY_AUTONOMOUS_CODE_VERIFY_COMMAND=[\"/opt/eimemory/current/.venv/bin/python\",\"-m\",\"compileall\",\"-q\",\"eimemory\"]"'
-ensure_env "EIMEMORY_AUTONOMOUS_CODE_DEPLOY_COMMAND" 'Environment="EIMEMORY_AUTONOMOUS_CODE_DEPLOY_COMMAND=[\"bash\",\"-lc\",\"COMMIT=\\\"$(git rev-parse HEAD)\\\" && bash ./deploy/install_immutable_release.sh \\\"$COMMIT\\\" && systemctl --user restart eimemory-rpc.service\"]"'
 ensure_env "EIMEMORY_AUTONOMOUS_CODE_HEALTH_COMMAND" 'Environment="EIMEMORY_AUTONOMOUS_CODE_HEALTH_COMMAND=[\"curl\",\"-fsS\",\"http://127.0.0.1:8091/health\"]"'
+# The retired gate may encounter a unit written by an older release. Remove
+# the deployment argv after normalizing the explicit no-deploy setting.
+remove_env "EIMEMORY_AUTONOMOUS_CODE_DEPLOY_COMMAND"
 enable_openclaw_memory_behavior
 
 systemctl --user daemon-reload
@@ -240,6 +260,6 @@ echo "status=l5_enabled"
 echo "stage=$stage"
 echo "readiness_score=$readiness_score"
 echo "autonomous_learning_apply=1"
-echo "autonomous_code_commit=1"
-echo "autonomous_code_deploy=1"
+echo "autonomous_code_commit=0"
+echo "autonomous_code_deploy=0"
 echo "openclaw_memory_behavior=enabled"

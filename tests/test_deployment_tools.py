@@ -222,7 +222,7 @@ def test_l5_effect_review_timer_is_read_only_and_one_shot() -> None:
     assert "eimemory-l5-observation-gate" not in service_text
 
 
-def test_l5_observation_gate_enables_autonomous_code_after_48_hours() -> None:
+def test_l5_observation_gate_keeps_commit_and_deploy_disabled_after_48_hours() -> None:
     unit_text = Path("deploy/systemd/eimemory-l5-observation-gate.service").read_text(encoding="utf-8")
     timer_text = Path("deploy/systemd/eimemory-l5-observation-gate.timer").read_text(encoding="utf-8")
     script_text = Path("deploy/systemd/eimemory-l5-observation-gate.sh").read_text(encoding="utf-8")
@@ -233,11 +233,10 @@ def test_l5_observation_gate_enables_autonomous_code_after_48_hours() -> None:
     assert "OnUnitActiveSec=6h" in timer_text
     assert "Persistent=true" in timer_text
     assert "EIMEMORY_AUTONOMOUS_LEARNING_APPLY=1" in script_text
-    assert "EIMEMORY_AUTONOMOUS_CODE_COMMIT=1" in script_text
-    assert "EIMEMORY_AUTONOMOUS_CODE_DEPLOY=1" in script_text
+    assert "EIMEMORY_AUTONOMOUS_CODE_COMMIT=0" in script_text
+    assert "EIMEMORY_AUTONOMOUS_CODE_DEPLOY=0" in script_text
     assert "EIMEMORY_AUTONOMOUS_CODE_DEPLOY_COMMAND" in script_text
-    assert "install_immutable_release.sh" in script_text
-    assert "systemctl --user restart eimemory-rpc.service" in script_text
+    assert 'remove_env "EIMEMORY_AUTONOMOUS_CODE_DEPLOY_COMMAND"' in script_text
     assert "EIMEMORY_AUTONOMOUS_CODE_HEALTH_COMMAND" in script_text
     assert "allowPromptInjection" in script_text
     assert "allowConversationAccess" in script_text
@@ -499,6 +498,15 @@ def test_l5_observation_gate_mutates_and_disables_timer_only_at_exact_l5(
     assert "EIMEMORY_AUTONOMOUS_LEARNING_APPLY=1" in nightly_unit.read_text(
         encoding="utf-8"
     )
+    assert "EIMEMORY_AUTONOMOUS_CODE_COMMIT=0" in nightly_unit.read_text(
+        encoding="utf-8"
+    )
+    assert "EIMEMORY_AUTONOMOUS_CODE_DEPLOY=0" in nightly_unit.read_text(
+        encoding="utf-8"
+    )
+    assert "EIMEMORY_AUTONOMOUS_CODE_DEPLOY_COMMAND" not in nightly_unit.read_text(
+        encoding="utf-8"
+    )
     assert json.loads(openclaw_config.read_text(encoding="utf-8"))["plugins"]["entries"][
         "eimemory-bridge"
     ]["hooks"] == {
@@ -549,9 +557,8 @@ def test_l5_observation_gate_exact_l5_is_idempotent_with_shell_operators(
     assert result.returncode == 0, result.stderr
     unit_text = nightly_unit.read_text(encoding="utf-8")
     assert unit_text.count("Environment=EIMEMORY_AUTONOMOUS_CODE_DEPLOY=") == 1
-    assert unit_text.count("Environment=\"EIMEMORY_AUTONOMOUS_CODE_DEPLOY_COMMAND=") == 1
-    assert " && bash ./deploy/install_immutable_release.sh " in unit_text
-    assert " && systemctl --user restart eimemory-rpc.service" in unit_text
+    assert "Environment=EIMEMORY_AUTONOMOUS_CODE_DEPLOY=0" in unit_text
+    assert "EIMEMORY_AUTONOMOUS_CODE_DEPLOY_COMMAND" not in unit_text
 
 
 def test_l5_observation_gate_rejects_failed_service_query(
@@ -1381,8 +1388,8 @@ def test_openclaw_runtime_verifier_requires_loaded_hooks_tools_and_clean_diagnos
             "enabled": True,
             "activated": True,
             "status": "loaded",
-            "toolNames": ["eimemory_bridge_status", "memory_e2e_check"],
-            "contracts": {"tools": ["eimemory_bridge_status", "memory_e2e_check"]},
+            "toolNames": ["eimemory_bridge_status"],
+            "contracts": {"tools": ["eimemory_bridge_status"]},
         },
         "typedHooks": [
             {"name": name}
@@ -1403,11 +1410,11 @@ def test_openclaw_runtime_verifier_requires_loaded_hooks_tools_and_clean_diagnos
 
     report = verify_openclaw_plugin_runtime(payload, expected_root=root)
 
-    assert report == {"ok": True, "plugin_id": "eimemory-bridge", "hook_count": 8, "tool_count": 2}
-    payload["plugin"]["toolNames"] = ["eimemory_bridge_status"]
+    assert report == {"ok": True, "plugin_id": "eimemory-bridge", "hook_count": 8, "tool_count": 1}
+    payload["plugin"]["toolNames"] = []
     with pytest.raises(OpenClawRuntimeError, match="runtime tools"):
         verify_openclaw_plugin_runtime(payload, expected_root=root)
-    payload["plugin"]["toolNames"] = ["eimemory_bridge_status", "memory_e2e_check"]
+    payload["plugin"]["toolNames"] = ["eimemory_bridge_status"]
     payload["diagnostics"] = [{"level": "error", "message": "stale manifest"}]
     with pytest.raises(OpenClawRuntimeError, match="diagnostics"):
         verify_openclaw_plugin_runtime(payload, expected_root=root)

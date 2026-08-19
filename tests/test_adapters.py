@@ -15,7 +15,6 @@ from eimemory.adapters.eibrain.rpc import EIBrainRPCBridge
 from eimemory.adapters.eibrain.rpc_server import EIBrainRPCServer
 from eimemory.adapters.eibrain.sdk import EIBrainMemoryClient
 from eimemory.adapters.openclaw.hooks import OpenClawMemoryHooks
-from eimemory.adapters.openclaw.tools import OpenClawMemoryTools
 from eimemory.ei_bridge.protocol import EIMemoryRPCRequest, EIMemoryRPCResponse
 from eimemory.api.runtime import Runtime
 from eimemory.cli.main import main as cli_main
@@ -203,27 +202,6 @@ def test_eibrain_rpc_exposes_graph_first_memory_contract(tmp_path) -> None:
     assert replay["result"]["verdict"] == "pass"
     assert audit["ok"] is True
     assert "memory.observe" in audit["result"]["stable_tools"]
-
-
-def test_openclaw_tools_expose_stable_graph_first_memory_contract(tmp_path) -> None:
-    runtime = Runtime.create(root=tmp_path)
-    tools = OpenClawMemoryTools(runtime)
-    scope = {"agent_id": "hongtu", "workspace_id": "graph-contract", "user_id": "darrow"}
-
-    observe = tools.memory_observe(observation=_graph_contract_observation(), scope=scope)
-    graph = tools.memory_graph(query="too many memory entrypoints", scope=scope)
-    replay = tools.memory_replay(
-        query="too many memory entrypoints",
-        expected_relations=["FAILED_WITH", "DECIDED_BECAUSE"],
-        scope=scope,
-        persist=True,
-    )
-    audit = tools.memory_audit(scope=scope)
-
-    assert observe["ok"] is True
-    assert graph["paths"]
-    assert replay["verdict"] == "pass"
-    assert audit["observation_count"] == 1
 
 
 def test_eibrain_rpc_normalizes_hardware_scope_to_hongtu_memory_subject(tmp_path) -> None:

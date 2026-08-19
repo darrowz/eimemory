@@ -1,1 +1,0 @@
-"""Skill pipeline subpackage (Task 4.3 of the Karpathy Loop plan)."""

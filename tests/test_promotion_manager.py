@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import subprocess
 
@@ -56,6 +57,68 @@ def test_patch_commands_fail_closed_when_verification_list_is_empty(tmp_path) ->
     assert report["reports"] == []
 
 
+def test_code_preflight_rejects_external_argv_before_sandbox_execution(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = {"agent_id": "hongtu", "workspace_id": "code", "user_id": "darrow"}
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    target = repo / "module.py"
+    target.write_text("VALUE = 'old'\n", encoding="utf-8")
+    monkeypatch.setenv("EIMEMORY_AUTONOMOUS_CODE_REPO", str(repo))
+
+    report = run_code_patch_preflight(
+        runtime,
+        {
+            "summary": "Do not execute arbitrary verification argv",
+            "repo_root": str(repo),
+            "apply_to_repo": True,
+            "allowed_files": ["module.py"],
+            "file_updates": [{"path": "module.py", "content": "VALUE = 'new'\n"}],
+            "verification_commands": [["git", "push"]],
+        },
+        scope=scope,
+        loop_id="preflight_unsafe_argv",
+    )
+
+    assert report["ok"] is False
+    assert report["executed"] is False
+    assert report["patch_error"] == "code_patch_verification_command_not_allowed"
+    assert target.read_text(encoding="utf-8") == "VALUE = 'old'\n"
+
+
+def test_code_preflight_rejects_symlinked_update_target(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = {"agent_id": "hongtu", "workspace_id": "code", "user_id": "darrow"}
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    outside = tmp_path / "outside.py"
+    outside.write_text("VALUE = 'outside'\n", encoding="utf-8")
+    link = repo / "linked.py"
+    try:
+        os.symlink(outside, link)
+    except OSError:
+        pytest.skip("symlink creation is unavailable on this host")
+    monkeypatch.setenv("EIMEMORY_AUTONOMOUS_CODE_REPO", str(repo))
+
+    report = run_code_patch_preflight(
+        runtime,
+        {
+            "summary": "Do not follow a linked code target",
+            "repo_root": str(repo),
+            "apply_to_repo": True,
+            "allowed_files": ["linked.py"],
+            "file_updates": [{"path": "linked.py", "content": "VALUE = 'new'\n"}],
+            "verification_commands": [["python", "-m", "compileall", "linked.py"]],
+        },
+        scope=scope,
+        loop_id="preflight_symlink_target",
+    )
+
+    assert report["ok"] is False
+    assert report["patch_error"] == "code_patch_symlink_path_not_allowed:linked.py"
+    assert outside.read_text(encoding="utf-8") == "VALUE = 'outside'\n"
+
+
 def test_code_preflight_persists_failure_when_sandbox_setup_raises(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path / "runtime")
     scope = {"agent_id": "hongtu", "workspace_id": "code", "user_id": "darrow"}
@@ -77,7 +140,7 @@ def test_code_preflight_persists_failure_when_sandbox_setup_raises(tmp_path, mon
             "apply_to_repo": True,
             "allowed_files": ["module.py"],
             "file_updates": [{"path": "module.py", "content": "VALUE = 'new'\n"}],
-            "verification_commands": [[sys.executable, "-c", "print('ok')"]],
+            "verification_commands": [["python", "-m", "compileall", "module.py"]],
         },
         scope=scope,
         loop_id="preflight_setup_failure",
@@ -107,7 +170,7 @@ def test_non_git_preflight_is_invalidated_when_repository_state_changes(tmp_path
         "apply_to_repo": True,
         "allowed_files": ["module.py"],
         "file_updates": [{"path": "module.py", "content": "VALUE = 'new'\n"}],
-        "verification_commands": [[sys.executable, "-c", "print('ok')"]],
+        "verification_commands": [["python", "-m", "compileall", "module.py"]],
     }
     preflight = run_code_patch_preflight(runtime, patch, scope=scope, loop_id="preflight_state")
     eval_result = {"gate_bundle": {"code_preflight": preflight}}
@@ -135,7 +198,7 @@ def test_git_preflight_is_invalidated_when_worktree_becomes_dirty(tmp_path, monk
         "apply_to_repo": True,
         "allowed_files": ["module.py"],
         "file_updates": [{"path": "module.py", "content": "VALUE = 'new'\n"}],
-        "verification_commands": [[sys.executable, "-c", "print('ok')"]],
+        "verification_commands": [["python", "-m", "compileall", "module.py"]],
     }
     preflight = run_code_patch_preflight(runtime, patch, scope=scope, loop_id="preflight_git_state")
     eval_result = {"gate_bundle": {"code_preflight": preflight}}
@@ -169,7 +232,7 @@ def test_code_patch_rechecks_subject_state_immediately_before_repo_mutation(tmp_
             "deploy_to_production": False,
             "allowed_files": ["module.py"],
             "file_updates": [{"path": "module.py", "content": "VALUE = 'new'\n"}],
-            "verification_commands": [[sys.executable, "-c", "print('ok')"]],
+                "verification_commands": [["python", "-m", "compileall", "module.py"]],
         },
     )
     candidate_id = distill_capability_candidate(
@@ -205,6 +268,139 @@ def test_code_patch_rechecks_subject_state_immediately_before_repo_mutation(tmp_
     assert result["blocked_reason"] == "code_patch_subject_changed"
     assert result["side_effect"]["repo_mutated"] is False
     assert target.read_text(encoding="utf-8") == "VALUE = 'concurrent-drift'\n"
+
+
+def test_recover_incomplete_code_apply_rolls_back_interrupted_verification_without_retrying(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = {"agent_id": "hongtu", "workspace_id": "code", "user_id": "darrow"}
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    target = repo / "module.py"
+    target.write_text("VALUE = 'old'\n", encoding="utf-8")
+    monkeypatch.setenv("EIMEMORY_AUTONOMOUS_CODE_REPO", str(repo))
+    monkeypatch.setattr(promotion_manager, "_code_preflight_subject_matches", lambda *args, **kwargs: True)
+    patch = {
+        "summary": "Persist before direct write",
+        "repo_root": str(repo),
+        "apply_to_repo": True,
+        "commit_to_repo": False,
+        "deploy_to_production": False,
+        "allowed_files": ["module.py"],
+        "file_updates": [{"path": "module.py", "content": "VALUE = 'new'\n"}],
+        "verification_commands": [["python", "-m", "compileall", "module.py"]],
+    }
+    candidate = RecordEnvelope.create(
+        kind="capability_candidate",
+        title="Interrupted direct patch",
+        scope=ScopeRef.from_dict(scope),
+        content={"candidate_patch": patch},
+        meta={"promotion_target": "code_patch", "authority_tier": "L2"},
+    )
+
+    def interrupt_verification(*args, **kwargs):
+        assert kwargs["phase"] == "verify"
+        raise KeyboardInterrupt("simulated process interruption")
+
+    monkeypatch.setattr(promotion_manager, "_run_patch_commands", interrupt_verification)
+    with pytest.raises(KeyboardInterrupt, match="simulated process interruption"):
+        promotion_manager._apply_code_patch_candidate(
+            runtime,
+            candidate,
+            patch,
+            scope=scope,
+            loop_id="crash_recovery",
+            eval_result=PASSING_EVAL,
+            gate={"gate_bundle": _l2_gate_bundle()},
+        )
+
+    assert target.read_text(encoding="utf-8") == "VALUE = 'new'\n"
+    transactions = [
+        record
+        for record in runtime.store.list_records(kinds=["promotion_request"], scope=scope, limit=20)
+        if record.source == promotion_manager.CODE_APPLY_TRANSACTION_SOURCE
+    ]
+    assert len(transactions) == 1
+    assert transactions[0].status == "in_flight"
+    assert transactions[0].content["stage"] == "verification_started"
+    assert transactions[0].content["patch_digest"]
+    assert transactions[0].content["backups"][0]["content_b64"]
+
+    recovered = promotion_manager.recover_incomplete_code_apply(runtime, scope=scope)
+
+    assert recovered["ok"] is True
+    assert recovered["recovered_count"] == 1
+    assert recovered["retried_apply_count"] == 0
+    assert recovered["transactions"][0]["retried_apply"] is False
+    assert target.read_text(encoding="utf-8") == "VALUE = 'old'\n"
+    persisted = runtime.store.get_by_id(transactions[0].record_id, scope=scope)
+    assert persisted is not None
+    assert persisted.status == "rolled_back"
+    assert persisted.content["stage"] == "rollback_completed"
+
+
+def test_recover_incomplete_code_apply_preserves_dirty_user_work_and_quarantines_target_drift(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = {"agent_id": "hongtu", "workspace_id": "code", "user_id": "darrow"}
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+    target = repo / "module.py"
+    target.write_text("VALUE = 'old'\n", encoding="utf-8")
+    subprocess.run(["git", "add", "module.py"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "seed"], cwd=repo, check=True)
+    monkeypatch.setenv("EIMEMORY_AUTONOMOUS_CODE_REPO", str(repo))
+    monkeypatch.setattr(promotion_manager, "_code_preflight_subject_matches", lambda *args, **kwargs: True)
+    patch = {
+        "summary": "Quarantine conflicted direct patch",
+        "repo_root": str(repo),
+        "apply_to_repo": True,
+        "commit_to_repo": False,
+        "deploy_to_production": False,
+        "allowed_files": ["module.py"],
+        "file_updates": [{"path": "module.py", "content": "VALUE = 'new'\n"}],
+        "verification_commands": [["python", "-m", "compileall", "module.py"]],
+    }
+    candidate = RecordEnvelope.create(
+        kind="capability_candidate",
+        title="Conflicted interrupted direct patch",
+        scope=ScopeRef.from_dict(scope),
+        content={"candidate_patch": patch},
+        meta={"promotion_target": "code_patch", "authority_tier": "L2"},
+    )
+    monkeypatch.setattr(
+        promotion_manager,
+        "_run_patch_commands",
+        lambda *args, **kwargs: (_ for _ in ()).throw(KeyboardInterrupt("simulated process interruption")),
+    )
+    with pytest.raises(KeyboardInterrupt, match="simulated process interruption"):
+        promotion_manager._apply_code_patch_candidate(
+            runtime,
+            candidate,
+            patch,
+            scope=scope,
+            loop_id="crash_recovery",
+            eval_result=PASSING_EVAL,
+            gate={"gate_bundle": _l2_gate_bundle()},
+        )
+
+    target.write_text("VALUE = 'user-change'\n", encoding="utf-8")
+    (repo / "user-notes.txt").write_text("do not erase\n", encoding="utf-8")
+
+    recovered = promotion_manager.recover_incomplete_code_apply(runtime, scope=scope)
+
+    assert recovered["ok"] is False
+    assert recovered["recovered_count"] == 0
+    assert recovered["recovery_quarantined_count"] == 1
+    assert recovered["transactions"][0]["reason"] == "code_apply_recovery_target_changed:module.py"
+    assert target.read_text(encoding="utf-8") == "VALUE = 'user-change'\n"
+    assert (repo / "user-notes.txt").read_text(encoding="utf-8") == "do not erase\n"
+    transaction = next(
+        record
+        for record in runtime.store.list_records(kinds=["promotion_request"], scope=scope, limit=20)
+        if record.source == promotion_manager.CODE_APPLY_TRANSACTION_SOURCE
+    )
+    assert transaction.status == promotion_manager.CODE_APPLY_TRANSACTION_QUARANTINED
+    assert transaction.content["recovery"]["retry_apply"] is False
 
 
 def test_deployment_commands_ignore_raw_env_shell_strings(tmp_path, monkeypatch) -> None:
@@ -617,7 +813,7 @@ def test_l2_code_patch_uses_gate_timeout_when_patch_timeout_is_malformed(tmp_pat
             "allowed_files": ["health_probe.py"],
             "timeout_seconds": "bad",
             "file_updates": [{"path": "health_probe.py", "content": "VERSION = 'new'\n"}],
-            "verification_commands": [[sys.executable, "-c", "from pathlib import Path; assert Path('health_probe.py').read_text(encoding='utf-8') == \"VERSION = 'new'\\n\""]],
+            "verification_commands": [["python", "-m", "compileall", "health_probe.py"]],
         },
     )
     gate_bundle = _l2_gate_bundle()
@@ -762,13 +958,7 @@ def test_l2_code_patch_applies_repo_patch_and_deploys_after_gates(tmp_path, monk
             "file_updates": [
                 {"path": "health_probe.py", "content": "VERSION = 'new'\n"},
             ],
-            "verification_commands": [
-                [
-                    sys.executable,
-                    "-c",
-                    "from pathlib import Path; assert Path('health_probe.py').read_text(encoding='utf-8') == \"VERSION = 'new'\\n\"",
-                ]
-            ],
+                "verification_commands": [["python", "-m", "compileall", "health_probe.py"]],
             "deployment_commands": [
                 [
                     sys.executable,
@@ -848,8 +1038,8 @@ def test_code_patch_failing_verification_is_blocked_in_isolation_before_repo_mut
             "deploy_to_production": False,
             "commit_to_repo": False,
             "allowed_files": ["module.py"],
-            "file_updates": [{"path": "module.py", "content": "VALUE = 'new'\n"}],
-            "verification_commands": [[sys.executable, "-c", "raise SystemExit(9)"]],
+                "file_updates": [{"path": "module.py", "content": "VALUE =\n"}],
+                "verification_commands": [["python", "-m", "compileall", "module.py"]],
         },
     )
     candidate_id = distill_capability_candidate(
@@ -913,7 +1103,7 @@ def test_code_patch_rollout_writes_full_lifecycle_ledger(tmp_path, monkeypatch) 
             "commit_to_repo": True,
             "allowed_files": ["module.py"],
             "file_updates": [{"path": "module.py", "content": "VALUE = 'new'\n"}],
-            "verification_commands": [[sys.executable, "-c", "from pathlib import Path; assert Path('module.py').read_text(encoding='utf-8') == \"VALUE = 'new'\\n\""]],
+                "verification_commands": [["python", "-m", "compileall", "module.py"]],
             "deployment_commands": [[sys.executable, "-c", f"from pathlib import Path; Path(r'{release_token}').mkdir(parents=True, exist_ok=True); print('release={release_token}')"]],
             "post_deploy_health_commands": [[sys.executable, "-c", "print('health ok')"]],
             "rollback_plan": {"commands": [[sys.executable, "-c", "print('rollback ready')"]]},
@@ -990,7 +1180,7 @@ def test_code_patch_rollout_auto_canary_promotes_active(tmp_path, monkeypatch) -
             "commit_to_repo": True,
             "allowed_files": ["module.py"],
             "file_updates": [{"path": "module.py", "content": "VALUE = 'new'\n"}],
-            "verification_commands": [[sys.executable, "-c", "from pathlib import Path; assert Path('module.py').read_text(encoding='utf-8') == \"VALUE = 'new'\\n\""]],
+                "verification_commands": [["python", "-m", "compileall", "module.py"]],
             "deployment_commands": [[sys.executable, "-c", f"from pathlib import Path; Path(r'{release_token}').mkdir(parents=True, exist_ok=True); print('release={release_token}')"]],
             "post_deploy_health_commands": [[sys.executable, "-c", "print('health ok')"]],
             "canary_commands": [
@@ -1067,7 +1257,7 @@ def test_code_patch_rollout_auto_canary_failure_rolls_back(tmp_path, monkeypatch
             "commit_to_repo": True,
             "allowed_files": ["module.py"],
             "file_updates": [{"path": "module.py", "content": "VALUE = 'new'\n"}],
-            "verification_commands": [[sys.executable, "-c", "from pathlib import Path; assert Path('module.py').read_text(encoding='utf-8') == \"VALUE = 'new'\\n\""]],
+                "verification_commands": [["python", "-m", "compileall", "module.py"]],
             "deployment_commands": [[sys.executable, "-c", f"from pathlib import Path; Path(r'{release_token}').mkdir(parents=True, exist_ok=True); print('release={release_token}')"]],
             "post_deploy_health_commands": [[sys.executable, "-c", "print('health ok')"]],
             "canary_commands": [[sys.executable, "-c", "raise SystemExit(2)"]],
@@ -1157,7 +1347,7 @@ def test_code_patch_deployment_failure_reverts_created_commit(tmp_path, monkeypa
             "commit_to_repo": True,
             "allowed_files": ["module.py"],
             "file_updates": [{"path": "module.py", "content": "VALUE = 'new'\n"}],
-            "verification_commands": [[sys.executable, "-c", "print('tests ok')"]],
+                "verification_commands": [["python", "-m", "compileall", "module.py"]],
             "deployment_commands": [[sys.executable, "-c", "raise SystemExit(8)"]],
             "post_deploy_health_commands": [[sys.executable, "-c", "print('health ok')"]],
             "rollback_plan": {"commands": [[sys.executable, "-c", "print('rollback ready')"]]},
@@ -1210,7 +1400,7 @@ def test_code_patch_blocks_dirty_repo_before_mutation_when_committing(tmp_path, 
             "commit_to_repo": True,
             "allowed_files": ["module.py"],
             "file_updates": [{"path": "module.py", "content": "VALUE = 'new'\n"}],
-            "verification_commands": [[sys.executable, "-c", "print('tests ok')"]],
+                "verification_commands": [["python", "-m", "compileall", "module.py"]],
         },
     )
     candidate_id = distill_capability_candidate(
@@ -1254,7 +1444,7 @@ def test_code_patch_requires_explicit_allowed_files_before_mutation(tmp_path, mo
             "deploy_to_production": False,
             "commit_to_repo": False,
             "file_updates": [{"path": "unlisted.py", "content": "VALUE = 'new'\n"}],
-            "verification_commands": [[sys.executable, "-c", "print('ok')"]],
+            "verification_commands": [["python", "-m", "compileall", "module.py"]],
         },
     )
     candidate_id = distill_capability_candidate(
@@ -1304,7 +1494,7 @@ def test_code_patch_requires_strict_rollout_contract(tmp_path, monkeypatch) -> N
             "commit_to_repo": True,
             "allowed_files": ["module.py"],
             "file_updates": [{"path": "module.py", "content": "VALUE = 'new'\n"}],
-            "verification_commands": [[sys.executable, "-c", "print('ok')"]],
+                "verification_commands": [["python", "-m", "compileall", "module.py"]],
         },
     )
     candidate_id = distill_capability_candidate(
@@ -1352,7 +1542,7 @@ def test_code_patch_rolls_back_when_post_deploy_health_fails(tmp_path, monkeypat
             "commit_to_repo": True,
             "allowed_files": ["module.py"],
             "file_updates": [{"path": "module.py", "content": "VALUE = 'new'\n"}],
-            "verification_commands": [[sys.executable, "-c", "print('tests ok')"]],
+                "verification_commands": [["python", "-m", "compileall", "module.py"]],
             "deployment_commands": [[sys.executable, "-c", "print('release=/tmp/bad-release')"]],
             "post_deploy_health_commands": [[sys.executable, "-c", "raise SystemExit(9)"]],
             "rollback_plan": {"commands": [[sys.executable, "-c", f"from pathlib import Path; Path(r'{rollback_marker}').write_text('rolled back', encoding='utf-8')"]]},
@@ -1408,7 +1598,7 @@ def test_code_patch_marks_rollback_failed_when_rollback_command_fails(tmp_path, 
             "commit_to_repo": True,
             "allowed_files": ["module.py"],
             "file_updates": [{"path": "module.py", "content": "VALUE = 'new'\n"}],
-            "verification_commands": [[sys.executable, "-c", "print('tests ok')"]],
+                "verification_commands": [["python", "-m", "compileall", "module.py"]],
             "deployment_commands": [[sys.executable, "-c", "print('release=/tmp/bad-release')"]],
             "post_deploy_health_commands": [[sys.executable, "-c", "raise SystemExit(9)"]],
             "rollback_plan": {"commands": [[sys.executable, "-c", "raise SystemExit(6)"]]},
@@ -1470,7 +1660,7 @@ def test_l2_code_patch_blocks_when_post_deploy_health_fails(tmp_path, monkeypatc
             "commit_to_repo": True,
             "allowed_files": ["health_probe.py"],
             "file_updates": [{"path": "health_probe.py", "content": "VERSION = 'new'\n"}],
-            "verification_commands": [[sys.executable, "-c", "print('tests ok')"]],
+                "verification_commands": [["python", "-m", "compileall", "health_probe.py"]],
             "deployment_commands": [[sys.executable, "-c", "print('deployed')"]],
             "post_deploy_health_commands": [[sys.executable, "-c", "raise SystemExit(7)"]],
             "rollback_plan": {"commands": [[sys.executable, "-c", "print('rollback ready')"]]},

@@ -20,7 +20,7 @@ REQUIRED_HOOKS = {
     "message_sent",
     "session_end",
 }
-REQUIRED_TOOLS = {"eimemory_bridge_status", "memory_e2e_check"}
+REQUIRED_TOOLS = {"eimemory_bridge_status"}
 MAX_INSPECT_BYTES = 4 * 1024 * 1024
 
 

@@ -97,9 +97,9 @@ timers unless a deployment document explicitly says otherwise:
 | `eimemory-learn-dashboard.timer` | Refresh the operator dashboard daily at 03:45. |
 | `eimemory-l5-effect-review.timer` | Capture one production-bound L5 readiness report after 48 hours. |
 
-Do not install a standalone Karpathy-loop timer in production. The reusable
-experiment helpers under `eimemory.autonomous` feed into the governance path;
-they are not a second state owner.
+Do not install a second learning timer. `eimemory-nightly.timer` and the managed
+`eimemory-learn-*` companions are the only production learning schedule; the
+governance pipeline is the sole state owner.
 
 The standard nightly schedule runs active knowledge intake and governance once
 per day at 03:30 in the server's local timezone. L5 runs in apply mode so it

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from eimemory.api.runtime import Runtime
 from eimemory.governance.autonomous_learning import (
     _candidate_kind_for_goal,
     _candidate_patch,
@@ -85,7 +86,7 @@ def test_all_actionable_candidate_patches_have_trigger_action_verification_and_r
         assert patch["rollback"]
 
 
-def test_generic_sop_fallback_is_not_promotion_ready_without_replay_contract() -> None:
+def test_missing_code_proposer_is_explicitly_blocked_without_sop_fallback() -> None:
     kind, patch = _resolved_candidate_kind_and_patch(
         {
             "target_capability": "code.implementation",
@@ -98,13 +99,14 @@ def test_generic_sop_fallback_is_not_promotion_ready_without_replay_contract() -
         replay_dataset={"cases": []},
     )
 
-    assert kind == "sop_draft"
-    assert patch["fallback_reason"] == "code_patch_missing_file_updates"
+    assert kind == "code_patch"
+    assert patch["proposal_status"] == "proposal_unavailable"
+    assert patch["proposal_blocked_reason"] == "code_proposer_unavailable"
     assert patch["promotion_ready"] is False
-    assert "missing_replay_case_ids" in patch["blocked_reasons"]
+    assert "code_proposer_unavailable" in patch["blocked_reasons"]
 
 
-def test_empty_code_patch_downgrades_to_sop_candidate() -> None:
+def test_empty_code_patch_is_retained_as_blocked_code_candidate() -> None:
     goal = {
         "target_capability": "code.implementation",
         "question": "Fix the broken implementation path without guessing.",
@@ -119,10 +121,54 @@ def test_empty_code_patch_downgrades_to_sop_candidate() -> None:
         replay_dataset={"cases": [{"case_id": "case-empty-patch", "query": "fix code"}]},
     )
 
-    assert kind == "sop_draft"
-    assert patch["fallback_from"] == "code_patch"
-    assert patch["fallback_reason"] == "code_patch_missing_file_updates"
-    assert "file_updates" not in patch
+    assert kind == "code_patch"
+    assert patch["proposal_status"] == "proposal_unavailable"
+    assert patch["proposal_blocked_reason"] == "code_proposer_unavailable"
+    assert patch["file_updates"] == []
+
+
+def test_code_goal_uses_injected_proposer_to_emit_reviewable_diff(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "module.py").write_text("VALUE = 'old'\n", encoding="utf-8")
+    try:
+        runtime.code_patch_proposer = lambda **_kwargs: {
+            "allowed_files": ["module.py"],
+            "file_updates": [{"path": "module.py", "content": "VALUE = 'new'\n"}],
+            "verification_commands": [["python", "-m", "compileall", "module.py"]],
+        }
+        kind, patch = _resolved_candidate_kind_and_patch(
+            {
+                "target_capability": "code.implementation",
+                "goal_type": "bugfix",
+                "title": "Repair module value",
+                "question": "Repair the detected value regression.",
+                "success_criteria": "The module reports the corrected value.",
+                "semantic_key": "code-goal-1",
+                "repo_root": str(repo),
+                "files": ["module.py"],
+            },
+            [],
+            candidate_kind="code_patch",
+            replay_dataset={"cases": [{"case_id": "code-case-1", "query": "repair module"}]},
+            runtime=runtime,
+            scope={"agent_id": "tests"},
+        )
+
+        assert kind == "code_patch"
+        assert patch["proposal_status"] == "proposal_ready"
+        assert patch["requires_human_approval"] is False
+        assert patch["approval_status"] == "not_required"
+        assert patch["file_updates"] == [{"path": "module.py", "content": "VALUE = 'new'\n"}]
+        assert "-VALUE = 'old'" in patch["unified_diff"]
+        assert "+VALUE = 'new'" in patch["unified_diff"]
+        assert patch["patch_digest"]
+        assert patch["subject_state_digest"]
+        assert patch["deploy_to_production"] is False
+        assert patch["commit_to_repo"] is False
+    finally:
+        runtime.close()
 
 
 def test_candidate_specs_cover_diverse_capability_goals() -> None:
@@ -145,4 +191,5 @@ def test_candidate_specs_cover_diverse_capability_goals() -> None:
         "knowledge.intake",
         "proactive.judgment",
     ]
+    assert "code_patch" in targets
     assert {"memory_rule", "tool_route", "source_policy", "sop_draft"}.issubset(targets)
