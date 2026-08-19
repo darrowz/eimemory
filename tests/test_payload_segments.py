@@ -62,6 +62,26 @@ def test_segment_store_rejects_symlink_segment(tmp_path) -> None:
         store.read(pointer)
 
 
+def test_read_only_segment_store_preserves_sealed_file_mode(tmp_path) -> None:
+    if os.name == "nt":
+        pytest.skip("POSIX snapshot seal modes are not available on Windows")
+    root = tmp_path / "segments"
+    writable = PayloadSegmentStore(root, max_segment_bytes=1024, max_payload_bytes=512)
+    pointer = writable.append(b"sealed snapshot payload")
+    segment = root / pointer["segment"]
+    segment.chmod(0o400)
+
+    read_only = PayloadSegmentStore(
+        root,
+        max_segment_bytes=1024,
+        max_payload_bytes=512,
+        read_only=True,
+    )
+
+    assert read_only.read(pointer) == b"sealed snapshot payload"
+    assert segment.stat().st_mode & 0o777 == 0o400
+
+
 def test_segment_store_persists_digest_index_across_restart_without_duplicate_append(tmp_path) -> None:
     root = tmp_path / "segments"
     first_store = PayloadSegmentStore(root, max_segment_bytes=1024, max_payload_bytes=512)
