@@ -52,6 +52,11 @@ from eimemory.storage.payload_segments import (
     PayloadSegmentError,
     PayloadSegmentStore,
 )
+from eimemory.storage.migrations import (
+    apply_registered_data_migration_batch,
+    ensure_registered_storage_schema,
+    pending_registered_data_migrations,
+)
 
 
 MAX_QUERY_LIMIT = 1000
@@ -148,9 +153,18 @@ class SqliteRecordStore:
         self._create_adapter_receipt_tables()
         self._create_proactive_recall_tables()
         self.conn.commit()
+        # V3 schema creation intentionally runs after the legacy initialization
+        # branch, including its early-return fast path for already-migrated
+        # production stores.  It creates schema only and never scans/backfills
+        # record payloads during startup.
+        ensure_registered_storage_schema(self.conn)
         self.preload_report = self.preload_hot_pages()
 
     def _configure_connection(self) -> None:
+        self.conn.execute("PRAGMA foreign_keys=ON")
+        foreign_keys = self.conn.execute("PRAGMA foreign_keys").fetchone()
+        if foreign_keys is None or int(foreign_keys[0]) != 1:
+            raise RuntimeError("SQLite foreign-key enforcement could not be enabled")
         try:
             self.conn.execute("PRAGMA journal_mode=WAL")
         except sqlite3.OperationalError:
@@ -2083,11 +2097,22 @@ class SqliteRecordStore:
         *,
         commit: bool = True,
     ) -> bool:
+        exported_at = datetime.now(timezone.utc).isoformat()
         result = self.conn.execute(
             "UPDATE export_outbox SET state = 'exported', exported_at = ? "
             "WHERE operation_id = ? AND state = 'pending'",
-            (datetime.now(timezone.utc).isoformat(), str(operation_id)),
+            (exported_at, str(operation_id)),
         )
+        if result.rowcount > 0:
+            # Capability audit export is a recoverable projection.  Its durable
+            # confirmation belongs to the operation journal, not to a prunable
+            # outbox row, and must commit with the outbox state transition.
+            self.conn.execute(
+                "UPDATE capability_operation_journal "
+                "SET audit_exported_at=? "
+                "WHERE audit_export_operation_id=? AND audit_exported_at=''",
+                (exported_at, str(operation_id)),
+            )
         if commit:
             self.conn.commit()
         return result.rowcount > 0
@@ -2342,6 +2367,7 @@ class SqliteRecordStore:
             and not self._outcome_trace_index_ready()
         ):
             pending.append(_OUTCOME_TRACE_INDEX_MIGRATION)
+        pending.extend(pending_registered_data_migrations(self.conn))
         return pending
 
     def apply_storage_migrations(
@@ -2436,12 +2462,19 @@ class SqliteRecordStore:
             except Exception:
                 self.conn.rollback()
                 raise
+        registered = apply_registered_data_migration_batch(
+            self.conn,
+            batch_size=bounded,
+            max_seconds=5.0,
+            offline=offline,
+        )
         return {
             "ok": True,
             "processed": processed,
             "index_created": index_created,
             "offline_required": False,
             "pending": self.pending_storage_migrations(),
+            "registered_data_migration": registered,
         }
 
     def _migration_cursor(self, migration_id: str) -> str:

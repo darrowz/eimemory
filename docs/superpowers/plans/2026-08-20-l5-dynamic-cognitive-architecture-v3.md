@@ -263,22 +263,23 @@ existing reads.
 - Modify: `tests/test_storage_deferred_migrations.py`
 - Modify: `tests/test_runtime_store_concurrency.py`
 
-- [ ] Add the normalized entities required by the specification with scope,
+- [x] Add the normalized entities required by the specification with scope,
   revision, provenance, digest, timestamp, and idempotency fields.
-- [ ] Add foreign keys or equivalent deterministic integrity checks. Enable and
+- [x] Add foreign keys or equivalent deterministic integrity checks. Enable and
   test SQLite foreign-key enforcement for these tables.
-- [ ] Add indexes from the Storage v2 indexing contract and verify query plans
+- [x] Add indexes from the Storage v2 indexing contract and verify query plans
   with representative fixtures.
-- [ ] Keep large fixtures and evidence bodies as content-addressed references.
-- [ ] Separate schema creation from data backfill.
-- [ ] Add migration status, cursor, counts, digest, last error, started/finished
+- [x] Keep large fixtures and evidence bodies as content-addressed references.
+- [x] Separate schema creation from data backfill.
+- [x] Add migration status, cursor, counts, digest, last error, started/finished
   timestamps, and restart semantics.
-- [ ] Make schema migration transactional and idempotent.
-- [ ] Make data migration bounded by rows and elapsed time.
-- [ ] Add operation-journal/outbox integration so a committed domain mutation is
+- [x] Make schema migration transactional and idempotent.
+- [x] Make data migration bounded by rows and elapsed time.
+- [x] Add operation-journal/outbox integration so a committed domain mutation is
   recoverable before audit export.
-- [ ] Prove concurrent registration/observation cannot create duplicate active
-  revisions or lose idempotent writes.
+- [x] Prove concurrent registration/observation cannot create duplicate semantic
+  revisions or lose idempotent writes, while preserving declared distinct
+  revisions and bindings.
 
 **Focused tests:** storage v3, deferred migrations, and runtime-store concurrency.
 
@@ -859,7 +860,7 @@ gate evidence.
 | WP0 baseline custody | completed | `docs/audit/l5-v3-pre-refactor-baseline.md` | `dfcf7c9` |
 | WP1 ADRs/contracts | completed | `tests/test_capability_v3_contracts.py` (12 passed); compileall; independent contract and documentation reviews | `07e3d37` |
 | WP2 performance baseline | completed | `docs/audit/l5-v3-performance-baseline.md`; all three tiers, 9 samples/2 warmups, semantic parity 33/33, report digest `ecd3df1b17ae69e92628dd78cf4e2087c4e968433ead422f7dd1e5d91f9aba6b` | `3af4c53` |
-| WP3 Storage v2 schema | pending | | |
+| WP3 Storage v2 schema | completed | `tests/test_capability_storage_v3.py`, `tests/test_storage_deferred_migrations.py`, `tests/test_runtime_store_concurrency.py`, and `tests/test_capability_v3_contracts.py` (34 passed); compileall; diff check; two independent reviews | `HEAD` (WP3 commit) |
 | WP4 registry/profiles | pending | | |
 | WP5 adapter advertisements | pending | | |
 | WP6 eval catalog | pending | | |
