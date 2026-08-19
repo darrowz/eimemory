@@ -836,7 +836,7 @@ gate evidence.
 
 | Work package | Status | Evidence reference | Commit |
 | --- | --- | --- | --- |
-| WP0 baseline custody | completed | `docs/audit/l5-v3-pre-refactor-baseline.md` | pending commit |
+| WP0 baseline custody | completed | `docs/audit/l5-v3-pre-refactor-baseline.md` | `dfcf7c9` |
 | WP1 ADRs/contracts | pending | | |
 | WP2 performance baseline | pending | | |
 | WP3 Storage v2 schema | pending | | |
