@@ -226,19 +226,19 @@ paths.
 - Add: `tests/performance/test_l5_v3_baseline_contract.py`
 - Add: `docs/audit/l5-v3-performance-baseline.md`
 
-- [ ] Build deterministic small/medium/large fixtures covering records,
+- [x] Build deterministic small/medium/large fixtures covering records,
   capability scores, replay results, outcomes, knowledge links, and adapters.
-- [ ] Measure recall p50/p95/p99, append, atomic mutation, existing readiness,
+- [x] Measure recall p50/p95/p99, append, atomic mutation, existing readiness,
   ledger construction, replay-pack build, SQLite/WAL size, and startup/migration
   time.
-- [ ] Measure result parity using digests, not only timing.
-- [ ] Run warm and cold variants separately.
-- [ ] Store hardware/OS/Python/SQLite as benchmark context, not pass/fail
+- [x] Measure result parity using digests, not only timing.
+- [x] Run warm and cold variants separately.
+- [x] Store hardware/OS/Python/SQLite as benchmark context, not pass/fail
   identity.
-- [ ] Establish versioned relative budgets in a benchmark profile. If the local
+- [x] Establish versioned relative budgets in a benchmark profile. If the local
   machine is too noisy, use repeated samples and confidence bands rather than
   hard-coded machine names.
-- [ ] Ensure the benchmark cannot mutate production runtime data.
+- [x] Ensure the benchmark cannot mutate production runtime data.
 
 **Exit gate:** A reproducible baseline report and benchmark profile exist, with
 scale tiers and explicit variance policy.
@@ -858,7 +858,7 @@ gate evidence.
 | --- | --- | --- | --- |
 | WP0 baseline custody | completed | `docs/audit/l5-v3-pre-refactor-baseline.md` | `dfcf7c9` |
 | WP1 ADRs/contracts | completed | `tests/test_capability_v3_contracts.py` (12 passed); compileall; independent contract and documentation reviews | `07e3d37` |
-| WP2 performance baseline | pending | | |
+| WP2 performance baseline | completed | `docs/audit/l5-v3-performance-baseline.md`; all three tiers, 9 samples/2 warmups, semantic parity 33/33, report digest `ecd3df1b17ae69e92628dd78cf4e2087c4e968433ead422f7dd1e5d91f9aba6b` | `3af4c53` |
 | WP3 Storage v2 schema | pending | | |
 | WP4 registry/profiles | pending | | |
 | WP5 adapter advertisements | pending | | |
