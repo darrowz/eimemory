@@ -1,6 +1,6 @@
 # L5 Dynamic Cognitive Architecture v3
 
-Status: proposed execution specification, 2026-08-20.
+Status: accepted implementation specification, 2026-08-20.
 
 This specification is the target architecture for the next eimemory refactor.
 It supersedes the fixed capability taxonomy and single-axis readiness semantics
@@ -286,6 +286,13 @@ is downgraded or marked regressed when required recent evidence expires.
 `capability_readiness` is a map keyed by capability revision and, where needed,
 provider binding. L5 may report coverage and weighted readiness for a selected
 profile, but must always retain the individual states and uncovered capabilities.
+
+The v3 contract uses `revision_id -> (_revision | binding_id) -> state`.
+`_revision` is a revision-wide state; each binding ID preserves an independent
+provider state. Every state names the immutable capability-state snapshot that
+supports it, and that snapshot must be listed by the assessment. This prevents a
+multi-adapter assessment from collapsing Codex, Hermes, OpenClaw, or a future
+provider into one mutable score.
 
 There is no built-in strong/weak taxonomy. A weak capability is simply an active
 capability whose projected state is below the selected profile's requirement.
@@ -587,4 +594,3 @@ The architecture is complete only when all of the following hold:
 - Allowing an LLM-generated definition or eval to execute without schema,
   provenance, resource, and policy validation.
 - Claiming production L5 from unit tests, service health, or module presence.
-
