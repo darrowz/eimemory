@@ -328,6 +328,11 @@ def workload_contract(spec: TierSpec) -> dict[str, Any]:
                 "text": MUTATION_TEXT,
                 "memory_type": "fact",
             },
+            "static_fixture_seed": {
+                "authority": "sqlite",
+                "exports": "excluded_from_fixture_setup",
+                "rationale": "append and atomic mutation separately measure the complete export path",
+            },
         },
         "operation_inputs": {
             "candidate_recall": {"query": RECALL_QUERY, "limit": 8},
@@ -354,10 +359,32 @@ def workload_contract(spec: TierSpec) -> dict[str, Any]:
     }
 
 
+def _seed_static_records(runtime: Runtime, records: Sequence[RecordEnvelope]) -> None:
+    """Bulk seed deterministic static inputs through the SQLite authority only.
+
+    Fixture construction is intentionally outside every measured operation.
+    The separately measured ``append`` and ``atomic_mutation`` operations keep
+    their full SQLite/outbox/JSONL/Markdown behavior, so this helper prevents
+    an unmeasured projection fan-out from dominating large-tier wall clock.
+    The benchmark runtime is isolated and single-threaded while this runs.
+    """
+
+    connection = runtime.store.sqlite.conn
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        for record in records:
+            runtime.store.sqlite.upsert(record, commit=False)
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+
+
 def seed_fixture(runtime: Runtime, spec: TierSpec) -> dict[str, Any]:
-    """Seed all workload roles using current production-facing write paths."""
+    """Seed deterministic static roles, then use real outcome/score APIs."""
 
     scope = asdict(SCOPE)
+    static_records: list[RecordEnvelope] = []
     memory_ids: list[str] = []
     for index in range(spec.memory_records):
         record_id = f"bench-{spec.name}-memory-{index:05d}"
@@ -372,13 +399,13 @@ def seed_fixture(runtime: Runtime, spec: TierSpec) -> dict[str, Any]:
             },
             meta={"memory_type": "fact", "benchmark_role": "memory"},
         )
-        runtime.store.append(record)
+        static_records.append(record)
         memory_ids.append(record_id)
 
     knowledge_ids: list[str] = []
     for index in range(spec.knowledge_links):
         record_id = f"bench-{spec.name}-knowledge-{index:04d}"
-        runtime.store.append(
+        static_records.append(
             _fixed_record(
                 record_id=record_id,
                 kind="knowledge_page",
@@ -392,7 +419,7 @@ def seed_fixture(runtime: Runtime, spec: TierSpec) -> dict[str, Any]:
 
     adapter_channels = list(ADAPTER_CHANNELS[: spec.adapter_descriptors])
     for channel in adapter_channels:
-        runtime.store.append(
+        static_records.append(
             _fixed_record(
                 record_id=f"bench-{spec.name}-adapter-{channel}",
                 kind="capability_model",
@@ -406,7 +433,7 @@ def seed_fixture(runtime: Runtime, spec: TierSpec) -> dict[str, Any]:
     replay_ids: list[str] = []
     for index in range(spec.replay_results):
         record_id = f"bench-{spec.name}-replay-{index:04d}"
-        runtime.store.append(
+        static_records.append(
             _fixed_record(
                 record_id=record_id,
                 kind="replay_result",
@@ -417,6 +444,8 @@ def seed_fixture(runtime: Runtime, spec: TierSpec) -> dict[str, Any]:
             )
         )
         replay_ids.append(record_id)
+
+    _seed_static_records(runtime, static_records)
 
     outcome_ids: list[str] = []
     for index in range(spec.outcome_traces):
@@ -465,6 +494,7 @@ def seed_fixture(runtime: Runtime, spec: TierSpec) -> dict[str, Any]:
         "capability_score_record_ids": score_ids,
         "capabilities": _capability_ids(spec),
         "adapter_channels": adapter_channels,
+        "static_record_count": len(static_records),
         "fixture_digest": canonical_digest(workload_contract(spec)),
     }
 
