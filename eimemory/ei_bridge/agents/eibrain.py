@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import Any, TypeAlias
 
 from eimemory.ei_bridge.protocol import BridgeCommand, BridgeResult
 
 
-type EIBrainTransportResult = dict[str, Any] | BridgeResult
-type EIBrainTransport = Callable[[BridgeCommand], EIBrainTransportResult]
+EIBrainTransportResult: TypeAlias = dict[str, Any] | BridgeResult
+EIBrainTransport: TypeAlias = Callable[[BridgeCommand], EIBrainTransportResult]
 
 DEFAULT_CAPABILITIES = (
     "vision.describe",

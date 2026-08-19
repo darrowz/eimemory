@@ -2,16 +2,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from time import time
-from typing import Any, Literal
+from typing import Any, Literal, TypeAlias
 
 
-type BridgeJSONValue = str | int | float | bool | None | list["BridgeJSONValue"] | dict[str, "BridgeJSONValue"]
-type BridgeScope = dict[str, str]
-type BridgePayload = dict[str, Any]
-type BridgeCommandDict = dict[str, BridgeJSONValue]
-type BridgeResultDict = dict[str, BridgeJSONValue]
-type BridgeEventDict = dict[str, BridgeJSONValue]
-type EIMemoryRPCMethod = Literal[
+BridgeJSONValue: TypeAlias = str | int | float | bool | None | list["BridgeJSONValue"] | dict[str, "BridgeJSONValue"]
+BridgeScope: TypeAlias = dict[str, str]
+BridgePayload: TypeAlias = dict[str, Any]
+BridgeCommandDict: TypeAlias = dict[str, BridgeJSONValue]
+BridgeResultDict: TypeAlias = dict[str, BridgeJSONValue]
+BridgeEventDict: TypeAlias = dict[str, BridgeJSONValue]
+EIMemoryRPCMethod: TypeAlias = Literal[
     "adapter.prefetch",
     "adapter.proactive_prefetch",
     "adapter.proactive_ack",
@@ -31,8 +31,8 @@ type EIMemoryRPCMethod = Literal[
     "experience.record_outcome_trace",
     "evolution.get_active_policy",
 ]
-type EIMemoryRPCRequest = dict[str, Any]
-type EIMemoryRPCResponse = dict[str, Any]
+EIMemoryRPCRequest: TypeAlias = dict[str, Any]
+EIMemoryRPCResponse: TypeAlias = dict[str, Any]
 
 EIMEMORY_RPC_CONTRACT_VERSION = "ei.memory.rpc.v1"
 
