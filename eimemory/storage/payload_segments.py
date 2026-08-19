@@ -380,7 +380,13 @@ class PayloadSegmentStore:
                 raise PayloadSegmentError("payload segment identity changed during open")
             if Path(os.path.realpath(path)).parent != Path(os.path.realpath(self.root)):
                 raise PayloadSegmentError("payload segment final path escaped its private root")
-            self._make_private(path, directory=False)
+            # A read-only store is also used to verify sealed release
+            # snapshots.  Mutating permissions while opening a segment for
+            # O_RDONLY breaks the snapshot's readonly_tree_v1 identity and
+            # makes every storage-bearing immutable release fail closed after
+            # a successful deep verification.
+            if not self.read_only:
+                self._make_private(path, directory=False)
             return descriptor
         except Exception:
             os.close(descriptor)
