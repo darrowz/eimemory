@@ -212,6 +212,32 @@ def _forced_sqlite_runtime(root: Path) -> Runtime:
     return Runtime(RuntimeStore(root))
 
 
+def _copy_authoritative_runtime_state(seed_root: Path, target_root: Path) -> None:
+    """Copy only SQLite authority state needed for a cold runtime-open sample.
+
+    Markdown and JSONL exports are projections.  They are intentionally not
+    copied: RuntimeStore startup is SQLite-authoritative, and including tens of
+    thousands of projections would turn an excluded fixture-copy step into the
+    dominant wall-clock cost of a benchmark run.
+    """
+
+    target_state = target_root / "state"
+    target_state.mkdir(parents=True, exist_ok=False)
+    source_state = seed_root / "state"
+    for filename in (
+        "eimemory.sqlite",
+        "eimemory.sqlite-wal",
+        "eimemory.sqlite-shm",
+        "source_registry.json",
+    ):
+        source = source_state / filename
+        if source.exists():
+            shutil.copy2(source, target_state / filename)
+    payload_segments = source_state / "payload_segments"
+    if payload_segments.exists():
+        shutil.copytree(payload_segments, target_state / "payload_segments")
+
+
 def _fixed_record(
     *,
     record_id: str,
@@ -314,7 +340,11 @@ def workload_contract(spec: TierSpec) -> dict[str, Any]:
             "readiness_no_release": {"persist": False, "limit": 500, "release_receipt": "absent"},
             "capability_ledger": {"attribute_outcomes": False, "ensure_seeded": False, "limit": 500},
             "capability_replay_pack": {"capabilities": list(REPLAY_CAPABILITIES), "persist": False},
-            "runtime_cold_startup": {"candidate_source": "sqlite_forced", "fixture_copy_excluded": True},
+            "runtime_cold_startup": {
+                "candidate_source": "sqlite_forced",
+                "fixture_copy_excluded": True,
+                "copy_contents": "sqlite_authority_state_and_payload_segments_only",
+            },
             "legacy_migration_batch": {
                 "batch_size": min(64, spec.legacy_migration_rows),
                 "offline": False,
@@ -741,7 +771,7 @@ def _measure_runtime_cold_startup(seed_root: Path, tier_root: Path, *, samples: 
     sample_roots: dict[int, Path] = {}
     for ordinal in range(samples):
         target = cold_root / f"sample-{ordinal:03d}"
-        shutil.copytree(seed_root, target)
+        _copy_authoritative_runtime_state(seed_root, target)
         sample_roots[ordinal] = target
 
     def open_runtime(ordinal: int) -> dict[str, Any]:
@@ -763,6 +793,7 @@ def _measure_runtime_cold_startup(seed_root: Path, tier_root: Path, *, samples: 
     )
     result["os_cache_not_controlled"] = True
     result["fixture_copy_excluded_from_timing"] = True
+    result["cold_fixture_contents"] = "SQLite authority state plus payload segments; Markdown and JSONL projections excluded"
     return result
 
 
