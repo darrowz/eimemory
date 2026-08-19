@@ -13,9 +13,14 @@ from typing import TypeVar
 from eimemory.adapters.openclaw.qmd_export import export_record_markdown
 from eimemory.metadata import business_metadata
 from eimemory.models.memory_edges import MemoryEdge
-from eimemory.storage.jsonl import JsonlLog, JsonlScanEntry, JsonlScanError
+from eimemory.storage.jsonl import JsonlLog, JsonlScanEntry, JsonlScanError, canonical_payload_json
+from eimemory.storage.capability_store import (
+    CapabilityStore,
+    PendingCapabilityAudit,
+    _open_capability_store,
+)
 from eimemory.storage.sqlite_store import SqliteRecordStore
-from eimemory.models.records import RecordEnvelope, ScopeRef
+from eimemory.models.records import RecordEnvelope, ScopeRef, TimeRef
 
 
 AUXILIARY_JSONL_STREAMS = (
@@ -38,7 +43,13 @@ class RuntimeStore:
         self.auxiliary_log_dir = self.root / "state"
         self._auxiliary_logs: dict[str, JsonlLog] = {}
         self._lock = RLock()
+        self._last_capability_export_status: dict[str, object] = {
+            "ok": True,
+            "pending": 0,
+            "error": "",
+        }
         self.sqlite = SqliteRecordStore(self.root / "state" / "eimemory.sqlite", auxiliary_log_dir=self.auxiliary_log_dir)
+        self._last_capability_export_status = self._durable_capability_export_status()
 
     def append(self, record: RecordEnvelope) -> RecordEnvelope:
         with self._lock:
@@ -108,6 +119,101 @@ class RuntimeStore:
             for record in changed_records:
                 export_record_markdown(self.root, record)
             return result
+
+    def mutate_capabilities_atomically(
+        self,
+        mutation: Callable[[CapabilityStore], T],
+    ) -> T:
+        """Commit normalized capability writes and their audit outbox together.
+
+        The callback receives only the transaction-local repository, never the
+        raw SQLite connection.  Its capability ledger/event, domain rows,
+        operation journal, archived audit record, and JSONL outbox row all
+        either commit together or roll back together.  JSONL flushing is a
+        recoverable post-commit projection and therefore never reverses a
+        committed capability fact.
+        """
+
+        with self._lock:
+            operation_ids: list[str] = []
+            try:
+                self.sqlite.conn.execute("BEGIN IMMEDIATE")
+                repository = _open_capability_store(self.sqlite)
+                result = mutation(repository)
+                for audit in repository.pending_audits:
+                    record = _capability_audit_record(audit)
+                    existing = self.sqlite.get_by_id(record.record_id, scope=record.scope)
+                    if existing is not None:
+                        existing_audit = (
+                            existing.content.get("audit")
+                            if isinstance(existing.content, dict)
+                            else None
+                        )
+                        if canonical_payload_json(existing_audit or {}) != canonical_payload_json(audit.payload):
+                            raise ValueError("capability audit record identity collision")
+                    else:
+                        self.sqlite.upsert(record, commit=False)
+                    export = self.sqlite.enqueue_export(
+                        stream="records",
+                        payload=record.to_dict(),
+                        operation_id=audit.operation_id,
+                        commit=False,
+                    )
+                    operation_ids.append(str(export["operation_id"]))
+                self.sqlite.conn.commit()
+            except Exception:
+                self.sqlite.conn.rollback()
+                raise
+
+            try:
+                status = self._flush_committed_exports(*operation_ids)
+                self._last_capability_export_status = {
+                    "ok": bool(status.get("ok")),
+                    "pending": int(status.get("remaining") or 0),
+                    "error": "",
+                    "operation_ids": tuple(operation_ids),
+                }
+            except Exception as exc:
+                # The SQLite transaction is already durable.  A retry or a
+                # normal outbox flush can recover the exact pending audit row.
+                self._last_capability_export_status = {
+                    "ok": False,
+                    "pending": len(operation_ids),
+                    "error": str(exc),
+                    "operation_ids": tuple(operation_ids),
+                }
+            return result
+
+    def capability_export_status(self) -> dict[str, object]:
+        """Return the latest capability audit-export projection status."""
+
+        with self._lock:
+            durable = self._durable_capability_export_status()
+            error = str(self._last_capability_export_status.get("error") or "")
+            if durable["pending"] == 0:
+                error = ""
+            return {
+                **durable,
+                "error": error,
+                "operation_ids": tuple(self._last_capability_export_status.get("operation_ids") or ()),
+            }
+
+    def _durable_capability_export_status(self) -> dict[str, object]:
+        row = self.sqlite.conn.execute(
+            """
+            SELECT
+                COUNT(*) AS journal_count,
+                SUM(CASE WHEN journal.audit_exported_at='' THEN 1 ELSE 0 END) AS pending_count
+            FROM capability_operation_journal AS journal
+            """
+        ).fetchone()
+        journal_count = int(row["journal_count"] or 0) if row is not None else 0
+        pending = int(row["pending_count"] or 0) if row is not None else 0
+        return {
+            "ok": pending == 0,
+            "pending": pending,
+            "journal_count": journal_count,
+        }
 
     def append_proactive_turn(
         self,
@@ -1102,6 +1208,7 @@ class RuntimeStore:
     def _replay_jsonl_into(self, target: SqliteRecordStore) -> dict[str, int]:
         counts = {
             "records": 0,
+            "capability_v3": 0,
             "events": 0,
             "event_outcomes": 0,
             "intent_patterns": 0,
@@ -1120,6 +1227,7 @@ class RuntimeStore:
             "PRIMARY KEY(table_name, item_key))"
         )
         try:
+            capability_audits: list[tuple[dict, RecordEnvelope, str]] = []
             for scanned in self.log.scan_strict():
                 if not _accept_rebuild_operation(target, scanned):
                     continue
@@ -1130,6 +1238,30 @@ class RuntimeStore:
                     (target._storage_key(record),),
                 )
                 counts["records"] += 1
+                audit = _capability_audit_from_record(
+                    record,
+                    scanned_operation_id=str(scanned.operation_id or ""),
+                )
+                if audit is not None:
+                    capability_audits.append((audit, record, str(audit["operation_id"])))
+            if capability_audits:
+                capabilities = _open_capability_store(target)
+                for audit, record, operation_id in sorted(
+                    capability_audits,
+                    key=lambda item: _capability_audit_replay_key(item[0]),
+                ):
+                    capabilities.replay_audit(audit)
+                    # Rebuild recreates a historical export as already durable.
+                    # Marking it only after the operation journal exists records
+                    # the confirmation in the non-prunable journal state too.
+                    target.enqueue_export(
+                        stream="records",
+                        payload=record.to_dict(),
+                        operation_id=operation_id,
+                        commit=False,
+                    )
+                    target.mark_exported(operation_id, commit=False)
+                    counts["capability_v3"] += 1
             for stream in (
                 "events",
                 "event_outcomes",
@@ -1535,6 +1667,126 @@ def _scope_to_dict(scope: ScopeRef) -> dict[str, str]:
         "workspace_id": scope.workspace_id,
         "user_id": scope.user_id,
     }
+
+
+def _capability_audit_record(audit: PendingCapabilityAudit) -> RecordEnvelope:
+    """Build a hidden, deterministic record-stream audit copy for a v3 write."""
+
+    record = RecordEnvelope.create(
+        kind="capability_audit",
+        title=f"Capability v3 {audit.action}: {audit.entity_type}/{audit.entity_id}",
+        summary=(
+            f"Immutable capability ledger event {audit.ledger_event_id} "
+            f"for {audit.entity_type} {audit.entity_id}."
+        ),
+        scope=audit.scope,
+        status="archived",
+        source="eimemory.capability.v3",
+        source_id="capability_v3",
+        content={
+            "report_type": "capability.v3.audit",
+            "audit": dict(audit.payload),
+        },
+        tags=["audit", "capability-v3"],
+        provenance={
+            "ledger_event_id": audit.ledger_event_id,
+            "entity_digest": audit.entity_digest,
+            "capability_scope": audit.capability_scope,
+        },
+        meta={
+            "report_type": "capability.v3.audit",
+            "operation_id": audit.operation_id,
+            "ledger_event_id": audit.ledger_event_id,
+            "authoritative": False,
+        },
+    )
+    record.record_id = audit.audit_record_id
+    record.time = TimeRef(
+        created_at=audit.created_at,
+        updated_at=audit.created_at,
+        occurred_at=audit.created_at,
+    )
+    return record
+
+
+def _capability_audit_from_record(
+    record: RecordEnvelope,
+    *,
+    scanned_operation_id: str = "",
+) -> dict | None:
+    if record.kind != "capability_audit":
+        return None
+    if record.source != "eimemory.capability.v3":
+        raise ValueError("capability audit record source identity mismatch")
+    if str(record.source_id or "") != "capability_v3":
+        raise ValueError("capability audit record source identity mismatch")
+    content = record.content if isinstance(record.content, dict) else {}
+    if str(content.get("report_type") or "") != "capability.v3.audit":
+        raise ValueError("capability audit record report type mismatch")
+    audit = content.get("audit")
+    if not isinstance(audit, dict):
+        raise ValueError("capability audit record has no structured audit payload")
+    if str(audit.get("schema") or "") != "capability.audit.v1":
+        raise ValueError("capability audit record has an unsupported schema")
+    metadata = record.meta if isinstance(record.meta, dict) else {}
+    operation_id = str(audit.get("operation_id") or "")
+    if not operation_id:
+        raise ValueError("capability audit record lacks an operation identity")
+    expected_record_id = f"capability_audit_{operation_id[:24]}"
+    expected_ledger_event_id = f"capability-ledger-{operation_id[:32]}"
+    if record.record_id != expected_record_id:
+        raise ValueError("capability audit record identity mismatch")
+    if str(metadata.get("report_type") or "") != "capability.v3.audit":
+        raise ValueError("capability audit record metadata report type mismatch")
+    if str(metadata.get("operation_id") or "") != operation_id:
+        raise ValueError("capability audit record operation identity mismatch")
+    if str(metadata.get("ledger_event_id") or "") != expected_ledger_event_id:
+        raise ValueError("capability audit record ledger identity mismatch")
+    if str(audit.get("ledger_event_id") or "") != expected_ledger_event_id:
+        raise ValueError("capability audit payload ledger identity mismatch")
+    if scanned_operation_id != operation_id:
+        raise ValueError("capability audit JSONL operation identity mismatch")
+
+    audit_scope = audit.get("scope")
+    required_scope_keys = ("tenant_id", "agent_id", "workspace_id", "user_id")
+    if not isinstance(audit_scope, dict) or any(
+        key not in audit_scope or not isinstance(audit_scope[key], str)
+        for key in required_scope_keys
+    ):
+        raise ValueError("capability audit record scope is incomplete or malformed")
+    if not str(audit_scope["tenant_id"]).strip():
+        raise ValueError("capability audit record has an empty tenant scope")
+    if {key: str(audit_scope[key]) for key in required_scope_keys} != _scope_to_dict(record.scope):
+        raise ValueError("capability audit record scope does not match its payload")
+
+    provenance = record.provenance if isinstance(record.provenance, dict) else {}
+    if (
+        str(provenance.get("ledger_event_id") or "") != expected_ledger_event_id
+        or str(provenance.get("entity_digest") or "") != str(audit.get("entity_digest") or "")
+        or str(provenance.get("capability_scope") or "") != str(audit.get("capability_scope") or "")
+    ):
+        raise ValueError("capability audit record provenance does not match its payload")
+    return audit
+
+
+def _capability_audit_replay_key(audit: dict) -> tuple[int, str]:
+    """Order audit replay by FK dependency rather than incidental JSONL order."""
+
+    priority = {
+        "definition": 10,
+        "revision": 20,
+        "relation": 30,
+        "binding": 30,
+        "profile": 30,
+        "evaluation_spec": 40,
+        "evaluation_run": 50,
+        "observation": 50,
+        "knowledge_link": 50,
+        "snapshot": 60,
+        "assessment": 70,
+    }
+    entity_type = str(audit.get("entity_type") or "")
+    return (priority.get(entity_type, 100), str(audit.get("operation_id") or ""))
 
 
 def _auxiliary_entry_from_payload(entry: dict) -> dict:

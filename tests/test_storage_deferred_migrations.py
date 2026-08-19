@@ -8,6 +8,10 @@ from eimemory.api.runtime import Runtime
 from eimemory.adapters.eibrain.rpc_server import build_health_payload
 from eimemory.storage.runtime_store import RuntimeStore
 from eimemory.storage.sqlite_store import SqliteRecordStore
+from eimemory.storage.migrations.capability_v3 import (
+    CAPABILITY_V3_BACKFILL_MIGRATION,
+    capability_v3_backfill_state,
+)
 
 
 SCOPE = ScopeRef(tenant_id="default", agent_id="agent", workspace_id="workspace", user_id="")
@@ -102,6 +106,24 @@ def test_legacy_source_and_identity_migrations_do_not_scan_payload_during_startu
         "SELECT payload_json FROM records WHERE title='legacy 0'"
     ).fetchone()[0]
     store.close()
+
+
+def test_capability_v3_schema_installs_on_legacy_store_without_scheduling_backfill(tmp_path) -> None:
+    db_path = tmp_path / "legacy-v3.sqlite"
+    _legacy_database(db_path, rows=2)
+
+    store = SqliteRecordStore(db_path)
+    try:
+        assert store.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='capability_definitions'"
+        ).fetchone() is not None
+        state = capability_v3_backfill_state(store.conn)
+        assert state["migration_id"] == CAPABILITY_V3_BACKFILL_MIGRATION
+        assert state["status"] == "not_scheduled"
+        assert CAPABILITY_V3_BACKFILL_MIGRATION not in store.pending_storage_migrations()
+        assert store.conn.execute("SELECT COUNT(*) FROM records").fetchone()[0] == 2
+    finally:
+        store.close()
 
 
 def test_deferred_source_migration_is_keyset_bounded_and_never_rewrites_payload(tmp_path) -> None:

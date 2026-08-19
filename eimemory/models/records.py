@@ -39,6 +39,7 @@ VALID_KINDS: frozenset[str] = frozenset(
         "thought",
         "initiative",
         "capability_model",
+        "capability_audit",
         "weakness",
         "learning_goal",
         "research_task",

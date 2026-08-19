@@ -37,6 +37,21 @@ transitioned transactionally in SQLite; linked ledger events preserve their
 immutable audit trail. JSON exports, dashboards, and PostgreSQL projections are
 read models rather than authorities.
 
+For Storage v2, `capability_ledger_events` is the append-only durable ledger
+for capability-domain mutations and historical observations. Every ledger row
+is linked one-to-one to a deterministic `capability_audit` record-stream audit
+envelope by `ledger_event_id`, audit record id, and export operation id. That
+envelope is a non-authoritative recovery/export mirror: it can rehydrate the
+ledger and its typed SQLite rows after a replace rebuild, but it cannot mutate a
+committed fact or become an independent observation authority. The operation
+journal persists export confirmation, so the transient outbox may be pruned
+without changing the fact's audit/export state.
+
+An immutable capability mutation has one canonical request key. A transport
+retry must reuse that key to receive an idempotent result; a fresh key targeting
+an already-registered immutable entity fails closed rather than creating a
+duplicate ledger event or an unrecoverable request alias.
+
 Use expand-contract migration: schema first, idempotent dual write, bounded
 backfill, shadow comparison, reversible reader cutover, and later deletion.
 
