@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Planned
 - Multi-agent memory coordination
 
+## [1.9.135] - 2026-08-19
+
+### Fixed
+
+- Keep `PayloadSegmentStore(read_only=True)` strictly non-mutating so deep payload-pointer verification cannot restore owner-write bits on sealed immutable-release snapshots and block storage-bearing deployments.
+
 ## [1.9.134] - 2026-08-19
 
 ### Fixed
