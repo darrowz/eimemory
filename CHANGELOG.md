@@ -10,6 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Planned
 - Multi-agent memory coordination
 
+## [1.9.134] - 2026-08-19
+
+### Fixed
+
+- Preserve Hermes automatic recall when the proactive policy explicitly bypasses an otherwise successful query by falling back to bounded channel-local recall without manufacturing proactive acknowledgements.
+- Derive the Hermes single-flight waiter deadline from the bounded adapter timeout so concurrent callers do not abandon valid 3–6 second recall work at the former fixed three-second boundary.
+- Raise the managed OpenClaw RPC hook timeout from 1.8 to 3.5 seconds and keep the EI bridge importable on Python 3.11 by using `typing.TypeAlias` declarations.
+
 ## [1.9.133] - 2026-08-10
 
 ### Fixed
