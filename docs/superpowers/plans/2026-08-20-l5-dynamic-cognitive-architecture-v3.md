@@ -12,7 +12,8 @@ Target specification:
 Read this complete plan and the target specification before changing code. Work
 task by task, update the checkboxes and evidence log in this file, and continue
 until the current task's exit gate passes. Do not infer completion from existing
-green tests, a healthy service, or the presence of a module.
+green tests, a healthy service, or the presence of a module. Completion of WP16
+is standing authorization to execute WP17 automatically.
 
 This plan is intentionally executable without ECC or another external agent
 harness. It adopts contract-first, eval-first, expand-contract migration,
@@ -40,8 +41,8 @@ The executor must:
 - keep the existing cleanup batch logically separate from L5 v3 changes;
 - avoid a version bump until release work is explicitly authorized;
 - stop if a prerequisite requires discarding or redefining user changes;
-- not push or deploy unless the user explicitly authorizes those actions in the
-  active turn.
+- do not push or deploy before WP16; the user's standing authorization in this
+  turn activates WP17 automatically after WP16 passes.
 
 ## Global constraints
 
@@ -136,19 +137,19 @@ mixed, lost, or incorrectly credited.
   established tracked evidence location; otherwise keep generated benchmark
   output below `EIMEMORY_ROOT` and link its digest from the audit document.
 
-- [ ] Capture repository HEAD, branch, upstream, status, diff stat, changed-file
+- [x] Capture repository HEAD, branch, upstream, status, diff stat, changed-file
   list, Python version, SQLite version, platform, and relevant optional
   dependency availability.
-- [ ] Classify every current change as `cleanup-existing`, `l5-v3-new`, or
+- [x] Classify every current change as `cleanup-existing`, `l5-v3-new`, or
   `unrelated-user-change`; do not rewrite existing changes merely to classify
   them.
-- [ ] Confirm whether the existing cleanup batch has a reviewable baseline
+- [x] Confirm whether the existing cleanup batch has a reviewable baseline
   commit. If not, keep a path-level ownership manifest so later diffs can be
   reviewed separately.
-- [ ] Record the previously focused adapter and closure test evidence as
+- [x] Record the previously focused adapter and closure test evidence as
   historical evidence only; rerun a test only when required by an overlapping
   change.
-- [ ] Record current hard-coded taxonomy locations with `rg`, including at least
+- [x] Record current hard-coded taxonomy locations with `rg`, including at least
   capability contract, acceptance, replay packs, readiness, release lineage,
   goal queue, self model, replay dataset, and world watchers.
 
@@ -784,12 +785,15 @@ release blocker.
 
 ---
 
-## WP17 — Release, push, and deployment closure
+## WP17 — Automatic release, push, and deployment closure
 
-**Depends on:** WP16 and explicit user authorization in the active turn.
+**Depends on:** WP16.
 
-This plan does not itself authorize external writes, GitHub push, or production
-deployment. When authorized:
+The user has explicitly authorized this work package. When WP16 passes, execute
+the following release, push, deployment, and verification sequence without
+waiting for another approval. A failed gate stops the sequence, preserves the
+evidence, and follows the documented rollback/quarantine path; it never treats
+an incomplete deployment as success.
 
 - [ ] Reconfirm exact upstream and intended branch.
 - [ ] Rebase/synchronize safely without losing user changes.
@@ -832,7 +836,7 @@ gate evidence.
 
 | Work package | Status | Evidence reference | Commit |
 | --- | --- | --- | --- |
-| WP0 baseline custody | pending | | |
+| WP0 baseline custody | completed | `docs/audit/l5-v3-pre-refactor-baseline.md` | pending commit |
 | WP1 ADRs/contracts | pending | | |
 | WP2 performance baseline | pending | | |
 | WP3 Storage v2 schema | pending | | |
@@ -849,7 +853,7 @@ gate evidence.
 | WP14 backfill/shadow | pending | | |
 | WP15 cutover/cleanup | pending | | |
 | WP16 final integration | pending | | |
-| WP17 release/deploy | not authorized | | |
+| WP17 release/deploy | pending after WP16 | standing authorization recorded 2026-08-20 | |
 
 ## Terra handoff prompt
 
@@ -863,6 +867,5 @@ docs/superpowers/plans/2026-08-20-l5-dynamic-cognitive-architecture-v3.md
 执行重构。先完整读取两份文档，从 WP0 开始，保护现有脏工作树，不回滚用户改动。
 逐工作包执行 contract/RED/implementation/GREEN/benchmark/review/evidence，实时更新计划
 中的 Progress ledger。阶段内只跑定向测试，WP16 才运行一次全集测试。代码演进不增加人工
-审批状态；推送和部署只有在当前对话得到明确授权后才能执行。
+审批状态；WP16 通过后自动执行已获 standing authorization 的 WP17 推送与部署闭环。
 ```
-
