@@ -7,8 +7,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Rewrite the project overview, architecture, deployment boundary, and module
+  ownership documentation around the single production governance pipeline.
+- Make L3/L4 safety-wire declarations name active controls:
+  `kill_switch`, `audit_verifier`, `safety_replay`, and `promotion_manager`.
+- Keep the backward-compatible JSON default for `eimemory doctor`, make
+  `doctor --json` machine-parseable, and reserve human rendering for an explicit
+  `doctor --human` request.
+- Preserve the supervisor contract in the expanded doctor report so operators
+  can inspect scheduled-run state alongside storage and integrity diagnostics;
+  retain the prior RPC service, version, commit, and runtime-identity fields.
+- Align the Codex plugin manifest with package version `1.9.135` and document
+  the complete `agent.runtime.v1` adapter environment and isolation contract.
+- Guard the outcome-trace expression index with `json_valid` so one malformed
+  legacy payload cannot block writes, startup, or offline storage repair.
+- Replace the former empty PDF placeholder with content-addressed raw PDF,
+  canonical UTF-8 text, and immutable parser-manifest evidence. Runtime
+  extraction and refresh now verify the manifest, references, and blob hashes
+  again; missing parser support, scanned PDFs, malformed input, and untrusted
+  caller-supplied references fail explicitly.
+- Add the knowledge-refresh consumer after contradiction reconciliation: it
+  atomically retires stale operational projections and recompiles only from
+  canonical sources and non-conflicted claims. Nightly reports now distinguish
+  pages marked for refresh from pages actually recompiled or blocked.
+- Add automatic local code-proposal and direct-apply flow: a configured or
+  injected proposer yields a state-bound, allowlisted unified diff with focused
+  verification; unavailable or invalid proposals remain explicit blocked
+  evidence rather than being downgraded to SOPs. Generated proposals accept
+  only focused `python -m compileall` or `python -m pytest -q tests/...` argv
+  checks, rejecting shell, Git, network tools, `python -c`, and a broad
+  full-suite command. The local `--apply` path has no human approval gate, but
+  repository commit and production deployment default to disabled and require
+  explicit settings.
+- Persist a direct code-apply transaction before the first write. Failed
+  verification rolls back; apply-enabled learning and evolution cycles recover
+  interrupted transactions only when the recorded state is provable, otherwise
+  isolate them without retrying, patch replay, or overwrite; reports expose the
+  result as `code_apply_recovery`.
+- Converge host integration boundaries: Codex and Hermes retain the shared
+  four-operation public memory contract, while OpenClaw exposes bridge status
+  and keeps lifecycle behavior in its hooks.
+
+### Removed
+
+- Remove the test-only `eimemory.autonomous` Karpathy experiment stack; active
+  learning and evolution remain under `eimemory.governance`.
+- Remove duplicate governance state-machine, held-out splitter, evidence wrapper,
+  skill-merger, and obsolete safety prototypes whose responsibilities are owned
+  by current replay, promotion, safe-transport, audit, and rollback flows.
+- Remove empty, disconnected, or shadow modules for core errors, report models,
+  living temporal helpers, persona wrappers, and Python-side Feishu delivery
+  state, together with their corresponding obsolete tests.
+- Remove the unregistered Python `OpenClawMemoryTools` facade; the supported
+  lifecycle path is the bridge hooks and the operator-only E2E diagnostic.
+
 ### Planned
+
 - Multi-agent memory coordination
+- Re-extract, review, and reconcile fresh claims when a canonical paper source
+  changes; the current refresh consumer recompiles surviving reviewed claims.
+- Cross-worker source-version coordination for concurrent knowledge refreshes.
+- Release-bound L5 closure evidence: live acceptance, observation, and
+  independent readiness for the deployed commit.
 
 ## [1.9.135] - 2026-08-19
 

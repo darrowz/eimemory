@@ -506,7 +506,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     doctor = sub.add_parser("doctor")
     doctor.add_argument("--json", action="store_true", default=False)
-    doctor.add_argument("--human", action="store_true", default=True)
+    doctor.add_argument("--human", action="store_true", default=False)
     doctor.add_argument("--no-l5", action="store_true", default=False)
     doctor.add_argument("--no-systemd", action="store_true", default=False)
     status = sub.add_parser("status")
@@ -1097,7 +1097,9 @@ def main(argv: list[str] | None = None) -> int:
             include_l5=not bool(getattr(parsed, "no_l5", False)),
             include_systemd=not bool(getattr(parsed, "no_systemd", False)),
         )
-        if bool(getattr(parsed, "human", False)):
+        emit_human = bool(getattr(parsed, "human", False))
+        emit_json = bool(getattr(parsed, "json", False)) or not emit_human
+        if emit_human:
             # Windows consoles default to GBK which cannot encode the
             # ⚠️ / ❌ / ✅ glyphs. Reconfigure stdout to UTF-8 just for
             # the human block; fall back to ASCII on failure.
@@ -1106,8 +1108,8 @@ def main(argv: list[str] | None = None) -> int:
             except Exception:
                 pass
             print(render_human(report))
-        if bool(getattr(parsed, "json", False)):
-            if bool(getattr(parsed, "human", False)):
+        if emit_json:
+            if emit_human:
                 print()
             print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
         return 0 if report.get("overall_status") in {"HEALTHY", "DEGRADED", "UNKNOWN"} else 2
@@ -1677,16 +1679,29 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if parsed.paper_command == "extract":
             source_record = runtime.store.get_by_id(parsed.paper_source_id, scope=scope)
-            result = runtime.extract_paper_memory(
-                {
-                    "paper_source_id": parsed.paper_source_id,
-                    "title": parsed.title or (source_record.title if source_record else ""),
-                    "abstract": parsed.abstract or (source_record.summary if source_record else ""),
-                    "body": parsed.body,
-                    "provenance": {"paper_source_id": parsed.paper_source_id, "source": "cli.paper.extract"},
-                },
-                scope=scope,
-            )
+            try:
+                if parsed.body:
+                    result = runtime.extract_paper_memory(
+                        {
+                            "paper_source_id": parsed.paper_source_id,
+                            "title": parsed.title or (source_record.title if source_record else ""),
+                            "abstract": parsed.abstract or (source_record.summary if source_record else ""),
+                            "body": parsed.body,
+                            "metadata": {"content_origin": "manual_excerpt"},
+                            "provenance": {"paper_source_id": parsed.paper_source_id, "source": "cli.paper.extract.manual"},
+                        },
+                        scope=scope,
+                    )
+                else:
+                    result = runtime.extract_paper_source_memory(
+                        paper_source_id=parsed.paper_source_id,
+                        scope=scope,
+                        title=parsed.title,
+                        abstract=parsed.abstract,
+                    )
+            except (ValueError, OSError) as exc:
+                print(json.dumps({"ok": False, "error": "paper_extract_blocked", "detail": str(exc)}, ensure_ascii=False))
+                return 2
             print(json.dumps({"ok": True, "record_count": len(result.to_records(scope=scope))}, ensure_ascii=False, indent=2))
             return 0
         if parsed.paper_command == "compile":
@@ -2572,7 +2587,7 @@ def main(argv: list[str] | None = None) -> int:
                 return 0 if report.get("accepted") is True and report.get("gate_status") == "accepted" else 1
             return 0 if report.get("ok") else 1
         if parsed.eval_command == "openclaw-e2e":
-            from eimemory.adapters.openclaw.tools import OpenClawMemoryTools
+            from eimemory.adapters.openclaw.e2e import run_openclaw_e2e_check
 
             e2e_scope = asdict(
                 ScopeRef.from_dict(
@@ -2583,7 +2598,7 @@ def main(argv: list[str] | None = None) -> int:
                     }
                 )
             )
-            report = OpenClawMemoryTools(runtime).memory_e2e_check(scope=e2e_scope, query=str(parsed.query or ""))
+            report = run_openclaw_e2e_check(runtime, scope=e2e_scope, query=str(parsed.query or ""))
             if parsed.output:
                 try:
                     output_path = Path(parsed.output)

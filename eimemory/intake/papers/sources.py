@@ -2,6 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from eimemory.intake.papers.artifacts import (
+    ARTIFACT_SCHEMA_VERSION,
+    PaperArtifactError,
+    materialize_paper_artifacts,
+)
 from eimemory.intake.papers.normalize import normalize_paper_source_payload
 from eimemory.models.paper_sources import PaperSource
 from eimemory.models.records import RecordEnvelope, ScopeRef
@@ -42,6 +47,41 @@ def ingest_paper_source(
 ) -> RecordEnvelope:
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
     normalized = normalize_paper_source_payload(paper_input)
+    try:
+        artifacts = materialize_paper_artifacts(store.root, paper_input)
+    except PaperArtifactError as exc:
+        # A transient remote fetch or parser failure is evidence about this
+        # source, not a reason to abort the rest of a promotion batch.
+        artifacts = {
+            "pdf_blob_ref": "",
+            "normalized_text_ref": "",
+            "artifact": {
+                "schema_version": ARTIFACT_SCHEMA_VERSION,
+                "status": "blocked",
+                "error_code": exc.code,
+                "error_detail": exc.detail,
+            },
+        }
+    normalized["pdf_blob_ref"] = str(artifacts.get("pdf_blob_ref") or "")
+    normalized["normalized_text_ref"] = str(artifacts.get("normalized_text_ref") or "")
+    metadata = dict(normalized.get("metadata") or {})
+    metadata["pdf_blob_ref"] = normalized["pdf_blob_ref"]
+    metadata["normalized_text_ref"] = normalized["normalized_text_ref"]
+    metadata["artifact"] = dict(artifacts.get("artifact") or {})
+    normalized["metadata"] = metadata
+    provenance = dict(normalized.get("provenance") or {})
+    manifest_ref = str(metadata["artifact"].get("manifest_ref") or "")
+    if manifest_ref:
+        provenance["artifact_manifest_ref"] = manifest_ref
+    provenance["artifact_status"] = str(metadata["artifact"].get("status") or "not_requested")
+    if metadata["artifact"].get("error_code"):
+        provenance["artifact_error_code"] = str(metadata["artifact"]["error_code"])
+    normalized["provenance"] = provenance
     paper_source = paper_source_from_payload(normalized)
     record = paper_source.to_record(scope=scope_ref)
+    if str(metadata["artifact"].get("status") or "").lower() == "blocked":
+        record.status = "blocked"
+        record.detail = "Paper source blocked pending canonical artifact evidence"
+        record.meta["artifact_status"] = "blocked"
+        record.meta["artifact_error_code"] = str(metadata["artifact"].get("error_code") or "")
     return store.append(record)

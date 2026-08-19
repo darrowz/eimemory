@@ -22,7 +22,7 @@ def detect_paper_source_kind(input_data: dict[str, Any]) -> str:
         return "arxiv"
     if input_data.get("doi"):
         return "doi"
-    if input_data.get("pdf_file") or input_data.get("pdf_path"):
+    if input_data.get("pdf_file") or input_data.get("pdf_path") or input_data.get("pdf_url"):
         return "pdf"
     if _extract_arxiv_id(raw_url):
         return "arxiv"
@@ -39,6 +39,7 @@ def normalize_paper_source_payload(input_data: dict[str, Any]) -> dict[str, Any]
     pdf_file = input_data.get("pdf_file") or input_data.get("pdf_path")
     pdf_path = str(Path(pdf_file)) if pdf_file else ""
     raw_url = str(input_data.get("canonical_url") or input_data.get("paper_url") or input_data.get("url") or "")
+    pdf_url = canonicalize_identifier_url(input_data.get("pdf_url"))
     canonical_url = canonicalize_identifier_url(raw_url)
     doi = canonicalize_doi(input_data.get("doi") or (_extract_doi(raw_url) if source_kind == "doi" else ""))
     arxiv_id = canonicalize_arxiv_id(input_data.get("arxiv_id") or (_extract_arxiv_id(raw_url) if source_kind == "arxiv" else ""))
@@ -53,7 +54,10 @@ def normalize_paper_source_payload(input_data: dict[str, Any]) -> dict[str, Any]
         "arxiv_id": arxiv_id,
         "canonical_url": canonical_url,
         "pdf_path": pdf_path,
-        "pdf_blob_ref": str(input_data.get("pdf_blob_ref") or pdf_path or ""),
+        # A local path is intake input, not a durable artifact reference.  It is
+        # materialized under the runtime root by ``ingest_paper_source``.
+        "pdf_url": pdf_url,
+        "pdf_blob_ref": str(input_data.get("pdf_blob_ref") or ""),
         "normalized_text_ref": str(input_data.get("normalized_text_ref") or ""),
     }
     normalized["metadata"] = build_paper_metadata(normalized, upstream_metadata=input_data.get("metadata"))
@@ -89,6 +93,10 @@ def build_paper_source_hash(payload: dict[str, Any]) -> str:
         "arxiv_id": canonicalize_arxiv_id(payload.get("arxiv_id")),
         "doi": canonicalize_doi(payload.get("doi")),
         "canonical_url": canonicalize_identifier_url(payload.get("canonical_url")),
+        # A landing page and its PDF are independently mutable identifiers.
+        # Keep the PDF URL in the identity so two assets cannot collapse into
+        # one paper source merely because they share a landing page.
+        "pdf_url": canonicalize_identifier_url(payload.get("pdf_url")),
         "pdf_identity": pdf_identity,
     }
     digest = sha256(json.dumps(fingerprint, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
@@ -98,7 +106,7 @@ def build_paper_source_hash(payload: dict[str, Any]) -> str:
 def _pdf_identity(payload: dict[str, Any]) -> str:
     if any(str(payload.get(key) or "").strip() for key in ("arxiv_id", "doi", "canonical_url")):
         return ""
-    pdf_ref = str(payload.get("pdf_blob_ref") or payload.get("pdf_path") or "").strip()
+    pdf_ref = str(payload.get("pdf_blob_ref") or payload.get("pdf_path") or payload.get("pdf_url") or "").strip()
     if not pdf_ref:
         return ""
     pdf_path = Path(pdf_ref)

@@ -15,11 +15,13 @@ from eimemory.api.memory import MemoryAPI
 from eimemory.core.clock import now_iso
 from eimemory.intake.registry import SourceRegistry
 from eimemory.intake.safe_transport import safe_urlopen
+from eimemory.intake.papers.artifacts import PaperArtifactError, load_verified_canonical_text
 from eimemory.intake.papers.sources import ingest_paper_source
 from eimemory.intake.title_normalization import strip_candidate_title_prefixes
 from eimemory.knowledge.compiler import KnowledgeCompilation, compile_paper_knowledge
 from eimemory.knowledge.extract import PaperMemoryExtraction, extract_paper_memory
 from eimemory.knowledge.projectors import project_operational_knowledge
+from eimemory.knowledge.refresh import refresh_knowledge_pages
 from eimemory.knowledge.synthesis import build_research_digest, digest_to_record
 from eimemory.config.defaults import default_root
 from eimemory.models.records import RecordEnvelope, ScopeRef, TimeRef
@@ -1697,6 +1699,54 @@ class Runtime:
             self.store.append(record)
         return result
 
+    def extract_paper_source_memory(
+        self,
+        *,
+        paper_source_id: str,
+        scope: dict | None = None,
+        title: str = "",
+        abstract: str = "",
+    ) -> PaperMemoryExtraction:
+        """Extract knowledge from a previously materialized canonical paper text."""
+        scope_ref = ScopeRef.from_dict(scope)
+        source_record = self.store.get_by_id(str(paper_source_id), scope=scope_ref)
+        if source_record is None or source_record.kind != "paper_source":
+            raise ValueError("paper_source_not_found")
+        source_payload = dict(source_record.content or {})
+        metadata = dict(source_payload.get("metadata") or {})
+        artifact = dict(metadata.get("artifact") or {})
+        if str(source_record.status or "").lower() in {"blocked", "rejected", "deprecated", "conflicted", "needs_refresh"}:
+            raise PaperArtifactError("paper_source_not_eligible", str(source_record.status))
+        body = load_verified_canonical_text(
+            self.store.root,
+            pdf_blob_ref=str(source_payload.get("pdf_blob_ref") or ""),
+            normalized_text_ref=str(source_payload.get("normalized_text_ref") or ""),
+            artifact=artifact,
+        )
+        extraction_metadata = {
+            **metadata,
+            "content_origin": "canonical_pdf_text",
+            "artifact": artifact,
+        }
+        extraction_provenance = {
+            **dict(source_record.provenance or {}),
+            "paper_source_id": source_record.record_id,
+            "normalized_text_ref": str(source_payload.get("normalized_text_ref") or ""),
+            "pdf_blob_ref": str(source_payload.get("pdf_blob_ref") or ""),
+            "source": "eimemory.paper_canonical_extract",
+        }
+        return self.extract_paper_memory(
+            {
+                "paper_source_id": source_record.record_id,
+                "title": str(title or source_payload.get("title") or source_record.title),
+                "abstract": str(abstract or source_payload.get("abstract") or source_record.summary),
+                "body": body,
+                "metadata": extraction_metadata,
+                "provenance": extraction_provenance,
+            },
+            scope=scope_ref,
+        )
+
     def compile_paper_knowledge(
         self,
         *,
@@ -1710,6 +1760,10 @@ class Runtime:
 
     def project_operational_knowledge(self, *, scope: dict | None = None, limit: int = 100) -> dict:
         return project_operational_knowledge(self.store, scope=scope, limit=limit)
+
+    def refresh_knowledge_pages(self, *, scope: dict | None = None, limit: int = 100) -> dict:
+        """Retire stale knowledge projections and recompile safe source pages."""
+        return refresh_knowledge_pages(self.store, scope=scope, limit=limit)
 
     def extract_skill_candidates(
         self,

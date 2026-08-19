@@ -44,6 +44,7 @@ def run_nightly_jobs(
         claim_card_count = runtime.store.count_records(kinds=["claim_card"], scope=scope)
         knowledge_page_count = runtime.store.count_records(kinds=["knowledge_page"], scope=scope)
         knowledge_report = runtime.evolution.reconcile_knowledge(scope=scope)
+        knowledge_refresh_report = runtime.refresh_knowledge_pages(scope=scope, limit=100)
         quality_report = runtime.evolution.memory_quality_report(scope=scope)
         source_expansion_report = runtime.expand_sources_autonomously(scope=scope, apply=True, max_apply=3)
         news_source_promotion_report = _promote_news_rss_source_candidates(runtime, scope=scope)
@@ -99,7 +100,10 @@ def run_nightly_jobs(
                 "claim_card_count": claim_card_count,
                 "knowledge_page_count": knowledge_page_count,
                 "contradiction_count": knowledge_report["contradiction_count"],
-                "refreshed_page_count": knowledge_report["page_refresh_count"],
+                "marked_for_refresh_count": knowledge_report["page_refresh_count"],
+                "recompiled_page_count": knowledge_refresh_report["recompiled_page_count"],
+                "blocked_refresh_page_count": knowledge_refresh_report["blocked_page_count"],
+                "retired_projection_count": knowledge_refresh_report["retired_projection_count"],
             },
             "replay": {
                 "executed": len(replay_reports),

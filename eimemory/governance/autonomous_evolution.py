@@ -12,7 +12,11 @@ from eimemory.governance.isolated_evaluator import (
     judge_stop_condition,
     run_isolated_evaluator,
 )
-from eimemory.governance.promotion_manager import promote_candidate, run_code_patch_preflight
+from eimemory.governance.promotion_manager import (
+    promote_candidate,
+    recover_incomplete_code_apply,
+    run_code_patch_preflight,
+)
 from eimemory.core.clock import now_iso
 from eimemory.governance.policy_replay import (
     build_replay_case,
@@ -39,6 +43,11 @@ def run_autonomous_evolution(
 ) -> dict[str, Any]:
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
     scope_payload = asdict(scope_ref)
+    code_apply_recovery = _recover_code_apply_before_evolution(
+        runtime,
+        scope=scope_ref,
+        apply=apply,
+    )
     opportunities = _mine_event_opportunities(runtime, scope=scope_ref)
     opportunities.extend(_web_opportunities(web_hypotheses or [], scope=scope_ref))
     replay_cases = [_replay_case_from_opportunity(item) for item in opportunities]
@@ -214,6 +223,7 @@ def run_autonomous_evolution(
     report: dict[str, Any] = {
         "ok": True,
         "apply": bool(apply),
+        "code_apply_recovery": code_apply_recovery,
         "persist_report": bool(persist_report),
         "report_type": "autonomous_evolution",
         "schema_version": AUTONOMOUS_EVOLUTION_SCHEMA_VERSION,
@@ -234,7 +244,7 @@ def run_autonomous_evolution(
         "rolled_back_count": rollback_counts["rolled_back_count"],
         "rollback_failed_count": rollback_counts["rollback_failed_count"],
         "blocked_patches": blocked_patches,
-        "circuit_breaker": {"open": False, "reason": ""},
+        "safety_gates": _safety_gate_summary(experiments=experiments, blocked_patches=blocked_patches),
         "max_apply": max_apply_count,
     }
     persisted_record_id = ""
@@ -245,6 +255,39 @@ def run_autonomous_evolution(
     report["persisted"] = bool(persist_report)
     report["persisted_record_id"] = persisted_record_id
     return report
+
+
+def _recover_code_apply_before_evolution(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    apply: bool,
+) -> dict[str, Any]:
+    if not apply:
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "apply_disabled",
+            "transaction_count": 0,
+            "recovered_count": 0,
+            "recovery_quarantined_count": 0,
+            "retried_apply_count": 0,
+            "transactions": [],
+        }
+    try:
+        return recover_incomplete_code_apply(runtime, scope=scope)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "skipped": False,
+            "reason": "code_apply_recovery_failed",
+            "error_type": type(exc).__name__,
+            "transaction_count": 0,
+            "recovered_count": 0,
+            "recovery_quarantined_count": 0,
+            "retried_apply_count": 0,
+            "transactions": [],
+        }
 
 
 def _blocked_gates(*, trusted_gate: dict[str, Any], replay_gate: dict[str, Any], safe_action_gate: dict[str, Any]) -> dict[str, Any]:
@@ -263,6 +306,24 @@ def _gate_summary(experiments: list[dict[str, Any]]) -> dict[str, Any]:
         "replay_passed": sum(1 for item in experiments if item.get("replay_gate", {}).get("ok")),
         "safe_action_passed": sum(1 for item in experiments if item.get("safe_action_gate", {}).get("ok")),
         "passed_all": sum(1 for item in experiments if item.get("passed")),
+    }
+
+
+def _safety_gate_summary(*, experiments: list[dict[str, Any]], blocked_patches: list[dict[str, Any]]) -> dict[str, Any]:
+    """Report only the safety gates this run actually evaluated.
+
+    The retired circuit-breaker prototype has no live state in the current
+    governance path.  A static green value would be misleading, so callers
+    receive the actual safe-action results and blocked-patch count instead.
+    """
+    safe_action_passed = sum(1 for item in experiments if item.get("safe_action_gate", {}).get("ok"))
+    return {
+        "safe_action_gate": {
+            "evaluated": len(experiments),
+            "passed": safe_action_passed,
+            "failed": len(experiments) - safe_action_passed,
+        },
+        "blocked_patch_count": len(blocked_patches),
     }
 
 
@@ -402,8 +463,11 @@ def _safe_patch_from_opportunity(opportunity: dict[str, Any], *, scope: ScopeRef
         code_patch = dict(opportunity.get("code_patch") or {})
         code_patch.setdefault("apply_to_repo", True)
         code_patch.setdefault("target_capability", "code.implementation")
-        code_patch.setdefault("deploy_to_production", True)
-        code_patch.setdefault("commit_to_repo", bool(code_patch.get("deploy_to_production")))
+        # The autonomous path may apply a verified local patch, but a commit
+        # or production deployment must be explicitly requested by the
+        # opportunity.  Neither is an implicit consequence of auto-apply.
+        code_patch.setdefault("deploy_to_production", False)
+        code_patch.setdefault("commit_to_repo", False)
         return {
             "opportunity_id": str(opportunity.get("opportunity_id") or ""),
             "patch_type": "code_patch",

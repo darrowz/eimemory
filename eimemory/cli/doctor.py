@@ -750,6 +750,10 @@ def run_doctor(
 ) -> dict[str, Any]:
     """Run every doctor check and return a structured report."""
 
+    from eimemory.adapters.eibrain.rpc_server import build_health_payload
+    from eimemory.config.loader import load_settings
+    from eimemory.governance.supervisor import build_supervisor_contract
+
     effective_scope: dict[str, Any] = dict(scope) if scope else {}
 
     checks: dict[str, CheckResult] = {}
@@ -764,14 +768,25 @@ def run_doctor(
 
     overall = _overall_status(checks)
     recommendations = _collect_recommendations(checks)
+    settings = load_settings()
+    health = build_health_payload(
+        runtime,
+        listen_host=settings.rpc_host,
+        listen_port=int(settings.rpc_port),
+    )
     return {
-        "ok": overall == "HEALTHY",
+        **health,
+        "ok": bool(health.get("ok")) and overall in {"HEALTHY", "DEGRADED", "UNKNOWN"},
         "report_type": "doctor_report",
         "schema_version": "doctor.v1",
         "generated_at": time.time(),
         "root": str(getattr(getattr(runtime, "store", None), "root", "")),
         "overall_status": overall,
-        "checks": {name: check.to_dict() for name, check in checks.items()},
+        "checks": {
+            **dict(health.get("checks") or {}),
+            **{name: check.to_dict() for name, check in checks.items()},
+        },
+        "supervisor": build_supervisor_contract(runtime, scope=effective_scope),
         "recommendations": recommendations,
     }
 

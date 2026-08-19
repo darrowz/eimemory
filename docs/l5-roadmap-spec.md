@@ -2,6 +2,15 @@
 
 Status: first executable roadmap, 2026-06-28.
 
+> **Superseded for the next architecture refactor:** This file documents the
+> fixed-taxonomy L5 implementation and remains historical/current-v2 evidence.
+> The target architecture is
+> [`superpowers/specs/2026-08-20-l5-dynamic-cognitive-architecture-v3-design.md`](superpowers/specs/2026-08-20-l5-dynamic-cognitive-architecture-v3-design.md),
+> and its executable handoff plan is
+> [`superpowers/plans/2026-08-20-l5-dynamic-cognitive-architecture-v3.md`](superpowers/plans/2026-08-20-l5-dynamic-cognitive-architecture-v3.md).
+> Until the v3 cutover gate passes, production behavior is still described by
+> this v2 roadmap; documentation status does not switch runtime authority.
+
 ## Plain Definition
 
 L5 does not mean "more tools" or "unbounded autonomy". For eimemory, L5 means
@@ -141,8 +150,9 @@ Best existing modules to extend:
   traces and graph-first memory anchors.
 - `eimemory.evaluation.task_replay` and `regression_replay`: deterministic
   replay checks.
-- `eimemory.governance.safety.*`, `promotion_manager`, `promotion_watch`:
-  authority boundary, rollout ledger, post-promotion monitoring, rollback.
+- `safety_replay`, `prompt_safety*`, active `governance.safety` audit and kill
+  switch modules, `promotion_manager`, and `promotion_watch`: authority
+  boundary, rollout ledger, post-promotion monitoring, and rollback.
 
 Current closure facts:
 - capability observations use the nested `capability_contract.v1` schema. An

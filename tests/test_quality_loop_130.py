@@ -192,9 +192,10 @@ def test_openclaw_e2e_tool_and_cli(tmp_path, monkeypatch, capsys) -> None:
     monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path / "runtime"))
     runtime = Runtime.create(root=tmp_path / "tool-runtime")
 
-    from eimemory.adapters.openclaw.tools import OpenClawMemoryTools
+    from eimemory.adapters.openclaw.e2e import run_openclaw_e2e_check
 
-    tool_result = OpenClawMemoryTools(runtime).memory_e2e_check(
+    tool_result = run_openclaw_e2e_check(
+        runtime,
         scope={"agent_id": "main", "workspace_id": "repo-x", "user_id": "darrow"},
         query="quality loop e2e",
     )

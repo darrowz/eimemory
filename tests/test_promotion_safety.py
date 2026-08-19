@@ -1,8 +1,8 @@
 """L3+ safety wire enforcement in promotion_manager.
 
 Verifies that ``_check_safety_wire`` rejects L3/L4 candidates whose
-``safety_wire`` does not declare every required governance module
-(kill_switch, circuit_breaker, spend_guard, audit_verifier) and that
+``safety_wire`` does not declare every active governance control
+(kill_switch, audit_verifier, safety_replay, promotion_manager) and that
 tiers below L3 pass through unchanged.
 """
 from __future__ import annotations
@@ -25,7 +25,7 @@ def test_check_safety_wire_rejects_l3_missing_modules() -> None:
 def test_check_safety_wire_accepts_l3_with_all_four() -> None:
     _check_safety_wire(
         authority_tier="L3",
-        safety_wire=("kill_switch", "circuit_breaker", "spend_guard", "audit_verifier"),
+        safety_wire=("kill_switch", "audit_verifier", "safety_replay", "promotion_manager"),
     )
 
 

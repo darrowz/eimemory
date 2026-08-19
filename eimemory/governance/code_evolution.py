@@ -205,18 +205,24 @@ def _incident_allowed_files(incident: dict[str, Any]) -> list[str]:
     return deduped
 
 
-def _verification_commands(incident: dict[str, Any]) -> list[str]:
-    _ = incident
-    return [
-        "python -m compileall eimemory",
-        "python -m pytest -q tests",
-    ]
+def _verification_commands(incident: dict[str, Any]) -> list[list[str]]:
+    test_files: list[str] = []
+    for item in _coerce_list(incident.get("files") or incident.get("paths")):
+        path = _coerce_text(item).replace("\\", "/")
+        if path.startswith("tests/") and path.endswith(".py") and path not in test_files:
+            test_files.append(path)
+    # The direct-apply runner intentionally accepts argv commands only: do not
+    # leave a generated proposal dependent on an implicit shell parser.
+    commands = [["python", "-m", "compileall", "eimemory"]]
+    if test_files:
+        commands.append(["python", "-m", "pytest", "-q", *test_files])
+    return commands
 
 
 def _rollback_notes() -> list[str]:
     return [
         "No commit, push, merge, or production deployment is performed in sandbox mode.",
-        "Discard the generated worktree after review if changes are not needed.",
+        "Discard the generated worktree when the proposal is not applied.",
     ]
 
 

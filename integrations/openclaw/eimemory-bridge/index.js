@@ -2583,15 +2583,45 @@ function registerStatusTool(api) {
       properties: {},
       required: [],
     },
-    async execute() {
+    async execute(input = {}) {
+      const scope = normalizeScope(input);
+      let runtime = {
+        ok: false,
+        state: 'degraded',
+        reason: 'rpc_not_configured',
+      };
+      if (rpcHotPathConfigured()) {
+        try {
+          const response = await invokeRpc('adapter.status', {
+            channel: 'openclaw',
+            scope,
+          }, { timeout: Number(process.env.EIMEMORY_STATUS_TIMEOUT_MS || 5000) });
+          const result = response?.result;
+          if (!result || typeof result !== 'object' || result.ok !== true) {
+            throw new Error('eimemory RPC returned an invalid adapter status payload');
+          }
+          runtime = {
+            ...result,
+            state: 'ready',
+          };
+        } catch (error) {
+          runtime = {
+            ok: false,
+            state: 'degraded',
+            reason: String(error?.code || error?.message || 'rpc_status_failed'),
+          };
+        }
+      }
       const status = {
         ok: true,
+        degraded: runtime.ok !== true,
         hookCommandConfigured: Boolean((process.env.EIMEMORY_HOOK_COMMAND || '').trim()),
         bridgeCommandConfigured: Boolean((process.env.EIMEMORY_BRIDGE_COMMAND || '').trim()),
         promptInjectionEnabled: promptInjectionEnabled(api),
         promptInjectionEnvEnabled: truthy(process.env.EIMEMORY_ENABLE_PROMPT_INJECTION),
         allowPromptInjection: promptInjectionAllowed(api),
         promptBridgeEnabled: promptBridgeEnabled(api),
+        runtime,
       };
       return {
         content: [{
@@ -2602,75 +2632,6 @@ function registerStatusTool(api) {
       };
     },
   }), { name: 'eimemory_bridge_status' });
-}
-
-function registerMemoryE2ETool(api) {
-  if (!api?.registerTool) {
-    return;
-  }
-  api.registerTool(() => ({
-    name: 'memory_e2e_check',
-    label: 'eimemory E2E Check',
-    description: 'Run an eimemory OpenClaw end-to-end memory check.',
-    parameters: {
-      type: 'object',
-      additionalProperties: false,
-      properties: {
-        query: { type: 'string' },
-        agent_id: { type: 'string' },
-        workspace_id: { type: 'string' },
-        user_id: { type: 'string' },
-      },
-      required: [],
-    },
-    async execute(input = {}) {
-      if (!truthy(process.env.EIMEMORY_ENABLE_E2E_TOOL)) {
-        const result = { ok: false, error: 'e2e_tool_disabled' };
-        return {
-          content: [{ type: 'text', text: JSON.stringify(result) }],
-          details: result,
-        };
-      }
-      const args = ['eval', 'openclaw-e2e'];
-      if (input.query) {
-        args.push('--query', String(input.query));
-      }
-      if (input.agent_id) {
-        args.push('--scope-agent', String(input.agent_id));
-      }
-      if (input.workspace_id) {
-        args.push('--scope-workspace', String(input.workspace_id));
-      }
-      if (input.user_id) {
-        args.push('--scope-user', String(input.user_id));
-      }
-      let result;
-      try {
-        result = await invokeCli(args);
-      } catch (error) {
-        const command = resolveCliCommand();
-        const ledgerPath = recordTransportFailure({
-          transport: 'tool',
-          hook: 'memory_e2e_check',
-          command: [...command, ...args],
-          error: serializeTransportError(error),
-        });
-        result = {
-          ok: false,
-          error: 'transport_error',
-          detail: String(error?.message || error || ''),
-          transport_ledger_path: ledgerPath,
-        };
-      }
-      return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify(result),
-        }],
-        details: result,
-      };
-    },
-  }), { name: 'memory_e2e_check' });
 }
 
 module.exports.default = {
@@ -2685,7 +2646,6 @@ module.exports.default = {
   register(api) {
     api?.logger?.info?.('eimemory-bridge: registering OpenClaw hooks');
     registerStatusTool(api);
-    registerMemoryE2ETool(api);
     writeReplyDeliveryState(readReplyDeliveryState());
     registerTypedHookOnce(api, 'message_received', async (event, context) => {
       trackReplyInbound(event, context);

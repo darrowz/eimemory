@@ -9,7 +9,6 @@ import sys
 import pytest
 
 from eimemory.adapters.eibrain.rpc_server import EIBrainRPCServer
-from eimemory.adapters.openclaw.tools import OpenClawMemoryTools
 from eimemory.api.runtime import Runtime
 from eimemory.cli.main import main as cli_main
 from eimemory.compatibility.migration_helpers import export_records, import_records
@@ -502,23 +501,16 @@ def test_scheduler_and_openclaw_tools_surface_runtime_state(tmp_path) -> None:
         scope={"agent_id": "main", "workspace_id": "repo-x"},
         status="active",
     )
-    tools = OpenClawMemoryTools(runtime)
-
-    search = tools.memory_search(
+    bundle = runtime.memory.recall(
         query="prompt build context",
         scope={"agent_id": "main", "workspace_id": "repo-x"},
-        limit=5,
-    )
-    explain = tools.memory_explain(
-        query="prompt build context",
         task_context={"task_type": "chat.reply"},
-        scope={"agent_id": "main", "workspace_id": "repo-x"},
+        limit=5,
     )
     nightly = run_nightly_jobs(runtime, scope={"agent_id": "main", "workspace_id": "repo-x"})
 
-    assert search["ok"] is True
-    assert search["items"]
-    assert explain["ok"] is True
+    assert bundle.items
+    assert bundle.explanation
     assert nightly["active_rule_count"] == 1
     assert nightly["storage_maintenance"]["ok"] is True
     assert nightly["storage_maintenance"]["flush"]["remaining"] == 0
@@ -1201,7 +1193,7 @@ def test_openclaw_bridge_assets_exist() -> None:
         "before_tool_call",
         "after_tool_call",
     ]
-    assert manifest["contracts"]["tools"] == ["eimemory_bridge_status", "memory_e2e_check"]
+    assert manifest["contracts"]["tools"] == ["eimemory_bridge_status"]
     assert manifest["configSchema"]["type"] == "object"
     assert manifest["configSchema"]["additionalProperties"] is False
     package = json.loads(Path("integrations/openclaw/eimemory-bridge/package.json").read_text(encoding="utf-8"))
@@ -1805,9 +1797,6 @@ process.stdout.write(JSON.stringify(names));
         "eimemory_bridge_status",
         "eimemory_bridge_status",
         "required-array",
-        "memory_e2e_check",
-        "memory_e2e_check",
-        "required-array",
     ]
 
 
@@ -1886,23 +1875,23 @@ plugin.register({ on() {} });
     assert "delivery_message_id" not in state["entries"]["om_pending"]
 
 
-def test_openclaw_js_bridge_e2e_tool_is_registered_but_disabled_by_default() -> None:
+def test_openclaw_js_bridge_keeps_e2e_diagnostic_out_of_model_tools() -> None:
     script = """
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
-let tool;
+let e2eTool;
 plugin.register({
   registerTool(factory) {
     const candidate = factory();
-    if (candidate.name === 'memory_e2e_check') tool = candidate;
+    if (candidate.name === 'memory_e2e_check') e2eTool = candidate;
   },
   on() {}
 });
-tool.execute({ query: 'must not execute' }).then((result) => process.stdout.write(JSON.stringify(result)));
+process.stdout.write(JSON.stringify({ registered: Boolean(e2eTool) }));
 """.strip()
 
     result = subprocess.run(["node", "-e", script], cwd=Path.cwd(), capture_output=True, text=True, check=True)
 
-    assert json.loads(result.stdout)["details"] == {"ok": False, "error": "e2e_tool_disabled"}
+    assert json.loads(result.stdout) == {"registered": False}
 
 
 def test_openclaw_js_bridge_status_tool_returns_json() -> None:
@@ -1929,32 +1918,52 @@ statusTool.execute().then((result) => { process.stdout.write(JSON.stringify(resu
     assert payload["promptInjectionEnvEnabled"] is True
     assert payload["allowPromptInjection"] is True
     assert payload["promptInjectionEnabled"] is True
+    assert payload["degraded"] is True
+    assert payload["runtime"] == {"ok": False, "state": "degraded", "reason": "rpc_not_configured"}
 
 
-def test_openclaw_js_bridge_memory_e2e_tool_records_transport_failure(tmp_path) -> None:
+def test_openclaw_js_bridge_status_tool_reads_channel_runtime_status_from_rpc() -> None:
     script = """
-const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
-let toolFactory;
-plugin.register({
-  registerTool(factory) {
-    const tool = factory();
-    if (tool.name === 'memory_e2e_check') toolFactory = () => tool;
-  },
-  on() {}
+const http = require('node:http');
+const requests = [];
+const server = http.createServer((req, res) => {
+  let body = '';
+  req.on('data', (chunk) => { body += chunk; });
+  req.on('end', () => {
+    requests.push(JSON.parse(body || '{}'));
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({
+      ok: true,
+      result: {
+        ok: true,
+        channel: 'openclaw',
+        authority_mode: 'per_channel',
+        scope: { agent_id: 'main', workspace_id: 'repo-x', user_id: '' },
+        release: { commit: 'abc123', version: '1.9.135' }
+      }
+    }));
+  });
 });
-toolFactory().execute({ query: 'memory smoke' })
-  .then((result) => { process.stdout.write(JSON.stringify(result)); })
-  .catch((error) => { console.error(error && error.stack ? error.stack : String(error)); process.exit(1); });
+server.listen(0, '127.0.0.1', async () => {
+  const address = server.address();
+  process.env.EIMEMORY_RPC_URL = `http://127.0.0.1:${address.port}/`;
+  process.env.EIMEMORY_RPC_AUTH_TOKEN = 'status-test-token';
+  const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
+  let statusTool;
+  plugin.register({
+    registerTool(factory) {
+      const tool = factory();
+      if (tool.name === 'eimemory_bridge_status') statusTool = tool;
+    },
+    on() {}
+  });
+  const result = await statusTool.execute({ agent_id: 'main', workspace_id: 'repo-x' });
+  server.close(() => process.stdout.write(JSON.stringify({ requests, result })));
+});
 """.strip()
-    ledger = tmp_path / "tool-transport.jsonl"
-    env = os.environ.copy()
-    env["EIMEMORY_CLI_COMMAND"] = "does-not-exist"
-    env["EIMEMORY_ENABLE_E2E_TOOL"] = "true"
-    env["EIMEMORY_BRIDGE_TRANSPORT_LEDGER"] = str(ledger)
     result = subprocess.run(
         ["node", "-e", script],
         cwd=Path.cwd(),
-        env=env,
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -1962,15 +1971,19 @@ toolFactory().execute({ query: 'memory smoke' })
         check=False,
     )
 
-    assert result.returncode == 0
-    payload = json.loads(result.stdout or "{}")
-    details = payload["details"]
-    assert details["ok"] is False
-    assert details["error"] == "transport_error"
-    incidents = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
-    assert incidents[0]["event_type"] == "openclaw.bridge.transport_error"
-    assert incidents[0]["transport"] == "tool"
-    assert incidents[0]["hook"] == "memory_e2e_check"
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert len(payload["requests"]) == 1
+    request = payload["requests"][0]
+    assert request["method"] == "adapter.status"
+    assert request["params"]["channel"] == "openclaw"
+    assert request["params"]["scope"]["agent_id"] == "main"
+    assert request["params"]["scope"]["workspace_id"] == "repo-x"
+    details = payload["result"]["details"]
+    assert details["ok"] is True
+    assert details["degraded"] is False
+    assert details["runtime"]["state"] == "ready"
+    assert details["runtime"]["channel"] == "openclaw"
 
 
 def test_openclaw_js_bridge_degrades_gracefully_on_hook_failure(tmp_path) -> None:

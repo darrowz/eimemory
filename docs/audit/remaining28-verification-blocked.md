@@ -1,3 +1,7 @@
+> Historical snapshot (2026-08-17). This pre-cleanup audit is retained for
+> provenance only and is superseded by the current module map and cleanup
+> changelog. Its deletion conclusions do not describe the current tree.
+
 ⚠️ 任务中止 — 删除前发现严重问题
 
 ## 结论

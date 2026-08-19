@@ -172,9 +172,9 @@ The immutable installer disables the retired
 `eimemory-l5-observation-gate.timer`; that legacy gate opened autonomous
 commit/deploy switches and is no longer the L5 start condition.
 
-Do not install a separate Karpathy-loop timer in production. Experimental
-autonomy helpers under `eimemory.autonomous` are reusable mechanisms, not a
-second scheduler writing competing learning state.
+Do not install a second learning scheduler. All production learning enters
+through `eimemory nightly` or `eimemory learn ...`; the governance pipeline is
+the sole owner of goals, replay evidence, promotion, observation, and rollback.
 
 ## Verification
 

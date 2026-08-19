@@ -61,6 +61,22 @@ def test_normalize_pdf_input_distinguishes_different_pdf_content(tmp_path) -> No
     assert paper_source_from_payload(payload_one).paper_source_id != paper_source_from_payload(payload_two).paper_source_id
 
 
+def test_normalize_pdf_url_is_part_of_source_identity() -> None:
+    shared_landing_page = "https://example.test/papers/landing"
+    first = normalize_paper_input(
+        {"source_kind": "pdf", "canonical_url": shared_landing_page, "pdf_url": "https://cdn.example.test/a.pdf"}
+    )
+    second = normalize_paper_input(
+        {"source_kind": "pdf", "canonical_url": shared_landing_page, "pdf_url": "https://cdn.example.test/b.pdf"}
+    )
+    equivalent = normalize_paper_input(
+        {"source_kind": "pdf", "canonical_url": shared_landing_page, "pdf_url": "HTTPS://CDN.EXAMPLE.TEST:443/a.pdf#fragment"}
+    )
+
+    assert first["source_hash"] != second["source_hash"]
+    assert first["source_hash"] == equivalent["source_hash"]
+
+
 def test_normalize_pdf_hashes_content_without_reading_whole_file(tmp_path, monkeypatch) -> None:
     pdf_path = tmp_path / "large.pdf"
     pdf_path.write_bytes(b"%PDF-1.4\n" + b"x" * (2 * 1024 * 1024))

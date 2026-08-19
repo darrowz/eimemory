@@ -40,16 +40,27 @@ class PaperIntakePipeline:
             return _skip("not_a_paper_candidate")
 
         source_record = self.runtime.ingest_paper_source(paper_input, scope=scope)
-        extraction_input = {
-            **paper_input,
-            "paper_source_id": source_record.record_id,
-            "provenance": {
-                **dict(paper_input.get("provenance") or {}),
+        source_payload = dict(source_record.content or {})
+        artifact = dict((source_payload.get("metadata") or {}).get("artifact") or {})
+        if source_payload.get("normalized_text_ref"):
+            extraction = self.runtime.extract_paper_source_memory(
+                paper_source_id=source_record.record_id,
+                scope=scope,
+            )
+        elif artifact.get("status") == "blocked":
+            return _skip(f"canonical_text_{str(artifact.get('error_code') or 'unavailable')}")
+        else:
+            extraction_input = {
+                **paper_input,
                 "paper_source_id": source_record.record_id,
-                "source": "eimemory.intake.pipeline",
-            },
-        }
-        extraction = self.runtime.extract_paper_memory(extraction_input, scope=scope)
+                "metadata": {**dict(paper_input.get("metadata") or {}), "content_origin": "metadata_excerpt"},
+                "provenance": {
+                    **dict(paper_input.get("provenance") or {}),
+                    "paper_source_id": source_record.record_id,
+                    "source": "eimemory.intake.pipeline.metadata_excerpt",
+                },
+            }
+            extraction = self.runtime.extract_paper_memory(extraction_input, scope=scope)
         compilation = self.runtime.compile_paper_knowledge(extraction=extraction, scope=scope)
         extracted_records = extraction.to_records(scope=scope)
         compiled_records = compilation.to_records(scope=scope)
@@ -104,6 +115,7 @@ def promote_collected_paper_candidates(
     reasons: dict[str, int] = {}
     promoted_reports: list[dict[str, Any]] = []
     skipped_reports: list[dict[str, str]] = []
+    errors: list[dict[str, str]] = []
     promoted = 0
     skipped = 0
 
@@ -120,7 +132,18 @@ def promote_collected_paper_candidates(
             _count_reason(reasons, "auto_disabled")
             skipped_reports.append({"record_id": record.record_id, "reason": "auto_disabled"})
             continue
-        report = runtime.promote_paper_candidate(record, scope=scope)
+        # Collection runs must isolate a bad source or a transient parser/
+        # transport failure to the candidate that caused it.  A batch is a
+        # scheduler convenience, not a transaction over unrelated papers.
+        try:
+            report = runtime.promote_paper_candidate(record, scope=scope)
+        except Exception as exc:  # pragma: no cover - defensive boundary
+            reason = "promotion_exception"
+            skipped += 1
+            _count_reason(reasons, reason)
+            skipped_reports.append({"record_id": record.record_id, "reason": reason})
+            errors.append({"record_id": record.record_id, "error_type": type(exc).__name__})
+            continue
         if report.get("ok"):
             promoted += 1
             promoted_reports.append({"record_id": record.record_id, **report})
@@ -142,6 +165,8 @@ def promote_collected_paper_candidates(
         "reasons": reasons,
         "promoted_reports": promoted_reports,
         "skipped_reports": skipped_reports,
+        "error_count": len(errors),
+        "errors": errors,
     }
 
 
@@ -214,6 +239,7 @@ def _paper_input_from_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
         "url": uri,
         "pdf_blob_ref": _candidate_text(candidate, "pdf_blob_ref"),
         "normalized_text_ref": _candidate_text(candidate, "normalized_text_ref"),
+        "pdf_url": metadata_url,
         "metadata": _paper_metadata(candidate),
         "provenance": _paper_provenance(candidate),
     }
