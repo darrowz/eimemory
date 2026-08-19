@@ -4,6 +4,7 @@ from collections import OrderedDict, deque
 from hashlib import sha256
 import json
 import logging
+import math
 import os
 from pathlib import Path
 import re
@@ -21,16 +22,36 @@ MAX_TURN_CHARS = 8_000
 MAX_MEMORY_CHARS = 16_000
 DEFAULT_MAX_WRITE_QUEUE = 16
 DEFAULT_MAX_PREFETCH_CACHE_ENTRIES = 16
-PREFETCH_SINGLE_FLIGHT_WAIT_SECONDS = 3.0
+MIN_PREFETCH_SINGLE_FLIGHT_WAIT_SECONDS = 3.0
+MAX_ADAPTER_TIMEOUT_SECONDS = 30.0
+MAX_PREFETCH_SINGLE_FLIGHT_WAIT_SECONDS = 2 * MAX_ADAPTER_TIMEOUT_SECONDS + 1.0
 logger = logging.getLogger(__name__)
 _PROACTIVE_CITATION = re.compile(r"(?<![A-Za-z0-9])pm:[0-9a-f]{20}(?![A-Za-z0-9])")
 
 
-def hermes_client_from_env(*, hermes_home: str = "") -> AgentRuntimeRPCClient:
+def _adapter_timeout_seconds_from_env() -> float:
     try:
         timeout_seconds = float(os.getenv("EIMEMORY_ADAPTER_TIMEOUT_SECONDS", "0.8"))
-    except ValueError:
+    except (TypeError, ValueError):
         timeout_seconds = 0.8
+    if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+        timeout_seconds = 0.8
+    return min(MAX_ADAPTER_TIMEOUT_SECONDS, timeout_seconds)
+
+
+def _prefetch_single_flight_wait_seconds() -> float:
+    # A successful proactive policy bypass may be followed by one ordinary
+    # bounded recall.  Waiters must cover both sequential RPC deadlines plus
+    # a small handoff margin, while remaining bounded when configuration is
+    # accidentally extreme.
+    return min(
+        MAX_PREFETCH_SINGLE_FLIGHT_WAIT_SECONDS,
+        max(MIN_PREFETCH_SINGLE_FLIGHT_WAIT_SECONDS, 2 * _adapter_timeout_seconds_from_env() + 1.0),
+    )
+
+
+def hermes_client_from_env(*, hermes_home: str = "") -> AgentRuntimeRPCClient:
+    timeout_seconds = _adapter_timeout_seconds_from_env()
     ledger = os.getenv("EIMEMORY_ADAPTER_FAILURE_LEDGER", "").strip()
     if not ledger and hermes_home:
         ledger = str(Path(hermes_home) / "logs" / "eimemory-adapter-failures.jsonl")
@@ -58,6 +79,7 @@ class HermesMemoryProviderCore:
         self._scope = self._scope_from_context({})
         self._max_write_queue = max(1, min(128, int(max_write_queue)))
         self._max_prefetch_cache_entries = max(1, min(128, int(max_prefetch_cache_entries)))
+        self._prefetch_single_flight_wait_seconds = _prefetch_single_flight_wait_seconds()
         self._write_queue: deque[tuple[str, dict[str, Any]]] = deque()
         self._pending_proactive: OrderedDict[tuple[str, ...], dict[str, Any]] = OrderedDict()
         self._pending_terminal_retries: OrderedDict[str, dict[str, Any]] = OrderedDict()
@@ -170,7 +192,7 @@ class HermesMemoryProviderCore:
                 self._inflight_prefetch_waiters[key] = self._inflight_prefetch_waiters.get(key, 0) + 1
         if not owner:
             assert waiter is not None
-            if not waiter.wait(timeout=PREFETCH_SINGLE_FLIGHT_WAIT_SECONDS):
+            if not waiter.wait(timeout=self._prefetch_single_flight_wait_seconds):
                 self._abandon_prefetch_wait(key)
                 return ""
             return self._consume_prefetch_result(key)
@@ -716,6 +738,32 @@ class HermesMemoryProviderCore:
         payload = result["result"]
         context = _bounded_text(payload.get("context"), MAX_PREFETCH_CONTEXT_CHARS)
         decision_id = _bounded_text(payload.get("decision_id"), 200)
+        # A successful proactive policy bypass is not evidence that no
+        # authoritative channel memory exists.  Hermes has no separate base
+        # recall stage like OpenClaw, so without this bounded fallback the
+        # automatic integration becomes nondeterministically write-only.
+        # Transport/operation failures remain fail-closed: fallback is allowed
+        # only for an explicit successful policy bypass.
+        if not context and payload.get("ok") is True and payload.get("bypassed") is True:
+            fallback = self._safe_call(
+                "adapter.prefetch",
+                {
+                    **self._common_params(),
+                    "query": query,
+                    "task_type": "research.task",
+                    "limit": 8,
+                },
+            )
+            fallback_payload = fallback.get("result")
+            if (
+                fallback.get("ok") is True
+                and isinstance(fallback_payload, dict)
+                and fallback_payload.get("ok") is True
+            ):
+                context = _bounded_text(
+                    fallback_payload.get("context"),
+                    MAX_PREFETCH_CONTEXT_CHARS,
+                )
         if context and decision_id:
             key = self._prefetch_key(session, query)
             abandoned: list[dict[str, Any]] = []

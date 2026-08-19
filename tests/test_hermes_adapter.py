@@ -7,7 +7,13 @@ from pathlib import Path
 import re
 import threading
 
-from eimemory.adapters.hermes.provider_core import HermesMemoryProviderCore, _source_ids_from_env
+from eimemory.adapters.hermes.provider_core import (
+    MAX_PREFETCH_CONTEXT_CHARS,
+    MAX_PREFETCH_SINGLE_FLIGHT_WAIT_SECONDS,
+    HermesMemoryProviderCore,
+    _prefetch_single_flight_wait_seconds,
+    _source_ids_from_env,
+)
 from eimemory.adapters.eibrain.rpc import EIBrainRPCBridge
 from eimemory.adapters.runtime.channel import resolve_channel_scope
 from eimemory.api.runtime import Runtime
@@ -43,6 +49,72 @@ class FakeClient:
                 "result": {"authority_mode": "per_channel", "channel": "hermes"},
             }
         return {"ok": True, "bypassed": False, "result": {"stored": True}}
+
+
+class ProactiveBypassClient(FakeClient):
+    def call_or_bypass(self, method: str, params: dict) -> dict:
+        self.calls.append((method, params))
+        if method == "adapter.proactive_prefetch":
+            return {
+                "ok": True,
+                "bypassed": False,
+                "result": {"ok": True, "bypassed": True, "decision_id": "", "context": ""},
+            }
+        if method == "adapter.prefetch":
+            return {
+                "ok": True,
+                "bypassed": False,
+                "result": {
+                    "ok": True,
+                    "context": "Relevant eimemory context:\n- [memory] fallback-only authority",
+                },
+            }
+        return {"ok": True, "bypassed": False, "result": {"ok": True}}
+
+
+def test_hermes_successful_proactive_bypass_falls_back_without_fake_ack() -> None:
+    client = ProactiveBypassClient()
+    provider = HermesMemoryProviderCore(client=client)
+    provider.initialize("fallback-session", agent_workspace="embodied", user_id="darrow")
+
+    context = provider.prefetch("recall fallback-only authority", session_id="fallback-session")
+    provider.on_pre_llm_call(
+        user_message="recall fallback-only authority",
+        session_id="fallback-session",
+        turn_id="host-turn",
+    )
+
+    methods = [method for method, _params in client.calls]
+    assert methods[:2] == ["adapter.proactive_prefetch", "adapter.prefetch"]
+    assert "fallback-only authority" in context
+    assert len(context) <= MAX_PREFETCH_CONTEXT_CHARS
+    assert "adapter.proactive_ack" not in methods
+    assert provider.prefetch_cache_size == 0
+
+
+def test_hermes_proactive_transport_failure_does_not_fallback() -> None:
+    class FailedProactiveClient(FakeClient):
+        def call_or_bypass(self, method: str, params: dict) -> dict:
+            self.calls.append((method, params))
+            return {"ok": False, "bypassed": True, "error": "adapter_unavailable", "result": None}
+
+    client = FailedProactiveClient()
+    provider = HermesMemoryProviderCore(client=client)
+    provider.initialize("failed-session", agent_workspace="embodied", user_id="darrow")
+
+    assert provider.prefetch("must fail closed", session_id="failed-session") == ""
+    assert [method for method, _params in client.calls] == ["adapter.proactive_prefetch"]
+
+
+def test_hermes_single_flight_wait_covers_two_bounded_rpc_deadlines(monkeypatch) -> None:
+    monkeypatch.setenv("EIMEMORY_ADAPTER_TIMEOUT_SECONDS", "10")
+    assert _prefetch_single_flight_wait_seconds() == 21.0
+
+    monkeypatch.setenv("EIMEMORY_ADAPTER_TIMEOUT_SECONDS", "999")
+    assert _prefetch_single_flight_wait_seconds() == MAX_PREFETCH_SINGLE_FLIGHT_WAIT_SECONDS
+
+    monkeypatch.setenv("EIMEMORY_ADAPTER_TIMEOUT_SECONDS", "invalid")
+    assert _prefetch_single_flight_wait_seconds() == 3.0
 
 
 def test_hermes_configured_sources_always_include_native_authority(monkeypatch) -> None:
