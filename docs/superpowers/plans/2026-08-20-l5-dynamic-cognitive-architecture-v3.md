@@ -1,8 +1,9 @@
 # L5 Dynamic Cognitive Architecture v3 Implementation Plan
 
-Status: ready for execution handoff, 2026-08-20.
+Status: in progress, 2026-08-20.
 
-Primary executor: `gpt-5.6-terra` after the user switches models.
+Primary executor: current agent; `gpt-5.6-terra` is the designated continuation
+target if the user switches models.
 
 Target specification:
 `docs/superpowers/specs/2026-08-20-l5-dynamic-cognitive-architecture-v3-design.md`.
@@ -27,19 +28,22 @@ preserve adapter behavior; retain fully machine-gated code evolution without a
 human approval queue; and prove semantic, migration, and performance parity
 before removing the old paths.
 
-## Starting-state warning
+## Starting-state custody
 
-The worktree already contains an unreleased cleanup and closure batch. It
-includes removed zombie modules, OpenClaw surface cleanup, automatic code
-proposal/apply work, PDF artifact closure, knowledge refresh, tests, and
-documentation. These changes belong to the user.
+The cleanup and closure batch that preceded L5 v3 is now a committed historical
+baseline (`4a0cb0b5d70d8ed53eeb2cbb2b20f84ef43a46a0`), followed by the WP0
+custody commits. It includes removed zombie modules, OpenClaw surface cleanup,
+automatic code proposal/apply work, PDF artifact closure, knowledge refresh,
+tests, and documentation. Those changes remain user-owned context and must not
+be silently redefined by the refactor.
 
 The executor must:
 
 - inspect `git status --short`, `git diff --stat`, and overlapping diffs first;
 - never reset, restore, overwrite, or silently reformat unrelated changes;
-- keep the existing cleanup batch logically separate from L5 v3 changes;
-- avoid a version bump until release work is explicitly authorized;
+- keep the committed cleanup batch logically separate from L5 v3 changes;
+- avoid a version bump until WP16 prepares the final, fully tested release
+  candidate;
 - stop if a prerequisite requires discarding or redefining user changes;
 - do not push or deploy before WP16; the user's standing authorization in this
   turn activates WP17 automatically after WP16 passes.
@@ -119,7 +123,7 @@ WP0 baseline custody
                                       -> WP14 backfill and shadow mode
                                           -> WP15 cutover and cleanup
                                               -> WP16 final integration
-                                                  -> WP17 release/deploy only if authorized
+                                                  -> WP17 automatic release/deploy
 ```
 
 ---
@@ -179,23 +183,23 @@ consumer changes.
 - Add: `eimemory/capabilities/models.py`
 - Add: `tests/test_capability_v3_contracts.py`
 
-- [ ] Define validated models for `CapabilityDefinition`,
+- [x] Define validated models for `CapabilityDefinition`,
   `CapabilityRevision`, `CapabilityRelation`, `CapabilityBinding`,
   `CapabilityProfile`, `EvaluationSpec`, `CapabilityObservation`,
   `EvaluationRun`, `CapabilityKnowledgeLink`, `CapabilityStateSnapshot`, and
   `L5AssessmentV3`.
-- [ ] Define stable canonical serialization and digest functions.
-- [ ] Reject empty/oversized IDs, unknown lifecycle states, cyclic direct
+- [x] Define stable canonical serialization and digest functions.
+- [x] Reject empty/oversized IDs, unknown lifecycle states, cyclic direct
   supersession, invalid relation types, unbounded payloads, and executable
   content in definitions/specifications.
-- [ ] Keep capability ID independent from provider, version, commit, hostname,
+- [x] Keep capability ID independent from provider, version, commit, hostname,
   model, and environment fingerprint.
-- [ ] Represent schema revisions and compatibility explicitly.
-- [ ] Add tests proving a new arbitrary capability such as
+- [x] Represent schema revisions and compatibility explicitly.
+- [x] Add tests proving a new arbitrary capability such as
   `planning.constraint_resolution` validates without modifying a source list.
-- [ ] Add tests proving two providers and two machines can bind the same
+- [x] Add tests proving two providers and two machines can bind the same
   capability revision without changing its identity.
-- [ ] Add tests proving package-version-only changes do not affect semantic
+- [x] Add tests proving package-version-only changes do not affect semantic
   identity or applicability.
 
 **Focused tests:**
@@ -750,6 +754,17 @@ in production code, and rollback remains possible through the declared window.
   isolation.
 - [ ] Small/medium/large performance profiles and migration timing.
 
+### Final candidate identity
+
+- [ ] Before the one permitted full-suite run, choose the release version,
+  update the changelog, and create the final-candidate commit with an
+  intentional path inventory.
+- [ ] Record the candidate commit and its Git tree ID in final integration
+  evidence, then run every WP16 check on that exact clean tree.
+- [ ] Do not change source, documentation, version, changelog, or commit tree
+  after the final suite passes. Any such change creates a new candidate and
+  repeats WP16.
+
 ### Full-suite rule
 
 After all focused matrices pass and only once for the final integration state:
@@ -795,11 +810,16 @@ waiting for another approval. A failed gate stops the sequence, preserves the
 evidence, and follows the documented rollback/quarantine path; it never treats
 an incomplete deployment as success.
 
-- [ ] Reconfirm exact upstream and intended branch.
-- [ ] Rebase/synchronize safely without losing user changes.
-- [ ] Update version and changelog exactly once.
-- [ ] Commit with an intentional path inventory and evidence summary.
-- [ ] Push the reviewed commit.
+- [ ] Fetch and compare the exact upstream/target-branch state without changing
+  the WP16-tested commit.
+- [ ] Deploy only the exact commit that passed WP16. If upstream divergence
+  requires a merge, rebase, or any source change, treat that result as a new
+  final state and repeat WP16 before continuing.
+- [ ] Verify local `HEAD` and `HEAD^{tree}` against the WP16 recorded final
+  candidate before pushing; version and changelog are already part of that
+  tested tree.
+- [ ] Push that exact reviewed final-candidate commit without creating a new
+  content commit.
 - [ ] Deploy the exact full commit through the immutable-release workflow.
 - [ ] Verify origin branch, local HEAD, deployed release target, import root,
   package digest, RPC/HTTP health, adapter contracts, migration state, and
@@ -827,7 +847,7 @@ and capability state.
 10. Fixed-taxonomy deletion proof and updated module/architecture docs.
 11. Focused and final integration test evidence.
 12. Performance report for all scale tiers.
-13. Release/deployment report only if WP17 is authorized.
+13. Automatic WP17 release/deployment report after WP16 passes.
 
 ## Progress ledger
 
@@ -837,7 +857,7 @@ gate evidence.
 | Work package | Status | Evidence reference | Commit |
 | --- | --- | --- | --- |
 | WP0 baseline custody | completed | `docs/audit/l5-v3-pre-refactor-baseline.md` | `dfcf7c9` |
-| WP1 ADRs/contracts | pending | | |
+| WP1 ADRs/contracts | completed | `tests/test_capability_v3_contracts.py` (12 passed); compileall; independent contract and documentation reviews | pending evidence commit |
 | WP2 performance baseline | pending | | |
 | WP3 Storage v2 schema | pending | | |
 | WP4 registry/profiles | pending | | |
@@ -864,7 +884,7 @@ Use the following as the first instruction after switching models:
 docs/superpowers/specs/2026-08-20-l5-dynamic-cognitive-architecture-v3-design.md
 和
 docs/superpowers/plans/2026-08-20-l5-dynamic-cognitive-architecture-v3.md
-执行重构。先完整读取两份文档，从 WP0 开始，保护现有脏工作树，不回滚用户改动。
+执行重构。先完整读取两份文档，从 WP0 开始，保护现有用户上下文，不回滚用户改动。
 逐工作包执行 contract/RED/implementation/GREEN/benchmark/review/evidence，实时更新计划
 中的 Progress ledger。阶段内只跑定向测试，WP16 才运行一次全集测试。代码演进不增加人工
 审批状态；WP16 通过后自动执行已获 standing authorization 的 WP17 推送与部署闭环。
