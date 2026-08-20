@@ -14,6 +14,11 @@ import subprocess
 import tomllib
 from typing import Any, Mapping
 
+from eimemory.evaluation.capability_catalog import (
+    CapabilityEvaluationCatalog,
+    CatalogResolutionError,
+    resolve_application_capability_catalog,
+)
 from eimemory.governance.evidence_contract import (
     ReleaseIdentity,
     current_release_identity,
@@ -21,7 +26,6 @@ from eimemory.governance.evidence_contract import (
     same_scope,
     verified_deployment_receipt_identity,
 )
-from eimemory.governance.capability_replay_packs import CORE_REPLAY_CAPABILITIES
 from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.models.records import ScopeRef
 
@@ -106,9 +110,30 @@ INTEGRATION_VERSION_PATHS = {
 }
 COMMIT_RE = re.compile(r"[0-9a-f]{40}")
 RECEIPT_PAGE_SIZE = 200
-WEAK_REPLAY_CAPABILITIES = frozenset(
-    {"search.discovery", "research.synthesis", "operations.uumit", "device.control"}
-)
+
+
+def _resolve_lineage_catalog(
+    catalog: CapabilityEvaluationCatalog | None,
+    *,
+    legacy_compatibility: bool,
+) -> CapabilityEvaluationCatalog:
+    """Resolve the one executable catalog authority for lineage validation.
+
+    A lineage record validates replay evidence rather than trusting a payload
+    embedded in the record. Dynamic callers may use only a constructed
+    application catalog; the retired evaluator set is materialized solely by
+    the explicit legacy release-closure path.
+    """
+
+    if not legacy_compatibility:
+        return resolve_application_capability_catalog(catalog)
+    if catalog is not None and not isinstance(catalog, CapabilityEvaluationCatalog):
+        raise CatalogResolutionError(
+            "capability catalog must be an in-process CapabilityEvaluationCatalog"
+        )
+    from eimemory.governance.capability_acceptance import ensure_legacy_evaluation_catalog
+
+    return ensure_legacy_evaluation_catalog(catalog, legacy_compatibility=True)
 
 
 def record_release_lineage(
@@ -118,9 +143,18 @@ def record_release_lineage(
     repo_root: str | Path,
     current_release: ReleaseIdentity,
     gate_evidence: dict[str, list[str]] | None = None,
+    catalog: CapabilityEvaluationCatalog | None = None,
+    legacy_compatibility: bool = False,
 ) -> dict[str, Any]:
     scope_ref = _scope_ref(scope)
     repo = Path(repo_root).expanduser().resolve()
+    try:
+        active_catalog = _resolve_lineage_catalog(
+            catalog,
+            legacy_compatibility=legacy_compatibility,
+        )
+    except CatalogResolutionError:
+        return {"ok": False, "error": "evaluation_catalog_untrusted"}
     current_error = _current_release_error(runtime, scope_ref, current_release)
     if current_error:
         return current_error
@@ -129,6 +163,8 @@ def record_release_lineage(
         scope=scope_ref,
         repo=repo,
         current_release=current_release,
+        catalog=active_catalog,
+        legacy_compatibility=legacy_compatibility,
     )
     if ancestor is None:
         return {"ok": False, "error": "verified_ancestor_receipt_not_found"}
@@ -139,6 +175,8 @@ def record_release_lineage(
         current_release=current_release,
         ancestor_release=ancestor,
         gate_evidence=gate_evidence,
+        catalog=active_catalog,
+        legacy_compatibility=legacy_compatibility,
     )
     if not lineage.get("ok"):
         return lineage
@@ -185,9 +223,18 @@ def current_release_lineage(
     scope: ScopeRef | dict | None,
     current_release: ReleaseIdentity,
     repo_root: str | Path = "/dev-project/eimemory",
+    catalog: CapabilityEvaluationCatalog | None = None,
+    legacy_compatibility: bool = False,
 ) -> dict[str, Any]:
     scope_ref = _scope_ref(scope)
     repo = Path(repo_root).expanduser().resolve()
+    try:
+        active_catalog = _resolve_lineage_catalog(
+            catalog,
+            legacy_compatibility=legacy_compatibility,
+        )
+    except CatalogResolutionError:
+        return {"ok": False, "error": "evaluation_catalog_untrusted"}
     current_error = _current_release_error(runtime, scope_ref, current_release)
     if current_error:
         return current_error
@@ -220,6 +267,8 @@ def current_release_lineage(
                 scope=scope_ref,
                 repo=repo,
                 current_release=current_release,
+                catalog=active_catalog,
+                legacy_compatibility=legacy_compatibility,
             )
             selected_ancestor_loaded = True
         stored_ancestor = _identity_from_payload(stored.get("ancestor_release"))
@@ -236,6 +285,8 @@ def current_release_lineage(
             current_release=current_release,
             ancestor_release=selected_ancestor,
             gate_evidence=stored.get("gate_evidence"),
+            catalog=active_catalog,
+            legacy_compatibility=legacy_compatibility,
         )
         if recomputed != stored:
             mismatch_seen = True
@@ -254,12 +305,16 @@ def evidence_release_for_domain(
     domain: str,
     current_release: ReleaseIdentity,
     expected_record_id: str = "",
+    catalog: CapabilityEvaluationCatalog | None = None,
+    legacy_compatibility: bool = False,
 ) -> ReleaseIdentity:
     lineage = current_release_lineage(
         runtime,
         scope=scope,
         repo_root=repo_root,
         current_release=current_release,
+        catalog=catalog,
+        legacy_compatibility=legacy_compatibility,
     )
     if (
         not isinstance(lineage, dict)
@@ -306,6 +361,8 @@ def _compute_lineage(
     current_release: ReleaseIdentity,
     ancestor_release: ReleaseIdentity,
     gate_evidence: Mapping[str, Any] | None,
+    catalog: CapabilityEvaluationCatalog | None = None,
+    legacy_compatibility: bool = False,
 ) -> dict[str, Any]:
     if _receipt_identity(runtime, scope, ancestor_release) is None:
         return {"ok": False, "error": "ancestor_release_receipt_invalid"}
@@ -341,6 +398,8 @@ def _compute_lineage(
                 current_release=current_release,
                 references=current_references,
                 domain_changed=changed,
+                catalog=catalog,
+                legacy_compatibility=legacy_compatibility,
             )
             if current_references
             else {}
@@ -356,6 +415,8 @@ def _compute_lineage(
                 repo=repo,
                 domain=domain,
                 current_release=current_release,
+                catalog=catalog,
+                legacy_compatibility=legacy_compatibility,
             )
             if inherited is not None:
                 mode = "inherited"
@@ -442,6 +503,8 @@ def _nearest_verified_domain_evidence(
     repo: Path,
     domain: str,
     current_release: ReleaseIdentity,
+    catalog: CapabilityEvaluationCatalog | None = None,
+    legacy_compatibility: bool = False,
 ) -> tuple[ReleaseIdentity, list[str]] | None:
     current_receipt = runtime.store.get_by_id(current_release.receipt_id, scope=scope)
     current_rowid = (
@@ -516,6 +579,8 @@ def _nearest_verified_domain_evidence(
                 domain=domain,
                 current_release=candidate,
                 references=references,
+                catalog=catalog,
+                legacy_compatibility=legacy_compatibility,
             )
         ):
             continue
@@ -618,6 +683,8 @@ def _newest_verified_ancestor(
     scope: ScopeRef,
     repo: Path,
     current_release: ReleaseIdentity,
+    catalog: CapabilityEvaluationCatalog | None = None,
+    legacy_compatibility: bool = False,
 ) -> ReleaseIdentity | None:
     current_record = runtime.store.get_by_id(current_release.receipt_id, scope=scope)
     if current_record is None:
@@ -1046,6 +1113,8 @@ def _gate_errors(
     current_release: ReleaseIdentity,
     references: list[str],
     domain_changed: bool = False,
+    catalog: CapabilityEvaluationCatalog | None = None,
+    legacy_compatibility: bool = False,
 ) -> dict[str, str]:
     authorized_sources = {
         "memory.recall": {
@@ -1123,6 +1192,8 @@ def _gate_errors(
             references=references,
             records=records,
             domain_changed=domain_changed,
+            catalog=catalog,
+            legacy_compatibility=legacy_compatibility,
         )
     elif domain == "memory.governance":
         contract_error = _governance_gate_contract_error(
@@ -1130,6 +1201,9 @@ def _gate_errors(
             scope=scope,
             current_release=current_release,
             references=references,
+            records=records,
+            catalog=catalog,
+            legacy_compatibility=legacy_compatibility,
         )
     elif domain == "channel.openclaw":
         contract_error = _channel_acceptance_contract_error(
@@ -1178,6 +1252,8 @@ def _recall_gate_contract_error(
     references: list[str],
     records: dict[str, Any],
     domain_changed: bool,
+    catalog: CapabilityEvaluationCatalog | None = None,
+    legacy_compatibility: bool = False,
 ) -> str:
     sources = {str(record.source or "") for record in records.values()}
     if sources == {
@@ -1191,6 +1267,8 @@ def _recall_gate_contract_error(
             references=references,
             records=records,
             domain_changed=domain_changed,
+            catalog=catalog,
+            legacy_compatibility=legacy_compatibility,
         )
     if sources != {
         "eimemory.evaluation.production_recall",
@@ -1240,6 +1318,8 @@ def _pending_recall_gate_contract_error(
     references: list[str],
     records: dict[str, Any],
     domain_changed: bool,
+    catalog: CapabilityEvaluationCatalog | None = None,
+    legacy_compatibility: bool = False,
 ) -> str:
     if domain_changed:
         return "bootstrap_pending_requires_unchanged_recall_domain"
@@ -1262,14 +1342,24 @@ def _pending_recall_gate_contract_error(
     ):
         return str(pending.get("reason") or "current_bootstrap_pending_invalid")
 
-    missing_field = "core_replay_capabilities_missing"
+    replay_references = [
+        reference
+        for reference in references
+        if getattr(records.get(reference), "source", "") == "eimemory.capability_replay"
+    ]
+    replay_capabilities = _manifest_capabilities(records, replay_references)
+    if not replay_capabilities:
+        return "bootstrap_pending_replay_capability_selection_missing"
+    missing_field = "replay_capabilities_missing"
     replay = _verified_replay_summary(
         runtime,
         scope=scope,
         limit=2000,
-        capabilities={"memory.recall"},
+        capabilities=replay_capabilities,
         missing_field=missing_field,
         release=current_release,
+        catalog=catalog,
+        legacy_compatibility=legacy_compatibility,
     )
     manifest_ids = {
         str(record_id or "")
@@ -1313,55 +1403,226 @@ def _governance_gate_contract_error(
     scope: ScopeRef,
     current_release: ReleaseIdentity,
     references: list[str],
+    records: dict[str, Any],
+    catalog: CapabilityEvaluationCatalog | None = None,
+    legacy_compatibility: bool = False,
 ) -> str:
     from eimemory.governance.l5_readiness import _verified_replay_summary
 
-    checks = (
-        (
-            _verified_replay_summary(
-                runtime,
-                scope=scope,
-                limit=2000,
-                capabilities=set(WEAK_REPLAY_CAPABILITIES),
-                missing_field="weak_replay_capabilities_missing",
-                release=current_release,
-            ),
-            "weak_replay_capabilities_missing",
-        ),
-        (
-            _verified_replay_summary(
-                runtime,
-                scope=scope,
-                limit=2000,
-                capabilities=set(CORE_REPLAY_CAPABILITIES),
-                missing_field="core_replay_capabilities_missing",
-                release=current_release,
-            ),
-            "core_replay_capabilities_missing",
-        ),
+    selected_capabilities, minimums, selection_error = _manifest_profile_replay_contract(
+        records,
+        references,
+        scope=scope,
     )
-    expected: set[str] = set()
-    for summary, missing_field in checks:
-        expected.update(
-            str(record_id or "")
-            for record_id in dict(summary.get("manifest_record_ids") or {}).values()
-            if str(record_id or "")
-        )
-        if (
-            summary.get(missing_field)
-            or summary.get("manifest_rejection_reasons")
-            or summary.get("rejection_reasons")
-            or int(summary.get("fail_count") or 0) != 0
-            or int(summary.get("not_run_count") or 0) != 0
-            or int(summary.get("executed_count") or 0)
-            < int(summary.get("minimum_executed") or 1)
-            or int(summary.get("pass_count") or 0)
-            != int(summary.get("executed_count") or 0)
-        ):
-            return "current_release_replay_manifests_incomplete"
+    if selection_error:
+        return selection_error
+    summary = _verified_replay_summary(
+        runtime,
+        scope=scope,
+        limit=2000,
+        capabilities=selected_capabilities,
+        missing_field="replay_capabilities_missing",
+        release=current_release,
+        minimums=minimums,
+        catalog=catalog,
+        legacy_compatibility=legacy_compatibility,
+    )
+    expected = {
+        str(record_id or "")
+        for record_id in dict(summary.get("manifest_record_ids") or {}).values()
+        if str(record_id or "")
+    }
+    if (
+        summary.get("replay_capabilities_missing")
+        or summary.get("manifest_rejection_reasons")
+        or summary.get("rejection_reasons")
+        or int(summary.get("fail_count") or 0) != 0
+        or int(summary.get("not_run_count") or 0) != 0
+        or int(summary.get("executed_count") or 0)
+        < int(summary.get("minimum_executed") or 1)
+        or int(summary.get("pass_count") or 0)
+        != int(summary.get("executed_count") or 0)
+    ):
+        return "current_release_replay_manifests_incomplete"
     return "" if expected and set(references) == expected and len(references) == len(expected) else (
         "exact_current_release_replay_manifests_required"
     )
+
+
+def _manifest_capabilities(records: Mapping[str, Any], references: list[str]) -> set[str]:
+    """Read an exact cohort from durable replay manifests, never a compiled list."""
+
+    capabilities: set[str] = set()
+    for reference in references:
+        record = records.get(reference)
+        content = record.content if record is not None and isinstance(getattr(record, "content", None), dict) else {}
+        if (
+            record is None
+            or str(getattr(record, "source", "") or "") != "eimemory.capability_replay"
+            or str(content.get("report_type") or "") != "capability_replay_manifest"
+            or not isinstance(content.get("capabilities"), list)
+        ):
+            return set()
+        manifest_capabilities = {
+            str(value or "").strip()
+            for value in content.get("capabilities") or []
+            if str(value or "").strip()
+        }
+        if not manifest_capabilities:
+            return set()
+        capabilities.update(manifest_capabilities)
+    return capabilities
+
+
+def _manifest_profile_replay_contract(
+    records: Mapping[str, Any],
+    references: list[str],
+    *,
+    scope: ScopeRef,
+) -> tuple[set[str], dict[str, dict[str, Any]], str]:
+    """Read the exact replay threshold contract used for a release gate.
+
+    Dynamic manifests must keep their Profile resolution and per-capability
+    thresholds.  Release lineage deliberately does not reconstruct those from
+    whatever Profile happens to be active now: a later Profile edit cannot
+    weaken or strengthen already-recorded evidence.  Historical compatibility
+    manifests remain explicitly bounded to their historical three-sample rule.
+    """
+
+    from eimemory.governance.capability_replay_packs import (
+        SELECTION_CONTRACT_SCHEMA,
+        replay_selection_contract_digest,
+    )
+
+    all_capabilities: set[str] = set()
+    minimums: dict[str, dict[str, Any]] = {}
+    common_context: dict[str, Any] | None = None
+    modes: set[str] = set()
+    for reference in references:
+        record = records.get(reference)
+        content = record.content if record is not None and isinstance(getattr(record, "content", None), dict) else {}
+        meta = record.meta if record is not None and isinstance(getattr(record, "meta", None), dict) else {}
+        provenance = record.provenance if record is not None and isinstance(getattr(record, "provenance", None), dict) else {}
+        if (
+            record is None
+            or str(getattr(record, "source", "") or "") != "eimemory.capability_replay"
+            or str(content.get("report_type") or "") != "capability_replay_manifest"
+            or not isinstance(content.get("capabilities"), list)
+            or not same_scope(getattr(record, "scope", None), scope)
+        ):
+            return set(), {}, "release_governance_replay_capability_selection_missing"
+        capabilities = {
+            str(value or "").strip()
+            for value in content.get("capabilities") or []
+            if str(value or "").strip()
+        }
+        if not capabilities:
+            return set(), {}, "release_governance_replay_capability_selection_missing"
+        selection = content.get("selection_contract")
+        if not isinstance(selection, Mapping) or not selection:
+            # Pre-contract evidence is only usable by the explicitly retained
+            # legacy release facade, with its fixed historical threshold.
+            for capability in capabilities:
+                minimums.setdefault(
+                    capability,
+                    {
+                        "minimum_executed": 3,
+                        "minimum_distinct_evidence": 3,
+                        "minimum_pass_rate": 0.8,
+                    },
+                )
+            all_capabilities.update(capabilities)
+            modes.add("legacy_unversioned")
+            if len(modes) > 1:
+                return set(), {}, "release_governance_replay_selection_modes_mixed"
+            continue
+        contract = dict(selection)
+        digest = str(contract.get("selection_contract_digest") or "").strip()
+        if (
+            str(contract.get("schema") or "") != SELECTION_CONTRACT_SCHEMA
+            or not digest
+            or replay_selection_contract_digest(contract) != digest
+            or str(meta.get("selection_contract_digest") or "") != digest
+            or str(provenance.get("selection_contract_digest") or "") != digest
+            or str(meta.get("selection_contract_schema") or "") != SELECTION_CONTRACT_SCHEMA
+            or str(provenance.get("selection_contract_schema") or "") != SELECTION_CONTRACT_SCHEMA
+        ):
+            return set(), {}, "release_governance_replay_selection_contract_invalid"
+        runtime_scope = contract.get("runtime_scope")
+        if not isinstance(runtime_scope, Mapping) or dict(runtime_scope) != asdict(scope):
+            return set(), {}, "release_governance_replay_selection_scope_mismatch"
+        contract_capabilities = {
+            str(value or "").strip()
+            for value in contract.get("capabilities") or []
+            if str(value or "").strip()
+        }
+        if contract_capabilities != capabilities:
+            return set(), {}, "release_governance_replay_selection_capabilities_mismatch"
+        mode = str(contract.get("mode") or "")
+        modes.add(mode)
+        if len(modes) > 1:
+            return set(), {}, "release_governance_replay_selection_modes_mixed"
+        if mode == "legacy_compatibility":
+            for capability in capabilities:
+                minimums.setdefault(
+                    capability,
+                    {
+                        "minimum_executed": 3,
+                        "minimum_distinct_evidence": 3,
+                        "minimum_pass_rate": 0.8,
+                    },
+                )
+            all_capabilities.update(capabilities)
+            continue
+        if mode != "dynamic_profile" or any(
+            not str(contract.get(field) or "").strip()
+            for field in ("profile_key", "profile_id", "profile_digest", "resolution_digest")
+        ):
+            return set(), {}, "release_governance_profile_selection_missing"
+        context = {
+            key: contract.get(key)
+            for key in (
+                "mode",
+                "runtime_scope",
+                "capability_scope",
+                "profile_key",
+                "profile_id",
+                "profile_digest",
+                "resolution_digest",
+                "registry_watermark",
+                "lifecycle_watermark",
+            )
+        }
+        if common_context is None:
+            common_context = context
+        elif common_context != context:
+            return set(), {}, "release_governance_profile_selection_inconsistent"
+        raw_minimums = contract.get("minimums_by_capability")
+        if not isinstance(raw_minimums, Mapping):
+            return set(), {}, "release_governance_profile_replay_minimums_missing"
+        for capability in capabilities:
+            raw = raw_minimums.get(capability)
+            if not isinstance(raw, Mapping):
+                return set(), {}, "release_governance_profile_replay_minimums_missing"
+            try:
+                executed = int(raw.get("minimum_executed"))
+                distinct = int(raw.get("minimum_distinct_evidence"))
+                pass_rate = float(raw.get("minimum_pass_rate"))
+            except (TypeError, ValueError):
+                return set(), {}, "release_governance_profile_replay_minimums_invalid"
+            if not 1 <= executed <= 10_000 or not 1 <= distinct <= 10_000 or not 0.0 <= pass_rate <= 1.0:
+                return set(), {}, "release_governance_profile_replay_minimums_invalid"
+            normalized = {
+                "minimum_executed": executed,
+                "minimum_distinct_evidence": distinct,
+                "minimum_pass_rate": pass_rate,
+            }
+            existing = minimums.get(capability)
+            if existing is not None and existing != normalized:
+                return set(), {}, "release_governance_profile_replay_minimums_inconsistent"
+            minimums[capability] = normalized
+        all_capabilities.update(capabilities)
+    return all_capabilities, minimums, ""
 
 
 def _channel_acceptance_contract_error(

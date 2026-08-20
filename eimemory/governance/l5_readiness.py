@@ -2,20 +2,28 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
+from collections.abc import Mapping
 from typing import Any
 
 from eimemory.core.clock import now_iso
+from eimemory.evaluation.capability_catalog import (
+    CapabilityEvaluationCatalog,
+    CatalogResolutionError,
+    resolve_application_capability_catalog,
+)
 from eimemory.governance.capability_attribution import collect_capability_evidence
 from eimemory.governance.capability_ledger import build_capability_ledger
 from eimemory.governance.capability_replay_executor import validate_capability_replay_result
 from eimemory.governance.capability_replay_packs import (
-    CORE_REPLAY_CAPABILITIES,
+    LEGACY_CORE_REPLAY_CAPABILITIES,
     MANIFEST_REPORT_TYPE,
     MANIFEST_SCHEMA_VERSION,
+    SELECTION_CONTRACT_SCHEMA,
     capability_replay_case_ids,
     capability_replay_log_sequence_state,
     capability_replay_manifest_digest,
     capability_replay_member_digest,
+    replay_selection_contract_digest,
 )
 from eimemory.governance.evidence_contract import (
     EvidenceRequirement,
@@ -38,7 +46,10 @@ from eimemory.governance.rollout_lifecycle import is_executed_rollback_ledger_re
 from eimemory.models.records import ScopeRef
 
 
-READINESS_CAPABILITIES = [
+# Historical v2 taxonomy.  It remains available exclusively for durable
+# report/replay compatibility; default readiness selection is resolved from
+# the active capability Registry/Profile below.
+LEGACY_READINESS_CAPABILITIES = [
     "memory.recall",
     "tool.routing",
     "knowledge.intake",
@@ -50,8 +61,299 @@ READINESS_CAPABILITIES = [
     "safety.boundary",
 ]
 
-STRONG_CAPABILITIES = {"memory.recall", "tool.routing", "knowledge.intake", "safety.boundary"}
-WEAK_CAPABILITIES = {"search.discovery", "research.synthesis", "operations.uumit", "device.control"}
+LEGACY_STRONG_CAPABILITIES = {"memory.recall", "tool.routing", "knowledge.intake", "safety.boundary"}
+LEGACY_WEAK_CAPABILITIES = {"search.discovery", "research.synthesis", "operations.uumit", "device.control"}
+
+
+def _resolve_readiness_catalog(
+    *,
+    catalog: CapabilityEvaluationCatalog | None,
+    legacy_compatibility: bool,
+) -> tuple[CapabilityEvaluationCatalog | None, str, str]:
+    """Resolve one catalog authority for a readiness calculation."""
+
+    if legacy_compatibility:
+        try:
+            from eimemory.governance.capability_acceptance import ensure_legacy_evaluation_catalog
+
+            return (
+                ensure_legacy_evaluation_catalog(catalog, legacy_compatibility=True),
+                "legacy_compatibility",
+                "",
+            )
+        except Exception as exc:
+            return None, "legacy_compatibility", f"legacy_evaluation_catalog_unavailable:{type(exc).__name__}"
+    try:
+        registered = resolve_application_capability_catalog(catalog)
+    except CatalogResolutionError as exc:
+        source = "explicit" if catalog is not None else "application_default"
+        # Keep a resolver's stable provisioning reason observable to L5.  In
+        # particular, ``catalog_not_configured`` is materially different from
+        # a malformed caller-supplied catalog: it tells operators to install
+        # the dynamic catalog, while still leaving this read-only report
+        # fail-closed.
+        reason = str(exc).strip()
+        return None, source, reason or f"evaluation_catalog_untrusted:{type(exc).__name__}"
+    return registered, "explicit" if catalog is not None else "application_default", ""
+
+
+def _readiness_capability_selection(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    runtime_scope: ScopeRef | Mapping[str, Any] | None,
+    capability_scope: str,
+    profile_key: str,
+    at_time: str,
+    catalog: CapabilityEvaluationCatalog | None,
+    catalog_source: str,
+    catalog_error: str,
+    legacy_compatibility: bool,
+) -> dict[str, Any]:
+    """Resolve the capability cohort without inferring one from package/host.
+
+    The v2 report can still read legacy evidence for migration comparison, but
+    the normal path consumes only explicit Registry/Profile descriptors.  An
+    empty or invalid dynamic selection is evidence of an unconfigured control
+    plane, not a reason to revive a compiled vocabulary.
+    """
+
+    if legacy_compatibility:
+        entries = [
+            {
+                "capability_id": capability_id,
+                "risk_tier": "",
+                "requirement": {
+                    "min_evidence_count": 3,
+                    "min_sample_count": 3,
+                },
+                "requires_outcome": capability_id in LEGACY_WEAK_CAPABILITIES,
+                "planning_policy": {},
+            }
+            for capability_id in LEGACY_READINESS_CAPABILITIES
+        ]
+        return {
+            "ok": True,
+            "mode": "legacy_compatibility",
+            "reason": "",
+            "capabilities": entries,
+            "capability_ids": list(LEGACY_READINESS_CAPABILITIES),
+            "profile": {},
+            "profile_key": "",
+            "capability_scope": capability_scope,
+            "runtime_scope": asdict(scope),
+            "resolution_digest": "",
+            "registry_watermark": "",
+            "lifecycle_watermark": "",
+        }
+
+    if catalog is None:
+        return {
+            "ok": False,
+            "mode": "dynamic",
+            "reason": catalog_error or "evaluation_catalog_required",
+            "capabilities": [],
+            "capability_ids": [],
+            "profile": {},
+            "profile_key": str(profile_key or "").strip(),
+            "capability_scope": capability_scope,
+            "runtime_scope": asdict(scope),
+            "evaluation_catalog": {
+                "status": "blocked",
+                "source": catalog_source,
+                "reason": catalog_error or "evaluation_catalog_required",
+            },
+        }
+    try:
+        from eimemory.capabilities.consumer_views import dynamic_evaluation_view
+        from eimemory.capabilities.registry import exact_runtime_scope
+
+        exact_scope = exact_runtime_scope(runtime_scope if runtime_scope is not None else scope)
+        if asdict(exact_scope) != asdict(scope):
+            return {
+                "ok": False,
+                "mode": "dynamic",
+                "reason": "dynamic_runtime_scope_mismatch",
+                "capabilities": [],
+                "capability_ids": [],
+                "profile": {},
+                "profile_key": str(profile_key or "").strip(),
+                "capability_scope": capability_scope,
+                "runtime_scope": asdict(exact_scope),
+            }
+        view = dynamic_evaluation_view(
+            runtime,
+            scope=exact_scope,
+            capability_scope=capability_scope,
+            profile_key=str(profile_key or "").strip(),
+            catalog=catalog,
+            at_time=at_time,
+            max_cases=256,
+        )
+    except Exception as exc:
+        return {
+            "ok": False,
+            "mode": "dynamic",
+            "reason": f"dynamic_capability_selection_failed:{type(exc).__name__}",
+            "capabilities": [],
+            "capability_ids": [],
+            "profile": {},
+            "profile_key": str(profile_key or "").strip(),
+            "capability_scope": capability_scope,
+            "runtime_scope": asdict(scope),
+        }
+
+    if view.get("ok") is not True:
+        return {
+            "ok": False,
+            "mode": "dynamic",
+            "reason": str(view.get("reason") or "dynamic_evaluation_catalog_selection_blocked"),
+            "capabilities": [],
+            "capability_ids": [],
+            "profile": dict(view.get("profile") or {}),
+            "profile_key": str(profile_key or "").strip(),
+            "capability_scope": capability_scope,
+            "runtime_scope": dict(view.get("scope") or asdict(scope)),
+            "evaluation_catalog": {
+                "status": "blocked",
+                "source": catalog_source,
+                "reason": str(view.get("reason") or "dynamic_evaluation_catalog_selection_blocked"),
+            },
+        }
+    capability_view = view.get("capability_view") if isinstance(view.get("capability_view"), Mapping) else {}
+    entries = [
+        dict(item)
+        for item in capability_view.get("capabilities") or []
+        if isinstance(item, Mapping) and str(item.get("capability_id") or "").strip()
+    ]
+    entries.sort(key=lambda item: str(item.get("capability_id") or ""))
+    capability_ids = list(dict.fromkeys(str(item["capability_id"]) for item in entries))
+    resolved_capabilities = {
+        str((item.get("artifact") or {}).get("capability") or "").strip()
+        for item in view.get("cases") or []
+        if isinstance(item, Mapping) and isinstance(item.get("artifact"), Mapping)
+    }
+    missing_catalog_cases = sorted(set(capability_ids) - resolved_capabilities)
+    if missing_catalog_cases:
+        return {
+            "ok": False,
+            "mode": "dynamic",
+            "reason": "evaluation_catalog_missing_profile_capability_cases",
+            "capabilities": entries,
+            "capability_ids": capability_ids,
+            "profile": dict(view.get("profile") or capability_view.get("profile") or {}),
+            "profile_key": str(profile_key or "").strip(),
+            "capability_scope": capability_scope,
+            "runtime_scope": dict(view.get("scope") or asdict(scope)),
+            "evaluation_catalog": {
+                "status": "blocked",
+                "source": catalog_source,
+                "reason": "evaluation_catalog_missing_profile_capability_cases",
+                "missing_capabilities": missing_catalog_cases,
+            },
+        }
+    return {
+        "ok": bool(capability_ids),
+        "mode": "dynamic",
+        "reason": "" if capability_ids else "dynamic_capability_selection_empty",
+        "capabilities": entries,
+        "capability_ids": capability_ids,
+        "profile": dict(view.get("profile") or capability_view.get("profile") or {}),
+        "profile_key": str(profile_key or "").strip(),
+        "capability_scope": capability_scope,
+        "runtime_scope": dict(view.get("scope") or asdict(scope)),
+        "resolution_digest": str(view.get("resolution_digest") or capability_view.get("resolution_digest") or ""),
+        "registry_watermark": str(view.get("registry_watermark") or capability_view.get("registry_watermark") or ""),
+        "lifecycle_watermark": str(view.get("lifecycle_watermark") or capability_view.get("lifecycle_watermark") or ""),
+        "source": str(capability_view.get("source") or ""),
+        "evaluation_catalog": {
+            "status": "resolved",
+            "source": catalog_source,
+            "case_ids": sorted(
+                str((item.get("artifact") or {}).get("case_id") or "")
+                for item in view.get("cases") or []
+                if isinstance(item, Mapping) and isinstance(item.get("artifact"), Mapping)
+            ),
+        },
+    }
+
+
+def _selection_requirement(entry: Mapping[str, Any] | object, field: str, default: int) -> int:
+    requirement = entry.get("requirement") if isinstance(entry, Mapping) and isinstance(entry.get("requirement"), Mapping) else {}
+    value = requirement.get(field, default)
+    if isinstance(value, bool):
+        return default
+    try:
+        numeric = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(1, min(numeric, 10_000))
+
+
+def _selection_replay_minimums(selection: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    minimums: dict[str, dict[str, Any]] = {}
+    for entry in selection.get("capabilities") or []:
+        if not isinstance(entry, Mapping):
+            continue
+        capability_id = str(entry.get("capability_id") or "").strip()
+        if not capability_id:
+            continue
+        evidence_minimum = _selection_requirement(entry, "min_evidence_count", 3)
+        sample_minimum = _selection_requirement(entry, "min_sample_count", evidence_minimum)
+        minimums[capability_id] = {
+            "minimum_executed": max(evidence_minimum, sample_minimum),
+            "minimum_distinct_evidence": sample_minimum,
+            "minimum_pass_rate": 0.8,
+        }
+    return minimums
+
+
+def _selection_outcome_minimum(entry: Mapping[str, Any] | object) -> int:
+    if not isinstance(entry, Mapping):
+        return 0
+    if entry.get("requires_outcome") is False:
+        return 0
+    requirement = entry.get("requirement") if isinstance(entry.get("requirement"), Mapping) else {}
+    if "min_sample_count" in requirement:
+        return _selection_requirement(entry, "min_sample_count", 0)
+    return 3 if entry.get("requires_outcome") is True else 0
+
+
+def _selection_priority(entry: Mapping[str, Any] | object) -> str:
+    if not isinstance(entry, Mapping):
+        return "medium"
+    planning = entry.get("planning_policy") if isinstance(entry.get("planning_policy"), Mapping) else {}
+    priority = planning.get("priority_weight")
+    try:
+        if not isinstance(priority, bool) and float(priority) >= 0.75:
+            return "high"
+    except (TypeError, ValueError):
+        pass
+    risk_tier = str(entry.get("risk_tier") or "").strip().lower()
+    return "high" if risk_tier in {"high", "critical"} else "medium"
+
+
+def _replay_missing(summary: Mapping[str, Any]) -> list[str]:
+    for key in ("capabilities_missing", "weak_capabilities_missing", "core_capabilities_missing"):
+        value = summary.get(key)
+        if isinstance(value, list):
+            return [str(item) for item in value if str(item)]
+    return []
+
+
+def _replay_missing_field_is_valid(summary: Mapping[str, Any]) -> bool:
+    """Require an explicit list-valued replay-gap field before L5 promotion.
+
+    ``_replay_missing`` intentionally returns an empty list for display when a
+    malformed historical summary has no usable field.  The readiness gate must
+    distinguish that presentation fallback from verified evidence: a missing
+    field is unknown, never evidence of zero gaps.
+    """
+
+    return any(
+        isinstance(summary.get(key), list)
+        for key in ("capabilities_missing", "weak_capabilities_missing", "core_capabilities_missing")
+    )
 
 
 def readiness_gate_status(
@@ -63,7 +365,14 @@ def readiness_gate_status(
 ) -> str:
     """Return the only release-gate states backed by complete L5 evidence."""
 
-    if readiness.get("schema_version") != "l5_readiness.v2" or runtime is None:
+    # The v2 gate has a fixed historical evidence contract.  Dynamic L5 is
+    # evaluated by the v3 reader/assessment, so a registry-selected v2 report
+    # must never be promoted through this compatibility gate.
+    if (
+        readiness.get("schema_version") != "l5_readiness.v2"
+        or readiness.get("legacy_compatibility") is not True
+        or runtime is None
+    ):
         return ""
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(
         scope if scope is not None else readiness.get("scope")
@@ -100,6 +409,7 @@ def readiness_gate_status(
             scope=scope_ref,
             current_release=exact_release,
             repo_root=repo_root,
+            legacy_compatibility=True,
         )
     )
     if (
@@ -181,7 +491,7 @@ def readiness_gate_status(
         and not weak_missing
         and isinstance(weak_manifest_rejections, dict)
         and not weak_manifest_rejections
-        and int(core_replay.get("executed_count") or 0) >= len(CORE_REPLAY_CAPABILITIES) * 3
+        and int(core_replay.get("executed_count") or 0) >= len(LEGACY_CORE_REPLAY_CAPABILITIES) * 3
         and isinstance(core_missing, list)
         and not core_missing
         and isinstance(core_manifest_rejections, dict)
@@ -226,16 +536,48 @@ def build_l5_readiness_report(
     limit: int = 500,
     loop_id: str = "l5_readiness",
     repo_root: str = "/dev-project/eimemory",
+    profile_key: str = "",
+    capability_scope: str = "global",
+    runtime_scope: ScopeRef | Mapping[str, Any] | None = None,
+    at_time: str = "",
+    catalog: CapabilityEvaluationCatalog | None = None,
+    legacy_compatibility: bool = False,
 ) -> dict[str, Any]:
-    """Build a read-only L5 readiness report from existing governance evidence."""
+    """Build a read-only L5 readiness report from existing governance evidence.
+
+    The normal v2 reader path selects active capabilities from the registry or
+    a named Profile.  The historical strong/weak/core cohort is available only
+    for migration comparison through ``legacy_compatibility=True``.
+    """
 
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+    active_catalog, catalog_source, catalog_error = _resolve_readiness_catalog(
+        catalog=catalog,
+        legacy_compatibility=legacy_compatibility,
+    )
+    capability_selection = _readiness_capability_selection(
+        runtime,
+        scope=scope_ref,
+        runtime_scope=runtime_scope,
+        capability_scope=capability_scope,
+        profile_key=profile_key,
+        at_time=at_time,
+        catalog=active_catalog,
+        catalog_source=catalog_source,
+        catalog_error=catalog_error,
+        legacy_compatibility=legacy_compatibility,
+    )
+    selected_capabilities = set(str(item) for item in capability_selection.get("capability_ids") or [] if str(item))
+    replay_minimums = _selection_replay_minimums(capability_selection)
+    replay_missing_field = "weak_capabilities_missing" if legacy_compatibility else "capabilities_missing"
     release = current_release_identity(runtime, scope_ref, limit=limit)
     release_lineage, evidence_releases = _resolve_readiness_release_lineage(
         runtime,
         scope=scope_ref,
         current_release=release,
         repo_root=repo_root,
+        catalog=active_catalog,
+        legacy_compatibility=legacy_compatibility,
     )
     channel_release = evidence_releases["channel.openclaw"]
     governance_release = evidence_releases["memory.governance"]
@@ -257,7 +599,13 @@ def build_l5_readiness_report(
         and bootstrap_pending.get("status") == "bootstrap_data_pending"
         else evidence_releases["memory.recall"]
     )
-    ledger = build_capability_ledger(runtime, scope=scope_ref, limit=limit, attribute_outcomes=False)
+    ledger = build_capability_ledger(
+        runtime,
+        scope=scope_ref,
+        limit=limit,
+        attribute_outcomes=False,
+        legacy_compatibility=legacy_compatibility,
+    )
     hard_metrics = _safe_hard_metrics(
         runtime,
         scope=scope_ref,
@@ -269,18 +617,34 @@ def build_l5_readiness_report(
         runtime,
         scope=scope_ref,
         limit=limit,
-        capabilities=WEAK_CAPABILITIES,
-        missing_field="weak_capabilities_missing",
+        capabilities=(LEGACY_WEAK_CAPABILITIES if legacy_compatibility else selected_capabilities),
+        missing_field=replay_missing_field,
         release=governance_release,
+        minimums=(None if legacy_compatibility else replay_minimums),
+        catalog=active_catalog,
+        legacy_compatibility=legacy_compatibility,
     )
-    verified_core_replay = _verified_replay_summary(
-        runtime,
-        scope=scope_ref,
-        limit=limit,
-        capabilities=set(CORE_REPLAY_CAPABILITIES),
-        missing_field="core_capabilities_missing",
-        release=governance_release,
-    )
+    if legacy_compatibility:
+        verified_core_replay = _verified_replay_summary(
+            runtime,
+            scope=scope_ref,
+            limit=limit,
+            capabilities=set(LEGACY_CORE_REPLAY_CAPABILITIES),
+            missing_field="core_capabilities_missing",
+            release=governance_release,
+            minimums=None,
+            catalog=active_catalog,
+            legacy_compatibility=True,
+        )
+    else:
+        # Dynamic selection has one registry-defined cohort, not invented
+        # "weak" and "core" partitions.  Preserve the field only for readers
+        # that still expect a second replay object during migration.
+        verified_core_replay = {
+            **verified_replay,
+            "shared_dynamic_selection": True,
+            "core_capabilities_missing": list(_replay_missing(verified_replay)),
+        }
     verified_real_replay = build_verified_real_replay_summary(
         runtime,
         scope=scope_ref,
@@ -365,18 +729,31 @@ def build_l5_readiness_report(
         current_release=release,
     )
     storage_migrations = _storage_migration_status(runtime)
-    weak_outcome_evidence = _weak_outcome_evidence(runtime, scope=scope_ref, limit=limit)
-    capability_gaps = _capability_gaps(ledger, weak_outcome_evidence=weak_outcome_evidence)
+    outcome_evidence = _capability_outcome_evidence(
+        runtime,
+        scope=scope_ref,
+        limit=limit,
+        capability_selection=capability_selection,
+        catalog=active_catalog,
+        legacy_compatibility=legacy_compatibility,
+    )
+    capability_gaps = _capability_gaps(
+        ledger,
+        outcome_evidence=outcome_evidence,
+        capability_selection=capability_selection,
+    )
     stage = _stage_for(
         ledger,
         hard_metrics,
         evidence_counts,
         capability_gaps,
-        weak_outcome_evidence,
+        outcome_evidence,
         verified_replay,
         verified_core_replay,
         latest_l5_assessment,
         verified_real_replay,
+        capability_selection=capability_selection,
+        legacy_compatibility=legacy_compatibility,
     )
     stage = _apply_production_recall_gate(stage, production_recall_gate)
     stage = _apply_production_recall_strict_state_gate(stage, production_recall_strict_state)
@@ -414,6 +791,7 @@ def build_l5_readiness_report(
         latest_l5_assessment=latest_l5_assessment,
         production_recall_gate=production_recall_gate,
         production_recall_strict_state=production_recall_strict_state,
+        legacy_compatibility=legacy_compatibility,
     )
     if storage_migrations.get("pending"):
         next_actions = [
@@ -426,6 +804,16 @@ def build_l5_readiness_report(
         "schema_version": "l5_readiness.v2",
         "generated_at": now_iso(),
         "scope": asdict(scope_ref),
+        "legacy_compatibility": bool(legacy_compatibility),
+        "capability_selection": capability_selection,
+        "evaluation_catalog": {
+            "status": "resolved" if active_catalog is not None and not catalog_error else "blocked",
+            "source": catalog_source,
+            "reason": catalog_error,
+            "legacy_compatibility": bool(legacy_compatibility),
+        },
+        "profile_key": str(profile_key or "").strip(),
+        "capability_scope": capability_scope,
         "release_identity": release_identity_payload(release) if release is not None else {},
         "release_lineage": release_lineage,
         "observed_stage": observed_stage,
@@ -449,7 +837,9 @@ def build_l5_readiness_report(
         "production_recall_gate": production_recall_gate,
         "production_recall_strict_state": production_recall_strict_state,
         "storage_migrations": storage_migrations,
-        "weak_outcome_evidence": weak_outcome_evidence,
+        "outcome_evidence": outcome_evidence,
+        # Retained only for consumers replaying a historical v2 report.
+        "weak_outcome_evidence": outcome_evidence if legacy_compatibility else {},
         "capability_gaps": capability_gaps,
         "next_actions": next_actions,
         "release_validation": _release_validation(
@@ -486,6 +876,9 @@ def build_l5_readiness_report(
                 maturity["current_stage"],
                 evidence_counts,
                 capability_gaps,
+                capability_selection.get("resolution_digest"),
+                capability_selection.get("registry_watermark"),
+                bool(legacy_compatibility),
             ),
             authority_tier="L0",
             status="active",
@@ -495,6 +888,10 @@ def build_l5_readiness_report(
                 "stage": observed_stage,
                 "observed_stage": observed_stage,
                 "readiness_score": observed_score,
+                "legacy_compatibility": bool(legacy_compatibility),
+                "profile_key": str(profile_key or "").strip(),
+                "capability_scope": capability_scope,
+                "capability_resolution_digest": str(capability_selection.get("resolution_digest") or ""),
             },
             source="eimemory.l5_readiness",
         )
@@ -508,6 +905,8 @@ def _resolve_readiness_release_lineage(
     scope: ScopeRef,
     current_release: ReleaseIdentity | None,
     repo_root: str,
+    catalog: CapabilityEvaluationCatalog | None,
+    legacy_compatibility: bool,
 ) -> tuple[dict[str, Any], dict[str, ReleaseIdentity | None]]:
     domains = ("channel.openclaw", "memory.governance", "memory.recall")
     releases = {domain: current_release for domain in domains}
@@ -518,6 +917,8 @@ def _resolve_readiness_release_lineage(
         scope=scope,
         current_release=current_release,
         repo_root=repo_root,
+        catalog=catalog,
+        legacy_compatibility=legacy_compatibility,
     )
     if (
         not isinstance(lineage, dict)
@@ -540,6 +941,8 @@ def _resolve_readiness_release_lineage(
                 domain=domain,
                 current_release=current_release,
                 expected_record_id=str(lineage.get("record_id") or ""),
+                catalog=catalog,
+                legacy_compatibility=legacy_compatibility,
             )
         except (OSError, TypeError, ValueError) as exc:
             return {
@@ -778,6 +1181,9 @@ def _verified_replay_summary(
     capabilities: set[str],
     missing_field: str,
     release: ReleaseIdentity | None,
+    minimums: Mapping[str, Mapping[str, Any]] | None = None,
+    catalog: CapabilityEvaluationCatalog | None = None,
+    legacy_compatibility: bool = False,
 ) -> dict[str, Any]:
     records = _capability_replay_records(runtime, scope=scope, limit=limit)
     selected_records, manifest_record_ids, manifest_rejection_reasons = _latest_manifest_case_records(
@@ -786,6 +1192,7 @@ def _verified_replay_summary(
         limit=limit,
         capabilities=capabilities,
         release=release,
+        legacy_compatibility=legacy_compatibility,
     )
     by_capability = {
         capability: {
@@ -831,13 +1238,18 @@ def _verified_replay_summary(
             continue
         evidence_source_id = str(persisted_result.get("evidence_source_id") or "").strip()
         if verdict == "pass":
-            validation = validate_capability_replay_result(
-                runtime,
-                scope=scope,
-                capability=capability,
-                case_id=case_id,
-                result=persisted_result,
-            )
+            if catalog is None:
+                validation = {"ok": False, "reason": "evaluation_catalog_required"}
+            else:
+                validation = validate_capability_replay_result(
+                    runtime,
+                    scope=scope,
+                    capability=capability,
+                    case_id=case_id,
+                    result=persisted_result,
+                    catalog=catalog,
+                    legacy_compatibility=legacy_compatibility,
+                )
             if validation.get("ok") is not True:
                 verdict = "fail"
                 reason = str(validation.get("reason") or "invalid_contract_replay_result")
@@ -860,13 +1272,25 @@ def _verified_replay_summary(
     for capability, bucket in by_capability.items():
         bucket["distinct_evidence_count"] = len(evidence_sources[capability])
     executed_count = pass_count + fail_count
-    capabilities_missing = [
-        capability
-        for capability, bucket in by_capability.items()
-        if int(bucket["executed_count"]) < 3
-        or float(bucket["pass_rate"]) < 0.8
-        or int(bucket["distinct_evidence_count"]) < 3
-    ]
+    resolved_minimums = {
+        capability: dict((minimums or {}).get(capability) or {})
+        for capability in capabilities
+    }
+    capabilities_missing = []
+    for capability, bucket in by_capability.items():
+        configured = resolved_minimums.get(capability) or {}
+        minimum_executed = _bounded_replay_minimum(configured.get("minimum_executed"), default=3)
+        minimum_distinct = _bounded_replay_minimum(configured.get("minimum_distinct_evidence"), default=3)
+        minimum_pass_rate = _bounded_pass_rate(configured.get("minimum_pass_rate"), default=0.8)
+        bucket["minimum_executed"] = minimum_executed
+        bucket["minimum_distinct_evidence"] = minimum_distinct
+        bucket["minimum_pass_rate"] = minimum_pass_rate
+        if (
+            int(bucket["executed_count"]) < minimum_executed
+            or float(bucket["pass_rate"]) < minimum_pass_rate
+            or int(bucket["distinct_evidence_count"]) < minimum_distinct
+        ):
+            capabilities_missing.append(capability)
     return {
         "observed_executed_count": observed_executed_count,
         "executed_count": executed_count,
@@ -874,15 +1298,44 @@ def _verified_replay_summary(
         "fail_count": fail_count,
         "not_run_count": not_run_count,
         "pass_rate": round(pass_count / executed_count, 3) if executed_count else 0.0,
-        "minimum_executed": len(capabilities) * 3,
+        "minimum_executed": sum(
+            _bounded_replay_minimum((resolved_minimums.get(capability) or {}).get("minimum_executed"), default=3)
+            for capability in capabilities
+        ),
         "minimum_pass_rate": 0.8,
-        "minimum_per_capability": 3,
+        "minimum_per_capability": 3 if not minimums else None,
+        "minimums_by_capability": resolved_minimums,
         "by_capability": by_capability,
         missing_field: capabilities_missing,
         "rejection_reasons": dict(sorted(rejection_reasons.items())),
         "manifest_record_ids": manifest_record_ids,
         "manifest_rejection_reasons": manifest_rejection_reasons,
+        "evaluation_catalog": {
+            "status": "resolved" if catalog is not None else "blocked",
+            "reason": "" if catalog is not None else "evaluation_catalog_required",
+            "legacy_compatibility": bool(legacy_compatibility),
+        },
     }
+
+
+def _bounded_replay_minimum(value: Any, *, default: int) -> int:
+    if isinstance(value, bool):
+        return default
+    try:
+        numeric = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(1, min(numeric, 10_000))
+
+
+def _bounded_pass_rate(value: Any, *, default: float) -> float:
+    if isinstance(value, bool):
+        return default
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return default
+    return max(0.0, min(numeric, 1.0))
 
 
 def _capability_replay_records(runtime: Any, *, scope: ScopeRef, limit: int) -> list[Any]:
@@ -918,6 +1371,7 @@ def _latest_manifest_case_records(
     limit: int,
     capabilities: set[str],
     release: ReleaseIdentity | None,
+    legacy_compatibility: bool = False,
 ) -> tuple[list[Any], dict[str, str], dict[str, str]]:
     high_water = _latest_manifest_high_water(
         runtime,
@@ -983,6 +1437,7 @@ def _latest_manifest_case_records(
             scope=scope,
             capability=capability,
             release=release,
+            legacy_compatibility=legacy_compatibility,
         )
         if reason:
             rejection_reasons[capability] = reason
@@ -1070,6 +1525,100 @@ def _capability_replay_manifest_records(runtime: Any, *, scope: ScopeRef, limit:
         return []
 
 
+def _manifest_selection_case_contract(
+    *,
+    content: Mapping[str, Any],
+    meta: Mapping[str, Any],
+    provenance: Mapping[str, Any],
+    scope: ScopeRef,
+    capability: str,
+    legacy_compatibility: bool,
+) -> tuple[list[str], dict[str, dict[str, str]], str]:
+    """Validate the Profile/catalog contract frozen into a replay manifest.
+
+    Old manifests are accepted only as explicitly legacy-shaped evidence.  New
+    dynamic manifests must carry their exact Profile resolution, case targets,
+    and thresholds so a release cannot downgrade the Profile requirement after
+    the replay was recorded.
+    """
+
+    selection = content.get("selection_contract")
+    if not isinstance(selection, Mapping) or not selection:
+        # Historical manifests predate the selection contract and are only
+        # useful to the explicit legacy compatibility reader.
+        if not legacy_compatibility:
+            return [], {}, "manifest_selection_contract_missing"
+        return capability_replay_case_ids(capability, legacy_compatibility=True), {}, ""
+    normalized = dict(selection)
+    selection_digest = str(normalized.get("selection_contract_digest") or "").strip()
+    if (
+        str(normalized.get("schema") or "") != SELECTION_CONTRACT_SCHEMA
+        or not selection_digest
+        or replay_selection_contract_digest(normalized) != selection_digest
+    ):
+        return [], {}, "manifest_selection_contract_invalid"
+    for container in (meta, provenance):
+        if (
+            str(container.get("selection_contract_schema") or "") != SELECTION_CONTRACT_SCHEMA
+            or str(container.get("selection_contract_digest") or "") != selection_digest
+            or str(container.get("selection_mode") or "") != str(normalized.get("mode") or "")
+            or str(container.get("profile_key") or "") != str(normalized.get("profile_key") or "")
+            or str(container.get("profile_id") or "") != str(normalized.get("profile_id") or "")
+            or str(container.get("capability_scope") or "") != str(normalized.get("capability_scope") or "")
+        ):
+            return [], {}, "manifest_selection_contract_envelope_mismatch"
+    runtime_scope = normalized.get("runtime_scope")
+    if not isinstance(runtime_scope, Mapping) or dict(runtime_scope) != asdict(scope):
+        return [], {}, "manifest_selection_scope_mismatch"
+    capabilities = normalized.get("capabilities")
+    if not isinstance(capabilities, list) or len({str(item or "").strip() for item in capabilities}) != len(capabilities):
+        return [], {}, "manifest_selection_capabilities_invalid"
+    if capability not in {str(item or "").strip() for item in capabilities}:
+        return [], {}, "manifest_selection_capability_missing"
+    expected_map = normalized.get("expected_case_ids")
+    if not isinstance(expected_map, Mapping):
+        return [], {}, "manifest_selection_expected_cases_missing"
+    expected = [str(value or "").strip() for value in expected_map.get(capability) or []]
+    if not expected or any(not value for value in expected) or len(set(expected)) != len(expected):
+        return [], {}, "manifest_selection_expected_cases_invalid"
+    mode = str(normalized.get("mode") or "")
+    targets = normalized.get("case_targets")
+    target_by_case: dict[str, dict[str, str]] = {}
+    if mode == "legacy_compatibility":
+        canonical_legacy = capability_replay_case_ids(capability, legacy_compatibility=True)
+        if expected != canonical_legacy:
+            return [], {}, "manifest_selection_legacy_cases_mismatch"
+        return expected, target_by_case, ""
+    if mode not in {"dynamic_profile", "dynamic_registry"}:
+        return [], {}, "manifest_selection_mode_invalid"
+    if mode == "dynamic_profile" and any(
+        not str(normalized.get(field) or "").strip()
+        for field in ("profile_key", "profile_id", "profile_digest", "resolution_digest")
+    ):
+        return [], {}, "manifest_selection_profile_identity_missing"
+    if not isinstance(targets, Mapping) or not isinstance(targets.get(capability), list):
+        return [], {}, "manifest_selection_targets_missing"
+    for raw in targets.get(capability) or []:
+        if not isinstance(raw, Mapping):
+            return [], {}, "manifest_selection_target_invalid"
+        row = {field: str(raw.get(field) or "").strip() for field in (
+            "case_id",
+            "capability_revision_id",
+            "provider_binding_id",
+            "eval_spec_id",
+            "evaluation_case_digest",
+        )}
+        if any(not value for value in row.values()) or row["case_id"] in target_by_case:
+            return [], {}, "manifest_selection_target_invalid"
+        target_by_case[row["case_id"]] = row
+    if list(sorted(target_by_case)) != list(expected):
+        return [], {}, "manifest_selection_target_cases_mismatch"
+    minimums = normalized.get("minimums_by_capability")
+    if not isinstance(minimums, Mapping) or not isinstance(minimums.get(capability), Mapping):
+        return [], {}, "manifest_selection_minimums_missing"
+    return expected, target_by_case, ""
+
+
 def _validated_manifest_members(
     runtime: Any,
     manifest: Any,
@@ -1077,6 +1626,7 @@ def _validated_manifest_members(
     scope: ScopeRef,
     capability: str,
     release: ReleaseIdentity | None,
+    legacy_compatibility: bool,
 ) -> tuple[list[Any], str]:
     content = manifest.get("content") if isinstance(manifest, dict) else getattr(manifest, "content", None)
     content = content if isinstance(content, dict) else {}
@@ -1088,6 +1638,7 @@ def _validated_manifest_members(
     status = str(manifest.get("status", "") if isinstance(manifest, dict) else getattr(manifest, "status", "") or "")
     execution_id = str(content.get("execution_id") or "").strip()
     digest = str(content.get("manifest_digest") or "").strip()
+    selection_contract = content.get("selection_contract") if isinstance(content.get("selection_contract"), Mapping) else {}
     if not _record_has_exact_scope(manifest, scope):
         return [], "manifest_scope_mismatch"
     if source != "eimemory.capability_replay":
@@ -1106,6 +1657,16 @@ def _validated_manifest_members(
         return [], "manifest_digest_mismatch"
     if capability_replay_manifest_digest(content) != digest:
         return [], "manifest_digest_mismatch"
+    canonical_case_ids, expected_targets, selection_error = _manifest_selection_case_contract(
+        content=content,
+        meta=meta,
+        provenance=provenance,
+        scope=scope,
+        capability=capability,
+        legacy_compatibility=legacy_compatibility,
+    )
+    if selection_error:
+        return [], selection_error
     if any(container.get("complete") is not True for container in (content, meta, provenance)):
         return [], "manifest_incomplete"
     if release is None:
@@ -1137,7 +1698,6 @@ def _validated_manifest_members(
     expected_case_ids = [str(value or "").strip() for value in expected_map.get(capability) or []]
     member_ids = [str(value or "").strip() for value in member_map.get(capability) or []]
     member_digests = member_digest_map.get(capability) if isinstance(member_digest_map.get(capability), dict) else {}
-    canonical_case_ids = capability_replay_case_ids(capability)
     if expected_case_ids != canonical_case_ids:
         return [], "manifest_expected_cases_mismatch"
     if len(member_ids) != len(canonical_case_ids) or len(set(member_ids)) != len(member_ids):
@@ -1169,6 +1729,15 @@ def _validated_manifest_members(
         case_payload = record_content.get("case") if isinstance(record_content.get("case"), dict) else {}
         case_id = str(case_payload.get("case_id") or record.meta.get("case_id") or "").strip()
         probe_id = str(result.get("probe_source_id") or "").strip()
+        expected_target = expected_targets.get(case_id)
+        expected_profile = (
+            {
+                field: str(selection_contract.get(field) or "")
+                for field in ("profile_key", "profile_id", "profile_digest", "selection_contract_digest")
+            }
+            if expected_targets
+            else {}
+        )
         if (
             record.source != "eimemory.capability_replay"
             or record.kind != "replay_result"
@@ -1181,6 +1750,25 @@ def _validated_manifest_members(
             or str(record.meta.get("capability") or "") != capability
             or str(record_content.get("capability") or "") != capability
             or case_id not in canonical_case_ids
+            or (
+                expected_target is not None
+                and any(
+                    str(record_content.get(field) or record.meta.get(field) or "") != expected_target[field]
+                    for field in (
+                        "capability_revision_id",
+                        "provider_binding_id",
+                        "eval_spec_id",
+                        "evaluation_case_digest",
+                    )
+                )
+            )
+            or (
+                expected_profile
+                and any(
+                    str(record_content.get(field) or record.meta.get(field) or "") != value
+                    for field, value in expected_profile.items()
+                )
+            )
         ):
             return [], "manifest_member_binding_mismatch"
         member_created = _record_created_at(record)
@@ -1385,25 +1973,43 @@ def _record_field(record: Any, key: str) -> Any:
 def _capability_gaps(
     ledger: dict[str, Any],
     *,
-    weak_outcome_evidence: dict[str, Any],
+    outcome_evidence: dict[str, Any],
+    capability_selection: Mapping[str, Any],
 ) -> list[dict[str, Any]]:
     capabilities = dict(ledger.get("capabilities") or {})
-    weak_outcome_counts = (
-        weak_outcome_evidence.get("counts")
-        if isinstance(weak_outcome_evidence.get("counts"), dict)
+    outcome_counts = (
+        outcome_evidence.get("counts")
+        if isinstance(outcome_evidence.get("counts"), dict)
         else {}
     )
-    gaps = []
-    for name in READINESS_CAPABILITIES:
+    selection_reason = str(capability_selection.get("reason") or "")
+    entries = [item for item in capability_selection.get("capabilities") or [] if isinstance(item, Mapping)]
+    if not entries:
+        return [
+            {
+                "capability": "",
+                "score": 0.0,
+                "evidence_count": 0,
+                "outcome_evidence_count": 0,
+                "reason": selection_reason or "dynamic_capability_selection_empty",
+                "priority": "high",
+            }
+        ]
+    gaps: list[dict[str, Any]] = []
+    for entry in entries:
+        name = str(entry.get("capability_id") or "").strip()
+        if not name:
+            continue
         item = dict(capabilities.get(name) or {})
         score = float(item.get("score") or 0.0)
         evidence_count = int(item.get("evidence_count") or 0)
-        outcome_count = (
-            int(weak_outcome_counts.get(name) or 0)
-            if name in WEAK_CAPABILITIES
-            else _outcome_evidence_count(item)
-        )
-        if name in WEAK_CAPABILITIES and outcome_count < 3:
+        # Ledger source labels are self-described metadata.  Only the
+        # contract-verified evidence projection can satisfy an outcome
+        # requirement; otherwise a legacy score could fabricate L5 evidence.
+        outcome_count = max(0, int(outcome_counts.get(name) or 0))
+        minimum_evidence = _selection_requirement(entry, "min_evidence_count", 3)
+        minimum_outcomes = _selection_outcome_minimum(entry)
+        if minimum_outcomes and outcome_count < minimum_outcomes:
             gaps.append(
                 {
                     "capability": name,
@@ -1411,11 +2017,13 @@ def _capability_gaps(
                     "evidence_count": evidence_count,
                     "outcome_evidence_count": outcome_count,
                     "reason": "insufficient_attributed_outcome_evidence",
-                    "priority": "high",
+                    "priority": _selection_priority(entry),
+                    "minimum_evidence_count": minimum_evidence,
+                    "minimum_outcome_evidence_count": minimum_outcomes,
                 }
             )
             continue
-        if score >= 0.7 and evidence_count >= 3:
+        if score >= 0.7 and evidence_count >= minimum_evidence:
             continue
         gaps.append(
             {
@@ -1424,7 +2032,9 @@ def _capability_gaps(
                 "evidence_count": evidence_count,
                 "outcome_evidence_count": outcome_count,
                 "reason": str(item.get("goal_gap_reason") or item.get("status") or "insufficient_evidence"),
-                "priority": "high" if name in WEAK_CAPABILITIES else "medium",
+                "priority": _selection_priority(entry),
+                "minimum_evidence_count": minimum_evidence,
+                "minimum_outcome_evidence_count": minimum_outcomes,
             }
         )
     return gaps
@@ -1435,23 +2045,44 @@ def _stage_for(
     hard_metrics: dict[str, Any],
     evidence_counts: dict[str, int],
     capability_gaps: list[dict[str, Any]],
-    weak_outcome_evidence: dict[str, Any],
+    outcome_evidence: dict[str, Any],
     verified_replay: dict[str, Any],
     verified_core_replay: dict[str, Any],
     latest_l5_assessment: dict[str, Any],
     verified_real_replay: dict[str, Any] | None = None,
+    *,
+    capability_selection: Mapping[str, Any],
+    legacy_compatibility: bool,
 ) -> dict[str, Any]:
     metrics = dict(hard_metrics.get("metrics") or {})
     metric_quality = dict(hard_metrics.get("metric_quality") or {})
     replay_count = int(verified_replay.get("executed_count") or 0)
     observed_replay_count = int(verified_replay.get("observed_executed_count") or replay_count)
     replay_pass_rate = float(verified_replay.get("pass_rate") or 0.0)
+    replay_minimum = max(1, int(verified_replay.get("minimum_executed") or 1))
+    readiness_replay_target = max(10, replay_minimum) if legacy_compatibility else replay_minimum
     l5_artifacts = sum(int(evidence_counts.get(kind) or 0) for kind in ("l5_world_model", "l5_strategic_roadmap", "l5_assessment", "l5_closed_loop"))
     promotion_count = int(evidence_counts.get("promotion_applied") or 0)
     rollback_count = int(evidence_counts.get("rollback_or_quarantine") or 0)
-    weak_gap_count = sum(1 for gap in capability_gaps if gap["capability"] in WEAK_CAPABILITIES)
-    strong_ready_count = _ready_count(ledger, STRONG_CAPABILITIES)
-    core_ready_count = _ready_count(ledger, set(READINESS_CAPABILITIES))
+    selected_capabilities = {
+        str(value or "").strip()
+        for value in capability_selection.get("capability_ids") or []
+        if str(value or "").strip()
+    }
+    selected_count = len(selected_capabilities)
+    weak_gap_count = len(capability_gaps)
+    maturity_ready_count = _ready_count(
+        ledger,
+        LEGACY_STRONG_CAPABILITIES if legacy_compatibility else selected_capabilities,
+        capability_selection=capability_selection,
+    )
+    core_ready_count = _ready_count(
+        ledger,
+        set(LEGACY_READINESS_CAPABILITIES) if legacy_compatibility else selected_capabilities,
+        capability_selection=capability_selection,
+    )
+    readiness_coverage = core_ready_count / max(selected_count, 1)
+    gap_coverage = weak_gap_count / max(selected_count, 1)
     task_success = float(metrics.get("task_success_rate") or 0.0)
     recall_hit = float(metrics.get("recall_hit_rate") or 0.0)
     patch_success = float(metrics.get("patch_promotion_success_rate") or metrics.get("auto_patch_success_rate") or 0.0)
@@ -1499,25 +2130,25 @@ def _stage_for(
         live_task_gate,
         verified_real_replay if isinstance(verified_real_replay, dict) else {},
     )
-    weak_outcome_ok = not weak_outcome_evidence.get("missing")
-    weak_missing = verified_replay.get("weak_capabilities_missing")
+    outcome_evidence_ok = not outcome_evidence.get("missing")
+    weak_missing = _replay_missing(verified_replay)
     weak_manifest_rejections = verified_replay.get("manifest_rejection_reasons")
-    core_missing = verified_core_replay.get("core_capabilities_missing")
+    core_missing = _replay_missing(verified_core_replay)
     core_manifest_rejections = verified_core_replay.get("manifest_rejection_reasons")
     replay_gate_fields_valid = bool(
-        isinstance(weak_missing, list)
+        _replay_missing_field_is_valid(verified_replay)
         and isinstance(weak_manifest_rejections, dict)
-        and isinstance(core_missing, list)
+        and _replay_missing_field_is_valid(verified_core_replay)
         and isinstance(core_manifest_rejections, dict)
     )
 
     readiness_score = round(
-        min(1.0, (core_ready_count / len(READINESS_CAPABILITIES) * 0.45) + (min(replay_count, 10) / 10 * 0.2) + (min(l5_artifacts, 4) / 4 * 0.2) + (min(promotion_count, 5) / 5 * 0.15)),
+        min(1.0, (readiness_coverage * 0.45) + (min(replay_count, readiness_replay_target) / readiness_replay_target * 0.2) + (min(l5_artifacts, 4) / 4 * 0.2) + (min(promotion_count, 5) / 5 * 0.15)),
         3,
     )
     if (
         capability_gaps
-        or not weak_outcome_ok
+        or not outcome_evidence_ok
         or not patch_quality_ok
         or not replay_gate_fields_valid
         or weak_missing
@@ -1537,13 +2168,13 @@ def _stage_for(
     structural_ready = bool(
         l5_artifacts >= 4
         and not capability_gaps
-        and weak_outcome_ok
+        and outcome_evidence_ok
         and replay_gate_fields_valid
-        and replay_count >= 10
+        and replay_count >= readiness_replay_target
         and replay_pass_rate >= 0.8
         and not weak_missing
         and not weak_manifest_rejections
-        and int(verified_core_replay.get("executed_count") or 0) >= len(CORE_REPLAY_CAPABILITIES) * 3
+        and int(verified_core_replay.get("executed_count") or 0) >= int(verified_core_replay.get("minimum_executed") or 0)
         and not core_missing
         and not core_manifest_rejections
         and latest_l5_assessment.get("complete") is True
@@ -1552,7 +2183,7 @@ def _stage_for(
         and patch_quality_ok
         and patch_success >= 0.8
     )
-    if structural_ready and real_business_gate["ok"]:
+    if structural_ready and real_business_gate["ok"] and legacy_compatibility:
         return {
             **common,
             "readiness_score": 1.0,
@@ -1566,32 +2197,47 @@ def _stage_for(
             **common,
             "readiness_score": 0.8,
             "stage": "L4.5",
-            "label": "release structure complete; real-task evidence accumulating",
-            "reason": "All structural and safety gates pass, but neither verified live tasks nor current-code replay of verified real tasks closes the business gate.",
-            "done_when": "Accumulate verified real tasks or replay at least ten unique real sources across five task types with pass rate >=0.8.",
+            "label": "dynamic evidence structure complete; v3 authority pending",
+            "reason": (
+                "The registry-selected evidence set is structurally complete, but the v2 reader cannot claim L5 "
+                "for a dynamic capability cohort. Use the v3 projection and four-axis assessment."
+                if not legacy_compatibility
+                else "All structural and safety gates pass, but neither verified live tasks nor current-code replay of verified real tasks closes the business gate."
+            ),
+            "done_when": (
+                "Run the v3 projection/assessment for this exact Profile and capability scope."
+                if not legacy_compatibility
+                else "Accumulate verified real tasks or replay at least ten unique real sources across five task types with pass rate >=0.8."
+            ),
         }
-    if l5_artifacts >= 2 and replay_count >= 5 and weak_gap_count <= 2:
+    if l5_artifacts >= 2 and replay_count > 0 and (
+        weak_gap_count <= 2 if legacy_compatibility else gap_coverage <= 0.5
+    ):
         return {
             **common,
             "stage": "L4.5",
-            "label": "self-growth reporting with most weak gaps closing",
-            "reason": "L5 rehearsal artifacts exist, but one or more production evidence gates remain incomplete.",
+            "label": "self-growth reporting with registry-selected gaps closing",
+            "reason": "L5 rehearsal artifacts exist, but one or more registry-selected evidence or production gates remain incomplete.",
             "done_when": "Complete replay, reversible promotion, and either verified live-task or verified real-replay business evidence.",
         }
-    if strong_ready_count >= 3 and observed_replay_count >= 3 and (task_success > 0 or recall_hit > 0):
+    if (
+        (maturity_ready_count >= 3 if legacy_compatibility else readiness_coverage > 0.0)
+        and observed_replay_count > 0
+        and (task_success > 0 or recall_hit > 0)
+    ):
         return {
             **common,
             "stage": "L4",
             "label": "closed-loop learning with measurable outcomes",
-            "reason": "core capabilities have ledger evidence and replay exists, but weak capability coverage is incomplete.",
+            "reason": "registry-selected capabilities have ledger evidence and replay exists, but coverage is incomplete.",
             "done_when": "Autonomous cycles produce goal graph, replay dataset, promotion/block decision, and dashboard metrics every run.",
         }
     return {
         **common,
         "stage": "L3.5",
         "label": "early autonomous evolution with evidence gaps",
-        "reason": "learning and candidate records may exist, but repeatable replay, L5 artifacts, and weak capability evidence are not yet enough.",
-        "done_when": "Add readiness report, replay packs, and hard metrics for weak capabilities without changing production behavior.",
+        "reason": "learning and candidate records may exist, but repeatable replay, L5 artifacts, and registry-selected capability evidence are not yet enough.",
+        "done_when": "Add profile-backed replay packs and hard metrics for the active capability set without changing production behavior.",
     }
 
 
@@ -1659,18 +2305,49 @@ def _release_validation(
     }
 
 
-def _ready_count(ledger: dict[str, Any], capability_names: set[str]) -> int:
+def _ready_count(
+    ledger: dict[str, Any],
+    capability_names: set[str],
+    *,
+    capability_selection: Mapping[str, Any],
+) -> int:
     capabilities = dict(ledger.get("capabilities") or {})
+    requirements = {
+        str(entry.get("capability_id") or ""): entry
+        for entry in capability_selection.get("capabilities") or []
+        if isinstance(entry, Mapping)
+    }
     total = 0
     for name in capability_names:
         item = dict(capabilities.get(name) or {})
-        if float(item.get("score") or 0.0) >= 0.7 and int(item.get("evidence_count") or 0) >= 3:
+        entry = requirements.get(name) or {}
+        minimum_evidence = _selection_requirement(entry, "min_evidence_count", 3)
+        if float(item.get("score") or 0.0) >= 0.7 and int(item.get("evidence_count") or 0) >= minimum_evidence:
             total += 1
     return total
 
 
-def _weak_outcome_evidence(runtime: Any, *, scope: ScopeRef, limit: int) -> dict[str, Any]:
-    evidence_by_capability = collect_capability_evidence(runtime, scope=scope, limit=limit)
+def _capability_outcome_evidence(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    limit: int,
+    capability_selection: Mapping[str, Any],
+    catalog: CapabilityEvaluationCatalog | None,
+    legacy_compatibility: bool,
+) -> dict[str, Any]:
+    evidence_by_capability = collect_capability_evidence(
+        runtime,
+        scope=scope,
+        limit=limit,
+        catalog=catalog,
+        legacy_compatibility=legacy_compatibility,
+    )
+    requirements = {
+        str(entry.get("capability_id") or ""): entry
+        for entry in capability_selection.get("capabilities") or []
+        if isinstance(entry, Mapping) and str(entry.get("capability_id") or "").strip()
+    }
     counts = {
         name: len(
             {
@@ -1679,18 +2356,22 @@ def _weak_outcome_evidence(runtime: Any, *, scope: ScopeRef, limit: int) -> dict
                 if item.get("contract_verified") is True and str(item.get("source_id") or "")
             }
         )
-        for name in sorted(WEAK_CAPABILITIES)
+        for name in sorted(requirements)
     }
     return {
-        "minimum_per_capability": 3,
+        "minimum_per_capability": None,
+        "minimums_by_capability": {
+            name: _selection_outcome_minimum(entry)
+            for name, entry in requirements.items()
+            if _selection_outcome_minimum(entry)
+        },
         "counts": counts,
-        "missing": [name for name, count in counts.items() if count < 3],
+        "missing": [
+            name
+            for name, count in counts.items()
+            if count < _selection_outcome_minimum(requirements[name])
+        ],
     }
-
-
-def _outcome_evidence_count(item: dict[str, Any]) -> int:
-    source_counts = item.get("evidence_source_counts") if isinstance(item.get("evidence_source_counts"), dict) else {}
-    return int(source_counts.get("event_outcome") or 0) + int(source_counts.get("outcome_trace") or 0)
 
 
 def _next_actions(
@@ -1702,6 +2383,7 @@ def _next_actions(
     latest_l5_assessment: dict[str, Any],
     production_recall_gate: dict[str, Any],
     production_recall_strict_state: dict[str, Any],
+    legacy_compatibility: bool,
 ) -> list[str]:
     actions = []
     if production_recall_gate.get("ok") is not True or production_recall_gate.get("status") != "accepted":
@@ -1728,14 +2410,24 @@ def _next_actions(
         )
     if int(verified_replay.get("executed_count") or 0) < 5:
         actions.append("Execute replay packs from existing outcome traces before promoting new behavior; not_run records do not count.")
-    for capability in list(verified_replay.get("weak_capabilities_missing") or [])[:4]:
-        actions.append(f"Execute at least three replays for {capability} with pass rate >=0.8.")
+    for capability in _replay_missing(verified_replay)[:4]:
+        actions.append(f"Execute the Profile-configured replay minimum for {capability} with pass rate >=0.8.")
     for gap in capability_gaps[:4]:
-        actions.append(f"Add replay-backed evidence for {gap['capability']} ({gap['reason']}).")
+        capability = str(gap.get("capability") or "").strip()
+        if capability:
+            actions.append(f"Add replay-backed evidence for {capability} ({gap['reason']}).")
+        else:
+            actions.append(
+                "Register or resolve an exact active capability Profile before evaluating readiness; no legacy cohort will be substituted."
+            )
     if int(evidence_counts.get("l5_world_model") or 0) == 0:
         actions.append("Run or persist an L5 world-model report after the read-only readiness report is reviewed.")
     if stage["stage"] in {"L4", "L4.5"} and int(evidence_counts.get("rollback_or_quarantine") or 0) == 0:
         actions.append("Exercise a non-destructive rollback/quarantine rehearsal so reversibility is proven.")
     if not latest_l5_assessment.get("complete"):
-        actions.append("Complete an L5 assessment with zero missing evidence before claiming L5.")
+        actions.append(
+            "Complete an L5 assessment with zero missing evidence before claiming L5."
+            if legacy_compatibility
+            else "Complete the v3 projection and four-axis assessment for the exact active Profile before claiming L5."
+        )
     return actions[:6] or ["Keep running readiness, replay, and dashboard reports; do not claim L5 unless assessment evidence is complete."]

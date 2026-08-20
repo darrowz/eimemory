@@ -8,6 +8,10 @@ from typing import Any
 
 from eimemory.intake.papers import artifacts as paper_artifacts
 from eimemory.intake.papers.artifacts import PaperArtifactError
+from eimemory.knowledge.capabilities import (
+    KNOWLEDGE_CAPABILITY_MARKER_KEY,
+    refresh_capability_applicability_marker,
+)
 from eimemory.knowledge.compiler import compile_paper_knowledge
 from eimemory.models.records import RecordEnvelope, ScopeRef
 from eimemory.storage.runtime_store import RuntimeStore
@@ -303,7 +307,15 @@ def _mark_page_blocked(page: RecordEnvelope, *, plan: _RefreshPlan) -> bool:
         "compile_input_digest": plan.compile_input_digest,
     }
     current = page.content.get("refresh") if isinstance(page.content, dict) else None
-    if page.status == "needs_refresh" and current == refresh:
+    capability_marker = refresh_capability_applicability_marker(
+        "blocked",
+        reason=plan.blocked_reason,
+    )
+    if (
+        page.status == "needs_refresh"
+        and current == refresh
+        and page.content.get(KNOWLEDGE_CAPABILITY_MARKER_KEY) == capability_marker
+    ):
         return False
     page.status = "needs_refresh"
     page.content["refresh"] = refresh
@@ -311,12 +323,23 @@ def _mark_page_blocked(page: RecordEnvelope, *, plan: _RefreshPlan) -> bool:
     page.meta["refresh_blocked_reason"] = plan.blocked_reason
     page.meta["refresh_run_id"] = plan.refresh_run_id
     page.meta["compile_input_digest"] = plan.compile_input_digest
+    page.content[KNOWLEDGE_CAPABILITY_MARKER_KEY] = capability_marker
+    page.meta[KNOWLEDGE_CAPABILITY_MARKER_KEY] = capability_marker
+    page.provenance["knowledge_capability_refresh"] = capability_marker
     page.touch()
     return True
 
 
 def _deprecate_page(page: RecordEnvelope, *, plan: _RefreshPlan, superseded_by: list[str]) -> bool:
-    if page.status == "deprecated" and page.meta.get("refresh_run_id") == plan.refresh_run_id:
+    capability_marker = refresh_capability_applicability_marker(
+        "superseded",
+        reason="not_present_in_recompile",
+    )
+    if (
+        page.status == "deprecated"
+        and page.meta.get("refresh_run_id") == plan.refresh_run_id
+        and page.content.get(KNOWLEDGE_CAPABILITY_MARKER_KEY) == capability_marker
+    ):
         return False
     page.status = "deprecated"
     page.content["deprecated"] = True
@@ -330,6 +353,9 @@ def _deprecate_page(page: RecordEnvelope, *, plan: _RefreshPlan, superseded_by: 
     page.meta["refresh_state"] = "superseded"
     page.meta["refresh_run_id"] = plan.refresh_run_id
     page.meta["superseded_by"] = superseded_by
+    page.content[KNOWLEDGE_CAPABILITY_MARKER_KEY] = capability_marker
+    page.meta[KNOWLEDGE_CAPABILITY_MARKER_KEY] = capability_marker
+    page.provenance["knowledge_capability_refresh"] = capability_marker
     page.touch()
     return True
 
@@ -351,6 +377,8 @@ def _annotate_recompiled_page(
     page.content.pop("contradiction_claim_ids", None)
     page.meta.pop("contradiction_ids", None)
     page.meta.pop("contradiction_claim_ids", None)
+    page.provenance.pop("contradiction_ids", None)
+    page.provenance.pop("contradiction_claim_ids", None)
     page.content["refresh"] = {
         "state": "recompiled",
         "reason": "claim_contradiction",
@@ -371,6 +399,14 @@ def _annotate_recompiled_page(
     page.meta["previous_compile_digest"] = previous_digest
     page.provenance["refresh_run_id"] = plan.refresh_run_id
     page.provenance["compile_input_digest"] = plan.compile_input_digest
+    capability_marker = refresh_capability_applicability_marker(
+        "recompiled",
+        reason="claim_contradiction",
+        resolved_contradiction_ids=audit_ids,
+    )
+    page.content[KNOWLEDGE_CAPABILITY_MARKER_KEY] = capability_marker
+    page.meta[KNOWLEDGE_CAPABILITY_MARKER_KEY] = capability_marker
+    page.provenance["knowledge_capability_refresh"] = capability_marker
     if audit_ids:
         page.provenance["refresh_audit"] = {
             "resolved_contradiction_ids": audit_ids,
@@ -427,7 +463,11 @@ def _contradiction_audit_ids(records: list[RecordEnvelope]) -> tuple[str, ...]:
         refresh_audit = provenance.get("refresh_audit") if isinstance(provenance.get("refresh_audit"), dict) else {}
         for container, key in (
             (content, "contradiction_ids"),
+            (content, "contradiction_claim_ids"),
             (meta, "contradiction_ids"),
+            (meta, "contradiction_claim_ids"),
+            (provenance, "contradiction_ids"),
+            (provenance, "contradiction_claim_ids"),
             (content, "resolved_contradiction_ids"),
             (meta, "resolved_contradiction_ids"),
             (provenance, "resolved_contradiction_ids"),
@@ -501,7 +541,11 @@ def _record_digest(record: RecordEnvelope | None) -> str:
 
 
 def _refresh_run_id(source_id: str, compile_input_digest: str) -> str:
-    return f"krefresh_{_sha256(f'{source_id}\x1f{compile_input_digest}')[:20]}"
+    # Keep the separator outside an f-string expression.  Python 3.11 rejects
+    # backslashes within an f-string expression, while newer interpreters
+    # accept it; eimemory still supports Python 3.11 in production.
+    run_input = f"{source_id}\x1f{compile_input_digest}"
+    return f"krefresh_{_sha256(run_input)[:20]}"
 
 
 def _sha256(value: str) -> str:

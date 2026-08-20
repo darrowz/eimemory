@@ -267,6 +267,7 @@ class FakeRuntime:
             "persist": True,
             "replay_bootstrap": self.replay_bootstrap,
             "repo_root": REPO_ROOT,
+            "legacy_compatibility": True,
         }
         if self.expect_bootstrap_pending:
             assert "bootstrap_pending" in kwargs
@@ -300,6 +301,7 @@ class FakeRuntime:
             "persist": True,
             "limit": 1000,
             "loop_id": "release_closure",
+            "reader_mode": "legacy",
         }
         return deepcopy(self.readiness)
 
@@ -377,6 +379,7 @@ def test_release_closure_finalizes_exact_lineage_inside_single_rehearsal(
             "persist": True,
             "replay_bootstrap": runtime.replay_bootstrap,
             "repo_root": REPO_ROOT,
+            "legacy_compatibility": True,
         }
         lineage = finalizer({"ok": True, "manifest_record_id": "core-manifest"})
         return {
@@ -420,7 +423,7 @@ def test_release_closure_finalizes_exact_lineage_inside_single_rehearsal(
     ]
     assert captured["gate_evidence"] == {
         "memory.recall": ["prg-current", "prbs-strict-current"],
-        "memory.governance": ["manifest-1", "core-manifest"],
+        "memory.governance": ["core-manifest", "manifest-1"],
         "channel.openclaw": ["channel-current"],
         "storage.integrity": [f"live-case-{index}" for index in range(10)],
         "deployment.runtime": ["receipt-1"],
@@ -473,8 +476,11 @@ def test_release_closure_finalizes_pending_recall_lineage_with_bootstrap_and_cor
         strict_state_record_id="",
         bootstrap_pending_record_id="bootstrap-pending-current",
         channel_acceptance_record_id="channel-current",
-        weak_replay={"weak_capability_replay": {"manifest_record_id": "weak-manifest"}},
-        core_replay={"manifest_record_id": "core-manifest"},
+        replay_bootstrap={
+            "legacy_compatibility": True,
+            "weak_capability_replay": {"manifest_record_id": "weak-manifest"},
+        },
+        capability_replay={"manifest_record_id": "core-manifest"},
         live_acceptance=live_acceptance,
     )
 
@@ -1452,6 +1458,7 @@ def _successful_live_acceptance() -> dict:
 def _successful_replay_bootstrap() -> dict:
     return {
         "ok": True,
+        "legacy_compatibility": True,
         "capability_acceptance": {"ok": True, "execution_id": "acceptance-1"},
         "weak_capability_replay": {
             "ok": True,
@@ -1488,6 +1495,7 @@ def _successful_readiness() -> dict:
     return {
         "ok": True,
         "schema_version": "l5_readiness.v2",
+        "legacy_compatibility": True,
         "release_identity": {
             "release_commit": CURRENT_COMMIT,
             "release_version": "1.9.51",

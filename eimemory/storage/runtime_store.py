@@ -16,9 +16,12 @@ from eimemory.models.memory_edges import MemoryEdge
 from eimemory.storage.jsonl import JsonlLog, JsonlScanEntry, JsonlScanError, canonical_payload_json
 from eimemory.storage.capability_store import (
     CapabilityStore,
+    EffectiveCapabilityEntity,
     PendingCapabilityAudit,
+    StoredCapabilityEntity,
     _open_capability_store,
 )
+from eimemory.capabilities.models import AdapterCapabilityAdvertisement
 from eimemory.storage.sqlite_store import SqliteRecordStore
 from eimemory.models.records import RecordEnvelope, ScopeRef, TimeRef
 
@@ -183,6 +186,109 @@ class RuntimeStore:
                     "operation_ids": tuple(operation_ids),
                 }
             return result
+
+    def read_capabilities(self, reader: Callable[[CapabilityStore], T]) -> T:
+        """Run a bounded capability-domain read without exposing SQLite rows.
+
+        The repository is explicitly read-only and the enclosing snapshot is
+        always rolled back after the callback.  This keeps registry/profile
+        queries on the same exact-scope boundary as mutations while preventing
+        an accidental write path from bypassing the capability ledger/outbox.
+        """
+
+        with self._lock:
+            self.sqlite.conn.execute("BEGIN")
+            try:
+                repository = _open_capability_store(self.sqlite, read_only=True)
+                return reader(repository)
+            finally:
+                if self.sqlite.conn.in_transaction:
+                    self.sqlite.conn.rollback()
+
+    def register_capability_advertisement(
+        self,
+        advertisement: AdapterCapabilityAdvertisement,
+        *,
+        scope: ScopeRef,
+        request_key: str = "",
+    ) -> StoredCapabilityEntity:
+        """Persist an adapter advertisement through the capability transaction.
+
+        This narrow convenience boundary prevents adapters from reaching into a
+        SQLite connection or constructing their own capability-domain
+        transaction.  It retains the ledger/audit/outbox behavior of every
+        other capability write.
+        """
+
+        return self.mutate_capabilities_atomically(
+            lambda repository: repository.register_advertisement(
+                advertisement,
+                scope=scope,
+                request_key=request_key,
+            )
+        )
+
+    def list_capability_advertisements(
+        self,
+        *,
+        scope: ScopeRef,
+        capability_scope: str,
+        binding_id: str = "",
+        adapter_id: str = "",
+        provider_kind: str = "",
+        provider_instance_id: str = "",
+        status: str | None = "active",
+        at_time: str = "",
+        fresh_at: str = "",
+        limit: int = 100,
+    ) -> list[EffectiveCapabilityEntity]:
+        """Read bounded advertisement DTOs through the capability repository."""
+
+        return self.read_capabilities(
+            lambda repository: repository.list_advertisements(
+                scope=scope,
+                capability_scope=capability_scope,
+                binding_id=binding_id,
+                adapter_id=adapter_id,
+                provider_kind=provider_kind,
+                provider_instance_id=provider_instance_id,
+                status=status,
+                at_time=at_time,
+                fresh_at=fresh_at,
+                limit=limit,
+            )
+        )
+
+    def list_adapter_advertisements(
+        self,
+        *,
+        scope: ScopeRef,
+        capability_scope: str,
+        adapter_id: str = "",
+        binding_id: str = "",
+        at_time: str = "",
+        limit: int = 100,
+        fresh_at: str = "",
+        provider_kind: str = "",
+        provider_instance_id: str = "",
+        status: str | None = "active",
+    ) -> list[EffectiveCapabilityEntity]:
+        """Stable RuntimeStore façade for adapter-readiness consumers."""
+
+        return self.read_capabilities(
+            lambda repository: repository.list_adapter_advertisements(
+                scope=scope,
+                capability_scope=capability_scope,
+                adapter_id=adapter_id,
+                binding_id=binding_id,
+                at_time=at_time,
+                limit=limit,
+                fresh_at=fresh_at,
+                provider_kind=provider_kind,
+                provider_instance_id=provider_instance_id,
+                status=status,
+            )
+        )
 
     def capability_export_status(self) -> dict[str, object]:
         """Return the latest capability audit-export projection status."""
@@ -1227,8 +1333,8 @@ class RuntimeStore:
             "PRIMARY KEY(table_name, item_key))"
         )
         try:
-            capability_audits: list[tuple[dict, RecordEnvelope, str]] = []
-            for scanned in self.log.scan_strict():
+            capability_audits: list[tuple[dict, RecordEnvelope, str, int]] = []
+            for scan_index, scanned in enumerate(self.log.scan_strict()):
                 if not _accept_rebuild_operation(target, scanned):
                     continue
                 record = RecordEnvelope.from_dict(scanned.payload)
@@ -1243,12 +1349,12 @@ class RuntimeStore:
                     scanned_operation_id=str(scanned.operation_id or ""),
                 )
                 if audit is not None:
-                    capability_audits.append((audit, record, str(audit["operation_id"])))
+                    capability_audits.append((audit, record, str(audit["operation_id"]), scan_index))
             if capability_audits:
                 capabilities = _open_capability_store(target)
-                for audit, record, operation_id in sorted(
+                for audit, record, operation_id, scan_index in sorted(
                     capability_audits,
-                    key=lambda item: _capability_audit_replay_key(item[0]),
+                    key=lambda item: _capability_audit_replay_key(item[0], scan_index=item[3]),
                 ):
                     capabilities.replay_audit(audit)
                     # Rebuild recreates a historical export as already durable.
@@ -1769,7 +1875,7 @@ def _capability_audit_from_record(
     return audit
 
 
-def _capability_audit_replay_key(audit: dict) -> tuple[int, str]:
+def _capability_audit_replay_key(audit: dict, *, scan_index: int) -> tuple[int, int, str]:
     """Order audit replay by FK dependency rather than incidental JSONL order."""
 
     priority = {
@@ -1777,6 +1883,7 @@ def _capability_audit_replay_key(audit: dict) -> tuple[int, str]:
         "revision": 20,
         "relation": 30,
         "binding": 30,
+        "advertisement": 35,
         "profile": 30,
         "evaluation_spec": 40,
         "evaluation_run": 50,
@@ -1784,9 +1891,34 @@ def _capability_audit_replay_key(audit: dict) -> tuple[int, str]:
         "knowledge_link": 50,
         "snapshot": 60,
         "assessment": 70,
+        # A lifecycle event can only follow the immutable descriptor it
+        # transitions.  Replaying it last avoids depending on incidental JSONL
+        # append order while preserving the CAS predecessor carried in the
+        # audit payload.
+        "lifecycle_transition": 80,
     }
     entity_type = str(audit.get("entity_type") or "")
-    return (priority.get(entity_type, 100), str(audit.get("operation_id") or ""))
+    operation_id = str(audit.get("operation_id") or "")
+    # Relations are the one v3 descriptor whose *effective* state constrains
+    # later immutable registrations.  Preserve their durable records-stream
+    # sequence together with their own lifecycle events: a retired A->B must
+    # replay before a subsequently admitted B->A.  Other descriptor groups
+    # retain topology-first ordering, so FK reconstruction does not depend on
+    # incidental JSONL order.
+    if entity_type == "relation":
+        return (priority["relation"], int(scan_index), operation_id)
+    if entity_type == "lifecycle_transition":
+        transition = audit.get("entity") if isinstance(audit.get("entity"), dict) else {}
+        target_type = str(transition.get("entity_type") or "")
+        target_id = str(transition.get("entity_id") or "")
+        if target_type == "relation":
+            return (priority["relation"], int(scan_index), operation_id)
+        try:
+            expected_version = int(transition.get("expected_state_version") or 0)
+        except (TypeError, ValueError):
+            expected_version = -1
+        return (priority[entity_type], 0, f"{target_type}:{target_id}:{expected_version:020d}")
+    return (priority.get(entity_type, 100), 0, operation_id)
 
 
 def _auxiliary_entry_from_payload(entry: dict) -> dict:

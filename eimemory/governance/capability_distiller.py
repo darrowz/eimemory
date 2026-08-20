@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from eimemory.governance.learning_eval import REGRESSION_THRESHOLD, SAFETY_THRESHOLD
@@ -16,12 +17,35 @@ def distill_capability_candidate(
     eval_result: dict[str, Any],
     promotion_target: str,
     summary: str,
-    target_capability: str = "proactive.judgment",
+    target_capability: str = "",
+    candidate_patch: dict[str, Any] | None = None,
 ) -> str:
+    target_capability = str(target_capability or "").strip()
+    if not target_capability:
+        raise ValueError("target_capability must be explicitly attributed")
     _validate_eval(eval_result)
     scores = dict(eval_result.get("scores") or {})
     tier = _tier_for_target(promotion_target)
-    semantic_key = stable_semantic_key("capability_candidate", target_capability, promotion_target, summary)
+    normalized_patch = dict(candidate_patch or {})
+    hypothesis_context = normalized_patch.get("capability_hypothesis")
+    hypothesis_context = dict(hypothesis_context) if isinstance(hypothesis_context, dict) else {}
+    candidate_bounds = normalized_patch.get("candidate_bounds")
+    candidate_bounds = dict(candidate_bounds) if isinstance(candidate_bounds, dict) else {}
+    replay_case_ids = normalized_patch.get("replay_case_ids")
+    replay_case_ids = [str(value) for value in replay_case_ids if str(value)] if isinstance(replay_case_ids, (list, tuple)) else []
+    # A generic summary must not deduplicate candidates from two distinct
+    # hypotheses or bounded replay sets.  Those links are behavior-relevant
+    # evidence, not presentation metadata.
+    semantic_key = stable_semantic_key(
+        "capability_candidate",
+        target_capability,
+        promotion_target,
+        summary,
+        hypothesis_context.get("hypothesis_id"),
+        hypothesis_context.get("link_digest"),
+        json.dumps(candidate_bounds, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str),
+        json.dumps(sorted(replay_case_ids), ensure_ascii=False, separators=(",", ":")),
+    )
     existing = _existing_candidate_by_semantic_key(runtime, scope=scope, semantic_key=semantic_key)
     if existing:
         return existing
@@ -48,6 +72,13 @@ def distill_capability_candidate(
             "summary": summary,
             "target_capability": target_capability,
             "rollback": "Disable promoted candidate or restore previous artifact version.",
+            # Preserve an explicit hypothesis bridge with the immutable
+            # candidate.  Feedback validation deliberately refuses to infer
+            # this later from a goal title or capability name.
+            "candidate_patch": normalized_patch,
+            "capability_hypothesis": hypothesis_context,
+            "candidate_bounds": candidate_bounds,
+            "replay_case_ids": replay_case_ids,
         },
         meta={
             "experiment_id": experiment_id,
@@ -56,6 +87,7 @@ def distill_capability_candidate(
             "authority_tier": tier,
             "safety": scores.get("safety"),
             "regression": scores.get("regression"),
+            "capability_hypothesis_id": str(hypothesis_context.get("hypothesis_id") or ""),
         },
     )
     playbook = append_learning_record_once(
@@ -100,7 +132,7 @@ def _existing_candidate_by_semantic_key(
 
 
 def _candidate_title(*, target_capability: str, promotion_target: str, summary: str) -> str:
-    capability = str(target_capability or "proactive.judgment")
+    capability = str(target_capability or "unclassified")
     artifact = _artifact_label(promotion_target)
     phrase = _short_summary(summary)
     if phrase:

@@ -72,6 +72,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release-bound L5 closure evidence: live acceptance, observation, and
   independent readiness for the deployed commit.
 
+## [1.9.136] - 2026-08-20
+
+### Added
+
+- Add dynamic L5 v3 capability contracts: semantic capability definitions,
+  revisions, provider bindings, profiles, evaluation specifications, evidence
+  observations, and per-axis assessments replace the former default fixed
+  capability universe.
+- Add a sealed, typed application evaluation-catalog bootstrap. Installed
+  Python entry points may register trusted executors and cases during startup;
+  absent configuration blocks dynamic evaluation with `catalog_not_configured`
+  instead of selecting an implicit catalog.
+
+### Changed
+
+- Align the Codex and Hermes plugin package metadata with the `1.9.136`
+  runtime declaration.
+- Scope capability-domain reads, writes, backfill cursors, and assessments to
+  the exact tenant/agent/workspace/user owner scope plus logical capability
+  scope. Evidence remains bound to capability revision, provider binding, and
+  its recorded provenance; package version and machine identity are context,
+  not capability identity.
+- Introduce SQLite capability v3 domain tables, transactional lifecycle and
+  audit/export boundaries, and restartable scoped backfill machinery. This
+  release does not claim a completed historical backfill or benchmark-budget
+  validation for every deployment.
+- Let Codex, Hermes, OpenClaw, and eibrain advertise independently through the
+  internal capability contract; model-visible adapter surfaces remain
+  compatibility-bound rather than being forced into tool parity.
+- Route reviewed external knowledge through typed capability links and
+  evidence-bound hypotheses. Knowledge, stale sources, or failed hypotheses
+  cannot self-promote maturity or apply a change.
+- Make automatic local code evolution depend on a matching trusted
+  machine-environment policy and, on the dynamic path, verified hypothesis
+  evidence. There is no human approval queue; a missing, malformed, or
+  nonmatching policy blocks the action, while commit and deployment remain
+  separate machine-policy capabilities.
+
 ## [1.9.135] - 2026-08-19
 
 ### Fixed

@@ -42,7 +42,14 @@ def test_autonomous_learning_failure_gate_preserves_prior_capability_score(tmp_p
         },
     )
 
-    report = runtime.run_autonomous_learning_cycle(scope=scope, force=True, apply=True, max_goals=1, max_promotions=1)
+    report = runtime.run_autonomous_learning_cycle(
+        scope=scope,
+        force=True,
+        apply=True,
+        max_goals=1,
+        max_promotions=1,
+        legacy_compatibility=True,
+    )
 
     assert report["ok"] is True
     assert report["replay_gate_passed"] is False
@@ -56,7 +63,11 @@ def test_autonomous_learning_failure_gate_preserves_prior_capability_score(tmp_p
     assert "real_task_replay_no_samples" in eval_record.content["blocked_reasons"]
 
     assert report["capability_score_id"] == ""
-    ledger = runtime.learning_ledger(scope=scope, attribute_outcomes=False)
+    ledger = runtime.learning_ledger(
+        scope=scope,
+        attribute_outcomes=False,
+        legacy_compatibility=True,
+    )
     assert ledger["capabilities"]["tool.routing"]["score"] == 0.84
 
 
@@ -109,9 +120,14 @@ def test_autonomous_learning_attributes_preexisting_verified_real_outcome_before
             },
         },
         scope=scope,
+        legacy_compatibility=True,
     )
     assert trace["ok"] is True
-    before = runtime.learning_ledger(scope=scope, attribute_outcomes=False)
+    before = runtime.learning_ledger(
+        scope=scope,
+        attribute_outcomes=False,
+        legacy_compatibility=True,
+    )
     assert before["capabilities"]["operations.uumit"]["score"] == 0.0
 
     monkeypatch.setattr(
@@ -144,13 +160,18 @@ def test_autonomous_learning_attributes_preexisting_verified_real_outcome_before
         apply=True,
         max_goals=1,
         max_promotions=1,
+        legacy_compatibility=True,
     )
 
     assert report["replay_gate_passed"] is False
     attribution = report["preexisting_outcome_attribution"]
     attributed = attribution["capabilities"]["operations.uumit"]
     assert attributed["evidence_record_ids"] == [trace["record_id"]]
-    ledger = runtime.learning_ledger(scope=scope, attribute_outcomes=False)
+    ledger = runtime.learning_ledger(
+        scope=scope,
+        attribute_outcomes=False,
+        legacy_compatibility=True,
+    )
     capability = ledger["capabilities"]["operations.uumit"]
     assert capability["score"] == 0.82
     assert capability["last_record_id"] in attribution["record_ids"]
@@ -200,6 +221,7 @@ def test_autonomous_learning_degrades_preexisting_outcome_attribution_failure_wi
         apply=True,
         max_goals=1,
         max_promotions=1,
+        legacy_compatibility=True,
     )
 
     assert report["ok"] is True

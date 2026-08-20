@@ -3,6 +3,11 @@ from __future__ import annotations
 from typing import Any
 from collections import OrderedDict
 
+from eimemory.capabilities.consumer_views import (
+    capability_aliases_from_view,
+    dynamic_evaluation_view,
+    resolve_explicit_capability_attribution,
+)
 from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
@@ -20,9 +25,90 @@ def generate_thoughts(
     loop_id: str = "manual",
     persist: bool = True,
     max_items: int = 20,
+    capability_scope: str = "global",
+    profile_key: str = "",
+    catalog: Any | None = None,
+    at_time: str = "",
+    dynamic_capabilities: bool | None = None,
+    legacy_compatibility: bool = False,
 ) -> dict[str, Any]:
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
-    candidates = _candidate_thoughts(signals or [], self_model or {}, goals or [])
+    # Default thought generation is scoped by a live registry/profile and
+    # immutable evaluation catalog.  Keeping legacy mode explicit prevents a
+    # prose-only thought from silently inheriting a compiled capability name.
+    if legacy_compatibility and dynamic_capabilities is True:
+        return {
+            "ok": False,
+            "status": "blocked",
+            "reason": "conflicting_capability_consumer_modes",
+            "errors": [],
+            "thought_count": 0,
+            "persisted_record_ids": [],
+            "thoughts": [],
+            "capability_evaluation_view": {},
+            "legacy_compatibility": True,
+        }
+    if dynamic_capabilities is False and not legacy_compatibility:
+        return {
+            "ok": False,
+            "status": "blocked",
+            "reason": "legacy_compatibility_required",
+            "errors": [],
+            "thought_count": 0,
+            "persisted_record_ids": [],
+            "thoughts": [],
+            "capability_evaluation_view": {},
+            "legacy_compatibility": False,
+        }
+    legacy_compatibility = bool(legacy_compatibility)
+    dynamic_requested = not legacy_compatibility
+    evaluation_view: dict[str, Any] = {}
+    attribution_context: dict[str, Any] | None = None
+    if dynamic_requested:
+        evaluation_view = dynamic_evaluation_view(
+            runtime,
+            scope=scope_ref,
+            capability_scope=capability_scope,
+            profile_key=profile_key,
+            catalog=catalog,
+            at_time=at_time,
+            max_cases=256,
+        )
+        if evaluation_view.get("ok") is not True:
+            return {
+                "ok": False,
+                "status": "blocked",
+                "reason": str(evaluation_view.get("reason") or "capability_evaluation_selection_blocked"),
+                "errors": [str(item) for item in evaluation_view.get("errors") or ()],
+                "thought_count": 0,
+                "persisted_record_ids": [],
+                "thoughts": [],
+                "capability_evaluation_view": evaluation_view,
+                "legacy_compatibility": False,
+            }
+        capability_view = (
+            evaluation_view.get("capability_view")
+            if isinstance(evaluation_view.get("capability_view"), dict)
+            else {}
+        )
+        attribution_context = {
+            "allowed_capability_ids": tuple(
+                sorted(
+                    {
+                        str(item.get("capability_id") or "").strip()
+                        for item in capability_view.get("capabilities") or ()
+                        if isinstance(item, dict) and str(item.get("capability_id") or "").strip()
+                    }
+                )
+            ),
+            "aliases": capability_aliases_from_view(capability_view),
+        }
+    candidates = _candidate_thoughts(
+        signals or [],
+        self_model or {},
+        goals or [],
+        attribution_context=attribution_context,
+    )
     ranked = rank_thoughts(_merge_repeat_candidates(candidates))[:max_items]
     records: list[RecordEnvelope] = []
     if persist:
@@ -33,6 +119,8 @@ def generate_thoughts(
         "thought_count": len(ranked),
         "persisted_record_ids": [record.record_id for record in records],
         "thoughts": [record_to_thought(record) for record in records] if persist else ranked,
+        "capability_evaluation_view": evaluation_view,
+        "legacy_compatibility": bool(legacy_compatibility),
     }
 
 
@@ -58,7 +146,7 @@ def promote_thoughts_to_goals(
         thought = record_to_thought(raw) if isinstance(raw, RecordEnvelope) else dict(raw)
         if str(thought.get("status") or "candidate") == "blocked":
             continue
-        capability = str(thought.get("target_capability") or "proactive.judgment")
+        capability = str(thought.get("target_capability") or "unclassified")
         question = str(thought.get("question") or thought.get("hypothesis") or "What should be learned from this thought?")
         goals.append(
             {
@@ -104,7 +192,8 @@ def record_to_thought(record: RecordEnvelope) -> dict[str, Any]:
         "question": str(thought.get("question") or record.summary or record.title),
         "hypothesis": str(thought.get("hypothesis") or ""),
         "next_action": str(thought.get("next_action") or ""),
-        "target_capability": str(thought.get("target_capability") or meta.get("target_capability") or "proactive.judgment"),
+        "target_capability": str(thought.get("target_capability") or meta.get("target_capability") or "unclassified"),
+        "capability_attribution": dict(thought.get("capability_attribution") or {}),
         "importance": float(thought.get("importance") or meta.get("importance") or 0.0),
         "urgency": float(thought.get("urgency") or meta.get("urgency") or 0.0),
         "confidence": float(thought.get("confidence") or meta.get("confidence") or 0.0),
@@ -121,19 +210,29 @@ def record_to_thought(record: RecordEnvelope) -> dict[str, Any]:
     }
 
 
-def _candidate_thoughts(signals: list[dict[str, Any]], self_model: dict[str, Any], goals: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _candidate_thoughts(
+    signals: list[dict[str, Any]],
+    self_model: dict[str, Any],
+    goals: list[dict[str, Any]],
+    *,
+    attribution_context: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     for signal in signals:
         summary = str(signal.get("summary") or signal.get("title") or "").strip()
         if not summary:
             continue
-        cap = str(signal.get("target_capability") or "proactive.judgment")
+        cap, capability_attribution = _thought_capability(
+            [signal],
+            attribution_context=attribution_context,
+        )
         items.append(
             {
                 "question": f"What should change because of this signal: {_short(summary, 140)}?",
                 "hypothesis": summary,
                 "next_action": "Create a reusable asset or explicit rejection after replay/eval.",
                 "target_capability": cap,
+                "capability_attribution": capability_attribution,
                 "importance": float(signal.get("impact") or signal.get("score") or 0.55),
                 "urgency": float(signal.get("urgency") or 0.45),
                 "confidence": float(signal.get("confidence") or 0.5),
@@ -144,7 +243,10 @@ def _candidate_thoughts(signals: list[dict[str, Any]], self_model: dict[str, Any
             }
         )
     for weakness in self_model.get("weaknesses") or []:
-        cap = str(weakness.get("capability") or "proactive.judgment")
+        cap, capability_attribution = _thought_capability(
+            [weakness],
+            attribution_context=attribution_context,
+        )
         lesson = str(weakness.get("lesson") or weakness.get("kind") or cap)
         items.append(
             {
@@ -152,6 +254,7 @@ def _candidate_thoughts(signals: list[dict[str, Any]], self_model: dict[str, Any
                 "hypothesis": lesson,
                 "next_action": f"Build a {cap} policy/SOP/eval case for: {_short(lesson, 96)}.",
                 "target_capability": cap,
+                "capability_attribution": capability_attribution,
                 "importance": 0.75 + min(0.2, float(weakness.get("severity") or 0.0) / 5),
                 "urgency": 0.65,
                 "confidence": 0.72,
@@ -162,7 +265,18 @@ def _candidate_thoughts(signals: list[dict[str, Any]], self_model: dict[str, Any
             }
         )
     for goal in goals:
-        cap = str((goal.get("sub_capabilities") or ["proactive.judgment"])[0])
+        goal_payload = dict(goal)
+        sub_capabilities = goal.get("sub_capabilities")
+        if (
+            not goal_payload.get("target_capability")
+            and isinstance(sub_capabilities, (list, tuple))
+            and sub_capabilities
+        ):
+            goal_payload["target_capability"] = sub_capabilities[0]
+        cap, capability_attribution = _thought_capability(
+            [goal_payload],
+            attribution_context=attribution_context,
+        )
         title = str(goal.get("title") or "long-term goal")
         items.append(
             {
@@ -170,6 +284,7 @@ def _candidate_thoughts(signals: list[dict[str, Any]], self_model: dict[str, Any
                 "hypothesis": title,
                 "next_action": "Select one small measurable learning asset.",
                 "target_capability": cap,
+                "capability_attribution": capability_attribution,
                 "importance": 0.7,
                 "urgency": 0.4,
                 "confidence": 0.7,
@@ -181,6 +296,44 @@ def _candidate_thoughts(signals: list[dict[str, Any]], self_model: dict[str, Any
             }
         )
     return items
+
+
+def _thought_capability(
+    payloads: list[dict[str, Any]],
+    *,
+    attribution_context: dict[str, Any] | None,
+) -> tuple[str, dict[str, Any]]:
+    """Keep dynamic thought routing data-declared and fail closed."""
+
+    if attribution_context is None:
+        for payload in payloads:
+            for key in ("target_capability", "capability_id", "capability", "capability_domain"):
+                value = str(payload.get(key) or "").strip()
+                if value:
+                    return value, {
+                        "schema": "capability.consumer_attribution.v1",
+                        "status": "legacy_shadow",
+                        "capability_id": value,
+                        "reason": "legacy_explicit_field",
+                        "source": f"explicit_field:{key}",
+                        "rule_id": "",
+                        "migration_id": "",
+                    }
+        return "unclassified", {
+            "schema": "capability.consumer_attribution.v1",
+            "status": "legacy_shadow",
+            "capability_id": "unclassified",
+            "reason": "legacy_missing_capability_attribution",
+            "source": "",
+            "rule_id": "",
+            "migration_id": "",
+        }
+    attribution = resolve_explicit_capability_attribution(
+        payloads,
+        allowed_capability_ids=attribution_context.get("allowed_capability_ids") or (),
+        aliases=attribution_context.get("aliases") or {},
+    )
+    return str(attribution.get("capability_id") or "unclassified"), attribution
 
 
 def _upsert_thought(runtime: Any, thought: dict[str, Any], *, scope: ScopeRef, loop_id: str) -> RecordEnvelope:
@@ -221,7 +374,7 @@ def _upsert_thought(runtime: Any, thought: dict[str, Any], *, scope: ScopeRef, l
         meta={
             "thought_type": str(scored.get("source_type") or "proactive"),
             "source_type": str(scored.get("source_type") or "thought"),
-            "target_capability": str(scored.get("target_capability") or "proactive.judgment"),
+            "target_capability": str(scored.get("target_capability") or "unclassified"),
             "importance": scored.get("importance"),
             "urgency": scored.get("urgency"),
             "confidence": scored.get("confidence"),

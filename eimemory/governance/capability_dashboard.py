@@ -7,6 +7,11 @@ from pathlib import Path
 import re
 from typing import Any
 
+from eimemory.capabilities.consumer_views import (
+    capability_aliases_from_view,
+    dynamic_evaluation_view,
+)
+from eimemory.governance.capability_ledger import build_dynamic_capability_ledger
 from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.governance.deployment_receipt import valid_deployment_rollback_evidence
 from eimemory.governance.evidence_contract import (
@@ -300,6 +305,265 @@ def build_capability_dashboard_metrics(
             "patch_promotions": len(executed_patch_deployments),
             "policy_rollbacks": len(policy_rollbacks),
         },
+    }
+
+
+def build_dynamic_capability_dashboard(
+    runtime: Any,
+    *,
+    scope: dict[str, Any] | ScopeRef | None = None,
+    capability_scope: str = "global",
+    profile_key: str = "",
+    catalog: Any | None = None,
+    at_time: str = "",
+    page: int = 1,
+    page_size: int = 50,
+    persist: bool = False,
+    loop_id: str = "capability_dashboard_dynamic_v1",
+) -> dict[str, Any]:
+    """Render a paginated arbitrary-capability dashboard from v3 contracts.
+
+    This is the WP11 consumer path.  It neither reads a compiled capability
+    universe nor converts legacy scores into a made-up target: every selected
+    evaluation is tied to one registry capability revision and provider
+    binding.  The older hard-metrics function remains a shadow report until
+    WP15.
+    """
+
+    scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+    if isinstance(page, bool) or not isinstance(page, int) or page < 1:
+        raise ValueError("page must be a positive integer")
+    if isinstance(page_size, bool) or not isinstance(page_size, int) or not 1 <= page_size <= 100:
+        raise ValueError("page_size must be an integer from 1 to 100")
+    selection = dynamic_evaluation_view(
+        runtime,
+        scope=scope_ref,
+        capability_scope=capability_scope,
+        profile_key=profile_key,
+        catalog=catalog,
+        at_time=at_time,
+        max_cases=256,
+    )
+    if selection.get("ok") is not True:
+        return {
+            "ok": False,
+            "status": "blocked",
+            "report_type": "dynamic_capability_dashboard",
+            "scope": asdict(scope_ref),
+            "capability_scope": capability_scope,
+            "reason": str(selection.get("reason") or "capability_evaluation_selection_blocked"),
+            "errors": [str(item) for item in selection.get("errors") or ()],
+            "selection": selection,
+            "items": [],
+            "pagination": _dashboard_pagination(page=page, page_size=page_size, total=0),
+            "persisted_record_id": "",
+        }
+    try:
+        ledger = build_dynamic_capability_ledger(
+            runtime,
+            scope=scope_ref,
+            capability_scope=capability_scope,
+            limit=500,
+        )
+    except Exception as exc:
+        return {
+            "ok": False,
+            "status": "blocked",
+            "report_type": "dynamic_capability_dashboard",
+            "scope": asdict(scope_ref),
+            "capability_scope": capability_scope,
+            "reason": "capability_ledger_projection_failed",
+            "errors": [type(exc).__name__],
+            "selection": selection,
+            "items": [],
+            "pagination": _dashboard_pagination(page=page, page_size=page_size, total=0),
+            "persisted_record_id": "",
+        }
+    capability_view = (
+        selection.get("capability_view")
+        if isinstance(selection.get("capability_view"), dict)
+        else {}
+    )
+    items = _dynamic_dashboard_items(
+        capability_view=capability_view,
+        selection=selection,
+        ledger=ledger,
+    )
+    start = (page - 1) * page_size
+    visible = items[start : start + page_size]
+    pagination = _dashboard_pagination(page=page, page_size=page_size, total=len(items))
+    report = {
+        "ok": True,
+        "status": "resolved",
+        "report_type": "dynamic_capability_dashboard",
+        "scope": asdict(scope_ref),
+        "capability_scope": capability_scope,
+        "profile": selection.get("profile") or {},
+        "resolution_digest": str(selection.get("resolution_digest") or ""),
+        "registry_watermark": str(selection.get("registry_watermark") or ""),
+        "lifecycle_watermark": str(selection.get("lifecycle_watermark") or ""),
+        "historical_aliases": capability_aliases_from_view(capability_view),
+        "selection": selection,
+        "ledger_watermark": str(ledger.get("watermark") or ""),
+        "items": visible,
+        "pagination": pagination,
+        "aggregate": _dynamic_dashboard_aggregate(items),
+        "persisted_record_id": "",
+    }
+    if persist:
+        record = append_learning_record_once(
+            runtime,
+            kind="reflection",
+            title="Dynamic capability dashboard",
+            summary=f"Rendered {len(visible)} of {len(items)} registry/profile capability rows.",
+            scope=scope_ref,
+            loop_id=loop_id,
+            step_name="dynamic_capability_dashboard",
+            semantic_key=stable_semantic_key(
+                "dynamic_capability_dashboard",
+                scope_ref,
+                capability_scope,
+                str(selection.get("resolution_digest") or ""),
+                page,
+                page_size,
+            ),
+            authority_tier="L0",
+            status="active",
+            content={
+                "report_type": "dynamic_capability_dashboard",
+                "selection": selection,
+                "ledger_watermark": str(ledger.get("watermark") or ""),
+                "items": visible,
+                "pagination": pagination,
+                "aggregate": report["aggregate"],
+            },
+            meta={
+                "report_type": "dynamic_capability_dashboard",
+                "capability_scope": capability_scope,
+                "profile_key": str(profile_key or ""),
+                "item_count": len(visible),
+                "total_capability_count": len(items),
+            },
+            source="eimemory.capability_dashboard",
+        )
+        report["persisted_record_id"] = record.record_id
+    return report
+
+
+def _dynamic_dashboard_items(
+    *,
+    capability_view: dict[str, Any],
+    selection: dict[str, Any],
+    ledger: dict[str, Any],
+) -> list[dict[str, Any]]:
+    targets_by_capability: dict[str, list[dict[str, Any]]] = {}
+    for entry in selection.get("cases") or ():
+        if not isinstance(entry, dict):
+            continue
+        artifact = entry.get("artifact") if isinstance(entry.get("artifact"), dict) else {}
+        target = entry.get("target") if isinstance(entry.get("target"), dict) else {}
+        capability_id = str(target.get("capability_id") or artifact.get("capability") or "").strip()
+        if not capability_id:
+            continue
+        targets_by_capability.setdefault(capability_id, []).append(
+            {
+                "case_id": str(artifact.get("case_id") or ""),
+                "evaluation_case_digest": str(artifact.get("evaluation_case_digest") or ""),
+                "eval_spec_id": str(artifact.get("eval_spec_id") or ""),
+                "capability_revision_id": str(target.get("capability_revision_id") or ""),
+                "provider_binding_id": str(target.get("provider_binding_id") or ""),
+                "profile_id": str(target.get("profile_id") or ""),
+            }
+        )
+    ledger_capabilities = ledger.get("capabilities") if isinstance(ledger.get("capabilities"), dict) else {}
+    entries = capability_view.get("capabilities") if isinstance(capability_view.get("capabilities"), list) else []
+    results: list[dict[str, Any]] = []
+    for descriptor in entries:
+        if not isinstance(descriptor, dict):
+            continue
+        capability_id = str(descriptor.get("capability_id") or "").strip()
+        if not capability_id:
+            continue
+        targets = sorted(targets_by_capability.get(capability_id) or [], key=lambda item: (item["case_id"], item["provider_binding_id"]))
+        aggregate = _dynamic_target_aggregate(
+            ledger_capabilities.get(capability_id),
+            targets=targets,
+        )
+        results.append(
+            {
+                "capability_id": capability_id,
+                "display_name": str(descriptor.get("display_name") or capability_id),
+                "description": str(descriptor.get("description") or ""),
+                "owner": str(descriptor.get("owner") or ""),
+                "risk_tier": str(descriptor.get("risk_tier") or ""),
+                "tags": [str(item) for item in descriptor.get("tags") or ()],
+                "definition_digest": str(descriptor.get("definition_digest") or ""),
+                "profile_requirement": descriptor.get("requirement") or {},
+                "evaluation_targets": targets,
+                "evaluation_target_count": len(targets),
+                "status": "observed" if aggregate["observation_count"] else ("no_catalog_case" if not targets else "unobserved"),
+                **aggregate,
+            }
+        )
+    return sorted(results, key=lambda item: str(item["capability_id"]))
+
+
+def _dynamic_target_aggregate(value: Any, *, targets: list[dict[str, Any]]) -> dict[str, Any]:
+    revisions = value.get("revisions") if isinstance(value, dict) and isinstance(value.get("revisions"), dict) else {}
+    observations = decisive = passes = failures = 0
+    latest: list[dict[str, Any]] = []
+    for target in targets:
+        revision = revisions.get(str(target.get("capability_revision_id") or ""))
+        bindings = revision.get("bindings") if isinstance(revision, dict) and isinstance(revision.get("bindings"), dict) else {}
+        binding = bindings.get(str(target.get("provider_binding_id") or ""))
+        if not isinstance(binding, dict):
+            continue
+        observations += int(binding.get("observation_count") or 0)
+        decisive += int(binding.get("decisive_count") or 0)
+        passes += int(binding.get("pass_count") or 0)
+        failures += int(binding.get("failure_count") or 0)
+        if isinstance(binding.get("latest"), dict):
+            latest.append(dict(binding["latest"]))
+    return {
+        "observation_count": observations,
+        "decisive_count": decisive,
+        "pass_count": passes,
+        "failure_count": failures,
+        "pass_rate": round(passes / decisive, 6) if decisive else None,
+        "latest_observation": sorted(
+            latest,
+            key=lambda item: (str(item.get("observed_at") or ""), str(item.get("ledger_event_id") or "")),
+            reverse=True,
+        )[0]
+        if latest
+        else {},
+    }
+
+
+def _dynamic_dashboard_aggregate(items: list[dict[str, Any]]) -> dict[str, Any]:
+    observations = sum(int(item.get("observation_count") or 0) for item in items)
+    decisive = sum(int(item.get("decisive_count") or 0) for item in items)
+    passes = sum(int(item.get("pass_count") or 0) for item in items)
+    return {
+        "capability_count": len(items),
+        "evaluation_target_count": sum(int(item.get("evaluation_target_count") or 0) for item in items),
+        "observation_count": observations,
+        "decisive_count": decisive,
+        "pass_count": passes,
+        "failure_count": sum(int(item.get("failure_count") or 0) for item in items),
+        "pass_rate": round(passes / decisive, 6) if decisive else None,
+        "unclassified_count": 0,
+    }
+
+
+def _dashboard_pagination(*, page: int, page_size: int, total: int) -> dict[str, Any]:
+    return {
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "page_count": (total + page_size - 1) // page_size if total else 0,
+        "has_next": page * page_size < total,
+        "has_previous": page > 1,
     }
 
 

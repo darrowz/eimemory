@@ -1,7 +1,8 @@
-"""Dynamic capability contracts for the L5 v3 control plane.
+"""Dynamic L5 v3 capability contracts and bounded runtime façades.
 
-This package intentionally contains no registry, storage, or runtime side
-effects. Those owners are introduced in later L5 v3 work packages.
+Importing this package has no registration, storage, or runtime side effects.
+The registry and Profile resolver become active only when a caller explicitly
+uses the Runtime capability service with an exact runtime scope.
 """
 
 from eimemory.capabilities.contracts import (
@@ -11,6 +12,8 @@ from eimemory.capabilities.contracts import (
     normalize_capability_id,
 )
 from eimemory.capabilities.models import (
+    ADAPTER_CAPABILITY_ADVERTISEMENT_SCHEMA_VERSION,
+    AdapterCapabilityAdvertisement,
     CapabilityBinding,
     CapabilityDefinition,
     CapabilityKnowledgeLink,
@@ -25,6 +28,8 @@ from eimemory.capabilities.models import (
 )
 
 __all__ = [
+    "ADAPTER_CAPABILITY_ADVERTISEMENT_SCHEMA_VERSION",
+    "AdapterCapabilityAdvertisement",
     "CAPABILITY_SCHEMA_VERSION",
     "CapabilityBinding",
     "CapabilityContractError",
@@ -41,4 +46,3 @@ __all__ = [
     "contract_digest",
     "normalize_capability_id",
 ]
-

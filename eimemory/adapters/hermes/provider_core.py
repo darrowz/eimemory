@@ -12,6 +12,7 @@ import threading
 import unicodedata
 from typing import Any, Dict, List, Mapping, Optional
 
+from eimemory.adapters.hermes.host_context import hermes_producer_token
 from eimemory.adapters.runtime.http_client import AgentRuntimeRPCClient
 from eimemory.adapters.runtime.receipt_handoff import ReceiptIdHandoff
 from eimemory.governance.tool_receipts import MAX_ELIGIBLE_RECEIPTS_PER_RUN
@@ -63,16 +64,31 @@ def hermes_client_from_env(*, hermes_home: str = "") -> AgentRuntimeRPCClient:
     )
 
 
+def hermes_attestation_client_from_env(*, hermes_home: str = "") -> AgentRuntimeRPCClient | None:
+    """Build the private producer-authenticated client for verified evidence."""
+
+    token = hermes_producer_token()
+    if not token:
+        return None
+    client = hermes_client_from_env(hermes_home=hermes_home)
+    if token == client.auth_token:
+        return None
+    client.auth_token = token
+    return client
+
+
 class HermesMemoryProviderCore:
     def __init__(
         self,
         *,
         client: Any | None = None,
+        attestation_client: Any | None = None,
         max_write_queue: int = DEFAULT_MAX_WRITE_QUEUE,
         max_prefetch_cache_entries: int = DEFAULT_MAX_PREFETCH_CACHE_ENTRIES,
     ) -> None:
         self._client = client
         self._client_injected = client is not None
+        self._attestation_client = attestation_client
         self._active = False
         self._write_enabled = True
         self._session_id = ""
@@ -144,6 +160,123 @@ class HermesMemoryProviderCore:
         if self._client_injected:
             return True
         return bool(os.getenv("EIMEMORY_RPC_TOKEN", "").strip())
+
+    def advertise_capabilities(
+        self,
+        adapter_context: Mapping[str, Any],
+        *,
+        now: str = "",
+    ) -> dict[str, Any]:
+        """Advertise provider-backed capabilities through the internal RPC path.
+
+        This deliberately does not add a fifth Hermes model tool and is not
+        called from the provider lifecycle implicitly.  The owning host can
+        publish a concrete provider/binding statement when it has one.
+        """
+
+        return self._safe_call(
+            "adapter.advertise_capabilities",
+            {
+                **self._common_params(),
+                "adapter_context": dict(adapter_context) if isinstance(adapter_context, Mapping) else {},
+                "now": _bounded_text(now, 128),
+            },
+        )
+
+    def capability_health(
+        self,
+        binding_id: str,
+        *,
+        capability_scope: str = "global",
+        at_time: str = "",
+    ) -> dict[str, Any]:
+        """Return the internal advertisement health of an explicit binding."""
+
+        return self._safe_call(
+            "adapter.capability_health",
+            {
+                **self._common_params(),
+                "binding_id": _bounded_text(binding_id, 256),
+                "capability_scope": _bounded_text(capability_scope, 256),
+                "at_time": _bounded_text(at_time, 128),
+            },
+        )
+
+    def normalize_capability_outcome(
+        self,
+        event_type: str,
+        event: Mapping[str, Any] | None,
+        *,
+        capability_scope: str = "global",
+    ) -> dict[str, Any]:
+        """Normalize only an explicit, host-declared outcome envelope."""
+
+        raw_outcome = dict(event or {}).get("capability_outcome")
+        envelope = {"capability_outcome": dict(raw_outcome)} if isinstance(raw_outcome, Mapping) else {}
+        return self._safe_call(
+            "adapter.normalize_capability_outcome",
+            {
+                **self._common_params(),
+                "event_type": _bounded_text(event_type, 256),
+                "event": envelope,
+                "capability_scope": _bounded_text(capability_scope, 256),
+            },
+        )
+
+    def record_verified_capability_outcome(
+        self,
+        event_type: str,
+        event: Mapping[str, Any] | None,
+        *,
+        independent_verifier: Mapping[str, Any],
+        environment_fingerprint: Mapping[str, Any],
+        provenance: Mapping[str, Any],
+        capability_scope: str = "global",
+    ) -> dict[str, Any]:
+        """Persist a verifier-backed outcome without adding a model tool.
+
+        The normal Hermes RPC bearer is intentionally insufficient for this
+        mutation.  Only the private, operator-separated producer credential
+        may submit the outcome together with a distinct verifier result.
+        """
+
+        client = self._attestation_client or hermes_attestation_client_from_env()
+        if client is None:
+            return {
+                "ok": False,
+                "bypassed": True,
+                "error": "independent_attestation_client_unavailable",
+                "result": None,
+            }
+        raw_outcome = dict(event or {}).get("capability_outcome")
+        envelope = {"capability_outcome": dict(raw_outcome)} if isinstance(raw_outcome, Mapping) else {}
+        try:
+            result = client.call_or_bypass(
+                "adapter.record_verified_capability_outcome",
+                {
+                    **self._common_params(),
+                    "event_type": _bounded_text(event_type, 256),
+                    "event": envelope,
+                    "independent_verifier": (
+                        dict(independent_verifier) if isinstance(independent_verifier, Mapping) else {}
+                    ),
+                    "environment_fingerprint": (
+                        dict(environment_fingerprint)
+                        if isinstance(environment_fingerprint, Mapping)
+                        else {}
+                    ),
+                    "provenance": dict(provenance) if isinstance(provenance, Mapping) else {},
+                    "capability_scope": _bounded_text(capability_scope, 256),
+                },
+            )
+        except Exception:
+            return {"ok": False, "bypassed": True, "error": "adapter_unavailable", "result": None}
+        return result if isinstance(result, dict) else {
+            "ok": False,
+            "bypassed": True,
+            "error": "adapter_unavailable",
+            "result": None,
+        }
 
     def initialize(self, session_id: str, **kwargs: Any) -> None:
         self._session_id = str(session_id or "").strip() or "hermes-session"

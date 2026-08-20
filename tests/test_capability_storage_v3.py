@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import replace
 import sqlite3
+from types import SimpleNamespace
 
 import pytest
 
@@ -31,11 +32,16 @@ from eimemory.storage.migrations.capability_v3 import (
     apply_capability_v3_backfill_batch,
     capability_v3_backfill_state,
 )
+from eimemory.storage.migrations.backfill_capability_v3 import (
+    capability_v3_backfill_status,
+    inspect_capability_v3_dual_write,
+    run_capability_v3_backfill_batch,
+)
 from eimemory.storage.runtime_store import RuntimeStore, _capability_audit_from_record
 
 
 SCOPE = ScopeRef(tenant_id="tenant-a", agent_id="agent-a", workspace_id="workspace-a", user_id="user-a")
-STAMP = "2026-08-20T00:00:00+00:00"
+STAMP = "2020-08-20T00:00:00+00:00"
 
 
 def _definition(capability_id: str = "planning.constraint_resolution") -> CapabilityDefinition:
@@ -147,7 +153,7 @@ def _run(
         metrics={"pass_rate": 1.0, "latency_ms": 12},
         error_taxonomy={},
         started_at=STAMP,
-        finished_at="2026-08-20T00:00:01+00:00",
+        finished_at="2020-08-20T00:00:01+00:00",
     )
 
 
@@ -177,7 +183,7 @@ def _observation(
         provenance={"source": "storage-test"},
         metrics={"success": 1},
         error_taxonomy={},
-        observed_at="2026-08-20T00:00:02+00:00",
+        observed_at="2020-08-20T00:00:02+00:00",
     )
 
 
@@ -229,7 +235,7 @@ def _snapshot(
         environment_applicability={"status": "applicable"},
         input_watermark="observation:1",
         algorithm_revision="capability-state.v3",
-        computed_at="2026-08-20T00:00:03+00:00",
+        computed_at="2020-08-20T00:00:03+00:00",
     )
 
 
@@ -247,7 +253,7 @@ def _assessment(profile: CapabilityProfile, revision: CapabilityRevision, snapsh
         adapter_readiness={"hermes": "ready"},
         deployment_assurance={"status": "not_evaluated"},
         evidence_refs=(snapshot.snapshot_id,),
-        created_at="2026-08-20T00:00:03+00:00",
+        created_at="2020-08-20T00:00:03+00:00",
     )
 
 
@@ -917,5 +923,129 @@ def test_v3_audit_replay_envelope_requires_exact_scope_and_identities(tmp_path) 
                 mismatched_ledger,
                 scanned_operation_id=result.operation_id,
             )
+    finally:
+        store.close()
+
+
+def test_scoped_entity_backfill_replays_audit_graph_and_keeps_audits_out_of_dual_write(tmp_path) -> None:
+    """A graph replay is resumable and audit evidence is not raw-outcome drift."""
+
+    source = RuntimeStore(tmp_path / "source")
+    target = RuntimeStore(tmp_path / "target")
+    try:
+        definition = _definition("planning.scoped_backfill")
+        revision = _revision(definition)
+        binding = _binding(definition, revision)
+        profile = _profile(definition)
+        source.mutate_capabilities_atomically(
+            lambda repository: repository.register_definition(
+                definition,
+                scope=SCOPE,
+                request_key="backfill-definition",
+            )
+        )
+        source.mutate_capabilities_atomically(
+            lambda repository: repository.register_revision(
+                revision,
+                scope=SCOPE,
+                request_key="backfill-revision",
+            )
+        )
+        source.mutate_capabilities_atomically(
+            lambda repository: repository.register_binding(
+                binding,
+                scope=SCOPE,
+                request_key="backfill-binding",
+            )
+        )
+        source.mutate_capabilities_atomically(
+            lambda repository: repository.register_profile(
+                profile,
+                scope=SCOPE,
+                request_key="backfill-profile",
+            )
+        )
+        audits = source.list_records(kinds=["capability_audit"], scope=SCOPE, limit=100)
+        assert len(audits) == 4
+        for audit in audits:
+            target.append(audit)
+
+        runtime = SimpleNamespace(store=target)
+        reports = []
+        for _ in range(20):
+            report = run_capability_v3_backfill_batch(
+                runtime,
+                runtime_scope=SCOPE,
+                capability_scope="global",
+                batch_size=16,
+                max_seconds=1.0,
+            )
+            reports.append(report)
+            if report["full_migration_complete"]:
+                break
+
+        assert reports[-1]["status"] == "completed"
+        assert reports[-1]["full_migration_complete"] is True
+        assert target.sqlite.conn.execute(
+            "SELECT COUNT(*) FROM capability_definitions WHERE capability_id=?",
+            [definition.capability_id],
+        ).fetchone()[0] == 1
+        assert target.sqlite.conn.execute(
+            "SELECT COUNT(*) FROM capability_revisions WHERE revision_id=?",
+            [revision.revision_id],
+        ).fetchone()[0] == 1
+        assert target.sqlite.conn.execute(
+            "SELECT COUNT(*) FROM capability_bindings WHERE binding_id=?",
+            [binding.binding_id],
+        ).fetchone()[0] == 1
+        status = capability_v3_backfill_status(runtime, runtime_scope=SCOPE, capability_scope="global")
+        assert status["full_migration_complete"] is True
+        assert all(item["status"] == "completed" for item in status["phase_stats"].values())
+
+        dual_write = inspect_capability_v3_dual_write(
+            runtime,
+            runtime_scope=SCOPE,
+            capability_scope="global",
+            limit=100,
+        )
+        assert dual_write["complete"] is True
+        assert dual_write["page_ok"] is True
+        assert dual_write["eligible"] == 0
+        assert dual_write["missing"] == 0
+    finally:
+        source.close()
+        target.close()
+
+
+def test_outcome_normalization_requires_an_explicit_boolean_verifier_verdict(tmp_path) -> None:
+    from eimemory.capabilities.observations import CapabilityObservations
+
+    store = RuntimeStore(tmp_path)
+    try:
+        result = CapabilityObservations(store).normalize_outcome(
+            {
+                "capability_attribution": {
+                    "capability_id": "planning.explicit_verdict",
+                    "capability_revision_id": "planning.explicit_verdict:v1",
+                    "provider_binding_id": "binding.explicit-verdict:v1",
+                    "idempotency_key": "explicit-verdict-1",
+                    "observed_at": STAMP,
+                    "evidence_refs": ["artifact://evidence/explicit-verdict.json"],
+                    "environment_fingerprint": {"runtime": "test"},
+                    "provenance": {"source": "storage-test"},
+                },
+                "verifier": {
+                    "independent": True,
+                    "id": "independent-evaluator",
+                    "revision": "independent-evaluator:v1",
+                    "contract_digest": "a" * 64,
+                },
+            },
+            runtime_scope=SCOPE,
+        )
+
+        assert result.status == "unclassified"
+        assert result.reason == "verifier_verdict_missing_or_invalid"
+        assert store.sqlite.conn.execute("SELECT COUNT(*) FROM capability_observations").fetchone()[0] == 0
     finally:
         store.close()

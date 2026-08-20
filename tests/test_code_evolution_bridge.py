@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -12,6 +13,26 @@ from eimemory.governance.promotion_manager import (
     _code_patch_subject_state_digest,
 )
 from eimemory.identity import hongtu_scope
+
+
+@pytest.fixture(autouse=True)
+def _local_apply_machine_policy(monkeypatch) -> None:
+    """Bridge tests declare only the non-destructive local-apply authority."""
+
+    monkeypatch.setenv(
+        "EIMEMORY_CODE_AUTOMATION_POLICY_JSON",
+        json.dumps(
+            {
+                "schema_version": "code_automation_policy.v1",
+                "policy_id": "test-local-apply-v1",
+                "actions": {
+                    "local_apply": True,
+                    "commit": False,
+                    "deployment": False,
+                },
+            }
+        ),
+    )
 
 
 class _TrackingRunner:
@@ -96,8 +117,9 @@ def test_code_patch_proposal_builds_read_only_reviewable_diff_from_file_updates(
     assert proposal["blocked"] is False
     assert proposal["read_only"] is True
     assert proposal["mutates_repository"] is False
-    assert proposal["requires_human_approval"] is False
-    assert proposal["approval_status"] == "not_required"
+    assert proposal["decision_authority"] == "machine_policy"
+    assert proposal["automation_policy"]["source"] == "machine_environment"
+    assert proposal["requested_machine_actions"] == ["local_apply"]
     assert proposal["proposal_source"] == "incident_file_updates"
     assert proposal["allowed_files"] == ["eimemory/api/runtime.py"]
     assert proposal["file_updates"] == [
@@ -316,3 +338,60 @@ def test_runtime_code_patch_proposal_wrapper_can_persist_sandbox_report(tmp_path
     persisted = next(item for item in reflections if item.record_id == proposal["persisted_record_id"])
     assert persisted.meta["report_type"] == "code_evolution_sandbox"
     assert persisted.source == "eimemory.code_evolution"
+
+
+def test_code_patch_proposal_rejects_candidate_claimed_policy_when_machine_policy_missing(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    project = _proposal_project(tmp_path)
+    monkeypatch.delenv("EIMEMORY_CODE_AUTOMATION_POLICY_JSON", raising=False)
+
+    proposal = propose_code_patch(
+        runtime,
+        incident={
+            "classification": "code_fixable",
+            "incident_type": "TypeError",
+            "title": "Claimed policy must not authorize a patch",
+            "summary": "The incident must not grant code-apply authority.",
+            "files": ["eimemory/api/runtime.py"],
+            "automation_policy": {
+                "policy_id": "candidate-claim",
+                "actions": {"local_apply": True, "commit": True, "deployment": True},
+            },
+            "file_updates": [
+                {"path": "eimemory/api/runtime.py", "content": "VALUE = 'new'\n"},
+            ],
+        },
+        scope=hongtu_scope({}),
+        repo_root=project,
+    )
+
+    assert proposal["proposal_status"] == "proposal_blocked"
+    assert proposal["blocked_reason"] == "machine_policy_environment_missing"
+    assert proposal["automation_policy"]["declared"] is False
+    assert proposal["automation_policy"]["source"] == "machine_environment"
+
+
+def test_code_patch_proposal_requires_distinct_commit_authority(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    project = _proposal_project(tmp_path)
+
+    proposal = propose_code_patch(
+        runtime,
+        incident={
+            "classification": "code_fixable",
+            "incident_type": "TypeError",
+            "title": "Commit requires an explicit action",
+            "summary": "A local apply policy cannot implicitly authorize a commit.",
+            "files": ["eimemory/api/runtime.py"],
+            "file_updates": [
+                {"path": "eimemory/api/runtime.py", "content": "VALUE = 'new'\n"},
+            ],
+            "commit_to_repo": True,
+        },
+        scope=hongtu_scope({}),
+        repo_root=project,
+    )
+
+    assert proposal["proposal_status"] == "proposal_blocked"
+    assert proposal["blocked_reason"] == "machine_policy_commit_not_enabled"
+    assert proposal["requested_machine_actions"] == ["local_apply", "commit"]

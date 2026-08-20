@@ -6,7 +6,7 @@ from hashlib import sha256
 import pytest
 
 from eimemory.api.runtime import Runtime
-from eimemory.governance.capability_seeding import SEEDED_CAPABILITIES
+from eimemory.governance.capability_seeding import LEGACY_SEEDED_CAPABILITIES
 from eimemory.governance.capability_ledger import build_capability_ledger, record_capability_score
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
@@ -391,13 +391,18 @@ def test_record_capability_score_counts_single_source_by_items_when_items_exist(
     assert stored.meta["evidence_items_fields_filtered"] is False
 
 
-def test_build_capability_ledger_auto_includes_seeded_defaults(tmp_path) -> None:
+def test_build_capability_ledger_includes_seeded_defaults_only_in_explicit_legacy_mode(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     scope = {"agent_id": "hongtu"}
 
-    ledger = build_capability_ledger(runtime, scope=scope)
+    ledger = build_capability_ledger(
+        runtime,
+        scope=scope,
+        ensure_seeded=True,
+        legacy_compatibility=True,
+    )
 
-    for capability in SEEDED_CAPABILITIES:
+    for capability in LEGACY_SEEDED_CAPABILITIES:
         item = ledger["capabilities"].get(capability)
         assert item is not None
         assert item["score"] == 0.0

@@ -89,15 +89,22 @@ class EvolutionAPI:
         miss: str,
         fix: str,
         scope: dict,
+        target_capability: str = "",
     ) -> RecordEnvelope:
+        capability = str(target_capability or "").strip()
+        content = {"tag": tag, "miss": miss, "fix": fix, "lesson": fix}
+        meta = {"tag": tag, "miss": miss, "fix": fix, "lesson": fix}
+        if capability:
+            content["target_capability"] = capability
+            meta["target_capability"] = capability
         record = RecordEnvelope.create(
             kind="reflection",
             title=f"Reflection: {tag}",
             summary=miss,
-            content={"tag": tag, "miss": miss, "fix": fix, "lesson": fix},
+            content=content,
             scope=ScopeRef.from_dict(scope),
             source="evolution.log_reflection",
-            meta={"tag": tag, "miss": miss, "fix": fix, "lesson": fix},
+            meta=meta,
         )
         return self.store.append(record)
 

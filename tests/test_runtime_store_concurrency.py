@@ -44,7 +44,7 @@ def test_runtime_store_serializes_concurrent_writes(tmp_path) -> None:
 
 def test_capability_domain_writes_are_exact_scope_idempotent_across_store_instances(tmp_path) -> None:
     scope = ScopeRef(tenant_id="tenant", agent_id="agent", workspace_id="workspace", user_id="user")
-    stamp = "2026-08-20T00:00:00+00:00"
+    stamp = "2020-08-20T00:00:00+00:00"
     definition = CapabilityDefinition(
         capability_id="planning.concurrent_constraint",
         display_name="Concurrent constraint",
@@ -103,7 +103,7 @@ def test_capability_domain_writes_are_exact_scope_idempotent_across_store_instan
         provenance={"source": "test"},
         metrics={"success": 1},
         error_taxonomy={},
-        observed_at="2026-08-20T00:00:01+00:00",
+        observed_at="2020-08-20T00:00:01+00:00",
     )
 
     bootstrap = RuntimeStore(tmp_path)

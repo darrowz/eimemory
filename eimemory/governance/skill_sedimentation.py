@@ -177,7 +177,10 @@ def _replay_passed(record: RecordEnvelope) -> bool:
 
 def _skill_entry(key: str, records: list[RecordEnvelope], *, scope: ScopeRef) -> dict[str, Any]:
     first = records[0]
-    target_capability = str(first.meta.get("target_capability") or first.content.get("target_capability") or "proactive.judgment")
+    # Repeated SOPs can be useful before their semantic capability is known,
+    # but they cannot become an automatically callable capability candidate
+    # until explicit attribution binds them to the live registry/Profile.
+    target_capability = str(first.meta.get("target_capability") or first.content.get("target_capability") or "").strip()
     steps = _steps(records)
     trigger_conditions = _trigger_conditions(records)
     skill_id = f"eiskill_{_stable_hash(key, target_capability, asdict(scope))[:16]}"
@@ -338,6 +341,8 @@ def _registry_skill(record: RecordEnvelope) -> dict[str, Any]:
 
 def _missing_execution_contract(skill: dict[str, Any]) -> list[str]:
     missing: list[str] = []
+    if not str(skill.get("target_capability") or "").strip():
+        missing.append("target_capability")
     trigger_conditions = [str(item).strip() for item in (skill.get("trigger_conditions") or []) if str(item).strip()]
     if not trigger_conditions:
         missing.append("trigger_conditions")

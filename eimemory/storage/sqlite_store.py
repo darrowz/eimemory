@@ -74,6 +74,29 @@ _OUTCOME_TRACE_INDEX_MIGRATION = "records.outcome_trace_index.v1"
 _PAYLOAD_ARCHIVE_MIGRATION = "records.payload_archive.v1"
 _PAYLOAD_ARCHIVE_KINDS = ("capability_score", "recall_view")
 _DEFAULT_PAYLOAD_INLINE_BYTES = 16 * 1024
+# Keep the lookup expression exactly aligned with the expression index below.
+# The json_valid guards also keep malformed legacy JSON from breaking outcome
+# idempotency recovery before its fallback paths can run.
+_OUTCOME_TRACE_ID_SQL = (
+    "CAST(COALESCE("
+    "CASE WHEN json_valid(meta_json) THEN json_extract(meta_json, '$.trace_id') END, "
+    "CASE WHEN json_valid(meta_json) THEN json_extract(meta_json, '$.business_meta.trace_id') END, "
+    "CASE WHEN json_valid(payload_json) THEN json_extract(payload_json, '$.provenance.trace_id') END"
+    ") AS TEXT)"
+)
+_OUTCOME_TRACE_REPORT_TYPE_SQL = (
+    "CAST(COALESCE("
+    "CASE WHEN json_valid(meta_json) THEN json_extract(meta_json, '$.report_type') END, "
+    "CASE WHEN json_valid(meta_json) THEN json_extract(meta_json, '$.business_meta.report_type') END, "
+    "CASE WHEN json_valid(payload_json) THEN json_extract(payload_json, '$.provenance.report_type') END"
+    ") AS TEXT)"
+)
+_OUTCOME_TRACE_IDEMPOTENCY_KEY_SQL = (
+    "CAST(COALESCE("
+    "CASE WHEN json_valid(meta_json) THEN json_extract(meta_json, '$.business_meta.idempotency_key') END, "
+    "CASE WHEN json_valid(payload_json) THEN json_extract(payload_json, '$.provenance.idempotency_key') END"
+    ") AS TEXT)"
+)
 _LIST_RECALL_AUDITS_COMPACT_BY_SESSION_SQL = (
     "WITH selected_records AS ("
     "SELECT storage_key,updated_at,record_id FROM records "
@@ -1527,11 +1550,8 @@ class SqliteRecordStore:
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_records_outcome_trace "
             "ON records(kind, source, tenant_id, agent_id, workspace_id, user_id, "
-            "CAST(COALESCE("
-            "CASE WHEN json_valid(meta_json) THEN json_extract(meta_json, '$.trace_id') END, "
-            "CASE WHEN json_valid(meta_json) THEN json_extract(meta_json, '$.business_meta.trace_id') END, "
-            "CASE WHEN json_valid(payload_json) THEN json_extract(payload_json, '$.provenance.trace_id') END"
-            ") AS TEXT), "
+            + _OUTCOME_TRACE_ID_SQL
+            + ", "
             "updated_at DESC, record_id DESC)"
         )
         if self.conn.execute(
@@ -4916,9 +4936,7 @@ class SqliteRecordStore:
         base = (
             "kind='reflection' AND source='eimemory.experience.outcome_trace' "
             "AND tenant_id=? AND agent_id=? AND workspace_id=? AND user_id=? "
-            "AND CAST(COALESCE(json_extract(meta_json,'$.report_type'), "
-            "json_extract(meta_json,'$.business_meta.report_type'), "
-            "json_extract(payload_json,'$.provenance.report_type')) AS TEXT)='outcome_trace' "
+            f"AND {_OUTCOME_TRACE_REPORT_TYPE_SQL}='outcome_trace' "
         )
         scope_params = [scope.tenant_id, scope.agent_id, scope.workspace_id, scope.user_id]
 
@@ -4939,18 +4957,15 @@ class SqliteRecordStore:
         trace = str(trace_id or "").strip()
         if trace:
             traced = fetch(
-                "CAST(COALESCE(json_extract(meta_json,'$.trace_id'), "
-                "json_extract(meta_json,'$.business_meta.trace_id'), "
-                "json_extract(payload_json,'$.provenance.trace_id')) AS TEXT)=?",
+                _OUTCOME_TRACE_ID_SQL + "=?",
                 [trace],
             )
             if traced is not None:
                 return traced
         if key:
             legacy = fetch(
-                "CAST(json_extract(meta_json,'$.business_meta.idempotency_key') AS TEXT)=? "
-                "OR CAST(json_extract(payload_json,'$.provenance.idempotency_key') AS TEXT)=?",
-                [key, key],
+                _OUTCOME_TRACE_IDEMPOTENCY_KEY_SQL + "=?",
+                [key],
             )
             if legacy is not None:
                 return legacy
@@ -6549,7 +6564,11 @@ class SqliteRecordStore:
             auto=bool(auto),
             budget_limit=AUTO_ROLLBACK_BUDGET_PER_DAY,
         )
-        if budget_decision not in {"ok", "manual_ok"}:
+        # Non-automatic policy rollbacks are explicitly allowed by the
+        # budget helper as ``policy_ok``.  Treating that established decision
+        # as blocked makes a real status transition disappear from L5 rollback
+        # evidence without adding any machine-policy authority.
+        if budget_decision not in {"ok", "policy_ok", "manual_ok"}:
             ledger = self._record_policy_rollout_ledger(
                 action_type="rollback",
                 scope=scope_ref,

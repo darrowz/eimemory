@@ -15,7 +15,7 @@ def test_generate_learning_goals_from_weaknesses() -> None:
                 "severity": 0.9,
             }
         ],
-        "capabilities": [],
+        "capabilities": [{"capability": "tool.routing", "score": 0.0}],
         "metrics": {"replay_pass_rate": 0.0},
     }
 
@@ -30,7 +30,14 @@ def test_generate_learning_goals_from_weaknesses() -> None:
 def test_persist_learning_goals_is_idempotent(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     scope = {"agent_id": "hongtu"}
-    goals = generate_learning_goals({"weaknesses": [], "metrics": {"replay_pass_rate": 0.0}}, max_goals=1)
+    goals = generate_learning_goals(
+        {
+            "weaknesses": [],
+            "capabilities": [{"capability": "tool.routing", "score": 0.0}],
+            "metrics": {"replay_pass_rate": 0.0},
+        },
+        max_goals=1,
+    )
 
     first = persist_learning_goals(runtime, goals, scope=scope, loop_id="learn_test")
     second = persist_learning_goals(runtime, goals, scope=scope, loop_id="learn_test")

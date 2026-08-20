@@ -7,7 +7,11 @@ from typing import Any
 from eimemory.governance.learning_state import stable_semantic_key
 
 
-DEFAULT_LONG_TERM_GOALS: list[dict[str, Any]] = [
+# Historical v2 examples are intentionally isolated from the live goal
+# universe.  L5 v3 derives live targets from the exact registry/profile
+# resolution; a bundled Python taxonomy must never re-create capabilities that
+# have been retired or are absent on this runtime.
+LEGACY_DEFAULT_LONG_TERM_GOALS: tuple[dict[str, Any], ...] = (
     {
         "id": "lt-memory-architecture",
         "title": "AI Agent long-term memory architecture",
@@ -50,16 +54,31 @@ DEFAULT_LONG_TERM_GOALS: list[dict[str, Any]] = [
         "milestones": ["Keep L2/L3 gated", "Make rollback evidence explicit"],
         "evaluation_signals": ["blocked promotions", "regression watches", "rollback metadata"],
     },
-]
+)
 
 
 def registry_path(root: str | Path | None = None) -> Path:
     root_path = Path(root) if root is not None else Path(__file__).resolve().parents[2]
+    # A production goal registry is operator-owned configuration.  The former
+    # checked-in long_term.json encoded a fixed v2 capability cohort and is
+    # available only through ``legacy_registry_path``.
+    return root_path / "goals" / "operator_long_term.json"
+
+
+def legacy_registry_path(root: str | Path | None = None) -> Path:
+    root_path = Path(root) if root is not None else Path(__file__).resolve().parents[2]
     return root_path / "goals" / "long_term.json"
 
 
-def seed_long_term_goals() -> list[dict[str, Any]]:
-    return [_normalize_goal(goal, index=index) for index, goal in enumerate(DEFAULT_LONG_TERM_GOALS)]
+def seed_long_term_goals(*, legacy_compatibility: bool = False) -> list[dict[str, Any]]:
+    """Return the old bundled examples only under an explicit v2 request."""
+
+    if not legacy_compatibility:
+        return []
+    return [
+        _normalize_goal(goal, index=index)
+        for index, goal in enumerate(LEGACY_DEFAULT_LONG_TERM_GOALS)
+    ]
 
 
 def load_goal_registry(
@@ -68,15 +87,44 @@ def load_goal_registry(
     root: str | Path | None = None,
     repo_root: str | Path | None = None,
     config: str | Path | None = None,
+    legacy_compatibility: bool = False,
 ) -> dict[str, Any]:
     fallback_root = root if root is not None else repo_root
-    target = Path(config) if config is not None else (Path(path) if path is not None else registry_path(fallback_root))
+    target = (
+        Path(config)
+        if config is not None
+        else (
+            Path(path)
+            if path is not None
+            else (
+                legacy_registry_path(fallback_root)
+                if legacy_compatibility
+                else registry_path(fallback_root)
+            )
+        )
+    )
+    legacy_target = legacy_registry_path(fallback_root)
+    if not legacy_compatibility:
+        try:
+            requested_legacy_registry = target.resolve() == legacy_target.resolve()
+        except OSError:
+            requested_legacy_registry = str(target) == str(legacy_target)
+        if requested_legacy_registry:
+            return {
+                "ok": False,
+                "path": str(target),
+                "long_term": [],
+                "source": "legacy_registry_blocked",
+                "legacy_compatibility": False,
+                "error": "legacy_compatibility_required",
+            }
     if not target.exists():
         return {
             "ok": True,
             "path": str(target),
-            "long_term": seed_long_term_goals(),
-            "source": "defaults",
+            "long_term": seed_long_term_goals(legacy_compatibility=legacy_compatibility),
+            "source": "legacy_defaults" if legacy_compatibility else "not_configured",
+            "legacy_compatibility": bool(legacy_compatibility),
         }
     try:
         payload = json.loads(target.read_text(encoding="utf-8"))
@@ -84,8 +132,9 @@ def load_goal_registry(
         return {
             "ok": False,
             "path": str(target),
-            "long_term": seed_long_term_goals(),
-            "source": "fallback",
+            "long_term": seed_long_term_goals(legacy_compatibility=legacy_compatibility),
+            "source": "legacy_fallback" if legacy_compatibility else "invalid_config",
+            "legacy_compatibility": bool(legacy_compatibility),
             "error": type(exc).__name__,
             "detail": str(exc),
         }
@@ -96,8 +145,9 @@ def load_goal_registry(
     return {
         "ok": True,
         "path": str(target),
-        "long_term": normalized or seed_long_term_goals(),
+        "long_term": normalized,
         "source": "file",
+        "legacy_compatibility": bool(legacy_compatibility),
     }
 
 
@@ -139,7 +189,9 @@ def _derive_gap_signals(
             continue
         subcaps = [str(item) for item in goal.get("sub_capabilities") or [] if str(item or "").strip()]
         weakest = _weakest_subcap(subcaps, scores)
-        focus = weakest or (subcaps[0] if subcaps else "proactive.judgment")
+        focus = weakest or (subcaps[0] if subcaps else "")
+        if not focus:
+            continue
         signals.append(
             {
                 "signal_type": "goal_registry_gap",
@@ -197,7 +249,7 @@ def max_goals_limit(value: int | None) -> int:
 
 def goal_to_learning_goal(goal: dict[str, Any], *, priority: float = 0.58) -> dict[str, Any]:
     subcaps = [str(item) for item in goal.get("sub_capabilities") or [] if str(item or "").strip()]
-    capability = subcaps[0] if subcaps else "proactive.judgment"
+    capability = subcaps[0] if subcaps else ""
     title = str(goal.get("title") or "Long-term learning goal")
     return {
         "goal_type": "long_term",

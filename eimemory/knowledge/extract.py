@@ -38,6 +38,7 @@ def extract_paper_memory(
     body: str = "",
     metadata: dict[str, Any] | None = None,
     provenance: dict[str, Any] | None = None,
+    capability_context: dict[str, Any] | None = None,
 ) -> PaperMemoryExtraction:
     normalized_title = _clean_text(title)
     normalized_abstract = _clean_text(abstract)
@@ -60,6 +61,7 @@ def extract_paper_memory(
         paper_extract_id=extract_id,
         sentences=sentences,
         provenance=provenance or {},
+        capability_context=capability_context,
     )
     entities = build_entity_records(
         paper_source_id=paper_source_id,
@@ -72,6 +74,7 @@ def extract_paper_memory(
         claims=claims,
         entities=entities,
         provenance=provenance or {},
+        capability_context=capability_context,
     )
     return PaperMemoryExtraction(
         extract=extract,

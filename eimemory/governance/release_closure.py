@@ -6,7 +6,9 @@ from typing import Any
 
 from eimemory.governance.l5_readiness import readiness_gate_status
 from eimemory.governance.evidence_contract import ReleaseIdentity
-from eimemory.governance.closure_rehearsal import verify_bootstrap_pending_readiness_contract
+from eimemory.governance.closure_rehearsal import (
+    verify_bootstrap_pending_readiness_contract,
+)
 from eimemory.governance.live_task_acceptance import LIVE_ACCEPTANCE_CASE_IDS
 from eimemory.models.records import ScopeRef
 
@@ -41,6 +43,7 @@ def run_release_closure(
         "closure_complete": False,
         "data_accumulating": False,
         "report_type": "l5_release_closure",
+        "legacy_compatibility": True,
         "scope": scope_payload,
         "blocked_stage": "",
         "blocked_reason": "",
@@ -174,7 +177,17 @@ def run_release_closure(
                 _failure_reason(strict_state, "production_recall_strict_activation_failed"),
             )
 
-    replay_bootstrap = runtime.run_weak_capability_replay_gate(
+    # Release closure is the one remaining historic cohort workflow.  Keep
+    # that choice explicit by going through the named compatibility facade;
+    # it must never accidentally select the default dynamic catalog.
+    run_replay_bootstrap = getattr(runtime, "run_weak_capability_replay_gate", None)
+    if not callable(run_replay_bootstrap):
+        return _blocked(
+            report,
+            "replay_bootstrap",
+            "legacy_capability_replay_runner_unavailable",
+        )
+    replay_bootstrap = run_replay_bootstrap(
         scope=scope_payload,
         persist=True,
         loop_id="release_closure_bootstrap",
@@ -184,7 +197,7 @@ def run_release_closure(
         return _blocked(
             report,
             "replay_bootstrap",
-            _failure_reason(replay_bootstrap, "weak_capability_replay_failed"),
+            _failure_reason(replay_bootstrap, "legacy_capability_replay_failed"),
         )
 
     live_acceptance = runtime.run_live_task_acceptance(**identity_kwargs)
@@ -283,6 +296,7 @@ def _continue_release_closure(
         "persist": True,
         "replay_bootstrap": replay_bootstrap,
         "repo_root": repo_root,
+        "legacy_compatibility": True,
     }
     lineage_finalizer_enabled = bool(
         callable(getattr(runtime, "record_release_lineage", None))
@@ -290,7 +304,7 @@ def _continue_release_closure(
     )
     if lineage_finalizer_enabled:
         rehearsal_kwargs["release_lineage_finalizer"] = (
-            lambda core_replay: _finalize_release_lineage(
+            lambda capability_replay: _finalize_release_lineage(
                 runtime,
                 scope=scope_payload,
                 repo_root=repo_root,
@@ -306,8 +320,8 @@ def _continue_release_closure(
                 channel_acceptance_record_id=str(
                     report["record_ids"].get("channel_acceptance") or ""
                 ),
-                weak_replay=replay_bootstrap,
-                core_replay=core_replay,
+                replay_bootstrap=replay_bootstrap,
+                capability_replay=capability_replay,
                 live_acceptance=live_acceptance,
             )
         )
@@ -348,6 +362,7 @@ def _continue_release_closure(
             persist=True,
             limit=1000,
             loop_id="release_closure",
+            reader_mode="legacy",
             **({"repo_root": repo_root} if lineage_finalizer_enabled else {}),
         )
     )
@@ -408,6 +423,7 @@ def resume_release_closure(
         "closure_complete": False,
         "data_accumulating": False,
         "report_type": "l5_release_closure",
+        "legacy_compatibility": True,
         "scope": scope_payload,
         "blocked_stage": "",
         "blocked_reason": "",
@@ -460,23 +476,25 @@ def _finalize_release_lineage(
     strict_state_record_id: str,
     bootstrap_pending_record_id: str,
     channel_acceptance_record_id: str,
-    weak_replay: dict[str, Any],
-    core_replay: dict[str, Any],
+    replay_bootstrap: dict[str, Any],
+    capability_replay: dict[str, Any],
     live_acceptance: dict[str, Any],
 ) -> dict[str, Any]:
-    weak = (
-        weak_replay.get("weak_capability_replay")
-        if isinstance(weak_replay.get("weak_capability_replay"), dict)
+    bootstrap_replay = (
+        replay_bootstrap.get("capability_replay")
+        if isinstance(replay_bootstrap.get("capability_replay"), dict)
+        else replay_bootstrap.get("weak_capability_replay")
+        if isinstance(replay_bootstrap.get("weak_capability_replay"), dict)
         else {}
     )
-    weak_manifest = str(weak.get("manifest_record_id") or "").strip()
-    core_manifest = str(core_replay.get("manifest_record_id") or "").strip()
+    bootstrap_manifest = str(bootstrap_replay.get("manifest_record_id") or "").strip()
+    capability_manifest = str(capability_replay.get("manifest_record_id") or "").strip()
     live_record_ids = _canonical_live_case_record_ids(live_acceptance)
     if (
         not receipt_record_id
         or receipt_record_id != current_release.receipt_id
-        or not weak_manifest
-        or not core_manifest
+        or not bootstrap_manifest
+        or not capability_manifest
         or not channel_acceptance_record_id
         or live_record_ids is None
         or bool(recall_gate_record_id) != bool(strict_state_record_id)
@@ -490,13 +508,13 @@ def _finalize_release_lineage(
             "error": "release_lineage_gate_references_incomplete",
         }
     recall_references = (
-        [bootstrap_pending_record_id, core_manifest]
+        [bootstrap_pending_record_id, capability_manifest]
         if bootstrap_pending_record_id
         else [recall_gate_record_id, strict_state_record_id]
     )
     gate_evidence = {
         "memory.recall": recall_references,
-        "memory.governance": [weak_manifest, core_manifest],
+        "memory.governance": sorted({bootstrap_manifest, capability_manifest}),
         "channel.openclaw": [channel_acceptance_record_id],
         "storage.integrity": live_record_ids,
         "deployment.runtime": [receipt_record_id],
@@ -506,6 +524,7 @@ def _finalize_release_lineage(
         repo_root=repo_root,
         current_release=current_release,
         gate_evidence=gate_evidence,
+        legacy_compatibility=True,
     )
     if not isinstance(recorded, dict) or recorded.get("ok") is not True:
         return (
@@ -522,6 +541,7 @@ def _finalize_release_lineage(
         scope=scope,
         repo_root=repo_root,
         current_release=current_release,
+        legacy_compatibility=True,
     )
     if (
         not isinstance(resolved, dict)

@@ -16,9 +16,9 @@ from eimemory.governance.evidence_contract import (
     verified_deployment_receipt_identity,
 )
 from eimemory.governance.release_lineage import (
-    current_release_lineage,
-    evidence_release_for_domain,
-    record_release_lineage,
+    current_release_lineage as _current_release_lineage,
+    evidence_release_for_domain as _evidence_release_for_domain,
+    record_release_lineage as _record_release_lineage,
 )
 from eimemory.governance.live_task_acceptance import LIVE_ACCEPTANCE_CASE_IDS
 from eimemory.models.records import RecordEnvelope, ScopeRef, TimeRef
@@ -31,6 +31,21 @@ SCOPE = ScopeRef(
     workspace_id="embodied",
     user_id="darrow",
 )
+
+
+# This module exercises the frozen release-closure lineage contract.  That
+# cohort is available only through the explicit compatibility reader; keep
+# each historic assertion out of the dynamic-default authority path.
+def record_release_lineage(*args, **kwargs):
+    return _record_release_lineage(*args, legacy_compatibility=True, **kwargs)
+
+
+def current_release_lineage(*args, **kwargs):
+    return _current_release_lineage(*args, legacy_compatibility=True, **kwargs)
+
+
+def evidence_release_for_domain(*args, **kwargs):
+    return _evidence_release_for_domain(*args, legacy_compatibility=True, **kwargs)
 
 
 def test_release_lineage_current_authority_does_not_bind_version(tmp_path: Path) -> None:
@@ -436,6 +451,8 @@ def test_openclaw_deploy_surface_marks_channel_domain_changed(tmp_path: Path) ->
         ),
     ],
 )
+
+
 def test_hermes_release_surface_is_fully_classified(
     tmp_path: Path,
     path: str,
@@ -684,7 +701,12 @@ def test_unchanged_recall_accepts_current_bootstrap_pending_and_core_replay(
         current = verified_deployment_receipt_identity(current_record)
         assert current == anticipated
         runtime._test_runtime_commit = current.commit
-        core_manifest = _manifest(runtime, SCOPE, title="core")
+        core_manifest = _manifest(
+            runtime,
+            SCOPE,
+            title="core",
+            capabilities=["memory.recall"],
+        )
         _mock_pending_recall_verifiers(
             monkeypatch,
             release=current,
@@ -737,7 +759,12 @@ def test_bootstrap_pending_cannot_authorize_changed_recall_domain(
             current,
             source="eimemory.evaluation.production_recall.bootstrap",
         )
-        core_manifest = _manifest(runtime, SCOPE, title="core")
+        core_manifest = _manifest(
+            runtime,
+            SCOPE,
+            title="core",
+            capabilities=["memory.recall"],
+        )
         _mock_pending_recall_verifiers(
             monkeypatch,
             release=current,
@@ -783,8 +810,18 @@ def test_bootstrap_pending_requires_exact_current_recall_replay_manifest(
             current,
             source="eimemory.evaluation.production_recall.bootstrap",
         )
-        supplied_manifest = _manifest(runtime, SCOPE, title="supplied")
-        verified_manifest = _manifest(runtime, SCOPE, title="verified")
+        supplied_manifest = _manifest(
+            runtime,
+            SCOPE,
+            title="supplied",
+            capabilities=["memory.recall"],
+        )
+        verified_manifest = _manifest(
+            runtime,
+            SCOPE,
+            title="verified",
+            capabilities=["memory.recall"],
+        )
         _mock_pending_recall_verifiers(
             monkeypatch,
             release=current,
@@ -1169,14 +1206,22 @@ def test_governance_requires_complete_weak_and_core_manifest_contracts(
         )
         assert bypass["domains"]["memory.governance"]["mode"] == "changed_unverified"
 
-        weak_manifest = _manifest(runtime, SCOPE, title="weak")
-        core_manifest = _manifest(runtime, SCOPE, title="core")
+        weak_manifest = _manifest(
+            runtime,
+            SCOPE,
+            title="weak",
+            capabilities=sorted(l5_readiness.LEGACY_WEAK_CAPABILITIES),
+        )
+        core_manifest = _manifest(
+            runtime,
+            SCOPE,
+            title="core",
+            capabilities=sorted(l5_readiness.LEGACY_READINESS_CAPABILITIES),
+        )
 
         def verified_summary(*args, **kwargs):
             missing_field = kwargs["missing_field"]
-            weak = missing_field.startswith("weak_")
             capabilities = set(kwargs["capabilities"])
-            record_id = weak_manifest.record_id if weak else core_manifest.record_id
             return {
                 "executed_count": len(capabilities) * 3,
                 "pass_count": len(capabilities) * 3,
@@ -1186,7 +1231,12 @@ def test_governance_requires_complete_weak_and_core_manifest_contracts(
                 missing_field: [],
                 "rejection_reasons": {},
                 "manifest_record_ids": {
-                    capability: record_id for capability in capabilities
+                    capability: (
+                        weak_manifest.record_id
+                        if capability in l5_readiness.LEGACY_WEAK_CAPABILITIES
+                        else core_manifest.record_id
+                    )
+                    for capability in capabilities
                 },
                 "manifest_rejection_reasons": {},
             }
@@ -1883,6 +1933,7 @@ def _manifest(
     scope: ScopeRef,
     *,
     title: str,
+    capabilities: list[str] | None = None,
 ) -> RecordEnvelope:
     return runtime.store.append(
         RecordEnvelope.create(
@@ -1894,6 +1945,7 @@ def _manifest(
             content={
                 "report_type": "capability_replay_manifest",
                 "schema_version": "capability_replay_manifest.v1",
+                **({"capabilities": list(capabilities)} if capabilities is not None else {}),
             },
             meta={"report_type": "capability_replay_manifest"},
         )

@@ -64,7 +64,13 @@ def test_replay_dataset_includes_persisted_regression_replay_case(tmp_path) -> N
         )
     )
 
-    report = build_replay_dataset(runtime, scope=scope, limit=10, persist=False)
+    report = build_replay_dataset(
+        runtime,
+        scope=scope,
+        limit=10,
+        persist=False,
+        legacy_compatibility=True,
+    )
 
     assert report["case_count"] == 1
     assert report["cases"][0]["source"] == "regression_replay_case"
@@ -113,6 +119,7 @@ def test_replay_dataset_can_include_built_in_real_regressions(tmp_path) -> None:
         limit=50,
         persist=False,
         include_built_in_regressions=True,
+        legacy_compatibility=True,
     )
 
     mistake_types = {case["mistake_type"] for case in report["cases"]}

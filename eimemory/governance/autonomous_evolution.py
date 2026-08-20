@@ -7,12 +7,14 @@ from hashlib import sha256
 from typing import Any
 
 from eimemory.governance.capability_distiller import distill_capability_candidate
+from eimemory.governance.capability_hypotheses import hypothesis_behavior_gate
 from eimemory.governance.isolated_evaluator import (
     build_evaluation_packet,
     judge_stop_condition,
     run_isolated_evaluator,
 )
 from eimemory.governance.promotion_manager import (
+    _issue_legacy_promotion_authority,
     promote_candidate,
     recover_incomplete_code_apply,
     run_code_patch_preflight,
@@ -38,8 +40,11 @@ def run_autonomous_evolution(
     scope: dict[str, Any] | ScopeRef | None = None,
     apply: bool = False,
     web_hypotheses: list[dict[str, Any]] | None = None,
+    opportunities: list[dict[str, Any]] | None = None,
+    mine_events: bool = True,
     max_apply: int = 3,
     persist_report: bool = False,
+    legacy_compatibility: bool = False,
 ) -> dict[str, Any]:
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
     scope_payload = asdict(scope_ref)
@@ -48,17 +53,19 @@ def run_autonomous_evolution(
         scope=scope_ref,
         apply=apply,
     )
-    opportunities = _mine_event_opportunities(runtime, scope=scope_ref)
-    opportunities.extend(_web_opportunities(web_hypotheses or [], scope=scope_ref))
-    replay_cases = [_replay_case_from_opportunity(item) for item in opportunities]
-    safe_patches = [_safe_patch_from_opportunity(item, scope=scope_ref) for item in opportunities]
+    selected_opportunities = [dict(item) for item in opportunities or [] if isinstance(item, dict)]
+    if mine_events:
+        selected_opportunities.extend(_mine_event_opportunities(runtime, scope=scope_ref))
+    selected_opportunities.extend(_web_opportunities(web_hypotheses or [], scope=scope_ref))
+    replay_cases = [_replay_case_from_opportunity(item) for item in selected_opportunities]
+    safe_patches = [_safe_patch_from_opportunity(item, scope=scope_ref) for item in selected_opportunities]
     patch_evaluations = [_evaluate_patch(patch) for patch in safe_patches]
     patch_gates = [
         {
             "trusted_gate": evaluate_trust_gate(
-                outcome=dict(opportunities[index].get("source_outcome_payload") or {}),
-                event=dict(opportunities[index].get("source_event_payload") or {}),
-                source=str(opportunities[index].get("source") or ""),
+                outcome=dict(selected_opportunities[index].get("source_outcome_payload") or {}),
+                event=dict(selected_opportunities[index].get("source_event_payload") or {}),
+                source=str(selected_opportunities[index].get("source") or ""),
             ),
             "replay_gate": evaluate_replay_gate(replay_case),
             "safe_action_gate": evaluate_safe_action_gate(patch=patch),
@@ -146,6 +153,30 @@ def run_autonomous_evolution(
                 }
             )
             continue
+        hypothesis_gate = _code_patch_hypothesis_gate(
+            runtime,
+            patch=patch,
+            scope=scope_ref,
+            legacy_compatibility=legacy_compatibility,
+        )
+        if not hypothesis_gate.get("allowed"):
+            blocked_patches.append(
+                {
+                    "opportunity_id": patch["opportunity_id"],
+                    "patch_type": patch["patch_type"],
+                    "risk_level": patch["risk_level"],
+                    "blocked_reason": str(
+                        hypothesis_gate.get("reason") or "nonlegacy_code_patch_hypothesis_gate_blocked"
+                    ),
+                    "hypothesis_gate": hypothesis_gate,
+                    "blocked_gates": _blocked_gates(
+                        trusted_gate=trusted_gate,
+                        replay_gate=replay_gate,
+                        safe_action_gate=safe_action_gate,
+                    ),
+                }
+            )
+            continue
         isolation_gate: dict[str, Any] = {"ok": True, "skipped": True}
         if str(patch.get("patch_type") or "") == "code_patch":
             isolation_gate = _run_isolated_code_patch_gate(
@@ -197,8 +228,13 @@ def run_autonomous_evolution(
                     "safe_action_report": safe_action_gate,
                     "replay_case": replay_case,
                     "isolated_evaluator": isolation_gate,
+                    "code_patch": {
+                        **dict(patch.get("code_patch") or {}),
+                        "capability_hypothesis_gate": dict(hypothesis_gate),
+                    },
                 },
                 scope=scope_payload,
+                legacy_compatibility=legacy_compatibility,
             )
             if applied.get("applied"):
                 applied_count += 1
@@ -223,14 +259,15 @@ def run_autonomous_evolution(
     report: dict[str, Any] = {
         "ok": True,
         "apply": bool(apply),
+        "legacy_compatibility": bool(legacy_compatibility),
         "code_apply_recovery": code_apply_recovery,
         "persist_report": bool(persist_report),
         "report_type": "autonomous_evolution",
         "schema_version": AUTONOMOUS_EVOLUTION_SCHEMA_VERSION,
         "generated_at": now_iso(),
         "scope": scope_payload,
-        "opportunity_count": len(opportunities),
-        "opportunities": opportunities,
+        "opportunity_count": len(selected_opportunities),
+        "opportunities": selected_opportunities,
         "replay_cases": replay_cases,
         "safe_patches": safe_patches,
         "experiments": experiments,
@@ -589,9 +626,20 @@ def _experiment_from_patch(
     }
 
 
-def _apply_safe_patch(runtime: Any, patch: dict[str, Any], *, scope: dict[str, Any]) -> dict[str, Any]:
+def _apply_safe_patch(
+    runtime: Any,
+    patch: dict[str, Any],
+    *,
+    scope: dict[str, Any],
+    legacy_compatibility: bool = False,
+) -> dict[str, Any]:
     if str(patch.get("patch_type") or "") == "code_patch":
-        return _apply_code_patch(runtime, patch, scope=scope)
+        return _apply_code_patch(
+            runtime,
+            patch,
+            scope=scope,
+            legacy_compatibility=legacy_compatibility,
+        )
     payload = {
         "pattern": str(patch.get("pattern") or ""),
         "default_event_type": str(patch.get("default_event_type") or "communication"),
@@ -618,7 +666,7 @@ def _apply_safe_patch(runtime: Any, patch: dict[str, Any], *, scope: dict[str, A
     budget_decision = str(result.get("_promotion_budget_decision") or "")
     promotion_id = str(result.get("_promotion_id") or "")
     rollout_ledger_id = _rollout_ledger_id_for_promotion(runtime, scope=scope, promotion_id=promotion_id)
-    applied = budget_decision in {"ok", "manual_ok", ""} and str(result.get("status") or "active") == "active"
+    applied = budget_decision in {"ok", "policy_ok", ""} and str(result.get("status") or "active") == "active"
     return {
         "opportunity_id": str(patch.get("opportunity_id") or ""),
         "patch_type": "intent_pattern",
@@ -653,6 +701,130 @@ def _rollback_counts(*, applied_patches: list[dict[str, Any]], blocked_patches: 
         if rollback_failed:
             rollback_failed_count += 1
     return {"rolled_back_count": rolled_back_count, "rollback_failed_count": rollback_failed_count}
+
+
+def _code_patch_hypothesis_gate(
+    runtime: Any,
+    *,
+    patch: dict[str, Any],
+    scope: ScopeRef,
+    legacy_compatibility: bool,
+) -> dict[str, Any]:
+    """Require a current, exact v3 hypothesis before generic code apply.
+
+    Generic event mining has no authority to turn an unbound historical patch
+    into a repository mutation.  Only the explicit legacy replay flag may use
+    that historic behavior; the default path independently rechecks the
+    durable hypothesis rather than trusting opportunity payload fields.
+    """
+
+    if str(patch.get("patch_type") or "") != "code_patch":
+        return {"required": False, "allowed": True, "reason": "not_applicable"}
+    if legacy_compatibility:
+        return {
+            "required": False,
+            "allowed": True,
+            "reason": "legacy_compatibility_explicit",
+        }
+    code_patch = dict(patch.get("code_patch") or {})
+    context = code_patch.get("capability_hypothesis")
+    if not isinstance(context, dict):
+        return {
+            "required": True,
+            "allowed": False,
+            "reason": "nonlegacy_code_patch_hypothesis_context_missing",
+        }
+    required_context_fields = (
+        "hypothesis_id",
+        "link_id",
+        "link_digest",
+        "capability_id",
+        "capability_revision_id",
+        "provider_binding_id",
+        "capability_scope",
+    )
+    missing_context = [field for field in required_context_fields if not str(context.get(field) or "").strip()]
+    if missing_context:
+        return {
+            "required": True,
+            "allowed": False,
+            "reason": "nonlegacy_code_patch_hypothesis_context_incomplete",
+            "missing_fields": missing_context,
+        }
+    required_patch_fields = (
+        "target_capability",
+        "capability_revision_id",
+        "provider_binding_id",
+        "profile_key",
+        "capability_scope",
+        "evidence_watermark",
+    )
+    missing_patch = [field for field in required_patch_fields if not str(code_patch.get(field) or "").strip()]
+    if missing_patch:
+        return {
+            "required": True,
+            "allowed": False,
+            "reason": "nonlegacy_code_patch_binding_context_incomplete",
+            "missing_fields": missing_patch,
+        }
+    for patch_field, context_field in (
+        ("target_capability", "capability_id"),
+        ("capability_revision_id", "capability_revision_id"),
+        ("provider_binding_id", "provider_binding_id"),
+        ("capability_scope", "capability_scope"),
+    ):
+        if str(code_patch.get(patch_field) or "") != str(context.get(context_field) or ""):
+            return {
+                "required": True,
+                "allowed": False,
+                "reason": f"nonlegacy_code_patch_{patch_field}_mismatch",
+            }
+    try:
+        gate = dict(
+            hypothesis_behavior_gate(
+                runtime,
+                runtime_scope=scope,
+                hypothesis_id=str(context.get("hypothesis_id") or ""),
+            )
+        )
+    except Exception as exc:
+        return {
+            "required": True,
+            "allowed": False,
+            "reason": f"nonlegacy_code_patch_hypothesis_gate_error:{type(exc).__name__}",
+        }
+    gate["required"] = True
+    if not gate.get("allowed"):
+        return gate
+    for field in ("hypothesis_id", "link_id", "link_digest", "capability_id", "capability_revision_id", "capability_scope"):
+        if str(gate.get(field) or "") != str(context.get(field) or ""):
+            return {
+                **gate,
+                "allowed": False,
+                "reason": f"nonlegacy_code_patch_hypothesis_{field}_mismatch",
+            }
+    for field in ("expected_metric", "candidate_bounds"):
+        patch_value = code_patch.get(field)
+        gate_value = gate.get(field)
+        if not isinstance(patch_value, dict) or not patch_value:
+            return {
+                **gate,
+                "allowed": False,
+                "reason": f"nonlegacy_code_patch_{field}_missing",
+            }
+        if not isinstance(gate_value, dict) or not gate_value:
+            return {
+                **gate,
+                "allowed": False,
+                "reason": f"nonlegacy_code_patch_hypothesis_{field}_missing",
+            }
+        if dict(patch_value) != dict(gate_value):
+            return {
+                **gate,
+                "allowed": False,
+                "reason": f"nonlegacy_code_patch_{field}_mismatch",
+            }
+    return gate
 
 
 def _run_isolated_code_patch_gate(
@@ -692,7 +864,9 @@ def _run_isolated_code_patch_gate(
                 "summary": str(patch.get("summary") or code_patch.get("summary") or ""),
                 "target_capability": str(code_patch.get("target_capability") or "code.implementation"),
                 "file_updates": _code_patch_file_updates(code_patch),
-                "replay_case_ids": [str(replay_case.get("case_id") or replay_case.get("id") or "")],
+                "replay_case_ids": list(code_patch.get("replay_case_ids") or [str(replay_case.get("case_id") or replay_case.get("id") or "")]),
+                "candidate_bounds": dict(code_patch.get("candidate_bounds") or {}),
+                "capability_hypothesis": dict(code_patch.get("capability_hypothesis") or {}),
             },
             generator_claim=str(patch.get("summary") or code_patch.get("summary") or ""),
             replay_gate=replay_evidence,
@@ -733,12 +907,28 @@ def _run_isolated_code_patch_gate(
     }
 
 
-def _apply_code_patch(runtime: Any, patch: dict[str, Any], *, scope: dict[str, Any]) -> dict[str, Any]:
+def _apply_code_patch(
+    runtime: Any,
+    patch: dict[str, Any],
+    *,
+    scope: dict[str, Any],
+    legacy_compatibility: bool = False,
+) -> dict[str, Any]:
     code_patch = dict(patch.get("code_patch") or {})
+    target_capability = str(code_patch.get("target_capability") or patch.get("target_capability") or "code.implementation")
     loop_id = f"autonomous_evolution:{patch.get('opportunity_id') or 'code_patch'}"
     isolated_evaluator = dict(patch.get("isolated_evaluator") or {})
     preflight = dict(isolated_evaluator.get("preflight") or {})
     evidence_ok = bool(isolated_evaluator.get("ok")) and bool(preflight.get("ok")) and bool(preflight.get("executed"))
+    # Promotion Manager performs the dynamic binding transition immediately
+    # before its first repository write.  Keeping it there ensures any later
+    # machine-policy, repository-contract, or final evidence rejection leaves
+    # the active binding untouched.
+    binding_invalidation = {
+        "required": bool(code_patch.get("capability_hypothesis")),
+        "ok": True,
+        "status": "deferred_to_promotion_manager",
+    }
     eval_result = {
         "ok": evidence_ok,
         "verdict": "pass" if evidence_ok else "fail",
@@ -769,7 +959,17 @@ def _apply_code_patch(runtime: Any, patch: dict[str, Any], *, scope: dict[str, A
         eval_result=eval_result,
         promotion_target="code_patch",
         summary=str(patch.get("summary") or code_patch.get("summary") or "Autonomous code patch"),
-        target_capability="code.implementation",
+        target_capability=target_capability,
+        candidate_patch=code_patch,
+    )
+    legacy_authority = (
+        _issue_legacy_promotion_authority(
+            runtime,
+            candidate_id=candidate_id,
+            scope=scope,
+        )
+        if legacy_compatibility
+        else None
     )
     promotion = promote_candidate(
         runtime,
@@ -783,8 +983,11 @@ def _apply_code_patch(runtime: Any, patch: dict[str, Any], *, scope: dict[str, A
             "source": "eimemory.code_patch_preflight",
             "evidence_ref": str(preflight.get("record_id") or ""),
         },
+        legacy_authority=legacy_authority,
     )
     side_effect = dict(promotion.get("side_effect") or {})
+    if isinstance(side_effect.get("binding_invalidation"), dict):
+        binding_invalidation = dict(side_effect["binding_invalidation"])
     applied = bool(promotion.get("ok") and promotion.get("applied") and side_effect.get("repo_mutated"))
     promotion_id = str(promotion.get("promotion_request_id") or "")
     rollout_ledger_id = _rollout_ledger_id_for_promotion(runtime, scope=scope, promotion_id=promotion_id)
@@ -801,6 +1004,205 @@ def _apply_code_patch(runtime: Any, patch: dict[str, Any], *, scope: dict[str, A
         "promotion": promotion,
         "side_effect": side_effect,
         "isolated_evaluator": isolated_evaluator,
+        "binding_invalidation": binding_invalidation,
+    }
+
+
+def _invalidate_dynamic_binding_before_apply(
+    runtime: Any,
+    *,
+    code_patch: dict[str, Any],
+    scope: dict[str, Any],
+    opportunity_id: str,
+) -> dict[str, Any]:
+    """Fail closed when a code patch changes a declared implementation.
+
+    A capability binding is an implementation claim, not merely a capability
+    label.  Once a targeted repository mutation is allowed to proceed, the
+    old binding's evidence must not continue to qualify the changed code.  We
+    therefore transition it to ``stale`` before the mutating promotion and
+    require a fresh, exact implementation advertisement afterwards.  Generic
+    legacy evolution has no v3 hypothesis context and remains outside this
+    dynamic lifecycle path.
+    """
+
+    context = code_patch.get("capability_hypothesis")
+    if context is None:
+        return {"required": False, "ok": True, "status": "not_dynamic_capability_patch"}
+    if not isinstance(context, dict):
+        return {"required": True, "ok": False, "reason": "dynamic_hypothesis_context_invalid"}
+    binding_id = str(code_patch.get("provider_binding_id") or "").strip()
+    capability_id = str(context.get("capability_id") or code_patch.get("target_capability") or "").strip()
+    revision_id = str(context.get("capability_revision_id") or code_patch.get("capability_revision_id") or "").strip()
+    capability_scope = str(context.get("capability_scope") or "").strip()
+    if not binding_id or not capability_id or not revision_id or not capability_scope:
+        return {"required": True, "ok": False, "reason": "dynamic_binding_context_incomplete"}
+    service = getattr(runtime, "capabilities", None)
+    binding_context = getattr(service, "binding_context", None)
+    transition = getattr(service, "transition_status", None)
+    if not callable(binding_context) or not callable(transition):
+        return {"required": True, "ok": False, "reason": "capability_lifecycle_service_unavailable"}
+    try:
+        current = binding_context(
+            binding_id,
+            runtime_scope=scope,
+            capability_scope=capability_scope,
+        )
+    except Exception as exc:
+        return {"required": True, "ok": False, "reason": f"binding_context_error:{type(exc).__name__}"}
+    if not isinstance(current, dict):
+        return {"required": True, "ok": False, "reason": "dynamic_binding_not_found"}
+    descriptor = current.get("descriptor") if isinstance(current.get("descriptor"), dict) else {}
+    if (
+        str(descriptor.get("capability_id") or "") != capability_id
+        or str(descriptor.get("capability_revision_id") or "") != revision_id
+    ):
+        return {"required": True, "ok": False, "reason": "dynamic_binding_target_mismatch"}
+    status = str(current.get("status") or "")
+    if status == "stale":
+        projection_refresh = _refresh_dynamic_capability_state(
+            runtime,
+            scope=scope,
+            code_patch=code_patch,
+            capability_id=capability_id,
+            capability_scope=capability_scope,
+        )
+        if projection_refresh.get("ok") is not True:
+            return {
+                "required": True,
+                "ok": False,
+                "reason": str(projection_refresh.get("reason") or "dynamic_projection_refresh_failed"),
+                "binding_id": binding_id,
+                "implementation_digest": str(descriptor.get("implementation_digest") or ""),
+                "projection_refresh": projection_refresh,
+            }
+        return {
+            "required": True,
+            "ok": True,
+            "status": "already_stale",
+            "binding_id": binding_id,
+            "implementation_digest": str(descriptor.get("implementation_digest") or ""),
+            "projection_refresh": projection_refresh,
+        }
+    if status != "active":
+        return {
+            "required": True,
+            "ok": False,
+            "reason": f"dynamic_binding_not_active:{status or 'unknown'}",
+            "binding_id": binding_id,
+        }
+    try:
+        receipt = transition(
+            entity_type="binding",
+            entity_id=binding_id,
+            entity_digest=str(current.get("entity_digest") or ""),
+            target_status="stale",
+            runtime_scope=scope,
+            capability_scope=capability_scope,
+            expected_state_version=int(current.get("state_version") or 0),
+            expected_state_digest=str(current.get("state_digest") or ""),
+            effective_at=now_iso(),
+            reason="dynamic_code_evolution_pending_rebind",
+            provenance={
+                "source": "eimemory.governance.autonomous_evolution",
+                "opportunity_id": opportunity_id,
+                "capability_id": capability_id,
+                "capability_revision_id": revision_id,
+                "previous_implementation_digest": str(descriptor.get("implementation_digest") or ""),
+            },
+            request_key=f"dynamic-binding-stale:{opportunity_id}:{binding_id}",
+        )
+    except Exception as exc:
+        return {"required": True, "ok": False, "reason": f"binding_stale_transition_error:{type(exc).__name__}"}
+    receipt_payload = receipt.to_dict() if callable(getattr(receipt, "to_dict", None)) else {}
+    projection_refresh = _refresh_dynamic_capability_state(
+        runtime,
+        scope=scope,
+        code_patch=code_patch,
+        capability_id=capability_id,
+        capability_scope=capability_scope,
+    )
+    if projection_refresh.get("ok") is not True:
+        # The state transition is intentionally not rolled back: after an
+        # implementation-targeted mutation begins, retaining the prior
+        # binding is less safe than leaving it stale.  Refuse the repository
+        # write until the affected dynamic projection and L5 snapshot have
+        # been recomputed from that conservative state.
+        return {
+            "required": True,
+            "ok": False,
+            "reason": str(projection_refresh.get("reason") or "dynamic_projection_refresh_failed"),
+            "binding_id": binding_id,
+            "implementation_digest": str(descriptor.get("implementation_digest") or ""),
+            "transition": receipt_payload,
+            "projection_refresh": projection_refresh,
+        }
+    return {
+        "required": True,
+        "ok": True,
+        "status": "stale_transitioned",
+        "binding_id": binding_id,
+        "implementation_digest": str(descriptor.get("implementation_digest") or ""),
+        "transition": receipt_payload,
+        "projection_refresh": projection_refresh,
+    }
+
+
+def _refresh_dynamic_capability_state(
+    runtime: Any,
+    *,
+    scope: dict[str, Any],
+    code_patch: dict[str, Any],
+    capability_id: str,
+    capability_scope: str,
+) -> dict[str, Any]:
+    """Persist a conservative affected projection and L5 re-evaluation."""
+
+    profile_key = str(code_patch.get("profile_key") or "").strip()
+    if not profile_key:
+        return {"ok": False, "reason": "dynamic_profile_key_missing"}
+    store = getattr(runtime, "store", None)
+    if store is None:
+        return {"ok": False, "reason": "dynamic_projection_store_unavailable"}
+    try:
+        from eimemory.capabilities.projector import CapabilityStateProjector
+
+        projection = CapabilityStateProjector(store).project_affected(
+            profile_key,
+            runtime_scope=scope,
+            capability_scope=capability_scope,
+            affected_capability_ids=[capability_id],
+            max_candidates=100,
+            observation_limit=500,
+            persist=True,
+        ).to_dict()
+    except Exception as exc:
+        return {"ok": False, "reason": f"dynamic_projection_failed:{type(exc).__name__}"}
+    try:
+        from eimemory.governance.l5_assessment_v3 import build_l5_assessment_v3
+
+        assessment = build_l5_assessment_v3(
+            runtime,
+            profile_key=profile_key,
+            scope=scope,
+            capability_scope=capability_scope,
+            persist=True,
+            max_candidates=100,
+            observation_limit=500,
+        )
+    except Exception as exc:
+        return {
+            "ok": False,
+            "reason": f"dynamic_l5_reassessment_failed:{type(exc).__name__}",
+            "projection": projection,
+        }
+    return {
+        "ok": True,
+        "profile_key": profile_key,
+        "affected_capability_ids": [capability_id],
+        "projection": projection,
+        "assessment": assessment,
+        "assessment_ready": assessment.get("ok") is True if isinstance(assessment, dict) else False,
     }
 
 

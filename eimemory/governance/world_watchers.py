@@ -10,6 +10,11 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
+from eimemory.capabilities.consumer_views import (
+    capability_aliases_from_view,
+    dynamic_evaluation_view,
+    resolve_explicit_capability_attribution,
+)
 from eimemory.core.clock import now_iso
 from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.governance.goal_registry import derive_goal_signals, load_goal_registry
@@ -62,6 +67,12 @@ def collect_world_signals(
     watches: list[SourceWatch | dict[str, Any]] | None = None,
     dry_run: bool = True,
     loop_id: str = "manual",
+    capability_scope: str = "global",
+    profile_key: str = "",
+    catalog: Any | None = None,
+    at_time: str = "",
+    dynamic_capabilities: bool | None = None,
+    legacy_compatibility: bool = False,
 ) -> dict[str, Any]:
     started = time.perf_counter()
     started_memory_tracing = not tracemalloc.is_tracing()
@@ -71,6 +82,85 @@ def collect_world_signals(
         tracemalloc.reset_peak()
     memory_start = _memory_peak_bytes()
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+    # Dynamic registry/profile + catalog selection is now the only normal
+    # signal-consumer path.  The old keyword classifier remains available only
+    # when a caller deliberately requests compatibility mode.
+    if legacy_compatibility and dynamic_capabilities is True:
+        if started_memory_tracing and tracemalloc.is_tracing():
+            tracemalloc.stop()
+        return {
+            "ok": False,
+            "status": "blocked",
+            "reason": "conflicting_capability_consumer_modes",
+            "errors": [],
+            "signal_count": 0,
+            "persisted_record_ids": [],
+            "updated_record_ids": [],
+            "signals": [],
+            "capability_evaluation_view": {},
+            "legacy_compatibility": True,
+        }
+    if dynamic_capabilities is False and not legacy_compatibility:
+        if started_memory_tracing and tracemalloc.is_tracing():
+            tracemalloc.stop()
+        return {
+            "ok": False,
+            "status": "blocked",
+            "reason": "legacy_compatibility_required",
+            "errors": [],
+            "signal_count": 0,
+            "persisted_record_ids": [],
+            "updated_record_ids": [],
+            "signals": [],
+            "capability_evaluation_view": {},
+            "legacy_compatibility": False,
+        }
+    legacy_compatibility = bool(legacy_compatibility)
+    dynamic_requested = not legacy_compatibility
+    evaluation_view: dict[str, Any] = {}
+    attribution_context: dict[str, Any] | None = None
+    if dynamic_requested:
+        evaluation_view = dynamic_evaluation_view(
+            runtime,
+            scope=scope_ref,
+            capability_scope=capability_scope,
+            profile_key=profile_key,
+            catalog=catalog,
+            at_time=at_time,
+            max_cases=256,
+        )
+        if evaluation_view.get("ok") is not True:
+            if started_memory_tracing and tracemalloc.is_tracing():
+                tracemalloc.stop()
+            return {
+                "ok": False,
+                "status": "blocked",
+                "reason": str(evaluation_view.get("reason") or "capability_evaluation_selection_blocked"),
+                "errors": [str(item) for item in evaluation_view.get("errors") or ()],
+                "signal_count": 0,
+                "persisted_record_ids": [],
+                "updated_record_ids": [],
+                "signals": [],
+                "capability_evaluation_view": evaluation_view,
+                "legacy_compatibility": bool(legacy_compatibility),
+            }
+        capability_view = (
+            evaluation_view.get("capability_view")
+            if isinstance(evaluation_view.get("capability_view"), dict)
+            else {}
+        )
+        attribution_context = {
+            "allowed_capability_ids": tuple(
+                sorted(
+                    {
+                        str(item.get("capability_id") or "").strip()
+                        for item in capability_view.get("capabilities") or ()
+                        if isinstance(item, dict) and str(item.get("capability_id") or "").strip()
+                    }
+                )
+            ),
+            "aliases": capability_aliases_from_view(capability_view),
+        }
     normalized = [_with_cursor(runtime, scope=scope_ref, watch=watch if isinstance(watch, SourceWatch) else SourceWatch.from_dict(watch)) for watch in (watches or default_watches())]
     signals: list[dict[str, Any]] = []
     persisted_ids: list[str] = []
@@ -89,7 +179,17 @@ def collect_world_signals(
         normalized_signals: list[dict[str, Any]] = []
         seen_local_hashes: set[str] = set()
         for raw_signal in watch_signals:
-            signal = _normalize_signal(raw_signal, watch=watch)
+            if attribution_context is not None:
+                raw_signal = _attach_record_capability_attribution(
+                    runtime,
+                    scope=scope_ref,
+                    signal=raw_signal,
+                )
+            signal = _normalize_signal(
+                raw_signal,
+                watch=watch,
+                attribution_context=attribution_context,
+            )
             if _is_noise_signal(signal):
                 continue
             local_hash = _signal_hash(watch, signal)
@@ -136,6 +236,7 @@ def collect_world_signals(
                         "source_kind": watch.kind,
                         "signal_type": payload.get("signal_type"),
                         "target_capability": payload.get("target_capability"),
+                        "capability_attribution": payload.get("capability_attribution") or {},
                         "signal_hash": signal_hash,
                         "evidence_tier": payload.get("evidence_tier"),
                         "repeat_count": int(payload.get("repeat_count") or 1),
@@ -181,6 +282,8 @@ def collect_world_signals(
         "edge_builder": edge_report,
         "supervisor_summary": summary,
         "signals": signals,
+        "capability_evaluation_view": evaluation_view,
+        "legacy_compatibility": bool(legacy_compatibility),
     }
 
 
@@ -263,7 +366,7 @@ def _signals_from_outcomes(runtime: Any, *, scope: ScopeRef, watch: SourceWatch)
         if label == "success":
             continue
         summary = record.summary or str(record.content.get("input_summary") or "")
-        key = stable_semantic_key("bad_outcome_signal", label, _normalize_text(summary), _capability_from_label(label, summary))
+        key = stable_semantic_key("bad_outcome_signal", label, _normalize_text(summary))
         if key not in signals_by_key:
             signals_by_key[key] = {
                 "record_id": record.record_id,
@@ -271,7 +374,6 @@ def _signals_from_outcomes(runtime: Any, *, scope: ScopeRef, watch: SourceWatch)
                 "signal_type": "bad_outcome",
                 "title": f"Bad outcome: {label}",
                 "summary": summary,
-                "target_capability": _capability_from_label(label, summary),
                 "repeat_count": 1,
                 "confidence": 0.8,
                 "impact": 0.75,
@@ -301,7 +403,6 @@ def _signals_from_records(
             "signal_type": signal_type,
             "title": record.title,
             "summary": record.summary,
-            "target_capability": _classify_capability(f"{record.title} {record.summary}", fallback="memory.recall" if signal_type == "recall_gap" else "proactive.judgment"),
             "confidence": 0.65,
             "evidence_tier": _evidence_tier(watch.kind),
         }
@@ -324,7 +425,6 @@ def _signals_from_user_goals(runtime: Any, *, scope: ScopeRef, watch: SourceWatc
                     "signal_type": "user_goal_memory",
                     "title": record.title,
                     "summary": record.summary,
-                    "target_capability": _classify_capability(text, fallback="proactive.judgment"),
                     "confidence": 0.55,
                     "evidence_tier": "T2",
                 }
@@ -352,7 +452,6 @@ def _signals_from_external_intake(runtime: Any, *, scope: ScopeRef, watch: Sourc
                 "signal_type": "external_intake_summary",
                 "title": f"External intake updated: {kind}",
                 "summary": f"{len(items)} recent {kind} records. {sample}",
-                "target_capability": "research.synthesis" if kind in {"paper_source", "paper_extract", "knowledge_page", "claim_card"} else "knowledge.intake",
                 "confidence": 0.62,
                 "impact": 0.55,
                 "urgency": 0.35,
@@ -382,7 +481,6 @@ def _signals_from_local_state(runtime: Any, *, scope: ScopeRef, watch: SourceWat
                 "signal_type": "local_state",
                 "title": "Active autonomous learning loop is still open",
                 "summary": f"{len(active)} active learning loop(s) need completion or force handling.",
-                "target_capability": "ops.health",
                 "confidence": 0.7,
                 "impact": 0.65,
                 "urgency": 0.7,
@@ -396,7 +494,6 @@ def _signals_from_local_state(runtime: Any, *, scope: ScopeRef, watch: SourceWat
                 "signal_type": "local_state",
                 "title": "Recent regression watch activity",
                 "summary": f"{len(regressions)} regression watch records exist; review before further promotion.",
-                "target_capability": "safety.boundary",
                 "confidence": 0.65,
                 "impact": 0.65,
                 "urgency": 0.55,
@@ -410,7 +507,6 @@ def _signals_from_local_state(runtime: Any, *, scope: ScopeRef, watch: SourceWat
                 "signal_type": "local_state",
                 "title": "Blocked promotions need review",
                 "summary": f"{len(blocked)} blocked promotion request(s) are available for proactive follow-up.",
-                "target_capability": "proactive.judgment",
                 "confidence": 0.68,
                 "impact": 0.6,
                 "urgency": 0.5,
@@ -424,7 +520,6 @@ def _signals_from_local_state(runtime: Any, *, scope: ScopeRef, watch: SourceWat
                 "signal_type": "local_state",
                 "title": "Local autonomous learning state is quiet",
                 "summary": "No active loops, regressions, or blocked promotions were found in the local store.",
-                "target_capability": "ops.health",
                 "confidence": 0.35,
                 "impact": 0.2,
                 "urgency": 0.1,
@@ -439,7 +534,7 @@ def _signals_from_outcome_weakness(runtime: Any, *, scope: ScopeRef, watch: Sour
     table_signals = _signals_from_event_outcomes(runtime, scope=scope, watch=watch)
     grouped: dict[str, dict[str, Any]] = {}
     for signal in [*signals, *table_signals]:
-        key = stable_semantic_key(signal.get("target_capability"), signal.get("summary"))
+        key = stable_semantic_key(signal.get("signal_type"), signal.get("summary"))
         if key not in grouped:
             grouped[key] = signal
             continue
@@ -489,7 +584,6 @@ def _signals_from_event_outcomes(runtime: Any, *, scope: ScopeRef, watch: Source
                 "signal_type": "outcome_weakness",
                 "title": f"Outcome weakness: {event.get('event_type') or outcome_name or 'bad'}",
                 "summary": summary,
-                "target_capability": _classify_capability(f"{event.get('event_type')} {event.get('user_phrase')} {summary}", fallback="proactive.judgment"),
                 "repeat_count": 1,
                 "confidence": 0.82 if correction else 0.72,
                 "impact": 0.78,
@@ -525,7 +619,7 @@ def _signals_from_stale_assets(runtime: Any, *, scope: ScopeRef, watch: SourceWa
                 "signal_type": "stale_asset",
                 "title": f"Replay needed: {record.title}",
                 "summary": f"{record.kind} {record.record_id} has no recent replay or verification metadata.",
-                "target_capability": str(meta.get("target_capability") or meta.get("capability") or "proactive.judgment"),
+                "target_capability": str(meta.get("target_capability") or meta.get("capability") or ""),
                 "confidence": 0.58,
                 "impact": 0.5,
                 "urgency": 0.42,
@@ -557,7 +651,6 @@ def _signals_from_repo(runtime: Any, *, watch: SourceWatch) -> list[dict[str, An
                     "signal_type": "local_repo",
                     "title": f"Repo maintenance signal: {path.name}",
                     "summary": f"{path.as_posix()} contains TODO/FIXME markers",
-                    "target_capability": "code.implementation",
                     "confidence": 0.5,
                     "evidence_tier": "T2",
                 }
@@ -786,18 +879,96 @@ def _json_dict(value: Any) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
-def _normalize_signal(signal: dict[str, Any], *, watch: SourceWatch) -> dict[str, Any]:
+def _attach_record_capability_attribution(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    signal: dict[str, Any],
+) -> dict[str, Any]:
+    """Carry an already-declared historical attribution into dynamic mode.
+
+    This is a migration reader only: it does not classify title/summary text.
+    New signal producers should write their own ``capability_attribution``
+    object; the synthesized wrapper makes the source and migration boundary
+    visible to downstream consumers.
+    """
+
+    payload = dict(signal or {})
+    if isinstance(payload.get("capability_attribution"), dict):
+        return payload
+    record_id = str(payload.get("record_id") or "").strip()
+    if not record_id:
+        return payload
+    try:
+        record = runtime.store.get_by_id(record_id, scope=scope)
+    except Exception:
+        record = None
+    if record is None:
+        return payload
+    content = record.content if isinstance(record.content, dict) else {}
+    meta = record.meta if isinstance(record.meta, dict) else {}
+    for source in (meta, content):
+        existing = source.get("capability_attribution") if isinstance(source, dict) else None
+        if isinstance(existing, dict):
+            payload["capability_attribution"] = dict(existing)
+            return payload
+    for source in (meta, content):
+        if not isinstance(source, dict):
+            continue
+        for key in ("capability_id", "target_capability", "capability", "capability_domain"):
+            value = str(source.get(key) or "").strip()
+            if value:
+                payload["capability_attribution"] = {
+                    "capability_id": value,
+                    "rule_id": "historical_record_explicit_field",
+                    "migration_id": "wp11_record_attribution_reader",
+                }
+                return payload
+    return payload
+
+
+def _normalize_signal(
+    signal: dict[str, Any],
+    *,
+    watch: SourceWatch,
+    attribution_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     payload = dict(signal or {})
     title = _compact_text(str(payload.get("title") or f"World signal: {watch.name}"), limit=MAX_SIGNAL_TITLE_CHARS)
     raw_summary = str(payload.get("summary") or "")
     summary = _compact_text(raw_summary, limit=MAX_SIGNAL_SUMMARY_CHARS)
-    target_capability = _classify_capability(
-        f"{title} {raw_summary} {payload.get('signal_type') or ''}",
-        fallback=str(payload.get("target_capability") or "proactive.judgment"),
-    )
+    if attribution_context is None:
+        target_capability = _legacy_classify_capability(
+            f"{title} {raw_summary} {payload.get('signal_type') or ''}",
+            fallback=str(payload.get("target_capability") or "unclassified"),
+        )
+        capability_attribution = {
+            "schema": "capability.consumer_attribution.v1",
+            "status": "legacy_shadow",
+            "capability_id": target_capability,
+            "reason": "legacy_keyword_classifier",
+            "source": "",
+            "rule_id": "",
+            "migration_id": "",
+        }
+    else:
+        # A generated legacy target is not an explicit attribution.  Dynamic
+        # consumers therefore only accept the durable structured rule object;
+        # otherwise the signal stays honestly unclassified.
+        dynamic_payload = dict(payload)
+        if not isinstance(dynamic_payload.get("capability_attribution"), dict):
+            for key in ("target_capability", "capability", "capability_id", "capability_domain"):
+                dynamic_payload.pop(key, None)
+        capability_attribution = resolve_explicit_capability_attribution(
+            [dynamic_payload],
+            allowed_capability_ids=attribution_context.get("allowed_capability_ids") or (),
+            aliases=attribution_context.get("aliases") or {},
+        )
+        target_capability = str(capability_attribution.get("capability_id") or "unclassified")
     payload["title"] = title
     payload["summary"] = summary
     payload["target_capability"] = target_capability
+    payload["capability_attribution"] = capability_attribution
     payload["raw_summary_chars"] = len(raw_summary)
     payload["summary_truncated"] = len(summary) < len(raw_summary.strip())
     if raw_summary and (len(raw_summary) > NOISE_SUMMARY_CHARS or raw_summary.count("\n") > NOISE_LINE_COUNT):
@@ -826,7 +997,9 @@ def _is_noise_signal(signal: dict[str, Any]) -> bool:
     return False
 
 
-def _classify_capability(text: str, *, fallback: str) -> str:
+def _legacy_classify_capability(text: str, *, fallback: str) -> str:
+    """Historical keyword classifier; reachable only from legacy mode."""
+
     value = str(text or "").lower()
     if any(term in value for term in ("health", "timeout", "8091", "service", "systemd", "gateway", "rpc", "端口", "超时", "健康")):
         return "ops.health"
@@ -840,7 +1013,7 @@ def _classify_capability(text: str, *, fallback: str) -> str:
         return "policy.judgment"
     if any(term in value for term in ("source", "paper", "rss", "news", "论文", "新闻")):
         return "knowledge.intake"
-    return fallback or "proactive.judgment"
+    return fallback or "unclassified"
 
 
 def _evidence_tier(kind: str) -> str:
@@ -855,14 +1028,3 @@ def _evidence_tier(kind: str) -> str:
     if kind.startswith("research"):
         return "T4"
     return "T5"
-
-
-def _capability_from_label(label: str, text: str) -> str:
-    value = f"{label} {text}".lower()
-    if "tool" in value:
-        return "tool.routing"
-    if "stale" in value or "recall" in value:
-        return "memory.recall"
-    if "unsafe" in value or "risk" in value:
-        return "safety.judgment"
-    return "proactive.judgment"

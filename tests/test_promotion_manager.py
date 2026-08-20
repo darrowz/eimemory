@@ -10,13 +10,121 @@ import pytest
 from eimemory.api.runtime import Runtime
 from eimemory.governance.capability_distiller import distill_capability_candidate
 import eimemory.governance.promotion_manager as promotion_manager
-from eimemory.governance.promotion_manager import backfill_promotion_rollout_ledger, promote_candidate, _deployment_commands, _matching_code_preflight, _run_patch_commands, run_code_patch_preflight
+from eimemory.governance.promotion_manager import (
+    _deployment_commands,
+    _matching_code_preflight,
+    _run_patch_commands,
+    backfill_promotion_rollout_ledger,
+    promote_candidate as _promote_candidate,
+    run_code_patch_preflight,
+)
 from eimemory.governance.sandbox_lab import create_sandbox_experiment
 from eimemory.governance.rollout_lifecycle import is_executed_rollback_ledger_record
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
 PASSING_EVAL = {"verdict": "pass", "scores": {"capability": 0.9, "safety": 1.0, "regression": 1.0, "cost": 0.8}}
+
+
+def _dynamic_code_patch_candidate(runtime, *, scope: dict, authority_tier: str = "L1"):
+    context = {
+        "hypothesis_id": "hypothesis-v3-final-gate",
+        "link_id": "link-v3-final-gate",
+        "link_digest": "a" * 64,
+        "capability_id": "code.implementation",
+        "capability_revision_id": "revision-v3-final-gate",
+        "provider_binding_id": "binding-v3-final-gate",
+        "capability_scope": "global",
+    }
+    expected_metric = {"pass_rate": {"minimum": 0.9}}
+    candidate_bounds = {"repo_root": "/tmp/final-gate", "allowed_files": ["module.py"]}
+    patch = {
+        "summary": "Bound dynamic code patch",
+        "target_capability": "code.implementation",
+        "capability_revision_id": context["capability_revision_id"],
+        "provider_binding_id": context["provider_binding_id"],
+        "profile_key": "profile-v3-final-gate",
+        "capability_scope": "global",
+        "evidence_watermark": "watermark-v3-final-gate",
+        "expected_metric": expected_metric,
+        "candidate_bounds": candidate_bounds,
+        "capability_hypothesis": context,
+        "capability_hypothesis_gate": {"qualifying_feedback_id": "feedback-v3-current"},
+        "apply_to_repo": True,
+        "repo_root": "/tmp/final-gate",
+        "allowed_files": ["module.py"],
+        "file_updates": [{"path": "module.py", "content": "VALUE = 'new'\n"}],
+        "verification_commands": [["python", "-m", "compileall", "module.py"]],
+    }
+    record = runtime.store.append(
+        RecordEnvelope.create(
+            kind="capability_candidate",
+            title="Dynamic code patch",
+            scope=ScopeRef.from_dict(scope),
+            status="candidate",
+            content={
+                "promotion_target": "code_patch",
+                "target_capability": "code.implementation",
+                "candidate_patch": patch,
+            },
+            meta={
+                "promotion_target": "code_patch",
+                "target_capability": "code.implementation",
+                "authority_tier": authority_tier,
+            },
+        )
+    )
+    return record, context, expected_metric, candidate_bounds
+
+
+def promote_candidate(runtime, **kwargs):
+    """Exercise historic code-patch fixtures through explicit in-memory mode.
+
+    The older fixture corpus intentionally predates durable v3 hypotheses. It
+    must not silently model the production default, so only this test-local
+    shim issues the private, non-serializable migration authority. New final
+    gate regressions call ``_promote_candidate`` directly.
+    """
+
+    candidate = runtime.store.get_by_id(kwargs.get("candidate_id", ""), scope=kwargs.get("scope"))
+    if candidate is not None and str(candidate.meta.get("promotion_target") or "") == "code_patch":
+        patch = dict((candidate.content or {}).get("candidate_patch") or {})
+        if not isinstance(patch.get("capability_hypothesis"), dict) or not patch.get("capability_hypothesis"):
+            kwargs.setdefault(
+                "legacy_authority",
+                promotion_manager._issue_legacy_promotion_authority(
+                    runtime,
+                    candidate_id=candidate.record_id,
+                    scope=candidate.scope,
+                ),
+            )
+    return _promote_candidate(runtime, **kwargs)
+
+
+@pytest.fixture(autouse=True)
+def _machine_code_policy(monkeypatch) -> None:
+    """Promotion behavior tests opt into each bounded machine action explicitly.
+
+    Production remains fail-closed when the deployment-controlled policy is
+    absent.  These tests exercise the gates after that authority has been
+    deliberately supplied, while bridge/policy tests cover missing and
+    malformed policy rejection.
+    """
+
+    monkeypatch.setenv(
+        "EIMEMORY_CODE_AUTOMATION_POLICY_JSON",
+        json.dumps(
+            {
+                "schema_version": "code_automation_policy.v1",
+                "policy_id": "test-promotion-machine-policy-v1",
+                "actions": {
+                    "local_apply": True,
+                    "commit": True,
+                    "deployment": True,
+                },
+            }
+        ),
+    )
 
 
 def test_patch_command_resolves_python_to_current_interpreter_when_path_lacks_python(tmp_path, monkeypatch) -> None:
@@ -270,6 +378,84 @@ def test_code_patch_rechecks_subject_state_immediately_before_repo_mutation(tmp_
     assert target.read_text(encoding="utf-8") == "VALUE = 'concurrent-drift'\n"
 
 
+def test_direct_promotion_revalidates_current_hypothesis_evidence_before_write(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"tenant_id": "default", "agent_id": "hongtu", "workspace_id": "code", "user_id": "darrow"}
+    candidate, context, expected_metric, candidate_bounds = _dynamic_code_patch_candidate(runtime, scope=scope)
+    monkeypatch.setattr(
+        promotion_manager,
+        "hypothesis_behavior_gate",
+        lambda *_args, **_kwargs: {
+            "allowed": False,
+            "reason": "latest_independent_feedback_not_pass",
+            **context,
+            "expected_metric": expected_metric,
+            "candidate_bounds": candidate_bounds,
+            "qualifying_feedback_id": "feedback-v3-current",
+        },
+    )
+
+    result = _promote_candidate(
+        runtime,
+        candidate_id=candidate.record_id,
+        scope=scope,
+        loop_id="direct-final-gate",
+        apply=True,
+        eval_result=PASSING_EVAL,
+        health={"ok": True},
+    )
+
+    assert result["ok"] is False
+    assert result["blocked_reason"] == "latest_independent_feedback_not_pass"
+    assert result["capability_hypothesis"]["required"] is True
+    assert result["capability_hypothesis"]["allowed"] is False
+    assert runtime.store.get_by_id(candidate.record_id, scope=scope).status == "candidate"
+
+
+def test_machine_policy_rejection_leaves_dynamic_binding_active_without_stale_transition(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"tenant_id": "default", "agent_id": "hongtu", "workspace_id": "code", "user_id": "darrow"}
+    candidate, context, expected_metric, candidate_bounds = _dynamic_code_patch_candidate(runtime, scope=scope)
+    monkeypatch.delenv("EIMEMORY_CODE_AUTOMATION_POLICY_JSON", raising=False)
+    monkeypatch.setattr(
+        promotion_manager,
+        "hypothesis_behavior_gate",
+        lambda *_args, **_kwargs: {
+            "allowed": True,
+            **context,
+            "expected_metric": expected_metric,
+            "candidate_bounds": candidate_bounds,
+            "qualifying_feedback_id": "feedback-v3-current",
+        },
+    )
+    transitions: list[dict] = []
+
+    class ActiveBinding:
+        def binding_context(self, *_args, **_kwargs):
+            return {"status": "active", "descriptor": {"capability_id": context["capability_id"]}}
+
+        def transition_status(self, **kwargs):
+            transitions.append(kwargs)
+            return {"ok": True}
+
+    monkeypatch.setattr(runtime, "capabilities", ActiveBinding())
+
+    result = _promote_candidate(
+        runtime,
+        candidate_id=candidate.record_id,
+        scope=scope,
+        loop_id="policy-reject-before-stale",
+        apply=True,
+        eval_result=PASSING_EVAL,
+        health={"ok": True},
+    )
+
+    assert result["ok"] is False
+    assert result["blocked_reason"].startswith("machine_policy")
+    assert transitions == []
+    assert runtime.capabilities.binding_context()["status"] == "active"
+
+
 def test_recover_incomplete_code_apply_rolls_back_interrupted_verification_without_retrying(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path / "runtime")
     scope = {"agent_id": "hongtu", "workspace_id": "code", "user_id": "darrow"}
@@ -507,6 +693,7 @@ def test_distillation_rejects_low_safety_eval(tmp_path) -> None:
             eval_result={"verdict": "pass", "scores": {"safety": 0.5, "regression": 1.0}},
             promotion_target="tool_route",
             summary="Unsafe candidate",
+            target_capability="tool.routing",
         )
 
 
@@ -522,6 +709,7 @@ def test_distillation_rejects_failed_eval_even_when_verdict_text_says_pass(tmp_p
             eval_result={"ok": False, "verdict": "pass", "scores": {"safety": 1.0, "regression": 1.0}},
             promotion_target="tool_route",
             summary="Contradictory eval must not distill.",
+            target_capability="tool.routing",
         )
 
 
@@ -535,6 +723,7 @@ def test_l2_promotion_blocks_without_structured_gate_bundle(tmp_path) -> None:
         eval_result=PASSING_EVAL,
         promotion_target="system_prompt_patch",
         summary="Prompt policy update",
+        target_capability="tool.routing",
     )
 
     result = promote_candidate(runtime, candidate_id=candidate_id, scope={"agent_id": "hongtu"}, loop_id="learn_test", eval_result=PASSING_EVAL, health={"ok": True})
@@ -555,6 +744,7 @@ def test_l2_promotion_blocks_without_loop_doctor_and_smoke_gate(tmp_path) -> Non
         eval_result=PASSING_EVAL,
         promotion_target="system_prompt_patch",
         summary="Prompt policy update",
+        target_capability="tool.routing",
     )
     gate_bundle = _l2_gate_bundle()
     gate_bundle.pop("closed_loop", None)
@@ -624,6 +814,7 @@ def test_l2_promotion_blocks_without_health_gate(tmp_path) -> None:
         eval_result=PASSING_EVAL,
         promotion_target="deployment_rollout",
         summary="Deploy rollout",
+        target_capability="code.implementation",
     )
 
     result = promote_candidate(runtime, candidate_id=candidate_id, scope={"agent_id": "hongtu"}, loop_id="learn_test", eval_result=PASSING_EVAL, health={"ok": False})
@@ -705,6 +896,7 @@ def test_l2_prompt_policy_blocks_when_prompt_safety_is_stub_notready(tmp_path) -
         eval_result=eval_result,
         promotion_target="system_prompt_patch",
         summary="Prompt policy update",
+        target_capability="tool.routing",
     )
 
     result = promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", apply=False, eval_result=eval_result, health={"ok": True})
@@ -731,6 +923,7 @@ def test_l2_promotion_blocks_malformed_evidence_score_without_crashing(tmp_path)
         eval_result={**PASSING_EVAL, "gate_bundle": _l2_gate_bundle()},
         promotion_target="system_prompt_patch",
         summary="Prompt policy update",
+        target_capability="tool.routing",
     )
 
     result = promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", apply=False, eval_result=eval_result, health={"ok": True})
@@ -753,6 +946,7 @@ def test_l2_promotion_blocks_malformed_timeout_without_crashing(tmp_path) -> Non
         eval_result={**PASSING_EVAL, "gate_bundle": _l2_gate_bundle()},
         promotion_target="system_prompt_patch",
         summary="Prompt policy update",
+        target_capability="tool.routing",
     )
 
     result = promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", apply=False, eval_result=eval_result, health={"ok": True})
@@ -781,6 +975,7 @@ def test_l2_code_patch_blocks_malformed_real_task_replay_without_crashing(tmp_pa
         eval_result={**PASSING_EVAL, "gate_bundle": _l2_gate_bundle()},
         promotion_target="code_patch",
         summary="Code patch update",
+        target_capability="code.implementation",
     )
 
     result = promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", apply=False, eval_result=eval_result, health={"ok": True})
@@ -919,6 +1114,7 @@ def test_l2_deployment_rollout_blocks_without_real_adapter(tmp_path) -> None:
         eval_result={**PASSING_EVAL, "gate_bundle": _l2_gate_bundle()},
         promotion_target="deployment_rollout",
         summary="Deploy rollout",
+        target_capability="code.implementation",
     )
 
     result = promote_candidate(runtime, candidate_id=candidate_id, scope={"agent_id": "hongtu"}, loop_id="learn_test", eval_result={**PASSING_EVAL, "gate_bundle": _l2_gate_bundle()}, health={"ok": True})
@@ -1301,7 +1497,7 @@ def test_code_patch_rollout_auto_canary_failure_rolls_back(tmp_path, monkeypatch
     assert is_executed_rollback_ledger_record(rolled_back) is True
 
 
-def test_default_code_patch_deployment_command_uses_user_systemd_without_sudo(tmp_path, monkeypatch) -> None:
+def test_default_code_patch_deployment_command_requires_explicit_argv(tmp_path, monkeypatch) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     installer = repo / "deploy" / "install_immutable_release.sh"
@@ -1311,13 +1507,10 @@ def test_default_code_patch_deployment_command_uses_user_systemd_without_sudo(tm
 
     commands = _deployment_commands({}, repo)
 
-    assert commands
-    command_text = " ".join(commands[0]) if isinstance(commands[0], list) else commands[0]
-    assert "sudo" not in command_text
-    assert "systemctl --user" in command_text
-    assert "install_immutable_release.sh" in command_text
-    assert "git rev-parse HEAD" in command_text
-    assert "git rev-parse --short HEAD" not in command_text
+    # A repository layout is not deployment authority.  The machine policy
+    # governs whether deployment is eligible; the exact executable argv must
+    # still be supplied explicitly rather than inferred from an installer.
+    assert commands == []
 
 
 def test_code_patch_deployment_failure_reverts_created_commit(tmp_path, monkeypatch) -> None:
@@ -1746,6 +1939,54 @@ def test_l2_code_patch_ignores_untrusted_replay_and_requires_executed_preflight(
     assert entry["budget_decision"] == "blocked"
     assert entry["reason"] == "code_patch_requires_verification_commands"
     assert entry["details"]["rollout_action"] == "gate_failed"
+
+
+def test_code_patch_promotion_reloads_machine_policy_and_rejects_candidate_claim(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu"}
+    monkeypatch.delenv("EIMEMORY_CODE_AUTOMATION_POLICY_JSON", raising=False)
+    candidate = RecordEnvelope.create(
+        kind="capability_candidate",
+        title="Candidate policy cannot grant code mutation",
+        summary="Promotion must reload authority from the machine environment.",
+        status="candidate",
+        scope=ScopeRef.from_dict(scope),
+        content={
+            "authority_tier": "L1",
+            "promotion_target": "code_patch",
+            "target_capability": "code.implementation",
+            "candidate_patch": {
+                "apply_to_repo": True,
+                "automation_policy": {
+                    "policy_id": "candidate-claim",
+                    "actions": {"local_apply": True, "commit": True, "deployment": True},
+                },
+                "requested_machine_actions": ["local_apply", "commit", "deployment"],
+            },
+        },
+        meta={
+            "authority_tier": "L1",
+            "promotion_target": "code_patch",
+            "target_capability": "code.implementation",
+        },
+    )
+    runtime.store.append(candidate)
+
+    result = promote_candidate(
+        runtime,
+        candidate_id=candidate.record_id,
+        scope=scope,
+        loop_id="machine_policy_reload",
+        apply=True,
+        eval_result=PASSING_EVAL,
+        health={"ok": True},
+    )
+
+    assert result["ok"] is False
+    assert result["applied"] is False
+    assert result["blocked_reason"] == "machine_policy_environment_missing"
+    assert result["automation_policy"]["policy_declared"] is False
+    assert runtime.store.get_by_id(candidate.record_id, scope=scope).status == "candidate"
 
 
 def test_backfill_promotion_rollout_ledger_from_existing_request(tmp_path) -> None:

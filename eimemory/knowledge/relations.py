@@ -5,6 +5,7 @@ import re
 from collections import Counter
 from typing import Any
 
+from eimemory.knowledge.capabilities import normalize_capability_context
 from eimemory.models.claim_cards import ClaimCard
 from eimemory.models.entity_records import EntityRecord
 from eimemory.models.relation_records import RelationRecord
@@ -50,9 +51,17 @@ def build_relation_records(
     claims: tuple[ClaimCard, ...],
     entities: tuple[EntityRecord, ...],
     provenance: dict[str, Any] | None = None,
+    capability_context: dict[str, Any] | None = None,
 ) -> tuple[RelationRecord, ...]:
     if not claims or not entities:
         return tuple()
+    # This is intentionally an opt-in provenance bridge.  Relations never
+    # promote a paper, create a hypothesis, or guess capability attribution.
+    normalized_capability_context = normalize_capability_context(capability_context)
+    base_provenance = dict(provenance or {})
+    if normalized_capability_context:
+        base_provenance["capability_context"] = dict(normalized_capability_context)
+    metadata = {"capability_context": dict(normalized_capability_context)} if normalized_capability_context else {}
     relations: list[RelationRecord] = []
     primary = entities[0]
     for claim in claims:
@@ -67,7 +76,8 @@ def build_relation_records(
                 relation_type=relation_type,
                 evidence_text=claim.evidence_text,
                 confidence=min(claim.confidence, matched.salience),
-                provenance=provenance or {},
+                metadata=metadata,
+                provenance=base_provenance,
             )
         )
     return tuple(relations)

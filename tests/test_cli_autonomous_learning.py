@@ -4,7 +4,71 @@ import json
 
 from eimemory.api.runtime import Runtime
 from eimemory.cli.main import main as cli_main
+from eimemory.governance.code_automation_policy import (
+    CODE_AUTOMATION_POLICY_ENV,
+    CODE_AUTOMATION_POLICY_SCHEMA_VERSION,
+)
 from eimemory.governance.capability_ledger import record_capability_score
+from eimemory.models.records import RecordEnvelope
+
+
+def _enable_local_machine_policy(monkeypatch) -> None:
+    monkeypatch.setenv(
+        CODE_AUTOMATION_POLICY_ENV,
+        json.dumps(
+            {
+                "schema_version": CODE_AUTOMATION_POLICY_SCHEMA_VERSION,
+                "policy_id": "tests.cli.autonomous-learning",
+                "actions": {
+                    "local_apply": True,
+                    "commit": False,
+                    "deployment": False,
+                },
+            }
+        ),
+    )
+
+
+def _force_cli_measured_replay_pass(monkeypatch) -> None:
+    def fake_build_replay_dataset(_runtime, **kwargs):
+        assert kwargs.get("legacy_compatibility") is True
+        return {
+            "ok": True,
+            "schema_version": "real_task_replay.v1",
+            "report_type": "proactive_replay_dataset",
+            "case_count": 1,
+            "correction_count": 1,
+            "persisted_record_id": "cli-replay-dataset",
+            "cases": [
+                {
+                    "case_id": "cli_measured_case",
+                    "query": "use bounded replay evidence",
+                    "task_type": "tool.routing",
+                    "target_capability": "tool.routing",
+                    "expected_text": ["evidence"],
+                }
+            ],
+        }
+
+    def fake_run_real_task_replay(_self, dataset, **_kwargs):
+        count = len(dataset.get("cases") or [])
+        return {
+            "ok": True,
+            "report_type": "real_task_replay",
+            "schema_version": "real_task_replay.v1",
+            "verdict": "pass",
+            "pass_rate": 1.0,
+            "threshold": float(dataset.get("threshold") or 0.6),
+            "sample_count": count,
+            "pass_count": count,
+            "fail_count": 0,
+        }
+
+    monkeypatch.setattr(
+        "eimemory.governance.autonomous_learning.build_replay_dataset",
+        fake_build_replay_dataset,
+    )
+    monkeypatch.setattr(Runtime, "run_real_task_replay", fake_run_real_task_replay)
 
 
 def test_cli_learn_cycle_dry_run_outputs_preview_without_persisting(tmp_path, monkeypatch, capsys) -> None:
@@ -26,10 +90,12 @@ def test_cli_learn_cycle_dry_run_outputs_preview_without_persisting(tmp_path, mo
 
 def test_cli_learn_cycle_apply_and_ledger(tmp_path, monkeypatch, capsys) -> None:
     monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path))
+    _enable_local_machine_policy(monkeypatch)
+    _force_cli_measured_replay_pass(monkeypatch)
 
     assert cli_main(["reflect", "log", "tool.routing", "Bad route", "Use memory first for stable personal facts"]) == 0
     capsys.readouterr()
-    assert cli_main(["learn", "cycle", "--apply", "--force"]) == 0
+    assert cli_main(["learn", "cycle", "--apply", "--force", "--legacy-compatibility"]) == 0
     report = json.loads(capsys.readouterr().out)
     assert report["ok"] is True
     assert report["promotion"]["applied"] is True
@@ -56,7 +122,9 @@ def test_cli_learn_ledger_accepts_limit_and_date_filters(tmp_path, monkeypatch, 
     runtime.store.rewrite(old_record)
     runtime.store.rewrite(new_record)
 
-    assert cli_main(["learn", "ledger", "--limit", "1", "--since", "2099-01-02"]) == 0
+    assert cli_main(
+        ["learn", "ledger", "--limit", "1", "--since", "2099-01-02", "--legacy-compatibility"]
+    ) == 0
     ledger = json.loads(capsys.readouterr().out)
 
     assert ledger["query"]["limit"] == 1
@@ -111,10 +179,12 @@ def test_cli_evaluator_harness_fail_replay_does_not_reuse_prior_pass(tmp_path, m
 
 def test_cli_learn_promote_applies_candidate(tmp_path, monkeypatch, capsys) -> None:
     monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path))
+    _enable_local_machine_policy(monkeypatch)
+    _force_cli_measured_replay_pass(monkeypatch)
 
     assert cli_main(["reflect", "log", "tool.routing", "Bad route", "Use memory first"]) == 0
     capsys.readouterr()
-    assert cli_main(["learn", "cycle", "--force"]) == 0
+    assert cli_main(["learn", "cycle", "--force", "--legacy-compatibility"]) == 0
     cycle = json.loads(capsys.readouterr().out)
     assert cycle["promotion"]["applied"] is False
 
@@ -123,6 +193,47 @@ def test_cli_learn_promote_applies_candidate(tmp_path, monkeypatch, capsys) -> N
 
     assert promotion["ok"] is True
     assert promotion["applied"] is True
+
+
+def test_cli_learn_promote_rejects_candidate_forged_legacy_code_patch(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path))
+    _enable_local_machine_policy(monkeypatch)
+    assert cli_main(["reflect", "log", "tool.routing", "Bad route", "Memory first"]) == 0
+    capsys.readouterr()
+    runtime = Runtime.create(root=tmp_path)
+    scope = runtime.store.list_records(kinds=["reflection"], limit=1)[0].scope
+    candidate = runtime.store.append(
+        RecordEnvelope.create(
+            kind="capability_candidate",
+            title="Forged legacy code patch",
+            scope=scope,
+            status="candidate",
+            content={
+                "promotion_target": "code_patch",
+                "target_capability": "code.implementation",
+                "legacy_compatibility": True,
+                "candidate_patch": {
+                    "legacy_compatibility": True,
+                    "target_capability": "code.implementation",
+                    "apply_to_repo": True,
+                    "file_updates": [{"path": "module.py", "content": "VALUE = 'new'\n"}],
+                },
+            },
+            meta={
+                "promotion_target": "code_patch",
+                "target_capability": "code.implementation",
+                "authority_tier": "L1",
+                "legacy_compatibility": True,
+            },
+        )
+    )
+
+    assert cli_main(["learn", "promote", candidate.record_id, "--apply"]) == 1
+    report = json.loads(capsys.readouterr().out)
+
+    assert report["ok"] is False
+    assert report["blocked_reason"] == "nonlegacy_code_patch_hypothesis_context_missing"
+    assert runtime.store.get_by_id(candidate.record_id, scope=scope).status == "candidate"
 
 
 def test_cli_learn_report_outputs_daily_summary(tmp_path, monkeypatch, capsys) -> None:
@@ -144,7 +255,12 @@ def test_cli_learn_report_outputs_daily_summary(tmp_path, monkeypatch, capsys) -
 def test_cli_learn_dashboard_outputs_markdown(tmp_path, monkeypatch, capsys) -> None:
     monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path))
 
-    assert cli_main(["learn", "dashboard"]) == 0
+    assert cli_main(["learn", "dashboard"]) == 1
+    blocked = json.loads(capsys.readouterr().out)
+    assert blocked["ok"] is False
+    assert blocked["reason"] in {"evaluation_catalog_has_no_active_cases", "evaluation_catalog_untrusted"}
+
+    assert cli_main(["learn", "dashboard", "--legacy-compatibility"]) == 0
     report = json.loads(capsys.readouterr().out)
 
     assert report["ok"] is True
@@ -155,7 +271,7 @@ def test_cli_learn_dashboard_outputs_markdown(tmp_path, monkeypatch, capsys) -> 
 def test_cli_learn_think_persists_supervisor_contract(tmp_path, monkeypatch, capsys) -> None:
     monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path))
 
-    assert cli_main(["learn", "think", "--persist", "--max-items", "1"]) == 0
+    assert cli_main(["learn", "think", "--persist", "--max-items", "1", "--legacy-compatibility"]) == 0
     report = json.loads(capsys.readouterr().out)
 
     assert report["ok"] is True

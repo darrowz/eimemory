@@ -97,7 +97,10 @@ def collect_pending_production_queries(
         if not valid or not refs:
             skipped["candidate_boundary_invalid"] = skipped.get("candidate_boundary_invalid", 0) + 1
             continue
-        task_type = str(first.get("task_type") or "memory.recall")[:80]
+        task_type = str(first.get("task_type") or "").strip()[:80]
+        if not task_type:
+            skipped["task_type_unclassified"] = skipped.get("task_type_unclassified", 0) + 1
+            continue
         record_id = "prqp_" + _stable_digest({"schema": PENDING_QUERY_SCHEMA, "decision_id": decision_id, "query_digest": query_digest})[:32]
         pending = RecordEnvelope.create(
             kind="evaluation_packet",
@@ -111,7 +114,7 @@ def collect_pending_production_queries(
                 "scope": asdict(exact_scope),
                 "capture_query_digest": query_digest,
                 "suggested_query_features": {
-                    "terms": [term for term in re.split(r"[^a-zA-Z0-9_.-]+", task_type) if term][:8] or ["memory", "recall"],
+                    "terms": [term for term in re.split(r"[^a-zA-Z0-9_.-]+", task_type) if term][:8] or ["unclassified"],
                     "intent": "production recall",
                 },
                 "candidate_refs": refs,

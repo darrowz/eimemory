@@ -246,6 +246,9 @@ def test_live_acceptance_deployment_case_treats_version_as_metadata(tmp_path) ->
                 "version": "",
                 "release_path": f"/opt/eimemory/releases/{commit}",
             },
+            l5_reader_mode="v3",
+            profile_key="",
+            capability_scope="global",
         )
         check = next(
             item["check"]
@@ -283,6 +286,9 @@ def test_readiness_pure_read_ignores_concurrent_external_records(tmp_path, monke
             runtime,
             scope=scope_ref,
             identity={"commit": "a" * 40, "version": "1.9.52", "release_path": "/tmp/release"},
+            l5_reader_mode="v3",
+            profile_key="",
+            capability_scope="global",
         )
         check = next(item["check"] for item in definitions if item["case_id"] == "governance.readiness_pure_read")
         observation = check()
@@ -315,6 +321,9 @@ def test_readiness_pure_read_rejects_writes_from_current_runtime(tmp_path, monke
             runtime,
             scope=scope_ref,
             identity={"commit": "a" * 40, "version": "1.9.52", "release_path": "/tmp/release"},
+            l5_reader_mode="v3",
+            profile_key="",
+            capability_scope="global",
         )
         check = next(item["check"] for item in definitions if item["case_id"] == "governance.readiness_pure_read")
         observation = check()

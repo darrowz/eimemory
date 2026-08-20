@@ -161,7 +161,7 @@ class _RPCHandler(BaseHTTPRequestHandler):
             if not isinstance(request, dict):
                 raise ValueError("request body must be a JSON object")
             method = request.get("method")
-            if method == "adapter.attest_tool_result":
+            if method in {"adapter.attest_tool_result", "adapter.record_verified_capability_outcome"}:
                 producer = self._attestation_producer()
                 if not producer:
                     self._send_json(401, {"ok": False, "error": "attestation_unauthorized"})

@@ -7,16 +7,22 @@ integration so that one production governance flow owns learning state.
 ## Design rules
 
 1. `Runtime` is the public in-process facade.
-2. Durable records are authoritative; indexes and views are rebuildable.
-3. Runtime state belongs below `EIMEMORY_ROOT`, outside the source checkout.
-4. Host integrations use adapter contracts instead of direct database access.
-5. Learning evidence and the candidate being promoted must be bound to the same
-   release identity.
-6. A healthy service is necessary but insufficient for L5 closure.
-7. There is no second experimental scheduler or shadow promotion state owner.
-8. A verified local code patch may be applied by machine gates without a human
+2. A capability is a revisioned semantic job, not a package version, machine,
+   hostname, model, or adapter name.
+3. Capability-domain calls use an exact owner scope (`tenant_id`, `agent_id`,
+   `workspace_id`, `user_id`) plus a logical `capability_scope`; evidence keeps
+   its revision, binding, profile, provenance, and applicability context.
+4. Durable records are authoritative for general records; the normalized SQLite
+   v3 capability-domain tables are authoritative for their typed entities.
+5. Runtime state belongs below `EIMEMORY_ROOT`, outside the source checkout.
+6. Host integrations use adapter contracts instead of direct database access.
+7. Learning evidence and the candidate being promoted must be bound to the same
+   release identity when the claim is deployment-dependent.
+8. A healthy service is necessary but insufficient for L5 closure.
+9. There is no second experimental scheduler or shadow promotion state owner.
+10. A verified local code patch may be applied by machine gates without a human
    approval queue; repository commit and production deployment remain explicit
-   opt-ins, not consequences of a local write.
+   machine-policy opt-ins, not consequences of a local write.
 
 ## Runtime planes
 
@@ -38,8 +44,43 @@ models.records
 - `knowledge` turns reviewed sources into claims, relations, pages, views, and
   synthesized briefs while retaining provenance.
 
-SQLite and derived files are projections. They may accelerate reads but must not
-silently redefine the durable record contract.
+For general memory records, SQLite and derived files are rebuildable
+projections. They may accelerate reads but must not silently redefine the
+durable record contract. The capability domain has the narrower authority model
+below so its typed lifecycle and evaluation relations are queryable without a
+second mutable store.
+
+### Capability and L5 v3 data boundary
+
+```text
+exact runtime scope + logical capability scope
+  -> semantic definition / revision / relation / provider binding
+  -> profile / evaluation spec / evaluation run / observation
+  -> immutable ledger and audit-export evidence
+  -> reproducible state snapshot and L5 assessment
+```
+
+The SQLite capability v3 domain tables are the transactional authority for
+definitions, revisions, relations, bindings, advertisements, profiles,
+evaluation specifications and runs, knowledge links, state snapshots, and L5
+assessment references. The `RuntimeStore` capability mutation boundary owns
+their writes, lifecycle transitions, idempotency, and operation journal.
+
+Observations and ledger events retain append-only evidence identity; their
+SQLite rows provide typed, idempotent query paths. Content-addressed source and
+evaluation artifacts retain large immutable bodies. The `capability.audit.v1`
+record stream is an audit/export and recovery mirror, not a second writable
+authority. JSON exports, dashboards, and optional PostgreSQL/pgvector remain
+read models.
+
+Every capability v3 key includes the exact four-part runtime scope and logical
+capability scope. A cross-scope lookup, an unscoped registry request, or a
+compatibility inference from a hostname/package version fails rather than
+borrowing evidence. Migration is forward-only and expand-contract: schema,
+idempotent writes, bounded scoped backfill, comparison/cutover, and later
+cleanup are separate steps. The presence of this machinery does not claim that
+all historical data is already backfilled or that a performance budget has
+passed in a particular deployment.
 
 ### Recall plane
 
@@ -96,12 +137,24 @@ caller-supplied file reference is not source evidence.
 Outcome success is fail-closed: malformed metrics or explicit negative signals
 cannot be normalized into a pass.
 
+Dynamic capability evaluation is selected through a sealed
+`CapabilityEvaluationCatalog`. During process startup only, installed Python
+entry points in `eimemory.capability_catalog.bootstrap.v1` may receive the
+narrow typed bootstrap writer to register trusted executor callables, cases,
+and graders. The catalog is sealed before normal runtime use. Adapter
+advertisements, CLI requests, database rows, and JSON payloads are data, not
+executable registration authorities. When no trusted application catalog is
+installed, dynamic evaluation and consumers that require it fail closed with
+`catalog_not_configured`; the runtime does not invent a default catalog.
+
 ### Governance plane
 
 The active control flow is:
 
 ```text
-signals / corrections / outcomes / intake evidence
+signals / corrections / outcomes / reviewed knowledge / adapter advertisements
+  -> scoped capability registry + trusted evaluation catalog
+  -> capability links and evidence-bound hypotheses
   -> closed_loop and episode_events
   -> correction_replay and capability replay packs
   -> autonomous_learning and candidate portfolio
@@ -117,17 +170,42 @@ Key ownership boundaries:
 
 | Concern | Owner |
 | --- | --- |
+| Capability identity, revisions, profiles, and scope | `capabilities.*`, `storage.capability_store`, `storage.migrations.capability_v3` |
 | Learning goals and candidate portfolio | `autonomous_learning`, `goal_graph`, `goal_registry` |
 | Code and policy evolution | `autonomous_evolution`, `code_evolution`, `code_evolution_bridge`, `rule_evolution` |
-| Replay and acceptance | `capability_replay_*`, `correction_replay`, `live_task_acceptance` |
+| Replay and acceptance | `evaluation.capability_catalog`, `capability_replay_*`, `correction_replay`, `live_task_acceptance` |
 | Safety | `safety_replay`, `prompt_safety*`, active `safety` audit and kill-switch modules |
-| Promotion and rollback | `promotion_manager`, `promotion_watch`, `rollout_lifecycle` |
+| Knowledge-to-capability gate | `capability_hypotheses`, capability knowledge links, `policy_trust` |
+| Promotion and rollback | `promotion_manager`, `promotion_watch`, `rollout_lifecycle`, `code_automation_policy` |
 | Evidence and reporting | `evidence_contract`, `capability_ledger`, dashboards and reports |
-| Release closure and L5 | `release_closure*`, `closure_rehearsal`, `l5_loop`, `l5_readiness` |
+| Release closure and L5 | `release_closure*`, `closure_rehearsal`, `l5_loop`, `l5_assessment_v3`, `l5_v3_reconcile`, `l5_readiness` |
 
 The old Karpathy utility package, standalone state machine, held-out JSONL tool,
 test-only skill merger, and duplicate safety primitives were removed. Their
 production responsibilities already exist in the owners above.
+
+#### Dynamic L5 v3
+
+L5 v3 keeps four facts separate: loop maturity, capability readiness by
+revision/provider binding, adapter readiness, and deployment assurance. A
+profile selects requirements from registered capabilities; it does not compile a
+global strong/weak list into source code. Revision compatibility is explicit,
+so an incompatible contract starts without inherited maturity while eligible
+evidence can survive a compatible implementation change. Package versions,
+hostnames, and machine fingerprints are diagnostics or applicability inputs,
+not L5 gates by themselves.
+
+The default dynamic path requires a trusted catalog and exact scoped evidence.
+It does not fall back to retired case maps, inferred capability keywords, or a
+machine-specific cohort. Historical fixed cohorts remain behind an explicit
+`legacy_compatibility=True` request for maintenance/replay only, and cannot
+manufacture current dynamic readiness.
+
+Reviewed knowledge reaches this control plane only through typed links and a
+traceable hypothesis. It must produce bounded evaluation/replay evidence and,
+where required, independent outcomes before a projection can change capability
+state. Contradicted, stale, rejected, artifact-invalid, or failed evidence
+remains restrictive.
 
 #### Automatic code-patch path
 
@@ -145,27 +223,43 @@ compileall` targets or focused `python -m pytest -q tests/...` targets; it
 rejects a broad full-suite command, shell, Git, network tools, and `python -c`.
 Release-baseline validation is outside this targeted gate.
 
+For the default dynamic path, a code candidate must name an active capability
+revision and carry an evidence-bound hypothesis with qualifying independent
+feedback. A generic, unscoped `code_patch` request is blocked. The sole
+authority for code side effects is the deployment-controlled
+`EIMEMORY_CODE_AUTOMATION_POLICY_JSON` machine-environment policy. It matches
+the profile/capability/revision/scope/binding coordinates and declares allowed
+actions; a proposer, incident, candidate, or patch payload cannot grant those
+permissions. A missing, malformed, incomplete, or nonmatching policy blocks the
+action directly.
+
 When a learning cycle is explicitly run with `apply=True`, the existing machine
-gates can promote the ready local patch without human approval. The promotion
-manager persists a transaction before writing files, checks that the evaluated
-subject state still matches, executes declared verification, and rolls back on
-failure. Each apply-enabled learning/evolution cycle begins with transaction
-recovery; recovery only restores known recorded content or quarantines an
-ambiguous transaction, and never retries or reapplies the old patch. The cycle
-report carries that result as `code_apply_recovery` (skipped when apply is
-disabled). Git commit and production deployment both default to disabled and
-require explicit settings.
+gates can promote the ready local patch without human approval only when its
+matching environment policy enables `local_apply`. The promotion manager
+persists a transaction before writing files, checks that the evaluated subject
+state still matches, executes declared verification, and rolls back on failure.
+Each apply-enabled learning/evolution cycle begins with transaction recovery;
+recovery only restores known recorded content or quarantines an ambiguous
+transaction, and never retries or reapplies the old patch. The cycle report
+carries that result as `code_apply_recovery` (skipped when apply is disabled).
+Git commit and production deployment both default to disabled and require their
+own explicit machine-policy capabilities.
 
 ### Integration plane
 
 - `api` provides memory, evolution, and runtime facades.
 - `adapters.runtime` provides authentication, redaction, HTTP, channel, receipt,
-  and service primitives shared by host adapters.
+  service, and internal capability-advertisement primitives shared by host
+  adapters.
 - `adapters.codex`, `adapters.openclaw`, `adapters.hermes`, and
   `adapters.eibrain` translate host lifecycles into the common contracts.
 - Codex and Hermes expose the common recall, durable-capture, verified-outcome,
   and status operations. OpenClaw keeps lifecycle behavior in its hooks and
   exposes only bridge status to the model surface; its E2E probe is operator-only.
+- Capability advertisements are validated internal data: they name supported
+  revisions, operations, limits, side-effect class, contract digest, and
+  evidence sources. They do not infer capability from an adapter name or expand
+  a host's model-visible tools.
 - `ei_bridge` routes messages and agent calls without becoming a second memory
   or governance owner.
 - `cli` exposes operator workflows; `ops` contains bounded operational helpers.
@@ -198,9 +292,11 @@ control ran; promotion still requires the corresponding replay, audit, and gate
 results.
 
 Machine gating is not a human-approval detour for the bounded local code path:
-it is the decision mechanism itself. It also does not authorize external
-side-effects by default; commit and deployment remain opt-in capabilities with
-their own evidence and rollback requirements.
+it is the decision mechanism itself. `EIMEMORY_CODE_AUTOMATION_POLICY_JSON` is
+the policy authority for automatic code actions; untrusted runtime inputs only
+supply matching coordinates and diagnostics. It also does not authorize
+external side-effects by default; commit and deployment remain opt-in
+capabilities with their own evidence and rollback requirements.
 
 Network intake uses `intake.safe_transport`. Host credentials are read from
 private files and scrubbed from inherited environments. Receipts and evidence
@@ -226,7 +322,10 @@ covered at its current owner.
 Knowledge refresh verifies a source artifact and recompiles from active reviewed
 claims; it does not generate a new claim set from changed source text. Concurrent
 workers also do not gain a distributed source-version protocol merely because a
-single refresh transaction is atomic. Finally, L5 remains a deployment evidence
-claim, not an outcome of passing module-level gates.
+single refresh transaction is atomic. Capability v3 ships forward-only schema,
+audit, and scoped-backfill machinery, but this document does not claim a
+completed historic migration or deployment-wide performance-budget result.
+Finally, L5 remains a deployment evidence claim, not an outcome of passing
+module-level gates or a healthy service.
 
 See [Module map](modules.md) for the complete package inventory.

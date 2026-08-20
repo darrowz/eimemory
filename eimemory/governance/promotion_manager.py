@@ -14,7 +14,18 @@ import sys
 import tempfile
 from typing import Any
 
-from eimemory.governance.code_patch_command_policy import code_patch_verification_command_error
+from eimemory.governance.code_automation_policy import (
+    load_code_automation_policy,
+    machine_policy_context_from_mapping,
+)
+from eimemory.governance.capability_binding_lifecycle import (
+    invalidate_dynamic_binding_before_apply,
+    restore_dynamic_binding_after_unstarted_apply,
+)
+from eimemory.governance.capability_hypotheses import hypothesis_behavior_gate
+from eimemory.governance.code_patch_command_policy import (
+    code_patch_verification_command_error,
+)
 from eimemory.governance.learning_eval import REGRESSION_THRESHOLD, SAFETY_THRESHOLD
 from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.governance.promotion_watch import WATCH_STATUS, initialize_promotion_watch
@@ -30,6 +41,9 @@ CODE_APPLY_TRANSACTION_SOURCE = "eimemory.code_apply_transaction"
 CODE_APPLY_TRANSACTION_SCHEMA_VERSION = 1
 CODE_APPLY_TRANSACTION_IN_FLIGHT = "in_flight"
 CODE_APPLY_TRANSACTION_QUARANTINED = "recovery_quarantined"
+MACHINE_POLICY_ACTION_LOCAL_APPLY = "local_apply"
+MACHINE_POLICY_ACTION_COMMIT = "commit"
+MACHINE_POLICY_ACTION_DEPLOYMENT = "deployment"
 
 # L3+ candidates must declare the active safety controls that participate in
 # the production governance path.  The names are supplied in the candidate's
@@ -40,6 +54,64 @@ REQUIRED_SAFETY_CONTROLS_L3_PLUS = (
     "safety_replay",
     "promotion_manager",
 )
+
+
+# A compatibility claim in a persisted candidate is untrusted input: any
+# caller able to edit a candidate could otherwise erase a v3 hypothesis and
+# re-enable historical code writes.  Only this process-local capability can
+# authorize the narrow legacy migration path.  It binds the exact candidate
+# digest and scope and cannot be represented in CLI/JSON payloads.
+_LEGACY_PROMOTION_AUTHORITY_NONCE = object()
+
+
+class _LegacyPromotionAuthority:
+    __slots__ = ("candidate_id", "scope", "candidate_digest", "_nonce")
+
+    def __init__(self, *, candidate_id: str, scope: ScopeRef, candidate_digest: str) -> None:
+        self.candidate_id = candidate_id
+        self.scope = scope
+        self.candidate_digest = candidate_digest
+        self._nonce = _LEGACY_PROMOTION_AUTHORITY_NONCE
+
+
+def _issue_legacy_promotion_authority(
+    runtime: Any,
+    *,
+    candidate_id: str,
+    scope: dict[str, Any] | ScopeRef | None = None,
+) -> object:
+    """Create an in-memory-only authority for a known legacy migration call."""
+
+    candidate = runtime.store.get_by_id(candidate_id, scope=scope)
+    if candidate is None or candidate.kind != "capability_candidate":
+        raise ValueError(f"capability candidate not found: {candidate_id}")
+    return _LegacyPromotionAuthority(
+        candidate_id=candidate.record_id,
+        scope=candidate.scope,
+        candidate_digest=_candidate_promotion_digest(candidate),
+    )
+
+
+def _candidate_promotion_digest(candidate: RecordEnvelope) -> str:
+    payload = {
+        "candidate_id": candidate.record_id,
+        "scope": asdict(candidate.scope),
+        "promotion_target": _promotion_target(candidate),
+        "target_capability": _candidate_target_capability(candidate, {}),
+        "candidate_patch": dict((candidate.content or {}).get("candidate_patch") or {}),
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    return sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _has_legacy_promotion_authority(candidate: RecordEnvelope, authority: object | None) -> bool:
+    return bool(
+        isinstance(authority, _LegacyPromotionAuthority)
+        and authority._nonce is _LEGACY_PROMOTION_AUTHORITY_NONCE
+        and authority.candidate_id == candidate.record_id
+        and authority.scope == candidate.scope
+        and authority.candidate_digest == _candidate_promotion_digest(candidate)
+    )
 
 
 def _check_safety_wire(*, authority_tier: str, safety_wire: tuple[str, ...] | list[str]) -> None:
@@ -171,6 +243,7 @@ def promote_candidate(
     apply: bool = True,
     eval_result: dict[str, Any] | None = None,
     health: dict[str, Any] | None = None,
+    legacy_authority: object | None = None,
 ) -> dict[str, Any]:
     candidate = runtime.store.get_by_id(candidate_id, scope=scope)
     if candidate is None or candidate.kind != "capability_candidate":
@@ -190,13 +263,52 @@ def promote_candidate(
         request_id = _promotion_record(runtime, candidate, scope=scope, loop_id=loop_id, status="blocked", action="gate_failed", eval_result=eval_payload, health=health_payload, gate=gate)
         return {"ok": False, "applied": False, "blocked_reason": "safety_wire_missing", "promotion_request_id": request_id}
     _enforce_harness_patch_v2(runtime, candidate, scope=scope)
-    if tier == "L3":
-        _record_candidate_lifecycle(runtime, candidate, scope=scope, action_type="gate_failed", reason="l3_requires_approval")
-        request_id = _promotion_record(runtime, candidate, scope=scope, loop_id=loop_id, status="blocked", action="blocked_l3", eval_result=eval_result or {}, health=health or {})
-        return {"ok": False, "applied": False, "blocked_reason": "l3_requires_approval", "promotion_request_id": request_id}
+    automation_policy = _machine_apply_policy(candidate)
+    promotion_target = _promotion_target(candidate)
     eval_payload = eval_result or candidate.content.get("eval_result") or {}
     health_payload = health or {"ok": True}
-    if tier == "L2" and _promotion_target(candidate) in CODE_ASSET_TARGETS:
+    hypothesis_gate = _final_code_patch_hypothesis_gate(
+        runtime,
+        candidate=candidate,
+        legacy_authority=legacy_authority,
+    )
+    if not hypothesis_gate.get("allowed"):
+        final_gate = {
+            "ok": False,
+            "blocked_reasons": [str(hypothesis_gate.get("reason") or "nonlegacy_code_patch_hypothesis_gate_blocked")],
+            "capability_hypothesis": hypothesis_gate,
+            "automation_policy": automation_policy,
+        }
+        reason = str(final_gate["blocked_reasons"][0])
+        _record_candidate_lifecycle(
+            runtime,
+            candidate,
+            scope=scope,
+            action_type="gate_failed",
+            test_result=eval_payload,
+            health_result=health_payload,
+            reason=reason,
+            details={"gate": final_gate},
+        )
+        request_id = _promotion_record(
+            runtime,
+            candidate,
+            scope=scope,
+            loop_id=loop_id,
+            status="blocked",
+            action="capability_hypothesis_blocked",
+            eval_result=eval_payload,
+            health=health_payload,
+            gate=final_gate,
+        )
+        return {
+            "ok": False,
+            "applied": False,
+            "blocked_reason": reason,
+            "promotion_request_id": request_id,
+            "capability_hypothesis": hypothesis_gate,
+        }
+    if tier in {"L2", "L3", "L4"} and _promotion_target(candidate) in CODE_ASSET_TARGETS:
         eval_payload, health_payload = _canonicalize_code_patch_evidence(
             runtime,
             candidate,
@@ -206,16 +318,69 @@ def promote_candidate(
             health=health_payload,
         )
     gate = _rollout_gate(eval_payload, health_payload, tier=tier, candidate=candidate)
+    gate["automation_policy"] = automation_policy
+    gate["capability_hypothesis"] = hypothesis_gate
     if not gate["ok"]:
         _record_candidate_lifecycle(runtime, candidate, scope=scope, action_type="gate_failed", test_result=eval_payload, health_result=health_payload, reason=",".join(gate["blocked_reasons"]), details={"gate": gate})
         request_id = _promotion_record(runtime, candidate, scope=scope, loop_id=loop_id, status="blocked", action="gate_failed", eval_result=eval_payload, health=health_payload, gate=gate)
         return {"ok": False, "applied": False, "blocked_reason": ",".join(gate["blocked_reasons"]), "promotion_request_id": request_id}
-    _record_candidate_lifecycle(runtime, candidate, scope=scope, action_type="gate_passed", test_result=eval_payload, health_result=health_payload, details={"gate": gate})
     if not apply:
+        _record_candidate_lifecycle(runtime, candidate, scope=scope, action_type="gate_passed", test_result=eval_payload, health_result=health_payload, details={"gate": gate})
         request_id = _promotion_record(runtime, candidate, scope=scope, loop_id=loop_id, status="candidate", action="dry_run", eval_result=eval_payload, health=health_payload, gate=gate)
-        return {"ok": True, "applied": False, "dry_run": True, "promotion_request_id": request_id}
+        return {
+            "ok": True,
+            "applied": False,
+            "dry_run": True,
+            "promotion_request_id": request_id,
+            "automation_policy": automation_policy,
+        }
+    if promotion_target in CODE_ASSET_TARGETS and not automation_policy["allow_apply"]:
+        reason = str(automation_policy["reason"])
+        policy_gate = {
+            **gate,
+            "ok": False,
+            "blocked_reasons": [reason],
+            "automation_policy": automation_policy,
+        }
+        _record_candidate_lifecycle(
+            runtime,
+            candidate,
+            scope=scope,
+            action_type="gate_failed",
+            test_result=eval_payload,
+            health_result=health_payload,
+            reason=reason,
+            details={"gate": policy_gate},
+        )
+        request_id = _promotion_record(
+            runtime,
+            candidate,
+            scope=scope,
+            loop_id=loop_id,
+            status="blocked",
+            action="automation_policy_blocked",
+            eval_result=eval_payload,
+            health=health_payload,
+            gate=policy_gate,
+        )
+        return {
+            "ok": False,
+            "applied": False,
+            "blocked_reason": reason,
+            "promotion_request_id": request_id,
+            "automation_policy": automation_policy,
+        }
 
-    side_effect = _apply_candidate(runtime, candidate, scope=scope, loop_id=loop_id, eval_result=eval_payload, gate=gate)
+    _record_candidate_lifecycle(runtime, candidate, scope=scope, action_type="gate_passed", test_result=eval_payload, health_result=health_payload, details={"gate": gate})
+    side_effect = _apply_candidate(
+        runtime,
+        candidate,
+        scope=scope,
+        loop_id=loop_id,
+        eval_result=eval_payload,
+        gate=gate,
+        automation_policy=automation_policy,
+    )
     if not side_effect.get("ok"):
         request_id = _promotion_record(runtime, candidate, scope=scope, loop_id=loop_id, status="blocked", action="adapter_failed", eval_result=eval_payload, health=health_payload, gate=gate, side_effect=side_effect)
         return {
@@ -256,6 +421,7 @@ def promote_candidate(
         "post_promotion_watch": watch,
         "side_effect": side_effect,
         "applied_artifact_ids": list(side_effect.get("applied_artifact_ids") or []),
+        "automation_policy": automation_policy,
         "rollback": candidate.content.get("rollback") or "disable candidate",
     }
 
@@ -314,12 +480,211 @@ def backfill_promotion_rollout_ledger(
     }
 
 
+def _final_code_patch_hypothesis_gate(
+    runtime: Any,
+    *,
+    candidate: RecordEnvelope,
+    legacy_authority: object | None,
+) -> dict[str, Any]:
+    """Revalidate dynamic code authority at the final repository-write gate.
+
+    Candidate fields are planning evidence, never authority.  The durable
+    hypothesis, link applicability, revision, bounds, and independent evidence
+    are reloaded from the candidate's exact persisted scope immediately before
+    a promotion can proceed.
+    """
+
+    if _promotion_target(candidate) not in CODE_ASSET_TARGETS:
+        return {"required": False, "allowed": True, "reason": "not_applicable"}
+    patch = _candidate_patch(runtime, candidate, scope=candidate.scope)
+    context = patch.get("capability_hypothesis")
+    has_context = isinstance(context, dict) and bool(context)
+    legacy_allowed = _has_legacy_promotion_authority(candidate, legacy_authority)
+    # A real v3 context is always revalidated.  It cannot be downgraded by a
+    # candidate's own legacy flag or by an internal compatibility call.
+    if legacy_allowed and not has_context:
+        return {
+            "required": False,
+            "allowed": True,
+            "reason": "legacy_compatibility_explicit_internal_authority",
+        }
+    if not has_context:
+        return {
+            "required": True,
+            "allowed": False,
+            "reason": "nonlegacy_code_patch_hypothesis_context_missing",
+        }
+    required_context_fields = (
+        "hypothesis_id",
+        "link_id",
+        "link_digest",
+        "capability_id",
+        "capability_revision_id",
+        "provider_binding_id",
+        "capability_scope",
+    )
+    missing_context = [field for field in required_context_fields if not str(context.get(field) or "").strip()]
+    if missing_context:
+        return {
+            "required": True,
+            "allowed": False,
+            "reason": "nonlegacy_code_patch_hypothesis_context_incomplete",
+            "missing_fields": missing_context,
+        }
+    required_patch_fields = (
+        "target_capability",
+        "capability_revision_id",
+        "provider_binding_id",
+        "profile_key",
+        "capability_scope",
+        "evidence_watermark",
+    )
+    missing_patch = [field for field in required_patch_fields if not str(patch.get(field) or "").strip()]
+    if missing_patch:
+        return {
+            "required": True,
+            "allowed": False,
+            "reason": "nonlegacy_code_patch_binding_context_incomplete",
+            "missing_fields": missing_patch,
+        }
+    for patch_field, context_field in (
+        ("target_capability", "capability_id"),
+        ("capability_revision_id", "capability_revision_id"),
+        ("provider_binding_id", "provider_binding_id"),
+        ("capability_scope", "capability_scope"),
+    ):
+        if str(patch.get(patch_field) or "") != str(context.get(context_field) or ""):
+            return {
+                "required": True,
+                "allowed": False,
+                "reason": f"nonlegacy_code_patch_{patch_field}_mismatch",
+            }
+    try:
+        live_gate = dict(
+            hypothesis_behavior_gate(
+                runtime,
+                runtime_scope=candidate.scope,
+                hypothesis_id=str(context.get("hypothesis_id") or ""),
+            )
+        )
+    except Exception as exc:
+        return {
+            "required": True,
+            "allowed": False,
+            "reason": f"nonlegacy_code_patch_hypothesis_gate_error:{type(exc).__name__}",
+        }
+    live_gate["required"] = True
+    if not live_gate.get("allowed"):
+        return live_gate
+    for field in ("hypothesis_id", "link_id", "link_digest", "capability_id", "capability_revision_id", "capability_scope"):
+        if str(live_gate.get(field) or "") != str(context.get(field) or ""):
+            return {
+                **live_gate,
+                "allowed": False,
+                "reason": f"nonlegacy_code_patch_hypothesis_{field}_mismatch",
+            }
+    for field in ("expected_metric", "candidate_bounds"):
+        patch_value = patch.get(field)
+        gate_value = live_gate.get(field)
+        if not isinstance(patch_value, dict) or not patch_value:
+            return {
+                **live_gate,
+                "allowed": False,
+                "reason": f"nonlegacy_code_patch_{field}_missing",
+            }
+        if not isinstance(gate_value, dict) or not gate_value:
+            return {
+                **live_gate,
+                "allowed": False,
+                "reason": f"nonlegacy_code_patch_hypothesis_{field}_missing",
+            }
+        if dict(patch_value) != dict(gate_value):
+            return {
+                **live_gate,
+                "allowed": False,
+                "reason": f"nonlegacy_code_patch_{field}_mismatch",
+            }
+    recorded_gate = patch.get("capability_hypothesis_gate")
+    recorded_feedback_id = (
+        str(recorded_gate.get("qualifying_feedback_id") or "")
+        if isinstance(recorded_gate, dict)
+        else ""
+    )
+    live_feedback_id = str(live_gate.get("qualifying_feedback_id") or "")
+    if not recorded_feedback_id:
+        return {
+            **live_gate,
+            "allowed": False,
+            "reason": "nonlegacy_code_patch_hypothesis_evidence_missing",
+        }
+    if recorded_feedback_id != live_feedback_id:
+        return {
+            **live_gate,
+            "allowed": False,
+            "reason": "candidate_hypothesis_evidence_superseded",
+        }
+    return live_gate
+
+
+def _machine_apply_policy(candidate: RecordEnvelope) -> dict[str, Any]:
+    """Return explicit machine action authority for a candidate.
+
+    Candidate and patch policy fields are deliberately ignored here.  The only
+    authority is the deployment-controlled environment policy, read again at
+    promotion time so a proposal cannot smuggle or retain a stale grant.
+    """
+
+    context = _candidate_machine_policy_context(candidate)
+    policy = load_code_automation_policy(**context)
+    actions = dict(policy.get("actions") or {})
+    policy_ok = policy.get("ok") is True
+    allow_apply = policy_ok and bool(actions.get(MACHINE_POLICY_ACTION_LOCAL_APPLY))
+    allow_commit = policy_ok and bool(actions.get(MACHINE_POLICY_ACTION_COMMIT))
+    allow_deployment = policy_ok and bool(actions.get(MACHINE_POLICY_ACTION_DEPLOYMENT))
+    reason = str(policy.get("reason") or ("machine_policy_local_apply_enabled" if allow_apply else "machine_policy_blocked"))
+    return {
+        "allow_apply": allow_apply,
+        "allow_commit": allow_commit,
+        "allow_deployment": allow_deployment,
+        "reason": reason,
+        "policy_id": str(policy.get("policy_id") or ""),
+        "policy_declared": bool(policy.get("declared")),
+        "policy_digest": str(policy.get("policy_digest") or ""),
+        "policy_source": str(policy.get("source") or ""),
+        "policy_status": str(policy.get("status") or "blocked"),
+        "actions": {
+            MACHINE_POLICY_ACTION_LOCAL_APPLY: bool(actions.get(MACHINE_POLICY_ACTION_LOCAL_APPLY)),
+            MACHINE_POLICY_ACTION_COMMIT: bool(actions.get(MACHINE_POLICY_ACTION_COMMIT)),
+            MACHINE_POLICY_ACTION_DEPLOYMENT: bool(actions.get(MACHINE_POLICY_ACTION_DEPLOYMENT)),
+        },
+    }
+
+
+def _candidate_machine_policy_context(candidate: RecordEnvelope) -> dict[str, str]:
+    """Extract only match coordinates; candidate policy fields are ignored."""
+    content = candidate.content if isinstance(candidate.content, dict) else {}
+    meta = candidate.meta if isinstance(candidate.meta, dict) else {}
+    patch = content.get("candidate_patch") if isinstance(content.get("candidate_patch"), dict) else {}
+    hypothesis = patch.get("capability_hypothesis") if isinstance(patch.get("capability_hypothesis"), dict) else {}
+    return machine_policy_context_from_mapping(
+        {
+            "profile_key": patch.get("profile_key") or content.get("profile_key") or meta.get("profile_key"),
+            "target_capability": patch.get("target_capability") or content.get("target_capability") or meta.get("target_capability"),
+            "capability_revision_id": patch.get("capability_revision_id") or content.get("capability_revision_id") or meta.get("capability_revision_id"),
+            "capability_scope": patch.get("capability_scope") or content.get("capability_scope") or meta.get("capability_scope"),
+            "provider_binding_id": patch.get("provider_binding_id") or content.get("provider_binding_id") or meta.get("provider_binding_id"),
+            "capability_hypothesis": hypothesis,
+        }
+    )
+
+
 def _rollout_gate(eval_result: dict[str, Any], health: dict[str, Any], *, tier: str, candidate: RecordEnvelope) -> dict[str, Any]:
     scores = dict(eval_result.get("scores") or {})
     blocked = []
     gate_bundle = _gate_bundle(candidate, eval_result)
     target = _promotion_target(candidate)
-    if tier == "L2" and target in CODE_ASSET_TARGETS and not _code_preflight_gate(gate_bundle):
+    gated_tiers = {"L2", "L3", "L4"}
+    if tier in gated_tiers and target in CODE_ASSET_TARGETS and not _code_preflight_gate(gate_bundle):
         return {
             "ok": False,
             "blocked_reasons": [_code_preflight_blocked_reason(gate_bundle)],
@@ -331,9 +696,9 @@ def _rollout_gate(eval_result: dict[str, Any], health: dict[str, Any], *, tier: 
         blocked.append("safety_gate")
     if _score_value(scores, "regression", default=1.0 if tier in {"L0", "L1"} else 0.0) < (0.95 if tier == "L2" else REGRESSION_THRESHOLD):
         blocked.append("regression_gate")
-    if tier == "L2" and not health.get("ok", False):
+    if tier in gated_tiers and not health.get("ok", False):
         blocked.append("health_gate")
-    if tier == "L2":
+    if tier in gated_tiers:
         if not gate_bundle:
             blocked.append("gate_bundle_missing")
         if not _evidence_gate(gate_bundle, scores):
@@ -401,6 +766,7 @@ def _apply_candidate(
     loop_id: str,
     eval_result: dict[str, Any],
     gate: dict[str, Any],
+    automation_policy: dict[str, Any],
 ) -> dict[str, Any]:
     target = _promotion_target(candidate)
     patch = _candidate_patch(runtime, candidate, scope=scope)
@@ -409,7 +775,16 @@ def _apply_candidate(
     if target in POLICY_TARGETS:
         return _apply_policy_candidate(runtime, candidate, patch, scope=scope, loop_id=loop_id, eval_result=eval_result, gate=gate)
     if target in CODE_ASSET_TARGETS:
-        return _apply_code_patch_candidate(runtime, candidate, patch, scope=scope, loop_id=loop_id, eval_result=eval_result, gate=gate)
+        return _apply_code_patch_candidate(
+            runtime,
+            candidate,
+            patch,
+            scope=scope,
+            loop_id=loop_id,
+            eval_result=eval_result,
+            gate=gate,
+            automation_policy=automation_policy,
+        )
     if target == "memory_rule":
         return _apply_memory_rule_candidate(runtime, candidate, patch, scope=scope)
     if target in PLAYBOOK_TARGETS or target in {"", "unknown"}:
@@ -430,7 +805,13 @@ def _apply_policy_candidate(
     if not hasattr(runtime, "upsert_intent_pattern"):
         return {"ok": False, "blocked_reason": "intent_pattern_adapter_unavailable"}
     pattern_id = str(patch.get("id") or f"al-{stable_semantic_key('intent_pattern', candidate.record_id)[:20]}")
-    target_capability = str(candidate.meta.get("target_capability") or candidate.content.get("target_capability") or patch.get("target_capability") or "proactive.judgment")
+    target_capability = _candidate_target_capability(candidate, patch)
+    if not target_capability:
+        return {
+            "ok": False,
+            "blocked_reason": "target_capability_unclassified",
+            "promotion_target": _promotion_target(candidate),
+        }
     policy_lines = _list_text(patch.get("execution_policy")) or _list_text(patch.get("policy")) or [candidate.summary]
     pattern = str(patch.get("pattern") or patch.get("user_phrase") or target_capability or candidate.summary).strip()
     payload = {
@@ -487,10 +868,23 @@ def _apply_memory_rule_candidate(
 ) -> dict[str, Any]:
     if not hasattr(runtime, "evolution") or not hasattr(runtime.evolution, "store_rule"):
         return {"ok": False, "blocked_reason": "rule_adapter_unavailable"}
+    task_type = str(
+        patch.get("task_type")
+        or patch.get("target_capability")
+        or candidate.meta.get("target_capability")
+        or candidate.content.get("target_capability")
+        or ""
+    ).strip()
+    if not task_type:
+        return {
+            "ok": False,
+            "blocked_reason": "target_capability_unclassified",
+            "promotion_target": "memory_rule",
+        }
     rule = runtime.evolution.store_rule(
         title=str(patch.get("title") or candidate.title),
         summary=str(patch.get("summary") or candidate.summary),
-        task_type=str(patch.get("task_type") or patch.get("target_capability") or candidate.meta.get("target_capability") or "memory.recall"),
+        task_type=task_type,
         retrieval_policy=dict(patch.get("retrieval_policy") or {"learned_policy": candidate.summary}),
         response_policy=dict(patch.get("response_policy") or {}),
         scope=_scope_dict(scope or candidate.scope),
@@ -1102,6 +1496,7 @@ def _begin_code_apply_transaction(
     prior_commit_sha: str,
     subject_state_digest: str,
     verification_commands: list[str | list[str]],
+    automation_policy: dict[str, Any],
 ) -> RecordEnvelope:
     scope_ref = (
         scope
@@ -1140,6 +1535,7 @@ def _begin_code_apply_transaction(
             "patch_digest": patch_digest,
             "prior_commit_sha": str(prior_commit_sha or ""),
             "subject_state_digest": str(subject_state_digest or ""),
+            "automation_policy": dict(automation_policy),
             "allowed_files": list(allowed_files),
             "planned_files": planned_files,
             "backups": serialized_backups,
@@ -1152,6 +1548,7 @@ def _begin_code_apply_transaction(
             "candidate_id": candidate.record_id,
             "repo_root": str(repo_root.resolve()),
             "patch_digest": patch_digest,
+            "automation_policy_id": str(automation_policy.get("policy_id") or ""),
             "stage": "prepared",
         },
     )
@@ -1497,7 +1894,22 @@ def _apply_code_patch_candidate(
     loop_id: str,
     eval_result: dict[str, Any],
     gate: dict[str, Any],
+    automation_policy: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    policy_summary = (
+        dict(automation_policy)
+        if isinstance(automation_policy, dict)
+        else _machine_apply_policy(candidate)
+    )
+    policy_error = _code_patch_machine_policy_error(patch, policy_summary)
+    if policy_error:
+        return {
+            "ok": False,
+            "blocked_reason": policy_error,
+            "promotion_target": "code_patch",
+            "automation_policy": policy_summary,
+            "repo_mutated": False,
+        }
     if not _truthy(patch.get("apply_to_repo"), default=True):
         return {"ok": False, "blocked_reason": "code_patch_requires_apply_to_repo", "promotion_target": "code_patch"}
     repo_root = _code_repo_root(patch)
@@ -1552,22 +1964,63 @@ def _apply_code_patch_candidate(
             "repo_root": str(repo_root),
             "applied_file_paths": [],
         }
-    transaction = _begin_code_apply_transaction(
+    # The final non-mutating checks have now passed.  Transition a dynamic
+    # implementation binding only here, immediately before the first write;
+    # policy, repository, contract, and subject-state rejections above retain
+    # their active binding without any stale transition side effect.
+    binding_invalidation = invalidate_dynamic_binding_before_apply(
         runtime,
-        candidate,
-        patch,
-        scope=scope,
-        loop_id=loop_id,
-        repo_root=repo_root,
-        file_updates=file_updates,
-        prepared=prepared,
-        backups=backups,
-        allowed_files=allowed_files,
-        prior_commit_sha=prior_commit_sha,
-        subject_state_digest=subject_state_digest,
-        verification_commands=verification_commands,
+        code_patch=patch,
+        scope=candidate.scope,
+        opportunity_id=str(
+            patch.get("source_opportunity_id")
+            or candidate.meta.get("experiment_id")
+            or candidate.record_id
+        ),
     )
-    _update_code_apply_transaction(runtime, transaction, stage="write_started")
+    if binding_invalidation.get("required") is True and binding_invalidation.get("ok") is not True:
+        return {
+            "ok": False,
+            "blocked_reason": str(binding_invalidation.get("reason") or "dynamic_binding_invalidation_failed"),
+            "promotion_target": "code_patch",
+            "repo_root": str(repo_root),
+            "repo_mutated": False,
+            "binding_invalidation": binding_invalidation,
+        }
+    try:
+        transaction = _begin_code_apply_transaction(
+            runtime,
+            candidate,
+            patch,
+            scope=scope,
+            loop_id=loop_id,
+            repo_root=repo_root,
+            file_updates=file_updates,
+            prepared=prepared,
+            backups=backups,
+            allowed_files=allowed_files,
+            prior_commit_sha=prior_commit_sha,
+            subject_state_digest=subject_state_digest,
+            verification_commands=verification_commands,
+            automation_policy=policy_summary,
+        )
+        _update_code_apply_transaction(runtime, transaction, stage="write_started")
+    except Exception as exc:
+        compensation = restore_dynamic_binding_after_unstarted_apply(
+            runtime,
+            scope=candidate.scope,
+            invalidation=binding_invalidation,
+            reason="code_apply_transaction_start_failed_before_write",
+        )
+        return {
+            "ok": False,
+            "blocked_reason": f"code_apply_transaction_start_failed:{type(exc).__name__}",
+            "promotion_target": "code_patch",
+            "repo_root": str(repo_root),
+            "repo_mutated": False,
+            "binding_invalidation": binding_invalidation,
+            "binding_compensation": compensation,
+        }
     applied, error = _write_prepared_file_updates(prepared, backups)
     rollback_evidence = _rollback_evidence(repo_root=repo_root, patch=patch, applied=applied, backups=backups, prior_commit_sha=prior_commit_sha, commit={})
     if error:
@@ -1595,6 +2048,16 @@ def _apply_code_patch_candidate(
             reason="code_patch_write_failed",
             side_effect={"rollback": rollback, "rollback_evidence": rollback_evidence, **rollback_state},
         )
+        compensation = (
+            restore_dynamic_binding_after_unstarted_apply(
+                runtime,
+                scope=candidate.scope,
+                invalidation=binding_invalidation,
+                reason="code_patch_write_failed_before_mutation",
+            )
+            if not applied
+            else {"ok": True, "status": "not_safe_after_partial_write"}
+        )
         return {
             "ok": False,
             "blocked_reason": error,
@@ -1604,6 +2067,8 @@ def _apply_code_patch_candidate(
             "rollback_evidence": rollback_evidence,
             "rollback": rollback,
             "transaction_id": transaction.record_id,
+            "binding_invalidation": binding_invalidation,
+            "binding_compensation": compensation,
             **rollback_state,
         }
     _update_code_apply_transaction(runtime, transaction, stage="files_written")
@@ -1646,7 +2111,8 @@ def _apply_code_patch_candidate(
         applied_paths=[item["path"] for item in applied],
         patch=patch,
         candidate=candidate,
-            timeout_seconds=timeout_seconds,
+        timeout_seconds=timeout_seconds,
+        automation_policy=policy_summary,
     )
     rollback_evidence = _rollback_evidence(repo_root=repo_root, patch=patch, applied=applied, backups=backups, prior_commit_sha=prior_commit_sha, commit=commit)
     if not commit["ok"]:
@@ -1897,6 +2363,7 @@ def _apply_code_patch_candidate(
             "eval_result": eval_result,
             "gate": gate,
             "production_applied": production_applied,
+            "binding_invalidation": binding_invalidation,
         },
         meta={
             "candidate_id": candidate.record_id,
@@ -1923,6 +2390,7 @@ def _apply_code_patch_candidate(
         "rollback_evidence": rollback_evidence,
         "transaction_id": transaction.record_id,
         "production_applied": production_applied,
+        "binding_invalidation": binding_invalidation,
         "lifecycle_actions": [
             "applied",
             *([] if deployment.get("skipped") else ["deployed"]),
@@ -2196,6 +2664,20 @@ def _file_updates(patch: dict[str, Any]) -> list[dict[str, str]]:
             continue
         normalized.append({"path": path, "content": str(content)})
     return normalized
+
+
+def _code_patch_machine_policy_error(patch: dict[str, Any], automation_policy: dict[str, Any]) -> str:
+    """Bind each requested code side effect to a positive policy action."""
+    if not bool(automation_policy.get("allow_apply")):
+        return str(automation_policy.get("reason") or "automation_policy_local_apply_not_enabled")
+    if _truthy(patch.get("commit_to_repo"), default=False) and not bool(automation_policy.get("allow_commit")):
+        return "automation_policy_commit_not_enabled"
+    if _truthy(patch.get("deploy_to_production"), default=False):
+        if not bool(automation_policy.get("allow_commit")):
+            return "automation_policy_commit_not_enabled"
+        if not bool(automation_policy.get("allow_deployment")):
+            return "automation_policy_deployment_not_enabled"
+    return ""
 
 
 def _code_patch_contract_error(patch: dict[str, Any], *, repo_root: Path, file_updates: list[dict[str, str]]) -> str:
@@ -2668,9 +3150,12 @@ def _commit_repo_patch(
     patch: dict[str, Any],
     candidate: RecordEnvelope,
     timeout_seconds: int,
+    automation_policy: dict[str, Any],
 ) -> dict[str, Any]:
     if not _truthy(patch.get("commit_to_repo"), default=False):
         return {"ok": True, "skipped": True, "reason": "commit_disabled"}
+    if not bool(automation_policy.get("allow_commit")):
+        return {"ok": False, "reason": "automation_policy_commit_not_enabled"}
     if not (repo_root / ".git").exists():
         return {"ok": False, "reason": "git_repo_missing"}
     add_result = _run_patch_commands([["git", "add", "--", *applied_paths]], cwd=repo_root, timeout_seconds=timeout_seconds, phase="commit")
@@ -2691,20 +3176,13 @@ def _commit_repo_patch(
     }
 
 
-def _deployment_commands(patch: dict[str, Any], repo_root: Path) -> list[str | list[str]]:
+def _deployment_commands(patch: dict[str, Any], _repo_root: Path) -> list[str | list[str]]:
     explicit = _normalize_commands(patch.get("deployment_commands") or patch.get("deploy_commands"))
     if explicit:
         return explicit
     env_commands = _normalize_env_commands("EIMEMORY_AUTONOMOUS_CODE_DEPLOY_COMMAND")
     if env_commands:
         return env_commands
-    installer = repo_root / "deploy" / "install_immutable_release.sh"
-    if installer.exists():
-        return [[
-            "bash",
-            "-lc",
-            'COMMIT="$(git rev-parse HEAD)" && bash ./deploy/install_immutable_release.sh "$COMMIT" && systemctl --user daemon-reload && systemctl --user restart eimemory-rpc.service',
-        ]]
     return []
 
 
@@ -2719,7 +3197,7 @@ def _post_deploy_health_commands(patch: dict[str, Any]) -> list[str | list[str]]
     env_commands = _normalize_env_commands("EIMEMORY_AUTONOMOUS_CODE_HEALTH_COMMAND")
     if env_commands:
         return env_commands
-    return [["bash", "-lc", "curl -fsS http://127.0.0.1:8091/health"]]
+    return [["curl", "-fsS", "http://127.0.0.1:8091/health"]]
 
 
 def _canary_commands(patch: dict[str, Any]) -> list[str | list[str]]:
@@ -2833,6 +3311,20 @@ def _candidate_patch(runtime: Any, candidate: RecordEnvelope, *, scope: dict[str
         "target_capability": str(content.get("target_capability") or candidate.meta.get("target_capability") or ""),
         "policy": str(content.get("summary") or candidate.summary),
     }
+
+
+def _candidate_target_capability(candidate: RecordEnvelope, patch: dict[str, Any]) -> str:
+    content = candidate.content if isinstance(candidate.content, dict) else {}
+    meta = candidate.meta if isinstance(candidate.meta, dict) else {}
+    for value in (
+        patch.get("target_capability"),
+        content.get("target_capability"),
+        meta.get("target_capability"),
+    ):
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
 
 
 def _gate_bundle(candidate: RecordEnvelope, eval_result: dict[str, Any]) -> dict[str, Any]:
@@ -3197,8 +3689,8 @@ def _promotion_ledger_reason(*, action: str, gate: dict[str, Any], side_effect: 
     blocked_reasons = gate.get("blocked_reasons")
     if isinstance(blocked_reasons, list) and blocked_reasons:
         return ",".join(str(item) for item in blocked_reasons if str(item).strip())
-    if action == "blocked_l3":
-        return "l3_requires_approval"
+    if action == "automation_policy_blocked":
+        return "automation_policy_apply_disabled"
     if action in {"gate_failed", "adapter_failed"}:
         return action
     return ""

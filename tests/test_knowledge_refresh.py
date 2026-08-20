@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import ast
+import hashlib
+from pathlib import Path
+
 import pytest
 
 from eimemory.api.runtime import Runtime
 from eimemory.intake.papers import artifacts as paper_artifacts
 from eimemory.knowledge.compiler import compile_paper_knowledge
+from eimemory.knowledge import refresh as knowledge_refresh
 from eimemory.knowledge.projectors import stable_projection_id
 from eimemory.models.claim_cards import ClaimCard
 from eimemory.models.paper_sources import PaperSource
@@ -12,6 +17,16 @@ from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
 _CANONICAL_TEXT = "Canonical evidence says the OpenClaw runtime must preserve source provenance for recall decisions."
+
+
+def test_refresh_module_remains_python_311_parseable_and_refresh_ids_stable() -> None:
+    """Guard the oldest supported production interpreter against syntax drift."""
+
+    source_path = Path(knowledge_refresh.__file__)
+    ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path), feature_version=(3, 11))
+
+    expected_digest = hashlib.sha256(b"paper.source\x1fcompile-digest").hexdigest()[:20]
+    assert knowledge_refresh._refresh_run_id("paper.source", "compile-digest") == f"krefresh_{expected_digest}"
 
 
 @pytest.fixture

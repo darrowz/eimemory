@@ -147,7 +147,7 @@ def daily_rollout_count(*, conn, scope: ScopeRef, action: str, auto_only: bool =
 
 def budget_decision_for_promotion(*, conn, scope: ScopeRef, auto: bool, budget_limit: int = AUTO_PROMOTION_BUDGET_PER_DAY, date: str | None = None) -> str:
     if not auto:
-        return "manual_ok"
+        return "policy_ok"
     used = daily_rollout_count(conn=conn, scope=scope, action="promotion", auto_only=True, date=date)
     if used >= int(budget_limit):
         return "budget_exhausted"
@@ -156,7 +156,7 @@ def budget_decision_for_promotion(*, conn, scope: ScopeRef, auto: bool, budget_l
 
 def budget_decision_for_rollback(*, conn, scope: ScopeRef, auto: bool, budget_limit: int = AUTO_ROLLBACK_BUDGET_PER_DAY, date: str | None = None) -> str:
     if not auto:
-        return "manual_ok"
+        return "policy_ok"
     used = daily_rollout_count(conn=conn, scope=scope, action="rollback", auto_only=True, date=date)
     if used >= int(budget_limit):
         return "budget_exhausted"
@@ -198,7 +198,7 @@ def build_rollout_ledger_record(
         "replay_report": dict(replay_gate_report or {}),
         "applied_pattern_id": str(applied_pattern_id),
         "rollback_policy_id": str(rollback_policy_id or ""),
-        "budget_decision": str(budget_decision or "manual_ok"),
+        "budget_decision": str(budget_decision or "policy_ok"),
         "action_type": str(action),
         "scope": {
             "tenant_id": scope.tenant_id,

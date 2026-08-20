@@ -13,9 +13,11 @@ from eimemory.governance import capability_acceptance
 from eimemory.governance.capability_acceptance import (
     PROBE_SCHEMA_VERSION,
     capability_acceptance_digest,
-    run_capability_acceptance,
+    run_capability_acceptance as _run_capability_acceptance,
 )
-from eimemory.governance.capability_replay_executor import execute_capability_replay_case
+from eimemory.governance.capability_replay_executor import (
+    execute_capability_replay_case as _execute_capability_replay_case,
+)
 from eimemory.governance.capability_probe_executor import execute_probe
 from eimemory.governance.capability_ledger import record_capability_score
 from eimemory.governance.autonomous_learning import _evidence_bound_capabilities
@@ -38,6 +40,39 @@ WEAK_CAPABILITIES = {
     "operations.uumit",
     "device.control",
 }
+
+
+def run_capability_acceptance(runtime, *args, **kwargs):
+    """Exercise the retired static acceptance cohort only by explicit opt-in."""
+
+    kwargs.setdefault("legacy_compatibility", True)
+    return _run_capability_acceptance(runtime, *args, **kwargs)
+
+
+def execute_capability_replay_case(runtime, case, **kwargs):
+    """Keep historical replay traces on the explicit compatibility path."""
+
+    kwargs.setdefault("legacy_compatibility", True)
+    return _execute_capability_replay_case(runtime, case, **kwargs)
+
+
+@pytest.fixture(autouse=True)
+def _select_legacy_replay_packs_for_retired_contract_tests(monkeypatch) -> None:
+    """Do not let this v2 fixture module rely on the dynamic production default."""
+
+    original_replay = Runtime.build_capability_replay_packs
+    original_readiness = Runtime.build_l5_readiness_report
+
+    def build_legacy_replay_packs(*args, **kwargs):
+        kwargs.setdefault("legacy_compatibility", True)
+        return original_replay(*args, **kwargs)
+
+    def build_legacy_readiness(*args, **kwargs):
+        kwargs.setdefault("reader_mode", "legacy")
+        return original_readiness(*args, **kwargs)
+
+    monkeypatch.setattr(Runtime, "build_capability_replay_packs", build_legacy_replay_packs)
+    monkeypatch.setattr(Runtime, "build_l5_readiness_report", build_legacy_readiness)
 
 
 def test_manifest_sequence_allocation_requires_explicit_scope(tmp_path) -> None:
@@ -195,7 +230,11 @@ def test_capability_replay_packs_do_not_overwrite_scores_when_contracts_are_unav
             assert pack["rollback_plan"]["command"]
             assert pack["observe_plan"]["min_observations"] >= 1
 
-        ledger = runtime.learning_ledger(scope=SCOPE, attribute_outcomes=False)
+        ledger = runtime.learning_ledger(
+            scope=SCOPE,
+            attribute_outcomes=False,
+            legacy_compatibility=True,
+        )
         assert report["score_record_ids"] == []
         assert ledger["capabilities"]["memory.recall"]["status"] == "active"
         assert ledger["capabilities"]["memory.recall"]["score"] == 0.84
@@ -296,7 +335,11 @@ def test_capability_replay_packs_include_named_weak_capability_cases(tmp_path) -
             assert len(case_ids) >= 3
             assert all(case["target_capability"] == capability for case in pack["cases"])
 
-        ledger = runtime.learning_ledger(scope=SCOPE, attribute_outcomes=False)
+        ledger = runtime.learning_ledger(
+            scope=SCOPE,
+            attribute_outcomes=False,
+            legacy_compatibility=True,
+        )
         for capability in WEAK_CAPABILITIES:
             item = ledger["capabilities"][capability]
             assert item["status"] == "active"
@@ -313,9 +356,9 @@ def test_capability_replay_score_counts_only_executed_evidence_in_partial_pack(t
         accepted = next(item for item in acceptance["results"] if item["case_id"] == "search_recent_source")
         real_executor = runtime.run_capability_replay_case
 
-        def partial_executor(case):
+        def partial_executor(case, **kwargs):
             if case["case_id"] == accepted["case_id"]:
-                return real_executor(case)
+                return real_executor(case, **kwargs)
             return {"verdict": "not_run", "hit": None, "observed": "", "reason": "missing evidence"}
 
         runtime.run_capability_replay_case = partial_executor  # type: ignore[attr-defined]
@@ -344,7 +387,7 @@ def test_capability_replay_score_counts_only_executed_evidence_in_partial_pack(t
 def test_capability_replay_failure_score_excludes_not_run_evidence(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
 
-    def partial_failure(case):
+    def partial_failure(case, **_kwargs):
         if case["case_id"] == "search_recent_source":
             return {"verdict": "fail", "hit": False, "observed": "failed check"}
         return {"verdict": "not_run", "hit": None, "observed": "", "reason": "missing evidence"}
@@ -371,7 +414,7 @@ def test_capability_replay_failure_score_excludes_not_run_evidence(tmp_path) -> 
 
 def test_capability_replay_rejects_inconsistent_pass_claims(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
-    runtime.run_capability_replay_case = lambda _case: {"verdict": "pass", "hit": False, "observed": ""}  # type: ignore[attr-defined]
+    runtime.run_capability_replay_case = lambda _case, **_kwargs: {"verdict": "pass", "hit": False, "observed": ""}  # type: ignore[attr-defined]
     try:
         report = runtime.build_capability_replay_packs(
             scope=SCOPE,
@@ -388,7 +431,7 @@ def test_capability_replay_rejects_inconsistent_pass_claims(tmp_path) -> None:
 
 def test_capability_replay_rejects_pass_without_source_evidence(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
-    runtime.run_capability_replay_case = lambda case: {  # type: ignore[attr-defined]
+    runtime.run_capability_replay_case = lambda case, **_kwargs: {  # type: ignore[attr-defined]
         "verdict": "pass",
         "hit": True,
         "observed": f"verified:{case['case_id']}",
@@ -408,7 +451,7 @@ def test_capability_replay_rejects_pass_without_source_evidence(tmp_path) -> Non
 
 def test_capability_replay_rejects_bare_executor_pass_without_contract_chain(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
-    runtime.run_capability_replay_case = lambda case: {  # type: ignore[attr-defined]
+    runtime.run_capability_replay_case = lambda case, **_kwargs: {  # type: ignore[attr-defined]
         "verdict": "pass",
         "hit": True,
         "observed": f"verified:{case['case_id']}",
@@ -433,8 +476,8 @@ def test_capability_replay_rejects_wrong_contract_schema_from_executor(tmp_path)
         run_capability_acceptance(runtime, scope=SCOPE, persist=True)
         real_executor = runtime.run_capability_replay_case
 
-        def wrong_schema(case):
-            result = dict(real_executor(case))
+        def wrong_schema(case, **kwargs):
+            result = dict(real_executor(case, **kwargs))
             result["contract_schema"] = "capability_contract.v0"
             return result
 
@@ -939,10 +982,18 @@ def _seed_contract_trace(
     trace_text: str,
     duplicate_trace: bool,
 ) -> None:
-    artifact = capability_acceptance.capability_acceptance_case(case_id)
+    artifact = capability_acceptance.capability_acceptance_case(
+        case_id,
+        legacy_compatibility=True,
+    )
     probe_id = f"probe-{case_id}"
     execution_id = "fixture-execution"
-    execution = execute_probe(artifact, runtime=runtime, evidence_ref=probe_id)
+    execution = execute_probe(
+        artifact,
+        runtime=runtime,
+        evidence_ref=probe_id,
+        legacy_compatibility=True,
+    )
     digest = execution["execution_digest"]
     checks = execution["checks"]
     probe = RecordEnvelope.create(
@@ -1066,7 +1117,7 @@ def test_replay_rerun_persists_new_execution_and_readiness_uses_latest(tmp_path)
             acceptance_execution_id=acceptance["execution_id"],
             acceptance_probe_ids_by_case=acceptance_probe_ids,
         )
-        runtime.run_capability_replay_case = lambda case: {  # type: ignore[attr-defined]
+        runtime.run_capability_replay_case = lambda case, **_kwargs: {  # type: ignore[attr-defined]
             "verdict": "fail",
             "hit": False,
             "observed": f"failed:{case['case_id']}",

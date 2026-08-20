@@ -19,6 +19,13 @@ from .capability_v3 import (
     ensure_capability_v3_schema,
     is_capability_v3_schema_ready,
 )
+from .capability_profile_lineage import (
+    CAPABILITY_PROFILE_LINEAGE_SCHEMA_MIGRATION,
+    apply_capability_profile_lineage_backfill_batch,
+    capability_profile_lineage_backfill_is_scheduled,
+    ensure_capability_profile_lineage_schema,
+    is_capability_profile_lineage_schema_ready,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +46,13 @@ REGISTERED_STORAGE_MIGRATIONS: tuple[StorageMigrationSpec, ...] = (
         is_schema_ready=is_capability_v3_schema_ready,
         data_is_scheduled=capability_v3_backfill_is_scheduled,
         apply_data_batch=apply_capability_v3_backfill_batch,
+    ),
+    StorageMigrationSpec(
+        migration_id=CAPABILITY_PROFILE_LINEAGE_SCHEMA_MIGRATION,
+        ensure_schema=ensure_capability_profile_lineage_schema,
+        is_schema_ready=is_capability_profile_lineage_schema_ready,
+        data_is_scheduled=capability_profile_lineage_backfill_is_scheduled,
+        apply_data_batch=apply_capability_profile_lineage_backfill_batch,
     ),
 )
 

@@ -1,10 +1,35 @@
 from __future__ import annotations
 
+import json
+
+import pytest
+
 from eimemory.api.runtime import Runtime
 from eimemory.governance.autonomous_learning import (
+    _nonlegacy_code_patch_hypothesis_gate,
     classify_autonomous_learning_activity,
     run_autonomous_learning_cycle,
 )
+from eimemory.models.records import ScopeRef
+
+
+@pytest.fixture(autouse=True)
+def _enable_test_machine_code_policy(monkeypatch) -> None:
+    """Code-apply tests opt into bounded local mutation explicitly."""
+    monkeypatch.setenv(
+        "EIMEMORY_CODE_AUTOMATION_POLICY_JSON",
+        json.dumps(
+            {
+                "schema_version": "code_automation_policy.v1",
+                "policy_id": "test-autonomous-learning-local-apply-v1",
+                "actions": {
+                    "local_apply": True,
+                    "commit": False,
+                    "deployment": False,
+                },
+            }
+        ),
+    )
 
 
 def test_activity_classifier_marks_successful_no_change_idle() -> None:
@@ -26,6 +51,27 @@ def test_activity_classifier_marks_successful_no_change_idle() -> None:
         "activity_reason": "no_candidate_change",
         "attempted_candidate_count": 0,
     }
+
+
+def test_nonlegacy_learning_code_patch_requires_full_v3_hypothesis_context(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    gate = _nonlegacy_code_patch_hypothesis_gate(
+        runtime,
+        scope=ScopeRef.from_dict({"agent_id": "hongtu", "workspace_id": "personal"}),
+        hypothesis_reference={},
+        raw_hypothesis_context={},
+        candidate_patch={
+            "target_capability": "code.implementation",
+            "capability_revision_id": "revision-1",
+            "provider_binding_id": "binding-1",
+            "capability_scope": "global",
+        },
+        target_capability="code.implementation",
+    )
+
+    assert gate["required"] is True
+    assert gate["allowed"] is False
+    assert gate["reason"] == "nonlegacy_code_patch_hypothesis_context_incomplete"
 
 
 def test_activity_classifier_keeps_failed_evaluation_active() -> None:
@@ -86,7 +132,13 @@ def test_autonomous_learning_cycle_produces_goal_candidate_and_ledger(tmp_path, 
     )
     _force_real_task_replay_pass(runtime, monkeypatch)
 
-    report = run_autonomous_learning_cycle(runtime, scope=scope, apply=False, force=True)
+    report = run_autonomous_learning_cycle(
+        runtime,
+        scope=scope,
+        apply=False,
+        force=True,
+        legacy_compatibility=True,
+    )
 
     assert report["ok"] is True
     assert report["goal_count"] >= 1
@@ -159,7 +211,15 @@ def test_autonomous_learning_cycle_distills_diverse_capability_candidates(tmp_pa
     ]
     monkeypatch.setattr("eimemory.governance.autonomous_learning.generate_learning_goals", lambda *_args, **_kwargs: goals)
 
-    report = run_autonomous_learning_cycle(runtime, scope=scope, apply=False, force=True, max_goals=5, allow_network=False)
+    report = run_autonomous_learning_cycle(
+        runtime,
+        scope=scope,
+        apply=False,
+        force=True,
+        max_goals=5,
+        allow_network=False,
+        legacy_compatibility=True,
+    )
     candidates = [runtime.store.get_by_id(candidate_id, scope=scope) for candidate_id in report["candidate_ids"]]
     candidate_capabilities = {candidate.meta["target_capability"] for candidate in candidates if candidate is not None}
     promotion_targets = {candidate.meta["promotion_target"] for candidate in candidates if candidate is not None}
@@ -173,6 +233,7 @@ def test_autonomous_learning_cycle_distills_diverse_capability_candidates(tmp_pa
             "target_capability": "code.implementation",
             "requested_target": "code_patch",
             "promotion_target": "code_patch",
+            "capability_hypothesis": {},
             "fallback_reason": "",
             "proposal_status": "proposal_unavailable",
             "proposal_blocked_reason": "code_proposer_unavailable",
@@ -191,7 +252,13 @@ def test_autonomous_learning_cycle_applies_supported_policy_adapter(tmp_path, mo
     )
     _force_real_task_replay_pass(runtime, monkeypatch)
 
-    report = run_autonomous_learning_cycle(runtime, scope=scope, apply=True, force=True)
+    report = run_autonomous_learning_cycle(
+        runtime,
+        scope=scope,
+        apply=True,
+        force=True,
+        legacy_compatibility=True,
+    )
 
     assert report["ok"] is True
     assert report["promotion"]["applied"] is True
@@ -227,8 +294,31 @@ def test_autonomous_learning_cycle_applies_code_patch_directly_to_repo(tmp_path,
         fix="Generate a code patch candidate with replay evidence",
         scope=scope,
     )
+    monkeypatch.setattr(
+        "eimemory.governance.autonomous_learning.generate_learning_goals",
+        lambda *_args, **_kwargs: [
+            {
+                "goal_type": "capability_gap",
+                "title": "Repair module value",
+                "question": "Repair the broken module value without touching other files.",
+                "success_criteria": "module.py contains the repaired value and passes its focused check.",
+                "authority_tier": "L1",
+                "priority": 0.95,
+                "target_capability": "code.implementation",
+                "semantic_key": "direct-code-patch",
+                "repo_root": str(repo),
+                "files": ["module.py"],
+            }
+        ],
+    )
 
-    report = run_autonomous_learning_cycle(runtime, scope=scope, apply=True, force=True)
+    report = run_autonomous_learning_cycle(
+        runtime,
+        scope=scope,
+        apply=True,
+        force=True,
+        legacy_compatibility=True,
+    )
 
     assert report["ok"] is True
     assert report["promotion"]["applied"] is True
@@ -282,6 +372,7 @@ def test_autonomous_learning_cycle_generates_and_applies_code_patch_from_injecte
         max_goals=1,
         max_promotions=1,
         allow_network=False,
+        legacy_compatibility=True,
     )
 
     assert report["ok"] is True
@@ -290,6 +381,7 @@ def test_autonomous_learning_cycle_generates_and_applies_code_patch_from_injecte
             "target_capability": "code.implementation",
             "requested_target": "code_patch",
             "promotion_target": "code_patch",
+            "capability_hypothesis": {},
             "fallback_reason": "",
             "proposal_status": "proposal_ready",
             "proposal_blocked_reason": "",
@@ -329,7 +421,7 @@ def test_autonomous_learning_cycle_binds_acceptance_evidence_to_capability_repla
     _force_real_task_replay_pass(runtime, monkeypatch)
     calls: list[tuple[str, object]] = []
 
-    def fake_acceptance(*, scope, persist=True):
+    def fake_acceptance(*, scope, persist=True, **_kwargs):
         calls.append(("acceptance", scope))
         return {
             "ok": True,
@@ -354,6 +446,7 @@ def test_autonomous_learning_cycle_binds_acceptance_evidence_to_capability_repla
         loop_id,
         acceptance_execution_id="",
         acceptance_probe_ids_by_case=None,
+        **_kwargs,
     ):
         calls.append(
             (
@@ -377,7 +470,7 @@ def test_autonomous_learning_cycle_binds_acceptance_evidence_to_capability_repla
     monkeypatch.setattr(runtime, "run_capability_acceptance", fake_acceptance)
     monkeypatch.setattr(
         "eimemory.governance.autonomous_learning._loop_capabilities",
-        lambda _goals: ["search.discovery"],
+        lambda _goals, **_kwargs: ["search.discovery"],
     )
     monkeypatch.setattr(
         "eimemory.governance.autonomous_learning.build_capability_replay_packs",
@@ -408,6 +501,7 @@ def _force_real_task_replay_pass(runtime: Runtime, monkeypatch, code_patch: dict
         persist=True,
         loop_id="",
         include_built_in_regressions=False,
+        **_kwargs,
     ):
         return {
             "ok": True,
@@ -435,7 +529,7 @@ def _force_real_task_replay_pass(runtime: Runtime, monkeypatch, code_patch: dict
             ],
         }
 
-    def fake_run_real_task_replay(dataset, *, seed=False, persist_report=False):
+    def fake_run_real_task_replay(dataset, *, seed=False, persist_report=False, **_kwargs):
         return {
             "ok": True,
             "report_type": "real_task_replay",

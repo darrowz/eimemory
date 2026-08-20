@@ -4,30 +4,32 @@ import json
 from statistics import mean
 from typing import Any
 
+from eimemory.evaluation.capability_catalog import CapabilityEvaluationCatalog
 from eimemory.experience.capability_contract import (
-    CASE_CONTRACTS,
     contract_source_ids,
     normalize_capability_contract,
     validate_capability_contract,
 )
-from eimemory.governance.capability_ledger import SEEDED_LEDGER_CAPABILITIES, record_capability_score
+from eimemory.governance.capability_ledger import LEGACY_SEEDED_LEDGER_CAPABILITIES, record_capability_score
 from eimemory.governance.evidence_contract import same_scope
 from eimemory.governance.learning_state import stable_semantic_key
 from eimemory.metadata import business_metadata
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
-BUSINESS_CAPABILITIES = {
+# Historical keyword matching is migration-only.  A live capability must be
+# named by a verified contract/binding, not inferred from text that happens to
+# mention a familiar business area.
+LEGACY_BUSINESS_CAPABILITIES = {
     "operations.uumit",
     "research.synthesis",
     "search.discovery",
     "office.daily_task",
     "device.control",
 }
-CONTRACT_CAPABILITIES = {capability for capability, _validator in CASE_CONTRACTS.values()}
-ATTRIBUTABLE_CAPABILITIES = BUSINESS_CAPABILITIES | CONTRACT_CAPABILITIES
+LEGACY_ATTRIBUTABLE_CAPABILITIES = LEGACY_BUSINESS_CAPABILITIES
 
-CAPABILITY_TERMS: dict[str, tuple[str, ...]] = {
+LEGACY_CAPABILITY_TERMS: dict[str, tuple[str, ...]] = {
     "operations.uumit": (
         "uumit",
         "business delivery",
@@ -83,18 +85,118 @@ CAPABILITY_TERMS: dict[str, tuple[str, ...]] = {
 }
 
 
+def normalize_explicit_capability_outcomes(
+    runtime: Any,
+    *,
+    scope: dict[str, Any] | ScopeRef | None = None,
+    limit: int = 500,
+) -> dict[str, Any]:
+    """Project only explicitly attributed outcome traces into v3 observations.
+
+    This is the migration-safe replacement for the legacy keyword heuristic.
+    It never chooses a capability on behalf of a record: records without a
+    capability revision/binding and independent verifier remain accounted as
+    ``unclassified`` for later deterministic migration or operator policy.
+    """
+
+    from eimemory.capabilities.observations import CapabilityObservations
+
+    scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+    normalizer = CapabilityObservations(runtime.store)
+    recorded = 0
+    idempotent = 0
+    unclassified = 0
+    blocked = 0
+    details: list[dict[str, Any]] = []
+    for record in _records_by_meta_value(
+        runtime,
+        kinds=["reflection"],
+        scope=scope_ref,
+        meta_key="report_type",
+        meta_value="outcome_trace",
+        limit=max(1, min(500, int(limit))),
+    ):
+        if not same_scope(record.scope, scope_ref):
+            continue
+        content = record.content if isinstance(record.content, dict) else {}
+        payload = content.get("payload") if isinstance(content.get("payload"), dict) else {}
+        attribution = payload.get("capability_attribution") if isinstance(payload, dict) else None
+        capability_scope = str(attribution.get("capability_scope") or "global") if isinstance(attribution, dict) else "global"
+        try:
+            result = normalizer.normalize_outcome(
+                payload,
+                runtime_scope=scope_ref,
+                capability_scope=capability_scope,
+                request_key=f"outcome-trace:{record.record_id}",
+            )
+        except Exception as exc:
+            blocked += 1
+            details.append({"record_id": record.record_id, "status": "blocked", "reason": type(exc).__name__})
+            continue
+        if result.status == "recorded":
+            if result.observation is not None and result.observation.idempotent:
+                idempotent += 1
+            else:
+                recorded += 1
+        elif result.status == "unclassified":
+            unclassified += 1
+        else:
+            blocked += 1
+        details.append({"record_id": record.record_id, "status": result.status, "reason": result.reason})
+    return {
+        "schema": "capability.outcome_normalization.v3",
+        "ok": blocked == 0,
+        "recorded": recorded,
+        "idempotent": idempotent,
+        "unclassified": unclassified,
+        "blocked": blocked,
+        "details": details,
+    }
+
+
 def collect_capability_evidence(
     runtime: Any,
     *,
     scope: dict[str, Any] | ScopeRef | None = None,
     limit: int = 500,
+    catalog: CapabilityEvaluationCatalog | None = None,
+    legacy_compatibility: bool = False,
 ) -> dict[str, list[dict[str, Any]]]:
+    """Collect evidence without assigning live capabilities by keyword.
+
+    Default collection retains records without a verified capability contract
+    under ``unclassified``.  The historical text classifier is available only
+    to explicit migration/replay callers and can never expand the live
+    capability universe by itself.
+    """
+
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
-    grouped: dict[str, list[dict[str, Any]]] = {capability: [] for capability in ATTRIBUTABLE_CAPABILITIES}
+    grouped: dict[str, list[dict[str, Any]]] = {}
     seen: set[tuple[str, str]] = set()
-    for evidence in [*_evidence_from_outcome_traces(runtime, scope=scope_ref, limit=limit), *_evidence_from_event_outcomes(runtime, scope=scope_ref, limit=limit)]:
+    for evidence in [
+        *_evidence_from_outcome_traces(
+            runtime,
+            scope=scope_ref,
+            limit=limit,
+            catalog=catalog,
+            legacy_compatibility=legacy_compatibility,
+        ),
+        *_evidence_from_event_outcomes(
+            runtime,
+            scope=scope_ref,
+            limit=limit,
+            legacy_compatibility=legacy_compatibility,
+        ),
+    ]:
         for capability in evidence.get("capabilities") or []:
-            if capability not in ATTRIBUTABLE_CAPABILITIES:
+            if (
+                evidence.get("contract_verified") is not True
+                and capability != "unclassified"
+                and (
+                    not legacy_compatibility
+                    or capability not in LEGACY_ATTRIBUTABLE_CAPABILITIES
+                )
+            ):
                 continue
             key = (capability, str(evidence.get("source_id") or ""))
             if key in seen:
@@ -110,11 +212,19 @@ def attribute_capability_outcomes(
     scope: dict[str, Any] | ScopeRef | None = None,
     loop_id: str = "outcome_attribution",
     limit: int = 500,
+    catalog: CapabilityEvaluationCatalog | None = None,
+    legacy_compatibility: bool = False,
 ) -> dict[str, Any]:
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
     evidence_by_capability = {
         capability: [item for item in items if item.get("contract_verified") is True]
-        for capability, items in collect_capability_evidence(runtime, scope=scope_ref, limit=limit).items()
+        for capability, items in collect_capability_evidence(
+            runtime,
+            scope=scope_ref,
+            limit=limit,
+            catalog=catalog,
+            legacy_compatibility=legacy_compatibility,
+        ).items()
     }
     evidence_by_capability = {capability: items for capability, items in evidence_by_capability.items() if items}
     record_ids: list[str] = []
@@ -149,7 +259,14 @@ def attribute_capability_outcomes(
     }
 
 
-def _evidence_from_outcome_traces(runtime: Any, *, scope: ScopeRef, limit: int) -> list[dict[str, Any]]:
+def _evidence_from_outcome_traces(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    limit: int,
+    catalog: CapabilityEvaluationCatalog | None,
+    legacy_compatibility: bool,
+) -> list[dict[str, Any]]:
     evidence: list[dict[str, Any]] = []
     for record in _records_by_meta_value(
         runtime,
@@ -173,13 +290,21 @@ def _evidence_from_outcome_traces(runtime: Any, *, scope: ScopeRef, limit: int) 
             continue
         policy_attribution = _dict_value(record.content.get("policy_attribution") if isinstance(record.content, dict) else None) or _dict_value(payload.get("policy_attribution"))
         contract = normalize_capability_contract(payload.get("capability_contract"))
-        contract_error = validate_capability_contract(contract) if contract else "capability contract missing"
+        contract_error = (
+            validate_capability_contract(
+                contract,
+                catalog=catalog,
+                legacy_compatibility=legacy_compatibility,
+            )
+            if contract
+            else "capability contract missing"
+        )
         contract_verified = not contract_error
         if contract_verified:
             capabilities = [str(contract["capability"])]
             case_id = str(contract["case_id"])
             source_record_ids = contract_source_ids(contract)
-        else:
+        elif legacy_compatibility:
             text = _join_text(
                 record.title,
                 record.summary,
@@ -191,7 +316,13 @@ def _evidence_from_outcome_traces(runtime: Any, *, scope: ScopeRef, limit: int) 
                 payload.get("outcome"),
                 policy_attribution,
             )
-            capabilities = _capabilities_from_text(text)
+            capabilities = _legacy_capabilities_from_text(text)
+            case_id = ""
+            source_record_ids = []
+        else:
+            # Keep the evidence visible without treating its natural-language
+            # wording as capability authority.
+            capabilities = ["unclassified"]
             case_id = ""
             source_record_ids = []
         if not capabilities:
@@ -209,6 +340,10 @@ def _evidence_from_outcome_traces(runtime: Any, *, scope: ScopeRef, limit: int) 
                 "source_record_ids": source_record_ids,
                 "contract_schema": str(contract.get("schema_version") or "") if contract_verified else "",
                 "observation": dict(contract.get("observations") or {}) if contract_verified else {},
+                "capability_revision_id": str(contract.get("capability_revision_id") or "") if contract_verified else "",
+                "provider_binding_id": str(contract.get("provider_binding_id") or "") if contract_verified else "",
+                "eval_spec_id": str(contract.get("eval_spec_id") or "") if contract_verified else "",
+                "evaluation_case_digest": str(contract.get("evaluation_case_digest") or "") if contract_verified else "",
                 "policy_attribution": policy_attribution,
                 "regression": str(meta.get("primary_label") or "") not in {"", "success"},
                 "semantic_key": stable_semantic_key("capability_evidence", record.record_id),
@@ -217,7 +352,13 @@ def _evidence_from_outcome_traces(runtime: Any, *, scope: ScopeRef, limit: int) 
     return evidence
 
 
-def _evidence_from_event_outcomes(runtime: Any, *, scope: ScopeRef, limit: int) -> list[dict[str, Any]]:
+def _evidence_from_event_outcomes(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    limit: int,
+    legacy_compatibility: bool,
+) -> list[dict[str, Any]]:
     store = getattr(runtime, "store", None)
     conn = getattr(store, "conn", None) or getattr(getattr(store, "sqlite", None), "conn", None)
     if conn is None:
@@ -257,16 +398,19 @@ def _evidence_from_event_outcomes(runtime: Any, *, scope: ScopeRef, limit: int) 
         outcome = _json_dict(row["outcome_payload"])
         event = _json_dict(row["event_payload"])
         policy_attribution = _dict_value(outcome.get("policy_attribution")) or _dict_value(event.get("policy_attribution"))
-        text = _join_text(
-            row["outcome_name"],
-            row["reason"],
-            row["correction_from_user"],
-            row["policy_update"],
-            outcome,
-            event,
-            policy_attribution,
-        )
-        capabilities = _capabilities_from_text(text)
+        if legacy_compatibility:
+            text = _join_text(
+                row["outcome_name"],
+                row["reason"],
+                row["correction_from_user"],
+                row["policy_update"],
+                outcome,
+                event,
+                policy_attribution,
+            )
+            capabilities = _legacy_capabilities_from_text(text)
+        else:
+            capabilities = ["unclassified"]
         if not capabilities:
             continue
         outcome_name = str(outcome.get("outcome") or row["outcome_name"] or "")
@@ -292,13 +436,13 @@ def _evidence_from_event_outcomes(runtime: Any, *, scope: ScopeRef, limit: int) 
     return evidence
 
 
-def _capabilities_from_text(text: str) -> list[str]:
+def _legacy_capabilities_from_text(text: str) -> list[str]:
     value = str(text or "").lower()
     matched = [
         capability
-        for capability in SEEDED_LEDGER_CAPABILITIES
-        if capability in BUSINESS_CAPABILITIES
-        and any(term in value for term in CAPABILITY_TERMS.get(capability, (capability,)))
+        for capability in LEGACY_SEEDED_LEDGER_CAPABILITIES
+        if capability in LEGACY_BUSINESS_CAPABILITIES
+        and any(term in value for term in LEGACY_CAPABILITY_TERMS.get(capability, (capability,)))
     ]
     return sorted(set(matched))
 

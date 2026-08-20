@@ -106,13 +106,19 @@ def _capability_contract(source_id: str, *, case_id: str = "search_recent_source
     return contract
 
 
+def _record_legacy_capability_outcome(runtime: Runtime, payload: dict, *, scope: dict) -> dict:
+    """Use frozen capability cases only through their explicit compatibility path."""
+
+    return record_outcome_trace(runtime, payload, scope=scope, legacy_compatibility=True)
+
+
 def test_record_outcome_trace_persists_verified_capability_contract_and_hoists_metadata(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     scope = {"agent_id": "contract-agent", "workspace_id": "contract-workspace"}
     source = _source_record(runtime, scope)
     contract = _capability_contract(source.record_id)
 
-    result = record_outcome_trace(runtime, _payload(capability_contract=contract), scope=scope)
+    result = _record_legacy_capability_outcome(runtime, _payload(capability_contract=contract), scope=scope)
 
     assert result["ok"] is True
     record = runtime.store.get_by_id(result["record_id"], scope=scope)
@@ -129,7 +135,7 @@ def test_record_outcome_trace_accepts_all_exact_capability_observation_contracts
     scope = {"agent_id": "contract-agent", "workspace_id": case_id}
     source = _source_record(runtime, scope)
 
-    result = record_outcome_trace(
+    result = _record_legacy_capability_outcome(
         runtime,
         _payload(trace_id=f"trace-{case_id}", idempotency_key=f"idem-{case_id}", capability_contract=_capability_contract(source.record_id, case_id=case_id)),
         scope=scope,
@@ -148,7 +154,7 @@ def test_record_outcome_trace_rejects_missing_exact_capability_observations(tmp_
     source = _source_record(runtime, scope)
     contract = _capability_contract(source.record_id, case_id=case_id, observations={})
 
-    result = record_outcome_trace(runtime, _payload(capability_contract=contract), scope=scope)
+    result = _record_legacy_capability_outcome(runtime, _payload(capability_contract=contract), scope=scope)
 
     assert result["ok"] is False
     assert "observations" in result["error"]
@@ -176,7 +182,7 @@ def test_record_outcome_trace_rejects_invalid_capability_contracts(
     if contract_override.get("source_record_ids"):
         contract["checks"][0]["evidence_ref"] = contract["source_record_ids"][0]
 
-    result = record_outcome_trace(runtime, _payload(capability_contract=contract), scope=scope)
+    result = _record_legacy_capability_outcome(runtime, _payload(capability_contract=contract), scope=scope)
 
     assert result["ok"] is False
     assert error_fragment in result["error"]
@@ -187,7 +193,7 @@ def test_record_outcome_trace_rejects_contract_source_from_another_scope(tmp_pat
     source = _source_record(runtime, {"agent_id": "other-agent", "workspace_id": "other-workspace"})
     scope = {"agent_id": "contract-agent", "workspace_id": "contract-workspace"}
 
-    result = record_outcome_trace(
+    result = _record_legacy_capability_outcome(
         runtime,
         _payload(capability_contract=_capability_contract(source.record_id)),
         scope=scope,
@@ -207,7 +213,7 @@ def test_record_outcome_trace_rejects_invalid_source_id_without_normalizing_it_a
     contract = _capability_contract(source.record_id)
     contract["source_record_ids"].append(invalid_source_id)
 
-    result = record_outcome_trace(runtime, _payload(capability_contract=contract), scope=scope)
+    result = _record_legacy_capability_outcome(runtime, _payload(capability_contract=contract), scope=scope)
 
     assert result["ok"] is False
     assert "source_record_ids" in result["error"]
@@ -225,7 +231,7 @@ def test_record_outcome_trace_rejects_probe_contract_without_strict_rehearsal_tr
     if rehearsal is not None:
         outcome["rehearsal"] = rehearsal
 
-    result = record_outcome_trace(
+    result = _record_legacy_capability_outcome(
         runtime,
         _payload(capability_contract=contract, outcome=outcome),
         scope=scope,
@@ -242,7 +248,7 @@ def test_record_outcome_trace_accepts_probe_contract_with_strict_rehearsal_true(
     source = _source_record(runtime, scope)
     contract = _capability_contract(source.record_id, probe=True)
 
-    result = record_outcome_trace(
+    result = _record_legacy_capability_outcome(
         runtime,
         _payload(capability_contract=contract, outcome={"status": "success", "rehearsal": True}),
         scope=scope,
@@ -459,14 +465,18 @@ def test_outcome_trace_lookup_has_dedicated_trace_index(tmp_path) -> None:
         "EXPLAIN QUERY PLAN SELECT source_id FROM records "
         "WHERE kind='reflection' AND source='eimemory.experience.outcome_trace' "
         "AND tenant_id=? AND agent_id=? AND workspace_id=? AND user_id=? "
-        "AND CAST(COALESCE(json_extract(meta_json,'$.trace_id'), "
-        "json_extract(meta_json,'$.business_meta.trace_id'), "
-        "json_extract(payload_json,'$.provenance.trace_id')) AS TEXT)=? "
+        "AND CAST(COALESCE("
+        "CASE WHEN json_valid(meta_json) THEN json_extract(meta_json, '$.trace_id') END, "
+        "CASE WHEN json_valid(meta_json) THEN json_extract(meta_json, '$.business_meta.trace_id') END, "
+        "CASE WHEN json_valid(payload_json) THEN json_extract(payload_json, '$.provenance.trace_id') END"
+        ") AS TEXT)=? "
         "ORDER BY updated_at DESC,record_id DESC LIMIT 1",
         ["default", "eibrain", "repo", "", "missing"],
     ).fetchall()
 
     assert any("idx_records_outcome_trace" in str(row["detail"]) for row in plan)
+
+
 
 
 def test_record_outcome_trace_idempotency_scans_past_first_reflection_page(tmp_path) -> None:

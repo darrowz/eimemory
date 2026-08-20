@@ -16,6 +16,7 @@ def test_regression_watch_disables_l1_candidate(tmp_path) -> None:
         eval_result={"verdict": "pass", "scores": {"safety": 1.0, "regression": 1.0}},
         promotion_target="tool_route",
         summary="Tool route",
+        target_capability="tool.routing",
     )
 
     result = run_regression_watch(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", eval_result={"verdict": "fail", "scores": {"regression": 0.2}})
@@ -36,6 +37,7 @@ def test_regression_watch_persists_pass_observation(tmp_path) -> None:
         eval_result={"verdict": "pass", "scores": {"safety": 1.0, "regression": 1.0}},
         promotion_target="tool_route",
         summary="Tool route",
+        target_capability="tool.routing",
     )
 
     result = run_regression_watch(
@@ -67,6 +69,7 @@ def test_regression_watch_treats_explicit_zero_regression_as_regressed(tmp_path)
         eval_result={"verdict": "pass", "scores": {"safety": 1.0, "regression": 1.0}},
         promotion_target="tool_route",
         summary="Tool route",
+        target_capability="tool.routing",
     )
 
     result = run_regression_watch(

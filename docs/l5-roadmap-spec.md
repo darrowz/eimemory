@@ -2,14 +2,18 @@
 
 Status: first executable roadmap, 2026-06-28.
 
-> **Superseded for the next architecture refactor:** This file documents the
-> fixed-taxonomy L5 implementation and remains historical/current-v2 evidence.
-> The target architecture is
+> **Superseded historical roadmap:** This file documents the fixed-taxonomy L5
+> implementation and remains historical v2 evidence only. The dynamic v3
+> runtime defaults are documented in the project [README](../README.md),
+> [architecture](architecture.md), and [module map](modules.md). The design
+> reference is
 > [`superpowers/specs/2026-08-20-l5-dynamic-cognitive-architecture-v3-design.md`](superpowers/specs/2026-08-20-l5-dynamic-cognitive-architecture-v3-design.md),
 > and its executable handoff plan is
 > [`superpowers/plans/2026-08-20-l5-dynamic-cognitive-architecture-v3.md`](superpowers/plans/2026-08-20-l5-dynamic-cognitive-architecture-v3.md).
-> Until the v3 cutover gate passes, production behavior is still described by
-> this v2 roadmap; documentation status does not switch runtime authority.
+> Retired fixed cohorts are available only through an explicit
+> `legacy_compatibility=True` maintenance/replay path; they do not define
+> current L5 selection or readiness. This documentation change does not claim
+> L5 readiness, historical migration completion, or production evidence.
 
 ## Plain Definition
 

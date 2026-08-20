@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from hashlib import sha256
+import re
 from types import MappingProxyType
 from typing import Any
 
@@ -35,6 +37,12 @@ DEFINITION_STATUSES = frozenset({"discovered", "active", "deprecated", "retired"
 REVISION_STATUSES = frozenset({"active", "deprecated", "retired", "quarantined"})
 RELATION_TYPES = frozenset({"parent_of", "depends_on", "composes", "conflicts_with", "supersedes", "related_to"})
 BINDING_STATUSES = frozenset({"active", "stale", "disabled", "deprecated", "quarantined"})
+# Advertisements are immutable provider/binding facts.  Their effective state
+# follows the same fail-closed lifecycle vocabulary as a provider binding, but
+# is deliberately retained as a separate entity: a new host advertisement must
+# never rewrite the implementation binding it describes.
+ADVERTISEMENT_STATUSES = BINDING_STATUSES
+ADAPTER_CAPABILITY_ADVERTISEMENT_SCHEMA_VERSION = "adapter.capability_advertisement.v1"
 PROFILE_STATUSES = frozenset({"active", "deprecated", "retired"})
 EVAL_SPEC_STATUSES = frozenset({"active", "deprecated", "retired", "quarantined"})
 GRADER_TYPES = frozenset({"code", "schema_rule", "model"})
@@ -118,6 +126,102 @@ def _required_digest(value: object, *, field_name: str) -> str:
     return normalize_sha256(value, field=field_name)
 
 
+_ADVERTISEMENT_SENSITIVE_KEY = re.compile(
+    r"(?:api[_-]?(?:key|token)|access[_-]?token|auth[_-]?token|refresh[_-]?token|"
+    r"token|secret|password|private[_-]?key|authorization|cookie|credential)s?$",
+    re.IGNORECASE,
+)
+_ADVERTISEMENT_HOST_KEY = re.compile(
+    r"(?:host(?:name)?|machine|node|device|path|cwd|executable|binary)(?:[_-]?(?:id|name|path))?$",
+    re.IGNORECASE,
+)
+_ADVERTISEMENT_SECRET_TEXT = re.compile(
+    r"(?i)(?:\bbearer\s+[a-z0-9._~+/=-]{8,}|\bsk-[a-z0-9_-]{8,}|"
+    r"(?:api[_-]?key|token|secret|password|authorization|cookie)\s*[:=])"
+)
+_ADVERTISEMENT_HASHED_DIAGNOSTIC = re.compile(r"^sha256:[0-9a-f]{64}$")
+
+
+def _safe_advertisement_mapping(
+    value: Mapping[str, Any] | None,
+    *,
+    field_name: str,
+    required: bool = False,
+    max_bytes: int = 16_384,
+) -> Mapping[str, Any]:
+    """Normalize diagnostic-capable advertisement metadata without secrets.
+
+    Adapter advertisements are durable audit facts, so this boundary must not
+    retain raw host identifiers, paths, credentials, or executable payloads.
+    Host-like values are replaced with a stable digest for diagnostics only;
+    importantly, those values never participate in semantic capability IDs.
+    """
+
+    if value is None:
+        if required:
+            raise CapabilityContractError(f"{field_name} is required")
+        return MappingProxyType({})
+    normalized = normalize_json_payload(
+        value,
+        field=field_name,
+        reject_executable=True,
+        max_bytes=max_bytes,
+    )
+    if required and not normalized:
+        raise CapabilityContractError(f"{field_name} must not be empty")
+
+    def scrub(item: Any, *, key: str = "") -> Any:
+        canonical_key = re.sub(r"[^a-z0-9]", "", key.lower())
+        if _ADVERTISEMENT_SENSITIVE_KEY.search(canonical_key):
+            return "[REDACTED]"
+        if isinstance(item, Mapping):
+            return {str(child_key): scrub(child, key=str(child_key)) for child_key, child in item.items()}
+        if isinstance(item, list):
+            return [scrub(child, key=key) for child in item]
+        if isinstance(item, str):
+            if _ADVERTISEMENT_SECRET_TEXT.search(item):
+                return "[REDACTED]"
+            if _ADVERTISEMENT_HOST_KEY.search(canonical_key):
+                if _ADVERTISEMENT_HASHED_DIAGNOSTIC.fullmatch(item):
+                    return item
+                return "sha256:" + sha256(item.encode("utf-8", errors="replace")).hexdigest()
+            return item
+        return item
+
+    return _freeze_json(scrub(normalized))
+
+
+def _advertisement_signature(value: Mapping[str, Any] | None) -> Mapping[str, Any]:
+    """Validate an optional, opaque integrity signature without executing it."""
+
+    if value is None:
+        return MappingProxyType({})
+    normalized = normalize_json_payload(
+        value,
+        field="signature",
+        reject_executable=True,
+        max_bytes=8_192,
+    )
+    if not normalized:
+        return MappingProxyType({})
+    allowed = {"key_id", "algorithm", "value"}
+    unknown = set(normalized).difference(allowed)
+    if unknown:
+        raise CapabilityContractError(
+            f"signature contains unsupported keys: {', '.join(sorted(unknown))}"
+        )
+    if set(normalized) != allowed:
+        raise CapabilityContractError("signature requires key_id, algorithm, and value")
+    result = {
+        "key_id": normalize_opaque_id(normalized["key_id"], field="signature.key_id"),
+        "algorithm": normalize_opaque_id(normalized["algorithm"], field="signature.algorithm"),
+        "value": normalize_text(normalized["value"], field="signature.value", max_chars=4_096),
+    }
+    if _ADVERTISEMENT_SECRET_TEXT.search(result["value"]):
+        raise CapabilityContractError("signature.value must not contain a credential-like value")
+    return _freeze_json(result)
+
+
 def _nonempty_contract_part(contract: Mapping[str, Any], *keys: str) -> bool:
     return any(bool(contract.get(key)) for key in keys)
 
@@ -160,29 +264,283 @@ def _validate_revision_contract(contract: Mapping[str, Any]) -> None:
     ensure_allowed(side_effect_class, field="contract.side_effect_class", allowed=SIDE_EFFECT_CLASSES)
 
 
+_PROFILE_REQUIREMENT_KEYS = frozenset(
+    {
+        # ``capability_id`` is emitted when legacy exact rules are normalized.
+        # It must therefore be accepted on a canonical round trip, while the
+        # validator below still rejects it for selector-based rules.
+        "capability_id",
+        "selector",
+        "minimum_maturity",
+        "min_pass_rate",
+        "min_evidence_count",
+        "min_sample_count",
+        "min_consecutive_passes",
+        "max_evidence_age_seconds",
+        "allowed_risk_tiers",
+        "require_dependencies",
+        "priority",
+        "planning_policy",
+    }
+)
+_PROFILE_SELECTOR_KEYS = frozenset(
+    {
+        "tags_all",
+        "tags_any",
+        "owners_any",
+        "risk_tiers_any",
+        "statuses_any",
+        "revision_ids_any",
+        "provider_kinds_any",
+        "provider_instance_ids_any",
+        "operations_all",
+        "operations_any",
+    }
+)
+
+
+def _non_negative_requirement_int(value: object, *, field_name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise CapabilityContractError(f"{field_name} must be a non-negative integer")
+    return int(value)
+
+
+def _nonempty_requirement_sequence(value: object, *, field_name: str) -> tuple[str, ...]:
+    items = normalize_string_sequence(value, field=field_name, item_field="item")
+    if not items:
+        raise CapabilityContractError(f"{field_name} must not be empty")
+    return items
+
+
+def _validate_planning_policy(value: object, *, field_name: str) -> dict[str, float]:
+    """Validate declarative, capability-local planning weights.
+
+    These weights deliberately live in a versioned profile rule rather than a
+    compiled map keyed by a handful of capability names.  They guide secondary
+    consumers such as the autonomy queue, but cannot authorize an action or
+    alter evidence-derived maturity.
+    """
+
+    policy = dict(_mapping(value, field_name=field_name, executable=True, required=True))
+    allowed = {"user_value", "risk", "cost", "priority_weight"}
+    unknown = set(policy).difference(allowed)
+    if unknown:
+        raise CapabilityContractError(
+            f"{field_name} contains unsupported keys: {', '.join(sorted(unknown))}"
+        )
+    if not policy:
+        raise CapabilityContractError(f"{field_name} must not be empty")
+    normalized: dict[str, float] = {}
+    for key, raw in policy.items():
+        normalized[key] = ensure_probability(raw, field=f"{field_name}.{key}")
+    return normalized
+
+
+def _validate_profile_selector(value: object, *, field_name: str) -> dict[str, Any]:
+    """Normalize the declarative, non-executable profile selector DSL.
+
+    A selector is intentionally limited to semantic registry fields.  It cannot
+    express a command, SQL fragment, regular expression, host name, package
+    version, or arbitrary predicate.  This keeps profile expansion replayable
+    and prevents an imported profile from becoming an execution surface.
+    """
+
+    selector = dict(_mapping(value, field_name=field_name, executable=True, required=True))
+    if not selector:
+        raise CapabilityContractError(f"{field_name} must not be empty")
+    unknown = set(selector).difference(_PROFILE_SELECTOR_KEYS)
+    if unknown:
+        raise CapabilityContractError(
+            f"{field_name} contains unsupported selector keys: {', '.join(sorted(unknown))}"
+        )
+    normalized: dict[str, Any] = {}
+    for key in ("tags_all", "tags_any", "owners_any", "provider_kinds_any", "operations_all", "operations_any"):
+        if key in selector:
+            normalized[key] = list(_nonempty_requirement_sequence(selector[key], field_name=f"{field_name}.{key}"))
+    if "risk_tiers_any" in selector:
+        values = _nonempty_requirement_sequence(selector["risk_tiers_any"], field_name=f"{field_name}.risk_tiers_any")
+        normalized["risk_tiers_any"] = [
+            ensure_allowed(item, field=f"{field_name}.risk_tiers_any", allowed=RISK_TIERS) for item in values
+        ]
+    if "statuses_any" in selector:
+        values = _nonempty_requirement_sequence(selector["statuses_any"], field_name=f"{field_name}.statuses_any")
+        normalized["statuses_any"] = [
+            ensure_allowed(item, field=f"{field_name}.statuses_any", allowed=DEFINITION_STATUSES) for item in values
+        ]
+    if "revision_ids_any" in selector:
+        values = _nonempty_requirement_sequence(selector["revision_ids_any"], field_name=f"{field_name}.revision_ids_any")
+        normalized["revision_ids_any"] = [
+            normalize_opaque_id(item, field=f"{field_name}.revision_ids_any") for item in values
+        ]
+    if "provider_instance_ids_any" in selector:
+        values = _nonempty_requirement_sequence(
+            selector["provider_instance_ids_any"], field_name=f"{field_name}.provider_instance_ids_any"
+        )
+        normalized["provider_instance_ids_any"] = [
+            normalize_opaque_id(item, field=f"{field_name}.provider_instance_ids_any") for item in values
+        ]
+    return normalized
+
+
 def _validate_profile_requirements(value: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    """Validate exact and selector-based requirements for a profile revision.
+
+    Existing ``capability_id -> requirement`` mappings remain exact rules.  A
+    selector rule uses an opaque ``rule_id`` key and a constrained ``selector``
+    object.  The resolver owns precedence and expansion; this contract only
+    preserves the declarative inputs needed to reproduce that decision.
+    """
+
+    if not value:
+        raise CapabilityContractError("requirements must not be empty")
+    normalized: dict[str, dict[str, Any]] = {}
+    for raw_rule_id, raw_requirement in value.items():
+        raw = dict(_mapping(raw_requirement, field_name=f"requirements.{raw_rule_id}", executable=True, required=True))
+        unknown = set(raw).difference(_PROFILE_REQUIREMENT_KEYS)
+        if unknown:
+            raise CapabilityContractError(
+                f"requirements.{raw_rule_id} contains unsupported keys: {', '.join(sorted(unknown))}"
+            )
+        has_selector = "selector" in raw
+        if has_selector:
+            rule_id = normalize_opaque_id(raw_rule_id, field="requirements selector_id")
+            if "capability_id" in raw:
+                raise CapabilityContractError(
+                    f"requirements.{rule_id}.capability_id is only valid for an exact requirement"
+                )
+            raw["selector"] = _validate_profile_selector(raw["selector"], field_name=f"requirements.{rule_id}.selector")
+        else:
+            rule_id = normalize_capability_id(raw_rule_id, field="requirements capability_id")
+            supplied_capability_id = raw.get("capability_id")
+            if supplied_capability_id is not None:
+                normalized_capability_id = normalize_capability_id(
+                    supplied_capability_id,
+                    field=f"requirements.{rule_id}.capability_id",
+                )
+                if normalized_capability_id != rule_id:
+                    raise CapabilityContractError(
+                        f"requirements.{rule_id}.capability_id must match the requirement key"
+                    )
+            raw["capability_id"] = rule_id
+        if rule_id in normalized:
+            raise CapabilityContractError(f"duplicate profile requirement: {rule_id}")
+        raw["minimum_maturity"] = ensure_allowed(
+            raw.get("minimum_maturity"),
+            field=f"requirements.{rule_id}.minimum_maturity",
+            allowed=MATURITY_STATES,
+        )
+        if "min_pass_rate" in raw:
+            raw["min_pass_rate"] = ensure_probability(raw["min_pass_rate"], field=f"requirements.{rule_id}.min_pass_rate")
+        for key in (
+            "min_evidence_count",
+            "min_sample_count",
+            "min_consecutive_passes",
+            "max_evidence_age_seconds",
+            "priority",
+        ):
+            if key in raw:
+                raw[key] = _non_negative_requirement_int(raw[key], field_name=f"requirements.{rule_id}.{key}")
+        if "allowed_risk_tiers" in raw:
+            values = _nonempty_requirement_sequence(
+                raw["allowed_risk_tiers"], field_name=f"requirements.{rule_id}.allowed_risk_tiers"
+            )
+            raw["allowed_risk_tiers"] = [
+                ensure_allowed(item, field=f"requirements.{rule_id}.allowed_risk_tiers", allowed=RISK_TIERS)
+                for item in values
+            ]
+        if "require_dependencies" in raw:
+            if not isinstance(raw["require_dependencies"], bool):
+                raise CapabilityContractError(f"requirements.{rule_id}.require_dependencies must be boolean")
+        if "planning_policy" in raw:
+            raw["planning_policy"] = _validate_planning_policy(
+                raw["planning_policy"],
+                field_name=f"requirements.{rule_id}.planning_policy",
+            )
+        normalized[rule_id] = raw
+    return normalized
+
+
+def _validate_legacy_profile_requirements(value: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    """Reproduce the pre-WP4 exact-profile contract for durable replay.
+
+    WP3 permitted additional declarative requirement fields.  They cannot be
+    silently reinterpreted as the new selector DSL, but historical facts must
+    retain their original digest and remain readable.  This validator mirrors
+    the former exact-rule grammar: semantic capability key, required maturity,
+    optional pass-rate, and otherwise bounded non-executable JSON data.
+    """
+
     if not value:
         raise CapabilityContractError("requirements must not be empty")
     normalized: dict[str, dict[str, Any]] = {}
     for raw_capability_id, raw_requirement in value.items():
-        capability_id = normalize_capability_id(raw_capability_id, field="requirements capability_id")
+        capability_id = normalize_capability_id(raw_capability_id, field="legacy requirements capability_id")
         if capability_id in normalized:
-            raise CapabilityContractError(f"duplicate requirement for {capability_id}")
+            raise CapabilityContractError(f"duplicate legacy profile requirement: {capability_id}")
         requirement = dict(
-            _mapping(raw_requirement, field_name=f"requirements.{capability_id}", executable=True, required=True)
+            _mapping(
+                raw_requirement,
+                field_name=f"legacy requirements.{capability_id}",
+                executable=True,
+                required=True,
+            )
         )
-        maturity = ensure_allowed(
+        requirement["minimum_maturity"] = ensure_allowed(
             requirement.get("minimum_maturity"),
-            field=f"requirements.{capability_id}.minimum_maturity",
+            field=f"legacy requirements.{capability_id}.minimum_maturity",
             allowed=MATURITY_STATES,
         )
         if "min_pass_rate" in requirement:
             requirement["min_pass_rate"] = ensure_probability(
-                requirement["min_pass_rate"], field=f"requirements.{capability_id}.min_pass_rate"
+                requirement["min_pass_rate"],
+                field=f"legacy requirements.{capability_id}.min_pass_rate",
             )
-        requirement["minimum_maturity"] = maturity
         normalized[capability_id] = requirement
     return normalized
+
+
+def legacy_profile_payload(value: Mapping[str, Any]) -> tuple[dict[str, Any], str]:
+    """Return the canonical pre-WP4 Profile payload and immutable digest.
+
+    This is intentionally a narrowly versioned compatibility reader, not a
+    fallback for new writes.  New Profile revisions always carry
+    ``profile_key`` and use the constrained selector-aware schema.
+    """
+
+    raw = dict(_mapping(value, field_name="legacy profile", executable=True, required=True))
+    if "profile_key" in raw:
+        raise CapabilityContractError("legacy profile payload must not define profile_key")
+    allowed = {
+        "profile_id",
+        "requirements",
+        "created_at",
+        "status",
+        "scope",
+        "revision",
+        "provenance",
+        "profile_digest",
+    }
+    unknown = set(raw).difference(allowed)
+    if unknown:
+        raise CapabilityContractError(
+            f"legacy profile payload contains unsupported keys: {', '.join(sorted(unknown))}"
+        )
+    canonical = {
+        "profile_id": normalize_opaque_id(raw.get("profile_id"), field="profile_id"),
+        "requirements": _thaw_json(_freeze_json(_validate_legacy_profile_requirements(raw.get("requirements")))),
+        "created_at": require_timestamp(raw.get("created_at"), field="created_at"),
+        "status": ensure_allowed(raw.get("status", "active"), field="status", allowed=PROFILE_STATUSES),
+        "scope": normalize_opaque_id(raw.get("scope", "global"), field="scope"),
+        "revision": normalize_opaque_id(raw.get("revision", "v1"), field="revision"),
+        "provenance": _thaw_json(
+            _mapping(raw.get("provenance", {}), field_name="provenance", executable=True)
+        ),
+    }
+    digest = contract_digest(canonical)
+    supplied_digest = raw.get("profile_digest")
+    if supplied_digest is not None and str(supplied_digest) != digest:
+        raise CapabilityContractError("legacy profile payload digest does not match its canonical content")
+    return {**canonical, "profile_digest": digest}, digest
 
 
 def _validate_retry_policy(value: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -583,10 +941,221 @@ class CapabilityBinding:
 
 
 @dataclass(frozen=True, slots=True)
+class AdapterCapabilityAdvertisement:
+    """One immutable, provider-specific capability advertisement revision.
+
+    A binding remains the implementation-level fact connecting a semantic
+    capability revision to a provider.  An advertisement is narrower: it is a
+    time-bounded statement by one adapter about the operations and host events
+    it can actually support for that binding.  It therefore carries provider
+    instance/freshness metadata without changing the semantic capability
+    identity or its revision contract.
+    """
+
+    advertisement_id: str
+    advertisement_revision: str
+    binding_id: str
+    capability_revision_id: str
+    adapter_id: str
+    provider_kind: str
+    provider_instance_id: str
+    contract_digest: str
+    operations: Sequence[object]
+    limits: Mapping[str, Any]
+    side_effect_class: str
+    host_event_types: Sequence[object]
+    environment_fingerprint: Mapping[str, Any]
+    applicability: Mapping[str, Any]
+    evidence_refs: Sequence[object]
+    advertised_at: str
+    expires_at: str
+    created_at: str
+    status: str = "active"
+    scope: str = "global"
+    provenance: Mapping[str, Any] = field(default_factory=dict)
+    signature: Mapping[str, Any] = field(default_factory=dict)
+    schema_version: str = ADAPTER_CAPABILITY_ADVERTISEMENT_SCHEMA_VERSION
+    advertisement_digest: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        advertised_at = require_timestamp(self.advertised_at, field="advertised_at")
+        expires_at = require_timestamp(self.expires_at, field="expires_at")
+        created_at = require_timestamp(self.created_at, field="created_at")
+        ensure_timestamp_order(
+            advertised_at,
+            expires_at,
+            earlier_field="advertised_at",
+            later_field="expires_at",
+        )
+        if expires_at <= advertised_at:
+            raise CapabilityContractError("expires_at must be later than advertised_at")
+        operations = normalize_string_sequence(
+            self.operations,
+            field="operations",
+            item_field="operation",
+        )
+        if not operations:
+            raise CapabilityContractError("operations must not be empty")
+        if any(_ADVERTISEMENT_SECRET_TEXT.search(operation) for operation in operations):
+            raise CapabilityContractError("operations must not contain credential-like values")
+        host_event_types = normalize_string_sequence(
+            self.host_event_types,
+            field="host_event_types",
+            item_field="host_event_type",
+        )
+        if not host_event_types:
+            raise CapabilityContractError("host_event_types must not be empty")
+        if any(_ADVERTISEMENT_SECRET_TEXT.search(event_type) for event_type in host_event_types):
+            raise CapabilityContractError("host_event_types must not contain credential-like values")
+        schema_version = normalize_text(
+            self.schema_version,
+            field="schema_version",
+            max_chars=128,
+        )
+        if schema_version != ADAPTER_CAPABILITY_ADVERTISEMENT_SCHEMA_VERSION:
+            raise CapabilityContractError(
+                f"schema_version must be {ADAPTER_CAPABILITY_ADVERTISEMENT_SCHEMA_VERSION}"
+            )
+        object.__setattr__(
+            self,
+            "advertisement_id",
+            normalize_opaque_id(self.advertisement_id, field="advertisement_id"),
+        )
+        object.__setattr__(
+            self,
+            "advertisement_revision",
+            normalize_opaque_id(self.advertisement_revision, field="advertisement_revision"),
+        )
+        object.__setattr__(self, "binding_id", normalize_opaque_id(self.binding_id, field="binding_id"))
+        object.__setattr__(
+            self,
+            "capability_revision_id",
+            normalize_opaque_id(self.capability_revision_id, field="capability_revision_id"),
+        )
+        object.__setattr__(self, "adapter_id", normalize_opaque_id(self.adapter_id, field="adapter_id"))
+        object.__setattr__(
+            self,
+            "provider_kind",
+            normalize_opaque_id(self.provider_kind, field="provider_kind"),
+        )
+        object.__setattr__(
+            self,
+            "provider_instance_id",
+            normalize_opaque_id(self.provider_instance_id, field="provider_instance_id"),
+        )
+        object.__setattr__(
+            self,
+            "contract_digest",
+            _required_digest(self.contract_digest, field_name="contract_digest"),
+        )
+        object.__setattr__(self, "operations", operations)
+        object.__setattr__(
+            self,
+            "limits",
+            _safe_advertisement_mapping(self.limits, field_name="limits", required=True),
+        )
+        object.__setattr__(
+            self,
+            "side_effect_class",
+            ensure_allowed(
+                self.side_effect_class,
+                field="side_effect_class",
+                allowed=SIDE_EFFECT_CLASSES,
+            ),
+        )
+        object.__setattr__(self, "host_event_types", host_event_types)
+        object.__setattr__(
+            self,
+            "environment_fingerprint",
+            _safe_advertisement_mapping(
+                self.environment_fingerprint,
+                field_name="environment_fingerprint",
+                required=True,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "applicability",
+            _safe_advertisement_mapping(
+                self.applicability,
+                field_name="applicability",
+                required=True,
+            ),
+        )
+        evidence_refs = _evidence_refs(self.evidence_refs)
+        if not evidence_refs:
+            raise CapabilityContractError("evidence_refs must not be empty")
+        if any(_ADVERTISEMENT_SECRET_TEXT.search(ref) for ref in evidence_refs):
+            raise CapabilityContractError("evidence_refs must not contain credential-like values")
+        object.__setattr__(self, "evidence_refs", evidence_refs)
+        object.__setattr__(self, "advertised_at", advertised_at)
+        object.__setattr__(self, "expires_at", expires_at)
+        object.__setattr__(self, "created_at", created_at)
+        object.__setattr__(
+            self,
+            "status",
+            ensure_allowed(self.status, field="status", allowed=ADVERTISEMENT_STATUSES),
+        )
+        object.__setattr__(self, "scope", normalize_opaque_id(self.scope, field="scope"))
+        object.__setattr__(
+            self,
+            "provenance",
+            _safe_advertisement_mapping(self.provenance, field_name="provenance"),
+        )
+        object.__setattr__(self, "signature", _advertisement_signature(self.signature))
+        object.__setattr__(self, "schema_version", schema_version)
+        object.__setattr__(
+            self,
+            "advertisement_digest",
+            contract_digest(self.to_dict(include_digest=False)),
+        )
+
+    def to_dict(self, *, include_digest: bool = True) -> dict[str, Any]:
+        result = {
+            "advertisement_id": self.advertisement_id,
+            "advertisement_revision": self.advertisement_revision,
+            "binding_id": self.binding_id,
+            "capability_revision_id": self.capability_revision_id,
+            "adapter_id": self.adapter_id,
+            "provider_kind": self.provider_kind,
+            "provider_instance_id": self.provider_instance_id,
+            "contract_digest": self.contract_digest,
+            "operations": list(self.operations),
+            "limits": _thaw_json(self.limits),
+            "side_effect_class": self.side_effect_class,
+            "host_event_types": list(self.host_event_types),
+            "environment_fingerprint": _thaw_json(self.environment_fingerprint),
+            "applicability": _thaw_json(self.applicability),
+            "evidence_refs": list(self.evidence_refs),
+            "advertised_at": self.advertised_at,
+            "expires_at": self.expires_at,
+            "created_at": self.created_at,
+            "status": self.status,
+            "scope": self.scope,
+            "provenance": _thaw_json(self.provenance),
+            "signature": _thaw_json(self.signature),
+            "schema_version": self.schema_version,
+        }
+        if include_digest:
+            result["advertisement_digest"] = self.advertisement_digest
+        return result
+
+
+@dataclass(frozen=True, slots=True)
 class CapabilityProfile:
+    """An immutable profile revision with a stable logical profile lineage.
+
+    ``profile_id`` is the immutable revision identifier retained by existing
+    storage references.  ``profile_key`` is the stable logical name that a
+    runtime resolves at a point in time.  A new profile revision must therefore
+    use a new ``profile_id`` while retaining the same ``profile_key``; no old
+    snapshot, evaluation, or L5 assessment silently changes meaning.
+    """
+
     profile_id: str
     requirements: Mapping[str, Any]
     created_at: str
+    profile_key: str = ""
     status: str = "active"
     scope: str = "global"
     revision: str = "v1"
@@ -595,6 +1164,12 @@ class CapabilityProfile:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "profile_id", normalize_opaque_id(self.profile_id, field="profile_id"))
+        profile_key = normalize_optional_text(self.profile_key, field="profile_key", max_chars=512)
+        object.__setattr__(
+            self,
+            "profile_key",
+            normalize_opaque_id(profile_key or self.profile_id, field="profile_key"),
+        )
         object.__setattr__(self, "requirements", _freeze_json(_validate_profile_requirements(self.requirements)))
         object.__setattr__(self, "created_at", require_timestamp(self.created_at, field="created_at"))
         object.__setattr__(self, "status", ensure_allowed(self.status, field="status", allowed=PROFILE_STATUSES))
@@ -603,9 +1178,16 @@ class CapabilityProfile:
         object.__setattr__(self, "provenance", _mapping(self.provenance, field_name="provenance", executable=True))
         object.__setattr__(self, "profile_digest", contract_digest(self.to_dict(include_digest=False)))
 
+    @property
+    def profile_revision_id(self) -> str:
+        """Return the immutable profile revision identity for downstream facts."""
+
+        return self.profile_id
+
     def to_dict(self, *, include_digest: bool = True) -> dict[str, Any]:
         result = {
             "profile_id": self.profile_id,
+            "profile_key": self.profile_key,
             "requirements": _thaw_json(self.requirements),
             "created_at": self.created_at,
             "status": self.status,

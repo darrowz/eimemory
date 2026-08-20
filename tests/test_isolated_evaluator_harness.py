@@ -155,7 +155,7 @@ def test_verification_results_fail_closed_when_any_command_fails(tmp_path) -> No
     assert "verification_command_failed" in verdict.content["blocked_reasons"]
     assert verdict.content["real_execution"]["command_passed"] is False
     assert verdict.content["real_execution"]["command_failed_count"] == 1
-    assert judgment.content["decision"] == "require_human"
+    assert judgment.content["decision"] == "blocked_insufficient_independent_evidence"
 
 
 def test_stop_judge_stops_only_after_passed_isolated_verdict(tmp_path) -> None:

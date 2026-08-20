@@ -6,7 +6,7 @@ from typing import Any
 from eimemory.core.clock import now_iso
 from eimemory.core.ids import generate_record_id
 from eimemory.evaluation.reward import RewardEngine
-from eimemory.governance.capability_ledger import build_capability_ledger
+from eimemory.governance.capability_ledger import build_dynamic_capability_ledger
 from eimemory.governance.evidence_contract import (
     EvidenceRequirement,
     ReleaseIdentity,
@@ -14,7 +14,6 @@ from eimemory.governance.evidence_contract import (
     release_identity_payload,
     resolve_evidence,
 )
-from eimemory.governance.goal_graph import CORE_GOAL_CAPABILITIES
 from eimemory.governance.goal_registry import load_goal_registry
 from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.governance.rollout_lifecycle import is_executed_rollback_ledger_record
@@ -54,19 +53,42 @@ def build_world_model(
     persist: bool = False,
     loop_id: str = "l5_world_model",
     limit: int = 500,
+    capability_scope: str = "global",
+    profile_key: str = "",
+    catalog: Any | None = None,
+    at_time: str = "",
+    legacy_compatibility: bool = False,
 ) -> dict[str, Any]:
     scope_ref = _scope_ref(scope)
     release = current_release_identity(runtime, scope_ref)
     release_payload = release_identity_payload(release) if release is not None else {}
     generated_at = now_iso()
-    self_model = build_self_model(runtime, scope=scope_ref, limit=limit, persist=False, loop_id=loop_id)
-    registry = load_goal_registry(root=getattr(getattr(runtime, "store", None), "root", None))
-    ledger = build_capability_ledger(runtime, scope=scope_ref, limit=limit, attribute_outcomes=False)
+    self_model = build_self_model(
+        runtime,
+        scope=scope_ref,
+        limit=limit,
+        persist=False,
+        loop_id=loop_id,
+        capability_scope=capability_scope,
+        profile_key=profile_key,
+        catalog=catalog,
+        at_time=at_time,
+    )
+    ledger = build_dynamic_capability_ledger(
+        runtime,
+        scope=scope_ref,
+        capability_scope=capability_scope,
+        limit=limit,
+    )
     recent_records = _recent_records(runtime, scope=scope_ref, limit=min(100, max(1, limit)))
     weaknesses = _weaknesses(runtime, self_model, scope_ref)
     capabilities = _capabilities(self_model, ledger)
+    registry = load_goal_registry(
+        root=getattr(getattr(runtime, "store", None), "root", None),
+        legacy_compatibility=legacy_compatibility,
+    )
     evidence_refs = _evidence_refs(weaknesses, capabilities, recent_records)
-    long_term_goals = list(registry.get("long_term") or [])
+    long_term_goals = _active_long_term_goals(registry, capabilities)
     identity = _identity(scope_ref, long_term_goals, weaknesses, capabilities)
     world = {
         "ok": True,
@@ -76,6 +98,10 @@ def build_world_model(
         **release_payload,
         "generated_at": generated_at,
         "scope": asdict(scope_ref),
+        "capability_scope": capability_scope,
+        "legacy_compatibility": bool(legacy_compatibility),
+        "profile": self_model.get("profile") or {},
+        "capability_view_digest": str(self_model.get("capability_view_digest") or ""),
         "identity": identity,
         "long_term_goals": long_term_goals,
         "capabilities": capabilities,
@@ -109,6 +135,8 @@ def build_world_model(
                 "capability_count": len(capabilities),
                 "weakness_count": len(weaknesses),
                 "evidence_count": len(evidence_refs),
+                "capability_scope": capability_scope,
+                "profile_id": str((self_model.get("profile") or {}).get("profile_id") or ""),
             },
             evidence=evidence_refs,
             source="eimemory.l5_loop",
@@ -125,11 +153,29 @@ def build_strategic_roadmap(
     horizon_days: int = 180,
     persist: bool = False,
     loop_id: str = "l5_roadmap",
+    capability_scope: str = "global",
+    profile_key: str = "",
+    catalog: Any | None = None,
+    at_time: str = "",
+    legacy_compatibility: bool = False,
 ) -> dict[str, Any]:
     scope_ref = _scope_ref(scope)
     release = current_release_identity(runtime, scope_ref)
     release_payload = release_identity_payload(release) if release is not None else {}
-    world = dict(world_model or build_world_model(runtime, scope=scope_ref, persist=False, loop_id=loop_id))
+    world = dict(
+        world_model
+        or build_world_model(
+            runtime,
+            scope=scope_ref,
+            persist=False,
+            loop_id=loop_id,
+            capability_scope=capability_scope,
+            profile_key=profile_key,
+            catalog=catalog,
+            at_time=at_time,
+            legacy_compatibility=legacy_compatibility,
+        )
+    )
     horizons = [day for day in (30, 90, 180) if day <= max(30, int(horizon_days or 180))]
     if not horizons:
         horizons = [30]
@@ -160,6 +206,9 @@ def build_strategic_roadmap(
         **release_payload,
         "generated_at": now_iso(),
         "scope": asdict(scope_ref),
+        "capability_scope": str(world.get("capability_scope") or capability_scope),
+        "profile": world.get("profile") or {},
+        "legacy_compatibility": bool(legacy_compatibility),
         "world_model_record_id": str(world.get("persisted_record_id") or ""),
         "horizon_days": max(horizons),
         "stage_count": len(stages),
@@ -210,12 +259,27 @@ def run_l5_cycle(
     autonomous_learning_report: dict[str, Any] | None = None,
     prompt_safety_executor: Any = None,
     prompt_safety_prompt: str = "",
+    capability_scope: str = "global",
+    profile_key: str = "",
+    catalog: Any | None = None,
+    at_time: str = "",
+    legacy_compatibility: bool = False,
 ) -> dict[str, Any]:
     scope_ref = _scope_ref(scope)
     release = current_release_identity(runtime, scope_ref)
     release_payload = release_identity_payload(release) if release is not None else {}
     resolved_loop_id = loop_id or f"l5_{now_iso().replace('-', '').replace(':', '').replace('+', '_')}"
-    world = build_world_model(runtime, scope=scope_ref, persist=persist, loop_id=resolved_loop_id)
+    world = build_world_model(
+        runtime,
+        scope=scope_ref,
+        persist=persist,
+        loop_id=resolved_loop_id,
+        capability_scope=capability_scope,
+        profile_key=profile_key,
+        catalog=catalog,
+        at_time=at_time,
+        legacy_compatibility=legacy_compatibility,
+    )
     roadmap = build_strategic_roadmap(
         runtime,
         scope=scope_ref,
@@ -223,13 +287,22 @@ def run_l5_cycle(
         horizon_days=180,
         persist=persist,
         loop_id=resolved_loop_id,
+        capability_scope=capability_scope,
+        profile_key=profile_key,
+        catalog=catalog,
+        at_time=at_time,
+        legacy_compatibility=legacy_compatibility,
     )
     graph = runtime.build_goal_graph_loop(
         scope=asdict(scope_ref),
         max_goals=max(1, int(max_goals or 1)),
         persist=persist,
-        capabilities=CORE_GOAL_CAPABILITIES,
         loop_id=resolved_loop_id,
+        capability_scope=capability_scope,
+        profile_key=profile_key,
+        catalog=catalog,
+        at_time=at_time,
+        legacy_compatibility=legacy_compatibility,
     )
     autonomous = (
         dict(autonomous_learning_report)
@@ -243,6 +316,12 @@ def run_l5_cycle(
             max_goals=max(1, int(max_goals or 1)),
             max_promotions=max(0, int(max_promotions or 0)),
             allow_network=allow_network,
+            profile_key=profile_key,
+            capability_scope=capability_scope,
+            runtime_scope=scope_ref,
+            at_time=at_time,
+            catalog=catalog,
+            legacy_compatibility=legacy_compatibility,
         )
     )
     if isinstance(autonomous_learning_report, dict):
@@ -284,6 +363,9 @@ def run_l5_cycle(
         **release_payload,
         "loop_id": resolved_loop_id,
         "scope": asdict(scope_ref),
+        "capability_scope": capability_scope,
+        "profile_key": profile_key,
+        "legacy_compatibility": bool(legacy_compatibility),
         "apply": bool(apply),
         "force": bool(force),
         "world_model": world,
@@ -493,7 +575,12 @@ def assess_l5_closed_loop(
         "generated_at": now_iso(),
         "scope": asdict(scope_ref),
         "level": level,
-        "complete": level == "L5",
+        # The v2 structural loop can demonstrate an auditable feedback cycle,
+        # but L5 itself is owned by the dynamic v3 capability assessment.  It
+        # must not promote itself to L5 from a fixed/structural checklist.
+        "complete": False,
+        "authority": "legacy_structural_non_authoritative",
+        "v3_assessment_required": True,
         "activity_status": activity_status,
         "missing_evidence": missing,
         "evidence": {
@@ -586,11 +673,22 @@ def _weaknesses(runtime: Any, self_model: dict[str, Any], scope: ScopeRef) -> li
         lesson = str(record.meta.get("fix") or content.get("fix") or record.summary or "").strip()
         if not lesson:
             continue
+        explicit_capability = str(
+            record.meta.get("capability")
+            or record.meta.get("target_capability")
+            or content.get("capability")
+            or content.get("target_capability")
+            or ""
+        ).strip()
         fallback.append(
             {
                 "semantic_key": stable_semantic_key("l5_fallback_weakness", record.record_id),
                 "kind": str(record.meta.get("tag") or record.kind),
-                "capability": str(record.meta.get("tag") or "proactive.judgment").replace("_", "."),
+                # Historical prose/tag fields do not establish capability
+                # identity.  Preserve the observation but leave it
+                # unclassified until an explicit attribution is recorded.
+                "capability": explicit_capability,
+                "attribution_status": "classified" if explicit_capability else "unclassified",
                 "title": record.title or "Observed weakness",
                 "lesson": lesson,
                 "severity": 0.65,
@@ -619,16 +717,63 @@ def _capabilities(self_model: dict[str, Any], ledger: dict[str, Any]) -> list[di
             )
     by_name: dict[str, dict[str, Any]] = {}
     for item in capabilities:
-        capability = str(item.get("capability") or item.get("kind") or "proactive.judgment")
+        capability = str(item.get("capability") or item.get("kind") or "").strip()
+        if not capability:
+            continue
         current = by_name.get(capability)
         if current is None or _float(item.get("score")) >= _float(current.get("score")):
             by_name[capability] = dict(item)
-    if not by_name:
-        by_name = {
-            capability: {"kind": capability, "capability": capability, "title": capability, "status": "unknown", "score": 0.0, "source_record_ids": []}
-            for capability in CORE_GOAL_CAPABILITIES
-        }
     return sorted(by_name.values(), key=lambda item: (_float(item.get("score")), str(item.get("capability") or "")))
+
+
+def _active_long_term_goals(registry: dict[str, Any], capabilities: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Bind durable long-term intent to the live capability set.
+
+    A checked-in goal file is an operator intent source, not a capability
+    registry.  It may not introduce a target merely by naming it.  We retain
+    only explicitly declared sub-capabilities that are active in the current
+    dynamic view, then synthesize a small evidence-backed intent record for
+    every remaining live capability.  This makes new registered capabilities
+    eligible without editing a hard-coded L5 list.
+    """
+
+    live = {
+        str(item.get("capability") or "").strip()
+        for item in capabilities
+        if isinstance(item, dict) and str(item.get("capability") or "").strip()
+    }
+    result: list[dict[str, Any]] = []
+    covered: set[str] = set()
+    for raw_goal in registry.get("long_term") or []:
+        if not isinstance(raw_goal, dict):
+            continue
+        sub_capabilities = [
+            str(value or "").strip()
+            for value in raw_goal.get("sub_capabilities") or []
+            if str(value or "").strip() in live
+        ]
+        if not sub_capabilities:
+            continue
+        covered.update(sub_capabilities)
+        result.append(
+            {
+                **dict(raw_goal),
+                "sub_capabilities": sub_capabilities,
+                "source": "operator_goal_registry",
+            }
+        )
+    for capability in sorted(live.difference(covered)):
+        result.append(
+            {
+                "id": stable_semantic_key("dynamic_capability_goal", capability),
+                "title": f"Evidence-backed evolution of {capability}",
+                "sub_capabilities": [capability],
+                "milestones": ["Maintain Profile coverage, independent evaluation, and rollback evidence."],
+                "evaluation_signals": ["capability observations", "evaluation runs", "replay evidence"],
+                "source": "dynamic_capability_registry",
+            }
+        )
+    return result
 
 
 def _identity(scope: ScopeRef, goals: list[dict[str, Any]], weaknesses: list[dict[str, Any]], capabilities: list[dict[str, Any]]) -> dict[str, Any]:
@@ -675,38 +820,52 @@ def _milestones_for_horizon(
     goal = goals[(0 if horizon == 30 else 1 if horizon == 90 else 2) % max(1, len(goals))] if goals else {}
     prioritized_weaknesses = _prioritized_weaknesses(weaknesses)
     leading_weakness = prioritized_weaknesses[0] if prioritized_weaknesses else {}
-    weak_cap = str(leading_weakness.get("capability") or "")
-    cap = str((capabilities[0] if capabilities else {}).get("capability") or weak_cap or "memory.recall")
+    weak_cap = str(leading_weakness.get("capability") or "").strip()
+    cap = str((capabilities[0] if capabilities else {}).get("capability") or "").strip()
     focus = weak_cap or cap
-    priority = "P0" if horizon <= 30 and _is_safety_boundary_weakness(leading_weakness) else "P1"
-    base = [
-        {
-            "goal_id": str(goal.get("id") or ""),
-            "title": f"{focus} evidence loop at {horizon} days",
-            "capability": focus,
-            "priority": priority,
-            "success_metric": _success_metric(focus, horizon, weakness=leading_weakness),
-            "replay_gate": f"{focus} replay pack passes before active promotion.",
-            "rollback_or_stop_condition": f"Stop or rollback if {focus} failure rate exceeds 5% after canary observation.",
-        }
-    ]
+    priority = "P0" if horizon <= 30 and _float(leading_weakness.get("severity")) >= 0.8 else "P1"
+    base: list[dict[str, Any]] = []
+    if focus:
+        base.append(
+            {
+                "goal_id": str(goal.get("id") or ""),
+                "title": f"{focus} evidence loop at {horizon} days",
+                "capability": focus,
+                "priority": priority,
+                "success_metric": _success_metric(focus, horizon, weakness=leading_weakness),
+                "replay_gate": f"{focus} replay pack passes before active promotion.",
+                "rollback_or_stop_condition": f"Stop or rollback if {focus} failure rate exceeds 5% after canary observation.",
+            }
+        )
+    else:
+        base.append(
+            {
+                "goal_id": str(goal.get("id") or ""),
+                "title": f"Resolve capability attribution and evidence coverage at {horizon} days",
+                "capability": "",
+                "priority": priority,
+                "success_metric": "Every selected Profile member has explicit attribution and evidence provenance.",
+                "replay_gate": "No promotion uses an unclassified capability target.",
+                "rollback_or_stop_condition": "Block automatic change until a Profile/registry target is resolved.",
+            }
+        )
     if horizon >= 90:
         base.append(
             {
                 "goal_id": str(goal.get("id") or ""),
-                "title": "Skill sedimentation from repeated SOPs",
-                "capability": "skill.governance",
-                "success_metric": "Three repeated SOPs become replay-backed skill candidates.",
-                "replay_gate": "Skill replay passes on stored task episodes.",
-                "rollback_or_stop_condition": "Quarantine skill if replay fails or source evidence is missing.",
+                "title": "Sediment repeated, explicitly attributed procedures",
+                "capability": focus,
+                "success_metric": "Repeated procedures become replay-backed candidates only under their registered capability target.",
+                "replay_gate": "The selected capability's catalog replay passes on stored task episodes.",
+                "rollback_or_stop_condition": "Quarantine the candidate if replay fails or source evidence is missing.",
             }
         )
     if horizon >= 180:
         base.append(
             {
-                "goal_id": "lt-consciousness-research-layer",
+                "goal_id": str(goal.get("id") or ""),
                 "title": "Evidence-bound self-continuity roadmap",
-                "capability": "proactive.judgment",
+                "capability": focus,
                 "success_metric": "World model, roadmap, reward transition, and rollout ledger are all present for each L5 cycle.",
                 "replay_gate": "L5 assessment returns no missing evidence.",
                 "rollback_or_stop_condition": "Downgrade below L5 when any required evidence disappears.",
@@ -724,13 +883,8 @@ def _stage_theme(horizon: int) -> str:
 
 
 def _success_metric(capability: str, horizon: int, *, weakness: dict[str, Any] | None = None) -> str:
-    weakness = weakness or {}
-    if capability == "safety.boundary" and _is_safety_boundary_weakness(weakness):
-        return "Prompt injection and boundary replay pass rate stays at 1.0 before any active promotion."
-    if capability == "memory.recall":
-        return f"{capability} replay pass rate >= 0.8 within {horizon} days."
-    if capability == "safety.boundary":
-        return "No unsafe promotion reaches active status without rollback evidence."
+    if not str(capability or "").strip():
+        return "A concrete capability target, evaluation contract, and replay evidence are required before promotion."
     return f"{capability} capability score >= 0.8 with replay and ledger evidence."
 
 
@@ -739,22 +893,11 @@ def _prioritized_weaknesses(weaknesses: list[dict[str, Any]]) -> list[dict[str, 
     return sorted(
         items,
         key=lambda item: (
-            1 if _is_safety_boundary_weakness(item) else 0,
             _float(item.get("severity")),
             str(item.get("capability") or ""),
         ),
         reverse=True,
     )
-
-
-def _is_safety_boundary_weakness(weakness: dict[str, Any]) -> bool:
-    if not isinstance(weakness, dict) or not weakness:
-        return False
-    text = " ".join(
-        str(weakness.get(key) or "")
-        for key in ("capability", "kind", "title", "lesson", "summary")
-    ).lower()
-    return any(token in text for token in ("safety.boundary", "prompt injection", "boundary", "unsafe", "safety"))
 
 
 def _record_l5_reward(
@@ -946,7 +1089,7 @@ def _valid_prompt_safety_record(record: Any) -> bool:
 
 def _level_for(report: dict[str, Any], missing: list[str]) -> str:
     if not missing:
-        return "L5"
+        return "L4.5"
     missing_set = {item.split(":", 1)[0] for item in missing}
     if not {"world_model", "roadmap", "goal_graph"} & missing_set:
         return "L4"

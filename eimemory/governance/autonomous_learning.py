@@ -1,12 +1,20 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import asdict
 import json
 import os
 from typing import Any
 
+from eimemory.evaluation.capability_catalog import CapabilityEvaluationCatalog
 from eimemory.governance.capability_attribution import attribute_capability_outcomes
 from eimemory.governance.capability_distiller import distill_capability_candidate
+from eimemory.governance.capability_hypotheses import (
+    CapabilityHypothesisError,
+    explicit_hypothesis_reference,
+    hypothesis_behavior_gate,
+    record_hypothesis_experiment_feedback,
+)
 from eimemory.governance.capability_ledger import build_capability_ledger, record_capability_score
 from eimemory.governance.capability_dashboard import build_capability_dashboard_metrics
 from eimemory.governance.capability_replay_packs import (
@@ -14,6 +22,7 @@ from eimemory.governance.capability_replay_packs import (
     capability_replay_case_ids,
 )
 from eimemory.governance.capability_seeding import ensure_all_seeded
+from eimemory.governance.code_patch_command_policy import AUTOMATION_POLICY_ACTIONS
 from eimemory.governance.code_evolution_bridge import propose_code_patch
 from eimemory.governance.curiosity import generate_learning_goals, persist_learning_goals
 from eimemory.governance.evidence_collector import collect
@@ -34,7 +43,11 @@ from eimemory.governance.learning_state import (
     stable_semantic_key,
     start_learning_loop,
 )
-from eimemory.governance.promotion_manager import promote_candidate, recover_incomplete_code_apply
+from eimemory.governance.promotion_manager import (
+    _issue_legacy_promotion_authority,
+    promote_candidate,
+    recover_incomplete_code_apply,
+)
 from eimemory.governance.prompt_safety import (
     prompt_injection_check,
     prompt_shadow_eval,
@@ -52,6 +65,43 @@ from eimemory.governance.thoughts import generate_thoughts
 from eimemory.governance.world_watchers import collect_world_signals, default_watches
 from eimemory.llm import llm_client_from_env
 from eimemory.models.records import RecordEnvelope, ScopeRef
+
+
+# These identifiers describe the pre-Registry autonomous-learning behavior.
+# They are never a default capability selection: callers must intentionally
+# opt into ``legacy_compatibility`` to replay the historic maintenance path.
+LEGACY_AUTONOMOUS_LEARNING_CAPABILITIES = (
+    "memory.recall",
+    "tool.routing",
+    "safety.boundary",
+)
+LEGACY_AUTONOMOUS_LEARNING_FALLBACK_CAPABILITY = "proactive.judgment"
+
+# Candidate kinds are artifact contracts, not capability categories.  A
+# dynamic goal must declare one of them (directly or through its explicit
+# expected-artifact alias); capability names and prose never choose a kind.
+_CANDIDATE_KINDS = frozenset(
+    {
+        "tool_route",
+        "memory_rule",
+        "eval_case",
+        "skill_draft",
+        "sop_draft",
+        "source_policy",
+        "code_patch",
+    }
+)
+_EXPLICIT_ARTIFACT_KIND_ALIASES: dict[str, tuple[str, ...]] = {
+    "tool_route": ("tool_route",),
+    "memory_rule": ("memory_rule",),
+    "eval_case": ("eval_case",),
+    "skill_draft": ("skill_draft",),
+    "sop_draft": ("sop_draft",),
+    "source_policy": ("source_policy",),
+    "code_patch": ("code_patch",),
+    "playbook_or_policy_candidate": ("sop_draft", "eval_case"),
+    "policy_candidate": ("sop_draft", "eval_case"),
+}
 
 
 def classify_autonomous_learning_activity(
@@ -105,8 +155,17 @@ def run_autonomous_learning_cycle(
     max_goals: int = 3,
     max_promotions: int | None = None,
     allow_network: bool | None = None,
+    profile_key: str = "",
+    capability_scope: str = "global",
+    runtime_scope: ScopeRef | Mapping[str, Any] | None = None,
+    at_time: str = "",
+    catalog: CapabilityEvaluationCatalog | None = None,
+    legacy_compatibility: bool = False,
 ) -> dict[str, Any]:
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+    # A caller-selected catalog is a stronger binding than the Runtime startup
+    # catalog.  Neither path falls back to a process-global catalog.
+    effective_catalog = catalog if catalog is not None else getattr(runtime, "capability_catalog", None)
     network_enabled = _network_enabled(allow_network)
     if dry_run:
         return _run_autonomous_learning_dry_run(
@@ -116,6 +175,11 @@ def run_autonomous_learning_cycle(
             full=full,
             max_goals=max_goals,
             allow_network=network_enabled,
+            profile_key=profile_key,
+            capability_scope=capability_scope,
+            runtime_scope=runtime_scope,
+            at_time=at_time,
+            legacy_compatibility=legacy_compatibility,
         )
     code_apply_recovery = _recover_code_apply_before_cycle(
         runtime,
@@ -130,6 +194,8 @@ def run_autonomous_learning_cycle(
                 runtime,
                 scope=scope_ref,
                 loop_id="outcome_attribution",
+                catalog=effective_catalog,
+                legacy_compatibility=legacy_compatibility,
             )
         except Exception as exc:
             preexisting_outcome_attribution = {
@@ -147,14 +213,50 @@ def run_autonomous_learning_cycle(
             watches=default_watches(),
             dry_run=dry_run,
             loop_id=loop_id,
+            profile_key=profile_key,
+            capability_scope=capability_scope,
+            at_time=at_time,
+            legacy_compatibility=legacy_compatibility,
         )
         mark_step(runtime, loop, step_name="observe", status="completed", record_ids=watch_report.get("persisted_record_ids") or [], metrics={"signal_count": watch_report.get("signal_count", 0)})
 
-        self_model = build_self_model(runtime, scope=scope_ref, persist=True, loop_id=loop_id)
+        self_model = build_self_model(
+            runtime,
+            scope=scope_ref,
+            persist=True,
+            loop_id=loop_id,
+            profile_key=profile_key,
+            capability_scope=capability_scope,
+            at_time=at_time,
+        )
         mark_step(runtime, loop, step_name="self_model", status="completed", metrics=self_model.get("metrics") or {})
 
-        ensure_all_seeded(runtime, scope=scope_ref, loop_id=loop_id)
-        goal_registry = load_goal_registry()
+        # Dynamic learning must resolve an actual active registry/profile.  The
+        # historic seeding cohort is only available to an explicit legacy
+        # replay, never as a way to manufacture current capabilities.
+        if legacy_compatibility:
+            ensure_all_seeded(
+                runtime,
+                scope=scope_ref,
+                loop_id=loop_id,
+                legacy_compatibility=True,
+            )
+            self_model = {
+                **self_model,
+                "capabilities": _legacy_self_model_capabilities(runtime, scope=scope_ref),
+                "legacy_compatibility": True,
+            }
+        capability_selection = _resolve_autonomous_capability_selection(
+            runtime,
+            scope=scope_ref,
+            runtime_scope=runtime_scope,
+            profile_key=profile_key,
+            capability_scope=capability_scope,
+            at_time=at_time,
+            legacy_compatibility=legacy_compatibility,
+        )
+        selected_capability_ids = list(capability_selection.get("capability_ids") or [])
+        goal_registry = load_goal_registry(legacy_compatibility=legacy_compatibility)
         ranked_signals = rank_learning_signals(watch_report.get("signals") or [], self_model, [], max_items=20)
         thought_report = generate_thoughts(
             runtime,
@@ -165,6 +267,10 @@ def run_autonomous_learning_cycle(
             loop_id=loop_id,
             persist=True,
             max_items=20,
+            profile_key=profile_key,
+            capability_scope=capability_scope,
+            at_time=at_time,
+            legacy_compatibility=legacy_compatibility,
         )
         mark_step(runtime, loop, step_name="think", status="completed", record_ids=thought_report.get("persisted_record_ids") or [], metrics={"thought_count": thought_report.get("thought_count", 0)})
 
@@ -172,11 +278,11 @@ def run_autonomous_learning_cycle(
             self_model,
             ranked_signals,
             goal_registry=goal_registry,
-            thoughts=thought_report.get("thoughts") or [],
+            thoughts=[] if legacy_compatibility else thought_report.get("thoughts") or [],
             max_goals=max_goals,
         )
         goal_ids = persist_learning_goals(runtime, goals, scope=scope_ref, loop_id=loop_id)
-        selected_goal = goals[0] if goals else _fallback_goal()
+        selected_goal = goals[0] if goals else _fallback_goal(legacy_compatibility=legacy_compatibility)
         selected_goal_id = goal_ids[0] if goal_ids else ""
         mark_step(runtime, loop, step_name="goals", status="completed", record_ids=goal_ids, metrics={"goal_count": len(goals)})
 
@@ -209,6 +315,7 @@ def run_autonomous_learning_cycle(
             evidence=evidence[:20],
             applicability_score=_evidence_score(evidence),
             risk_tier=str(selected_goal.get("authority_tier") or "L0"),
+            capability_hypothesis=explicit_hypothesis_reference(selected_goal),
         )
         mark_step(runtime, loop, step_name="research", status="completed", record_ids=research_task_ids + [research_note_id], metrics={"evidence_count": len(evidence)})
 
@@ -218,7 +325,11 @@ def run_autonomous_learning_cycle(
             limit=50,
             persist=True,
             loop_id=loop_id,
-            include_built_in_regressions=True,
+            capability_scope=capability_scope,
+            profile_key=profile_key,
+            catalog=effective_catalog,
+            at_time=at_time,
+            legacy_compatibility=legacy_compatibility,
         )
         mark_step(runtime, loop, step_name="replay_dataset", status="completed", record_ids=[replay_dataset.get("persisted_record_id", "")], metrics={"case_count": replay_dataset.get("case_count", 0), "correction_count": replay_dataset.get("correction_count", 0)})
         real_task_replay = _run_real_task_replay_if_available(
@@ -227,10 +338,15 @@ def run_autonomous_learning_cycle(
             scope=scope_ref,
             replay_dataset=replay_dataset,
             seed_records=_replay_seed_records_from_cases(replay_dataset.get("cases") or [], scope=scope_ref),
+            legacy_compatibility=legacy_compatibility,
         )
         replay_gate = _replay_gate_report(real_task_replay)
         replay_gate_passed = bool(replay_gate.get("ok"))
-        loop_capabilities = _loop_capabilities(goals or [selected_goal])
+        loop_capabilities = _loop_capabilities(
+            goals or [selected_goal],
+            allowed_capability_ids=selected_capability_ids,
+            legacy_compatibility=legacy_compatibility,
+        )
         goal_graph = build_goal_graph_loop(
             runtime,
             scope=scope_ref,
@@ -238,6 +354,10 @@ def run_autonomous_learning_cycle(
             persist=True,
             capabilities=loop_capabilities,
             loop_id=loop_id,
+            capability_scope=capability_scope,
+            profile_key=profile_key,
+            catalog=effective_catalog,
+            legacy_compatibility=legacy_compatibility,
         )
         mark_step(
             runtime,
@@ -254,6 +374,12 @@ def run_autonomous_learning_cycle(
         capability_acceptance = runtime.run_capability_acceptance(
             scope=asdict(scope_ref),
             persist=True,
+            profile_key=profile_key,
+            capability_scope=capability_scope,
+            runtime_scope=runtime_scope if runtime_scope is not None else scope_ref,
+            at_time=at_time,
+            catalog=effective_catalog,
+            legacy_compatibility=legacy_compatibility,
         )
         acceptance_probe_ids_by_case = {
             str(result.get("case_id") or ""): str(
@@ -277,9 +403,16 @@ def run_autonomous_learning_cycle(
                 "failed_count": capability_acceptance.get("failed_count", 0),
             },
         )
-        replay_capabilities = _evidence_bound_capabilities(
-            loop_capabilities,
+        accepted_capability_ids = _accepted_capability_ids(
             capability_acceptance.get("results") or [],
+        )
+        replay_selection_capability_ids = (
+            loop_capabilities if legacy_compatibility else accepted_capability_ids
+        )
+        replay_capabilities = _evidence_bound_capabilities(
+            replay_selection_capability_ids,
+            capability_acceptance.get("results") or [],
+            legacy_compatibility=legacy_compatibility,
         )
         capability_replay = build_capability_replay_packs(
             runtime,
@@ -289,6 +422,12 @@ def run_autonomous_learning_cycle(
             loop_id=loop_id,
             acceptance_execution_id=str(capability_acceptance.get("execution_id") or ""),
             acceptance_probe_ids_by_case=acceptance_probe_ids_by_case,
+            profile_key=profile_key,
+            capability_scope=capability_scope,
+            runtime_scope=runtime_scope if runtime_scope is not None else scope_ref,
+            at_time=at_time,
+            catalog=effective_catalog,
+            legacy_compatibility=legacy_compatibility,
         )
         mark_step(
             runtime,
@@ -332,7 +471,12 @@ def run_autonomous_learning_cycle(
             },
         )
 
-        goal_portfolio = _candidate_goal_portfolio(goals or [selected_goal], max_goals=max_goals)
+        goal_portfolio = _candidate_goal_portfolio(
+            goals or [selected_goal],
+            max_goals=max_goals,
+            allowed_capability_ids=accepted_capability_ids,
+            legacy_compatibility=legacy_compatibility,
+        )
         max_candidates_per_goal = max(1, min(3, max_goals)) if len(goal_portfolio) <= 1 else 1
         candidate_specs = _candidate_specs_for_goals(
             goal_portfolio,
@@ -342,8 +486,20 @@ def run_autonomous_learning_cycle(
             evidence=evidence,
             runtime=runtime,
             scope=scope_ref,
+            allowed_capability_ids=accepted_capability_ids,
+            legacy_compatibility=legacy_compatibility,
         )
         candidate_kinds = [str(spec.get("promotion_target") or "") for spec in candidate_specs]
+        candidate_selection_reason = ""
+        if not candidate_specs:
+            candidate_selection_reason = (
+                "implicit_capability_fallback_unclassified"
+                if any(_implicit_capability_fallback(goal) for goal in goals or [selected_goal])
+                else (
+                    str(capability_selection.get("reason") or "")
+                    or "no_accepted_capability_goal_with_declared_artifact"
+                )
+            )
         network_research["output_gate"] = _network_output_gate(
             runtime,
             enabled=network_enabled,
@@ -367,14 +523,74 @@ def run_autonomous_learning_cycle(
         evaluator_verdicts: list[dict[str, Any]] = []
         stop_judgments: list[dict[str, Any]] = []
         isolation_blocked_reasons: list[str] = []
+        hypothesis_feedback_ids: list[str] = []
+        hypothesis_blocked_reasons: list[str] = []
         isolation_gate_passed = True
+        hypothesis_gate_passed = True
         promotion_budget = max(0, _as_int(max_promotions, default=0)) if max_promotions is not None else len(candidate_kinds)
         for spec in candidate_specs:
             candidate_kind = str(spec.get("promotion_target") or "")
             goal_for_candidate = dict(spec.get("goal") or selected_goal)
             goal_id_for_candidate = _goal_id_for_goal(goal_for_candidate, goals, goal_ids)
-            target_capability = str(spec.get("target_capability") or goal_for_candidate.get("target_capability") or "proactive.judgment")
-            candidate_patch = dict(spec.get("patch") or _candidate_patch(goal_for_candidate, evidence, candidate_kind=candidate_kind, replay_dataset=replay_dataset))
+            target_capability = _explicit_goal_capability(spec) or _explicit_goal_capability(goal_for_candidate)
+            if not target_capability:
+                # Candidate construction is a capability-changing path.  A
+                # goal without a durable target may be observed/researched,
+                # but it cannot become a candidate by falling back to a
+                # familiar capability name.
+                isolation_gate_passed = False
+                isolation_blocked_reasons.append("target_capability_unclassified")
+                continue
+            candidate_patch = dict(
+                spec.get("patch")
+                or _candidate_patch(
+                    goal_for_candidate,
+                    evidence,
+                    candidate_kind=candidate_kind,
+                    replay_dataset=replay_dataset,
+                    legacy_compatibility=legacy_compatibility,
+                )
+            )
+            raw_hypothesis_context = (
+                dict(spec.get("capability_hypothesis") or {})
+                if isinstance(spec.get("capability_hypothesis"), dict)
+                else (
+                    dict(goal_for_candidate.get("capability_hypothesis") or {})
+                    if isinstance(goal_for_candidate.get("capability_hypothesis"), dict)
+                    else dict(goal_for_candidate)
+                )
+            )
+            hypothesis_reference = explicit_hypothesis_reference(raw_hypothesis_context)
+            nonlegacy_code_patch = candidate_kind == "code_patch" and not legacy_compatibility
+            hypothesis_gate = (
+                _nonlegacy_code_patch_hypothesis_gate(
+                    runtime,
+                    scope=scope_ref,
+                    hypothesis_reference=hypothesis_reference,
+                    raw_hypothesis_context=raw_hypothesis_context,
+                    candidate_patch=candidate_patch,
+                    target_capability=target_capability,
+                )
+                if nonlegacy_code_patch
+                else _hypothesis_gate_for_candidate(
+                    runtime,
+                    scope=scope_ref,
+                    hypothesis_reference=hypothesis_reference,
+                )
+            )
+            requires_hypothesis_gate = bool(hypothesis_reference) or nonlegacy_code_patch
+            if hypothesis_reference:
+                hypothesis_context = _hypothesis_trace_context(hypothesis_reference, hypothesis_gate)
+                candidate_patch["capability_hypothesis"] = hypothesis_context
+                if hypothesis_context.get("expected_metric"):
+                    candidate_patch["expected_metric"] = dict(hypothesis_context["expected_metric"])
+                if hypothesis_context.get("candidate_bounds"):
+                    candidate_patch["candidate_bounds"] = dict(hypothesis_context["candidate_bounds"])
+            if requires_hypothesis_gate:
+                candidate_patch["capability_hypothesis_gate"] = hypothesis_gate
+                hypothesis_gate_passed = bool(hypothesis_gate_passed and hypothesis_gate.get("allowed"))
+                if not hypothesis_gate.get("allowed"):
+                    hypothesis_blocked_reasons.append(str(hypothesis_gate.get("reason") or "hypothesis_behavior_gate_blocked"))
             experiment_id = create_sandbox_experiment(
                 runtime,
                 scope=scope_ref,
@@ -393,6 +609,20 @@ def run_autonomous_learning_cycle(
                 safety_replay=safety_replay,
                 isolation_gate_passed=None,
             )
+            if requires_hypothesis_gate:
+                measured_eval_suite["gates"] = [
+                    *list(measured_eval_suite.get("gates") or []),
+                    {
+                        "name": "capability_hypothesis",
+                        "outcome": "pass" if hypothesis_gate.get("allowed") else "blocked",
+                        "reason": "" if hypothesis_gate.get("allowed") else str(hypothesis_gate.get("reason") or "hypothesis_behavior_gate_blocked"),
+                    },
+                ]
+                if not hypothesis_gate.get("allowed"):
+                    measured_eval_suite["blocked_reasons"] = [
+                        *[str(item) for item in measured_eval_suite.get("blocked_reasons") or [] if str(item)],
+                        str(hypothesis_gate.get("reason") or "hypothesis_behavior_gate_blocked"),
+                    ]
             if candidate_kind == "code_patch" and str(candidate_patch.get("proposal_status") or "") != "proposal_ready":
                 blocked_reason = str(candidate_patch.get("proposal_blocked_reason") or "invalid_code_proposal")
                 measured_eval_suite["blocked_reasons"] = [
@@ -406,6 +636,23 @@ def run_autonomous_learning_cycle(
                 loop_id=loop_id,
                 eval_suite=measured_eval_suite,
             )
+            if hypothesis_reference:
+                eval_result["capability_hypothesis"] = _hypothesis_trace_context(hypothesis_reference, hypothesis_gate)
+                eval_result["capability_hypothesis_gate"] = hypothesis_gate
+                feedback_id, feedback_error = _record_non_authorizing_hypothesis_eval_feedback(
+                    runtime,
+                    scope=scope_ref,
+                    hypothesis_reference=hypothesis_reference,
+                    eval_result=eval_result,
+                    loop_id=loop_id,
+                )
+                if feedback_id:
+                    hypothesis_feedback_ids.append(feedback_id)
+                if feedback_error:
+                    hypothesis_gate["allowed"] = False
+                    hypothesis_gate["reason"] = feedback_error
+                    hypothesis_gate_passed = False
+                    hypothesis_blocked_reasons.append(feedback_error)
             eval_result["gate_bundle"] = _gate_bundle_for_candidate(
                 candidate_kind,
                 evidence=evidence,
@@ -448,7 +695,13 @@ def run_autonomous_learning_cycle(
                 "stop_judgment": stop_judgment_content,
             }
             eval_results.append(eval_result)
-            if eval_result.get("ok") and replay_gate_passed and candidate_isolation_passed and safety_gate_passed:
+            if (
+                eval_result.get("ok")
+                and replay_gate_passed
+                and candidate_isolation_passed
+                and safety_gate_passed
+                and (not requires_hypothesis_gate or bool(hypothesis_gate.get("allowed")))
+            ):
                 candidate_id = distill_capability_candidate(
                     runtime,
                     scope=scope_ref,
@@ -458,6 +711,7 @@ def run_autonomous_learning_cycle(
                     promotion_target=candidate_kind,
                     summary=_candidate_summary(goal_for_candidate, candidate_kind=candidate_kind, patch=candidate_patch),
                     target_capability=target_capability,
+                    candidate_patch=candidate_patch,
                 )
                 candidate_ids.append(candidate_id)
                 promotion_report = promote_candidate(
@@ -468,6 +722,15 @@ def run_autonomous_learning_cycle(
                     apply=bool(apply and not dry_run and sum(1 for report in promotion_reports if report.get("applied")) < promotion_budget),
                     eval_result=eval_result,
                     health={"ok": True, "source": "offline_learning_cycle"},
+                    legacy_authority=(
+                        _issue_legacy_promotion_authority(
+                            runtime,
+                            candidate_id=candidate_id,
+                            scope=scope_ref,
+                        )
+                        if legacy_compatibility
+                        else None
+                    ),
                 )
                 promotion_reports.append(promotion_report)
                 regression_reports.append(
@@ -485,7 +748,18 @@ def run_autonomous_learning_cycle(
         promotion_report = promotion_reports[0] if promotion_reports else {"ok": True, "applied": False}
         regression_report = regression_reports[0] if regression_reports else {"ok": True, "regressed": False, "record_id": ""}
         mark_step(runtime, loop, step_name="experiment", status="completed", record_ids=experiment_ids, metrics={"experiment_count": len(experiment_ids), "candidate_kind_count": len(candidate_kinds)})
-        mark_step(runtime, loop, step_name="eval", status="completed", record_ids=[str(item.get("record_id") or "") for item in eval_results], metrics={"pass_count": sum(1 for item in eval_results if item.get("ok")), "eval_count": len(eval_results)})
+        mark_step(
+            runtime,
+            loop,
+            step_name="eval",
+            status="completed",
+            record_ids=[str(item.get("record_id") or "") for item in eval_results] + hypothesis_feedback_ids,
+            metrics={
+                "pass_count": sum(1 for item in eval_results if item.get("ok")),
+                "eval_count": len(eval_results),
+                "hypothesis_feedback_count": len(hypothesis_feedback_ids),
+            },
+        )
         mark_step(
             runtime,
             loop,
@@ -504,7 +778,13 @@ def run_autonomous_learning_cycle(
             runtime,
             loop,
             step_name="promotion",
-            status="completed" if replay_gate_passed and isolation_gate_passed and safety_gate_passed else "blocked",
+            status=(
+                "skipped"
+                if not candidate_specs
+                else "completed"
+                if replay_gate_passed and isolation_gate_passed and safety_gate_passed and hypothesis_gate_passed
+                else "blocked"
+            ),
             record_ids=[item for report in promotion_reports for item in [report.get("promotion_request_id", "")] if item] + candidate_ids,
             metrics={
                 "applied_count": sum(1 for report in promotion_reports if report.get("applied")),
@@ -514,6 +794,9 @@ def run_autonomous_learning_cycle(
                 "safety_gate_reason": str(safety_replay.get("blocked_reason") or safety_replay.get("reason") or ""),
                 "isolation_gate_passed": bool(isolation_gate_passed),
                 "isolation_blocked_reasons": sorted(set(isolation_blocked_reasons)),
+                "hypothesis_gate_passed": bool(hypothesis_gate_passed),
+                "hypothesis_blocked_reasons": sorted(set(hypothesis_blocked_reasons)),
+                "candidate_selection_reason": candidate_selection_reason,
             },
         )
 
@@ -522,14 +805,24 @@ def run_autonomous_learning_cycle(
             replay_gate=replay_gate,
             safety_replay=safety_replay,
             isolation_gate_passed=isolation_gate_passed,
+            hypothesis_gate_passed=hypothesis_gate_passed,
         )
         score_id = ""
-        if measured_score is not None:
+        scored_goal = (
+            dict(candidate_specs[0].get("goal") or {})
+            if candidate_specs and isinstance(candidate_specs[0].get("goal"), dict)
+            else selected_goal
+        )
+        score_capability = _explicit_goal_capability(scored_goal)
+        score_capability_authorized = bool(
+            legacy_compatibility or score_capability in set(accepted_capability_ids)
+        )
+        if measured_score is not None and score_capability and score_capability_authorized:
             score_id = record_capability_score(
                 runtime,
                 scope=scope_ref,
                 loop_id=loop_id,
-                capability=str(selected_goal.get("target_capability") or "proactive.judgment"),
+                capability=score_capability,
                 score=measured_score,
                 evidence_record_ids=[item for item in [research_note_id, eval_result.get("record_id", ""), candidate_id] if item],
                 meta={
@@ -539,6 +832,7 @@ def run_autonomous_learning_cycle(
                     "replay_gate_passed": bool(replay_gate_passed),
                     "safety_gate_passed": bool(safety_gate_passed),
                     "isolation_gate_passed": bool(isolation_gate_passed),
+                    "hypothesis_gate_passed": bool(hypothesis_gate_passed),
                 },
             )
         skill_sedimentation = promote_repeated_sops_to_skill_candidates(
@@ -562,7 +856,12 @@ def run_autonomous_learning_cycle(
         # This cycle already records a measured score only after all gates pass.
         # Keep the report read-only here so synthetic replay outcomes generated
         # by a failed cycle cannot supersede the last verified capability score.
-        ledger = build_capability_ledger(runtime, scope=scope_ref, attribute_outcomes=False)
+        ledger = build_capability_ledger(
+            runtime,
+            scope=scope_ref,
+            attribute_outcomes=False,
+            legacy_compatibility=legacy_compatibility,
+        )
         capability_dashboard = build_capability_dashboard_metrics(runtime, scope=scope_ref, persist=True, loop_id=loop_id)
         mark_step(
             runtime,
@@ -601,6 +900,11 @@ def run_autonomous_learning_cycle(
             "scope": asdict(scope_ref),
             "dry_run": bool(dry_run),
             "apply": bool(apply),
+            "legacy_compatibility": bool(legacy_compatibility),
+            "capability_selection": capability_selection,
+            "active_capability_ids": selected_capability_ids,
+            "accepted_capability_ids": accepted_capability_ids,
+            "replay_capability_ids": replay_capabilities,
             "code_apply_recovery": code_apply_recovery,
             "watch_signal_count": _as_int(watch_report.get("signal_count"), default=0),
             "thought_count": _as_int(thought_report.get("thought_count"), default=0),
@@ -618,11 +922,15 @@ def run_autonomous_learning_cycle(
             "candidate_id": candidate_id,
             "candidate_ids": candidate_ids,
             "candidate_kinds": candidate_kinds,
+            "candidate_selection_reason": candidate_selection_reason,
             "candidate_specs": [
                 {
                     "target_capability": str(spec.get("target_capability") or ""),
                     "requested_target": str(spec.get("requested_target") or ""),
                     "promotion_target": str(spec.get("promotion_target") or ""),
+                    "capability_hypothesis": explicit_hypothesis_reference(
+                        spec.get("capability_hypothesis") if isinstance(spec.get("capability_hypothesis"), dict) else {}
+                    ),
                     "fallback_reason": str((spec.get("patch") or {}).get("fallback_reason") or ""),
                     "proposal_status": str((spec.get("patch") or {}).get("proposal_status") or ""),
                     "proposal_blocked_reason": str((spec.get("patch") or {}).get("proposal_blocked_reason") or ""),
@@ -634,6 +942,9 @@ def run_autonomous_learning_cycle(
             "replay_gate_passed": replay_gate_passed,
             "safety_gate_passed": safety_gate_passed,
             "isolation_gate_passed": bool(isolation_gate_passed),
+            "hypothesis_gate_passed": bool(hypothesis_gate_passed),
+            "hypothesis_feedback_ids": hypothesis_feedback_ids,
+            "hypothesis_blocked_reasons": sorted(set(hypothesis_blocked_reasons)),
             "evaluator_packet_ids": evaluator_packet_ids,
             "evaluator_verdict_ids": evaluator_verdict_ids,
             "stop_judgment_ids": stop_judgment_ids,
@@ -655,6 +966,11 @@ def run_autonomous_learning_cycle(
             "regression_watches": regression_reports,
             "replay_dataset": replay_dataset,
             "capability_score_id": score_id,
+            "capability_score_blocked_reason": (
+                ""
+                if not (measured_score is not None and not score_id)
+                else "target_capability_unclassified_or_not_accepted"
+            ),
             "preexisting_outcome_attribution": preexisting_outcome_attribution,
             "skill_sedimentation": skill_sedimentation,
             "capability_dashboard": capability_dashboard,
@@ -709,6 +1025,7 @@ def _run_real_task_replay_if_available(
     scope: ScopeRef,
     replay_dataset: dict[str, Any],
     seed_records: list[dict[str, Any]] | None = None,
+    legacy_compatibility: bool = False,
 ) -> dict[str, Any]:
     cases = list((replay_dataset or {}).get("cases") or [])
     if not cases:
@@ -738,7 +1055,10 @@ def _run_real_task_replay_if_available(
         "cases": [dict(case) for case in cases],
     }
     try:
-        report = replay_runner(payload, seed=True, persist_report=True)
+        replay_kwargs: dict[str, Any] = {"seed": True, "persist_report": True}
+        if legacy_compatibility:
+            replay_kwargs["legacy_compatibility"] = True
+        report = replay_runner(payload, **replay_kwargs)
         if not isinstance(report, dict):
             report = {
                 "ok": False,
@@ -871,8 +1191,15 @@ def _measured_capability_score(
     replay_gate: dict[str, Any],
     safety_replay: dict[str, Any],
     isolation_gate_passed: bool,
+    hypothesis_gate_passed: bool = True,
 ) -> float | None:
-    if not (eval_result.get("ok") and replay_gate.get("ok") and safety_replay.get("ok") and isolation_gate_passed):
+    if not (
+        eval_result.get("ok")
+        and replay_gate.get("ok")
+        and safety_replay.get("ok")
+        and isolation_gate_passed
+        and hypothesis_gate_passed
+    ):
         return None
     scores = eval_result.get("scores") if isinstance(eval_result.get("scores"), dict) else {}
     measured = [
@@ -882,6 +1209,235 @@ def _measured_capability_score(
         _as_float(scores.get("evidence"), default=0.0),
     ]
     return round(sum(measured) / len(measured), 3) if measured else 0.0
+
+
+def _hypothesis_gate_for_candidate(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    hypothesis_reference: dict[str, str],
+) -> dict[str, Any]:
+    """Apply the WP8 gate only when a goal supplied an explicit hypothesis."""
+
+    if not hypothesis_reference:
+        return {"required": False, "allowed": True, "reason": "not_applicable"}
+    hypothesis_id = str(hypothesis_reference.get("capability_hypothesis_id") or "").strip()
+    if not hypothesis_id:
+        return {
+            "required": True,
+            "allowed": False,
+            "reason": "capability_hypothesis_id_missing",
+        }
+    try:
+        result = dict(
+            hypothesis_behavior_gate(
+                runtime,
+                runtime_scope=scope,
+                hypothesis_id=hypothesis_id,
+            )
+        )
+    except CapabilityHypothesisError as exc:
+        result = {"allowed": False, "reason": str(exc), "hypothesis_id": hypothesis_id}
+    # A planner may carry optional link/revision/scope context, but it cannot
+    # substitute that context for the durable hypothesis identity.  Any
+    # disagreement closes the candidate path and leaves the authoritative
+    # hypothesis trace in the result for audit.
+    for reference_key, gate_key in (
+        ("link_id", "link_id"),
+        ("link_digest", "link_digest"),
+        ("capability_id", "capability_id"),
+        ("capability_revision_id", "capability_revision_id"),
+        ("capability_scope", "capability_scope"),
+    ):
+        supplied = str(hypothesis_reference.get(reference_key) or "").strip()
+        resolved = str(result.get(gate_key) or "").strip()
+        if supplied and resolved and supplied != resolved:
+            result["allowed"] = False
+            result["reason"] = f"capability_hypothesis_{reference_key}_mismatch"
+            break
+    result["required"] = True
+    result["hypothesis_id"] = hypothesis_id
+    return result
+
+
+def _nonlegacy_code_patch_hypothesis_gate(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    hypothesis_reference: dict[str, str],
+    raw_hypothesis_context: dict[str, Any],
+    candidate_patch: dict[str, Any],
+    target_capability: str,
+) -> dict[str, Any]:
+    """Require an exact durable v3 hypothesis before generic code mutation.
+
+    Code proposals can still be evaluated with incomplete context, but the
+    default dynamic path must never distill or promote one.  A caller that
+    needs historic generic behavior has to opt in through the explicit
+    ``legacy_compatibility`` path at the cycle boundary.
+    """
+
+    required_reference_fields = (
+        "capability_hypothesis_id",
+        "link_id",
+        "link_digest",
+        "capability_id",
+        "capability_revision_id",
+        "capability_scope",
+    )
+    missing_reference = [field for field in required_reference_fields if not str(hypothesis_reference.get(field) or "").strip()]
+    if missing_reference:
+        return {
+            "required": True,
+            "allowed": False,
+            "reason": "nonlegacy_code_patch_hypothesis_context_incomplete",
+            "missing_fields": missing_reference,
+        }
+    if str(hypothesis_reference.get("capability_id") or "") != str(target_capability or ""):
+        return {
+            "required": True,
+            "allowed": False,
+            "reason": "nonlegacy_code_patch_hypothesis_target_mismatch",
+        }
+    required_patch_fields = (
+        "provider_binding_id",
+        "capability_revision_id",
+        "capability_scope",
+    )
+    missing_patch = [field for field in required_patch_fields if not str(candidate_patch.get(field) or "").strip()]
+    if missing_patch:
+        return {
+            "required": True,
+            "allowed": False,
+            "reason": "nonlegacy_code_patch_binding_context_incomplete",
+            "missing_fields": missing_patch,
+        }
+    context_binding_id = str(raw_hypothesis_context.get("provider_binding_id") or "").strip()
+    if not context_binding_id:
+        return {
+            "required": True,
+            "allowed": False,
+            "reason": "nonlegacy_code_patch_hypothesis_binding_missing",
+        }
+    if context_binding_id != str(candidate_patch.get("provider_binding_id") or ""):
+        return {
+            "required": True,
+            "allowed": False,
+            "reason": "nonlegacy_code_patch_provider_binding_id_mismatch",
+        }
+    for patch_field, reference_field in (
+        ("target_capability", "capability_id"),
+        ("capability_revision_id", "capability_revision_id"),
+        ("capability_scope", "capability_scope"),
+    ):
+        if str(candidate_patch.get(patch_field) or "") != str(hypothesis_reference.get(reference_field) or ""):
+            return {
+                "required": True,
+                "allowed": False,
+                "reason": f"nonlegacy_code_patch_{patch_field}_mismatch",
+            }
+    gate = _hypothesis_gate_for_candidate(
+        runtime,
+        scope=scope,
+        hypothesis_reference=hypothesis_reference,
+    )
+    if not gate.get("allowed"):
+        return gate
+    for field in required_reference_fields[1:]:
+        gate_field = "hypothesis_id" if field == "capability_hypothesis_id" else field
+        expected = str(hypothesis_reference.get(field) or "")
+        actual = str(gate.get(gate_field) or "")
+        if actual != expected:
+            return {
+                **gate,
+                "required": True,
+                "allowed": False,
+                "reason": f"nonlegacy_code_patch_hypothesis_{field}_mismatch",
+            }
+    if not isinstance(gate.get("expected_metric"), dict) or not gate.get("expected_metric"):
+        return {
+            **gate,
+            "required": True,
+            "allowed": False,
+            "reason": "nonlegacy_code_patch_hypothesis_metric_missing",
+        }
+    if not isinstance(gate.get("candidate_bounds"), dict) or not gate.get("candidate_bounds"):
+        return {
+            **gate,
+            "required": True,
+            "allowed": False,
+            "reason": "nonlegacy_code_patch_hypothesis_bounds_missing",
+        }
+    gate["required"] = True
+    return gate
+
+
+def _hypothesis_trace_context(
+    hypothesis_reference: dict[str, str],
+    hypothesis_gate: dict[str, Any],
+) -> dict[str, Any]:
+    """Carry durable link/revision/bounds into an evaluated candidate trace."""
+
+    result: dict[str, Any] = dict(hypothesis_reference)
+    aliases = {
+        "hypothesis_id": "capability_hypothesis_id",
+        "link_id": "link_id",
+        "link_digest": "link_digest",
+        "capability_id": "capability_id",
+        "capability_revision_id": "capability_revision_id",
+        "capability_scope": "capability_scope",
+    }
+    for source, target in aliases.items():
+        value = hypothesis_gate.get(source)
+        if str(value or "").strip():
+            result[target] = str(value)
+    for field in ("expected_metric", "candidate_bounds"):
+        value = hypothesis_gate.get(field)
+        if isinstance(value, dict) and value:
+            result[field] = dict(value)
+    return result
+
+
+def _record_non_authorizing_hypothesis_eval_feedback(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    hypothesis_reference: dict[str, str],
+    eval_result: dict[str, Any],
+    loop_id: str,
+) -> tuple[str, str]:
+    """Keep same-loop evaluation traceable without letting it self-authorize."""
+
+    hypothesis_id = str(hypothesis_reference.get("capability_hypothesis_id") or "").strip()
+    eval_record_id = str(eval_result.get("record_id") or "").strip()
+    if not hypothesis_id or not eval_record_id:
+        return "", "hypothesis_evaluation_record_missing"
+    try:
+        feedback = record_hypothesis_experiment_feedback(
+            runtime,
+            runtime_scope=scope,
+            hypothesis_id=hypothesis_id,
+            artifact_type="evaluation",
+            artifact_id=eval_record_id,
+            verdict=str(eval_result.get("verdict") or "blocked"),
+            # The loop generated this evaluation, so it is intentionally not
+            # independent and cannot satisfy the behavior gate by itself.
+            verifier={
+                "id": "autonomous_learning",
+                "revision": "learning_eval.v1",
+                "independent": False,
+            },
+            details={
+                "loop_id": loop_id,
+                "eval_record_id": eval_record_id,
+                "measurement_source": "autonomous_learning_gates",
+            },
+        )
+        return feedback.record_id, ""
+    except CapabilityHypothesisError as exc:
+        return "", f"hypothesis_feedback_blocked:{str(exc)}"
+    except Exception as exc:  # keep an evidence-write fault from opening a behavior path
+        return "", f"hypothesis_feedback_failed_{type(exc).__name__}"
 
 
 SUCCESS_LABELS = {"pass", "passed", "success", "succeeded", "ok", "true", "green"}
@@ -954,6 +1510,29 @@ def _replay_seed_records_from_cases(cases: list[dict[str, Any]], *, scope: Scope
     return seeds
 
 
+def _legacy_self_model_capabilities(runtime: Any, *, scope: ScopeRef) -> list[dict[str, Any]]:
+    """Render the historical cohort only for an explicit compatibility run."""
+
+    ledger = build_capability_ledger(
+        runtime,
+        scope=scope,
+        legacy_compatibility=True,
+    )
+    capabilities = ledger.get("capabilities") if isinstance(ledger.get("capabilities"), dict) else {}
+    return [
+        {
+            "capability": str(capability_id),
+            "kind": str(capability_id),
+            "score": _as_float(
+                details.get("score") if isinstance(details, dict) else 0.0,
+                default=0.0,
+            ),
+        }
+        for capability_id, details in capabilities.items()
+        if str(capability_id).strip()
+    ]
+
+
 def _run_autonomous_learning_dry_run(
     runtime: Any,
     *,
@@ -962,6 +1541,11 @@ def _run_autonomous_learning_dry_run(
     full: bool,
     max_goals: int,
     allow_network: bool = False,
+    profile_key: str = "",
+    capability_scope: str = "global",
+    runtime_scope: ScopeRef | Mapping[str, Any] | None = None,
+    at_time: str = "",
+    legacy_compatibility: bool = False,
 ) -> dict[str, Any]:
     watch_report = collect_world_signals(
         runtime,
@@ -969,10 +1553,27 @@ def _run_autonomous_learning_dry_run(
         watches=default_watches(),
         dry_run=True,
         loop_id="dry_run",
+        profile_key=profile_key,
+        capability_scope=capability_scope,
+        at_time=at_time,
+        legacy_compatibility=legacy_compatibility,
     )
-    self_model = build_self_model(runtime, scope=scope, persist=False)
+    self_model = build_self_model(
+        runtime,
+        scope=scope,
+        persist=False,
+        profile_key=profile_key,
+        capability_scope=capability_scope,
+        at_time=at_time,
+    )
+    if legacy_compatibility:
+        self_model = {
+            **self_model,
+            "capabilities": _legacy_self_model_capabilities(runtime, scope=scope),
+            "legacy_compatibility": True,
+        }
     ranked_signals = rank_learning_signals(watch_report.get("signals") or [], self_model, [], max_items=20)
-    goal_registry = load_goal_registry()
+    goal_registry = load_goal_registry(legacy_compatibility=legacy_compatibility)
     thought_report = generate_thoughts(
         runtime,
         signals=ranked_signals,
@@ -982,22 +1583,56 @@ def _run_autonomous_learning_dry_run(
         loop_id="dry_run",
         persist=False,
         max_items=20,
+        profile_key=profile_key,
+        capability_scope=capability_scope,
+        at_time=at_time,
+        legacy_compatibility=legacy_compatibility,
     )
-    goals = generate_learning_goals(self_model, ranked_signals, goal_registry=goal_registry, thoughts=thought_report.get("thoughts") or [], max_goals=max_goals)
-    selected_goal = goals[0] if goals else _fallback_goal()
+    goals = generate_learning_goals(
+        self_model,
+        ranked_signals,
+        goal_registry=goal_registry,
+        thoughts=[] if legacy_compatibility else thought_report.get("thoughts") or [],
+        max_goals=max_goals,
+    )
+    capability_selection = _resolve_autonomous_capability_selection(
+        runtime,
+        scope=scope,
+        runtime_scope=runtime_scope,
+        profile_key=profile_key,
+        capability_scope=capability_scope,
+        at_time=at_time,
+        legacy_compatibility=legacy_compatibility,
+    )
+    active_capability_ids = list(capability_selection.get("capability_ids") or [])
+    selected_goal = goals[0] if goals else _fallback_goal(legacy_compatibility=legacy_compatibility)
     research_tasks = plan_research_tasks(selected_goal, source_policy={"network_enabled": allow_network})
     evidence: list[dict[str, Any]] = []
     for task in research_tasks:
         evidence.extend(collect(task, runtime=runtime, scope=scope))
     network_research = _network_research_summary(enabled=allow_network, tasks=research_tasks, evidence=evidence)
-    candidate_kinds = choose_candidate_kinds_for_goal(selected_goal, max_candidates=max(1, min(3, max_goals)))
+    target_capability = _explicit_goal_capability(selected_goal)
+    candidate_kinds = (
+        choose_candidate_kinds_for_goal(
+            selected_goal,
+            max_candidates=max(1, min(3, max_goals)),
+            legacy_compatibility=legacy_compatibility,
+        )
+        if legacy_compatibility
+        or (
+            target_capability in set(active_capability_ids)
+            and not _implicit_capability_fallback(selected_goal)
+        )
+        else []
+    )
     candidate_kind, candidate_patch = _resolved_candidate_kind_and_patch(
         selected_goal,
         evidence,
-        candidate_kind=candidate_kinds[0] if candidate_kinds else _candidate_kind_for_goal(selected_goal),
+        candidate_kind=candidate_kinds[0] if candidate_kinds else "",
         replay_dataset={},
+        legacy_compatibility=legacy_compatibility,
     )
-    candidate_kinds = [candidate_kind, *[kind for kind in candidate_kinds[1:] if kind != candidate_kind]]
+    candidate_kinds = [candidate_kind, *[kind for kind in candidate_kinds[1:] if kind != candidate_kind]] if candidate_kind else candidate_kinds
     network_research["output_gate"] = _network_output_gate(
         runtime,
         enabled=allow_network,
@@ -1044,6 +1679,9 @@ def _run_autonomous_learning_dry_run(
         "dry_run": True,
         "apply": bool(apply),
         "full": bool(full),
+        "legacy_compatibility": bool(legacy_compatibility),
+        "capability_selection": capability_selection,
+        "active_capability_ids": active_capability_ids,
         "watch_signal_count": _as_int(watch_report.get("signal_count"), default=0),
         "thought_count": _as_int(thought_report.get("thought_count"), default=0),
         "goal_count": len(goals),
@@ -1060,13 +1698,17 @@ def _run_autonomous_learning_dry_run(
         "candidate_preview": {
             "candidate_kind": candidate_kind,
             "candidate_kinds": candidate_kinds,
-            "target_capability": selected_goal.get("target_capability") or "proactive.judgment",
+            "target_capability": target_capability,
             "patch": candidate_patch,
         },
         "promotion": {"ok": True, "applied": False, "dry_run": True},
         "regression_watch": {"ok": True, "regressed": False, "record_id": ""},
         "capability_score_id": "",
-        "ledger": build_capability_ledger(runtime, scope=scope),
+        "ledger": build_capability_ledger(
+            runtime,
+            scope=scope,
+            legacy_compatibility=legacy_compatibility,
+        ),
         "retention": compact_learning_records(runtime, scope=scope, loop_id="dry_run", dry_run=True),
     }
     result.update(classify_autonomous_learning_activity(result))
@@ -1078,37 +1720,245 @@ def list_learning_goals(runtime: Any, *, scope: dict[str, Any] | ScopeRef | None
     return [record.to_dict() for record in runtime.store.list_records(kinds=["learning_goal"], scope=scope_ref, limit=limit)]
 
 
-def _loop_capabilities(goals: list[dict[str, Any]]) -> list[str]:
+def _resolve_autonomous_capability_selection(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    runtime_scope: ScopeRef | Mapping[str, Any] | None,
+    profile_key: str,
+    capability_scope: str,
+    at_time: str,
+    legacy_compatibility: bool,
+) -> dict[str, Any]:
+    """Resolve a bounded autonomous-learning cohort without name inference.
+
+    The selected Registry/Profile view is only a control-plane input.  Later
+    candidate and replay paths require the stricter acceptance-result subset.
+    An unavailable, empty, or cross-scope view deliberately remains empty.
+    """
+
+    if legacy_compatibility:
+        return {
+            "ok": True,
+            "mode": "legacy_compatibility",
+            "reason": "",
+            "capability_ids": list(LEGACY_AUTONOMOUS_LEARNING_CAPABILITIES),
+            "profile_key": "",
+            "capability_scope": capability_scope,
+            "runtime_scope": asdict(scope),
+        }
+    try:
+        from eimemory.capabilities.consumer_views import dynamic_capability_views
+        from eimemory.capabilities.registry import exact_runtime_scope
+
+        exact_scope = exact_runtime_scope(runtime_scope if runtime_scope is not None else scope)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "mode": "dynamic",
+            "reason": f"dynamic_runtime_scope_invalid:{type(exc).__name__}",
+            "capability_ids": [],
+            "profile_key": str(profile_key or "").strip(),
+            "capability_scope": capability_scope,
+            "runtime_scope": asdict(scope),
+        }
+    if asdict(exact_scope) != asdict(scope):
+        return {
+            "ok": False,
+            "mode": "dynamic",
+            "reason": "dynamic_runtime_scope_mismatch",
+            "capability_ids": [],
+            "profile_key": str(profile_key or "").strip(),
+            "capability_scope": capability_scope,
+            "runtime_scope": asdict(exact_scope),
+        }
+    try:
+        view = dynamic_capability_views(
+            runtime,
+            scope=exact_scope,
+            profile_key=str(profile_key or "").strip(),
+            capability_scope=capability_scope,
+            at_time=at_time,
+            limit=499,
+        )
+    except Exception as exc:
+        return {
+            "ok": False,
+            "mode": "dynamic",
+            "reason": f"dynamic_capability_selection_failed:{type(exc).__name__}",
+            "capability_ids": [],
+            "profile_key": str(profile_key or "").strip(),
+            "capability_scope": capability_scope,
+            "runtime_scope": asdict(exact_scope),
+        }
+    capability_ids = sorted(
+        {
+            str(item.get("capability_id") or "").strip()
+            for item in view.get("capabilities") or []
+            if isinstance(item, Mapping) and str(item.get("capability_id") or "").strip()
+        }
+    )
+    return {
+        "ok": bool(capability_ids),
+        "mode": "dynamic",
+        "reason": "" if capability_ids else "dynamic_capability_selection_empty",
+        "capability_ids": capability_ids,
+        "profile_key": str(profile_key or "").strip(),
+        "capability_scope": capability_scope,
+        "runtime_scope": asdict(exact_scope),
+        "profile": dict(view.get("profile") or {}),
+        "resolution_digest": str(view.get("resolution_digest") or ""),
+        "registry_watermark": str(view.get("registry_watermark") or ""),
+        "lifecycle_watermark": str(view.get("lifecycle_watermark") or ""),
+        "source": str(view.get("source") or ""),
+    }
+
+
+def _explicit_goal_capability(goal: Mapping[str, Any] | object) -> str:
+    """Return only a declared/attributed capability; never infer from prose."""
+
+    if not isinstance(goal, Mapping):
+        return ""
+    for key in ("target_capability", "capability", "attributed_capability", "capability_id"):
+        value = str(goal.get(key) or "").strip()
+        if value:
+            return value
+    for key in ("capability_attribution", "attribution"):
+        attribution = goal.get(key)
+        if not isinstance(attribution, Mapping):
+            continue
+        for capability_key in ("capability_id", "capability", "target_capability"):
+            value = str(attribution.get(capability_key) or "").strip()
+            if value:
+                return value
+    try:
+        hypothesis = explicit_hypothesis_reference(goal)
+    except Exception:
+        hypothesis = {}
+    return str(hypothesis.get("capability_id") or "").strip() if isinstance(hypothesis, Mapping) else ""
+
+
+def _implicit_capability_fallback(goal: Mapping[str, Any] | object) -> bool:
+    """Identify old generic goals that named a capability without provenance.
+
+    A registry match alone is not enough to legitimize the historical
+    ``source_type=fallback`` goal: otherwise a seeded legacy descriptor would
+    recreate the old proactive default.  A future planner can opt in by
+    attaching an exact Profile/Registry/attribution/hypothesis reference.
+    """
+
+    if not isinstance(goal, Mapping):
+        return False
+    source_type = str(goal.get("source_type") or goal.get("classification") or "").strip().lower()
+    if source_type not in {"fallback", "default", "legacy_fallback"}:
+        return False
+    try:
+        if explicit_hypothesis_reference(goal):
+            return False
+    except Exception:
+        pass
+    for field in ("capability_origin", "capability_source", "target_capability_source"):
+        source = str(goal.get(field) or "").strip().lower()
+        if source in {"registry", "profile", "attribution", "hypothesis"}:
+            return False
+    for field in ("capability_attribution", "attribution"):
+        attribution = goal.get(field)
+        if isinstance(attribution, Mapping) and any(
+            str(attribution.get(key) or "").strip()
+            for key in ("capability_id", "capability", "target_capability")
+        ):
+            return False
+    provenance = goal.get("capability_provenance")
+    if isinstance(provenance, Mapping):
+        source = str(provenance.get("source") or provenance.get("kind") or "").strip().lower()
+        if source in {"registry", "profile", "attribution", "hypothesis"}:
+            return False
+    return True
+
+
+def _loop_capabilities(
+    goals: list[dict[str, Any]],
+    *,
+    allowed_capability_ids: list[str] | tuple[str, ...] | set[str] | None = None,
+    legacy_compatibility: bool = False,
+) -> list[str]:
+    allowed = {str(value or "").strip() for value in allowed_capability_ids or [] if str(value or "").strip()}
     capabilities: list[str] = []
     for goal in goals:
-        for key in ("target_capability", "capability"):
-            value = str(goal.get(key) or "").strip()
-            if value and value not in capabilities:
-                capabilities.append(value)
-    return capabilities or ["memory.recall", "tool.routing", "safety.boundary"]
+        capability = _explicit_goal_capability(goal)
+        if (
+            capability
+            and (legacy_compatibility or not _implicit_capability_fallback(goal))
+            and (legacy_compatibility or capability in allowed)
+            and capability not in capabilities
+        ):
+            capabilities.append(capability)
+    if capabilities or not legacy_compatibility:
+        return capabilities
+    return list(LEGACY_AUTONOMOUS_LEARNING_CAPABILITIES)
 
 
-def _evidence_bound_capabilities(capabilities: list[str], acceptance_results: list[dict[str, Any]]) -> list[str]:
-    passed_case_ids_by_capability: dict[str, set[str]] = {}
+def _accepted_capability_ids(acceptance_results: list[dict[str, Any]]) -> list[str]:
+    """Read the actual dynamic acceptance cohort, preserving no static list."""
+
+    observed: dict[str, set[str]] = {}
+    passed: dict[str, set[str]] = {}
     for result in acceptance_results:
-        if not isinstance(result, dict) or result.get("passed") is not True:
+        if not isinstance(result, Mapping):
             continue
         capability = str(result.get("capability") or "").strip()
         case_id = str(result.get("case_id") or "").strip()
-        if capability and case_id:
-            passed_case_ids_by_capability.setdefault(capability, set()).add(case_id)
-    result: list[str] = []
+        if not capability or not case_id:
+            continue
+        observed.setdefault(capability, set()).add(case_id)
+        if result.get("passed") is True:
+            passed.setdefault(capability, set()).add(case_id)
+    return sorted(
+        capability
+        for capability, case_ids in observed.items()
+        if case_ids and case_ids.issubset(passed.get(capability, set()))
+    )
+
+
+def _evidence_bound_capabilities(
+    capabilities: list[str],
+    acceptance_results: list[dict[str, Any]],
+    *,
+    legacy_compatibility: bool = False,
+) -> list[str]:
+    """Require every selected acceptance case to pass before replay.
+
+    Dynamic selection trusts the exact acceptance output rather than consulting
+    an imported static replay catalog.  The old complete-case expectation is
+    retained only for explicit legacy replay.
+    """
+
+    observed_case_ids: dict[str, set[str]] = {}
+    passed_case_ids: dict[str, set[str]] = {}
+    for item in acceptance_results:
+        if not isinstance(item, Mapping):
+            continue
+        capability = str(item.get("capability") or "").strip()
+        case_id = str(item.get("case_id") or "").strip()
+        if not capability or not case_id:
+            continue
+        observed_case_ids.setdefault(capability, set()).add(case_id)
+        if item.get("passed") is True:
+            passed_case_ids.setdefault(capability, set()).add(case_id)
+
+    eligible: list[str] = []
     for value in capabilities:
-        text = str(value or "").strip()
-        required_case_ids = set(capability_replay_case_ids(text)) if text else set()
-        if (
-            text
-            and required_case_ids
-            and required_case_ids.issubset(passed_case_ids_by_capability.get(text, set()))
-            and text not in result
-        ):
-            result.append(text)
-    return result
+        capability = str(value or "").strip()
+        if not capability or capability in eligible:
+            continue
+        observed = observed_case_ids.get(capability, set())
+        if legacy_compatibility:
+            required = set(capability_replay_case_ids(capability, legacy_compatibility=True))
+        else:
+            required = observed
+        if required and required.issubset(passed_case_ids.get(capability, set())):
+            eligible.append(capability)
+    return eligible
 
 
 def _network_enabled(value: bool | None) -> bool:
@@ -1170,8 +2020,11 @@ def _network_output_gate(
             candidate_kinds=candidate_kinds,
         )
 
-    target_capability = str(goal.get("target_capability") or "").lower()
-    actionable_goal = any(term in target_capability for term in ("source", "research", "knowledge", "recall", "memory", "code", "skill"))
+    # The presence of an explicit, already-selected capability and declared
+    # artifact contract is the actionable signal.  Do not infer actionability
+    # from words embedded in a capability identifier.
+    target_capability = _explicit_goal_capability(goal)
+    actionable_goal = bool(target_capability and candidate_kinds)
     landing_targets: list[str] = []
     if actionable_goal:
         for kind in candidate_kinds:
@@ -1198,7 +2051,7 @@ def _network_output_gate(
         landing_targets=landing_targets,
         web_items=web_items,
         candidate_kinds=candidate_kinds,
-        target_capability=str(goal.get("target_capability") or ""),
+        target_capability=target_capability,
         research_note_id=research_note_id,
         replay_dataset=replay_dataset or {},
     )
@@ -1385,7 +2238,12 @@ def list_learning_candidates(runtime: Any, *, scope: dict[str, Any] | ScopeRef |
     return [record.to_dict() for record in runtime.store.list_records(kinds=["capability_candidate"], scope=scope_ref, limit=limit)]
 
 
-def _fallback_goal() -> dict[str, Any]:
+def _fallback_goal(*, legacy_compatibility: bool = False) -> dict[str, Any]:
+    """Create an observation-only fallback unless legacy replay is explicit."""
+
+    target_capability = (
+        LEGACY_AUTONOMOUS_LEARNING_FALLBACK_CAPABILITY if legacy_compatibility else ""
+    )
     return {
         "goal_type": "maintenance",
         "title": "Refresh autonomous learning loop",
@@ -1393,13 +2251,26 @@ def _fallback_goal() -> dict[str, Any]:
         "success_criteria": "Create one evidence-backed maintenance candidate.",
         "authority_tier": "L0",
         "priority": 0.4,
-        "target_capability": "proactive.judgment",
-        "semantic_key": stable_semantic_key("fallback_learning_goal"),
+        "target_capability": target_capability,
+        "classification": "legacy_compatibility" if legacy_compatibility else "unclassified",
+        "blocked_reason": "" if legacy_compatibility else "target_capability_unclassified",
+        "semantic_key": stable_semantic_key(
+            "fallback_learning_goal_legacy" if legacy_compatibility else "fallback_learning_goal_unclassified"
+        ),
     }
 
 
-def _candidate_kind_for_goal(goal: dict[str, Any]) -> str:
-    return choose_candidate_kinds_for_goal(goal, max_candidates=1)[0]
+def _candidate_kind_for_goal(
+    goal: dict[str, Any],
+    *,
+    legacy_compatibility: bool = False,
+) -> str:
+    kinds = choose_candidate_kinds_for_goal(
+        goal,
+        max_candidates=1,
+        legacy_compatibility=legacy_compatibility,
+    )
+    return kinds[0] if kinds else ""
 
 
 def _candidate_specs_for_goals(
@@ -1411,10 +2282,24 @@ def _candidate_specs_for_goals(
     evidence: list[dict[str, Any]] | None = None,
     runtime: Any | None = None,
     scope: ScopeRef | dict[str, Any] | None = None,
+    allowed_capability_ids: list[str] | tuple[str, ...] | set[str] | None = None,
+    legacy_compatibility: bool = False,
 ) -> list[dict[str, Any]]:
     specs: list[dict[str, Any]] = []
-    for goal in _candidate_goal_portfolio(goals, max_goals=max_goals):
-        for requested_target in choose_candidate_kinds_for_goal(goal, max_candidates=max_candidates_per_goal):
+    for goal in _candidate_goal_portfolio(
+        goals,
+        max_goals=max_goals,
+        allowed_capability_ids=allowed_capability_ids,
+        legacy_compatibility=legacy_compatibility,
+    ):
+        target_capability = _explicit_goal_capability(goal)
+        if not target_capability:
+            continue
+        for requested_target in choose_candidate_kinds_for_goal(
+            goal,
+            max_candidates=max_candidates_per_goal,
+            legacy_compatibility=legacy_compatibility,
+        ):
             promotion_target, patch = _resolved_candidate_kind_and_patch(
                 goal,
                 evidence or [],
@@ -1422,25 +2307,32 @@ def _candidate_specs_for_goals(
                 replay_dataset=replay_dataset,
                 runtime=runtime,
                 scope=scope,
+                legacy_compatibility=legacy_compatibility,
             )
             spec = {
                 "goal": dict(goal),
-                "target_capability": str(goal.get("target_capability") or "proactive.judgment"),
+                "target_capability": target_capability,
                 "requested_target": requested_target,
                 "promotion_target": promotion_target,
                 "patch": patch,
+                # Only an explicit hypothesis id is propagated.  A candidate
+                # never infers one from its goal wording or research volume.
+                "capability_hypothesis": explicit_hypothesis_reference(goal),
             }
             specs.append(spec)
     if specs:
         return specs
-    fallback = _fallback_goal()
+    if not legacy_compatibility:
+        return []
+    fallback = _fallback_goal(legacy_compatibility=True)
     promotion_target, patch = _resolved_candidate_kind_and_patch(
         fallback,
         evidence or [],
-        candidate_kind=_candidate_kind_for_goal(fallback),
+        candidate_kind=_candidate_kind_for_goal(fallback, legacy_compatibility=True),
         replay_dataset=replay_dataset,
         runtime=runtime,
         scope=scope,
+        legacy_compatibility=True,
     )
     return [
         {
@@ -1449,18 +2341,33 @@ def _candidate_specs_for_goals(
             "requested_target": promotion_target,
             "promotion_target": promotion_target,
             "patch": patch,
+            "capability_hypothesis": explicit_hypothesis_reference(fallback),
         }
     ]
 
 
-def _candidate_goal_portfolio(goals: list[dict[str, Any]], *, max_goals: int = 3) -> list[dict[str, Any]]:
+def _candidate_goal_portfolio(
+    goals: list[dict[str, Any]],
+    *,
+    max_goals: int = 3,
+    allowed_capability_ids: list[str] | tuple[str, ...] | set[str] | None = None,
+    legacy_compatibility: bool = False,
+) -> list[dict[str, Any]]:
     limit = max(1, _as_int(max_goals, default=1))
+    allowed = {str(value or "").strip() for value in allowed_capability_ids or [] if str(value or "").strip()}
     selected: list[dict[str, Any]] = []
     seen_categories: set[str] = set()
     for goal in goals:
         if not isinstance(goal, dict):
             continue
-        category = _capability_category(str(goal.get("target_capability") or "proactive.judgment"))
+        capability = _explicit_goal_capability(goal)
+        if (
+            not capability
+            or (not legacy_compatibility and _implicit_capability_fallback(goal))
+            or (not legacy_compatibility and capability not in allowed)
+        ):
+            continue
+        category = _capability_category(goal)
         if category in seen_categories:
             continue
         selected.append(dict(goal))
@@ -1470,26 +2377,40 @@ def _candidate_goal_portfolio(goals: list[dict[str, Any]], *, max_goals: int = 3
     for goal in goals:
         if not isinstance(goal, dict):
             continue
-        if goal not in selected:
+        capability = _explicit_goal_capability(goal)
+        if (
+            capability
+            and (legacy_compatibility or capability in allowed)
+            and (legacy_compatibility or not _implicit_capability_fallback(goal))
+            and goal not in selected
+        ):
             selected.append(dict(goal))
         if len(selected) >= limit:
             break
     return selected
 
 
-def _capability_category(capability: str) -> str:
-    value = str(capability or "").lower()
-    if "recall" in value or "memory" in value:
-        return "memory.recall"
-    if "tool" in value or "routing" in value or "route" in value:
-        return "tool.routing"
-    if "code" in value or "implementation" in value:
-        return "code.implementation"
-    if any(term in value for term in ("source", "research", "knowledge", "intake", "rss", "news", "paper")):
-        return "knowledge.intake"
-    if "proactive" in value or "judgment" in value or "initiative" in value:
-        return "proactive.judgment"
-    return value or "proactive.judgment"
+def _capability_category(goal: Mapping[str, Any] | str | object) -> str:
+    """Use only declared portfolio metadata or the exact capability id.
+
+    This replaces keyword mapping (for example, translating a word containing
+    ``memory`` to ``memory.recall``).  A goal with no authoritative target is
+    deliberately unclassified instead of being merged into a familiar bucket.
+    """
+
+    if isinstance(goal, Mapping):
+        category = str(
+            goal.get("capability_category")
+            or goal.get("attribution_category")
+            or goal.get("portfolio_category")
+            or ""
+        ).strip()
+        if category:
+            return f"declared:{category}"
+        capability = _explicit_goal_capability(goal)
+    else:
+        capability = str(goal or "").strip()
+    return f"capability:{capability}" if capability else "unclassified"
 
 
 def _goal_id_for_goal(goal: dict[str, Any], goals: list[dict[str, Any]], goal_ids: list[str]) -> str:
@@ -1500,8 +2421,52 @@ def _goal_id_for_goal(goal: dict[str, Any], goals: list[dict[str, Any]], goal_id
     return ""
 
 
-def choose_candidate_kinds_for_goal(goal: dict[str, Any], *, max_candidates: int = 3) -> list[str]:
-    capability = str(goal.get("target_capability") or "").lower()
+def choose_candidate_kinds_for_goal(
+    goal: dict[str, Any],
+    *,
+    max_candidates: int = 3,
+    legacy_compatibility: bool = False,
+) -> list[str]:
+    """Choose only declared artifact contracts on the dynamic path."""
+
+    if (
+        (not _explicit_goal_capability(goal) or _implicit_capability_fallback(goal))
+        and not legacy_compatibility
+    ):
+        return []
+    kinds = (
+        _legacy_candidate_kinds_for_goal(goal)
+        if legacy_compatibility
+        else _declared_candidate_kinds_for_goal(goal)
+    )
+    return _bounded_candidate_kinds(kinds, max_candidates=max_candidates)
+
+
+def _declared_candidate_kinds_for_goal(goal: Mapping[str, Any]) -> list[str]:
+    kinds: list[str] = []
+    for field in ("candidate_kinds", "promotion_targets"):
+        values = goal.get(field)
+        if not isinstance(values, (list, tuple, set)):
+            continue
+        for value in values:
+            kind = str(value or "").strip().lower()
+            if kind in _CANDIDATE_KINDS:
+                kinds.append(kind)
+    for field in ("candidate_kind", "promotion_target", "expected_artifact"):
+        declared = str(goal.get(field) or "").strip().lower()
+        if not declared:
+            continue
+        if declared in _CANDIDATE_KINDS:
+            kinds.append(declared)
+        else:
+            kinds.extend(_EXPLICIT_ARTIFACT_KIND_ALIASES.get(declared, ()))
+    return kinds
+
+
+def _legacy_candidate_kinds_for_goal(goal: Mapping[str, Any]) -> list[str]:
+    """Historic name-based routing, reachable only through the explicit flag."""
+
+    capability = _explicit_goal_capability(goal).lower()
     goal_type = str(goal.get("goal_type") or "").lower()
     expected = str(goal.get("expected_artifact") or "").lower()
     kinds: list[str] = []
@@ -1519,9 +2484,13 @@ def choose_candidate_kinds_for_goal(goal: dict[str, Any], *, max_candidates: int
         kinds.extend(["sop_draft", "eval_case"])
     if not kinds:
         kinds.extend(["sop_draft", "eval_case"])
+    return kinds
+
+
+def _bounded_candidate_kinds(kinds: list[str], *, max_candidates: int) -> list[str]:
     deduped: list[str] = []
     for kind in kinds:
-        if kind not in deduped:
+        if kind in _CANDIDATE_KINDS and kind not in deduped:
             deduped.append(kind)
         if len(deduped) >= max(1, _as_int(max_candidates, default=3)):
             break
@@ -1536,8 +2505,32 @@ def _resolved_candidate_kind_and_patch(
     replay_dataset: dict[str, Any] | None = None,
     runtime: Any | None = None,
     scope: ScopeRef | dict[str, Any] | None = None,
+    legacy_compatibility: bool = False,
 ) -> tuple[str, dict[str, Any]]:
-    requested = str(candidate_kind or _candidate_kind_for_goal(goal))
+    requested = str(
+        candidate_kind
+        or _candidate_kind_for_goal(goal, legacy_compatibility=legacy_compatibility)
+    ).strip()
+    if not legacy_compatibility and _implicit_capability_fallback(goal):
+        patch = _candidate_patch(
+            goal,
+            evidence,
+            candidate_kind="",
+            replay_dataset=replay_dataset,
+            legacy_compatibility=False,
+        )
+        patch["promotion_target"] = ""
+        return "", patch
+    if not requested or requested not in _CANDIDATE_KINDS:
+        patch = _candidate_patch(
+            goal,
+            evidence,
+            candidate_kind="",
+            replay_dataset=replay_dataset,
+            legacy_compatibility=legacy_compatibility,
+        )
+        patch["promotion_target"] = ""
+        return "", patch
     if requested == "code_patch":
         patch = _proposed_code_patch(
             goal,
@@ -1545,10 +2538,17 @@ def _resolved_candidate_kind_and_patch(
             replay_dataset=replay_dataset,
             runtime=runtime,
             scope=scope,
+            legacy_compatibility=legacy_compatibility,
         )
         patch["promotion_target"] = "code_patch"
         return "code_patch", patch
-    patch = _candidate_patch(goal, evidence, candidate_kind=requested, replay_dataset=replay_dataset)
+    patch = _candidate_patch(
+        goal,
+        evidence,
+        candidate_kind=requested,
+        replay_dataset=replay_dataset,
+        legacy_compatibility=legacy_compatibility,
+    )
     patch["promotion_target"] = requested
     return requested, patch
 
@@ -1559,10 +2559,14 @@ def _candidate_patch(
     *,
     candidate_kind: str | None = None,
     replay_dataset: dict[str, Any] | None = None,
+    legacy_compatibility: bool = False,
 ) -> dict[str, Any]:
-    target_capability = str(goal.get("target_capability") or "proactive.judgment")
+    target_capability = _explicit_goal_capability(goal)
     summary = str(goal.get("success_criteria") or goal.get("question") or "")
-    kind = str(candidate_kind or _candidate_kind_for_goal(goal))
+    kind = str(
+        candidate_kind
+        or _candidate_kind_for_goal(goal, legacy_compatibility=legacy_compatibility)
+    ).strip()
     replay_case_ids = [str(case.get("case_id") or "") for case in (replay_dataset or {}).get("cases", [])[:10] if case.get("case_id")]
     base = {
         "summary": summary,
@@ -1576,6 +2580,26 @@ def _candidate_patch(
         "replay_case_ids": replay_case_ids,
     }
     base.update(_candidate_contract_fields(goal, kind=kind, summary=summary, replay_case_ids=replay_case_ids))
+    implicit_fallback = not legacy_compatibility and _implicit_capability_fallback(goal)
+    if not target_capability or kind not in _CANDIDATE_KINDS or implicit_fallback:
+        blocked_reasons = [str(reason) for reason in base.get("blocked_reasons") or [] if str(reason)]
+        if not target_capability:
+            blocked_reasons.append("target_capability_unclassified")
+        if kind not in _CANDIDATE_KINDS:
+            blocked_reasons.append("candidate_kind_unclassified")
+        if implicit_fallback:
+            blocked_reasons.append("implicit_capability_fallback_unclassified")
+        return {
+            **base,
+            "promotion_ready": False,
+            "blocked_reasons": list(dict.fromkeys(blocked_reasons)),
+            "proposal_status": "blocked",
+            "proposal_blocked_reason": "target_capability_unclassified"
+            if not target_capability
+            else "implicit_capability_fallback_unclassified"
+            if implicit_fallback
+            else "candidate_kind_unclassified",
+        }
     if kind == "eval_case":
         cases = list((replay_dataset or {}).get("cases") or [])
         first = cases[0] if cases else {}
@@ -1660,7 +2684,7 @@ def _candidate_patch(
 
 
 def _candidate_summary(goal: dict[str, Any], *, candidate_kind: str, patch: dict[str, Any]) -> str:
-    capability = str(goal.get("target_capability") or patch.get("target_capability") or "proactive.judgment")
+    capability = _explicit_goal_capability(goal) or str(patch.get("target_capability") or "").strip() or "unclassified capability"
     artifact = _candidate_artifact_label(candidate_kind)
     title = _first_text(goal.get("question"), goal.get("title"), patch.get("summary"), patch.get("policy"))
     criteria = _first_text(goal.get("success_criteria"), patch.get("success_criteria"))
@@ -1718,6 +2742,7 @@ def _proposed_code_patch(
     replay_dataset: dict[str, Any] | None,
     runtime: Any | None,
     scope: ScopeRef | dict[str, Any] | None,
+    legacy_compatibility: bool = False,
 ) -> dict[str, Any]:
     """Create a constrained code patch instead of silently downgrading to SOP.
 
@@ -1726,7 +2751,20 @@ def _proposed_code_patch(
     record honest and lets a later configured proposer retry the same goal.
     """
 
-    base = _candidate_patch(goal, evidence, candidate_kind="code_patch", replay_dataset=replay_dataset)
+    base = _candidate_patch(
+        goal,
+        evidence,
+        candidate_kind="code_patch",
+        replay_dataset=replay_dataset,
+        legacy_compatibility=legacy_compatibility,
+    )
+    if not legacy_compatibility and _implicit_capability_fallback(goal):
+        return {
+            **base,
+            "promotion_target": "",
+            "proposal_status": "blocked",
+            "proposal_blocked_reason": "implicit_capability_fallback_unclassified",
+        }
     structured = _structured_code_patch(goal=goal, replay_dataset=replay_dataset)
     repo_root = str(
         structured.get("repo_root")
@@ -1734,7 +2772,7 @@ def _proposed_code_patch(
         or os.environ.get("EIMEMORY_AUTONOMOUS_CODE_REPO")
         or ""
     ).strip()
-    proposer, proposer_reason = _resolve_code_patch_proposer(runtime=runtime, goal=goal)
+    proposer, proposer_reason = resolve_code_patch_proposer(runtime=runtime, goal=goal)
     incident = {
         "classification": "code_fixable",
         "incident_id": str(goal.get("semantic_key") or goal.get("goal_id") or goal.get("title") or "learning_goal"),
@@ -1761,14 +2799,32 @@ def _proposed_code_patch(
     blocked_reason = str(proposal.get("blocked_reason") or "invalid_code_proposal")
     if status == "proposal_unavailable" and not structured and proposer_reason:
         blocked_reason = proposer_reason
+    automation_policy, requested_machine_actions, machine_policy_reason = _bridge_machine_policy_envelope(
+        proposal
+    )
+    # A code proposal may be syntactically valid while still lacking machine
+    # authority to perform its declared effects.  This is a terminal machine
+    # gate for this candidate, never a redirect to a manual approval queue.
+    if status == "proposal_ready" and machine_policy_reason:
+        status = "proposal_blocked"
+        blocked_reason = machine_policy_reason
+    machine_policy_authorized = status == "proposal_ready" and not machine_policy_reason
 
     common = {
         "proposal_status": status,
         "proposal_blocked_reason": blocked_reason if status != "proposal_ready" else "",
         "proposal_source": str(proposal.get("proposal_source") or ""),
         "proposal_report_type": str(proposal.get("report_type") or ""),
-        "requires_human_approval": False,
-        "approval_status": "not_required",
+        "authorization_mode": "machine_gated",
+        "decision_authority": "machine_policy",
+        "machine_policy_required_for_apply": True,
+        # These are copied only from the code-evolution bridge.  The bridge
+        # owns sanitization; goal/proposer/incident policy data is never read
+        # as authority in this path.
+        "automation_policy": automation_policy,
+        "requested_machine_actions": requested_machine_actions,
+        "machine_policy_status": "authorized" if machine_policy_authorized else "blocked",
+        "machine_policy_blocked_reason": "" if machine_policy_authorized else (machine_policy_reason or blocked_reason),
         "unified_diff": str(proposal.get("unified_diff") or ""),
         "patch_digest": str(proposal.get("patch_digest") or ""),
         "base_commit": str(proposal.get("base_commit") or ""),
@@ -1785,6 +2841,8 @@ def _proposed_code_patch(
             "file_updates": list(proposal.get("file_updates") or []),
             "verification_commands": list(proposal.get("verification_commands") or []),
             "apply_to_repo": True,
+            "commit_to_repo": "commit" in requested_machine_actions,
+            "deploy_to_production": "deployment" in requested_machine_actions,
             "rollback_plan": dict(base.get("rollback_plan") or {"type": "restore_files"}),
         }
 
@@ -1800,11 +2858,99 @@ def _proposed_code_patch(
         "verification_commands": [],
         "promotion_ready": False,
         "blocked_reasons": previous_blocked,
-        "apply_to_repo": True,
+        # Do not leave a blocked proposal looking executable to a later
+        # adapter.  A new machine-authorized proposal must be generated.
+        "apply_to_repo": False,
+        "commit_to_repo": False,
+        "deploy_to_production": False,
     }
 
 
-def _resolve_code_patch_proposer(*, runtime: Any | None, goal: dict[str, Any]) -> tuple[object | None, str]:
+def _bridge_machine_policy_envelope(
+    proposal: Mapping[str, Any],
+) -> tuple[dict[str, Any], list[str], str]:
+    """Return the bridge-sanitized policy and exact requested effects.
+
+    A candidate receives no policy from its goal, incident, structured patch,
+    or proposer.  The code-evolution bridge is the single handoff here; its
+    policy copy is diagnostic while the promotion path independently resolves
+    its trusted machine policy.  Missing, malformed, or non-authorizing
+    envelopes fail closed without creating a human-review state.
+    """
+
+    raw_policy = proposal.get("automation_policy")
+    if not isinstance(raw_policy, Mapping):
+        reason = "automation_policy_missing" if raw_policy in (None, {}) else "automation_policy_ambiguous"
+        return _empty_machine_policy_envelope(), [], reason
+
+    raw_declared = raw_policy.get("declared")
+    raw_policy_id = raw_policy.get("policy_id")
+    raw_actions = raw_policy.get("actions")
+    if raw_declared is not None and not isinstance(raw_declared, bool):
+        return _empty_machine_policy_envelope(), [], "automation_policy_ambiguous"
+    if raw_policy_id is not None and not isinstance(raw_policy_id, str):
+        return _empty_machine_policy_envelope(), [], "automation_policy_ambiguous"
+    if not isinstance(raw_actions, Mapping):
+        return _empty_machine_policy_envelope(), [], "automation_policy_ambiguous"
+    if set(raw_actions) != set(AUTOMATION_POLICY_ACTIONS) or any(
+        not isinstance(raw_actions.get(action), bool) for action in AUTOMATION_POLICY_ACTIONS
+    ):
+        return _empty_machine_policy_envelope(), [], "automation_policy_ambiguous"
+
+    # Preserve the bridge's bounded diagnostics (for example policy digest and
+    # deployment-environment source) while normalizing the authority-bearing
+    # fields into the stable candidate schema.
+    policy = dict(raw_policy)
+    policy_id = str(raw_policy_id or "").strip()
+    policy["declared"] = bool(raw_declared) if raw_declared is not None else bool(policy_id)
+    policy["policy_id"] = policy_id
+    policy["actions"] = {action: bool(raw_actions[action]) for action in AUTOMATION_POLICY_ACTIONS}
+
+    if not policy["declared"]:
+        return policy, [], "automation_policy_missing"
+    if not policy_id:
+        return policy, [], "automation_policy_id_missing"
+
+    raw_requested_actions = proposal.get("requested_machine_actions")
+    if not isinstance(raw_requested_actions, (list, tuple)):
+        reason = (
+            "requested_machine_actions_missing"
+            if raw_requested_actions in (None, [])
+            else "requested_machine_actions_ambiguous"
+        )
+        return policy, [], reason
+    requested_actions: list[str] = []
+    for value in raw_requested_actions:
+        if not isinstance(value, str):
+            return policy, [], "requested_machine_actions_ambiguous"
+        action = value.strip()
+        if not action or action not in AUTOMATION_POLICY_ACTIONS or action in requested_actions:
+            return policy, [], "requested_machine_actions_ambiguous"
+        requested_actions.append(action)
+    if not requested_actions:
+        return policy, [], "requested_machine_actions_missing"
+    if "local_apply" not in requested_actions:
+        return policy, requested_actions, "requested_machine_actions_ambiguous"
+
+    for action in requested_actions:
+        if not policy["actions"][action]:
+            return policy, requested_actions, f"automation_policy_{action}_not_enabled"
+    # Deployment in the code-apply path is subordinate to a commit policy even
+    # when the proposal's requested-actions record omits a separate commit.
+    if "deployment" in requested_actions and not policy["actions"]["commit"]:
+        return policy, requested_actions, "automation_policy_commit_not_enabled"
+    return policy, requested_actions, ""
+
+
+def _empty_machine_policy_envelope() -> dict[str, Any]:
+    return {
+        "declared": False,
+        "policy_id": "",
+        "actions": {action: False for action in AUTOMATION_POLICY_ACTIONS},
+    }
+
+
+def resolve_code_patch_proposer(*, runtime: Any | None, goal: dict[str, Any]) -> tuple[object | None, str]:
     for value in (
         goal.get("code_patch_proposer"),
         getattr(runtime, "code_patch_proposer", None) if runtime is not None else None,
@@ -1900,9 +3046,9 @@ def _has_file_updates(value: dict[str, Any]) -> bool:
 
 
 def _safe_skill_name(capability: str) -> str:
-    value = "".join(ch.lower() if ch.isalnum() else "-" for ch in str(capability or "proactive-skill"))
+    value = "".join(ch.lower() if ch.isalnum() else "-" for ch in str(capability or "unclassified-skill"))
     value = "-".join(part for part in value.split("-") if part)
-    return value or "proactive-skill"
+    return value or "unclassified-skill"
 
 
 def _first_text(*values: Any) -> str:

@@ -7,9 +7,28 @@ from eimemory.governance.thoughts import generate_thoughts, promote_thoughts_to_
 
 
 def test_goal_registry_drives_learning_goals() -> None:
-    registry = load_goal_registry()
+    # This assertion covers the retired bundled registry, so selecting it is
+    # explicit and its targets are admitted through the caller's capability
+    # view rather than revived as a default vocabulary.
+    registry = load_goal_registry(legacy_compatibility=True)
+    capability_ids = sorted(
+        {
+            str(capability)
+            for goal in registry["long_term"]
+            for capability in goal.get("sub_capabilities") or []
+        }
+    )
 
-    goals = generate_learning_goals({"weaknesses": [], "metrics": {"replay_pass_rate": 1.0}}, [], goal_registry=registry, max_goals=2)
+    goals = generate_learning_goals(
+        {
+            "weaknesses": [],
+            "metrics": {"replay_pass_rate": 1.0},
+            "capabilities": [{"capability": capability} for capability in capability_ids],
+        },
+        [],
+        goal_registry=registry,
+        max_goals=2,
+    )
 
     assert goals
     assert goals[0]["source_type"] == "goal_registry"
@@ -30,8 +49,26 @@ def test_thought_queue_persists_merges_and_promotes_to_goal(tmp_path) -> None:
         "evidence_tier": "T0",
     }
 
-    first = generate_thoughts(runtime, signals=[signal], self_model={}, goals=[], scope=scope, loop_id="loop-1", persist=True)
-    second = generate_thoughts(runtime, signals=[signal], self_model={}, goals=[], scope=scope, loop_id="loop-2", persist=True)
+    first = generate_thoughts(
+        runtime,
+        signals=[signal],
+        self_model={},
+        goals=[],
+        scope=scope,
+        loop_id="loop-1",
+        persist=True,
+        legacy_compatibility=True,
+    )
+    second = generate_thoughts(
+        runtime,
+        signals=[signal],
+        self_model={},
+        goals=[],
+        scope=scope,
+        loop_id="loop-2",
+        persist=True,
+        legacy_compatibility=True,
+    )
     thoughts = second["thoughts"]
     promoted = promote_thoughts_to_goals(thoughts, limit=1)
 

@@ -49,6 +49,7 @@ VALID_KINDS: frozenset[str] = frozenset(
         "evaluation_packet",
         "evaluator_verdict",
         "stop_judgment",
+        "capability_hypothesis",
         "capability_candidate",
         "promotion_request",
         "capability_score",

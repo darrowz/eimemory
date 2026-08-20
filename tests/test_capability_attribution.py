@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from eimemory.api.runtime import Runtime
 from eimemory.experience import record_outcome_trace
-from eimemory.experience.capability_contract import CASE_CONTRACTS
+from eimemory.experience.capability_contract import LEGACY_CASE_CONTRACTS
 from eimemory.governance.capability_acceptance import run_capability_acceptance
-from eimemory.governance.capability_acceptance import CAPABILITY_ACCEPTANCE_CASE_IDS
+from eimemory.governance.capability_acceptance import LEGACY_CAPABILITY_ACCEPTANCE_CASE_IDS
 from eimemory.governance.capability_attribution import attribute_capability_outcomes, collect_capability_evidence
 from eimemory.governance.capability_ledger import build_capability_ledger
 
@@ -29,13 +29,18 @@ def _trace_payload(trace_id: str, *, task_type: str, summary: str, status: str =
 def test_attribute_capability_outcomes_writes_contract_evidence_to_ledger(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     scope = {"agent_id": "hongtu", "workspace_id": "business", "user_id": "darrow"}
-    run_capability_acceptance(runtime, scope=scope, persist=True)
+    run_capability_acceptance(runtime, scope=scope, persist=True, legacy_compatibility=True)
 
-    report = attribute_capability_outcomes(runtime, scope=scope, loop_id="attr_test")
-    ledger = build_capability_ledger(runtime, scope=scope)
+    report = attribute_capability_outcomes(
+        runtime,
+        scope=scope,
+        loop_id="attr_test",
+        legacy_compatibility=True,
+    )
+    ledger = build_capability_ledger(runtime, scope=scope, legacy_compatibility=True)
 
     assert report["ok"] is True
-    assert {capability for capability, _validator in CASE_CONTRACTS.values()} == set(report["capabilities"])
+    assert {capability for capability, _validator in LEGACY_CASE_CONTRACTS.values()} == set(report["capabilities"])
     assert ledger["capabilities"]["operations.uumit"]["evidence_count"] == 3
     assert ledger["capabilities"]["search.discovery"]["evidence_sources"] == ["outcome_trace"]
     assert ledger["capabilities"]["office.daily_task"]["evidence_count"] == 0
@@ -55,9 +60,9 @@ def test_legacy_office_evidence_remains_diagnostic_only(tmp_path) -> None:
         scope=scope,
     )
 
-    diagnostics = collect_capability_evidence(runtime, scope=scope)
-    attribute_capability_outcomes(runtime, scope=scope, loop_id="attr_gap")
-    item = build_capability_ledger(runtime, scope=scope)["capabilities"]["office.daily_task"]
+    diagnostics = collect_capability_evidence(runtime, scope=scope, legacy_compatibility=True)
+    attribute_capability_outcomes(runtime, scope=scope, loop_id="attr_gap", legacy_compatibility=True)
+    item = build_capability_ledger(runtime, scope=scope, legacy_compatibility=True)["capabilities"]["office.daily_task"]
 
     assert len(diagnostics["office.daily_task"]) == 2
     assert all(evidence["contract_verified"] is False for evidence in diagnostics["office.daily_task"])
@@ -84,10 +89,10 @@ def test_policy_source_field_does_not_pollute_search_discovery(tmp_path) -> None
 def test_attribution_covers_research_synthesis_and_device_control(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     scope = {"agent_id": "hongtu", "workspace_id": "mixed"}
-    run_capability_acceptance(runtime, scope=scope, persist=True)
+    run_capability_acceptance(runtime, scope=scope, persist=True, legacy_compatibility=True)
 
-    report = attribute_capability_outcomes(runtime, scope=scope, loop_id="attr_mixed")
-    ledger = build_capability_ledger(runtime, scope=scope)
+    report = attribute_capability_outcomes(runtime, scope=scope, loop_id="attr_mixed", legacy_compatibility=True)
+    ledger = build_capability_ledger(runtime, scope=scope, legacy_compatibility=True)
 
     assert {"research.synthesis", "device.control"} <= set(report["capabilities"])
     assert ledger["capabilities"]["research.synthesis"]["evidence_count"] == 3
@@ -107,9 +112,9 @@ def test_attribution_keeps_chinese_keyword_search_as_diagnostics(tmp_path) -> No
         scope=scope,
     )
 
-    diagnostics = collect_capability_evidence(runtime, scope=scope)
-    report = attribute_capability_outcomes(runtime, scope=scope, loop_id="attr_search_cn")
-    ledger = build_capability_ledger(runtime, scope=scope)
+    diagnostics = collect_capability_evidence(runtime, scope=scope, legacy_compatibility=True)
+    report = attribute_capability_outcomes(runtime, scope=scope, loop_id="attr_search_cn", legacy_compatibility=True)
+    ledger = build_capability_ledger(runtime, scope=scope, legacy_compatibility=True)
 
     assert len(diagnostics["search.discovery"]) == 1
     assert diagnostics["search.discovery"][0]["contract_verified"] is False
@@ -143,8 +148,8 @@ def test_explicit_contracts_attribute_exactly_one_capability_and_case(tmp_path) 
     runtime = Runtime.create(root=tmp_path)
     scope = {"agent_id": "hongtu", "workspace_id": "contract-attribution"}
     try:
-        acceptance = run_capability_acceptance(runtime, scope=scope, persist=True)
-        evidence_by_capability = collect_capability_evidence(runtime, scope=scope)
+        acceptance = run_capability_acceptance(runtime, scope=scope, persist=True, legacy_compatibility=True)
+        evidence_by_capability = collect_capability_evidence(runtime, scope=scope, legacy_compatibility=True)
     finally:
         runtime.close()
 
@@ -155,10 +160,10 @@ def test_explicit_contracts_attribute_exactly_one_capability_and_case(tmp_path) 
         for item in items
         if item["contract_verified"] is True
     ]
-    assert len(contract_items) == len(CAPABILITY_ACCEPTANCE_CASE_IDS) == 27
-    assert {item["case_id"] for item in contract_items} == set(CAPABILITY_ACCEPTANCE_CASE_IDS)
+    assert len(contract_items) == len(LEGACY_CAPABILITY_ACCEPTANCE_CASE_IDS) == 27
+    assert {item["case_id"] for item in contract_items} == set(LEGACY_CAPABILITY_ACCEPTANCE_CASE_IDS)
     for item in contract_items:
-        expected_capability = CASE_CONTRACTS[item["case_id"]][0]
+        expected_capability = LEGACY_CASE_CONTRACTS[item["case_id"]][0]
         assert item["capabilities"] == [expected_capability]
         assert item["capability"] == expected_capability
         assert len(item["source_record_ids"]) == 1
@@ -178,7 +183,7 @@ def test_legacy_keyword_trace_is_diagnostic_only(tmp_path) -> None:
             ),
             scope=scope,
         )
-        evidence_by_capability = collect_capability_evidence(runtime, scope=scope)
+        evidence_by_capability = collect_capability_evidence(runtime, scope=scope, legacy_compatibility=True)
     finally:
         runtime.close()
 
@@ -206,9 +211,19 @@ def test_legacy_diagnostics_are_not_written_to_capability_ledger(tmp_path) -> No
                 ),
                 scope=scope,
             )
-        diagnostics = collect_capability_evidence(runtime, scope=scope)
-        report = attribute_capability_outcomes(runtime, scope=scope, loop_id="legacy_diagnostics")
-        ledger = build_capability_ledger(runtime, scope=scope, attribute_outcomes=False)
+        diagnostics = collect_capability_evidence(runtime, scope=scope, legacy_compatibility=True)
+        report = attribute_capability_outcomes(
+            runtime,
+            scope=scope,
+            loop_id="legacy_diagnostics",
+            legacy_compatibility=True,
+        )
+        ledger = build_capability_ledger(
+            runtime,
+            scope=scope,
+            attribute_outcomes=False,
+            legacy_compatibility=True,
+        )
     finally:
         runtime.close()
 

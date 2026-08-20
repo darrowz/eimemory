@@ -360,7 +360,7 @@ def test_learning_dashboard_lists_current_promotion_status(tmp_path) -> None:
     candidate_id = _policy_candidate(runtime, scope=scope, pattern_id="watch-dashboard")
     result = promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", eval_result=_passing_eval(), health={"ok": True})
 
-    dashboard = runtime.build_learning_dashboard(scope=scope, persist=False)
+    dashboard = runtime.build_learning_dashboard(scope=scope, persist=False, legacy_compatibility=True)
 
     statuses = dashboard["promotion_statuses"]
     assert any(
