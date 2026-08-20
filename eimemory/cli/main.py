@@ -333,6 +333,10 @@ def _build_parser() -> argparse.ArgumentParser:
     experience_outcome.add_argument("json_path")
 
     learn = sub.add_parser("learn")
+    # Every learning subcommand has a deterministic dynamic-safe default.
+    # Individual subcommands expose the opt-in flag where legacy behavior is
+    # supported, so a future handler cannot fail on a missing Namespace field.
+    learn.set_defaults(legacy_compatibility=False)
     learn_sub = learn.add_subparsers(dest="learn_command")
     learn_watch = learn_sub.add_parser("watch")
     learn_watch.add_argument("--dry-run", action="store_true", default=True)
@@ -340,6 +344,7 @@ def _build_parser() -> argparse.ArgumentParser:
     learn_watch.add_argument("--profile", default="")
     learn_watch.add_argument("--capability-scope", default="global")
     learn_watch.add_argument("--at-time", default="")
+    learn_watch.add_argument("--legacy-compatibility", action="store_true")
     learn_watch.add_argument("--json", action="store_true", default=True)
     learn_think = learn_sub.add_parser("think")
     learn_think.add_argument("--dry-run", action="store_true")
