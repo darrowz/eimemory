@@ -72,6 +72,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release-bound L5 closure evidence: live acceptance, observation, and
   independent readiness for the deployed commit.
 
+## [1.9.137] - 2026-08-20
+
+### Fixed
+
+- Register the explicit `learn watch --legacy-compatibility` parser flag so
+  scheduled dynamic watch runs retain their fail-closed default instead of
+  failing before evaluation.
+
 ## [1.9.136] - 2026-08-20
 
 ### Added

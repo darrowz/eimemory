@@ -71,6 +71,26 @@ def _force_cli_measured_replay_pass(monkeypatch) -> None:
     monkeypatch.setattr(Runtime, "run_real_task_replay", fake_run_real_task_replay)
 
 
+def test_cli_learn_watch_forwards_explicit_legacy_mode(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path))
+    modes: list[bool] = []
+
+    def fake_collect_world_signals(_runtime, **kwargs):
+        modes.append(bool(kwargs["legacy_compatibility"]))
+        return {"ok": True, "report_type": "world_watch"}
+
+    monkeypatch.setattr(
+        "eimemory.governance.world_watchers.collect_world_signals",
+        fake_collect_world_signals,
+    )
+
+    assert cli_main(["learn", "watch"]) == 0
+    assert json.loads(capsys.readouterr().out)["ok"] is True
+    assert cli_main(["learn", "watch", "--legacy-compatibility"]) == 0
+    assert json.loads(capsys.readouterr().out)["ok"] is True
+    assert modes == [False, True]
+
+
 def test_cli_learn_cycle_dry_run_outputs_preview_without_persisting(tmp_path, monkeypatch, capsys) -> None:
     monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path))
 
