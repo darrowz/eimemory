@@ -26,7 +26,9 @@ from eimemory.identity import canonical_hongtu_user_id, hongtu_scope
 from eimemory.identity_ops import identity_report, repair_hongtu_identity
 from eimemory.knowledge.compiler import compile_paper_knowledge
 from eimemory.governance.console import write_evolution_console
-from eimemory.governance.capability_acceptance import ALL_CAPABILITY_ACCEPTANCE_CASE_IDS
+from eimemory.governance.capability_acceptance import (
+    LEGACY_CAPABILITY_ACCEPTANCE_CASE_IDS,
+)
 from eimemory.governance.snapshot import build_governance_snapshot
 from eimemory.ei_bridge.openclaw_runtime import handle_openclaw_feishu_event
 from eimemory.persona.cli import add_persona_parser, handle_persona_command
@@ -335,11 +337,18 @@ def _build_parser() -> argparse.ArgumentParser:
     learn_watch = learn_sub.add_parser("watch")
     learn_watch.add_argument("--dry-run", action="store_true", default=True)
     learn_watch.add_argument("--apply", action="store_true")
+    learn_watch.add_argument("--profile", default="")
+    learn_watch.add_argument("--capability-scope", default="global")
+    learn_watch.add_argument("--at-time", default="")
     learn_watch.add_argument("--json", action="store_true", default=True)
     learn_think = learn_sub.add_parser("think")
     learn_think.add_argument("--dry-run", action="store_true")
     learn_think.add_argument("--persist", action="store_true")
     learn_think.add_argument("--max-items", type=int, default=20)
+    learn_think.add_argument("--profile", default="")
+    learn_think.add_argument("--capability-scope", default="global")
+    learn_think.add_argument("--at-time", default="")
+    learn_think.add_argument("--legacy-compatibility", action="store_true")
     learn_think.add_argument("--json", action="store_true", default=True)
     learn_cycle = learn_sub.add_parser("cycle")
     learn_cycle.add_argument("--full", action="store_true", default=True)
@@ -348,6 +357,10 @@ def _build_parser() -> argparse.ArgumentParser:
     learn_cycle.add_argument("--force", action="store_true")
     learn_cycle.add_argument("--max-goals", type=int, default=3)
     learn_cycle.add_argument("--max-promotions", type=int, default=3)
+    learn_cycle.add_argument("--profile", default="")
+    learn_cycle.add_argument("--capability-scope", default="global")
+    learn_cycle.add_argument("--at-time", default="")
+    learn_cycle.add_argument("--legacy-compatibility", action="store_true")
     learn_cycle.add_argument("--json", action="store_true", default=True)
     learn_autonomy = learn_sub.add_parser("autonomy")
     learn_autonomy.add_argument("--full", action="store_true", default=True)
@@ -377,24 +390,40 @@ def _build_parser() -> argparse.ArgumentParser:
     learn_ledger.add_argument("--limit", type=int, default=200)
     learn_ledger.add_argument("--since", default="")
     learn_ledger.add_argument("--until", default="")
+    learn_ledger.add_argument("--legacy-compatibility", action="store_true")
     learn_ledger.add_argument("--json", action="store_true", default=True)
     learn_replay_dataset = learn_sub.add_parser("replay-dataset")
     learn_replay_dataset.add_argument("--limit", type=int, default=50)
     learn_replay_dataset.add_argument("--persist", action="store_true")
     learn_replay_dataset.add_argument("--include-built-in-regressions", action="store_true")
+    learn_replay_dataset.add_argument("--profile", default="")
+    learn_replay_dataset.add_argument("--capability-scope", default="global")
+    learn_replay_dataset.add_argument("--legacy-compatibility", action="store_true")
     learn_replay_dataset.add_argument("--json", action="store_true", default=True)
     learn_goal_graph = learn_sub.add_parser("goal-graph")
     learn_goal_graph.add_argument("--max-goals", type=int, default=3)
     learn_goal_graph.add_argument("--capability", action="append", default=[])
+    learn_goal_graph.add_argument("--profile", default="")
+    learn_goal_graph.add_argument("--capability-scope", default="global")
+    learn_goal_graph.add_argument("--at-time", default="")
+    learn_goal_graph.add_argument("--legacy-compatibility", action="store_true")
     learn_goal_graph.add_argument("--persist", action="store_true")
     learn_goal_graph.add_argument("--json", action="store_true", default=True)
     learn_world_model = learn_sub.add_parser("world-model")
     learn_world_model.add_argument("--persist", action="store_true")
     learn_world_model.add_argument("--limit", type=int, default=500)
+    learn_world_model.add_argument("--profile", default="")
+    learn_world_model.add_argument("--capability-scope", default="global")
+    learn_world_model.add_argument("--at-time", default="")
+    learn_world_model.add_argument("--legacy-compatibility", action="store_true")
     learn_world_model.add_argument("--json", action="store_true", default=True)
     learn_roadmap = learn_sub.add_parser("roadmap")
     learn_roadmap.add_argument("--horizon-days", type=int, default=180)
     learn_roadmap.add_argument("--persist", action="store_true")
+    learn_roadmap.add_argument("--profile", default="")
+    learn_roadmap.add_argument("--capability-scope", default="global")
+    learn_roadmap.add_argument("--at-time", default="")
+    learn_roadmap.add_argument("--legacy-compatibility", action="store_true")
     learn_roadmap.add_argument("--json", action="store_true", default=True)
     learn_l5 = learn_sub.add_parser("l5")
     learn_l5.add_argument("--apply", action="store_true")
@@ -403,6 +432,10 @@ def _build_parser() -> argparse.ArgumentParser:
     learn_l5.add_argument("--max-promotions", type=int, default=0)
     learn_l5.add_argument("--no-network", action="store_true")
     learn_l5.add_argument("--no-persist", action="store_true")
+    learn_l5.add_argument("--profile", default="")
+    learn_l5.add_argument("--capability-scope", default="global")
+    learn_l5.add_argument("--at-time", default="")
+    learn_l5.add_argument("--legacy-compatibility", action="store_true")
     learn_l5.add_argument("--json", action="store_true", default=True)
     learn_l5_assess = learn_sub.add_parser("l5-assess")
     learn_l5_assess.add_argument("--persist", action="store_true")
@@ -410,11 +443,120 @@ def _build_parser() -> argparse.ArgumentParser:
     learn_l5_readiness = learn_sub.add_parser("l5-readiness")
     learn_l5_readiness.add_argument("--persist", action="store_true")
     learn_l5_readiness.add_argument("--limit", type=int, default=500)
+    learn_l5_readiness.add_argument("--reader-mode", choices=("legacy", "shadow", "v3"), default="")
+    learn_l5_readiness.add_argument("--profile", default="")
+    learn_l5_readiness.add_argument("--capability-scope", default="global")
+    learn_l5_readiness.add_argument("--at-time", default="")
+    learn_l5_readiness.add_argument("--legacy-compatibility", action="store_true")
     learn_l5_readiness.add_argument("--json", action="store_true", default=True)
+    learn_l5_v3 = learn_sub.add_parser("l5-v3")
+    learn_l5_v3.add_argument("--profile", required=True)
+    learn_l5_v3.add_argument("--capability-scope", default="global")
+    learn_l5_v3.add_argument("--persist", action="store_true")
+    learn_l5_v3.add_argument("--at-time", default="")
+    learn_l5_v3.add_argument("--max-candidates", type=int, default=100)
+    learn_l5_v3.add_argument("--observation-limit", type=int, default=500)
+    learn_l5_v3.add_argument("--json", action="store_true", default=True)
+    learn_l5_v3_shadow = learn_sub.add_parser("l5-v3-shadow")
+    learn_l5_v3_shadow.add_argument("--profile", required=True)
+    learn_l5_v3_shadow.add_argument("--capability-scope", default="global")
+    learn_l5_v3_shadow.add_argument("--persist", action="store_true")
+    learn_l5_v3_shadow.add_argument("--at-time", default="")
+    learn_l5_v3_shadow.add_argument("--max-candidates", type=int, default=100)
+    learn_l5_v3_shadow.add_argument("--observation-limit", type=int, default=500)
+    learn_l5_v3_shadow.add_argument("--repo-root", default="/dev-project/eimemory")
+    learn_l5_v3_shadow.add_argument("--json", action="store_true", default=True)
+    learn_l5_v3_reconcile = learn_sub.add_parser("l5-v3-reconcile")
+    learn_l5_v3_reconcile.add_argument("--profile", required=True)
+    learn_l5_v3_reconcile.add_argument("--capability-scope", default="global")
+    learn_l5_v3_reconcile.add_argument(
+        "--scopes-json",
+        default="",
+        help="JSON list or file of exact runtime scopes; defaults to the current scope",
+    )
+    learn_l5_v3_reconcile.add_argument("--persist", action="store_true")
+    learn_l5_v3_reconcile.add_argument("--max-scopes", type=int, default=32)
+    learn_l5_v3_reconcile.add_argument("--at-time", default="")
+    learn_l5_v3_reconcile.add_argument("--max-candidates", type=int, default=100)
+    learn_l5_v3_reconcile.add_argument("--observation-limit", type=int, default=500)
+    learn_l5_v3_reconcile.add_argument("--repo-root", default="/dev-project/eimemory")
+    learn_l5_v3_reconcile.add_argument("--json", action="store_true", default=True)
+    learn_capability_v3_backfill = learn_sub.add_parser("capability-v3-backfill")
+    learn_capability_v3_backfill.add_argument("--capability-scope", default="global")
+    learn_capability_v3_backfill.add_argument("--batch-size", type=int, default=200)
+    learn_capability_v3_backfill.add_argument("--max-seconds", type=float, default=10.0)
+    learn_capability_v3_backfill.add_argument("--json", action="store_true", default=True)
+    learn_capability_v3_backfill_status = learn_sub.add_parser("capability-v3-backfill-status")
+    learn_capability_v3_backfill_status.add_argument("--capability-scope", default="global")
+    learn_capability_v3_backfill_status.add_argument("--json", action="store_true", default=True)
+    learn_capability_v3_dual_write = learn_sub.add_parser("capability-v3-dual-write")
+    learn_capability_v3_dual_write.add_argument("--capability-scope", default="global")
+    learn_capability_v3_dual_write.add_argument("--limit", type=int, default=200)
+    learn_capability_v3_dual_write.add_argument("--cursor", default="")
+    learn_capability_v3_dual_write.add_argument("--json", action="store_true", default=True)
+    learn_capability_profile_bootstrap = learn_sub.add_parser("capability-profile-bootstrap")
+    learn_capability_profile_bootstrap.add_argument("--capability-scope", default="global")
+    learn_capability_profile_bootstrap.add_argument("--request-key", default="")
+    learn_capability_profile_bootstrap.add_argument("--json", action="store_true", default=True)
+    learn_capability_seed_manifest = learn_sub.add_parser("capability-seed-manifest")
+    learn_capability_seed_manifest.add_argument("--capability-scope", default="global")
+    learn_capability_seed_manifest.add_argument(
+        "--manifest",
+        default="",
+        help="optional JSON mapping or JSON file; defaults to the packaged verified seed manifest",
+    )
+    learn_capability_seed_manifest.add_argument("--json", action="store_true", default=True)
+    learn_capability_evolution_plan = learn_sub.add_parser("capability-evolution-plan")
+    learn_capability_evolution_plan.add_argument("--profile", required=True)
+    learn_capability_evolution_plan.add_argument("--capability-scope", default="global")
+    learn_capability_evolution_plan.add_argument("--max-candidates", type=int, default=100)
+    learn_capability_evolution_plan.add_argument("--observation-limit", type=int, default=500)
+    learn_capability_evolution_plan.add_argument("--json", action="store_true", default=True)
+    learn_capability_evolution_evidence = learn_sub.add_parser("capability-evolution-evidence")
+    learn_capability_evolution_evidence.add_argument("--profile", required=True)
+    learn_capability_evolution_evidence.add_argument("--capability-scope", default="global")
+    learn_capability_evolution_evidence.add_argument("--work-item-id", action="append", default=[])
+    learn_capability_evolution_evidence.add_argument("--max-candidates", type=int, default=100)
+    learn_capability_evolution_evidence.add_argument("--observation-limit", type=int, default=500)
+    learn_capability_evolution_evidence.add_argument("--json", action="store_true", default=True)
+    learn_capability_evolution = learn_sub.add_parser("capability-evolution")
+    learn_capability_evolution.add_argument("--profile", required=True)
+    learn_capability_evolution.add_argument("--capability-scope", default="global")
+    learn_capability_evolution.add_argument("--max-candidates", type=int, default=100)
+    learn_capability_evolution.add_argument("--observation-limit", type=int, default=500)
+    learn_capability_evolution.add_argument(
+        "--independent-evidence",
+        default="",
+        help="optional JSON mapping or file keyed by dynamic work-item ID; missing items are collected independently",
+    )
+    learn_capability_evolution.add_argument(
+        "--candidate-opportunities",
+        default="",
+        help="optional JSON mapping or file keyed by dynamic work-item ID",
+    )
+    learn_capability_evolution.add_argument("--apply", dest="apply", action="store_true", default=True)
+    learn_capability_evolution.add_argument("--plan-only", dest="apply", action="store_false")
+    learn_capability_evolution.add_argument(
+        "--no-auto-collect-independent-evidence",
+        dest="auto_collect_independent_evidence",
+        action="store_false",
+        default=True,
+    )
+    learn_capability_evolution.add_argument(
+        "--no-auto-propose-code-patch",
+        dest="auto_propose_code_patch",
+        action="store_false",
+        default=True,
+    )
+    learn_capability_evolution.add_argument("--max-apply", type=int, default=1)
+    learn_capability_evolution.add_argument("--json", action="store_true", default=True)
     learn_closure_rehearsal = learn_sub.add_parser("closure-rehearsal")
     learn_closure_rehearsal.add_argument("--scope-agent", default="")
     learn_closure_rehearsal.add_argument("--scope-workspace", default="")
     learn_closure_rehearsal.add_argument("--scope-user", default="")
+    learn_closure_rehearsal.add_argument("--profile", default="")
+    learn_closure_rehearsal.add_argument("--capability-scope", default="global")
+    learn_closure_rehearsal.add_argument("--legacy-compatibility", action="store_true")
     learn_closure_rehearsal.add_argument("--json", action="store_true", default=True)
     learn_live_acceptance = learn_sub.add_parser("live-acceptance")
     learn_live_acceptance.add_argument("--repo-root", required=True)
@@ -424,6 +566,9 @@ def _build_parser() -> argparse.ArgumentParser:
     learn_live_acceptance.add_argument("--scope-agent", default="")
     learn_live_acceptance.add_argument("--scope-workspace", default="")
     learn_live_acceptance.add_argument("--scope-user", default="")
+    learn_live_acceptance.add_argument("--l5-reader-mode", choices=("legacy", "shadow", "v3"), default="v3")
+    learn_live_acceptance.add_argument("--profile", default="")
+    learn_live_acceptance.add_argument("--capability-scope", default="global")
     learn_live_acceptance.add_argument("--json", action="store_true", default=True)
     learn_release_closure = learn_sub.add_parser("release-closure")
     learn_release_closure.add_argument("--repo-root", required=True)
@@ -452,10 +597,16 @@ def _build_parser() -> argparse.ArgumentParser:
     learn_deployment_receipt.add_argument("--scope-user", default="")
     learn_deployment_receipt.add_argument("--json", action="store_true", default=True)
     learn_capability_acceptance = learn_sub.add_parser("capability-acceptance")
+    learn_capability_acceptance.add_argument("--profile", default="")
+    learn_capability_acceptance.add_argument("--capability-scope", default="global")
+    learn_capability_acceptance.add_argument("--legacy-compatibility", action="store_true")
     learn_capability_acceptance.add_argument("--json", action="store_true", default=True)
     learn_capability_replay = learn_sub.add_parser("capability-replay")
     learn_capability_replay.add_argument("--capability", action="append", default=[])
     learn_capability_replay.add_argument("--persist", action="store_true")
+    learn_capability_replay.add_argument("--profile", default="")
+    learn_capability_replay.add_argument("--capability-scope", default="global")
+    learn_capability_replay.add_argument("--legacy-compatibility", action="store_true")
     learn_capability_replay.add_argument("--json", action="store_true", default=True)
     learn_safety_replay = learn_sub.add_parser("safety-replay")
     learn_safety_replay.add_argument("--persist", action="store_true")
@@ -488,6 +639,10 @@ def _build_parser() -> argparse.ArgumentParser:
     learn_dashboard.add_argument("--week-start", default="")
     learn_dashboard.add_argument("--persist", action="store_true")
     learn_dashboard.add_argument("--output", default="")
+    learn_dashboard.add_argument("--profile", default="")
+    learn_dashboard.add_argument("--capability-scope", default="global")
+    learn_dashboard.add_argument("--at-time", default="")
+    learn_dashboard.add_argument("--legacy-compatibility", action="store_true")
     learn_dashboard.add_argument("--json", action="store_true", default=True)
     learn_promote = learn_sub.add_parser("promote")
     learn_promote.add_argument("candidate_id")
@@ -995,7 +1150,14 @@ def _living_posture_report(runtime, scope: dict, *, query: str, limit: int) -> d
 
 
 def _capability_acceptance_succeeded(report: dict[str, Any]) -> bool:
-    expected_count = len(ALL_CAPABILITY_ACCEPTANCE_CASE_IDS)
+    legacy_compatibility = report.get("legacy_compatibility") is True
+    expected_count = (
+        len(LEGACY_CAPABILITY_ACCEPTANCE_CASE_IDS)
+        if legacy_compatibility
+        else int(report.get("case_count") or 0)
+    )
+    if expected_count <= 0:
+        return False
     results = report.get("results")
     if not isinstance(results, list) or len(results) != expected_count:
         return False
@@ -1323,6 +1485,10 @@ def main(argv: list[str] | None = None) -> int:
                 scope=scope,
                 watches=default_watches(),
                 dry_run=not bool(parsed.apply),
+                profile_key=str(parsed.profile),
+                capability_scope=str(parsed.capability_scope),
+                at_time=str(parsed.at_time),
+                legacy_compatibility=bool(parsed.legacy_compatibility),
             )
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0
@@ -1332,6 +1498,10 @@ def main(argv: list[str] | None = None) -> int:
                 scope=scope,
                 persist=persist,
                 max_items=max(1, int(parsed.max_items)),
+                profile_key=str(parsed.profile),
+                capability_scope=str(parsed.capability_scope),
+                at_time=str(parsed.at_time),
+                legacy_compatibility=bool(parsed.legacy_compatibility),
             )
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0 if report.get("ok") else 1
@@ -1356,6 +1526,10 @@ def main(argv: list[str] | None = None) -> int:
                     force=bool(parsed.force),
                     max_goals=max(1, int(parsed.max_goals)),
                     max_promotions=max(0, int(parsed.max_promotions)),
+                    profile_key=str(parsed.profile),
+                    capability_scope=str(parsed.capability_scope),
+                    at_time=str(parsed.at_time),
+                    legacy_compatibility=bool(parsed.legacy_compatibility),
                 )
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0 if report.get("ok") else 1
@@ -1403,6 +1577,8 @@ def main(argv: list[str] | None = None) -> int:
                         limit=max(1, int(parsed.limit)),
                         since=str(parsed.since or "") or None,
                         until=str(parsed.until or "") or None,
+                        ensure_seeded=bool(parsed.legacy_compatibility),
+                        legacy_compatibility=bool(parsed.legacy_compatibility),
                     ),
                     ensure_ascii=False,
                     indent=2,
@@ -1415,6 +1591,9 @@ def main(argv: list[str] | None = None) -> int:
                 limit=max(1, int(parsed.limit)),
                 persist=bool(parsed.persist),
                 include_built_in_regressions=bool(parsed.include_built_in_regressions),
+                profile_key=str(parsed.profile),
+                capability_scope=str(parsed.capability_scope),
+                legacy_compatibility=bool(parsed.legacy_compatibility),
             )
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0 if report.get("ok") else 1
@@ -1425,6 +1604,10 @@ def main(argv: list[str] | None = None) -> int:
                 persist=bool(parsed.persist),
                 capabilities=list(parsed.capability or []) or None,
                 loop_id="cli_goal_graph",
+                profile_key=str(parsed.profile),
+                capability_scope=str(parsed.capability_scope),
+                at_time=str(parsed.at_time),
+                legacy_compatibility=bool(parsed.legacy_compatibility),
             )
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0 if report.get("ok") else 1
@@ -1434,17 +1617,33 @@ def main(argv: list[str] | None = None) -> int:
                 persist=bool(parsed.persist),
                 loop_id="cli_world_model",
                 limit=max(1, int(parsed.limit)),
+                profile_key=str(parsed.profile),
+                capability_scope=str(parsed.capability_scope),
+                at_time=str(parsed.at_time),
+                legacy_compatibility=bool(parsed.legacy_compatibility),
             )
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0 if report.get("ok") else 1
         if parsed.learn_command == "roadmap":
-            world = runtime.build_world_model(scope=scope, persist=bool(parsed.persist), loop_id="cli_roadmap")
+            world = runtime.build_world_model(
+                scope=scope,
+                persist=bool(parsed.persist),
+                loop_id="cli_roadmap",
+                profile_key=str(parsed.profile),
+                capability_scope=str(parsed.capability_scope),
+                at_time=str(parsed.at_time),
+                legacy_compatibility=bool(parsed.legacy_compatibility),
+            )
             report = runtime.build_strategic_roadmap(
                 scope=scope,
                 world_model=world,
                 horizon_days=max(30, int(parsed.horizon_days)),
                 persist=bool(parsed.persist),
                 loop_id="cli_roadmap",
+                profile_key=str(parsed.profile),
+                capability_scope=str(parsed.capability_scope),
+                at_time=str(parsed.at_time),
+                legacy_compatibility=bool(parsed.legacy_compatibility),
             )
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0 if report.get("ok") else 1
@@ -1458,6 +1657,10 @@ def main(argv: list[str] | None = None) -> int:
                 allow_network=not bool(parsed.no_network),
                 loop_id="cli_l5",
                 persist=not bool(parsed.no_persist),
+                profile_key=str(parsed.profile),
+                capability_scope=str(parsed.capability_scope),
+                at_time=str(parsed.at_time),
+                legacy_compatibility=bool(parsed.legacy_compatibility),
             )
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0 if report.get("ok") else 1
@@ -1471,18 +1674,186 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0 if report.get("ok") else 1
         if parsed.learn_command == "l5-readiness":
+            if bool(parsed.legacy_compatibility) and str(parsed.reader_mode or "") not in {"", "legacy"}:
+                print(json.dumps({"ok": False, "error": "legacy_compatibility_reader_mode_conflict"}, ensure_ascii=False))
+                return 2
             report = runtime.build_l5_readiness_report(
                 scope=scope,
                 persist=bool(parsed.persist),
                 limit=max(1, int(parsed.limit)),
                 loop_id="cli_l5_readiness",
+                reader_mode="legacy" if bool(parsed.legacy_compatibility) else str(parsed.reader_mode),
+                profile_key=str(parsed.profile),
+                capability_scope=str(parsed.capability_scope),
+                runtime_scope=scope,
+                at_time=str(parsed.at_time),
             )
             print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0 if report.get("ok") else 1
+        if parsed.learn_command == "l5-v3":
+            report = runtime.build_l5_assessment_v3(
+                profile_key=str(parsed.profile),
+                scope=scope,
+                capability_scope=str(parsed.capability_scope),
+                persist=bool(parsed.persist),
+                at_time=str(parsed.at_time),
+                max_candidates=max(1, min(499, int(parsed.max_candidates))),
+                observation_limit=max(1, min(500, int(parsed.observation_limit))),
+            )
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0 if report.get("ok") else 1
+        if parsed.learn_command == "l5-v3-shadow":
+            report = runtime.build_l5_v3_shadow(
+                profile_key=str(parsed.profile),
+                scope=scope,
+                capability_scope=str(parsed.capability_scope),
+                persist=bool(parsed.persist),
+                at_time=str(parsed.at_time),
+                max_candidates=max(1, min(499, int(parsed.max_candidates))),
+                observation_limit=max(1, min(500, int(parsed.observation_limit))),
+                repo_root=str(parsed.repo_root),
+            )
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0 if report.get("ok") else 1
+        if parsed.learn_command == "l5-v3-reconcile":
+            raw_scopes = _load_json_argument(
+                str(parsed.scopes_json),
+                allow_dict=True,
+                allow_list=True,
+                allow_empty=True,
+                error_code="invalid_l5_v3_reconcile_scopes",
+            )
+            if not raw_scopes:
+                reconcile_scopes = [scope]
+            elif isinstance(raw_scopes, dict):
+                reconcile_scopes = [raw_scopes]
+            else:
+                # Preserve malformed elements so the bounded public contract
+                # returns an explicit invalid-scope state instead of silently
+                # reconciling a different subset.
+                reconcile_scopes = list(raw_scopes)
+            report = runtime.reconcile_l5_v3(
+                profile_key=str(parsed.profile),
+                scopes=reconcile_scopes,
+                capability_scope=str(parsed.capability_scope),
+                persist=bool(parsed.persist),
+                max_scopes=int(parsed.max_scopes),
+                at_time=str(parsed.at_time),
+                max_candidates=int(parsed.max_candidates),
+                observation_limit=int(parsed.observation_limit),
+                repo_root=str(parsed.repo_root),
+            )
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0 if report.get("ok") else 1
+        if parsed.learn_command == "capability-v3-backfill":
+            report = runtime.run_capability_v3_backfill_batch(
+                scope=scope,
+                capability_scope=str(parsed.capability_scope),
+                # The runtime contract rejects an out-of-bound request rather
+                # than silently changing the caller's migration budget.
+                batch_size=int(parsed.batch_size),
+                max_seconds=float(parsed.max_seconds),
+            )
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0 if report.get("ok") else 1
+        if parsed.learn_command == "capability-v3-backfill-status":
+            report = runtime.capability_v3_backfill_status(
+                scope=scope,
+                capability_scope=str(parsed.capability_scope),
+            )
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0 if report.get("ok") else 1
+        if parsed.learn_command == "capability-v3-dual-write":
+            report = runtime.inspect_capability_v3_dual_write(
+                scope=scope,
+                capability_scope=str(parsed.capability_scope),
+                limit=int(parsed.limit),
+                cursor=str(parsed.cursor),
+            )
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0 if report.get("ok") else 1
+        if parsed.learn_command == "capability-profile-bootstrap":
+            report = runtime.ensure_default_l5_profile(
+                scope=scope,
+                capability_scope=str(parsed.capability_scope),
+                request_key=str(parsed.request_key),
+            )
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0
+        if parsed.learn_command == "capability-seed-manifest":
+            manifest = _load_json_argument(
+                str(parsed.manifest),
+                allow_dict=True,
+                allow_list=False,
+                allow_empty=True,
+                error_code="invalid_capability_seed_manifest",
+            )
+            report = runtime.apply_capability_seed_manifest(
+                scope=scope,
+                capability_scope=str(parsed.capability_scope),
+                manifest=manifest or None,
+            )
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0
+        if parsed.learn_command == "capability-evolution-plan":
+            report = runtime.build_dynamic_capability_evolution_plan(
+                profile_key=str(parsed.profile),
+                scope=scope,
+                capability_scope=str(parsed.capability_scope),
+                max_candidates=max(1, min(499, int(parsed.max_candidates))),
+                observation_limit=max(1, min(500, int(parsed.observation_limit))),
+            )
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0 if report.get("ok") else 1
+        if parsed.learn_command == "capability-evolution-evidence":
+            report = runtime.collect_dynamic_capability_independent_evidence(
+                profile_key=str(parsed.profile),
+                scope=scope,
+                capability_scope=str(parsed.capability_scope),
+                max_candidates=max(1, min(499, int(parsed.max_candidates))),
+                observation_limit=max(1, min(500, int(parsed.observation_limit))),
+                work_item_ids=list(parsed.work_item_id or []) or None,
+            )
+            print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+            return 0 if report.get("ok") else 1
+        if parsed.learn_command == "capability-evolution":
+            evidence = _load_json_argument(
+                str(parsed.independent_evidence),
+                allow_dict=True,
+                allow_list=False,
+                allow_empty=True,
+                error_code="invalid_dynamic_capability_evidence",
+            )
+            opportunities = _load_json_argument(
+                str(parsed.candidate_opportunities),
+                allow_dict=True,
+                allow_list=False,
+                allow_empty=True,
+                error_code="invalid_dynamic_capability_opportunities",
+            )
+            report = runtime.execute_dynamic_capability_evolution(
+                profile_key=str(parsed.profile),
+                independent_evidence=evidence,
+                scope=scope,
+                capability_scope=str(parsed.capability_scope),
+                candidate_opportunities=opportunities or None,
+                auto_collect_independent_evidence=bool(parsed.auto_collect_independent_evidence),
+                auto_propose_code_patch=bool(parsed.auto_propose_code_patch),
+                apply=bool(parsed.apply),
+                max_apply=max(0, min(20, int(parsed.max_apply))),
+                max_candidates=max(1, min(499, int(parsed.max_candidates))),
+                observation_limit=max(1, min(500, int(parsed.observation_limit))),
+            )
+            print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
             return 0 if report.get("ok") else 1
         if parsed.learn_command == "closure-rehearsal":
             report = runtime.run_l5_closure_rehearsal(
                 scope=_cli_scope(parsed, defaults=scope),
                 persist=True,
+                profile_key=str(parsed.profile),
+                capability_scope=str(parsed.capability_scope),
+                runtime_scope=_cli_scope(parsed, defaults=scope),
+                legacy_compatibility=bool(parsed.legacy_compatibility),
             )
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0 if report.get("ok") else 1
@@ -1493,6 +1864,9 @@ def main(argv: list[str] | None = None) -> int:
                 current_link=str(parsed.current_link),
                 health_url=str(parsed.health_url),
                 prior_commit=str(parsed.prior_commit),
+                l5_reader_mode=str(parsed.l5_reader_mode),
+                profile_key=str(parsed.profile),
+                capability_scope=str(parsed.capability_scope),
             )
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0 if report.get("ok") else 1
@@ -1524,7 +1898,14 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0 if report.get("ok") else 1
         if parsed.learn_command == "capability-acceptance":
-            report = runtime.run_capability_acceptance(scope=scope, persist=True)
+            report = runtime.run_capability_acceptance(
+                scope=scope,
+                persist=True,
+                profile_key=str(parsed.profile),
+                capability_scope=str(parsed.capability_scope),
+                runtime_scope=scope,
+                legacy_compatibility=bool(parsed.legacy_compatibility),
+            )
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0 if _capability_acceptance_succeeded(report) else 1
         if parsed.learn_command == "capability-replay":
@@ -1533,6 +1914,10 @@ def main(argv: list[str] | None = None) -> int:
                 capabilities=list(parsed.capability or []) or None,
                 persist=bool(parsed.persist),
                 loop_id="cli_capability_replay",
+                profile_key=str(parsed.profile),
+                capability_scope=str(parsed.capability_scope),
+                runtime_scope=scope,
+                legacy_compatibility=bool(parsed.legacy_compatibility),
             )
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0 if report.get("ok") else 1
@@ -1605,6 +1990,10 @@ def main(argv: list[str] | None = None) -> int:
                 persist=bool(parsed.persist),
                 output_path=str(parsed.output or "") or None,
                 weekly=bool(parsed.weekly),
+                profile_key=str(parsed.profile),
+                capability_scope=str(parsed.capability_scope),
+                at_time=str(parsed.at_time),
+                legacy_compatibility=bool(parsed.legacy_compatibility),
             )
             if parsed.json:
                 print(json.dumps(report, ensure_ascii=False, indent=2))
@@ -1647,7 +2036,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0 if report.get("ok") else 1
-        print(json.dumps({"usage": "eimemory learn watch|think|cycle|autonomy|evaluator-harness|loops|goals|candidates|ledger|replay-dataset|goal-graph|world-model|roadmap|l5|l5-assess|l5-readiness|closure-rehearsal|live-acceptance|release-closure|release-closure-reconcile|deployment-receipt|capability-acceptance|capability-replay|safety-replay|skills|skill-call|metrics|compact|report|dashboard|promote"}))
+        print(json.dumps({"usage": "eimemory learn watch|think|cycle|autonomy|evaluator-harness|loops|goals|candidates|ledger|replay-dataset|goal-graph|world-model|roadmap|l5|l5-assess|l5-readiness|l5-v3|l5-v3-shadow|l5-v3-reconcile|capability-v3-backfill|capability-v3-backfill-status|capability-v3-dual-write|capability-profile-bootstrap|capability-seed-manifest|capability-evolution-plan|capability-evolution-evidence|capability-evolution|closure-rehearsal|live-acceptance|release-closure|release-closure-reconcile|deployment-receipt|capability-acceptance|capability-replay|safety-replay|skills|skill-call|metrics|compact|report|dashboard|promote"}))
         return 0
     if parsed.command == "recall":
         task_context = {"task_type": "cli.recall"}

@@ -1035,3 +1035,34 @@ def test_hermes_bounded_queue_reports_dropped_writes() -> None:
     assert status["adapter_local"]["dropped_writes"] == 1
     client.release.set()
     provider.shutdown()
+
+
+def test_hermes_internal_capability_protocol_keeps_the_four_tool_contract() -> None:
+    client = FakeClient()
+    provider = HermesMemoryProviderCore(client=client)
+    provider.initialize("hermes-capability-session", agent_workspace="embodied", agent_context="primary")
+
+    provider.advertise_capabilities({"advertisement_id": "advertisement.hermes.v1"})
+    provider.capability_health("binding.hermes.v1")
+    provider.normalize_capability_outcome(
+        "Stop",
+        {
+            "password": "secret-must-not-cross-the-provider-boundary",
+            "capability_outcome": {"binding_id": "binding.hermes.v1"},
+        },
+    )
+
+    assert [method for method, _params in client.calls[-3:]] == [
+        "adapter.advertise_capabilities",
+        "adapter.capability_health",
+        "adapter.normalize_capability_outcome",
+    ]
+    assert client.calls[-1][1]["event"] == {
+        "capability_outcome": {"binding_id": "binding.hermes.v1"}
+    }
+    assert [schema["name"] for schema in provider.get_tool_schemas()] == [
+        "eimemory_recall",
+        "eimemory_remember",
+        "eimemory_verify_outcome",
+        "eimemory_status",
+    ]

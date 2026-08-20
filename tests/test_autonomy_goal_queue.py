@@ -6,30 +6,33 @@ from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
 SCOPE = {"agent_id": "hongtu", "workspace_id": "autonomy-goals"}
+LEGACY_GOAL_QUEUE_CAPABILITIES = (
+    "operations.uumit",
+    "search.discovery",
+    "research.synthesis",
+    "office.daily_task",
+    "device.control",
+)
 
 
-def test_seeded_default_capabilities_produce_goals_when_ledger_is_empty(tmp_path) -> None:
+def test_explicit_legacy_cohort_produces_goals_when_ledger_is_empty(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
 
-    queue = runtime.build_autonomy_goal_queue(scope=SCOPE)
+    queue = runtime.build_autonomy_goal_queue(
+        scope=SCOPE,
+        capabilities=list(LEGACY_GOAL_QUEUE_CAPABILITIES),
+        legacy_compatibility=True,
+    )
 
     assert queue["goal_count"] == 5
     assert 1 <= queue["selected_count"] <= 3
     assert queue["persisted_record_id"] == ""
     assert queue["generated_at"]
-    assert {goal["capability"] for goal in queue["goals"]}.issubset(
-        {
-            "operations.uumit",
-            "search.discovery",
-            "research.synthesis",
-            "office.daily_task",
-            "device.control",
-        }
-    )
+    assert {goal["capability"] for goal in queue["goals"]}.issubset(LEGACY_GOAL_QUEUE_CAPABILITIES)
     assert all(goal["explanation"] for goal in queue["goals"])
 
 
-def test_low_evidence_high_failure_capability_ranks_above_healthy_capability(tmp_path) -> None:
+def test_failure_signals_rank_above_legacy_score_records(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     record_capability_score(
         runtime,
@@ -56,18 +59,32 @@ def test_low_evidence_high_failure_capability_ranks_above_healthy_capability(tmp
         scope=SCOPE,
         max_goals=2,
         capabilities=["search.discovery", "office.daily_task"],
+        legacy_compatibility=True,
     )
 
     assert queue["goals"][0]["capability"] == "search.discovery"
     assert queue["goals"][0]["scoring_factors"]["failure_frequency"] > queue["goals"][-1]["scoring_factors"]["failure_frequency"]
-    assert queue["goals"][0]["scoring_factors"]["evidence_gap"] > queue["goals"][-1]["scoring_factors"]["evidence_gap"]
+    # Historic score records are not dynamic capability evidence.  They cannot
+    # make a frozen cohort look observed or shrink its evidence gap.
+    assert queue["goals"][0]["scoring_factors"]["evidence_gap"] == 1.0
+    assert queue["goals"][-1]["scoring_factors"]["evidence_gap"] == 1.0
 
 
 def test_max_goals_bounds_output_to_one_to_three(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
 
-    low = runtime.build_autonomy_goal_queue(scope=SCOPE, max_goals=0)
-    high = runtime.build_autonomy_goal_queue(scope=SCOPE, max_goals=10)
+    low = runtime.build_autonomy_goal_queue(
+        scope=SCOPE,
+        max_goals=0,
+        capabilities=list(LEGACY_GOAL_QUEUE_CAPABILITIES),
+        legacy_compatibility=True,
+    )
+    high = runtime.build_autonomy_goal_queue(
+        scope=SCOPE,
+        max_goals=10,
+        capabilities=list(LEGACY_GOAL_QUEUE_CAPABILITIES),
+        legacy_compatibility=True,
+    )
 
     assert low["selected_count"] == 1
     assert len(low["goals"]) == 1
@@ -78,7 +95,13 @@ def test_max_goals_bounds_output_to_one_to_three(tmp_path) -> None:
 def test_persist_writes_autonomy_goal_queue_record(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
 
-    queue = runtime.build_autonomy_goal_queue(scope=SCOPE, persist=True, max_goals=2)
+    queue = runtime.build_autonomy_goal_queue(
+        scope=SCOPE,
+        persist=True,
+        max_goals=2,
+        capabilities=list(LEGACY_GOAL_QUEUE_CAPABILITIES),
+        legacy_compatibility=True,
+    )
 
     assert queue["persisted_record_id"]
     records = runtime.store.list_records(kinds=["autonomy_goal_queue"], scope=SCOPE, limit=10)
@@ -90,7 +113,15 @@ def test_persist_writes_autonomy_goal_queue_record(tmp_path) -> None:
     assert record.source == "eimemory.autonomy_goal_queue"
     assert record.content["goals"] == queue["goals"]
     assert record.meta["selected_count"] == 2
-    assert record.meta["scoring_factors"] == ["user_value", "failure_frequency", "potential_gain", "risk", "evidence_gap"]
+    assert record.meta["scoring_factors"] == [
+        "user_value",
+        "failure_frequency",
+        "potential_gain",
+        "risk",
+        "cost",
+        "priority_weight",
+        "evidence_gap",
+    ]
 
 
 def test_goal_queue_treats_malformed_replay_pass_rate_as_failure_without_crashing(tmp_path) -> None:
@@ -101,6 +132,7 @@ def test_goal_queue_treats_malformed_replay_pass_rate_as_failure_without_crashin
         scope=SCOPE,
         max_goals=2,
         capabilities=["search.discovery", "office.daily_task"],
+        legacy_compatibility=True,
     )
 
     search_goal = next(goal for goal in queue["goals"] if goal["capability"] == "search.discovery")

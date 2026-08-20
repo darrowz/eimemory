@@ -2,7 +2,14 @@ from __future__ import annotations
 
 from eimemory.api.runtime import Runtime
 from eimemory.models.records import RecordEnvelope, ScopeRef
-from eimemory.governance.replay_dataset import build_replay_dataset, _cases_from_outcome_traces
+from eimemory.governance.replay_dataset import build_replay_dataset as _build_replay_dataset, _cases_from_outcome_traces
+
+
+def build_replay_dataset(*args, **kwargs):
+    """Keep v2 dataset-characterization tests on the explicit legacy path."""
+
+    kwargs.setdefault("legacy_compatibility", True)
+    return _build_replay_dataset(*args, **kwargs)
 
 
 def test_replay_dataset_extracts_user_correction_from_event_outcome(tmp_path) -> None:

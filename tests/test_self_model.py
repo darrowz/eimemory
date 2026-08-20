@@ -13,9 +13,10 @@ def test_build_self_model_extracts_weakness_from_reflections(tmp_path) -> None:
         miss="Used web search when local memory already had the answer",
         fix="Check memory before web search for stable personal facts",
         scope=scope,
+        target_capability="tool.routing",
     )
 
-    model = build_self_model(runtime, scope=scope)
+    model = build_self_model(runtime, scope=scope, legacy_compatibility=True)
 
     assert model["weaknesses"][0]["kind"] == "tool.routing"
     assert model["weaknesses"][0]["capability"] == "tool.routing"
@@ -27,7 +28,7 @@ def test_build_self_model_persists_model_and_weakness_records(tmp_path) -> None:
     scope = {"agent_id": "hongtu", "workspace_id": "personal"}
     runtime.evolution.log_reflection(tag="memory.recall", miss="Recall missed preference", fix="Prefer preference memory", scope=scope)
 
-    build_self_model(runtime, scope=scope, loop_id="learn_test", persist=True)
+    build_self_model(runtime, scope=scope, loop_id="learn_test", persist=True, legacy_compatibility=True)
 
     assert runtime.store.list_records(kinds=["capability_model"], scope=scope, limit=10)
     assert runtime.store.list_records(kinds=["weakness"], scope=scope, limit=10)
@@ -53,7 +54,7 @@ def test_build_self_model_uses_compact_capability_scores(tmp_path, monkeypatch) 
             return original(*args, **kwargs)
 
         monkeypatch.setattr(runtime.store, "list_records", reject_full_score_load)
-        model = build_self_model(runtime, scope=scope)
+        model = build_self_model(runtime, scope=scope, legacy_compatibility=True)
     finally:
         runtime.close()
 

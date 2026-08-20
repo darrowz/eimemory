@@ -7,6 +7,13 @@ import json
 from typing import Any
 
 from eimemory.core.ids import generate_record_id
+from eimemory.capabilities.consumer_views import dynamic_evaluation_view
+from eimemory.evaluation.capability_catalog import (
+    CapabilityEvaluationCatalog,
+    CatalogResolutionError,
+    EvaluationTarget,
+    resolve_application_capability_catalog,
+)
 from eimemory.governance.capability_ledger import record_capability_score
 from eimemory.governance.capability_replay_executor import validate_capability_replay_result
 from eimemory.governance.evidence_contract import current_release_identity, release_identity_payload
@@ -14,7 +21,11 @@ from eimemory.governance.learning_state import append_learning_record_once, stab
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
-CORE_REPLAY_CAPABILITIES = [
+# This is intentionally a compatibility-only taxonomy.  Runtime replay packs
+# resolve their members from the active registry/profile plus catalog cases;
+# callers that need this old fixed cohort must opt into
+# ``legacy_compatibility=True``.
+LEGACY_CORE_REPLAY_CAPABILITIES = [
     "memory.recall",
     "tool.routing",
     "knowledge.intake",
@@ -23,6 +34,7 @@ CORE_REPLAY_CAPABILITIES = [
 ]
 MANIFEST_REPORT_TYPE = "capability_replay_manifest"
 MANIFEST_SCHEMA_VERSION = "capability_replay_manifest.v2"
+SELECTION_CONTRACT_SCHEMA = "capability_replay_selection.v1"
 
 
 def build_capability_replay_packs(
@@ -34,20 +46,142 @@ def build_capability_replay_packs(
     loop_id: str = "capability_replay_1_6_9",
     acceptance_execution_id: str = "",
     acceptance_probe_ids_by_case: dict[str, str] | None = None,
+    catalog: CapabilityEvaluationCatalog | None = None,
+    profile_key: str = "",
+    capability_scope: str = "global",
+    runtime_scope: ScopeRef | dict[str, Any] | None = None,
+    at_time: str = "",
+    legacy_compatibility: bool = False,
 ) -> dict[str, Any]:
+    """Build replay packs from an exact active catalog/profile selection.
+
+    ``capabilities=None`` means every catalog case applicable to the current
+    active registry/profile; it never means the historical core list.  The
+    historical triples remain available only when ``legacy_compatibility`` is
+    explicitly requested by a compatibility caller.
+    """
+
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
     release = current_release_identity(runtime, scope_ref)
     release_payload = release_identity_payload(release) if release is not None else {}
-    selected = _dedupe(CORE_REPLAY_CAPABILITIES if capabilities is None else capabilities)
+    if not legacy_compatibility and capabilities is not None and not _dedupe(capabilities):
+        return _empty_replay_report(scope=scope_ref, release_payload=release_payload)
+    active_catalog: CapabilityEvaluationCatalog | None = None
+    if not legacy_compatibility:
+        # An explicitly supplied catalog is already a caller-owned immutable
+        # descriptor set.  The process-local default is read as-is: this
+        # dynamic path never registers historical compatibility cases.
+        try:
+            active_catalog = resolve_application_capability_catalog(catalog)
+        except (CatalogResolutionError, TypeError, ValueError) as exc:
+            return _blocked_replay_report(
+                scope=scope_ref,
+                release_payload=release_payload,
+                reason=f"dynamic_catalog_resolution_failed:{type(exc).__name__}",
+            )
+    exact_scope: ScopeRef | None = None
+    if not legacy_compatibility:
+        try:
+            from eimemory.capabilities.registry import exact_runtime_scope
+
+            exact_scope = exact_runtime_scope(runtime_scope if runtime_scope is not None else scope_ref)
+        except Exception as exc:
+            return _blocked_replay_report(
+                scope=scope_ref,
+                release_payload=release_payload,
+                reason=f"dynamic_runtime_scope_invalid:{type(exc).__name__}",
+            )
+        if asdict(exact_scope) != asdict(scope_ref):
+            return _blocked_replay_report(
+                scope=scope_ref,
+                release_payload=release_payload,
+                reason="dynamic_runtime_scope_mismatch",
+            )
+    dynamic_selection: dict[str, Any] = {}
+    dynamic_cases_by_capability: dict[str, list[dict[str, Any]]] = {}
+    if legacy_compatibility:
+        selected = _dedupe(LEGACY_CORE_REPLAY_CAPABILITIES if capabilities is None else capabilities)
+    else:
+        requested_capabilities = _dedupe(capabilities or [])
+        try:
+            dynamic_selection = dynamic_evaluation_view(
+                runtime,
+                scope=exact_scope,
+                capability_scope=capability_scope,
+                profile_key=str(profile_key or "").strip(),
+                catalog=active_catalog,
+                at_time=at_time,
+                max_cases=256,
+            )
+        except Exception as exc:
+            return _blocked_replay_report(
+                scope=scope_ref,
+                release_payload=release_payload,
+                reason=f"dynamic_catalog_selection_invalid:{type(exc).__name__}",
+            )
+        if dynamic_selection.get("ok") is not True:
+            return _blocked_replay_report(
+                scope=scope_ref,
+                release_payload=release_payload,
+                reason=str(dynamic_selection.get("reason") or "dynamic_evaluation_selection_blocked"),
+                selection=dynamic_selection,
+            )
+        selected_cases = list(dynamic_selection.get("cases") or [])
+        if requested_capabilities:
+            requested_set = set(requested_capabilities)
+            selected_cases = [
+                entry
+                for entry in selected_cases
+                if isinstance(entry, dict)
+                and str(
+                    (entry.get("target") if isinstance(entry.get("target"), dict) else {}).get("capability_id")
+                    or (entry.get("artifact") if isinstance(entry.get("artifact"), dict) else {}).get("capability")
+                    or ""
+                )
+                in requested_set
+            ]
+        dynamic_selection = {
+            **dynamic_selection,
+            "cases": selected_cases,
+            "case_count": len(selected_cases),
+        }
+        dynamic_cases_by_capability = _replay_cases_from_selection(dynamic_selection)
+        if requested_capabilities:
+            resolved_capabilities = set(dynamic_cases_by_capability)
+            missing_capabilities = sorted(set(requested_capabilities).difference(resolved_capabilities))
+            if missing_capabilities:
+                return _blocked_replay_report(
+                    scope=scope_ref,
+                    release_payload=release_payload,
+                    reason="dynamic_requested_capability_unresolved",
+                    selection={
+                        **dynamic_selection,
+                        "errors": [
+                            *list(dynamic_selection.get("errors") or []),
+                            *(f"capability_not_resolved:{capability}" for capability in missing_capabilities),
+                        ],
+                    },
+                )
+        selected = _dedupe(list(dynamic_cases_by_capability))
+        if not selected:
+            return _blocked_replay_report(
+                scope=scope_ref,
+                release_payload=release_payload,
+                reason="dynamic_evaluation_selection_empty",
+                selection=dynamic_selection,
+            )
     execution_id = generate_record_id("replay_result")
     executed_at = datetime.now(timezone.utc).astimezone().isoformat(timespec="microseconds")
-    cases_by_capability = {capability: _cases_for_capability(capability) for capability in selected}
-    sequence_by_capability = _next_manifest_sequences(
-        runtime,
-        scope=scope_ref,
-        capabilities=selected,
-        reserve=persist,
-    )
+    cases_by_capability = {
+        # The default path is catalog-selected.  Static triples only survive
+        # behind the explicit WP15 compatibility switch.
+        capability: (
+            _cases_for_capability(capability, legacy_compatibility=True)
+            if legacy_compatibility
+            else dynamic_cases_by_capability.get(capability, [])
+        )
+        for capability in selected
+    }
     packs: list[dict[str, Any]] = []
     persisted_replay_ids: list[str] = []
     member_record_ids: dict[str, list[str]] = {}
@@ -55,6 +189,31 @@ def build_capability_replay_packs(
         capability: [str(case["case_id"]) for case in cases]
         for capability, cases in cases_by_capability.items()
     }
+    try:
+        selection_contract = _replay_selection_contract(
+            scope=scope_ref,
+            selected=selected,
+            cases_by_capability=cases_by_capability,
+            expected_case_ids=expected_case_ids,
+            dynamic_selection=dynamic_selection,
+            profile_key=profile_key,
+            capability_scope=capability_scope,
+            at_time=at_time,
+            legacy_compatibility=legacy_compatibility,
+        )
+    except ValueError as exc:
+        return _blocked_replay_report(
+            scope=scope_ref,
+            release_payload=release_payload,
+            reason=f"replay_selection_contract_invalid:{exc}",
+            selection=dynamic_selection,
+        )
+    sequence_by_capability = _next_manifest_sequences(
+        runtime,
+        scope=scope_ref,
+        capabilities=selected,
+        reserve=persist,
+    )
     score_record_ids: list[str] = []
     bound_probe_ids = {
         str(case_id): str(probe_id or "").strip()
@@ -73,6 +232,7 @@ def build_capability_replay_packs(
             member_digests={capability: {} for capability in selected},
             complete=False,
             release_payload=release_payload,
+            selection_contract=selection_contract,
         )
         manifest_record = RecordEnvelope.create(
             kind="replay_result",
@@ -108,6 +268,8 @@ def build_capability_replay_packs(
                     ),
                     "required_probe_source_id": required_probe_source_id,
                 },
+                catalog=active_catalog,
+                legacy_compatibility=legacy_compatibility,
             )
             case_results.append(result)
             if persist:
@@ -126,6 +288,14 @@ def build_capability_replay_packs(
                         "report_type": "capability_replay_pack",
                         "evidence_class": "replay_execution",
                         "capability": capability,
+                        "capability_revision_id": str(case.get("capability_revision_id") or ""),
+                        "provider_binding_id": str(case.get("provider_binding_id") or ""),
+                        "eval_spec_id": str(case.get("eval_spec_id") or ""),
+                        "evaluation_case_digest": str(case.get("evaluation_case_digest") or ""),
+                        "profile_key": str(selection_contract.get("profile_key") or ""),
+                        "profile_id": str(selection_contract.get("profile_id") or ""),
+                        "profile_digest": str(selection_contract.get("profile_digest") or ""),
+                        "selection_contract_digest": str(selection_contract.get("selection_contract_digest") or ""),
                         "manifest_sequence": sequence_by_capability[capability],
                         "execution_id": execution_id,
                         "executed_at": executed_at,
@@ -144,6 +314,14 @@ def build_capability_replay_packs(
                         "report_type": "capability_replay_pack",
                         "evidence_class": "replay_execution",
                         "capability": capability,
+                        "capability_revision_id": str(case.get("capability_revision_id") or ""),
+                        "provider_binding_id": str(case.get("provider_binding_id") or ""),
+                        "eval_spec_id": str(case.get("eval_spec_id") or ""),
+                        "evaluation_case_digest": str(case.get("evaluation_case_digest") or ""),
+                        "profile_key": str(selection_contract.get("profile_key") or ""),
+                        "profile_id": str(selection_contract.get("profile_id") or ""),
+                        "profile_digest": str(selection_contract.get("profile_digest") or ""),
+                        "selection_contract_digest": str(selection_contract.get("selection_contract_digest") or ""),
                         "manifest_sequence": sequence_by_capability[capability],
                         "case_id": case["case_id"],
                         "execution_id": execution_id,
@@ -235,6 +413,7 @@ def build_capability_replay_packs(
                 for capability in selected
             ),
             release_payload=release_payload,
+            selection_contract=selection_contract,
         )
         manifest.content = manifest_payload
         manifest.meta = _manifest_metadata(manifest_payload)
@@ -260,7 +439,198 @@ def build_capability_replay_packs(
         "manifest_record_id": manifest_record_id,
         "score_record_ids": score_record_ids,
         "packs": packs,
+        "evaluation_catalog_schema": "capability_evaluation_catalog.v1",
+        "dynamic_selection": dynamic_selection,
+        "selection_contract": selection_contract,
+        "legacy_compatibility": bool(legacy_compatibility),
     }
+
+
+def replay_selection_contract_digest(contract: dict[str, Any]) -> str:
+    """Return the stable digest of a replay selection, excluding its digest field.
+
+    A replay manifest is evidence for a particular Profile expansion, not a
+    generic count of otherwise similarly named cases.  Keeping this small
+    contract separately digestible lets release lineage reject a later
+    profile/catalog expansion instead of silently applying a historic default
+    threshold to it.
+    """
+
+    canonical = {
+        str(key): value
+        for key, value in dict(contract).items()
+        if str(key) != "selection_contract_digest"
+    }
+    encoded = json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _bounded_replay_minimum(value: Any, *, default: int) -> int:
+    if isinstance(value, bool):
+        return default
+    try:
+        numeric = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(1, min(numeric, 10_000))
+
+
+def _profile_replay_minimums(
+    dynamic_selection: dict[str, Any],
+    *,
+    selected: list[str],
+) -> dict[str, dict[str, Any]]:
+    """Freeze only the selected Profile requirements into a replay manifest."""
+
+    view = dynamic_selection.get("capability_view")
+    entries = view.get("capabilities") if isinstance(view, dict) and isinstance(view.get("capabilities"), list) else []
+    by_capability: dict[str, dict[str, Any]] = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        capability_id = str(entry.get("capability_id") or "").strip()
+        if not capability_id:
+            continue
+        if capability_id in by_capability:
+            raise ValueError(f"duplicate_profile_requirement:{capability_id}")
+        by_capability[capability_id] = entry
+    minimums: dict[str, dict[str, Any]] = {}
+    for capability_id in selected:
+        entry = by_capability.get(capability_id)
+        if entry is None:
+            raise ValueError(f"profile_requirement_missing:{capability_id}")
+        requirement = entry.get("requirement") if isinstance(entry.get("requirement"), dict) else {}
+        evidence_minimum = _bounded_replay_minimum(requirement.get("min_evidence_count"), default=3)
+        sample_minimum = _bounded_replay_minimum(
+            requirement.get("min_sample_count"),
+            default=evidence_minimum,
+        )
+        minimums[capability_id] = {
+            "minimum_executed": max(evidence_minimum, sample_minimum),
+            "minimum_distinct_evidence": sample_minimum,
+            # Keep this synchronized with the dynamic v2 reader until the
+            # Profile contract grows a separate replay pass-rate field.
+            "minimum_pass_rate": 0.8,
+        }
+    return minimums
+
+
+def _selection_case_targets(
+    *,
+    cases_by_capability: dict[str, list[dict[str, Any]]],
+    require_target_identity: bool,
+) -> dict[str, list[dict[str, str]]]:
+    targets: dict[str, list[dict[str, str]]] = {}
+    for capability_id, cases in cases_by_capability.items():
+        rows = [
+            {
+                "case_id": str(case.get("case_id") or "").strip(),
+                "capability_revision_id": str(case.get("capability_revision_id") or "").strip(),
+                "provider_binding_id": str(case.get("provider_binding_id") or "").strip(),
+                "eval_spec_id": str(case.get("eval_spec_id") or "").strip(),
+                "evaluation_case_digest": str(case.get("evaluation_case_digest") or "").strip(),
+            }
+            for case in cases
+            if isinstance(case, dict)
+        ]
+        if not rows or any(not row["case_id"] for row in rows):
+            raise ValueError(f"selected_case_identity_missing:{capability_id}")
+        if len({row["case_id"] for row in rows}) != len(rows):
+            raise ValueError(f"selected_case_identity_ambiguous:{capability_id}")
+        if require_target_identity and any(
+            not row[field]
+            for row in rows
+            for field in (
+                "capability_revision_id",
+                "provider_binding_id",
+                "eval_spec_id",
+                "evaluation_case_digest",
+            )
+        ):
+            raise ValueError(f"selected_case_target_missing:{capability_id}")
+        targets[capability_id] = sorted(rows, key=lambda row: row["case_id"])
+    return {key: targets[key] for key in sorted(targets)}
+
+
+def _replay_selection_contract(
+    *,
+    scope: ScopeRef,
+    selected: list[str],
+    cases_by_capability: dict[str, list[dict[str, Any]]],
+    expected_case_ids: dict[str, list[str]],
+    dynamic_selection: dict[str, Any],
+    profile_key: str,
+    capability_scope: str,
+    at_time: str,
+    legacy_compatibility: bool,
+) -> dict[str, Any]:
+    """Build the immutable Profile/catalog selection bound into every manifest."""
+
+    capabilities = sorted({str(item or "").strip() for item in selected if str(item or "").strip()})
+    if not capabilities:
+        raise ValueError("selection_capabilities_empty")
+    case_targets = _selection_case_targets(
+        cases_by_capability=cases_by_capability,
+        require_target_identity=not legacy_compatibility,
+    )
+    if set(case_targets) != set(capabilities) or set(expected_case_ids) != set(capabilities):
+        raise ValueError("selection_capability_case_coverage_mismatch")
+    if legacy_compatibility:
+        minimums = {
+            capability_id: {
+                "minimum_executed": 3,
+                "minimum_distinct_evidence": 3,
+                "minimum_pass_rate": 0.8,
+            }
+            for capability_id in capabilities
+        }
+        contract: dict[str, Any] = {
+            "schema": SELECTION_CONTRACT_SCHEMA,
+            "mode": "legacy_compatibility",
+            "runtime_scope": asdict(scope),
+            "capability_scope": str(capability_scope or "global"),
+            "profile_key": "",
+            "profile_id": "",
+            "profile_digest": "",
+            "resolution_digest": "",
+            "registry_watermark": "",
+            "lifecycle_watermark": "",
+            "at_time": str(at_time or ""),
+            "capabilities": capabilities,
+            "expected_case_ids": {key: list(expected_case_ids[key]) for key in capabilities},
+            "case_targets": case_targets,
+            "minimums_by_capability": minimums,
+        }
+    else:
+        profile = dynamic_selection.get("profile") if isinstance(dynamic_selection.get("profile"), dict) else {}
+        resolved_profile_key = str(profile.get("profile_key") or profile_key or "").strip()
+        profile_id = str(profile.get("profile_id") or "").strip()
+        profile_digest = str(profile.get("profile_digest") or "").strip()
+        dynamic_mode = "dynamic_profile" if resolved_profile_key else "dynamic_registry"
+        if resolved_profile_key and (not profile_id or not profile_digest):
+            raise ValueError("profile_identity_or_digest_missing")
+        minimums = _profile_replay_minimums(dynamic_selection, selected=capabilities)
+        contract = {
+            "schema": SELECTION_CONTRACT_SCHEMA,
+            "mode": dynamic_mode,
+            "runtime_scope": asdict(scope),
+            "capability_scope": str(dynamic_selection.get("capability_scope") or capability_scope or "global"),
+            "profile_key": resolved_profile_key,
+            "profile_id": profile_id,
+            "profile_digest": profile_digest,
+            "resolution_digest": str(dynamic_selection.get("resolution_digest") or "").strip(),
+            "registry_watermark": str(dynamic_selection.get("registry_watermark") or "").strip(),
+            "lifecycle_watermark": str(dynamic_selection.get("lifecycle_watermark") or "").strip(),
+            "at_time": str(at_time or ""),
+            "capabilities": capabilities,
+            "expected_case_ids": {key: list(expected_case_ids[key]) for key in capabilities},
+            "case_targets": case_targets,
+            "minimums_by_capability": minimums,
+        }
+        if dynamic_mode == "dynamic_profile" and not contract["resolution_digest"]:
+            raise ValueError("profile_resolution_digest_missing")
+    contract["selection_contract_digest"] = replay_selection_contract_digest(contract)
+    return contract
 
 
 def capability_replay_manifest_digest(payload: dict[str, Any]) -> str:
@@ -282,14 +652,34 @@ def capability_replay_manifest_digest(payload: dict[str, Any]) -> str:
             "release_version",
             "deployment_receipt_id",
             "release_session_id",
+            "selection_contract",
         )
     }
     encoded = json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return sha256(encoded.encode("utf-8")).hexdigest()
 
 
-def capability_replay_case_ids(capability: str) -> list[str]:
-    return [str(case["case_id"]) for case in _cases_for_capability(capability)]
+def capability_replay_case_ids(
+    capability: str,
+    *,
+    catalog: CapabilityEvaluationCatalog | None = None,
+    legacy_compatibility: bool = False,
+) -> list[str]:
+    if legacy_compatibility:
+        return [
+            str(case["case_id"])
+            for case in _cases_for_capability(capability, legacy_compatibility=True)
+        ]
+    try:
+        active_catalog = resolve_application_capability_catalog(catalog)
+    except (CatalogResolutionError, TypeError, ValueError):
+        # Case IDs are a read surface.  An untrusted catalog is equivalent to
+        # no executable dynamic cases, never a reason to select legacy ones.
+        return []
+    return [
+        str(case["case_id"])
+        for case in _cases_for_capability(capability, catalog=active_catalog)
+    ]
 
 
 def capability_replay_member_digest(record: RecordEnvelope | None) -> str:
@@ -319,6 +709,7 @@ def _manifest_payload(
     member_digests: dict[str, dict[str, str]],
     complete: bool,
     release_payload: dict[str, str] | None = None,
+    selection_contract: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     release_fields = {
         key: str((release_payload or {}).get(key) or "")
@@ -337,12 +728,14 @@ def _manifest_payload(
         "member_record_ids": {key: list(value) for key, value in member_record_ids.items()},
         "member_digests": {key: dict(value) for key, value in member_digests.items()},
         "complete": bool(complete),
+        "selection_contract": dict(selection_contract or {}),
     }
     payload["manifest_digest"] = capability_replay_manifest_digest(payload)
     return payload
 
 
 def _manifest_metadata(payload: dict[str, Any]) -> dict[str, Any]:
+    selection = payload.get("selection_contract") if isinstance(payload.get("selection_contract"), dict) else {}
     return {
         "schema_version": MANIFEST_SCHEMA_VERSION,
         "report_type": MANIFEST_REPORT_TYPE,
@@ -354,6 +747,12 @@ def _manifest_metadata(payload: dict[str, Any]) -> dict[str, Any]:
         "execution_id": str(payload.get("execution_id") or ""),
         "manifest_digest": str(payload.get("manifest_digest") or ""),
         "complete": payload.get("complete") is True,
+        "selection_contract_schema": str(selection.get("schema") or ""),
+        "selection_contract_digest": str(selection.get("selection_contract_digest") or ""),
+        "selection_mode": str(selection.get("mode") or ""),
+        "profile_key": str(selection.get("profile_key") or ""),
+        "profile_id": str(selection.get("profile_id") or ""),
+        "capability_scope": str(selection.get("capability_scope") or ""),
     }
 
 
@@ -450,7 +849,17 @@ def capability_replay_log_sequence_state(
     return state
 
 
-def _cases_for_capability(capability: str) -> list[dict[str, Any]]:
+def _cases_for_capability(
+    capability: str,
+    *,
+    catalog: CapabilityEvaluationCatalog | None = None,
+    legacy_compatibility: bool = False,
+) -> list[dict[str, Any]]:
+    if catalog is not None:
+        catalog_cases = [_replay_case_from_artifact(case.to_artifact(), target=None) for case in catalog.list_cases(capability_id=capability)]
+        return catalog_cases
+    if not legacy_compatibility:
+        return []
     cases = {
         "memory.recall": [
             ("recall_version_truth", "What version and commit are deployed?", "answer cites version, commit, and source id"),
@@ -516,7 +925,114 @@ def _cases_for_capability(capability: str) -> list[dict[str, Any]]:
     ]
 
 
-def _run_case(runtime: Any, case: dict[str, Any]) -> dict[str, Any]:
+def _replay_cases_from_selection(selection: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    result: dict[str, list[dict[str, Any]]] = {}
+    for entry in selection.get("cases") or []:
+        if not isinstance(entry, dict):
+            continue
+        artifact = entry.get("artifact") if isinstance(entry.get("artifact"), dict) else {}
+        target = EvaluationTarget.from_value(entry.get("target"))
+        if target is None:
+            continue
+        case = _replay_case_from_artifact(artifact, target=target)
+        if not case:
+            continue
+        result.setdefault(str(case["target_capability"]), []).append(case)
+    for cases in result.values():
+        cases.sort(key=lambda item: (str(item.get("case_id") or ""), str(item.get("capability_revision_id") or "")))
+    return result
+
+
+def _replay_case_from_artifact(
+    artifact: dict[str, Any],
+    *,
+    target: EvaluationTarget | None,
+) -> dict[str, Any]:
+    case_id = str(artifact.get("case_id") or "").strip()
+    capability = str(artifact.get("capability") or "").strip()
+    if not case_id or not capability:
+        return {}
+    return {
+        "case_id": case_id,
+        "query": f"Registered capability evaluation: {case_id}",
+        "expected": f"registered evaluator {str(artifact.get('evaluation_case_digest') or '')}",
+        "target_capability": capability,
+        "capability_revision_id": target.capability_revision_id if target is not None else "",
+        "provider_binding_id": target.provider_binding_id if target is not None else "",
+        "eval_spec_id": str(artifact.get("eval_spec_id") or ""),
+        "evaluation_case_digest": str(artifact.get("evaluation_case_digest") or ""),
+        "threshold": 1.0,
+        "rollback_command": f"quarantine capability {capability} if replay fails",
+    }
+
+
+def _blocked_replay_report(
+    *,
+    scope: ScopeRef,
+    release_payload: dict[str, str],
+    reason: str,
+    selection: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "status": "blocked",
+        "blocked_reasons": [str(reason)],
+        "report_type": "capability_replay_packs",
+        "evidence_class": "replay_execution",
+        **release_payload,
+        "scope": asdict(scope),
+        "execution_id": "",
+        "executed_at": "",
+        "capabilities": [],
+        "pack_count": 0,
+        "case_count": 0,
+        "persisted_replay_count": 0,
+        "persisted_replay_ids": [],
+        "manifest_record_id": "",
+        "score_record_ids": [],
+        "packs": [],
+        "evaluation_catalog_schema": "capability_evaluation_catalog.v1",
+        "dynamic_selection": dict(selection or {}),
+        "legacy_compatibility": False,
+    }
+
+
+def _empty_replay_report(
+    *,
+    scope: ScopeRef,
+    release_payload: dict[str, str],
+) -> dict[str, Any]:
+    """Return the side-effect-free result for an explicit empty selection."""
+
+    return {
+        "ok": True,
+        "report_type": "capability_replay_packs",
+        "evidence_class": "replay_execution",
+        **release_payload,
+        "scope": asdict(scope),
+        "execution_id": "",
+        "executed_at": "",
+        "capabilities": [],
+        "pack_count": 0,
+        "case_count": 0,
+        "persisted_replay_count": 0,
+        "persisted_replay_ids": [],
+        "manifest_record_id": "",
+        "score_record_ids": [],
+        "packs": [],
+        "evaluation_catalog_schema": "capability_evaluation_catalog.v1",
+        "dynamic_selection": {"ok": True, "status": "empty_selection", "cases": [], "case_count": 0},
+        "legacy_compatibility": False,
+    }
+
+
+def _run_case(
+    runtime: Any,
+    case: dict[str, Any],
+    *,
+    catalog: CapabilityEvaluationCatalog | None = None,
+    legacy_compatibility: bool = False,
+) -> dict[str, Any]:
     executor = getattr(runtime, "run_capability_replay_case", None)
     if not callable(executor):
         return {
@@ -527,7 +1043,11 @@ def _run_case(runtime: Any, case: dict[str, Any]) -> dict[str, Any]:
             "reason": "missing_capability_replay_executor",
         }
     try:
-        raw = executor(case)
+        raw = executor(
+            case,
+            catalog=catalog,
+            legacy_compatibility=legacy_compatibility,
+        )
     except Exception as exc:
         return {
             "case_id": str(case.get("case_id") or ""),
@@ -549,6 +1069,7 @@ def _run_case(runtime: Any, case: dict[str, Any]) -> dict[str, Any]:
     probe_source_id = str(result.get("probe_source_id") or "").strip()
     contract_schema = str(result.get("contract_schema") or "").strip()
     observation = dict(result.get("observation") or {}) if isinstance(result.get("observation"), dict) else {}
+    capability_revision_id = str(result.get("capability_revision_id") or case.get("capability_revision_id") or "").strip()
     reason = str(result.get("reason") or "")
     if verdict == "pass" and (hit is not True or not observed.strip()):
         verdict = "fail"
@@ -569,6 +1090,7 @@ def _run_case(runtime: Any, case: dict[str, Any]) -> dict[str, Any]:
         "contract_schema": contract_schema,
         "observation": observation,
         "observed": observed,
+        **({"capability_revision_id": capability_revision_id} if capability_revision_id else {}),
         **({"reason": reason} if reason else {}),
     }
     if verdict == "pass":
@@ -578,6 +1100,9 @@ def _run_case(runtime: Any, case: dict[str, Any]) -> dict[str, Any]:
             capability=str(case.get("target_capability") or ""),
             case_id=str(case.get("case_id") or ""),
             result=normalized,
+            capability_revision_id=str(case.get("capability_revision_id") or ""),
+            catalog=catalog,
+            legacy_compatibility=legacy_compatibility,
         )
         if validation.get("ok") is not True:
             normalized["verdict"] = "fail"

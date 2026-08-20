@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from eimemory.governance.capability_hypotheses import explicit_hypothesis_reference
 from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.models.records import ScopeRef
 
@@ -39,6 +40,8 @@ def create_research_task(
     task: dict[str, Any],
 ) -> str:
     semantic_key = str(task.get("semantic_key") or stable_semantic_key("research_task", goal_id, task.get("task_type"), task.get("query")))
+    hypothesis_reference = explicit_hypothesis_reference(task)
+    hypothesis_meta = {key: value for key, value in hypothesis_reference.items() if key != "capability_hypothesis_id"}
     record = append_learning_record_once(
         runtime,
         kind="research_task",
@@ -50,8 +53,18 @@ def create_research_task(
         semantic_key=semantic_key,
         authority_tier=str(task.get("authority_tier") or "L0"),
         status="candidate",
-        content={"goal_id": goal_id, "task": {**task, "semantic_key": semantic_key}},
-        meta={"goal_id": goal_id, "task_type": task.get("task_type"), "network": bool(task.get("network"))},
+        content={
+            "goal_id": goal_id,
+            "task": {**task, "semantic_key": semantic_key},
+            "capability_hypothesis": hypothesis_reference,
+        },
+        meta={
+            "goal_id": goal_id,
+            "task_type": task.get("task_type"),
+            "network": bool(task.get("network")),
+            "capability_hypothesis_id": hypothesis_reference.get("capability_hypothesis_id", ""),
+            **hypothesis_meta,
+        },
     )
     return record.record_id
 
@@ -67,12 +80,20 @@ def create_research_note(
     evidence: list[dict[str, Any]],
     applicability_score: float = 0.0,
     risk_tier: str = "L0",
+    capability_hypothesis: dict[str, Any] | None = None,
 ) -> str:
     if not evidence:
         raise ValueError("research note requires evidence")
     if all(str(item.get("tier") or "").upper() == "T6" for item in evidence):
         raise ValueError("LLM synthesis cannot be the only evidence")
-    semantic_key = stable_semantic_key("research_note", learning_goal_id, title, summary)
+    hypothesis_reference = explicit_hypothesis_reference(capability_hypothesis)
+    semantic_key = stable_semantic_key(
+        "research_note",
+        learning_goal_id,
+        title,
+        summary,
+        hypothesis_reference.get("capability_hypothesis_id", ""),
+    )
     record = append_learning_record_once(
         runtime,
         kind="research_note",
@@ -84,8 +105,18 @@ def create_research_note(
         semantic_key=semantic_key,
         authority_tier=risk_tier,
         status="active",
-        content={"learning_goal_id": learning_goal_id, "evidence": evidence, "applicability_score": applicability_score},
-        meta={"learning_goal_id": learning_goal_id, "risk_tier": risk_tier, "applicability_score": applicability_score},
+        content={
+            "learning_goal_id": learning_goal_id,
+            "evidence": evidence,
+            "applicability_score": applicability_score,
+            "capability_hypothesis": hypothesis_reference,
+        },
+        meta={
+            "learning_goal_id": learning_goal_id,
+            "risk_tier": risk_tier,
+            "applicability_score": applicability_score,
+            "capability_hypothesis_id": hypothesis_reference.get("capability_hypothesis_id", ""),
+        },
         evidence=[str(item.get("ref") or item.get("url") or item.get("path") or item.get("summary") or "") for item in evidence],
     )
     return record.record_id
@@ -101,7 +132,14 @@ def _task(
 ) -> dict[str, Any]:
     title = str(goal.get("title") or "learning goal")
     query = str(goal.get("question") or title)
-    semantic_key = stable_semantic_key("research_task", task_type, title, query)
+    hypothesis_reference = explicit_hypothesis_reference(goal)
+    semantic_key = stable_semantic_key(
+        "research_task",
+        task_type,
+        title,
+        query,
+        hypothesis_reference.get("capability_hypothesis_id", ""),
+    )
     return {
         "task_type": task_type,
         "title": f"{task_type}: {title}",
@@ -112,6 +150,7 @@ def _task(
         "network": bool(network),
         "authority_tier": "L0" if not network else "L2",
         "semantic_key": semantic_key,
+        "capability_hypothesis": hypothesis_reference,
     }
 
 

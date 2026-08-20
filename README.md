@@ -3,7 +3,7 @@
 `eimemory` is a local-first memory and governed-learning runtime for long-running
 AI agents. It stores durable records, builds recall views, turns source material
 into reviewed knowledge, records task outcomes, and promotes learned behavior
-only after replay, safety, and rollback checks.
+only after scoped, evidence-bound replay, safety, and rollback checks.
 
 The production design has one state owner: the governance pipeline. Historical
 experimental loops and test-only shadow implementations are not part of the
@@ -15,7 +15,10 @@ runtime.
 - Scoped lexical, vector, graph-aware, and proactive recall.
 - Source intake, review, canonical PDF evidence, knowledge compilation, and
   conflict-safe recall projection.
-- Outcome traces, correction replay, policy evaluation, and capability ledgers.
+- Revisioned semantic capability contracts, provider bindings, exact-scope
+  evidence, evaluation catalogs, and reproducible L5 v3 projections.
+- Outcome traces, correction replay, policy evaluation, capability ledgers, and
+  evidence-bound knowledge hypotheses.
 - Governed autonomous learning with isolated evaluation, safety replay,
   promotion gates, observation, reward, rollback, and bounded automatic local
   code evolution.
@@ -40,7 +43,7 @@ The source tree is organized around four planes:
 | --- | --- | --- |
 | Data | `models`, `storage`, `raw`, `knowledge` | Records, payloads, indexes, provenance, compiled knowledge |
 | Recall | `recall`, `retrieval`, `embeddings`, `scoring` | Candidate generation, filtering, ranking, and quality |
-| Control | `experience`, `evaluation`, `governance` | Outcomes, replay, learning, promotion, readiness, rollback |
+| Control | `capabilities`, `experience`, `evaluation`, `governance` | Scoped capability contracts, outcomes, replay, learning, promotion, readiness, rollback |
 | Integration | `api`, `adapters`, `ei_bridge`, `cli`, `ops` | Public APIs, host lifecycle hooks, RPC, and operations |
 
 See [Architecture](docs/architecture.md) for the execution boundaries and
@@ -136,6 +139,12 @@ reported as `per_channel`. Recall and outcome hooks are deliberately fail-open
 for host availability while persistence and promotion gates remain fail-closed
 for trust decisions.
 
+Adapters may additionally publish internal capability advertisements with
+supported revisions, operations, limits, side-effect class, contract digest,
+and evidence references. The advertisement is validated as data and remains
+separate from model-facing tools: it does not make OpenClaw hooks into bridge
+tools or require Codex, Hermes, and eibrain to expose identical surfaces.
+
 The eibrain RPC service can be started locally with:
 
 ```bash
@@ -147,12 +156,45 @@ Non-health RPC methods require the configured authentication and attestation
 policy. Do not expose the service on a non-loopback address without a strong
 private credential.
 
+## Dynamic capability and evaluation contracts
+
+L5 v3 is dynamic by default. A `CapabilityDefinition` names a stable semantic
+job (for example, `memory.recall`); its `CapabilityRevision` carries the
+evolving contract, and a `CapabilityBinding` identifies one provider
+implementation. Package version, commit, hostname, model, and environment are
+recorded as evidence context or applicability constraints, never as capability
+identity. Codex, Hermes, OpenClaw, eibrain, and future providers can therefore
+advertise different supported revisions without requiring matching model-tool
+surfaces.
+
+Capability-domain operations require an exact runtime owner scope:
+`tenant_id`, `agent_id`, `workspace_id`, and `user_id`, plus a logical
+`capability_scope`. Evaluations, observations, state snapshots, and L5
+assessments retain the relevant revision, provider binding, profile, and
+evidence/provenance digests. A version or machine change alone cannot advance
+or reset maturity; evidence whose applicability genuinely depends on an
+implementation is evaluated through its declared binding and compatibility
+rules.
+
+The runtime loads dynamic evaluation executors and cases only from installed
+Python entry points in the `eimemory.capability_catalog.bootstrap.v1` group.
+The bootstrap receives a narrow typed writer, then seals the catalog; adapter
+advertisements, CLI data, database rows, and ordinary JSON payloads cannot
+register executable evaluators. If no trusted application catalog is installed,
+the ordinary runtime remains available but dynamic L5 selection and evaluation
+fail closed with `catalog_not_configured`.
+
+Retired fixed capability cohorts exist only for explicit
+`legacy_compatibility=True` maintenance or replay calls. They are not a default
+seed, fallback, or source of current L5 truth.
+
 ## Governed learning boundary
 
 There is one production learning flow:
 
 ```text
-signals and outcomes
+scoped outcomes, reviewed knowledge, and adapter advertisements
+  -> capability registry + trusted evaluation catalog
   -> correction and capability replay
   -> autonomous_learning
   -> isolated evaluation + safety replay
@@ -186,20 +228,32 @@ targets or focused `python -m pytest -q tests/...` targets. It rejects a broad
 full-suite command, shell, Git, network tools, and `python -c`; release-baseline
 validation is a separate operational decision.
 
+On the dynamic path, a `code_patch` candidate also needs a current capability
+revision, an evidence-bound hypothesis, and qualifying independent feedback;
+an unscoped generic patch request is blocked. The sole authority for automatic
+code side effects is the deployment-controlled
+`EIMEMORY_CODE_AUTOMATION_POLICY_JSON` environment policy. It is matched to the
+profile/capability/revision/scope/binding coordinates and declares the allowed
+machine actions. Proposal, incident, candidate, and patch payloads cannot grant
+that authority. A missing, malformed, incomplete, or nonmatching policy blocks
+the action directly rather than creating a human-review state.
+
 `eimemory learn cycle --apply` has no human approval queue for this local write
-path. Once the existing isolated evaluation, replay, safety, and preflight gates
-pass, the promotion manager can apply the bounded patch and run its declared
-verification. It writes a transaction record before the first file change, rolls
-back failed verification, and starts each apply-enabled learning or evolution
-cycle by recovering known interrupted writes or quarantining an ambiguous state.
-The learning/evolution report exposes this as `code_apply_recovery`; a
-non-applying cycle reports it as skipped. Recovery never retries or reapplies a
-prior patch: it only restores recorded old content or quarantines ambiguity.
+path. Once its matching environment policy enables `local_apply` and the
+isolated evaluation, replay, safety, hypothesis, and preflight gates pass, the
+promotion manager can apply the bounded patch and run its declared verification.
+It writes a transaction record before the first file change, rolls back failed
+verification, and starts each apply-enabled learning or evolution cycle by
+recovering known interrupted writes or quarantining an ambiguous state. The
+learning/evolution report exposes this as `code_apply_recovery`; a non-applying
+cycle reports it as skipped. Recovery never retries or reapplies a prior patch:
+it only restores recorded old content or quarantines ambiguity.
 
 This automatic path does **not** imply an automatic commit or production deploy:
-both default to off and require an explicit patch or environment decision. It
-also depends on an available code proposer; no configured provider means the
-candidate remains explicitly blocked.
+both default to off and require their own explicitly enabled machine-policy
+capabilities and deployment evidence. It also depends on an available code
+proposer; no configured provider means the candidate remains explicitly
+blocked.
 
 ## Paper knowledge closure
 
@@ -219,6 +273,15 @@ surviving reviewed claims after proving source provenance. Re-extracting a fresh
 claim set from a changed PDF, then reviewing and reconciling it, remains a
 separate intake/knowledge closure step.
 
+Reviewed knowledge can be linked to a capability revision as support,
+refutation, evaluation input, change rationale, outcome explanation, or an
+applicability limit. The link may create a traceable hypothesis, but knowledge
+does not itself raise maturity, activate policy, or apply code. A hypothesis
+must produce bounded evaluation or replay evidence and, where required,
+independent outcomes before the capability projector can use it. Stale,
+contradicted, rejected, artifact-invalid, or failed evidence remains
+restrictive rather than silently promoting a capability.
+
 ## Current closure limits
 
 - L5 is not claimed by a healthy process, module inventory, or focused test
@@ -228,8 +291,13 @@ separate intake/knowledge closure step.
   replacement for the atomic single-store refresh transaction and remains a
   follow-up closure item.
 - Automatic code application is local and machine-gated; absent proposer
-  configuration, automatic commit, and automatic production deployment are not
-  implied capabilities.
+  configuration or a matching environment policy, automatic commit, and
+  automatic production deployment are not implied capabilities.
+- Capability v3 has forward-only schema, audit, and scoped backfill machinery;
+  this document does not claim that every historical record has been migrated
+  or that performance budgets have been measured for every deployment.
+- A missing trusted application catalog deliberately blocks dynamic L5
+  selection/evaluation. It is not a reason to revive a fixed default taxonomy.
 
 ## Development
 

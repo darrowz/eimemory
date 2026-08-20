@@ -3,6 +3,12 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from eimemory.capabilities.consumer_views import (
+    capability_aliases_from_view,
+    dynamic_evaluation_view,
+    resolve_explicit_capability_attribution,
+)
+from eimemory.evaluation.capability_catalog import CapabilityEvaluationCatalog
 from eimemory.evaluation.regression_replay import REGRESSION_REPLAY_CASE_REPORT_TYPE, built_in_real_regression_cases
 from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.governance.replay_quality import govern_replay_cases
@@ -21,15 +27,111 @@ def build_replay_dataset(
     persist: bool = True,
     loop_id: str = "manual",
     include_built_in_regressions: bool = False,
+    capability_scope: str = "global",
+    profile_key: str = "",
+    catalog: CapabilityEvaluationCatalog | None = None,
+    at_time: str = "",
+    include_catalog_cases: bool | None = None,
+    legacy_compatibility: bool = False,
 ) -> dict[str, Any]:
+    """Build a bounded replay dataset from an exact active catalog selection.
+
+    Dynamic catalog cases are included by default.  Historical keyword
+    classification and bundled regression fixtures have no implicit path; a
+    caller must explicitly request ``legacy_compatibility=True`` to use them.
+    """
+
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
     budget = max(1, int(limit or 50))
-    cases = _cases_from_event_tables(runtime, scope=scope_ref, limit=budget)
-    cases.extend(_cases_from_outcome_traces(runtime, scope=scope_ref, limit=budget))
-    cases.extend(_cases_from_regression_replay_records(runtime, scope=scope_ref, limit=budget))
-    cases.extend(_cases_from_operator_corrections(runtime, scope=scope_ref, limit=budget))
-    cases.extend(_cases_from_replay_results(runtime, scope=scope_ref, limit=budget))
+    if legacy_compatibility and include_catalog_cases is True:
+        return _blocked_dataset_report(
+            {
+                "reason": "legacy_mode_cannot_include_dynamic_catalog_cases",
+                "errors": [],
+            },
+            include_built_in_regressions=include_built_in_regressions,
+            include_catalog_cases=True,
+            legacy_compatibility=True,
+        )
+    if include_built_in_regressions and not legacy_compatibility:
+        return _blocked_dataset_report(
+            {
+                "reason": "legacy_regression_fixture_requires_explicit_legacy_compatibility",
+                "errors": [],
+            },
+            include_built_in_regressions=True,
+            include_catalog_cases=bool(include_catalog_cases),
+            legacy_compatibility=False,
+        )
+    dynamic_requested = not legacy_compatibility
+    resolved_include_catalog_cases = (
+        dynamic_requested if include_catalog_cases is None else bool(include_catalog_cases)
+    )
+    evaluation_view: dict[str, Any] = {}
+    attribution_context: dict[str, Any] | None = None
+    if dynamic_requested:
+        evaluation_view = dynamic_evaluation_view(
+            runtime,
+            scope=scope_ref,
+            capability_scope=capability_scope,
+            profile_key=profile_key,
+            catalog=catalog,
+            at_time=at_time,
+            # Dataset output size must not silently narrow the authoritative
+            # evaluation selection.  The catalog itself supplies the bounded
+            # 256-case control-plane limit.
+            max_cases=256,
+        )
+        if evaluation_view.get("ok") is not True:
+            return _blocked_dataset_report(
+                evaluation_view,
+                include_built_in_regressions=include_built_in_regressions,
+                include_catalog_cases=resolved_include_catalog_cases,
+                legacy_compatibility=legacy_compatibility,
+            )
+        attribution_context = _attribution_context_from_evaluation_view(evaluation_view)
+    cases = _cases_from_event_tables(
+        runtime,
+        scope=scope_ref,
+        limit=budget,
+        attribution_context=attribution_context,
+    )
+    cases.extend(
+        _cases_from_outcome_traces(
+            runtime,
+            scope=scope_ref,
+            limit=budget,
+            attribution_context=attribution_context,
+        )
+    )
+    cases.extend(
+        _cases_from_regression_replay_records(
+            runtime,
+            scope=scope_ref,
+            limit=budget,
+            attribution_context=attribution_context,
+        )
+    )
+    cases.extend(
+        _cases_from_operator_corrections(
+            runtime,
+            scope=scope_ref,
+            limit=budget,
+            attribution_context=attribution_context,
+        )
+    )
+    cases.extend(
+        _cases_from_replay_results(
+            runtime,
+            scope=scope_ref,
+            limit=budget,
+            attribution_context=attribution_context,
+        )
+    )
+    if resolved_include_catalog_cases:
+        cases.extend(_cases_from_evaluation_catalog(evaluation_view))
     if include_built_in_regressions:
+        # Reached only through the explicit legacy compatibility mode above.
         cases.extend(built_in_real_regression_cases())
     quality_report = govern_replay_cases(cases, limit=budget * 3)
     deduped_cases = _dedupe_cases(quality_report["cases"])[:budget]
@@ -60,7 +162,11 @@ def build_replay_dataset(
             ),
             authority_tier="L0",
             status="active",
-            content={"schema_version": REAL_TASK_REPLAY_SCHEMA_VERSION, "cases": deduped_cases},
+            content={
+                "schema_version": REAL_TASK_REPLAY_SCHEMA_VERSION,
+                "cases": deduped_cases,
+                "capability_evaluation_view": evaluation_view,
+            },
             meta={
                 "report_type": REPLAY_DATASET_REPORT_TYPE,
                 "schema_version": REAL_TASK_REPLAY_SCHEMA_VERSION,
@@ -74,6 +180,11 @@ def build_replay_dataset(
                 "limit": budget,
                 "source_systems": _source_systems(deduped_cases),
                 "include_built_in_regressions": bool(include_built_in_regressions),
+                "include_catalog_cases": bool(resolved_include_catalog_cases),
+                "capability_scope": capability_scope if dynamic_requested else "",
+                "profile_key": str(profile_key or "") if dynamic_requested else "",
+                "evaluation_selection_status": str(evaluation_view.get("status") or "legacy_shadow"),
+                "legacy_compatibility": bool(legacy_compatibility),
             },
         )
         persisted_record_id = record.record_id
@@ -90,13 +201,22 @@ def build_replay_dataset(
         "target_pass_rate": quality_report["target_pass_rate"],
         "source_systems": _source_systems(deduped_cases),
         "include_built_in_regressions": bool(include_built_in_regressions),
+        "include_catalog_cases": bool(resolved_include_catalog_cases),
+        "capability_evaluation_view": evaluation_view,
+        "legacy_compatibility": bool(legacy_compatibility),
         "persisted": bool(persist),
         "persisted_record_id": persisted_record_id,
         "cases": deduped_cases,
     }
 
 
-def _cases_from_event_tables(runtime: Any, *, scope: ScopeRef, limit: int) -> list[dict[str, Any]]:
+def _cases_from_event_tables(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    limit: int,
+    attribution_context: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     store = getattr(runtime, "store", None)
     conn = getattr(store, "conn", None) or getattr(getattr(store, "sqlite", None), "conn", None)
     if conn is None:
@@ -132,6 +252,14 @@ def _cases_from_event_tables(runtime: Any, *, scope: ScopeRef, limit: int) -> li
         expected_text = _coerce_string_list(
             [outcome.get("policy_update"), correction, outcome.get("expected"), outcome.get("reason"), outcome.get("feedback")]
         )
+        target_capability, capability_attribution = _target_capability(
+            [outcome, event],
+            attribution_context=attribution_context,
+            legacy_text=" ".join(
+                str(value)
+                for value in [event.get("event_type"), event.get("user_phrase"), outcome.get("reason"), outcome.get("policy_update")]
+            ),
+        )
         cases.append(
             {
                 "case_id": stable_semantic_key(
@@ -147,8 +275,9 @@ def _cases_from_event_tables(runtime: Any, *, scope: ScopeRef, limit: int) -> li
                 "input": input_text,
                 "expected": expected_behavior,
                 "expected_text": expected_text,
-                "labels": [outcome_label, _classify(event, outcome)],
-                "target_capability": _classify(event, outcome),
+                "labels": [outcome_label, target_capability],
+                "target_capability": target_capability,
+                "capability_attribution": capability_attribution,
                 "task_type": _first_text(outcome.get("task_type"), event.get("event_type"), outcome.get("task_type")),
                 "outcome": outcome_label or "unknown",
                 "correction_from_user": correction,
@@ -158,7 +287,13 @@ def _cases_from_event_tables(runtime: Any, *, scope: ScopeRef, limit: int) -> li
     return cases
 
 
-def _cases_from_outcome_traces(runtime: Any, *, scope: ScopeRef, limit: int) -> list[dict[str, Any]]:
+def _cases_from_outcome_traces(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    limit: int,
+    attribution_context: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     records = _records_by_meta_value(
         runtime,
         kinds=["reflection"],
@@ -180,6 +315,12 @@ def _cases_from_outcome_traces(runtime: Any, *, scope: ScopeRef, limit: int) -> 
         input_text = _first_text(content.get("input_summary"), record.title, record.summary, content.get("query"))
         expected_behavior = _first_text(content.get("policy_update"), correction, content.get("expected"), content.get("expected_text"))
         expected_text = _coerce_string_list(content.get("expected_text") or content.get("expected"))
+        payload = content.get("payload") if isinstance(content.get("payload"), dict) else {}
+        target_capability, capability_attribution = _target_capability(
+            [content, payload, meta],
+            attribution_context=attribution_context,
+            legacy_text=" ".join(str(value) for value in [content.get("event_type"), content.get("input_summary"), content.get("reason")]),
+        )
         cases.append(
             {
                 "case_id": stable_semantic_key("outcome_trace_case", record.record_id, input_text, expected_behavior),
@@ -190,9 +331,10 @@ def _cases_from_outcome_traces(runtime: Any, *, scope: ScopeRef, limit: int) -> 
                 "input": input_text,
                 "expected": expected_behavior,
                 "expected_text": expected_text,
-                "labels": [primary_label, _classify(content, {})],
-                "target_capability": _classify(content, {}),
-                "task_type": _first_text(content.get("task_type"), content.get("payload", {}).get("task_type")),
+                "labels": [primary_label, target_capability],
+                "target_capability": target_capability,
+                "capability_attribution": capability_attribution,
+                "task_type": _first_text(content.get("task_type"), payload.get("task_type")),
                 "outcome": primary_label.lower() or "unknown",
                 "correction_from_user": correction,
                 "evidence": [record.record_id],
@@ -201,7 +343,13 @@ def _cases_from_outcome_traces(runtime: Any, *, scope: ScopeRef, limit: int) -> 
     return cases
 
 
-def _cases_from_operator_corrections(runtime: Any, *, scope: ScopeRef, limit: int) -> list[dict[str, Any]]:
+def _cases_from_operator_corrections(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    limit: int,
+    attribution_context: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     records = runtime.store.list_records(kinds=["memory"], scope=scope, limit=max(1, int(limit or 1)) * 3)
     cases: list[dict[str, Any]] = []
     for record in records:
@@ -225,6 +373,11 @@ def _cases_from_operator_corrections(runtime: Any, *, scope: ScopeRef, limit: in
             record.summary,
         )
         expected_behavior = _first_text(content.get("policy_update"), content.get("expected"), content.get("expected_behavior"))
+        target_capability, capability_attribution = _target_capability(
+            [content, meta],
+            attribution_context=attribution_context,
+            legacy_text=f"{record.title} {record.summary}",
+        )
         cases.append(
             {
                 "case_id": stable_semantic_key("operator_correction", record.record_id, correction, input_text),
@@ -236,7 +389,8 @@ def _cases_from_operator_corrections(runtime: Any, *, scope: ScopeRef, limit: in
                 "expected": expected_behavior or correction,
                 "expected_text": [expected_behavior or correction],
                 "labels": ["operator.correction"],
-                "target_capability": _classify_text(f"{record.title} {record.summary}"),
+                "target_capability": target_capability,
+                "capability_attribution": capability_attribution,
                 "task_type": _first_text(meta.get("task_type"), content.get("task_type")),
                 "outcome": "user_correction",
                 "correction_from_user": correction,
@@ -246,7 +400,13 @@ def _cases_from_operator_corrections(runtime: Any, *, scope: ScopeRef, limit: in
     return cases
 
 
-def _cases_from_regression_replay_records(runtime: Any, *, scope: ScopeRef, limit: int) -> list[dict[str, Any]]:
+def _cases_from_regression_replay_records(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    limit: int,
+    attribution_context: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     records = _records_by_meta_value(
         runtime,
         kinds=["reflection"],
@@ -266,7 +426,12 @@ def _cases_from_regression_replay_records(runtime: Any, *, scope: ScopeRef, limi
         query = _first_text(payload.get("query"), payload.get("input"), payload.get("prompt"), record.summary, record.title)
         expected_text = _coerce_string_list(payload.get("expected_text") or payload.get("expect_any_text") or payload.get("expected"))
         expected = _first_text(payload.get("expected"), expected_text[0] if expected_text else "")
-        target_capability = _first_text(payload.get("target_capability"), meta.get("target_capability"), _classify_text(" ".join([mistake_type, query, expected])))
+        target_capability, capability_attribution = _target_capability(
+            [payload, meta],
+            attribution_context=attribution_context,
+            legacy_text=" ".join([mistake_type, query, expected]),
+            prefer_legacy_explicit=True,
+        )
         case_id = _first_text(payload.get("case_id"), payload.get("id")) or stable_semantic_key(
             "regression_replay_case",
             record.record_id,
@@ -291,6 +456,7 @@ def _cases_from_regression_replay_records(runtime: Any, *, scope: ScopeRef, limi
                 "expected_text": expected_text,
                 "labels": labels,
                 "target_capability": target_capability,
+                "capability_attribution": capability_attribution,
                 "task_type": _first_text(payload.get("task_type"), target_capability),
                 "outcome": "regression_replay",
                 "correction_from_user": _first_text(payload.get("correction_from_user"), payload.get("correction")),
@@ -301,7 +467,13 @@ def _cases_from_regression_replay_records(runtime: Any, *, scope: ScopeRef, limi
     return cases
 
 
-def _cases_from_replay_results(runtime: Any, *, scope: ScopeRef, limit: int) -> list[dict[str, Any]]:
+def _cases_from_replay_results(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    limit: int,
+    attribution_context: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     records = runtime.store.list_records(kinds=["replay_result"], scope=scope, limit=max(1, int(limit or 1)) * 3)
     cases: list[dict[str, Any]] = []
     for record in records:
@@ -327,14 +499,16 @@ def _cases_from_replay_results(runtime: Any, *, scope: ScopeRef, limit: int) -> 
             labels = _coerce_string_list(sample.get("labels"))
             if verdict:
                 labels.append(verdict)
-            target_capability = _classify_text(
-                " ".join(
+            target_capability, capability_attribution = _target_capability(
+                [sample, content, meta],
+                attribution_context=attribution_context,
+                legacy_text=" ".join(
                     (
                         _first_text(sample.get("primary_label")),
                         _first_text(sample.get("query")),
                         _first_text(sample.get("task_type")),
                     )
-                )
+                ),
             )
             case_id = stable_semantic_key(
                 "replay_result_case",
@@ -355,6 +529,7 @@ def _cases_from_replay_results(runtime: Any, *, scope: ScopeRef, limit: int) -> 
                     "expected_text": expected_text,
                     "labels": labels,
                     "target_capability": target_capability,
+                    "capability_attribution": capability_attribution,
                     "task_type": _first_text(sample.get("task_type"), content.get("task_type"), record.meta.get("task_type")),
                     "outcome": verdict or "replay",
                     "correction_from_user": _first_text(meta.get("correction_from_user"), sample.get("correction")),
@@ -366,6 +541,11 @@ def _cases_from_replay_results(runtime: Any, *, scope: ScopeRef, limit: int) -> 
             query = _first_text(record.title, record.summary, record.record_id)
             if not query:
                 continue
+            target_capability, capability_attribution = _target_capability(
+                [content, meta],
+                attribution_context=attribution_context,
+                legacy_text=" ".join([record.title, record.summary]),
+            )
             cases.append(
                 {
                     "case_id": stable_semantic_key("replay_result_case", record.record_id, query),
@@ -377,7 +557,8 @@ def _cases_from_replay_results(runtime: Any, *, scope: ScopeRef, limit: int) -> 
                     "expected": _first_text(record.summary),
                     "expected_text": [],
                     "labels": [verdict] if verdict else [],
-                    "target_capability": _classify_text(" ".join([record.title, record.summary])),
+                    "target_capability": target_capability,
+                    "capability_attribution": capability_attribution,
                     "task_type": "replay_result",
                     "outcome": verdict or "replay",
                     "correction_from_user": _first_text(meta.get("correction_from_user"), content.get("correction")),
@@ -385,6 +566,168 @@ def _cases_from_replay_results(runtime: Any, *, scope: ScopeRef, limit: int) -> 
                 }
             )
     return cases
+
+
+def _attribution_context_from_evaluation_view(evaluation_view: dict[str, Any]) -> dict[str, Any]:
+    capability_view = (
+        evaluation_view.get("capability_view")
+        if isinstance(evaluation_view.get("capability_view"), dict)
+        else {}
+    )
+    capabilities = capability_view.get("capabilities") if isinstance(capability_view.get("capabilities"), list) else []
+    allowed = [
+        str(item.get("capability_id") or "").strip()
+        for item in capabilities
+        if isinstance(item, dict) and str(item.get("capability_id") or "").strip()
+    ]
+    return {
+        "allowed_capability_ids": tuple(sorted(set(allowed))),
+        "aliases": capability_aliases_from_view(capability_view),
+    }
+
+
+def _target_capability(
+    payloads: list[dict[str, Any]],
+    *,
+    attribution_context: dict[str, Any] | None,
+    legacy_text: str,
+    prefer_legacy_explicit: bool = False,
+) -> tuple[str, dict[str, Any]]:
+    """Return a data-backed target or an explicit unclassified result.
+
+    No dynamic path reaches the legacy text classifier.  That classifier is
+    retained only for old callers that do not request a catalog/profile view,
+    which keeps the v2 replay-dataset shadow contract intact through WP15.
+    """
+
+    if attribution_context is None:
+        if prefer_legacy_explicit:
+            for payload in payloads:
+                for key in ("target_capability", "capability_id", "capability", "capability_domain"):
+                    value = str(payload.get(key) or "").strip()
+                    if value:
+                        return value, {
+                            "schema": "capability.consumer_attribution.v1",
+                            "status": "legacy_shadow",
+                            "capability_id": value,
+                            "reason": "legacy_explicit_field",
+                            "source": f"explicit_field:{key}",
+                            "rule_id": "",
+                            "migration_id": "",
+                        }
+        capability = _legacy_classify_text(legacy_text)
+        return capability, {
+            "schema": "capability.consumer_attribution.v1",
+            "status": "legacy_shadow",
+            "capability_id": capability,
+            "reason": "legacy_keyword_classifier",
+            "source": "",
+            "rule_id": "",
+            "migration_id": "",
+        }
+    attribution = resolve_explicit_capability_attribution(
+        payloads,
+        allowed_capability_ids=attribution_context.get("allowed_capability_ids") or (),
+        aliases=attribution_context.get("aliases") or {},
+    )
+    return str(attribution.get("capability_id") or "unclassified"), attribution
+
+
+def _cases_from_evaluation_catalog(evaluation_view: dict[str, Any]) -> list[dict[str, Any]]:
+    """Expose selected catalog cases as replay candidates without executing them."""
+
+    cases: list[dict[str, Any]] = []
+    for entry in evaluation_view.get("cases") or ():
+        if not isinstance(entry, dict):
+            continue
+        artifact = entry.get("artifact") if isinstance(entry.get("artifact"), dict) else {}
+        target = entry.get("target") if isinstance(entry.get("target"), dict) else {}
+        case_id = str(artifact.get("case_id") or "").strip()
+        capability_id = str(artifact.get("capability") or "").strip()
+        case_digest = str(artifact.get("evaluation_case_digest") or "").strip()
+        revision_id = str(target.get("capability_revision_id") or "").strip()
+        binding_id = str(target.get("provider_binding_id") or "").strip()
+        if not case_id or not capability_id or not case_digest or not revision_id or not binding_id:
+            continue
+        input_data = artifact.get("input") if isinstance(artifact.get("input"), dict) else {}
+        fixture = artifact.get("fixture") if isinstance(artifact.get("fixture"), dict) else {}
+        query = _first_text(
+            input_data.get("query"),
+            input_data.get("input"),
+            input_data.get("prompt"),
+            input_data.get("task"),
+            json.dumps(input_data, ensure_ascii=False, sort_keys=True),
+        )
+        expected = _first_text(
+            fixture.get("expected"),
+            fixture.get("expected_behavior"),
+            fixture.get("expectation"),
+            f"Run immutable evaluation case {case_id} and satisfy its declared invariants.",
+        )
+        cases.append(
+            {
+                "case_id": case_id,
+                "source": "capability_evaluation_catalog",
+                "source_system": "eimemory",
+                "event_id": "",
+                "query": query,
+                "input": query,
+                "expected": expected,
+                "expected_text": [expected],
+                "labels": ["capability_evaluation_catalog", case_id],
+                "target_capability": capability_id,
+                "capability_attribution": {
+                    "schema": "capability.consumer_attribution.v1",
+                    "status": "classified",
+                    "capability_id": capability_id,
+                    "reason": "catalog_case_target",
+                    "source": "evaluation_catalog",
+                    "rule_id": "catalog_case_target",
+                    "migration_id": "",
+                },
+                "capability_revision_id": revision_id,
+                "provider_binding_id": binding_id,
+                "eval_spec_id": str(artifact.get("eval_spec_id") or ""),
+                "evaluation_case_digest": case_digest,
+                "task_type": capability_id,
+                "outcome": "catalog_declared",
+                "correction_from_user": "",
+                "evidence": [f"evaluation-case:{case_digest}"],
+            }
+        )
+    return cases
+
+
+def _blocked_dataset_report(
+    evaluation_view: dict[str, Any],
+    *,
+    include_built_in_regressions: bool,
+    include_catalog_cases: bool,
+    legacy_compatibility: bool,
+) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "status": "blocked",
+        "schema_version": REAL_TASK_REPLAY_SCHEMA_VERSION,
+        "report_type": REPLAY_DATASET_REPORT_TYPE,
+        "reason": str(evaluation_view.get("reason") or "capability_evaluation_selection_blocked"),
+        "errors": [str(item) for item in evaluation_view.get("errors") or ()],
+        "case_count": 0,
+        "correction_count": 0,
+        "filtered_count": 0,
+        "filter_reasons": {},
+        "quality_score": 0.0,
+        "case_quality_breakdown": {},
+        "target_pass_rate": 0.0,
+        "source_systems": [],
+        "include_built_in_regressions": bool(include_built_in_regressions),
+        "include_catalog_cases": bool(include_catalog_cases),
+        "capability_evaluation_view": evaluation_view,
+        "legacy_compatibility": bool(legacy_compatibility),
+        "persisted": False,
+        "persisted_record_id": "",
+        "cases": [],
+    }
 
 
 def _dedupe_cases(cases: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -466,11 +809,9 @@ def _query_event_outcomes(conn: Any, *, scope: ScopeRef, budget: int) -> list[An
         return []
 
 
-def _classify(event: dict[str, Any], outcome: dict[str, Any]) -> str:
-    return _classify_text(" ".join(str(value) for value in [event.get("event_type"), event.get("user_phrase"), outcome.get("reason"), outcome.get("policy_update")]))
+def _legacy_classify_text(text: str) -> str:
+    """Historical keyword classifier; reachable only from legacy mode."""
 
-
-def _classify_text(text: str) -> str:
     value = str(text or "").lower()
     if any(term in value for term in ("recall", "memory", "检索", "召回")):
         return "memory.recall"
@@ -484,7 +825,7 @@ def _classify_text(text: str) -> str:
         return "device.control"
     if any(term in value for term in ("safety", "risk", "rollback", "边界")):
         return "safety.boundary"
-    return "proactive.judgment"
+    return "unclassified"
 
 
 def _coerce_string_list(values: Any) -> list[str]:

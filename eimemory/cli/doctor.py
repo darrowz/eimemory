@@ -662,6 +662,31 @@ def check_l5_readiness(runtime: Any, scope: Mapping[str, Any]) -> CheckResult:
     if not isinstance(report, dict):
         return CheckResult(SKIP, "L5 readiness returned a non-dict", metrics={"type": type(report).__name__})
 
+    if str(report.get("schema_version") or "") == "l5_readiness.v3":
+        assessment = report.get("assessment") if isinstance(report.get("assessment"), dict) else {}
+        metrics = {
+            "reader_mode": str(report.get("reader_mode") or "v3"),
+            "profile_key": str(report.get("profile_key") or ""),
+            "loop_maturity": str(report.get("loop_maturity") or ""),
+            "capability_ready": bool(report.get("capability_ready")),
+            "adapter_ready": bool(report.get("adapter_ready")),
+            "deployment_ready": bool(report.get("deployment_ready")),
+            "gap_count": len(report.get("gaps") or []),
+            "assessment_status": str(assessment.get("status") or report.get("status") or ""),
+        }
+        if bool(report.get("ok")):
+            return CheckResult(
+                PASS,
+                "L5 v3 axes are independently evidenced and ready",
+                metrics=metrics,
+            )
+        return CheckResult(
+            WARN,
+            "L5 v3 is not ready; inspect independent capability, adapter, and deployment axes",
+            recommendation="Review `eimemory learn l5-readiness --reader-mode v3 --profile <profile> --json`.",
+            metrics=metrics,
+        )
+
     observed_stage = str(report.get("observed_stage", ""))
     current_stage = str(report.get("current_stage", ""))
     score = float(report.get("readiness_score") or 0.0)

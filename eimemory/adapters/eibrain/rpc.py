@@ -7,6 +7,8 @@ from eimemory.api.runtime import Runtime
 from eimemory.experience import record_experience_item, record_skill_trace
 from eimemory.identity import extract_user_aliases, hongtu_identity_meta, hongtu_scope
 from eimemory.models.records import LinkRef, ScopeRef
+from eimemory.adapters.runtime.capability import AdapterCapabilityService
+from eimemory.adapters.runtime.channel import normalize_runtime_channel, resolve_channel_scope
 from eimemory.adapters.runtime.service import AgentRuntimeMemoryService
 from eimemory.adapters.openclaw.hooks import OpenClawMemoryHooks
 from eimemory.ei_bridge.openclaw_runtime import handle_openclaw_feishu_event
@@ -79,6 +81,12 @@ class EIBrainRPCBridge:
                     },
                 }
             )
+        if method in {
+            "eibrain.capability_advertise",
+            "eibrain.capability_health",
+            "eibrain.normalize_capability_outcome",
+        }:
+            return self._handle_eibrain_capability(method, params)
         if method.startswith("adapter."):
             return self._handle_runtime_adapter(method, params, attestation_producer=attestation_producer)
         if method in {"memory.recall", "memory.search"}:
@@ -345,7 +353,93 @@ class EIBrainRPCBridge:
         if not isinstance(channel, str) or not channel.strip() or not self._valid_scope(scope):
             return self._with_contract(self._invalid_request())
         try:
-            if method == "adapter.attest_tool_result":
+            if method == "adapter.advertise_capabilities":
+                adapter_context = params.get("adapter_context", {})
+                now = params.get("now", "")
+                channel_id = normalize_runtime_channel(channel)
+                if not isinstance(adapter_context, dict) or not isinstance(now, str):
+                    return self._with_contract(self._invalid_request())
+                result = AdapterCapabilityService(
+                    self.runtime,
+                    adapter_id=channel_id,
+                    provider_kind=channel_id,
+                ).advertise_capabilities(
+                    adapter_context,
+                    runtime_scope=resolve_channel_scope(channel_id, scope),
+                    now=now,
+                )
+            elif method == "adapter.capability_health":
+                binding_id = params.get("binding_id", "")
+                capability_scope = params.get("capability_scope", "global")
+                at_time = params.get("at_time", "")
+                channel_id = normalize_runtime_channel(channel)
+                if not all(isinstance(value, str) for value in (binding_id, capability_scope, at_time)):
+                    return self._with_contract(self._invalid_request())
+                result = AdapterCapabilityService(
+                    self.runtime,
+                    adapter_id=channel_id,
+                    provider_kind=channel_id,
+                ).capability_health(
+                    binding_id,
+                    runtime_scope=resolve_channel_scope(channel_id, scope),
+                    capability_scope=capability_scope,
+                    at_time=at_time,
+                )
+            elif method == "adapter.normalize_capability_outcome":
+                event_type = params.get("event_type", "")
+                event = params.get("event", {})
+                capability_scope = params.get("capability_scope", "global")
+                channel_id = normalize_runtime_channel(channel)
+                if (
+                    not isinstance(event_type, str)
+                    or not isinstance(event, dict)
+                    or not isinstance(capability_scope, str)
+                ):
+                    return self._with_contract(self._invalid_request())
+                result = AdapterCapabilityService(
+                    self.runtime,
+                    adapter_id=channel_id,
+                    provider_kind=channel_id,
+                ).normalize_capability_outcome(
+                    event,
+                    runtime_scope=resolve_channel_scope(channel_id, scope),
+                    event_type=event_type,
+                    capability_scope=capability_scope,
+                )
+            elif method == "adapter.record_verified_capability_outcome":
+                producer = str(attestation_producer or "").strip().lower()
+                channel_id = normalize_runtime_channel(channel)
+                event_type = params.get("event_type", "")
+                event = params.get("event", {})
+                verifier = params.get("independent_verifier", {})
+                environment = params.get("environment_fingerprint", {})
+                provenance = params.get("provenance", {})
+                capability_scope = params.get("capability_scope", "global")
+                if not producer or producer != channel_id:
+                    return self._with_contract({"ok": False, "error": "capability_evidence_unauthorized"})
+                if (
+                    not isinstance(event_type, str)
+                    or not isinstance(event, dict)
+                    or not isinstance(verifier, dict)
+                    or not isinstance(environment, dict)
+                    or not isinstance(provenance, dict)
+                    or not isinstance(capability_scope, str)
+                ):
+                    return self._with_contract(self._invalid_request())
+                result = AdapterCapabilityService(
+                    self.runtime,
+                    adapter_id=channel_id,
+                    provider_kind=channel_id,
+                ).record_verified_capability_outcome(
+                    event,
+                    runtime_scope=resolve_channel_scope(channel_id, scope),
+                    event_type=event_type,
+                    independent_verifier=verifier,
+                    environment_fingerprint=environment,
+                    provenance=provenance,
+                    capability_scope=capability_scope,
+                )
+            elif method == "adapter.attest_tool_result":
                 producer = str(attestation_producer or "").strip().lower()
                 if not producer:
                     return self._with_contract({"ok": False, "error": "attestation_unauthorized"})
@@ -603,6 +697,62 @@ class EIBrainRPCBridge:
                 return self._with_contract({"ok": False, "error": "unknown_method"})
         except (TypeError, ValueError):
             return self._with_contract(self._invalid_request())
+        return self._with_contract({"ok": bool(result.get("ok")), "result": result})
+
+    def _handle_eibrain_capability(
+        self,
+        method: str,
+        params: dict[str, Any],
+    ) -> EIMemoryRPCResponse:
+        """Expose additive eibrain capability protocol methods over bounded RPC."""
+
+        scope: BridgeScope = params.get("scope", {})
+        if not self._valid_scope(scope):
+            return self._with_contract(self._invalid_request())
+        runtime_scope = self._resolve_scope(scope)
+        service = AdapterCapabilityService(
+            self.runtime,
+            adapter_id="eibrain",
+            provider_kind="eibrain",
+        )
+        if method == "eibrain.capability_advertise":
+            adapter_context = params.get("adapter_context", {})
+            now = params.get("now", "")
+            if not isinstance(adapter_context, dict) or not isinstance(now, str):
+                return self._with_contract(self._invalid_request())
+            result = service.advertise_capabilities(
+                adapter_context,
+                runtime_scope=runtime_scope,
+                now=now,
+            )
+        elif method == "eibrain.capability_health":
+            binding_id = params.get("binding_id", "")
+            capability_scope = params.get("capability_scope", "global")
+            at_time = params.get("at_time", "")
+            if not all(isinstance(value, str) for value in (binding_id, capability_scope, at_time)):
+                return self._with_contract(self._invalid_request())
+            result = service.capability_health(
+                binding_id,
+                runtime_scope=runtime_scope,
+                capability_scope=capability_scope,
+                at_time=at_time,
+            )
+        else:
+            event_type = params.get("event_type", "")
+            event = params.get("event", {})
+            capability_scope = params.get("capability_scope", "global")
+            if (
+                not isinstance(event_type, str)
+                or not isinstance(event, dict)
+                or not isinstance(capability_scope, str)
+            ):
+                return self._with_contract(self._invalid_request())
+            result = service.normalize_capability_outcome(
+                event,
+                runtime_scope=runtime_scope,
+                event_type=event_type,
+                capability_scope=capability_scope,
+            )
         return self._with_contract({"ok": bool(result.get("ok")), "result": result})
 
     @staticmethod

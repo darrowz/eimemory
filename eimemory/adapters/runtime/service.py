@@ -1126,9 +1126,26 @@ class AgentRuntimeMemoryService:
         outcome_trace_payload["recorded_at"] = datetime.now(timezone.utc).isoformat()
         from eimemory.experience.outcome import build_outcome_trace_record
 
+        # A host terminal hook records lifecycle evidence only.  It does not
+        # own an evaluation catalog, so it must never attach a dynamic
+        # capability contract and accidentally validate it against a process
+        # global/default catalog.  A producer that needs a contracted outcome
+        # must use the explicit Runtime outcome API with the exact trusted
+        # catalog that selected the case.
+        if "capability_contract" in outcome_trace_payload:
+            return {
+                "ok": False,
+                "status": "blocked",
+                "reason": "adapter_terminal_dynamic_capability_contract_unsupported",
+                "event": None,
+                "outcome": None,
+                "outcome_trace": None,
+            }
         trace_build = build_outcome_trace_record(
             outcome_trace_payload,
             scope=ScopeRef.from_dict(channel_scope),
+            catalog=None,
+            legacy_compatibility=False,
         )
         terminal = self.runtime.store.record_terminal_bundle(
             verified_receipts=verified_receipts

@@ -1,8 +1,36 @@
 from __future__ import annotations
 
+import json
+
+import pytest
+
 from eimemory.api.runtime import Runtime
-from eimemory.governance.autonomous_evolution import _safe_patch_from_opportunity, run_autonomous_evolution
+from eimemory.governance.autonomous_evolution import (
+    _code_patch_hypothesis_gate,
+    _safe_patch_from_opportunity,
+    run_autonomous_evolution,
+)
 from eimemory.models.records import ScopeRef
+
+
+@pytest.fixture(autouse=True)
+def _local_apply_machine_policy(monkeypatch) -> None:
+    """Controller tests opt into bounded local repository mutation explicitly."""
+
+    monkeypatch.setenv(
+        "EIMEMORY_CODE_AUTOMATION_POLICY_JSON",
+        json.dumps(
+            {
+                "schema_version": "code_automation_policy.v1",
+                "policy_id": "test-autonomous-evolution-local-apply-v1",
+                "actions": {
+                    "local_apply": True,
+                    "commit": False,
+                    "deployment": False,
+                },
+            }
+        ),
+    )
 
 
 def test_code_opportunity_defaults_to_local_uncommitted_and_undeployed_apply() -> None:
@@ -24,6 +52,56 @@ def test_code_opportunity_defaults_to_local_uncommitted_and_undeployed_apply() -
     assert patch["code_patch"]["apply_to_repo"] is True
     assert patch["code_patch"]["deploy_to_production"] is False
     assert patch["code_patch"]["commit_to_repo"] is False
+
+
+def test_nonlegacy_code_patch_accepts_exact_v3_hypothesis_after_behavior_gate(monkeypatch) -> None:
+    scope = ScopeRef.from_dict(
+        {"tenant_id": "default", "agent_id": "tests", "workspace_id": "code", "user_id": "darrow"}
+    )
+    context = {
+        "hypothesis_id": "hypothesis-v3-1",
+        "link_id": "link-v3-1",
+        "link_digest": "a" * 64,
+        "capability_id": "code.implementation",
+        "capability_revision_id": "revision-v3-1",
+        "provider_binding_id": "binding-v3-1",
+        "capability_scope": "global",
+    }
+    expected_metric = {"pass_rate": {"minimum": 0.9}}
+    candidate_bounds = {"repo_root": "/tmp/repo", "allowed_files": ["module.py"]}
+    patch = {
+        "patch_type": "code_patch",
+        "code_patch": {
+            "target_capability": "code.implementation",
+            "capability_revision_id": "revision-v3-1",
+            "provider_binding_id": "binding-v3-1",
+            "profile_key": "profile-v3-1",
+            "capability_scope": "global",
+            "evidence_watermark": "watermark-v3-1",
+            "expected_metric": expected_metric,
+            "candidate_bounds": candidate_bounds,
+            "capability_hypothesis": context,
+        },
+    }
+    monkeypatch.setattr(
+        "eimemory.governance.autonomous_evolution.hypothesis_behavior_gate",
+        lambda *_args, **_kwargs: {
+            "allowed": True,
+            **context,
+            "expected_metric": expected_metric,
+            "candidate_bounds": candidate_bounds,
+        },
+    )
+
+    gate = _code_patch_hypothesis_gate(
+        object(),
+        patch=patch,
+        scope=scope,
+        legacy_compatibility=False,
+    )
+
+    assert gate["required"] is True
+    assert gate["allowed"] is True
 
 
 def test_autonomous_evolution_mines_bad_outcome_into_opportunity_and_replay(tmp_path) -> None:
@@ -302,7 +380,24 @@ def test_autonomous_evolution_applies_structured_code_patch_from_bad_outcome(tmp
         scope=scope,
     )
 
-    report = run_autonomous_evolution(runtime, scope=scope, apply=True, max_apply=1)
+    default_report = run_autonomous_evolution(
+        runtime,
+        scope=scope,
+        apply=True,
+        max_apply=1,
+    )
+
+    assert default_report["applied_count"] == 0
+    assert default_report["blocked_patches"][0]["blocked_reason"] == "nonlegacy_code_patch_hypothesis_context_missing"
+    assert target.read_text(encoding="utf-8") == "VALUE = 'broken'\n"
+
+    report = run_autonomous_evolution(
+        runtime,
+        scope=scope,
+        apply=True,
+        max_apply=1,
+        legacy_compatibility=True,
+    )
 
     assert report["ok"] is True
     assert report["code_apply_recovery"]["skipped"] is False
@@ -376,7 +471,13 @@ def test_autonomous_evolution_blocks_code_patch_without_verification_before_eval
         scope=scope,
     )
 
-    report = run_autonomous_evolution(runtime, scope=scope, apply=True, max_apply=1)
+    report = run_autonomous_evolution(
+        runtime,
+        scope=scope,
+        apply=True,
+        max_apply=1,
+        legacy_compatibility=True,
+    )
 
     assert report["applied_count"] == 0
     assert report["experiments"][0]["evaluation"]["blocked_reason"] == "missing_verification_commands"
@@ -429,7 +530,13 @@ def test_autonomous_evolution_blocks_code_patch_when_evaluator_is_not_isolated(t
         scope=scope,
     )
 
-    report = run_autonomous_evolution(runtime, scope=scope, apply=True, max_apply=1)
+    report = run_autonomous_evolution(
+        runtime,
+        scope=scope,
+        apply=True,
+        max_apply=1,
+        legacy_compatibility=True,
+    )
 
     assert report["applied_count"] == 0
     assert report["blocked_patches"][0]["blocked_reason"] == "isolated_evaluator_reject"
@@ -479,7 +586,13 @@ def test_autonomous_evolution_rejects_failed_code_patch_before_repo_mutation(tmp
         scope=scope,
     )
 
-    report = run_autonomous_evolution(runtime, scope=scope, apply=True, max_apply=1)
+    report = run_autonomous_evolution(
+        runtime,
+        scope=scope,
+        apply=True,
+        max_apply=1,
+        legacy_compatibility=True,
+    )
 
     assert report["applied_count"] == 0
     assert report["rolled_back_count"] == 0

@@ -4,6 +4,13 @@
 
 **Date:** 2026-08-20
 
+> **Implementation note (v1.9.136):** “v2” in this ADR title is the historical
+> planning label. The executable dynamic-capability schema is
+> `capability.v3`; its current authority boundaries are summarized in
+> [Architecture](../architecture.md). This ADR records the authority decision,
+> not a claim that historical backfill or deployment performance validation is
+> complete.
+
 ## Context
 
 Current capability and L5 state relies heavily on generic record JSON and

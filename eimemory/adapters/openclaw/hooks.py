@@ -6,10 +6,11 @@ import os
 import re
 from hashlib import sha256
 from time import perf_counter
-from typing import Any
+from typing import Any, Mapping
 
 from eimemory.adapters.openclaw.task_contract import classify_openclaw_task_type
 from eimemory.adapters.runtime.service import AgentRuntimeMemoryService
+from eimemory.adapters.runtime.capability import AdapterCapabilityService
 from eimemory.api.runtime import Runtime
 from eimemory.governance.evidence_contract import current_release_identity, release_identity_payload
 from eimemory.governance.tool_receipts import verified_tool_receipts
@@ -48,6 +49,108 @@ def _int_env(name: str, default: int) -> int:
 class OpenClawMemoryHooks:
     def __init__(self, runtime: Runtime) -> None:
         self.runtime = runtime
+
+    def advertise_capabilities(
+        self,
+        adapter_context: Mapping[str, Any],
+        *,
+        event: Mapping[str, Any] | None = None,
+        now: str = "",
+    ) -> dict[str, Any]:
+        """Publish an explicit hook-backed provider advertisement internally.
+
+        OpenClaw continues to own lifecycle behavior in these hooks.  This
+        method is intentionally not a model tool and does not manufacture a
+        dead Python wrapper around the host surface.
+        """
+
+        return AdapterCapabilityService(
+            self.runtime,
+            adapter_id="openclaw",
+            provider_kind="openclaw",
+        ).advertise_capabilities(
+            adapter_context,
+            runtime_scope=self._scope_from_event(dict(event or {})),
+            now=now,
+        )
+
+    def capability_health(
+        self,
+        binding_id: str,
+        *,
+        event: Mapping[str, Any] | None = None,
+        capability_scope: str = "global",
+        at_time: str = "",
+    ) -> dict[str, Any]:
+        """Report lifecycle/freshness for an explicit OpenClaw binding."""
+
+        return AdapterCapabilityService(
+            self.runtime,
+            adapter_id="openclaw",
+            provider_kind="openclaw",
+        ).capability_health(
+            binding_id,
+            runtime_scope=self._scope_from_event(dict(event or {})),
+            capability_scope=capability_scope,
+            at_time=at_time,
+        )
+
+    def normalize_capability_outcome(
+        self,
+        hook_name: str,
+        event: Mapping[str, Any] | None,
+        *,
+        capability_scope: str = "global",
+    ) -> dict[str, Any]:
+        """Normalize only a host-declared hook outcome; never infer a capability."""
+
+        raw_event = dict(event or {})
+        return AdapterCapabilityService(
+            self.runtime,
+            adapter_id="openclaw",
+            provider_kind="openclaw",
+        ).normalize_capability_outcome(
+            raw_event,
+            runtime_scope=self._scope_from_event(raw_event),
+            event_type=str(hook_name or ""),
+            capability_scope=capability_scope,
+        )
+
+    def record_verified_capability_outcome(
+        self,
+        hook_name: str,
+        event: Mapping[str, Any] | None,
+        *,
+        independent_verifier: Mapping[str, Any],
+        environment_fingerprint: Mapping[str, Any],
+        provenance: Mapping[str, Any],
+        capability_scope: str = "global",
+    ) -> dict[str, Any]:
+        """Write a verifier-backed hook outcome through the in-process owner.
+
+        OpenClaw's model-facing manifest remains unchanged.  This hook-only
+        operation requires explicit independent evidence and never infers a
+        capability from an ordinary lifecycle callback.
+        """
+
+        raw_event = dict(event or {})
+        return AdapterCapabilityService(
+            self.runtime,
+            adapter_id="openclaw",
+            provider_kind="openclaw",
+        ).record_verified_capability_outcome(
+            raw_event,
+            runtime_scope=self._scope_from_event(raw_event),
+            event_type=str(hook_name or ""),
+            independent_verifier=(
+                dict(independent_verifier) if isinstance(independent_verifier, Mapping) else {}
+            ),
+            environment_fingerprint=(
+                dict(environment_fingerprint) if isinstance(environment_fingerprint, Mapping) else {}
+            ),
+            provenance=dict(provenance) if isinstance(provenance, Mapping) else {},
+            capability_scope=capability_scope,
+        )
 
     def on_message_received(self, event: dict) -> dict:
         message = dict(event.get("message") or {})

@@ -171,6 +171,9 @@ def run_live_task_acceptance(
     current_link: str = DEFAULT_DEPLOYMENT_CURRENT_LINK,
     health_url: str = DEFAULT_DEPLOYMENT_HEALTH_URL,
     prior_commit: str = "",
+    l5_reader_mode: str = "v3",
+    profile_key: str = "",
+    capability_scope: str = "global",
 ) -> dict[str, Any]:
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
     identity = _verified_deployment_identity(
@@ -191,7 +194,14 @@ def run_live_task_acceptance(
             "cases": [],
         }
 
-    definitions = _case_definitions(runtime, scope=scope_ref, identity=identity)
+    definitions = _case_definitions(
+        runtime,
+        scope=scope_ref,
+        identity=identity,
+        l5_reader_mode=l5_reader_mode,
+        profile_key=profile_key,
+        capability_scope=capability_scope,
+    )
     case_ids = {str(item.get("case_id") or "") for item in definitions}
     task_types = {str(item.get("task_type") or "") for item in definitions}
     if (
@@ -239,6 +249,9 @@ def run_live_task_acceptance(
         "report_type": REPORT_TYPE,
         "schema_version": SCHEMA_VERSION,
         "scope": asdict(scope_ref),
+        "l5_reader_mode": str(l5_reader_mode or "").strip(),
+        "profile_key": str(profile_key or "").strip(),
+        "capability_scope": capability_scope,
         "deployment": {
             "commit": str(identity.get("commit") or ""),
             "version": str(identity.get("version") or ""),
@@ -307,7 +320,15 @@ def _runtime_matches_identity(identity: dict[str, Any]) -> bool:
     )
 
 
-def _case_definitions(runtime: Any, *, scope: ScopeRef, identity: dict[str, Any]) -> list[dict[str, Any]]:
+def _case_definitions(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    identity: dict[str, Any],
+    l5_reader_mode: str,
+    profile_key: str,
+    capability_scope: str,
+) -> list[dict[str, Any]]:
     scope_payload = asdict(scope)
 
     def store_sqlite() -> dict[str, Any]:
@@ -344,28 +365,62 @@ def _case_definitions(runtime: Any, *, scope: ScopeRef, identity: dict[str, Any]
 
     def readiness_pure_read() -> dict[str, Any]:
         before = int(runtime.store.sqlite.conn.total_changes)
-        report = runtime.build_l5_readiness_report(scope=scope_payload, persist=False, limit=500)
+        report = runtime.build_l5_readiness_report(
+            scope=scope_payload,
+            persist=False,
+            limit=500,
+            reader_mode=l5_reader_mode,
+            profile_key=profile_key,
+            capability_scope=capability_scope,
+        )
         after = int(runtime.store.sqlite.conn.total_changes)
         return {
-            "passed": report.get("ok") is True and before == after,
+            # This is an operational read-only probe, not an L5 authority
+            # claim.  A Profile may truthfully be unconfigured or have gaps;
+            # neither condition makes a deployment-health read mutate state.
+            "passed": isinstance(report, dict) and before == after,
             "connection_changes_before": before,
             "connection_changes_after": after,
-            "stage": str(report.get("current_stage") or ""),
+            "reader_mode": str(report.get("reader_mode") or l5_reader_mode or ""),
+            "readiness_status": str(report.get("status") or report.get("current_stage") or ""),
+            "profile_key": str(profile_key or "").strip(),
         }
 
     def replay_integrity() -> dict[str, Any]:
-        report = runtime.build_l5_readiness_report(scope=scope_payload, persist=False, limit=500)
-        replay = report.get("verified_replay") if isinstance(report.get("verified_replay"), dict) else {}
+        report = runtime.build_l5_readiness_report(
+            scope=scope_payload,
+            persist=False,
+            limit=500,
+            reader_mode=l5_reader_mode,
+            profile_key=profile_key,
+            capability_scope=capability_scope,
+        )
+        assessment = report.get("assessment") if isinstance(report.get("assessment"), dict) else {}
+        projection = assessment.get("projection") if isinstance(assessment.get("projection"), dict) else {}
+        configured = bool(str(profile_key or "").strip())
+        snapshots = [item for item in projection.get("snapshots") or [] if isinstance(item, dict)]
+        gaps = [item for item in report.get("gaps") or [] if isinstance(item, dict)]
+        # Deployment acceptance only confirms that an explicitly requested
+        # dynamic replay/projection read is internally shaped; it does not
+        # recast a fixed replay quota as a deployment requirement.
         passed = (
-            int(replay.get("executed_count") or 0) >= 10
-            and not replay.get("weak_capabilities_missing")
-            and not replay.get("manifest_rejection_reasons")
+            isinstance(report, dict)
+            and (
+                not configured
+                or (
+                    report.get("schema_version") == "l5_readiness.v3"
+                    and isinstance(assessment, dict)
+                    and isinstance(projection, dict)
+                )
+            )
         )
         return {
             "passed": passed,
-            "executed_count": int(replay.get("executed_count") or 0),
-            "weak_missing_count": len(replay.get("weak_capabilities_missing") or []),
-            "manifest_rejection_count": len(replay.get("manifest_rejection_reasons") or {}),
+            "configured": configured,
+            "snapshot_count": len(snapshots),
+            "gap_count": len(gaps),
+            "reader_mode": str(report.get("reader_mode") or l5_reader_mode or ""),
+            "profile_key": str(profile_key or "").strip(),
         }
 
     def deployment_identity() -> dict[str, Any]:

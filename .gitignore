@@ -17,6 +17,8 @@ memory/
 
 # raw eval data (multi-hundred-MB JSONs, never in git)
 data/
+!eimemory/capabilities/data/
+!eimemory/capabilities/data/legacy_capabilities.v1.json
 # generic large data files
 *.json.gz
 # loose eval dataset dumps anywhere in the tree

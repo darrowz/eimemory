@@ -328,7 +328,11 @@ def _stop_decision(verdict_content: dict[str, Any], *, stop_blocked_reasons: lis
         return "quarantine"
     if "missing_real_execution_evidence" in blocked or "insufficient_replay_quality" in blocked:
         return "continue"
-    return "require_human"
+    # A missing or insufficient independent verdict is a machine-readable
+    # blocked state, not a request for a human approval lane.  Callers may
+    # collect more bounded evidence or quarantine the candidate, but cannot
+    # turn this into an implicit approval workflow.
+    return "blocked_insufficient_independent_evidence"
 
 
 def _stop_judge_blocked_reasons(roles: dict[str, Any]) -> list[str]:

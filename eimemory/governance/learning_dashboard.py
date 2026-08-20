@@ -5,10 +5,17 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from eimemory.capabilities.consumer_views import (
+    capability_aliases_from_view,
+    resolve_explicit_capability_attribution,
+)
 from eimemory.core.clock import now_iso
-from eimemory.governance.capability_ledger import build_capability_ledger
-from eimemory.governance.capability_dashboard import build_capability_dashboard_metrics
-from eimemory.governance.capability_seeding import SEEDED_CAPABILITIES, ensure_all_seeded
+from eimemory.governance.capability_ledger import build_capability_ledger, build_dynamic_capability_ledger
+from eimemory.governance.capability_dashboard import (
+    build_capability_dashboard_metrics,
+    build_dynamic_capability_dashboard,
+)
+from eimemory.governance.capability_seeding import LEGACY_SEEDED_CAPABILITIES, ensure_all_seeded
 from eimemory.governance.learning_report import build_learning_daily_report
 from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.models.records import ScopeRef
@@ -22,19 +29,139 @@ def build_weekly_dashboard(
     persist: bool = True,
     output_path: str | Path | None = None,
     weekly: bool = False,
+    capability_scope: str = "global",
+    profile_key: str = "",
+    catalog: Any | None = None,
+    at_time: str = "",
+    dynamic_capabilities: bool | None = None,
+    legacy_compatibility: bool = False,
+    page: int = 1,
+    page_size: int = 50,
 ) -> dict[str, Any]:
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
-    ensure_all_seeded(runtime, scope=scope_ref, loop_id="dashboard_seed")
+    # Dynamic registry/profile + immutable catalog selection is the only
+    # default.  Compatibility callers must name their intent explicitly.
+    if legacy_compatibility and dynamic_capabilities is True:
+        return {
+            "ok": False,
+            "status": "blocked",
+            "report_type": f"autonomous_learning_{'weekly' if weekly else 'daily'}_dashboard",
+            "scope": asdict(scope_ref),
+            "reason": "conflicting_capability_consumer_modes",
+            "errors": [],
+            "legacy_compatibility": True,
+            "persisted": False,
+            "persisted_record_id": "",
+        }
+    if dynamic_capabilities is False and not legacy_compatibility:
+        return {
+            "ok": False,
+            "status": "blocked",
+            "report_type": f"autonomous_learning_{'weekly' if weekly else 'daily'}_dashboard",
+            "scope": asdict(scope_ref),
+            "reason": "legacy_compatibility_required",
+            "errors": [],
+            "legacy_compatibility": False,
+            "persisted": False,
+            "persisted_record_id": "",
+        }
+    legacy_compatibility = bool(legacy_compatibility)
+    dynamic_requested = not legacy_compatibility
+    if not dynamic_requested:
+        # Isolated v2 shadow behavior.  The default branch never seeds or
+        # renders a fixed capability taxonomy.
+        ensure_all_seeded(
+            runtime,
+            scope=scope_ref,
+            loop_id="dashboard_seed",
+            legacy_compatibility=True,
+        )
     period_type = "weekly" if weekly else "daily"
     start = _week_start(week_start) if weekly else _day_start(week_start)
-    ledger = build_capability_ledger(runtime, scope=scope_ref)
+    dynamic_dashboard: dict[str, Any] = {}
+    attribution_context: dict[str, Any] | None = None
+    if dynamic_requested:
+        dynamic_dashboard = build_dynamic_capability_dashboard(
+            runtime,
+            scope=scope_ref,
+            capability_scope=capability_scope,
+            profile_key=profile_key,
+            catalog=catalog,
+            at_time=at_time,
+            page=page,
+            page_size=page_size,
+            persist=False,
+        )
+        if dynamic_dashboard.get("ok") is not True:
+            return {
+                "ok": False,
+                "status": "blocked",
+                "report_type": f"autonomous_learning_{period_type}_dashboard",
+                "period_type": period_type,
+                "period_start": start,
+                "scope": asdict(scope_ref),
+                "reason": str(dynamic_dashboard.get("reason") or "dynamic_capability_dashboard_blocked"),
+                "errors": [str(item) for item in dynamic_dashboard.get("errors") or ()],
+                "dynamic_capability_dashboard": dynamic_dashboard,
+                "legacy_compatibility": bool(legacy_compatibility),
+                "persisted": False,
+                "persisted_record_id": "",
+            }
+        selection = dynamic_dashboard.get("selection") if isinstance(dynamic_dashboard.get("selection"), dict) else {}
+        capability_view = selection.get("capability_view") if isinstance(selection.get("capability_view"), dict) else {}
+        allowed = [
+            str(item.get("capability_id") or "").strip()
+            for item in capability_view.get("capabilities") or ()
+            if isinstance(item, dict) and str(item.get("capability_id") or "").strip()
+        ]
+        attribution_context = {
+            "allowed_capability_ids": tuple(sorted(set(allowed))),
+            "aliases": capability_aliases_from_view(capability_view),
+        }
+        try:
+            ledger = build_dynamic_capability_ledger(
+                runtime,
+                scope=scope_ref,
+                capability_scope=capability_scope,
+                limit=500,
+            )
+        except Exception as exc:
+            return {
+                "ok": False,
+                "status": "blocked",
+                "report_type": f"autonomous_learning_{period_type}_dashboard",
+                "period_type": period_type,
+                "period_start": start,
+                "scope": asdict(scope_ref),
+                "reason": "dynamic_capability_ledger_projection_failed",
+                "errors": [type(exc).__name__],
+                "dynamic_capability_dashboard": dynamic_dashboard,
+                "legacy_compatibility": bool(legacy_compatibility),
+                "persisted": False,
+                "persisted_record_id": "",
+            }
+    else:
+        ledger = build_capability_ledger(
+            runtime,
+            scope=scope_ref,
+            legacy_compatibility=True,
+        )
     daily = build_learning_daily_report(runtime, scope=scope_ref, persist=False)
-    failures = _failure_breakdown(runtime, scope=scope_ref, since=start)
+    failures = _failure_breakdown(
+        runtime,
+        scope=scope_ref,
+        since=start,
+        attribution_context=attribution_context,
+    )
     activity = _activity_breakdown(runtime, scope=scope_ref, since=start)
     promotion_statuses = _promotion_statuses(runtime, scope=scope_ref)
     roi = _safe_roi(runtime, scope=scope_ref)
     module_status = _module_status(runtime, scope=scope_ref)
-    hard_metrics = build_capability_dashboard_metrics(runtime, scope=scope_ref, persist=False)
+    hard_metrics = (
+        {"metrics": {}, "metric_quality": {}, "legacy_shadow": True}
+        if dynamic_requested
+        else build_capability_dashboard_metrics(runtime, scope=scope_ref, persist=False)
+    )
     markdown = _render_markdown(
         start=start,
         period_type=period_type,
@@ -45,6 +172,7 @@ def build_weekly_dashboard(
         roi=roi,
         module_status=module_status,
         hard_metrics=hard_metrics,
+        dynamic_dashboard=dynamic_dashboard,
     )
     output_error: str | dict[str, str] = ""
     written_path = ""
@@ -81,8 +209,18 @@ def build_weekly_dashboard(
                 "roi": roi,
                 "module_status": module_status,
                 "hard_metrics": hard_metrics,
+                "dynamic_capability_dashboard": dynamic_dashboard,
             },
-            meta={"report_type": f"autonomous_learning_{period_type}_dashboard", "period_type": period_type, "period_start": start, "capability_count": len(ledger.get("capabilities") or {})},
+            meta={
+                "report_type": f"autonomous_learning_{period_type}_dashboard",
+                "period_type": period_type,
+                "period_start": start,
+                "capability_count": len(ledger.get("capabilities") or {}),
+                "capability_scope": capability_scope if dynamic_requested else "",
+                "profile_key": str(profile_key or "") if dynamic_requested else "",
+                "dynamic_capabilities": dynamic_requested,
+                "legacy_compatibility": bool(legacy_compatibility),
+            },
         )
         record_id = record.record_id
     return {
@@ -103,6 +241,8 @@ def build_weekly_dashboard(
         "roi": roi,
         "module_status": module_status,
         "hard_metrics": hard_metrics,
+        "dynamic_capability_dashboard": dynamic_dashboard,
+        "legacy_compatibility": bool(legacy_compatibility),
     }
 
 
@@ -120,13 +260,32 @@ def _day_start(value: str | None) -> str:
     return datetime.fromisoformat(now_iso().replace("Z", "+00:00")).date().isoformat()
 
 
-def _failure_breakdown(runtime: Any, *, scope: ScopeRef, since: str) -> dict[str, int]:
+def _failure_breakdown(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    since: str,
+    attribution_context: dict[str, Any] | None = None,
+) -> dict[str, int]:
     counts: dict[str, int] = {}
     for kind in ["world_signal", "weakness", "regression_watch", "promotion_request", "reflection"]:
         for record in runtime.store.list_records(kinds=[kind], scope=scope, limit=500):
             if _record_date(record) < since:
                 continue
-            capability = str(record.meta.get("target_capability") or record.meta.get("capability") or _classify(record.summary or record.title))
+            if attribution_context is None:
+                capability = str(
+                    record.meta.get("target_capability")
+                    or record.meta.get("capability")
+                    or _legacy_classify(record.summary or record.title)
+                )
+            else:
+                content = record.content if isinstance(record.content, dict) else {}
+                attribution = resolve_explicit_capability_attribution(
+                    [record.meta, content],
+                    allowed_capability_ids=attribution_context.get("allowed_capability_ids") or (),
+                    aliases=attribution_context.get("aliases") or {},
+                )
+                capability = str(attribution.get("capability_id") or "unclassified")
             status = str(record.status or "")
             if kind in {"weakness", "regression_watch"} or status in {"blocked", "failed"} or "fail" in (record.summary or "").lower():
                 counts[capability] = counts.get(capability, 0) + 1
@@ -210,6 +369,7 @@ def _render_markdown(
     roi: dict[str, Any],
     module_status: dict[str, Any],
     hard_metrics: dict[str, Any],
+    dynamic_dashboard: dict[str, Any] | None = None,
 ) -> str:
     metrics = dict(hard_metrics.get("metrics") or {})
     lines = [
@@ -230,32 +390,60 @@ def _render_markdown(
         "| --- | ---: | --- |",
         *_module_status_lines(module_status),
         "",
-        "## Hard Metrics",
-        "",
-        f"- Recall hit rate: {float(metrics.get('recall_hit_rate') or 0.0):.3f}",
-        f"- User correction rate: {float(metrics.get('user_correction_rate') or 0.0):.3f}",
-        f"- Task success rate: {float(metrics.get('task_success_rate') or 0.0):.3f}",
-        f"- Auto patch success rate: {float(metrics.get('auto_patch_success_rate') or 0.0):.3f}",
-        f"- Rollbacks/quarantines: {int(metrics.get('rollback_count') or 0)}",
-        f"- Skill reuse count: {int(metrics.get('skill_reuse_count') or 0)}",
-        "",
         "## ROI Components",
         "",
         *_roi_component_lines(roi),
         "",
-        "## Capability Ledger",
-        "",
-        "| Capability | Score | Average | Trend | Evidence | Regressions | Failures |",
-        "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
-    caps = dict(ledger.get("capabilities") or {})
-    for cap in SEEDED_CAPABILITIES:
-        item = dict(caps.get(cap) or {})
-        lines.append(
-            f"| {cap} | {float(item.get('score') or 0.0):.3f} | {float(item.get('average') or 0.0):.3f} | "
-            f"{float(item.get('trend') or 0.0):.3f} | {int(item.get('evidence_count') or 0)} | "
-            f"{int(item.get('regression_count') or 0)} | {int(failures.get(cap) or 0)} |"
+    if dynamic_dashboard:
+        aggregate = dynamic_dashboard.get("aggregate") if isinstance(dynamic_dashboard.get("aggregate"), dict) else {}
+        lines.extend(
+            [
+                "## Dynamic Capability Evaluation",
+                "",
+                f"- Selected evaluation targets: {int(aggregate.get('evaluation_target_count') or 0)}",
+                f"- Observations: {int(aggregate.get('observation_count') or 0)}",
+                f"- Decisive pass rate: {_optional_rate(aggregate.get('pass_rate'))}",
+                "",
+                "| Capability | Targets | Observations | Pass rate | Failures |",
+                "| --- | ---: | ---: | ---: | ---: |",
+            ]
         )
+        for item in dynamic_dashboard.get("items") or ():
+            if not isinstance(item, dict):
+                continue
+            capability = str(item.get("capability_id") or "unclassified")
+            lines.append(
+                f"| {capability} | {int(item.get('evaluation_target_count') or 0)} | "
+                f"{int(item.get('observation_count') or 0)} | {_optional_rate(item.get('pass_rate'))} | "
+                f"{int(item.get('failure_count') or 0) + int(failures.get(capability) or 0)} |"
+            )
+    else:
+        lines.extend(
+            [
+                "## Hard Metrics",
+                "",
+                f"- Recall hit rate: {float(metrics.get('recall_hit_rate') or 0.0):.3f}",
+                f"- User correction rate: {float(metrics.get('user_correction_rate') or 0.0):.3f}",
+                f"- Task success rate: {float(metrics.get('task_success_rate') or 0.0):.3f}",
+                f"- Auto patch success rate: {float(metrics.get('auto_patch_success_rate') or 0.0):.3f}",
+                f"- Rollbacks/quarantines: {int(metrics.get('rollback_count') or 0)}",
+                f"- Skill reuse count: {int(metrics.get('skill_reuse_count') or 0)}",
+                "",
+                "## Capability Ledger",
+                "",
+                "| Capability | Score | Average | Trend | Evidence | Regressions | Failures |",
+                "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+            ]
+        )
+        caps = dict(ledger.get("capabilities") or {})
+        for cap in LEGACY_SEEDED_CAPABILITIES:
+            item = dict(caps.get(cap) or {})
+            lines.append(
+                f"| {cap} | {float(item.get('score') or 0.0):.3f} | {float(item.get('average') or 0.0):.3f} | "
+                f"{float(item.get('trend') or 0.0):.3f} | {int(item.get('evidence_count') or 0)} | "
+                f"{int(item.get('regression_count') or 0)} | {int(failures.get(cap) or 0)} |"
+            )
     lines.extend(
         [
             "",
@@ -382,12 +570,22 @@ def _join(items: list[Any]) -> str:
     return " | ".join(values) if values else "none"
 
 
+def _optional_rate(value: Any) -> str:
+    if value is None:
+        return "n/a"
+    try:
+        return f"{float(value):.3f}"
+    except (TypeError, ValueError):
+        return "n/a"
+
+
 def _record_date(record: Any) -> str:
     raw = str(getattr(record, "time", None).created_at if getattr(record, "time", None) else "")
     return raw[:10] if raw else date.min.isoformat()
 
 
-def _classify(text: str) -> str:
+def _legacy_classify(text: str) -> str:
+    """Historical dashboard-only classifier; dynamic callers use attribution."""
     value = str(text or "").lower()
     if any(term in value for term in ("recall", "检索", "召回")):
         return "search.discovery"

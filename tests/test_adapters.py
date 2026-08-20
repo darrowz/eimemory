@@ -2147,3 +2147,31 @@ def test_eibrain_rpc_rejects_invalid_experience_payload(tmp_path) -> None:
         response["error"]
         == "missing required fields: task_type, input_summary, selected_skills, actions, outcome, feedback, latency_ms"
     )
+
+
+def test_eibrain_capability_rpc_and_sdk_keep_outcomes_explicit(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        bridge = EIBrainRPCBridge(runtime)
+        scope = {"agent_id": "eibrain", "workspace_id": "robot", "user_id": "darrow"}
+        rejected = _handle_eibrain_request(
+            bridge,
+            {
+                "method": "eibrain.capability_advertise",
+                "params": {"scope": scope, "adapter_context": {}},
+            },
+        )
+        unsupported = EIBrainMemoryClient(runtime).normalize_capability_outcome(
+            host_event={"authorization": "Bearer secret-must-not-be-forwarded"},
+            event_type="robot_turn_end",
+            scope=scope,
+        )
+    finally:
+        runtime.close()
+
+    assert rejected["ok"] is False
+    assert rejected["result"]["status"] == "rejected"
+    assert rejected["result"]["reason"] == "advertisement_schema_invalid"
+    assert unsupported["ok"] is False
+    assert unsupported["status"] == "unsupported"
+    assert unsupported["reason"] == "capability_outcome_not_declared"

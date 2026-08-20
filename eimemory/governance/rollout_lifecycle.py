@@ -38,7 +38,7 @@ def is_executed_rollback_ledger_record(item: dict[str, Any]) -> bool:
     if execution.get("ok") is not True or execution.get("skipped") is True:
         return False
     if action in {"rollback", "quarantine"}:
-        if str(item.get("budget_decision") or "").strip().lower() not in {"ok", "manual_ok"}:
+        if str(item.get("budget_decision") or "").strip().lower() not in {"ok", "policy_ok"}:
             return False
         if not str(item.get("applied_pattern_id") or "").strip():
             return False

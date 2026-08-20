@@ -2,6 +2,12 @@
 
 Date: 2026-08-20
 
+> Historical WP2 evidence. This report was captured before the v3 storage and
+> dynamic catalog work landed. The current harness now seeds an exact v3
+> definition/revision/binding/profile and a sealed in-process catalog instead
+> of the retired fixed replay cohort, so it must be recaptured before using it
+> as a post-refactor performance comparison.
+
 ## Scope and evidence
 
 This is the pre-Storage-v2 functional/performance baseline required by WP2 of

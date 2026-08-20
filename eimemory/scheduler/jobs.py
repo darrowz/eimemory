@@ -86,6 +86,11 @@ def run_nightly_jobs(
         autonomous_learning_daily_report = _run_autonomous_learning_daily_report(runtime, scope=scope)
         autonomous_learning_dashboard = _run_autonomous_learning_dashboard(runtime, scope=scope)
         l5_loop_report = _run_l5_loop(runtime, scope=scope, autonomous_learning_report=autonomous_learning_report)
+        capability_v3_backfill_report = _run_capability_v3_backfill(runtime, scope=scope)
+        capability_v3_dual_write_report = _run_capability_v3_dual_write(runtime, scope=scope)
+        l5_v3_shadow_report = _run_l5_v3_shadow(runtime, scope=scope)
+        l5_v3_reconcile_report = _run_l5_v3_reconcile(runtime, scope=scope)
+        dynamic_capability_evolution_report = _run_dynamic_capability_evolution(runtime, scope=scope)
         outcome_evolution_report = _run_outcome_evolution_summary(runtime, scope=scope)
         storage_maintenance_report = runtime.store.maintain_storage()
         if not storage_maintenance_report.get("ok"):
@@ -141,6 +146,11 @@ def run_nightly_jobs(
             "autonomous_learning_daily_report": autonomous_learning_daily_report,
             "autonomous_learning_dashboard": autonomous_learning_dashboard,
             "l5_loop": l5_loop_report,
+            "capability_v3_backfill": capability_v3_backfill_report,
+            "capability_v3_dual_write": capability_v3_dual_write_report,
+            "l5_v3_shadow": l5_v3_shadow_report,
+            "l5_v3_reconcile": l5_v3_reconcile_report,
+            "dynamic_capability_evolution": dynamic_capability_evolution_report,
             "outcome_evolution": outcome_evolution_report,
             "storage_maintenance": storage_maintenance_report,
             "memory_eval_ci": memory_eval_ci_report,
@@ -1369,6 +1379,392 @@ def _run_rule_evolution(
         }
 
 
+def _capability_v3_profile_key() -> str:
+    """Return the explicitly deployed profile selector, never a built-in list."""
+
+    return str(os.environ.get("EIMEMORY_L5_V3_PROFILE") or "").strip()
+
+
+def _run_capability_v3_backfill(runtime: Runtime, *, scope: dict) -> dict[str, Any]:
+    """Run one explicit, bounded v3 entity-graph phase page per scheduler pass."""
+
+    enabled = _env_bool("EIMEMORY_CAPABILITY_V3_BACKFILL_ENABLED", default=False)
+    if not enabled:
+        return {
+            "ok": True,
+            "report_type": "capability_v3_backfill",
+            "enabled": False,
+            "status": "not_scheduled",
+            "reason": "capability_v3_backfill_not_enabled_by_deployment_policy",
+        }
+    runner = getattr(runtime, "run_capability_v3_backfill_batch", None)
+    if not callable(runner):
+        return {
+            "ok": False,
+            "report_type": "capability_v3_backfill",
+            "enabled": True,
+            "status": "blocked",
+            "reason": "capability_v3_backfill_runner_unavailable",
+        }
+    try:
+        report = _json_safe(
+            runner(
+                scope=scope,
+                capability_scope=str(os.environ.get("EIMEMORY_CAPABILITY_SCOPE") or "global"),
+                batch_size=_env_int(
+                    "EIMEMORY_CAPABILITY_V3_BACKFILL_BATCH_SIZE",
+                    default=200,
+                    minimum=1,
+                    maximum=2_000,
+                ),
+                max_seconds=_env_float(
+                    "EIMEMORY_CAPABILITY_V3_BACKFILL_MAX_SECONDS",
+                    default=10.0,
+                    minimum=0.001,
+                    maximum=60.0,
+                ),
+            )
+        )
+        if isinstance(report, dict):
+            return {"report_type": "capability_v3_backfill", "enabled": True, **report}
+    except Exception as exc:
+        return {
+            "ok": False,
+            "report_type": "capability_v3_backfill",
+            "enabled": True,
+            "status": "failed",
+            "reason": "capability_v3_backfill_failed",
+            "error": type(exc).__name__,
+            "detail": str(exc),
+        }
+    return {
+        "ok": False,
+        "report_type": "capability_v3_backfill",
+        "enabled": True,
+        "status": "failed",
+        "reason": "capability_v3_backfill_invalid_report",
+    }
+
+
+def _run_capability_v3_dual_write(runtime: Runtime, *, scope: dict) -> dict[str, Any]:
+    """Emit a bounded, read-only raw-outcome/v3 observation parity page."""
+
+    enabled = _env_bool("EIMEMORY_CAPABILITY_V3_DUAL_WRITE_REPORT_ENABLED", default=False)
+    if not enabled:
+        return {
+            "ok": True,
+            "report_type": "capability_v3_dual_write",
+            "enabled": False,
+            "status": "not_scheduled",
+            "reason": "capability_v3_dual_write_report_not_enabled_by_deployment_policy",
+        }
+    inspector = getattr(runtime, "inspect_capability_v3_dual_write", None)
+    if not callable(inspector):
+        return {
+            "ok": False,
+            "report_type": "capability_v3_dual_write",
+            "enabled": True,
+            "status": "blocked",
+            "reason": "capability_v3_dual_write_inspector_unavailable",
+        }
+    try:
+        report = _json_safe(
+            inspector(
+                scope=scope,
+                capability_scope=str(os.environ.get("EIMEMORY_CAPABILITY_SCOPE") or "global"),
+                limit=_env_int(
+                    "EIMEMORY_CAPABILITY_V3_DUAL_WRITE_LIMIT",
+                    default=200,
+                    minimum=1,
+                    maximum=500,
+                ),
+                cursor=str(os.environ.get("EIMEMORY_CAPABILITY_V3_DUAL_WRITE_CURSOR") or ""),
+            )
+        )
+        if isinstance(report, dict):
+            return {"report_type": "capability_v3_dual_write", "enabled": True, **report}
+    except Exception as exc:
+        return {
+            "ok": False,
+            "report_type": "capability_v3_dual_write",
+            "enabled": True,
+            "status": "failed",
+            "reason": "capability_v3_dual_write_report_failed",
+            "error": type(exc).__name__,
+            "detail": str(exc),
+        }
+    return {
+        "ok": False,
+        "report_type": "capability_v3_dual_write",
+        "enabled": True,
+        "status": "failed",
+        "reason": "capability_v3_dual_write_invalid_report",
+    }
+
+
+def _run_l5_v3_shadow(runtime: Runtime, *, scope: dict) -> dict[str, Any]:
+    """Observe the dynamic model beside legacy L5 without changing readers."""
+
+    profile_key = _capability_v3_profile_key()
+    if not profile_key:
+        return {
+            "ok": True,
+            "report_type": "l5_v3_shadow",
+            "enabled": False,
+            "status": "not_configured",
+            "reason": "l5_v3_profile_not_configured",
+        }
+    builder = getattr(runtime, "build_l5_v3_shadow", None)
+    if not callable(builder):
+        return {
+            "ok": False,
+            "report_type": "l5_v3_shadow",
+            "enabled": True,
+            "status": "blocked",
+            "reason": "l5_v3_shadow_builder_unavailable",
+        }
+    try:
+        report = _json_safe(
+            builder(
+                profile_key=profile_key,
+                scope=scope,
+                capability_scope=str(os.environ.get("EIMEMORY_CAPABILITY_SCOPE") or "global"),
+                persist=_env_bool("EIMEMORY_L5_V3_SHADOW_PERSIST", default=True),
+                max_candidates=_env_int(
+                    "EIMEMORY_L5_V3_MAX_CANDIDATES",
+                    default=100,
+                    minimum=1,
+                    maximum=499,
+                ),
+                observation_limit=_env_int(
+                    "EIMEMORY_L5_V3_OBSERVATION_LIMIT",
+                    default=500,
+                    minimum=1,
+                    maximum=500,
+                ),
+                repo_root=str(os.environ.get("EIMEMORY_L5_V3_REPO_ROOT") or "/dev-project/eimemory"),
+            )
+        )
+        if isinstance(report, dict):
+            return {"report_type": "l5_v3_shadow", "enabled": True, **report}
+    except Exception as exc:
+        return {
+            "ok": False,
+            "report_type": "l5_v3_shadow",
+            "enabled": True,
+            "status": "failed",
+            "reason": "l5_v3_shadow_failed",
+            "error": type(exc).__name__,
+            "detail": str(exc),
+        }
+    return {
+        "ok": False,
+        "report_type": "l5_v3_shadow",
+        "enabled": True,
+        "status": "failed",
+        "reason": "l5_v3_shadow_invalid_report",
+    }
+
+
+def _run_l5_v3_reconcile(runtime: Runtime, *, scope: dict) -> dict[str, Any]:
+    """Optionally reconcile bounded v2/v3 shadows across explicit scopes."""
+
+    enabled = _env_bool("EIMEMORY_L5_V3_RECONCILE_ENABLED", default=False)
+    if not enabled:
+        return {
+            "ok": True,
+            "report_type": "l5_v3_reconcile",
+            "enabled": False,
+            "status": "not_scheduled",
+            "reason": "l5_v3_reconcile_not_enabled_by_deployment_policy",
+        }
+    profile_key = _capability_v3_profile_key()
+    if not profile_key:
+        return {
+            "ok": False,
+            "report_type": "l5_v3_reconcile",
+            "enabled": True,
+            "status": "blocked",
+            "reason": "l5_v3_profile_not_configured",
+        }
+    reconciler = getattr(runtime, "reconcile_l5_v3", None)
+    if not callable(reconciler):
+        return {
+            "ok": False,
+            "report_type": "l5_v3_reconcile",
+            "enabled": True,
+            "status": "blocked",
+            "reason": "l5_v3_reconcile_runner_unavailable",
+        }
+    raw_scopes = str(os.environ.get("EIMEMORY_L5_V3_RECONCILE_SCOPES_JSON") or "").strip()
+    try:
+        if not raw_scopes:
+            reconcile_scopes: list[Any] = [scope]
+        else:
+            loaded = json.loads(raw_scopes)
+            if isinstance(loaded, dict):
+                reconcile_scopes = [loaded]
+            elif isinstance(loaded, list):
+                reconcile_scopes = list(loaded)
+            else:
+                return {
+                    "ok": False,
+                    "report_type": "l5_v3_reconcile",
+                    "enabled": True,
+                    "status": "blocked",
+                    "reason": "l5_v3_reconcile_scopes_must_be_object_or_array",
+                }
+        report = _json_safe(
+            reconciler(
+                profile_key=profile_key,
+                scopes=reconcile_scopes,
+                capability_scope=str(os.environ.get("EIMEMORY_CAPABILITY_SCOPE") or "global"),
+                persist=_env_bool("EIMEMORY_L5_V3_RECONCILE_PERSIST", default=False),
+                max_scopes=_env_int(
+                    "EIMEMORY_L5_V3_RECONCILE_MAX_SCOPES",
+                    default=32,
+                    minimum=1,
+                    maximum=32,
+                ),
+                at_time=str(os.environ.get("EIMEMORY_L5_V3_RECONCILE_AT_TIME") or ""),
+                max_candidates=_env_int(
+                    "EIMEMORY_L5_V3_MAX_CANDIDATES",
+                    default=100,
+                    minimum=1,
+                    maximum=499,
+                ),
+                observation_limit=_env_int(
+                    "EIMEMORY_L5_V3_OBSERVATION_LIMIT",
+                    default=500,
+                    minimum=1,
+                    maximum=500,
+                ),
+                repo_root=str(os.environ.get("EIMEMORY_L5_V3_REPO_ROOT") or "/dev-project/eimemory"),
+            )
+        )
+        if isinstance(report, dict):
+            return {"report_type": "l5_v3_reconcile", "enabled": True, **report}
+    except Exception as exc:
+        return {
+            "ok": False,
+            "report_type": "l5_v3_reconcile",
+            "enabled": True,
+            "status": "failed",
+            "reason": "l5_v3_reconcile_failed",
+            "error": type(exc).__name__,
+            "detail": str(exc),
+        }
+    return {
+        "ok": False,
+        "report_type": "l5_v3_reconcile",
+        "enabled": True,
+        "status": "failed",
+        "reason": "l5_v3_reconcile_invalid_report",
+    }
+
+
+def _run_dynamic_capability_evolution(runtime: Runtime, *, scope: dict) -> dict[str, Any]:
+    """Run bounded dynamic evolution with only machine authorization.
+
+    The executor itself collects only exact deterministic catalog evidence,
+    optionally asks a configured machine proposer for a bounded patch, and
+    applies only after the ordinary isolated preflight/promotion gates.  A
+    missing profile, evidence route, proposer, file bound, or policy remains
+    a visible machine-blocked result; it is never converted into a deferred
+    authorization state.
+    """
+
+    profile_key = _capability_v3_profile_key()
+    enabled = _env_bool("EIMEMORY_DYNAMIC_CAPABILITY_EVOLUTION_ENABLED", default=bool(profile_key))
+    if not enabled or not profile_key:
+        return {
+            "ok": True,
+            "report_type": "dynamic_capability_evolution",
+            "enabled": False,
+            "status": "not_configured",
+            "reason": "dynamic_capability_evolution_profile_missing_or_disabled",
+        }
+    executor = getattr(runtime, "execute_dynamic_capability_evolution", None)
+    if not callable(executor):
+        return {
+            "ok": False,
+            "report_type": "dynamic_capability_evolution",
+            "enabled": True,
+            "status": "blocked",
+            "reason": "dynamic_capability_evolution_executor_unavailable",
+        }
+    try:
+        report = _json_safe(
+            executor(
+                profile_key=profile_key,
+                scope=scope,
+                capability_scope=str(os.environ.get("EIMEMORY_CAPABILITY_SCOPE") or "global"),
+                independent_evidence=None,
+                auto_collect_independent_evidence=True,
+                auto_propose_code_patch=_env_bool(
+                    "EIMEMORY_DYNAMIC_CAPABILITY_AUTO_PROPOSE_CODE_PATCH",
+                    default=True,
+                ),
+                apply=_env_bool("EIMEMORY_DYNAMIC_CAPABILITY_AUTO_APPLY", default=True),
+                max_apply=_env_int(
+                    "EIMEMORY_DYNAMIC_CAPABILITY_MAX_APPLY",
+                    default=1,
+                    minimum=0,
+                    maximum=20,
+                ),
+                max_candidates=_env_int(
+                    "EIMEMORY_DYNAMIC_CAPABILITY_MAX_CANDIDATES",
+                    default=100,
+                    minimum=1,
+                    maximum=499,
+                ),
+                observation_limit=_env_int(
+                    "EIMEMORY_DYNAMIC_CAPABILITY_OBSERVATION_LIMIT",
+                    default=500,
+                    minimum=1,
+                    maximum=500,
+                ),
+            )
+        )
+        if isinstance(report, dict):
+            results = list(report.get("results") or [])
+            return {
+                "report_type": "dynamic_capability_evolution",
+                "enabled": True,
+                "status": (
+                    "applied" if int(report.get("applied_count") or 0) > 0
+                    else "evaluated" if report.get("ok") is True
+                    else "blocked" if results
+                    else "no_dynamic_gaps"
+                ),
+                "work_item_count": len(results),
+                "evaluated_work_item_count": sum(
+                    1 for item in results if isinstance(item, dict) and item.get("status") in {"evaluated", "applied"}
+                ),
+                "blocked_work_item_count": sum(
+                    1 for item in results if isinstance(item, dict) and item.get("status") == "blocked"
+                ),
+                "execution": report,
+            }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "report_type": "dynamic_capability_evolution",
+            "enabled": True,
+            "status": "failed",
+            "reason": "dynamic_capability_evolution_execution_failed",
+            "error": type(exc).__name__,
+            "detail": str(exc),
+        }
+    return {
+        "ok": False,
+        "report_type": "dynamic_capability_evolution",
+        "enabled": True,
+        "status": "failed",
+        "reason": "dynamic_capability_evolution_invalid_execution",
+    }
+
+
 def _run_autonomous_evolution(runtime: Runtime, *, scope: dict) -> dict[str, Any]:
     run_autonomous = getattr(runtime, "run_autonomous_evolution", None)
     if run_autonomous is None:
@@ -1456,6 +1852,10 @@ def _run_autonomous_learning(runtime: Runtime, *, scope: dict) -> dict[str, Any]
     max_promotions = _env_int("EIMEMORY_AUTONOMOUS_LEARNING_MAX_PROMOTIONS", default=3, minimum=0, maximum=20)
     timeout_seconds = _env_int("EIMEMORY_AUTONOMOUS_LEARNING_TIMEOUT_SECONDS", default=900, minimum=30, maximum=7200)
     allow_network = _env_bool("EIMEMORY_AUTONOMOUS_LEARNING_NETWORK", default=True)
+    # Historic taxonomy/replay behavior is never selected implicitly.  This
+    # explicit operator configuration exists only for controlled legacy
+    # migration jobs; the normal scheduler path stays dynamic and fail-closed.
+    legacy_compatibility = _env_bool("EIMEMORY_AUTONOMOUS_LEARNING_LEGACY_COMPATIBILITY", default=False)
     try:
         started = time.monotonic()
         report = _json_safe(
@@ -1468,6 +1868,7 @@ def _run_autonomous_learning(runtime: Runtime, *, scope: dict) -> dict[str, Any]
                 max_goals=max_goals,
                 max_promotions=max_promotions,
                 allow_network=allow_network,
+                legacy_compatibility=legacy_compatibility,
             )
         )
         elapsed_seconds = round(time.monotonic() - started, 3)
@@ -1488,6 +1889,7 @@ def _run_autonomous_learning(runtime: Runtime, *, scope: dict) -> dict[str, Any]
                 "apply_env": "EIMEMORY_AUTONOMOUS_LEARNING_APPLY=1",
                 "dry_run": bool(report.get("dry_run", dry_run)),
                 "apply": bool(report.get("apply", apply_changes)),
+                "legacy_compatibility": bool(report.get("legacy_compatibility", legacy_compatibility)),
                 "force": bool(force),
                 "max_goals": max_goals,
                 "max_promotions": max_promotions,
@@ -1790,6 +2192,15 @@ def _env_int(name: str, *, default: int, minimum: int, maximum: int) -> int:
     except ValueError:
         value = int(default)
     return max(minimum, min(maximum, value))
+
+
+def _env_float(name: str, *, default: float, minimum: float, maximum: float) -> float:
+    raw = os.environ.get(name)
+    try:
+        value = float(str(raw).strip()) if raw is not None else float(default)
+    except ValueError:
+        value = float(default)
+    return max(float(minimum), min(float(maximum), value))
 
 def _delivery_is_pending(delivery: dict[str, Any]) -> bool:
     status = str(((delivery.get("outbox") or {}).get("status") or delivery.get("status") or "")).strip().lower()

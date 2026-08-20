@@ -49,7 +49,7 @@ def build_research_closure_review(
     candidate = _candidate_payload(candidate_record_or_dict)
     title = _candidate_text(candidate, "title") or "Promoted research paper"
     text = _combined_text(candidate)
-    decision = _closure_decision(text)
+    decision = _closure_decision(text, target_capability=_explicit_candidate_capability(candidate))
     artifact = {
         "report_type": RESEARCH_CLOSURE_REPORT_TYPE,
         "review_model_requested": str(review_model or DEFAULT_REVIEW_MODEL),
@@ -107,13 +107,22 @@ def build_research_closure_review(
     }
 
 
-def _closure_decision(text: str) -> dict[str, Any]:
+def _closure_decision(text: str, *, target_capability: str = "") -> dict[str, Any]:
+    """Classify a research closure without inventing a capability identity.
+
+    Research prose can suggest a landing point, but only an explicit source
+    attribution (later validated through the knowledge/capability bridge) may
+    attach it to a live capability.  This keeps knowledge useful without
+    letting keyword heuristics silently widen L5's capability universe.
+    """
+
+    target = str(target_capability or "").strip()
     lowered = text.lower()
     replay_hits = [term for term in _POLICY_REPLAY_TERMS if term in lowered]
     if replay_hits:
         return {
             "decision": "enter_closure",
-            "target_capability": "proactive.judgment",
+            "target_capability": target,
             "landing_point": "policy_replay",
             "summary": "Research maps directly to policy replay closure and should become a replay/candidate follow-up.",
             "evidence": replay_hits,
@@ -124,7 +133,7 @@ def _closure_decision(text: str) -> dict[str, Any]:
     if grounding_hits:
         return {
             "decision": "observe_only",
-            "target_capability": "research.synthesis",
+            "target_capability": target,
             "landing_point": "self_model_observe",
             "summary": "Research is useful for future hierarchical observe work but is not a direct replay-count repair.",
             "evidence": grounding_hits,
@@ -133,7 +142,7 @@ def _closure_decision(text: str) -> dict[str, Any]:
         }
     return {
         "decision": "observe_only",
-        "target_capability": "knowledge.intake",
+        "target_capability": target,
         "landing_point": "research_memory",
         "summary": "Research was promoted to paper memory but has no immediate closed-loop implementation target.",
         "evidence": [],
@@ -153,6 +162,24 @@ def _candidate_payload(candidate_record_or_dict: RecordEnvelope | dict[str, Any]
         payload.setdefault("provenance", dict(candidate_record_or_dict.provenance or {}))
         return payload
     return dict(candidate_record_or_dict or {})
+
+
+def _explicit_candidate_capability(candidate: dict[str, Any]) -> str:
+    attribution = candidate.get("capability_attribution")
+    if isinstance(attribution, dict):
+        value = attribution.get("capability_id") or attribution.get("target_capability") or attribution.get("capability")
+        if str(value or "").strip():
+            return str(value).strip()
+    for container in (
+        candidate,
+        candidate.get("meta") if isinstance(candidate.get("meta"), dict) else {},
+        candidate.get("provenance") if isinstance(candidate.get("provenance"), dict) else {},
+    ):
+        for key in ("target_capability", "capability_id", "capability"):
+            value = str(container.get(key) or "").strip()
+            if value:
+                return value
+    return ""
 
 
 def _candidate_id(candidate_record_or_dict: RecordEnvelope | dict[str, Any], candidate: dict[str, Any]) -> str:

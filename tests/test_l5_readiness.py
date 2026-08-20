@@ -9,10 +9,11 @@ import pytest
 import eimemory.governance.l5_readiness as l5_readiness_module
 from eimemory.api.runtime import Runtime
 from eimemory.cli.main import main as cli_main
+from eimemory.evaluation.capability_catalog import CatalogResolutionError
 from eimemory.experience import record_outcome_trace
 from eimemory.governance.capability_ledger import record_capability_score
 from eimemory.governance.capability_acceptance import (
-    CORE_CAPABILITY_ACCEPTANCE_CASE_IDS,
+    LEGACY_CORE_CAPABILITY_ACCEPTANCE_CASE_IDS,
     capability_acceptance_case,
 )
 from eimemory.governance.evidence_contract import (
@@ -21,7 +22,7 @@ from eimemory.governance.evidence_contract import (
     release_identity_payload,
 )
 from eimemory.governance.capability_replay_packs import (
-    CORE_REPLAY_CAPABILITIES,
+    LEGACY_CORE_REPLAY_CAPABILITIES,
     MANIFEST_REPORT_TYPE,
     MANIFEST_SCHEMA_VERSION,
     capability_replay_manifest_digest,
@@ -37,6 +38,52 @@ from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
 SCOPE = {"agent_id": "agent-l5-readiness", "workspace_id": "l5-readiness", "user_id": "darrow"}
+
+
+@pytest.fixture(autouse=True)
+def _select_legacy_reader_for_retired_v2_contract_tests(monkeypatch) -> None:
+    """Keep this historic v2 contract module explicit about its reader mode.
+
+    Production defaults to the dynamic v3 reader.  These fixtures deliberately
+    exercise the retired readiness contract, so the test seam selects it once
+    rather than relying on that production default.
+    """
+
+    original = Runtime.build_l5_readiness_report
+
+    def build_legacy_reader(*args, **kwargs):
+        kwargs.setdefault("reader_mode", "legacy")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(Runtime, "build_l5_readiness_report", build_legacy_reader)
+
+
+def test_dynamic_readiness_preserves_unconfigured_catalog_reason(tmp_path, monkeypatch) -> None:
+    """The dynamic reader must expose provisioning gaps without a v2 fallback."""
+
+    runtime = Runtime.create(root=tmp_path)
+
+    def _catalog_not_configured(_catalog=None):
+        raise CatalogResolutionError("catalog_not_configured")
+
+    monkeypatch.setattr(
+        l5_readiness_module,
+        "resolve_application_capability_catalog",
+        _catalog_not_configured,
+    )
+    try:
+        report = l5_readiness_module.build_l5_readiness_report(
+            runtime,
+            scope=SCOPE,
+            persist=False,
+        )
+    finally:
+        runtime.close()
+
+    assert report["evaluation_catalog"]["reason"] == "catalog_not_configured"
+    assert report["capability_selection"]["reason"] == "catalog_not_configured"
+    assert report["capability_selection"]["evaluation_catalog"]["reason"] == "catalog_not_configured"
+    assert report["current_stage"] != "L5"
 
 
 def test_real_business_gate_accepts_live_or_verified_real_replay_independently() -> None:
@@ -318,6 +365,7 @@ def test_l5_readiness_validates_inherited_recall_against_ancestor_receipt(
             scope=SCOPE,
             persist=False,
             repo_root=tmp_path,
+            legacy_compatibility=True,
         )
         gate_status = readiness_gate_status(
             report,
@@ -459,7 +507,7 @@ def test_l5_readiness_report_is_read_only_by_default_and_surfaces_gaps(tmp_path)
     runtime = Runtime.create(root=tmp_path)
     try:
         before = runtime.store.sqlite.conn.execute("SELECT COUNT(*) FROM records").fetchone()[0]
-        report = runtime.build_l5_readiness_report(scope=SCOPE)
+        report = runtime.build_l5_readiness_report(scope=SCOPE, reader_mode="legacy")
         after = runtime.store.sqlite.conn.execute("SELECT COUNT(*) FROM records").fetchone()[0]
     finally:
         runtime.close()
@@ -467,7 +515,7 @@ def test_l5_readiness_report_is_read_only_by_default_and_surfaces_gaps(tmp_path)
     assert report["ok"] is True
     assert report["report_type"] == "l5_readiness_report"
     assert report["verified_replay"]["minimum_executed"] == len(WEAK_CAPABILITIES) * 3
-    assert report["verified_core_replay"]["minimum_executed"] == len(CORE_REPLAY_CAPABILITIES) * 3
+    assert report["verified_core_replay"]["minimum_executed"] == len(LEGACY_CORE_REPLAY_CAPABILITIES) * 3
     assert "minimum_per_weak_capability" not in report["verified_replay"]
     assert "minimum_per_weak_capability" not in report["verified_core_replay"]
     assert report["current_stage"] == "L3.5"
@@ -613,7 +661,7 @@ def test_stage_for_rejects_missing_or_malformed_replay_gate_fields() -> None:
         "manifest_rejection_reasons": {},
     }
     core_replay = {
-        "executed_count": len(CORE_REPLAY_CAPABILITIES) * 3,
+        "executed_count": len(LEGACY_CORE_REPLAY_CAPABILITIES) * 3,
         "pass_rate": 1.0,
         "core_capabilities_missing": [],
         "manifest_rejection_reasons": {},
@@ -629,6 +677,8 @@ def test_stage_for_rejects_missing_or_malformed_replay_gate_fields() -> None:
             weak,
             core,
             {"complete": True},
+            capability_selection={"capability_ids": sorted(READINESS_CAPABILITIES)},
+            legacy_compatibility=True,
         )
 
     assert stage(weak_replay, core_replay)["stage"] == "L5"
@@ -1207,7 +1257,7 @@ def test_l5_readiness_uses_monotonic_batch_order_after_future_clock_skew(tmp_pat
                 score.time.updated_at = "2100-01-01T00:00:01+00:00"
                 runtime.store.rewrite(score)
 
-        runtime.run_capability_replay_case = lambda case: {  # type: ignore[attr-defined]
+        runtime.run_capability_replay_case = lambda case, **_kwargs: {  # type: ignore[attr-defined]
             "verdict": "fail",
             "hit": False,
             "observed": f"failed:{case['case_id']}",
@@ -1218,6 +1268,7 @@ def test_l5_readiness_uses_monotonic_batch_order_after_future_clock_skew(tmp_pat
             capabilities=sorted(WEAK_CAPABILITIES),
             persist=True,
             loop_id="post-clock-recovery-failure",
+            legacy_compatibility=True,
         )
 
         report = runtime.build_l5_readiness_report(scope=SCOPE)
@@ -1316,7 +1367,7 @@ def test_l5_readiness_does_not_fallback_after_latest_batch_is_physically_removed
             assessment_complete=True,
             verified_patch_evidence=True,
         )
-        runtime.run_capability_replay_case = lambda case: {  # type: ignore[attr-defined]
+        runtime.run_capability_replay_case = lambda case, **_kwargs: {  # type: ignore[attr-defined]
             "verdict": "fail",
             "hit": False,
             "observed": f"failed:{case['case_id']}",
@@ -1327,6 +1378,7 @@ def test_l5_readiness_does_not_fallback_after_latest_batch_is_physically_removed
             capabilities=sorted(WEAK_CAPABILITIES),
             persist=True,
             loop_id="latest-failing-batch",
+            legacy_compatibility=True,
         )
         deleted_ids = [latest["manifest_record_id"], *latest["score_record_ids"], *latest["persisted_replay_ids"]]
         placeholders = ",".join("?" for _ in deleted_ids)
@@ -1510,7 +1562,10 @@ def test_l5_readiness_rejects_legacy_ledger_outcomes_without_verified_contracts(
     finally:
         runtime.close()
 
-    assert report["weak_outcome_evidence"]["counts"] == {capability: 0 for capability in sorted(WEAK_CAPABILITIES)}
+    assert {
+        capability: report["weak_outcome_evidence"]["counts"][capability]
+        for capability in sorted(WEAK_CAPABILITIES)
+    } == {capability: 0 for capability in sorted(WEAK_CAPABILITIES)}
     assert report["weak_outcome_evidence"]["missing"] == sorted(WEAK_CAPABILITIES)
     weak_gaps = {
         gap["capability"]: gap
@@ -1527,7 +1582,11 @@ def test_l5_readiness_reparses_contract_chain_and_rejects_forged_probe_digest(tm
     runtime = Runtime.create(root=tmp_path)
     try:
         _seed_current_release(runtime, scope=SCOPE)
-        acceptance = runtime.run_capability_acceptance(scope=SCOPE, persist=True)
+        acceptance = runtime.run_capability_acceptance(
+            scope=SCOPE,
+            persist=True,
+            legacy_compatibility=True,
+        )
         runtime.build_capability_replay_packs(
             scope=SCOPE,
             capabilities=sorted(WEAK_CAPABILITIES),
@@ -1537,6 +1596,7 @@ def test_l5_readiness_reparses_contract_chain_and_rejects_forged_probe_digest(tm
             acceptance_probe_ids_by_case={
                 item["case_id"]: item["probe_record_id"] for item in acceptance["results"]
             },
+            legacy_compatibility=True,
         )
         probe = runtime.store.get_by_id(acceptance["results"][0]["probe_id"], scope=SCOPE)
         assert probe is not None
@@ -1561,7 +1621,8 @@ def test_l5_readiness_rejects_replay_manifests_from_user_alias_scope(tmp_path) -
         acceptance = runtime.run_capability_acceptance(
             scope=shared_scope,
             persist=True,
-            case_ids=list(CORE_CAPABILITY_ACCEPTANCE_CASE_IDS),
+            case_ids=list(LEGACY_CORE_CAPABILITY_ACCEPTANCE_CASE_IDS),
+            legacy_compatibility=True,
         )
         runtime.build_capability_replay_packs(
             scope=shared_scope,
@@ -1572,6 +1633,7 @@ def test_l5_readiness_rejects_replay_manifests_from_user_alias_scope(tmp_path) -
             acceptance_probe_ids_by_case={
                 item["case_id"]: item["probe_record_id"] for item in acceptance["results"]
             },
+            legacy_compatibility=True,
         )
 
         report = runtime.build_l5_readiness_report(scope=SCOPE)
@@ -1595,7 +1657,8 @@ def test_l5_readiness_rejects_replay_bound_to_superseded_release_receipt(tmp_pat
         acceptance = runtime.run_capability_acceptance(
             scope=SCOPE,
             persist=True,
-            case_ids=list(CORE_CAPABILITY_ACCEPTANCE_CASE_IDS),
+            case_ids=list(LEGACY_CORE_CAPABILITY_ACCEPTANCE_CASE_IDS),
+            legacy_compatibility=True,
         )
         runtime.build_capability_replay_packs(
             scope=SCOPE,
@@ -1606,6 +1669,7 @@ def test_l5_readiness_rejects_replay_bound_to_superseded_release_receipt(tmp_pat
             acceptance_probe_ids_by_case={
                 item["case_id"]: item["probe_record_id"] for item in acceptance["results"]
             },
+            legacy_compatibility=True,
         )
         original_receipt = runtime.store.get_by_id(original_release.receipt_id, scope=SCOPE)
         assert original_receipt is not None
@@ -1643,7 +1707,14 @@ def test_l5_readiness_rejects_replay_bound_to_superseded_release_receipt(tmp_pat
 def test_cli_l5_readiness_returns_json(tmp_path, monkeypatch, capsys) -> None:
     monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path))
 
-    exit_code = cli_main(["learn", "l5-readiness", "--limit", "25", "--json"])
+    exit_code = cli_main([
+        "learn",
+        "l5-readiness",
+        "--legacy-compatibility",
+        "--limit",
+        "25",
+        "--json",
+    ])
     payload = json.loads(capsys.readouterr().out)
 
     assert exit_code == 0
@@ -1696,13 +1767,14 @@ def _seed_l5_prerequisites(
     core_capabilities = sorted((READINESS_CAPABILITIES - WEAK_CAPABILITIES) - {missing_core_capability})
     core_case_ids = [
         case_id
-        for case_id in CORE_CAPABILITY_ACCEPTANCE_CASE_IDS
-        if capability_acceptance_case(case_id).get("capability") in core_capabilities
+        for case_id in LEGACY_CORE_CAPABILITY_ACCEPTANCE_CASE_IDS
+        if capability_acceptance_case(case_id, legacy_compatibility=True).get("capability") in core_capabilities
     ]
     core_acceptance = runtime.run_capability_acceptance(
         scope=scope,
         persist=True,
         case_ids=core_case_ids,
+        legacy_compatibility=True,
     )
     runtime.build_capability_replay_packs(
         scope=scope,
@@ -1715,12 +1787,19 @@ def _seed_l5_prerequisites(
             for item in core_acceptance.get("results") or []
             if isinstance(item, dict)
         },
+        legacy_compatibility=True,
     )
     if execute_weak_replays:
-        runtime.run_capability_acceptance(scope=scope, persist=True)
-    runtime.build_capability_replay_packs(scope=scope, capabilities=sorted(WEAK_CAPABILITIES), persist=True, loop_id="seed_weak_replay")
+        runtime.run_capability_acceptance(scope=scope, persist=True, legacy_compatibility=True)
+    runtime.build_capability_replay_packs(
+        scope=scope,
+        capabilities=sorted(WEAK_CAPABILITIES),
+        persist=True,
+        loop_id="seed_weak_replay",
+        legacy_compatibility=True,
+    )
     if weak_outcomes and not execute_weak_replays:
-        runtime.run_capability_acceptance(scope=scope, persist=True)
+        runtime.run_capability_acceptance(scope=scope, persist=True, legacy_compatibility=True)
         for capability, task_type, summary in (
             ("search.discovery", "搜索最近 GitHub 热门项目", "搜索 GitHub created range stars sort source verification"),
             ("research.synthesis", "research_synthesis", "Synthesized research papers and claim evidence into a brief"),

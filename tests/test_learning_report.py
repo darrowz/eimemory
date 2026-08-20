@@ -47,7 +47,7 @@ def test_learning_daily_report_persists_short_summary(tmp_path) -> None:
 
     assert report["ok"] is True
     assert report["persisted_record_id"]
-    assert report["learned"] == ["ops.health: Health checks should use compact endpoints."]
+    assert report["learned"] == ["unclassified: Health checks should use compact endpoints."]
     assert report["applied"]
     assert report["blocked"]
     assert len(report["summary"]) < 700
@@ -87,7 +87,7 @@ def test_learning_daily_report_skips_tool_message_noise(tmp_path) -> None:
     report = build_learning_daily_report(runtime, scope=scope, report_date="2099-01-01", persist=False)
 
     assert report["noise_skipped_count"] == 1
-    assert report["learned"] == ["ops.health: RPC health endpoint timed out because it returned a large daily digest payload."]
+    assert report["learned"] == ["unclassified: RPC health endpoint timed out because it returned a large daily digest payload."]
     assert "toolCall" not in report["summary"]
     assert "assistant:" not in report["summary"]
 

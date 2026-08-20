@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 from typing import Any
 
+from eimemory.knowledge.capabilities import normalize_capability_context
 from eimemory.models.claim_cards import ClaimCard
 
 
@@ -12,7 +13,15 @@ def build_claim_cards(
     paper_extract_id: str,
     sentences: list[str],
     provenance: dict[str, Any] | None = None,
+    capability_context: dict[str, Any] | None = None,
 ) -> tuple[ClaimCard, ...]:
+    # Capability attribution is explicit metadata only.  Do not infer a
+    # capability from the claim wording or auto-register a knowledge link.
+    normalized_capability_context = normalize_capability_context(capability_context)
+    base_provenance = dict(provenance or {})
+    if normalized_capability_context:
+        base_provenance["capability_context"] = dict(normalized_capability_context)
+    metadata = {"capability_context": dict(normalized_capability_context)} if normalized_capability_context else {}
     claims: list[ClaimCard] = []
     for sentence in sentences:
         claim_type = classify_claim(sentence)
@@ -29,7 +38,8 @@ def build_claim_cards(
                 claim_type=claim_type,
                 evidence_text=sentence,
                 confidence=0.72 if claim_type in {"finding", "method", "limitation"} else 0.58,
-                provenance=provenance or {},
+                metadata=metadata,
+                provenance=base_provenance,
             )
         )
     if not claims and sentences:
@@ -43,7 +53,8 @@ def build_claim_cards(
                 claim_type="summary",
                 evidence_text=sentence,
                 confidence=0.5,
-                provenance=provenance or {},
+                metadata=metadata,
+                provenance=base_provenance,
             )
         )
     return tuple(claims)

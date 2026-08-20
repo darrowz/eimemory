@@ -2,9 +2,16 @@ from __future__ import annotations
 
 from eimemory.api.runtime import Runtime
 from eimemory.governance import world_watchers
-from eimemory.governance.world_watchers import SourceWatch, collect_world_signals
+from eimemory.governance.world_watchers import SourceWatch, collect_world_signals as _collect_world_signals
 from eimemory.governance.world_watchers import default_watches
 from eimemory.models.records import RecordEnvelope, ScopeRef
+
+
+def collect_world_signals(*args, **kwargs):
+    """Keep v2 characterization tests on the explicit compatibility path."""
+
+    kwargs.setdefault("legacy_compatibility", True)
+    return _collect_world_signals(*args, **kwargs)
 
 
 def test_disabled_watchers_write_nothing(tmp_path) -> None:

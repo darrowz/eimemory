@@ -39,6 +39,17 @@ class PaperIntakePipeline:
         if not paper_input:
             return _skip("not_a_paper_candidate")
 
+        # A collected candidate is an observation, not authority to fetch an
+        # arbitrary remote PDF during the unattended nightly run.  Preserve
+        # the declared URL in metadata for an explicit canonical-artifact
+        # intake later, while allowing the bounded metadata-excerpt path to
+        # create a research record.  That record remains non-applicable to
+        # capability promotion until canonical artifact verification succeeds.
+        # Direct ``Runtime.ingest_paper_source`` remains the explicit path
+        # that may materialize a PDF and therefore still fails closed on a
+        # fetch/parser error.
+        paper_input = _defer_collected_remote_pdf_fetch(paper_input)
+
         source_record = self.runtime.ingest_paper_source(paper_input, scope=scope)
         source_payload = dict(source_record.content or {})
         artifact = dict((source_payload.get("metadata") or {}).get("artifact") or {})
@@ -250,6 +261,24 @@ def _paper_input_from_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
     if not _has_enough_content(paper_input):
         return {}
     return {key: value for key, value in paper_input.items() if value not in ("", [], {})}
+
+
+def _defer_collected_remote_pdf_fetch(paper_input: dict[str, Any]) -> dict[str, Any]:
+    """Remove only the unattended remote-PDF trigger from a collected item.
+
+    The URL remains in ``metadata`` because ``_paper_metadata`` carries the
+    collector payload through.  Verified artifact references and local-file
+    inputs are not changed; the former are revalidated by the artifact reader
+    and the latter are explicit local operator inputs.
+    """
+
+    result = dict(paper_input)
+    if result.get("pdf_file") or result.get("pdf_path"):
+        return result
+    if result.get("pdf_blob_ref") or result.get("normalized_text_ref"):
+        return result
+    result.pop("pdf_url", None)
+    return result
 
 
 def _candidate_text(candidate: dict[str, Any], key: str) -> str:

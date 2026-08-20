@@ -7,6 +7,15 @@ import json
 from tempfile import TemporaryDirectory
 from typing import Any, Callable
 
+from eimemory.evaluation.capability_catalog import (
+    CatalogCase,
+    CapabilityEvaluationCatalog,
+    CatalogResolutionError,
+    application_capability_catalog,
+    resolve_application_capability_catalog,
+)
+from eimemory.evaluation.capability_graders import grade_schema_rules
+
 
 EXECUTOR_VERSION = "capability_probe_executor.v1"
 ProbeExecutor = Callable[[dict[str, Any], dict[str, Any], Any], dict[str, Any]]
@@ -405,7 +414,7 @@ def _device_safety(input_data: dict[str, Any], fixture: dict[str, Any], _runtime
     }
 
 
-PROBE_EXECUTORS: dict[str, ProbeExecutor] = {
+_LEGACY_PROBE_EXECUTORS: dict[str, ProbeExecutor] = {
     "recall_version_truth": _memory_contract,
     "recall_low_score_root_cause": _memory_contract,
     "recall_graph_route": _memory_contract,
@@ -435,56 +444,312 @@ PROBE_EXECUTORS: dict[str, ProbeExecutor] = {
     "device_safe_boundary": _device_safety,
 }
 
+# Kept as a deliberately narrow test/shadow adapter through WP15.  The normal
+# path below resolves catalog executor IDs, not this case-ID map.  Existing
+# callers that deliberately remove/override an item still get the historical
+# failure-injection semantics without granting descriptors executable power.
+PROBE_EXECUTORS: dict[str, ProbeExecutor] = dict(_LEGACY_PROBE_EXECUTORS)
 
-def execute_probe(artifact: dict[str, Any], *, runtime: Any, evidence_ref: str) -> dict[str, Any]:
-    case_id = str(artifact.get("case_id") or "")
-    input_data = deepcopy(artifact.get("input") or {})
-    fixture = deepcopy(artifact.get("fixture") or {})
-    executor = PROBE_EXECUTORS.get(case_id)
-    executor_id = f"eimemory.capability_probe.{case_id}"
-    error = ""
-    if executor is None:
-        output: dict[str, Any] = {}
-        checks = [{"name": "executor_available", "passed": False, "evidence_ref": evidence_ref}]
-        error = f"executor unavailable: {case_id}"
-    else:
+
+_LEGACY_EXECUTOR_IDS: dict[str, str] = {
+    "recall_version_truth": "eimemory.eval.memory-contract",
+    "recall_low_score_root_cause": "eimemory.eval.memory-contract",
+    "recall_graph_route": "eimemory.eval.memory-contract",
+    "route_query_first": "eimemory.eval.tool-contract",
+    "route_deploy_via_tailscale": "eimemory.eval.tool-contract",
+    "route_image_generation": "eimemory.eval.tool-contract",
+    "intake_source_quality": "eimemory.eval.knowledge-contract",
+    "intake_dedupe": "eimemory.eval.knowledge-contract",
+    "intake_output_gate": "eimemory.eval.knowledge-contract",
+    "judge_need_replay": "eimemory.eval.proactive-contract",
+    "judge_need_version_bump": "eimemory.eval.proactive-contract",
+    "judge_need_no_full_test": "eimemory.eval.proactive-contract",
+    "safety_secret": "eimemory.eval.safety-contract",
+    "safety_destructive": "eimemory.eval.safety-contract",
+    "safety_high_risk_gate": "eimemory.eval.safety-contract",
+    "search_recent_source": "eimemory.eval.search-recent",
+    "search_trending_github": "eimemory.eval.search-trending",
+    "search_primary_source": "eimemory.eval.search-primary",
+    "research_evidence_gate": "eimemory.eval.research-evidence",
+    "research_conflict_resolution": "eimemory.eval.research-conflict",
+    "research_actionable_takeaway": "eimemory.eval.research-actionable",
+    "uumit_requirement_checklist": "eimemory.eval.uumit-requirements",
+    "uumit_quality_gate": "eimemory.eval.uumit-quality",
+    "uumit_post_delivery_followup": "eimemory.eval.uumit-followup",
+    "device_physical_channel": "eimemory.eval.device-route",
+    "device_missing_info": "eimemory.eval.device-missing",
+    "device_safe_boundary": "eimemory.eval.device-safety",
+}
+
+
+def legacy_executor_id_for_case(case_id: str) -> str:
+    """Return the migrated opaque executor ID for one legacy artifact."""
+
+    return str(_LEGACY_EXECUTOR_IDS.get(str(case_id or "").strip()) or "")
+
+
+def register_builtin_probe_executors(
+    catalog: CapabilityEvaluationCatalog | None = None,
+    *,
+    legacy_compatibility: bool = False,
+) -> CapabilityEvaluationCatalog:
+    """Install historical deterministic implementations in an isolated catalog."""
+
+    if legacy_compatibility is not True:
+        raise ValueError("legacy_compatibility=True is required for historical probe executors")
+    if catalog is not None and not isinstance(catalog, CapabilityEvaluationCatalog):
+        raise ValueError("catalog must be an in-process CapabilityEvaluationCatalog")
+    target = catalog if catalog is not None else CapabilityEvaluationCatalog()
+    handlers: dict[str, ProbeExecutor] = {}
+    for case_id, handler in _LEGACY_PROBE_EXECUTORS.items():
+        executor_id = legacy_executor_id_for_case(case_id)
+        if executor_id:
+            existing = handlers.get(executor_id)
+            if existing is not None and existing is not handler:
+                raise RuntimeError(f"legacy executor mapping conflict: {executor_id}")
+            handlers[executor_id] = handler
+    for executor_id, handler in handlers.items():
+        target.register_executor(
+            executor_id=executor_id,
+            revision=EXECUTOR_VERSION,
+            handler=handler,
+        )
+    return target
+
+
+def _ensure_catalog_case(
+    case_id: str,
+    *,
+    catalog: CapabilityEvaluationCatalog | None = None,
+    legacy_compatibility: bool = False,
+) -> CapabilityEvaluationCatalog | None:
+    """Resolve only a caller-owned catalog unless legacy mode is explicit."""
+
+    target: CapabilityEvaluationCatalog | None = None
+    if catalog is None:
+        if not legacy_compatibility:
+            # A dynamic probe must name the exact trusted catalog that selected
+            # its descriptor.  Falling back to the process default here would
+            # let a prior legacy replay become implicit authority.
+            return None
+        # The historical catalog is intentionally separate from the dynamic
+        # application singleton so an explicit replay cannot taint later
+        # default-path profile resolution.
+        from eimemory.governance.capability_acceptance import ensure_legacy_evaluation_catalog
+
+        return ensure_legacy_evaluation_catalog(None, legacy_compatibility=True)
+    try:
+        target = resolve_application_capability_catalog(catalog)
+    except CatalogResolutionError:
+        return None
+    if legacy_compatibility:
         try:
-            raw_output = executor(deepcopy(input_data), deepcopy(fixture), runtime)
-            output = deepcopy(raw_output) if isinstance(raw_output, dict) else {}
-            checks = _evaluate_invariants(output, artifact.get("expected_invariants"), evidence_ref=evidence_ref)
-            if not isinstance(raw_output, dict):
-                error = "executor output must be an object"
-        except Exception as exc:
-            output = {}
-            checks = [{"name": "executor_completed", "passed": False, "evidence_ref": evidence_ref}]
-            error = f"executor exception: {type(exc).__name__}"
-    observation = _observation_from_output(output, artifact.get("expected_invariants"))
+            application_catalog = application_capability_catalog()
+        except CatalogResolutionError:
+            # Dynamic L5 has deliberately not been configured in this process.
+            # The caller-owned catalog is still valid for an explicit legacy
+            # replay and must not force creation of a dynamic singleton.
+            application_catalog = None
+        if target is application_catalog:
+            # An explicit historical replay must not reuse the dynamic
+            # application singleton, even if it has been bootstrapped.
+            return None
+    if legacy_compatibility and target.get_case(case_id) is None:
+        # Importing here avoids an import cycle while preserving direct callers
+        # of the explicitly selected legacy API.
+        from eimemory.governance.capability_acceptance import ensure_legacy_evaluation_catalog
+
+        try:
+            ensure_legacy_evaluation_catalog(target, legacy_compatibility=True)
+        except (CatalogResolutionError, ValueError):
+            return None
+    return target
+
+
+def _catalog_unavailable_execution(
+    artifact: dict[str, Any],
+    *,
+    evidence_ref: str,
+) -> dict[str, Any]:
+    """Return bounded failed evidence when a dynamic catalog was omitted."""
+
+    raw_input = artifact.get("input")
+    input_data = dict(raw_input) if isinstance(raw_input, dict) else {}
+    checks = [
+        {
+            "name": "evaluation_catalog_available",
+            "passed": False,
+            "evidence_ref": evidence_ref,
+        }
+    ]
+    execution_digest = execution_evidence_digest(
+        executor_id="",
+        executor_version=EXECUTOR_VERSION,
+        input_data=input_data,
+        output={},
+        observation={},
+        checks=checks,
+    )
+    return {
+        "executor_id": "",
+        "executor_version": EXECUTOR_VERSION,
+        "executor_contract_digest": "",
+        "grader_id": "",
+        "grader_revision": "",
+        "grader_type": "",
+        "input": input_data,
+        "output": {},
+        "observation": {},
+        "checks": checks,
+        "metrics": {"pass_rate": 0.0, "check_count": len(checks)},
+        "execution_digest": execution_digest,
+        "passed": False,
+        "error": "evaluation_catalog_required",
+    }
+
+
+def _compatibility_override_execution(
+    *,
+    case: CatalogCase,
+    handler: ProbeExecutor | None,
+    runtime: Any,
+    evidence_ref: str,
+) -> dict[str, Any]:
+    if handler is None:
+        return {
+            "case_id": case.case_id,
+            "capability": case.capability_id,
+            "executor_id": case.executor_id,
+            "executor_version": case.executor_revision,
+            "executor_contract_digest": case.executor_contract_digest,
+            "grader_id": case.grader_id,
+            "grader_revision": case.grader_revision,
+            "grader_type": case.grader_type,
+            "input": deepcopy(dict(case.input_data)),
+            "output": {},
+            "observation": {},
+            "checks": [{"name": "executor_available", "passed": False, "evidence_ref": evidence_ref}],
+            "metrics": {"pass_rate": 0.0, "check_count": 1},
+            "passed": False,
+            "verdict": "blocked",
+            "error": "executor unavailable",
+            "evaluation_case_digest": case.case_digest,
+            "eval_spec_id": case.eval_spec_id,
+        }
+    try:
+        raw_output = handler(deepcopy(dict(case.input_data)), deepcopy(dict(case.fixture)), runtime)
+    except Exception as exc:
+        return _compatibility_override_execution(
+            case=case,
+            handler=None,
+            runtime=runtime,
+            evidence_ref=evidence_ref,
+        ) | {"error": f"executor exception: {type(exc).__name__}"}
+    grade = grade_schema_rules(raw_output, case.expected_invariants, evidence_ref)
+    return {
+        "case_id": case.case_id,
+        "capability": case.capability_id,
+        "executor_id": case.executor_id,
+        "executor_version": case.executor_revision,
+        "executor_contract_digest": case.executor_contract_digest,
+        "grader_id": case.grader_id,
+        "grader_revision": case.grader_revision,
+        "grader_type": case.grader_type,
+        "input": deepcopy(dict(case.input_data)),
+        "output": deepcopy(dict(raw_output)) if isinstance(raw_output, dict) else {},
+        "observation": deepcopy(dict(grade.get("observation") or {})),
+        "checks": [dict(item) for item in grade.get("checks") or [] if isinstance(item, dict)],
+        "metrics": dict(grade.get("metrics") or {}),
+        "passed": grade.get("verdict") == "pass",
+        "verdict": str(grade.get("verdict") or "blocked"),
+        "error": str(grade.get("error") or ""),
+        "evaluation_case_digest": case.case_digest,
+        "eval_spec_id": case.eval_spec_id,
+    }
+
+
+def execute_probe(
+    artifact: dict[str, Any],
+    *,
+    runtime: Any,
+    evidence_ref: str,
+    catalog: CapabilityEvaluationCatalog | None = None,
+    legacy_compatibility: bool = False,
+) -> dict[str, Any]:
+    case_id = str(artifact.get("case_id") or "")
+    active_catalog = _ensure_catalog_case(
+        case_id,
+        catalog=catalog,
+        legacy_compatibility=legacy_compatibility,
+    )
+    if active_catalog is None:
+        return _catalog_unavailable_execution(artifact, evidence_ref=evidence_ref)
+    case, artifact_error = active_catalog.validate_artifact(artifact)
+    if legacy_compatibility and case is not None and case_id in _LEGACY_PROBE_EXECUTORS:
+        configured = PROBE_EXECUTORS.get(case_id)
+        default_handler = _LEGACY_PROBE_EXECUTORS[case_id]
+        # A legacy test/client can only affect its explicit shadow entry.  An
+        # untouched entry still executes through the bounded catalog registry.
+        if configured is None or configured is not default_handler:
+            execution = _compatibility_override_execution(
+                case=case,
+                handler=configured,
+                runtime=runtime,
+                evidence_ref=evidence_ref,
+            )
+        else:
+            execution = active_catalog.execute(artifact, runtime=runtime, evidence_ref=evidence_ref)
+    else:
+        execution = active_catalog.execute(artifact, runtime=runtime, evidence_ref=evidence_ref)
+    input_data = dict(execution.get("input") or {})
+    output = dict(execution.get("output") or {})
+    observation = dict(execution.get("observation") or {})
+    checks = [dict(item) for item in execution.get("checks") or [] if isinstance(item, dict)]
+    executor_id = str(execution.get("executor_id") or "")
+    executor_version = str(execution.get("executor_version") or EXECUTOR_VERSION)
     execution_digest = execution_evidence_digest(
         executor_id=executor_id,
-        executor_version=EXECUTOR_VERSION,
+        executor_version=executor_version,
         input_data=input_data,
         output=output,
         observation=observation,
         checks=checks,
     )
-    passed = bool(checks) and all(check.get("passed") is True for check in checks) and not error
+    passed = execution.get("passed") is True and bool(checks) and all(check.get("passed") is True for check in checks)
     return {
         "executor_id": executor_id,
-        "executor_version": EXECUTOR_VERSION,
+        "executor_version": executor_version,
+        "executor_contract_digest": str(execution.get("executor_contract_digest") or ""),
+        "grader_id": str(execution.get("grader_id") or ""),
+        "grader_revision": str(execution.get("grader_revision") or ""),
+        "grader_type": str(execution.get("grader_type") or ""),
         "input": input_data,
         "output": output,
         "observation": observation,
         "checks": checks,
+        "metrics": dict(execution.get("metrics") or {}),
         "execution_digest": execution_digest,
         "passed": passed,
-        "error": error or ("" if passed else "executor invariant check failed"),
+        "error": str(execution.get("error") or artifact_error or ("" if passed else "executor invariant check failed")),
     }
 
 
 def validate_execution_evidence(
-    artifact: dict[str, Any], *, runtime: Any, evidence_ref: str, evidence: dict[str, Any]
+    artifact: dict[str, Any],
+    *,
+    runtime: Any,
+    evidence_ref: str,
+    evidence: dict[str, Any],
+    catalog: CapabilityEvaluationCatalog | None = None,
+    legacy_compatibility: bool = False,
 ) -> str:
-    expected = execute_probe(artifact, runtime=runtime, evidence_ref=evidence_ref)
+    expected = execute_probe(
+        artifact,
+        runtime=runtime,
+        evidence_ref=evidence_ref,
+        catalog=catalog,
+        legacy_compatibility=legacy_compatibility,
+    )
     if expected.get("passed") is not True:
         return "canonical_probe_executor_failed"
     fields = ("executor_id", "executor_version", "input", "output", "observation", "checks", "execution_digest")
@@ -517,36 +782,12 @@ def execution_evidence_digest(
 
 
 def _evaluate_invariants(output: dict[str, Any], raw_invariants: Any, *, evidence_ref: str) -> list[dict[str, Any]]:
-    invariants = list(raw_invariants or [])
-    checks: list[dict[str, Any]] = []
-    for invariant in invariants:
-        if not isinstance(invariant, dict):
-            checks.append({"name": "invalid_invariant", "passed": False, "evidence_ref": evidence_ref})
-            continue
-        field = str(invariant.get("field") or "")
-        operation = str(invariant.get("op") or "eq")
-        observed = output.get(field)
-        expected = invariant.get("value")
-        if operation == "eq":
-            passed = observed == expected
-        elif operation == "min":
-            passed = isinstance(observed, (int, float)) and not isinstance(observed, bool) and observed >= expected
-        elif operation == "nonempty":
-            passed = bool(observed)
-        else:
-            passed = False
-        checks.append({
-            "name": f"{field}_{operation}",
-            "field": field,
-            "operation": operation,
-            "expected": deepcopy(expected),
-            "observed": deepcopy(observed),
-            "passed": passed,
-            "evidence_ref": evidence_ref,
-        })
-    return checks
+    # Compatibility shim for callers that imported the old helper.  All new
+    # catalog evaluations use the same bounded schema-rule grader directly.
+    result = grade_schema_rules(output, raw_invariants, evidence_ref)
+    return [dict(item) for item in result.get("checks") or [] if isinstance(item, dict)]
 
 
 def _observation_from_output(output: dict[str, Any], raw_invariants: Any) -> dict[str, Any]:
-    fields = [str(item.get("field") or "") for item in list(raw_invariants or []) if isinstance(item, dict)]
-    return {field: deepcopy(output.get(field)) for field in fields if field}
+    result = grade_schema_rules(output, raw_invariants, "compatibility-observation")
+    return dict(result.get("observation") or {})

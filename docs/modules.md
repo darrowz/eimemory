@@ -13,7 +13,7 @@ surfaces, and where duplicated responsibilities must not be reintroduced.
 | `api.evolution` | Active | Observation, evolution, and quality repair facade. |
 | `api.runtime` | Active | Composition root and public runtime facade. |
 | `cli.main`, `cli.doctor` | Entry | Operator CLI and diagnostics. |
-| `adapters.runtime.*` | Active | Shared channel, auth, redaction, HTTP, receipt, and service contracts. |
+| `adapters.runtime.*` | Active | Shared channel, auth, redaction, HTTP, receipt, service, and internal capability-advertisement contracts. |
 | `adapters.codex.*` | Entry | Codex hooks and MCP surface. |
 | `adapters.openclaw.*` | Entry | OpenClaw lifecycle hooks, bridge-status surface, QMD compatibility/export, and task contracts. |
 | `adapters.hermes.*` | Entry | Hermes provider core, registry, and private host context. |
@@ -21,6 +21,14 @@ surfaces, and where duplicated responsibilities must not be reintroduced.
 | `ei_bridge.*` | Active/entry | Agent and channel routing, monitoring, audit, and OpenClaw runtime bridge. |
 | `llm.command_client` | Active | Optional bounded LLM command client. |
 | `llm.openclaw_adapter` | Entry | Command adapter launched through deployment configuration. |
+
+`api.runtime` is also the application-catalog composition point. It asks only
+the installed `eimemory.capability_catalog.bootstrap.v1` entry-point group to
+populate a typed evaluation catalog, and records a bounded bootstrap error when
+that is unavailable or invalid. A missing catalog leaves ordinary runtime
+operations available but keeps dynamic evaluation/L5 consumers fail-closed.
+Adapters advertise supported revisions internally; those advertisements are not
+model-tool registrations and do not imply tool-surface parity.
 
 ## Durable data and models
 
@@ -33,8 +41,33 @@ surfaces, and where duplicated responsibilities must not be reintroduced.
 | `models.identity_aliases` | Bounded identity aliases and compatibility projections. |
 | `storage.jsonl`, `atomic_file`, `payload_segments` | Durable append, atomic state, and segmented payloads. |
 | `storage.sqlite_store`, `runtime_store` | Materialized indexes and runtime access. |
+| `storage.capability_store`, `storage.migrations.capability_v3`, `storage.migrations.backfill_capability_v3` | SQLite v3 capability-domain authority, transaction-local lifecycle writes, audit/export work, and bounded exact-scope backfill. |
 | `storage.maintenance`, `replay_buffer` | Migration, compaction, verification, and replay storage. |
 | `raw.chunks`, `raw.store`, `raw.retrieval`, `raw.synthetic` | Bounded raw evidence and two-stage recall support. |
+
+## Dynamic capability and L5 v3 authority
+
+| Module group | Responsibility |
+| --- | --- |
+| `capabilities.contracts`, `models`, `registry`, `service` | Semantic IDs, revisioned descriptors, exact runtime-scope validation, and bounded public service facades. |
+| `capabilities.profiles`, `profile_bootstrap`, `applicability`, `consumer_views` | Profile-specific requirement selection, declared applicability, and exact scoped consumer views. |
+| `capabilities.observations`, `projector` | Evidence observations, immutable references, and reproducible state projection. |
+| `governance.l5_assessment_v3`, `l5_v3_reconcile` | Four-axis L5 assessment and v3 reconciliation. |
+
+The v3 key is the exact `tenant_id`/`agent_id`/`workspace_id`/`user_id` runtime
+owner scope plus logical `capability_scope`; capability definitions and evidence
+are never resolved through a partial scope. A `CapabilityDefinition` is a
+semantic identity, while revision, provider binding, profile, release context,
+and machine applicability remain distinct evidence coordinates.
+
+Normalized SQLite v3 domain tables are authoritative for typed capability
+entities and their lifecycle/run state. Append-only observations and ledger
+events retain evidence identity; their SQLite rows are idempotent query paths.
+The `capability.audit.v1` stream is an audit/export and recovery mirror rather
+than a second mutable authority. JSON exports, dashboards, and optional
+PostgreSQL projections remain read models. The forward-only schema and scoped
+backfill runner do not by themselves prove a completed historical migration or
+a measured deployment performance budget.
 
 ## Recall, scoring, and identity
 
@@ -72,6 +105,14 @@ caller-supplied text reference is not reusable evidence. `knowledge.refresh`
 requires that verified chain, retires stale operational projections atomically,
 and only reactivates pages compiled from non-conflicted claims.
 
+Reviewed knowledge may be associated with a capability revision only through a
+typed capability knowledge link (`supports`, `refutes`, `informs_eval`,
+`informs_change`, `explains_outcome`, or `limits_applicability`). The link can
+open a traceable hypothesis but cannot directly change capability maturity,
+activate policy, or apply code. Stale, contradicted, rejected, artifact-invalid,
+or failed evidence remains restrictive until a bounded evaluation/replay and,
+where required, independent outcome closes the loop.
+
 ## Experience and evaluation
 
 | Module group | Responsibility |
@@ -79,26 +120,34 @@ and only reactivates pages compiled from non-conflicted claims.
 | `experience.bridge`, `capability_contract` | Host outcome and capability contracts. |
 | `experience.outcome`, `diagnosis`, `sanitize` | Verified outcomes, diagnosis, and secret-safe persistence. |
 | `evaluation.framework`, `contracts`, `metrics`, `reward` | Shared evaluation contracts and metrics. |
+| `evaluation.capability_catalog`, `capability_graders`, `application_catalog_bootstrap` | Sealed typed catalog, trusted executor/grader registrations, and installed application bootstrap. |
 | `evaluation.regression_replay`, `task_replay` | Regression and task replay. |
 | `evaluation.production_recall`, `production_query_dataset`, `real_query_gate` | Release-bound production recall evidence. |
 | `evaluation.actionable_memory`, `livingmem` | Behavior and living-memory evaluation. |
 | `evaluation.locomo`, `longmemeval`, `benchmarks`, `public_benchmarks` | Benchmark adapters. |
+
+`application_catalog_bootstrap` accepts only callable installers from installed
+Python entry points in `eimemory.capability_catalog.bootstrap.v1`. It does not
+parse catalog registrations from CLI input, adapter advertisements, database
+rows, or untrusted JSON. After bootstrap, the catalog seals executor, case, and
+grader registration; lack of a trusted catalog is represented as
+`catalog_not_configured`, not a hidden default case collection.
 
 ## Governance ownership
 
 | Concern | Active modules |
 | --- | --- |
 | Learning orchestration | `autonomous_learning`, `autonomy_controller`, `learning_state`, `learning_eval`, `learning_retention` |
-| Evolution | `autonomous_evolution`, `code_evolution`, `code_evolution_bridge`, `rule_evolution`, `evolution_pruner` |
+| Evolution | `autonomous_evolution`, `code_evolution`, `code_evolution_bridge`, `rule_evolution`, `evolution_pruner`, `code_automation_policy` |
 | Goals and episodes | `goal_graph`, `goal_registry`, `autonomy_goal_queue`, `episode_events`, `event_graph` |
 | Candidate lifecycle | `candidate_search`, `skill_candidate`, `promotion_manager`, `promotion_watch`, `rollout_lifecycle` |
-| Capability evidence | `capability_contract`, `capability_attribution`, `capability_ledger`, `capability_dashboard` |
-| Replay and probes | `capability_replay_*`, `capability_probe_executor`, `correction_replay`, `outcome_replay`, `policy_replay` |
+| Capability evidence | `capability_contract`, `capability_attribution`, `capability_ledger`, `capability_dashboard`, `capability_hypotheses` |
+| Replay and probes | `capability_replay_*`, `capability_probe_executor`, `correction_replay`, `outcome_replay`, `policy_replay`, `evaluation.capability_catalog` |
 | Safety | `safety_replay`, `prompt_safety*`, `change_policy`, `policy_trust`, `safety.audit`, `safety.audit_verifier`, `safety.kill_switch` |
 | Evidence | `evidence_contract`, `evidence_collector`, `snapshot`, `memory_graph`, `tool_receipts` |
 | Learning output | `skill_sedimentation`, `capability_distiller`, `learning_report`, `learning_dashboard` |
 | Research and signals | `research_planner`, `web_learning`, `world_watchers`, `signal_intake`, `curiosity`, `thoughts` |
-| Closure and L5 | `release_closure*`, `closure_rehearsal`, `live_task_acceptance`, `l5_loop`, `l5_maturity`, `l5_readiness` |
+| Closure and L5 | `release_closure*`, `closure_rehearsal`, `live_task_acceptance`, `l5_loop`, `l5_assessment_v3`, `l5_v3_reconcile`, `l5_maturity`, `l5_readiness` |
 | Operator services | `console`, `serve_console`, `supervisor`, `openclaw_channel_acceptance` |
 
 ### Automatic local code evolution
@@ -116,17 +165,28 @@ focused `python -m pytest -q tests/...` commands. Shell, Git, network tools,
 `python -c`, and a broad full-suite command are rejected; release-baseline
 validation is a separate operation.
 
+In the default dynamic path, `capability_hypotheses` must bind a code candidate
+to an exact-scope capability revision and qualifying independent feedback. A
+generic unscoped code patch is blocked. `code_automation_policy` reads the sole
+side-effect authority from the deployment-controlled
+`EIMEMORY_CODE_AUTOMATION_POLICY_JSON` environment value. It matches profile,
+capability, revision, scope, and binding constraints; proposer, incident,
+candidate, and patch payloads can never supply policy authority. Missing,
+malformed, incomplete, or nonmatching policy is a machine block, not a queued
+human approval.
+
 `promotion_manager` owns the direct-write transaction after the normal replay,
-safety, isolated-evaluation, and preflight gates pass. With an explicitly
-applying cycle there is no human approval record or review queue: the machine
-gate either applies the bounded local patch or blocks it. A transaction is
-persisted before the first write, verification failure rolls back, and recovery
-at the start of each apply-enabled learning/evolution cycle only restores known
-prior content or quarantines an ambiguous state; it never retries the old patch.
-The cycle report exposes the result as `code_apply_recovery` and marks it skipped
-when application is disabled. Repository commit and production deployment are
-disabled by default and must be explicitly enabled; a local write is not a
-deployment.
+safety, isolated-evaluation, hypothesis, and preflight gates pass. With an
+explicitly applying cycle and a policy that enables `local_apply`, there is no
+human approval record or review queue: the machine gate either applies the
+bounded local patch or blocks it. A transaction is persisted before the first
+write, verification failure rolls back, and recovery at the start of each
+apply-enabled learning/evolution cycle only restores known prior content or
+quarantines an ambiguous state; it never retries the old patch. The cycle report
+exposes the result as `code_apply_recovery` and marks it skipped when application
+is disabled. Repository commit and production deployment are disabled by default
+and require their own explicitly enabled machine-policy capabilities; a local
+write is not a deployment.
 
 ## Living memory and persona
 
@@ -157,11 +217,20 @@ bridge owns that schema and delivery lifecycle.
 
 - A missing or invalid code proposer produces a blocked code candidate; it is
   not a substitute for an automatic code-generation capability.
+- A missing, malformed, or nonmatching machine-environment automation policy
+  blocks automatic code side effects; it is not a human-review queue or an
+  implicit permission to commit or deploy.
 - Knowledge refresh rebuilds from surviving reviewed claims after artifact
   verification. Re-extraction, review, and reconciliation of a changed source
   remain separate work.
 - The atomic refresh transaction is single-store safety, not a distributed
   source-version protocol for concurrent workers.
+- Capability v3 schema, audit/export, and scoped-backfill machinery do not
+  assert that all historic data has migrated or that deployment performance
+  budgets have been measured.
+- Dynamic L5 consumers require a trusted application catalog. They do not
+  silently revive the retired fixed taxonomy; historical cohorts are available
+  only through an explicit `legacy_compatibility=True` path.
 - L5 readiness still requires release-bound live evidence; it cannot be inferred
   from the presence of these modules or a healthy service.
 

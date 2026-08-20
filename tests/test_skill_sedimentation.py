@@ -166,7 +166,13 @@ def test_sop_without_full_execution_contract_does_not_become_callable(tmp_path) 
             "ok": False,
             "error": "eiskill_contract_incomplete",
             "skill_id": "legacy-incomplete",
-            "missing_contract": ["trigger_conditions", "action", "verification", "rollback"],
+            "missing_contract": [
+                "target_capability",
+                "trigger_conditions",
+                "action",
+                "verification",
+                "rollback",
+            ],
         }
     finally:
         runtime.close()

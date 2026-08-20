@@ -44,6 +44,7 @@ def test_nightly_jobs_include_autonomous_learning_summary(tmp_path, monkeypatch)
     monkeypatch.setenv("EIMEMORY_AUTONOMOUS_LEARNING_ENABLED", "1")
     monkeypatch.setenv("EIMEMORY_AUTONOMOUS_LEARNING_DRY_RUN", "0")
     monkeypatch.setenv("EIMEMORY_AUTONOMOUS_LEARNING_APPLY", "0")
+    monkeypatch.setenv("EIMEMORY_AUTONOMOUS_LEARNING_LEGACY_COMPATIBILITY", "1")
     monkeypatch.setattr(runtime, "run_memory_eval_ci", lambda dataset, *, emit_incidents=False: {"ok": True, "pass_rate": 1.0, "passed_threshold": True, "fail_count": 0, "name": "stub"})
     _force_real_task_replay_pass(runtime, monkeypatch)
     scope = {"agent_id": "main"}
@@ -324,7 +325,7 @@ def test_governance_snapshot_exposes_autonomous_learning_state(tmp_path, monkeyp
     scope = {"agent_id": "main"}
     _force_real_task_replay_pass(runtime, monkeypatch)
     runtime.evolution.log_reflection(tag="memory.recall", miss="recall miss", fix="preference first", scope=scope)
-    runtime.run_autonomous_learning_cycle(scope=scope, force=True)
+    runtime.run_autonomous_learning_cycle(scope=scope, force=True, legacy_compatibility=True)
 
     snapshot = build_governance_snapshot(runtime, scope)
 
@@ -356,7 +357,16 @@ def test_autonomous_learning_cycle_returns_real_task_replay_report(tmp_path, mon
 
     replay_dataset_calls: list[dict] = []
 
-    def fake_build_replay_dataset(_runtime, *, scope, limit=50, persist=True, loop_id="", include_built_in_regressions=False):
+    def fake_build_replay_dataset(
+        _runtime,
+        *,
+        scope,
+        limit=50,
+        persist=True,
+        loop_id="",
+        include_built_in_regressions=False,
+        **_kwargs,
+    ):
         replay_dataset_calls.append(
             {
                 "scope": scope,
@@ -381,7 +391,7 @@ def test_autonomous_learning_cycle_returns_real_task_replay_report(tmp_path, mon
 
     replay_calls: list[dict] = []
 
-    def fake_run_real_task_replay(dataset, *, seed=False, persist_report=False):
+    def fake_run_real_task_replay(dataset, *, seed=False, persist_report=False, **_kwargs):
         replay_calls.append(
             {
                 "seed": seed,
@@ -408,10 +418,15 @@ def test_autonomous_learning_cycle_returns_real_task_replay_report(tmp_path, mon
     )
     monkeypatch.setattr(runtime, "run_real_task_replay", fake_run_real_task_replay)
 
-    report = runtime.run_autonomous_learning_cycle(scope=scope, force=True, apply=False)
+    report = runtime.run_autonomous_learning_cycle(
+        scope=scope,
+        force=True,
+        apply=False,
+        legacy_compatibility=True,
+    )
 
     assert replay_dataset_calls
-    assert replay_dataset_calls[0]["include_built_in_regressions"] is True
+    assert replay_dataset_calls[0]["include_built_in_regressions"] is False
     assert replay_calls
     assert replay_calls[0]["persist_report"] is True
     assert report["ok"] is True
@@ -431,7 +446,13 @@ def test_autonomous_learning_cycle_records_isolated_evaluator_gate(tmp_path, mon
     _force_real_task_replay_pass(runtime, monkeypatch)
     runtime.evolution.log_reflection(tag="tool.routing", miss="routing drift", fix="prefer memory-first", scope=scope)
 
-    report = runtime.run_autonomous_learning_cycle(scope=scope, force=True, apply=False, max_goals=1)
+    report = runtime.run_autonomous_learning_cycle(
+        scope=scope,
+        force=True,
+        apply=False,
+        max_goals=1,
+        legacy_compatibility=True,
+    )
 
     assert report["ok"] is True
     assert report["isolation_gate_passed"] is True
@@ -459,7 +480,14 @@ def test_autonomous_learning_blocks_promotion_when_evaluator_model_matches_gener
     _force_real_task_replay_pass(runtime, monkeypatch)
     runtime.evolution.log_reflection(tag="tool.routing", miss="routing drift", fix="prefer memory-first", scope=scope)
 
-    report = runtime.run_autonomous_learning_cycle(scope=scope, force=True, apply=True, max_goals=1, max_promotions=1)
+    report = runtime.run_autonomous_learning_cycle(
+        scope=scope,
+        force=True,
+        apply=True,
+        max_goals=1,
+        max_promotions=1,
+        legacy_compatibility=True,
+    )
 
     assert report["ok"] is True
     assert report["isolation_gate_passed"] is False
@@ -555,7 +583,13 @@ def test_autonomous_learning_cycle_can_attach_web_scout_evidence_when_network_en
 
     monkeypatch.setattr(runtime, "scout_web_learning", fake_scout_web_learning)
 
-    report = runtime.run_autonomous_learning_cycle(scope=scope, force=True, apply=False, allow_network=True)
+    report = runtime.run_autonomous_learning_cycle(
+        scope=scope,
+        force=True,
+        apply=False,
+        allow_network=True,
+        legacy_compatibility=True,
+    )
     research_note = runtime.store.get_by_id(report["research_note_id"], scope=scope)
     evidence = research_note.content["evidence"]
 
@@ -840,7 +874,7 @@ def _force_real_task_replay_pass(runtime: Runtime, monkeypatch) -> None:
     monkeypatch.setattr(
         runtime,
         "run_real_task_replay",
-        lambda dataset, *, seed=False, persist_report=False: {
+        lambda dataset, *, seed=False, persist_report=False, **_kwargs: {
             "ok": True,
             "report_type": "real_task_replay",
             "schema_version": "real_task_replay.v1",

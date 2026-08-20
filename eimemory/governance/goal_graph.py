@@ -13,7 +13,10 @@ from eimemory.governance.research_planner import create_research_task, plan_rese
 from eimemory.models.records import ScopeRef
 
 
-CORE_GOAL_CAPABILITIES = [
+# Historical bootstrap data is deliberately named as legacy-only.  The live
+# goal graph derives its target set from the exact registry/Profile view; it
+# must never expand an empty live view into this compiled cohort.
+LEGACY_CORE_GOAL_CAPABILITIES = [
     "memory.recall",
     "tool.routing",
     "knowledge.intake",
@@ -35,21 +38,70 @@ def build_goal_graph_loop(
     max_goals: int = 3,
     persist: bool = False,
     capabilities: list[str] | None = None,
+    capability_scope: str = "global",
+    profile_key: str = "",
+    catalog: Any | None = None,
+    at_time: str = "",
+    legacy_compatibility: bool = False,
     loop_id: str = "goal_graph_1_6_9",
 ) -> dict[str, Any]:
     """Build a minimal executable goal tree for the autonomous evolution loop."""
 
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
     selected_limit = max(1, min(3, int(max_goals or 1)))
-    target_capabilities = _dedupe(capabilities or CORE_GOAL_CAPABILITIES)
+    target_capabilities = _dedupe(capabilities or [])
+    if legacy_compatibility and not target_capabilities:
+        target_capabilities = list(LEGACY_CORE_GOAL_CAPABILITIES)
     queue = build_autonomy_goal_queue(
         runtime,
         scope=scope_ref,
         max_goals=selected_limit,
         persist=False,
         capabilities=target_capabilities,
+        capability_scope=capability_scope,
+        profile_key=profile_key,
+        catalog=catalog,
+        at_time=at_time,
+        legacy_compatibility=legacy_compatibility,
     )
+    if queue.get("ok") is False:
+        return {
+            "ok": False,
+            "status": "blocked",
+            "reason": str(queue.get("reason") or "goal_graph_capability_selection_blocked"),
+            "errors": [str(item) for item in (queue.get("errors") or [])],
+            "scope": asdict(scope_ref),
+            "capability_scope": capability_scope,
+            "profile": queue.get("profile") or {},
+            "capability_evaluation_view": queue.get("capability_evaluation_view") or {},
+            "nodes": [],
+            "edges": [],
+            "persisted_record_id": "",
+        }
     goals = list(queue.get("goals") or [])[:selected_limit]
+    if not goals:
+        # An empty dynamic view is meaningful: there is no registered,
+        # effective capability to improve.  It must never look like a
+        # successfully-built zero-node graph, because callers could treat
+        # that as a completed planning cycle and silently skip the missing
+        # registry/Profile configuration.
+        return {
+            "ok": False,
+            "status": "blocked",
+            "reason": "dynamic_goal_selection_empty",
+            "errors": [
+                "no effective registered capability matched the goal selection",
+            ],
+            "scope": asdict(scope_ref),
+            "capability_scope": capability_scope,
+            "profile": queue.get("profile") or {},
+            "capability_view_digest": str(queue.get("consumer_view_digest") or ""),
+            "excluded_capabilities": list(queue.get("excluded_capabilities") or []),
+            "capability_evaluation_view": queue.get("capability_evaluation_view") or {},
+            "nodes": [],
+            "edges": [],
+            "persisted_record_id": "",
+        }
     generated_at = now_iso()
     nodes: list[dict[str, Any]] = []
     edges: list[dict[str, str]] = []
@@ -57,7 +109,11 @@ def build_goal_graph_loop(
     research_task_ids: list[str] = []
 
     for goal in goals:
-        capability = str(goal.get("capability") or goal.get("target_capability") or "proactive.judgment")
+        capability = str(goal.get("capability") or goal.get("target_capability") or "").strip()
+        if not capability:
+            # A malformed/old goal must not silently be assigned to a compiled
+            # catch-all capability.  The queue remains the sole live selector.
+            continue
         root_id = _node_id(scope_ref, "root", capability, goal.get("title"))
         root = _node(
             node_id=root_id,
@@ -153,6 +209,10 @@ def build_goal_graph_loop(
         "evidence_class": "structural",
         "generated_at": generated_at,
         "scope": asdict(scope_ref),
+        "capability_scope": capability_scope,
+        "profile": queue.get("profile") or {},
+        "capability_view_digest": str(queue.get("consumer_view_digest") or ""),
+        "legacy_compatibility": bool(legacy_compatibility),
         "loop_id": loop_id,
         "loop_contract": dict(LOOP_CONTRACT),
         "root_goal_count": sum(1 for node in nodes if node["node_type"] == "root_goal"),
@@ -304,7 +364,7 @@ def _dedupe(values: list[str]) -> list[str]:
         text = str(value or "").strip()
         if text and text not in result:
             result.append(text)
-    return result or list(CORE_GOAL_CAPABILITIES)
+    return result
 
 
 def _safe_status(value: str) -> str:

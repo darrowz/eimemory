@@ -618,3 +618,34 @@ def test_codex_hook_and_mcp_stdio_framing(monkeypatch) -> None:
     assert hook_result["continue"] is True
     assert responses[0]["result"]["serverInfo"]["name"] == "eimemory-codex"
     assert len(responses[1]["result"]["tools"]) == 4
+
+
+def test_codex_internal_capability_protocol_does_not_expand_mcp_tools() -> None:
+    client = FakeClient()
+    adapter = CodexHookAdapter(client=client, scope=BASE_SCOPE)
+
+    adapter.advertise_capabilities({"advertisement_id": "advertisement.codex.v1"})
+    adapter.normalize_capability_outcome(
+        "Stop",
+        {
+            "api_token": "secret-must-not-cross-the-hook-boundary",
+            "capability_outcome": {"binding_id": "binding.codex.v1"},
+        },
+    )
+    listed = CodexMCPServer(client=client, scope=BASE_SCOPE).handle_message(
+        {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}
+    )
+
+    assert [method for method, _params in client.calls[:2]] == [
+        "adapter.advertise_capabilities",
+        "adapter.normalize_capability_outcome",
+    ]
+    assert client.calls[1][1]["event"] == {
+        "capability_outcome": {"binding_id": "binding.codex.v1"}
+    }
+    assert [tool["name"] for tool in listed["result"]["tools"]] == [
+        "eimemory_recall",
+        "eimemory_remember",
+        "eimemory_verify_outcome",
+        "eimemory_status",
+    ]

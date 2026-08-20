@@ -13,6 +13,14 @@ from eimemory.runtime_identity import package_import_root
 
 @dataclass(frozen=True, slots=True)
 class ReleaseIdentity:
+    """Deployment authority plus a descriptive release label.
+
+    ``version`` is intentionally retained for human diagnostics and backwards
+    compatible receipt rendering.  It is never part of ``complete`` or the
+    authority key: v3 capability/deployment applicability is bound only to
+    immutable commit, receipt, and session evidence.
+    """
+
     commit: str
     version: str
     receipt_id: str
@@ -268,10 +276,8 @@ def _verified_receipt_identity(record: Any) -> ReleaseIdentity | None:
         and health.get("ok") is True
         and health.get("skipped") is not True
         and re.fullmatch(r"[0-9a-f]{40}", commit)
-        and version
         and release_path.endswith("/" + commit)
         and str(health.get("commit") or "").strip().lower() == commit
-        and str(health.get("version") or "").strip() == version
         and str(health.get("release_path") or "").replace("\\", "/").rstrip("/") == release_path
         and str(deployment.get("release_path") or "").replace("\\", "/").rstrip("/") == release_path
         and valid_deployment_rollback_evidence(dict(rollback))

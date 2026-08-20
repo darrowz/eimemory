@@ -1,8 +1,9 @@
-"""Isolated functional and performance baseline for the L5 v3 refactor.
+"""Isolated functional and performance baseline for the L5 v3 runtime.
 
-The baseline deliberately measures the current (v2) runtime before Storage v2
-or the dynamic L5 reader exists.  It is a comparison point, not a claim that
-the fixed v2 capability taxonomy is the desired architecture.
+The baseline supplies one deterministic, in-process v3 capability catalog and
+an exact registered profile/binding fixture.  It is a comparison point, not a
+claim that a fixed capability taxonomy, machine identity, or release identity
+is an authority.
 
 The module has no third-party benchmark dependency.  It forces the SQLite
 candidate source, uses a fresh non-production root for every run, and reports
@@ -34,8 +35,10 @@ from typing import Any, Callable, Iterator, Mapping, Sequence
 
 from eimemory.adapters.runtime.service import AgentRuntimeMemoryService
 from eimemory.api.runtime import Runtime
+from eimemory.capabilities import CapabilityBinding, CapabilityDefinition, CapabilityProfile, CapabilityRevision
 from eimemory.config.defaults import default_root
 from eimemory.core.clock import now_iso
+from eimemory.evaluation.capability_catalog import CapabilityEvaluationCatalog, CatalogCase
 from eimemory.governance.capability_ledger import build_capability_ledger, record_capability_score
 from eimemory.models.records import RecordEnvelope, ScopeRef, TimeRef
 from eimemory.storage.runtime_store import RuntimeStore
@@ -53,6 +56,13 @@ SCOPE = ScopeRef(
 )
 ADAPTER_CHANNELS = ("codex", "hermes", "openclaw")
 REPLAY_CAPABILITIES = ("memory.recall",)
+BENCHMARK_CAPABILITY = "memory.recall"
+BENCHMARK_REVISION = "memory.recall:benchmark-v1"
+BENCHMARK_BINDING = "binding.memory.recall:benchmark-v1"
+BENCHMARK_PROFILE_ID = "profile.benchmark.l5-v3:v1"
+BENCHMARK_PROFILE_KEY = "profile.benchmark.l5-v3"
+BENCHMARK_EXECUTOR = "eimemory.benchmark.memory-recall"
+CAPABILITY_TIMESTAMP = "2020-08-20T00:00:00Z"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RECALL_QUERY = "benchmark capability signal stable retrieval"
 MUTATION_TEXT = "benchmark capability signal mutation payload"
@@ -344,7 +354,25 @@ def workload_contract(spec: TierSpec) -> dict[str, Any]:
             "adapter_status": {"channels": list(ADAPTER_CHANNELS), "cache_mode": "warm"},
             "readiness_no_release": {"persist": False, "limit": 500, "release_receipt": "absent"},
             "capability_ledger": {"attribute_outcomes": False, "ensure_seeded": False, "limit": 500},
-            "capability_replay_pack": {"capabilities": list(REPLAY_CAPABILITIES), "persist": False},
+            "capability_replay_pack": {
+                "mode": "dynamic_v3",
+                "capabilities": list(REPLAY_CAPABILITIES),
+                "persist": False,
+                "profile_key": BENCHMARK_PROFILE_KEY,
+                "capability_scope": "global",
+                "runtime_scope": asdict(SCOPE),
+                "binding": {
+                    "capability_id": BENCHMARK_CAPABILITY,
+                    "revision_id": BENCHMARK_REVISION,
+                    "binding_id": BENCHMARK_BINDING,
+                    "implementation_digest": "b" * 64,
+                    "operations": ["evaluate"],
+                },
+                "catalog_cases": [
+                    case.to_artifact()
+                    for case in _benchmark_catalog().list_cases(capability_id=BENCHMARK_CAPABILITY)
+                ],
+            },
             "runtime_cold_startup": {
                 "candidate_source": "sqlite_forced",
                 "fixture_copy_excluded": True,
@@ -378,6 +406,90 @@ def _seed_static_records(runtime: Runtime, records: Sequence[RecordEnvelope]) ->
     except Exception:
         connection.rollback()
         raise
+
+
+def _benchmark_catalog() -> CapabilityEvaluationCatalog:
+    """Return a sealed typed catalog owned by this deterministic harness."""
+
+    catalog = CapabilityEvaluationCatalog()
+    catalog.register_executor(
+        executor_id=BENCHMARK_EXECUTOR,
+        revision="v1",
+        handler=lambda _input, _fixture, _runtime: {"decision": "traceable", "evidence_count": 1},
+    )
+    for index in range(3):
+        catalog.register_case(
+            CatalogCase(
+                case_id=f"benchmark_memory_recall_{index + 1}",
+                capability_id=BENCHMARK_CAPABILITY,
+                executor_id=BENCHMARK_EXECUTOR,
+                input_data={"request": f"benchmark recall {index + 1}"},
+                fixture={"fixture_id": f"benchmark-memory-recall-v1-{index + 1}"},
+                expected_invariants=(
+                    {"field": "decision", "op": "eq", "value": "traceable"},
+                    {"field": "evidence_count", "op": "min", "value": 1},
+                ),
+                binding_selector={"operations_all": ["evaluate"]},
+            )
+        )
+    return catalog.seal()
+
+
+def _register_benchmark_v3_capability(runtime: Runtime) -> None:
+    """Install the bounded profile/binding authority outside measured work."""
+
+    definition = CapabilityDefinition(
+        capability_id=BENCHMARK_CAPABILITY,
+        display_name="Benchmark Memory Recall",
+        description="Deterministic local L5 v3 benchmark target.",
+        owner="benchmark",
+        created_at=CAPABILITY_TIMESTAMP,
+        provenance={"source": "l5_v3_baseline"},
+    )
+    revision = CapabilityRevision(
+        revision_id=BENCHMARK_REVISION,
+        capability_id=definition.capability_id,
+        contract={
+            "input_schema": {"type": "object", "required": ["request"]},
+            "output_schema": {"type": "object", "required": ["decision"]},
+            "success_invariants": ["decision_is_traceable"],
+            "failure_invariants": ["blocked_input"],
+            "evidence_requirements": {"minimum_refs": 1},
+            "dependencies": [],
+            "composition": [],
+            "risk_tier": "low",
+            "side_effect_class": "none",
+        },
+        compatibility="incompatible",
+        created_at=CAPABILITY_TIMESTAMP,
+        provenance={"source": "l5_v3_baseline"},
+    )
+    binding = CapabilityBinding(
+        binding_id=BENCHMARK_BINDING,
+        capability_id=definition.capability_id,
+        capability_revision_id=revision.revision_id,
+        provider_kind="module",
+        provider_instance_id="benchmark-local",
+        implementation_digest="b" * 64,
+        operations=("evaluate",),
+        limits={"max_requests": 64},
+        environment_fingerprint={"runtime": "isolated-benchmark"},
+        applicability={"scope": "global"},
+        advertisement_evidence_refs=("artifact://benchmark/memory-recall-advertisement.json",),
+        provenance={"source": "l5_v3_baseline"},
+        created_at=CAPABILITY_TIMESTAMP,
+    )
+    profile = CapabilityProfile(
+        profile_id=BENCHMARK_PROFILE_ID,
+        profile_key=BENCHMARK_PROFILE_KEY,
+        requirements={definition.capability_id: {"minimum_maturity": "evaluated"}},
+        provenance={"source": "l5_v3_baseline"},
+        created_at=CAPABILITY_TIMESTAMP,
+    )
+    runtime.capabilities.register_definition(definition, runtime_scope=SCOPE)
+    runtime.capabilities.register_revision(revision, runtime_scope=SCOPE)
+    runtime.capabilities.bind(binding, runtime_scope=SCOPE)
+    runtime.capabilities.register_profile(profile, runtime_scope=SCOPE)
 
 
 def seed_fixture(runtime: Runtime, spec: TierSpec) -> dict[str, Any]:
@@ -446,6 +558,7 @@ def seed_fixture(runtime: Runtime, spec: TierSpec) -> dict[str, Any]:
         replay_ids.append(record_id)
 
     _seed_static_records(runtime, static_records)
+    _register_benchmark_v3_capability(runtime)
 
     outcome_ids: list[str] = []
     for index in range(spec.outcome_traces):
@@ -708,6 +821,7 @@ def _record_for_measurement(*, spec: TierSpec, operation: str, ordinal: int) -> 
 def _measure_warm_operations(runtime: Runtime, spec: TierSpec, *, samples: int, warmup: int) -> dict[str, dict[str, Any]]:
     scope = asdict(SCOPE)
     service = AgentRuntimeMemoryService(runtime)
+    catalog = _benchmark_catalog()
 
     def recall(_ordinal: int) -> Any:
         return runtime.store.search_with_diagnostics(
@@ -751,6 +865,10 @@ def _measure_warm_operations(runtime: Runtime, spec: TierSpec, *, samples: int, 
             capabilities=list(REPLAY_CAPABILITIES),
             persist=False,
             loop_id="benchmark.l5_v3",
+            catalog=catalog,
+            profile_key=BENCHMARK_PROFILE_KEY,
+            capability_scope="global",
+            runtime_scope=SCOPE,
         )
 
     def adapter_prefetch(_ordinal: int) -> dict[str, Any]:
@@ -1154,7 +1272,7 @@ def _run_tier(workspace: Path, spec: TierSpec, *, samples: int, warmup: int) -> 
             "fixture_digest": fixture["fixture_digest"],
             "capability_count": len(fixture["capabilities"]),
             "adapter_channels": fixture["adapter_channels"],
-            "current_v3_storage_owner": False,
+            "current_v3_storage_owner": True,
         },
         "workload_digest": canonical_digest(workload_contract(spec)),
         "warm": warm,
@@ -1206,10 +1324,10 @@ def run_baseline(
             },
             "tiers": {tier: _run_tier(workspace, TIER_SPECS[tier], samples=samples, warmup=warmup) for tier in selected},
             "limitations": [
-                "This is a v2 runtime baseline; v3 capability contracts are not yet SQLite-owned.",
+                "The fixture uses one sealed in-process v3 catalog plus exact SQLite-owned capability descriptors.",
                 "readiness_no_release intentionally has no deployment receipt and must not be read as production readiness.",
                 "runtime_cold does not control the operating-system page cache.",
-                "capability_replay_pack exercises the current fixed v2 replay case implementation only as a pre-refactor comparison point.",
+                "capability_replay_pack exercises only the benchmark-owned dynamic catalog fixture, never a fixed legacy cohort.",
             ],
         }
         report["budget_profile"] = build_budget_profile(report)

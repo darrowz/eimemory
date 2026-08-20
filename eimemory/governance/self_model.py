@@ -4,25 +4,11 @@ from collections import Counter
 from dataclasses import asdict
 from typing import Any
 
+from eimemory.capabilities.consumer_views import dynamic_capability_views, dynamic_evaluation_view
+from eimemory.governance.capability_ledger import build_dynamic_capability_ledger
 from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.metadata import business_metadata
 from eimemory.models.records import RecordEnvelope, ScopeRef
-
-
-CAPABILITY_DIMENSIONS = (
-    "search.research",
-    "knowledge.intake",
-    "memory.recall",
-    "tool.routing",
-    "code.implementation",
-    "code.review_ci",
-    "openclaw.ops",
-    "safety.judgment",
-    "communication.style",
-    "proactive.judgment",
-    "data_quality.governance",
-)
-
 
 def build_self_model(
     runtime: Any,
@@ -31,24 +17,100 @@ def build_self_model(
     limit: int = 500,
     persist: bool = False,
     loop_id: str = "",
+    capability_scope: str = "global",
+    profile_key: str = "",
+    catalog: Any | None = None,
+    at_time: str = "",
+    legacy_compatibility: bool = False,
 ) -> dict[str, Any]:
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
     reflections = _list_all(runtime, kinds=["reflection"], scope=scope_ref, limit=limit)
     incidents = _list_all(runtime, kinds=["incident", "unknown"], scope=scope_ref, limit=limit)
     rules = _list_all(runtime, kinds=["rule"], scope=scope_ref, limit=limit)
     replays = _list_all(runtime, kinds=["replay_result"], scope=scope_ref, limit=limit)
-    compact_loader = getattr(runtime.store, "list_capability_scores_compact", None)
-    if callable(compact_loader):
-        capability_scores = compact_loader(scope=scope_ref, limit=limit)
-    else:
-        capability_scores = _list_all(runtime, kinds=["capability_score"], scope=scope_ref, limit=limit)
-
     weaknesses = _weaknesses_from_records(reflections + incidents)
-    capabilities = _capabilities_from_rules_and_replays(rules, replays, capability_scores)
+    bounded_limit = max(1, min(499, int(limit or 1)))
+    evaluation_view: dict[str, Any] = {}
+    if catalog is not None:
+        evaluation_view = dynamic_evaluation_view(
+            runtime,
+            scope=scope_ref,
+            capability_scope=capability_scope,
+            profile_key=profile_key,
+            catalog=catalog,
+            at_time=at_time,
+            max_cases=min(256, bounded_limit),
+        )
+        if evaluation_view.get("ok") is not True:
+            return {
+                "ok": False,
+                "status": "blocked",
+                "scope": asdict(scope_ref),
+                "capability_scope": capability_scope,
+                "reason": str(evaluation_view.get("reason") or "capability_evaluation_selection_blocked"),
+                "errors": [str(item) for item in evaluation_view.get("errors") or ()],
+                "capability_evaluation_view": evaluation_view,
+                "capabilities": [],
+                "weaknesses": weaknesses,
+                "metrics": _metrics(
+                    reflections=reflections,
+                    incidents=incidents,
+                    rules=rules,
+                    replays=replays,
+                    weaknesses=weaknesses,
+                ),
+            }
+        capability_view = (
+            evaluation_view.get("capability_view")
+            if isinstance(evaluation_view.get("capability_view"), dict)
+            else {}
+        )
+    else:
+        capability_view = dynamic_capability_views(
+            runtime,
+            scope=scope_ref,
+            capability_scope=capability_scope,
+            profile_key=profile_key,
+            at_time=at_time,
+            limit=bounded_limit,
+        )
+    dynamic_ledger = build_dynamic_capability_ledger(
+        runtime,
+        scope=scope_ref,
+        capability_scope=capability_scope,
+        limit=min(500, bounded_limit),
+    )
+    capabilities = _capabilities_from_dynamic_view(
+        capability_view,
+        dynamic_ledger,
+        evaluation_view=evaluation_view,
+    )
+    if legacy_compatibility:
+        # The retired score ledger is visible only through this explicit
+        # compatibility switch; the normal path above remains registry- and
+        # catalog-derived.
+        from eimemory.governance.capability_ledger import build_capability_ledger
+
+        legacy_ledger = build_capability_ledger(
+            runtime,
+            scope=scope_ref,
+            limit=min(500, bounded_limit),
+            attribute_outcomes=False,
+            legacy_compatibility=True,
+        )
+        capability_view = {"capabilities": _legacy_capability_entries(legacy_ledger)}
+        dynamic_ledger = {"capabilities": {}}
+        capabilities = _capabilities_from_legacy_ledger(legacy_ledger)
     metrics = _metrics(reflections=reflections, incidents=incidents, rules=rules, replays=replays, weaknesses=weaknesses)
     model = {
-        "schema_version": "autonomous_learning.v1",
+        "schema_version": "autonomous_learning.v2",
         "scope": asdict(scope_ref),
+        "capability_scope": capability_scope,
+        "profile": capability_view.get("profile") or {},
+        "capability_view_digest": str(capability_view.get("resolution_digest") or ""),
+        "capability_ledger_digest": str(dynamic_ledger.get("projection_digest") or ""),
+        "capability_evaluation_view": evaluation_view,
+        "legacy_compatibility": bool(legacy_compatibility),
         "capabilities": capabilities,
         "weaknesses": weaknesses,
         "metrics": metrics,
@@ -56,6 +118,39 @@ def build_self_model(
     if persist:
         persist_self_model(runtime, model, scope=scope_ref, loop_id=loop_id or "manual")
     return model
+
+
+def _legacy_capability_entries(ledger: dict[str, Any]) -> list[dict[str, Any]]:
+    entries = ledger.get("capabilities") if isinstance(ledger.get("capabilities"), dict) else {}
+    return [
+        {"capability_id": str(capability), "display_name": str(capability)}
+        for capability in sorted(entries)
+    ]
+
+
+def _capabilities_from_legacy_ledger(ledger: dict[str, Any]) -> list[dict[str, Any]]:
+    entries = ledger.get("capabilities") if isinstance(ledger.get("capabilities"), dict) else {}
+    items: list[dict[str, Any]] = []
+    for capability_id, value in sorted(entries.items()):
+        entry = value if isinstance(value, dict) else {}
+        record_id = str(entry.get("last_record_id") or "")
+        items.append(
+            {
+                "kind": str(capability_id),
+                "capability": str(capability_id),
+                "title": str(capability_id),
+                "status": str(entry.get("status") or "unobserved"),
+                "score": float(entry.get("score") or 0.0),
+                "observation_count": int(entry.get("evidence_count") or 0),
+                "failure_count": 0,
+                "revisions": {},
+                "definition_digest": "",
+                "profile_requirement": {},
+                "evaluation_targets": [],
+                "source_record_ids": [record_id] if record_id else [],
+            }
+        )
+    return items
 
 
 def persist_self_model(
@@ -123,7 +218,7 @@ def _weaknesses_from_records(records: list[RecordEnvelope]) -> list[dict[str, An
         )
         if not lesson:
             continue
-        capability = _capability_for(tag, lesson)
+        capability = _explicit_capability(record, meta=meta, payload=payload)
         key = stable_semantic_key(capability, tag, lesson)
         if key in seen:
             continue
@@ -143,46 +238,96 @@ def _weaknesses_from_records(records: list[RecordEnvelope]) -> list[dict[str, An
     return sorted(items, key=lambda item: (-float(item.get("severity") or 0), str(item.get("capability") or "")))
 
 
-def _capabilities_from_rules_and_replays(
-    rules: list[RecordEnvelope],
-    replays: list[RecordEnvelope],
-    capability_scores: list[RecordEnvelope],
+def _capabilities_from_dynamic_view(
+    capability_view: dict[str, Any],
+    ledger: dict[str, Any],
+    *,
+    evaluation_view: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    replay_by_rule: dict[str, list[RecordEnvelope]] = {}
-    for replay in replays:
-        target = str(replay.meta.get("target_rule_id") or replay.content.get("target_rule_id") or "")
-        if target:
-            replay_by_rule.setdefault(target, []).append(replay)
+    """Render arbitrary registered capabilities without fixed labels/scores."""
 
-    capabilities: list[dict[str, Any]] = []
-    for rule in rules:
-        task_type = str(rule.meta.get("task_type") or rule.content.get("task_type") or "general")
-        latest_replay = replay_by_rule.get(rule.record_id, [None])[0]
-        pass_rate = float(latest_replay.meta.get("pass_rate") or 0.0) if latest_replay is not None else 0.0
-        capabilities.append(
+    ledger_items = ledger.get("capabilities") if isinstance(ledger.get("capabilities"), dict) else {}
+    targets_by_capability: dict[str, list[dict[str, Any]]] = {}
+    for selected in (evaluation_view or {}).get("cases") or ():
+        if not isinstance(selected, dict):
+            continue
+        artifact = selected.get("artifact") if isinstance(selected.get("artifact"), dict) else {}
+        target = selected.get("target") if isinstance(selected.get("target"), dict) else {}
+        capability_id = str(target.get("capability_id") or artifact.get("capability") or "").strip()
+        if not capability_id:
+            continue
+        targets_by_capability.setdefault(capability_id, []).append(
             {
-                "kind": task_type,
-                "capability": _capability_for(task_type, rule.summary),
-                "title": rule.title,
-                "status": rule.status,
-                "score": round(max(0.1 if rule.status == "active" else 0.0, pass_rate), 3),
-                "source_record_ids": [rule.record_id] + ([latest_replay.record_id] if latest_replay is not None else []),
+                "case_id": str(artifact.get("case_id") or ""),
+                "evaluation_case_digest": str(artifact.get("evaluation_case_digest") or ""),
+                "eval_spec_id": str(artifact.get("eval_spec_id") or ""),
+                "capability_revision_id": str(target.get("capability_revision_id") or ""),
+                "provider_binding_id": str(target.get("provider_binding_id") or ""),
             }
         )
-    for score in capability_scores:
-        capabilities.append(
+    results: list[dict[str, Any]] = []
+    for entry in capability_view.get("capabilities") or ():
+        if not isinstance(entry, dict):
+            continue
+        capability_id = str(entry.get("capability_id") or "")
+        if not capability_id:
+            continue
+        aggregate = _ledger_aggregate(ledger_items.get(capability_id))
+        results.append(
             {
-                "kind": str(score.meta.get("capability") or score.content.get("capability") or "general"),
-                "capability": str(score.meta.get("capability") or score.content.get("capability") or "general"),
-                "title": score.title,
-                "status": score.status,
-                "score": float(score.meta.get("score") or score.content.get("score") or 0.0),
-                "source_record_ids": [score.record_id],
+                "kind": capability_id,
+                "capability": capability_id,
+                "title": str(entry.get("display_name") or capability_id),
+                "status": "observed" if aggregate["observation_count"] else "unobserved",
+                "score": aggregate["pass_rate"],
+                "observation_count": aggregate["observation_count"],
+                "failure_count": aggregate["failure_count"],
+                "revisions": aggregate["revisions"],
+                "definition_digest": str(entry.get("definition_digest") or ""),
+                "profile_requirement": entry.get("requirement") or {},
+                "evaluation_targets": sorted(
+                    targets_by_capability.get(capability_id) or [],
+                    key=lambda item: (item["case_id"], item["provider_binding_id"]),
+                ),
+                "source_record_ids": [],
             }
         )
-    if not capabilities:
-        capabilities = [{"kind": item, "capability": item, "title": item, "status": "unknown", "score": 0.0, "source_record_ids": []} for item in CAPABILITY_DIMENSIONS]
-    return capabilities
+    return sorted(results, key=lambda item: str(item["capability"]))
+
+
+def _ledger_aggregate(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {"pass_rate": 0.0, "observation_count": 0, "failure_count": 0, "revisions": {}}
+    decisive = passes = observation_count = failure_count = 0
+    revisions: dict[str, Any] = {}
+    for revision_id, revision in (value.get("revisions") or {}).items():
+        if not isinstance(revision, dict):
+            continue
+        bindings = revision.get("bindings") if isinstance(revision.get("bindings"), dict) else {}
+        revision_view: dict[str, Any] = {}
+        for binding_id, binding in bindings.items():
+            if not isinstance(binding, dict):
+                continue
+            count = int(binding.get("observation_count") or 0)
+            binding_decisive = int(binding.get("decisive_count") or 0)
+            binding_passes = int(binding.get("pass_count") or 0)
+            binding_failures = int(binding.get("failure_count") or 0)
+            observation_count += count
+            decisive += binding_decisive
+            passes += binding_passes
+            failure_count += binding_failures
+            revision_view[str(binding_id)] = {
+                "observation_count": count,
+                "pass_rate": binding.get("pass_rate"),
+                "latest": binding.get("latest"),
+            }
+        revisions[str(revision_id)] = revision_view
+    return {
+        "pass_rate": round(passes / decisive, 6) if decisive else 0.0,
+        "observation_count": observation_count,
+        "failure_count": failure_count,
+        "revisions": revisions,
+    }
 
 
 def _metrics(
@@ -207,26 +352,20 @@ def _metrics(
     }
 
 
-def _capability_for(tag: str, text: str) -> str:
-    normalized_tag = str(tag or "").strip().lower().replace("_", ".")
-    if normalized_tag in CAPABILITY_DIMENSIONS:
-        return normalized_tag
-    value = f"{tag} {text}".lower()
-    if any(term in value for term in ("recall", "memory", "记忆", "召回")):
-        return "memory.recall"
-    if any(term in value for term in ("tool", "routing", "route", "工具", "路由")):
-        return "tool.routing"
-    if any(term in value for term in ("knowledge", "intake", "source", "rss", "news", "paper", "research stale", "web evidence")):
-        return "knowledge.intake"
-    if any(term in value for term in ("code", "test", "ci", "pytest", "代码")):
-        return "code.implementation"
-    if any(term in value for term in ("safety", "risk", "unsafe", "权限", "安全")):
-        return "safety.judgment"
-    if any(term in value for term in ("openclaw", "gateway", "hook")):
-        return "openclaw.ops"
-    if any(term in value for term in ("style", "tone", "沟通", "废话")):
-        return "communication.style"
-    return "proactive.judgment"
+def _explicit_capability(
+    record: RecordEnvelope,
+    *,
+    meta: dict[str, Any],
+    payload: dict[str, Any],
+) -> str:
+    """Read only an explicit capability declaration; never infer by prose."""
+
+    for source in (meta, payload, record.provenance):
+        for key in ("capability_id", "capability", "target_capability", "capability_domain"):
+            value = str(source.get(key) or "").strip()
+            if value:
+                return value
+    return "unclassified"
 
 
 def _severity(record: RecordEnvelope, primary_label: str) -> float:

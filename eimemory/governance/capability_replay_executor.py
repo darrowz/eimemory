@@ -4,6 +4,7 @@ from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from eimemory.evaluation.capability_catalog import CapabilityEvaluationCatalog
 from eimemory.experience.capability_contract import (
     SCHEMA_VERSION as CONTRACT_SCHEMA_VERSION,
     contract_source_ids,
@@ -27,13 +28,26 @@ from eimemory.models.records import ScopeRef
 SUCCESS_STATUSES = {"success", "good", "passed", "pass", "completed"}
 
 
-def execute_capability_replay_case(runtime: Any, case: dict[str, Any]) -> dict[str, Any]:
+def execute_capability_replay_case(
+    runtime: Any,
+    case: dict[str, Any],
+    *,
+    catalog: CapabilityEvaluationCatalog | None = None,
+    legacy_compatibility: bool = False,
+) -> dict[str, Any]:
     """Replay one case only from a verified outcome-trace and probe contract chain."""
 
     scope = ScopeRef.from_dict(case.get("scope") or {})
     capability = str(case.get("target_capability") or "").strip()
     case_id = str(case.get("case_id") or "").strip()
-    evidence_by_capability = collect_capability_evidence(runtime, scope=scope, limit=500)
+    capability_revision_id = str(case.get("capability_revision_id") or "").strip()
+    evidence_by_capability = collect_capability_evidence(
+        runtime,
+        scope=scope,
+        limit=500,
+        catalog=catalog,
+        legacy_compatibility=legacy_compatibility,
+    )
     candidates = [
         item
         for item in evidence_by_capability.get(capability, [])
@@ -41,6 +55,10 @@ def execute_capability_replay_case(runtime: Any, case: dict[str, Any]) -> dict[s
         and str(item.get("case_id") or "") == case_id
         and str(item.get("source_kind") or "") == "outcome_trace"
         and str(item.get("source_id") or "")
+        and (
+            not capability_revision_id
+            or str(item.get("capability_revision_id") or "") == capability_revision_id
+        )
     ]
     expected_execution_id = str(case.get("acceptance_execution_id") or "").strip()
     expected_probe_id = str(case.get("required_probe_source_id") or "").strip()
@@ -89,8 +107,11 @@ def execute_capability_replay_case(runtime: Any, case: dict[str, Any]) -> dict[s
         scope=scope,
         capability=capability,
         case_id=case_id,
+        expected_capability_revision_id=capability_revision_id,
         expected_acceptance_execution_id=expected_execution_id,
         expected_probe_source_id=expected_probe_id,
+        catalog=catalog,
+        legacy_compatibility=legacy_compatibility,
     )
 
 
@@ -138,6 +159,9 @@ def validate_capability_replay_result(
     capability: str,
     case_id: str,
     result: dict[str, Any],
+    capability_revision_id: str = "",
+    catalog: CapabilityEvaluationCatalog | None = None,
+    legacy_compatibility: bool = False,
 ) -> dict[str, Any]:
     """Re-resolve and compare one persisted contract replay result."""
 
@@ -159,6 +183,9 @@ def validate_capability_replay_result(
         return _result_validation_failure("missing_contract_replay_observation")
     if str(result.get("evidence_source_id") or "").strip() != trace_record_id:
         return _result_validation_failure("contract_replay_evidence_trace_mismatch")
+    normalized_revision_id = str(capability_revision_id or "").strip()
+    if normalized_revision_id and str(result.get("capability_revision_id") or "").strip() != normalized_revision_id:
+        return _result_validation_failure("contract_replay_revision_mismatch")
 
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
     resolved = _validate_contract_chain(
@@ -167,6 +194,9 @@ def validate_capability_replay_result(
         scope=scope_ref,
         capability=str(capability or "").strip(),
         case_id=str(case_id or "").strip(),
+        expected_capability_revision_id=normalized_revision_id,
+        catalog=catalog,
+        legacy_compatibility=legacy_compatibility,
     )
     if resolved.get("verdict") != "pass":
         return _result_validation_failure(str(resolved.get("reason") or "invalid_contract_replay_chain"))
@@ -183,8 +213,11 @@ def _validate_contract_chain(
     scope: ScopeRef,
     capability: str,
     case_id: str,
+    expected_capability_revision_id: str = "",
     expected_acceptance_execution_id: str = "",
     expected_probe_source_id: str = "",
+    catalog: CapabilityEvaluationCatalog | None = None,
+    legacy_compatibility: bool = False,
 ) -> dict[str, Any]:
     trace_record_id = str(evidence.get("source_id") or "").strip()
     trace_record = runtime.store.get_by_id(trace_record_id, scope=scope)
@@ -224,20 +257,32 @@ def _validate_contract_chain(
         contract,
         expected_capability=capability,
         expected_case_id=case_id,
+        catalog=catalog,
+        legacy_compatibility=legacy_compatibility,
     )
     if contract_error:
         return _failure("fail", "invalid_capability_contract", trace_id=trace_id, trace_record_id=trace_record_id)
-    canonical_artifact = capability_acceptance_case(case_id)
+    canonical_artifact = capability_acceptance_case(
+        case_id,
+        catalog=catalog,
+        legacy_compatibility=legacy_compatibility,
+    )
     if not canonical_artifact or str(canonical_artifact.get("capability") or "") != capability:
         return _failure("fail", "unknown_capability_acceptance_case", trace_id=trace_id, trace_record_id=trace_record_id)
     if contract.get("probe") is not True:
         return _failure("fail", "capability_contract_probe_required", trace_id=trace_id, trace_record_id=trace_record_id)
+    if expected_capability_revision_id and str(contract.get("capability_revision_id") or "") != expected_capability_revision_id:
+        return _failure("fail", "capability_contract_revision_mismatch", trace_id=trace_id, trace_record_id=trace_record_id)
     if (
         trace_meta.get("contract_verified") is not True
         or str(trace_meta.get("capability") or "") != capability
         or str(trace_meta.get("capability_case_id") or "") != case_id
         or str(payload.get("capability") or "") != capability
         or str(payload.get("capability_case_id") or "") != case_id
+        or (
+            bool(expected_capability_revision_id)
+            and str(payload.get("capability_revision_id") or "") != expected_capability_revision_id
+        )
     ):
         return _failure("fail", "trace_contract_attribution_mismatch", trace_id=trace_id, trace_record_id=trace_record_id)
 
@@ -323,12 +368,20 @@ def _validate_contract_chain(
         or str(probe_provenance.get("schema_version") or "") != PROBE_SCHEMA_VERSION
         or str(probe_meta.get("capability") or "") != capability
         or str(probe_meta.get("case_id") or "") != case_id
+        or (
+            bool(expected_capability_revision_id)
+            and str(probe_meta.get("capability_revision_id") or "") != expected_capability_revision_id
+        )
         or probe_meta.get("passed") is not True
         or str(probe_meta.get("verdict") or "") != "pass"
         or str(probe_content.get("report_type") or "") != PROBE_REPORT_TYPE
         or str(probe_content.get("schema_version") or "") != PROBE_SCHEMA_VERSION
         or str(probe_content.get("capability") or "") != capability
         or str(probe_content.get("case_id") or "") != case_id
+        or (
+            bool(expected_capability_revision_id)
+            and str(probe_content.get("capability_revision_id") or "") != expected_capability_revision_id
+        )
         or probe_content.get("passed") is not True
         or str(probe_content.get("verdict") or "") != "pass"
         or validator.get("passed") is not True
@@ -431,6 +484,8 @@ def _validate_contract_chain(
         runtime=runtime,
         evidence_ref=probe_source_id,
         evidence=execution_evidence,
+        catalog=catalog,
+        legacy_compatibility=legacy_compatibility,
     )
     if execution_error:
         return _failure(
@@ -470,7 +525,7 @@ def _validate_contract_chain(
             probe_source_id=probe_source_id,
         )
     immutable_observation = deepcopy(observation)
-    return {
+    result = {
         "verdict": "pass",
         "hit": True,
         "evidence_source_id": trace_record_id,
@@ -484,6 +539,9 @@ def _validate_contract_chain(
             f"probe_source_id={probe_source_id};contract_schema={contract.get('schema_version', '')}"
         ),
     }
+    if expected_capability_revision_id:
+        result["capability_revision_id"] = expected_capability_revision_id
+    return result
 
 
 def _failure(

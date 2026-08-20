@@ -218,7 +218,10 @@ def _normalize(correction: dict[str, Any]) -> dict[str, str]:
     return {
         "text": text,
         "context": _first(correction.get("context"), correction.get("observed_behavior"), text),
-        "target_capability": _first(correction.get("target_capability"), "proactive.judgment"),
+        # A correction is valuable even before a Profile/registry target is
+        # known.  Do not silently attach it to a compiled catch-all; later
+        # attribution can link this durable lesson to a concrete capability.
+        "target_capability": _first(correction.get("target_capability"), ""),
         "expected_behavior": expected,
         "lesson": f"Do not stop at inability; convert the missing ability into a lesson, replay case, gate, and concrete implementation path.",
     }

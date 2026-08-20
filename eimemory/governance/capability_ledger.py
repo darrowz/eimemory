@@ -12,7 +12,9 @@ from eimemory.governance.evidence_contract import same_scope
 from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
-SEEDED_LEDGER_CAPABILITIES = [
+# Frozen v2 compatibility cohort.  New callers use
+# ``build_dynamic_capability_ledger`` and never synthesize these entries.
+LEGACY_SEEDED_LEDGER_CAPABILITIES = (
     "memory.recall",
     "tool.routing",
     "knowledge.intake",
@@ -24,7 +26,7 @@ SEEDED_LEDGER_CAPABILITIES = [
     "device.control",
     "research.synthesis",
     "safety.boundary",
-]
+)
 
 MAX_EVIDENCE_ITEMS = 500
 MAX_EVIDENCE_ITEMS_BYTES = 262_144
@@ -39,6 +41,30 @@ MAX_EVIDENCE_SOURCE_KINDS = 100
 MAX_CALLER_META_BYTES = 131_072
 MAX_CAPABILITY_CHARS = 256
 MAX_LOOP_ID_CHARS = 512
+
+
+def build_dynamic_capability_ledger(
+    runtime: Any,
+    *,
+    scope: dict[str, Any] | ScopeRef,
+    capability_scope: str = "global",
+    limit: int = 500,
+) -> dict[str, Any]:
+    """Return the v3 ledger without seeding or fixed-capability defaults.
+
+    The legacy ``build_capability_ledger`` remains a shadow-compatible reader
+    until WP15.  New callers use this explicit path so observation-backed
+    evidence can be compared without silently materializing the former fixed
+    taxonomy or invoking legacy keyword attribution.
+    """
+
+    from eimemory.capabilities.observations import CapabilityObservations
+
+    return CapabilityObservations(runtime.store).build_ledger(
+        runtime_scope=scope,
+        capability_scope=capability_scope,
+        limit=limit,
+    )
 
 
 def record_capability_score(
@@ -242,11 +268,24 @@ def build_capability_ledger(
     until: str | None = None,
     ensure_seeded: bool = False,
     attribute_outcomes: bool = True,
+    legacy_compatibility: bool = False,
 ) -> dict[str, Any]:
-    if ensure_seeded:
+    """Build a score ledger without manufacturing a capability universe.
+
+    Live callers see only observed capability-score records.  The retired
+    fixed score cohort can be reconstructed for a bounded v2 replay only when
+    both the caller requests seeding and names ``legacy_compatibility=True``.
+    """
+
+    if ensure_seeded and legacy_compatibility:
         from eimemory.governance.capability_seeding import ensure_all_seeded
 
-        ensure_all_seeded(runtime, scope=scope, loop_id="seed")
+        ensure_all_seeded(
+            runtime,
+            scope=scope,
+            loop_id="seed",
+            legacy_compatibility=True,
+        )
 
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
     if attribute_outcomes:
@@ -311,30 +350,32 @@ def build_capability_ledger(
             "goal_gap_reason": _goal_gap_reason(score=latest_score, evidence_count=evidence_count),
             "last_record_id": ordered[0].record_id if ordered else "",
         }
-    for capability in SEEDED_LEDGER_CAPABILITIES:
-        capabilities.setdefault(
-            capability,
-            {
-                "score": 0.0,
-                "average": 0.0,
-                "trend": 0.0,
-                "evidence_count": 0,
-                "evidence_record_ids": [],
-                "regression_count": 0,
-                "evidence_tiers": [],
-                "evidence_sources": [],
-                "evidence_source_counts": {},
-                "confidence": "none",
-                "status": "stale_unverified",
-                "needs_outcome_recalculation": True,
-                "goal_gap_reason": "no_outcome_evidence",
-                "last_record_id": "",
-            },
-        )
+    if legacy_compatibility:
+        for capability in LEGACY_SEEDED_LEDGER_CAPABILITIES:
+            capabilities.setdefault(
+                capability,
+                {
+                    "score": 0.0,
+                    "average": 0.0,
+                    "trend": 0.0,
+                    "evidence_count": 0,
+                    "evidence_record_ids": [],
+                    "regression_count": 0,
+                    "evidence_tiers": [],
+                    "evidence_sources": [],
+                    "evidence_source_counts": {},
+                    "confidence": "none",
+                    "status": "stale_unverified",
+                    "needs_outcome_recalculation": True,
+                    "goal_gap_reason": "no_outcome_evidence",
+                    "last_record_id": "",
+                },
+            )
     return {
         "ok": True,
         "capabilities": capabilities,
         "record_count": len(records),
+        "legacy_compatibility": bool(legacy_compatibility),
         "query": {
             "limit": max(0, int(limit)),
             "since": normalized_since,

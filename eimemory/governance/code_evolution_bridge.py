@@ -11,11 +11,16 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from eimemory.governance.code_evolution import run_code_sandbox
+from eimemory.governance.code_automation_policy import (
+    code_automation_policy_summary,
+    load_code_automation_policy,
+    machine_policy_context_from_mapping,
+)
 from eimemory.governance.code_patch_command_policy import code_patch_verification_command_error
 
 
 CODE_PATCH_PROPOSAL_REPORT_TYPE = "code_patch_proposal"
-CODE_PATCH_PROPOSAL_SCHEMA_VERSION = "code_patch_proposal.v2"
+CODE_PATCH_PROPOSAL_SCHEMA_VERSION = "code_patch_proposal.v3"
 
 
 def propose_code_patch(
@@ -30,6 +35,7 @@ def propose_code_patch(
     proposer: object | None = None,
     file_updates: list[dict[str, Any]] | None = None,
     repo_root: str | Path | None = None,
+    machine_policy_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a read-only, auditable code-change proposal.
 
@@ -38,9 +44,23 @@ def propose_code_patch(
     proposer that returns one. Applying a proposal remains the responsibility
     of the separately governed promotion path.
     """
+    policy_context = machine_policy_context_from_mapping(
+        machine_policy_context if isinstance(machine_policy_context, dict) else incident
+    )
+    machine_policy = load_code_automation_policy(**policy_context)
+    sanitized_incident = _sanitized_incident(
+        incident,
+        automation_policy=code_automation_policy_summary(machine_policy),
+    )
+
+    def policy_proposal(**kwargs: Any) -> dict[str, Any]:
+        """Bind every bridge result to the one resolved machine policy."""
+
+        return _proposal(automation_policy=machine_policy, **kwargs)
+
     sandbox_report = run_code_sandbox(
         runtime,
-        incident=incident,
+        incident=sanitized_incident,
         scope=scope,
         create_worktree=create_worktree,
         persist_report=persist_report,
@@ -54,7 +74,7 @@ def propose_code_patch(
     )
 
     if not is_code_fixable:
-        return _proposal(
+        return policy_proposal(
             sandbox_report=sandbox_report,
             proposal_status="not_applicable",
             blocked_reason="not_code_fixable",
@@ -69,8 +89,20 @@ def propose_code_patch(
     rollback_notes = _coerce_string_list(sandbox_plan.get("rollback_notes"))
     default_verification = _coerce_commands(sandbox_plan.get("verification_commands"))
     proposal_root = _resolve_repo_root(repo_root)
+    if machine_policy.get("ok") is not True:
+        return policy_proposal(
+            sandbox_report=sandbox_report,
+            proposal_status="proposal_blocked",
+            blocked_reason=str(machine_policy.get("reason") or "machine_policy_blocked"),
+            patch_scope={"allowed_files": sandbox_allowed_files},
+            allowed_files=[],
+            sandbox_allowed_files=sandbox_allowed_files,
+            verification_commands=default_verification,
+            rollback_notes=rollback_notes,
+            proposal_source="machine_policy",
+        )
     candidate, proposal_source, candidate_error = _proposal_candidate(
-        incident=incident,
+        incident=sanitized_incident,
         sandbox_plan=sandbox_plan,
         repo_root=proposal_root,
         allowed_files=sandbox_allowed_files,
@@ -79,7 +111,7 @@ def propose_code_patch(
     )
     patch_scope = {"allowed_files": sandbox_allowed_files}
     if candidate_error:
-        return _proposal(
+        return policy_proposal(
             sandbox_report=sandbox_report,
             proposal_status="proposal_invalid",
             blocked_reason=candidate_error,
@@ -91,7 +123,7 @@ def propose_code_patch(
             proposal_source=proposal_source,
         )
     if candidate is None or "file_updates" not in candidate:
-        return _proposal(
+        return policy_proposal(
             sandbox_report=sandbox_report,
             proposal_status="proposal_unavailable",
             blocked_reason="file_updates_unavailable",
@@ -105,7 +137,7 @@ def propose_code_patch(
 
     normalized_updates, update_error = _normalize_file_updates(candidate.get("file_updates"))
     if update_error:
-        return _proposal(
+        return policy_proposal(
             sandbox_report=sandbox_report,
             proposal_status="proposal_invalid",
             blocked_reason=update_error,
@@ -117,7 +149,7 @@ def propose_code_patch(
             proposal_source=proposal_source,
         )
     if not normalized_updates:
-        return _proposal(
+        return policy_proposal(
             sandbox_report=sandbox_report,
             proposal_status="proposal_unavailable",
             blocked_reason="file_updates_unavailable",
@@ -130,7 +162,7 @@ def propose_code_patch(
         )
 
     if proposal_root is None:
-        return _proposal(
+        return policy_proposal(
             sandbox_report=sandbox_report,
             proposal_status="proposal_invalid",
             blocked_reason="proposal_repo_root_invalid",
@@ -143,7 +175,7 @@ def propose_code_patch(
         )
     for update in normalized_updates:
         if not _path_allowed(update["path"], sandbox_allowed_files):
-            return _proposal(
+            return policy_proposal(
                 sandbox_report=sandbox_report,
                 proposal_status="proposal_invalid",
                 blocked_reason="file_update_outside_sandbox_allowlist",
@@ -159,7 +191,7 @@ def propose_code_patch(
         candidate.get("allowed_files") or candidate.get("allowlist")
     )
     if allowlist_error:
-        return _proposal(
+        return policy_proposal(
             sandbox_report=sandbox_report,
             proposal_status="proposal_invalid",
             blocked_reason=allowlist_error,
@@ -175,7 +207,7 @@ def propose_code_patch(
             not _path_allowed(pattern, sandbox_allowed_files)
             for pattern in declared_allowed_files
         ):
-            return _proposal(
+            return policy_proposal(
                 sandbox_report=sandbox_report,
                 proposal_status="proposal_invalid",
                 blocked_reason="declared_allowlist_outside_sandbox_allowlist",
@@ -190,7 +222,7 @@ def propose_code_patch(
             not _path_allowed(update["path"], declared_allowed_files)
             for update in normalized_updates
         ):
-            return _proposal(
+            return policy_proposal(
                 sandbox_report=sandbox_report,
                 proposal_status="proposal_invalid",
                 blocked_reason="file_update_outside_declared_allowlist",
@@ -206,7 +238,7 @@ def propose_code_patch(
         candidate.get("verification_commands") or candidate.get("verify_commands")
     ) or default_verification
     if _contains_full_test_suite(verification_commands):
-        return _proposal(
+        return policy_proposal(
             sandbox_report=sandbox_report,
             proposal_status="proposal_invalid",
             blocked_reason="full_test_suite_verification_not_allowed",
@@ -219,7 +251,7 @@ def propose_code_patch(
         )
     command_error = code_patch_verification_command_error(verification_commands)
     if command_error:
-        return _proposal(
+        return policy_proposal(
             sandbox_report=sandbox_report,
             proposal_status="proposal_invalid",
             blocked_reason=command_error,
@@ -235,7 +267,7 @@ def propose_code_patch(
         proposal_root, normalized_updates
     )
     if diff_error:
-        return _proposal(
+        return policy_proposal(
             sandbox_report=sandbox_report,
             proposal_status="proposal_invalid",
             blocked_reason=diff_error,
@@ -248,7 +280,7 @@ def propose_code_patch(
         )
     unified_diff = "".join(file_diffs)
     if not unified_diff:
-        return _proposal(
+        return policy_proposal(
             sandbox_report=sandbox_report,
             proposal_status="proposal_invalid",
             blocked_reason="no_effective_file_updates",
@@ -266,7 +298,7 @@ def propose_code_patch(
         proposal_root, subject_commit=subject_commit
     )
     if not subject_state_digest:
-        return _proposal(
+        return policy_proposal(
             sandbox_report=sandbox_report,
             proposal_status="proposal_invalid",
             blocked_reason="subject_state_unavailable",
@@ -278,6 +310,33 @@ def propose_code_patch(
             proposal_source=proposal_source,
             file_base_digest=file_base_digest,
         )
+    requested_machine_actions, action_error = _requested_machine_actions(candidate)
+    if action_error:
+        return policy_proposal(
+            sandbox_report=sandbox_report,
+            proposal_status="proposal_blocked",
+            blocked_reason=action_error,
+            patch_scope=patch_scope,
+            allowed_files=[],
+            sandbox_allowed_files=sandbox_allowed_files,
+            verification_commands=verification_commands,
+            rollback_notes=rollback_notes,
+            proposal_source=proposal_source,
+        )
+    action_policy_error = _machine_policy_action_error(machine_policy, requested_machine_actions)
+    if action_policy_error:
+        return policy_proposal(
+            sandbox_report=sandbox_report,
+            proposal_status="proposal_blocked",
+            blocked_reason=action_policy_error,
+            patch_scope=patch_scope,
+            allowed_files=[],
+            sandbox_allowed_files=sandbox_allowed_files,
+            verification_commands=verification_commands,
+            rollback_notes=rollback_notes,
+            proposal_source=proposal_source,
+            requested_machine_actions=requested_machine_actions,
+        )
     patch_digest = _patch_digest(
         repo_root=proposal_root,
         subject_commit=subject_commit,
@@ -286,7 +345,7 @@ def propose_code_patch(
         file_updates=normalized_updates,
         verification_commands=verification_commands,
     )
-    return _proposal(
+    return policy_proposal(
         sandbox_report=sandbox_report,
         proposal_status="proposal_ready",
         blocked_reason="",
@@ -303,6 +362,7 @@ def propose_code_patch(
         subject_commit=subject_commit,
         subject_state_digest=subject_state_digest,
         file_base_digest=file_base_digest,
+        requested_machine_actions=requested_machine_actions,
     )
 
 
@@ -352,7 +412,7 @@ def _incident_candidate_payload(incident: dict[str, Any]) -> dict[str, Any]:
     for key in ("code_patch", "candidate_patch", "patch", "proposal"):
         value = incident.get(key)
         if isinstance(value, dict):
-            return dict(value)
+            return _sanitized_candidate_payload(value)
     payload: dict[str, Any] = {}
     for key in (
         "file_updates",
@@ -360,10 +420,57 @@ def _incident_candidate_payload(incident: dict[str, Any]) -> dict[str, Any]:
         "allowlist",
         "verification_commands",
         "verify_commands",
+        "apply_to_repo",
+        "commit_to_repo",
+        "deploy_to_production",
     ):
         if key in incident:
             payload[key] = incident[key]
-    return payload
+    return _sanitized_candidate_payload(payload)
+
+
+_UNTRUSTED_AUTOMATION_FIELDS = frozenset(
+    {
+        "automation_policy",
+        "machine_policy",
+        "policy",
+        "requested_machine_actions",
+        "operator_approval_path",
+        "operator_approval",
+        "approval",
+        "approval_status",
+        "review_status",
+    }
+)
+
+
+def _sanitized_incident(
+    incident: dict[str, Any],
+    *,
+    automation_policy: dict[str, Any],
+) -> dict[str, Any]:
+    """Drop claimed authority and attach only the trusted policy summary."""
+
+    sanitized = {
+        key: value
+        for key, value in dict(incident).items()
+        if key not in _UNTRUSTED_AUTOMATION_FIELDS
+    }
+    for key in ("code_patch", "candidate_patch", "patch", "proposal"):
+        value = sanitized.get(key)
+        if isinstance(value, dict):
+            sanitized[key] = _sanitized_candidate_payload(value)
+    sanitized["automation_policy"] = dict(automation_policy)
+    sanitized["requested_machine_actions"] = []
+    return sanitized
+
+
+def _sanitized_candidate_payload(value: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: item
+        for key, item in dict(value).items()
+        if key not in _UNTRUSTED_AUTOMATION_FIELDS
+    }
 
 
 def _normalize_file_updates(value: Any) -> tuple[list[dict[str, str]], str]:
@@ -611,6 +718,40 @@ def _patch_digest(
     return sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def _requested_machine_actions(candidate: dict[str, Any]) -> tuple[list[str], str]:
+    """Require explicit boolean action requests before policy matching."""
+
+    actions = ["local_apply"]
+    for field, action in (
+        ("commit_to_repo", "commit"),
+        ("deploy_to_production", "deployment"),
+    ):
+        value = candidate.get(field, False)
+        if not isinstance(value, bool):
+            return [], f"machine_action_{field}_must_be_boolean"
+        if value:
+            actions.append(action)
+    if "deployment" in actions and "commit" not in actions:
+        return [], "machine_action_deployment_requires_commit"
+    return actions, ""
+
+
+def _machine_policy_action_error(
+    automation_policy: dict[str, Any],
+    requested_machine_actions: list[str],
+) -> str:
+    summary = code_automation_policy_summary(automation_policy)
+    if summary.get("ok") is not True:
+        return str(summary.get("reason") or "machine_policy_blocked")
+    actions = summary.get("actions") if isinstance(summary.get("actions"), dict) else {}
+    for action in requested_machine_actions:
+        if action not in {"local_apply", "commit", "deployment"}:
+            return "machine_policy_action_unknown"
+        if actions.get(action) is not True:
+            return f"machine_policy_{action}_not_enabled"
+    return ""
+
+
 def _proposal(
     *,
     sandbox_report: dict[str, Any],
@@ -629,8 +770,11 @@ def _proposal(
     subject_commit: str = "",
     subject_state_digest: str = "",
     file_base_digest: str = "",
+    automation_policy: dict[str, Any] | None = None,
+    requested_machine_actions: list[str] | None = None,
 ) -> dict[str, Any]:
     ready = proposal_status == "proposal_ready"
+    policy_summary = code_automation_policy_summary(automation_policy)
     return {
         "ok": bool(sandbox_report.get("ok")),
         "report_type": CODE_PATCH_PROPOSAL_REPORT_TYPE,
@@ -642,8 +786,11 @@ def _proposal(
         "blocked_reason": blocked_reason,
         "read_only": True,
         "mutates_repository": False,
-        "requires_human_approval": False,
-        "approval_status": "not_required",
+        "authorization_mode": "machine_gated",
+        "decision_authority": "machine_policy",
+        "machine_policy_required_for_apply": True,
+        "automation_policy": policy_summary,
+        "requested_machine_actions": list(requested_machine_actions or []),
         "incident_category": str(sandbox_report.get("incident_category") or "unknown"),
         "patch_scope": patch_scope,
         "allowed_files": allowed_files,

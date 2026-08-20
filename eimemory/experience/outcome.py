@@ -22,6 +22,7 @@ from eimemory.adapters.runtime.channel import base_scope_from_channel
 
 REPORT_TYPE = "outcome_trace"
 SCHEMA_VERSION = "outcome_trace.v1"
+DUAL_WRITE_SCHEMA = "capability.outcome_dual_write.v1"
 
 
 class OutcomeTraceBuildError(ValueError):
@@ -35,7 +36,23 @@ class OutcomeTraceRecordBuild:
     contract: dict[str, Any] | None
 
 
-def record_outcome_trace(runtime: Any, payload: dict[str, Any], scope: dict | ScopeRef | None = None) -> dict[str, Any]:
+def record_outcome_trace(
+    runtime: Any,
+    payload: dict[str, Any],
+    scope: dict | ScopeRef | None = None,
+    *,
+    catalog: Any | None = None,
+    legacy_compatibility: bool = False,
+) -> dict[str, Any]:
+    """Persist a trace using an explicitly supplied trusted contract catalog.
+
+    A missing catalog is never replaced with a process-global or fixed
+    capability map.  Dynamic capability contracts therefore fail closed until
+    their caller supplies the catalog that selected the case.  Historical
+    fixed-case contracts remain available only through the explicit
+    ``legacy_compatibility`` opt-in.
+    """
+
     scope_ref = _scope_ref(scope)
     payload = dict(payload)
     payload.setdefault("recorded_at", now_iso())
@@ -54,7 +71,12 @@ def record_outcome_trace(runtime: Any, payload: dict[str, Any], scope: dict | Sc
             payload.update(release_identity_payload(release))
             payload["evidence_class"] = "verified_real_task"
     try:
-        build = build_outcome_trace_record(payload, scope=scope_ref)
+        build = build_outcome_trace_record(
+            payload,
+            scope=scope_ref,
+            catalog=catalog,
+            legacy_compatibility=legacy_compatibility,
+        )
     except OutcomeTraceBuildError as exc:
         return {"ok": False, "error": str(exc)}
     for source_id in contract_source_ids(build.contract or {}):
@@ -68,25 +90,177 @@ def record_outcome_trace(runtime: Any, payload: dict[str, Any], scope: dict | Sc
             idempotency_key=_idempotency_key(build.payload),
             trace_id=_trace_id(build.payload),
         )
-        return {
+        return _with_capability_observation(
+            runtime,
+            {
             "ok": True,
             "record_id": stored.record_id,
             "kind": stored.kind,
             "idempotent": idempotent,
-        }
+            },
+            payload=build.payload,
+            scope=scope_ref,
+        )
     existing = _existing_outcome_record(runtime, build.payload, scope=scope_ref)
     if existing is not None:
-        return {"ok": True, "record_id": existing.record_id, "kind": existing.kind, "idempotent": True}
+        return _with_capability_observation(
+            runtime,
+            {"ok": True, "record_id": existing.record_id, "kind": existing.kind, "idempotent": True},
+            payload=build.payload,
+            scope=scope_ref,
+        )
     stored = runtime.store.append(build.record)
-    return {"ok": True, "record_id": stored.record_id, "kind": stored.kind, "idempotent": False}
+    return _with_capability_observation(
+        runtime,
+        {"ok": True, "record_id": stored.record_id, "kind": stored.kind, "idempotent": False},
+        payload=build.payload,
+        scope=scope_ref,
+    )
+
+
+def _with_capability_observation(
+    runtime: Any,
+    result: dict[str, Any],
+    *,
+    payload: dict[str, Any],
+    scope: ScopeRef,
+) -> dict[str, Any]:
+    """Add a v3 observation only for an explicit, independently verified link.
+
+    Outcome persistence remains authoritative even if the optional projection is
+    incomplete or temporarily unavailable.  The returned status makes this
+    visible to callers instead of silently falling back to a keyword-derived
+    capability.
+    """
+
+    attribution = payload.get("capability_attribution")
+    if not isinstance(attribution, dict):
+        result["capability_observation"] = {
+            "schema": "capability.observation_normalization.v1",
+            "status": "unclassified",
+            "reason": "missing_explicit_capability_attribution",
+        }
+        result["capability_dual_write"] = _capability_dual_write_receipt(
+            result,
+            status="not_applicable",
+            reason="missing_explicit_capability_attribution",
+        )
+        return result
+    normalized_payload = dict(payload)
+    normalized_attribution = dict(attribution)
+    provenance = normalized_attribution.get("provenance")
+    if isinstance(provenance, dict):
+        normalized_attribution["provenance"] = {
+            **provenance,
+            "outcome_trace_record_id": str(result.get("record_id") or ""),
+        }
+    normalized_payload["capability_attribution"] = normalized_attribution
+    try:
+        from eimemory.capabilities.observations import CapabilityObservations
+
+        capability_scope = str(normalized_attribution.get("capability_scope") or "global")
+        observation = CapabilityObservations(runtime.store).normalize_outcome(
+            normalized_payload,
+            runtime_scope=scope,
+            capability_scope=capability_scope,
+            request_key=f"outcome-trace:{result.get('record_id') or _trace_id(payload)}",
+        )
+        normalized = observation.to_dict()
+        result["capability_observation"] = normalized
+        receipt = normalized.get("observation") if isinstance(normalized.get("observation"), dict) else {}
+        if str(normalized.get("status") or "") == "recorded" and receipt:
+            result["capability_dual_write"] = _capability_dual_write_receipt(
+                result,
+                status="aligned",
+                reason="explicit_outcome_normalized",
+                capability_scope=capability_scope,
+                observation_id=str(receipt.get("entity_id") or ""),
+                observation_digest=str(receipt.get("entity_digest") or ""),
+                operation_id=str(receipt.get("operation_id") or ""),
+                idempotent=bool(receipt.get("idempotent")),
+            )
+        elif str(normalized.get("status") or "") == "unclassified":
+            # The raw outcome remains retained and observable.  It is not a
+            # dual-write drift until a complete independent attribution exists.
+            result["capability_dual_write"] = _capability_dual_write_receipt(
+                result,
+                status="not_applicable",
+                reason=str(normalized.get("reason") or "unclassified_outcome"),
+                capability_scope=capability_scope,
+            )
+        else:
+            result["capability_dual_write"] = _capability_dual_write_receipt(
+                result,
+                status="blocked",
+                reason=str(normalized.get("reason") or "observation_receipt_unavailable"),
+                capability_scope=capability_scope,
+            )
+    except Exception as exc:
+        result["capability_observation"] = {
+            "schema": "capability.observation_normalization.v1",
+            "status": "blocked",
+            "reason": f"normalization_error:{type(exc).__name__}",
+        }
+        # Do not roll back or hide the authoritative raw outcome.  The
+        # bounded backfill/reconciliation path can recover it later once the
+        # explicit v3 dependency chain is available.
+        result["capability_dual_write"] = _capability_dual_write_receipt(
+            result,
+            status="blocked",
+            reason=f"normalization_error:{type(exc).__name__}",
+            capability_scope=str(normalized_attribution.get("capability_scope") or "global"),
+        )
+    return result
+
+
+def _capability_dual_write_receipt(
+    result: dict[str, Any],
+    *,
+    status: str,
+    reason: str,
+    capability_scope: str = "",
+    observation_id: str = "",
+    observation_digest: str = "",
+    operation_id: str = "",
+    idempotent: bool | None = None,
+) -> dict[str, Any]:
+    """Expose the central owner result without making raw persistence atomic.
+
+    The raw outcome is the authoritative event.  This receipt makes the
+    additive v3 write and any recovery obligation observable at the one owner
+    rather than asking every consumer to infer dual-write state.
+    """
+
+    receipt = {
+        "schema": DUAL_WRITE_SCHEMA,
+        "status": status,
+        "reason": reason,
+        "raw_record_id": str(result.get("record_id") or ""),
+        "capability_scope": capability_scope,
+        "observation_id": observation_id,
+        "observation_digest": observation_digest,
+        "operation_id": operation_id,
+    }
+    if idempotent is not None:
+        receipt["idempotent"] = bool(idempotent)
+    return receipt
 
 
 def build_outcome_trace_record(
     payload: dict[str, Any],
     *,
     scope: ScopeRef | dict | None = None,
+    catalog: Any | None = None,
+    legacy_compatibility: bool = False,
 ) -> OutcomeTraceRecordBuild:
-    """Validate and build one outcome-trace record without reading or writing runtime state."""
+    """Build an outcome trace with an explicit trusted catalog boundary.
+
+    ``catalog`` is intentionally caller-owned: this pure builder neither
+    reads a global capability taxonomy nor looks one up from runtime state.
+    Dynamic contracts cannot validate when it is absent.  A legacy contract
+    must opt in through ``legacy_compatibility`` rather than inheriting that
+    fallback implicitly.
+    """
     error = _validate_outcome_trace(payload)
     if error:
         raise OutcomeTraceBuildError(error)
@@ -98,10 +272,16 @@ def build_outcome_trace_record(
     contract: dict[str, Any] | None = None
     if "capability_contract" in normalized_payload:
         contract = normalize_capability_contract(normalized_payload.get("capability_contract"))
+        if catalog is None and not legacy_compatibility:
+            raise OutcomeTraceBuildError(
+                "trusted capability catalog is required for a dynamic capability contract"
+            )
         error = validate_capability_contract(
             contract,
             expected_capability=str(normalized_payload.get("capability") or "").strip(),
             expected_case_id=str(normalized_payload.get("capability_case_id") or "").strip(),
+            catalog=catalog,
+            legacy_compatibility=legacy_compatibility,
         )
         if error:
             raise OutcomeTraceBuildError(error)

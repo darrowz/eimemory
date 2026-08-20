@@ -6,6 +6,7 @@ import pytest
 
 from eimemory.adapters.openclaw.hooks import OpenClawMemoryHooks
 from eimemory.api.runtime import Runtime
+from eimemory.governance.capability_acceptance import ensure_legacy_evaluation_catalog
 from eimemory.models.records import RecallBundle, RecordEnvelope, ScopeRef
 from eimemory.ops import openclaw_loop as loop
 
@@ -806,6 +807,12 @@ def test_openclaw_agent_end_can_use_explicit_verification_when_verified_field_is
 
 def test_openclaw_probe_contract_without_rehearsal_is_rejected_by_outcome_recorder(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
+    # This fixture intentionally uses a retired fixed case.  Install its
+    # compatibility catalog explicitly; the production hook still receives no
+    # implicit catalog or legacy fallback.
+    runtime.capability_catalog = ensure_legacy_evaluation_catalog(
+        legacy_compatibility=True,
+    )
     hooks = OpenClawMemoryHooks(runtime)
     scope = {"tenant_id": "default", "agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"}
     source = runtime.store.append(
@@ -820,7 +827,11 @@ def test_openclaw_probe_contract_without_rehearsal_is_rejected_by_outcome_record
         "schema_version": "capability_contract.v1",
         "capability": "search.discovery",
         "case_id": "search_primary_source",
-        "observations": {"source_tier": "official", "source_verified": True},
+        "observations": {
+            "selected_source": "docs",
+            "source_tier": "official",
+            "source_verified": True,
+        },
         "checks": [{"name": "official_source", "passed": True, "evidence_ref": source.record_id}],
         "source_record_ids": [source.record_id],
         "probe": True,
@@ -1272,3 +1283,23 @@ def test_openclaw_record_outcome_trace_exception_degrades_without_raising(tmp_pa
     )
 
     assert result["outcome_trace_error"] == "trace store offline"
+
+
+def test_openclaw_capability_normalization_is_explicit_and_hook_only(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        hooks = OpenClawMemoryHooks(runtime)
+        result = hooks.normalize_capability_outcome(
+            "agent_end",
+            {
+                "session_id": "openclaw-capability-session",
+                "api_token": "secret-must-not-be-normalized",
+                "outcome": {"success": True},
+            },
+        )
+    finally:
+        runtime.close()
+
+    assert result["ok"] is False
+    assert result["status"] == "unsupported"
+    assert result["reason"] == "capability_outcome_not_declared"

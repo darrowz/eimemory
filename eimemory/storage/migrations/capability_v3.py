@@ -1,4 +1,4 @@
-"""Storage v2 schema for dynamic L5 capability data.
+"""Capability Storage v3 schema for dynamic L5 capability data.
 
 This module owns DDL only.  It is intentionally forward-only and installs no
 dual writes or data backfill during construction.  All capability rows carry
@@ -14,6 +14,7 @@ from typing import Any
 
 CAPABILITY_V3_SCHEMA_MIGRATION = "capability.v3.schema.v1"
 CAPABILITY_V3_BACKFILL_MIGRATION = "capability.v3.backfill.v1"
+CAPABILITY_V3_BACKFILL_CONTEXT_SCHEMA = "capability.v3.backfill.context.v1"
 CAPABILITY_V3_SCHEMA_VERSION = "capability.v3"
 
 SCOPE_COLUMNS: tuple[str, ...] = (
@@ -527,14 +528,25 @@ _TABLE_DDL: tuple[str, ...] = (
         migration_id TEXT PRIMARY KEY,
         status TEXT NOT NULL,
         phase TEXT NOT NULL,
+        context_digest TEXT NOT NULL DEFAULT '',
+        context_json TEXT NOT NULL DEFAULT '{}',
+        backfill_plan_digest TEXT NOT NULL DEFAULT '',
+        backfill_plan_json TEXT NOT NULL DEFAULT '{}',
+        phase_stats_json TEXT NOT NULL DEFAULT '{}',
         cursor TEXT NOT NULL DEFAULT '',
         rows_scanned INTEGER NOT NULL DEFAULT 0,
         rows_written INTEGER NOT NULL DEFAULT 0,
         rows_skipped INTEGER NOT NULL DEFAULT 0,
+        skipped_reasons_json TEXT NOT NULL DEFAULT '{}',
         batch_count INTEGER NOT NULL DEFAULT 0,
         source_watermark TEXT NOT NULL DEFAULT '',
         source_digest TEXT NOT NULL DEFAULT '',
         target_digest TEXT NOT NULL DEFAULT '',
+        source_total INTEGER NOT NULL DEFAULT 0,
+        destination_total INTEGER NOT NULL DEFAULT 0,
+        last_duration_ms INTEGER NOT NULL DEFAULT 0,
+        last_batch_digest TEXT NOT NULL DEFAULT '',
+        last_batch_json TEXT NOT NULL DEFAULT '{}',
         last_error TEXT NOT NULL DEFAULT '',
         started_at TEXT NOT NULL DEFAULT '',
         updated_at TEXT NOT NULL,
@@ -586,7 +598,27 @@ _REQUIRED_COLUMNS: dict[str, frozenset[str]] = {
     "l5_assessment_snapshot_refs": frozenset({"assessment_id", "snapshot_id", "profile_id", "ref_digest", "capability_scope"}),
     "l5_assessment_readiness_refs": frozenset({"assessment_id", "profile_id", "capability_id", "capability_revision_id", "readiness_binding_id", "snapshot_id", "ref_digest", "capability_scope"}),
     "capability_operation_journal": frozenset({"operation_id", "request_key", "result_digest", "audit_export_operation_id", "audit_exported_at", "capability_scope"}),
-    "capability_v3_migration_state": frozenset({"migration_id", "status", "cursor", "rows_scanned", "target_digest", "last_error"}),
+    "capability_v3_migration_state": frozenset(
+        {
+            "migration_id",
+            "status",
+            "context_digest",
+            "context_json",
+            "backfill_plan_digest",
+            "backfill_plan_json",
+            "phase_stats_json",
+            "cursor",
+            "rows_scanned",
+            "skipped_reasons_json",
+            "target_digest",
+            "source_total",
+            "destination_total",
+            "last_duration_ms",
+            "last_batch_digest",
+            "last_batch_json",
+            "last_error",
+        }
+    ),
 }
 
 _REQUIRED_INDEXES = frozenset(
@@ -749,6 +781,29 @@ def _ensure_additive_schema_columns(conn: sqlite3.Connection) -> None:
             "ADD COLUMN audit_exported_at TEXT NOT NULL DEFAULT ''"
         )
 
+    migration_columns = {
+        str(row[1])
+        for row in conn.execute("PRAGMA table_info(capability_v3_migration_state)").fetchall()
+    }
+    for column, ddl in (
+        ("context_digest", "TEXT NOT NULL DEFAULT ''"),
+        ("context_json", "TEXT NOT NULL DEFAULT '{}'"),
+        ("backfill_plan_digest", "TEXT NOT NULL DEFAULT ''"),
+        ("backfill_plan_json", "TEXT NOT NULL DEFAULT '{}'"),
+        ("phase_stats_json", "TEXT NOT NULL DEFAULT '{}'"),
+        ("skipped_reasons_json", "TEXT NOT NULL DEFAULT '{}'"),
+        ("source_total", "INTEGER NOT NULL DEFAULT 0"),
+        ("destination_total", "INTEGER NOT NULL DEFAULT 0"),
+        ("last_duration_ms", "INTEGER NOT NULL DEFAULT 0"),
+        ("last_batch_digest", "TEXT NOT NULL DEFAULT ''"),
+        ("last_batch_json", "TEXT NOT NULL DEFAULT '{}'"),
+    ):
+        if column not in migration_columns:
+            conn.execute(
+                "ALTER TABLE capability_v3_migration_state "
+                f"ADD COLUMN {column} {ddl}"
+            )
+
 
 def _assert_capability_v3_schema(conn: sqlite3.Connection) -> None:
     for table, expected_columns in _REQUIRED_COLUMNS.items():
@@ -825,14 +880,25 @@ def capability_v3_foreign_key_check(conn: sqlite3.Connection) -> list[dict[str, 
     ]
 
 
-def capability_v3_backfill_state(conn: sqlite3.Connection) -> dict[str, Any]:
+def capability_v3_backfill_state(
+    conn: sqlite3.Connection,
+    *,
+    migration_id: str = CAPABILITY_V3_BACKFILL_MIGRATION,
+) -> dict[str, Any]:
+    """Read one durable backfill cursor state.
+
+    The historical no-argument call remains the aggregate migration-family
+    state.  Runtime backfill runners use a deterministic context-specific
+    migration id so one tenant/scope cannot advance another scope's cursor.
+    """
+
     row = conn.execute(
         "SELECT * FROM capability_v3_migration_state WHERE migration_id = ?",
-        (CAPABILITY_V3_BACKFILL_MIGRATION,),
+        (str(migration_id),),
     ).fetchone()
     if row is None:
         return {
-            "migration_id": CAPABILITY_V3_BACKFILL_MIGRATION,
+            "migration_id": str(migration_id),
             "status": "not_installed",
             "phase": "not_installed",
         }
@@ -851,19 +917,23 @@ def apply_capability_v3_backfill_batch(
     max_seconds: float,
     offline: bool = False,
 ) -> dict[str, Any]:
-    """Expose bounded backfill semantics without scheduling a backfill yet.
+    """Reject an unscoped registry invocation instead of returning a no-op.
 
-    WP3 installs the durable cursor/count/error contract only.  A later
-    forward migration owns source inventory and dual-write/backfill activation.
+    The real runner needs both a RuntimeStore transaction boundary and an
+    exact runtime/capability scope.  The generic storage registry deliberately
+    cannot infer either, so callers are directed to the bounded public Runtime
+    backfill API rather than being told a zero-row migration succeeded.
     """
 
     bounded_rows = max(1, min(2_000, int(batch_size)))
     bounded_seconds = max(0.001, min(60.0, float(max_seconds)))
     state = capability_v3_backfill_state(conn)
     return {
-        "ok": True,
+        "ok": False,
         "migration_id": CAPABILITY_V3_BACKFILL_MIGRATION,
         "scheduled": capability_v3_backfill_is_scheduled(conn),
+        "status": "blocked",
+        "reason": "runtime_scoped_capability_v3_backfill_required",
         "processed": 0,
         "batch_size": bounded_rows,
         "max_seconds": bounded_seconds,

@@ -1,0 +1,262 @@
+{
+  "schema_version": "capability_seed_manifest.v1",
+  "manifest_id": "legacy-capability-bootstrap",
+  "version": "v1",
+  "created_at": "2026-08-19T00:00:00+00:00",
+  "manifest_digest": "1df67f02c7632f5a65bb6254072ab4e5f2ebee41ea8b224366f10dde73ead55e",
+  "capabilities": [
+    {
+      "capability_id": "memory.recall",
+      "display_name": "Memory recall",
+      "description": "Retrieve relevant durable context for a bounded request.",
+      "owner": "eimemory",
+      "risk_tier": "bounded_read",
+      "tags": ["memory", "legacy-seed"],
+      "revision": {
+        "revision_id": "memory.recall:v1",
+        "compatibility": "incompatible",
+        "contract": {
+          "input_schema": {"type": "object"},
+          "output_schema": {"type": "object"},
+          "success_invariants": ["outcome_evidence_recorded"],
+          "failure_invariants": ["unavailable_or_unsafe_outcome_recorded"],
+          "evidence_requirements": {"minimum_refs": 1},
+          "dependencies": [],
+          "composition": [],
+          "risk_tier": "bounded_read",
+          "side_effect_class": "none"
+        }
+      }
+    },
+    {
+      "capability_id": "tool.routing",
+      "display_name": "Tool routing",
+      "description": "Select an admissible tool route for a bounded request.",
+      "owner": "eimemory",
+      "risk_tier": "medium",
+      "tags": ["routing", "legacy-seed"],
+      "revision": {
+        "revision_id": "tool.routing:v1",
+        "compatibility": "incompatible",
+        "contract": {
+          "input_schema": {"type": "object"},
+          "output_schema": {"type": "object"},
+          "success_invariants": ["outcome_evidence_recorded"],
+          "failure_invariants": ["unavailable_or_unsafe_outcome_recorded"],
+          "evidence_requirements": {"minimum_refs": 1},
+          "dependencies": [],
+          "composition": [],
+          "risk_tier": "medium",
+          "side_effect_class": "none"
+        }
+      }
+    },
+    {
+      "capability_id": "knowledge.intake",
+      "display_name": "Knowledge intake",
+      "description": "Ingest a bounded knowledge candidate with provenance.",
+      "owner": "eimemory",
+      "risk_tier": "bounded_write",
+      "tags": ["knowledge", "legacy-seed"],
+      "revision": {
+        "revision_id": "knowledge.intake:v1",
+        "compatibility": "incompatible",
+        "contract": {
+          "input_schema": {"type": "object"},
+          "output_schema": {"type": "object"},
+          "success_invariants": ["outcome_evidence_recorded"],
+          "failure_invariants": ["unavailable_or_unsafe_outcome_recorded"],
+          "evidence_requirements": {"minimum_refs": 1},
+          "dependencies": [],
+          "composition": [],
+          "risk_tier": "bounded_write",
+          "side_effect_class": "internal_state"
+        }
+      }
+    },
+    {
+      "capability_id": "proactive.judgment",
+      "display_name": "Proactive judgment",
+      "description": "Form a bounded proactive recommendation from available evidence.",
+      "owner": "eimemory",
+      "risk_tier": "medium",
+      "tags": ["proactive", "legacy-seed"],
+      "revision": {
+        "revision_id": "proactive.judgment:v1",
+        "compatibility": "incompatible",
+        "contract": {
+          "input_schema": {"type": "object"},
+          "output_schema": {"type": "object"},
+          "success_invariants": ["outcome_evidence_recorded"],
+          "failure_invariants": ["unavailable_or_unsafe_outcome_recorded"],
+          "evidence_requirements": {"minimum_refs": 1},
+          "dependencies": [],
+          "composition": [],
+          "risk_tier": "medium",
+          "side_effect_class": "none"
+        }
+      }
+    },
+    {
+      "capability_id": "search.discovery",
+      "display_name": "Search discovery",
+      "description": "Discover candidate information sources for a bounded query.",
+      "owner": "eimemory",
+      "risk_tier": "bounded_read",
+      "tags": ["search", "legacy-seed"],
+      "revision": {
+        "revision_id": "search.discovery:v1",
+        "compatibility": "incompatible",
+        "contract": {
+          "input_schema": {"type": "object"},
+          "output_schema": {"type": "object"},
+          "success_invariants": ["outcome_evidence_recorded"],
+          "failure_invariants": ["unavailable_or_unsafe_outcome_recorded"],
+          "evidence_requirements": {"minimum_refs": 1},
+          "dependencies": [],
+          "composition": [],
+          "risk_tier": "bounded_read",
+          "side_effect_class": "none"
+        }
+      }
+    },
+    {
+      "capability_id": "code.implementation",
+      "display_name": "Code implementation",
+      "description": "Produce a bounded implementation artifact from a declared contract.",
+      "owner": "eimemory",
+      "risk_tier": "bounded_write",
+      "tags": ["code", "legacy-seed"],
+      "revision": {
+        "revision_id": "code.implementation:v1",
+        "compatibility": "incompatible",
+        "contract": {
+          "input_schema": {"type": "object"},
+          "output_schema": {"type": "object"},
+          "success_invariants": ["outcome_evidence_recorded"],
+          "failure_invariants": ["unavailable_or_unsafe_outcome_recorded"],
+          "evidence_requirements": {"minimum_refs": 1},
+          "dependencies": [],
+          "composition": [],
+          "risk_tier": "bounded_write",
+          "side_effect_class": "local_io"
+        }
+      }
+    },
+    {
+      "capability_id": "operations.uumit",
+      "display_name": "Operations UUMIT",
+      "description": "Perform an explicitly bounded operations action with recorded evidence.",
+      "owner": "eimemory",
+      "risk_tier": "high",
+      "tags": ["operations", "legacy-seed"],
+      "revision": {
+        "revision_id": "operations.uumit:v1",
+        "compatibility": "incompatible",
+        "contract": {
+          "input_schema": {"type": "object"},
+          "output_schema": {"type": "object"},
+          "success_invariants": ["outcome_evidence_recorded"],
+          "failure_invariants": ["unavailable_or_unsafe_outcome_recorded"],
+          "evidence_requirements": {"minimum_refs": 1},
+          "dependencies": [],
+          "composition": [],
+          "risk_tier": "high",
+          "side_effect_class": "external_mutation"
+        }
+      }
+    },
+    {
+      "capability_id": "office.daily_task",
+      "display_name": "Office daily task",
+      "description": "Carry out a bounded office task under an explicit contract.",
+      "owner": "eimemory",
+      "risk_tier": "bounded_write",
+      "tags": ["office", "legacy-seed"],
+      "revision": {
+        "revision_id": "office.daily_task:v1",
+        "compatibility": "incompatible",
+        "contract": {
+          "input_schema": {"type": "object"},
+          "output_schema": {"type": "object"},
+          "success_invariants": ["outcome_evidence_recorded"],
+          "failure_invariants": ["unavailable_or_unsafe_outcome_recorded"],
+          "evidence_requirements": {"minimum_refs": 1},
+          "dependencies": [],
+          "composition": [],
+          "risk_tier": "bounded_write",
+          "side_effect_class": "external_mutation"
+        }
+      }
+    },
+    {
+      "capability_id": "device.control",
+      "display_name": "Device control",
+      "description": "Control a device only through a declared bounded operation.",
+      "owner": "eimemory",
+      "risk_tier": "critical",
+      "tags": ["device", "legacy-seed"],
+      "revision": {
+        "revision_id": "device.control:v1",
+        "compatibility": "incompatible",
+        "contract": {
+          "input_schema": {"type": "object"},
+          "output_schema": {"type": "object"},
+          "success_invariants": ["outcome_evidence_recorded"],
+          "failure_invariants": ["unavailable_or_unsafe_outcome_recorded"],
+          "evidence_requirements": {"minimum_refs": 1},
+          "dependencies": [],
+          "composition": [],
+          "risk_tier": "critical",
+          "side_effect_class": "external_mutation"
+        }
+      }
+    },
+    {
+      "capability_id": "research.synthesis",
+      "display_name": "Research synthesis",
+      "description": "Synthesize bounded research evidence into a traceable result.",
+      "owner": "eimemory",
+      "risk_tier": "bounded_read",
+      "tags": ["research", "legacy-seed"],
+      "revision": {
+        "revision_id": "research.synthesis:v1",
+        "compatibility": "incompatible",
+        "contract": {
+          "input_schema": {"type": "object"},
+          "output_schema": {"type": "object"},
+          "success_invariants": ["outcome_evidence_recorded"],
+          "failure_invariants": ["unavailable_or_unsafe_outcome_recorded"],
+          "evidence_requirements": {"minimum_refs": 1},
+          "dependencies": [],
+          "composition": [],
+          "risk_tier": "bounded_read",
+          "side_effect_class": "none"
+        }
+      }
+    },
+    {
+      "capability_id": "safety.boundary",
+      "display_name": "Safety boundary",
+      "description": "Evaluate a bounded request against declared safety boundaries.",
+      "owner": "eimemory",
+      "risk_tier": "high",
+      "tags": ["safety", "legacy-seed"],
+      "revision": {
+        "revision_id": "safety.boundary:v1",
+        "compatibility": "incompatible",
+        "contract": {
+          "input_schema": {"type": "object"},
+          "output_schema": {"type": "object"},
+          "success_invariants": ["outcome_evidence_recorded"],
+          "failure_invariants": ["unavailable_or_unsafe_outcome_recorded"],
+          "evidence_requirements": {"minimum_refs": 1},
+          "dependencies": [],
+          "composition": [],
+          "risk_tier": "high",
+          "side_effect_class": "none"
+        }
+      }
+    }
+  ]
+}

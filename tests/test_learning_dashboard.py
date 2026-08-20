@@ -5,7 +5,7 @@ import pytest
 import eimemory.governance.learning_dashboard as learning_dashboard
 
 from eimemory.api.runtime import Runtime
-from eimemory.governance.capability_seeding import SEEDED_CAPABILITIES, ensure_all_seeded
+from eimemory.governance.capability_seeding import LEGACY_SEEDED_CAPABILITIES, ensure_all_seeded
 from eimemory.governance.learning_dashboard import build_weekly_dashboard
 
 
@@ -13,14 +13,14 @@ def test_capability_seed_is_idempotent_and_dashboard_lists_all_capabilities(tmp_
     runtime = Runtime.create(root=tmp_path)
     scope = {"agent_id": "hongtu"}
 
-    first = ensure_all_seeded(runtime, scope=scope)
-    second = ensure_all_seeded(runtime, scope=scope)
-    report = build_weekly_dashboard(runtime, scope=scope, persist=True)
+    first = ensure_all_seeded(runtime, scope=scope, legacy_compatibility=True)
+    second = ensure_all_seeded(runtime, scope=scope, legacy_compatibility=True)
+    report = build_weekly_dashboard(runtime, scope=scope, persist=True, legacy_compatibility=True)
 
-    assert first["created_count"] == len(SEEDED_CAPABILITIES)
+    assert first["created_count"] == len(LEGACY_SEEDED_CAPABILITIES)
     assert second["created_count"] == 0
     assert report["ok"] is True
-    for capability in SEEDED_CAPABILITIES:
+    for capability in LEGACY_SEEDED_CAPABILITIES:
         assert capability in report["markdown"]
     assert "| Score | Average | Trend |" in report["markdown"]
     assert "- Learned:" in report["markdown"]
@@ -53,7 +53,7 @@ def test_capability_seeding_uses_compact_score_projection(tmp_path, monkeypatch)
     runtime = Runtime.create(root=tmp_path)
     compact_calls: list[dict[str, object]] = []
     try:
-        ensure_all_seeded(runtime, scope={"agent_id": "hongtu"})
+        ensure_all_seeded(runtime, scope={"agent_id": "hongtu"}, legacy_compatibility=True)
         archived_count = runtime.store.sqlite.conn.execute(
             "SELECT COUNT(*) FROM records WHERE kind='capability_score' AND payload_pointer_json!=''"
         ).fetchone()[0]
@@ -77,7 +77,7 @@ def test_capability_seeding_uses_compact_score_projection(tmp_path, monkeypatch)
             "read",
             lambda _pointer: (_ for _ in ()).throw(AssertionError("inline seed payload was hydrated")),
         )
-        report = ensure_all_seeded(runtime, scope={"agent_id": "hongtu"})
+        report = ensure_all_seeded(runtime, scope={"agent_id": "hongtu"}, legacy_compatibility=True)
     finally:
         runtime.close()
 
@@ -98,7 +98,7 @@ def test_capability_seeding_fails_closed_without_compact_projection(tmp_path, mo
         monkeypatch.setattr(runtime.store, "list_capability_scores_compact", None)
         monkeypatch.setattr(runtime.store, "list_records", tracked_full_load)
         with pytest.raises(RuntimeError, match="compact capability-score projection is unavailable"):
-            ensure_all_seeded(runtime, scope={"agent_id": "hongtu"})
+            ensure_all_seeded(runtime, scope={"agent_id": "hongtu"}, legacy_compatibility=True)
     finally:
         runtime.close()
 
@@ -112,6 +112,7 @@ def test_build_weekly_dashboard_writes_output_on_success(tmp_path) -> None:
         scope={"agent_id": "hongtu"},
         output_path=tmp_path / "reports" / "autonomous-learning-dashboard.md",
         persist=False,
+        legacy_compatibility=True,
     )
 
     assert report["ok"] is True
@@ -124,7 +125,12 @@ def test_build_weekly_dashboard_writes_output_on_success(tmp_path) -> None:
 def test_dashboard_defaults_to_daily_autonomy_summary(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
 
-    report = build_weekly_dashboard(runtime, scope={"agent_id": "hongtu"}, persist=False)
+    report = build_weekly_dashboard(
+        runtime,
+        scope={"agent_id": "hongtu"},
+        persist=False,
+        legacy_compatibility=True,
+    )
 
     assert report["report_type"] == "autonomous_learning_daily_dashboard"
     assert report["period_type"] == "daily"
@@ -136,7 +142,13 @@ def test_dashboard_defaults_to_daily_autonomy_summary(tmp_path) -> None:
 def test_dashboard_weekly_flag_preserves_weekly_report_type(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
 
-    report = build_weekly_dashboard(runtime, scope={"agent_id": "hongtu"}, persist=False, weekly=True)
+    report = build_weekly_dashboard(
+        runtime,
+        scope={"agent_id": "hongtu"},
+        persist=False,
+        weekly=True,
+        legacy_compatibility=True,
+    )
 
     assert report["report_type"] == "autonomous_learning_weekly_dashboard"
     assert report["period_type"] == "weekly"
@@ -156,6 +168,7 @@ def test_build_weekly_dashboard_survives_output_write_permission_error(tmp_path,
         scope={"agent_id": "hongtu"},
         output_path=output_path,
         persist=True,
+        legacy_compatibility=True,
     )
 
     assert report["ok"] is True

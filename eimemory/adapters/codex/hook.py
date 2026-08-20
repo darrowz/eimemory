@@ -125,6 +125,113 @@ class CodexHookAdapter:
             return {"continue": True}
         return {"continue": True}
 
+    def advertise_capabilities(
+        self,
+        adapter_context: Mapping[str, Any],
+        *,
+        now: str = "",
+    ) -> dict[str, Any]:
+        """Submit an internal capability advertisement without adding an MCP tool."""
+
+        return self.client.call_or_bypass(
+            "adapter.advertise_capabilities",
+            {
+                "channel": "codex",
+                "scope": self._scope_for_event({}),
+                "adapter_context": dict(adapter_context) if isinstance(adapter_context, Mapping) else {},
+                "now": _bounded_text(now, 128),
+            },
+        )
+
+    def capability_health(
+        self,
+        binding_id: str,
+        *,
+        capability_scope: str = "global",
+        at_time: str = "",
+    ) -> dict[str, Any]:
+        """Read internal advertisement health; this is not a model-facing tool."""
+
+        return self.client.call_or_bypass(
+            "adapter.capability_health",
+            {
+                "channel": "codex",
+                "scope": self._scope_for_event({}),
+                "binding_id": _bounded_text(binding_id, 256),
+                "capability_scope": _bounded_text(capability_scope, 256),
+                "at_time": _bounded_text(at_time, 128),
+            },
+        )
+
+    def normalize_capability_outcome(
+        self,
+        event_name: str,
+        event: Mapping[str, Any] | None,
+        *,
+        capability_scope: str = "global",
+    ) -> dict[str, Any]:
+        """Normalize only an explicitly declared capability outcome envelope."""
+
+        raw_event = dict(event or {})
+        outcome = raw_event.get("capability_outcome")
+        envelope = {"capability_outcome": dict(outcome)} if isinstance(outcome, Mapping) else {}
+        return self.client.call_or_bypass(
+            "adapter.normalize_capability_outcome",
+            {
+                "channel": "codex",
+                "scope": self._scope_for_event(raw_event),
+                "event_type": _bounded_text(event_name, 256),
+                "event": envelope,
+                "capability_scope": _bounded_text(capability_scope, 256),
+            },
+        )
+
+    def record_verified_capability_outcome(
+        self,
+        event_name: str,
+        event: Mapping[str, Any] | None,
+        *,
+        independent_verifier: Mapping[str, Any],
+        environment_fingerprint: Mapping[str, Any],
+        provenance: Mapping[str, Any],
+        capability_scope: str = "global",
+    ) -> dict[str, Any]:
+        """Persist a separately verified host outcome through the private path.
+
+        This is intentionally not an MCP/model tool.  The ordinary adapter
+        bearer may normalize diagnostics, but only the operator-separated
+        Codex attestation client is permitted to turn an outcome into L5 input.
+        """
+
+        if self.attestation_client is None:
+            return {
+                "ok": False,
+                "status": "unclassified",
+                "reason": "independent_attestation_client_unavailable",
+            }
+        raw_event = dict(event or {})
+        outcome = raw_event.get("capability_outcome")
+        envelope = {"capability_outcome": dict(outcome)} if isinstance(outcome, Mapping) else {}
+        return self.attestation_client.call_or_bypass(
+            "adapter.record_verified_capability_outcome",
+            {
+                "channel": "codex",
+                "scope": self._scope_for_event(raw_event),
+                "event_type": _bounded_text(event_name, 256),
+                "event": envelope,
+                "independent_verifier": (
+                    dict(independent_verifier) if isinstance(independent_verifier, Mapping) else {}
+                ),
+                "environment_fingerprint": (
+                    dict(environment_fingerprint)
+                    if isinstance(environment_fingerprint, Mapping)
+                    else {}
+                ),
+                "provenance": dict(provenance) if isinstance(provenance, Mapping) else {},
+                "capability_scope": _bounded_text(capability_scope, 256),
+            },
+        )
+
     def _prefetch(
         self,
         event_name: str,

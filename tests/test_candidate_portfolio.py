@@ -10,20 +10,27 @@ from eimemory.governance.autonomous_learning import (
 )
 
 
+def _enable_local_code_apply(monkeypatch) -> None:
+    monkeypatch.setenv(
+        "EIMEMORY_CODE_AUTOMATION_POLICY_JSON",
+        '{"schema_version":"code_automation_policy.v1","policy_id":"test-local-apply","actions":{"local_apply":true,"commit":false,"deployment":false}}',
+    )
+
+
 def test_candidate_kinds_include_expected_portfolio_types() -> None:
-    assert "tool_route" in choose_candidate_kinds_for_goal({"target_capability": "tool.routing"}, max_candidates=3)
-    assert "memory_rule" in choose_candidate_kinds_for_goal({"target_capability": "memory.recall"}, max_candidates=3)
-    assert "code_patch" in choose_candidate_kinds_for_goal({"target_capability": "code.implementation"}, max_candidates=3)
-    assert "skill_draft" in choose_candidate_kinds_for_goal({"target_capability": "skill.draft"}, max_candidates=3)
-    assert "source_policy" in choose_candidate_kinds_for_goal({"target_capability": "knowledge.source", "goal_type": "research"}, max_candidates=3)
-    assert "eval_case" in choose_candidate_kinds_for_goal({"target_capability": "tool.routing"}, max_candidates=3)
+    assert "tool_route" in choose_candidate_kinds_for_goal({"target_capability": "tool.routing"}, max_candidates=3, legacy_compatibility=True)
+    assert "memory_rule" in choose_candidate_kinds_for_goal({"target_capability": "memory.recall"}, max_candidates=3, legacy_compatibility=True)
+    assert "code_patch" in choose_candidate_kinds_for_goal({"target_capability": "code.implementation"}, max_candidates=3, legacy_compatibility=True)
+    assert "skill_draft" in choose_candidate_kinds_for_goal({"target_capability": "skill.draft"}, max_candidates=3, legacy_compatibility=True)
+    assert "source_policy" in choose_candidate_kinds_for_goal({"target_capability": "knowledge.source", "goal_type": "research"}, max_candidates=3, legacy_compatibility=True)
+    assert "eval_case" in choose_candidate_kinds_for_goal({"target_capability": "tool.routing"}, max_candidates=3, legacy_compatibility=True)
 
 
 def test_candidate_kind_compatibility_with_legacy_single_selector() -> None:
     goal = {"target_capability": "tool.routing", "goal_type": "maintenance"}
-    portfolio = choose_candidate_kinds_for_goal(goal, max_candidates=2)
+    portfolio = choose_candidate_kinds_for_goal(goal, max_candidates=2, legacy_compatibility=True)
 
-    assert _candidate_kind_for_goal(goal) == portfolio[0]
+    assert _candidate_kind_for_goal(goal, legacy_compatibility=True) == portfolio[0]
 
 
 def test_candidate_patch_shapes_differ_by_candidate_kind() -> None:
@@ -86,7 +93,8 @@ def test_all_actionable_candidate_patches_have_trigger_action_verification_and_r
         assert patch["rollback"]
 
 
-def test_missing_code_proposer_is_explicitly_blocked_without_sop_fallback() -> None:
+def test_missing_code_proposer_is_explicitly_blocked_without_sop_fallback(monkeypatch) -> None:
+    _enable_local_code_apply(monkeypatch)
     kind, patch = _resolved_candidate_kind_and_patch(
         {
             "target_capability": "code.implementation",
@@ -97,6 +105,7 @@ def test_missing_code_proposer_is_explicitly_blocked_without_sop_fallback() -> N
         [],
         candidate_kind="code_patch",
         replay_dataset={"cases": []},
+        legacy_compatibility=True,
     )
 
     assert kind == "code_patch"
@@ -106,7 +115,8 @@ def test_missing_code_proposer_is_explicitly_blocked_without_sop_fallback() -> N
     assert "code_proposer_unavailable" in patch["blocked_reasons"]
 
 
-def test_empty_code_patch_is_retained_as_blocked_code_candidate() -> None:
+def test_empty_code_patch_is_retained_as_blocked_code_candidate(monkeypatch) -> None:
+    _enable_local_code_apply(monkeypatch)
     goal = {
         "target_capability": "code.implementation",
         "question": "Fix the broken implementation path without guessing.",
@@ -119,6 +129,7 @@ def test_empty_code_patch_is_retained_as_blocked_code_candidate() -> None:
         [],
         candidate_kind="code_patch",
         replay_dataset={"cases": [{"case_id": "case-empty-patch", "query": "fix code"}]},
+        legacy_compatibility=True,
     )
 
     assert kind == "code_patch"
@@ -127,7 +138,8 @@ def test_empty_code_patch_is_retained_as_blocked_code_candidate() -> None:
     assert patch["file_updates"] == []
 
 
-def test_code_goal_uses_injected_proposer_to_emit_reviewable_diff(tmp_path) -> None:
+def test_code_goal_uses_injected_proposer_to_emit_reviewable_diff(tmp_path, monkeypatch) -> None:
+    _enable_local_code_apply(monkeypatch)
     runtime = Runtime.create(root=tmp_path / "runtime")
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -154,12 +166,15 @@ def test_code_goal_uses_injected_proposer_to_emit_reviewable_diff(tmp_path) -> N
             replay_dataset={"cases": [{"case_id": "code-case-1", "query": "repair module"}]},
             runtime=runtime,
             scope={"agent_id": "tests"},
+            legacy_compatibility=True,
         )
 
         assert kind == "code_patch"
         assert patch["proposal_status"] == "proposal_ready"
-        assert patch["requires_human_approval"] is False
-        assert patch["approval_status"] == "not_required"
+        assert patch["authorization_mode"] == "machine_gated"
+        assert patch["machine_policy_status"] == "authorized"
+        assert "requires_human_approval" not in patch
+        assert "approval_status" not in patch
         assert patch["file_updates"] == [{"path": "module.py", "content": "VALUE = 'new'\n"}]
         assert "-VALUE = 'old'" in patch["unified_diff"]
         assert "+VALUE = 'new'" in patch["unified_diff"]
@@ -180,7 +195,13 @@ def test_candidate_specs_cover_diverse_capability_goals() -> None:
         {"target_capability": "proactive.judgment", "title": "Improve proactive judgment", "goal_type": "capability_gap"},
     ]
 
-    specs = _candidate_specs_for_goals(goals, max_goals=5, max_candidates_per_goal=1, replay_dataset={})
+    specs = _candidate_specs_for_goals(
+        goals,
+        max_goals=5,
+        max_candidates_per_goal=1,
+        replay_dataset={},
+        legacy_compatibility=True,
+    )
     capabilities = [spec["target_capability"] for spec in specs]
     targets = {spec["promotion_target"] for spec in specs}
 

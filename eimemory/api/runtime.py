@@ -24,6 +24,13 @@ from eimemory.knowledge.projectors import project_operational_knowledge
 from eimemory.knowledge.refresh import refresh_knowledge_pages
 from eimemory.knowledge.synthesis import build_research_digest, digest_to_record
 from eimemory.config.defaults import default_root
+from eimemory.evaluation.application_catalog_bootstrap import (
+    bootstrap_installed_application_catalog,
+)
+from eimemory.evaluation.capability_catalog import (
+    CapabilityEvaluationCatalog,
+    CatalogResolutionError,
+)
 from eimemory.models.records import RecordEnvelope, ScopeRef, TimeRef
 from eimemory.raw.store import RawEvidenceAPI
 from eimemory.retrieval.contracts import CandidateSource, RecallEngine
@@ -79,6 +86,22 @@ class Runtime:
             candidate_source=candidate_source,
             recall_engine=recall_engine,
         )
+        # Dynamic capability registration and Profile expansion are opt-in
+        # runtime services.  Construction never seeds a fixed taxonomy or
+        # mutates the control plane merely because a Runtime is opened.
+        from eimemory.capabilities.service import CapabilityService
+
+        self.capabilities = CapabilityService(store)
+        # Installed application code is the only authority allowed to install
+        # a dynamic evaluation catalog.  Its absence is intentional and
+        # leaves dynamic paths fail-closed; a malformed installed catalog must
+        # not make the ordinary runtime unavailable.
+        self.capability_catalog: CapabilityEvaluationCatalog | None = None
+        self.catalog_bootstrap_error = ""
+        try:
+            self.capability_catalog = bootstrap_installed_application_catalog()
+        except CatalogResolutionError as exc:
+            self.catalog_bootstrap_error = str(exc)
         from eimemory.retrieval.proactive import ProactiveRecallService
 
         self.proactive = ProactiveRecallService(self)
@@ -534,7 +557,10 @@ class Runtime:
         apply: bool = False,
         max_apply: int = 3,
         web_hypotheses: list[dict] | None = None,
+        opportunities: list[dict] | None = None,
+        mine_events: bool = True,
         persist_report: bool = False,
+        legacy_compatibility: bool = False,
     ) -> dict:
         from eimemory.governance.autonomous_evolution import run_autonomous_evolution
 
@@ -544,7 +570,10 @@ class Runtime:
             apply=apply,
             max_apply=max_apply,
             web_hypotheses=web_hypotheses,
+            opportunities=opportunities,
+            mine_events=mine_events,
             persist_report=persist_report,
+            legacy_compatibility=legacy_compatibility,
         )
 
     def run_autonomous_learning_cycle(
@@ -558,6 +587,12 @@ class Runtime:
         max_goals: int = 3,
         max_promotions: int | None = None,
         allow_network: bool | None = None,
+        profile_key: str = "",
+        capability_scope: str = "global",
+        runtime_scope: dict | ScopeRef | None = None,
+        at_time: str = "",
+        catalog: CapabilityEvaluationCatalog | None = None,
+        legacy_compatibility: bool = False,
     ) -> dict:
         from eimemory.governance.autonomous_learning import run_autonomous_learning_cycle
 
@@ -571,6 +606,12 @@ class Runtime:
             max_goals=max_goals,
             max_promotions=max_promotions,
             allow_network=allow_network,
+            profile_key=profile_key,
+            capability_scope=capability_scope,
+            runtime_scope=runtime_scope,
+            at_time=at_time,
+            catalog=self.capability_catalog if catalog is None else catalog,
+            legacy_compatibility=legacy_compatibility,
         )
 
     def run_isolated_evaluator_harness(
@@ -646,6 +687,8 @@ class Runtime:
         since: str | None = None,
         until: str | None = None,
         attribute_outcomes: bool = False,
+        ensure_seeded: bool = False,
+        legacy_compatibility: bool = False,
     ) -> dict:
         from eimemory.governance.capability_ledger import build_capability_ledger
 
@@ -656,6 +699,8 @@ class Runtime:
             since=since,
             until=until,
             attribute_outcomes=attribute_outcomes,
+            ensure_seeded=ensure_seeded,
+            legacy_compatibility=legacy_compatibility,
         )
 
     def build_autonomy_goal_queue(
@@ -665,6 +710,11 @@ class Runtime:
         max_goals: int = 3,
         persist: bool = False,
         capabilities: list[str] | None = None,
+        capability_scope: str = "global",
+        profile_key: str = "",
+        catalog: Any | None = None,
+        at_time: str = "",
+        legacy_compatibility: bool = False,
     ) -> dict:
         from eimemory.governance.autonomy_goal_queue import build_autonomy_goal_queue
 
@@ -674,6 +724,11 @@ class Runtime:
             max_goals=max_goals,
             persist=persist,
             capabilities=capabilities,
+            capability_scope=capability_scope,
+            profile_key=profile_key,
+            catalog=self.capability_catalog if catalog is None else catalog,
+            at_time=at_time,
+            legacy_compatibility=legacy_compatibility,
         )
 
     def build_goal_graph_loop(
@@ -684,6 +739,11 @@ class Runtime:
         persist: bool = False,
         capabilities: list[str] | None = None,
         loop_id: str = "goal_graph_1_6_9",
+        capability_scope: str = "global",
+        profile_key: str = "",
+        catalog: Any | None = None,
+        at_time: str = "",
+        legacy_compatibility: bool = False,
     ) -> dict:
         from eimemory.governance.goal_graph import build_goal_graph_loop
 
@@ -694,6 +754,11 @@ class Runtime:
             persist=persist,
             capabilities=capabilities,
             loop_id=loop_id,
+            capability_scope=capability_scope,
+            profile_key=profile_key,
+            catalog=self.capability_catalog if catalog is None else catalog,
+            at_time=at_time,
+            legacy_compatibility=legacy_compatibility,
         )
 
     def observe_goal_graph_node(
@@ -803,10 +868,26 @@ class Runtime:
         persist: bool = False,
         loop_id: str = "l5_world_model",
         limit: int = 500,
+        capability_scope: str = "global",
+        profile_key: str = "",
+        catalog: Any = None,
+        at_time: str = "",
+        legacy_compatibility: bool = False,
     ) -> dict:
         from eimemory.governance.l5_loop import build_world_model
 
-        return build_world_model(self, scope=scope, persist=persist, loop_id=loop_id, limit=limit)
+        return build_world_model(
+            self,
+            scope=scope,
+            persist=persist,
+            loop_id=loop_id,
+            limit=limit,
+            capability_scope=capability_scope,
+            profile_key=profile_key,
+            catalog=self.capability_catalog if catalog is None else catalog,
+            at_time=at_time,
+            legacy_compatibility=legacy_compatibility,
+        )
 
     def build_strategic_roadmap(
         self,
@@ -816,6 +897,11 @@ class Runtime:
         horizon_days: int = 180,
         persist: bool = False,
         loop_id: str = "l5_roadmap",
+        capability_scope: str = "global",
+        profile_key: str = "",
+        catalog: Any = None,
+        at_time: str = "",
+        legacy_compatibility: bool = False,
     ) -> dict:
         from eimemory.governance.l5_loop import build_strategic_roadmap
 
@@ -826,6 +912,11 @@ class Runtime:
             horizon_days=horizon_days,
             persist=persist,
             loop_id=loop_id,
+            capability_scope=capability_scope,
+            profile_key=profile_key,
+            catalog=self.capability_catalog if catalog is None else catalog,
+            at_time=at_time,
+            legacy_compatibility=legacy_compatibility,
         )
 
     def run_l5_cycle(
@@ -842,6 +933,11 @@ class Runtime:
         autonomous_learning_report: dict | None = None,
         prompt_safety_executor: Any = None,
         prompt_safety_prompt: str = "",
+        capability_scope: str = "global",
+        profile_key: str = "",
+        catalog: Any = None,
+        at_time: str = "",
+        legacy_compatibility: bool = False,
     ) -> dict:
         from eimemory.governance.l5_loop import run_l5_cycle
 
@@ -858,6 +954,11 @@ class Runtime:
             autonomous_learning_report=autonomous_learning_report,
             prompt_safety_executor=prompt_safety_executor,
             prompt_safety_prompt=prompt_safety_prompt,
+            capability_scope=capability_scope,
+            profile_key=profile_key,
+            catalog=self.capability_catalog if catalog is None else catalog,
+            at_time=at_time,
+            legacy_compatibility=legacy_compatibility,
         )
 
     def assess_l5_closed_loop(
@@ -880,16 +981,314 @@ class Runtime:
         limit: int = 500,
         loop_id: str = "l5_readiness",
         repo_root: str = "/dev-project/eimemory",
+        reader_mode: str = "",
+        profile_key: str = "",
+        capability_scope: str = "global",
+        runtime_scope: ScopeRef | dict | None = None,
+        at_time: str = "",
+        catalog: Any | None = None,
     ) -> dict:
-        from eimemory.governance.l5_readiness import build_l5_readiness_report
+        """Read L5 through the reversible legacy/shadow/v3 policy seam.
 
-        return build_l5_readiness_report(
+        ``catalog`` is caller-owned trusted evaluation authority.  This façade
+        does not synthesize a default catalog or turn a release/machine value
+        into one; the selected reader decides whether that explicit authority
+        is relevant to its path.
+        """
+
+        from eimemory.governance.l5_reader import build_l5_effective_report
+
+        return build_l5_effective_report(
             self,
             scope=scope,
             persist=persist,
             limit=limit,
             loop_id=loop_id,
             repo_root=repo_root,
+            reader_mode=reader_mode,
+            profile_key=profile_key,
+            capability_scope=capability_scope,
+            runtime_scope=runtime_scope,
+            at_time=at_time,
+            catalog=self.capability_catalog if catalog is None else catalog,
+        )
+
+    def build_l5_assessment_v3(
+        self,
+        *,
+        profile_key: str,
+        scope: dict | ScopeRef | None = None,
+        capability_scope: str = "global",
+        persist: bool = False,
+        at_time: str = "",
+        max_candidates: int = 100,
+        observation_limit: int = 500,
+    ) -> dict:
+        """Build the dynamic four-axis L5 assessment without altering v2."""
+
+        from eimemory.governance.l5_assessment_v3 import build_l5_assessment_v3
+
+        return build_l5_assessment_v3(
+            self,
+            profile_key=profile_key,
+            scope=scope if scope is not None else ScopeRef(),
+            capability_scope=capability_scope,
+            persist=persist,
+            at_time=at_time,
+            max_candidates=max_candidates,
+            observation_limit=observation_limit,
+        )
+
+    def build_l5_v3_shadow(
+        self,
+        *,
+        profile_key: str,
+        scope: dict | ScopeRef | None = None,
+        capability_scope: str = "global",
+        persist: bool = False,
+        at_time: str = "",
+        max_candidates: int = 100,
+        observation_limit: int = 500,
+        repo_root: str = "/dev-project/eimemory",
+    ) -> dict:
+        """Compare legacy L5 with dynamic L5 v3 without promoting either."""
+
+        from eimemory.governance.l5_shadow import build_l5_v3_shadow
+
+        return build_l5_v3_shadow(
+            self,
+            profile_key=profile_key,
+            scope=scope if scope is not None else ScopeRef(),
+            capability_scope=capability_scope,
+            persist=persist,
+            at_time=at_time,
+            max_candidates=max_candidates,
+            observation_limit=observation_limit,
+            repo_root=repo_root,
+        )
+
+    def reconcile_l5_v3(
+        self,
+        *,
+        profile_key: str,
+        scopes: list[dict | ScopeRef],
+        capability_scope: str = "global",
+        persist: bool = False,
+        max_scopes: int = 32,
+        at_time: str = "",
+        max_candidates: int = 100,
+        observation_limit: int = 500,
+        repo_root: str = "/dev-project/eimemory",
+    ) -> dict:
+        """Classify bounded legacy/v3 shadow differences without a cutover."""
+
+        from eimemory.governance.l5_v3_reconcile import reconcile_l5_v3
+
+        return reconcile_l5_v3(
+            self,
+            profile_key=profile_key,
+            scopes=scopes,
+            capability_scope=capability_scope,
+            persist=persist,
+            max_scopes=max_scopes,
+            at_time=at_time,
+            max_candidates=max_candidates,
+            observation_limit=observation_limit,
+            repo_root=repo_root,
+        )
+
+    def build_dynamic_capability_evolution_plan(
+        self,
+        *,
+        profile_key: str,
+        scope: dict | ScopeRef | None = None,
+        capability_scope: str = "global",
+        catalog: Any | None = None,
+        max_candidates: int = 100,
+        observation_limit: int = 500,
+    ) -> dict:
+        """Return machine-actionable capability gaps without writing state."""
+
+        from eimemory.governance.dynamic_capability_evolution import (
+            build_dynamic_capability_evolution_plan,
+        )
+
+        return build_dynamic_capability_evolution_plan(
+            self,
+            profile_key=profile_key,
+            runtime_scope=scope if scope is not None else ScopeRef(),
+            capability_scope=capability_scope,
+            catalog=self.capability_catalog if catalog is None else catalog,
+            max_candidates=max_candidates,
+            observation_limit=observation_limit,
+        )
+
+    def execute_dynamic_capability_evolution(
+        self,
+        *,
+        profile_key: str,
+        independent_evidence: dict[str, dict] | None = None,
+        scope: dict | ScopeRef | None = None,
+        capability_scope: str = "global",
+        catalog: Any | None = None,
+        candidate_opportunities: dict[str, dict] | None = None,
+        auto_collect_independent_evidence: bool = True,
+        auto_propose_code_patch: bool = True,
+        apply: bool = True,
+        max_apply: int = 1,
+        max_candidates: int = 100,
+        observation_limit: int = 500,
+    ) -> dict:
+        """Execute bounded dynamic work under machine policy.
+
+        Missing evidence is collected only through the exact deterministic
+        catalog/profile path; caller-supplied evidence remains subject to the
+        same durable trace validation.
+        """
+
+        from eimemory.governance.dynamic_capability_evolution import (
+            execute_dynamic_capability_evolution,
+        )
+
+        return execute_dynamic_capability_evolution(
+            self,
+            profile_key=profile_key,
+            runtime_scope=scope if scope is not None else ScopeRef(),
+            independent_evidence=independent_evidence,
+            auto_collect_independent_evidence=auto_collect_independent_evidence,
+            auto_propose_code_patch=auto_propose_code_patch,
+            capability_scope=capability_scope,
+            catalog=self.capability_catalog if catalog is None else catalog,
+            candidate_opportunities=candidate_opportunities,
+            apply=apply,
+            max_apply=max_apply,
+            max_candidates=max_candidates,
+            observation_limit=observation_limit,
+        )
+
+    def load_code_automation_policy(
+        self,
+        *,
+        profile_key: str = "",
+        capability_id: str = "",
+        capability_revision_id: str = "",
+        capability_scope: str = "",
+        provider_binding_id: str = "",
+    ) -> dict:
+        """Read the deployment-controlled authority for code side effects.
+
+        This facade intentionally has no payload argument: proposals and
+        callers may supply only match coordinates, never a policy grant.
+        """
+
+        from eimemory.governance.code_automation_policy import load_code_automation_policy
+
+        return load_code_automation_policy(
+            profile_key=profile_key,
+            capability_id=capability_id,
+            capability_revision_id=capability_revision_id,
+            capability_scope=capability_scope,
+            provider_binding_id=provider_binding_id,
+        )
+
+    def collect_dynamic_capability_independent_evidence(
+        self,
+        *,
+        profile_key: str,
+        scope: dict | ScopeRef | None = None,
+        capability_scope: str = "global",
+        catalog: Any | None = None,
+        max_candidates: int = 100,
+        observation_limit: int = 500,
+        work_item_ids: list[str] | tuple[str, ...] | None = None,
+    ) -> dict:
+        """Persist exact catalog evidence for bounded live L5 plan items."""
+
+        from eimemory.governance.dynamic_capability_evolution import (
+            collect_dynamic_capability_independent_evidence,
+        )
+
+        return collect_dynamic_capability_independent_evidence(
+            self,
+            profile_key=profile_key,
+            runtime_scope=scope if scope is not None else ScopeRef(),
+            capability_scope=capability_scope,
+            catalog=self.capability_catalog if catalog is None else catalog,
+            max_candidates=max_candidates,
+            observation_limit=observation_limit,
+            work_item_ids=work_item_ids,
+        )
+
+    def run_capability_v3_backfill_batch(
+        self,
+        *,
+        scope: dict | ScopeRef | None = None,
+        capability_scope: str = "global",
+        batch_size: int = 200,
+        max_seconds: float = 10.0,
+        raise_on_error: bool = False,
+    ) -> dict:
+        """Explicitly run one bounded, restart-safe L5 v3 entity-graph batch.
+
+        The runner reconstructs only structurally verified ``capability.audit.v1``
+        entities in dependency order, then performs the legacy explicit
+        observation compatibility pass.  The returned envelope always carries
+        a terminal/running/blocked/failed state by default.  Set
+        ``raise_on_error`` only for callers that need a Python exception after
+        the durable failure checkpoint was recorded.
+        """
+
+        from eimemory.storage.migrations.backfill_capability_v3 import (
+            run_capability_v3_backfill_batch,
+        )
+
+        return run_capability_v3_backfill_batch(
+            self,
+            runtime_scope=scope if scope is not None else ScopeRef(),
+            capability_scope=capability_scope,
+            batch_size=batch_size,
+            max_seconds=max_seconds,
+            raise_on_error=raise_on_error,
+        )
+
+    def capability_v3_backfill_status(
+        self,
+        *,
+        scope: dict | ScopeRef | None = None,
+        capability_scope: str = "global",
+    ) -> dict:
+        """Read the exact scoped L5 v3 backfill cursor without changing it."""
+
+        from eimemory.storage.migrations.backfill_capability_v3 import (
+            capability_v3_backfill_status,
+        )
+
+        return capability_v3_backfill_status(
+            self,
+            runtime_scope=scope if scope is not None else ScopeRef(),
+            capability_scope=capability_scope,
+        )
+
+    def inspect_capability_v3_dual_write(
+        self,
+        *,
+        scope: dict | ScopeRef | None = None,
+        capability_scope: str = "global",
+        limit: int = 200,
+        cursor: str = "",
+    ) -> dict:
+        """Read one bounded raw-outcome/v3-observation parity page."""
+
+        from eimemory.storage.migrations.backfill_capability_v3 import (
+            inspect_capability_v3_dual_write,
+        )
+
+        return inspect_capability_v3_dual_write(
+            self,
+            runtime_scope=scope if scope is not None else ScopeRef(),
+            capability_scope=capability_scope,
+            limit=limit,
+            cursor=cursor,
         )
 
     def run_l5_closure_rehearsal(
@@ -902,6 +1301,12 @@ class Runtime:
         release_identity: Any | None = None,
         release_lineage_finalizer: Any | None = None,
         repo_root: str = "/dev-project/eimemory",
+        profile_key: str = "",
+        capability_scope: str = "global",
+        runtime_scope: ScopeRef | dict | None = None,
+        at_time: str = "",
+        legacy_compatibility: bool = False,
+        correction_capability_id: str = "",
     ) -> dict:
         from eimemory.governance.closure_rehearsal import run_l5_closure_rehearsal
 
@@ -914,6 +1319,12 @@ class Runtime:
             release_identity=release_identity,
             release_lineage_finalizer=release_lineage_finalizer,
             repo_root=repo_root,
+            profile_key=profile_key,
+            capability_scope=capability_scope,
+            runtime_scope=runtime_scope,
+            at_time=at_time,
+            legacy_compatibility=legacy_compatibility,
+            correction_capability_id=correction_capability_id,
         )
 
     def run_weak_capability_replay_gate(
@@ -940,6 +1351,9 @@ class Runtime:
         current_link: str,
         health_url: str,
         prior_commit: str = "",
+        l5_reader_mode: str = "v3",
+        profile_key: str = "",
+        capability_scope: str = "global",
     ) -> dict:
         from eimemory.governance.live_task_acceptance import run_live_task_acceptance
 
@@ -950,6 +1364,9 @@ class Runtime:
             current_link=current_link,
             health_url=health_url,
             prior_commit=prior_commit,
+            l5_reader_mode=l5_reader_mode,
+            profile_key=profile_key,
+            capability_scope=capability_scope,
         )
 
     def run_release_closure(
@@ -993,6 +1410,13 @@ class Runtime:
         persist: bool = True,
         execution_id: str = "",
         case_ids: list[str] | tuple[str, ...] | None = None,
+        catalog: Any | None = None,
+        profile_key: str = "",
+        capability_scope: str = "global",
+        runtime_scope: ScopeRef | dict | None = None,
+        at_time: str = "",
+        legacy_compatibility: bool = False,
+        hypothesis_context_by_case: dict[str, dict] | None = None,
     ) -> dict:
         from eimemory.governance.capability_acceptance import run_capability_acceptance
 
@@ -1002,6 +1426,13 @@ class Runtime:
             persist=persist,
             execution_id=execution_id,
             case_ids=case_ids,
+            catalog=self.capability_catalog if catalog is None else catalog,
+            profile_key=profile_key,
+            capability_scope=capability_scope,
+            runtime_scope=runtime_scope,
+            at_time=at_time,
+            legacy_compatibility=legacy_compatibility,
+            hypothesis_context_by_case=hypothesis_context_by_case,
         )
 
     def build_capability_replay_packs(
@@ -1013,6 +1444,12 @@ class Runtime:
         loop_id: str = "capability_replay_1_6_9",
         acceptance_execution_id: str = "",
         acceptance_probe_ids_by_case: dict[str, str] | None = None,
+        catalog: Any | None = None,
+        profile_key: str = "",
+        capability_scope: str = "global",
+        runtime_scope: ScopeRef | dict | None = None,
+        at_time: str = "",
+        legacy_compatibility: bool = False,
     ) -> dict:
         from eimemory.governance.capability_replay_packs import build_capability_replay_packs
 
@@ -1024,12 +1461,35 @@ class Runtime:
             loop_id=loop_id,
             acceptance_execution_id=acceptance_execution_id,
             acceptance_probe_ids_by_case=acceptance_probe_ids_by_case,
+            catalog=self.capability_catalog if catalog is None else catalog,
+            profile_key=profile_key,
+            capability_scope=capability_scope,
+            runtime_scope=runtime_scope,
+            at_time=at_time,
+            legacy_compatibility=legacy_compatibility,
         )
 
-    def run_capability_replay_case(self, case: dict) -> dict:
+    def run_capability_replay_case(
+        self,
+        case: dict,
+        *,
+        catalog: Any | None = None,
+        legacy_compatibility: bool = False,
+    ) -> dict:
+        """Execute one replay case with an explicit evaluation authority.
+
+        Dynamic cases deliberately do not fall back to a process-global or
+        legacy catalog.  Callers that need retired fixtures must opt into the
+        bounded compatibility path explicitly.
+        """
         from eimemory.governance.capability_replay_executor import execute_capability_replay_case
 
-        return execute_capability_replay_case(self, case)
+        return execute_capability_replay_case(
+            self,
+            case,
+            catalog=self.capability_catalog if catalog is None else catalog,
+            legacy_compatibility=legacy_compatibility,
+        )
 
     def run_safety_boundary_replay(
         self,
@@ -1126,6 +1586,8 @@ class Runtime:
         repo_root: str,
         current_release: Any,
         gate_evidence: dict[str, list[str]] | None = None,
+        catalog: Any | None = None,
+        legacy_compatibility: bool = False,
     ) -> dict:
         from eimemory.governance.release_lineage import record_release_lineage
 
@@ -1135,6 +1597,8 @@ class Runtime:
             repo_root=repo_root,
             current_release=current_release,
             gate_evidence=gate_evidence,
+            catalog=self.capability_catalog if catalog is None else catalog,
+            legacy_compatibility=legacy_compatibility,
         )
 
     def record_openclaw_channel_acceptance(
@@ -1171,6 +1635,8 @@ class Runtime:
         scope: dict | None = None,
         current_release: Any,
         repo_root: str = "/dev-project/eimemory",
+        catalog: Any | None = None,
+        legacy_compatibility: bool = False,
     ) -> dict:
         from eimemory.governance.release_lineage import current_release_lineage
 
@@ -1179,14 +1645,83 @@ class Runtime:
             scope=scope,
             current_release=current_release,
             repo_root=repo_root,
+            catalog=self.capability_catalog if catalog is None else catalog,
+            legacy_compatibility=legacy_compatibility,
         )
 
-    def ensure_capability_seeded(self, *, scope: dict | None = None) -> dict:
+    def ensure_capability_seeded(
+        self,
+        *,
+        scope: dict | None = None,
+        legacy_compatibility: bool = False,
+    ) -> dict:
+        """Materialize retired score seeds only through explicit legacy mode."""
+
+        if not legacy_compatibility:
+            return {
+                "ok": False,
+                "status": "blocked",
+                "reason": "legacy_compatibility_required_for_retired_capability_seed",
+                "legacy_compatibility": False,
+                "seeded_capabilities": [],
+                "created_count": 0,
+                "created_record_ids": [],
+            }
         from eimemory.governance.capability_seeding import ensure_all_seeded
 
-        return ensure_all_seeded(self, scope=scope)
+        return ensure_all_seeded(self, scope=scope, legacy_compatibility=True)
 
-    def generate_learning_thoughts(self, *, scope: dict | None = None, persist: bool = True, max_items: int = 20) -> dict:
+    def ensure_default_l5_profile(
+        self,
+        *,
+        scope: dict | ScopeRef | None = None,
+        capability_scope: str = "global",
+        request_key: str = "",
+    ) -> dict:
+        """Explicitly bootstrap the generic L5 Profile, never at init time."""
+
+        from eimemory.capabilities.profile_bootstrap import ensure_default_l5_profile
+
+        receipt = ensure_default_l5_profile(
+            self,
+            runtime_scope=scope if scope is not None else ScopeRef(),
+            capability_scope=capability_scope,
+            request_key=request_key,
+        )
+        return receipt.to_dict()
+
+    def apply_capability_seed_manifest(
+        self,
+        *,
+        scope: dict | ScopeRef | None = None,
+        capability_scope: str = "global",
+        manifest: Any | None = None,
+    ) -> dict:
+        """Explicitly apply a validated capability seed manifest.
+
+        Runtime construction never calls this.  A supplied manifest remains
+        declarative and is revalidated by the capability service before any
+        registry mutation is attempted.
+        """
+
+        result = self.capabilities.apply_seed_manifest(
+            runtime_scope=scope if scope is not None else ScopeRef(),
+            capability_scope=capability_scope,
+            manifest=manifest,
+        )
+        return result.to_dict()
+
+    def generate_learning_thoughts(
+        self,
+        *,
+        scope: dict | None = None,
+        persist: bool = True,
+        max_items: int = 20,
+        profile_key: str = "",
+        capability_scope: str = "global",
+        at_time: str = "",
+        legacy_compatibility: bool = False,
+    ) -> dict:
         from eimemory.governance.goal_registry import load_goal_registry
         from eimemory.governance.self_model import build_self_model
         from eimemory.governance.signal_intake import rank_learning_signals
@@ -1199,10 +1734,29 @@ class Runtime:
         if not started_tracing:
             tracemalloc.start()
         try:
-            watch_report = collect_world_signals(self, scope=scope, watches=default_watches(), dry_run=True, loop_id="think")
-            self_model = build_self_model(self, scope=scope, persist=persist, loop_id="think")
+            watch_report = collect_world_signals(
+                self,
+                scope=scope,
+                watches=default_watches(),
+                dry_run=True,
+                loop_id="think",
+                profile_key=profile_key,
+                capability_scope=capability_scope,
+                at_time=at_time,
+                legacy_compatibility=legacy_compatibility,
+            )
+            self_model = build_self_model(
+                self,
+                scope=scope,
+                persist=persist,
+                loop_id="think",
+                profile_key=profile_key,
+                capability_scope=capability_scope,
+                at_time=at_time,
+                legacy_compatibility=legacy_compatibility,
+            )
             ranked = rank_learning_signals(watch_report.get("signals") or [], self_model, [], max_items=max_items)
-            registry = load_goal_registry()
+            registry = load_goal_registry(legacy_compatibility=legacy_compatibility)
             report = generate_thoughts(
                 self,
                 signals=ranked,
@@ -1212,6 +1766,10 @@ class Runtime:
                 loop_id="think",
                 persist=persist,
                 max_items=max_items,
+                profile_key=profile_key,
+                capability_scope=capability_scope,
+                at_time=at_time,
+                legacy_compatibility=legacy_compatibility,
             )
             summary = supervisor_summary(
                 command="learn-think",
@@ -1249,6 +1807,12 @@ class Runtime:
         limit: int = 50,
         persist: bool = True,
         include_built_in_regressions: bool = False,
+        capability_scope: str = "global",
+        profile_key: str = "",
+        catalog: Any | None = None,
+        at_time: str = "",
+        include_catalog_cases: bool | None = None,
+        legacy_compatibility: bool = False,
     ) -> dict:
         from eimemory.governance.replay_dataset import build_replay_dataset
 
@@ -1259,6 +1823,12 @@ class Runtime:
             persist=persist,
             loop_id="cli",
             include_built_in_regressions=include_built_in_regressions,
+            capability_scope=capability_scope,
+            profile_key=profile_key,
+            catalog=self.capability_catalog if catalog is None else catalog,
+            at_time=at_time,
+            include_catalog_cases=include_catalog_cases,
+            legacy_compatibility=legacy_compatibility,
         )
 
     def build_learning_dashboard(
@@ -1269,10 +1839,25 @@ class Runtime:
         persist: bool = True,
         output_path: str | None = None,
         weekly: bool = False,
+        profile_key: str = "",
+        capability_scope: str = "global",
+        at_time: str = "",
+        legacy_compatibility: bool = False,
     ) -> dict:
         from eimemory.governance.learning_dashboard import build_weekly_dashboard
 
-        return build_weekly_dashboard(self, scope=scope, week_start=week_start, persist=persist, output_path=output_path, weekly=weekly)
+        return build_weekly_dashboard(
+            self,
+            scope=scope,
+            week_start=week_start,
+            persist=persist,
+            output_path=output_path,
+            weekly=weekly,
+            profile_key=profile_key,
+            capability_scope=capability_scope,
+            at_time=at_time,
+            legacy_compatibility=legacy_compatibility,
+        )
 
     def compact_learning_records(self, *, scope: dict | None = None, dry_run: bool = True) -> dict:
         from eimemory.governance.learning_retention import compact_learning_records
@@ -1315,6 +1900,7 @@ class Runtime:
         persist_report: bool = False,
         runner: object | None = None,
         worktree_root: str | Path | None = None,
+        machine_policy_context: dict[str, Any] | None = None,
     ) -> dict:
         from eimemory.governance.code_evolution_bridge import propose_code_patch
 
@@ -1326,6 +1912,7 @@ class Runtime:
             persist_report=persist_report,
             runner=runner,
             worktree_root=worktree_root,
+            machine_policy_context=machine_policy_context,
         )
 
     def scout_web_learning(
@@ -1545,10 +2132,21 @@ class Runtime:
         *,
         seed: bool = True,
         persist_report: bool = False,
+        catalog: Any | None = None,
+        legacy_compatibility: bool = False,
     ) -> dict:
         from eimemory.evaluation import run_real_task_replay
 
-        return run_real_task_replay(self, dataset, seed=seed, persist_report=persist_report)
+        kwargs: dict[str, Any] = {
+            "seed": seed,
+            "persist_report": persist_report,
+        }
+        effective_catalog = self.capability_catalog if catalog is None else catalog
+        if effective_catalog is not None:
+            kwargs["catalog"] = effective_catalog
+        if legacy_compatibility:
+            kwargs["legacy_compatibility"] = True
+        return run_real_task_replay(self, dataset, **kwargs)
 
     def enrich_living_memory(self, *, scope: dict | None = None, limit: int = 100) -> dict:
         from eimemory.living.operations import enrich_memory_records
@@ -1575,10 +2173,31 @@ class Runtime:
 
         return record_experience_item(self, payload, scope=scope)
 
-    def record_outcome_trace(self, payload: dict, *, scope: dict | None = None) -> dict:
+    def record_outcome_trace(
+        self,
+        payload: dict,
+        *,
+        scope: dict | ScopeRef | None = None,
+        catalog: Any | None = None,
+        legacy_compatibility: bool = False,
+    ) -> dict:
+        """Persist one outcome trace against an explicitly trusted catalog.
+
+        Dynamic contract validation is fail-closed when ``catalog`` is absent;
+        callers needing the historical fixed case map must opt in with
+        ``legacy_compatibility``.  The default call shape remains unchanged
+        for ordinary uncontracted outcome traces.
+        """
+
         from eimemory.experience import record_outcome_trace
 
-        return record_outcome_trace(self, payload, scope=scope)
+        kwargs: dict[str, Any] = {"scope": scope}
+        effective_catalog = self.capability_catalog if catalog is None else catalog
+        if effective_catalog is not None:
+            kwargs["catalog"] = effective_catalog
+        if legacy_compatibility:
+            kwargs["legacy_compatibility"] = True
+        return record_outcome_trace(self, payload, **kwargs)
 
     def record_event(self, payload: dict, *, scope: dict | None = None) -> dict:
         return self.store.record_event(payload, scope=scope)

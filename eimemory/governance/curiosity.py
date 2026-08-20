@@ -20,24 +20,26 @@ def generate_learning_goals(
     limit = max_goals if max_goals is not None else daily_cap
     goals: list[dict[str, Any]] = []
     seen: set[str] = set()
+    allowed_capability_ids = _allowed_capability_ids(self_model)
 
     for thought_goal in _high_priority_thought_goals(thoughts or [], limit=limit):
         _append_goal(goals, seen, thought_goal, limit)
         if len(goals) >= limit:
             return _finalize_goals(goals, limit)
 
-    for candidate in _goal_registry_candidates(goal_registry):
+    for candidate in _goal_registry_candidates(goal_registry, allowed_capability_ids=allowed_capability_ids):
         _append_goal(goals, seen, candidate, limit)
         if len(goals) >= limit:
             return _finalize_goals(goals, limit)
 
-    for weakness_goal in _weakness_goals(self_model):
+    for weakness_goal in _weakness_goals(self_model, allowed_capability_ids=allowed_capability_ids):
         _append_goal(goals, seen, weakness_goal, limit)
         if len(goals) >= limit:
             return _finalize_goals(goals, limit)
 
     metrics = dict(self_model.get("metrics") or {})
-    if float(metrics.get("replay_pass_rate") or 0.0) < 0.8:
+    weakest_capability = _weakest_capability(self_model, allowed_capability_ids=allowed_capability_ids)
+    if weakest_capability and float(metrics.get("replay_pass_rate") or 0.0) < 0.8:
         _append_goal(
             goals,
             seen,
@@ -49,7 +51,7 @@ def generate_learning_goals(
                 "success_criteria": "Replay pass rate improves without safety regression",
                 "authority_tier": "L1",
                 "priority": 0.62,
-                "target_capability": "memory.recall",
+                "target_capability": weakest_capability,
                 "source_type": "self_model_metric",
                 "source_record_ids": [],
                 "evidence_tier": "T1",
@@ -59,12 +61,16 @@ def generate_learning_goals(
         if len(goals) >= limit:
             return _finalize_goals(goals, limit)
 
-    for signal_goal in _signal_goals(ranked_signals or [], max(1, min(5, limit))):
+    for signal_goal in _signal_goals(
+        ranked_signals or [],
+        max(1, min(5, limit)),
+        allowed_capability_ids=allowed_capability_ids,
+    ):
         _append_goal(goals, seen, signal_goal, limit)
         if len(goals) >= limit:
             return _finalize_goals(goals, limit)
 
-    if not goals:
+    if not goals and weakest_capability:
         _append_goal(
             goals,
             seen,
@@ -76,8 +82,8 @@ def generate_learning_goals(
                 "success_criteria": "At least one stale or missing eval gap is resolved",
                 "authority_tier": "L0",
                 "priority": 0.4,
-                "target_capability": "proactive.judgment",
-                "source_type": "fallback",
+                "target_capability": weakest_capability,
+                "source_type": "dynamic_maintenance",
                 "source_record_ids": [],
                 "evidence_tier": "T2",
             },
@@ -149,23 +155,40 @@ def _ranked_thoughts_for_goals(thoughts: list[dict[str, Any]]) -> list[dict[str,
     )
 
 
-def _goal_registry_candidates(registry: dict[str, Any] | None, *, limit: int = 20) -> list[dict[str, Any]]:
+def _goal_registry_candidates(
+    registry: dict[str, Any] | None,
+    *,
+    allowed_capability_ids: set[str],
+    limit: int = 20,
+) -> list[dict[str, Any]]:
     if not registry:
         return []
     candidates = derive_goal_candidates(registry, limit=max(0, int(limit)))
+    result: list[dict[str, Any]] = []
     for candidate in candidates:
+        capability = str(candidate.get("target_capability") or "").strip()
+        if not capability or capability not in allowed_capability_ids:
+            # Goal-registry prose/config cannot introduce a capability target.
+            continue
         candidate["source_type"] = "goal_registry"
         if not candidate.get("source_goal_id"):
             candidate["source_goal_id"] = str(candidate.get("source_goal_id") or "")
         if not candidate.get("goal_type"):
             candidate["goal_type"] = "long_term"
-    return candidates
+        result.append(candidate)
+    return result
 
 
-def _weakness_goals(self_model: dict[str, Any]) -> list[dict[str, Any]]:
+def _weakness_goals(
+    self_model: dict[str, Any],
+    *,
+    allowed_capability_ids: set[str],
+) -> list[dict[str, Any]]:
     weakness_goals: list[dict[str, Any]] = []
     for weakness in list(self_model.get("weaknesses") or []):
-        capability = str(weakness.get("capability") or "proactive.judgment")
+        capability = str(weakness.get("capability") or "").strip()
+        if not capability or capability not in allowed_capability_ids:
+            continue
         kind = str(weakness.get("kind") or capability)
         weakness_goals.append(
             {
@@ -185,11 +208,19 @@ def _weakness_goals(self_model: dict[str, Any]) -> list[dict[str, Any]]:
     return weakness_goals
 
 
-def _signal_goals(signals: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+def _signal_goals(
+    signals: list[dict[str, Any]],
+    limit: int,
+    *,
+    allowed_capability_ids: set[str],
+) -> list[dict[str, Any]]:
     goals: list[dict[str, Any]] = []
     if limit <= 0:
         return goals
     for signal in signals[:limit]:
+        capability = str(signal.get("target_capability") or signal.get("capability") or "").strip()
+        if not capability or capability not in allowed_capability_ids:
+            continue
         signal_type = str(signal.get("signal_type") or signal.get("kind") or "world_signal")
         goal_type = "world_change" if str(signal.get("source_kind") or "").startswith(("github", "research", "web")) else "opportunity"
         goals.append(
@@ -201,13 +232,39 @@ def _signal_goals(signals: list[dict[str, Any]], limit: int) -> list[dict[str, A
                 "success_criteria": "Evidence-backed candidate or explicit rejection",
                 "authority_tier": "L0",
                 "priority": float(signal.get("score") or 0.5),
-                "target_capability": str(signal.get("target_capability") or "proactive.judgment"),
+                "target_capability": capability,
                 "source_record_ids": [str(signal.get("record_id"))] if signal.get("record_id") else [],
                 "source_type": str(signal.get("source_type") or signal.get("signal_type") or "world_signal"),
                 "evidence_tier": str(signal.get("evidence_tier") or "T2"),
             }
         )
     return goals
+
+
+def _allowed_capability_ids(self_model: dict[str, Any]) -> set[str]:
+    return {
+        str(item.get("capability") or item.get("kind") or "").strip()
+        for item in self_model.get("capabilities") or []
+        if isinstance(item, dict) and str(item.get("capability") or item.get("kind") or "").strip()
+    }
+
+
+def _weakest_capability(self_model: dict[str, Any], *, allowed_capability_ids: set[str]) -> str:
+    candidates = [
+        item
+        for item in self_model.get("capabilities") or []
+        if isinstance(item, dict)
+        and str(item.get("capability") or item.get("kind") or "").strip() in allowed_capability_ids
+    ]
+    if not candidates:
+        return ""
+    candidates.sort(
+        key=lambda item: (
+            float(item.get("score") or 0.0),
+            str(item.get("capability") or item.get("kind") or ""),
+        )
+    )
+    return str(candidates[0].get("capability") or candidates[0].get("kind") or "").strip()
 
 
 def _append_goal(goals: list[dict[str, Any]], seen: set[str], goal: dict[str, Any], limit: int) -> None:

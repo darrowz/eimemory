@@ -210,10 +210,13 @@ def _record_report_text(record: Any) -> tuple[str, dict[str, Any]]:
 def _record_capability(record: Any, text: str, payload: dict[str, Any]) -> str:
     meta = record.meta if isinstance(record.meta, dict) else {}
     explicit = str(payload.get("target_capability") or meta.get("target_capability") or meta.get("capability") or "")
-    return explicit or _classify_report_capability(text)
+    # A report renderer may surface unclassified evidence, but may not infer a
+    # capability from prose.  Attribution belongs to the dynamic registry
+    # bridge and carries revision/binding provenance.
+    return explicit or "unclassified"
 
 
-def _classify_report_capability(text: str) -> str:
+def _legacy_classify_report_capability(text: str) -> str:
     value = str(text or "").lower()
     if any(term in value for term in ("health", "timeout", "8091", "systemd", "gateway", "rpc", "端口", "超时", "健康")):
         return "ops.health"

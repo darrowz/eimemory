@@ -50,7 +50,7 @@ def test_small_baseline_isolated_and_semantically_deterministic(tmp_path: Path, 
 
     tier = report["tiers"]["small"]
     assert tier["fixture"]["spec"]["memory_records"] == 256
-    assert tier["fixture"]["current_v3_storage_owner"] is False
+    assert tier["fixture"]["current_v3_storage_owner"] is True
     assert set(tier["warm"]) == {
         "candidate_recall",
         "append",

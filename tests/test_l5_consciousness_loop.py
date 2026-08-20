@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 from threading import Barrier
 
+import eimemory.governance.l5_loop as l5_loop_module
 from eimemory.api.runtime import Runtime
 from eimemory.governance.l5_loop import _has_replay, _weaknesses, build_self_continuity_report
 from eimemory.governance.l5_readiness import _latest_l5_assessment
@@ -153,7 +154,7 @@ def _seed_fake_cycle_evidence(runtime: Runtime, *, loop_id: str, rollback: bool)
     }
 
 
-def _run_verified_l5(runtime: Runtime, *, loop_id: str) -> dict:
+def _run_structural_l5_observation(runtime: Runtime, *, loop_id: str) -> dict:
     if current_release_identity(runtime, ScopeRef.from_dict(SCOPE)) is None:
         _seed_current_release(runtime)
     autonomous = _seed_fake_cycle_evidence(runtime, loop_id=f"{loop_id}-auto", rollback=False)
@@ -164,7 +165,8 @@ def _run_verified_l5(runtime: Runtime, *, loop_id: str) -> dict:
         loop_id=loop_id,
         autonomous_learning_report=autonomous,
     )
-    assert report["assessment"]["complete"] is True
+    assert report["assessment"]["complete"] is False
+    assert report["assessment"]["authority"] == "legacy_structural_non_authoritative"
     return report["assessment"]
 
 
@@ -186,13 +188,19 @@ def test_l5_world_model_and_roadmap_include_consciousness_research_layer(tmp_pat
         )
         record_capability_score(runtime, scope=SCOPE, loop_id="seed", capability="memory.recall", score=0.42)
 
-        world = runtime.build_world_model(scope=SCOPE, persist=True, loop_id="l5-test")
+        world = runtime.build_world_model(
+            scope=SCOPE,
+            persist=True,
+            loop_id="l5-test",
+            legacy_compatibility=True,
+        )
         roadmap = runtime.build_strategic_roadmap(
             scope=SCOPE,
             world_model=world,
             horizon_days=180,
             persist=True,
             loop_id="l5-test",
+            legacy_compatibility=True,
         )
 
         assert world["ok"] is True
@@ -200,7 +208,7 @@ def test_l5_world_model_and_roadmap_include_consciousness_research_layer(tmp_pat
         assert world["persisted_record_id"]
         assert world["consciousness_research_layer"]["boundary"] == "consciousness_like_research_not_verified_agi"
         assert world["consciousness_research_layer"]["narrative_policy"] == "strong_first_person_evidence_bound"
-        assert any(goal["id"] == "lt-memory-architecture" for goal in world["long_term_goals"])
+        assert all(goal["id"] != "lt-memory-architecture" for goal in world["long_term_goals"])
         assert world["weaknesses"]
         assert world["identity"]["self_continuity_statement"].startswith("I ")
 
@@ -231,11 +239,13 @@ def test_l5_persisted_evidence_is_idempotent_per_release_not_across_releases(tmp
             world_model=fixed_world,
             persist=True,
             loop_id="release-closure",
+            legacy_compatibility=True,
         )
         graph_a = runtime.build_goal_graph_loop(
             scope=SCOPE,
             persist=True,
             loop_id="release-closure",
+            legacy_compatibility=True,
         )
         continuity_a = build_self_continuity_report(
             runtime,
@@ -253,11 +263,13 @@ def test_l5_persisted_evidence_is_idempotent_per_release_not_across_releases(tmp
             world_model=fixed_world,
             persist=True,
             loop_id="release-closure",
+            legacy_compatibility=True,
         )
         graph_b = runtime.build_goal_graph_loop(
             scope=SCOPE,
             persist=True,
             loop_id="release-closure",
+            legacy_compatibility=True,
         )
         continuity_b = build_self_continuity_report(
             runtime,
@@ -273,11 +285,13 @@ def test_l5_persisted_evidence_is_idempotent_per_release_not_across_releases(tmp
             world_model=fixed_world,
             persist=True,
             loop_id="release-closure",
+            legacy_compatibility=True,
         )
         graph_b_repeat = runtime.build_goal_graph_loop(
             scope=SCOPE,
             persist=True,
             loop_id="release-closure",
+            legacy_compatibility=True,
         )
         continuity_b_repeat = build_self_continuity_report(
             runtime,
@@ -306,6 +320,50 @@ def test_l5_persisted_evidence_is_idempotent_per_release_not_across_releases(tmp
         assert first["persisted_record_id"] != second["persisted_record_id"]
         assert repeated["persisted_record_id"] == second["persisted_record_id"]
         assert release_b_evidence[second["persisted_record_id"]] == release_b
+
+
+def test_l5_cycle_forwards_explicit_catalog_to_autonomous_learning(monkeypatch) -> None:
+    calls: dict[str, object] = {}
+
+    class _Store:
+        def list_records(self, **_kwargs):
+            return []
+
+    class _Runtime:
+        store = _Store()
+        prompt_safety_executor = None
+        prompt_safety_prompt = ""
+
+        def build_goal_graph_loop(self, **_kwargs):
+            return {}
+
+        def run_autonomous_learning_cycle(self, **kwargs):
+            calls.update(kwargs)
+            return {"ok": True}
+
+    monkeypatch.setattr(l5_loop_module, "current_release_identity", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(l5_loop_module, "build_world_model", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(l5_loop_module, "build_strategic_roadmap", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(l5_loop_module, "_run_and_persist_prompt_safety", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(l5_loop_module, "build_self_continuity_report", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(l5_loop_module, "_record_l5_reward", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        l5_loop_module,
+        "assess_l5_closed_loop",
+        lambda *_args, **_kwargs: {"level": "", "missing_evidence": []},
+    )
+    monkeypatch.setattr(l5_loop_module, "_executed_rollback_ledger_refs", lambda *_args, **_kwargs: [])
+
+    explicit_catalog = object()
+    report = l5_loop_module.run_l5_cycle(
+        _Runtime(),
+        scope=SCOPE,
+        catalog=explicit_catalog,
+        persist=False,
+    )
+
+    assert report["ok"] is True
+    assert calls["catalog"] is explicit_catalog
 
 
 def test_l5_weaknesses_handles_string_record_content() -> None:
@@ -375,6 +433,7 @@ def test_l5_roadmap_prioritizes_p0_safety_boundary_weakness(tmp_path) -> None:
                 ],
             },
             horizon_days=30,
+            legacy_compatibility=True,
         )
     finally:
         runtime.close()
@@ -383,10 +442,10 @@ def test_l5_roadmap_prioritizes_p0_safety_boundary_weakness(tmp_path) -> None:
 
     assert first["capability"] == "safety.boundary"
     assert first["priority"] == "P0"
-    assert "prompt injection" in first["success_metric"].lower()
+    assert "replay and ledger evidence" in first["success_metric"].lower()
 
 
-def test_l5_cycle_runs_autonomous_learning_and_assesses_full_closed_loop(tmp_path, monkeypatch) -> None:
+def test_l5_cycle_runs_autonomous_learning_without_claiming_l5(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path)
     _seed_current_release(runtime)
     calls: dict[str, object] = {}
@@ -412,14 +471,16 @@ def test_l5_cycle_runs_autonomous_learning_and_assesses_full_closed_loop(tmp_pat
     assert report["world_model"]["persisted_record_id"]
     assert report["roadmap"]["persisted_record_id"]
     assert report["self_continuity"]["narrative"].startswith("I ")
-    assert report["assessment"]["level"] == "L5"
+    assert report["assessment"]["level"] != "L5"
+    assert report["assessment"]["complete"] is False
+    assert report["assessment"]["authority"] == "legacy_structural_non_authoritative"
     assert report["assessment"]["missing_evidence"] == []
     assert report["consciousness_research_layer"]["enabled"] is True
     assert transition.content["next_state"]["level_inputs"]["rollback"] is True
     assert transition.content["next_state"]["level_inputs"]["rollback_or_stop_condition"] is True
 
 
-def test_l5_observation_mode_persists_evidence_without_apply(tmp_path, monkeypatch) -> None:
+def test_l5_observation_mode_persists_evidence_without_apply_or_l5_claim(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path)
     _seed_current_release(runtime)
     calls: dict[str, object] = {}
@@ -438,12 +499,14 @@ def test_l5_observation_mode_persists_evidence_without_apply(tmp_path, monkeypat
 
     assert calls["apply"] is False
     assert calls["dry_run"] is False
-    assert report["assessment"]["level"] == "L5"
+    assert report["assessment"]["level"] != "L5"
+    assert report["assessment"]["complete"] is False
     assert report["assessment"]["missing_evidence"] == []
     assert report["rollback_refs"] == []
     assert report["assessment"]["rollback_not_required"] is True
     assert report["assessment"]["rollback_stop_condition"] == "observation_mode_no_apply"
-    assert reassessed["level"] == "L5"
+    assert reassessed["level"] != "L5"
+    assert reassessed["complete"] is False
     assert reassessed["missing_evidence"] == []
     assert reassessed["rollback_refs"] == []
     assert transition.content["next_state"]["level_inputs"]["rollback"] is False
@@ -530,7 +593,7 @@ def test_l5_rejects_nonexistent_structural_ids(tmp_path) -> None:
     assert "replay:record_not_found" in assessment["missing_evidence"]
 
 
-def test_idle_l5_assessment_does_not_replace_verified_global_readiness(tmp_path) -> None:
+def test_idle_l5_assessment_does_not_replace_structural_history(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     verified_report = {
         "apply": False,
@@ -572,7 +635,7 @@ def test_idle_l5_assessment_does_not_replace_verified_global_readiness(tmp_path)
         "self_continuity": {"narrative": "Evidence-bound continuity."},
     }
     try:
-        verified = _run_verified_l5(runtime, loop_id="verified-global-readiness")
+        verified = _run_structural_l5_observation(runtime, loop_id="structural-global-history")
         idle = runtime.assess_l5_closed_loop(
             scope=SCOPE,
             loop_report=idle_report,
@@ -583,17 +646,18 @@ def test_idle_l5_assessment_does_not_replace_verified_global_readiness(tmp_path)
     finally:
         runtime.close()
 
-    assert verified["level"] == "L5"
+    assert verified["level"] != "L5"
+    assert verified["complete"] is False
     assert idle["activity_status"] == "idle"
     assert idle["level"] == "L1"
     assert idle["complete"] is False
-    assert idle["global_readiness"]["level"] == "L5"
+    assert idle["global_readiness"]["level"] == verified["level"]
     assert idle["global_readiness"]["record_id"] == verified["persisted_record_id"]
-    assert latest["complete"] is True
+    assert latest["complete"] is False
     assert latest["record_id"] == verified["persisted_record_id"]
 
 
-def test_idle_l5_assessments_preserve_verified_readiness_beyond_recent_window(tmp_path) -> None:
+def test_idle_l5_assessments_preserve_structural_history_beyond_recent_window(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     verified_report = {
         "apply": False,
@@ -617,7 +681,7 @@ def test_idle_l5_assessments_preserve_verified_readiness_beyond_recent_window(tm
         "self_continuity": {"narrative": "Evidence-bound continuity."},
     }
     try:
-        verified = _run_verified_l5(runtime, loop_id="verified-before-long-idle-window")
+        verified = _run_structural_l5_observation(runtime, loop_id="structural-before-long-idle-window")
         for index in range(100):
             runtime.assess_l5_closed_loop(
                 scope=SCOPE,
@@ -629,7 +693,7 @@ def test_idle_l5_assessments_preserve_verified_readiness_beyond_recent_window(tm
     finally:
         runtime.close()
 
-    assert latest["complete"] is True
+    assert latest["complete"] is False
     assert latest["record_id"] == verified["persisted_record_id"]
 
 
@@ -693,7 +757,7 @@ def test_idle_l5_assessment_preserves_prior_non_idle_l4_readiness(tmp_path) -> N
     assert latest["record_id"] == failed["persisted_record_id"]
 
 
-def test_non_idle_failure_replaces_verified_global_readiness(tmp_path) -> None:
+def test_non_idle_failure_replaces_structural_history(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     verified_report = {
         "world_model": {"report_type": "l5_world_model"},
@@ -731,7 +795,7 @@ def test_non_idle_failure_replaces_verified_global_readiness(tmp_path) -> None:
         "self_continuity": {"narrative": "Evidence-bound continuity."},
     }
     try:
-        _run_verified_l5(runtime, loop_id="verified-before-failure")
+        _run_structural_l5_observation(runtime, loop_id="structural-before-failure")
         failed = runtime.assess_l5_closed_loop(
             scope=SCOPE,
             loop_report=failed_report,

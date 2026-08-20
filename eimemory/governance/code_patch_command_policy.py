@@ -14,6 +14,64 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 
+AUTOMATION_POLICY_ACTIONS = ("local_apply", "commit", "deployment")
+
+
+def normalize_automation_policy(value: Any) -> dict[str, Any]:
+    """Sanitize an untrusted policy-shaped value for diagnostics only.
+
+    A proposal is data, never authority.  Promotion and dynamic evolution read
+    their authority only from ``code_automation_policy.load_code_automation_policy``.
+    This compatibility helper retains a bounded view for legacy callers but
+    does not grant any machine action.  Unknown fields are discarded so
+    diagnostics cannot echo policy secrets.
+
+    The accepted input forms preserve the pre-existing ``allow_apply`` spelling
+    while normalizing every caller to the distinct ``local_apply``, ``commit``,
+    and ``deployment`` actions:
+
+    ``{"policy_id": "...", "actions": {"local_apply": true}}``
+    ``{"policy_id": "...", "allow_apply": true}``
+    """
+    raw = dict(value) if isinstance(value, dict) else {}
+    actions = {
+        action: _automation_policy_action_enabled(raw, action)
+        for action in AUTOMATION_POLICY_ACTIONS
+    }
+    return {
+        "declared": bool(raw),
+        "policy_id": _bounded_policy_identifier(raw.get("policy_id")),
+        "actions": actions,
+    }
+
+
+def _automation_policy_action_enabled(raw: dict[str, Any], action: str) -> bool:
+    aliases = {
+        "local_apply": ("local_apply", "allow_local_apply", "allow_apply"),
+        "commit": ("commit", "allow_commit"),
+        "deployment": ("deployment", "deploy", "allow_deployment", "allow_deploy"),
+    }.get(action, (action,))
+    declarations: list[bool] = []
+    for container_name in ("actions", "capabilities"):
+        container = raw.get(container_name)
+        if isinstance(container, dict):
+            for key in aliases:
+                if key in container:
+                    declarations.append(container.get(key) is True)
+    for key in aliases:
+        if key in raw:
+            declarations.append(raw.get(key) is True)
+    allowed_actions = raw.get("allowed_actions")
+    if isinstance(allowed_actions, (list, tuple, set)):
+        declarations.append(action in {str(item).strip() for item in allowed_actions})
+    return bool(declarations) and all(declarations)
+
+
+def _bounded_policy_identifier(value: Any) -> str:
+    text = " ".join(str(value or "").split())
+    return text[:160]
+
+
 def code_patch_verification_command_error(commands: Any) -> str:
     """Return a stable rejection reason, or ``""`` for safe argv commands."""
     if not isinstance(commands, list) or not commands:

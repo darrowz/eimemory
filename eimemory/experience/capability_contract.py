@@ -25,7 +25,11 @@ def _all_true(observations: dict[str, Any], *keys: str) -> bool:
     return all(observations.get(key) is True for key in keys)
 
 
-CASE_CONTRACTS: dict[str, tuple[str, ObservationValidator]] = {
+# Historical v2 contracts retained only to verify explicitly requested legacy
+# traces.  New capabilities are validated against a trusted catalog descriptor
+# supplied by the caller; this module never invents a fixed capability
+# universe for a dynamic outcome.
+LEGACY_CASE_CONTRACTS: dict[str, tuple[str, ObservationValidator]] = {
     "recall_version_truth": (
         "memory.recall",
         lambda item: _nonempty(item.get("version"))
@@ -180,7 +184,15 @@ def normalize_capability_contract(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         return {}
     normalized = dict(value)
-    for key in ("schema_version", "capability", "case_id"):
+    for key in (
+        "schema_version",
+        "capability",
+        "case_id",
+        "evaluation_case_digest",
+        "eval_spec_id",
+        "capability_revision_id",
+        "provider_binding_id",
+    ):
         if isinstance(normalized.get(key), str):
             normalized[key] = normalized[key].strip()
     if isinstance(normalized.get("observations"), dict):
@@ -205,6 +217,8 @@ def validate_capability_contract(
     *,
     expected_capability: str = "",
     expected_case_id: str = "",
+    catalog: Any | None = None,
+    legacy_compatibility: bool = False,
 ) -> str:
     if not isinstance(contract, dict):
         return "capability contract must be an object"
@@ -216,10 +230,23 @@ def validate_capability_contract(
         return "capability contract capability is required"
     if not _nonempty(case_id):
         return "capability contract case_id is required"
-    case_contract = CASE_CONTRACTS.get(str(case_id))
-    if case_contract is None:
+    catalog_case = _catalog_case(str(case_id), catalog=catalog)
+    case_contract = (
+        LEGACY_CASE_CONTRACTS.get(str(case_id)) if legacy_compatibility else None
+    )
+    if catalog_case is None and case_contract is None:
         return f"unknown capability case: {case_id}"
-    mapped_capability, observation_validator = case_contract
+    if catalog_case is not None:
+        mapped_capability = str(getattr(catalog_case, "capability_id", "") or "")
+        observation_validator = _catalog_observation_validator(catalog_case)
+        supplied_case_digest = str(contract.get("evaluation_case_digest") or "").strip()
+        if supplied_case_digest and supplied_case_digest != str(getattr(catalog_case, "case_digest", "") or ""):
+            return "evaluation case digest does not match registered catalog case"
+        supplied_spec_id = str(contract.get("eval_spec_id") or "").strip()
+        if supplied_spec_id and supplied_spec_id != str(getattr(catalog_case, "eval_spec_id", "") or ""):
+            return "evaluation spec identity does not match registered catalog case"
+    else:
+        mapped_capability, observation_validator = case_contract
     if capability != mapped_capability:
         return f"capability mismatch for case {case_id}: expected {mapped_capability}"
     if expected_capability and capability != expected_capability:
@@ -257,7 +284,48 @@ def validate_capability_contract(
 
     if not isinstance(contract.get("probe"), bool):
         return "capability contract probe must be a boolean"
+    capability_revision_id = str(contract.get("capability_revision_id") or "").strip()
+    provider_binding_id = str(contract.get("provider_binding_id") or "").strip()
+    if bool(capability_revision_id) != bool(provider_binding_id):
+        return "capability contract revision and binding must be supplied together"
     return ""
+
+
+def _catalog_case(case_id: str, *, catalog: Any | None) -> Any | None:
+    # A process-global catalog can be populated by a legacy replay during the
+    # same process lifetime.  Treating it as an implicit authority would let a
+    # dynamic outcome inherit that frozen taxonomy.  New paths must therefore
+    # pass their exact trusted catalog; only the explicit legacy map below is
+    # permitted without one.
+    getter = getattr(catalog, "get_case", None)
+    if not callable(getter):
+        return None
+    try:
+        return getter(case_id)
+    except Exception:
+        return None
+
+
+def _catalog_observation_validator(catalog_case: Any) -> ObservationValidator:
+    """Recheck catalog rules without executing a descriptor or model.
+
+    A model grader can contribute an optional bounded opinion at execution
+    time, but a durable acceptance contract still needs deterministic
+    rule-level evidence to be independently replayable.
+    """
+
+    rules = getattr(catalog_case, "expected_invariants", ())
+
+    def validator(observations: dict[str, Any]) -> bool:
+        try:
+            from eimemory.evaluation.capability_graders import grade_schema_rules
+
+            result = grade_schema_rules(observations, rules, "catalog-contract")
+            return result.get("verdict") == "pass"
+        except Exception:
+            return False
+
+    return validator
 
 
 def contract_source_ids(contract: Any) -> list[str]:

@@ -60,6 +60,8 @@ def run_real_task_replay(
     *,
     seed: bool = True,
     persist_report: bool = False,
+    catalog: Any | None = None,
+    legacy_compatibility: bool = False,
 ) -> dict[str, Any]:
     normalized = normalize_real_task_replay_dataset(dataset)
     if seed and normalized["seed"]:
@@ -68,11 +70,21 @@ def run_real_task_replay(
 
             eval_runtime = Runtime.create(root=Path(temp_root))
             try:
-                report = _run_on_runtime(eval_runtime, normalized=normalized)
+                report = _run_on_runtime(
+                    eval_runtime,
+                    normalized=normalized,
+                    catalog=catalog,
+                    legacy_compatibility=legacy_compatibility,
+                )
             finally:
                 eval_runtime.close()
     else:
-        report = _run_on_runtime(runtime, normalized=normalized if seed else {**normalized, "seed": []})
+        report = _run_on_runtime(
+            runtime,
+            normalized=normalized if seed else {**normalized, "seed": []},
+            catalog=catalog,
+            legacy_compatibility=legacy_compatibility,
+        )
     if persist_report:
         report_scope = ScopeRef.from_dict(normalized["scope"])
         release = current_release_identity(runtime, report_scope)
@@ -81,7 +93,13 @@ def run_real_task_replay(
     return report
 
 
-def _run_on_runtime(runtime, *, normalized: dict[str, Any]) -> dict[str, Any]:
+def _run_on_runtime(
+    runtime,
+    *,
+    normalized: dict[str, Any],
+    catalog: Any | None = None,
+    legacy_compatibility: bool = False,
+) -> dict[str, Any]:
     scope = ScopeRef.from_dict(normalized["scope"])
     seeded_record_ids = _seed_records(runtime, normalized["seed"], scope=scope)
     samples: list[dict[str, Any]] = []
@@ -97,6 +115,8 @@ def _run_on_runtime(runtime, *, normalized: dict[str, Any]) -> dict[str, Any]:
             default_scope=scope,
             seen_terminal_evidence=seen_terminal_evidence,
             execution_id=execution_id,
+            catalog=catalog,
+            legacy_compatibility=legacy_compatibility,
         )
         sample["latency_ms"] = round((perf_counter() - started) * 1000.0, 3)
         latencies.append(float(sample["latency_ms"]))
@@ -208,6 +228,8 @@ def _run_case(
     default_scope: ScopeRef,
     seen_terminal_evidence: set[str],
     execution_id: str,
+    catalog: Any | None = None,
+    legacy_compatibility: bool = False,
 ) -> dict[str, Any]:
     case_id = str(case.get("case_id") or case.get("id") or index)
     query = str(case.get("query") or case.get("input") or case.get("prompt") or "")
@@ -224,6 +246,8 @@ def _run_case(
             runtime,
             source_record_id=str(case.get("source_record_id") or ""),
             scope=scope,
+            catalog=catalog,
+            legacy_compatibility=legacy_compatibility,
         )
     )
     terminal_evidence_digest = str(
@@ -314,6 +338,8 @@ def validate_real_replay_source(
     *,
     source_record_id: str,
     scope: ScopeRef | dict[str, Any],
+    catalog: Any | None = None,
+    legacy_compatibility: bool = False,
 ) -> dict[str, Any]:
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
     source_record_id = str(source_record_id or "").strip()
@@ -335,9 +361,17 @@ def validate_real_replay_source(
     ):
         return _invalid_provenance(source_record_id, "invalid_outcome_trace_contract")
     try:
-        rebuilt = build_outcome_trace_record(payload, scope=scope_ref)
-    except OutcomeTraceBuildError:
-        return _invalid_provenance(source_record_id, "invalid_outcome_trace_payload")
+        rebuilt = build_outcome_trace_record(
+            payload,
+            scope=scope_ref,
+            catalog=catalog,
+            legacy_compatibility=legacy_compatibility,
+        )
+    except OutcomeTraceBuildError as exc:
+        return _invalid_provenance(
+            source_record_id,
+            _outcome_trace_build_failure_reason(exc),
+        )
     trace_id = str(payload.get("trace_id") or "")
     idempotency_key = str(payload.get("idempotency_key") or "")
     business_meta = meta.get("business_meta")
@@ -472,6 +506,13 @@ def _invalid_provenance(source_record_id: str, reason: str) -> dict[str, Any]:
         "task_type": "",
         "reason": reason,
     }
+
+
+def _outcome_trace_build_failure_reason(error: OutcomeTraceBuildError) -> str:
+    """Keep dynamic-contract catalog absence observable and fail closed."""
+    if "trusted capability catalog is required" in str(error):
+        return "dynamic_capability_catalog_required"
+    return "invalid_outcome_trace_payload"
 
 
 def _normalized_task_type(value: Any) -> str:

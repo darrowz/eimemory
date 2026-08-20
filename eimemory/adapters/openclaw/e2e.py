@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from hashlib import sha256
-from typing import Any
+from typing import Any, Mapping
 
 from eimemory.adapters.openclaw.hooks import OpenClawMemoryHooks
 from eimemory.api.runtime import Runtime
@@ -13,6 +13,8 @@ def run_openclaw_e2e_check(
     *,
     scope: dict[str, Any],
     query: str = "eimemory openclaw e2e",
+    capability_advertisement: Mapping[str, Any] | None = None,
+    capability_outcome: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run the operator-only OpenClaw memory lifecycle diagnostic.
 
@@ -77,7 +79,7 @@ def run_openclaw_e2e_check(
     outcome_trace_id = str(outcome_trace.get("record_id") or "")
     evidence_id = str(audit.record_id if audit else event.get("id") or outcome.get("id") or "")
     ok = bool(stored.record_id and recall_hit and audit and event and outcome)
-    return {
+    result = {
         "ok": ok,
         "verdict": "pass" if ok else "fail",
         "scope": canonical_scope,
@@ -107,6 +109,23 @@ def run_openclaw_e2e_check(
             "outcome_trace_id": outcome_trace_id,
         },
     }
+    # Capability advertisement/normalization is deliberately opt-in for this
+    # operator diagnostic.  The default E2E probe remains a lifecycle hook
+    # check; it never guesses a semantic capability from an OpenClaw host.
+    if capability_advertisement is not None:
+        result["capability_advertisement"] = hooks.advertise_capabilities(
+            capability_advertisement,
+            event=event_base,
+        )
+    if capability_outcome is not None:
+        result["capability_outcome"] = hooks.normalize_capability_outcome(
+            "e2e",
+            {
+                **event_base,
+                "capability_outcome": dict(capability_outcome),
+            },
+        )
+    return result
 
 
 def _latest_recall_audit(runtime: Runtime, *, session_id: str, scope: dict[str, Any]) -> RecordEnvelope | None:

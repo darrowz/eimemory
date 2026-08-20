@@ -13,6 +13,7 @@ def test_capability_replay_without_executor_is_pending_not_passed(tmp_path) -> N
             scope=SCOPE,
             persist=True,
             capabilities=["memory.recall"],
+            legacy_compatibility=True,
         )
 
         assert report["ok"] is True
@@ -31,7 +32,7 @@ def test_capability_replay_without_executor_is_pending_not_passed(tmp_path) -> N
         assert {record.meta["verdict"] for record in case_records} == {"not_run"}
         assert {record.meta["pass_rate"] for record in case_records} == {None}
 
-        ledger = runtime.learning_ledger(scope=SCOPE, attribute_outcomes=False)
+        ledger = runtime.learning_ledger(scope=SCOPE, attribute_outcomes=False, legacy_compatibility=True)
         item = ledger["capabilities"]["memory.recall"]
         assert item["score"] == 0.0
         assert item["status"] == "stale_unverified"
@@ -56,6 +57,7 @@ def test_capability_replay_rejects_uncontracted_executor_pass_claim(tmp_path) ->
             scope=SCOPE,
             persist=True,
             capabilities=["memory.recall"],
+            legacy_compatibility=True,
         )
 
         pack = report["packs"][0]
@@ -63,7 +65,7 @@ def test_capability_replay_rejects_uncontracted_executor_pass_claim(tmp_path) ->
         assert pack["score"] == 0.0
         assert {result["verdict"] for result in pack["case_results"]} == {"fail"}
 
-        ledger = runtime.learning_ledger(scope=SCOPE, attribute_outcomes=False)
+        ledger = runtime.learning_ledger(scope=SCOPE, attribute_outcomes=False, legacy_compatibility=True)
         item = ledger["capabilities"]["memory.recall"]
         assert item["status"] == "needs_outcome_recalculation"
         assert item["evidence_count"] >= 3

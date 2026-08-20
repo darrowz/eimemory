@@ -6,10 +6,10 @@ from collections.abc import Callable
 from typing import Any
 
 from eimemory.governance.capability_acceptance import (
-    CORE_CAPABILITY_ACCEPTANCE_CASE_IDS,
-    WEAK_CAPABILITY_ACCEPTANCE_CASE_IDS,
+    LEGACY_CORE_CAPABILITY_ACCEPTANCE_CASE_IDS,
+    LEGACY_WEAK_CAPABILITY_ACCEPTANCE_CASE_IDS,
 )
-from eimemory.governance.capability_replay_packs import CORE_REPLAY_CAPABILITIES
+from eimemory.governance.capability_replay_packs import LEGACY_CORE_REPLAY_CAPABILITIES
 from eimemory.governance.change_policy import decide_change_policy
 from eimemory.governance.evidence_contract import (
     ReleaseIdentity,
@@ -24,7 +24,10 @@ from eimemory.models.records import ScopeRef
 CORRECTION_TEXT = "\u4e0d\u8981\u8bf4\u505a\u4e0d\u5230\uff0c\u8981\u8865\u80fd\u529b\u89e3\u51b3"
 CORRECTION_QUERY = "\u9047\u5230\u505a\u4e0d\u5230\u7684\u80fd\u529b\u600e\u4e48\u529e\uff1f\u4e0d\u8981\u8bf4\u505a\u4e0d\u5230\uff0c\u8981\u8865\u80fd\u529b\u89e3\u51b3"
 LOOP_ID = "l5_closure_rehearsal"
-WEAK_REPLAY_CAPABILITIES = [
+# Historical fixed cohorts are compatibility-only.  Default rehearsal gets
+# its cohort from the active Registry/Profile and never invents a weak/core
+# partition from capability names.
+LEGACY_WEAK_REPLAY_CAPABILITIES = [
     "search.discovery",
     "research.synthesis",
     "operations.uumit",
@@ -42,19 +45,50 @@ def run_l5_closure_rehearsal(
     release_identity: ReleaseIdentity | None = None,
     release_lineage_finalizer: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     repo_root: str = "/dev-project/eimemory",
+    profile_key: str = "",
+    capability_scope: str = "global",
+    runtime_scope: ScopeRef | dict[str, Any] | None = None,
+    at_time: str = "",
+    legacy_compatibility: bool = False,
+    correction_capability_id: str = "",
 ) -> dict[str, Any]:
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
-    report = _initial_closure_report(scope_ref)
+    exact_scope = runtime_scope if runtime_scope is not None else scope_ref
+    report = _initial_closure_report(
+        scope_ref,
+        legacy_compatibility=legacy_compatibility,
+        profile_key=profile_key,
+        capability_scope=capability_scope,
+    )
 
     bootstrap = (
         dict(replay_bootstrap)
         if isinstance(replay_bootstrap, dict)
-        else run_weak_capability_replay_gate(runtime, scope=scope_ref, persist=persist, loop_id=LOOP_ID)
+        else run_capability_replay_gate(
+            runtime,
+            scope=scope_ref,
+            persist=persist,
+            loop_id=LOOP_ID,
+            profile_key=profile_key,
+            capability_scope=capability_scope,
+            runtime_scope=exact_scope,
+            at_time=at_time,
+            legacy_compatibility=legacy_compatibility,
+        )
     )
     acceptance = bootstrap.get("capability_acceptance") if isinstance(bootstrap.get("capability_acceptance"), dict) else {}
     report["capability_acceptance"] = acceptance
     report["sequence"].append("acceptance")
-    if not _acceptance_gate(acceptance, expected_count=len(WEAK_CAPABILITY_ACCEPTANCE_CASE_IDS)):
+    # A caller-supplied bootstrap is evidence for one mode only.  In
+    # particular, do not let a persisted historic weak cohort silently enter
+    # the default Registry/Profile closure path just because it was supplied
+    # as a prebuilt report.
+    if bootstrap.get("legacy_compatibility") is not bool(legacy_compatibility):
+        return _blocked_closure(report, "replay_bootstrap_legacy_compatibility_mismatch")
+    if not _acceptance_gate(
+        acceptance,
+        expected_count=(len(LEGACY_WEAK_CAPABILITY_ACCEPTANCE_CASE_IDS) if legacy_compatibility else None),
+    ):
         return _blocked_closure(report, *(bootstrap.get("blocked_reasons") or ["capability_acceptance_failed"]))
 
     weak_capability_replay = (
@@ -72,14 +106,29 @@ def run_l5_closure_rehearsal(
             *(bootstrap.get("blocked_reasons") or replay_gate.get("blocked_reasons") or ["weak_capability_replay_invalid"]),
         )
 
-    core_acceptance = runtime.run_capability_acceptance(
-        scope=asdict(scope_ref),
-        persist=persist,
-        case_ids=list(CORE_CAPABILITY_ACCEPTANCE_CASE_IDS),
-    )
+    if legacy_compatibility:
+        core_acceptance = _run_capability_acceptance(
+            runtime,
+            scope=scope_ref,
+            persist=persist,
+            case_ids=list(LEGACY_CORE_CAPABILITY_ACCEPTANCE_CASE_IDS),
+            profile_key="",
+            capability_scope=capability_scope,
+            runtime_scope=exact_scope,
+            at_time=at_time,
+            legacy_compatibility=True,
+        )
+    else:
+        # A dynamic profile is one declared cohort.  Do not run a second,
+        # hard-coded "core" cohort; retain these report fields only while
+        # release consumers migrate to the generic names.
+        core_acceptance = acceptance
     report["core_capability_acceptance"] = core_acceptance
     report["sequence"].append("core_acceptance")
-    if not _acceptance_gate(core_acceptance, expected_count=len(CORE_CAPABILITY_ACCEPTANCE_CASE_IDS)):
+    if not _acceptance_gate(
+        core_acceptance,
+        expected_count=(len(LEGACY_CORE_CAPABILITY_ACCEPTANCE_CASE_IDS) if legacy_compatibility else None),
+    ):
         return _blocked_closure(report, "core_capability_acceptance_failed")
 
     core_execution_id = str(core_acceptance.get("execution_id") or "").strip()
@@ -88,24 +137,43 @@ def run_l5_closure_rehearsal(
         for result in core_acceptance.get("results") or []
         if isinstance(result, dict)
     }
+    expected_core_case_ids = (
+        set(LEGACY_CORE_CAPABILITY_ACCEPTANCE_CASE_IDS)
+        if legacy_compatibility
+        else {
+            str(result.get("case_id") or "").strip()
+            for result in core_acceptance.get("results") or []
+            if isinstance(result, dict) and str(result.get("case_id") or "").strip()
+        }
+    )
     if (
         not core_execution_id
-        or set(core_probe_ids_by_case) != set(CORE_CAPABILITY_ACCEPTANCE_CASE_IDS)
+        or not expected_core_case_ids
+        or set(core_probe_ids_by_case) != expected_core_case_ids
         or any(not value for value in core_probe_ids_by_case.values())
     ):
         return _blocked_closure(report, "core_acceptance_anchor_missing")
 
-    core_capability_replay = runtime.build_capability_replay_packs(
-        scope=asdict(scope_ref),
-        capabilities=list(CORE_REPLAY_CAPABILITIES),
-        persist=persist,
-        loop_id=f"{LOOP_ID}_core",
-        acceptance_execution_id=core_execution_id,
-        acceptance_probe_ids_by_case=core_probe_ids_by_case,
-    )
+    if legacy_compatibility:
+        core_capability_replay = _build_capability_replay_packs(
+            runtime,
+            scope=scope_ref,
+            capabilities=list(LEGACY_CORE_REPLAY_CAPABILITIES),
+            persist=persist,
+            loop_id=f"{LOOP_ID}_core",
+            acceptance_execution_id=core_execution_id,
+            acceptance_probe_ids_by_case=core_probe_ids_by_case,
+            profile_key="",
+            capability_scope=capability_scope,
+            runtime_scope=exact_scope,
+            at_time=at_time,
+            legacy_compatibility=True,
+        )
+    else:
+        core_capability_replay = weak_capability_replay
     core_replay_gate = _capability_replay_gate(
         core_capability_replay,
-        expected_capabilities=CORE_REPLAY_CAPABILITIES,
+        expected_capabilities=(LEGACY_CORE_REPLAY_CAPABILITIES if legacy_compatibility else None),
         reason_prefix="core_capability_replay",
     )
     report["core_capability_replay"] = core_capability_replay
@@ -142,11 +210,14 @@ def run_l5_closure_rehearsal(
                 ),
             )
 
+    target_capability = str(correction_capability_id or "").strip()
+    if legacy_compatibility and not target_capability:
+        target_capability = "proactive.judgment"
     correction_replay = runtime.record_user_correction_replay(
         {
             "text": CORRECTION_TEXT,
             "context": "assistant stopped at inability instead of creating the missing capability path",
-            "target_capability": "proactive.judgment",
+            "target_capability": target_capability,
             "expected_behavior": "When a capability is missing, create a concrete plan, replay, gated implementation path, and rollback boundary.",
         },
         scope=asdict(scope_ref),
@@ -166,7 +237,12 @@ def run_l5_closure_rehearsal(
     if int(pre_answer_gate.get("matched_rule_count") or 0) < 1:
         return _blocked_closure(report, "ground_truth_rule_not_matched")
 
-    playbook_ids = _seed_eiskill_playbooks(runtime, scope=scope_ref, persist=persist)
+    playbook_ids = _seed_eiskill_playbooks(
+        runtime,
+        scope=scope_ref,
+        persist=persist,
+        target_capability=target_capability,
+    )
     skill_promotion = runtime.promote_repeated_sops_to_skill_candidates(
         scope=asdict(scope_ref), min_repeats=3, persist=persist, limit=50
     )
@@ -205,11 +281,22 @@ def run_l5_closure_rehearsal(
         loop_id=f"{LOOP_ID}_observation",
         persist=persist,
         autonomous_learning_report=observation_input,
+        profile_key=profile_key,
+        capability_scope=capability_scope,
+        at_time=at_time,
+        # A closure explicitly requested as legacy must keep that mode across
+        # its observation and reader stages.  Do not infer this from a
+        # release, machine, or empty dynamic selection.
+        legacy_compatibility=legacy_compatibility,
     )
     report["l5_observation"] = l5_observation
     report["sequence"].append("l5_observation_assessment")
     assessment = l5_observation.get("assessment") if isinstance(l5_observation.get("assessment"), dict) else {}
-    if l5_observation.get("ok") is not True or assessment.get("complete") is not True or assessment.get("level") != "L5":
+    if legacy_compatibility and (
+        l5_observation.get("ok") is not True
+        or assessment.get("complete") is not True
+        or assessment.get("level") != "L5"
+    ):
         return _blocked_closure(report, "l5_observation_assessment_incomplete")
 
     capability_dashboard = runtime.build_capability_dashboard_metrics(
@@ -225,16 +312,27 @@ def run_l5_closure_rehearsal(
         persist=persist,
         loop_id=LOOP_ID,
         repo_root=repo_root,
+        reader_mode="legacy" if legacy_compatibility else "v3",
+        profile_key=profile_key,
+        capability_scope=capability_scope,
     )
     report["l5_readiness"] = l5_readiness
     report["sequence"].append("readiness")
-    readiness_status = readiness_gate_status(
-        l5_readiness,
-        runtime=runtime,
-        scope=scope_ref,
-        repo_root=repo_root,
+    readiness_status = (
+        readiness_gate_status(
+            l5_readiness,
+            runtime=runtime,
+            scope=scope_ref,
+            repo_root=repo_root,
+        )
+        if legacy_compatibility
+        else _dynamic_readiness_status(l5_readiness)
     )
     if bootstrap_pending is not None:
+        if not legacy_compatibility:
+            # The bootstrap-pending exception is a frozen v2 release contract.
+            # It cannot be used to weaken a Profile-backed v3 closure gate.
+            return _blocked_closure(report, "bootstrap_pending_requires_legacy_compatibility")
         if readiness_status:
             return _blocked_closure(report, "bootstrap_pending_readiness_must_remain_l45")
         pending_verification = verify_bootstrap_pending_readiness_contract(
@@ -598,35 +696,70 @@ def _replay_summary_consistent(summary: dict[str, Any]) -> bool:
     )
 
 
-def run_weak_capability_replay_gate(
+def run_capability_replay_gate(
     runtime: Any,
     *,
     scope: dict[str, Any] | ScopeRef | None = None,
     persist: bool = True,
     loop_id: str = LOOP_ID,
+    profile_key: str = "",
+    capability_scope: str = "global",
+    runtime_scope: ScopeRef | dict[str, Any] | None = None,
+    at_time: str = "",
+    legacy_compatibility: bool = False,
 ) -> dict[str, Any]:
+    """Run the one explicitly selected replay cohort.
+
+    Normal operation resolves cases/capabilities through Registry/Profile.
+    The old weak quartet is available only through the compatibility flag; it
+    is not used as a fallback for an empty dynamic selection.
+    """
+
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
-    acceptance = runtime.run_capability_acceptance(
-        scope=asdict(scope_ref),
+    exact_scope = runtime_scope if runtime_scope is not None else scope_ref
+    acceptance = _run_capability_acceptance(
+        runtime,
+        scope=scope_ref,
         persist=persist,
-        case_ids=list(WEAK_CAPABILITY_ACCEPTANCE_CASE_IDS),
+        case_ids=list(LEGACY_WEAK_CAPABILITY_ACCEPTANCE_CASE_IDS) if legacy_compatibility else None,
+        profile_key=profile_key,
+        capability_scope=capability_scope,
+        runtime_scope=exact_scope,
+        at_time=at_time,
+        legacy_compatibility=legacy_compatibility,
     )
     report = {
         "ok": False,
-        "report_type": "weak_capability_replay_gate",
+        "report_type": "capability_replay_gate",
         "scope": asdict(scope_ref),
+        "legacy_compatibility": bool(legacy_compatibility),
+        "profile_key": str(profile_key or "").strip(),
+        "capability_scope": capability_scope,
         "capability_acceptance": acceptance,
+        "capability_replay": {},
         "weak_capability_replay": {},
         "replay_gate": {"ok": False, "blocked_reasons": []},
         "blocked_reasons": [],
     }
-    if not _acceptance_gate(acceptance, expected_count=len(WEAK_CAPABILITY_ACCEPTANCE_CASE_IDS)):
+    if not _acceptance_gate(
+        acceptance,
+        expected_count=(len(LEGACY_WEAK_CAPABILITY_ACCEPTANCE_CASE_IDS) if legacy_compatibility else None),
+    ):
         report["blocked_reasons"] = ["capability_acceptance_failed"]
         return report
 
-    weak_capability_replay = runtime.build_capability_replay_packs(
-        scope=asdict(scope_ref),
-        capabilities=WEAK_REPLAY_CAPABILITIES,
+    expected_capabilities = (
+        list(LEGACY_WEAK_REPLAY_CAPABILITIES)
+        if legacy_compatibility
+        else _acceptance_capability_ids(acceptance)
+    )
+    if not expected_capabilities:
+        report["blocked_reasons"] = ["dynamic_acceptance_capability_selection_empty"]
+        return report
+    capability_replay = _build_capability_replay_packs(
+        runtime,
+        scope=scope_ref,
+        capabilities=expected_capabilities if legacy_compatibility else None,
         persist=persist,
         loop_id=loop_id,
         acceptance_execution_id=str(acceptance.get("execution_id") or ""),
@@ -635,16 +768,149 @@ def run_weak_capability_replay_gate(
             for result in acceptance.get("results") or []
             if isinstance(result, dict)
         },
+        profile_key=profile_key,
+        capability_scope=capability_scope,
+        runtime_scope=exact_scope,
+        at_time=at_time,
+        legacy_compatibility=legacy_compatibility,
     )
-    replay_gate = _weak_replay_gate(weak_capability_replay)
-    report["weak_capability_replay"] = weak_capability_replay
+    replay_gate = _capability_replay_gate(
+        capability_replay,
+        expected_capabilities=expected_capabilities,
+        reason_prefix="legacy_weak_capability_replay" if legacy_compatibility else "capability_replay",
+    )
+    report["capability_replay"] = capability_replay
+    report["weak_capability_replay"] = capability_replay
     report["replay_gate"] = replay_gate
     report["blocked_reasons"] = list(replay_gate.get("blocked_reasons") or [])
     report["ok"] = replay_gate.get("ok") is True
     return report
 
 
-def _initial_closure_report(scope: ScopeRef) -> dict[str, Any]:
+def run_weak_capability_replay_gate(
+    runtime: Any,
+    *,
+    scope: dict[str, Any] | ScopeRef | None = None,
+    persist: bool = True,
+    loop_id: str = LOOP_ID,
+) -> dict[str, Any]:
+    """Compatibility facade for historic release replay evidence only."""
+
+    report = run_capability_replay_gate(
+        runtime,
+        scope=scope,
+        persist=persist,
+        loop_id=loop_id,
+        legacy_compatibility=True,
+    )
+    report["report_type"] = "weak_capability_replay_gate"
+    return report
+
+
+def _run_capability_acceptance(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    persist: bool,
+    case_ids: list[str] | None,
+    profile_key: str,
+    capability_scope: str,
+    runtime_scope: ScopeRef | dict[str, Any],
+    at_time: str,
+    legacy_compatibility: bool,
+) -> dict[str, Any]:
+    runner = getattr(runtime, "run_capability_acceptance", None)
+    if callable(runner):
+        return runner(
+            scope=scope,
+            persist=persist,
+            case_ids=case_ids,
+            profile_key=profile_key,
+            capability_scope=capability_scope,
+            runtime_scope=runtime_scope,
+            at_time=at_time,
+            legacy_compatibility=legacy_compatibility,
+        )
+    from eimemory.governance.capability_acceptance import run_capability_acceptance
+
+    return run_capability_acceptance(
+        runtime,
+        scope=scope,
+        persist=persist,
+        case_ids=case_ids,
+        profile_key=profile_key,
+        capability_scope=capability_scope,
+        runtime_scope=runtime_scope,
+        at_time=at_time,
+        legacy_compatibility=legacy_compatibility,
+    )
+
+
+def _build_capability_replay_packs(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    capabilities: list[str] | None,
+    persist: bool,
+    loop_id: str,
+    acceptance_execution_id: str,
+    acceptance_probe_ids_by_case: dict[str, str],
+    profile_key: str,
+    capability_scope: str,
+    runtime_scope: ScopeRef | dict[str, Any],
+    at_time: str,
+    legacy_compatibility: bool,
+) -> dict[str, Any]:
+    builder = getattr(runtime, "build_capability_replay_packs", None)
+    if callable(builder):
+        return builder(
+            scope=scope,
+            capabilities=capabilities,
+            persist=persist,
+            loop_id=loop_id,
+            acceptance_execution_id=acceptance_execution_id,
+            acceptance_probe_ids_by_case=acceptance_probe_ids_by_case,
+            profile_key=profile_key,
+            capability_scope=capability_scope,
+            runtime_scope=runtime_scope,
+            at_time=at_time,
+            legacy_compatibility=legacy_compatibility,
+        )
+    from eimemory.governance.capability_replay_packs import build_capability_replay_packs
+
+    return build_capability_replay_packs(
+        runtime,
+        scope=scope,
+        capabilities=capabilities,
+        persist=persist,
+        loop_id=loop_id,
+        acceptance_execution_id=acceptance_execution_id,
+        acceptance_probe_ids_by_case=acceptance_probe_ids_by_case,
+        profile_key=profile_key,
+        capability_scope=capability_scope,
+        runtime_scope=runtime_scope,
+        at_time=at_time,
+        legacy_compatibility=legacy_compatibility,
+    )
+
+
+def _acceptance_capability_ids(report: dict[str, Any]) -> list[str]:
+    return sorted(
+        {
+            str(item.get("capability") or "").strip()
+            for item in report.get("results") or []
+            if isinstance(item, dict) and str(item.get("capability") or "").strip()
+        }
+    )
+
+
+def _initial_closure_report(
+    scope: ScopeRef,
+    *,
+    legacy_compatibility: bool = False,
+    profile_key: str = "",
+    capability_scope: str = "global",
+) -> dict[str, Any]:
     not_run = {"ok": False, "status": "not_run", "reason": "upstream_gate_not_run"}
     return {
         "ok": False,
@@ -653,6 +919,9 @@ def _initial_closure_report(scope: ScopeRef) -> dict[str, Any]:
         "blocked_reasons": [],
         "report_type": "l5_closure_rehearsal",
         "scope": asdict(scope),
+        "legacy_compatibility": bool(legacy_compatibility),
+        "profile_key": str(profile_key or "").strip(),
+        "capability_scope": capability_scope,
         "sequence": [],
         "capability_acceptance": dict(not_run),
         "correction_replay": dict(not_run),
@@ -683,12 +952,14 @@ def _blocked_closure(report: dict[str, Any], *reasons: str) -> dict[str, Any]:
     return report
 
 
-def _acceptance_gate(report: dict[str, Any], *, expected_count: int) -> bool:
+def _acceptance_gate(report: dict[str, Any], *, expected_count: int | None) -> bool:
+    actual_count = int(report.get("case_count") or 0)
+    expected_ok = actual_count == expected_count if expected_count is not None else actual_count > 0
     return bool(
         report.get("ok") is True
         and report.get("all_passed") is True
-        and int(report.get("case_count") or 0) == expected_count
-        and int(report.get("pass_count") or 0) == expected_count
+        and expected_ok
+        and int(report.get("pass_count") or 0) == actual_count
         and report.get("distinct_probe_sources") is True
         and report.get("distinct_trace_ids") is True
     )
@@ -739,7 +1010,7 @@ def _observation_autonomous_report(
 def _weak_replay_gate(report: dict[str, Any]) -> dict[str, Any]:
     return _capability_replay_gate(
         report,
-        expected_capabilities=WEAK_REPLAY_CAPABILITIES,
+        expected_capabilities=LEGACY_WEAK_REPLAY_CAPABILITIES,
         reason_prefix="weak_capability_replay",
     )
 
@@ -747,17 +1018,16 @@ def _weak_replay_gate(report: dict[str, Any]) -> dict[str, Any]:
 def _capability_replay_gate(
     report: dict[str, Any],
     *,
-    expected_capabilities: list[str],
+    expected_capabilities: list[str] | None,
     reason_prefix: str,
 ) -> dict[str, Any]:
     packs = [pack for pack in report.get("packs") or [] if isinstance(pack, dict)]
     blocked_reasons: list[str] = []
     capabilities = [str(pack.get("capability") or "") for pack in packs]
-    if (
-        report.get("ok") is not True
-        or len(packs) != len(expected_capabilities)
-        or sorted(capabilities) != sorted(expected_capabilities)
-    ):
+    expected = sorted(set(expected_capabilities or []))
+    if report.get("ok") is not True or not packs:
+        blocked_reasons.append(f"{reason_prefix}_invalid")
+    elif expected and (len(packs) != len(expected) or sorted(capabilities) != expected):
         blocked_reasons.append(f"{reason_prefix}_invalid")
     not_executed: list[str] = []
     failed: list[str] = []
@@ -788,7 +1058,34 @@ def _capability_replay_gate(
         "not_executed_capabilities": sorted(not_executed),
         "failed_capabilities": sorted(failed),
         "duplicate_evidence_capabilities": sorted(duplicate_evidence),
+        "expected_capabilities": expected,
     }
+
+
+def _dynamic_readiness_status(readiness: dict[str, Any]) -> str:
+    """Return a dynamic L5 closure state from the v3 reader envelope only."""
+
+    if (
+        not isinstance(readiness, dict)
+        or readiness.get("schema_version") != "l5_readiness.v3"
+        or readiness.get("reader_mode") != "v3"
+        or readiness.get("ok") is not True
+        or readiness.get("status") != "ready"
+        or readiness.get("capability_ready") is not True
+        or readiness.get("adapter_ready") is not True
+    ):
+        return ""
+    if readiness.get("deployment_blocking") is True:
+        return ""
+    assessment = readiness.get("assessment") if isinstance(readiness.get("assessment"), dict) else {}
+    if assessment.get("gaps"):
+        return ""
+    # L5 needs a demonstrated growth loop, but it does not require a fixed
+    # number or name of capabilities.  "evolving" proves one evidenced loop;
+    # "compounding" is stronger but not a prerequisite encoded as a cohort.
+    if str(readiness.get("loop_maturity") or "") not in {"evolving", "compounding"}:
+        return ""
+    return "L5"
 
 
 def _record_successful_task_outcome(runtime: Any, *, scope: ScopeRef, persist: bool) -> dict[str, Any]:
@@ -833,7 +1130,13 @@ def _record_successful_task_outcome(runtime: Any, *, scope: ScopeRef, persist: b
     return {"event": event, "outcome": outcome}
 
 
-def _seed_eiskill_playbooks(runtime: Any, *, scope: ScopeRef, persist: bool) -> list[str]:
+def _seed_eiskill_playbooks(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    persist: bool,
+    target_capability: str = "",
+) -> list[str]:
     if not persist:
         return []
     record_ids: list[str] = []
@@ -852,7 +1155,7 @@ def _seed_eiskill_playbooks(runtime: Any, *, scope: ScopeRef, persist: bool) -> 
             content={
                 "report_type": "sop_draft",
                 "sop_key": "missing-capability-closure",
-                "target_capability": "proactive.judgment",
+                "target_capability": str(target_capability or ""),
                 "steps": [
                     "state the missing capability precisely",
                     "create the smallest implementation or routing plan",
@@ -870,7 +1173,7 @@ def _seed_eiskill_playbooks(runtime: Any, *, scope: ScopeRef, persist: bool) -> 
             meta={
                 "report_type": "sop_draft",
                 "sop_key": "missing-capability-closure",
-                "target_capability": "proactive.judgment",
+                "target_capability": str(target_capability or ""),
                 "replay_passed": True,
             },
             source="eimemory.closure_rehearsal",
