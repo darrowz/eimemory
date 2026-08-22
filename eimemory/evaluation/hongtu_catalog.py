@@ -15,8 +15,12 @@ from eimemory.evaluation.capability_catalog import CatalogCase
 
 EXECUTOR_ID = "hongtu.eval.memory-recall"
 EXECUTOR_REVISION = "v1"
-CASE_ID = "hongtu_memory_recall_contract_v2"
+HERMES_CASE_ID = "hongtu_memory_recall_hermes_v3"
+OPENCLAW_CASE_ID = "hongtu_memory_recall_openclaw_v1"
+CASE_ID = HERMES_CASE_ID
 CAPABILITY_ID = "memory.recall"
+HERMES_BINDING_ID = "binding.hermes.memory-recall:v1"
+OPENCLAW_BINDING_ID = "binding.openclaw.memory-recall:v1"
 RUNTIME_SCOPE = {
     "tenant_id": "default",
     "agent_id": "hongtu",
@@ -58,11 +62,14 @@ def evaluate_memory_recall(
 
     query = str(input_data.get("query") or "").strip()
     expected_scope = _scope_dict(fixture.get("scope"))
+    catalog_case_id = str(fixture.get("catalog_case_id") or "").strip()
     raw_limit = input_data.get("limit", 8)
     if not query:
         raise ValueError("query is required")
     if expected_scope != RUNTIME_SCOPE:
         raise ValueError("catalog fixture scope is not the Hongtu production scope")
+    if catalog_case_id not in {HERMES_CASE_ID, OPENCLAW_CASE_ID}:
+        raise ValueError("catalog fixture case identity is invalid")
     if isinstance(raw_limit, bool) or not isinstance(raw_limit, int):
         raise ValueError("limit must be an integer")
     limit = max(1, min(8, raw_limit))
@@ -78,7 +85,7 @@ def evaluate_memory_recall(
         task_context={
             "task_type": "catalog.memory_recall_probe",
             "recall_profile": "precision",
-            "catalog_case_id": CASE_ID,
+            "catalog_case_id": catalog_case_id,
         },
         limit=limit,
     )
@@ -102,6 +109,41 @@ def evaluate_memory_recall(
     }
 
 
+def _recall_case(
+    *,
+    case_id: str,
+    binding_id: str,
+    query: str,
+    revision: str,
+    executor_contract_digest: str,
+) -> CatalogCase:
+    return CatalogCase(
+        case_id=case_id,
+        capability_id=CAPABILITY_ID,
+        executor_id=EXECUTOR_ID,
+        executor_revision=EXECUTOR_REVISION,
+        executor_contract_digest=executor_contract_digest,
+        input_data={"query": query, "limit": 8},
+        fixture={"scope": dict(RUNTIME_SCOPE), "catalog_case_id": case_id},
+        expected_invariants=[
+            {"field": "execution_ok", "op": "eq", "value": True},
+            {"field": "result_count", "op": "min", "value": 1},
+            {"field": "result_count", "op": "max", "value": 24},
+            {"field": "max_lane_count", "op": "max", "value": 8},
+            {"field": "scope_isolated", "op": "eq", "value": True},
+            {"field": "confidence_bounded", "op": "eq", "value": True},
+            {"field": "payload_redacted", "op": "eq", "value": True},
+        ],
+        binding_selector={"binding_ids": [binding_id]},
+        resource_budget={
+            "timeout_seconds": 30,
+            "max_memory_mb": 256,
+            "max_artifact_bytes": 262_144,
+        },
+        revision=revision,
+    )
+
+
 def install(bootstrap: Any) -> None:
     """Register the trusted production catalog through the sealed bootstrap."""
 
@@ -117,29 +159,21 @@ def install(bootstrap: Any) -> None:
         },
     )
     bootstrap.register_case(
-        CatalogCase(
-            case_id=CASE_ID,
-            capability_id=CAPABILITY_ID,
-            executor_id=EXECUTOR_ID,
-            executor_revision=EXECUTOR_REVISION,
+        _recall_case(
+            case_id=HERMES_CASE_ID,
+            binding_id=HERMES_BINDING_ID,
+            query="eimemory Hermes 商务助理",
+            revision="v3",
             executor_contract_digest=registration.contract_digest,
-            input_data={"query": "eimemory Hermes 商务助理", "limit": 8},
-            fixture={"scope": dict(RUNTIME_SCOPE)},
-            expected_invariants=[
-                {"field": "execution_ok", "op": "eq", "value": True},
-                {"field": "result_count", "op": "min", "value": 1},
-                {"field": "result_count", "op": "max", "value": 24},
-                {"field": "max_lane_count", "op": "max", "value": 8},
-                {"field": "scope_isolated", "op": "eq", "value": True},
-                {"field": "confidence_bounded", "op": "eq", "value": True},
-                {"field": "payload_redacted", "op": "eq", "value": True},
-            ],
-            resource_budget={
-                "timeout_seconds": 30,
-                "max_memory_mb": 256,
-                "max_artifact_bytes": 262_144,
-            },
-            revision="v2",
+        )
+    )
+    bootstrap.register_case(
+        _recall_case(
+            case_id=OPENCLAW_CASE_ID,
+            binding_id=OPENCLAW_BINDING_ID,
+            query="eimemory OpenClaw 自主学习",
+            revision="v1",
+            executor_contract_digest=registration.contract_digest,
         )
     )
 
@@ -147,6 +181,10 @@ def install(bootstrap: Any) -> None:
 __all__ = [
     "CAPABILITY_ID",
     "CASE_ID",
+    "HERMES_BINDING_ID",
+    "HERMES_CASE_ID",
+    "OPENCLAW_BINDING_ID",
+    "OPENCLAW_CASE_ID",
     "EXECUTOR_ID",
     "EXECUTOR_REVISION",
     "RUNTIME_SCOPE",
