@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-08-22
+
+### Added
+
+- Add a bounded `operational_issue` recall intent for Chinese and English
+  deployment, release, incident, rollback, root-cause, and troubleshooting
+  queries without treating a bare generic question as an operational event.
+- Add governed post-fusion relevance selection with exact-identity dominance,
+  duplicate-identity preservation, grounded score margins, graph/anchor
+  filtering, and no forced top-k padding.
+- Add `recall_bundle.compact.v1` plus CLI `--compact`, `--explain`, and
+  `--limit` controls. The compatibility release keeps the diagnostic payload
+  as the default while compact results enforce bounded model-facing output.
+- Add canonical-first recall with bounded legacy fallback while preserving
+  exact Hermes/OpenClaw channel isolation and the low-level legacy-union
+  contract.
+
+### Changed
+
+- Make recall lane eligibility intent-driven so preference, project, and
+  operational queries do not inherit unrelated research/news tails, while
+  explicit caller boundaries and research recall remain authoritative.
+- Extend production recall evaluation with P@3, MRR, noise, padding, compact
+  payload, latency, canonical/fallback, duplicate identity, graph/anchor, and
+  independent Hermes/OpenClaw/CLI regression coverage.
+
+### Compatibility
+
+- Keep `RecallBundle.to_dict()`, storage schema, RPC methods, adapter contracts,
+  source allowlists, authoritative hydration, rejected-record filtering, and
+  channel leakage gates unchanged. No data migration or new service is needed.
+
 ### Changed
 
 - Ship the trusted Hongtu application catalog from the main `eimemory`

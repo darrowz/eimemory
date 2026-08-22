@@ -18,7 +18,12 @@ from eimemory.identity import (
 from eimemory.living import LIVING_MEMORY_META_KEY, enrich_living_memory, refresh_living_quality_snapshot
 from eimemory.metadata import business_metadata, runtime_metadata
 from eimemory.models.records import LinkRef, RecallBundle, RecordEnvelope, ScopeRef
-from eimemory.recall import RecallIntent, build_recall_index_document, is_outcome_pollution_record
+from eimemory.recall import (
+    RecallIntent,
+    build_recall_index_document,
+    is_outcome_pollution_record,
+    operational_issue_cue_reasons,
+)
 from eimemory.scoring import ScoreContext, evaluate_memory_score, extract_memory_score, with_score_metadata
 from eimemory.storage.runtime_store import RuntimeStore
 from eimemory.retrieval.contracts import CandidateRequest, CandidateSource, RecallEngine, RecallPipelineSnapshot
@@ -826,9 +831,10 @@ class MemoryAPI:
         recall_intent: RecallIntent,
         report_query: bool,
         operational_recall_allowed: bool = False,
+        allowed_recall_lanes: list[str] | tuple[str, ...] | None = None,
     ) -> list[str]:
         if operational_recall_allowed:
-            return [
+            kinds = [
                 "reflection",
                 "memory",
                 "claim_card",
@@ -840,11 +846,18 @@ class MemoryAPI:
                 "skill_candidate",
                 "promotion_request",
             ]
-        if report_query or recall_intent.name == "report":
-            return ["reflection", "memory", "claim_card"]
-        if recall_intent.name in {"project_delivery", "operator_preference", "living_posture"} and recall_intent.confidence >= 0.45:
-            return ["memory", "claim_card"]
-        return ["memory", "claim_card", "knowledge_page"]
+        elif report_query or recall_intent.name == "report":
+            kinds = ["reflection", "memory", "claim_card"]
+        elif recall_intent.name in {"project_delivery", "operator_preference", "living_posture"} and recall_intent.confidence >= 0.45:
+            kinds = ["memory", "claim_card"]
+        else:
+            kinds = ["memory", "claim_card", "knowledge_page"]
+        explicit_lanes = {str(value or "").strip().lower() for value in (allowed_recall_lanes or ())}
+        if "external_knowledge" in explicit_lanes:
+            kinds.append("knowledge_page")
+        if "news" in explicit_lanes:
+            kinds.append("news")
+        return list(dict.fromkeys(kinds))
 
     @staticmethod
     def _recall_intent_summary(recall_intent: RecallIntent) -> dict:
@@ -1021,6 +1034,12 @@ class MemoryAPI:
         if organs and labels["organs"] and not labels["organs"] & organs:
             return "organ:not_allowed"
         recall_lane = self._record_recall_lane(item)
+        suppressed_kinds = set(recall_filters.get("suppressed_kinds") or [])
+        explicit_allowed_lanes = set(recall_filters.get("allowed_recall_lanes") or [])
+        if item.kind in suppressed_kinds and (
+            not explicit_allowed_lanes or recall_lane not in explicit_allowed_lanes
+        ):
+            return "intent_kind:suppressed"
         blocked_recall_lanes = set(recall_filters.get("blocked_recall_lanes") or [])
         if blocked_recall_lanes and recall_lane in blocked_recall_lanes:
             return recall_lane
@@ -1176,10 +1195,12 @@ class MemoryAPI:
             return True
         if bool(task_context.get("include_report_records")) or bool(task_context.get("include_evidence_only")):
             return True
-        haystack = " ".join(
+        query_cues = operational_issue_cue_reasons(query)
+        if query_cues:
+            return True
+        context_haystack = " ".join(
             str(value or "")
             for value in (
-                query,
                 task_context.get("intent"),
                 task_context.get("task_intent"),
                 task_context.get("task_type"),
@@ -1189,7 +1210,7 @@ class MemoryAPI:
             )
         ).lower()
         return any(
-            marker in haystack
+            marker in context_haystack
             for marker in (
                 "diagnostic",
                 "diagnostics",

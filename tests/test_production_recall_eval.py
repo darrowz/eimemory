@@ -7,7 +7,11 @@ import pytest
 from eimemory.adapters.runtime.channel import resolve_channel_scope
 from eimemory.api.runtime import Runtime
 from eimemory.cli.main import main as cli_main
-from eimemory.evaluation.production_recall import evaluate_production_recall_quality_gate, run_production_recall_eval
+from eimemory.evaluation.production_recall import (
+    RECALL_QUALITY_GATE_THRESHOLDS,
+    evaluate_production_recall_quality_gate,
+    run_production_recall_eval,
+)
 from eimemory.models.records import RecallBundle, RecordEnvelope, ScopeRef
 
 
@@ -195,6 +199,64 @@ def test_production_recall_eval_reports_regression_metrics(tmp_path) -> None:
     assert report["samples"][4]["forbid_hit"] is False
     assert all(sample["cross_channel_leakage_count"] == 0 for sample in report["samples"])
     assert all(sample["source_filter_leakage_count"] == 0 for sample in report["samples"])
+
+
+def test_production_recall_eval_reports_precision_noise_padding_payload_metrics(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    dataset = _dataset()
+    dataset["cases"].append(
+        {
+            "case_id": "case-no-answer",
+            "query": "no such recall answer marker",
+            "no_answer": True,
+            "topk": 5,
+            "task_context": {"scope_strategy": "exact"},
+            "scope": _scope(),
+        }
+    )
+
+    report = run_production_recall_eval(runtime, dataset)
+
+    no_answer = report["samples"][-1]
+    assert report["sample_count"] == 6
+    assert "p_at_3" in report
+    assert "mrr" in report
+    assert "noise_rate" in report
+    assert "padding_rate" in report
+    assert report["payload_bytes_top_1"] <= 4_096
+    assert report["payload_bytes_top_5"] <= 16_384
+    assert no_answer["no_answer"] is True
+    assert no_answer["padding"] is False
+    assert no_answer["noise_rate"] == 0.0
+    assert no_answer["p_at_3"] == 1.0
+    assert report["padding_rate"] == 0.0
+
+
+def test_production_recall_eval_scores_research_multi_hit_cases(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    dataset = _dataset()
+    dataset["seed"].append(
+        {
+            "id": "graphiti-retrieval-companion",
+            "kind": "knowledge_page",
+            "title": "Graphiti temporal knowledge graph retrieval companion",
+            "text": "Graphiti temporal knowledge graph retrieval companion notes.",
+            "source": "external.research",
+            "content": {"page_type": "paper", "summary": "Graphiti temporal knowledge graph"},
+            "meta": {"page_type": "paper", "source": "research"},
+        }
+    )
+    research_case = next(case for case in dataset["cases"] if case["case_id"] == "case-research-knowledge")
+    research_case["expected_record_ids"].append("graphiti-retrieval-companion")
+    research_case["expected_titles"].append("Graphiti temporal knowledge graph retrieval companion")
+
+    report = run_production_recall_eval(runtime, dataset)
+    sample = next(item for item in report["samples"] if item["case_id"] == "case-research-knowledge")
+
+    assert set(sample["expected_record_ids"]).issubset(sample["returned_record_ids"])
+    assert "Graphiti temporal knowledge graph retrieval companion" in sample["returned_titles"]
+    assert sample["p_at_3"] == 1.0
+    assert report["precision_at_3"] == report["p_at_3"]
 
 
 def test_production_recall_eval_blocks_cross_channel_leaks_for_all_authority_channels(tmp_path, monkeypatch) -> None:
@@ -545,3 +607,35 @@ def test_production_recall_quality_gate_blocks_pollution_and_latency() -> None:
     assert gate["blocked_reason"] == "recall_quality_gate_failed"
     assert gate["blocking_metrics"]["audit_pollution_rate"]["actual"] == 0.06
     assert gate["blocking_metrics"]["latency_ms_p95"]["actual"] == 3000.1
+
+
+def test_production_recall_quality_gate_enforces_new_quality_and_payload_metrics() -> None:
+    report = {
+        "sample_count": 20,
+        **RECALL_QUALITY_GATE_THRESHOLDS,
+        "cross_channel_leakage_count": 0,
+        "source_filter_leakage_count": 0,
+    }
+    report.update(
+        {
+            "p_at_3": 0.0,
+            "mrr": 0.0,
+            "noise_rate": 1.0,
+            "padding_rate": 1.0,
+            "payload_bytes_top_1": 4_097,
+            "payload_bytes_top_5": 16_385,
+            "latency_ms_p95": 3_000.1,
+        }
+    )
+
+    gate = evaluate_production_recall_quality_gate(report)
+
+    assert set(gate["blocking_metrics"]) >= {
+        "p_at_3",
+        "mrr",
+        "noise_rate",
+        "padding_rate",
+        "payload_bytes_top_1",
+        "payload_bytes_top_5",
+        "latency_ms_p95",
+    }

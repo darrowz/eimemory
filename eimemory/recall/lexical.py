@@ -205,9 +205,18 @@ def _build_kind_suppression_reason(record_kind: str, record_source: str, recall_
     if not intent_name or intent_name == "research":
         return ""
     kind = str(record_kind or "").strip().lower()
-    if kind != "knowledge_page":
-        return ""
-    if intent_name not in {"project_delivery", "operator_preference", "living_posture"}:
+    suppressed_kinds = {
+        str(value or "").strip().lower()
+        for value in (recall_filters or {}).get("suppressed_kinds") or ()
+    }
+    if not suppressed_kinds and intent_name in {
+        "project_delivery",
+        "operator_preference",
+        "living_posture",
+        "operational_issue",
+    }:
+        suppressed_kinds = {"knowledge_page", "news"}
+    if kind not in suppressed_kinds:
         return ""
     return f"intent:{intent_name} downweights kind={kind}; source={str(record_source or '').strip().lower()}"
 

@@ -74,6 +74,16 @@ def _read_stdin_text() -> str:
     return sys.stdin.read()
 
 
+def _recall_limit(value: str) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise argparse.ArgumentTypeError("recall limit must be an integer from 1 to 50") from exc
+    if not 1 <= parsed <= 50:
+        raise argparse.ArgumentTypeError("recall limit must be an integer from 1 to 50")
+    return parsed
+
+
 def _write_json(payload: Any, *, indent: int | None = 2) -> None:
     text = json.dumps(payload, ensure_ascii=False, indent=indent) + "\n"
     buffer = getattr(sys.stdout, "buffer", None)
@@ -116,6 +126,9 @@ def _build_parser() -> argparse.ArgumentParser:
     recall = sub.add_parser("recall")
     recall.add_argument("query")
     recall.add_argument("--view", choices=["claim_centered", "page_centered", "mixed", "contradiction", "freshness"], default="")
+    recall.add_argument("--compact", action="store_true", help="emit bounded recall_bundle.compact.v1 output")
+    recall.add_argument("--explain", action="store_true", help="include bounded selector explanation with compact output")
+    recall.add_argument("--limit", type=_recall_limit, default=5, help="number of results, from 1 to 50")
 
     paper = sub.add_parser("paper")
     paper_sub = paper.add_subparsers(dest="paper_command")
@@ -1016,11 +1029,26 @@ def _dispatch_recall(parsed: object, runtime: Any, scope: dict[str, Any]) -> int
     task_context = {"task_type": "cli.recall"}
     if parsed.view:
         task_context["recall_view"] = parsed.view
+    if parsed.compact:
+        task_context["scope_strategy"] = "canonical_first"
     bundle = runtime.memory.recall(
         query=parsed.query,
         scope=scope,
         task_context=task_context,
-        limit=5,
+        limit=parsed.limit,
+    )
+    if parsed.compact:
+        print(
+            json.dumps(
+                bundle.to_compact_dict(limit=parsed.limit, include_explanation=parsed.explain),
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        )
+        return 0
+    print(
+        "warning: full recall payload is deprecated; use --compact for bounded output",
+        file=sys.stderr,
     )
     print(json.dumps(bundle.to_dict(), ensure_ascii=False, indent=2))
     return 0
@@ -2973,9 +3001,10 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if report.get("ok") is True else 1
         if parsed.eval_command == "production-recall":
             try:
-                from eimemory.scheduler.jobs import _load_json_dataset
-
-                dataset = _load_json_dataset(parsed.dataset_json)
+                with open(parsed.dataset_json, "r", encoding="utf-8") as handle:
+                    dataset = json.load(handle)
+                if not isinstance(dataset, (dict, list)):
+                    raise ValueError("dataset must be a JSON object or list")
             except OSError as exc:
                 print(
                     json.dumps(

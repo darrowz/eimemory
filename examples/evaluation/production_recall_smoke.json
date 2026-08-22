@@ -65,6 +65,61 @@
       "provenance": {
         "report_type": "rule_evolution"
       }
+    },
+    {
+      "id": "deployment-incident-root-cause",
+      "kind": "memory",
+      "title": "部署失败根因与回滚",
+      "text": "部署失败后的根因：健康检查超时；先回滚到上一版本并核验服务恢复。",
+      "memory_type": "fact",
+      "source": "eimemory.incident"
+    },
+    {
+      "id": "deployment-incident-distractor",
+      "kind": "memory",
+      "title": "部署失败关键词噪声",
+      "text": "部署失败关键词出现在一份无关的草稿索引中，不提供根因或回滚步骤。",
+      "memory_type": "fact",
+      "source": "test.noise"
+    },
+    {
+      "id": "graphiti-retrieval-notes",
+      "kind": "knowledge_page",
+      "title": "Graphiti temporal knowledge graph retrieval notes",
+      "text": "Graphiti temporal knowledge graph retrieval notes cover temporal edges and evidence ranking.",
+      "source": "external.research",
+      "content": {
+        "page_type": "paper",
+        "summary": "Graphiti temporal knowledge graph retrieval"
+      },
+      "meta": {
+        "page_type": "paper",
+        "source": "research"
+      }
+    },
+    {
+      "id": "canonical-scope-only",
+      "kind": "memory",
+      "title": "canonical-only-alpha",
+      "text": "canonical-only-alpha",
+      "memory_type": "fact",
+      "scope": {
+        "agent_id": "hongtu",
+        "workspace_id": "embodied",
+        "user_id": "darrow"
+      }
+    },
+    {
+      "id": "legacy-scope-fallback",
+      "kind": "memory",
+      "title": "legacy-only-beta",
+      "text": "legacy-only-beta",
+      "memory_type": "fact",
+      "scope": {
+        "agent_id": "main",
+        "workspace_id": "repo-x",
+        "user_id": "darrow"
+      }
     }
   ],
   "cases": [
@@ -162,6 +217,87 @@
       "scope": {
         "agent_id": "hongtu",
         "workspace_id": "production",
+        "user_id": "darrow"
+      }
+    },
+    {
+      "case_id": "case-operational-zh",
+      "query": "部署失败根因与回滚",
+      "expected_record_ids": ["deployment-incident-root-cause"],
+      "expected_titles": ["部署失败根因与回滚"],
+      "expected_text": ["健康检查", "回滚"],
+      "forbid_title_contains": ["关键词噪声"],
+      "topk": 5,
+      "task_context": {
+        "task_type": "cli.recall"
+      },
+      "scope": {
+        "agent_id": "hongtu",
+        "workspace_id": "production",
+        "user_id": "darrow"
+      }
+    },
+    {
+      "case_id": "case-research-multi-hit",
+      "query": "Graphiti temporal knowledge graph",
+      "expected_record_ids": ["graphiti-knowledge-page", "graphiti-retrieval-notes"],
+      "expected_titles": [
+        "Graphiti temporal knowledge graph 论文",
+        "Graphiti temporal knowledge graph retrieval notes"
+      ],
+      "expected_text": ["Graphiti", "knowledge graph"],
+      "topk": 5,
+      "task_context": {
+        "task_type": "knowledge_search",
+        "knowledge_scope": "research"
+      },
+      "scope": {
+        "agent_id": "hongtu",
+        "workspace_id": "production",
+        "user_id": "darrow"
+      }
+    },
+    {
+      "case_id": "case-no-answer-no-padding",
+      "query": "no such production recall answer marker",
+      "no_answer": true,
+      "topk": 5,
+      "task_context": {
+        "scope_strategy": "exact"
+      },
+      "scope": {
+        "agent_id": "hongtu",
+        "workspace_id": "production",
+        "user_id": "darrow"
+      }
+    },
+    {
+      "case_id": "case-canonical-no-fallback",
+      "query": "canonical-only-alpha",
+      "expected_record_ids": ["canonical-scope-only"],
+      "expected_titles": ["canonical-only-alpha"],
+      "topk": 5,
+      "task_context": {
+        "scope_strategy": "canonical_first"
+      },
+      "scope": {
+        "agent_id": "hongtu",
+        "workspace_id": "embodied",
+        "user_id": "darrow"
+      }
+    },
+    {
+      "case_id": "case-legacy-fallback",
+      "query": "legacy-only-beta",
+      "expected_record_ids": ["legacy-scope-fallback"],
+      "expected_titles": ["legacy-only-beta"],
+      "topk": 5,
+      "task_context": {
+        "scope_strategy": "canonical_first"
+      },
+      "scope": {
+        "agent_id": "hongtu",
+        "workspace_id": "embodied",
         "user_id": "darrow"
       }
     }

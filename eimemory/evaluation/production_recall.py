@@ -11,6 +11,7 @@ This module intentionally keeps the runtime surface small and deterministic:
 from __future__ import annotations
 
 from dataclasses import asdict
+import json
 from pathlib import Path
 import tempfile
 from time import perf_counter
@@ -38,6 +39,12 @@ from eimemory.recall import is_outcome_pollution_record
 RECALL_QUALITY_GATE_THRESHOLDS: dict[str, float] = {
     "hit_at_1": 0.70,
     "hit_at_5": 0.90,
+    "p_at_3": 0.60,
+    "mrr": 0.70,
+    "noise_rate": 0.40,
+    "padding_rate": 0.05,
+    "payload_bytes_top_1": 4_096.0,
+    "payload_bytes_top_5": 16_384.0,
     "false_recall_rate": 0.05,
     "forbidden_hit_rate": 0.05,
     "outcome_pollution_rate": 0.05,
@@ -50,7 +57,7 @@ RECALL_QUALITY_GATE_THRESHOLDS: dict[str, float] = {
     "latency_ms_p95": 3000.0,
 }
 
-_MIN_GATE_METRICS = {"hit_at_1", "hit_at_5"}
+_MIN_GATE_METRICS = {"hit_at_1", "hit_at_5", "p_at_3", "mrr"}
 
 
 def normalize_production_recall_dataset(dataset: dict | list) -> dict[str, Any]:
@@ -161,6 +168,11 @@ def _run_production_recall_eval_on_runtime(
     policy_hit_scores: list[float] = []
     injection_withheld_rates: list[float] = []
     empty_count = 0
+    p_at_3_scores: list[float] = []
+    noise_rates: list[float] = []
+    padding_count = 0
+    payload_bytes_top_1: list[int] = []
+    payload_bytes_top_5: list[int] = []
 
     for index, case in enumerate(normalized["cases"]):
         if not isinstance(case, dict):
@@ -202,6 +214,12 @@ def _run_production_recall_eval_on_runtime(
         source_filter_leakage_count += int(sample.get("source_filter_leakage_count") or 0)
         policy_hit_scores.append(float(sample.get("policy_hit") or 0.0))
         injection_withheld_rates.append(float(sample.get("injection_withheld_rate") or 0.0))
+        p_at_3_scores.append(float(sample.get("p_at_3") or 0.0))
+        noise_rates.append(float(sample.get("noise_rate") or 0.0))
+        if sample.get("padding"):
+            padding_count += 1
+        payload_bytes_top_1.append(int(sample.get("payload_bytes_top_1") or 0))
+        payload_bytes_top_5.append(int(sample.get("payload_bytes_top_5") or 0))
         if sample.get("empty"):
             empty_count += 1
 
@@ -228,6 +246,13 @@ def _run_production_recall_eval_on_runtime(
         "hit_at_k": round(sum(hit_at_k_scores) / sample_count, 3) if sample_count else 0.0,
         "hit_at_5": round(sum(hit_at_5_scores) / sample_count, 3) if sample_count else 0.0,
         "mrr": mean_reciprocal_rank([int(rank) for rank in reciprocal_ranks]) if sample_count else 0.0,
+        "p_at_3": round(sum(p_at_3_scores) / sample_count, 3) if sample_count else 0.0,
+        "precision_at_3": round(sum(p_at_3_scores) / sample_count, 3) if sample_count else 0.0,
+        "noise_rate": round(sum(noise_rates) / sample_count, 3) if sample_count else 0.0,
+        "padding_rate": round(padding_count / sample_count, 3) if sample_count else 0.0,
+        "payload_bytes_top_1": max(payload_bytes_top_1 or [0]),
+        "payload_bytes_top_5": max(payload_bytes_top_5 or [0]),
+        "payload_ceiling_ok": max(payload_bytes_top_1 or [0]) <= 4_096 and max(payload_bytes_top_5 or [0]) <= 16_384,
         "latency_ms_avg": round(sum(latencies_ms) / sample_count, 3) if sample_count else 0.0,
         "latency_ms_p95": percentile(latencies_ms, 95),
         "false_recall_rate": round(false_recall_count / sample_count, 3) if sample_count else 0.0,
@@ -340,6 +365,11 @@ def _run_case(
     forbid_kinds = _normalize_set(case.get("forbid_kinds") or case.get("forbid_any_kind"), lower=True)
     forbid_title_contains = _normalize_list(case.get("forbid_title_contains") or case.get("forbid_any_title"))
     forbid_source_contains = _normalize_list(case.get("forbid_source_contains") or case.get("forbid_any_source"))
+    no_answer = bool(
+        case.get("no_answer")
+        or case.get("expect_no_answer")
+        or case.get("expected_empty")
+    )
 
     matched_rank = _first_matching_rank(
         returned,
@@ -348,7 +378,13 @@ def _run_case(
         expected_text=expected_text,
     )
     has_expectation = bool(expected_record_ids or expected_titles or expected_text)
-    if has_expectation:
+    if no_answer:
+        matched_rank = 0
+        hit_at_1 = 1.0 if not returned else 0.0
+        hit_at_k = hit_at_1
+        hit_at_5 = hit_at_1
+        reciprocal_rank = 0.0
+    elif has_expectation:
         hit_at_1 = 1.0 if matched_rank == 1 else 0.0
         hit_at_k = 1.0 if matched_rank and matched_rank <= topk else 0.0
         hit_at_5 = 1.0 if matched_rank and matched_rank <= 5 else 0.0
@@ -403,9 +439,34 @@ def _run_case(
         )
         for item in returned
     )
-    false_recall = bool(has_expectation and returned and not matched_rank)
+    relevant_flags = [
+        _record_matches_expected(
+            item,
+            expected_record_ids=expected_record_ids,
+            expected_titles=expected_titles,
+            expected_text=expected_text,
+        )
+        for item in returned
+    ]
+    if no_answer:
+        p_at_3 = 1.0 if not returned else 0.0
+        noise_rate = 1.0 if returned else 0.0
+        padding = bool(returned)
+    else:
+        top_three = relevant_flags[:3]
+        p_at_3 = round(sum(1 for matched in top_three if matched) / max(1, len(top_three)), 3)
+        noise_rate = round(
+            sum(1 for matched in relevant_flags if not matched) / max(1, len(relevant_flags)),
+            3,
+        )
+        padding = False
+    compact_top_1 = bundle.to_compact_dict(limit=1, include_explanation=True)
+    compact_top_5 = bundle.to_compact_dict(limit=min(5, topk), include_explanation=True)
+    payload_top_1 = len(json.dumps(compact_top_1, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+    payload_top_5 = len(json.dumps(compact_top_5, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+    false_recall = bool((no_answer and returned) or (has_expectation and returned and not matched_rank))
     passed = (
-        bool(matched_rank) if has_expectation else bool(returned)
+        (not returned if no_answer else (bool(matched_rank) if has_expectation else bool(returned)))
     ) and not any(
         [
             forbidden_by_case,
@@ -447,8 +508,14 @@ def _run_case(
         "hit_at_k": hit_at_k,
         "hit_at_5": hit_at_5,
         "reciprocal_rank": reciprocal_rank,
-        "matched_expected": bool(matched_rank) if has_expectation else bool(returned),
+        "matched_expected": (not returned) if no_answer else (bool(matched_rank) if has_expectation else bool(returned)),
         "empty": not bool(returned),
+        "no_answer": no_answer,
+        "p_at_3": p_at_3,
+        "noise_rate": noise_rate,
+        "padding": padding,
+        "payload_bytes_top_1": payload_top_1,
+        "payload_bytes_top_5": payload_top_5,
         "false_recall": bool(false_recall),
         "forbid_hit": bool(forbidden_by_case),
         "outcome_polluted": bool(outcome_polluted),
@@ -473,6 +540,7 @@ def _run_case(
             "recall_filters": dict(bundle.explanation.get("recall_filters") or {}),
             "selected_records": selected_records,
             "injection_plan": injection_plan,
+            "relevance_selector": dict(bundle.explanation.get("relevance_selector") or {}),
         },
     }
 
@@ -593,6 +661,27 @@ def _first_matching_rank(
         if any(term in text for term in expected_text):
             return index
     return 0
+
+
+def _record_matches_expected(
+    record: RecordEnvelope,
+    *,
+    expected_record_ids: set[str],
+    expected_titles: set[str],
+    expected_text: set[str],
+) -> bool:
+    if record.record_id in expected_record_ids or record.title in expected_titles:
+        return True
+    text = " ".join(
+        [
+            record.title,
+            record.summary,
+            record.detail,
+            str(record.content.get("text") or ""),
+            str(record.content.get("summary") or ""),
+        ]
+    ).lower()
+    return any(term in text for term in expected_text)
 
 
 def _record_texts(records: list[RecordEnvelope]) -> list[str]:
@@ -797,6 +886,11 @@ def _recall_quality_report_record(report: dict[str, Any], *, scope: ScopeRef) ->
             "sample_count": int(report.get("sample_count") or 0),
             "hit_at_1": float(report.get("hit_at_1") or 0.0),
             "hit_at_5": float(report.get("hit_at_5") or 0.0),
+            "p_at_3": float(report.get("p_at_3") or 0.0),
+            "noise_rate": float(report.get("noise_rate") or 0.0),
+            "padding_rate": float(report.get("padding_rate") or 0.0),
+            "payload_bytes_top_1": int(report.get("payload_bytes_top_1") or 0),
+            "payload_bytes_top_5": int(report.get("payload_bytes_top_5") or 0),
             "latency_ms_p95": float(report.get("latency_ms_p95") or 0.0),
             "quality_gate_ok": bool((report.get("quality_gate") or {}).get("ok")),
         },
@@ -823,6 +917,7 @@ def _sanitized_diagnostic_report(report: dict[str, Any]) -> dict[str, Any]:
                 "index", "case_id", "scope", "topk", "latency_ms", "returned_record_ids",
                 "returned_count", "rank", "hit_at_1", "hit_at_k", "hit_at_5",
                 "reciprocal_rank", "matched_expected", "empty", "false_recall", "forbid_hit",
+                "no_answer", "p_at_3", "noise_rate", "padding", "payload_bytes_top_1", "payload_bytes_top_5",
                 "outcome_polluted", "reflection_polluted", "audit_polluted", "incident_polluted",
                 "evolution_polluted", "stale_rule_polluted", "selected_record_polluted", "passed", "error",
                 "cross_channel_leakage_count", "source_filter_leakage_count",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
@@ -67,6 +68,10 @@ VALID_KINDS: frozenset[str] = frozenset(
 )
 
 QUALITY_META_KEY = "quality"
+RECALL_BUNDLE_COMPACT_SCHEMA = "recall_bundle.compact.v1"
+_COMPACT_TEXT_LIMIT = 240
+_COMPACT_TITLE_LIMIT = 120
+_COMPACT_AUXILIARY_LIMIT = 1
 
 
 def _clamp_score(value: float) -> float:
@@ -305,3 +310,112 @@ class RecallBundle:
             "next_action_hint": self.next_action_hint,
             "explanation": dict(self.explanation),
         }
+
+    def to_compact_dict(
+        self,
+        *,
+        limit: int | None = None,
+        include_explanation: bool = False,
+        explain: bool | None = None,
+    ) -> dict[str, Any]:
+        """Return a bounded presentation payload without changing ``to_dict``."""
+
+        if explain is not None:
+            include_explanation = bool(explain)
+        bounded_limit = max(1, min(50, int(limit))) if limit is not None else min(50, len(self.items))
+        payload: dict[str, Any] = {
+            "schema_version": RECALL_BUNDLE_COMPACT_SCHEMA,
+            "items": [_compact_record(item) for item in self.items[:bounded_limit]],
+            "rules": [_compact_record(item) for item in self.rules[:_COMPACT_AUXILIARY_LIMIT]],
+            "reflections": [_compact_record(item) for item in self.reflections[:_COMPACT_AUXILIARY_LIMIT]],
+            "confidence": round(max(0.0, min(1.0, float(self.confidence))), 3),
+            "next_action_hint": _compact_text(self.next_action_hint, maximum=160),
+        }
+        if include_explanation:
+            payload["explanation"] = _compact_explanation(self.explanation)
+        return _fit_compact_payload(payload, maximum_bytes=16_384 if bounded_limit > 1 else 4_096)
+
+
+def _compact_record(record: RecordEnvelope) -> dict[str, Any]:
+    meta = record.meta if isinstance(record.meta, dict) else {}
+    content = record.content if isinstance(record.content, dict) else {}
+    memory_type = str(meta.get("memory_type") or content.get("memory_type") or "").strip()
+    payload: dict[str, Any] = {
+        "record_id": record.record_id,
+        "kind": record.kind,
+        "status": record.status,
+        "title": _compact_text(record.title, maximum=_COMPACT_TITLE_LIMIT),
+        "summary": _compact_text(record.summary or record.detail or content.get("text"), maximum=_COMPACT_TEXT_LIMIT),
+        "source": _compact_text(record.source, maximum=96),
+        "source_id": _compact_text(record.source_id, maximum=96),
+    }
+    if memory_type:
+        payload["memory_type"] = _compact_text(memory_type, maximum=64)
+    return payload
+
+
+def _compact_explanation(explanation: dict[str, Any]) -> dict[str, Any]:
+    allowed = {
+        "query",
+        "scope_strategy",
+        "scope_fallback",
+        "recall_profile",
+        "recall_profile_source",
+        "recall_intent",
+        "selected_count",
+        "retrieval_mode",
+        "vector_hits",
+        "preference_query",
+        "report_query",
+        "relevance_selector",
+    }
+    return {
+        key: _compact_value(explanation[key], depth=0)
+        for key in sorted(allowed)
+        if key in explanation
+    }
+
+
+def _compact_value(value: Any, *, depth: int) -> Any:
+    if depth >= 3:
+        return _compact_text(value, maximum=160)
+    if isinstance(value, dict):
+        return {
+            str(key): _compact_value(item, depth=depth + 1)
+            for key, item in list(value.items())[:24]
+            if str(key) not in {"scoring", "living", "fusion", "scope", "query_scopes", "recall_scope_aliases"}
+        }
+    if isinstance(value, (list, tuple)):
+        return [_compact_value(item, depth=depth + 1) for item in list(value)[:16]]
+    if isinstance(value, str):
+        return _compact_text(value, maximum=320)
+    return value
+
+
+def _compact_text(value: Any, *, maximum: int) -> str:
+    return " ".join(str(value or "").split())[:maximum]
+
+
+def _fit_compact_payload(payload: dict[str, Any], *, maximum_bytes: int) -> dict[str, Any]:
+    """Keep compact output within the caller-facing top-1/top-5 ceilings."""
+
+    if len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) <= maximum_bytes:
+        return payload
+    payload["rules"] = []
+    payload["reflections"] = []
+    if "explanation" in payload:
+        explanation = dict(payload["explanation"])
+        explanation.pop("relevance_selector", None)
+        payload["explanation"] = explanation
+    while len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) > maximum_bytes:
+        changed = False
+        for collection_name in ("items", "rules", "reflections"):
+            for item in payload.get(collection_name, []):
+                for field_name in ("summary", "title"):
+                    value = str(item.get(field_name) or "")
+                    if len(value) > 32:
+                        item[field_name] = value[: max(32, len(value) // 2)]
+                        changed = True
+        if not changed:
+            break
+    return payload

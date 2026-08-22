@@ -21,7 +21,7 @@ def test_recall_filters_for_intent() -> None:
     assert filters["intent"] == "project_delivery"
     assert filters["memory_cube"] == "project"
     assert filters["preferred_kinds"] == ("memory", "rule", "raw_chunk", "reflection")
-    assert filters["suppressed_kinds"] == ("knowledge_page",)
+    assert filters["suppressed_kinds"] == ("knowledge_page", "news")
     assert filters["query_terms"] and "uumit" in filters["query_terms"]
     assert isinstance(filters["source_weights"], dict)
     assert "allowed_kinds" not in filters
@@ -35,7 +35,7 @@ def test_classify_recall_intent_project_delivery_query() -> None:
     assert intent.confidence >= 0.7
     assert intent.memory_cube == "project"
     assert intent.preferred_kinds == ("memory", "rule", "raw_chunk", "reflection")
-    assert intent.suppressed_kinds == ("knowledge_page",)
+    assert intent.suppressed_kinds == ("knowledge_page", "news")
     assert intent.query_terms and "uumit" in intent.query_terms
     assert any("delivery" in reason.lower() or "project" in reason.lower() for reason in intent.reasons)
 
@@ -58,7 +58,7 @@ def test_classify_recall_intent_operator_preference_query() -> None:
     assert intent.name == "operator_preference"
     assert intent.memory_cube == "operator"
     assert intent.preferred_kinds == ("memory", "rule", "reflection")
-    assert intent.suppressed_kinds == ("knowledge_page",)
+    assert intent.suppressed_kinds == ("knowledge_page", "news")
     assert intent.confidence >= 0.75
 
 

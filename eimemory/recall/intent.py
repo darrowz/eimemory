@@ -20,6 +20,36 @@ class RecallIntent:
     query_terms: tuple[str, ...]
 
 
+_OPERATIONAL_ISSUE_CHINESE_PATTERNS = (
+    re.compile(r"(?:部署|发布|上线|回滚|线上|生产|服务|系统|接口).{0,8}(?:失败|故障|事故|异常|不可用|报错|超时|问题|根因)", re.IGNORECASE),
+    re.compile(r"(?:故障|事故|宕机|不可用|报错|超时|回滚|根因|健康检查|服务异常|部署失败|发布失败|上线失败)", re.IGNORECASE),
+)
+_OPERATIONAL_ISSUE_ENGLISH_PATTERNS = (
+    re.compile(
+        r"(?<![A-Za-z0-9_])(?:deployment|deploy|release|rollout|rollback|outage|incident|postmortem|root[ -]cause|service[ -]unavailable|health[ -]check[ -]failed|failed[ -](?:deployment|release|rollout)|production[ -](?:incident|outage|failure|error)|release[ -](?:failure|error)|deployment[ -](?:failure|error|issue))(?![A-Za-z0-9_])",
+        re.IGNORECASE,
+    ),
+)
+
+
+def operational_issue_cue_reasons(query: str) -> tuple[str, ...]:
+    """Return bounded deployment/incident cues used by recall permission gates."""
+
+    normalized = " ".join(str(query or "").split())
+    if not normalized:
+        return ()
+    reasons: list[str] = []
+    for pattern in _OPERATIONAL_ISSUE_CHINESE_PATTERNS:
+        if pattern.search(normalized):
+            reasons.append("cue: operational_issue.zh")
+            break
+    for pattern in _OPERATIONAL_ISSUE_ENGLISH_PATTERNS:
+        if pattern.search(normalized):
+            reasons.append("cue: operational_issue.en")
+            break
+    return tuple(reasons)
+
+
 def classify_recall_intent(query: str, task_context: dict | None = None) -> RecallIntent:
     normalized_query = str(query or "").strip()
     normalized_lower = normalized_query.lower()
@@ -34,6 +64,7 @@ def classify_recall_intent(query: str, task_context: dict | None = None) -> Reca
         "project_delivery": 0.0,
         "operator_preference": 0.0,
         "living_posture": 0.0,
+        "operational_issue": 0.0,
         "research": 0.0,
         "news": 0.0,
         "report": 0.0,
@@ -71,6 +102,12 @@ def classify_recall_intent(query: str, task_context: dict | None = None) -> Reca
     )
     _apply_living_posture_cues(
         normalized_lower=normalized_lower,
+        context_hint=context_hint,
+        scores=scores,
+        reasons=reasons,
+    )
+    _apply_operational_issue_cues(
+        normalized_query=normalized_query,
         context_hint=context_hint,
         scores=scores,
         reasons=reasons,
@@ -197,6 +234,21 @@ def _apply_living_posture_cues(
         reasons["living_posture"].append("keyword: living_posture")
 
 
+def _apply_operational_issue_cues(
+    *,
+    normalized_query: str,
+    context_hint: str,
+    scores: dict[str, float],
+    reasons: dict[str, list[str]],
+) -> None:
+    del context_hint
+    cue_reasons = operational_issue_cue_reasons(normalized_query)
+    if not cue_reasons:
+        return
+    scores["operational_issue"] += 0.9
+    reasons["operational_issue"].extend(cue_reasons)
+
+
 def _apply_research_cues(
     *,
     normalized_lower: str,
@@ -243,6 +295,7 @@ def _intent_rank(name: str) -> int:
         "project_delivery",
         "operator_preference",
         "living_posture",
+        "operational_issue",
         "research",
         "news",
         "report",
@@ -290,7 +343,7 @@ def _extract_terms(text: str) -> tuple[str, ...]:
 _INTENT_CONFIG = {
     "project_delivery": {
         "preferred_kinds": ("memory", "rule", "raw_chunk", "reflection"),
-        "suppressed_kinds": ("knowledge_page",),
+        "suppressed_kinds": ("knowledge_page", "news"),
         "source_weights": {
             "eibrain.policy": 1.2,
             "eimemory.knowledge.compiler": 1.1,
@@ -300,7 +353,7 @@ _INTENT_CONFIG = {
     },
     "operator_preference": {
         "preferred_kinds": ("memory", "rule", "reflection"),
-        "suppressed_kinds": ("knowledge_page",),
+        "suppressed_kinds": ("knowledge_page", "news"),
         "source_weights": {
             "eibrain.policy": 1.3,
             "eimemory.knowledge.claims": 1.1,
@@ -310,12 +363,22 @@ _INTENT_CONFIG = {
     },
     "living_posture": {
         "preferred_kinds": ("memory", "rule", "reflection"),
-        "suppressed_kinds": ("knowledge_page",),
+        "suppressed_kinds": ("knowledge_page", "news"),
         "source_weights": {
             "eimemory.living": 1.2,
             "eibrain.policy": 1.0,
         },
         "memory_cube": "project",
+    },
+    "operational_issue": {
+        "preferred_kinds": ("memory", "incident", "reflection", "rule", "replay_result", "claim_card"),
+        "suppressed_kinds": ("knowledge_page", "news"),
+        "source_weights": {
+            "eibrain.policy": 1.3,
+            "eimemory.knowledge.projectors": 1.2,
+            "eimemory.evolution": 1.0,
+        },
+        "memory_cube": "operational",
     },
     "research": {
         "preferred_kinds": ("claim_card", "knowledge_page", "memory", "reflection"),

@@ -1,4 +1,9 @@
-from eimemory.recall.intent import RecallIntent, classify_recall_intent, recall_filters_for_intent
+from eimemory.recall.intent import (
+    RecallIntent,
+    classify_recall_intent,
+    operational_issue_cue_reasons,
+    recall_filters_for_intent,
+)
 from eimemory.recall.lexical import LexicalSignal, analyze_lexical_signal
 from eimemory.recall.indexing import (
     RecallIndexDocument,
@@ -20,5 +25,6 @@ __all__ = [
     "RecallIntent",
     "analyze_lexical_signal",
     "classify_recall_intent",
+    "operational_issue_cue_reasons",
     "recall_filters_for_intent",
 ]
