@@ -148,6 +148,7 @@ def test_profile_selector_expands_new_tagged_capability_without_source_edit(tmp_
                         "selector": {"tags_all": ["planning"]},
                         "minimum_maturity": "evaluated",
                         "min_pass_rate": 0.8,
+                        "planning_policy": {"user_value": 0.5, "risk": 0.25},
                     }
                 },
             ),
@@ -162,6 +163,10 @@ def test_profile_selector_expands_new_tagged_capability_without_source_edit(tmp_
         )
         assert [item["capability_id"] for item in first["requirements"]] == ["planning.alpha"]
         assert _requirement_by_capability(first, "planning.alpha")["selection"]["kind"] == "selector"
+        assert _requirement_by_capability(first, "planning.alpha")["requirement"]["planning_policy"] == {
+            "user_value": 0.5,
+            "risk": 0.25,
+        }
 
         _register_capability(store, _definition("planning.beta"))
         second = profiles.resolve(

@@ -151,11 +151,21 @@ def _contract_from_entity(
     return contract
 
 
+def _plain_copy(value: Any) -> Any:
+    """Thaw recursively frozen capability JSON without pickling proxies."""
+
+    if isinstance(value, Mapping):
+        return {str(key): _plain_copy(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain_copy(item) for item in value]
+    return deepcopy(value)
+
+
 def _rule_requirement(raw: Mapping[str, Any]) -> dict[str, Any]:
     """Strip resolution-only fields from a declared requirement rule."""
 
     return {
-        str(key): deepcopy(value)
+        str(key): _plain_copy(value)
         for key, value in raw.items()
         if key not in {"selector", "priority", "capability_id"}
     }
@@ -290,7 +300,7 @@ def _merged_selector_requirement(
                     "conflicting same-priority selector requirements for "
                     f"{rule_id!r} field {key!r}"
                 )
-            merged[key] = deepcopy(value)
+            merged[key] = _plain_copy(value)
         revision_ids.update(matched_revisions)
         binding_ids.update(matched_bindings)
     return merged, {
