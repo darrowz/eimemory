@@ -453,6 +453,10 @@ class GovernedRecallEngine:
         memory._merge_recall_intent_filters(recall_filters, recall_intent)
         recall_filters["scoring_profile"] = recall_profile
         operational_recall_allowed = report_query or memory._allows_operational_recall(normalized_query, task_context)
+        explicit_evidence_boundary = report_query or any(
+            task_context.get(key) is True
+            for key in ("include_report_records", "include_evidence_only")
+        )
         if operational_recall_allowed:
             recall_filters["include_evidence_only"] = True
             recall_filters["include_report_records"] = True
@@ -537,7 +541,6 @@ class GovernedRecallEngine:
                         }
                     raw_evidence.append(safe_evidence)
             raw_evidence = raw_evidence[:limit]
-        report_query = report_query or operational_recall_allowed
         items: list[RecordEnvelope] = []
         seen_item_refs: set[tuple[str, ExactScope, str]] = set()
         seen_candidate_refs: set[tuple[str, ExactScope, str]] = set()
@@ -884,7 +887,7 @@ class GovernedRecallEngine:
             fusion_state=fusion_state,
             component_hints_by_ref=component_hints_by_ref,
             graph_edge_refs=graph_edge_refs,
-            explicit_recall_boundary=report_query or operational_recall_allowed,
+            explicit_recall_boundary=explicit_evidence_boundary,
             research_multi_hit=recall_intent.name in {"research", "news"},
             exact_scope_strategy=scope_strategy == "exact",
             canonical_first_strategy=scope_strategy == "canonical_first",
@@ -907,23 +910,7 @@ class GovernedRecallEngine:
             memories=[item for item in items if item.kind in {"memory", "rule"}],
             query=normalized_query,
         )
-        reflection_items = (
-            self.store.search(
-                query=normalized_query,
-                kinds=["reflection"],
-                scope=scope_ref,
-                limit=3,
-                source_ids=source_ids,
-            )
-            if operational_recall_allowed
-            else []
-        )
-        reflections = [
-            item
-            for item in reflection_items
-            if self._record_is_exact_and_active(item)
-            and ExactScope.from_scope(item.scope) in authorized_exact_scopes
-        ][:3]
+        reflections = [item for item in items if item.kind == "reflection"][:3]
         confidence = 0.0
         if items:
             confidence = 0.92 if active_policy.get("retrieval_policy", {}).get("route_hint") == "task_context_first" else 0.81

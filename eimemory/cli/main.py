@@ -3001,19 +3001,25 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if report.get("ok") is True else 1
         if parsed.eval_command == "production-recall":
             try:
-                with open(parsed.dataset_json, "r", encoding="utf-8") as handle:
-                    dataset = json.load(handle)
+                from eimemory.scheduler.jobs import (
+                    DatasetUnreadableError,
+                    load_json_dataset_with_evidence,
+                )
+
+                dataset, dataset_evidence = load_json_dataset_with_evidence(parsed.dataset_json)
                 if not isinstance(dataset, (dict, list)):
                     raise ValueError("dataset must be a JSON object or list")
-            except OSError as exc:
+                if isinstance(dataset, dict):
+                    dataset = {**dataset, "_secure_dataset_evidence": dataset_evidence}
+            except (OSError, DatasetUnreadableError):
                 print(
                     json.dumps(
-                        {"ok": False, "error": "dataset_unreadable", "detail": str(exc)},
+                        {"ok": False, "error": "dataset_unreadable"},
                         ensure_ascii=False,
                     )
                 )
                 return 2
-            except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+            except (json.JSONDecodeError, UnicodeError, ValueError):
                 print(json.dumps({"ok": False, "error": "invalid_dataset_json"}, ensure_ascii=False))
                 return 2
             try:

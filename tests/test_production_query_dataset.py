@@ -130,7 +130,10 @@ def _append_legacy_low_signal_accepted_case(runtime: Runtime, *, channel: str, i
     runtime.store.append(accepted)
 
 
-def test_real_audit_collection_operator_acceptance_and_immutable_dataset_build(tmp_path) -> None:
+def test_real_audit_collection_operator_acceptance_and_immutable_dataset_build(
+    tmp_path,
+    trusted_dataset_path_ancestors,
+) -> None:
     runtime = Runtime.create(root=tmp_path / "runtime")
     expected: dict[tuple[str, int], RecordEnvelope] = {}
     for channel in ("openclaw", "codex", "hermes"):
@@ -170,7 +173,10 @@ def test_real_audit_collection_operator_acceptance_and_immutable_dataset_build(t
     runtime.close()
 
 
-def test_dataset_build_is_ready_for_single_active_production_channel(tmp_path) -> None:
+def test_dataset_build_requires_all_production_channels(
+    tmp_path,
+    trusted_dataset_path_ancestors,
+) -> None:
     runtime = Runtime.create(root=tmp_path / "runtime")
     expected: dict[int, RecordEnvelope] = {}
     for index in range(5):
@@ -196,22 +202,28 @@ def test_dataset_build_is_ready_for_single_active_production_channel(tmp_path) -
 
     dataset = build_production_query_dataset(runtime, scope=BASE_SCOPE)
 
-    assert dataset["ready"] is True
+    assert dataset["ready"] is False
     assert dataset["progress"]["accepted_case_count"] == 5
     assert dataset["progress"]["active_channels"] == ["openclaw"]
-    assert dataset["progress"]["required_case_count"] == 5
+    assert dataset["progress"]["required_case_count"] == 15
+    assert dataset["progress"]["required_channels"] == ["codex", "hermes", "openclaw"]
+    assert dataset["progress"]["required_per_channel"] == 5
     assert dataset["progress"]["per_channel_accepted"] == {"codex": 0, "hermes": 0, "openclaw": 5}
     output = tmp_path / "production-redacted.json"
     written = write_production_query_dataset(dataset["dataset"], output)
     loaded, evidence = load_json_dataset_with_evidence(str(output))
     frozen = freeze_production_recall_dataset({**loaded, "_secure_dataset_evidence": evidence})
     assert written["ok"] is True
-    assert frozen["eligibility"]["ok"] is True
+    assert frozen["eligibility"]["ok"] is False
+    assert "required_channel_coverage_missing" in frozen["eligibility"]["blocked_reasons"]
     assert frozen["eligibility"]["active_channels"] == ["openclaw"]
     runtime.close()
 
 
-def test_dataset_build_blocks_active_channel_until_minimum_cases(tmp_path) -> None:
+def test_dataset_build_blocks_active_channel_until_minimum_cases(
+    tmp_path,
+    trusted_dataset_path_ancestors,
+) -> None:
     runtime = Runtime.create(root=tmp_path / "runtime")
     expected: dict[int, RecordEnvelope] = {}
     for index in range(4):
@@ -242,12 +254,16 @@ def test_dataset_build_blocks_active_channel_until_minimum_cases(tmp_path) -> No
 
     assert dataset["ready"] is False
     assert dataset["progress"]["active_channels"] == ["openclaw"]
-    assert dataset["progress"]["required_case_count"] == 5
+    assert dataset["progress"]["required_case_count"] == 15
+    assert dataset["progress"]["required_per_channel"] == 5
     assert "minimum_case_count_missing" in frozen["eligibility"]["blocked_reasons"]
     runtime.close()
 
 
-def test_dataset_build_uses_overall_minimum_across_active_channels(tmp_path) -> None:
+def test_dataset_build_uses_overall_minimum_across_active_channels(
+    tmp_path,
+    trusted_dataset_path_ancestors,
+) -> None:
     runtime = Runtime.create(root=tmp_path / "runtime")
     expected: dict[tuple[str, int], RecordEnvelope] = {}
     for channel, total in (("openclaw", 3), ("codex", 2)):
@@ -278,10 +294,13 @@ def test_dataset_build_uses_overall_minimum_across_active_channels(tmp_path) -> 
     loaded, evidence = load_json_dataset_with_evidence(str(output))
     frozen = freeze_production_recall_dataset({**loaded, "_secure_dataset_evidence": evidence})
 
-    assert dataset["ready"] is True
+    assert dataset["ready"] is False
     assert dataset["progress"]["accepted_case_count"] == 5
     assert dataset["progress"]["active_channels"] == ["codex", "openclaw"]
-    assert frozen["eligibility"]["ok"] is True
+    assert dataset["progress"]["required_case_count"] == 15
+    assert dataset["progress"]["required_per_channel"] == 5
+    assert frozen["eligibility"]["ok"] is False
+    assert "required_channel_coverage_missing" in frozen["eligibility"]["blocked_reasons"]
     runtime.close()
 
 
@@ -363,7 +382,12 @@ def test_operator_cannot_label_across_channel_or_source_boundary(tmp_path) -> No
     runtime.close()
 
 
-def test_production_query_cli_collect_accept_and_status_without_raw_echo(tmp_path, monkeypatch, capsys) -> None:
+def test_production_query_cli_collect_accept_and_status_without_raw_echo(
+    tmp_path,
+    monkeypatch,
+    capsys,
+    trusted_dataset_path_ancestors,
+) -> None:
     root = tmp_path / "runtime"
     runtime = Runtime.create(root=root)
     expected = _seed_decision(runtime, channel="codex", index=7)

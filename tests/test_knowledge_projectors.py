@@ -1,6 +1,26 @@
+from dataclasses import asdict
+
 from eimemory.api.runtime import Runtime
+from eimemory.knowledge.projectors import stable_projection_id
 from eimemory.models.knowledge_pages import KnowledgePage
 from eimemory.models.records import RecordEnvelope, ScopeRef
+
+
+def _operational_page(*, page_id: str, scope: ScopeRef) -> RecordEnvelope:
+    return KnowledgePage(
+        knowledge_page_id=page_id,
+        page_type="topic",
+        title="EIBrain runtime policy",
+        summary="EIBrain runtime recall should prefer verified memory records with explicit provenance.",
+        sections=(
+            {
+                "name": "runtime",
+                "text": "The runtime policy should keep compiled knowledge as memory-only recall hints.",
+            },
+        ),
+        supporting_claim_ids=(f"claim_{page_id}",),
+        source_ids=(f"paper_{page_id}",),
+    ).to_record(scope=scope)
 
 
 def test_claim_card_projects_to_memory_and_dedupes(tmp_path) -> None:
@@ -69,6 +89,71 @@ def test_knowledge_page_projects_to_memory(tmp_path) -> None:
         assert memories[0].links[0].target_id == page.record_id
         assert memories[0].meta["projection_reason"] == "operational_knowledge_page"
     finally:
+        runtime.close()
+
+
+def test_projection_create_rechecks_source_version_inside_write_transaction(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    other = Runtime.create(root=tmp_path)
+    scope = ScopeRef.from_dict({"agent_id": "agent-proj", "workspace_id": "create-race"})
+    page = runtime.store.append(_operational_page(page_id="page_projection_create_race", scope=scope))
+    original_mutate = runtime.store.mutate_records_atomically
+
+    def race(mutation):
+        changed = other.store.get_by_id(page.record_id, scope=scope)
+        assert changed is not None
+        changed.summary = "EIBrain runtime recall now uses a different verified operational policy version."
+        changed.touch()
+        other.store.rewrite(changed)
+        return original_mutate(mutation)
+
+    runtime.store.mutate_records_atomically = race
+    try:
+        report = runtime.project_operational_knowledge(scope=asdict(scope))
+        projection = runtime.store.get_by_id(stable_projection_id(page), scope=scope)
+
+        assert report["projected_count"] == 0
+        assert {item["reason"] for item in report["skipped"]} == {"source_changed"}
+        assert projection is None
+    finally:
+        other.close()
+        runtime.close()
+
+
+def test_projection_reactivation_rechecks_source_status_inside_write_transaction(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    other = Runtime.create(root=tmp_path)
+    scope = ScopeRef.from_dict({"agent_id": "agent-proj", "workspace_id": "reactivation-race"})
+    page = runtime.store.append(_operational_page(page_id="page_projection_reactivation_race", scope=scope))
+    first = runtime.project_operational_knowledge(scope=asdict(scope))
+    projection_id = stable_projection_id(page)
+    projection = runtime.store.get_by_id(projection_id, scope=scope)
+    assert first["projected_count"] == 1
+    assert projection is not None
+    projection.status = "deprecated"
+    projection.touch()
+    runtime.store.rewrite(projection)
+    original_mutate = runtime.store.mutate_records_atomically
+
+    def race(mutation):
+        changed = other.store.get_by_id(page.record_id, scope=scope)
+        assert changed is not None
+        changed.status = "needs_refresh"
+        changed.touch()
+        other.store.rewrite(changed)
+        return original_mutate(mutation)
+
+    runtime.store.mutate_records_atomically = race
+    try:
+        report = runtime.project_operational_knowledge(scope=asdict(scope))
+        final_projection = runtime.store.get_by_id(projection_id, scope=scope)
+
+        assert report["projected_count"] == 0
+        assert {item["reason"] for item in report["skipped"]} == {"source_changed"}
+        assert final_projection is not None
+        assert final_projection.status == "deprecated"
+    finally:
+        other.close()
         runtime.close()
 
 

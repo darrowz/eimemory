@@ -47,7 +47,7 @@ from eimemory.models.source_partitions import normalize_source_id
 
 PRODUCTION_REAL_QUERY_SCHEMA = "production_redacted_v1"
 PRODUCTION_REAL_QUERY_REPORT_SCHEMA = "production_recall_gate.v1"
-PRODUCTION_REAL_QUERY_POLICY = "production_recall_gate_policy.v1"
+PRODUCTION_REAL_QUERY_POLICY = "production_recall_gate_policy.v2"
 PRODUCTION_REAL_QUERY_REQUIRED_CHANNELS = frozenset({"openclaw", "codex", "hermes"})
 PRODUCTION_REAL_QUERY_DATASET_EVIDENCE_SCHEMA = "secure_dataset_fingerprint.v1"
 PRODUCTION_RECALL_BOOTSTRAP_STATE_SCHEMA = "production_recall_bootstrap_state.v1"
@@ -77,8 +77,9 @@ PRODUCTION_REAL_QUERY_THRESHOLDS: dict[str, float] = {
     "peak_memory_bytes": 67_108_864.0,
 }
 _REAL_QUERY_MIN_ACTIVE_CHANNELS = 1
-_REAL_QUERY_MIN_CASES = 5
-_REAL_QUERY_MIN_LABELS = 5
+_REAL_QUERY_REQUIRED_PER_CHANNEL = 5
+_REAL_QUERY_MIN_CASES = 15
+_REAL_QUERY_MIN_LABELS = 15
 _MAX_QUERY_TERMS = 16
 _MAX_QUERY_TERM_CHARS = 64
 _MAX_QUERY_FEATURE_CHARS = 512
@@ -248,7 +249,9 @@ def freeze_production_recall_dataset(dataset: dict[str, Any]) -> dict[str, Any]:
             "active_channels": list(active_contract["active_channels"]),
             "required_case_count": int(active_contract["required_case_count"]),
             "required_label_count": int(active_contract["required_label_count"]),
-            "required_per_active_channel": 0,
+            "required_channels": list(active_contract["required_channels"]),
+            "required_per_channel": int(active_contract["required_per_channel"]),
+            "required_per_active_channel": int(active_contract["required_per_channel"]),
         },
     }
 
@@ -256,21 +259,42 @@ def freeze_production_recall_dataset(dataset: dict[str, Any]) -> dict[str, Any]:
 def production_real_query_active_channel_contract(channel_counts: dict[str, int]) -> dict[str, Any]:
     counts = {channel: int(channel_counts.get(channel) or 0) for channel in sorted(SUPPORTED_RUNTIME_CHANNELS)}
     active_channels = [channel for channel, count in counts.items() if count > 0]
-    total_count = sum(counts[channel] for channel in active_channels)
+    required_channels = sorted(PRODUCTION_REAL_QUERY_REQUIRED_CHANNELS)
+    total_count = sum(counts.get(channel, 0) for channel in required_channels)
     blocked: list[str] = []
     if len(active_channels) < _REAL_QUERY_MIN_ACTIVE_CHANNELS:
         blocked.append("active_channel_coverage_missing")
+    if any(counts.get(channel, 0) < _REAL_QUERY_REQUIRED_PER_CHANNEL for channel in required_channels):
+        blocked.append("required_channel_coverage_missing")
     if total_count < _REAL_QUERY_MIN_CASES:
         blocked.append("minimum_case_count_missing")
     return {
         "ok": not blocked,
         "active_channels": active_channels,
         "per_channel_case_count": counts,
+        "required_channels": required_channels,
+        "required_per_channel": _REAL_QUERY_REQUIRED_PER_CHANNEL,
         "required_case_count": _REAL_QUERY_MIN_CASES,
         "required_label_count": _REAL_QUERY_MIN_LABELS,
-        "required_per_active_channel": 0,
+        "required_per_active_channel": _REAL_QUERY_REQUIRED_PER_CHANNEL,
         "blocked_reasons": list(dict.fromkeys(blocked)),
     }
+
+
+def production_real_query_policy_payload() -> dict[str, Any]:
+    return {
+        "schema": PRODUCTION_REAL_QUERY_POLICY,
+        "thresholds": dict(PRODUCTION_REAL_QUERY_THRESHOLDS),
+        "k": 5,
+        "required_channels": sorted(PRODUCTION_REAL_QUERY_REQUIRED_CHANNELS),
+        "required_per_channel": _REAL_QUERY_REQUIRED_PER_CHANNEL,
+        "required_case_count": _REAL_QUERY_MIN_CASES,
+        "required_label_count": _REAL_QUERY_MIN_LABELS,
+    }
+
+
+def production_real_query_policy_digest() -> str:
+    return _stable_digest(production_real_query_policy_payload())
 
 
 def _sample_channel_counts(samples: list[Any]) -> dict[str, int]:
@@ -1984,11 +2008,7 @@ def _retrieval_identity(runtime: Any, *, samples: list[dict[str, Any]]) -> dict[
     except ImportError:  # pragma: no cover
         FUSION_POLICY_VERSION = "unavailable"
     fusion_payload = {"policy_version": FUSION_POLICY_VERSION}
-    policy_payload = {
-        "schema": PRODUCTION_REAL_QUERY_POLICY,
-        "thresholds": PRODUCTION_REAL_QUERY_THRESHOLDS,
-        "k": 5,
-    }
+    policy_payload = production_real_query_policy_payload()
     return {
         "engine_digest": effective_engine_digest,
         "engine_identity": _bounded_safe_value(engine_payload) if engine_identity_valid else {},
@@ -2136,7 +2156,7 @@ def _not_run_real_query_report(
         "secure_dataset_evidence": dict(frozen.get("secure_dataset_evidence") or {}),
         "engine_digest": "",
         "fusion_digest": "",
-        "policy_digest": _stable_digest({"schema": PRODUCTION_REAL_QUERY_POLICY, "thresholds": PRODUCTION_REAL_QUERY_THRESHOLDS, "k": 5}),
+        "policy_digest": production_real_query_policy_digest(),
         "policy_schema": PRODUCTION_REAL_QUERY_POLICY,
         "result_digest": _stable_digest({}),
         "result_refs": {},
@@ -2497,6 +2517,10 @@ def _independent_real_query_metrics_valid(
     scope: ScopeRef | dict[str, Any] | None = None,
     allow_legacy_exact_ranking: bool = False,
 ) -> bool:
+    if str(report.get("policy_schema") or "") != PRODUCTION_REAL_QUERY_POLICY:
+        return False
+    if str(report.get("policy_digest") or "") != production_real_query_policy_digest():
+        return False
     samples = report.get("samples") if isinstance(report.get("samples"), list) else []
     memory_measurement_ok = _memory_measurement_valid(report, samples=samples)
     if not memory_measurement_ok:
@@ -2785,6 +2809,7 @@ def _validate_persisted_real_query_report(
         and (semantic_ranking_identity_valid or legacy_exact_ranking_valid)
         and gate.get("schema") == PRODUCTION_REAL_QUERY_POLICY
         and thresholds == PRODUCTION_REAL_QUERY_THRESHOLDS
+        and str(report.get("policy_digest") or "") == production_real_query_policy_digest()
         and int(report.get("cross_channel_leakage_count") or 0) == 0
         and int(report.get("source_filter_leakage_count") or 0) == 0
     )
@@ -2810,6 +2835,7 @@ def _validate_low_signal_not_run_report(report: dict[str, Any], *, expected_rele
         and gate.get("ok") is False
         and gate.get("blocked_reason") == "query_features_low_signal"
         and thresholds == PRODUCTION_REAL_QUERY_THRESHOLDS
+        and str(report.get("policy_digest") or "") == production_real_query_policy_digest()
         and gate.get("blocking_metrics") == {}
         and int(report.get("sample_count") or 0) == 0
         and report.get("samples") == []

@@ -331,7 +331,8 @@ def build_production_query_dataset(
         "progress": {
             "accepted_case_count": len(cases),
             "required_case_count": int(active_contract["required_case_count"]),
-            "required_per_channel": int(active_contract["required_per_active_channel"]),
+            "required_channels": list(active_contract["required_channels"]),
+            "required_per_channel": int(active_contract["required_per_channel"]),
             "active_channels": list(active_contract["active_channels"]),
             "blocked_reasons": list(active_contract["blocked_reasons"]),
             "skipped_low_signal": skipped_low_signal,

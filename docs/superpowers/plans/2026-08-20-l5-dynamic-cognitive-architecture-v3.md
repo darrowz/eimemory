@@ -874,7 +874,23 @@ gate evidence.
 | WP14 backfill/shadow | completed | Scoped backfill `full_migration_complete=true`; legacy records without attribution remained unmappable | `docs/audit/l5-v3-production-closure-2026-08-22.md` |
 | WP15 cutover/cleanup | completed | Dynamic default, explicit legacy compatibility, duplicate owners removed, ownership docs updated | `56e5483d8` and cleanup commits |
 | WP16 final integration | completed with explicit full-suite waiver | Static/package/docs checks passed; 3,068-pass clean run plus affected modules 416/416 and watchdog 10/10; operator stopped a third full run | final documentation tree |
-| WP17 release/deploy | authorized and in progress | Standing authorization plus explicit 2026-08-22 push request | |
+| WP17 release/deploy | completed for 1.10.0 | Commit `2b472ef3c3511e37bd108d802a97862e9b7af769` was pushed and immutably deployed; the 1.10.1 handoff recorded matching production commit/version, healthy services, and complete migration | `2b472ef3c3511e37bd108d802a97862e9b7af769` |
+
+### 1.10.1 candidate closure slices — 2026-08-23
+
+The release slice adds relevance-boundary separation, secure open-time
+production-dataset evidence, the policy-v2 15-case/5-per-channel readiness
+contract, and source-version CAS for knowledge refresh. The production recall
+gate remains data-pending until naturally collected and independently labelled
+OpenClaw, Codex, and Hermes cases exist; this note does not replace the dated
+2026-08-22 closure audit or claim a fully green final suite. The final exact-tree
+review, commit, and deployment gates remain with the release lead.
+
+The completed WP17 row above is historical 1.10.0 status only. For 1.10.1,
+the exact-tree final suite and review, commit and push, immutable deployment,
+and post-deploy identity, health, and canary gates remain pending. Policy-v2
+production recall acceptance is a separate data-pending gate and must not be
+manufactured.
 
 The detailed production comparison, counts, twelve-criterion score, and honest
 remaining limits are maintained in

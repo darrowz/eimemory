@@ -1634,6 +1634,30 @@ def test_default_recall_does_not_issue_operational_diagnostic_requeries(tmp_path
     store.close()
 
 
+def test_recall_does_not_issue_auxiliary_reflection_search(tmp_path, monkeypatch) -> None:
+    store = RuntimeStore(tmp_path)
+    store.append(_record(text="selected reflection search marker", source_id="alpha"))
+    calls: list[dict] = []
+    original = store.search
+
+    def recording_search(**kwargs):
+        if kwargs.get("kinds") == ["reflection"]:
+            calls.append(dict(kwargs))
+        return original(**kwargs)
+
+    monkeypatch.setattr(store, "search", recording_search)
+
+    MemoryAPI(store).recall(
+        query="deployment failure selected reflection search marker",
+        scope=asdict(SCOPE),
+        task_context={"source_ids": ["alpha"]},
+        limit=3,
+    )
+
+    assert calls == []
+    store.close()
+
+
 def test_explicit_recall_diagnostics_still_runs_bounded_operational_probe(tmp_path, monkeypatch) -> None:
     store = RuntimeStore(tmp_path)
     store.append(_record(text="explicit probe marker", source_id="alpha"))

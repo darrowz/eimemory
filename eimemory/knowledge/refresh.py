@@ -20,6 +20,26 @@ from eimemory.storage.runtime_store import RuntimeStore
 REFRESH_SOURCE = "eimemory.knowledge.refresh"
 PROJECTION_TYPE = "operational_knowledge"
 _BLOCKED_SOURCE_STATUSES = {"rejected", "deprecated", "conflicted", "needs_refresh"}
+_REFRESH_INPUT_KINDS = ["knowledge_page", "claim_card", "entity_record", "paper_source"]
+_RECORD_PAGE_SIZE = 1_000
+
+
+@dataclass(slots=True)
+class _RefreshInputs:
+    pages: list[RecordEnvelope]
+    pages_by_id: dict[str, RecordEnvelope]
+    pages_by_source: dict[str, list[RecordEnvelope]]
+    claims_by_source: dict[str, list[RecordEnvelope]]
+    entities_by_source: dict[str, list[RecordEnvelope]]
+    sources_by_id: dict[str, RecordEnvelope]
+
+
+@dataclass(slots=True)
+class _PlanRecords:
+    source_record: RecordEnvelope | None
+    source_pages: list[RecordEnvelope]
+    source_claims: list[RecordEnvelope]
+    source_entities: list[RecordEnvelope]
 
 
 @dataclass(slots=True)
@@ -27,9 +47,13 @@ class _RefreshPlan:
     source_id: str
     stale_pages: list[RecordEnvelope]
     source_pages: list[RecordEnvelope]
+    source_record: RecordEnvelope | None
+    source_claims: list[RecordEnvelope]
+    source_entities: list[RecordEnvelope]
     invalidated_record_ids: set[str]
     contradiction_audit_ids: tuple[str, ...] = ()
     blocked_reason: str = ""
+    source_version_digest: str = ""
     compile_input_digest: str = ""
     refresh_run_id: str = ""
     compiled_records: list[RecordEnvelope] | None = None
@@ -52,41 +76,59 @@ def refresh_knowledge_pages(
     """
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
     max_pages = max(1, int(limit))
-    pages = _list_records(store, kinds=["knowledge_page"], scope=scope_ref, limit=max(1_000, max_pages * 10))
-    stale_pages = [record for record in pages if record.status == "needs_refresh"][:max_pages]
+    inputs = _load_refresh_inputs(store, scope=scope_ref)
+    stale_pages = [record for record in inputs.pages if record.status == "needs_refresh"][:max_pages]
     if not stale_pages:
         return _empty_report()
 
-    claims = _list_records(store, kinds=["claim_card"], scope=scope_ref, limit=2_000)
-    entities = _list_records(store, kinds=["entity_record"], scope=scope_ref, limit=2_000)
-    sources = {
-        record.record_id: record
-        for record in _list_records(store, kinds=["paper_source"], scope=scope_ref, limit=2_000)
-    }
     plans = _prepare_plans(
         store=store,
         scope=scope_ref,
         stale_pages=stale_pages,
-        all_pages=pages,
-        claims=claims,
-        entities=entities,
-        sources=sources,
+        inputs=inputs,
     )
     invalidated_record_ids = {
         record_id
         for plan in plans
         for record_id in plan.invalidated_record_ids
     }
-    projection_records = _list_records(store, kinds=["memory"], scope=scope_ref, limit=5_000)
-    projected_to_retire = [
-        record
-        for record in projection_records
-        if _projection_source_id(record) in invalidated_record_ids and record.status != "deprecated"
-    ]
 
     def mutation(sqlite) -> tuple[dict[str, Any], list[RecordEnvelope], list]:
         changed: list[RecordEnvelope] = []
         retired_projection_ids: list[str] = []
+        current_inputs = _load_refresh_inputs(sqlite, scope=scope_ref)
+        stale_source_ids, current_records = _revalidate_plans(
+            store,
+            inputs=current_inputs,
+            plans=plans,
+        )
+        if stale_source_ids:
+            return _retry_required_report(stale_source_ids), [], []
+
+        for plan in plans:
+            records = current_records[plan.source_id]
+            current_pages_by_id = {record.record_id: record for record in records.source_pages}
+            plan.stale_pages = [
+                current_pages_by_id[page.record_id]
+                for page in plan.stale_pages
+                if page.record_id in current_pages_by_id
+            ]
+            plan.source_pages = records.source_pages
+            plan.source_record = records.source_record
+            plan.source_claims = records.source_claims
+            plan.source_entities = records.source_entities
+
+        projection_records = _list_all_records(
+            sqlite,
+            kinds=["memory"],
+            scope=scope_ref,
+        )
+        projected_to_retire = [
+            record
+            for record in projection_records
+            if _projection_source_id(record) in invalidated_record_ids
+            and record.status != "deprecated"
+        ]
         for projection in projected_to_retire:
             plan = _first_plan_for_record(plans, _projection_source_id(projection))
             _retire_projection(projection, refresh_run_id=plan.refresh_run_id if plan else "")
@@ -124,6 +166,9 @@ def refresh_knowledge_pages(
 
         report = {
             "ok": True,
+            "refresh_status": "ok",
+            "retry_required": False,
+            "stale_source_ids": [],
             "marked_for_refresh_count": len(stale_pages),
             "recompiled_page_count": len(recompiled_page_ids),
             "blocked_page_count": len(blocked_page_ids),
@@ -152,10 +197,7 @@ def _prepare_plans(
     store: RuntimeStore,
     scope: ScopeRef,
     stale_pages: list[RecordEnvelope],
-    all_pages: list[RecordEnvelope],
-    claims: list[RecordEnvelope],
-    entities: list[RecordEnvelope],
-    sources: dict[str, RecordEnvelope],
+    inputs: _RefreshInputs,
 ) -> list[_RefreshPlan]:
     grouped: dict[str, list[RecordEnvelope]] = defaultdict(list)
     for page in stale_pages:
@@ -164,11 +206,15 @@ def _prepare_plans(
 
     plans: list[_RefreshPlan] = []
     for source_id, source_stale_pages in grouped.items():
-        source_pages = [page for page in all_pages if source_id and source_id in _record_source_ids(page)]
-        if not source_pages:
-            source_pages = list(source_stale_pages)
-        source_claims = [claim for claim in claims if source_id and source_id in _record_source_ids(claim)]
-        source_entities = [entity for entity in entities if source_id and source_id in _record_source_ids(entity)]
+        records = _records_for_plan(
+            inputs,
+            source_id=source_id,
+            fallback_page_ids=[page.record_id for page in source_stale_pages],
+        )
+        source_pages = records.source_pages
+        source_claims = records.source_claims
+        source_entities = records.source_entities
+        source_record = records.source_record
         invalidated_record_ids = {page.record_id for page in source_pages}
         invalidated_record_ids.update(
             claim.record_id
@@ -179,10 +225,12 @@ def _prepare_plans(
             source_id=source_id,
             stale_pages=list(source_stale_pages),
             source_pages=source_pages,
+            source_record=source_record,
+            source_claims=source_claims,
+            source_entities=source_entities,
             invalidated_record_ids=invalidated_record_ids,
             contradiction_audit_ids=_contradiction_audit_ids(source_pages),
         )
-        source_record = sources.get(source_id)
         canonical_text, blocked_reason = _canonical_source_text(store, source_record)
         if not source_id:
             blocked_reason = "missing_paper_source_id"
@@ -196,11 +244,25 @@ def _prepare_plans(
             for entity in source_entities
             if entity.status not in _BLOCKED_SOURCE_STATUSES
         ]
+        plan.source_version_digest = _source_version_digest(
+            source_id=source_id,
+            source_record=source_record,
+            canonical_text=canonical_text,
+            source_claims=source_claims,
+            active_claims=active_claims,
+            source_entities=source_entities,
+            active_entities=active_entities,
+            source_pages=source_pages,
+            contradiction_audit_ids=plan.contradiction_audit_ids,
+        )
         plan.compile_input_digest = _compile_input_digest(
             source_id=source_id,
             source_record=source_record,
             canonical_text=canonical_text,
             active_claims=active_claims,
+            active_entities=active_entities,
+            source_pages=source_pages,
+            source_version_digest=plan.source_version_digest,
             contradiction_audit_ids=plan.contradiction_audit_ids,
         )
         plan.refresh_run_id = _refresh_run_id(source_id, plan.compile_input_digest)
@@ -228,6 +290,137 @@ def _prepare_plans(
                 plan.blocked_reason = f"recompile_failed_{type(exc).__name__}"
         plans.append(plan)
     return plans
+
+
+def _revalidate_plans(
+    store: RuntimeStore,
+    *,
+    inputs: _RefreshInputs,
+    plans: list[_RefreshPlan],
+) -> tuple[list[str], dict[str, _PlanRecords]]:
+    stale: list[str] = []
+    current_records: dict[str, _PlanRecords] = {}
+    for plan in plans:
+        records = _records_for_plan(
+            inputs,
+            source_id=plan.source_id,
+            fallback_page_ids=[page.record_id for page in plan.stale_pages],
+        )
+        current_records[plan.source_id] = records
+        current = _current_plan_inputs(store, plan=plan, records=records)
+        if (
+            current["source_version_digest"] != plan.source_version_digest
+            or current["compile_input_digest"] != plan.compile_input_digest
+        ):
+            stale.append(plan.source_id)
+    return sorted({source_id for source_id in stale}), current_records
+
+
+def _current_plan_inputs(
+    store: RuntimeStore,
+    *,
+    plan: _RefreshPlan,
+    records: _PlanRecords,
+) -> dict[str, Any]:
+    source_record = records.source_record
+    source_pages = records.source_pages
+    source_claims = records.source_claims
+    source_entities = records.source_entities
+    canonical_text, _blocked_reason = _canonical_source_text(store, source_record)
+    active_claims = [
+        claim
+        for claim in source_claims
+        if claim.status == "active" and not _is_conflicted_claim(claim)
+    ]
+    active_entities = [
+        entity
+        for entity in source_entities
+        if entity.status not in _BLOCKED_SOURCE_STATUSES
+    ]
+    contradiction_audit_ids = _contradiction_audit_ids(source_pages)
+    source_version_digest = _source_version_digest(
+        source_id=plan.source_id,
+        source_record=source_record,
+        canonical_text=canonical_text,
+        source_claims=source_claims,
+        active_claims=active_claims,
+        source_entities=source_entities,
+        active_entities=active_entities,
+        source_pages=source_pages,
+        contradiction_audit_ids=contradiction_audit_ids,
+    )
+    return {
+        "source_version_digest": source_version_digest,
+        "compile_input_digest": _compile_input_digest(
+            source_id=plan.source_id,
+            source_record=source_record,
+            canonical_text=canonical_text,
+            active_claims=active_claims,
+            active_entities=active_entities,
+            source_pages=source_pages,
+            source_version_digest=source_version_digest,
+            contradiction_audit_ids=contradiction_audit_ids,
+        ),
+    }
+
+
+def _load_refresh_inputs(repository, *, scope: ScopeRef) -> _RefreshInputs:
+    records = _list_all_records(
+        repository,
+        kinds=_REFRESH_INPUT_KINDS,
+        scope=scope,
+    )
+    pages: list[RecordEnvelope] = []
+    pages_by_id: dict[str, RecordEnvelope] = {}
+    pages_by_source: dict[str, list[RecordEnvelope]] = defaultdict(list)
+    claims_by_source: dict[str, list[RecordEnvelope]] = defaultdict(list)
+    entities_by_source: dict[str, list[RecordEnvelope]] = defaultdict(list)
+    sources_by_id: dict[str, RecordEnvelope] = {}
+    grouped_by_kind = {
+        "knowledge_page": pages_by_source,
+        "claim_card": claims_by_source,
+        "entity_record": entities_by_source,
+    }
+    for record in records:
+        if record.kind == "knowledge_page":
+            pages.append(record)
+            pages_by_id.setdefault(record.record_id, record)
+        elif record.kind == "paper_source":
+            sources_by_id.setdefault(record.record_id, record)
+        target = grouped_by_kind.get(record.kind)
+        if target is None:
+            continue
+        for source_id in _record_source_ids(record):
+            target[source_id].append(record)
+    return _RefreshInputs(
+        pages=pages,
+        pages_by_id=pages_by_id,
+        pages_by_source=dict(pages_by_source),
+        claims_by_source=dict(claims_by_source),
+        entities_by_source=dict(entities_by_source),
+        sources_by_id=sources_by_id,
+    )
+
+
+def _records_for_plan(
+    inputs: _RefreshInputs,
+    *,
+    source_id: str,
+    fallback_page_ids: list[str],
+) -> _PlanRecords:
+    source_pages = list(inputs.pages_by_source.get(source_id, ())) if source_id else []
+    if not source_pages:
+        source_pages = [
+            inputs.pages_by_id[record_id]
+            for record_id in fallback_page_ids
+            if record_id in inputs.pages_by_id
+        ]
+    return _PlanRecords(
+        source_record=inputs.sources_by_id.get(source_id),
+        source_pages=source_pages,
+        source_claims=list(inputs.claims_by_source.get(source_id, ())) if source_id else [],
+        source_entities=list(inputs.entities_by_source.get(source_id, ())) if source_id else [],
+    )
 
 
 def _canonical_source_text(store: RuntimeStore, source_record: RecordEnvelope | None) -> tuple[str, str]:
@@ -272,31 +465,137 @@ def _compile_input_digest(
     source_record: RecordEnvelope | None,
     canonical_text: str,
     active_claims: list[RecordEnvelope],
+    active_entities: list[RecordEnvelope],
+    source_pages: list[RecordEnvelope],
+    source_version_digest: str,
     contradiction_audit_ids: tuple[str, ...],
 ) -> str:
-    artifact = {}
-    if source_record is not None:
-        metadata = source_record.content.get("metadata") if isinstance(source_record.content, dict) else {}
-        artifact = dict(metadata.get("artifact") or {}) if isinstance(metadata, dict) else {}
     payload = {
         "source_id": source_id,
-        "source_status": str(source_record.status if source_record is not None else "missing"),
-        "artifact_status": str(artifact.get("status") or ""),
-        "canonical_text_sha256": str(artifact.get("text_sha256") or _sha256(canonical_text)),
-        "active_claims": [
-            {
-                "id": record.record_id,
-                "summary": record.summary,
-                "confidence": record.content.get("confidence", record.meta.get("confidence", "")),
-            }
-            for record in sorted(active_claims, key=lambda item: item.record_id)
-        ],
-        # Do not include the stale page envelope: marking a page blocked
-        # mutates its refresh metadata and would create a fresh run id on
-        # every retry.  These values are immutable source/claim evidence.
+        "source_version_digest": source_version_digest,
+        "source_record": _record_payload(source_record),
+        "canonical_artifact": _canonical_artifact_identity(source_record),
+        "canonical_text_sha256": _sha256(canonical_text),
+        "active_claims": _record_payloads(active_claims),
+        "active_entities": _record_payloads(active_entities),
+        "source_pages": _refresh_page_payloads(source_pages),
         "contradiction_audit_ids": list(contradiction_audit_ids),
     }
     return _sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+
+
+def _source_version_digest(
+    *,
+    source_id: str,
+    source_record: RecordEnvelope | None,
+    canonical_text: str,
+    source_claims: list[RecordEnvelope],
+    active_claims: list[RecordEnvelope],
+    source_entities: list[RecordEnvelope],
+    active_entities: list[RecordEnvelope],
+    source_pages: list[RecordEnvelope],
+    contradiction_audit_ids: tuple[str, ...],
+) -> str:
+    payload = {
+        "source_id": source_id,
+        "source_record": _record_payload(source_record),
+        "canonical_artifact": _canonical_artifact_identity(source_record),
+        "canonical_text_sha256": _sha256(canonical_text),
+        "source_claims": _record_payloads(source_claims),
+        "active_claim_ids": [record.record_id for record in sorted(active_claims, key=lambda item: item.record_id)],
+        "source_entities": _record_payloads(source_entities),
+        "active_entity_ids": [record.record_id for record in sorted(active_entities, key=lambda item: item.record_id)],
+        "source_pages": _refresh_page_payloads(source_pages),
+        "contradiction_audit_ids": list(contradiction_audit_ids),
+    }
+    return _sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+
+
+def _record_payload(record: RecordEnvelope | None) -> dict[str, Any] | None:
+    return record.to_dict() if record is not None else None
+
+
+def _record_payloads(records: list[RecordEnvelope]) -> list[dict[str, Any]]:
+    return [
+        record.to_dict()
+        for record in sorted(records, key=lambda item: (item.record_id, item.kind))
+    ]
+
+
+def _refresh_page_payloads(records: list[RecordEnvelope]) -> list[dict[str, Any]]:
+    payloads: list[dict[str, Any]] = []
+    for record in sorted(records, key=lambda item: (item.record_id, item.kind)):
+        payload = record.to_dict()
+        time_payload = payload.get("time") if isinstance(payload.get("time"), dict) else {}
+        time_payload["updated_at"] = ""
+        payload["time"] = time_payload
+        content = payload.get("content") if isinstance(payload.get("content"), dict) else {}
+        for key in (
+            "refresh",
+            "deprecated",
+            KNOWLEDGE_CAPABILITY_MARKER_KEY,
+        ):
+            content.pop(key, None)
+        payload["content"] = content
+        meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
+        for key in (
+            "deprecated",
+            "refresh_state",
+            "refresh_blocked_reason",
+            "refresh_reason",
+            "refresh_run_id",
+            "source_version_digest",
+            "compile_input_digest",
+            "previous_compile_digest",
+            "superseded_by",
+            "resolved_contradiction_ids",
+            KNOWLEDGE_CAPABILITY_MARKER_KEY,
+        ):
+            meta.pop(key, None)
+        payload["meta"] = meta
+        provenance = payload.get("provenance") if isinstance(payload.get("provenance"), dict) else {}
+        for key in (
+            "refresh_run_id",
+            "source_version_digest",
+            "compile_input_digest",
+            "knowledge_capability_refresh",
+            "resolved_contradiction_ids",
+            "refresh_audit",
+            "retired_reason",
+            KNOWLEDGE_CAPABILITY_MARKER_KEY,
+        ):
+            provenance.pop(key, None)
+        payload["provenance"] = provenance
+        payloads.append(payload)
+    return payloads
+
+
+def _canonical_artifact_identity(record: RecordEnvelope | None) -> dict[str, Any]:
+    if record is None or not isinstance(record.content, dict):
+        return {}
+    metadata = record.content.get("metadata")
+    if not isinstance(metadata, dict):
+        return {}
+    artifact = metadata.get("artifact")
+    return dict(artifact) if isinstance(artifact, dict) else {}
+
+
+def _retry_required_report(stale_source_ids: list[str]) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "refresh_status": "retry_required",
+        "retry_required": True,
+        "stale_source_ids": list(stale_source_ids),
+        "marked_for_refresh_count": 0,
+        "recompiled_page_count": 0,
+        "blocked_page_count": 0,
+        "retired_projection_count": 0,
+        "deprecated_page_count": 0,
+        "recompiled_page_ids": [],
+        "blocked_page_ids": [],
+        "retired_projection_ids": [],
+        "blocked": [],
+    }
 
 
 def _mark_page_blocked(page: RecordEnvelope, *, plan: _RefreshPlan) -> bool:
@@ -304,6 +603,7 @@ def _mark_page_blocked(page: RecordEnvelope, *, plan: _RefreshPlan) -> bool:
         "state": "blocked",
         "reason": plan.blocked_reason,
         "refresh_run_id": plan.refresh_run_id,
+        "source_version_digest": plan.source_version_digest,
         "compile_input_digest": plan.compile_input_digest,
     }
     current = page.content.get("refresh") if isinstance(page.content, dict) else None
@@ -322,6 +622,7 @@ def _mark_page_blocked(page: RecordEnvelope, *, plan: _RefreshPlan) -> bool:
     page.meta["refresh_state"] = "blocked"
     page.meta["refresh_blocked_reason"] = plan.blocked_reason
     page.meta["refresh_run_id"] = plan.refresh_run_id
+    page.meta["source_version_digest"] = plan.source_version_digest
     page.meta["compile_input_digest"] = plan.compile_input_digest
     page.content[KNOWLEDGE_CAPABILITY_MARKER_KEY] = capability_marker
     page.meta[KNOWLEDGE_CAPABILITY_MARKER_KEY] = capability_marker
@@ -347,11 +648,13 @@ def _deprecate_page(page: RecordEnvelope, *, plan: _RefreshPlan, superseded_by: 
         "state": "superseded",
         "reason": "not_present_in_recompile",
         "refresh_run_id": plan.refresh_run_id,
+        "source_version_digest": plan.source_version_digest,
         "superseded_by": superseded_by,
     }
     page.meta["deprecated"] = True
     page.meta["refresh_state"] = "superseded"
     page.meta["refresh_run_id"] = plan.refresh_run_id
+    page.meta["source_version_digest"] = plan.source_version_digest
     page.meta["superseded_by"] = superseded_by
     page.content[KNOWLEDGE_CAPABILITY_MARKER_KEY] = capability_marker
     page.meta[KNOWLEDGE_CAPABILITY_MARKER_KEY] = capability_marker
@@ -383,6 +686,7 @@ def _annotate_recompiled_page(
         "state": "recompiled",
         "reason": "claim_contradiction",
         "refresh_run_id": plan.refresh_run_id,
+        "source_version_digest": plan.source_version_digest,
         "compile_input_digest": plan.compile_input_digest,
         "previous_compile_digest": previous_digest,
         "resolved_contradiction_ids": audit_ids,
@@ -395,9 +699,11 @@ def _annotate_recompiled_page(
     page.meta["refresh_state"] = "recompiled"
     page.meta["refresh_reason"] = "claim_contradiction"
     page.meta["refresh_run_id"] = plan.refresh_run_id
+    page.meta["source_version_digest"] = plan.source_version_digest
     page.meta["compile_input_digest"] = plan.compile_input_digest
     page.meta["previous_compile_digest"] = previous_digest
     page.provenance["refresh_run_id"] = plan.refresh_run_id
+    page.provenance["source_version_digest"] = plan.source_version_digest
     page.provenance["compile_input_digest"] = plan.compile_input_digest
     capability_marker = refresh_capability_applicability_marker(
         "recompiled",
@@ -552,19 +858,34 @@ def _sha256(value: str) -> str:
     return hashlib.sha256(str(value or "").encode("utf-8")).hexdigest()
 
 
-def _list_records(
-    store: RuntimeStore,
+def _list_all_records(
+    repository,
     *,
     kinds: list[str],
     scope: ScopeRef,
-    limit: int,
 ) -> list[RecordEnvelope]:
-    return store.list_records(kinds=kinds, scope=scope, limit=max(1, int(limit)))
+    records: list[RecordEnvelope] = []
+    offset = 0
+    while True:
+        page = repository.list_records(
+            kinds=kinds,
+            scope=scope,
+            limit=_RECORD_PAGE_SIZE,
+            offset=offset,
+        )
+        records.extend(page)
+        if len(page) < _RECORD_PAGE_SIZE:
+            break
+        offset += len(page)
+    return records
 
 
 def _empty_report() -> dict[str, Any]:
     return {
         "ok": True,
+        "refresh_status": "ok",
+        "retry_required": False,
+        "stale_source_ids": [],
         "marked_for_refresh_count": 0,
         "recompiled_page_count": 0,
         "blocked_page_count": 0,
