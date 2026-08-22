@@ -299,6 +299,69 @@ class CapabilityService:
             "descriptor": dict(row.payload),
         }
 
+    def incubation_context(
+        self,
+        capability_id: str,
+        *,
+        runtime_scope: ScopeRef | Mapping[str, Any],
+        capability_scope: str,
+        at_time: str = "",
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        """Read active revisions/bindings for one discovered definition.
+
+        This bounded exact-scope view exists only for the incubation control
+        plane. It does not make the definition resolvable to ordinary active
+        consumers before its lifecycle transition.
+        """
+
+        scope = exact_runtime_scope(runtime_scope)
+        budget = max(1, min(499, int(limit)))
+
+        def reader(repository):
+            revisions = repository.list_effective_entities(
+                entity_type="revision",
+                scope=scope,
+                capability_scope=capability_scope,
+                status="active",
+                at_time=at_time,
+                capability_id=str(capability_id),
+                limit=budget + 1,
+            )
+            bindings = repository.list_effective_entities(
+                entity_type="binding",
+                scope=scope,
+                capability_scope=capability_scope,
+                status="active",
+                at_time=at_time,
+                capability_id=str(capability_id),
+                limit=budget + 1,
+            )
+            return revisions, bindings
+
+        revisions, bindings = self._store.read_capabilities(reader)
+        if len(revisions) > budget or len(bindings) > budget:
+            raise ValueError("capability incubation context exceeds bounded limit")
+
+        def public(row):
+            return {
+                "entity_type": row.entity_type,
+                "entity_id": row.entity_id,
+                "entity_digest": row.entity_digest,
+                "status": row.status,
+                "state_version": row.state_version,
+                "state_digest": row.state_digest,
+                "effective_at": row.effective_at,
+                "descriptor": dict(row.payload),
+            }
+
+        return {
+            "capability_id": str(capability_id),
+            "capability_scope": capability_scope,
+            "revisions": [public(row) for row in revisions],
+            "bindings": [public(row) for row in bindings],
+        }
+
     def resolve(
         self,
         capability_id: str,

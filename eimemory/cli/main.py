@@ -511,6 +511,17 @@ def _build_parser() -> argparse.ArgumentParser:
         help="optional JSON mapping or JSON file; defaults to the packaged verified seed manifest",
     )
     learn_capability_seed_manifest.add_argument("--json", action="store_true", default=True)
+    learn_capability_incubation_plan = learn_sub.add_parser("capability-incubation-plan")
+    learn_capability_incubation_plan.add_argument("--capability-scope", default="global")
+    learn_capability_incubation_plan.add_argument("--max-candidates", type=int, default=100)
+    learn_capability_incubation_plan.add_argument("--json", action="store_true", default=True)
+    learn_capability_incubation = learn_sub.add_parser("capability-incubation")
+    learn_capability_incubation.add_argument("--capability-scope", default="global")
+    learn_capability_incubation.add_argument("--max-candidates", type=int, default=100)
+    learn_capability_incubation.add_argument("--max-activate", type=int, default=3)
+    learn_capability_incubation.add_argument("--preflight-passes", type=int, default=2)
+    learn_capability_incubation.add_argument("--plan-only", action="store_true")
+    learn_capability_incubation.add_argument("--json", action="store_true", default=True)
     learn_capability_evolution_plan = learn_sub.add_parser("capability-evolution-plan")
     learn_capability_evolution_plan.add_argument("--profile", required=True)
     learn_capability_evolution_plan.add_argument("--capability-scope", default="global")
@@ -1800,6 +1811,32 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0
+        if parsed.learn_command == "capability-incubation-plan":
+            report = runtime.build_capability_incubation_plan(
+                scope=scope,
+                capability_scope=str(parsed.capability_scope),
+                max_candidates=max(1, min(499, int(parsed.max_candidates))),
+            )
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0 if report.get("ok") else 1
+        if parsed.learn_command == "capability-incubation":
+            if parsed.plan_only:
+                report = runtime.build_capability_incubation_plan(
+                    scope=scope,
+                    capability_scope=str(parsed.capability_scope),
+                    max_candidates=max(1, min(499, int(parsed.max_candidates))),
+                )
+            else:
+                report = runtime.execute_capability_incubation(
+                    scope=scope,
+                    capability_scope=str(parsed.capability_scope),
+                    max_candidates=max(1, min(499, int(parsed.max_candidates))),
+                    max_activate=max(0, min(20, int(parsed.max_activate))),
+                    preflight_passes=max(1, min(5, int(parsed.preflight_passes))),
+                    persist_report=True,
+                )
+            print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+            return 0 if report.get("ok") else 1
         if parsed.learn_command == "capability-evolution-plan":
             report = runtime.build_dynamic_capability_evolution_plan(
                 profile_key=str(parsed.profile),

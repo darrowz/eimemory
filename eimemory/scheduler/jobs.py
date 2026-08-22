@@ -90,6 +90,7 @@ def run_nightly_jobs(
         capability_v3_dual_write_report = _run_capability_v3_dual_write(runtime, scope=scope)
         l5_v3_shadow_report = _run_l5_v3_shadow(runtime, scope=scope)
         l5_v3_reconcile_report = _run_l5_v3_reconcile(runtime, scope=scope)
+        capability_incubation_report = _run_capability_incubation(runtime, scope=scope)
         dynamic_capability_evolution_report = _run_dynamic_capability_evolution(runtime, scope=scope)
         outcome_evolution_report = _run_outcome_evolution_summary(runtime, scope=scope)
         storage_maintenance_report = runtime.store.maintain_storage()
@@ -150,6 +151,7 @@ def run_nightly_jobs(
             "capability_v3_dual_write": capability_v3_dual_write_report,
             "l5_v3_shadow": l5_v3_shadow_report,
             "l5_v3_reconcile": l5_v3_reconcile_report,
+            "capability_incubation": capability_incubation_report,
             "dynamic_capability_evolution": dynamic_capability_evolution_report,
             "outcome_evolution": outcome_evolution_report,
             "storage_maintenance": storage_maintenance_report,
@@ -1660,6 +1662,75 @@ def _run_l5_v3_reconcile(runtime: Runtime, *, scope: dict) -> dict[str, Any]:
         "enabled": True,
         "status": "failed",
         "reason": "l5_v3_reconcile_invalid_report",
+    }
+
+
+def _run_capability_incubation(runtime: Runtime, *, scope: dict) -> dict[str, Any]:
+    """Expose and automatically activate discovered definitions with complete prerequisites."""
+
+    profile_key = _capability_v3_profile_key()
+    enabled = _env_bool("EIMEMORY_CAPABILITY_INCUBATION_ENABLED", default=bool(profile_key))
+    if not enabled or not profile_key:
+        return {
+            "ok": True,
+            "report_type": "capability_incubation",
+            "enabled": False,
+            "status": "not_configured",
+            "reason": "capability_incubation_profile_missing_or_disabled",
+        }
+    executor = getattr(runtime, "execute_capability_incubation", None)
+    if not callable(executor):
+        return {
+            "ok": False,
+            "report_type": "capability_incubation",
+            "enabled": True,
+            "status": "blocked",
+            "reason": "capability_incubation_executor_unavailable",
+        }
+    try:
+        report = _json_safe(
+            executor(
+                scope=scope,
+                capability_scope=str(os.environ.get("EIMEMORY_CAPABILITY_SCOPE") or "global"),
+                max_candidates=_env_int(
+                    "EIMEMORY_CAPABILITY_INCUBATION_MAX_CANDIDATES",
+                    default=100,
+                    minimum=1,
+                    maximum=499,
+                ),
+                max_activate=_env_int(
+                    "EIMEMORY_CAPABILITY_INCUBATION_MAX_ACTIVATE",
+                    default=3,
+                    minimum=0,
+                    maximum=20,
+                ),
+                preflight_passes=_env_int(
+                    "EIMEMORY_CAPABILITY_INCUBATION_PREFLIGHT_PASSES",
+                    default=2,
+                    minimum=1,
+                    maximum=5,
+                ),
+                persist_report=True,
+            )
+        )
+        if isinstance(report, dict):
+            return {"report_type": "capability_incubation", "enabled": True, **report}
+    except Exception as exc:
+        return {
+            "ok": False,
+            "report_type": "capability_incubation",
+            "enabled": True,
+            "status": "failed",
+            "reason": "capability_incubation_execution_failed",
+            "error": type(exc).__name__,
+            "detail": str(exc),
+        }
+    return {
+        "ok": False,
+        "report_type": "capability_incubation",
+        "enabled": True,
+        "status": "failed",
+        "reason": "capability_incubation_invalid_execution",
     }
 
 

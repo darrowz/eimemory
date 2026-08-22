@@ -52,6 +52,7 @@ model-tool registrations and do not imply tool-surface parity.
 | `capabilities.contracts`, `models`, `registry`, `service` | Semantic IDs, revisioned descriptors, exact runtime-scope validation, and bounded public service facades. |
 | `capabilities.profiles`, `profile_bootstrap`, `applicability`, `consumer_views` | Profile-specific requirement selection, declared applicability, and exact scoped consumer views. |
 | `capabilities.observations`, `projector` | Evidence observations, immutable references, and reproducible state projection. |
+| `governance.capability_incubation` | Exact-scope discovered-capability work items, trusted prerequisite checks, bounded preflight, activation, and fail-closed quarantine. |
 | `governance.l5_assessment_v3`, `l5_v3_reconcile` | Four-axis L5 assessment and v3 reconciliation. |
 
 The v3 key is the exact `tenant_id`/`agent_id`/`workspace_id`/`user_id` runtime

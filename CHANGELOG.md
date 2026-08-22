@@ -90,6 +90,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release-bound L5 closure evidence: live acceptance, observation, and
   independent readiness for the deployed commit.
 
+## [1.9.138] - 2026-08-22
+
+### Added
+
+- Add an evidence-gated capability incubation pipeline that scans exact-scope
+  `discovered` definitions outside the active-only L5 profile, reports every
+  missing prerequisite, and automatically transitions a definition to `active`
+  only after trusted Catalog cases, active revisions/bindings, fresh adapter
+  advertisements, and repeated bounded preflight passes exist.
+- Run incubation from nightly before dynamic capability evolution and expose
+  `learn capability-incubation-plan` plus `learn capability-incubation` for
+  read-only inspection and bounded operator execution.
+
+### Safety
+
+- Incubation never infers capability identity from text or tool names, never
+  loads executable evaluators from data, and quarantines a newly activated
+  definition if its immediate persisted profile acceptance fails.
+
 ## [1.9.137] - 2026-08-20
 
 ### Fixed
