@@ -1271,8 +1271,7 @@ class HermesMemoryProviderCore:
         return {
             "tenant_id": os.getenv("EIMEMORY_TENANT_ID", "default").strip() or "default",
             "agent_id": (
-                os.getenv("EIMEMORY_AGENT_ID", "").strip()
-                or str(context.get("agent_identity") or "hermes").strip()
+                str(context.get("agent_identity") or "hermes").strip()
                 or "hermes"
             ),
             "workspace_id": (

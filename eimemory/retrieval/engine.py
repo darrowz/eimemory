@@ -10,7 +10,13 @@ from time import perf_counter
 from typing import Any, Mapping, Protocol
 
 from eimemory.governance.memory_graph import build_evidence_refs, build_timeline, graph_route_for_query
-from eimemory.identity import extract_user_aliases, hongtu_query_scopes, hongtu_query_scopes_with_aliases
+from eimemory.identity import (
+    extract_user_aliases,
+    hongtu_query_scopes,
+    hongtu_query_scopes_with_aliases,
+    hongtu_scope,
+    is_hongtuish_scope,
+)
 from eimemory.knowledge.views import build_recall_view, choose_view_type, records_from_view
 from eimemory.metadata import business_metadata
 from eimemory.models.records import RecallBundle, RecordEnvelope, ScopeRef
@@ -76,6 +82,7 @@ class RecallCallbacks(Protocol):
         recall_intent: RecallIntent,
         report_query: bool,
         operational_recall_allowed: bool = False,
+        allowed_recall_lanes: list[str] | tuple[str, ...] | None = None,
     ) -> list[str]: ...
     def _diagnostic_blocked_operational_counts(
         self,
@@ -181,6 +188,15 @@ class GovernedRecallEngine:
     _minimum_candidate_budget = 48
     _candidate_budget_multiplier = 3
     _max_query_scope_refs = 64
+    _max_legacy_fallback_scope_refs = 8
+    _relevance_selector_policy_version = "post-fusion-relevance.v1"
+    _relevance_selector_thresholds = {
+        "non_exact_min_grounding": 0.08,
+        "non_exact_min_score": 0.18,
+        "top_score_margin": 0.15,
+        "graph_relation_min_confidence": 0.5,
+        "vector_grounding_min_score": 0.12,
+    }
     _safe_raw_boosts = frozenset(
         {
             "keyword_overlap",
@@ -263,12 +279,42 @@ class GovernedRecallEngine:
         raw_hybrid = recall_mode == "raw_hybrid"
         scope_ref = request.scope.to_scope_ref()
         recall_scope_aliases = extract_user_aliases(task_context)
-        exact_scope_only = task_context.get("exact_scope_only") is True
-        query_scope_refs = (
-            [scope_ref]
-            if exact_scope_only
-            else hongtu_query_scopes_with_aliases(scope_ref, aliases=recall_scope_aliases)
-        )
+        requested_scope_strategy = str(task_context.get("scope_strategy") or "").strip().lower()
+        if requested_scope_strategy in {"exact", "canonical_first", "legacy_union"}:
+            scope_strategy = requested_scope_strategy
+        elif task_context.get("exact_scope_only") is True:
+            scope_strategy = "exact"
+        else:
+            scope_strategy = "legacy_union"
+        exact_scope_only = task_context.get("exact_scope_only") is True or scope_strategy == "exact"
+        fallback_query_scope_refs: list[ScopeRef] = []
+        if scope_strategy == "exact":
+            query_scope_refs = [scope_ref]
+        elif scope_strategy == "canonical_first" and is_hongtuish_scope(scope_ref, aliases=recall_scope_aliases):
+            canonical_scope = ScopeRef.from_dict(
+                hongtu_scope(
+                    {
+                        "tenant_id": scope_ref.tenant_id,
+                        "agent_id": scope_ref.agent_id,
+                        "workspace_id": scope_ref.workspace_id,
+                        "user_id": scope_ref.user_id,
+                    },
+                    aliases=recall_scope_aliases,
+                )
+            )
+            union_scope_refs = hongtu_query_scopes_with_aliases(scope_ref, aliases=recall_scope_aliases)
+            query_scope_refs = [canonical_scope]
+            fallback_query_scope_refs = [
+                item
+                for item in union_scope_refs
+                if ExactScope.from_scope(item) != ExactScope.from_scope(canonical_scope)
+            ][: self._max_legacy_fallback_scope_refs]
+        else:
+            query_scope_refs = (
+                [scope_ref]
+                if exact_scope_only
+                else hongtu_query_scopes_with_aliases(scope_ref, aliases=recall_scope_aliases)
+            )
         query_scope_limit = memory._positive_int(task_context.get("query_scope_limit"))
         if recall_mode == "fast" and query_scope_limit:
             query_scope_refs = memory._prioritize_fast_query_scopes(
@@ -279,22 +325,38 @@ class GovernedRecallEngine:
         query_scope_refs = query_scope_refs[: self._max_query_scope_refs]
         policy_scope_ref = query_scope_refs[0] if query_scope_refs else scope_ref
         candidate_scope_groups: list[list[ScopeRef]] = []
+        fallback_scope_groups: list[list[ScopeRef]] = []
         authorized_exact_scopes: set[ExactScope] = set()
         scope_group_by_exact: dict[ExactScope, int] = {}
-        for logical_scope in query_scope_refs:
-            group: list[ScopeRef] = []
-            physical_scopes = [logical_scope] if exact_scope_only else hongtu_query_scopes(logical_scope)
-            for physical_scope in physical_scopes:
-                visible_scopes = [physical_scope] if exact_scope_only else self._visible_exact_scopes([physical_scope])
-                for exact_scope_ref in visible_scopes:
-                    exact_scope = ExactScope.from_scope(exact_scope_ref)
-                    if exact_scope in authorized_exact_scopes:
-                        continue
-                    authorized_exact_scopes.add(exact_scope)
-                    scope_group_by_exact[exact_scope] = len(candidate_scope_groups)
-                    group.append(exact_scope_ref)
-            if group:
-                candidate_scope_groups.append(group)
+
+        def add_scope_groups(
+            logical_scopes: list[ScopeRef],
+            *,
+            exact_only: bool,
+            destination: list[list[ScopeRef]],
+        ) -> None:
+            for logical_scope in logical_scopes:
+                group: list[ScopeRef] = []
+                physical_scopes = [logical_scope] if exact_only else hongtu_query_scopes(logical_scope)
+                for physical_scope in physical_scopes:
+                    visible_scopes = [physical_scope] if exact_only else self._visible_exact_scopes([physical_scope])
+                    for exact_scope_ref in visible_scopes:
+                        exact_scope = ExactScope.from_scope(exact_scope_ref)
+                        if exact_scope in authorized_exact_scopes:
+                            continue
+                        authorized_exact_scopes.add(exact_scope)
+                        scope_group_by_exact[exact_scope] = len(candidate_scope_groups) + len(fallback_scope_groups)
+                        group.append(exact_scope_ref)
+                if group:
+                    destination.append(group)
+
+        add_scope_groups(
+            query_scope_refs,
+            exact_only=exact_scope_only or scope_strategy == "canonical_first",
+            destination=candidate_scope_groups,
+        )
+        if fallback_query_scope_refs:
+            add_scope_groups(fallback_query_scope_refs, exact_only=True, destination=fallback_scope_groups)
         task_type = str(task_context.get("task_type") or "")
         if not normalized_query:
             return RecallBundle(
@@ -381,6 +443,7 @@ class GovernedRecallEngine:
         report_query = memory._is_report_query(normalized_query, task_context)
         recall_filters = memory._recall_filters_from_task_context(task_context)
         recall_filters["_result_limit"] = limit
+        recall_filters["scope_strategy"] = scope_strategy
         policy_source_weights = memory._source_weights(retrieval_policy.get("source_weights"))
         if policy_source_weights:
             recall_filters["source_weights"] = {
@@ -490,6 +553,7 @@ class GovernedRecallEngine:
             recall_intent=recall_intent,
             report_query=report_query,
             operational_recall_allowed=operational_recall_allowed,
+            allowed_recall_lanes=list(recall_filters.get("allowed_recall_lanes") or ()),
         )
         source_reports: list[dict[str, Any]] = []
         scored_items: list[dict[str, Any]] = []
@@ -497,45 +561,80 @@ class GovernedRecallEngine:
         identity_evidence_by_ref: dict[tuple[str, ExactScope, str], set[str]] = {}
         pending_hits: list[tuple[CandidateRequest, int, int, int, CandidateHit]] = []
         recall_budget_exhausted = False
-        for group_index, scope_group in enumerate(candidate_scope_groups):
-            for scope_index, query_scope_ref in enumerate(scope_group):
-                if recall_deadline_exceeded():
-                    recall_budget_exhausted = True
+        scope_fallback = "not_needed"
+
+        def search_scope_groups(scope_groups: list[list[ScopeRef]], *, group_offset: int = 0) -> None:
+            nonlocal recall_budget_exhausted
+            for local_group_index, scope_group in enumerate(scope_groups):
+                group_index = group_offset + local_group_index
+                for scope_index, query_scope_ref in enumerate(scope_group):
+                    if recall_deadline_exceeded():
+                        recall_budget_exhausted = True
+                        break
+                    candidate_budget = max(
+                        search_limit,
+                        memory._positive_int(recall_filters.get("candidate_limit"))
+                        or max(self._minimum_candidate_budget, search_limit * self._candidate_budget_multiplier),
+                    )
+                    provider_limit = search_limit
+                    if isinstance(self.candidate_source, SQLiteCandidateSource) or (
+                        getattr(self.candidate_source, "sqlite_authority", False) is True
+                    ):
+                        provider_limit = min(candidate_budget, max(search_limit, self._minimum_candidate_budget))
+                    source_request = replace(
+                        request,
+                        scope=ExactScope.from_scope(query_scope_ref),
+                        kinds=tuple(search_kinds),
+                        limit=provider_limit,
+                        budget=candidate_budget,
+                        recall_filters=freeze_value(recall_filters),
+                    )
+                    batch = self.candidate_source.search(source_request)
+                    source_reports.append(batch.diagnostic_dict())
+                    indexed_hits = list(enumerate(batch.hits))
+                    indexed_hits.sort(key=lambda pair: (pair[1].source_rank, -pair[1].source_score, pair[0]))
+                    bounded_hits = indexed_hits[: source_request.limit]
+                    if len(indexed_hits) > len(bounded_hits):
+                        engine_drops["provider_over_limit"] += len(indexed_hits) - len(bounded_hits)
+                    pending_hits.extend(
+                        (source_request, group_index, scope_index, provider_index, hit)
+                        for provider_index, hit in bounded_hits
+                    )
+                    if recall_deadline_exceeded():
+                        recall_budget_exhausted = True
+                        break
+                if recall_budget_exhausted:
                     break
-                candidate_budget = max(
-                    search_limit,
-                    memory._positive_int(recall_filters.get("candidate_limit"))
-                    or max(self._minimum_candidate_budget, search_limit * self._candidate_budget_multiplier),
+
+        search_scope_groups(candidate_scope_groups)
+        canonical_identity_hit = any(
+            bool(set(hit.evidence_hints) & {"exact_title", "alias_hit"})
+            for _source_request, _group_index, _scope_index, _provider_index, hit in pending_hits
+        )
+        if not canonical_identity_hit:
+            canonical_identity_hit = any(
+                (
+                    candidate := self.store.get_by_exact_ref(
+                        hit.ref.record_id,
+                        scope=hit.ref.scope.to_scope_ref(),
+                        source_id=hit.ref.source_id,
+                    )
                 )
-                provider_limit = search_limit
-                if isinstance(self.candidate_source, SQLiteCandidateSource) or (
-                    getattr(self.candidate_source, "sqlite_authority", False) is True
-                ):
-                    provider_limit = min(candidate_budget, max(search_limit, self._minimum_candidate_budget))
-                source_request = replace(
-                    request,
-                    scope=ExactScope.from_scope(query_scope_ref),
-                    kinds=tuple(search_kinds),
-                    limit=provider_limit,
-                    budget=candidate_budget,
-                    recall_filters=freeze_value(recall_filters),
-                )
-                batch = self.candidate_source.search(source_request)
-                source_reports.append(batch.diagnostic_dict())
-                indexed_hits = list(enumerate(batch.hits))
-                indexed_hits.sort(key=lambda pair: (pair[1].source_rank, -pair[1].source_score, pair[0]))
-                bounded_hits = indexed_hits[: source_request.limit]
-                if len(indexed_hits) > len(bounded_hits):
-                    engine_drops["provider_over_limit"] += len(indexed_hits) - len(bounded_hits)
-                pending_hits.extend(
-                    (source_request, group_index, scope_index, provider_index, hit)
-                    for provider_index, hit in bounded_hits
-                )
-                if recall_deadline_exceeded():
-                    recall_budget_exhausted = True
-                    break
-            if recall_budget_exhausted:
-                break
+                is not None
+                and self._is_strongly_lexical_durable_event(normalized_query, candidate)
+                for _source_request, _group_index, _scope_index, _provider_index, hit in pending_hits
+            )
+        if (
+            scope_strategy == "canonical_first"
+            and fallback_scope_groups
+            and not canonical_identity_hit
+            and not items
+            and not recall_deadline_exceeded()
+        ):
+            scope_fallback = "legacy_union"
+            pending_hits.clear()
+            query_scope_refs.extend(fallback_query_scope_refs)
+            search_scope_groups(fallback_scope_groups, group_offset=len(candidate_scope_groups))
         if recall_budget_exhausted:
             engine_drops["recall_budget_exhausted"] += 1
         pending_hits.sort(
@@ -778,13 +877,23 @@ class GovernedRecallEngine:
             base_ids=base_ids,
             memory_usage_adjustments=memory_usage_adjustments,
         )
-        items, anchor_reserve_swapped = self._reserve_high_quality_anchor_only(
+        items, relevance_selector_state = self._select_post_fusion_items(
             items,
+            query=normalized_query,
             limit=limit,
+            fusion_state=fusion_state,
             component_hints_by_ref=component_hints_by_ref,
+            graph_edge_refs=graph_edge_refs,
+            explicit_recall_boundary=report_query or operational_recall_allowed,
+            research_multi_hit=recall_intent.name in {"research", "news"},
+            exact_scope_strategy=scope_strategy == "exact",
+            canonical_first_strategy=scope_strategy == "canonical_first",
         )
-        if anchor_reserve_swapped:
+        if relevance_selector_state.get("anchor_reserve_swap"):
             engine_drops["anchor_reserve_swap"] += 1
+        for reason, count in dict(relevance_selector_state.get("dropped_reasons") or {}).items():
+            if count:
+                engine_drops[f"relevance_selector:{reason}"] += int(count)
         graph_expanded = sum(1 for item in items if self._record_key(item) not in base_ids)
         selected_refs = {self._record_key(item) for item in items}
         rule_recall_promoted_count = sum(
@@ -869,6 +978,8 @@ class GovernedRecallEngine:
             explanation={
                 "query": normalized_query,
                 "task_context": task_context,
+                "scope_strategy": scope_strategy,
+                "scope_fallback": scope_fallback,
                 "recall_profile": recall_profile,
                 "recall_profile_source": recall_profile_source,
                 "recall_profile_params": profile_config,
@@ -909,6 +1020,7 @@ class GovernedRecallEngine:
                     memory_usage_adjustments=memory_usage_adjustments,
                 ),
                 "fusion": self._fusion_explanation(items, fusion_state),
+                "relevance_selector": relevance_selector_state,
                 "recall_intent": memory._recall_intent_summary(recall_intent),
                 "query_scopes": [memory._scope_dict(item) for item in query_scope_refs],
                 "recall_scope_aliases": recall_scope_aliases,
@@ -1124,11 +1236,323 @@ class GovernedRecallEngine:
             "detail_by_ref": detail_by_ref,
             "evidence_by_ref": evidence_by_ref,
             "pool_members": pool_members,
+            "graph_expanded_refs": {
+                self._record_key(item)
+                for item in pre_pool_items
+                if self._record_key(item) not in base_ids
+            },
+            "authorized_exact_refs": {self._record_key(item) for item in pre_pool_items},
             "create_safety": create_safety,
             "target_source_id": target_source_id,
             "target_identity_refs": target_identity_refs,
             "ambiguity_reasons": ambiguity_reasons,
         }
+
+    def _select_post_fusion_items(
+        self,
+        items: list[RecordEnvelope],
+        *,
+        query: str,
+        limit: int,
+        fusion_state: dict[str, Any],
+        component_hints_by_ref: dict[tuple[str, ExactScope, str], dict[str, Any]],
+        graph_edge_refs: list[object] | None = None,
+        explicit_recall_boundary: bool = False,
+        research_multi_hit: bool = False,
+        exact_scope_strategy: bool = False,
+        canonical_first_strategy: bool = False,
+    ) -> tuple[list[RecordEnvelope], dict[str, Any]]:
+        """Apply one bounded relevance gate after fusion and page pooling.
+
+        Fusion owns order; this selector only removes items that are not
+        sufficiently grounded. Exact identity hits are already hydrated from
+        authorized exact references and may dominate weaker distractors.
+        """
+
+        thresholds = dict(self._relevance_selector_thresholds)
+        bounded_limit = max(0, int(limit or 0))
+        detail_by_ref = fusion_state.get("detail_by_ref") or {}
+        evidence_by_ref = fusion_state.get("evidence_by_ref") or {}
+        pool_members = fusion_state.get("pool_members") or {}
+        graph_expanded_refs = set(fusion_state.get("graph_expanded_refs") or ())
+        authorized_exact_refs = set(fusion_state.get("authorized_exact_refs") or ())
+        if not authorized_exact_refs:
+            authorized_exact_refs = set(evidence_by_ref)
+        graph_grounded_ids = self._trusted_graph_grounded_ids(
+            graph_edge_refs or (),
+            minimum_confidence=float(thresholds["graph_relation_min_confidence"]),
+        )
+
+        def members_for(item: RecordEnvelope) -> list[RecordEnvelope]:
+            return list(pool_members.get(self._record_key(item)) or [item])
+
+        def evidence_for(item: RecordEnvelope) -> set[str]:
+            members = members_for(item)
+            return {
+                evidence
+                for member in members
+                for evidence in evidence_by_ref.get(self._record_key(member), set())
+            }
+
+        def score_for(item: RecordEnvelope) -> float:
+            member_refs = [self._record_key(member) for member in members_for(item)]
+            scores = [self._safe_float((detail_by_ref.get(ref) or {}).get("score")) for ref in member_refs]
+            return max(scores or [self._safe_float((detail_by_ref.get(self._record_key(item)) or {}).get("score"))])
+
+        def is_exact_identity(item: RecordEnvelope) -> bool:
+            return self._record_key(item) in authorized_exact_refs and bool(
+                evidence_for(item) & {"exact_title", "alias_hit"}
+            )
+
+        def is_authoritative_graph_expansion(item: RecordEnvelope) -> bool:
+            return "graph_path" in evidence_for(item) and any(
+                self._record_key(member) in graph_expanded_refs for member in members_for(item)
+            )
+
+        exact_identity_items = [item for item in items if is_exact_identity(item)]
+        dropped_reasons: Counter[str] = Counter()
+        exact_top_score = max((score_for(item) for item in exact_identity_items), default=0.0)
+        non_exact_top_score = max(
+            (score_for(item) for item in items if not is_exact_identity(item)),
+            default=0.0,
+        )
+        safe_exact_dominance = bool(exact_identity_items) and (
+            not non_exact_top_score
+            or non_exact_top_score < float(thresholds["non_exact_min_score"])
+            or exact_top_score - non_exact_top_score >= float(thresholds["top_score_margin"])
+        )
+        if exact_identity_items and not research_multi_hit and (
+            exact_scope_strategy or (canonical_first_strategy and safe_exact_dominance)
+        ):
+            selected = exact_identity_items[:bounded_limit]
+            dropped_reasons["exact_dominance"] = max(0, len(items) - len(selected))
+            return selected, {
+                "policy_version": self._relevance_selector_policy_version,
+                "thresholds": thresholds,
+                "input_count": len(items),
+                "selected_count": len(selected),
+                "dropped_count": max(0, len(items) - len(selected)),
+                "dropped_reasons": dict(sorted(dropped_reasons.items())),
+                "exact_identity_count": len(exact_identity_items),
+                "authorized_exact_duplicates": len(exact_identity_items),
+                "safe_exact_dominance": True,
+                "early_stop": True,
+                "research_multi_hit": False,
+                "preserved_fused_order": True,
+                "padding": False,
+            }
+        durable_event_items = [
+            item for item in items if self._is_strongly_lexical_durable_event(query, item)
+        ]
+        if durable_event_items and not research_multi_hit:
+            selected = durable_event_items[:bounded_limit]
+            dropped_reasons["durable_event_dominance"] = max(0, len(items) - len(selected))
+            return selected, {
+                "policy_version": self._relevance_selector_policy_version,
+                "thresholds": thresholds,
+                "input_count": len(items),
+                "selected_count": len(selected),
+                "dropped_count": max(0, len(items) - len(selected)),
+                "dropped_reasons": dict(sorted(dropped_reasons.items())),
+                "exact_identity_count": len(exact_identity_items),
+                "authorized_exact_duplicates": len(exact_identity_items),
+                "safe_exact_dominance": False,
+                "early_stop": True,
+                "research_multi_hit": False,
+                "preserved_fused_order": True,
+                "padding": False,
+            }
+        ordered_scores = [score_for(item) for item in items if not is_exact_identity(item)]
+        top_score = max(ordered_scores or [0.0])
+        selected: list[RecordEnvelope] = []
+        for item in items:
+            if len(selected) >= bounded_limit:
+                break
+            if is_exact_identity(item):
+                selected.append(item)
+                continue
+            if is_authoritative_graph_expansion(item):
+                selected.append(item)
+                continue
+            if self._is_strongly_lexical_durable_event(query, item):
+                selected.append(item)
+                continue
+            score = score_for(item)
+            if (
+                canonical_first_strategy
+                and exact_identity_items
+                and not research_multi_hit
+                and score < float(thresholds["non_exact_min_score"])
+            ):
+                dropped_reasons["score"] += 1
+                continue
+            if (
+                not research_multi_hit
+                and canonical_first_strategy
+                and exact_identity_items
+                and top_score > 0
+                and top_score - score > float(thresholds["top_score_margin"]) + 1e-12
+            ):
+                dropped_reasons["top_score_margin"] += 1
+                continue
+            grounding_score, grounding_reason = self._non_exact_grounding_score(
+                query=query,
+                item=item,
+                evidence=evidence_for(item),
+                component_hints_by_ref=component_hints_by_ref,
+                graph_grounded_ids=graph_grounded_ids,
+                vector_min_score=float(thresholds["vector_grounding_min_score"]),
+                explicit_recall_boundary=explicit_recall_boundary,
+            )
+            if grounding_score < float(thresholds["non_exact_min_grounding"]):
+                dropped_reasons[grounding_reason or "grounding"] += 1
+                continue
+            selected.append(item)
+
+        anchor_reserve_swap = False
+        if bounded_limit > 1 and len(selected) >= bounded_limit:
+            selected_refs = {self._record_key(item) for item in selected}
+
+            def high_quality_anchor(item: RecordEnvelope) -> bool:
+                hints = component_hints_by_ref.get(self._record_key(item)) or {}
+                sources = {str(value) for value in hints.get("candidate_sources") or ()}
+                return (
+                    "anchor" in sources
+                    and "fts" not in sources
+                    and self._safe_float(hints.get("quality_score")) >= 0.8
+                    and (
+                        self._safe_float(hints.get("lexical_score")) > 0.0
+                        or (
+                            self._safe_float(hints.get("semantic_score")) >= 0.12
+                            and self._safe_float(hints.get("vector_score")) >= 0.35
+                        )
+                    )
+                )
+
+            reserved = next(
+                (
+                    item
+                    for item in items
+                    if self._record_key(item) not in selected_refs and high_quality_anchor(item)
+                ),
+                None,
+            )
+            if reserved is not None:
+                selected[-1] = reserved
+                anchor_reserve_swap = True
+
+        dropped_count = max(0, len(items) - len(selected))
+        return selected, {
+            "policy_version": self._relevance_selector_policy_version,
+            "thresholds": thresholds,
+            "input_count": len(items),
+            "selected_count": len(selected),
+            "dropped_count": dropped_count,
+            "dropped_reasons": dict(sorted(dropped_reasons.items())),
+            "exact_identity_count": len(exact_identity_items),
+            "authorized_exact_duplicates": len(exact_identity_items),
+            "safe_exact_dominance": False,
+            "early_stop": False,
+            "research_multi_hit": research_multi_hit,
+            "top_score": round(top_score, 12),
+            "preserved_fused_order": True,
+            "padding": False,
+            "anchor_reserve_swap": anchor_reserve_swap,
+        }
+
+    @staticmethod
+    def _is_strongly_lexical_durable_event(query: str, item: RecordEnvelope) -> bool:
+        meta = business_metadata(item.meta)
+        content = item.content if isinstance(item.content, dict) else {}
+        memory_type = str(meta.get("memory_type") or content.get("memory_type") or "").strip().lower()
+        if item.kind != "memory" or memory_type not in {"event", "commitment"}:
+            return False
+        text = " ".join(
+            str(value or "")[:4096]
+            for value in (item.title, item.summary, item.detail, content.get("text"))
+        )
+        normalized_query = " ".join(str(query or "").strip().lower().split())
+        normalized_text = " ".join(text.lower().split())
+        return bool(normalized_query) and normalized_query in normalized_text
+
+    def _non_exact_grounding_score(
+        self,
+        *,
+        query: str,
+        item: RecordEnvelope,
+        evidence: set[str],
+        component_hints_by_ref: dict[tuple[str, ExactScope, str], dict[str, Any]],
+        graph_grounded_ids: set[str],
+        vector_min_score: float,
+        explicit_recall_boundary: bool,
+    ) -> tuple[float, str]:
+        if "keyword_exact" in evidence:
+            return 1.0, "keyword_exact"
+        hints: list[dict[str, Any]] = [component_hints_by_ref.get(self._record_key(item)) or {}]
+        text = " ".join(
+            str(value or "")[:4096]
+            for value in (
+                item.title,
+                item.summary,
+                item.detail,
+                item.content.get("text") if isinstance(item.content, dict) else "",
+                item.content.get("excerpt") if isinstance(item.content, dict) else "",
+            )
+        )
+        lexical = analyze_lexical_signal(query, text, record_kind=item.kind, record_source=item.source)
+        lexical_score = max(
+            lexical.score,
+            *(self._safe_float(hint.get("lexical_score")) for hint in hints),
+        )
+        semantic_score = max(
+            [self._safe_float(hint.get("semantic_score")) for hint in hints],
+            default=0.0,
+        )
+        vector_score = max(
+            [self._safe_float(hint.get("vector_score")) for hint in hints],
+            default=0.0,
+        )
+        if lexical_score >= float(self._relevance_selector_thresholds["non_exact_min_grounding"]):
+            return min(1.0, lexical_score), "lexical"
+        if semantic_score >= float(self._relevance_selector_thresholds["non_exact_min_grounding"]) and vector_score >= vector_min_score:
+            return min(1.0, semantic_score), "semantic_vector"
+        if item.record_id in graph_grounded_ids:
+            return float(self._relevance_selector_thresholds["non_exact_min_grounding"]), "graph_relation"
+        if explicit_recall_boundary and self._is_explicit_operational_evidence(item):
+            return float(self._relevance_selector_thresholds["non_exact_min_grounding"]), "explicit_boundary"
+        return max(lexical_score, semantic_score, vector_score), "grounding"
+
+    @staticmethod
+    def _is_explicit_operational_evidence(item: RecordEnvelope) -> bool:
+        source = str(item.source or "").strip().lower()
+        return item.kind in {
+            "incident",
+            "replay_result",
+            "learning_eval",
+            "recall_view",
+            "reflection",
+        } or any(
+            marker in source
+            for marker in ("agent_end", "outcome", "incident", "run_log", "audit", "evolution")
+        )
+
+    def _trusted_graph_grounded_ids(
+        self,
+        graph_edge_refs: Any,
+        *,
+        minimum_confidence: float,
+    ) -> set[str]:
+        grounded: set[str] = set()
+        allowed_edge_types = {"causal", "supports", "contradicts", "depends_on", "derived_from"}
+        for edge in list(graph_edge_refs or ())[:256]:
+            edge_type = str(getattr(edge, "edge_type", "") or "").strip().lower()
+            confidence = self._safe_float(getattr(edge, "confidence", 0.0))
+            if edge_type not in allowed_edge_types or confidence < minimum_confidence:
+                continue
+            for record_id in (getattr(edge, "from_id", ""), getattr(edge, "to_id", "")):
+                if str(record_id or "").strip():
+                    grounded.add(str(record_id))
+        return grounded
 
     def _fusion_explanation(self, items: list[RecordEnvelope], state: dict[str, Any]) -> dict[str, Any]:
         evidence_order = ("alias_hit", "exact_title", "keyword_exact", "vector_match", "graph_path")
@@ -1278,41 +1702,6 @@ class GovernedRecallEngine:
             return lexical_score
         provider_rank = self._safe_int(hints.get("_provider_rank"), default=0)
         return (1.0 / provider_rank) if self._keyword_component_eligible(hints) and provider_rank else 0.0
-
-    def _reserve_high_quality_anchor_only(
-        self,
-        items: list[RecordEnvelope],
-        *,
-        limit: int,
-        component_hints_by_ref: dict[tuple[str, ExactScope, str], dict[str, Any]],
-    ) -> tuple[list[RecordEnvelope], bool]:
-        selected = list(items[:limit])
-        if limit <= 1 or not selected:
-            return selected, False
-
-        def qualifies(item: RecordEnvelope) -> bool:
-            hints = component_hints_by_ref.get(self._record_key(item)) or {}
-            sources = set(str(value) for value in hints.get("candidate_sources") or ())
-            return (
-                "anchor" in sources
-                and "fts" not in sources
-                and self._safe_float(hints.get("quality_score")) >= 0.8
-                and (
-                    self._safe_float(hints.get("lexical_score")) > 0.0
-                    or (
-                        self._safe_float(hints.get("semantic_score")) >= 0.12
-                        and self._safe_float(hints.get("vector_score")) >= 0.35
-                    )
-                )
-            )
-
-        if any(qualifies(item) for item in selected):
-            return selected, False
-        reserved = next((item for item in items[limit:] if qualifies(item)), None)
-        if reserved is None:
-            return selected, False
-        selected[-1] = reserved
-        return selected, True
 
     def _keyword_component_tie_key(self, hints: dict[str, Any]) -> tuple[float, float, int]:
         provider_rank = self._safe_int(hints.get("_provider_rank"), default=0)
