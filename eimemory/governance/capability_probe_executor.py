@@ -716,6 +716,14 @@ def execute_probe(
         checks=checks,
     )
     passed = execution.get("passed") is True and bool(checks) and all(check.get("passed") is True for check in checks)
+    raw_verdict = str(execution.get("verdict") or "")
+    verdict = (
+        "pass"
+        if passed
+        else raw_verdict
+        if raw_verdict in {"fail", "blocked", "inconclusive", "stale", "invalid"}
+        else "fail"
+    )
     return {
         "executor_id": executor_id,
         "executor_version": executor_version,
@@ -730,6 +738,7 @@ def execute_probe(
         "metrics": dict(execution.get("metrics") or {}),
         "execution_digest": execution_digest,
         "passed": passed,
+        "verdict": verdict,
         "error": str(execution.get("error") or artifact_error or ("" if passed else "executor invariant check failed")),
     }
 

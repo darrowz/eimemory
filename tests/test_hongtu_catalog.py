@@ -13,6 +13,7 @@ from eimemory.evaluation.hongtu_catalog import (
     evaluate_memory_recall,
     install,
 )
+from eimemory.governance.capability_probe_executor import execute_probe
 from eimemory.models.records import ScopeRef
 
 
@@ -94,3 +95,19 @@ def test_hongtu_catalog_case_is_sealed_and_passes() -> None:
     assert result["passed"] is True
     assert result["verdict"] == "pass"
     assert result["output"]["payload_redacted"] is True
+
+
+def test_governed_probe_preserves_pass_verdict_for_persistence() -> None:
+    catalog = _catalog()
+    case = catalog.get_case(CASE_ID)
+    assert case is not None
+
+    result = execute_probe(
+        case.to_artifact(),
+        runtime=_Runtime(),
+        evidence_ref="test://governed-probe",
+        catalog=catalog,
+    )
+
+    assert result["passed"] is True
+    assert result["verdict"] == "pass"
