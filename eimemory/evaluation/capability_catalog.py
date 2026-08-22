@@ -36,6 +36,7 @@ from eimemory.models.records import ScopeRef
 
 
 CATALOG_SCHEMA_VERSION = "capability_evaluation_catalog.v1"
+CATALOG_SPEC_CREATED_AT = "2026-08-20T00:00:00.000000Z"
 DEFAULT_EXECUTOR_REVISION = "v1"
 DEFAULT_GRADER_REVISION = "v1"
 _ALLOWED_GRADER_TYPES = frozenset({"code", "schema_rule", "model"})
@@ -319,7 +320,11 @@ class CatalogCase:
                 "case_id": self.case_id,
                 "case_digest": self.case_digest,
             },
-            created_at=created_at or _utc_now(),
+            # A catalog case is immutable, so the derived EvaluationSpec must
+            # also be stable across repeated runs. Using wall-clock time here
+            # produced one spec ID with different digests and blocked every
+            # second observation as an idempotency conflict.
+            created_at=created_at or CATALOG_SPEC_CREATED_AT,
             binding_selector=dict(self.binding_selector),
             model_grader_policy=dict(self.model_grader_policy),
             status="active",
