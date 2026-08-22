@@ -858,23 +858,31 @@ gate evidence.
 | Work package | Status | Evidence reference | Commit |
 | --- | --- | --- | --- |
 | WP0 baseline custody | completed | `docs/audit/l5-v3-pre-refactor-baseline.md` | `dfcf7c9` |
-| WP1 ADRs/contracts | completed | `tests/test_capability_v3_contracts.py` (12 passed); compileall; independent contract and documentation reviews | `07e3d37` |
-| WP2 performance baseline | completed | `docs/audit/l5-v3-performance-baseline.md`; all three tiers, 9 samples/2 warmups, semantic parity 33/33, report digest `ecd3df1b17ae69e92628dd78cf4e2087c4e968433ead422f7dd1e5d91f9aba6b` | `3af4c53` |
-| WP3 Storage v2 schema | completed | `tests/test_capability_storage_v3.py`, `tests/test_storage_deferred_migrations.py`, `tests/test_runtime_store_concurrency.py`, and `tests/test_capability_v3_contracts.py` (34 passed); compileall; diff check; two independent reviews | `HEAD` (WP3 commit) |
-| WP4 registry/profiles | pending | | |
-| WP5 adapter advertisements | pending | | |
-| WP6 eval catalog | pending | | |
-| WP7 observations/ledger | pending | | |
-| WP8 knowledge bridge | pending | | |
-| WP9 state projector | pending | | |
-| WP10 L5 v3 | pending | | |
-| WP11 consumer migration | pending | | |
-| WP12 release separation | pending | | |
-| WP13 automatic evolution | pending | | |
-| WP14 backfill/shadow | pending | | |
-| WP15 cutover/cleanup | pending | | |
-| WP16 final integration | pending | | |
-| WP17 release/deploy | pending after WP16 | standing authorization recorded 2026-08-20 | |
+| WP1 ADRs/contracts | completed | `tests/test_capability_v3_contracts.py`; compileall; independent contract and documentation reviews | `07e3d37` |
+| WP2 performance baseline | completed | `docs/audit/l5-v3-performance-baseline.md`; all three tiers; semantic parity report | `3af4c53` |
+| WP3 Storage v2 schema | completed | Capability storage, deferred migration, concurrency, and contract suites | `463b180aa` |
+| WP4 registry/profiles | completed | Dynamic definitions/revisions/bindings/profiles; production exact-scope resolution; Python 3.14 frozen-profile repair | `2103122c8` |
+| WP5 adapter advertisements | completed | Shared adapter advertisement contracts; live independent Hermes/OpenClaw bindings and advertisements | `90d20ab42` |
+| WP6 eval catalog | completed | Sealed mainline Hongtu catalog; stable repeat-run specs; provider-specific cases | `d675fa9a5`, `f6004191e`, `90d20ab42` |
+| WP7 observations/ledger | completed | Twelve live observations, stable specs/runs, immutable ledger/audit evidence | `80564e77e`, `f6004191e` |
+| WP8 knowledge bridge | completed | Canonical PDF artifact, approved/high-trust link, candidate hypothesis, independent Hermes/OpenClaw evals, eligible feedback, updated snapshots | `docs/audit/l5-v3-production-closure-2026-08-22.md` |
+| WP9 state projector | completed | Two provider-specific reliable production snapshots with exact evidence watermarks | `docs/audit/l5-v3-production-closure-2026-08-22.md` |
+| WP10 L5 v3 | completed | Four-axis production assessment: ready, `evolving`, no blocking gaps | `docs/audit/l5-v3-production-closure-2026-08-22.md` |
+| WP11 consumer migration | completed | Dynamic reader/doctor/think/dashboard/acceptance paths; no default legacy fallback | `56e5483d8`, `90d20ab42` |
+| WP12 release separation | completed | Deployment assurance remains independent and non-blocking for portable recall evidence | `56e5483d8` |
+| WP13 automatic evolution | implemented; fresh production mutation proof pending | Machine-gated proposal/apply/recovery/rollback code and focused tests; no fresh production code mutation in this review | `CHANGELOG.md`, production closure review |
+| WP14 backfill/shadow | completed | Scoped backfill `full_migration_complete=true`; legacy records without attribution remained unmappable | `docs/audit/l5-v3-production-closure-2026-08-22.md` |
+| WP15 cutover/cleanup | completed | Dynamic default, explicit legacy compatibility, duplicate owners removed, ownership docs updated | `56e5483d8` and cleanup commits |
+| WP16 final integration | completed with explicit full-suite waiver | Static/package/docs checks passed; 3,068-pass clean run plus affected modules 416/416 and watchdog 10/10; operator stopped a third full run | final documentation tree |
+| WP17 release/deploy | authorized and in progress | Standing authorization plus explicit 2026-08-22 push request | |
+
+The detailed production comparison, counts, twelve-criterion score, and honest
+remaining limits are maintained in
+`docs/audit/l5-v3-production-closure-2026-08-22.md`. Implementation presence is
+not used as a substitute for production evidence: WP13 remains the only
+partially production-proven package. Its completion requires regression-tested
+commit, push, immutable deployment, health/canary observation, and rollback;
+loop maturity is `evolving`.
 
 ## Terra handoff prompt
 

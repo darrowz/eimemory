@@ -14,6 +14,14 @@ Status: first executable roadmap, 2026-06-28.
 > `legacy_compatibility=True` maintenance/replay path; they do not define
 > current L5 selection or readiness. This documentation change does not claim
 > L5 readiness, historical migration completion, or production evidence.
+>
+> Current production evidence is now recorded separately in
+> [`audit/l5-v3-production-closure-2026-08-22.md`](audit/l5-v3-production-closure-2026-08-22.md):
+> the dynamic Hongtu profile is ready at loop stage `evolving`, with reliable
+> independent Hermes/OpenClaw recall bindings and a verified canonical
+> knowledge-hypothesis-feedback chain. The fixed-taxonomy stage
+> and score language below remains historical and must not be used to override
+> the four-axis v3 assessment.
 
 ## Plain Definition
 

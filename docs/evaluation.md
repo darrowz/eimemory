@@ -59,6 +59,30 @@ The report includes:
 This framework evaluates recall behavior first. Broader source-intake,
 daily-brief, and skill replay suites should reuse this report shape.
 
+## Dynamic Capability Catalog Evaluation
+
+L5 v3 capability evaluation is separate from dataset recall benchmarks.
+Installed Python entry points in
+`eimemory.capability_catalog.bootstrap.v1` register trusted executors and typed
+cases, after which the catalog is sealed. A dynamic case resolves one exact
+capability revision and provider binding through the selected profile.
+
+```bash
+eimemory learn capability-acceptance \
+  --profile l5.default --capability-scope global --json
+eimemory learn l5-v3 \
+  --profile l5.default --capability-scope global --persist --json
+eimemory learn l5-readiness \
+  --reader-mode v3 --profile l5.default --json
+```
+
+EvaluationSpec derivation is stable across repeated runs; the same immutable
+case/revision pair retains one spec digest while each execution produces a
+distinct run and observation. Governed probes preserve the executor verdict in
+the persisted run. The Hongtu catalog returns aggregate recall checks only and
+uses exact binding selectors so Hermes and OpenClaw accumulate independent
+evidence. Recalled payloads are not evaluator output.
+
 ## LongMemEval Raw Evidence
 
 `eimemory eval longmem` runs a LongMemEval-style retrieval benchmark without

@@ -584,6 +584,24 @@ The architecture is complete only when all of the following hold:
 12. Old fixed taxonomies and duplicate compatibility paths are removed only
     after parity is demonstrated.
 
+### 14.1 Production status addendum (2026-08-22)
+
+The target architecture is implemented through WP15. The Hongtu reference
+profile has a sealed mainline catalog, exact Hermes/OpenClaw recall bindings,
+provider-specific advertisements and cases, twelve observations, reliable
+snapshots, and a ready four-axis assessment at loop stage `evolving`.
+The scoped v3 backfill is complete.
+
+This is **not** a declaration that all twelve criteria have equal production
+proof. Criterion 6 now has a canonical artifact-backed knowledge link,
+hypothesis, independent two-provider evaluation, and eligible feedback without
+self-promotion. Criterion 8 remains partially production-evidenced because no
+fresh regression-tested commit/push/immutable-deployment code mutation was
+performed for this review. The authoritative evidence and 91.7% fully evidenced score are in
+`docs/audit/l5-v3-production-closure-2026-08-22.md`; implementation-plan status
+is maintained in the progress ledger rather than inferred from this target
+specification.
+
 ## 15. Explicit non-goals
 
 - A universal ontology that predicts all future capability names.

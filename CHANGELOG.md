@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Ship the trusted Hongtu application catalog from the main `eimemory`
+  distribution, with aggregate-only scoped recall evaluation and independent
+  Hermes/OpenClaw binding selectors. Production acceptance now records separate
+  provider observations and reliable snapshots without exposing recalled
+  payloads to the evaluator output.
+- Complete the scoped capability v3 production backfill, explicitly seed the
+  eleven legacy vocabulary definitions as discovered, and lifecycle-activate
+  only `memory.recall` after its catalog, provider bindings, advertisements,
+  repeated acceptance evidence, and projection gates pass.
+- Record the production L5 v3 closure review, including a 91.7% fully evidenced
+  score against the twelve original acceptance criteria. A canonical PDF-backed
+  knowledge link, hypothesis, independent Hermes/OpenClaw evaluation, and
+  eligible feedback advance the loop to `evolving`; automatic code evolution
+  remains the sole criterion without fresh production proof.
+- Record the final verification boundary honestly: static, packaging, links,
+  3,068 clean full-run passes, 416/416 affected-module passes, and 10/10
+  OpenClaw watchdog passes. The operator explicitly waived a third full run;
+  the project does not claim a fully green all-test invocation for this tree.
 - Rewrite the project overview, architecture, deployment boundary, and module
   ownership documentation around the single production governance pipeline.
 - Make L3/L4 safety-wire declarations name active controls:

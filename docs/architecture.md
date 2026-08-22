@@ -147,6 +147,14 @@ executable registration authorities. When no trusted application catalog is
 installed, dynamic evaluation and consumers that require it fail closed with
 `catalog_not_configured`; the runtime does not invent a default catalog.
 
+The Hongtu production package supplies one such trusted installer in
+`evaluation.hongtu_catalog`. It registers an aggregate-only recall executor and
+separate Hermes/OpenClaw cases selected by exact binding ID. The executor calls
+the real scoped recall path and returns only bounded counts, confidence and
+scope-isolation checks; recalled payloads do not enter evaluation output. This
+is an application catalog, not a general authority for adapters or stored data
+to register executable code.
+
 ### Governance plane
 
 The active control flow is:
@@ -200,6 +208,13 @@ It does not fall back to retired case maps, inferred capability keywords, or a
 machine-specific cohort. Historical fixed cohorts remain behind an explicit
 `legacy_compatibility=True` request for maintenance/replay only, and cannot
 manufacture current dynamic readiness.
+
+In the 2026-08-22 reference deployment, `memory.recall:v1` is lifecycle-active
+with reliable Hermes and OpenClaw snapshots. The other seed-manifest definitions
+remain discovered. A canonical knowledge link and independently verified
+hypothesis feedback advanced the resulting ready assessment to loop stage
+`evolving`; it must reach `compounding` only through later repeated outcomes,
+never through an operator-set label.
 
 Reviewed knowledge reaches this control plane only through typed links and a
 traceable hypothesis. It must produce bounded evaluation/replay evidence and,

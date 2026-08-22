@@ -188,6 +188,25 @@ Retired fixed capability cohorts exist only for explicit
 `legacy_compatibility=True` maintenance or replay calls. They are not a default
 seed, fallback, or source of current L5 truth.
 
+### Hongtu production catalog reference
+
+The maintained Hongtu distribution now publishes a trusted catalog installer
+from `eimemory.evaluation.hongtu_catalog`. The current production profile
+evaluates `memory.recall:v1` independently through explicit Hermes and OpenClaw
+bindings; each provider has its own catalog case selector, advertisement,
+evaluation runs, observations, and state snapshot. This does not activate every
+seeded capability: the remaining definitions stay discovered until their own
+provider, evaluator, and evidence chain exist.
+
+The 2026-08-22 production assessment reports `status=ready`,
+`loop_maturity=evolving`, both adapters ready, both recall bindings
+reliable, and no blocking gaps. `ready` here is the four-axis L5 v3 assessment
+for the selected profile, not a claim that the cognitive loop has reached
+`compounding` or that every original acceptance criterion has fresh production
+proof. See
+[the production closure review](docs/audit/l5-v3-production-closure-2026-08-22.md)
+for exact identity, counts, completion, and remaining limits.
+
 ## Governed learning boundary
 
 There is one production learning flow:
