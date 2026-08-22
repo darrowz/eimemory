@@ -216,6 +216,13 @@ hypothesis feedback advanced the resulting ready assessment to loop stage
 `evolving`; it must reach `compounding` only through later repeated outcomes,
 never through an operator-set label.
 
+Discovered definitions have a separate incubation path so the active-only
+profile cannot create a bootstrap deadlock. Incubation reads exact-scope
+definitions, revisions, bindings, advertisements, and sealed Catalog cases;
+only a complete fresh target with repeated passing preflight can transition to
+active. Immediate profile acceptance then persists normal evidence. Failure
+quarantines the definition instead of leaving an unverified active capability.
+
 Reviewed knowledge reaches this control plane only through typed links and a
 traceable hypothesis. It must produce bounded evaluation/replay evidence and,
 where required, independent outcomes before a projection can change capability

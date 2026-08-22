@@ -207,6 +207,13 @@ proof. See
 [the production closure review](docs/audit/l5-v3-production-closure-2026-08-22.md)
 for exact identity, counts, completion, and remaining limits.
 
+Discovered definitions are not stranded outside that active profile. The
+nightly capability-incubation stage lists them independently and automatically
+activates only those with a trusted Catalog target, active revision/provider
+binding, fresh advertisement, and repeated passing preflight. Missing pieces
+remain explicit work items; after activation, ordinary acceptance, observation,
+projection, and regression logic own natural maturity and downgrade.
+
 ## Governed learning boundary
 
 There is one production learning flow:

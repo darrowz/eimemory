@@ -1097,6 +1097,54 @@ class Runtime:
             repo_root=repo_root,
         )
 
+    def build_capability_incubation_plan(
+        self,
+        *,
+        scope: dict | ScopeRef | None = None,
+        capability_scope: str = "global",
+        catalog: Any | None = None,
+        max_candidates: int = 100,
+        fresh_at: str = "",
+    ) -> dict:
+        """Expose discovered capabilities and exact activation prerequisites."""
+
+        from eimemory.governance.capability_incubation import build_capability_incubation_plan
+
+        return build_capability_incubation_plan(
+            self,
+            runtime_scope=scope if scope is not None else ScopeRef(),
+            capability_scope=capability_scope,
+            catalog=self.capability_catalog if catalog is None else catalog,
+            max_candidates=max_candidates,
+            fresh_at=fresh_at,
+        )
+
+    def execute_capability_incubation(
+        self,
+        *,
+        scope: dict | ScopeRef | None = None,
+        capability_scope: str = "global",
+        catalog: Any | None = None,
+        max_candidates: int = 100,
+        max_activate: int = 3,
+        preflight_passes: int = 2,
+        persist_report: bool = True,
+    ) -> dict:
+        """Activate only discovered definitions with complete trusted evidence prerequisites."""
+
+        from eimemory.governance.capability_incubation import execute_capability_incubation
+
+        return execute_capability_incubation(
+            self,
+            runtime_scope=scope if scope is not None else ScopeRef(),
+            capability_scope=capability_scope,
+            catalog=self.capability_catalog if catalog is None else catalog,
+            max_candidates=max_candidates,
+            max_activate=max_activate,
+            preflight_passes=preflight_passes,
+            persist_report=persist_report,
+        )
+
     def build_dynamic_capability_evolution_plan(
         self,
         *,
